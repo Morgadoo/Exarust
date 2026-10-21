@@ -218,18 +218,22 @@ original's half-second warm-up and three runs). It pushes the live options into 
 frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).
 
-The camera's navigation unit is `nav_camera`: the align-behind wrap, the
-orbit rate and pitch limits (0.8 rad to 1.5, 0.000125 steeper per zoom unit
-in double precision), the frame clock's nine ticks, the camera placement
-with its height, distance and pitch clamps, the free zoom's 0.2 % step, the
-preset record's numeric fields (the 59² view and size scales, the 59th
-roots, the pitch bounds, the 10/10000 distance range and the fixed camera's
-pitch and zoom speeds; its GUI callbacks and editor scan are not modelled),
-and the random kick offset. Its picking unit is `nav_pick`: the screen ray's
-plane pick, the node walk with the class, layer and option-word filters,
-the bounding-sphere test, the nearest mesh hit and the kinesis pick; the
-cursor's aim plane and reach use them, and the physics world answers as the
-mesh callback because Exarust keeps no CPU triangles.
+The camera's navigation unit is `nav_camera`: the align routine's wrap
+of the target yaw about the camera's, the engine's planar yaw, the orbit
+rate (4.8 rad over the screen, in double precision) and pitch limits (0.8
+rad to 1.5, 0.000125 steeper per zoom unit, the held pitch), the frame
+clock's nine ticks, the camera placement with its height, distance and
+pitch clamps, the free zoom's 0.2 % per wheel unit, the preset record's
+numeric fields (the 59² view and size scales, the 59th roots of the
+retention and the rate, the pitch bounds, the 10/10000 distance range and
+both cameras' speeds; its GUI callbacks and editor scan are not
+modelled), the cut-away segment and the kick offset. Its picking unit is
+`nav_pick`: the screen ray's plane pick, the node walk with the class,
+layer and option bits, the segment against each bounding sphere and box,
+the nearest mesh within the best distance, the ground-plane fallback and
+the kinesis pick; the cursor's aim plane and reach use them, and the
+physics world answers as the mesh callback because Exarust keeps no CPU
+triangles.
 
 ## Scope
 

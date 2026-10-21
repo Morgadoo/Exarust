@@ -218,7 +218,7 @@ does not yet follow these three rules.
 
 A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door. A drag pulls along the cursor direction by the nearest accepted hit, and that reach starts at 1000 cm. The grabbed box is refused when any placed corner is higher than 280 cm or lower than 1000 cm.
 
-The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`), its layer against the view's, its option flag (`0x4000000` skips it) and its bounding sphere, and each mesh asked for its nearest face, keeping the nearest. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles, and the kinesis variant also needs the node's `0x200000` flag.
+The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`, and `0x4000000` skips it), its layer against the view's, the segment against its bounding sphere and then its box, and each mesh asked for its nearest face within the best distance so far, which then shortens the segment. With no hit the pick records where the ray meets the ground plane. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles. The kinesis variant also needs the node's `0x200000` option bit, looks 40 m, grows each sphere by the caller's height and asks the mesh from where the ray crosses that sphere's top.
 
 ## Combat mode
 
@@ -640,42 +640,61 @@ character body's possession routines; addresses are in the research notes.
   offset one way and the last tick's the other; each tick then keeps 0.96
   of its change and 0.99 of the whole, a wobble of about a second that
   dies away, and drops it once both are tiny (change within 1e-7 cm²,
-  offset within 1e-4 cm², squared). Exarust builds the original's random
-  kick offset (a small random vector plus the camera's right axis,
-  jittered vertically and normalised to the kick's size) in
-  `nav_camera::kick_offset`; nothing fires it yet, since the magnitudes
-  its impact callers pass are not traced (`ChaseCamera::kick_random`).
+  offset within 1e-4 cm², squared). The kick's offset is the kick's own
+  direction, normalised (or, when it is shorter than √0.1, the camera's
+  right axis by the sign of a random draw, lifted by up to ±2), plus a
+  small random vector (±0.5 across, 0–0.15 up), scaled to the kick's
+  size. Exarust builds it in `nav_camera::kick_offset`; nothing fires it
+  yet, since the directions and sizes its impact callers pass are not
+  traced (`ChaseCamera::kick_random`).
 - **Zoom is field of view**: fov = zoom / 2000 × 45° × √(1.6 / aspect),
   clamped to 10–100°. The wheel steps through six stops from 800 to 2000
   (18° to 45°); the game starts at 1300.
 - **Pitch**: 0.8 rad below the horizon under zoom 1000, then 0.000125 rad
-  steeper per unit up to 0.925 rad at 2000. A vertical orbit drag can raise
-  it to 1.5 rad. The pitch moves 10 % of the way per 17 ms camera tick.
-- **The target yaw stays within half a turn of the body**: the align-behind
-  routine compares the two in double precision and adds or subtracts a
-  whole turn, so Cursor Look's new facing leaves the camera behind it with
-  no wrap left for the spring. The unit also places a camera from an eye
-  and a looked-at point: the point's height is clamped to the preset's
-  limits, a fixed-distance camera keeps its distance between 10 and 10000
-  and its pitch between the zoom's floor and 1.5 rad, and a free zoom
-  moves 0.2 % a step but at least 0.5 % of its range. The preset record's
+  steeper per unit up to 0.925 rad at 2000 (the zoom less 1000 in single
+  precision, the product and the sum with 0.8 in double). A vertical
+  orbit drag can raise it to 1.5 rad. The camera holds the asked pitch or
+  the floor when that is steeper, and the pitch moves 10 % of the way per
+  17 ms camera tick.
+- **Cursor Look keeps the target yaw within half a turn of the camera's**:
+  the align routine compares the target with the camera's present yaw in
+  double precision and adds or subtracts a whole turn, so the spring
+  turns the short way. The unit also places a camera from a looked-at
+  point and an eye: the point's height is clamped to the preset's limits,
+  the backward vector runs to the eye from the unclamped point and is
+  scaled by its reciprocal length, the yaw is the engine's planar angle
+  (its polynomial arc cosine of z over the horizontal length) and the
+  pitch its arc sine. The stepped camera (the game's) starts its zoom
+  between the preset's 10 and 10000 and its pitch between the held pitch
+  and 1.5 rad. A free zoom moves 0.2 % of its value per wheel unit (120
+  to a notch) but at least 0.5 % of its range. The preset record's
   numeric fields are applied as the original applies them (the 280 and
-  16000 defaults over 59², the 4719934.5 angle's and the rate's 59th
-  roots, the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range
-  and the fixed camera's 5 and 6.6/59 speeds); its GUI callbacks and
-  editor scan have no Exarust counterpart. The chase camera uses the
-  shared pieces; the placement and free-zoom paths are modelled
+  16000 defaults over 59², the 59th roots of the retention, a double
+  3.94e-13 by default whose root is the orbit's 0.616, and of the rate,
+  the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range, and the
+  speeds: 5 and 5/59 on the stepped camera, 15 × the largest distance /
+  59² and 6.6/59 otherwise); its GUI callbacks and editor scan have no
+  Exarust counterpart. The chase camera uses the shared pieces; the
+  placement, free-zoom and preset paths are modelled
   (`exa_game::nav_camera`) with tests but have no Exarust caller yet.
-- **Middle mouse** orbits: 4.8 rad per screen width, through a near
-  critically damped spring (stiffness 0.0718 and retention 0.616 per tick),
-  leading by at most 45° per tick.
-- The camera's **cut-away detector** casts from two camera distances
-  behind the looked-at point along the backward vector, for two distances
-  less a metre, and marks every candidate mesh whose box the segment meets
-  (`exa_world::scene_nodes::Scene::detect_cut_away`); the model's fade then
-  moves that mesh toward dithered or partial drawing. The detector and the
-  fade are not on the draw path yet (`room_view` still draws from the room
-  states), and with no CPU triangles the test stops at the bounding box.
+- **Middle mouse** orbits: 4.8 rad per screen width (the division in
+  double precision), through a near critically damped spring (stiffness
+  0.0718 and retention 0.616 per tick), leading by at most 45° per tick.
+- The camera's **cut-away detector** runs each frame on the stepped
+  camera. Its segment starts twice the camera's largest distance out
+  along the backward vector from the looked-at point (beyond the eye) and
+  runs back towards the point for twice that distance less a metre. It
+  probes the meshes of the sectors the first view draws, in each sector's
+  space: a candidate mesh is marked when the segment meets its bounding
+  sphere (and, by kind, the mesh's own segment test), and a mesh over the
+  player is marked when a 10 m segment straight down onto the point meets
+  it; a mark carries to the parent and the mesh children when their bits
+  say so, and a miss clears a marked mesh
+  (`exa_world::scene_nodes::Scene::detect_cut_away`). The model's fade
+  then moves a marked mesh toward dithered or partial drawing. The
+  detector and the fade are not on the draw path yet (`room_view` still
+  draws from the room states), and with no CPU triangles the tests stop
+  at the bounding sphere.
 - Not yet in Exarust: the original tilts 0.15 rad steeper per step (up to
   4) when a wall blocks the view.
 
