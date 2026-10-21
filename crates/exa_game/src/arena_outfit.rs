@@ -720,17 +720,16 @@ where
 
 /// Pick an entry that does not overlap anything already worn.
 ///
-/// The first pass marks entries that name an item, cost no more than the
-/// remaining points, pass the mask and rank checks, exist in the item
-/// database and share no bonus word with the worn set, and sums their
-/// weights. One stepped draw is taken, then a second pass walks only the
+/// The first pass marks entries that name an item, pass the mask and rank
+/// checks, exist in the item database and share no bonus word with the worn
+/// set, and sums their weights. The candidate's cost is not checked here;
+/// the pool picks that pay for an item check it when they add it. One stepped draw is taken, then a second pass walks only the
 /// marked entries to the pick. When nothing is eligible or no row passes,
 /// nothing is equipped.
 pub fn pick_without_overlap<F, E>(
     lcg: &mut Lcg,
     entries: &[PoolEntry],
     query: MaskQuery,
-    points: i32,
     worn: &WornBonus,
     mut lookup: F,
     mut equip: E,
@@ -742,7 +741,7 @@ where
     let mut marked = vec![false; entries.len()];
     let mut total = 0i32;
     for (index, entry) in entries.iter().enumerate() {
-        if entry.id.0 == 0 || entry.cost > points || !mask_accepts(query, entry) {
+        if entry.id.0 == 0 || !mask_accepts(query, entry) {
             continue;
         }
         let Some(facts) = lookup(entry.id) else {
@@ -1494,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn two_pass_pick_skips_worn_and_unaffordable() {
+    fn two_pass_pick_skips_worn_unknown_and_ranked_out() {
         let mut worn = WornBonus::default();
         worn.words[0] = 0b100;
         let mut first = entry(10, 40, 1, 5);
@@ -1503,13 +1502,11 @@ mod tests {
         let mut overlapping = entry(11, 100, 1, 5);
         overlapping.wanted = 1;
         overlapping.bonus.words[0] = 0b100;
-        let mut costly = entry(12, 100, 1, 25);
-        costly.wanted = 1;
         let mut nothing = entry(0, 100, 1, 5);
         nothing.wanted = 1;
         let mut too_high = entry(13, 100, 3, 5);
         too_high.wanted = 1;
-        let table = [first, overlapping, costly, nothing, too_high];
+        let table = [first, overlapping, nothing, too_high];
         let query = MaskQuery {
             character_bonus: 0,
             wanted: 1,
@@ -1521,7 +1518,6 @@ mod tests {
             &mut Lcg::new(0),
             &table,
             query,
-            20,
             &worn,
             |id| match id.0 {
                 10..=12 => Some(ItemFacts {
@@ -1541,12 +1537,40 @@ mod tests {
             &mut Lcg::new(0),
             &table,
             wanted_elsewhere,
-            20,
             &worn,
             |_| Some(ItemFacts::default()),
             |_, _| panic!("nothing should be equipped"),
         );
         assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn the_two_pass_pick_ignores_the_cost() {
+        // The first pass checks the worn overlap and the masks, not the
+        // candidate's cost; only the later pool picks pay for an item.
+        let mut costly = entry(12, 100, 1, 25);
+        costly.wanted = 1;
+        let table = [costly];
+        let query = MaskQuery {
+            character_bonus: 0,
+            wanted: 1,
+            rank_limit: 2,
+            max_rank: false,
+        };
+        let picked = pick_without_overlap(
+            &mut Lcg::new(0),
+            &table,
+            query,
+            &WornBonus::default(),
+            |id| {
+                Some(ItemFacts {
+                    id,
+                    ..ItemFacts::default()
+                })
+            },
+            |_, _| {},
+        );
+        assert_eq!(picked, Some(ItemId(12)));
     }
 
     #[test]
