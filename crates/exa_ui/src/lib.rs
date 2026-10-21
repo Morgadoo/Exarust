@@ -127,12 +127,12 @@ pub use skill::{
     SkillHoverInput, SkillInputInput, SkillInputOutput, SkillKeyInput, SkillKeyOutput, SkillLeave,
     SkillLink, SkillLinkInput, SkillNodeTip, SkillNodeTipPlace, SkillPointInput, SkillPopupFade,
     SkillRing, SkillScreen, SkillShow, SkillTipIcon, choose_skill_node, clamp_tooltip,
-    distribute_skill_experience, forget_dialog_fade, forget_dialog_place, group_tooltip,
-    handle_skill_input, hit_skill_point, leave_skill_ui, node_tooltip_fade, pick_skill_satellite,
-    selected_tooltip, selection_tip_slide, show_skill_ui, skill_can_learn, skill_group_icons,
-    skill_hover, skill_icon_cell, skill_node_hit, skill_node_state, skill_orbit_mark,
-    skill_position, skill_requirements, skill_ring_position, skill_satellite, skill_screen_key,
-    unlearn_skill_node,
+    detail_tooltip, distribute_skill_experience, forget_dialog_fade, forget_dialog_place,
+    group_tooltip, handle_skill_input, hit_skill_point, leave_skill_ui, node_tooltip_fade,
+    pick_skill_satellite, ring_group_tooltip, ring_node_tooltip, selection_tip_slide,
+    show_skill_ui, skill_can_learn, skill_group_icons, skill_hover, skill_icon_cell,
+    skill_node_hit, skill_node_state, skill_orbit_mark, skill_position, skill_requirements,
+    skill_ring_position, skill_satellite, skill_screen_key, unlearn_skill_node,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,

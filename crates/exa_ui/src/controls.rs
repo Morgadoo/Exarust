@@ -1,6 +1,9 @@
-//! The extended GUI controls' geometry (`RF_GUI_Controls_Ex`): the trackbar
-//! value/thumb map, the menu/drop-down row metrics, list extents and
-//! radio/check activation. The unit-derived `3U|1` quirk is kept.
+//! The extended GUI controls (`RF_GUI_Controls_Ex`): the text field, combo
+//! box, colour swatch, spinner, progress bar, separator, image and texture
+//! views, caption, trackbar and scroll bar, their default sizes, spans,
+//! values, presses, keys and draw geometry, plus the menu/drop-down row
+//! metrics, list extents and radio/check activation. The unit-derived
+//! `3U|1` quirk is kept.
 
 /// The default trackbar knob width (20).
 pub const DEFAULT_SPAN: i32 = 20;
@@ -549,8 +552,8 @@ pub struct TextField {
     pub caret: usize,
     /// The first byte drawn.
     pub view_start: usize,
-    /// The longest text the field accepts; 0 means only the class's own
-    /// limit (the original treats 0 as 255 at init).
+    /// The longest text the field accepts; the constructor turns 0 into
+    /// 255, as the original's init does.
     pub max_len: usize,
     pub editable: bool,
 }
@@ -558,6 +561,8 @@ pub struct TextField {
 impl TextField {
     /// A field around `text`.
     pub fn new(text: &[u8], max_len: usize, editable: bool) -> Self {
+        // The original's init turns a zero limit into 255.
+        let max_len = if max_len == 0 { 255 } else { max_len };
         let text = text.to_vec();
         let caret = text.len();
         Self {
@@ -748,7 +753,7 @@ impl ComboBox {
             items,
             selected,
             open: false,
-            max_len: 0,
+            max_len: 255,
         }
     }
 
@@ -758,7 +763,7 @@ impl ComboBox {
             .ok()
             .and_then(|at| at.checked_sub(1))
             .and_then(|at| self.items.get(at))
-            .map(Vec::as_slice)
+            .map(|text| &text[..text.len().min(self.max_len)])
             .unwrap_or(&[])
     }
 
@@ -935,15 +940,19 @@ impl Spinner {
 /// step))`, clamped to `unit/2 .. 8·unit`.
 pub fn spinner_repeat_step(unit: i32, min: f32, max: f32, step: f32) -> i32 {
     let range = (max - min) / step;
-    let value = (f64::from(unit) * 96.0 / f64::from(range)) as f32;
-    let value = value.round_ties_even() as i32;
-    value.clamp(unit / 2, unit * 8)
+    let raw = unit as f32 * 96.0 / range;
+    if raw.is_nan() {
+        unit / 2
+    } else {
+        (raw.round_ties_even() as i32).clamp(unit / 2, unit * 8)
+    }
 }
 
 /// A progress bar's state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProgressBar {
     pub value: f32,
+    pub min: f32,
     pub max: f32,
     pub step: f32,
     pub precision: i32,
@@ -954,6 +963,7 @@ impl Default for ProgressBar {
     fn default() -> Self {
         Self {
             value: 0.0,
+            min: 0.0,
             max: 0.0,
             step: 0.0,
             precision: 0,
@@ -964,7 +974,7 @@ impl Default for ProgressBar {
 
 impl ProgressBar {
     /// The init rule: a zero step becomes 1, a zero maximum 100, a value
-    /// under zero zero.
+    /// under the minimum raised to it.
     pub fn init(&mut self) {
         if self.step == 0.0 {
             self.step = 1.0;
@@ -972,16 +982,15 @@ impl ProgressBar {
         if self.max == 0.0 {
             self.max = 100.0;
         }
-        if self.value < 0.0 || self.value.is_nan() {
-            self.value = 0.0;
+        if self.value < self.min {
+            self.value = self.min;
         }
     }
 
-    /// Sets the value; a negative value or NaN becomes zero.
+    /// Sets the value; a negative value becomes zero (NaN stays, as the
+    /// original's ordered test leaves it).
     pub fn set(&mut self, value: f32) -> bool {
         let mut v = value;
-        // The original tests `v ≤ 0` and `v ≠ 0`; for a float that is the
-        // same set as `v < 0` (−0 stays, NaN stays).
         if v < 0.0 {
             v = 0.0;
         }
@@ -995,7 +1004,8 @@ impl ProgressBar {
 
     /// The shown text: the value times a hundred, one digit, then `%`.
     pub fn text(&self) -> String {
-        format!("{:.*}%", self.precision.max(1) as usize, self.value * 100.0)
+        // The original formats this text with a fixed one digit.
+        format!("{:.1}%", self.value * 100.0)
     }
 
     /// The filled width: `round(width × value)`.
@@ -1015,13 +1025,15 @@ pub fn separator_lines(
     rect: (i32, i32, i32, i32),
     gap: i32,
     right: bool,
+    unit: i32,
 ) -> Vec<(i32, i32, i32, i32)> {
     let (x, y, w, h) = rect;
     if gap <= 0 {
         return vec![(x, y, w, h)];
     }
     if right {
-        return vec![(x, y, w - gap - 1, h)];
+        // The line keeps its right edge and starts after the gap and a unit.
+        return vec![(x + gap + unit, y, w - gap - unit, h)];
     }
     let first = (w - gap) / 2 - 1;
     vec![(x, y, first, h), (x + w - first, y, first, h)]
@@ -1208,10 +1220,13 @@ mod extended_tests {
         selected.insert(b"X");
         assert_eq!(selected.text, b"Xbc");
         assert_eq!(selected.caret, 1);
-        // A max length clips the insert.
+        // A max length clips the insert; zero becomes the original's 255.
         let mut limited = TextField::new(b"ab", 3, true);
         limited.insert(b"CD");
         assert_eq!(limited.text, b"abC");
+        let mut default_limited = TextField::new(b"", 0, true);
+        default_limited.insert(&[b'x'; 300]);
+        assert_eq!(default_limited.text.len(), 255);
         // Read-only fields take nothing.
         let mut read_only = TextField::new(b"ab", 0, false);
         assert_eq!(read_only.key(b'X' as i32, false), TextFieldEvent::None);
@@ -1332,22 +1347,31 @@ mod extended_tests {
         };
         whole.value = 0.25;
         assert_eq!(whole.text(), "25.0%");
+        let mut negative = ProgressBar {
+            min: -5.0,
+            value: -10.0,
+            ..ProgressBar::default()
+        };
+        negative.init();
+        assert_eq!(negative.value, -5.0);
+        assert!(negative.set(f32::NAN));
+        assert!(negative.value.is_nan());
     }
 
     #[test]
     fn a_separator_leaves_a_gap_for_its_text() {
         assert_eq!(separator_gap(16, 2), 32);
         assert_eq!(
-            separator_lines((0, 0, 100, 3), 0, false),
+            separator_lines((0, 0, 100, 3), 0, false, 4),
             vec![(0, 0, 100, 3)]
         );
         assert_eq!(
-            separator_lines((0, 0, 100, 3), 32, false),
+            separator_lines((0, 0, 100, 3), 32, false, 4),
             vec![(0, 0, 33, 3), (67, 0, 33, 3)]
         );
         assert_eq!(
-            separator_lines((0, 0, 100, 3), 32, true),
-            vec![(0, 0, 67, 3)]
+            separator_lines((0, 0, 100, 3), 32, true, 4),
+            vec![(36, 0, 64, 3)]
         );
     }
 

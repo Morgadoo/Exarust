@@ -1402,18 +1402,17 @@ pub fn skill_group_icons(
 
 /// The four corners of one orbit mark around a group.
 ///
-/// The marks are the five spokes from `14 × unit` to `20.3 × unit` around
-/// the group's ring, at the same angles as its icons.
+/// A spoke is a radial bar from `20.3 × unit` to `26.3 × unit` out, `14 ×
+/// unit` either side, at the same angles as the group's icons. Angle zero
+/// points up (the negative y axis), as the original's.
 pub fn skill_orbit_mark(slot: usize, x: f32, y: f32, unit: i32, zoom: f32) -> [[f32; 2]; 4] {
     let angle = slot as f32 * std::f32::consts::TAU * 0.2;
     let (sin, cos) = (angle.sin() * zoom, angle.cos() * zoom);
-    let inner = 14.0 * unit as f32;
-    let outer = 20.3 * unit as f32;
-    // The original's spoke is a quad whose axis is the radius; this is the
-    // guessed half width, from the 12 × 14 box of its four corners.
-    let half = 6.0 * unit as f32;
+    let inner = 20.3 * unit as f32;
+    let outer = 26.3 * unit as f32;
+    let half = 14.0 * unit as f32;
     let point =
-        |radius: f32, side: f32| [x + radius * cos - side * sin, y - radius * sin - side * cos];
+        |radius: f32, side: f32| [x + radius * sin - side * cos, y - radius * cos - side * sin];
     [
         point(inner, half),
         point(outer, half),
@@ -1537,12 +1536,9 @@ pub struct SkillNodeTipPlace {
     pub half_height: f32,
 }
 
-/// Places the selected node's tooltip.
-///
-/// The tip is `82 × unit` wide and `14 × unit` tall, its centre one unit
-/// above the node, clamped to the window. The node icon is `5 × unit` above
-/// the centre and the title two units below the icon.
-pub fn selected_tooltip(
+/// Places the ring's node tooltip: `82 × 14` units, its centre 13 units
+/// below the node and clamped into the window.
+pub fn ring_node_tooltip(
     x: f32,
     y: f32,
     unit: i32,
@@ -1550,12 +1546,49 @@ pub fn selected_tooltip(
     offsets: &[i32],
 ) -> SkillNodeTipPlace {
     let half_width = 41.0 * unit as f32;
-    let half_height = 14.0 * unit as f32;
+    let half_height = 7.0 * unit as f32;
     SkillNodeTipPlace {
         x: clamp_tooltip(x, offsets, half_width, window),
-        y: y + unit as f32,
+        y: y + 13.0 * unit as f32,
         half_width,
         half_height,
+    }
+}
+
+/// Places the ring's group tooltip: the group icon's half width plus a
+/// unit, `4` units tall, its centre 4 units below the node.
+pub fn ring_group_tooltip(
+    x: f32,
+    y: f32,
+    icon_width: i32,
+    unit: i32,
+    window: i32,
+    offsets: &[i32],
+) -> SkillNodeTipPlace {
+    let half_width = icon_width as f32 / 2.0 + unit as f32;
+    SkillNodeTipPlace {
+        x: clamp_tooltip(x, offsets, half_width, window),
+        y: y + 4.0 * unit as f32,
+        half_width,
+        half_height: 2.0 * unit as f32,
+    }
+}
+
+/// Places the group detail tooltip: `82 × 28` units, its centre 4 units
+/// below the selected group.
+pub fn detail_tooltip(
+    x: f32,
+    y: f32,
+    unit: i32,
+    window: i32,
+    offsets: &[i32],
+) -> SkillNodeTipPlace {
+    let half_width = 41.0 * unit as f32;
+    SkillNodeTipPlace {
+        x: clamp_tooltip(x, offsets, half_width, window),
+        y: y + 4.0 * unit as f32,
+        half_width,
+        half_height: 14.0 * unit as f32,
     }
 }
 
@@ -1566,15 +1599,16 @@ pub struct SkillTipIcon {
     pub x: f32,
     pub y: f32,
     pub dimmed: bool,
+    pub selected: bool,
 }
 
 /// Places the group tooltip and its seven node icons.
 ///
 /// The box is `82 × unit` wide and `28 × unit` tall; the icons stand in a
-/// row `10 × unit` apart, centred, four units left of the box's centre, and
-/// a node before the group's level is drawn at full opacity while the rest
-/// are dimmed. `chosen` holds the eight chosen bytes and `current` the
-/// hovered node code.
+/// row `10 × unit` apart, centred, four units left of the box's centre. A
+/// slot whose requirement byte is zero draws at full opacity; the others
+/// draw at half. `requirements` is the group's requirement mask and
+/// `current` the hovered node code.
 #[allow(clippy::too_many_arguments)]
 pub fn group_tooltip(
     group: i32,
@@ -1583,22 +1617,23 @@ pub fn group_tooltip(
     unit: i32,
     window: i32,
     offsets: &[i32],
-    chosen: &[u8; NODES_PER_GROUP],
+    requirements: &[u8; NODES_PER_GROUP],
     current: i32,
 ) -> (SkillNodeTipPlace, Vec<SkillTipIcon>) {
-    let place = selected_tooltip(x, y, unit, window, offsets);
+    let place = detail_tooltip(x, y, unit, window, offsets);
     let bottom = place.y - 14.0 * unit as f32;
     let mut icons = Vec::new();
     for slot in 0..7usize {
         let ix = (slot as f32 - 3.5) * 10.0 * unit as f32 + place.x - 4.0 * unit as f32;
         let iy = bottom + 2.0 * unit as f32;
         let code = (group << 8) | (slot as i32 + 1);
-        let dimmed = chosen.get(slot).copied().unwrap_or_default() == 0 && current != code;
+        let dimmed = requirements.get(slot).copied().unwrap_or_default() != 0;
         icons.push(SkillTipIcon {
             node: slot as i32 + 1,
             x: ix,
             y: iy,
             dimmed,
+            selected: current == code,
         });
     }
     (place, icons)
@@ -1633,7 +1668,9 @@ pub fn forget_dialog_place(
 ) -> ForgetDialogPlace {
     let half_width = 41.0 * unit as f32 * alpha;
     let cx = clamp_tooltip(x, offsets, half_width, window);
-    let title_y = y + 2.0 * unit as f32 + 5.0 * unit as f32;
+    // The glow box is centred two units under the node and ten units
+    // tall; the title sits five units into it.
+    let title_y = y + 2.0 * unit as f32 - 10.0 * unit as f32 + 5.0 * unit as f32;
     let choice_y = title_y + 13.0 * unit as f32;
     ForgetDialogPlace {
         x: cx,
@@ -2666,13 +2703,16 @@ mod tests {
     #[test]
     fn an_orbit_mark_spans_its_two_radii() {
         let mark = skill_orbit_mark(0, 100.0, 100.0, 4, 1.0);
-        // Slot 0 points down the +x axis: inner 56, outer 81.2, half 24.
-        assert_eq!(mark[0], [156.0, 76.0]);
-        assert!((mark[1][0] - 181.2).abs() < 1e-4);
-        assert_eq!(mark[1][1], 76.0);
-        assert!((mark[2][0] - 181.2).abs() < 1e-4);
-        assert_eq!(mark[2][1], 124.0);
-        assert_eq!(mark[3], [156.0, 124.0]);
+        // Slot 0 points up: from 81.2 to 105.2 above the node, 56 either
+        // side.
+        assert_eq!(mark[0][0], 44.0);
+        assert!((mark[0][1] - 18.8).abs() < 1e-4);
+        assert!((mark[1][1] + 5.2).abs() < 1e-4);
+        assert_eq!(mark[1][0], 44.0);
+        assert_eq!(mark[2][0], 156.0);
+        assert!((mark[2][1] + 5.2).abs() < 1e-4);
+        assert_eq!(mark[3][0], 156.0);
+        assert!((mark[3][1] - 18.8).abs() < 1e-4);
     }
 
     #[test]
@@ -2727,18 +2767,30 @@ mod tests {
 
     #[test]
     fn tooltips_clamp_to_the_window_and_place_their_icons() {
-        let place = selected_tooltip(300.0, 200.0, 4, 500, &[10, 20]);
+        let place = ring_node_tooltip(300.0, 200.0, 4, 500, &[10, 20]);
         assert_eq!(place.half_width, 164.0);
-        assert_eq!(place.half_height, 56.0);
-        assert_eq!(place.y, 204.0);
+        assert_eq!(place.half_height, 28.0);
+        assert_eq!(place.y, 252.0);
+        let group = ring_group_tooltip(300.0, 200.0, 60, 4, 500, &[10, 20]);
+        assert_eq!(group.half_width, 34.0);
+        assert_eq!(group.half_height, 8.0);
+        assert_eq!(group.y, 216.0);
+        let detail = detail_tooltip(300.0, 200.0, 4, 500, &[10, 20]);
+        assert_eq!(detail.half_width, 164.0);
+        assert_eq!(detail.half_height, 56.0);
+        assert_eq!(detail.y, 216.0);
         assert!(place.x + 164.0 <= 500.0);
 
-        let (place, icons) = group_tooltip(1, 100.0, 100.0, 4, 1000, &[], &[1; 8], 0x0101);
-        assert_eq!(place.y, 104.0);
+        let (place, icons) = group_tooltip(1, 100.0, 100.0, 4, 1000, &[], &[0; 8], 0x0101);
+        assert_eq!(place.y, 116.0);
         assert_eq!(icons.len(), 7);
         assert_eq!(icons[0].x, place.x - 156.0);
         assert_eq!(icons[6].x, place.x + 84.0);
         assert!(icons.iter().all(|icon| !icon.dimmed));
+        assert!(icons[0].selected);
+        assert!(!icons[1].selected);
+        let (_, dimmed) = group_tooltip(1, 100.0, 100.0, 4, 1000, &[], &[3; 8], 0x0101);
+        assert!(dimmed.iter().all(|icon| icon.dimmed));
     }
 
     #[test]
@@ -2838,10 +2890,10 @@ mod tests {
         assert_eq!(place.x, 100.0);
         assert_eq!(place.y, 208.0);
         assert_eq!(place.half_width, 164.0);
-        assert_eq!(place.title_y, 228.0);
-        assert_eq!(place.choice_y, 280.0);
+        assert_eq!(place.title_y, 188.0);
+        assert_eq!(place.choice_y, 240.0);
         assert_eq!(place.yes_x, 52.0);
         assert_eq!(place.no_x, 124.0);
-        assert_eq!(place.text_y, 252.0);
+        assert_eq!(place.text_y, 212.0);
     }
 }

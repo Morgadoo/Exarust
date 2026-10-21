@@ -850,8 +850,8 @@ text field 80 × 24, combo box 80 × 24, colour swatch 24 tall, spinner
 trackbar 28 tall, caption 20 tall and scroll bar 16 tall. Their metrics
 and states:
 
-- **Text field.** Its usable span is `w − 2·pad − 2·unit`; the initial
-  field has no 255-byte limit. A press puts the caret before the first
+- **Text field.** Its usable span is `w − 2·pad − 2·unit`; a zero limit
+  becomes 255 bytes. A press puts the caret before the first
   byte whose middle is right of the pointer; Shift keeps the anchor, a
   selection is replaced by typing, and Enter commits.
 - **Combo box.** Its span is `w − (4·unit|1) − 2·pad − unit`; the arrow is
@@ -870,12 +870,14 @@ and states:
   change under 1e-8 keeps the old value. The auto-repeat step is
   `round(unit × 96 / ((max − min) / step))` clamped to `unit/2 .. 8·unit`.
   Typed bytes are digits, one dot and a leading minus only.
-- **Progress bar.** A zero step becomes 1, a zero maximum 100, a negative
-  value or NaN zero. The text is `value × 100` with one digit and `%`; the
-  fill is `round(width × value)`.
+- **Progress bar.** A zero step becomes 1, a zero maximum 100, and the
+  init raises a value under the minimum to it. Setting a negative value
+  stores zero; a NaN stays. The text is `value × 100` with one digit and
+  `%`; the fill is `round(width × value)`.
 - **Separator.** One line when it has no text; with text it draws two
-  segments round a gap of one glyph height a byte, or one segment ending
-  before the gap when its alignment's 0x2000 bit is set.
+  segments round a gap of one glyph height a byte; with its alignment's
+  0x2000 bit it draws one segment after the gap and a unit, keeping the
+  right edge.
 - **Image and texture view.** The image picks `u = (x − pad)/(w − pad)`
   and `v = 1 − (y − pad)/(h − pad)`, both clamped (NaN to 0). The texture
   view centres its texture in the control.
@@ -930,17 +932,22 @@ techniques and the prerequisite table.
 - **Group icons.** A group draws one icon per level, plus the next while a
   level is ready or while a chosen technique sits at the current level,
   on a pentagon of radius 18.3 units four units left and up. Five orbit
-  spokes run from 14 to 20.3 units.
-- **Tooltips.** The selected node's tip is 82 × 28 units, centred one unit
-  above the node and clamped into the window; a group tip puts seven node
-  icons 10 units apart. It slides in over 200 ms. The text is the group
-  and technique names from the record's tables, the node's status
-  ("Already chosen.", "Requirements not met.", "Unavailable.") and its
-  level's cost of 5000 points a level. The forget dialog
-  ("Forget Technique", "Forget all knowledge of this technique?", Yes and
-  No) opens with `(t × 0.005)²` over its last 200 ms, closes with
-  `(1 − t × 0.00333) × (2 − …)` and its Yes sits twelve units left of the
-  centre and No twelve right.
+  spokes are radial bars from 20.3 to 26.3 units out, 14 units either side,
+  pointing up at angle zero.
+- **Tooltips.** The ring's node tip is 82 × 14 units, its centre 13 units
+  below the node; the ring's group tip is the icon's width plus two units,
+  4 units tall and 4 below. The open group's detail tip is 82 × 28 units
+  and puts seven node icons 10 units apart; a slot with a zero requirement
+  byte draws fully and the others at half opacity. Each slides in over 200
+  ms.
+  The text is the group and technique names from the record's tables, the
+  node's status ("Already chosen.", "Requirements not met.",
+  "Unavailable.") and its level's cost of 5000 points a level. The forget
+  dialog ("Forget Technique", "Forget all knowledge of this technique?",
+  Yes and No) opens with `(t × 0.005)²` over its last 200 ms, closes with
+  `(1 − t × 0.00333) × (2 − …)`; its title sits three units above the
+  node, its choices ten below, Yes twelve units left of the centre and No
+  six right.
 - **Experience.** The screen distributes experience with a weight of four
   plus the levels shown: a partial group takes `remainder × weight / 4`
   first, then complete levels at `weight × 5000 / 4` each. The selector for
