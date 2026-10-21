@@ -351,7 +351,9 @@ only.
 ### Level transitions
 
 * A level is available when the save has a section with the locale's name;
-  otherwise the game loads `<locale>.rfc` from the archive.
+  otherwise the game loads `<locale>.rfc` from the archive. Exarust exposes
+  the same order as `Slots::level_available`, with the archive's lookup
+  supplied by the caller.
 * The **transition save** runs when the save has **neither** an
   `exanima04` section **nor** a section for the target level (the early
   levels, entered for the first time): it flushes the scene, saves without
