@@ -1545,7 +1545,9 @@ pub fn effective_global_experience(skills: &[Skill; SKILLS]) -> i32 {
             break;
         }
     }
-    let quarter = total.div_euclid(4);
+    // The original's sign correction makes this a truncating division; the
+    // total is never negative, so it equals a plain signed divide.
+    let quarter = total / 4;
     i32::try_from(quarter).unwrap_or(i32::MAX)
 }
 
