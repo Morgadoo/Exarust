@@ -704,6 +704,68 @@ impl ImageData {
         self.header.data_size = 0;
     }
 
+    /// Converts the image to another format word through the registered
+    /// converter table, as the original's conversion routine does: the same
+    /// word or layout changes the word only; otherwise the table's target
+    /// is converted face by face on the base level, the chain flag clears
+    /// and the pixel store holds one base level per face. Returns `false`
+    /// when no converter fits.
+    pub fn convert(
+        &mut self,
+        requested: Option<u32>,
+        table: &crate::pixel::ConverterRegistry,
+    ) -> Result<bool> {
+        let old = self.header.format_word;
+        if requested == Some(old) {
+            return Ok(true);
+        }
+        let new = match requested {
+            Some(w) if w & crate::pixel::LAYOUT_MASK == old & crate::pixel::LAYOUT_MASK => w,
+            _ => match table.target_for(old, requested) {
+                Some(w) => w,
+                None => return Ok(false),
+            },
+        };
+        if new & crate::pixel::LAYOUT_MASK == old & crate::pixel::LAYOUT_MASK {
+            self.header.format_word = new;
+            return Ok(true);
+        }
+        let w = self.header.width;
+        let h = self.header.height;
+        let old_base = self
+            .header
+            .level_size(w, h)
+            .ok_or_else(|| Error::Unsupported(format!("rfi format word {old:#010x}")))?;
+        let new_base = format_level_size(new, w, h)
+            .filter(|&size| size > 0)
+            .ok_or_else(|| Error::Unsupported(format!("rfi format word {new:#010x}")))?;
+        let image = self.as_rfi();
+        let old_face = image.face_chain_len()?;
+        let source = image.pixels()?.into_owned();
+        let mut out = Vec::with_capacity(new_base * self.header.faces() as usize);
+        for face in 0..self.header.faces() as usize {
+            let start = face * old_face;
+            let src = source
+                .get(start..start + old_base)
+                .ok_or(Error::Truncated {
+                    offset: HEADER_LEN + start,
+                    needed: old_base,
+                    len: HEADER_LEN + source.len(),
+                })?;
+            let mut dst = vec![0u8; new_base];
+            if !table.convert(old, new, src, (w * h) as usize, &mut dst)? {
+                return Ok(false);
+            }
+            out.extend_from_slice(&dst);
+        }
+        self.header.format_word = new;
+        self.header.data_size = new_base as u32;
+        self.header.flags &= !FLAG_MIP_CHAIN;
+        self.pixels = out;
+        self.format = PixelFormat::from_word(new);
+        Ok(true)
+    }
+
     /// The image as a borrowed [`Rfi`], for decoding.
     pub fn as_rfi(&self) -> Rfi<'_> {
         Rfi {
@@ -1085,6 +1147,26 @@ mod tests {
         assert_eq!(target.header.detail_class(), 2);
         assert_eq!(target.header.data_size, 4 * 4 * 4 + 2 * 2 * 4 + 4);
         assert!(ImageData::blank(2, 2, 0x0100_C600, 0).is_ok());
+    }
+
+    #[test]
+    fn an_image_converts_through_the_registered_table() {
+        let table = crate::pixel::ConverterRegistry::standard();
+        let raw = image(2, 1, 0x0100_C600, 0x1000_0000, 6, &[10, 20, 30, 40, 50, 60]);
+        let rfi = Rfi::parse(&raw).unwrap();
+        let mut data = ImageData::copy_of(&rfi).unwrap();
+        assert!(data.convert(Some(0x0100_E608), &table).unwrap());
+        assert_eq!(data.header.format_word, 0x0100_E608);
+        assert_eq!(data.header.data_size, 8);
+        assert_eq!(data.pixels, [10, 20, 30, 255, 40, 50, 60, 255]);
+        // The same layout changes the word only.
+        assert!(data.convert(Some(0x0101_E608), &table).unwrap());
+        assert_eq!(data.header.format_word, 0x0101_E608);
+        assert_eq!(data.pixels.len(), 8);
+        // No converter for this pair.
+        let mut other = ImageData::copy_of(&rfi).unwrap();
+        assert!(!other.convert(Some(0x0104_4040), &table).unwrap());
+        assert_eq!(other.header.format_word, 0x0100_C600);
     }
 
     /// A shipped environment cube: six 256² RGB8 faces, each nine levels,

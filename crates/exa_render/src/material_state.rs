@@ -18,6 +18,7 @@
 //! Rules: `docs/RENDERING.md` (Surfaces) and `docs/formats/FLB.md`.
 
 use bevy::math::Vec4;
+use bevy::prelude::{App, Plugin};
 use exa_formats::material::{Material, TextureSlot};
 
 use crate::material::{ExaParams, linear_rgb, linear_rgb4};
@@ -48,7 +49,7 @@ pub const BUILTIN_TYPES: [MaterialType; 5] = [
 
 /// The material-type table. The built-ins are copied in on the first reset
 /// (an empty table), and plug-ins append at index 5 and above.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, bevy::prelude::Resource)]
 pub struct MaterialTypes {
     entries: Vec<MaterialType>,
 }
@@ -102,6 +103,110 @@ impl MaterialTypes {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// One material factory record: the class mask it serves, its priority (the
+/// low nibble of the original's second dword, higher first) and the builder
+/// it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoryRecord {
+    pub class_mask: u32,
+    pub priority: u32,
+    pub builder: u32,
+}
+
+/// The renderer's sorted factory list. The default factory (class mask 5,
+/// priority 0) is in it at start-up; effects register more. A material
+/// picks the first record whose mask meets its class word.
+#[derive(Debug, Clone, PartialEq, Eq, bevy::prelude::Resource)]
+pub struct FactoryList {
+    records: Vec<FactoryRecord>,
+}
+
+impl Default for FactoryList {
+    fn default() -> Self {
+        let mut list = Self {
+            records: Vec::new(),
+        };
+        assert!(list.register(FactoryRecord {
+            class_mask: 5,
+            priority: 0,
+            builder: 0,
+        }));
+        list
+    }
+}
+
+impl FactoryList {
+    /// An empty list (the original start-up hook resets and then inserts the
+    /// default record).
+    pub fn empty() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    /// Registers a record, keeping the list sorted by descending priority
+    /// (the original inserts before the first record of lower priority).
+    /// A higher-priority record of the same builder replaces the old one.
+    pub fn register(&mut self, record: FactoryRecord) -> bool {
+        if let Some(slot) = self
+            .records
+            .iter_mut()
+            .find(|r| r.builder == record.builder)
+        {
+            *slot = record;
+        } else {
+            let at = self
+                .records
+                .iter()
+                .position(|r| r.priority < record.priority)
+                .unwrap_or(self.records.len());
+            self.records.insert(at, record);
+        }
+        self.records
+            .windows(2)
+            .all(|w| w[0].priority >= w[1].priority)
+    }
+
+    /// The builder for a material class word (its `+0x238` mask): the first
+    /// record whose class mask meets it.
+    pub fn for_material(&self, class_mask: u32) -> Option<u32> {
+        self.records
+            .iter()
+            .find(|r| r.class_mask & class_mask != 0)
+            .map(|r| r.builder)
+    }
+
+    pub fn records(&self) -> &[FactoryRecord] {
+        &self.records
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+}
+
+/// The factory's normal-map predicate: any of `0x100807` (lit 0x3,
+/// specular 0x4, opacity fall-off 0x800, 0x100000) means the material state
+/// asks for a normal map (or its "none" bit).
+pub fn wants_normal_map(material_word: u32) -> bool {
+    material_word & 0x10_0807 != 0
+}
+
+/// The material factory's start-up: the type table and the factory list
+/// with the default record. Compiling a record is [`build`].
+pub struct MaterialStatePlugin;
+
+impl Plugin for MaterialStatePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MaterialTypes>()
+            .init_resource::<FactoryList>();
     }
 }
 
@@ -425,6 +530,49 @@ mod tests {
             assert_eq!(crate::shader_program::PLUGIN_MASKS[i], ty.mask);
             assert_eq!(crate::shader_program::PLUGIN_CLASSES[i], ty.base);
         }
+    }
+
+    #[test]
+    fn the_factory_list_sorts_and_picks_a_builder() {
+        let mut list = FactoryList::default();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.records()[0].class_mask, 5);
+        assert_eq!(list.for_material(5), Some(0));
+        assert_eq!(list.for_material(0), None);
+        list.register(FactoryRecord {
+            class_mask: 0x8,
+            priority: 3,
+            builder: 7,
+        });
+        list.register(FactoryRecord {
+            class_mask: 0x10,
+            priority: 1,
+            builder: 8,
+        });
+        assert_eq!(
+            list.records().iter().map(|r| r.builder).collect::<Vec<_>>(),
+            [7, 8, 0]
+        );
+        assert_eq!(list.for_material(0x8), Some(7));
+        assert_eq!(list.for_material(0x5), Some(0));
+        // A later registration of the same builder replaces it in place.
+        list.register(FactoryRecord {
+            class_mask: 0x20,
+            priority: 4,
+            builder: 7,
+        });
+        assert_eq!(list.records()[0].builder, 7);
+        assert_eq!(list.records()[0].class_mask, 0x20);
+        assert!(FactoryList::empty().is_empty());
+    }
+
+    #[test]
+    fn the_normal_map_predicate_tests_the_four_bits() {
+        assert!(!wants_normal_map(0));
+        for bit in [0x1, 0x2, 0x4, 0x800, 0x10_0000] {
+            assert!(wants_normal_map(bit), "{bit:#x}");
+        }
+        assert!(!wants_normal_map(0x8 | 0x10 | 0x2_0000));
     }
 
     #[test]

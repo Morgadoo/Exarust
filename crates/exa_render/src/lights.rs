@@ -101,6 +101,29 @@ pub struct MeshLights(pub Vec<u32>);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShadowBias(pub u32);
 
+/// A node's two shadow-bias scales (`+0x224`, `+0x228`) from its render
+/// flags (`0x204`): `(receive, cast)`.
+///
+/// - With bit `0x80000`, both are `1 + v·0.005` for the level `v` in bits
+///   16–18 (an inflated receiver and caster; one shipped mesh), computed
+///   in double precision.
+/// - Otherwise, with a level, receive is `1 − v·0.005` and cast is that
+///   less 0.01.
+/// - Without either, both are 1.
+pub fn shadow_bias_scales(flags: u32) -> (f32, f32) {
+    if flags & 0x8_0000 != 0 {
+        let v = f64::from((flags & 0x7_0000) >> 16);
+        let scale = (v * 0.005 + 1.0) as f32;
+        return (scale, scale);
+    }
+    if flags & 0x7_0000 != 0 {
+        let v = f64::from((flags & 0x7_0000) >> 16);
+        let receive = (1.0 - v * 0.005) as f32;
+        return (receive, receive - 0.01);
+    }
+    (1.0, 1.0)
+}
+
 /// A light's record: shaping y, z, cached cube slot + 1 (0 for none), and
 /// its radius R in metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -304,6 +327,19 @@ fn upload(mut table: ResMut<LightTable>, mut buffers: ResMut<Assets<ShaderBuffer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shadow_bias_scales_follow_the_render_flags() {
+        assert_eq!(shadow_bias_scales(0), (1.0, 1.0));
+        let (receive, cast) = shadow_bias_scales(3 << 16);
+        assert!((receive - (1.0 - 3.0 * 0.005)).abs() < 1e-6);
+        assert!((cast - (receive - 0.01)).abs() < 1e-6);
+        let (receive, cast) = shadow_bias_scales(0x8_0000 | (2 << 16));
+        assert_eq!(receive, cast);
+        assert!((receive - (1.0 + 2.0 * 0.005)).abs() < 1e-6);
+        // The inflated bit alone leaves the level at zero.
+        assert_eq!(shadow_bias_scales(0x8_0000), (1.0, 1.0));
+    }
 
     #[test]
     fn tags_pack_bias_and_slot() {

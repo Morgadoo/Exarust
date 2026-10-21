@@ -45,8 +45,14 @@ pub const COLOR: MeshVertexAttribute =
 pub struct QuadBatch {
     pub positions: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    /// The second texture-coordinate channel (the terrain texrender's).
+    pub uv2s: Vec<[f32; 2]>,
     pub colours: Vec<[u8; 4]>,
     pub indices: Vec<u16>,
+    /// The viewport's projection, which the original's vertex program
+    /// applies (`MPrj`); [`QuadBatch::mesh`] applies it on the CPU because
+    /// Exarust's fixed shader takes clip positions.
+    pub projection: Mat4,
 }
 
 impl QuadBatch {
@@ -59,14 +65,29 @@ impl QuadBatch {
         self.positions.is_empty()
     }
 
-    /// The batch as a Bevy triangle-list mesh.
+    /// The batch as a Bevy triangle-list mesh with its own projection.
     pub fn mesh(&self) -> Mesh {
+        self.mesh_with(self.projection)
+    }
+
+    /// The batch as a Bevy triangle-list mesh with `projection` applied to
+    /// its positions.
+    pub fn mesh_with(&self, projection: Mat4) -> Mesh {
         let mut mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
             bevy::asset::RenderAssetUsages::RENDER_WORLD,
         );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions.clone());
+        let projected: Vec<[f32; 3]> = self
+            .positions
+            .iter()
+            .map(|p| {
+                let v = projection * Vec4::new(p[0], p[1], p[2], 1.0);
+                [v.x, v.y, v.z]
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, projected);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs.clone());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, self.uv2s.clone());
         mesh.insert_attribute(
             COLOR,
             bevy::mesh::VertexAttributeValues::Unorm8x4(self.colours.clone()),
@@ -177,6 +198,74 @@ impl QuadBatcher {
         self.batch.uvs[at..at + 4].copy_from_slice(&uvs);
     }
 
+    /// The next vertex's second texture coordinate.
+    pub fn texcoord2(&mut self, u: f32, v: f32) {
+        let at = self.batch.positions.len();
+        if self.batch.uv2s.len() <= at {
+            self.batch.uv2s.resize(at + 1, [0.0; 2]);
+        }
+        self.batch.uv2s[at] = [u, v];
+    }
+
+    /// The next four vertices' second texture coordinates.
+    pub fn quad_texcoord2s(&mut self, uvs: [[f32; 2]; 4]) {
+        let at = self.batch.positions.len();
+        self.batch.uv2s.resize(at + 4, [0.0; 2]);
+        self.batch.uv2s[at..at + 4].copy_from_slice(&uvs);
+    }
+
+    /// The projection the original builds from the viewport
+    /// (`0x1001f97a0`): the template's 2 and −2 scaled by `1/width` and
+    /// `1/height`, translated by `2·tx/width − 1` and `1 − 2·ty/height`.
+    /// The original uses it for the raw pixel-vertex batcher; Exarust's
+    /// pixel vertices are already divided by the viewport, so [`flush`]
+    /// uses [`QuadBatcher::normalized_projection`] instead.
+    pub fn projection(&self) -> Mat4 {
+        Mat4::from_cols_array(&[
+            2.0 * self.scale_x,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -2.0 * self.scale_y,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            self.translation[self.level].x * self.scale_x * 2.0 - 1.0,
+            1.0 - self.translation[self.level].y * self.scale_y * 2.0,
+            0.0,
+            1.0,
+        ])
+    }
+
+    /// The projection for our coordinates already in 0..1, counted from
+    /// the top: `x·2 − 1` and `y·2 − 1`, so 0 is the left/bottom clip edge
+    /// and 1 the right/top.
+    pub fn normalized_projection(&self) -> Mat4 {
+        Mat4::from_cols_array(&[
+            2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0,
+        ])
+    }
+
+    /// A vertex copied as given (the original's raw batcher,
+    /// `0x1001f9980`): x/y unchanged, z zero, with the current colour. A
+    /// caller filling a batch this way gives it [`QuadBatcher::projection`]
+    /// through [`QuadBatch::mesh_with`].
+    pub fn vertex_raw(&mut self, x: f32, y: f32) {
+        let at = self.batch.positions.len();
+        self.batch.positions.push([x, y, 0.0]);
+        if self.batch.uvs.len() <= at {
+            self.batch.uvs.push([0.0; 2]);
+        }
+        if self.batch.uv2s.len() <= at {
+            self.batch.uv2s.push([0.0; 2]);
+        }
+        self.batch.colours.push(self.colour);
+    }
+
     /// Adds a vertex in pixel coordinates, with the current colour and the
     /// texture coordinate already set for this slot.
     pub fn vertex(&mut self, x: f32, y: f32) {
@@ -189,6 +278,9 @@ impl QuadBatcher {
         self.batch.positions.push(position);
         if self.batch.uvs.len() <= at {
             self.batch.uvs.push([0.0; 2]);
+        }
+        if self.batch.uv2s.len() <= at {
+            self.batch.uv2s.push([0.0; 2]);
         }
         self.batch.colours.push(self.colour);
     }
@@ -208,10 +300,12 @@ impl QuadBatcher {
     /// clearing the batcher's.
     pub fn flush(&mut self) -> QuadBatch {
         let mut batch = std::mem::take(&mut self.batch);
+        batch.projection = self.normalized_projection();
         let quads = batch.positions.len() / QUAD_VERTICES;
         if batch.positions.len() > quads * QUAD_VERTICES {
             batch.positions.truncate(quads * QUAD_VERTICES);
             batch.uvs.truncate(quads * QUAD_VERTICES);
+            batch.uv2s.truncate(quads * QUAD_VERTICES);
             batch.colours.truncate(quads * QUAD_VERTICES);
         }
         batch.indices.reserve(quads * QUAD_INDICES);
@@ -230,6 +324,7 @@ impl QuadBatcher {
 pub struct LineBatch {
     pub positions: Vec<[f32; 3]>,
     pub colours: Vec<[u8; 4]>,
+    pub projection: Mat4,
 }
 
 impl LineBatch {
@@ -239,7 +334,15 @@ impl LineBatch {
             PrimitiveTopology::LineList,
             bevy::asset::RenderAssetUsages::RENDER_WORLD,
         );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions.clone());
+        let projected: Vec<[f32; 3]> = self
+            .positions
+            .iter()
+            .map(|p| {
+                let v = self.projection * Vec4::new(p[0], p[1], p[2], 1.0);
+                [v.x, v.y, v.z]
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, projected);
         mesh.insert_attribute(
             COLOR,
             bevy::mesh::VertexAttributeValues::Unorm8x4(self.colours.clone()),
@@ -306,6 +409,7 @@ impl LineBatcher {
     /// Returns the line list, dropping an odd trailing vertex.
     pub fn flush(&mut self) -> LineBatch {
         let mut batch = std::mem::take(&mut self.batch);
+        batch.projection = self.batcher.normalized_projection();
         if !batch.positions.len().is_multiple_of(2) {
             batch.positions.pop();
             batch.colours.pop();
@@ -313,6 +417,51 @@ impl LineBatcher {
         batch
     }
 }
+
+/// The six built-in immediate-draw vertex programs, as the original's
+/// library stores them (CRLF line endings). The fragment program is the
+/// caller's own or the built-in `shading` one; Exarust's batcher draws with
+/// `quad.wesl` and these are kept for comparison.
+pub const BUILTIN_SHADERS: [&str; 6] = [
+    "in vec3 vPos;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\n}",
+    "in vec3 vPos;\r\nin vec2 vTex;\r\nout vec2 vrTex;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\n}",
+    "in vec3 vPos;\r\nin vec4 vCol;\r\nin vec2 vTex;\r\nout vec4 vrCol;\r\nout vec2 vrTex;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrCol = vCol * 0.003921568;\r\n}",
+    "in vec3 vPos;\r\nin vec4 vCol;\r\nout vec4 vrCol;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrCol = vCol * 0.003921568;\r\n}",
+    "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec2 vTx2;\r\nout vec2 vrTex;\r\nout vec2 vrTx2;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrTx2 = vTx2;\r\n}",
+    "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec2 vTx2;\r\nin vec4 vCol;\r\nout vec2 vrTex;\r\nout vec2 vrTx2;\r\nout vec4 vrCol;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrTx2 = vTx2;\r\nvrCol = vCol * 0.003921568;\r\n}",
+];
+
+/// The built-in program a vertex-format word picks: bit `0x20` adds the
+/// second texture channel, bit `0x4` the colour and bit `0x10` the first
+/// texture channel. The order of the tests is the original's.
+pub fn builtin_for(word: u32) -> usize {
+    if word & 0x20 == 0 {
+        if word & 4 == 0 {
+            if word & 0x10 == 0 { 0 } else { 1 }
+        } else if word & 0x10 == 0 {
+            3
+        } else {
+            2
+        }
+    } else if word & 4 == 0 {
+        4
+    } else {
+        5
+    }
+}
+
+/// The attribute locations the original binds before linking: position 0,
+/// texture coordinate 1, normal 2, colour 3, second texture coordinate 4,
+/// then attributes 6 and 7.
+pub const ATTRIBUTE_LOCATIONS: [(&str, u32); 7] = [
+    ("vPos", 0),
+    ("vTex", 1),
+    ("vNrm", 2),
+    ("vCol", 3),
+    ("vTx2", 4),
+    ("vAttr6", 6),
+    ("vAttr7", 7),
+];
 
 /// The material a flushed batch draws with: an untextured colour quad, or a
 /// textured one.
@@ -467,6 +616,59 @@ mod tests {
             batch.mesh().primitive_topology(),
             PrimitiveTopology::LineList
         );
+    }
+
+    #[test]
+    fn the_projection_matrix_maps_the_viewport_to_clip() {
+        let mut b = QuadBatcher::new();
+        b.begin(0.0, 0.0, 800.0, 600.0);
+        let m = b.projection();
+        assert!((m.x_axis.x - 2.0 / 800.0).abs() < 1e-6);
+        assert!((m.y_axis.y + 2.0 / 600.0).abs() < 1e-6);
+        assert_eq!(m.z_axis.z, 1.0);
+        assert_eq!((m.w_axis.x, m.w_axis.y), (-1.0, 1.0));
+        let p = m * Vec4::new(0.0, 0.0, 0.0, 1.0);
+        assert_eq!((p.x, p.y), (-1.0, 1.0));
+        let p = m * Vec4::new(800.0, 600.0, 0.0, 1.0);
+        assert!((p.x - 1.0).abs() < 1e-6 && (p.y + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_vertex_words_pick_the_six_builtin_programs() {
+        assert_eq!(BUILTIN_SHADERS.len(), 6);
+        assert!(BUILTIN_SHADERS[2].contains("vCol * 0.003921568"));
+        assert_eq!(builtin_for(0), 0);
+        assert_eq!(builtin_for(0x10), 1);
+        assert_eq!(builtin_for(0x4 | 0x10), 2);
+        assert_eq!(builtin_for(0x4), 3);
+        assert_eq!(builtin_for(0x20), 4);
+        assert_eq!(builtin_for(0x20 | 0x4 | 0x10), 5);
+        assert_eq!(ATTRIBUTE_LOCATIONS[0], ("vPos", 0));
+        assert_eq!(ATTRIBUTE_LOCATIONS[3], ("vCol", 3));
+        assert_eq!(ATTRIBUTE_LOCATIONS[6], ("vAttr7", 7));
+    }
+
+    #[test]
+    fn the_second_texture_channel_and_clip_vertices() {
+        let mut b = QuadBatcher::new();
+        b.begin(0.0, 0.0, 100.0, 100.0);
+        b.texcoord2(0.5, 0.25);
+        b.vertex(0.0, 0.0);
+        b.vertex_raw(0.25, 0.75);
+        b.vertex(100.0, 100.0);
+        b.vertex_raw(0.25, 0.75);
+        let batch = b.flush();
+        assert_eq!(batch.uv2s[0], [0.5, 0.25]);
+        assert_eq!(batch.positions[1], [0.25, 0.75, 0.0]);
+        assert_eq!(batch.positions[0], [0.0, 1.0, 0.0]);
+        // The mesh applies the projection: pixel 0,0 is clip -1,1.
+        let projected = batch.mesh();
+        match projected.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+            bevy::mesh::VertexAttributeValues::Float32x3(p) => {
+                assert_eq!(p[0], [-1.0, 1.0, 0.0])
+            }
+            _ => panic!("positions"),
+        }
     }
 
     #[test]

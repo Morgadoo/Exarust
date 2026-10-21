@@ -107,6 +107,20 @@ impl IconImage {
         }
         out
     }
+
+    /// An RGBA icon from an offscreen render's readback: the renderer's
+    /// rows are already bottom-up, the same order the atlas stores.
+    pub fn from_rgba(width: u16, height: u16, pixels: Vec<u8>) -> Self {
+        let len = usize::from(width) * usize::from(height) * 4;
+        let mut pixels = pixels;
+        pixels.resize(len, 0);
+        Self {
+            width,
+            height,
+            channels: 4,
+            pixels,
+        }
+    }
 }
 
 /// The smallest power of two from 1 to 65536 that holds `n`; 1 when none
@@ -708,5 +722,17 @@ mod tests {
             (3.0, Some([9, 9, 9, 0x7f]), GLOW_SHADER)
         );
         assert_eq!((g[4].ink, g[4].shader), (Some([255; 4]), ICON_SHADER));
+    }
+
+    #[test]
+    fn an_offscreen_icon_becomes_an_atlas_image() {
+        let icon = IconImage::from_rgba(2, 1, vec![1, 2, 3, 255, 4, 5, 6, 128]);
+        assert_eq!((icon.width, icon.height, icon.channels), (2, 1, 4));
+        assert_eq!(icon.pixels.len(), 8);
+        assert_eq!(&icon.pixels[4..], &[4, 5, 6, 128]);
+        // A short readback is padded with transparent texels.
+        let short = IconImage::from_rgba(2, 2, vec![1, 2, 3, 255]);
+        assert_eq!(short.pixels.len(), 16);
+        assert_eq!(&short.pixels[4..], &[0; 12]);
     }
 }

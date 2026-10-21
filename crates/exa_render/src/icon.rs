@@ -148,6 +148,11 @@ pub struct IconRendered {
     pub output: IconOutput,
 }
 
+/// Drops every queued capture (the original's cancel: the render queue's
+/// entries are flagged cancelled and never read back).
+#[derive(Message, Debug, Clone, Copy, Default)]
+pub struct IconRenderCancel;
+
 /// The icon renderer's state.
 #[derive(Resource, Default)]
 pub struct IconRenderer {
@@ -157,6 +162,7 @@ pub struct IconRenderer {
 struct Job {
     readback: Entity,
     camera: Entity,
+    target: Handle<Image>,
     settings: IconSettings,
     /// Each subject's layer before the capture, restored afterwards.
     layers: Vec<(Entity, Option<RenderLayers>)>,
@@ -242,8 +248,9 @@ impl Plugin for IconRenderPlugin {
         app.init_resource::<IconRenderer>()
             .add_message::<IconRenderRequest>()
             .add_message::<IconRendered>()
+            .add_message::<IconRenderCancel>()
             .add_observer(finish_captures)
-            .add_systems(Update, start_captures);
+            .add_systems(Update, (start_captures, cancel_captures).chain());
     }
 }
 
@@ -312,6 +319,7 @@ fn start_captures(
         renderer.jobs.push(Job {
             readback,
             camera,
+            target,
             settings,
             layers: originals,
         });
@@ -348,12 +356,41 @@ fn subjects_span(
     (centre, radius)
 }
 
+/// Drops the queued captures: their cameras, readbacks and targets go and
+/// their subjects return to their own layers.
+fn cancel_captures(
+    mut commands: Commands,
+    mut requests: MessageReader<IconRenderCancel>,
+    mut renderer: ResMut<IconRenderer>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if requests.read().next().is_none() {
+        return;
+    }
+    for job in std::mem::take(&mut renderer.jobs) {
+        for (subject, layer) in &job.layers {
+            match layer {
+                Some(layer) => {
+                    commands.entity(*subject).insert(layer.clone());
+                }
+                None => {
+                    commands.entity(*subject).remove::<RenderLayers>();
+                }
+            }
+        }
+        images.remove(&job.target);
+        commands.entity(job.camera).despawn();
+        commands.entity(job.readback).despawn();
+    }
+}
+
 /// The readback's pixels become the icon: unpadded, averaged 2 × 2 and
 /// sent out.
 fn finish_captures(
     event: On<ReadbackComplete>,
     mut commands: Commands,
     mut renderer: ResMut<IconRenderer>,
+    mut images: ResMut<Assets<Image>>,
     mut out: MessageWriter<IconRendered>,
 ) {
     let Some(index) = renderer
@@ -376,6 +413,7 @@ fn finish_captures(
             }
         }
     }
+    images.remove(&job.target);
     commands.entity(job.camera).despawn();
     commands.entity(job.readback).despawn();
     out.write(IconRendered { output });

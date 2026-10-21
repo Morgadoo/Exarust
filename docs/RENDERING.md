@@ -86,6 +86,21 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
 
 The ACES curve found among the shader programs is unused.
 
+## Mesh queries
+
+`exa_physics::kdtree` holds the background kd-tree plumbing: a grow-on-full
+ring (256 slots, grown by 128; the original's two locked queues), the
+builder thread's idle-priority/stop/reset state, the query install that
+copies the ray, sphere and capsule callbacks to a mesh's instances, and the
+queries themselves over a triangle set (segment-triangle, closest-point and
+segment-triangle distance; the engine's per-face routines are outside the
+group). `exa_physics::StaticBuild` routes its build queue and finished
+colliders through the rings and drains the done ring from the frame hook.
+The original's point-to-oriented-box distance is
+`exa_physics::intersect::point_obb_distance_squared`, which compares the
+overhang bits as integers as the original does. The sign-extended three-bit
+face decode is `kdtree::decode_three_bits`.
+
 ## Shader builder
 
 The original does not ship fixed GLSL binaries: `Resource.rpk`'s
@@ -220,6 +235,39 @@ phase. The original's list order inside a phase is not reproduced by Bevy's
 batching (the same materials and meshes batch in any order); draw order
 between different materials follows the phase's own sort.
 
+## Light nodes
+
+A level's light node reads its flags, colour, multiplier, intensity, radius
+and softness; `exa_world::light_bundle` turns them into the Bevy light, the
+GI share and the shadow reach (`read_light`, `shadow_radius`,
+`vertical_shaping`). The fields the original keeps beside them are run by
+`exa_world::light_source`:
+
+- **activation** copies the stored base intensity (`+0x2c8`) into the
+  current one and sets the light's shadow-quality offset from the low two
+  flag bits: 00 → 0, 01 → +1, 10 → −1, 11 → −2. The offset is added to the
+  scene's shadow quality and held to 1..5; the shipped cube pool uses one
+  size, so Exarust carries the offset without per-light map sizes.
+- **a lever** sets the intensity scale: `intensity = base × scale`, and a
+  light whose parent is drawable scales that node's first sub-object
+  material's emissive by `scale × 0.5` and the node's emissive scale to the
+  same, marking the light dirty.
+- **flicker** (flag `0x10000`) random-walks a flicker term by
+  `depth × scene × 0.01` per tick (the depth 0.5, the scene scalar 1) and
+  moves the scale by `scene × 0.1 × u × flicker`, clamped to ±1; intensity
+  is `(scale × rate × 0.1 + 1) × base` (rate 0.1) and the fixture's
+  emissive `scale × 0.5 + 1`. The two uniform draws are made in that order.
+- **fade** (flag `0x20000`) draws nothing: with a flicker term at or below
+  zero the scale falls by the same step toward the rate, otherwise it rises
+  toward one; intensity and the fixture follow, and the flicker flag clears
+  when it arrives.
+- **aliases** (`TLightAlias`) keep a per-sector copy: syncing replaces the
+  alias's flags' high byte and copies the source's frame, derived colours,
+  fade amount, softness and shadow offset.
+
+The private icon scene and the smoke draw below use these fields only
+through their own materials.
+
 ## Surfaces
 
 `exa_render::material::ExaMaterial` with `exa.wesl` reproduces the main lit
@@ -239,7 +287,21 @@ program.
 | `0x48` | flags: lit `0x3`, specular `0x4`, emissive `0x8`, two-sided `0x10`, refraction `0x200`, opacity falloff `0x800` (the loader also sets it when `0x64` > 0), plus the texture slots |
 | `0x4C` | extra flags: `0x100` the opacity fall-off fades toward the outline (most records), `0x100000` displacement shadows |
 | `0x50` | type: bit 0 means the specular map is a packed intensity/gloss/metal map |
+| `0x58` | vertical shaping word (zero becomes 1), written to the spot-shaping half-float of mode `0x200` |
 | `0x64`, `0x68` | opacity fall-off amount and exponent |
+| `0x30`, `0x34` | dirt amount and the word written to the dirt uniform's fourth lane |
+| `0x7C`, `0x84`, `0x8C` | texture-coordinate translation (2 floats), scale (2) and angle; extra flag `0x40` builds the transform |
+| `0x90` | render-state word | 
+| `0x94` | plug-in mask |
+| `0x98`, `0x9C`, `0xA0`, `0xA8`, `0xB0`, `0xB4` | kept whole; no reader found |
+
+`exa_formats::material::Material` now decodes every word of the block
+(`raw_block`), so a pass-through rewrite keeps it. The original's order is
+kept: type-0 diffuse is scaled ×1.5 in stored sRGB before the decode, the
+gloss floor to 0.01 applies only to type 0, and the specular level scales
+the linearised specular colour. `Material::uv_transform` builds the 3 × 4
+matrix in the original's order (scale about the centre, rotation, then the
+translation).
 
 **Texture slots**:
 - `0x20000` diffuse
@@ -441,6 +503,12 @@ smooth the aliasing.
 **Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
 20 cm, and the original draws it as one terrain mesh per 6 m block: a
 30 × 30 cell window of the same grid, each block in its grid cell's room.
+Every block entity carries `terrain::TerrainBlock`: block (bx, by) at
+`(step·bx + half − size/2, 0, step·by + half − size/2)` with
+`step = size/2^level`, `half = size/2^(level+1)` and level 3, half extents
+`(half, 10 cm, half)` and radius the half diagonal, the original's flat
+slab bounds. Its activation gives it the floor shadow-bias level and the
+room visibility is what draws it.
 Every block draws one shared 30 × 30 cell triangle list, flattened into the
 tile's 241-vertex rows, from its own first vertex. The list is serpentine,
 cell row 0 running along +X, row 1 back along −X, and every quad splits
@@ -854,6 +922,46 @@ frame, part link and seed, the spray template and its derived values,
 the particle tick, spawn, quad and colour routines with the template's
 flags, the droplet material), and `BldPrt02`'s header (256², BC1, the
 file's wrap flags); the rules are pinned by tests.
+
+## Smoke and mist
+
+`exa_render::smoke` is the original's `shadesmk_f` draw (the "Shading-mask
+GLSL snippets" cluster): an unlit, two-sided, alpha-blended texture with no
+depth writes and no shadows, drawn from the shared vertex stage. The
+original compiles `shading_v` + `shadesmk_f` once per state key
+(`state & 0x0003_C00F_0048_0008`), locates `UVOfst` and repeats the draw
+once per supersample quadrant. Exarust runs one WESL program with the key in
+the uniform, caches programs by the same key, scrolls the texture on the
+original's 80-second cycle, `UVOfst = (0.5, node scale + (now mod 80 000) /
+80 000 + 0.5)`, and relies on the supersampled scene camera for the four
+quadrant draws (`smoke_quadrants`).
+
+## Pixel-space 2-D batcher
+
+`exa_render::quads` reproduces the immediate-draw helper cluster's batcher:
+`begin` takes the viewport's pixel rectangle and sets `1/width` and
+`1/height`; a vertex maps to `((x + tx)·sx, (ty − y)·sy)` with the y axis
+flipped, where `(tx, ty)` is the 16-deep translation stack frozen at
+`begin`. A texture coordinate belongs to the next vertex (or four at once
+with `quad_texcoords`); a colour is RGBA bytes. `flush` turns each four
+vertices into two triangles indexed `(0,1,2)`, `(0,2,3)` and drops a partial
+quad; the line variant emits vertex pairs without indices. A flush becomes a
+Bevy mesh with the batcher's `Vertex_Color` attribute and `QuadMaterial`
+(`quad.wesl`). Shader compile and link are wgpu's.
+
+## Icons
+
+`exa_render::icon` is the original's `FLX_IconRender`: a private scene and
+camera on their own render layer, a 30° field of view, a 10 cm near plane,
+bloom 0.8 and no sharpen, the fixed ambient (0.35, 0.36, 0.37) and a global
+light of 100, a render target twice the icon size in sRGB, framed by the
+subjects' bounding sphere (`distance = radius / sin(fov/2) / margin`, 0.75
+for the still capture and 0.8 for the asynchronous path). Bevy's GPU
+readback returns the 2× pixels; each row is unpadded (the copy aligns rows
+to 256 bytes), every 2 × 2 block is averaged and the rows are emitted
+bottom-up, the order the icon atlas stores, ready for
+`exa_ui::icon_atlas::IconImage::from_rgba`. The exact fit call is outside
+the group, so that framing is Exarust's guess.
 
 ## Voxel GI
 

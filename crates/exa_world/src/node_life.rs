@@ -152,6 +152,34 @@ pub struct NodeInstance {
     pub own_parts: bool,
 }
 
+/// The components of a new instance of `master` (the original's instance
+/// creation, slot 19): its shared parts and a link naming the master. Spawn
+/// it and the [`sync_instances`] system fills the parts; the
+/// [`register_instance`] system adds it to the master's list.
+pub fn instance_node(master: Entity, master_parts: &NodeParts, own_parts: bool) -> impl Bundle {
+    let parts = NodeParts::shared_from(master_parts, own_parts);
+    (
+        NodeInstance { master, own_parts },
+        parts,
+        NodeInstances {
+            master: Some(master),
+            ..Default::default()
+        },
+    )
+}
+
+/// Adds a new instance to its master's list.
+fn register_instance(
+    mut links: Query<&mut NodeInstances>,
+    new: Query<(Entity, &NodeInstance), Added<NodeInstance>>,
+) {
+    for (entity, instance) in &new {
+        if let Ok(mut link) = links.get_mut(instance.master) {
+            link.add(entity);
+        }
+    }
+}
+
 /// The scene's deferred-removal ring: 256 nodes queued for the frame's
 /// removal pass. A full ring is an error (the original reports "Node
 /// removal queue is full." and frees the node at once).
@@ -226,6 +254,7 @@ impl Plugin for NodeLifePlugin {
             PostUpdate,
             (
                 record_part_emissive,
+                register_instance,
                 sync_instances,
                 apply_emissive_scales,
                 apply_fade_scales,
@@ -370,6 +399,17 @@ mod tests {
 
     fn entity(raw: u32) -> Entity {
         Entity::from_raw_u32(raw).unwrap()
+    }
+
+    #[test]
+    fn an_instance_bundle_names_its_master() {
+        let master = NodeParts::new(vec![entity(1)]);
+        let bundle = instance_node(entity(9), &master, false);
+        let _ = bundle;
+        let _ = NodeInstance {
+            master: entity(9),
+            own_parts: false,
+        };
     }
 
     #[test]

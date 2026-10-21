@@ -14,7 +14,7 @@ was established by reverse engineering (below).
 | 8 | height | non-square common (2048x256) |
 | 12 | depth | 1; 0 on a handful of entries (treated as 1) |
 | 16 | format word | bit fields, below |
-| 20 | flags | e.g. `0x20AB0000`, `0x24AF0000`, `0x40A80000`; sampler/usage bits, partly decoded (below) |
+| 20 | flags | e.g. `0x20AB0000`, `0x24AF0000`, `0x40A80000`; sampler/usage bits, partly decoded (below); bits 30–31 `01` mark a cube |
 | 24 | storage | `0x10000000` raw, `0x50000000` packed (RLE; bit 30 is the test) |
 | 28 | data size | bytes of the unpacked mip chain |
 
@@ -22,7 +22,13 @@ Flags: the original's texture loader keeps the word's bits from `0x10000`
 up and adds its own. Bits `0x10000`, `0x20000` and `0x40000` repeat the
 image across its width, height and depth; without them it clamps to its
 edge (established by reverse engineering of the loader and its wrap
-setup). `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
+setup). Bits 30–31 reading `01` (`0x40000000`) mark a cube: the image
+holds six faces, each with its own mip chain, face after face, and
+`data size` counts one face's chain. `genref01r` and `genref02r` (the
+indoor and outdoor environment cubes) are six 256² RGB8 faces of nine
+levels each, `data size` 262 143; `genref02rm` is the same layout in L8.
+`exa_formats::rfi::RfiHeader::is_cube` and `Rfi::decode_faces_rgba8` read
+it. `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
 repeats across and clamps along its height (pinned by a corpus test in
 `exa_character`). `BldPrt02`, the blood droplet atlas, has `0x20A80000`,
 and its built-in material loads it with `0xF0` (no wrap bit either): it
@@ -73,6 +79,26 @@ does a capture of the original's main menu: its title (`maintitle01`,
 packed RGBA8) is steel blue, blue above green above red, as it decodes red
 first. The community notes call these formats BGR and BGRA; that is wrong
 for 0.9.5.
+
+## Level sizes from the format word
+
+The original sizes a level from the word's bit fields rather than a table
+(`FUN_100046880`, reproduced by `exa_formats::rfi::format_level_size`):
+
+- bit 31 set: block compressed. A block takes `1 + bits 19–23` bytes (8
+  for BC1/BC4, 16 for BC3/BC5) and is `1 + bits 16–18` texels a side (4),
+  so a level is whole blocks across and down;
+- bit 18 set: bit-packed. The bits per pixel are bits 6–12 plus bits 0–5
+  (1 for LUM1, 24 for RGB8, 32 for RGBA8) and a level is
+  `ceil(width·height·bits / 8)`;
+- otherwise one byte-per-channel pixel: `width·height·ceil(bits / 8)`.
+
+A word whose cube bits (30–31) read `01` multiplies the answer by six; the
+shipped cubes carry the bit in the header flags instead, so that branch is
+unreachable from the data. A face's whole chain (base plus halved levels
+while `width + height > 2`) has `mip_chain_pixels` (the original's
+data-size helper) pixels; the stored chain's byte count sums the same
+level sizes as the mip count.
 
 ## Pixel-format conversion
 
@@ -130,6 +156,18 @@ Exarust's decoder runs the stored format's converter to RGBA8 for grey,
 alpha, grey-alpha and RGB images and copies RGBA images, which matches
 what the original's RGBA8 targets give. Established by reverse engineering
 of the two registration routines and every converter (REA).
+
+The original's conversion routine also keeps a registered table of
+from/to pairs (`0x1000458f0` appends one 32-byte entry per pair;
+`0x100046300` walks it for the image's own word). Exarust's
+`pixel::ConverterRegistry` has the same shape: `register` appends a pair,
+`standard()` probes every format pair on a one-pixel buffer and registers
+the working ones, and `target_for` follows the original's choice (the same
+word is a no-op, a request of 0 takes the first entry's target, otherwise
+the pair must be registered). `ImageData::convert` converts each face's
+base level through it, sets the new word and drops the stored chain. The
+mask `0x8F0CFFFF` decides when two words describe the same layout (only the
+word changes).
 
 ## Upload formats
 
@@ -242,6 +280,25 @@ textures. The whole mip chain is one run-length stream that unpacks to
 The codec was first described by the community translation projects (see
 `../research/online-research.md`). Exarust's decoder is an independent
 implementation, checked on fonts and emblems.
+
+## The loader registry and image copies
+
+The original's image loaders sit in a registry keyed by a format tag and a
+file extension; its start-up registers `.rfi` as `"Rayform Image"`.
+`exa_formats::image_registry::LoaderRegistry` keeps the same shape:
+`standard()` holds the Rayform reader, `register` replaces the same tag or
+extension, `by_extension`/`by_tag` look an entry up, and `load`/`load_tag`
+return owned [`ImageData`]. The numeric key is Exarust's (`RFI_MAGIC`):
+the original's key word is not stored in any file.
+
+`ImageData` is the owned form the engine's copy and create helpers work
+on: `copy_of` copies every face and level, unpacking a packed source
+first (the original logs "Source image is run length encoded." and does
+the same), while `copy_base` clears the chain flag and keeps each face's
+base level only. `blank` creates an image from the format word's size,
+`render_target` adds a mip chain and detail class 2 (the icon target),
+`resize` reallocates the pixel store (six faces for a cube) and
+`release` empties it. `as_rfi` borrows the data back for decoding.
 
 ## Naming conventions
 

@@ -449,6 +449,118 @@ fn read_f32(src: &[u8], i: usize) -> f32 {
 /// handle that target (nothing is written), and an error when the source is
 /// not a registered format or a buffer is too short. Float pixels are
 /// little-endian `f32`.
+/// A registered conversion: the source word a converter reads, and the
+/// target word it writes (the 32-byte entries the original's register call
+/// appends).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Conversion {
+    pub from: u32,
+    pub to: u32,
+}
+
+/// The registered converter table (the original's `0x1000458f0` appends one
+/// entry per working pair; its image conversion walks the table for the
+/// image's own word).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConverterRegistry {
+    entries: Vec<Conversion>,
+}
+
+impl ConverterRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a pair, returning its index. A pair already present keeps
+    /// its first slot (the original appends duplicates, but a later lookup
+    /// finds the first).
+    pub fn register(&mut self, from: u32, to: u32) -> usize {
+        if let Some(i) = self
+            .entries
+            .iter()
+            .position(|c| c.from == from && c.to == to)
+        {
+            return i;
+        }
+        self.entries.push(Conversion { from, to });
+        self.entries.len() - 1
+    }
+
+    /// The table with every pair the engine's converters handle, found by
+    /// probing each registered format against every other on a one-pixel
+    /// buffer.
+    pub fn standard() -> Self {
+        let mut table = Self::new();
+        let words: Vec<u32> = EIGHT_BIT_FORMATS
+            .iter()
+            .chain(FLOAT_FORMATS.iter())
+            .map(|f| f.id)
+            .collect();
+        let src = [0u8; MAX_PIXEL_BYTES];
+        let mut dst = [0u8; MAX_PIXEL_BYTES];
+        for &from in &words {
+            for &to in &words {
+                if convert(from, to, &src, 1, &mut dst).unwrap_or(false) {
+                    table.register(from, to);
+                }
+            }
+        }
+        table
+    }
+
+    /// The target word for a requested conversion: the request itself when
+    /// the source is the same word, else the first registered entry from
+    /// the source whose target is the request (or the entry's own target
+    /// when the request is 0). `None` when no converter fits.
+    pub fn target_for(&self, from: u32, requested: Option<u32>) -> Option<u32> {
+        if requested == Some(from) {
+            return Some(from);
+        }
+        let first = self.entries.iter().find(|c| c.from == from)?;
+        match requested {
+            None | Some(0) => Some(first.to),
+            Some(wanted) => self
+                .entries
+                .iter()
+                .find(|c| c.from == from && c.to == wanted)
+                .map(|c| c.to),
+        }
+    }
+
+    /// Converts `pixels` pixels from `from` to `to` through the table.
+    pub fn convert(
+        &self,
+        from: u32,
+        to: u32,
+        src: &[u8],
+        pixels: usize,
+        dst: &mut [u8],
+    ) -> Result<bool> {
+        if self.target_for(from, Some(to)).is_none() {
+            return Ok(false);
+        }
+        convert(from, to, src, pixels, dst)
+    }
+
+    /// The registered pairs.
+    pub fn entries(&self) -> &[Conversion] {
+        &self.entries
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Whether two format words describe the same layout: the original's
+/// `0x8F0CFFFF` mask drops the flags and data-kind bits its converter
+/// leaves alone.
+pub const LAYOUT_MASK: u32 = 0x8F0C_FFFF;
+
 pub fn convert(
     source: u32,
     target: u32,
@@ -917,6 +1029,40 @@ mod tests {
         assert!(convert(id::RGBAF, id::RGBA8, &[], usize::MAX / 8, &mut dst).is_err());
         assert_eq!(pixel_bytes(id::RGBAF, usize::MAX / 8), None);
         assert_eq!(pixel_bytes(id::LUMA8, usize::MAX), None);
+    }
+
+    #[test]
+    fn the_converter_table_registers_and_finds_pairs() {
+        let mut table = ConverterRegistry::new();
+        assert!(table.is_empty());
+        assert_eq!(table.register(id::RGB8, id::RGBA8), 0);
+        assert_eq!(table.register(id::RGB8, id::RGBA8), 0);
+        assert_eq!(table.len(), 1);
+        assert_eq!(table.target_for(id::RGB8, None), Some(id::RGBA8));
+        assert_eq!(table.target_for(id::RGB8, Some(id::RGBA8)), Some(id::RGBA8));
+        assert_eq!(table.target_for(id::RGB8, Some(id::LUM8)), None);
+        assert_eq!(table.target_for(id::LUM8, None), None);
+        // The standard table holds every working pair; RGB8 converts to
+        // RGBA8, and the source converts to itself.
+        let standard = ConverterRegistry::standard();
+        assert!(standard.len() > 20);
+        assert!(standard.target_for(id::RGB8, Some(id::RGBA8)).is_some());
+        assert_eq!(
+            standard.target_for(id::RGBA8, Some(id::RGBA8)),
+            Some(id::RGBA8)
+        );
+        let mut dst = [0u8; 4];
+        assert!(
+            standard
+                .convert(id::RGB8, id::RGBA8, &[10, 20, 30], 1, &mut dst)
+                .unwrap()
+        );
+        assert_eq!(dst, [10, 20, 30, 255]);
+        assert!(
+            !standard
+                .convert(id::RGB8, id::LUM1, &[10, 20, 30], 1, &mut dst)
+                .unwrap()
+        );
     }
 
     #[test]

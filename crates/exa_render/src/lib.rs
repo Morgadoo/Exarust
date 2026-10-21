@@ -69,7 +69,7 @@ impl Plugin for RenderPlugin {
             smoke::SmokePlugin,
             quads::QuadPlugin,
         ))
-            .add_plugins(icon::IconRenderPlugin)
+            .add_plugins((icon::IconRenderPlugin, material_state::MaterialStatePlugin))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.
             .insert_resource(bevy::light::PointLightShadowMap {
