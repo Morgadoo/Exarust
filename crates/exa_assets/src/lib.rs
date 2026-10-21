@@ -13,6 +13,7 @@ pub mod morph_controller;
 pub mod paint;
 pub mod polyhedra;
 pub mod skin;
+pub mod stream;
 pub mod texture;
 pub mod texture_cache;
 pub mod vertex_cache;
