@@ -895,7 +895,12 @@ fn emitter(body: &[u8]) -> Option<NodeBody> {
 fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     let name = c.name()?;
     let flags = c.u32()?;
-    let flags2 = c.u32()?;
+    let mut flags2 = c.u32()?;
+    // The deprecated fading bit: the reader logs "Deprecated fading flag",
+    // sets the replacement bit and clears it.
+    if flags2 & 0x8000_0000 != 0 {
+        flags2 = (flags2 | 0x0100_0000) & 0x7FFF_FFFF;
+    }
     let instance = c.u32()?;
     let parent = c.u32()? as usize;
     let mut transform = [[0.0; 3]; 4];
@@ -1945,6 +1950,17 @@ mod tests {
         assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
         assert!(db.items.is_empty() && db.placed_objects.is_empty());
         assert!(Scene::parse_database(b"not an rfc").is_err());
+    }
+
+    #[test]
+    fn the_deprecated_fading_flag_is_replaced() {
+        let mut body = node_with("Old", 0x8000_0001, &[]);
+        let file = file_of_nodes(&[(0x3D01, std::mem::take(&mut body))]);
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.nodes[0].flags2, 0x0100_0001);
+        let mut body = node_with("New", 0x0000_0001, &[]);
+        let file = file_of_nodes(&[(0x3D01, std::mem::take(&mut body))]);
+        assert_eq!(Scene::parse(&file).unwrap().nodes[0].flags2, 1);
     }
 
     /// An instance node draws its owner's mesh, as the original shares the

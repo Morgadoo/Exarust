@@ -116,7 +116,7 @@ not count as painted, so their weight falls to node 0 (see below).
 
 | offset | type | field |
 |---|---|---|
-| 0 | u32 | magic `0x3EEFBD03` (v3) or `0x3EEFBD02` (v2) |
+| 0 | u32 | magic `0x3EEFBD03` (v3), `0x3EEFBD02` (v2) or `0x3EEFBD01` (v1) |
 | 4 | u32 | 0 |
 | 8 | name[16] | palette name |
 | 24 | f32 | environment value; the original copies it into the scene's environment record, and the terrain passes do not read it (0 in every shipped palette) |
@@ -130,6 +130,18 @@ Version 2 material records store 25 parameters; the loader inserts four
 defaults (0.5, 0.3, 0.5, 1.0) at index 20, so the file's parameters 20–24
 become the runtime's 24–28. A missing palette falls back to `default.ftb`,
 with the "Could not find … (Terrain Palette)" message.
+
+A version 1 palette has no 144-byte header: after the name come width,
+height and the material count, then 152-byte materials (name, four old
+texture names, 17 floats and a flags word), a rule count with 64-byte rules,
+and no plants. Its loader moves the old fields into the runtime material (a
+version 2 record's shape), derives the mask texture name from the diffuse
+name when the old height amount is set, renames a legacy shader grass
+material to the `Trn_GrasA01*` set, and gives the palette three default
+plants (`Trn_GrasA01`, `Trn_SPlnA01`, `Trn_BPlntA01`, colour 0.72, 0.56,
+0.6). The exact shading meaning of the old fields is not established (no
+shipped palette is version 1), so the field moves are marked a guess in
+`exa_formats::terrain`.
 
 ### Material (232 bytes in v3, 216 in v2)
 

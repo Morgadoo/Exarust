@@ -11,6 +11,7 @@
 use crate::{Error, Result};
 
 pub const TERRAIN_MAGIC: u32 = 0x3EEF_AD01;
+pub const PALETTE_MAGIC_V1: u32 = 0x3EEF_BD01;
 pub const PALETTE_MAGIC_V2: u32 = 0x3EEF_BD02;
 pub const PALETTE_MAGIC_V3: u32 = 0x3EEF_BD03;
 pub const TILE: u32 = 0xBDAD;
@@ -268,6 +269,9 @@ impl Palette {
     pub fn parse(b: &[u8]) -> Result<Self> {
         let mut r = Reader::new(b);
         let magic = r.u32()?;
+        if magic == PALETTE_MAGIC_V1 {
+            return parse_v1(b);
+        }
         let (params, version_2) = match magic {
             PALETTE_MAGIC_V2 => (25, true),
             PALETTE_MAGIC_V3 => (29, false),
@@ -365,6 +369,122 @@ impl Palette {
             .position(|m| m.name.eq_ignore_ascii_case(name))
             .map(PaletteEntry::Material)
     }
+}
+
+/// A version 1 palette, upgraded as the original's loader does it: its
+/// materials keep the old shader-era fields (moved into the runtime record),
+/// a legacy grass material is renamed to the `Trn_GrasA01*` set, and the
+/// plant list is replaced by three default plants. The file has no 144-byte
+/// header: name, width, height and the material count follow the magic, then
+/// 152-byte materials, a rule count with 64-byte rules, and no plants.
+///
+/// [guess] The parameter moves are the loader's field assignments, but the
+/// shading meaning of the version 1 fields themselves is not established;
+/// no shipped palette is a version 1 file.
+fn parse_v1(b: &[u8]) -> Result<Palette> {
+    let mut r = Reader::new(b);
+    r.u32()?; // magic
+    r.u32()?;
+    let name = r.name()?;
+    r.u32()?; // width
+    r.u32()?; // height
+    let count = r.u32()? as usize;
+    if count.checked_mul(152).is_none_or(|n| n > r.remaining()) {
+        return Err(Error::Malformed(format!(
+            "{count} version 1 materials do not fit"
+        )));
+    }
+    let mut materials = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = r.name()?;
+        let mut textures: [String; 6] = Default::default();
+        textures[0] = r.name()?;
+        textures[1] = r.name()?;
+        // The third name is the old specular texture; the runtime record
+        // leaves the gloss slot empty for it.
+        r.name()?;
+        textures[4] = r.name()?;
+        let mut f = [0.0f32; 17];
+        for v in &mut f {
+            *v = r.f32()?;
+        }
+        let flags = r.u32()?;
+        let mut p = [0.0f32; 29];
+        p[0] = f[0];
+        p[6] = f[3];
+        p[7] = f[4];
+        p[8] = f[5];
+        // The loader stores the negated height offset, and 1 for a value
+        // that is not negative.
+        p[9] = if -f[6] < 1.192_089_98e-7 { 1.0 } else { -f[6] };
+        p[10] = 0.1;
+        p[11] = 1.0 - f[8];
+        p[12..16].copy_from_slice(&f[9..13]);
+        p[16..20].copy_from_slice(&f[13..17]);
+        p[20..24].copy_from_slice(&[0.5, 0.3, 0.5, 1.0]);
+        // The mask texture is the diffuse name with its last character
+        // replaced by `M` when the material has a height amount.
+        if f[1] > 1.192_089_98e-7 && !textures[0].is_empty() {
+            let mut mask = textures[0].clone();
+            mask.pop();
+            mask.push('M');
+            textures[3] = mask;
+        }
+        // An old shader-era grass material takes the `Trn_GrasA01*` set.
+        if name.as_bytes().get(7) == Some(&b'S') && name.as_bytes().get(8) == Some(&b'h') {
+            textures[0] = "Trn_GrasA01D".into();
+            textures[1] = "Trn_GrasA01N".into();
+            textures[2] = "Trn_GrasA01G".into();
+            textures[3] = "Trn_GrasA01M".into();
+            p[0] = 2.0;
+        }
+        materials.push(TerrainMaterial {
+            name,
+            flags,
+            textures,
+            params: p.to_vec(),
+        });
+    }
+    let rules_count = r.u32()? as usize;
+    r.fits(rules_count, RULE_BYTES)?;
+    let mut rules = Vec::with_capacity(rules_count);
+    for _ in 0..rules_count {
+        rules.push(BlendRule {
+            name: r.name()?,
+            flags: r.u32()?,
+            kind: r.u32()?,
+            a: r.name()?,
+            b: r.name()?,
+            lo: r.f32()?,
+            hi: r.f32()?,
+        });
+    }
+    let plants = ["Trn_GrasA01", "Trn_SPlnA01", "Trn_BPlntA01"]
+        .into_iter()
+        .map(|name| Plant {
+            flags: 1,
+            name: name.into(),
+            params: default_plant_params(),
+        })
+        .collect();
+    Ok(Palette {
+        name,
+        environment: 0.0,
+        wetness: 0.0,
+        materials,
+        rules,
+        plants,
+    })
+}
+
+/// The three plants a version 1 palette gains: the grass, small-plant and
+/// large-plant defaults (colour 0.72, 0.56, 0.6 at the first two, 0.6, 1 at
+/// the next two, and the loader's fixed parameters after them).
+fn default_plant_params() -> Vec<f32> {
+    vec![
+        0.72, 0.56, 0.6, 1.0, 0.72, 0.56, 0.6, 1.0, 0.1, 0.1, 0.35, 1.0, 0.5, 0.3, 0.6, 2.0, 0.0,
+        1.0, 0.0, 1.0,
+    ]
 }
 
 struct Reader<'a> {
@@ -490,6 +610,56 @@ mod tests {
         b.extend(u32s(&[1, 1, 1, TILE, 100, 0]));
         assert!(Terrain::parse(&b).is_err());
         assert!(Terrain::parse(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn a_version_1_palette_is_upgraded() {
+        let mut b = u32s(&[PALETTE_MAGIC_V1, 0]);
+        b.extend(name("Old"));
+        b.extend(u32s(&[1, 1, 1]));
+        b.extend(name("OldShade"));
+        b.extend(name("Dtex"));
+        b.extend(name("Ntex"));
+        b.extend(name("Gtex"));
+        b.extend(name("Htex"));
+        let mut f = [0.0f32; 17];
+        f[0] = 1.5;
+        f[1] = 0.5;
+        f[3] = 0.1;
+        f[4] = 0.2;
+        f[5] = 0.3;
+        f[6] = -2.0;
+        f[8] = 0.25;
+        for (i, v) in f[9..].iter_mut().enumerate() {
+            *v = 0.4 + i as f32;
+        }
+        b.extend(f32s(&f));
+        b.extend(u32s(&[0x11, 0]));
+        let pal = Palette::parse(&b).unwrap();
+        assert_eq!(pal.name, "Old");
+        let m = &pal.materials[0];
+        assert_eq!(m.flags, 0x11);
+        assert_eq!(
+            [
+                m.textures[0].as_str(),
+                m.textures[1].as_str(),
+                m.textures[2].as_str(),
+                m.textures[3].as_str(),
+                m.textures[4].as_str()
+            ],
+            ["Dtex", "Ntex", "", "DteM", "Htex"]
+        );
+        assert_eq!(m.params.len(), 29);
+        assert_eq!(m.params[0], 1.5);
+        assert_eq!(&m.params[6..11], &[0.1, 0.2, 0.3, 2.0, 0.1]);
+        assert_eq!(m.params[11], 0.75);
+        assert_eq!(&m.params[12..16], &[0.4, 1.4, 2.4, 3.4]);
+        assert_eq!(&m.params[16..20], &[4.4, 5.4, 6.4, 7.4]);
+        assert_eq!(&m.params[20..24], &[0.5, 0.3, 0.5, 1.0]);
+        assert_eq!(pal.plants.len(), 3);
+        assert_eq!(pal.plants[0].name, "Trn_GrasA01");
+        assert_eq!(pal.plants[2].name, "Trn_BPlntA01");
+        assert_eq!(&pal.plants[0].params[..3], &[0.72, 0.56, 0.6]);
     }
 
     #[test]

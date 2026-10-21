@@ -40,4 +40,6 @@ bytes and returns plain data or an error. No Bevy dependency.
 | `data_stream` | the engine's byte stream: writes that cut the size at the cursor and grow in 512-byte steps, u8/u16/u32/f32, text lines, length-prefixed strings, Latin-1 text as UTF-8 and back |
 | `file_ref` | file plumbing: the folder table, file references with inline names, entry stems, extension swaps, the folders made for a path, the search path, whole-file reads and writes, and the file-format registry |
 | `factory` | `.fty` weapon recipes (v0–v2): parts, deforms, variants and tags; the four generation paths (full roll, stored replay, freshly stored replay, initial choice store), area material/finish/colour and emblem rolls, the colour roll by material class, component placement and the five mesh deforms (the bend with the engine's packed sine and cosine) |
-| levels, terrain, actors, powers | Phase 1 |
+| `level` | level sections: the tile grid (planes A–C with the legacy word converted), placed props and their node overrides (`0x3DE0ECAC` transforms, `0x3DE0ECDB` mesh positions) |
+| `terrain` | terrain heightfields (`.rft`: apron heights, holes, painted layers) and palettes (`.ftb` versions 1–3: the version 1 upgrade and its three default plants, version 2's four inserted parameters, materials, rules and plants) |
+| actors, powers | Phase 1 |

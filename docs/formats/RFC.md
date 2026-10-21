@@ -103,7 +103,7 @@ Header, shared by every kind:
 ```
 char name[16]
 u32  flags         top 20 bits stored; low 12 bits are a class id (0x89 for meshes)
-u32  flags2
+u32  flags2        bit 31 is the deprecated fading flag (replaced by bit 24)
 u32  instance      1-based index of the node that owns this one (0: its own);
                    non-zero nodes store no body or sub-chunks
 u32  parent        1-based index into the node list; 0 = root
