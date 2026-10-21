@@ -648,6 +648,9 @@ pub fn spawn_model_nodes(
                 if node.is_skin {
                     commands.entity(part).insert(exa_assets::RaceSkinPart);
                 }
+                if node.cloth {
+                    commands.entity(part).insert(cloth::ClothNode);
+                }
                 // The level the mesh ships with. Builders that set their own
                 // (grid sets, floors) replace it.
                 if node.shadow_bias != 0 {
@@ -662,17 +665,6 @@ pub fn spawn_model_nodes(
             commands
                 .entity(e)
                 .insert(node_parts::NodeParts::new(parts.clone()));
-            if node.cloth {
-                commands.entity(part).insert(cloth::ClothNode);
-            }
-            // The level the mesh ships with. Builders that set their own
-            // (grid sets, floors) replace it.
-            if node.shadow_bias != 0 {
-                commands
-                    .entity(part)
-                    .insert(exa_render::lights::ShadowBias(node.shadow_bias));
-            }
-            parts.push(part);
         }
         parts_of.push(parts);
         if node.placeholder {
