@@ -1329,6 +1329,10 @@ name keeps its old label (Exarust's [`Scale::text`] returns `None`).
 
 Window: the original's window-mode checkbox is the inverse of its full
 screen flag; setting it and pressing Apply toggles full screen immediately.
+Exarust asks winit for an exclusive full-screen mode at the requested size
+when the display lists it, as the original changes the display mode, and
+keeps the current mode when it does not; a platform without exclusive
+full screen falls back to a borderless window.
 
 ### Opening the page
 
