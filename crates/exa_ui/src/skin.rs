@@ -6447,8 +6447,8 @@ pub fn draw_form_background(
         }
         let active = mark_active(code, place.active_code, place.hot_flag, place.hot_code);
         drawn.arrow_icons.push(MarkIcon {
-            x: (rect[0] + (unit >> 1)) as f32,
-            y: (rect[1] + (unit >> 1)) as f32,
+            x: (rect[0] + (unit >> 1) - 1) as f32,
+            y: (rect[1] + (unit >> 1) - 1) as f32,
             id,
             ink: if active { None } else { Some(palette.text[5]) },
             scale: active.then_some(1.0),
@@ -6546,9 +6546,12 @@ pub fn draw_form_background(
                 palette,
             );
             batch.add_texture_shift(0.0, -(scroll.position as f32));
-            drawn
-                .scroll_bars
-                .push([rect[0], scroll.position, rect[2], scroll.length]);
+            drawn.scroll_bars.push([
+                rect[0],
+                scroll.position,
+                rect[2],
+                scroll.position + scroll.length,
+            ]);
             drawn.scroll_frames.push(rect);
         }
         if (place.state & 0x100) != 0
@@ -11691,5 +11694,52 @@ mod tests {
             (cursor.begin_calls, cursor.end_calls, cursor.blend),
             (1, 1, 0x201)
         );
+    }
+
+    #[test]
+    fn a_vertical_scrollbar_places_its_arrows_and_trough() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_form_background(
+            &mut batch,
+            FormBackgroundPlace {
+                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
+                inset: 5,
+                client_top: 24,
+                client_right: 180,
+                client_bottom: 90,
+                state: 0x200,
+                flags: 0,
+                frame_style: 0,
+                margin: 4.0,
+                bar: 8.0,
+                vertical: Some(FormScroll {
+                    position: 30,
+                    length: 20,
+                }),
+                horizontal: None,
+                title_width: 0,
+                title_x: 0,
+                title_y: 0,
+                title_style: 0,
+                title_offset: 0,
+                active_code: -9,
+                hot_code: -9,
+                hot_flag: false,
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(drawn.arrow_icons.len(), 2);
+        assert_eq!(
+            (drawn.arrow_icons[0].x, drawn.arrow_icons[0].y),
+            (181.0, 25.0)
+        );
+        assert_eq!(drawn.arrow_icons[0].id, 4);
+        assert_eq!(drawn.arrow_icons[0].ink, None);
+        assert_eq!(drawn.arrow_icons[0].scale, Some(1.0));
+        assert_eq!(drawn.scroll_shadows.len(), 1);
+        assert_eq!(drawn.scroll_shadows[0], [180, 50, 15, 11]);
+        assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
     }
 }
