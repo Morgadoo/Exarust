@@ -500,12 +500,32 @@ impl Steering {
         }
     }
 
-    /// The right button's walk in combat mode: the body walks toward the
-    /// cursor's point like the exploration walk, but keeps the combat
-    /// stance's fast turn and runs beyond 3 m (the original's own combat
-    /// walk is not fully traced; the run is Exarust's guess, as the
-    /// exploration walk's rule). The footwork then gives way to the walk.
-    /// Returns whether the walk is asked.
+    /// The right button in combat mode, each behaviour tick: held, it asks
+    /// the walk to the cursor however near the cursor is, walking within
+    /// 3 m and running beyond (the original's combat branch takes the walk
+    /// mode while the button is down and drops it at once on the release,
+    /// and its cursor shows the chevrons meanwhile).
+    pub(crate) fn combat_request(&mut self, mouse: bool) {
+        if !mouse {
+            return;
+        }
+        self.requested = true;
+        self.mode = if self.raw.is_some_and(|(_, d)| d > CURSOR_RUN_FROM) {
+            CursorMode::Run
+        } else {
+            CursorMode::Walk
+        };
+    }
+
+    /// The right button's walk in combat mode, as the original's combat
+    /// branch: the request keeps only its sprint latch and asks to move, the
+    /// heading and the look take the cursor's direction, a cursor beyond 3 m
+    /// runs and a nearer one walks unless the Run key's latch turns into the
+    /// run; the walk is free. While no foot steps, the look-ahead
+    /// `6·v² + 45` cm along the body's facing is cast, and a hit stops the
+    /// free walk and, within 100 cm, the run and the sprint. The footwork
+    /// then gives way to the walk. Returns whether the walk is asked (not
+    /// while the cursor is within 50 cm, which has no direction here).
     pub(crate) fn combat_walk(
         &mut self,
         req: &mut Locomotion,
@@ -521,9 +541,8 @@ impl Steering {
         }
         req.heading = yaw_of(flat);
         req.look = req.heading;
-        req.flags |= MOVE;
-        req.flags &= !(BACK | TURN_ABOUT | BRAKE | STOPPING | KEYS);
-        req.flags = if flat.length() > CURSOR_RUN_FROM {
+        req.flags = (req.flags & SPRINT) | MOVE;
+        req.flags = if self.mode == CursorMode::Run {
             req.flags | RUN
         } else if !req.has(SPRINT) {
             req.flags & !RUN
@@ -531,19 +550,26 @@ impl Steering {
             (req.flags & !SPRINT) | RUN
         };
         req.slow_turn = false;
-        req.stepping = None;
         req.moving = true;
+        req.free_walk = true;
         self.requested = true;
-        let reach = look_ahead_reach(body.speed, false, true);
-        let asked = ask(
-            line,
-            Asked::LookAhead,
-            standing,
-            standing + flat.normalize_or_zero() * (reach / CM),
-        );
-        self.line = Some(asked);
-        req.goal = asked.end;
-        req.free_walk = !asked.blocked;
+        if req.stepping.is_none() {
+            let reach = look_ahead_reach(body.speed, false, true);
+            let asked = ask(
+                line,
+                Asked::LookAhead,
+                standing,
+                standing + body.facing() * (reach / CM),
+            );
+            self.line = Some(asked);
+            req.goal = asked.end;
+            if asked.blocked {
+                req.free_walk = false;
+                if (asked.end - standing).length() * CM < RUN_CUT_WITHIN {
+                    req.flags &= !(RUN | SPRINT);
+                }
+            }
+        }
         true
     }
 

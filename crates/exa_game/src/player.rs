@@ -167,14 +167,9 @@ impl PlayerBody {
         self
     }
 
-    /// A movement request is held (a key or the right button, or a released
-    /// walk finishing its stride): the original's `0x96c` latch.
-    pub(crate) fn walk_requested(&self) -> bool {
-        self.steering.requested
-    }
-
-    /// The walk to the cursor is asked (not the keys' walk): the cursor
-    /// shows its chevrons and the reach waits.
+    /// The walk to the cursor is asked by the right button (not the keys'
+    /// walk, nor a released walk finishing its stride): the cursor shows its
+    /// chevrons.
     pub(crate) fn walking_to_cursor(&self) -> bool {
         self.steering.requested && self.steering.mode != crate::steering::CursorMode::Other
     }
@@ -671,7 +666,8 @@ pub(crate) fn steer_player(
                     line: &line,
                 };
                 // The right button walks toward the cursor in combat mode
-                // too; the keys then keep the footwork.
+                // too, however near it is; the keys then keep the footwork.
+                steering.combat_request(input.mouse);
                 let walked = if input.mouse
                     && let Some(to) = to_cursor
                 {

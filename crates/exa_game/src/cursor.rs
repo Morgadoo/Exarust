@@ -136,8 +136,9 @@ pub(crate) fn pick_cursor(
     };
     let condition = Condition::of(word.copied().unwrap_or_default());
     let aim = feet + Vec3::Y * AIM_HEIGHT;
-    // The chevrons follow the walk to the cursor's latch: held after the
-    // button's release until the stride ends, and in combat mode too.
+    // The chevrons show while the right button walks to the cursor, however
+    // near it is, in combat mode too; a released walk finishing its stride
+    // shows the other shapes (the original's keys-walking bit).
     let walking_to = ground
         .0
         .map(|c| (c - aim).xz().length())

@@ -107,14 +107,11 @@ pub enum Holding {
         /// The body is a character's (let go once it lives).
         character: bool,
     },
-    /// The lifting press (the original's item drag), until the release:
-    /// the world body it picked, with the transform it must go back to when
-    /// combat mode cancels the lift.
-    Lift {
-        body: Option<Entity>,
-        saved: Option<Vec3>,
-    },
-    /// A door's, a wheel's or a cloth's drag, until the release.
+    /// The lifting press (the original's item drag), until the release.
+    Lift,
+    /// A door's, a wheel's or a cloth's drag, until the release. Unlike a
+    /// lift or a refusal it leaves the movement request to the keys and the
+    /// right button, as the original's door, wheel and cloth drags do.
     Mechanism(Pick),
     /// A press on something the hand does not use, until the release.
     Refused,
@@ -171,24 +168,13 @@ impl Hand {
     /// Whether the frame's movement request is left as it was: while a
     /// press is refused or a lift holds the cursor.
     pub fn keeps_the_request(&self) -> bool {
-        matches!(
-            self.holding,
-            Holding::Refused | Holding::Lift { .. } | Holding::Mechanism(_)
-        )
+        matches!(self.holding, Holding::Refused | Holding::Lift)
     }
 
     /// Whether the cursor shows the cross whatever else holds: a refused
     /// press.
     pub fn refused(&self) -> bool {
         self.holding == Holding::Refused
-    }
-
-    /// The body a lift picked, if any.
-    pub fn lifted(&self) -> Option<(Entity, Option<Vec3>)> {
-        match self.holding {
-            Holding::Lift { body, saved } => body.map(|b| (b, saved)),
-            _ => None,
-        }
     }
 }
 
@@ -705,19 +691,7 @@ fn press_hand(
         Press::Mechanism(pick) => hand.holding = Holding::Mechanism(pick),
         Press::Lift => {
             pb.hold_object(true);
-            let (body, saved) = match picked.map(|p| p.hit) {
-                Some(Hit::Prop { body, .. }) => {
-                    let saved = bodies.get(body).ok().map(|(_, r, ..)| {
-                        r.parts
-                            .iter()
-                            .find(|p| p.parent.is_none())
-                            .map_or(Vec3::ZERO, |p| p.transform().translation.into())
-                    });
-                    (Some(body), saved)
-                }
-                _ => (None, None),
-            };
-            hand.holding = Holding::Lift { body, saved };
+            hand.holding = Holding::Lift;
         }
         Press::Drag {
             strength,
@@ -848,7 +822,7 @@ fn hold_hand(
                 hand.holding = Holding::Nothing;
             }
         }
-        Holding::Lift { .. } => {
+        Holding::Lift => {
             if released {
                 hand.holding = Holding::Nothing;
                 if let Some((_, child)) = player
@@ -941,9 +915,10 @@ fn reach_hand(
         return;
     }
     let ctrl = bindings.pressed(&keys, Action::Interact);
-    // The original latches the walk after the button's release until the
-    // stride ends; the reach waits while it holds.
-    let walking = buttons.pressed(MouseButton::Right) || pb.walk_requested();
+    // The original skips the reach while its walk latch is held by the right
+    // button; after the release (and while the keys walk) its keys-walking
+    // bit measures the reach again, so only the button counts.
+    let walking = buttons.pressed(MouseButton::Right);
     if !measures_reach(pb.combat, ctrl, hand.holding != Holding::Nothing, walking) {
         return;
     }
@@ -1289,18 +1264,19 @@ mod tests {
     }
 
     /// The hand's state keeps the request while a press is refused or a
-    /// lift holds, and shows the cross only for the refusal.
+    /// lift holds (not while a mechanism is dragged), and shows the cross
+    /// only for the refusal.
     #[test]
     fn a_refused_press_keeps_the_request_and_shows_the_cross() {
         let mut hand = Hand::default();
         assert!(!hand.keeps_the_request() && !hand.refused());
         hand.holding = Holding::Refused;
         assert!(hand.keeps_the_request() && hand.refused());
-        hand.holding = Holding::Lift {
-            body: None,
-            saved: None,
-        };
+        hand.holding = Holding::Lift;
         assert!(hand.keeps_the_request() && !hand.refused());
+        // A door's drag leaves the request to the keys.
+        hand.holding = Holding::Mechanism(Pick::Hinge);
+        assert!(!hand.keeps_the_request() && !hand.refused());
         hand.holding = Holding::Drag {
             body: Entity::PLACEHOLDER,
             height: 0.0,

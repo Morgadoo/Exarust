@@ -268,10 +268,12 @@ while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
 when it gives light and the body is not switching weapons (0x10000).
 
-Wired in Exarust: Tab (with the hand's cancel: a lift goes back to its
-saved transform and a drag's link stays where it was), R and F. Not yet:
-the windows, the dialogue and the power bar the other keys open; the
-extinguished light itself (the record's flag changes, the torch burns on);
+Wired in Exarust: Tab, R and F. Not yet: the windows, the dialogue and the
+power bar the other keys open; the extinguished light itself (the record's
+flag changes, the torch burns on); the original's cancel of a lift or drag
+on entering combat, which puts a lifted item back where its lift saved it
+and leaves a drag's link in place (Exarust's lift does not move the item,
+and it lets go of the drag rather than leave a link no release would end);
 the flag that keeps a player out of combat mode.
 
 ## Gamepad
@@ -523,10 +525,10 @@ a NaN passes, as the original's unordered compares do. The reach is measured
 each frame: outside combat mode while the right button is not walking to the
 cursor, in combat mode only with Ctrl held or something held, whatever the
 right button does; a drag in hand is always within reach. The original
-keeps its walk to the cursor latched after the right button's release until
-the player stops moving, and skips the reach meanwhile; Exarust's steering
-keeps the same latch (`PlayerBody::walk_requested`) and the hand waits on
-it. Outside combat mode the cursor shows the pointer within reach and the
+keeps its walk latched after the right button's release until the player
+stops moving, but the release also sets the request's keys-walking bit,
+which measures the reach again, so the reach waits only while the button
+walks to the cursor, as in Exarust. Outside combat mode the cursor shows the pointer within reach and the
 cross beyond it. The player down, collapsing or dead lets go of everything
 and is out of reach. A sim object's point must also lie in the player's
 navigation region with nothing between: the grid's line walk from the feet
@@ -897,10 +899,14 @@ shared bit also lays the Torch overlay on a one-handed weapon).
 The cursor is the game's own world cursor ([UI.md](UI.md), World cursor):
 a red ring in combat mode, and outside it an amber arrowhead over ground
 within reach, a cross beyond it and chevrons while walking to it. In
-combat mode the right button walks to the cursor too: the body walks
-toward the point, running beyond 3 m, and the footwork yields while it
-walks (`steering::Steering::combat_walk`; the run is Exarust's guess, the
-original's combat walk not being fully traced).
+combat mode the right button walks to the cursor too, as the original's
+combat branch does while the button is held: the request keeps only its
+sprint latch, the heading and the look take the cursor's direction, a
+cursor beyond 3 m runs (the Run key's latch also runs nearer), and the
+look-ahead `6·v² + 45` cm along the facing stops the free walk and, within
+100 cm, the run; the footwork yields while it walks and the cursor shows
+the chevrons however near the point is (`steering::Steering::combat_walk`).
+The release ends it at once.
 
 ## Held items and their grips
 

@@ -178,34 +178,18 @@ pub fn hotkey(key: u32, bindings: &Bindings, c: Context) -> Option<Hotkey> {
     }
 }
 
-/// What entering combat mode does to the hand.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum CombatCancel {
-    Nothing,
-    /// A lift: the item goes back where its lift saved it.
-    Lift {
-        body: Entity,
-        saved: Option<Vec3>,
-    },
-    /// A drag: its link is left in place (not released).
-    Drag(Entity),
-}
-
-/// Entering combat mode: the request's backpedal, keys' heading and
-/// turn-about bits clear, a lift is put back where its lift saved it, and a
-/// drag's link is left in place.
-pub fn enter_combat(hand: &mut Hand, req: &mut Locomotion) -> CombatCancel {
+/// Entering combat mode: the hand lets go and the request's backpedal,
+/// keys' heading and turn-about bits clear. The original's cancel puts a
+/// lifted item back where its lift saved it and leaves a drag's link in
+/// place; Exarust lets go of the drag.
+pub fn enter_combat(hand: &mut Hand, req: &mut Locomotion) -> Option<Entity> {
     req.flags &= !COMBAT_CLEARS;
-    let out = match hand.holding {
-        Holding::Lift {
-            body: Some(body),
-            saved,
-        } => CombatCancel::Lift { body, saved },
-        Holding::Drag { body, .. } => CombatCancel::Drag(body),
-        _ => CombatCancel::Nothing,
+    let held = match hand.holding {
+        Holding::Drag { body, .. } => Some(body),
+        _ => None,
     };
     hand.holding = Holding::Nothing;
-    out
+    held
 }
 
 pub struct HotkeyPlugin;
@@ -245,7 +229,6 @@ fn press_hotkeys(
     )>,
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
     mut screens: MessageWriter<ScreenRequest>,
-    mut transforms: Query<&mut Transform, Without<PlayerBody>>,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -295,29 +278,14 @@ fn press_hotkeys(
                     pb.aim = req.heading;
                     if pb.combat
                         && let Some(hand) = hand.as_deref_mut()
+                        && let Some(body) = enter_combat(hand, &mut req)
+                        && let Ok(mut ragdoll) = bodies.get_mut(body)
                     {
-                        match enter_combat(hand, &mut req) {
-                            CombatCancel::Lift { body, saved } => {
-                                if let (Some(saved), Ok(mut at)) = (saved, transforms.get_mut(body))
-                                {
-                                    at.translation = saved;
-                                }
-                            }
-                            CombatCancel::Drag(body) => {
-                                if let Ok(mut ragdoll) = bodies.get_mut(body) {
-                                    // The original leaves the link where the
-                                    // drag put it rather than letting go.
-                                    ragdoll.hold_grab_still();
-                                }
-                            }
-                            CombatCancel::Nothing => {}
-                        }
+                        ragdoll.release_grab();
                     }
                 }
                 Hotkey::SwapSets => {
-                    let lifting = hand
-                        .as_deref()
-                        .is_some_and(|h| matches!(h.holding, Holding::Lift { .. }));
+                    let lifting = hand.as_deref().is_some_and(|h| h.holding == Holding::Lift);
                     if Possessions::swap_request(word.0, lifting, false) != SwapRequest::Refused {
                         commands
                             .entity(entity)
@@ -540,23 +508,11 @@ mod tests {
             flags: flags::MOVE | flags::BACK | flags::KEYS | flags::TURN_ABOUT | flags::RUN,
             ..Locomotion::default()
         };
-        assert_eq!(
-            enter_combat(&mut hand, &mut req),
-            CombatCancel::Drag(Entity::PLACEHOLDER)
-        );
+        assert_eq!(enter_combat(&mut hand, &mut req), Some(Entity::PLACEHOLDER));
         assert_eq!(req.flags, flags::MOVE | flags::RUN);
         assert_eq!(hand.holding, Holding::Nothing);
-        hand.holding = Holding::Lift {
-            body: Some(Entity::PLACEHOLDER),
-            saved: Some(Vec3::ZERO),
-        };
-        assert_eq!(
-            enter_combat(&mut hand, &mut req),
-            CombatCancel::Lift {
-                body: Entity::PLACEHOLDER,
-                saved: Some(Vec3::ZERO)
-            }
-        );
+        hand.holding = Holding::Lift;
+        assert_eq!(enter_combat(&mut hand, &mut req), None);
         assert_eq!(hand.holding, Holding::Nothing);
     }
 }

@@ -152,8 +152,8 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   level, the props and the characters, the hit at most 245 cm high in the
   world, and its offset from the player's hip within 300 cm up or down and
   300 cm across;
-- Exarust's player walks to the cursor only outside combat mode for now, so
-  chevrons show in combat mode only once it does there as the original;
+- the chevrons show while the right button walks to the cursor, in combat
+  mode too;
 - the state comes from the player's condition word
   ([formats/RSQ.md](formats/RSQ.md), Condition): dead (`0xA00`), collapsing
   (`0x800`), down for bit `0x200` (down, getting up, dormant), else

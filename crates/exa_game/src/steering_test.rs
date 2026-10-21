@@ -616,18 +616,40 @@ fn a_click_walks_to_its_goal_and_combat_walks_to_the_cursor() {
     );
     assert!(s.walk_to.is_none());
     // Combat: toward the cursor across the ground, walking within 3 m and
-    // running beyond, with the fast turn.
+    // running beyond, with the fast turn; the request keeps only the sprint
+    // latch.
     let (mut s, mut req, body) = standing();
     req.slow_turn = true;
+    req.flags |= flags::BACK | flags::KEYS;
+    s.raw = Some((0.0, 2.0));
+    s.combat_request(true);
+    assert!(s.requested && s.mode == CursorMode::Walk);
     assert!(s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(0.0, 0.0, 2.0), &open));
-    assert!(req.moving && !req.has(flags::RUN) && !req.slow_turn);
+    assert!(req.moving && req.free_walk && !req.slow_turn);
+    assert_eq!(req.flags, flags::MOVE);
     assert_eq!(req.heading, 0.0);
     let (mut s, mut req, body) = standing();
+    s.raw = Some((FRAC_PI_2, 4.0));
+    s.combat_request(true);
+    assert_eq!(s.mode, CursorMode::Run);
     s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0), &open);
     assert!(req.has(flags::RUN));
     assert!((req.heading - FRAC_PI_2).abs() < 1e-6);
-    // A cursor within 50 cm is no walk.
+    // Within 3 m the Run key's latch turns into the run.
     let (mut s, mut req, body) = standing();
+    s.raw = Some((0.0, 2.0));
+    s.combat_request(true);
+    req.flags |= flags::SPRINT;
+    s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(0.0, 0.0, 2.0), &open);
+    assert_eq!(req.flags, flags::MOVE | flags::RUN);
+    // A cursor within 50 cm is no walk, but the button still asks it.
+    let (mut s, mut req, body) = standing();
+    s.combat_request(true);
+    assert!(s.requested);
     assert!(!s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(0.0, 0.0, 0.2), &open));
     assert!(!req.moving);
+    // Released, the button asks nothing more.
+    let mut s = Steering::default();
+    s.combat_request(false);
+    assert!(!s.requested);
 }
