@@ -30,7 +30,7 @@ pub const MAX_CANDIDATES: usize = 128;
 pub const EXPERIENCE_PER_RANK: u32 = 5_000;
 
 /// The profession grid is three rows of eight columns.
-pub const PROFESSION_ROWS: usize = 3;
+pub const PROFESSION_ROWS: usize = 4;
 /// Columns in a profession row.
 pub const PROFESSION_COLUMNS: usize = 8;
 /// A row records up to this many rank gains (the experience cap divided by
@@ -2025,9 +2025,11 @@ where
 /// One row of profession progress: total experience and the column gained at
 /// each rank.
 ///
-/// The original writes one byte per rank into a row whose exact stride is
-/// unclear from the decompilation; the twelve rank slots here are a
-/// reconstruction that keeps the same order of writes.
+/// The original keeps a row as eight bytes, a sixteen-bit total and then one
+/// byte per rank; with the shipped grids a row never gains more than six
+/// ranks, so the bytes stay inside the row. The twelve slots here only keep a
+/// custom catalog from overrunning, which the original would do into the next
+/// row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProfessionRow {
     /// Total experience in this row, capped by the original's twelve ranks.
@@ -2036,7 +2038,7 @@ pub struct ProfessionRow {
     pub levels: [u8; PROFESSION_TRACKS],
 }
 
-/// The three profession rows of one character.
+/// The four profession rows of one character.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProfessionProgress {
     /// One row per profession track.
@@ -2047,10 +2049,8 @@ pub struct ProfessionProgress {
 ///
 /// The original keeps two grids and drifts between them as characters are
 /// generated. A nonzero prerequisite link names a one-based column in the
-/// same row that must already be marked. The default is a neutral grid with
-/// every weight at one; it is not retail data. Which grid the original treats
-/// as the rarer side is a guess: the caller can swap `weights_a` and
-/// `weights_b` without changing any other rule.
+/// same row that must already be marked. The default is the shipped data
+/// (`arena_outfit_data`); a caller may supply other grids.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfessionCatalog {
     /// The grid used when the drift roll picks the rare side.
@@ -2070,10 +2070,10 @@ pub struct ProfessionCatalog {
 impl Default for ProfessionCatalog {
     fn default() -> Self {
         Self {
-            weights_a: [[1; PROFESSION_COLUMNS]; PROFESSION_ROWS],
-            weights_b: [[1; PROFESSION_COLUMNS]; PROFESSION_ROWS],
-            prereq_a: [[0; PROFESSION_COLUMNS]; PROFESSION_ROWS],
-            prereq_b: [[0; PROFESSION_COLUMNS]; PROFESSION_ROWS],
+            weights_a: data::PROFESSION_WEIGHTS_RARE,
+            weights_b: data::PROFESSION_WEIGHTS_COMMON,
+            prereq_a: data::PROFESSION_PREREQ_A,
+            prereq_b: data::PROFESSION_PREREQ_B,
             drift: 0,
         }
     }
@@ -2338,9 +2338,14 @@ pub fn random_npc<'a>(
     let damage_seed = lcg.high(0x7fff_ffff);
 
     let frame = (smooth_unit(unit()) - 0.5) * 0.5 + 0.5;
-    let height = (1.0 - level as f32 * 0.05) * smooth_unit(unit());
+    // The height, deviation, muscle and skin sums run in double precision in
+    // the original and are narrowed once at the end.
+    let height_draw = smooth_unit(unit());
+    let height = ((1.0 - f64::from(level) * 0.05) * f64::from(height_draw)) as f32;
     let weight = smooth_unit(unit()) * 2.0 - 1.0;
-    let deviation = weight * 0.3 + (0.5 - frame) * 0.6 + (height - 0.5) * 0.8;
+    let deviation = (f64::from(weight) * 0.3
+        + (f64::from(0.5 - frame) * 0.6 + f64::from(height - 0.5) * 0.8))
+        as f32;
     let deviation = if -LOOK_EPSILON <= deviation {
         if LOOK_EPSILON < deviation {
             deviation.sqrt()
@@ -2350,14 +2355,15 @@ pub fn random_npc<'a>(
     } else {
         -(-deviation).sqrt()
     };
-    let muscle = (smooth_unit(unit()) * 0.5 + (deviation * 0.5 + 0.5) * 0.5) * 0.17 + 0.9;
+    let muscle_sum = smooth_unit(unit()) * 0.5 + (deviation * 0.5 + 0.5) * 0.5;
+    let muscle = (f64::from(muscle_sum) * 0.17 + 0.9) as f32;
     let draw = unit();
     let mut strength = draw * draw;
     if flags & 0x2_0000 != 0 {
         strength = (1.0 - strength) * 0.75 + strength;
     }
-    let face_seed = (smooth_unit(unit()) * 65535.0).round_ties_even() as u16;
-    let voice_seed = (smooth_unit(unit()) * 65535.0).round_ties_even() as u16;
+    let face_seed = cvtss2si_low(smooth_unit(unit()) * 65535.0) as u16;
+    let voice_seed = cvtss2si_low(smooth_unit(unit()) * 65535.0) as u16;
 
     lcg.step();
     let mut build_seed = lcg.high(13);
@@ -2387,17 +2393,19 @@ pub fn random_npc<'a>(
     let feature_seed = (lcg.state() >> 24) as u8;
 
     let skin_draw = unit();
-    let muscle_share = strength * 0.6;
-    let skin_value = request.warmth * 0.5 + muscle_share * muscle_share + skin_draw * skin_draw;
-    let skin_tone = if skin_value <= 1.0 {
-        (skin_value * 255.0).round_ties_even() as u8
-    } else {
+    let muscle_share = f64::from(strength) * 0.6;
+    let skin_value = (f64::from(request.warmth * 0.5)
+        + muscle_share * muscle_share
+        + f64::from(skin_draw * skin_draw)) as f32;
+    let skin_tone = if skin_value > 1.0 {
         255
+    } else {
+        cvtss2si_low(skin_value * 255.0) as u8
     };
     let hair_draw = unit();
-    let mut hair_tone = ((strength * 0.5 + hair_draw * 0.5) * 255.0).round_ties_even() as u8;
+    let mut hair_tone = cvtss2si_low((strength * 0.5 + hair_draw * 0.5) * 255.0) as u8;
     let blend = request.warmth * 0.75;
-    hair_tone = (blend * 255.0 + (1.0 - blend) * f32::from(hair_tone)).round_ties_even() as u8;
+    hair_tone = cvtss2si_low(blend * 255.0 + (1.0 - blend) * f32::from(hair_tone)) as u8;
 
     NpcProfile {
         level,
@@ -2987,8 +2995,9 @@ mod tests {
         assert_eq!(progress.rows[0].experience, 5_000);
         assert_eq!(progress.rows[0].levels[0], 1);
         assert_eq!(progress.rows[1].experience, 0);
-        assert_eq!(progress.rows[2].experience, 2_000);
-        assert_eq!(progress.rows[2].levels[0], 5);
+        assert_eq!(progress.rows[2].experience, 0);
+        assert_eq!(progress.rows[3].experience, 2_000);
+        assert_eq!(progress.rows[3].levels[0], 4);
         assert_eq!(catalog.drift, 3);
 
         let mut empty = ProfessionCatalog::default();
@@ -2997,6 +3006,36 @@ mod tests {
             grant_profession_levels(&mut Lcg::new(0), &mut empty, &mut nothing, 0),
             0
         );
+    }
+
+    #[test]
+    fn profession_grids_keep_their_prerequisites_and_rows() {
+        for seed in 0..32 {
+            let mut catalog = ProfessionCatalog::default();
+            let mut progress = ProfessionProgress::default();
+            let granted =
+                grant_profession_levels(&mut Lcg::new(seed), &mut catalog, &mut progress, 60_000);
+            assert_eq!(granted, 12);
+            // The second row has no weights; the others each mark a cell once.
+            assert_eq!(progress.rows[1].experience, 0);
+            let total: u32 = progress.rows.iter().map(|r| u32::from(r.experience)).sum();
+            assert_eq!(total, 60_000);
+            for row in &progress.rows {
+                let gained: Vec<u8> = row.levels.iter().copied().take_while(|c| *c != 0).collect();
+                assert_eq!(gained.len() as u16, row.experience / 5_000);
+                for (index, column) in gained.iter().enumerate() {
+                    let before = &gained[..index];
+                    match (progress.rows.iter().position(|r| r == row), column) {
+                        // The first row's last column needs its first and fourth.
+                        (Some(0), 8) => assert!(before.contains(&1) && before.contains(&4)),
+                        // The last two rows' second and third columns chain.
+                        (Some(2 | 3), 2) => assert!(before.contains(&1)),
+                        (Some(2 | 3), 3) => assert!(before.contains(&2)),
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -3033,12 +3072,12 @@ mod tests {
         assert_eq!(profile.appearance, 3);
         assert_eq!(profile.profession, 5);
         assert_eq!(profile.name, ("Given0", "Family0"));
-        assert_eq!(profile.professions.rows[0].experience, 15_000);
-        assert_eq!(profile.professions.rows[1].experience, 5_000);
-        assert_eq!(profile.professions.rows[2].experience, 10_000);
-        assert_eq!(profile.professions.rows[0].levels[..3], [5, 8, 4]);
-        assert_eq!(profile.professions.rows[1].levels[0], 1);
-        assert_eq!(profile.professions.rows[2].levels[..2], [5, 1]);
+        assert_eq!(profile.professions.rows[0].experience, 20_000);
+        assert_eq!(profile.professions.rows[1].experience, 0);
+        assert_eq!(profile.professions.rows[2].experience, 0);
+        assert_eq!(profile.professions.rows[3].experience, 10_000);
+        assert_eq!(profile.professions.rows[0].levels[..4], [1, 3, 4, 2]);
+        assert_eq!(profile.professions.rows[3].levels[..2], [4, 1]);
         let look = profile.look;
         assert_eq!(look.flags, 0x530_000);
         assert_eq!(look.frame, 0.5625);

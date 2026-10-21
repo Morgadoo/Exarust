@@ -1974,3 +1974,33 @@ pub const WEAPONS_D: [RawRankEntry; 4] = [
         second: 0,
     },
 ];
+
+/// Profession grid weights for the common side: four rows of eight columns.
+/// A zero weight is a cell that is never drawn.
+pub const PROFESSION_WEIGHTS_COMMON: [[i32; 8]; 4] = [
+    [20, 12, 16, 12, 0, 0, 0, 2],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [12, 8, 4, 8, 4, 0, 0, 0],
+    [1, 1, 1, 1, 1, 1, 0, 0],
+];
+
+/// Profession grid weights for the rare side, drawn when the drift roll is
+/// zero.
+pub const PROFESSION_WEIGHTS_RARE: [[i32; 8]; 4] = [
+    [20, 12, 16, 4, 0, 0, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [3, 2, 1, 2, 1, 0, 0, 0],
+    [20, 12, 8, 8, 4, 4, 0, 0],
+];
+
+/// First prerequisite link per cell: a one-based column of the same row that
+/// must already be marked, or zero for none.
+pub const PROFESSION_PREREQ_A: [[u8; 8]; 4] = [
+    [0, 0, 0, 0, 0, 0, 0, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 2, 0, 0, 0, 0, 0],
+    [0, 1, 2, 0, 0, 0, 0, 0],
+];
+
+/// Second prerequisite link per cell, same meaning as the first.
+pub const PROFESSION_PREREQ_B: [[u8; 8]; 4] = [[0, 0, 0, 0, 0, 0, 0, 4], [0; 8], [0; 8], [0; 8]];
