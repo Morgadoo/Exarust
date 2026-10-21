@@ -156,9 +156,6 @@ pub struct NoStaticCollider;
 #[derive(Resource, Default)]
 pub struct StaticBuild {
     roots: Vec<RootBuild>,
-    /// Finished colliders waiting for the frame hook: the original's done
-    /// ring.
-    done: kdtree::Ring<BuiltCollider>,
     built: usize,
     total: usize,
 }
@@ -167,10 +164,8 @@ pub struct StaticBuild {
 /// flight with the number of meshes each covers.
 struct RootBuild {
     root: Entity,
-    /// The meshes waiting for a tree or collider: the original's build ring.
-    parts: kdtree::Ring<Entity>,
-    /// How many meshes the root queued.
-    total: usize,
+    parts: Vec<Entity>,
+    handed: usize,
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
 
@@ -179,15 +174,6 @@ struct RootBuild {
 type BuiltCollider = (Collider, Option<(Entity, usize)>);
 
 impl StaticBuild {
-    /// Empties both rings and forgets the roots (the original's session-end
-    /// reset of the queue pair).
-    pub fn clear(&mut self) {
-        self.roots.clear();
-        self.done.clear();
-        self.built = 0;
-        self.total = 0;
-    }
-
     /// The share of the meshes queued since the last idle moment that are
     /// built (1 when nothing is being built).
     pub fn fraction(&self) -> f32 {
@@ -362,62 +348,55 @@ fn build_static_colliders(
         if build.roots.iter().any(|r| r.root == root) {
             continue;
         }
-        let meshes: Vec<Entity> = children
+        let parts: Vec<Entity> = children
             .iter_descendants(root)
             .filter(|&e| shapes.contains(e) && !no_collider.contains(e))
             .collect();
-        build.total += meshes.len();
-        let mut parts = kdtree::Ring::new();
-        for e in &meshes {
-            parts.push(*e);
-        }
+        build.total += parts.len();
         build.roots.push(RootBuild {
             root,
             parts,
-            total: meshes.len(),
+            handed: 0,
             tasks: Vec::new(),
         });
     }
     let started = std::time::Instant::now();
     let build = &mut *build;
-    // Finished builds move to the done ring, and the frame hook installs
-    // what it holds.
+    // Finished builds join the world.
     for root in &mut build.roots {
         root.tasks.retain_mut(|(count, task)| {
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for collider in colliders {
-                build.done.push(collider);
+            for (mut collider, owner) in colliders {
+                if owner.is_some() {
+                    collider.user_data = prop::STAND_IN;
+                }
+                let handle = physics.0.insert_collider(collider, None);
+                if let Some((body, part)) = owner {
+                    stand_ins.0.entry(body).or_default().push((handle, part));
+                }
             }
             build.built += *count;
             false
         });
     }
-    while let Some((mut collider, owner)) = build.done.pop() {
-        if owner.is_some() {
-            collider.user_data = prop::STAND_IN;
-        }
-        let handle = physics.0.insert_collider(collider, None);
-        if let Some((body, part)) = owner {
-            stand_ins.0.entry(body).or_default().push((handle, part));
-        }
-    }
     // New builds, a batch of copied meshes each.
     let pool = AsyncComputeTaskPool::get();
     let mut in_flight: usize = build.roots.iter().map(|r| r.tasks.len()).sum();
     for root in &mut build.roots {
-        while !root.parts.is_empty()
+        while root.handed < root.parts.len()
             && in_flight < BUILDS_IN_FLIGHT
             && started.elapsed() < STATIC_BUILD_BUDGET
         {
             let mut batch = Vec::new();
             let mut triangles = 0;
-            let mut count = 0;
-            while let Some(e) = root.parts.pop()
+            let first = root.handed;
+            while root.handed < root.parts.len()
                 && (batch.is_empty() || triangles < BUILD_TRIANGLES)
             {
-                count += 1;
+                let e = root.parts[root.handed];
+                root.handed += 1;
                 if let Ok((mesh, global)) = shapes.get(e)
                     && let Some(mut copy) =
                         meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
@@ -427,6 +406,7 @@ fn build_static_colliders(
                     batch.push(copy);
                 }
             }
+            let count = root.handed - first;
             let task = pool.spawn(async move {
                 batch
                     .into_iter()
@@ -441,9 +421,9 @@ fn build_static_colliders(
         }
     }
     build.roots.retain(|root| {
-        let finished = root.parts.is_empty() && root.tasks.is_empty();
+        let finished = root.handed == root.parts.len() && root.tasks.is_empty();
         if finished {
-            debug!("static colliders built: {} meshes", root.total);
+            debug!("static colliders built: {} meshes", root.parts.len());
             if roots.contains(root.root) {
                 commands.entity(root.root).remove::<StaticGeometry>();
             }

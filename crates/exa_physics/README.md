@@ -24,13 +24,11 @@ transcendentals are stood in for by the platform's double functions. The
 UI's `engine_math` forwards here, and the body's twist helpers are
 re-exported from it.
 
-The original's kd-tree plumbing (`kdtree`) holds the grow-on-full 256-slot
-ring (grown by 128, the two locked queues), the builder thread's start,
-stop and reset, the query install copied to a mesh's instances, and ray,
-sphere and capsule queries over a triangle set; `StaticBuild` queues parts
-and finished colliders through the rings. The sign-extended three-bit face
-decode is there too. The original's point-to-oriented-box distance is
-`intersect::point_obb_distance_squared`.
+`kdtree` holds the two pieces of the original's background kd-tree unit
+that stand alone: its builder queues' FIFO ring (256 slots, one entry
+fewer than its slots, grown by 128 when full) and a sign-magnitude
+three-bit decode. Static colliders are built by `StaticBuild` on the async
+compute pool; the original's builder thread is not reproduced.
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the
