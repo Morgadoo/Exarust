@@ -204,6 +204,8 @@ pub struct Blast {
     pub chunks: Vec<Chunk>,
     /// The two random tints each chunk's slot takes, in 0..1.
     pub tints: Vec<(f32, f32)>,
+    /// Whether the release has been reported used.
+    pub power_used: bool,
 }
 
 impl Blast {
@@ -223,6 +225,7 @@ impl Blast {
             hand,
             chunks: Vec::new(),
             tints,
+            power_used: false,
         }
     }
 
@@ -326,6 +329,7 @@ impl Blast {
     fn release(&mut self) {
         self.charge = 0.0;
         self.phase = RELEASED;
+        self.power_used = true;
         for chunk in &mut self.chunks {
             chunk.previous = chunk.at;
             for (slot, point) in chunk.trail.iter_mut().enumerate() {
@@ -751,6 +755,20 @@ pub fn hit_limb(
     }
 }
 
+/// A character struck by a flying chunk: the impulse is normalised, capped
+/// at 30 and doubled into the knock, and the stun is `0.08·(1 − share)`
+/// between 0.008 and 0.08 s. A chunk slower than one unit does nothing.
+pub fn character_knock(impulse: Vec3, inverse_mass: f32) -> (Vec3, f32, f32) {
+    let speed = impulse.length();
+    if speed <= 1.0 {
+        return (Vec3::ZERO, 0.0, 0.0);
+    }
+    let direction = impulse / speed;
+    let capped = if speed > KNOCK_CAP { KNOCK_CAP } else { speed };
+    let stun = (STUN_BASE * (1.0 - inverse_mass)).clamp(STUN_FLOOR, STUN_CAP);
+    (direction * capped * 2.0, stun, HIT_ANGER)
+}
+
 /// The alert weight of a character at a position: the horizontal distance
 /// over the radius squared twice, and the facing dot, floor 0. Three is
 /// added and the result quartered.
@@ -800,6 +818,7 @@ mod tests {
                 assert_eq!(step.phase, RELEASED);
                 let alert = step.alert.expect("an alert");
                 assert_eq!(alert.radius, 1800.0);
+                assert!(blast.power_used);
                 break;
             }
         }
@@ -866,6 +885,17 @@ mod tests {
             &[chunk.at + Vec3::new(0.0, 0.0, 500.0)],
         );
         assert!(far.is_none());
+    }
+
+    #[test]
+    fn a_character_knocks_at_most_sixty() {
+        let (knock, stun, anger) = character_knock(Vec3::new(100.0, 0.0, 0.0), 0.2);
+        assert_eq!(knock, Vec3::new(60.0, 0.0, 0.0));
+        assert!((stun - 0.064).abs() < 1e-6);
+        assert_eq!(anger, 0.01);
+        let (slow, stun, anger) = character_knock(Vec3::new(0.5, 0.0, 0.0), 0.2);
+        assert_eq!(slow, Vec3::ZERO);
+        assert_eq!((stun, anger), (0.0, 0.0));
     }
 
     #[test]

@@ -149,6 +149,8 @@ pub struct Torrent {
     pub streams: Vec<Stream>,
     /// The caster's hand.
     pub hand: Vec3,
+    /// Whether the power has been reported used.
+    pub power_used: bool,
     /// The aim, a unit vector.
     pub aim: Vec3,
 }
@@ -165,6 +167,7 @@ impl Torrent {
             streams: Vec::new(),
             hand,
             aim,
+            power_used: false,
         }
     }
 
@@ -245,6 +248,7 @@ impl Torrent {
             self.charge = 1.0;
             self.phase = RUNNING;
             self.level = LEVEL_CURVE;
+            self.power_used = true;
             released = true;
             for stream in &mut self.streams {
                 stream.aim = self.aim;
@@ -321,6 +325,11 @@ impl Torrent {
         if self.phase == RUNNING {
             self.phase = FADING;
         }
+    }
+
+    /// The two sounds the start plays.
+    pub fn start_sounds(&self) -> [&'static str; 2] {
+        [CHARGE_SOUND, LOOP_SOUND]
     }
 
     /// The reach of a stream point: the point's age (its life lost) times
@@ -572,6 +581,18 @@ mod tests {
         let expected = 0.12 * 1.0 * 0.5 * 0.25 * 1.5 * 0.5 * 1.2;
         assert!((set.blocks[0][0] - expected).abs() < 1e-6);
         assert_eq!(torrent.texture_offset(), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_start_sounds_and_the_power_used_are_recorded() {
+        let mut torrent = torrent();
+        assert_eq!(torrent.start_sounds(), ["thmfrc_cu01", "thmfrc_trntdr"]);
+        assert!(!torrent.power_used);
+        torrent.charge = 1.0;
+        torrent.step(Vec3::ZERO, Vec3::X, 0.0);
+        assert!(torrent.power_used);
+        torrent.release();
+        assert_eq!(torrent.phase, FADING);
     }
 
     #[test]
