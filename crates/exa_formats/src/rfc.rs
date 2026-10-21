@@ -336,9 +336,12 @@ impl Mesh {
         self.render_flags & 0x8_0000 != 0
     }
 
-    /// Render flag `0x800`: the mesh culls its front faces and draws the
-    /// back ones (the original's cull-front bit). No shipped mesh sets it.
-    pub fn cull_front(&self) -> bool {
+    /// Render flag `0x800`: in the shadow depth pass the original culls
+    /// this mesh's front faces (it draws the back ones); without the bit the
+    /// pass culls the back faces. Only the two shadow-pass draw routines
+    /// read the bit, the colour pass does not. No shipped mesh sets it, and
+    /// Exarust draws no mesh with it.
+    pub fn shadow_cull_front(&self) -> bool {
         self.render_flags & 0x800 != 0
     }
 
@@ -1961,12 +1964,12 @@ mod tests {
         assert_eq!(mesh.render_flags, 0x000A_0000);
         assert_eq!(mesh.shadow_bias_level(), 2);
         assert!(mesh.shadow_bias_inflated());
-        assert!(!mesh.cull_front());
+        assert!(!mesh.shadow_cull_front());
         assert_eq!(Mesh::default().shadow_bias_level(), 0);
-        // The cull-front bit is the render word's 0x800.
+        // The shadow-pass cull-front bit is the render word's 0x800.
         let mut mesh = (*mesh).clone();
         mesh.render_flags = 0x0000_0800;
-        assert!(mesh.cull_front());
+        assert!(mesh.shadow_cull_front());
         assert_eq!(mesh.shadow_bias_level(), 0);
         assert!(!mesh.shadow_bias_inflated());
     }

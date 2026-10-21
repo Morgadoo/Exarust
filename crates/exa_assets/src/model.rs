@@ -76,9 +76,6 @@ pub struct ModelNode {
     /// [`exa_formats::rfc::Mesh::shadow_bias_level`]); 0 for other nodes
     /// and for the inflated variant.
     pub shadow_bias: u32,
-    /// The mesh's cull-front render flag ([`exa_formats::rfc::Mesh::cull_front`]):
-    /// its parts draw their back faces. No shipped mesh sets it.
-    pub cull_front: bool,
     /// Whether a part of this node is the race's built-in skin (a body
     /// model's `skinhuman`), which a character's tone re-tints.
     pub is_skin: bool,
@@ -418,16 +415,7 @@ impl ModelLoader<'_> {
                     .into_iter()
                     .map(|(group, bevy_mesh)| {
                         let name = &mesh.groups[group].material;
-                        let mut material = self.material(&entry, &scene, name);
-                        // A mesh's cull-front render flag applies to every
-                        // part of that node: give those parts their own
-                        // material, as no shipped mesh sets it.
-                        if mesh.cull_front()
-                            && let Some(mut own) = self.materials.get(&material).cloned()
-                        {
-                            own.cull_front = true;
-                            material = self.materials.add(own);
-                        }
+                        let material = self.material(&entry, &scene, name);
                         ((self.meshes.add(bevy_mesh), material), name.clone())
                     })
                     .unzip(),
@@ -485,10 +473,6 @@ impl ModelLoader<'_> {
                     // not reproduced: such a mesh keeps level 0.
                     Some(mesh) if !mesh.shadow_bias_inflated() => mesh.shadow_bias_level(),
                     _ => 0,
-                },
-                cull_front: match &node.body {
-                    NodeBody::Mesh(mesh) => mesh.cull_front(),
-                    _ => false,
                 },
                 is_skin,
             });

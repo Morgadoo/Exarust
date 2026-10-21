@@ -148,7 +148,6 @@ impl ModelLoader<'_> {
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
-            cull_front: false,
             is_skin: false,
         }];
         let mut head: Option<(f32, f32)> = None;
@@ -241,7 +240,6 @@ impl ModelLoader<'_> {
                 rigid: None,
                 tracks: Vec::new(),
                 shadow_bias: 0,
-                cull_front: false,
                 is_skin: false,
             });
         }

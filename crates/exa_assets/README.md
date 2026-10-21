@@ -202,9 +202,10 @@ original does (`exa_formats`' `Mesh::bounds`: box centre, half extents
 floored at 0.001 cm and the farthest vertex's radius), its triangles can be
 regrouped by material (`Mesh::regroup_by_material`) and two meshes can be
 appended (`Mesh::merge`), the render-form equivalents of the original's face
-regrouping and assembly. A node whose mesh sets the cull-front render flag
-gets its own copies of the parts' materials with front faces culled
-([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Mesh body).
+regrouping and assembly. The mesh's shadow-pass cull-front render
+bit (`Mesh::shadow_cull_front`) is not carried onto the model node: no
+shipped mesh sets it ([`docs/formats/RFC.md`](../../docs/formats/RFC.md),
+Mesh body).
 
 ## Placement instances
 

@@ -194,7 +194,7 @@ shadow-bias level, which sets its shadow depth scales
 switches to the inflated variant. In the shipped packs 19 748 meshes store
 level 0, 378 level 1, 2 761 level 2, 174 level 3 and 3 level 4; one mesh
 (`Objlib/pvmtrna03 a06`, `Pave03Brk`) sets bit 19. No mesh sets `0x800`
-(the original's cull-front bit); 38 set `0x1000`. Counted by
+(the shadow pass's cull-front bit); 38 set `0x1000`. Counted by
 `exa-tool corpus render-words`.
 
 | stream id | format word | content | count |
@@ -254,11 +254,13 @@ normalised values. A group whose colour channel the original has to make
 attribute off that group.
 
 **Per-mesh render state.** Besides the shadow-bias level, the render word's
-bit `0x800` culls the mesh's front faces (it draws the back ones). No
-shipped mesh sets it; Exarust keeps it as `Mesh::cull_front` and gives such
-a node's parts a cull-front material. Bit `0x1000` (12 meshes at level 0,
-22 at level 1, 4 at level 2; mostly character body parts) has no identified
-meaning in this unit.
+bit `0x800` selects which faces the shadow depth pass culls (REA on the
+original's two shadow-pass draw routines, the only readers of the bit): set,
+the front faces (the GL front-face cull mode); clear, the back faces. The
+colour pass ignores it. No shipped mesh sets it; Exarust keeps it as
+`Mesh::shadow_cull_front` and draws no mesh with it. Bit `0x1000` (12 meshes at level 0, 22 at level 1,
+4 at level 2; mostly character body parts) has no identified meaning in this
+unit.
 
 ## Editable meshes
 
