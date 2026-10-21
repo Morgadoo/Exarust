@@ -964,10 +964,14 @@ pub enum Sleep {
     Deep,
 }
 
+/// A dormant statue or golem keeps this share of the living retention.
+const DORMANT_KEEP: f32 = 0.95;
+
 /// The velocity a living body's limbs keep each tick, whatever their
-/// speed: the fast retention × u².
-fn living_retention(u: f32) -> f32 {
-    per_tick(RETENTION[0]) * u * u
+/// speed: the fast retention × u², × [`DORMANT_KEEP`] while `dormant`.
+fn living_retention(u: f32, dormant: bool) -> f32 {
+    let keep = if dormant { DORMANT_KEEP } else { 1.0 };
+    per_tick(RETENTION[0]) * u * u * keep
 }
 
 /// The original's smoothing for a link point `r` (m) from its part's origin.
@@ -1264,6 +1268,9 @@ pub struct Drive {
     /// The clip rate the posture block last wrote. A weak tick, and a walk
     /// or a run, leave it; the clock reads it. It starts at the human base.
     pub posture_rate: f32,
+    /// A dormant statue or golem. Its limbs keep [`DORMANT_KEEP`] of the
+    /// living retention, and its sleep countdown runs.
+    pub dormant: bool,
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -1308,6 +1315,7 @@ impl Default for Drive {
             posture_wait: 0,
             steps: steps::Steps::default(),
             posture_rate: RaceMuscles::HUMAN.clip_rate,
+            dormant: false,
         }
     }
 }
@@ -2416,12 +2424,11 @@ impl Ragdoll {
     }
 
     /// This tick's sleep countdown, from the last tick's motion, before the
-    /// body is integrated. A living body's is held at 256 (the original's
-    /// living never sleep, save dormant statues). A limp body's follows the
-    /// band of its fastest part, by the farthest one of that part's
-    /// particles moved ([`count_down`]).
+    /// body is integrated. A living body's is held at 256. A dormant statue
+    /// or golem counts down with a limp body, by the band of its fastest
+    /// part ([`count_down`]).
     fn tick_countdown(&mut self) {
-        if self.drive.is_some() {
+        if self.drive.as_ref().is_some_and(|d| !d.dormant) {
             self.countdown = self.countdown.max(WAKE_COUNT);
             return;
         }
@@ -2500,10 +2507,11 @@ impl Ragdoll {
         let carried = self.drive.as_ref().map(|d| (d.tone, d.energy, d.carry));
         // A limp part keeps its velocity by how fast it moved last tick; a
         // living limb keeps the fast retention whatever its speed.
+        let dormant = self.drive.as_ref().is_some_and(|d| d.dormant);
         let living = self
             .drive
             .is_some()
-            .then(|| living_retention(HUMAN_LIMB_DAMPING));
+            .then(|| living_retention(HUMAN_LIMB_DAMPING, dormant));
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
@@ -3235,7 +3243,20 @@ mod tests {
         ] {
             assert_eq!(limp_retention(moved), want, "{moved} cm in a tick");
         }
-        assert!(close(living_retention(HUMAN_LIMB_DAMPING), 0.98977));
+        assert!(close(living_retention(HUMAN_LIMB_DAMPING, false), 0.98977));
+        assert!(close(
+            living_retention(HUMAN_LIMB_DAMPING, true),
+            0.98977 * DORMANT_KEEP
+        ));
+        let mut awake = Ragdoll::new(&[]).with_drive();
+        awake.countdown = 10;
+        awake.tick_countdown();
+        assert_eq!(awake.countdown(), WAKE_COUNT);
+        let mut statue = Ragdoll::new(&[]).with_drive();
+        statue.drive.as_mut().unwrap().dormant = true;
+        statue.countdown = 10;
+        statue.tick_countdown();
+        assert_eq!(statue.countdown(), 8);
         // One tick of a lone part drifting sideways at 6 cm/s (resting) and
         // at 60 cm/s (fast), limp and living (held up by its tone).
         for (speed, living, want) in [

@@ -56,5 +56,8 @@ pub(crate) fn take_bearing(
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
+    if let Some(drive) = body.drive.as_mut() {
+        drive.dormant = state == Condition::DORMANT;
+    }
     body.set_bearing(bearing);
 }

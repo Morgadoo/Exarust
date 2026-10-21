@@ -72,10 +72,10 @@ How the original simulates a body (`exa_physics::body`):
   moved over 40/83 cm, over 20/83 cm, or less in the last tick (strictly
   over). A living limb keeps the fast value × u² whatever its speed, with
   u = (1 − balance)(1 − r) + r and r the race's limb damping ratio (1 for
-  humans, so 0.98977). The original also builds a 0.6× environment
-  (0.2556 / 0.15 / 0.03) that no body ever uses. Exarust leaves out the
-  living ×0.95 the original applies in a state of dormant statues and
-  golems, and caps particles at 25 m/s, a guard the original lacks.
+humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
+(`Drive::dormant`). The original also builds a 0.6× environment
+(0.2556 / 0.15 / 0.03) that no body ever uses. Exarust caps particles at
+25 m/s, a guard the original lacks.
 - Joints (`Ragdoll::new`). Every part with a parent part takes its stored
   links and then one more, made when the body is registered: a **pivot**
   from its origin (the joint centre) to its origin's place in the parent,
@@ -237,8 +237,8 @@ How the original simulates a body (`exa_physics::body`):
   A sleeper is not integrated, solved, tested against the level or
   rubbed; its stored level contacts are kept, unused.
   - A living body never sleeps: the original wakes its tree to 256 every
-    tick, standing, fallen or getting up (only dormant statues and golems
-    count down; Exarust has none). Death leaves the countdown as it is
+    tick, standing, fallen or getting up. A dormant statue or golem counts
+    down with a limp body (`Drive::dormant`). Death leaves the countdown as it is
     (256). Registration sets it to 0, so a placed corpse sleeps after its
     first tick, and the living builder wakes its body to 256. Exarust
     builds every body at 256, since its corpses still collapse from a
