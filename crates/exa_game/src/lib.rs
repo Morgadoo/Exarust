@@ -125,6 +125,7 @@ impl Plugin for GamePlugin {
                 arena_match::ArenaMatchPlugin,
                 gui_screens::GameScreensPlugin,
                 power_screen::PowerScreenPlugin,
+            thaum::visuals::VisualPlugin,
             ),
         ))
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))

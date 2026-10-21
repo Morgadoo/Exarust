@@ -1440,7 +1440,7 @@ impl TreeScreen {
         slot: Option<usize>,
         body: &mut CastBody,
         now: u32,
-        dispatch: impl FnOnce(u8, u32) -> i32,
+        dispatch: impl FnOnce(u8, u32, &mut CastBody) -> i32,
     ) -> CastEntry {
         let mut out = CastEntry::default();
         if body.status_bits & super::casting::POWERS_BLOCKED != 0 {
@@ -1469,7 +1469,7 @@ impl TreeScreen {
         } else {
             match domain_of(word) {
                 DOMAIN_MIND | DOMAIN_FORCE | DOMAIN_ENERGY | DOMAIN_DISPLACEMENT => {
-                    dispatch(domain_of(word), word & word::MATCH)
+                    dispatch(domain_of(word), word & word::MATCH, body)
                 }
                 _ => super::casting::code::REFUSED,
             }
@@ -2908,7 +2908,7 @@ mod tests {
             None,
             &mut body,
             500,
-            |domain, word| {
+            |domain, word, _body| {
                 assert_eq!(domain, DOMAIN_FORCE);
                 assert_eq!(word, 0x201);
                 1
@@ -2920,25 +2920,25 @@ mod tests {
         assert_eq!(record.slots[0], 0x100201);
         assert_eq!(bar.slots[0].state & bar_state::MARK, bar_state::MARK);
         // A sustained power clears the last instant power.
-        let out = screen.cast_slot(&mut record, &mut bar, Some(1), &mut body, 600, |_, _| 1);
+        let out = screen.cast_slot(&mut record, &mut bar, Some(1), &mut body, 600, |_, _, _| 1);
         assert_eq!(out.result, 1);
         assert_eq!(body.last_instant, 0);
         // Blocked powers refuse without dispatching.
         body.status_bits = super::super::casting::POWERS_BLOCKED;
-        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 700, |_, _| {
+        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 700, |_, _, _| {
             panic!("no dispatch")
         });
         assert_eq!(out.result, 0);
         body.status_bits = 0;
         // Shadow/body domains are refused.
         record.slots[2] = 0x301;
-        let out = screen.cast_slot(&mut record, &mut bar, Some(2), &mut body, 800, |_, _| {
+        let out = screen.cast_slot(&mut record, &mut bar, Some(2), &mut body, 800, |_, _, _| {
             panic!("no dispatch")
         });
         assert_eq!(out.result, 0);
         assert_eq!(out.sound, Some(CAST_FAIL_SOUND));
         // "Not now" stops the running cast.
-        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 900, |_, _| -3);
+        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 900, |_, _, _| -3);
         assert!(out.stop_cast);
         assert_eq!(out.result, -1);
     }

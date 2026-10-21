@@ -20,7 +20,15 @@ use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
-use crate::thaum::tree::{PowerBar, PowerRecord, TreeMode, TreeScreen};
+use crate::player::PlayerBody;
+use crate::thaum::casting::{CastBody, code};
+use crate::thaum::displacement::{DisplacementAim, DisplacementStart, displacement_front_end};
+use crate::thaum::energy::energy_front_end;
+use crate::thaum::force::{ForceStart, ForceWorld, force_front_end};
+use crate::thaum::tree::{
+    DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, PowerBar, PowerRecord, TreeMode, TreeScreen,
+};
+use crate::thaum::visuals::{self, CreatorInput, EffectKind, VisualSpawn};
 
 /// The time between redraws while the screen animates.
 const REDRAW_MS: u128 = 33;
@@ -144,8 +152,10 @@ fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Option<Res<Bindings>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    players: Query<&GlobalTransform, With<PlayerBody>>,
     mut screen: ResMut<PowerScreen>,
-    body: ResMut<PowerBody>,
+    mut body: ResMut<PowerBody>,
+    mut spawns: MessageWriter<VisualSpawn>,
 ) {
     let Some(bindings) = bindings else {
         return;
@@ -212,6 +222,83 @@ fn hotkeys(
         *dirty = true;
     }
     if !*bar_open {
+        return;
+    }
+    let using = bindings
+        .key_code(Action::UsePower)
+        .is_some_and(|key| keys.just_pressed(key));
+    if using {
+        let now = 0;
+        let mut force_start = None;
+        let mut displacement_start = None;
+        let (domain_body, domain_aim) = (ForceWorld::default(), DisplacementAim::default());
+        let result = tree.cast_slot(
+            record,
+            bar,
+            None,
+            &mut body.body,
+            now,
+            |domain, asked, cast: &mut CastBody| match domain {
+                DOMAIN_FORCE => {
+                    let (result, start) = force_front_end(asked, cast, &domain_body);
+                    force_start = start;
+                    result
+                }
+                DOMAIN_DISPLACEMENT => {
+                    let (result, start) = displacement_front_end(asked, cast, &domain_aim);
+                    displacement_start = start;
+                    result
+                }
+                DOMAIN_ENERGY => energy_front_end(asked, cast).0,
+                _ => code::REFUSED,
+            },
+        );
+        let place = players.single().ok();
+        let at = place.map(|t| t.translation()).unwrap_or(Vec3::ZERO);
+        let heading = place.map(|t| t.forward().as_vec3()).unwrap_or(Vec3::NEG_Z);
+        let input = CreatorInput {
+            body: at,
+            heading,
+            hand: at + heading * 40.0 + Vec3::Y * 120.0,
+            point: None,
+            roll: 0.5,
+        };
+        if result.result > 0 {
+            if let Some(start) = force_start {
+                let kind = match start {
+                    ForceStart::Blast { setup, .. } => match setup.power {
+                        0x202 => Some(EffectKind::Bolt),
+                        0x204 => Some(EffectKind::Wave),
+                        _ => Some(EffectKind::Blast),
+                    },
+                    ForceStart::Torrent { .. } => Some(EffectKind::Torrent),
+                    ForceStart::Barrier { .. } => Some(EffectKind::Barrier),
+                    ForceStart::Bubble { .. } => Some(EffectKind::Bubble),
+                    ForceStart::Barricade { .. } => Some(EffectKind::Barricade),
+                    ForceStart::Shell { .. } => Some(EffectKind::Shell),
+                    ForceStart::Kinesis { .. } => Some(EffectKind::Kinesis),
+                    ForceStart::Throw { .. } => Some(EffectKind::Throw),
+                    ForceStart::Strikes { .. } => Some(EffectKind::Strikes),
+                    ForceStart::ThrowMissed => None,
+                };
+                if let Some(kind) = kind {
+                    spawns.write(VisualSpawn(visuals::creator(kind, &input)));
+                }
+            }
+            if let Some(start) = displacement_start {
+                let kind = match start {
+                    DisplacementStart::Vanish { .. } => Some(EffectKind::Vanish),
+                    DisplacementStart::LongDoor { .. } => Some(EffectKind::LongDoor),
+                    DisplacementStart::Constant { .. } => Some(EffectKind::Constant),
+                    DisplacementStart::Summon { .. } => Some(EffectKind::Summon),
+                    DisplacementStart::EndVanish => None,
+                };
+                if let Some(kind) = kind {
+                    spawns.write(VisualSpawn(visuals::creator(kind, &input)));
+                }
+            }
+        }
+        *dirty = true;
         return;
     }
     for (index, key) in [
