@@ -747,13 +747,7 @@ impl Emitter {
                     live: 0,
                 };
             }
-            return TickStats {
-                died,
-                spawned: 0,
-                live: self.live(),
-            };
-        }
-        if p.flags & flags::ONE_SHOT != 0
+        } else if p.flags & flags::ONE_SHOT != 0
             && self.emitter_flags & 0x1200 == 0
             && self.first == self.next
         {

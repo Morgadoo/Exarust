@@ -476,8 +476,12 @@ fn medium(size: f32) -> Preset {
 }
 
 fn large(size: f32) -> Preset {
-    let template = LARGE.scaled(size);
-    let base = LARGE_BASE.scaled(size);
+    // The large fires are one-shot: both emitters stop once their ring is
+    // empty (the builder sets the flag on the emitters).
+    let mut template = LARGE.scaled(size);
+    template.flags |= crate::particles::flags::ONE_SHOT;
+    let mut base = LARGE_BASE.scaled(size);
+    base.flags |= crate::particles::flags::ONE_SHOT;
     Preset {
         size,
         flame: EmitterSpec {
@@ -692,6 +696,8 @@ mod tests {
         assert!((p.flame.size - 2.0).abs() < 1e-6);
         assert!((p.base.as_ref().unwrap().lift + 40.0).abs() < 1e-6);
         assert!((p.light.desc.intensity - 12.0).abs() < 1e-6);
+        assert!(p.flame.template.flags & crate::particles::flags::ONE_SHOT != 0);
+        assert!(p.base.as_ref().unwrap().template.flags & crate::particles::flags::ONE_SHOT != 0);
     }
 
     #[test]

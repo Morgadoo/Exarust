@@ -494,8 +494,9 @@ impl Arc {
     /// per-tick tendril motion: the tendril simulation itself is outside
     /// this component's evidence).
     pub fn new(spec: ArcSpec, start: Vec3, end: Vec3) -> Self {
-        let n = spec.tendrils.max(1) as usize;
-        let s = spec.segments.max(2) as usize;
+        // A record from an untrusted file cannot ask for an unbounded mesh.
+        let n = spec.tendrils.clamp(1, 1024) as usize;
+        let s = spec.segments.clamp(2, 4096) as usize;
         // A local, deterministic stream stands in for the original's global
         // one; the arc's jitter is a model of the tendril tick either way.
         let mut rng = LocalRng::new(start.x.to_bits() ^ end.z.to_bits() ^ 0x9E37_79B9);
