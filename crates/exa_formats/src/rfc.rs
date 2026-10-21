@@ -1070,23 +1070,62 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
     })
 }
 
-/// Area-weighted face normals accumulated over vertices sharing a smoothing key.
+/// The corner angle's weight in the original's normal averaging: the angle
+/// between two edge vectors, approximated by
+/// `sin θ · (1.571 − 0.1945·cos θ + 0.111·(cos² θ − cos³ θ))`, and zero for
+/// a degenerate or parallel pair. The constants are the original's f32
+/// values.
+pub fn corner_angle_weight(a: [f32; 3], b: [f32; 3]) -> f32 {
+    const EPSILON: f32 = f32::from_bits(0x3380_0000); // 2^-23
+    const ONE: f32 = 1.570_999_979_972_839_4;
+    const COS: f32 = 0.194_499_999_284_744_26;
+    const CUBE: f32 = 0.111_000_001_430_511_47;
+    let length_squared =
+        (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) * (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    if length_squared > EPSILON {
+        let cos = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / length_squared.sqrt();
+        if cos < 1.0 {
+            return ((cos * cos * CUBE + (ONE - cos * COS)) - cos * cos * cos * CUBE)
+                * (1.0 - cos * cos).sqrt();
+        }
+    }
+    0.0
+}
+
+/// Angle-weighted face normals accumulated over vertices sharing a smoothing
+/// key. Each face contributes its unit normal times the corner angle at
+/// that vertex, as the original's normal builder does; a vertex with no
+/// usable face keeps +Y (the original divides zero by zero there).
 fn smooth_normals(positions: &[[f32; 3]], indices: &[u32], keys: &[u32]) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
     let mut acc = vec![[0.0f32; 3]; key_count];
     for t in indices.as_chunks::<3>().0 {
+        let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
         let [a, b, c] = [t[0], t[1], t[2]].map(|i| positions[i as usize]);
         let u = sub(b, a);
         let v = sub(c, a);
-        let n = [
+        let cross = [
             u[1] * v[2] - u[2] * v[1],
             u[2] * v[0] - u[0] * v[2],
             u[0] * v[1] - u[1] * v[0],
         ];
-        for &i in t {
-            let k = keys[i as usize] as usize;
-            for d in 0..3 {
-                acc[k][d] += n[d];
+        let length = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let normal = if length > 0.0 {
+            cross.map(|x| x / length)
+        } else {
+            [0.0; 3]
+        };
+        // The original's corner tables: next and previous corner.
+        const NEXT: [usize; 3] = [2, 0, 1];
+        const PREV: [usize; 3] = [1, 2, 0];
+        for corner in 0..3 {
+            let here = positions[corners[corner]];
+            let next = positions[corners[NEXT[corner]]];
+            let prev = positions[corners[PREV[corner]]];
+            let weight = corner_angle_weight(sub(next, here), sub(prev, here));
+            let key = keys[corners[corner]] as usize;
+            for axis in 0..3 {
+                acc[key][axis] += normal[axis] * weight;
             }
         }
     }
@@ -1660,6 +1699,25 @@ mod tests {
         assert_eq!(mesh.groups.len(), 1);
         assert_eq!(mesh.groups[0].index_count, 6);
         assert!(mesh.regroup_by_material(&[0]).is_err());
+    }
+
+    #[test]
+    fn the_corner_weight_is_the_original_angle_approximation() {
+        // A right angle: cos 0, so the polynomial alone, near π/2.
+        let weight = corner_angle_weight([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!((weight - 1.570_999_979_972_839_4).abs() < 1e-6, "{weight}");
+        // Parallel and opposite edges carry no weight.
+        assert_eq!(corner_angle_weight([1.0, 0.0, 0.0], [1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(corner_angle_weight([1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]), 0.0);
+        assert_eq!(corner_angle_weight([0.0; 3], [1.0, 0.0, 0.0]), 0.0);
+        // A 45° corner: cos = √½.
+        let c = std::f32::consts::FRAC_1_SQRT_2;
+        let expected = ((c * c * 0.111_000_001_430_511_47
+            + (1.570_999_979_972_839_4 - c * 0.194_499_999_284_744_26))
+            - c * c * c * 0.111_000_001_430_511_47)
+            * (1.0 - c * c).sqrt();
+        let weight = corner_angle_weight([1.0, 0.0, 0.0], [c, c, 0.0]);
+        assert!((weight - expected).abs() < 1e-7, "{weight} {expected}");
     }
 
     #[test]
