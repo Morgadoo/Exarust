@@ -285,6 +285,10 @@ pub struct Perception {
     /// An alert level this pass asks the observer to take when a tracked
     /// target is lost, if it asked.
     pub alert_floor: Option<f32>,
+    /// The other is attacking and its phase is just past one half with a
+    /// threat over 16 and its back turned: the original raises a
+    /// behaviour flag for it.
+    pub quick_swing: bool,
 }
 
 impl Default for Perception {
@@ -308,6 +312,7 @@ impl Default for Perception {
             bearing: 0.0,
             familiarity: 0.0,
             alert_floor: None,
+            quick_swing: false,
         }
     }
 }
@@ -398,8 +403,11 @@ pub const CONDITION_GETTING_UP: u32 = 0x300;
 pub const CONDITION_DEAD: u32 = 0xA00;
 /// The state-flag bit for sleep.
 pub const FLAG_ASLEEP: u32 = 0x10;
-/// The state-flag bit for invisibility.
+/// The state-flag bit for a hidden character whose detection radius
+/// shrinks.
 pub const FLAG_HIDDEN: u32 = 0x1_0000;
+/// The state-flag bit for a character perception skips entirely.
+pub const FLAG_INVISIBLE: u32 = 0x2_0000;
 /// The state-flag bit that makes a blow's threat raise happen once.
 pub const FLAG_THREAT_NOTED: u32 = 0x10_0000;
 
@@ -522,10 +530,10 @@ pub fn blend(t: f32, p: f32) -> f32 {
 /// One perception pass: `observer` looks at `observed`, whose contacts are
 /// `observed_contacts`; the observer's own contacts are `own_contacts`.
 ///
-/// `out.attitude` and `out.raw_attitude` must be set to the observer's
-/// effective and raw attitude toward the other before the call; the group
-/// blend and the familiarity drift overwrite the former. `out.trust` is
-/// left for the caller (the tolerance over 100).
+/// `raw` is the role database's attitude and tolerance of the observer
+/// toward the other; the mind powers are applied to it and the group blend
+/// and the familiarity drift then overwrite the stored attitude. The trust
+/// is the tolerance over 100.
 ///
 /// The pass updates the distance and clears the notice flag when the other
 /// is out of sight; it returns `false` then. A tracked contact that targets
@@ -542,6 +550,9 @@ pub fn perceive(
     observed_contacts: &[Contact],
     own_contacts: &mut [Contact],
     out: &mut Perception,
+    raw: Attitude,
+    resist_mind: bool,
+    effects: &[Effect],
     now_ms: u64,
     elapsed: f32,
 ) -> bool {
@@ -553,7 +564,8 @@ pub fn perceive(
     out.distance_cm = distance_squared.sqrt();
     out.noticed = false;
     out.alert_floor = None;
-    if observed.flags & FLAG_HIDDEN != 0 {
+    out.quick_swing = false;
+    if observed.flags & FLAG_INVISIBLE != 0 {
         return false;
     }
 
@@ -562,7 +574,7 @@ pub fn perceive(
         radius *= 0.5;
     }
     let mut inner = radius;
-    if observed.hidden {
+    if observed.hidden || observed.flags & FLAG_HIDDEN != 0 {
         match observer.mask {
             Some((first, second)) => {
                 radius *= 1.0 - (1.0 - observer.perception) * first;
@@ -588,13 +600,24 @@ pub fn perceive(
     }
     out.noticed = true;
     out.tracked = true;
+    out.raw_attitude = raw.value;
+    out.trust = raw.tolerance * 0.01;
+    out.attitude = effective_attitude(
+        observer.entity,
+        observed.entity,
+        raw,
+        observer.aggression,
+        resist_mind,
+        effects.iter().copied(),
+    );
 
     let distance = distance_squared.sqrt();
     let dir = delta / distance.max(f32::EPSILON);
     let closeness = (1.0 - distance / PERCEPTION_CM).min(CLOSENESS_CAP);
     out.closeness = closeness;
+    out.facing = 1.0 - observed.look.dot(delta) / distance.max(f32::EPSILON);
 
-    if observed.condition & 0xA00 != 0 || observed.dead {
+    if observed.condition & 0xA00 != 0 || observed.dead || observed.asleep {
         if observed.condition == CONDITION_DEAD || observed.dead {
             let noticeability = closeness * closeness * 3.0;
             out.noticeability = noticeability;
@@ -628,7 +651,6 @@ pub fn perceive(
     let view_forward = observer.forward.dot(dir) * -0.5 + 0.5;
     out.view = view_look * view_look * 0.25 + view_forward * 0.75;
 
-    out.facing = 1.0 - observed.look.dot(delta) / distance.max(f32::EPSILON);
     let bearing = atan2_xz(delta.x, delta.z);
     out.bearing = if bearing >= 0.0 {
         wrap(bearing - std::f32::consts::PI)
@@ -710,6 +732,11 @@ pub fn perceive(
     let all = (max - scaled_negative) * friendly;
     let threat = (own / (own + 0.5) - scaled_negative) * friendly;
     out.threat = if threat > 0.0 { threat * 0.1 } else { 0.0 };
+    out.quick_swing = threat > 16.0
+        && observed.condition == CONDITION_ATTACKING
+        && observed.phase > 0.5
+        && observed.phase < 0.55
+        && out.facing > 1.5;
     out.selected = selected;
     if observed.speed > 1.3 {
         out.threat *= 4.0;
@@ -821,6 +848,12 @@ pub fn candidate_cost(clearance: f32, penalty: f32) -> f32 {
 pub fn outside_radius(radius_cm: f32, offset_cm: Vec3, half_height: bool) -> bool {
     let y = if half_height { offset_cm.y * 0.5 } else { 0.0 };
     radius_cm * radius_cm < offset_cm.x * offset_cm.x + y * y + offset_cm.z * offset_cm.z
+}
+
+/// The farthest a queued move point may lie from the body: eight times the
+/// body's speed plus 20 cm.
+pub fn move_limit(speed_cm: f32) -> f32 {
+    speed_cm * 8.0 + 20.0
 }
 
 /// Clamp a move point to `limit_cm` from `from`, keeping its direction.
@@ -1128,6 +1161,9 @@ mod tests {
             &[],
             &mut [],
             &mut out,
+            Attitude::default(),
+            false,
+            &[],
             0,
             0.0
         ));
@@ -1140,6 +1176,9 @@ mod tests {
             &[],
             &mut [],
             &mut out,
+            Attitude::default(),
+            false,
+            &[],
             0,
             0.0
         ));
@@ -1151,6 +1190,9 @@ mod tests {
             &[],
             &mut [],
             &mut out,
+            Attitude::default(),
+            false,
+            &[],
             0,
             0.0
         ));
@@ -1165,12 +1207,34 @@ mod tests {
         let mut near = observed(1100.0);
         near.position_cm.y = 100.0;
         // The 100 cm lift is ignored: the distance is the flat 1100 cm.
-        assert!(perceive(&o, &near, &[], &mut [], &mut out, 0, 0.0));
+        assert!(perceive(
+            &o,
+            &near,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            0.0
+        ));
         assert!((out.distance_cm - 1100.0).abs() < 1e-3, "{out:?}");
         let mut high = observed(1100.0);
         high.position_cm.y = 600.0;
         // A 600 cm lift is counted: 1253 cm, out of the 1200 cm radius.
-        assert!(!perceive(&o, &high, &[], &mut [], &mut out, 0, 0.0));
+        assert!(!perceive(
+            &o,
+            &high,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            0.0
+        ));
     }
 
     #[test]
@@ -1183,6 +1247,9 @@ mod tests {
             &[],
             &mut [],
             &mut out,
+            Attitude::default(),
+            false,
+            &[],
             0,
             0.0
         ));
@@ -1194,7 +1261,18 @@ mod tests {
         assert!((out.view - 1.0).abs() < 1e-6);
         let mut attacking = observed(600.0);
         attacking.condition = CONDITION_ATTACKING;
-        assert!(perceive(&o, &attacking, &[], &mut [], &mut out, 0, 0.0));
+        assert!(perceive(
+            &o,
+            &attacking,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            0.0
+        ));
         assert!((out.noticeability - (expected + 10.0)).abs() < 1e-5);
     }
 
@@ -1204,11 +1282,33 @@ mod tests {
         let mut out = Perception::default();
         let mut down = observed(600.0);
         down.condition = CONDITION_DOWN;
-        assert!(perceive(&o, &down, &[], &mut [], &mut out, 0, 0.0));
+        assert!(perceive(
+            &o,
+            &down,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            0.0
+        ));
         assert!((out.noticeability - 12.0).abs() < 1e-6);
         let mut dead = observed(600.0);
         dead.condition = CONDITION_DEAD;
-        assert!(perceive(&o, &dead, &[], &mut [], &mut out, 0, 0.0));
+        assert!(perceive(
+            &o,
+            &dead,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            0.0
+        ));
         assert!((out.noticeability - 0.75).abs() < 1e-6);
     }
 
@@ -1329,16 +1429,16 @@ mod tests {
         seen_group.attitude = 80.0;
         seen_group.closeness = 1.0;
         seen_group.facing = 1.0;
-        let mut out = Perception {
-            attitude: 0.0,
-            ..Perception::default()
-        };
+        let mut out = Perception::default();
         assert!(perceive(
             &o,
             &seen,
             &[seen_group],
             std::slice::from_mut(&mut own),
             &mut out,
+            Attitude::default(),
+            false,
+            &[],
             0,
             1.0
         ));
@@ -1350,6 +1450,57 @@ mod tests {
         );
         assert_eq!(out.selected, Some(observer_id));
         assert_eq!(out.attitude, 0.0);
+    }
+
+    #[test]
+    fn a_quick_swing_with_a_high_threat_raises_the_flag() {
+        let mut world = World::new();
+        let observer_id = world.spawn_empty().id();
+        let seen_id = world.spawn_empty().id();
+        let mut o = observer();
+        o.entity = observer_id;
+        let mut seen = observed(600.0);
+        seen.entity = seen_id;
+        seen.condition = CONDITION_ATTACKING;
+        seen.phase = 0.52;
+        // Its back is turned to the observer, the facing term over 1.5.
+        seen.look = Vec3::Z;
+        seen.forward = Vec3::Z;
+        let mut own = Contact::new(observer_id);
+        own.closeness = 1.0;
+        own.facing = 1.0;
+        let mut out = Perception::default();
+        assert!(perceive(
+            &o,
+            &seen,
+            &[own],
+            &mut [],
+            &mut out,
+            Attitude {
+                value: -100.0,
+                tolerance: 0.0
+            },
+            false,
+            &[],
+            0,
+            1.0
+        ));
+        assert!((out.threat - 1.8133).abs() < 1e-3, "{}", out.threat);
+        assert!(out.quick_swing);
+        seen.phase = 0.45;
+        assert!(perceive(
+            &o,
+            &seen,
+            &[],
+            &mut [],
+            &mut out,
+            Attitude::default(),
+            false,
+            &[],
+            0,
+            1.0
+        ));
+        assert!(!out.quick_swing);
     }
 
     #[test]
@@ -1367,16 +1518,19 @@ mod tests {
         own_friend.attitude = 50.0;
         let mut seen_friend = Contact::new(friend);
         seen_friend.attitude = 80.0;
-        let mut out = Perception {
-            attitude: 20.0,
-            ..Perception::default()
-        };
+        let mut out = Perception::default();
         assert!(perceive(
             &o,
             &seen,
             &[seen_friend],
             std::slice::from_mut(&mut own_friend),
             &mut out,
+            Attitude {
+                value: 20.0,
+                tolerance: 0.0
+            },
+            false,
+            &[],
             0,
             1.0
         ));
@@ -1388,6 +1542,13 @@ mod tests {
         assert_eq!(candidate_cost(0.0, 0.0), 1.0);
         assert_eq!(candidate_cost(1.0, 1.0), 281.0);
         assert_eq!(candidate_cost(0.5, 0.25), 101.0);
+    }
+
+    #[test]
+    fn a_move_point_is_limited_by_the_body_speed() {
+        assert_eq!(move_limit(0.0), 20.0);
+        assert_eq!(move_limit(5.0), 60.0);
+        assert_eq!(move_limit(-1.0), 12.0);
     }
 
     #[test]

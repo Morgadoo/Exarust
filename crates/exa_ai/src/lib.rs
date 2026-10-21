@@ -21,6 +21,7 @@ use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 pub mod activity;
 pub mod brain;
 use crate::combatant::{Combatant, Observed, Observer, Perception, atan2_xz, perceive};
+use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, perceive};
 
 pub mod combatant;
 pub mod fight;
@@ -368,17 +369,22 @@ fn duellist(
             reach_cm: reach_of(entity, &blades) * 100.0,
             speed: 0.0,
         };
-        let mut perception = Perception {
-            raw_attitude: combatant.contact(ai.target).map_or(0.0, |c| c.attitude),
-            attitude: combatant.contact(ai.target).map_or(0.0, |c| c.attitude),
-            ..combatant.perception
-        };
+        let raw = combatant
+            .contact(ai.target)
+            .map_or(Attitude::default(), |c| Attitude {
+                value: c.attitude,
+                tolerance: c.tolerance,
+            });
+        let mut perception = combatant.perception;
         let noticed = perceive(
             &observer,
             &observed,
             &[],
             &mut combatant.contacts,
             &mut perception,
+            raw,
+            false,
+            &[],
             now,
             1.0,
         );
@@ -392,6 +398,7 @@ fn duellist(
         contact.distance_cm = perception.distance_cm;
         contact.closeness = perception.closeness;
         contact.facing = perception.facing;
+        contact.attitude = perception.attitude;
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }

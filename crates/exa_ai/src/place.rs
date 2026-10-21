@@ -194,8 +194,24 @@ fn side_gap(kind: i32, start: f32, end: f32, angle: f32) -> f32 {
     }
 }
 
-fn arrival_ms(blow: Blow) -> i64 {
-    if !blow.sweeping || !(1..3).contains(&blow.kind) {
+/// The milliseconds until the sweep of a live side swing reaches `angle`,
+/// or [`NOT_SWEEPING_MS`]. Before a phase of 0.4 the wait adds
+/// `(0.4 − phase)·1.25` (in double precision); the gap itself counts an
+/// eighth of a millisecond per unit. A thrust's wait is `(0.6 − phase)·1.5`,
+/// floored at zero.
+pub fn arrival_ms(blow: Blow) -> i64 {
+    if !blow.sweeping {
+        return NOT_SWEEPING_MS;
+    }
+    if blow.kind == 3 {
+        let wait = (0.6 - f64::from(blow.phase)) * 1.5;
+        return if wait >= 0.0 {
+            (wait as f32 * 1000.0).round_ties_even() as i64
+        } else {
+            0
+        };
+    }
+    if !(1..3).contains(&blow.kind) {
         return NOT_SWEEPING_MS;
     }
     let raw = side_gap(blow.kind, blow.arc_start, blow.arc_end, blow.angle);
@@ -889,6 +905,29 @@ mod tests {
         swinging.blow.arc_end = -0.2;
         swinging.blow.angle = 0.1;
         assert_eq!(choose_footwork(120.0, swinging), Footwork::CircleRight);
+    }
+
+    #[test]
+    fn the_time_to_impact_follows_the_phase_and_the_gap() {
+        let mut blow = side(0.5, 0.0);
+        blow.angle = -1.0;
+        assert_eq!(arrival_ms(blow), 0);
+        blow.angle = 0.0;
+        assert_eq!(arrival_ms(blow), 125);
+        let mut early = side(0.2, 0.0);
+        early.angle = 0.0;
+        assert_eq!(arrival_ms(early), 375);
+        let mut thrust = side(0.55, 0.0);
+        thrust.kind = 3;
+        assert_eq!(arrival_ms(thrust), 75);
+        thrust.phase = 0.6;
+        assert_eq!(arrival_ms(thrust), 0);
+        let mut quiet = side(0.5, 0.0);
+        quiet.sweeping = false;
+        assert_eq!(arrival_ms(quiet), NOT_SWEEPING_MS);
+        let mut none = side(0.5, 0.0);
+        none.kind = 0;
+        assert_eq!(arrival_ms(none), NOT_SWEEPING_MS);
     }
 
     #[test]
