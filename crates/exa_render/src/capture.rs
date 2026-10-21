@@ -5,27 +5,28 @@
 //! back into an RGBA image.
 //!
 //! The two downsample shader sources and the accumulation weights are the
-//! original's. The jitter table's first four entries are the bytes the pack
-//! dumps; the last four are a labelled guess. The GL programs, framebuffer
-//! copies and readback are engine work; this module keeps the plan
-//! testable. Rules: `docs/RENDERING.md` (Icons and thumbnails).
+//! original's; the jitter points come from the recorded table in
+//! [`crate::view::JITTERS`]; the capture reads the run the 8-point level
+//! uses. The GL programs, framebuffer copies and readback are engine
+//! work; this module keeps the plan testable. Rules: `docs/RENDERING.md`
+//! (Still capture and vertex layouts).
+
+use crate::view::{JITTERS, jitter_offset};
 
 /// The number of jittered samples one capture takes.
 pub const SAMPLE_COUNT: usize = 8;
 
-/// The sub-pixel jitter of each sample, in pixels. The first four pairs are
-/// the original's table; the last four are a guess (the dump stops at the
-/// referenced bytes).
-pub const JITTER: [[f32; 2]; SAMPLE_COUNT] = [
-    [0.164_215_99, -0.054_399],
-    [-0.183_9, 0.082_1],
-    [0.102_25, 0.299_1],
-    [-0.079_3, -0.317_4],
-    [-0.164_215_99, 0.054_399],
-    [0.183_9, -0.082_1],
-    [-0.102_25, -0.299_1],
-    [0.079_3, 0.317_4],
-];
+/// The first entry of [`JITTERS`] the capture reads (the table's initial
+/// start offset, which is also where the 8-point supersampling level starts).
+pub const JITTER_START: usize = 10;
+
+/// The sub-pixel jitter of sample `index`, in pixels.
+pub fn jitter(index: usize) -> Option<(f32, f32)> {
+    if index >= SAMPLE_COUNT {
+        return None;
+    }
+    JITTERS.get(JITTER_START + index).copied()
+}
 
 /// The accumulation weight of sample `index`: the frame is blended towards
 /// the new sample by `1 − 1/(index + 1)`, so sample 0 replaces the frame
@@ -34,10 +35,16 @@ pub fn accumulate_weight(index: usize) -> f32 {
     1.0 - 1.0 / (index as f32 + 1.0)
 }
 
-/// The projection offset a sample adds: twice its jitter (the original's
-/// `scale · 2 · jitter / size` with the view's scale equal to its size).
-pub fn projection_offset(index: usize) -> Option<[f32; 2]> {
-    JITTER.get(index).map(|[x, y]| [x * 2.0, y * 2.0])
+/// The projection offset a sample adds: `2 · view scale · jitter / size`
+/// on each axis, evaluated left to right in single precision. `scale` is the
+/// view's own projection scale and `size` its render size in pixels.
+pub fn projection_offset(index: usize, scale: [f32; 2], size: (u32, u32)) -> Option<[f32; 2]> {
+    jitter(index).map(|(x, y)| {
+        [
+            jitter_offset(x, scale[0], size.0),
+            jitter_offset(y, scale[1], size.1),
+        ]
+    })
 }
 
 /// The captured image's size: half the view's, both sides shifted right.
@@ -65,14 +72,15 @@ pub struct CaptureStep {
     pub projection: [f32; 2],
 }
 
-/// The capture's sample walk. Sample 0 draws without a blend; the later
-/// samples blend at their accumulation weight.
-pub fn capture_steps() -> Vec<CaptureStep> {
+/// The capture's sample walk for a view of `scale` and `size`. Sample 0
+/// draws without a blend; the later samples blend at their accumulation
+/// weight.
+pub fn capture_steps(scale: [f32; 2], size: (u32, u32)) -> Vec<CaptureStep> {
     (0..SAMPLE_COUNT)
         .map(|sample| CaptureStep {
             sample,
             weight: accumulate_weight(sample),
-            projection: projection_offset(sample).unwrap_or([0.0, 0.0]),
+            projection: projection_offset(sample, scale, size).unwrap_or([0.0, 0.0]),
         })
         .collect()
 }
@@ -92,14 +100,29 @@ mod tests {
 
     #[test]
     fn the_capture_walks_eight_jittered_samples() {
-        let steps = capture_steps();
+        let steps = capture_steps([1.0, 1.0], (1024, 768));
         assert_eq!(steps.len(), 8);
-        assert_eq!(steps[0].projection, [0.328_431_98, -0.108_798]);
+        assert_eq!(
+            steps[0].projection,
+            [2.0 * 0.164_216 / 1024.0, 2.0 * -0.054_399 / 768.0]
+        );
         assert_eq!(steps[0].weight, 0.0);
         assert_eq!(steps[1].weight, 0.5);
         assert_eq!(capture_size(1024, 768), (512, 384));
         assert_eq!(capture_size(1, 1), (0, 0));
         assert_eq!(CAPTURE_FORMAT, 0x0100_E608);
+    }
+
+    #[test]
+    fn the_projection_offset_scales_with_the_view() {
+        // 2 * 0.5 * 0.102254 / 512 on x, 2 * 0.25 * 0.299133 / 256 on y.
+        let [x, y] = projection_offset(2, [0.5, 0.25], (512, 256)).unwrap();
+        assert!((x - 0.102_254 / 512.0).abs() < 1e-9);
+        assert!((y - 0.299_133 / 512.0).abs() < 1e-9);
+        assert_eq!(projection_offset(8, [1.0, 1.0], (1, 1)), None);
+        // The table is the executable's, not a symmetric pattern.
+        assert_eq!(jitter(4), Some((0.286_438, -0.393_495)));
+        assert_eq!(jitter(8), None);
     }
 
     #[test]

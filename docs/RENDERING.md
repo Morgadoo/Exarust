@@ -224,10 +224,21 @@ alone, so an opacity seen earlier in the scan still has to be beaten.
 word: `0x10000` first (the decal list), then `0x8000` (the alpha-tested
 list), then the low nibble (0 opaque, 1–4 blended, anything else no
 state); the second renderer mode sends every class but a blending nibble
-to its `+0xC8` list. `queue::DrawQueue` keeps the deferred draws: at most
-1023 entries, one bucket per light count (the sector chain's on lights
-weighing at least 0.004, capped at six), flushed bucket by bucket in
-first-seen order.
+to the decal list and files a blending nibble in a list of its own.
+`passes::existing_state_list` is the renderer's lookup of an existing state,
+which ignores the `0x10000` bit and the mode, and `passes::released_flags`
+is the word a released state keeps (detail levels below 3 and 4 clear bits
+21 and 23).
+
+`queue::DrawQueue` keeps the deferred draws: at most 1023 entries, each in
+the bucket of its sector's light count (the chain's enabled lights whose
+weight, widened to double, is not below 0.004, capped at the renderer's
+count and six; a NaN weight counts). The queue is a list kept grouped by
+bucket: a draw whose bucket is the one the lights were last set up for goes
+to the head (once, until the next flush); any other goes right behind the
+first entry of its bucket that has a successor, or at the end, so a group
+reads first-entry then newest first. Appending to a full queue flushes it,
+and a flush remembers its last entry's bucket for the lights.
 
 Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
 the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
@@ -2030,13 +2041,13 @@ viewport that hosts a view inside a form.
 ## Still capture and vertex layouts
 
 `exa_render::capture` is the still-image path: eight jittered samples, each
-blended in at `1 − 1/(index + 1)` with a projection offset of twice its
-jitter, then the post chain and a half-size downsample (`width >> 1`,
+blended in at `1 − 1/(index + 1)` (the first replaces the frame) with a
+projection offset of `2 · scale · jitter / size` per axis, the jitters being
+the recorded table's run from entry 10 (the 8-point level's), then the post chain and a half-size downsample (`width >> 1`,
 `height >> 1`) to RGBA8. The plain downsample sharpens with the original's
 4-tap contrast term (`a · 48`, `1 − a²`, a quarter of the neighbour sum);
 the icon variant also widens alpha from the four texels three pixels away.
-The first four jitter pairs are the recorded bytes; the rest are a
-labelled guess.
+The capture is not yet driven by the running renderer.
 
 `exa_render::geometry` holds the original's planar vertex layouts and
 index batches: position, texture (two or three floats), colour, normal,
