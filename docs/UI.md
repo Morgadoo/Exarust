@@ -941,6 +941,12 @@ the task's state. A control value of `i32::MIN` means none.
   for its 0x20 message; focusing clears the old record's 0x400, sets the
   new one's and the form's state bit 0x10 (or clears it when no control
   takes the focus).
+- **Runtime resize.** A right- or bottom-anchored form moves by the size
+  change. A stretched child takes the change (its size becomes its size
+  plus the change) and is resized recursively; a right/bottom-anchored
+  child moves; otherwise a centred style re-centres it (a floor). The
+  records follow the same rules in their 16-bit fields, the centred ones
+  from their owner's client span.
 - **Style and destroy.** Setting a style and attribute word raises the
   layout bit; a form whose parent is not a task gets state bit 4; a
   maximised form (attribute 0x10000) on a task adds style 0x10 and

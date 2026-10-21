@@ -301,6 +301,105 @@ pub fn destroy_plan(
     }
 }
 
+/// A control record for the runtime resize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeControl {
+    pub x: i16,
+    pub y: i16,
+    pub width: i16,
+    pub height: i16,
+    pub style: u32,
+    /// Its owner's client width and height, for the centred placements.
+    pub client: (i32, i32),
+}
+
+/// A form for the runtime resize: its size, style, children and records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizeNode {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub style: u32,
+    pub children: Vec<ResizeNode>,
+    pub controls: Vec<ResizeControl>,
+}
+
+/// Resizes a form in place (`0x10002c9e0`): a right/bottom-anchored form
+/// moves by the size change; a stretched child takes the change, a
+/// right/bottom-anchored child moves, and an unanchored child of a centred
+/// style is re-centred (a floor). The controls follow the same rules, with
+/// their stored 16-bit places. The original also calls the form's resize
+/// callback, which is the caller's.
+pub fn resize_form(form: &mut ResizeNode, new_width: i32, new_height: i32) {
+    let old = (form.width, form.height);
+    let dw = new_width - old.0;
+    let dh = new_height - old.1;
+    if form.style & style::X_MASK == style::RIGHT {
+        form.x = form.x + old.0 - new_width;
+    }
+    if form.style & style::Y_MASK == style::BOTTOM {
+        form.y = form.y + old.1 - new_height;
+    }
+    for child in &mut form.children {
+        let mut resized = false;
+        let mut child_w = child.width;
+        let mut child_h = child.height;
+        if child.style & style::X_MASK == style::X_MASK {
+            child_w = child.width + new_width - old.0;
+            resized = true;
+        } else if child.style & style::X_MASK == style::RIGHT {
+            child.x += dw;
+        }
+        if child.style & style::Y_MASK == style::Y_MASK {
+            child_h = child.height + new_height - old.1;
+            resized = true;
+        } else if child.style & style::Y_MASK == style::BOTTOM {
+            child.y += dh;
+        }
+        if resized {
+            resize_form(child, child_w, child_h);
+        } else {
+            if child.style & style::CENTRE_X != 0 {
+                child.x = (new_width - child.width) >> 1;
+            }
+            if child.style & style::CENTRE_Y != 0 {
+                child.y = (new_height - child.height) >> 1;
+            }
+        }
+    }
+    form.width = new_width;
+    form.height = new_height;
+    for control in &mut form.controls {
+        let mut resized = false;
+        let mut w = control.width;
+        let mut h = control.height;
+        if control.style & style::X_MASK == style::X_MASK {
+            w = (i32::from(control.width) + new_width - old.0) as i16;
+            resized = true;
+        } else if control.style & style::X_MASK == style::RIGHT {
+            control.x = (i32::from(control.x) + dw) as i16;
+        }
+        if control.style & style::Y_MASK == style::Y_MASK {
+            h = (i32::from(control.height) + new_height - old.1) as i16;
+            resized = true;
+        } else if control.style & style::Y_MASK == style::BOTTOM {
+            control.y = (i32::from(control.y) + dh) as i16;
+        }
+        if resized {
+            control.width = w;
+            control.height = h;
+        } else {
+            if control.style & style::CENTRE_X != 0 {
+                control.x = ((control.client.0 - i32::from(control.width)) >> 1) as i16;
+            }
+            if control.style & style::CENTRE_Y != 0 {
+                control.y = ((control.client.1 - i32::from(control.height)) >> 1) as i16;
+            }
+        }
+    }
+}
+
 /// The 1-based control code's index, when it names a control.
 pub fn control_index(code: i32, last: i32) -> Option<usize> {
     let index = (code & 0xffff) - 1;
@@ -1824,6 +1923,53 @@ mod tests {
             }
         );
         assert_eq!(destroy_plan(0, 5, false, false, false).controls_freed, 0);
+    }
+
+    #[test]
+    fn the_runtime_resize() {
+        let mut form = ResizeNode {
+            x: 100,
+            y: 50,
+            width: 300,
+            height: 200,
+            style: style::RIGHT | style::BOTTOM,
+            children: vec![ResizeNode {
+                x: 10,
+                y: 20,
+                width: 100,
+                height: 40,
+                style: style::X_MASK | style::Y_MASK,
+                children: Vec::new(),
+                controls: Vec::new(),
+            }],
+            controls: vec![
+                ResizeControl {
+                    x: 10,
+                    y: 10,
+                    width: 80,
+                    height: 20,
+                    style: style::RIGHT,
+                    client: (298, 398),
+                },
+                ResizeControl {
+                    x: 100,
+                    y: 100,
+                    width: 80,
+                    height: 20,
+                    style: style::CENTRE_X,
+                    client: (398, 398),
+                },
+            ],
+        };
+        resize_form(&mut form, 400, 250);
+        assert_eq!((form.width, form.height), (400, 250));
+        assert_eq!(form.x, 100 + 300 - 400);
+        assert_eq!(form.y, 50 + 200 - 250);
+        let child = &form.children[0];
+        assert_eq!((child.width, child.height), (200, 90));
+        assert_eq!((child.x, child.y), (10, 20));
+        assert_eq!((form.controls[0].x, form.controls[0].width), (110, 80));
+        assert_eq!((form.controls[1].x, form.controls[1].y), (159, 100));
     }
 
     #[test]
