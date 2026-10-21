@@ -84,8 +84,11 @@ decides from it each tick (below). Outside combat:
 - **The head looks** 30 % of the way from the heading toward the smoothed
   cursor while walking by the keys, along the heading walking by the
   mouse; standing it eases 5 % a tick toward the heading moved 40 % toward
-  the cursor (mixed 40 % with the facing). The request carries it for the
-  head (the head's sampler comes later).
+  the cursor (mixed 40 % with the facing). The torso twists toward that
+  look: its yaw within a radian of the body's, followed 0.05 rad a tick
+  standing and 0.02 walking, the lumbar taking half, lowered as the body
+  crouches ([formats/RSQ.md](formats/RSQ.md), Torso twist); the head's
+  own look comes later.
 - **The look-ahead**: 75 cm + 6·v² cm ahead along the facing (70 cm behind
   backwards). As the original does, it walks the navigation grid from the
   standing point toward that goal ([NAVIGATION.md](NAVIGATION.md)); the

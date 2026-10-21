@@ -20,8 +20,8 @@ use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_physics::body::locomotion::{
-    self, CapsuleGaits, Footing, GaitTable, Locomotion, Locomotor, Start, Stride, TurnBy, flags,
-    forward,
+    self, CapsuleGaits, Footing, GaitTable, Locomotion, Locomotor, Start, Stride, TurnBy, TwistBy,
+    flags, forward,
 };
 use exa_physics::body::{BodyTicks, Fallen, Ragdoll, TickedCharacter};
 use exa_physics::{CharacterBody, Physics};
@@ -137,6 +137,9 @@ pub(crate) fn decide_movement(
         d.land();
     }
     let motions = motions.as_deref();
+    // The character frame the twist reads is last tick's (the original
+    // rebuilds it from the new yaw after its sampler).
+    let frame = body.yaw;
     if held {
         locomotion::hold_turn(&mut body);
     } else {
@@ -213,6 +216,25 @@ pub(crate) fn decide_movement(
     } else {
         locomotion::stand(&mut body, state == Condition::GETTING_UP);
     }
+    // The torso twist toward the look, before the sampler.
+    let crouch = player.map_or(0.0, PlayerBody::crouch);
+    let moving = body.moving();
+    locomotion::twist(
+        &mut body,
+        &TwistBy {
+            helpless: state.helpless(),
+            tone: drive.map_or(1.0, |d| d.tone),
+            look: req.look,
+            frame,
+            moving,
+            attack: swinging
+                .filter(|_| state == Condition::ATTACKING)
+                .map(|(swing, swinging)| (swing.handling, swinging.strength)),
+            casting: state == Condition::CASTING,
+            crouch,
+            tilt: 0.0,
+        },
+    );
     locomotion::count_down(&mut body);
     // Sprinting (the latch, a stance level over 0.9 and over 3.5 cm a
     // tick), the capsule's run takes the feral sprint row.
@@ -594,5 +616,23 @@ mod tests {
         // 51 ticks after: from key 2 again.
         let restarted = walk_again(&mut app, 1101);
         assert_eq!((restarted.time, restarted.capture_key), (10.0, 2));
+    }
+
+    /// The torso twist follows the look in the movement stage: a standing
+    /// body looking 0.5 rad off its yaw twists 0.05 rad toward it a tick;
+    /// down, the twist is the identity.
+    #[test]
+    fn the_twist_follows_the_look_each_tick() {
+        let (mut app, _, model) = setup();
+        request(&mut app, model).look = 0.5;
+        app.update();
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert!((body.twist_yaw - 0.05).abs() < 1e-6, "{}", body.twist_yaw);
+        let ahead = body.twist * Vec3::Z;
+        assert!((ahead - forward(0.05)).length() < 1e-5, "{ahead}");
+        app.world_mut().entity_mut(model).insert(Condition::DOWN);
+        app.update();
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert_eq!(body.twist, Quat::IDENTITY);
     }
 }

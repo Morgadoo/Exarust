@@ -1496,7 +1496,7 @@ not landed is the identity and says which:
 | 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | identity until C13 |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
-| 7 | the torso twist on the lumbar (half) and the thorax toward the aim | identity until M8 |
+| 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
 | 8 | the head look (yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | identity until M8 and C13 |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
@@ -1632,11 +1632,37 @@ its energy is back the stance turns again and the posture switch blends
 from where the body is, so its targets do not jump back to the clip in
 one tick.
 
-Not reproduced yet: the locomotion clock's stride modulation, its start
-key and the run overlay (M16); the blow sag's writer, the swing's
+**Torso twist.** Before its sampler the body tick turns the spine toward
+where the character looks (REA: the body tick's twist block and the
+living sampler's midline step, `exe.asm`; constants from the PE;
+`exa_physics::body::locomotion::twist`). With the condition not
+helpless and the tone over 0.85: the look in the character frame (last
+tick's: the original rebuilds its frame after the sampler) gives a yaw
+by the original's arc cosine, (π/2 − 0.2075·x + 0.0535·x²)·√(1 − x)
+(π less it of −x below 0, within about 4e-4 rad), clamped to ±1 rad;
+the twist's yaw follows it by 0.02 rad a tick locomoting, else by the
+weapon's handling × 0.12 (double) × the swing strength attacking, else
+0.05. Its direction is that yaw across the ground with a height of the
+run lean (Exarust keeps none: 0) less the crouch (× 0.3 in double
+precision attacking), normalised; its height then × 0.75 (casting a
+power, a height at or under 0 is −height²), normalised again. The twist
+is the look rotation along it: forward the direction, up the vertical
+square to it, side their cross product. Otherwise it is the identity.
+In the sampler the midline chain (from the root part its first child
+within 3 cm of the midline, that child's, and so on: the lumbar and the
+thorax; the head leaves it at its first sample and looks instead) takes
+the twist on its turns; the part under the root (the lumbar) is then
+taken halfway back: its forward midway between twisted and not, its up
+square to it, its side their cross product. Their positions keep the
+pose (the original's pins read the untwisted placement); the shoulders
+keep their own turns, so the arms hold their pose in the world while the
+chest turns under them. The original normalises with the processor's
+reciprocal square root estimate; Exarust's normalisation is exact.
+
+Not reproduced yet: the blow sag's writer, the swing's
 weapon-in-hand wait (weapons are bodies with M24), recoil and the
-follow-through (C21, M26); the attack arm stiffness; the torso twist in
-the captures and the sampler, and the head look (M8); the femur posture
+follow-through (C21, M26); the attack arm stiffness; the twist in the
+captures and the run lean's exertion, and the head look (M8); the femur posture
 and the foot pitch (C13); the foot contacts' flag in the capture; the
 weak branch's rate kept from last tick (Exarust reads the base); the
 creature classes' own clock bases.

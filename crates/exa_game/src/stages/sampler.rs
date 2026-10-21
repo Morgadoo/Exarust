@@ -17,7 +17,8 @@
 //! 5. the clip chain ([`clip_chain`]): each part's placement from its
 //!    rest translation and posed turn under its parent's;
 //! 6. the IK chain ([`ik_chain`]; C13, C19);
-//! 7. the torso twist ([`twist`]; M8);
+//! 7. the torso twist: the spine turned toward the look ([`spine`],
+//!    `exa_physics::body::locomotion::twist_spine`);
 //! 8. the head look ([`head_look`]; M8) and the foot pitch
 //!    ([`foot_pitch`]; C13);
 //! 9. the anchors and the pelvis height: the drive's, in the carry stage
@@ -34,7 +35,7 @@ use exa_combat::stance::Stance;
 use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_formats::rsq::Clip;
-use exa_physics::body::locomotion::{Locomotion, Locomotor, flags};
+use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, twist_spine};
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
 use crate::limp::{Pace, clip_pose, clip_tick, physical_turns, run_overlay};
@@ -131,6 +132,7 @@ pub(crate) fn sample_clip(
     };
     let still = in_place(motions.0.action_index(&anim.action));
     let gait = run_overlay(&motions, &anim, &pace);
+    let twist = locomotion.map_or(Quat::IDENTITY, |(_, l)| l.twist);
     sampled.0 = sample_parts(
         &mut anim,
         clip,
@@ -138,6 +140,7 @@ pub(crate) fn sample_clip(
         gait,
         hold.toward(),
         stature,
+        twist,
         body,
         root,
         &parents,
@@ -150,8 +153,8 @@ pub(crate) fn sample_clip(
 /// blended, the gait overlay (`gait`, the Run clip and its weight while
 /// Walk plays), the hold, the pose kept as the targets and
 /// scaled by `stature`, the femur posture, the clip chain, the IK chain,
-/// the twist, the head look and the foot pitch; returns each part's
-/// placement.
+/// the `twist` of the spine, the head look and the foot pitch; returns
+/// each part's placement.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_parts(
     anim: &mut Animator,
@@ -160,6 +163,7 @@ pub(crate) fn sample_parts(
     gait: Option<(&Clip, f32)>,
     hold: Option<(&[Quat], f32)>,
     stature: f32,
+    twist: Quat,
     body: &Ragdoll,
     root: Entity,
     parents: &Query<&ChildOf>,
@@ -172,8 +176,8 @@ pub(crate) fn sample_parts(
     anim.keep(&pose, held);
     let pose = femur_posture(pose.scaled(stature));
     let chain = clip_chain(body, root, &pose, parents, nodes);
-    let parts = ik_chain(chain);
-    let parts = twist(parts);
+    let mut parts = ik_chain(chain);
+    twist_spine(&mut parts, &spine(body, nodes), twist);
     let parts = head_look(parts);
     Some(foot_pitch(parts))
 }
@@ -220,11 +224,39 @@ fn ik_chain(chain: Vec<Affine3A>) -> Vec<Affine3A> {
     chain
 }
 
-/// Step 7, the torso twist: the lumbar and the thorax are turned toward
-/// the aim direction (the lumbar half way). Until M8 lands the twist is
-/// the identity: the parts are returned as they are.
-fn twist(parts: Vec<Affine3A>) -> Vec<Affine3A> {
-    parts
+/// The bones' midline: a part within this (m) of its parent's midplane
+/// is on it.
+const MIDLINE: f32 = 0.03;
+/// The head, which its look turns instead of the twist.
+const HEAD: usize = 10;
+
+/// Step 7's parts, the spine the torso twist turns
+/// (`exa_physics::body::locomotion::twist_spine`): from the root part,
+/// its first child within 3 cm of the midline, that child's first, and so
+/// on (the original's midline chain), but the head; the one under the
+/// root (the lumbar) takes half of the twist.
+fn spine(body: &Ragdoll, nodes: &Query<(&Transform, Option<&BodyPart>)>) -> Vec<(usize, bool)> {
+    let parts = &body.parts;
+    let Some(root) = parts.iter().position(|p| p.parent.is_none()) else {
+        return Vec::new();
+    };
+    let on_midline = |i: usize| {
+        nodes
+            .get(parts[i].entity)
+            .ok()
+            .and_then(|(_, b)| b)
+            .is_some_and(|b| b.rest.translation.x.abs() < MIDLINE)
+    };
+    let mut chain = Vec::new();
+    let mut at = root;
+    while let Some(next) = (0..parts.len()).find(|&i| parts[i].parent == Some(at) && on_midline(i))
+    {
+        if parts[next].bone != HEAD {
+            chain.push((next, at == root));
+        }
+        at = next;
+    }
+    chain
 }
 
 /// Step 8, the head look: the head's yaw, pitch and roll follow the look
@@ -239,4 +271,56 @@ fn head_look(parts: Vec<Affine3A>) -> Vec<Affine3A> {
 /// parts are returned as they are.
 fn foot_pitch(parts: Vec<Affine3A>) -> Vec<Affine3A> {
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::ecs::system::SystemState;
+    use exa_physics::body::PartSetup;
+
+    use super::*;
+
+    /// A pelvis with a lumbar, a thorax and a head on the midline (the
+    /// lumbar 1 cm off it) and a thigh 10 cm off it: the spine is the
+    /// lumbar (half the twist) and the thorax, not the head or the thigh;
+    /// a lumbar 3 cm off the midline ends it at the pelvis.
+    #[test]
+    fn the_spine_is_the_midline_chain_but_the_head() {
+        let spine_of = |lumbar_x: f32| {
+            let mut world = World::new();
+            let mut node = |at: Vec3, bone: usize| {
+                let t = Transform::from_translation(at);
+                world.spawn((t, BodyPart { bone, rest: t })).id()
+            };
+            let parts = [
+                (1, None, node(Vec3::Y, 1)),
+                (2, Some(0), node(Vec3::new(0.1, -0.1, 0.0), 2)),
+                (8, Some(0), node(Vec3::new(lumbar_x, 0.1, 0.0), 8)),
+                (9, Some(2), node(Vec3::new(0.0, 0.2, 0.0), 9)),
+                (10, Some(3), node(Vec3::new(0.0, 0.2, 0.0), 10)),
+            ];
+            let setup: Vec<PartSetup> = parts
+                .iter()
+                .map(|&(bone, parent, entity)| PartSetup {
+                    bone,
+                    entity,
+                    parent,
+                    world: Affine3A::IDENTITY,
+                    centre: Vec3::ZERO,
+                    half: Vec3::splat(0.05),
+                    origin: Vec3::ZERO,
+                    links: vec![],
+                    foot: None,
+                    pins: Vec::new(),
+                })
+                .collect();
+            let body = Ragdoll::new(&setup);
+            let mut state: SystemState<Query<(&Transform, Option<&BodyPart>)>> =
+                SystemState::new(&mut world);
+            let nodes = state.get(&world).unwrap();
+            spine(&body, &nodes)
+        };
+        assert_eq!(spine_of(0.01), vec![(2, true), (3, false)]);
+        assert_eq!(spine_of(0.03), vec![]);
+    }
 }

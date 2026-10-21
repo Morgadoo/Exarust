@@ -25,6 +25,9 @@ mod gait;
 pub use gait::{
     GaitRow, GaitTable, PHASE_UNSET, STOPS, Start, Stride, advance_clock, fraction, locomote, stand,
 };
+#[path = "body_twist.rs"]
+mod twist;
+pub use twist::{TwistBy, acos_approx, heading_of, look_rotation, twist, twist_spine};
 
 /// Bits of the request's flag word, the original's.
 pub mod flags {
@@ -312,6 +315,11 @@ pub struct Locomotor {
     /// The stance facing (a yaw): the heading, kept within a quarter turn
     /// of the body's yaw.
     pub stance_facing: f32,
+    /// The torso twist's yaw in the character frame, which follows the
+    /// look, and the twist (a rotation in the character frame; the
+    /// identity while it holds) the sampler turns the spine by.
+    pub twist_yaw: f32,
+    pub twist: Quat,
 }
 
 impl Default for Locomotor {
@@ -339,6 +347,8 @@ impl Default for Locomotor {
             last_clock: 0.0,
             last_ran: 0,
             stance_facing: 0.0,
+            twist_yaw: 0.0,
+            twist: Quat::IDENTITY,
         }
     }
 }
