@@ -202,98 +202,102 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     Some(first)
 }
 
-/// The character-edit form's constructor values: 172 wide, 592 tall (540
-/// in the compact layout), eleven layout elements and the label at
-/// 1.0 scale. `DAT_10049a230` picks the compact heights.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EditFormData {
-    pub width: i32,
-    pub height: i32,
-    pub layout: usize,
-    pub label_scale_bits: u32,
-}
-
-pub fn edit_form(compact: bool) -> EditFormData {
-    EditFormData {
-        width: 0xac,
-        height: if compact { 0x21c } else { 0x250 },
-        layout: 0xb,
-        label_scale_bits: 1.0f32.to_bits(),
-    }
-}
-
-/// The body form's constructor: the physique picker at 8, 64 and the tone
-/// picker at 8, 320 by 160 (112 compact), with eight and 20 layout
-/// elements in all. `DAT_10049a230` picks the compact heights.
+/// The body form's constructor values: 172 wide with no border, 592 tall
+/// (540 in the compact layout), twelve controls in its table, the caption
+/// `VHM` and a scale of 1.0, the physique picker at 8, 64 and the tone
+/// picker at 8, 328, 160 wide and 160 tall (112 compact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFormData {
+    pub width: i32,
     pub height: i32,
-    pub physique: [i32; 4],
+    pub border: i32,
+    /// The control table's high index (so twelve controls).
+    pub controls_high: usize,
+    pub caption: &'static str,
+    pub scale_bits: u32,
+    pub physique: [i32; 2],
+    /// The tone picker's left, top, width and height.
     pub tone: [i32; 4],
 }
 
 pub fn base_form(compact: bool) -> BaseFormData {
     BaseFormData {
+        width: 0xac,
         height: if compact { 0x21c } else { 0x250 },
-        physique: [8, 0x40, 0, 0],
+        border: 0,
+        controls_high: 0xb,
+        caption: "VHM",
+        scale_bits: 1.0f32.to_bits(),
+        physique: [8, 0x40],
         tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
     }
 }
 
-/// The hair form's constructor: 172 by 612 (548 compact), six layout
-/// elements and the hair picker at 4, 24.
+/// The hair form's constructor values: 172 by 612 (548 compact) with no
+/// border, seven controls in its table, one attribute word of 0x100 (its
+/// role is not traced) and the hair-colour picker at 4, 24.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HairFormData {
     pub width: i32,
     pub height: i32,
-    pub layout: usize,
+    pub border: i32,
+    /// The control table's high index (so seven controls).
+    pub controls_high: usize,
+    pub attribute: u32,
     pub picker: [i32; 2],
-    pub digit: i32,
 }
 
 pub fn hair_form(compact: bool) -> HairFormData {
     HairFormData {
         width: 0xac,
         height: if compact { 0x224 } else { 0x264 },
-        layout: 6,
+        border: 0,
+        controls_high: 6,
+        attribute: 0x100,
         picker: [4, 0x18],
-        digit: 0x100,
     }
 }
 
-/// The physique sync: the body form copies the picker's point to its
-/// target and debounces a regeneration by two clock units.
+/// What the physique picker's change does in the body form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysiqueSync {
-    pub copied: bool,
+    /// Too soon after the last regeneration: a pending flag is set and
+    /// nothing is regenerated (what later clears it is not traced).
     pub pending: bool,
-    pub last: i32,
+    /// The form's regeneration callback runs.
+    pub regenerate: bool,
+    /// The clock value of the last regeneration.
+    pub last: u32,
 }
 
+/// The physique picker's change: its point goes into the record at once;
+/// the regeneration waits while the clock is within two units of the last
+/// one (the sum is worked in 64 bits).
 pub fn sync_physique(
     target: &mut [f32; 2],
     point: [f32; 2],
-    last: i32,
-    clock: i32,
+    last: u32,
+    clock: u32,
 ) -> PhysiqueSync {
     *target = point;
-    if u64::from(last as u32) + 2 > u64::from(clock as u32) {
+    if u64::from(last) + 2 > u64::from(clock) {
         PhysiqueSync {
-            copied: true,
             pending: true,
+            regenerate: false,
             last,
         }
     } else {
         PhysiqueSync {
-            copied: true,
             pending: false,
+            regenerate: true,
             last: clock,
         }
     }
 }
 
-/// The hair list's refresh: takes the icon view's cell height to twelve
-/// units and its scroll step to the same.
+/// The hair list's refresh: takes the icon view's cell height and its
+/// scroll step to twelve units, and redraws it when the global the form
+/// checks is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HairIconRefresh {
     pub cell: i32,
@@ -309,153 +313,113 @@ pub fn hair_icon_refresh(unit: i32, has_texture: bool) -> HairIconRefresh {
     }
 }
 
-/// The edit form's release helpers free the callback binding and the
-/// label's string slot.
-pub fn release_edit_form() -> (bool, bool) {
-    (true, true)
-}
-
-/// The character-edit page's record fields, as the page's update reads
-/// them.
+/// The character record's fields the edit page shows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageSource {
-    pub female: bool,
+    pub physique: [f32; 2],
     /// −1…1, positive shorter.
     pub height: f32,
-    /// 0…1.
     pub age: f32,
-    /// The two physique values.
-    pub physique: [f32; 2],
     /// The two skin-colour words.
     pub skin: [u16; 2],
-    /// The skin-tone value the slider shows.
-    pub skin_tone: f32,
-    /// The voice number.
-    pub voice: i32,
-    pub voice_pitch: f32,
-    /// The hair-style list index.
-    pub hair_style: i32,
-    pub hair_colour: [u8; 4],
-    /// The record word whose bit 0x10000 is the hair flag and whose bits
-    /// 20–23 are the appearance variant plus one.
+    /// The hair colour's red, green and blue bytes.
+    pub hair_colour: [u8; 3],
+    /// A float the fifth slider shows as it is (its role is not traced).
+    pub slider: f32,
+    /// The integer the sixth control shows (its role is not traced).
+    pub number: i32,
+    /// The voice number; the seventh control shows it as the letter `A` + n.
+    pub voice: u32,
+    /// The voice pitch, 0.9…1.07 (the slider's range).
+    pub pitch: f32,
+    /// The profession word: bit 0 female, 0x10000 the hair flag, bits
+    /// 20–23 the appearance variant plus one.
     pub word: u32,
 }
 
-/// The values the character-edit page's update pushes into its controls.
+/// What the character-edit page's update pushes into its controls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditPageState {
-    pub female: bool,
-    /// The height slider: 0.5 − height × 0.5.
+    /// The physique picker's point.
+    pub physique_point: [f32; 2],
+    /// The skin picker's point: the words over 65535.
+    pub skin_point: [f32; 2],
+    /// The first and second buttons' chosen flags (male, female).
+    pub male_on: bool,
+    pub female_on: bool,
+    /// 0.5 − height × 0.5.
     pub height_slider: f32,
     pub age_slider: f32,
-    pub voice_pitch: f32,
-    pub voice: i32,
-    pub hair_style: i32,
-    pub skin_words: [u16; 2],
-    pub skin_slider: f32,
-    /// The hair colour picker's three channels, 0…1.
+    pub slider: f32,
+    pub number: i32,
+    /// The seventh control's voice letter.
+    pub voice_letter: u8,
+    /// (pitch − 0.9) × 5.88235…, worked in double.
+    pub pitch_slider: f32,
+    /// The hair-colour picker's three channels over 255, worked in double.
     pub hair_colour: [f32; 3],
-    pub hair_visible: bool,
-    /// The appearance variant's letter, or None for a dash.
+    /// The hair buttons' chosen flags (without hair, with).
+    pub hair_off_on: bool,
+    pub hair_on: bool,
+    /// The variant label's letter, or a dash when the variant field is 0.
     pub variant_letter: Option<u8>,
 }
 
 /// The character-edit page's update.
 pub fn edit_page(src: &PageSource) -> EditPageState {
-    let variant = (src.word >> 20) & 0xf;
-    let letter = if (variant as i32) - 1 < 0 {
-        None
-    } else {
-        Some((variant as u8).wrapping_add(0x40))
-    };
+    let female = src.word & 1 != 0;
+    let hair = src.word & 0x10000 != 0;
+    let variant = ((src.word >> 20) & 0xf) as i32 - 1;
     EditPageState {
-        female: src.female,
+        physique_point: src.physique,
+        skin_point: src
+            .skin
+            .map(|w| (f64::from(w) * 1.5259021896696422e-05) as f32),
+        male_on: !female,
+        female_on: female,
         height_slider: 0.5 - src.height * 0.5,
         age_slider: src.age,
-        voice_pitch: src.voice_pitch,
-        voice: src.voice,
-        hair_style: src.hair_style,
-        skin_words: src.skin,
-        skin_slider: (src.skin_tone - 0.9) * 5.88235294117647,
-        hair_colour: [
-            f32::from(src.hair_colour[0]) * 0.00392156862745098,
-            f32::from(src.hair_colour[1]) * 0.00392156862745098,
-            f32::from(src.hair_colour[2]) * 0.00392156862745098,
-        ],
-        hair_visible: src.word & 0x10000 != 0,
-        variant_letter: letter,
+        slider: src.slider,
+        number: src.number,
+        voice_letter: (src.voice as u8).wrapping_add(0x41),
+        pitch_slider: ((f64::from(src.pitch) - 0.9) * 5.88235294117647) as f32,
+        hair_colour: src
+            .hair_colour
+            .map(|b| (f64::from(b) * 0.00392156862745098) as f32),
+        hair_off_on: !hair,
+        hair_on: hair,
+        variant_letter: (variant >= 0).then(|| (variant as u8).wrapping_add(0x41)),
     }
 }
 
-/// A picker change's rebuild flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EditChange {
-    /// The generator regenerates its body mesh and skin texture.
-    pub rebuild: bool,
-    /// The preview redraws.
-    pub redraw: bool,
-    /// The change was taken at all.
-    pub changed: bool,
-}
-
-const NO_CHANGE: EditChange = EditChange {
-    rebuild: false,
-    redraw: false,
-    changed: false,
-};
-
-/// The physique picker's change: copies its point to the target, then
-/// regenerates the body.
-pub fn physique_changed(target: &mut [f32; 2], point: [f32; 2]) -> EditChange {
-    *target = point;
-    EditChange {
-        rebuild: true,
-        redraw: true,
-        changed: true,
-    }
-}
-
-/// The skin-tone picker's change: its two coordinates scale to the
-/// record's two 16-bit colour words.
-pub fn skin_changed(src: &mut PageSource, point: [f32; 2]) -> EditChange {
+/// The skin picker's change: its two coordinates scale to the record's two
+/// 16-bit colour words (rounded half to even); the body is regenerated and
+/// the preview redrawn.
+pub fn skin_changed(src: &mut PageSource, point: [f32; 2]) {
     src.skin = appearance_words(point);
-    EditChange {
-        rebuild: true,
-        redraw: true,
-        changed: true,
-    }
 }
 
 /// The hair-colour picker's change: its three coordinates scale to the
-/// record's colour bytes, rounded half to even.
-pub fn hair_colour_changed(src: &mut PageSource, point: [f32; 3]) -> EditChange {
-    for (i, v) in point.iter().enumerate() {
-        src.hair_colour[i] = (v * 255.0).round_ties_even() as i64 as u8;
-    }
-    EditChange {
-        rebuild: true,
-        redraw: true,
-        changed: true,
-    }
+/// record's colour bytes (rounded half to even); the body is regenerated
+/// and the preview redrawn.
+pub fn hair_colour_changed(src: &mut Vec<u8>, point: [f32; 3]) {
+    src.clear();
+    src.extend(appearance_bytes(point));
 }
 
-/// The hair-style list's change: a positive selection one below the
-/// record's style (the list is one-based) updates it and regenerates the
-/// hair.
-pub fn hair_style_changed(src: &mut PageSource, selection: i32) -> EditChange {
-    if selection <= 0 || selection - 1 == src.hair_style {
-        return NO_CHANGE;
+/// The hair list's change: a selection of 1 or more that is not the
+/// record's style plus one sets the style (selection − 1), regenerates the
+/// hair and refreshes the icon view. Returns whether it changed.
+pub fn hair_style_changed(style: &mut u32, selection: i32) -> bool {
+    if selection < 1 || i64::from(selection) - 1 == i64::from(*style) {
+        return false;
     }
-    src.hair_style = selection - 1;
-    EditChange {
-        rebuild: true,
-        redraw: true,
-        changed: true,
-    }
+    *style = (selection - 1) as u32;
+    true
 }
 
-/// The edit form's close: detaches the child editors and runs the base
-/// close.
+/// The edit form's close: detaches the child editor's callback when there
+/// is one, then runs the base close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditClose {
     pub detach: bool,
@@ -3856,60 +3820,114 @@ mod tests {
     #[test]
     fn the_edit_page_pushes_the_record_into_its_controls() {
         let src = PageSource {
-            female: true,
+            physique: [0.25, 0.75],
             height: 0.5,
             age: 0.25,
-            physique: [0.5, 0.5],
-            skin: [0x2000, 0x4000],
-            skin_tone: 1.0,
-            voice: 3,
-            voice_pitch: 0.9,
-            hair_style: 2,
-            hair_colour: [255, 128, 0, 255],
-            word: 0x0011_0000,
+            skin: [0x8000, 0xffff],
+            hair_colour: [255, 51, 0],
+            slider: 0.3,
+            number: 3,
+            voice: 2,
+            pitch: 0.985,
+            word: 0x0011_0001,
         };
         let page = edit_page(&src);
-        assert!(page.female);
+        assert_eq!(page.physique_point, [0.25, 0.75]);
+        assert_eq!(page.skin_point[1], 1.0);
+        assert!((page.skin_point[0] - 0.5000076).abs() < 1e-6);
+        assert!(!page.male_on && page.female_on);
         assert_eq!(page.height_slider, 0.25);
-        assert_eq!(page.age_slider, 0.25);
-        assert_eq!(page.voice, 3);
-        assert_eq!(page.hair_style, 2);
-        assert_eq!(page.skin_words, [0x2000, 0x4000]);
-        assert!((page.skin_slider - 0.5882353).abs() < 1e-6);
-        assert_eq!(page.hair_colour, [1.0, 0.5019608, 0.0]);
-        assert!(page.hair_visible);
+        assert_eq!((page.age_slider, page.slider, page.number), (0.25, 0.3, 3));
+        assert_eq!(page.voice_letter, b'C');
+        assert!((page.pitch_slider - 0.5).abs() < 1e-6);
+        assert_eq!(page.hair_colour, [1.0, 0.2, 0.0]);
+        assert!(page.hair_on && !page.hair_off_on);
+        // Bits 20-23 hold 1: variant 0, the letter A.
         assert_eq!(page.variant_letter, Some(b'A'));
-        let mut src = src;
-        let change = hair_style_changed(&mut src, 4);
-        assert!(change.changed && change.rebuild);
-        assert_eq!(src.hair_style, 3);
-        assert!(!hair_style_changed(&mut src, 0).changed);
-        let change = hair_colour_changed(&mut src, [0.0, 0.5, 1.0]);
-        assert!(change.redraw);
-        assert_eq!(&src.hair_colour[..3], &[0, 128, 255]);
-        let change = skin_changed(&mut src, [0.5, 0.25]);
-        assert!(change.rebuild);
-        assert_eq!(src.skin, [32768, 16384]);
-        let mut physique = [0.0; 2];
-        assert!(physique_changed(&mut physique, [0.25, 0.75]).changed);
-        assert_eq!(physique, [0.25, 0.75]);
+        // A zero variant field shows the dash; a male without hair flips
+        // the buttons.
+        let plain = edit_page(&PageSource { word: 0, ..src });
+        assert_eq!(plain.variant_letter, None);
+        assert!(plain.male_on && !plain.female_on && plain.hair_off_on);
+        // The height slider runs 1 (tallest, height -1) to 0 (shortest).
+        let tall = edit_page(&PageSource {
+            height: -1.0,
+            word: 0,
+            ..src
+        });
+        assert_eq!(tall.height_slider, 1.0);
+    }
+
+    #[test]
+    fn the_pickers_write_the_record_with_half_even_rounding() {
+        let mut skin = PageSource {
+            physique: [0.0; 2],
+            height: 0.0,
+            age: 0.0,
+            skin: [0; 2],
+            hair_colour: [0; 3],
+            slider: 0.0,
+            number: 0,
+            voice: 0,
+            pitch: 1.0,
+            word: 0,
+        };
+        // 0.5 * 65535 = 32767.5 rounds to the even 32768; 0.25 * 65535 =
+        // 16383.75 to 16384.
+        skin_changed(&mut skin, [0.5, 0.25]);
+        assert_eq!(skin.skin, [32768, 16384]);
+        // 0.5 * 255 = 127.5 rounds to the even 128.
+        let mut hair = vec![9];
+        hair_colour_changed(&mut hair, [0.0, 0.5, 1.0]);
+        assert_eq!(hair, [0, 128, 255]);
+        let mut style = 2;
+        assert!(hair_style_changed(&mut style, 4));
+        assert_eq!(style, 3);
+        // The same style again, and a selection below 1, do nothing.
+        assert!(!hair_style_changed(&mut style, 4));
+        assert!(!hair_style_changed(&mut style, 0));
+        assert!(!hair_style_changed(&mut style, -1));
+        assert_eq!(style, 3);
         assert!(close_edit_form(true).detach);
-        assert!(close_edit_form(false).base);
-        assert_eq!(edit_form(false).height, 0x250);
-        assert_eq!(edit_form(true).width, 172);
-        assert_eq!(base_form(false).tone, [8, 0x148, 0xa0, 0xa0]);
-        assert_eq!(base_form(true).tone[3], 0x70);
-        assert_eq!(hair_form(false).height, 0x264);
-        let mut t = [0.0; 2];
-        let sync = sync_physique(&mut t, [0.4, 0.6], 100, 101);
-        assert!(sync.copied && sync.pending && sync.last == 100);
-        assert_eq!(t, [0.4, 0.6]);
-        let sync = sync_physique(&mut t, [0.5, 0.5], 100, 102);
-        assert!(!sync.pending && sync.last == 102);
+        assert!(close_edit_form(false).base && !close_edit_form(false).detach);
+    }
+
+    #[test]
+    fn the_form_constructors_keep_their_sizes() {
+        let base = base_form(false);
+        assert_eq!(
+            (base.width, base.height, base.controls_high),
+            (172, 592, 11)
+        );
+        assert_eq!(base.physique, [8, 64]);
+        assert_eq!(base.tone, [8, 328, 160, 160]);
+        assert_eq!(base_form(true).height, 540);
+        assert_eq!(base_form(true).tone[3], 112);
+        assert_eq!(base.caption, "VHM");
+        let hair = hair_form(false);
+        assert_eq!(
+            (hair.height, hair.controls_high, hair.picker),
+            (612, 6, [4, 24])
+        );
+        assert_eq!(hair_form(true).height, 548);
         let h = hair_icon_refresh(4, true);
-        assert_eq!((h.cell, h.step), (48, 48));
-        assert!(h.regenerate);
-        assert_eq!(release_edit_form(), (true, true));
+        assert_eq!((h.cell, h.step, h.regenerate), (48, 48, true));
+    }
+
+    #[test]
+    fn the_physique_change_waits_two_clock_units_between_regenerations() {
+        let mut target = [0.0; 2];
+        // 100 + 2 > 101: too soon.
+        let soon = sync_physique(&mut target, [0.4, 0.6], 100, 101);
+        assert!(soon.pending && !soon.regenerate && soon.last == 100);
+        assert_eq!(target, [0.4, 0.6]);
+        // 100 + 2 > 102 is false: regenerate and take the clock.
+        let due = sync_physique(&mut target, [0.5, 0.5], 100, 102);
+        assert!(!due.pending && due.regenerate && due.last == 102);
+        assert_eq!(target, [0.5, 0.5]);
+        // The sum is worked in 64 bits: no wrap near the top of u32.
+        let top = sync_physique(&mut target, [0.0; 2], u32::MAX, 5);
+        assert!(top.pending);
     }
 
     #[test]

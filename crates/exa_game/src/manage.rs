@@ -38,11 +38,12 @@ use crate::report::{self, RANKS, ReportFighter, ReportLine};
 
 /// The manage window's title.
 pub const MANAGE_TITLE: &str = "Manage Company";
-/// The manage window's class size and its close slot's work.
+/// The manage window class's instance size.
 pub const MANAGE_FORM_SIZE: i32 = 0x178;
 
-/// What closing Manage Company does: clears the hub-busy flag, releases
-/// the window registry's pointer and runs the base close.
+/// What closing Manage Company does: clears the arena hub's busy flag, calls
+/// a routine that only returns, forgets the window's global pointer and runs
+/// the base form's close.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManageClose {
     pub hub_busy: bool,
@@ -50,7 +51,7 @@ pub struct ManageClose {
     pub base: bool,
 }
 
-/// The close slot's state after it ran.
+/// The state the close leaves behind.
 pub fn close_manage() -> ManageClose {
     ManageClose {
         hub_busy: false,

@@ -615,11 +615,24 @@ callees were not identified. The actual camera, level and listener stay in
 
 ## The remaining screens' game side
 
-`flow::SaveFamily` is the story or arena save family: its prefix, its
-settings key, its slot count (−1 before a scan), ids, names, current slot,
-the three mode callbacks and the package magic. `manage::close_manage` is
-Manage Company's close. `emblem` now also holds the company-name confirm,
-the dialog's centre, the layer-removal and mask callbacks and the `klean`
-preset applied through the editor. `create` maps a creation record into
-the edit page's controls (`edit_page`) and back through the physique, skin,
-hair-colour and hair-style callbacks.
+None of this is wired into the running game yet; it is tested models of
+routines that were read from the original.
+
+- `flow::SaveFamily`: the save manager object the boot builds (file prefix
+  and its length, the identifier word, two words that start at -1, whether
+  the third hook is installed, and the magic word the boot writes).
+  `story_family` and `arena_family` give the two; the arena's magic word is
+  not the story's package magic, and what reads it is not traced.
+- `manage::close_manage`: what closing Manage Company leaves behind (the
+  hub's busy flag cleared, the window pointer forgotten, then the base
+  form's close).
+- `emblem`: the Emblems library name, the company-name confirm and its
+  message box, the cursor position the new-career screen uses, the
+  remove-layer button, the picture-step sum, the texture request with its
+  loader flags, the dialog's constructor values and paint quad, the steps
+  that close or finish the dialog, and the `klean` preset applied to the
+  editor.
+- `create`: the body form's and the hair form's constructor values, the
+  edit page's update from a character record (`edit_page`), and the
+  physique, skin, hair-colour and hair-style callbacks. The skin and
+  hair-colour callbacks round half to even like the original.

@@ -62,77 +62,84 @@ pub fn save_to(company: &mut crate::career::Company, editor: &exa_ui::EmblemEdit
     company.emblem = editor.record();
 }
 
-/// The library the emblem editor opens and its pack extension.
+/// The library the emblem editor opens: this name joined with a data path,
+/// then [`EMBLEMS_EXTENSION`].
 pub const EMBLEMS_LIBRARY: &str = "Emblems";
-pub const EMBLEMS_PACK: &str = "Emblems.rpk";
-/// The new-career dialog's labels.
+pub const EMBLEMS_EXTENSION: &str = ".rpk";
+/// The new-career dialog's message-box title and prompt.
 pub const COMPANY_NAME_TITLE: &str = "Company Name";
 pub const COMPANY_NAME_PROMPT: &str = "Please name your company";
-/// The message box's icon id the prompt uses.
-pub const COMPANY_NAME_ICON: u32 = 0xc1;
+/// The word the prompt passes to the message box after the two texts (its
+/// role is not traced).
+pub const COMPANY_NAME_BOX_WORD: u32 = 0xc1;
 /// The company-create form's colour (opaque black).
 pub const COMPANY_FORM_COLOUR: [u8; 4] = [0, 0, 0, 255];
-/// The action set the company dialog switches to.
-pub const COMPANY_ACTION_SET: i32 = 2;
 
 /// What confirming the company name does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompanyConfirm {
     /// The name is empty: show the message box and change nothing.
     MissingName,
-    /// The name is taken: store it and the emblem, and open the
-    /// character screen.
-    Named { name: String, layers: [u8; 4] },
+    /// The name is kept whole, the emblem record is stored beside it,
+    /// character creation starts and the fade runs [`company_named`] as its
+    /// step.
+    Named {
+        name: String,
+        emblem: exa_ui::EmblemRecord,
+    },
 }
 
-/// Confirms a company name (the name's bytes are kept whole).
+/// Confirms a company name.
 pub fn confirm_company(name: &str, editor: &exa_ui::EmblemEditor) -> CompanyConfirm {
     if name.is_empty() {
         CompanyConfirm::MissingName
     } else {
         CompanyConfirm::Named {
             name: name.to_string(),
-            layers: editor.record().layers.to_le_bytes(),
+            emblem: editor.record(),
         }
     }
 }
 
-/// Where the company dialog is centred: screen width over two, and the
-/// 370-scaled line down from the 1024 frame.
-pub fn company_place(screen: (i32, i32)) -> [i32; 2] {
-    let scale = (f64::from(screen.1) / 135.0).round_ties_even() * 0.125;
-    let top = (f64::from(screen.1) - (scale as f32) as f64 * 1024.0).round_ties_even() as i32 / 2;
-    [screen.0 / 2, (scale * 370.0).round_ties_even() as i32 + top]
+/// Where the new-career screen puts the mouse cursor: half the screen width
+/// across, and the 370-scaled line down from the 1024 frame (the scale is
+/// the height over 135, rounded to even, in eighths). The cursor is moved
+/// there through the window's client-to-screen conversion.
+pub fn company_cursor(screen: (i32, i32)) -> [i32; 2] {
+    let height = screen.1;
+    let scale = ((f64::from(height) / 135.0).round_ties_even() * 0.125) as f32;
+    let top = (height as f32 - scale * 1024.0).round_ties_even() as i64 / 2;
+    let line = (370.0f32 * scale).round_ties_even() as i64 + top;
+    [(screen.0 as u32 >> 1) as i32, line as i32]
 }
 
-/// The emblem form's "remove layer" callback: takes the last layer off
-/// and disables the button when none is left.
+/// The emblem form's "remove layer" button: takes the last layer off while
+/// there is one, then disables the button once fewer than one is left (the
+/// test runs even when nothing was removed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerRemove {
     pub removed: bool,
-    pub disabled: bool,
+    pub disable_button: bool,
 }
 
 pub fn remove_layer(count: &mut i32) -> LayerRemove {
-    if *count > 0 {
+    let removed = *count > 0;
+    if removed {
         *count -= 1;
     }
     LayerRemove {
-        removed: *count >= 0 && *count < i32::MAX,
-        disabled: *count < 1,
+        removed,
+        disable_button: *count < 1,
     }
 }
 
-/// The emblem form's mask callback: sets or clears a record word's bits.
-pub fn toggle_mask(word: &mut u32, value: u32, set: bool) {
-    if set {
-        *word |= value;
-    } else {
-        *word &= !value;
-    }
+/// The picture buttons: a button's tag added to the form's current
+/// background or design index gives the index the form is asked to take.
+pub fn step_picture(current: i32, tag: i32) -> i32 {
+    current.wrapping_add(tag)
 }
 
-/// The emblem texture loader's flags and its name/flags pair.
+/// The emblem texture loader's flags.
 pub const EMBLEM_TEXTURE_FLAGS: u32 = 0x70133;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,105 +156,64 @@ pub fn emblem_texture_request(kind: EmblemKind, index: u32) -> EmblemTexture {
     }
 }
 
-/// A callback's value write: the form's per-index word and the shared
-/// emblem record's word both take `value`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LayerWrite {
-    pub form_word: i32,
-    pub record_word: i32,
-}
-
-pub fn write_layer_value(index: usize, value: i32) -> LayerWrite {
-    let _ = index;
-    LayerWrite {
-        form_word: value,
-        record_word: value,
-    }
-}
-
-/// The layer list's label: the one-based layer number.
-pub fn layer_label(index: i32) -> String {
-    format!("{}", index.wrapping_add(1))
-}
-
-/// A picture picker's selected index: the label's text parsed, one below
-/// the one-based control.
-pub fn picture_index(text: i32) -> i32 {
-    text.wrapping_sub(1)
-}
-
-/// The layer picker's index: the control's number plus the form's own
-/// offset.
-pub fn layer_index(control: i32, form_offset: i32) -> i32 {
-    control.wrapping_add(form_offset)
-}
-
-/// The colour control's value: the form's base plus the control's delta.
-pub fn colour_value(base: i32, delta: i32) -> i32 {
-    base.wrapping_add(delta)
-}
-
-/// The new-career dialog's close: hides the dialog and returns to the
-/// main menu.
+/// Backing out of the new-career dialog: closes the dialog when there is one
+/// and runs the front-end step (traced only as far as setting a flag and
+/// bringing the world GUI back).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompanyClose {
     pub close_dialog: bool,
-    pub main_menu: bool,
+    pub front_end_step: bool,
 }
 
-pub fn close_company_to_menu(has_dialog: bool) -> CompanyClose {
+pub fn close_company_back(has_dialog: bool) -> CompanyClose {
     CompanyClose {
         close_dialog: has_dialog,
-        main_menu: true,
+        front_end_step: true,
     }
 }
 
-/// The close after the company is named: closes the dialog, resets the
-/// generator, releases the textures and the procedural materials, and
-/// returns to mode 2.
+/// The step the fade runs once the company is named.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompanyDone {
     pub close_dialog: bool,
-    pub reset_generator: bool,
+    /// The character-creation reset called with 0.
+    pub reset_character_create: bool,
     pub release_textures: bool,
-    pub release_materials: bool,
+    pub release_procedural_materials: bool,
+    /// The value the game-mode global takes.
     pub mode: i32,
 }
 
 pub fn company_named() -> CompanyDone {
     CompanyDone {
         close_dialog: true,
-        reset_generator: true,
+        reset_character_create: true,
         release_textures: true,
-        release_materials: true,
+        release_procedural_materials: true,
         mode: 2,
     }
-}
-
-/// The fade wrapper the named company runs behind: the transition calls
-/// the named-company step.
-pub fn named_company_step() -> CompanyDone {
-    company_named()
 }
 
 /// The company-create dialog's constructor values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompanyCreate {
     pub colour: [u8; 4],
-    pub layout: usize,
-    pub emblem_flags: u32,
+    /// The control table's high index (so two controls).
+    pub controls_high: usize,
+    /// Bits OR-ed into the embedded emblem form's flag word.
+    pub emblem_flags_or: u32,
 }
 
 pub fn company_create() -> CompanyCreate {
     CompanyCreate {
         colour: COMPANY_FORM_COLOUR,
-        layout: 1,
-        emblem_flags: 0x8800,
+        controls_high: 1,
+        emblem_flags_or: 0x8800,
     }
 }
 
-/// The dialog's paint: a black quad over the whole form before the base
-/// paint.
+/// The dialog's paint: a quad over the whole form in the form's colour
+/// (texture corners 0,0, 0,1, 1,1, 1,0) before the base paint.
 pub fn company_paint(width: i32, height: i32) -> [[f32; 2]; 4] {
     [
         [0.0, 0.0],
@@ -257,37 +223,21 @@ pub fn company_paint(width: i32, height: i32) -> [[f32; 2]; 4] {
     ]
 }
 
-/// The emblem unit's init is empty and its finaliser releases the stored
-/// name and the shader's tables.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmblemGlobals {
-    pub name: String,
-    pub shader_record: bool,
-    pub layout: bool,
-}
-
-pub fn emblem_finalise(mut globals: EmblemGlobals) -> EmblemGlobals {
-    globals.name.clear();
-    globals.shader_record = false;
-    globals.layout = false;
-    globals
-}
-
 /// The four layer bytes the "klean" preset stores, and its pictures.
 pub const KLEAN_LAYERS: [u8; 4] = [7, 0, 0, 6];
-pub const KLEAN_BACKGROUND: u32 = 52;
-pub const KLEAN_DESIGN: u32 = 81;
 
 /// Applies the preset to an editor when the typed name is exactly `klean`.
+/// The original also needs the entry's changed flag to be set before it
+/// compares.
 pub fn apply_klean(name: &str, editor: &mut exa_ui::EmblemEditor) -> bool {
-    if name != "klean" {
+    let Some(preset) = preset_emblem(name) else {
         return false;
-    }
+    };
     // The preset stores the two pictures directly; the selector's clamps
     // do not apply to it.
-    editor.record.background = KLEAN_BACKGROUND;
-    editor.record.design = KLEAN_DESIGN;
-    editor.record.layers = u32::from_le_bytes(KLEAN_LAYERS);
+    editor.record.background = preset.background;
+    editor.record.design = preset.design;
+    editor.record.layers = u32::from_le_bytes(preset.layers);
     true
 }
 
@@ -333,30 +283,18 @@ mod tests {
                 flags: 0x70133
             }
         );
-        assert_eq!(write_layer_value(2, 5).record_word, 5);
-        assert_eq!(layer_label(0), "1");
-        assert_eq!(picture_index(4), 3);
-        assert_eq!(layer_index(2, 5), 7);
-        assert_eq!(colour_value(10, 2), 12);
-        assert!(close_company_to_menu(true).main_menu);
+        assert_eq!(step_picture(52, -1), 51);
+        assert_eq!(step_picture(i32::MAX, 1), i32::MIN);
+        assert!(close_company_back(true).close_dialog);
+        assert!(!close_company_back(false).close_dialog);
         assert_eq!(company_named().mode, 2);
-        assert!(named_company_step().reset_generator);
-        assert_eq!(company_create().emblem_flags, 0x8800);
+        assert_eq!(company_create().emblem_flags_or, 0x8800);
         assert_eq!(company_paint(10, 20)[2], [10.0, 20.0]);
-        assert_eq!(
-            emblem_finalise(EmblemGlobals {
-                name: "x".into(),
-                shader_record: true,
-                layout: true
-            })
-            .name,
-            ""
-        );
 
-        // The company name and the dialog's place.
         let mut editor = exa_ui::EmblemEditor::new();
         assert!(apply_klean("klean", &mut editor));
         assert_eq!(editor.record().background, 52);
+        assert_eq!(editor.record().design, 81);
         assert_eq!(editor.record().layers, u32::from_le_bytes(KLEAN_LAYERS));
         assert!(!apply_klean("other", &mut editor));
         assert_eq!(confirm_company("", &editor), CompanyConfirm::MissingName);
@@ -364,25 +302,37 @@ mod tests {
             confirm_company("Ash", &editor),
             CompanyConfirm::Named {
                 name: "Ash".into(),
-                layers: KLEAN_LAYERS
+                emblem: editor.record()
             }
         );
+        // The last layer comes off while there is one; the button turns
+        // off once fewer than one is left, even when nothing came off.
         let mut count = 2;
         assert_eq!(
             remove_layer(&mut count),
             LayerRemove {
                 removed: true,
-                disabled: false
+                disable_button: false
             }
         );
+        assert_eq!(count, 1);
+        assert!(remove_layer(&mut count).disable_button);
+        assert_eq!(count, 0);
         count = 0;
-        assert!(remove_layer(&mut count).disabled);
-        let mut word = 0;
-        toggle_mask(&mut word, 0x10, true);
-        toggle_mask(&mut word, 0x4, true);
-        assert_eq!(word, 0x14);
-        toggle_mask(&mut word, 0x10, false);
-        assert_eq!(word, 0x4);
-        assert_eq!(company_place((1920, 1080)), [960, 370 + 28]);
+        assert_eq!(
+            remove_layer(&mut count),
+            LayerRemove {
+                removed: false,
+                disable_button: true
+            }
+        );
+        count = -3;
+        assert!(!remove_layer(&mut count).removed);
+        assert_eq!(count, -3);
+        // 1080 high: scale 1, the frame leaves 56 over, so the line is
+        // 370 + 28; 720 high: 720/135 rounds to 5, scale 0.625, top 40,
+        // line 231 + 40.
+        assert_eq!(company_cursor((1920, 1080)), [960, 398]);
+        assert_eq!(company_cursor((1280, 720)), [640, 271]);
     }
 }
