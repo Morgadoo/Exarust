@@ -1701,6 +1701,154 @@ mod tests {
         assert_eq!(read.chunk(MEMORY_FLAGS_CHUNK), Some(&[][..]));
     }
 
+    /// A story save laid out byte by byte as the original's writers lay it
+    /// out (synthetic values, the shape of a retail save): `#worldchrdb`,
+    /// `#playerdata` and the level, each at the next 0x2000 boundary.
+    pub(crate) fn retail_shaped_story() -> Vec<u8> {
+        fn word(out: &mut Vec<u8>, value: u32) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        let mut characters = Vec::new();
+        word(&mut characters, WORLD_CHARACTERS_CHUNK);
+        word(&mut characters, 8);
+        word(&mut characters, 0xDBAC_CD00);
+        word(&mut characters, 1);
+        let mut player = Vec::new();
+        word(&mut player, STORY_SIGNATURE);
+        player.extend_from_slice(b"exanima01\0\0\0\0\0\0\0");
+        for value in [7034.0f32, 1532.5, 4748.5, 800.0] {
+            player.extend_from_slice(&value.to_le_bytes());
+        }
+        word(&mut player, 0x02A6_5335); // seed
+        word(&mut player, 0x1_0000); // started, background 0
+        word(&mut player, 8684); // clock
+        word(&mut player, 0);
+        word(&mut player, CHARACTER_TAG);
+        word(&mut player, 24 + 8 + 4 + 8 + 12);
+        word(&mut player, CHARACTER_IN_WORLD_DB | 1);
+        for value in [8183.75f32, -6.0, 3961.0, -1.5] {
+            player.extend_from_slice(&value.to_le_bytes());
+        }
+        word(&mut player, 0);
+        word(&mut player, 0xCAC0_E100);
+        word(&mut player, 4);
+        word(&mut player, 0x0102_0304);
+        word(&mut player, 0xCAC0_EA00);
+        word(&mut player, 12);
+        player.extend_from_slice(&[0; 12]);
+        word(&mut player, DISCOVERY_CHUNK);
+        word(&mut player, 4);
+        word(&mut player, 0);
+        word(&mut player, JOURNAL_CHUNK);
+        word(&mut player, 4 + 4 + 4 + 9 + 4);
+        word(&mut player, 1);
+        word(&mut player, 0);
+        word(&mut player, 9);
+        player.extend_from_slice(b"New Entry");
+        word(&mut player, 0);
+        word(&mut player, GLOBAL_XP_CHUNK);
+        word(&mut player, 4);
+        word(&mut player, 44);
+        let level = b"level bytes".to_vec();
+        let mut out = Vec::new();
+        word(&mut out, PACKAGE_MAGIC);
+        word(&mut out, 4);
+        word(&mut out, 0);
+        word(&mut out, SENTINEL_SIZE);
+        out.extend_from_slice(&[0; NAME_LEN]);
+        let sections: [(&[u8; NAME_LEN], &Vec<u8>, u32); 3] = [
+            (WORLD_CHARACTER_DB, &characters, 0x2000),
+            (PLAYER_DATA, &player, 0x4000),
+            (&name("exanima01"), &level, 0x6000),
+        ];
+        for (label, payload, offset) in sections {
+            word(&mut out, offset);
+            word(&mut out, payload.len() as u32);
+            out.extend_from_slice(label);
+        }
+        for (_, payload, offset) in sections {
+            out.resize(offset as usize, 0);
+            out.extend_from_slice(payload);
+        }
+        out
+    }
+
+    #[test]
+    fn a_retail_shaped_save_round_trips_byte_for_byte() {
+        let bytes = retail_shaped_story();
+        // Read and written back unchanged.
+        let package = PackageImage::read(&bytes).unwrap();
+        assert_eq!(package.to_bytes(), bytes);
+        // Written from scratch in the original's section order, it comes
+        // out identical: the same offsets, sentinel and gaps.
+        let mut rebuilt = PackageImage::new();
+        for entry in package.entries() {
+            rebuilt.put_section(&entry.name, &entry.data);
+        }
+        assert_eq!(rebuilt.to_bytes(), bytes);
+        // The player data reads with its placement first and rewrites to
+        // the same bytes.
+        let section = package.section(PLAYER_DATA).unwrap();
+        let data = PlayerData::parse(section, Flavour::Story).unwrap();
+        assert_eq!(data.write(), section);
+        assert_eq!(data.character_record_id(), Some(1));
+        assert_eq!(data.character_in_world_db(), Some(true));
+        let placement = data.placement().unwrap().unwrap();
+        assert_eq!(placement.position, [8183.75, -6.0, 3961.0]);
+        assert_eq!(
+            data.chunks.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [DISCOVERY_CHUNK, JOURNAL_CHUNK, GLOBAL_XP_CHUNK]
+        );
+        assert_eq!(
+            data.journal().unwrap().unwrap(),
+            vec![JournalRecord {
+                id: 0,
+                title: "New Entry".to_string(),
+                text: String::new(),
+            }]
+        );
+        let PlayerHeader::Story(header) = data.header else {
+            unreachable!()
+        };
+        assert_eq!((header.flags & 0xFF, header.flags >> 16), (0, 1));
+        assert_eq!(header.clock, 8684);
+    }
+
+    #[test]
+    fn retail_saves_round_trip_when_a_save_folder_is_given() {
+        // A real-data check: `EXANIMA_SAVES` names a folder of the user's
+        // own saves (`%APPDATA%\Exanima`). Every package must rebuild byte
+        // for byte and its player data must rewrite unchanged. It skips
+        // when the variable is not set; nothing is copied.
+        let Ok(dir) = std::env::var("EXANIMA_SAVES") else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let file = entry.file_name().to_string_lossy().to_lowercase();
+            if !(file.ends_with(".rsg") || file.ends_with(".rcp")) {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let package = PackageImage::read(&bytes).unwrap();
+            assert_eq!(package.to_bytes(), bytes, "{file}");
+            let Some(section) = package.section(PLAYER_DATA) else {
+                continue;
+            };
+            let signature = u32::from_le_bytes(section[0..4].try_into().unwrap());
+            let flavour = if signature == ARENA_SIGNATURE {
+                Flavour::Arena
+            } else {
+                Flavour::Story
+            };
+            let data = PlayerData::parse(section, flavour).unwrap();
+            assert_eq!(data.write(), section, "{file}");
+            assert!(data.placement().unwrap().is_ok(), "{file}");
+        }
+    }
+
     #[test]
     fn the_retail_executable_names_the_save_sections() {
         // A real-data check: the section names and both extensions are in

@@ -143,16 +143,32 @@ pub fn player_data(session: &Session) -> PlayerData {
 }
 
 /// The `#playerdata` section a session writes: the mode's header, the
-/// journal and the Exarust chunk with everything else. A previous section's
-/// character placement is carried over when the session has none (the
-/// original's arena writer does this for a save made with no scene loaded).
+/// journal and the Exarust chunk with everything else. Over a previous
+/// section of the same mode, the character placement is carried over when
+/// the session has none (the original's arena writer does this for a save
+/// made with no scene loaded), and so are the chunks Exarust does not
+/// produce (discovery, global experience, the arena tables), in their
+/// order, so a retail save overwritten by Exarust keeps what Exarust cannot
+/// regenerate yet.
 pub fn player_section_after(session: &Session, previous: Option<&[u8]>) -> Vec<u8> {
     let mut data = player_data(session);
-    if data.character.is_none()
-        && let Some(bytes) = previous
-        && let Ok(old) = PlayerData::parse(bytes, flavour_of(bytes))
+    let flavour = data.header.flavour();
+    if let Some(bytes) = previous
+        && flavour_of(bytes) == flavour
+        && let Ok(old) = PlayerData::parse(bytes, flavour)
     {
-        data.character = old.character;
+        if data.character.is_none() {
+            data.character = old.character;
+        }
+        let ours = std::mem::take(&mut data.chunks);
+        data.chunks = old
+            .chunks
+            .into_iter()
+            .filter(|chunk| chunk.id != save_package::JOURNAL_CHUNK && chunk.id != EXARUST_CHUNK)
+            .collect();
+        for chunk in ours {
+            data.set_chunk(chunk.id, chunk.data);
+        }
     }
     data.set_chunk(EXARUST_CHUNK, write_body(session));
     data.write()

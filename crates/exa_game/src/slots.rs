@@ -789,6 +789,116 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The original's story reader, reduced to what decides whether a save
+    /// loads: the section found by its exact name, a signature at or above
+    /// the story's, the 52-byte header, the first chunk taken as the
+    /// character whatever its id, then chunk ids while more than eight
+    /// bytes remain. Returns the character reference and the chunk ids.
+    fn original_story_reader(bytes: &[u8]) -> Option<(u32, Vec<u32>)> {
+        let word = |at: usize| -> Option<u32> {
+            Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+        };
+        if word(0)? != save_package::PACKAGE_MAGIC {
+            return None;
+        }
+        let count = word(4)? as usize;
+        let (offset, size) = (1..count).find_map(|index| {
+            let at = 8 + index * 24;
+            (bytes.get(at + 8..at + 24)? == &PLAYER_DATA[..])
+                .then(|| Some((word(at)? as usize, word(at + 4)? as usize)))
+                .flatten()
+        })?;
+        let section = bytes.get(offset..offset + size)?;
+        let read = |at: usize| -> Option<u32> {
+            Some(u32::from_le_bytes(
+                section.get(at..at + 4)?.try_into().ok()?,
+            ))
+        };
+        if read(0)? < save_package::STORY_SIGNATURE {
+            return None;
+        }
+        let reference = read(60)?;
+        let mut at = 60 + read(56)? as usize;
+        let mut ids = Vec::new();
+        while at + 8 < section.len() {
+            ids.push(read(at)?);
+            at += 8 + read(at + 4)? as usize;
+        }
+        Some((reference, ids))
+    }
+
+    #[test]
+    fn a_session_saved_over_a_retail_save_stays_readable_by_the_original() {
+        let dir = folder("retail");
+        let slots = Slots::story(&dir);
+        // A retail-shaped story save: a world character database, player
+        // data with a placement, discovery, journal and experience, and the
+        // level.
+        let mut data = PlayerData::story(save_package::name("exanima01"));
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: save_package::CHARACTER_IN_WORLD_DB | 1,
+                position: [10.0, 0.0, 20.0],
+                facing: 0.5,
+                extra: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        data.set_chunk(save_package::DISCOVERY_CHUNK, vec![0; 4]);
+        data.set_chunk(save_package::GLOBAL_XP_CHUNK, 44u32.to_le_bytes().to_vec());
+        let mut package = PackageImage::new();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(&[0; 8]),
+        );
+        package.put_section(PLAYER_DATA, &data.write());
+        package.put_section(&save_package::name("exanima01"), b"level");
+        let path = slots.file(1, SlotKind::Save);
+        fs::write(&path, package.to_bytes()).unwrap();
+        let (reference, ids) = original_story_reader(&package.to_bytes()).unwrap();
+        assert_eq!(reference, 0x4000_0001);
+        assert_eq!(
+            ids,
+            [save_package::DISCOVERY_CHUNK, save_package::GLOBAL_XP_CHUNK]
+        );
+
+        // Exarust saves its session over it.
+        let mut session = Session::story();
+        session.clock = 9;
+        slots.save(1, &session).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let (reference, ids) = original_story_reader(&bytes).unwrap();
+        // The placement is still first, the retail chunks are kept, and the
+        // Exarust chunk is one more id the original skips.
+        assert_eq!(reference, 0x4000_0001);
+        assert_eq!(
+            ids,
+            [
+                save_package::DISCOVERY_CHUNK,
+                save_package::GLOBAL_XP_CHUNK,
+                save_package::JOURNAL_CHUNK,
+                save_package::EXARUST_CHUNK
+            ]
+        );
+        let package = PackageImage::read(&bytes).unwrap();
+        assert!(package.has_section(save_package::WORLD_CHARACTER_DB));
+        assert_eq!(
+            package.section(&save_package::name("exanima01")),
+            Some(&b"level"[..])
+        );
+        assert_eq!(slots.load(1, false).unwrap().0.clock, 9);
+
+        // A save Exarust writes from nothing has no placement: the
+        // original would take its first chunk as the character and fail to
+        // find the record. That is the documented gap until Exarust exports
+        // a character.
+        let fresh = session::write(&session);
+        let (reference, _) = original_story_reader(&fresh).unwrap();
+        assert_eq!(reference, 1, "the journal count read as a reference");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_manual_save_refreshes_an_existing_checkpoint() {
         let dir = folder("manual");
