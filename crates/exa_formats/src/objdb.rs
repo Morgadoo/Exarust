@@ -74,8 +74,6 @@ const SET_OFFSET: usize = 0x220;
 const POWERED: u8 = 1;
 const SPENT: u8 = 0xFF;
 const LAYERS: usize = 8;
-/// Layers the character texture job reads (the eighth is ignored).
-pub const USED_LAYERS: usize = 7;
 const LAYER_LEN: usize = 12;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -543,10 +541,10 @@ impl Appearance {
         (q, d / (2.0 - d), (r * r + r) / 2.0)
     }
 
-    /// The layers the original's texture job reads: the first seven. The
-    /// eighth is never looked at.
+    /// The layers the original's texture job paints: every one of the
+    /// eight that names a mask (its loop runs while the index is below 8).
     pub fn used_layers(&self) -> impl Iterator<Item = &Layer> {
-        self.layers.iter().take(USED_LAYERS).filter(|l| l.mask != 0)
+        self.layers.iter().filter(|l| l.mask != 0)
     }
 }
 
@@ -1031,10 +1029,10 @@ mod tests {
         assert_eq!(with(operative::KEY), None);
     }
 
-    /// The texture job reads seven layers: the eighth never reaches a
-    /// painted texture, and no shipped item puts anything in it.
+    /// The texture job reads all eight layers (no shipped item fills the
+    /// eighth, so the shipped looks do not depend on it).
     #[test]
-    fn the_eighth_layer_is_never_read() {
+    fn every_layer_with_a_mask_is_read() {
         let mut layers = [Layer::default(); LAYERS];
         for (i, layer) in layers.iter_mut().enumerate() {
             layer.mask = i as u8 + 1;
@@ -1046,7 +1044,7 @@ mod tests {
             layers,
         };
         let masks: Vec<u8> = appearance.used_layers().map(|l| l.mask).collect();
-        assert_eq!(masks, [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(masks, [1, 2, 3, 4, 5, 6, 7, 8]);
         let Some(dir) = exa_rpk::locate_install(None) else {
             return;
         };
@@ -1055,10 +1053,7 @@ mod tests {
         let db = Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
         let eight = items(&db)
             .iter()
-            .filter(|i| {
-                i.appearance
-                    .is_some_and(|a| a.layers[USED_LAYERS].mask != 0)
-            })
+            .filter(|i| i.appearance.is_some_and(|a| a.layers[LAYERS - 1].mask != 0))
             .count();
         assert_eq!(eight, 0);
     }
