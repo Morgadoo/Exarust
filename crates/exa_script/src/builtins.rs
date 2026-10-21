@@ -358,6 +358,23 @@ pub fn witness_range(dx: f32, dy: f32, dz: f32) -> bool {
     dx * dx + dy * dy + dz * dz <= 3.24e6
 }
 
+/// The characters a `WitnessRole` grant reaches: those within
+/// [`WITNESS_RADIUS_CM`] (the original's squared-distance test) for which
+/// `sees` answers, in the given order.
+pub fn witnesses<'a>(
+    actor: [f32; 3],
+    candidates: impl IntoIterator<Item = (u32, [f32; 3])> + 'a,
+    mut sees: impl FnMut(u32) -> bool,
+) -> Vec<u32> {
+    candidates
+        .into_iter()
+        .filter(|(id, [x, y, z])| {
+            witness_range(x - actor[0], y - actor[1], z - actor[2]) && sees(*id)
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Type word of a zone marker object, as `InZone` looks it up in the object
 /// database.
 pub const ZONE_MARKER_TYPE: u32 = 0x8000_AC07;
