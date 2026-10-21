@@ -824,8 +824,11 @@ mod level_tests {
         assert_eq!(plain.data.as_ref().unwrap().len(), 4 * 4 * 4);
         let chained =
             rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
-        assert_eq!(chained.texture_descriptor.mip_level_count, 2);
-        assert_eq!(chained.data.as_ref().unwrap().len(), 4 * 4 * 4 + 2 * 2 * 4);
+        assert_eq!(chained.texture_descriptor.mip_level_count, 3);
+        assert_eq!(
+            chained.data.as_ref().unwrap().len(),
+            4 * 4 * 4 + 2 * 2 * 4 + 4
+        );
     }
 
     fn rfi_bytes(header: &RfiHeader, data: &[u8]) -> Vec<u8> {
