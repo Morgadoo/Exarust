@@ -894,6 +894,12 @@ pub enum Step {
     MenuHelp(bool),
     /// The GUI's scale was re-quantised; both menus lay out again.
     GuiScale(f32),
+    /// The arena's own pause-screen callback runs.
+    ArenaPaused,
+    /// The session forfeits the match.
+    Forfeit,
+    /// A story hook another unit installed runs.
+    CustomHook,
     /// The menu's hover sound: this gain at the menu's volume.
     Hover {
         volume: f32,
@@ -1157,6 +1163,8 @@ pub struct Flow {
     last_placement: Placement,
     /// The client size the camera shots are framed for.
     pub viewport: Viewport,
+    /// Another unit installed a story hook (the story tick calls it).
+    pub custom_hook: bool,
 }
 
 impl Default for Flow {
@@ -1192,6 +1200,7 @@ impl Default for Flow {
                 width: 1600,
                 height: 900,
             },
+            custom_hook: false,
         }
     }
 }
@@ -1670,6 +1679,9 @@ impl Flow {
             self.story.last_discovery_s = second;
             steps.push(Step::Discovery);
         }
+        if self.custom_hook {
+            steps.push(Step::CustomHook);
+        }
         steps
     }
 
@@ -1792,6 +1804,7 @@ impl Flow {
             Step::SessionTask(false),
         ];
         let alive = f64::from(health) >= ALIVE_HEALTH;
+        steps.push(Step::Tip(if alive { 2 } else { 3 }));
         let mut reconstructed = false;
         if !alive && self.mode == Mode::Story {
             if self.story.reconstruction == 0 || self.story.checkpoint != self.story.record {
@@ -1811,7 +1824,6 @@ impl Flow {
         };
         let menu = end_menu(kind, self.mode);
         self.end_menu = Some(menu);
-        steps.push(Step::Tip(if alive { 2 } else { 3 }));
         steps.push(Step::EndMenu(menu));
         steps
     }
@@ -1907,28 +1919,29 @@ impl Flow {
         steps
     }
 
-    /// The in-game quit: the story saves first; the arena saves, or forfeits
-    /// when the pause page is open; any other mode just leaves. Going back to
-    /// the title runs behind the transition.
-    pub fn quit_session(&mut self, pause_page: bool, now: u32) -> Vec<Step> {
+    /// The in-game quit and its autosave: an arena pause screen runs the
+    /// arena's own pause callback; a story session always saves (dropping the
+    /// save when the player is dead); the arena saves from its in-game page
+    /// and forfeits from its pause page; practice writes nothing. Going back
+    /// to the title runs behind the transition.
+    pub fn quit_session(&mut self, page: Page, now: u32) -> Vec<Step> {
         let mut steps = Vec::new();
+        if self.phase == Phase::Paused && self.mode == Mode::Arena {
+            steps.push(Step::ArenaPaused);
+        }
         if self.phase == Phase::Playing {
             steps.push(Step::GameGui(false));
             match self.mode {
-                Mode::Arena => {
-                    steps.push(Step::Save {
-                        drop_on_low_health: false,
-                    });
-                    if pause_page {
-                        steps.push(Step::ScriptMode {
-                            mode: ARENA_MODE,
-                            hook: ScriptHook::End,
-                        });
-                    }
-                }
                 Mode::Story => steps.push(Step::Save {
-                    drop_on_low_health: false,
+                    drop_on_low_health: true,
                 }),
+                Mode::Arena => match page {
+                    Page::InGame => steps.push(Step::Save {
+                        drop_on_low_health: false,
+                    }),
+                    Page::ArenaPause => steps.push(Step::Forfeit),
+                    _ => {}
+                },
                 _ => {}
             }
             steps.push(Step::SessionTask(false));
@@ -1981,7 +1994,6 @@ impl Flow {
             _ => {}
         }
         steps.push(Step::TeardownWorld);
-        steps.push(Step::PlayerData);
         self.player = [false; 3];
         steps
     }
@@ -3118,9 +3130,10 @@ mod tests {
         let steps = flow.resume();
         assert_eq!(flow.phase, Phase::Playing);
         assert!(steps.contains(&Step::Controls(true)));
-        let steps = flow.quit_session(false, 100);
+        let steps = flow.quit_session(Page::InGame, 100);
+        // A story quit saves with the death rule.
         assert!(steps.contains(&Step::Save {
-            drop_on_low_health: false
+            drop_on_low_health: true
         }));
         assert!(steps.contains(&Step::Transition));
         let steps = flow.transition_due(200).unwrap();
@@ -3232,6 +3245,47 @@ mod tests {
             Vec3::new(1.0, 17.0, 3.0),
             flow.viewport
         ))));
+    }
+
+    #[test]
+    fn the_arena_quit_saves_or_forfeits() {
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = flow.quit_session(Page::InGame, 10);
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
+        assert!(!steps.contains(&Step::Forfeit));
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = flow.quit_session(Page::ArenaPause, 10);
+        assert!(steps.contains(&Step::Forfeit));
+        assert!(!steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
+        // A paused arena quit runs the arena's pause callback first.
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Paused,
+            ..Default::default()
+        };
+        let steps = flow.quit_session(Page::InGame, 10);
+        assert_eq!(steps.first(), Some(&Step::ArenaPaused));
+        // A practice quit writes no save.
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = flow.quit_session(Page::InGame, 10);
+        assert!(!steps.iter().any(|step| matches!(step, Step::Save { .. })));
+        assert!(steps.contains(&Step::Transition));
     }
 
     #[test]

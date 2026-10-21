@@ -52,6 +52,8 @@ pub const MENU_FADE_RATE: f64 = 0.001;
 /// The fade value below which the screen closes: the smallest float above
 /// zero that the original's fade rate can produce in one step.
 pub const FADE_EPSILON: f32 = 1.192_089_982_282_595_9e-07;
+/// The control value a form reports when no control is under the point.
+pub const NO_CONTROL: i32 = -1;
 /// The size quantisation the logos share with the menu.
 pub const SCALE_STEP: f64 = 0.125;
 /// The client height one scale step stands for.
@@ -185,6 +187,19 @@ impl Splash {
     /// The state.
     pub fn phase(&self) -> State {
         State::from_word(self.state)
+    }
+
+    /// The form's bounds callback: the client rect and no control, -1.
+    pub fn bounds(viewport: Viewport) -> (LogoRect, i32) {
+        (
+            LogoRect {
+                x: 0.0,
+                y: 0.0,
+                width: viewport.width as f32,
+                height: viewport.height as f32,
+            },
+            NO_CONTROL,
+        )
     }
 
     /// One tick at `now`. `programs_ready` is the renderer's warm-up answer:
@@ -648,6 +663,10 @@ mod tests {
         ] {
             assert_eq!(State::from_word(word), state);
         }
+        let (bounds, control) = Splash::bounds(VIEW);
+        assert_eq!(bounds.width, 1600.0);
+        assert_eq!(bounds.height, 1080.0);
+        assert_eq!(control, -1);
         let mut screen = SplashScreen::default();
         assert!(!screen.is_active());
         screen.begin(10, logos());
