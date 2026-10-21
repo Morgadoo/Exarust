@@ -73,7 +73,10 @@ use crate::arena::Mt19937;
 use crate::effects::{distance_squared, level_of_detail};
 use crate::nav_camera::planar_yaw;
 use crate::thaum::engine::{Roll, lerp, normalize};
-use crate::thaum::{dome_extent, step_ripple};
+use crate::thaum::{
+    BarrierPose, advance_barrier_pose, barrier_lerp, dome_extent, step_ripple,
+    update_barrier_position,
+};
 
 /// At most eight ripples.
 pub const MOST_RIPPLES: usize = 8;
@@ -87,7 +90,7 @@ pub const GLOW_CAP: f32 = 0.5;
 /// The level of detail's numerator.
 pub const LOD_BASE: f32 = 500.0;
 /// The cast sound's volume: the Barrier's and the Bubble's.
-pub const BARRIER_CAST_VOLUME: f32 = f32::from_bits(0x3e4c_cccd);
+pub const BARRIER_CAST_VOLUME: f32 = crate::thaum::BARRIER_CAST_VOLUME;
 pub const BUBBLE_CAST_VOLUME: f32 = f32::from_bits(0x3e99_999a);
 /// The Barrier's grow and shrink rates a millisecond, and its grow window.
 pub const BARRIER_GROW_PER_MS: f64 = 0.001_25;
@@ -551,9 +554,9 @@ pub struct Barrier {
     /// The power's focus rate a tick and its hit value.
     pub rate: f32,
     pub hit: f32,
-    /// The place at the last two snapshots, and the facing at the last two.
-    pub place: [Vec3; 2],
-    pub facing: [Vec3; 2],
+    /// The place and facing at the last two snapshots and the tick's own
+    /// (the snapshot's next pair), with the snapshot's frame.
+    pub pose: BarrierPose,
     /// The texture's random offsets.
     pub tex_seed: [f32; 2],
 }
@@ -574,7 +577,6 @@ impl Barrier {
         radius: f32,
         caster: Vec3,
         ground_y: f32,
-        facing: Vec3,
         start_ms: u32,
         random: &mut Mt19937,
     ) -> (Self, Sound) {
@@ -597,8 +599,15 @@ impl Barrier {
             drawn_radius: 0.0,
             rate: 0.0,
             hit: 0.0,
-            place: [at; 2],
-            facing: [facing; 2],
+            pose: BarrierPose {
+                first: [0.0; 3],
+                first_previous: [0.0; 3],
+                second: [0.0; 3],
+                second_previous: [0.0; 3],
+                next_first: at.to_array(),
+                next_second: [0.0; 3],
+                frame: 0,
+            },
             tex_seed,
         };
         (barrier, sound)
@@ -615,7 +624,8 @@ impl Barrier {
         let carried = f64::from(self.height - previous) * 0.95 + f64::from(self.height);
         self.height = (f64::from(target - self.height) * 0.003 + carried) as f32;
         self.dome.at = Vec3::new(caster.x, self.height, caster.z);
-        self.facing[1] = facing;
+        self.pose.next_first = self.dome.at.to_array();
+        self.pose.next_second = facing.to_array();
         self.dome.previous_share = self.dome.share;
         let dome = &mut self.dome;
         if dome.phase < Phase::Ending {
@@ -659,17 +669,31 @@ impl Barrier {
         out
     }
 
-    /// The pose snapshot at the start of a tick: the place and facing move
-    /// to the previous slot.
-    pub fn snapshot(&mut self) {
-        self.place[0] = self.place[1];
-        self.place[1] = self.dome.at;
-        self.facing[0] = self.facing[1];
+    /// The pose snapshot before a tick ([`advance_barrier_pose`]): the
+    /// current place and facing become the previous, the tick's become the
+    /// current, and the frame word is stored.
+    pub fn snapshot(&mut self, frame: i32) {
+        self.pose = advance_barrier_pose(&self.pose, frame);
     }
 
-    /// The place the frame draws at the tick fraction `t`.
+    /// The place the frame draws at the frame's fraction `t`: from the
+    /// previous snapshot toward the current one.
     pub fn frame_place(&self, t: f32) -> Vec3 {
-        lerp(self.place[0], self.place[1], t)
+        Vec3::from_array(barrier_lerp(self.pose.first_previous, self.pose.first, t))
+    }
+
+    /// The node's place a tick takes from its setup's frame: the fraction
+    /// is the setup's frame less the snapshot's plus its sub-frame part
+    /// ([`update_barrier_position`]).
+    pub fn tick_place(&self, setup_frame: i32, sub_frame: f32) -> Vec3 {
+        let (at, _) = update_barrier_position(
+            self.pose.first_previous,
+            self.pose.first,
+            setup_frame,
+            self.pose.frame,
+            sub_frame,
+        );
+        Vec3::from_array(at)
     }
 
     /// The frame: the cap's place, facing, centre and texture position,
@@ -677,7 +701,11 @@ impl Barrier {
     /// is the node's own clock word the texture's second coordinate follows.
     pub fn frame(&mut self, alpha: f32, camera: Vec3, node_time: f32) -> Option<BarrierFrame> {
         let at = self.frame_place(alpha);
-        let facing = normalize(lerp(self.facing[0], self.facing[1], alpha));
+        let facing = normalize(Vec3::from_array(barrier_lerp(
+            self.pose.second_previous,
+            self.pose.second,
+            alpha,
+        )));
         let yaw = planar_yaw(facing);
         self.dome.tex_pos = [
             (f64::from(yaw) * 0.159_154_943_091_895_35 + f64::from(self.tex_seed[0]) + 0.5) as f32,
@@ -1068,14 +1096,7 @@ mod tests {
     }
 
     fn barrier() -> Barrier {
-        let (mut b, _) = Barrier::cast(
-            100.0,
-            Vec3::new(0.0, 0.0, 0.0),
-            0.0,
-            Vec3::Z,
-            1000,
-            &mut random(),
-        );
+        let (mut b, _) = Barrier::cast(100.0, Vec3::new(0.0, 0.0, 0.0), 0.0, 1000, &mut random());
         b.rate = 0.002;
         b
     }
@@ -1135,15 +1156,24 @@ mod tests {
     #[test]
     fn the_barrier_frame_draws_the_cap_ahead_with_its_bound() {
         let mut b = barrier();
-        b.snapshot();
+        b.tick(Vec3::ZERO, 0.0, Vec3::Z, 1012);
+        b.snapshot(1);
+        b.snapshot(2);
+        // Two snapshots: the place stands still, the facing is +z.
+        assert_eq!(b.frame_place(0.5), b.dome.at);
+        assert_eq!(b.tick_place(4, 0.5), b.dome.at);
         let frame = b.frame(0.5, Vec3::new(0.0, 0.0, 1000.0), 0.0).unwrap();
         // The facing is the engine's approximate normalisation of +z.
         assert_eq!(frame.centre, frame.at + frame.facing * 75.0);
         assert!((frame.facing - Vec3::Z).length() < 1e-3);
         assert_eq!(frame.bound_radius, (625.0f32 + 7225.0).sqrt());
         assert_eq!(frame.hum_at, frame.centre + frame.facing * 80.0);
-        // The growing hum under a quarter share, and the glow from the hit.
-        assert_eq!(frame.dome.hum, [0.0, 1.0]);
+        // The growing hum under a quarter share: the blended share is half
+        // of 12 ms of growth.
+        let shown = 0.5 * 0.0 + b.dome.share * 0.5;
+        let x = shown * 4.0;
+        let x = x * (2.0 - x);
+        assert_eq!(frame.dome.hum, [x * 0.2, 1.0 - x * 0.25]);
         assert_eq!(b.dome.glow, 0.0);
     }
 
