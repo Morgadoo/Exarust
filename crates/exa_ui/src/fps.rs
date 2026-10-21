@@ -95,6 +95,8 @@ fn update(
         }
         let fps = readout.frames as f32 / readout.seconds;
         *readout = FpsReadout::default();
+        // Two decimals with the trailing zeros kept, as the original's
+        // readout asks for ("60.00 FPS").
         let text = exa_formats::text::format_float(fps, 2, true);
         debug!("{text} FPS");
         let line = font.0.render(&format!("{text} FPS"));

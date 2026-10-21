@@ -3,17 +3,22 @@
 //! colours, the a/an vowel test and title-casing.
 //!
 //! The formatting rules are the original's, not Rust's: integers are built
-//! from the least significant digit and prepended, the two-digit formatter
-//! pads with a leading zero and gives `"00"` for any value it cannot write,
-//! the float formatter takes the fractional part with a truncating
-//! conversion and the last digit with a rounding one (ties to even), trims
-//! trailing zeros at the caller's request, and carries a last digit of ten
-//! through trailing nines into the integer part. A float with fewer than
-//! one decimal place is the rounding conversion to an integer.
+//! from the least significant digit and prepended; the two-digit formatter
+//! writes zero as `"00"`, pads a lone digit with a zero and writes a
+//! negative value as `"0"`; the float formatter takes each fractional digit
+//! with a truncating conversion and the last with a rounding one (ties to
+//! even), carries a last digit of ten through trailing nines into the
+//! integer part, and drops trailing zeros unless the caller keeps them. A
+//! float with fewer than one decimal place is the rounding conversion to an
+//! integer. Rounding assumes the processor's default mode (to nearest).
 //!
-//! Evidence: the formatting unit listed in `docs/COMPONENT-MAP.md` (Core
-//! string/number formatting utilities); the assembly pins the conversion
-//! instructions and the branch order.
+//! Indexes follow the original: the search takes a 1-based start and
+//! returns a 0-based position, and the last-byte search behind the name
+//! helpers reports position 0, not "absent", for an empty text.
+//!
+//! Evidence: the text-formatting part of the core unit in
+//! `docs/COMPONENT-MAP.md`; the assembly pins the conversion instructions,
+//! the precision of each operation and the branch order.
 
 /// The digit a hexadecimal value uses, upper case.
 const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
@@ -161,74 +166,94 @@ pub fn format_hex(value: i64, width: i32) -> String {
     out
 }
 
-/// A float with `decimals` decimal places (the original's fixed-point
-/// formatter). Below one decimal place it is [`round_to_i32`] and
-/// [`format_int`]. Otherwise the fractional digits come from the fraction
-/// times ten (truncating each but the last, which rounds ties to even); a
-/// last digit of ten is carried through the trailing nines into the integer
-/// part. With `trim`, trailing zeros are dropped and a bare trailing point
-/// keeps one zero. The integer part is `0` for a value below one and `-0`
-/// when its sign bit is set.
-pub fn format_float(value: f32, decimals: i32, trim: bool) -> String {
-    if decimals < 1 {
-        return format_int(round_to_i32(value));
+/// `CVTTSS2SI` into a 64-bit register: truncate toward zero; a NaN or a
+/// value out of range is `i64::MIN`.
+fn trunc_to_i64(value: f32) -> i64 {
+    if value.is_nan()
+        || value >= 9_223_372_036_854_775_808.0
+        || value < -9_223_372_036_854_775_808.0
+    {
+        i64::MIN
+    } else {
+        value as i64
     }
-    let mut out = String::from(".");
+}
+
+/// `CVTSS2SI` into a 64-bit register: round half to even; a NaN or a value
+/// out of range is `i64::MIN`.
+fn round_to_i64(value: f32) -> i64 {
+    trunc_to_i64(value.round_ties_even())
+}
+
+/// A float with `decimals` decimal places (the original's fixed-point
+/// formatter). `keep_zeros` is the original's last argument: when it is
+/// false, trailing zeros are dropped and a bare trailing point keeps one.
+///
+/// Below one decimal place the value goes through the 64-bit rounding
+/// conversion and its low word is written by [`format_int`]. Otherwise:
+/// the fraction of the magnitude (less its 32-bit truncation) is multiplied
+/// by ten in single precision; each digit but the last is its 64-bit
+/// truncation (low word), the remainder times ten carrying on; the last
+/// digit is the 64-bit rounding conversion (ties to even). A last digit
+/// above nine turns the trailing nines into zeros and adds one to the digit
+/// before them, or, when the nines reach the point, moves the integer part
+/// one away from zero (by the sign bit); a `0` is then appended. The
+/// integer part is the 64-bit truncation's low word, written as `0` or `-0`
+/// (sign bit set) when it is zero. A digit byte is `(digit + '0') & 0xff`;
+/// bytes are mapped one to one to the characters U+0000 to U+00FF, so the
+/// out-of-range bytes that a value of 2^31 or more produces stay distinct.
+pub fn format_float(value: f32, decimals: i32, keep_zeros: bool) -> String {
+    if decimals < 1 {
+        return format_int(round_to_i64(value) as i32);
+    }
+    let mut out = vec![b'.'];
     let mut fraction = fraction(value.abs()) * 10.0;
     let mut written = 0;
     while written < decimals - 1 {
         written += 1;
-        let digit = trunc_to_i32(fraction);
-        out.push(((digit.wrapping_add(0x30)) & 0xff) as u8 as char);
+        let digit = trunc_to_i64(fraction) as i32;
+        out.push(digit.wrapping_add(0x30) as u8);
         fraction = (fraction - digit as f32) * 10.0;
     }
-    let last = round_to_i32(fraction);
-    let mut integer = trunc_to_i32(value);
-    if last < 10 {
-        out.push(((last.wrapping_add(0x30)) & 0xff) as u8 as char);
+    let last = round_to_i64(fraction) as i32;
+    let negative = value.to_bits() & 0x8000_0000 != 0;
+    let integer = if last <= 9 {
+        out.push(last.wrapping_add(0x30) as u8);
+        trunc_to_i64(value) as i32
     } else {
+        // `at` is the original's 1-based index; the point at index 1 stops
+        // the walk.
         let mut at = decimals as usize;
-        while at >= 1 && out.as_bytes().get(at - 1) == Some(&b'9') {
-            // SAFETY-free byte write: the character is ASCII.
-            let mut bytes = out.into_bytes();
-            bytes[at - 1] = b'0';
-            out = String::from_utf8_lossy(&bytes).into_owned();
+        while out[at - 1] == b'9' {
+            out[at - 1] = b'0';
             at -= 1;
         }
-        if at < 2 {
-            integer = trunc_to_i32(value)
-                + if value.to_bits() & 0x8000_0000 != 0 {
-                    -1
-                } else {
-                    1
-                };
+        let integer = if at < 2 {
+            let step = if negative { -1 } else { 1 };
+            trunc_to_i64(value).wrapping_add(step) as i32
         } else {
-            let mut bytes = out.into_bytes();
-            bytes[at - 1] = bytes[at - 1].wrapping_add(1);
-            out = String::from_utf8_lossy(&bytes).into_owned();
-        }
-        out.push('0');
-    }
-    if trim {
+            out[at - 1] = out[at - 1].wrapping_add(1);
+            trunc_to_i64(value) as i32
+        };
+        out.push(b'0');
+        integer
+    };
+    if !keep_zeros {
         let mut len = out.len();
-        while len >= 1 && out.as_bytes()[len - 1] == b'0' {
+        while out[len - 1] == b'0' {
             len -= 1;
         }
-        if len >= 1 && out.as_bytes()[len - 1] == b'.' {
+        if out[len - 1] == b'.' {
             len += 1;
         }
         out.truncate(len);
     }
-    let prefix = if integer == 0 {
-        if value.to_bits() & 0x8000_0000 != 0 {
-            "-0".to_string()
-        } else {
-            "0".to_string()
-        }
-    } else {
-        format_int(integer)
+    let prefix = match integer {
+        0 if negative => "-0".to_string(),
+        0 => "0".to_string(),
+        _ => format_int(integer),
     };
-    format!("{prefix}{out}")
+    prefix + &out.iter().map(|&byte| char::from(byte)).collect::<String>()
 }
 
 /// An integer from decimal text: an optional leading minus, then digits up
@@ -537,26 +562,33 @@ mod tests {
 
     #[test]
     fn a_float_takes_its_decimals_and_trims() {
-        assert_eq!(format_float(1.25, 2, false), "1.25");
         assert_eq!(format_float(1.25, 2, true), "1.25");
-        assert_eq!(format_float(1.2, 3, false), "1.200");
-        assert_eq!(format_float(1.2, 3, true), "1.2");
-        assert_eq!(format_float(1.0, 2, false), "1.00");
-        assert_eq!(format_float(1.0, 2, true), "1.0");
-        assert_eq!(format_float(0.5, 2, false), "0.50");
-        assert_eq!(format_float(0.5, 2, true), "0.5");
-        assert_eq!(format_float(-0.5, 2, true), "-0.5");
-        assert_eq!(format_float(0.0, 2, true), "0.0");
-        assert_eq!(format_float(f32::from_bits(0x8000_0000), 2, true), "-0.0");
-        // The last digit rounds ties to even.
-        assert_eq!(format_float(2.5, 0, true), "2");
-        assert_eq!(format_float(3.5, 0, true), "4");
-        assert_eq!(format_float(-2.5, 0, true), "-2");
+        assert_eq!(format_float(1.25, 2, false), "1.25");
+        assert_eq!(format_float(1.2, 3, true), "1.200");
+        assert_eq!(format_float(1.2, 3, false), "1.2");
+        assert_eq!(format_float(1.0, 2, true), "1.00");
+        assert_eq!(format_float(1.0, 2, false), "1.0");
+        assert_eq!(format_float(0.5, 2, true), "0.50");
+        assert_eq!(format_float(0.5, 2, false), "0.5");
+        assert_eq!(format_float(-0.5, 2, false), "-0.5");
+        assert_eq!(format_float(0.0, 2, false), "0.0");
+        assert_eq!(format_float(f32::from_bits(0x8000_0000), 2, false), "-0.0");
+        // No decimals: the rounding conversion, ties to even.
+        assert_eq!(format_float(2.5, 0, false), "2");
+        assert_eq!(format_float(3.5, 0, false), "4");
+        assert_eq!(format_float(-2.5, 0, false), "-2");
+        // The conversion is 64-bit and its low word is written.
+        assert_eq!(format_float(3.0e9, 0, false), "-1294967296");
         // Nines carry into the integer part.
-        assert_eq!(format_float(0.999, 2, false), "1.00");
-        assert_eq!(format_float(9.9995, 3, false), "10.000");
-        assert_eq!(format_float(1.999, 2, true), "2.0");
-        assert_eq!(format_float(-0.01, 1, false), "-0.0");
+        assert_eq!(format_float(0.999, 2, true), "1.00");
+        assert_eq!(format_float(9.9995, 3, true), "10.000");
+        assert_eq!(format_float(1.999, 2, false), "2.0");
+        assert_eq!(format_float(-0.999, 2, true), "-1.00");
+        assert_eq!(format_float(-0.01, 1, true), "-0.0");
+        // A NaN or an infinity converts to the indefinite value, whose low
+        // word is zero.
+        assert_eq!(format_float(f32::NAN, 2, true), "0.00");
+        assert_eq!(format_float(f32::INFINITY, 1, true), "0.0");
     }
 
     #[test]
