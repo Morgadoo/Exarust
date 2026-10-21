@@ -1006,10 +1006,11 @@ when the health word is below 0.01 in double and the race's first flag
 word lacks `0x80` (that test reads the first flag word). If the dormant
 flag remains and the shock stagger does not, the
 wake clock is the game clock plus 10000 ms; otherwise the clock is
-disabled. Each part that has a child loses the strike-chain bit on that
-first child. The dying tick and a fall that has reached its death call
-this and stamp both clocks (`DeathClock`): the f32 value 0.01 promotes
-to a double just under the threshold, so it clears the flag.
+disabled. Each part's class word becomes 0 and each part's first child
+takes 0x30, and that first child loses the strike-chain bit. The dying
+tick and a fall that has reached its death call this and stamp both
+clocks (`DeathClock`): the f32 value 0.01 promotes to a double just under
+the threshold, so it clears the flag.
 
 The body tick writes the word once, in this order: the daze block makes a
 dazed character normal unless the word holds `0xAC0` or is 2; then the

@@ -757,8 +757,10 @@ fn held_items_keep_their_motion_and_static_only_flags() {
 }
 
 /// The class word writer gives every part the word and each part's first
-/// child `word | 0x30`; the bite grab raises layer bit 0x40 on a part, its
-/// parent and its children; a state flag reaches every part.
+/// child `word | 0x30`. Death writes 0, so those children become 0x30, and
+/// clears the strike-chain bit on each first child. The bite grab raises
+/// layer bit 0x40 on a part, its parent and its children; a state flag
+/// reaches every part.
 #[test]
 fn class_grab_and_state_words_reach_their_parts() {
     let setup: Vec<PartSetup> = [(1, None), (2, Some(0)), (3, Some(1)), (4, None)]
@@ -778,6 +780,20 @@ fn class_grab_and_state_words_reach_their_parts() {
         })
         .collect();
     let mut body = Ragdoll::new(&setup);
+    let chain = crate::part::PartState::STRIKE_CHAIN;
+    for part in &mut body.parts {
+        part.state.0 |= chain;
+    }
+    body.set_class_word(0);
+    body.clear_death_strikes();
+    assert_eq!(body.parts[0].class_word, 0);
+    assert_eq!(body.parts[1].class_word, 0x30);
+    assert_eq!(body.parts[2].class_word, 0x30);
+    assert_eq!(body.parts[3].class_word, 0);
+    assert_eq!(body.parts[0].state.0 & chain, chain);
+    assert_eq!(body.parts[1].state.0 & chain, 0);
+    assert_eq!(body.parts[2].state.0 & chain, 0);
+    assert_eq!(body.parts[3].state.0 & chain, chain);
     body.set_class_word(0x400);
     assert_eq!(body.parts[0].class_word, 0x400);
     assert_eq!(body.parts[1].class_word, 0x430);

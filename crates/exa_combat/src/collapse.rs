@@ -558,8 +558,12 @@ pub fn dying_tick(
                     died_at_ms: now_ms,
                 });
             }
-            // Death empties the yellow bar the collapse regenerated.
+            // Death empties the yellow bar the collapse regenerated, writes
+            // the class word 0 (0x30 on each first child) and clears the
+            // strike chain on those children.
             fighter.health.yellow = 0.0;
+            body.set_class_word(0);
+            body.clear_death_strikes();
             body.go_limp();
             commands
                 .entity(entity)

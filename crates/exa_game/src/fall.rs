@@ -123,7 +123,7 @@ pub(crate) fn fall_to_death(
         &mut Condition,
         &mut StateFlags,
         &mut Fighter,
-        &Ragdoll,
+        &mut Ragdoll,
         Option<&PlayerBody>,
         Option<&ChildOf>,
     )>,
@@ -136,7 +136,7 @@ pub(crate) fn fall_to_death(
         mut condition,
         mut flags,
         mut fighter,
-        body,
+        mut body,
         player,
         parent,
     )) = bodies.get_mut(ticked.body)
@@ -210,6 +210,8 @@ pub(crate) fn fall_to_death(
             }
             fighter.health.yellow = 0.0;
             fighter.health.red = 0.0;
+            body.set_class_word(0);
+            body.clear_death_strikes();
             take_out(&mut commands, entity, parent);
             info!(
                 "{entity:?} falls to its death, tick {}, {} ms after it was lost",

@@ -865,9 +865,11 @@ starts and again on the first dying tick if they are still held. Death's
 own write (`settle_death`) clears the dormant flag once the fall counter
 is past 1, or when health is below 0.01 and the race's first flag word
 lacks red regeneration, and leaves a dormant corpse a 10000 ms wake clock
-when the shock stagger is clear. The dying tick and a fall that has
-reached its death call that write and stamp both clocks. The f32 value
-0.01 promotes to a double just under the threshold, so it clears the flag.
+when the shock stagger is clear. The class word becomes 0 and each first
+child takes 0x30, and that child loses its strike-chain bit. The dying
+tick and a fall that has reached its death call that write and stamp both
+clocks. The f32 value 0.01 promotes to a double just under the threshold,
+so it clears the flag.
 Done (change `regenerate-health`, M43 of the master plan): wounds heal as
 in the original. Each fixed tick yellow health regains √red × a rate that
 ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with

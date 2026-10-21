@@ -359,6 +359,61 @@ fn a_collapsing_death_settles_the_dormant_flag() {
     assert_eq!(clock.wake_at_ms, None);
 }
 
+/// Death writes class word 0, 0x30 on each first child, and clears the
+/// strike-chain bit on those children. A part that is not a first child
+/// keeps the bit.
+#[test]
+fn a_collapsing_death_writes_the_class_word() {
+    use exa_physics::body::PartSetup;
+    use exa_physics::part::PartState;
+
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let part = |bone, parent| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[part(1, None), part(2, Some(0)), part(3, None)]).with_drive();
+    let chain = PartState::STRIKE_CHAIN;
+    for p in &mut body.parts {
+        p.class_word = 0x11;
+        p.state.0 |= chain;
+    }
+    body.drive.as_mut().unwrap().tone = 0.25;
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            body,
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let body = app.world().get::<Ragdoll>(id).unwrap();
+    assert_eq!(body.parts[0].class_word, 0);
+    assert_eq!(body.parts[1].class_word, 0x30);
+    assert_eq!(body.parts[2].class_word, 0);
+    assert_eq!(body.parts[0].state.0 & chain, chain);
+    assert_eq!(body.parts[1].state.0 & chain, 0);
+    assert_eq!(body.parts[2].state.0 & chain, chain);
+}
+
 fn falling() -> CollapseStep {
     CollapseStep {
         stepping: false,

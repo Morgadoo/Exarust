@@ -1768,6 +1768,17 @@ impl Ragdoll {
         }
     }
 
+    /// Death clears the strike-chain bit on each part's first child. A part
+    /// with no child is left alone, and a part that is not a first child
+    /// keeps the bit.
+    pub fn clear_death_strikes(&mut self) {
+        let first: Vec<Option<usize>> =
+            (0..self.parts.len()).map(|i| self.first_child(i)).collect();
+        for child in first.into_iter().flatten() {
+            self.parts[child].state.0 &= !crate::part::PartState::STRIKE_CHAIN;
+        }
+    }
+
     /// Raises the grab layer's bit (0x40) on a part, its parent and its
     /// direct children, as the original's bite-grab does.
     pub fn raise_grab_layer(&mut self, index: usize) {
