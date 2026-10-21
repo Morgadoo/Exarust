@@ -1,58 +1,59 @@
-//! The original's immediate-mode 2-D quad batcher, in pixel coordinates,
-//! and its textured and line variants.
+//! The original's immediate-mode 2-D batcher in pixel coordinates, the data
+//! path of its GL immediate-draw helpers.
 //!
-//! `begin` takes the viewport's pixel rectangle and computes
-//! `1/width`, `1/height`; every vertex is scaled by those and drawn with
-//! the y axis flipped: `ndc = ((x + tx)·sx, (ty − y)·sy)`, where the
-//! translation stack (`translate`, `push`, `pop`, 16 levels) shifts the
-//! coordinates. A colour is RGBA bytes; a texture coordinate belongs to the
-//! next vertex. `flush` turns every four vertices into one quad, its two
-//! triangles indexed `(0,1,2)` and `(0,2,3)`, with a `u16` index buffer.
+//! `begin` takes the viewport's pixel rectangle and computes `1/width` and
+//! `1/height`; every vertex is scaled by them with the y axis flipped:
+//! `((x + tx)·sx, (ty − y)·sy)`, where `tx` is the current translation's x
+//! and `ty` the viewport height less its y, both taken when the batch
+//! begins. The translation is cumulative: each `translate` adds to it and
+//! saves it on a 16-level stack, `pop` restores the previous level's. A
+//! colour is RGBA bytes; a texture coordinate (or four at once) belongs to
+//! the next vertex slot. `flush` draws every four vertices as one quad, two
+//! triangles from the index template `(0, 1, 2, 0, 2, 3)`; the line draw
+//! takes the same vertices in pairs.
 //!
-//! The textured variant is the same batcher with UVs filled. The line
-//! variant emits vertex pairs and no indices, for `LineList` topologies.
-//! Exarust keeps the arithmetic as data and turns a flush into a Bevy
-//! `Mesh` ([`QuadBatch::mesh`]); shader compile and link are wgpu's.
+//! The vertex program the batch is drawn with is one of six built-ins,
+//! picked by the vertex-format word ([`builtin_for`], [`BUILTIN_SHADERS`]),
+//! with the projection [`NORMALIZED_PROJECTION`] for these 0..1 vertices or
+//! [`QuadBatcher::projection`] for raw pixel vertices. Exarust keeps the
+//! arithmetic as data and turns a batch into a Bevy `Mesh`; nothing draws
+//! one yet.
 //!
-//! Rules: this is the GL immediate-draw helper cluster's behaviour; the
-//! batcher's arithmetic is pinned by tests.
+//! Rules: `docs/RENDERING.md` (pixel-space batcher).
 
-use bevy::asset::{AssetPath, embedded_asset, embedded_path};
 use bevy::mesh::{Indices, MeshVertexAttribute, PrimitiveTopology, VertexFormat};
-use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
-use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
-};
-use bevy::shader::ShaderRef;
 
-/// The translation stack's depth (the original's 16 entries).
+/// The translation stack's depth.
 pub const TRANSLATION_LEVELS: usize = 16;
 /// How many vertices one quad takes.
 pub const QUAD_VERTICES: usize = 4;
-/// How many indices one quad takes.
-pub const QUAD_INDICES: usize = 6;
-/// The maximum `u16` vertex count a flushed batch can index.
-pub const MAX_U16_VERTICES: usize = u16::MAX as usize + 1;
+/// A quad's two triangles over its four vertices.
+pub const QUAD_INDICES: [u16; 6] = [0, 1, 2, 0, 2, 3];
+/// The texture coordinates a quad gets by default, vertex by vertex.
+pub const QUAD_TEXCOORDS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
-/// The vertex-colour attribute the batcher writes: RGBA bytes.
+/// The projection the built-in programs take for normalised vertices: x
+/// and y from 0..1 to −1..1, depth scaled by −0.001.
+pub const NORMALIZED_PROJECTION: Mat4 = Mat4::from_cols_array(&[
+    2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, -0.001, 0.0, -1.0, -1.0, -0.001, 1.0,
+]);
+
+/// The vertex-colour attribute a batch carries: RGBA bytes.
 pub const COLOR: MeshVertexAttribute =
     MeshVertexAttribute::new("Vertex_Color", 1, VertexFormat::Unorm8x4);
 
-/// A flushed quad batch: positions in clip space (z 0), texture
-/// coordinates and RGBA bytes, with the quad index list.
+/// A batch's vertices: positions (z 0), two texture-coordinate channels
+/// and RGBA bytes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QuadBatch {
     pub positions: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
-    /// The second texture-coordinate channel (the terrain texrender's).
+    /// The second texture-coordinate channel.
     pub uv2s: Vec<[f32; 2]>,
     pub colours: Vec<[u8; 4]>,
+    /// The quad indices ([`QuadBatcher::flush`]); empty for a line batch.
     pub indices: Vec<u16>,
-    /// The viewport's projection, which the original's vertex program
-    /// applies (`MPrj`); [`QuadBatch::mesh`] applies it on the CPU because
-    /// Exarust's fixed shader takes clip positions.
-    pub projection: Mat4,
 }
 
 impl QuadBatch {
@@ -65,18 +66,16 @@ impl QuadBatch {
         self.positions.is_empty()
     }
 
-    /// The batch as a Bevy triangle-list mesh with its own projection.
-    pub fn mesh(&self) -> Mesh {
-        self.mesh_with(self.projection)
-    }
-
-    /// The batch as a Bevy triangle-list mesh with `projection` applied to
-    /// its positions.
+    /// The batch as a Bevy mesh with `projection` applied to its positions
+    /// on the CPU: a triangle list over its indices, or a line list when it
+    /// has none.
     pub fn mesh_with(&self, projection: Mat4) -> Mesh {
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            bevy::asset::RenderAssetUsages::RENDER_WORLD,
-        );
+        let topology = if self.indices.is_empty() {
+            PrimitiveTopology::LineList
+        } else {
+            PrimitiveTopology::TriangleList
+        };
+        let mut mesh = Mesh::new(topology, bevy::asset::RenderAssetUsages::RENDER_WORLD);
         let projected: Vec<[f32; 3]> = self
             .positions
             .iter()
@@ -92,7 +91,9 @@ impl QuadBatch {
             COLOR,
             bevy::mesh::VertexAttributeValues::Unorm8x4(self.colours.clone()),
         );
-        mesh.insert_indices(Indices::U16(self.indices.clone()));
+        if !self.indices.is_empty() {
+            mesh.insert_indices(Indices::U16(self.indices.clone()));
+        }
         mesh
     }
 }
@@ -103,17 +104,14 @@ pub struct QuadBatcher {
     /// `1 / viewport width` and `1 / viewport height`.
     pub scale_x: f32,
     pub scale_y: f32,
-    /// The current translation and the stack of saved ones (`(x, y)`).
+    /// The current translation and the saved one of every level.
+    current: Vec2,
     translation: [Vec2; TRANSLATION_LEVELS],
     level: usize,
-    /// The translation and y flip the current batch uses: set by `begin`
-    /// from the stack's current level, as the original's vertex path reads
-    /// its two offset words kept from the begin call.
+    /// The `(tx, ty)` the batch's vertices use, taken at `begin`.
     offset: Vec2,
     /// The current colour (RGBA bytes).
     pub colour: [u8; 4],
-    /// Whether vertices take the current colour and a texture coordinate.
-    pub textured: bool,
     batch: QuadBatch,
 }
 
@@ -128,50 +126,51 @@ impl QuadBatcher {
         Self {
             scale_x: 1.0,
             scale_y: 1.0,
+            current: Vec2::ZERO,
             translation: [Vec2::ZERO; TRANSLATION_LEVELS],
             level: 0,
             offset: Vec2::ZERO,
             colour: [255; 4],
-            textured: true,
             batch: QuadBatch::default(),
         }
     }
 
-    /// Starts a batch for a viewport whose pixel rectangle is
-    /// `(left, top)..(right, bottom)`: `sx = 1/(right − left)`,
-    /// `sy = 1/(bottom − top)`, with the translation on the stack's level
-    /// zero.
-    pub fn begin(&mut self, left: f32, top: f32, right: f32, bottom: f32) {
-        let _ = top;
-        self.scale_x = 1.0 / (right - left);
-        self.scale_y = 1.0 / (bottom - top);
-        let t = self.translation[self.level];
-        self.offset = Vec2::new(t.x, (bottom - top) - t.y);
+    /// Starts a batch for the viewport `(left, top)..(right, bottom)` in
+    /// pixels: `sx = 1/(right − left)`, `sy = 1/(bottom − top)`, and the
+    /// vertices' offset from the current translation.
+    pub fn begin(&mut self, left: i32, top: i32, right: i32, bottom: i32) {
+        let width = (i64::from(right) - i64::from(left)) as f32;
+        let height = (i64::from(bottom) - i64::from(top)) as f32;
+        self.scale_x = 1.0 / width;
+        self.scale_y = 1.0 / height;
+        self.offset = Vec2::new(self.current.x, height - self.current.y);
         self.batch = QuadBatch::default();
     }
 
-    /// Adds a translation. The stack is 16 deep; past it the level stays at
-    /// the top and the position is not saved (the original clamps).
+    /// Adds `(dx, dy)` to the current translation and saves it one level
+    /// up; at the top level the last slot is overwritten.
     pub fn translate(&mut self, dx: f32, dy: f32) {
-        if self.level + 1 >= TRANSLATION_LEVELS {
-            return;
-        }
-        self.level += 1;
-        let current = self.translation[self.level];
-        self.translation[self.level] = current + Vec2::new(dx, dy);
+        self.level = (self.level + 1).min(TRANSLATION_LEVELS - 1);
+        self.current.x += dx;
+        self.current.y += dy;
+        self.translation[self.level] = self.current;
     }
 
-    /// Pops a translation.
+    /// Goes down a level (not below zero) and takes its translation.
     pub fn pop(&mut self) {
-        if self.level > 0 {
-            self.level -= 1;
-        }
+        self.level = self.level.saturating_sub(1);
+        self.current = self.translation[self.level];
     }
 
-    /// Clears the stack (the original's unit start-up).
+    /// Clears the current translation and the level.
     pub fn reset(&mut self) {
+        self.current = Vec2::ZERO;
         self.level = 0;
-        self.translation = [Vec2::ZERO; TRANSLATION_LEVELS];
+    }
+
+    /// The current translation.
+    pub fn translation(&self) -> Vec2 {
+        self.current
     }
 
     /// Sets the current colour, RGBA bytes.
@@ -179,22 +178,12 @@ impl QuadBatcher {
         self.colour = colour;
     }
 
-    /// Sets the current colour from the original's packed first half (two
-    /// bytes) and its blue and alpha bytes.
-    pub fn set_colour_packed(&mut self, packed: u16, blue: u8, alpha: u8) {
-        let bytes = packed.to_le_bytes();
-        self.colour = [bytes[0], bytes[1], blue, alpha];
+    /// Sets the current colour from an RGB triple and an alpha byte.
+    pub fn set_rgb(&mut self, rgb: [u8; 3], alpha: u8) {
+        self.colour = [rgb[0], rgb[1], rgb[2], alpha];
     }
 
-    /// Resets the next quad's texture coordinates to the built-in pair list
-    /// (`(0,0), (0,0), (1,0), (0,1)`), as the original's reset does.
-    pub fn quad_texcoords_default(&mut self) {
-        self.quad_texcoords([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-    }
-
-    /// The next vertex's texture coordinate. It belongs to the vertex
-    /// [`QuadBatcher::vertex`] adds next, as the immediate-mode call order
-    /// has it.
+    /// The next vertex slot's texture coordinate.
     pub fn texcoord(&mut self, u: f32, v: f32) {
         let at = self.batch.positions.len();
         if self.batch.uvs.len() <= at {
@@ -203,15 +192,21 @@ impl QuadBatcher {
         self.batch.uvs[at] = [u, v];
     }
 
-    /// The next four vertices' texture coordinates in one call (the
-    /// original's per-quad setter).
+    /// The texture coordinates of the next four vertex slots.
     pub fn quad_texcoords(&mut self, uvs: [[f32; 2]; 4]) {
         let at = self.batch.positions.len();
-        self.batch.uvs.resize(at + 4, [0.0; 2]);
+        if self.batch.uvs.len() < at + 4 {
+            self.batch.uvs.resize(at + 4, [0.0; 2]);
+        }
         self.batch.uvs[at..at + 4].copy_from_slice(&uvs);
     }
 
-    /// The next vertex's second texture coordinate.
+    /// The next four vertex slots get [`QUAD_TEXCOORDS`].
+    pub fn quad_texcoords_default(&mut self) {
+        self.quad_texcoords(QUAD_TEXCOORDS);
+    }
+
+    /// The next vertex slot's second texture coordinate.
     pub fn texcoord2(&mut self, u: f32, v: f32) {
         let at = self.batch.positions.len();
         if self.batch.uv2s.len() <= at {
@@ -220,73 +215,20 @@ impl QuadBatcher {
         self.batch.uv2s[at] = [u, v];
     }
 
-    /// The next four vertices' second texture coordinates.
-    pub fn quad_texcoord2s(&mut self, uvs: [[f32; 2]; 4]) {
-        let at = self.batch.positions.len();
-        self.batch.uv2s.resize(at + 4, [0.0; 2]);
-        self.batch.uv2s[at..at + 4].copy_from_slice(&uvs);
-    }
-
-    /// The projection the original builds from the viewport
-    /// (`0x1001f97a0`): the template's 2 and −2 scaled by `1/width` and
-    /// `1/height`, translated by `2·tx/width − 1` and `1 − 2·ty/height`.
-    /// The original uses it for the raw pixel-vertex batcher; Exarust's
-    /// pixel vertices are already divided by the viewport, so [`flush`]
-    /// uses [`QuadBatcher::normalized_projection`] instead.
+    /// The projection for raw pixel vertices ([`QuadBatcher::vertex_raw`]):
+    /// [`NORMALIZED_PROJECTION`] with x scaled by `sx`, y by `−sy`, and
+    /// translated by `tx·sx·2 − 1` and `1 − ty·sy·2` for the current
+    /// translation.
     pub fn projection(&self) -> Mat4 {
-        Mat4::from_cols_array(&[
-            2.0 * self.scale_x,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -2.0 * self.scale_y,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-            self.translation[self.level].x * self.scale_x * 2.0 - 1.0,
-            1.0 - self.translation[self.level].y * self.scale_y * 2.0,
-            0.0,
-            1.0,
-        ])
+        let mut m = NORMALIZED_PROJECTION.to_cols_array();
+        m[0] *= self.scale_x;
+        m[5] *= -self.scale_y;
+        m[12] = self.current.x * self.scale_x * 2.0 - 1.0;
+        m[13] = 1.0 - self.current.y * self.scale_y * 2.0;
+        Mat4::from_cols_array(&m)
     }
 
-    /// The projection for our coordinates already in 0..1, counted from
-    /// the top: `x·2 − 1` and `y·2 − 1`, so 0 is the left/bottom clip edge
-    /// and 1 the right/top.
-    pub fn normalized_projection(&self) -> Mat4 {
-        Mat4::from_cols_array(&[
-            2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0,
-        ])
-    }
-
-    /// A vertex copied as given (the original's raw batcher,
-    /// `0x1001f9980`): x/y unchanged, z zero, with the current colour. A
-    /// caller filling a batch this way gives it [`QuadBatcher::projection`]
-    /// through [`QuadBatch::mesh_with`].
-    pub fn vertex_raw(&mut self, x: f32, y: f32) {
-        let at = self.batch.positions.len();
-        self.batch.positions.push([x, y, 0.0]);
-        if self.batch.uvs.len() <= at {
-            self.batch.uvs.push([0.0; 2]);
-        }
-        if self.batch.uv2s.len() <= at {
-            self.batch.uv2s.push([0.0; 2]);
-        }
-        self.batch.colours.push(self.colour);
-    }
-
-    /// Adds a vertex in pixel coordinates, with the current colour and the
-    /// texture coordinate already set for this slot.
-    pub fn vertex(&mut self, x: f32, y: f32) {
-        let position = [
-            (x + self.offset.x) * self.scale_x,
-            (self.offset.y - y) * self.scale_y,
-            0.0,
-        ];
+    fn push(&mut self, position: [f32; 3]) {
         let at = self.batch.positions.len();
         self.batch.positions.push(position);
         if self.batch.uvs.len() <= at {
@@ -296,6 +238,21 @@ impl QuadBatcher {
             self.batch.uv2s.push([0.0; 2]);
         }
         self.batch.colours.push(self.colour);
+    }
+
+    /// Adds a vertex in pixel coordinates, normalised to 0..1 with y
+    /// flipped.
+    pub fn vertex(&mut self, x: f32, y: f32) {
+        self.push([
+            (x + self.offset.x) * self.scale_x,
+            (self.offset.y - y) * self.scale_y,
+            0.0,
+        ]);
+    }
+
+    /// Adds a vertex as given (for [`QuadBatcher::projection`]).
+    pub fn vertex_raw(&mut self, x: f32, y: f32) {
+        self.push([x, y, 0.0]);
     }
 
     /// The vertices added so far.
@@ -307,134 +264,37 @@ impl QuadBatcher {
         self.batch.positions.is_empty()
     }
 
-    /// Finishes the batch: every four vertices become a quad with two
-    /// triangles, indexed `(0,1,2)` and `(0,2,3)`. A trailing partial quad
-    /// is dropped, as the original's `count / 4` does. Returns the batch,
-    /// clearing the batcher's.
+    /// The batch as quads: every whole four vertices become two triangles
+    /// from [`QUAD_INDICES`]; a trailing partial quad is not drawn. The
+    /// batcher's vertices are taken.
     pub fn flush(&mut self) -> QuadBatch {
         let mut batch = std::mem::take(&mut self.batch);
-        batch.projection = self.normalized_projection();
         let quads = batch.positions.len() / QUAD_VERTICES;
-        if batch.positions.len() > quads * QUAD_VERTICES {
-            batch.positions.truncate(quads * QUAD_VERTICES);
-            batch.uvs.truncate(quads * QUAD_VERTICES);
-            batch.uv2s.truncate(quads * QUAD_VERTICES);
-            batch.colours.truncate(quads * QUAD_VERTICES);
-        }
-        batch.indices.reserve(quads * QUAD_INDICES);
-        for q in 0..quads {
-            let base = (q * QUAD_VERTICES) as u16;
-            batch
-                .indices
-                .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-        }
-        batch
-    }
-}
-
-/// One line batch: vertex pairs in pixel coordinates, for `LineList`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct LineBatch {
-    pub positions: Vec<[f32; 3]>,
-    pub colours: Vec<[u8; 4]>,
-    pub projection: Mat4,
-}
-
-impl LineBatch {
-    /// The batch as a Bevy `LineList` mesh.
-    pub fn mesh(&self) -> Mesh {
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::LineList,
-            bevy::asset::RenderAssetUsages::RENDER_WORLD,
-        );
-        let projected: Vec<[f32; 3]> = self
-            .positions
-            .iter()
-            .map(|p| {
-                let v = self.projection * Vec4::new(p[0], p[1], p[2], 1.0);
-                [v.x, v.y, v.z]
-            })
+        let whole = quads * QUAD_VERTICES;
+        batch.positions.truncate(whole);
+        batch.uvs.truncate(whole);
+        batch.uv2s.truncate(whole);
+        batch.colours.truncate(whole);
+        batch.indices = (0..quads)
+            .flat_map(|q| QUAD_INDICES.map(|i| i + (q * QUAD_VERTICES) as u16))
             .collect();
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, projected);
-        mesh.insert_attribute(
-            COLOR,
-            bevy::mesh::VertexAttributeValues::Unorm8x4(self.colours.clone()),
-        );
-        mesh
-    }
-}
-
-/// The line variant: the same pixel-to-clip arithmetic as the quad batcher,
-/// appending vertex pairs, with 16-level translations.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LineBatcher {
-    pub batcher: QuadBatcher,
-    batch: LineBatch,
-}
-
-impl Default for LineBatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LineBatcher {
-    pub fn new() -> Self {
-        Self {
-            batcher: QuadBatcher::new(),
-            batch: LineBatch::default(),
-        }
+        batch
     }
 
-    pub fn begin(&mut self, left: f32, top: f32, right: f32, bottom: f32) {
-        self.batcher.begin(left, top, right, bottom);
-        self.batch = LineBatch::default();
-    }
-
-    pub fn translate(&mut self, dx: f32, dy: f32) {
-        self.batcher.translate(dx, dy);
-    }
-
-    pub fn pop(&mut self) {
-        self.batcher.pop();
-    }
-
-    pub fn set_colour(&mut self, colour: [u8; 4]) {
-        self.batcher.set_colour(colour);
-    }
-
-    /// Adds a vertex to the line list.
-    pub fn vertex(&mut self, x: f32, y: f32) {
-        self.batcher.vertex(x, y);
-        let position = *self.batcher.batch.positions.last().unwrap_or(&[0.0; 3]);
-        self.batch.positions.push(position);
-        self.batch.colours.push(self.batcher.colour);
-    }
-
-    pub fn len(&self) -> usize {
-        self.batch.positions.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.batch.positions.is_empty()
-    }
-
-    /// Returns the line list, dropping an odd trailing vertex.
-    pub fn flush(&mut self) -> LineBatch {
+    /// The batch as lines: vertex pairs, a trailing odd vertex not drawn.
+    pub fn flush_lines(&mut self) -> QuadBatch {
         let mut batch = std::mem::take(&mut self.batch);
-        batch.projection = self.batcher.normalized_projection();
-        if !batch.positions.len().is_multiple_of(2) {
-            batch.positions.pop();
-            batch.colours.pop();
-        }
+        let whole = batch.positions.len() & !1;
+        batch.positions.truncate(whole);
+        batch.uvs.truncate(whole);
+        batch.uv2s.truncate(whole);
+        batch.colours.truncate(whole);
         batch
     }
 }
 
-/// The six built-in immediate-draw vertex programs, as the original's
-/// library stores them (CRLF line endings). The fragment program is the
-/// caller's own or the built-in `shading` one; Exarust's batcher draws with
-/// `quad.wesl` and these are kept for comparison.
+/// The six built-in immediate-draw vertex programs, as the original stores
+/// them (CRLF line endings), indexed as [`builtin_for`] picks them.
 pub const BUILTIN_SHADERS: [&str; 6] = [
     "in vec3 vPos;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\n}",
     "in vec3 vPos;\r\nin vec2 vTex;\r\nout vec2 vrTex;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\n}",
@@ -444,9 +304,9 @@ pub const BUILTIN_SHADERS: [&str; 6] = [
     "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec2 vTx2;\r\nin vec4 vCol;\r\nout vec2 vrTex;\r\nout vec2 vrTx2;\r\nout vec4 vrCol;\r\nuniform mat4 MPrj;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrTx2 = vTx2;\r\nvrCol = vCol * 0.003921568;\r\n}",
 ];
 
-/// The built-in program a vertex-format word picks: bit `0x20` adds the
-/// second texture channel, bit `0x4` the colour and bit `0x10` the first
-/// texture channel. The order of the tests is the original's.
+/// The built-in program a vertex-format word picks: bit `0x20` (second
+/// texture channel) first, then `0x4` (colour), then `0x10` (texture),
+/// tested in the original's order.
 pub fn builtin_for(word: u32) -> usize {
     if word & 0x20 == 0 {
         if word & 4 == 0 {
@@ -463,71 +323,26 @@ pub fn builtin_for(word: u32) -> usize {
     }
 }
 
-/// The attribute locations the original binds before linking: position 0,
-/// texture coordinate 1, normal 2, colour 3, second texture coordinate 4,
-/// then attributes 6 and 7.
-pub const ATTRIBUTE_LOCATIONS: [(&str, u32); 7] = [
-    ("vPos", 0),
-    ("vTex", 1),
-    ("vNrm", 2),
-    ("vCol", 3),
-    ("vTx2", 4),
-    ("vAttr6", 6),
-    ("vAttr7", 7),
+/// The attribute locations the original binds before linking, with the
+/// vertex-format bit that enables each (0 for the position, always bound).
+pub const ATTRIBUTE_LOCATIONS: [(&str, u32, u32); 7] = [
+    ("vPos", 0, 0),
+    ("vTex", 1, 0x10),
+    ("vTx2", 4, 0x20),
+    ("vNrm", 2, 0x2),
+    ("vCol", 3, 0x4),
+    ("vTng", 6, 0x8),
+    ("vDlt", 7, 0x40),
 ];
-
-/// The material a flushed batch draws with: an untextured colour quad, or a
-/// textured one.
-#[derive(Asset, TypePath, AsBindGroup, Clone, Debug, Default)]
-pub struct QuadMaterial {
-    #[uniform(0)]
-    pub colour: Vec4,
-    #[texture(1)]
-    #[sampler(2)]
-    pub texture: Option<Handle<Image>>,
-}
-
-fn quad_shader() -> ShaderRef {
-    ShaderRef::Path(AssetPath::from_path_buf(embedded_path!("quad.wesl")).with_source("embedded"))
-}
-
-impl Material for QuadMaterial {
-    fn fragment_shader() -> ShaderRef {
-        quad_shader()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-
-    fn specialize(
-        _pipeline: &MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        descriptor.primitive.cull_mode = None;
-        Ok(())
-    }
-}
-
-pub struct QuadPlugin;
-
-impl Plugin for QuadPlugin {
-    fn build(&self, app: &mut App) {
-        embedded_asset!(app, "quad.wesl");
-        app.add_plugins(MaterialPlugin::<QuadMaterial>::default());
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn pixels_map_to_clip_with_the_y_axis_flipped() {
+    fn pixels_map_to_the_unit_square_with_the_y_axis_flipped() {
         let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 800.0, 600.0);
+        b.begin(0, 0, 800, 600);
         b.vertex(0.0, 0.0);
         b.vertex(800.0, 0.0);
         b.vertex(800.0, 600.0);
@@ -537,162 +352,129 @@ mod tests {
         assert_eq!(batch.positions[1], [1.0, 1.0, 0.0]);
         assert_eq!(batch.positions[2], [1.0, 0.0, 0.0]);
         assert_eq!(batch.positions[3], [0.0, 0.0, 0.0]);
+        // The normalised projection puts the top-left pixel at (−1, 1).
+        let p = NORMALIZED_PROJECTION * Vec4::new(0.0, 1.0, 0.0, 1.0);
+        assert_eq!((p.x, p.y, p.z), (-1.0, 1.0, -0.001));
     }
 
     #[test]
-    fn a_viewport_origin_and_its_translation_stack_shift_the_pixels() {
+    fn translations_add_up_and_the_batch_takes_them_at_begin() {
         let mut b = QuadBatcher::new();
-        // The translation is set before the batch begins: begin snapshots
-        // it, and a translation after begin waits for the next begin, as
-        // the original's offset words are set by its begin call.
         b.translate(10.0, 20.0);
-        b.begin(100.0, 50.0, 500.0, 250.0);
+        b.begin(100, 50, 500, 250);
         b.vertex(100.0, 50.0);
+        // A translation after begin waits for the next batch.
         b.translate(100.0, 100.0);
+        assert_eq!(b.translation(), Vec2::new(110.0, 120.0));
         b.vertex(100.0, 50.0);
-        b.vertex(500.0, 250.0);
-        b.vertex(500.0, 250.0);
-        let batch = b.flush();
-        // (100 + 10)/400 = 0.275; (200 − 70)/200 = 0.65.
+        let batch = b.flush_lines();
+        // (100 + 10)/400 = 0.275; (200 − 20 − 50)/200 = 0.65.
         assert_eq!(batch.positions[0], [0.275, 0.65, 0.0]);
-        // The second vertex used the same snapshot.
         assert_eq!(batch.positions[1], [0.275, 0.65, 0.0]);
         b.pop();
+        assert_eq!(b.translation(), Vec2::new(10.0, 20.0));
         b.pop();
-        b.begin(100.0, 50.0, 500.0, 250.0);
-        for _ in 0..4 {
-            b.vertex(100.0, 50.0);
-        }
-        let batch = b.flush();
-        assert_eq!(batch.positions[0], [0.25, 0.75, 0.0]);
-        // The stack caps at 16 levels.
-        for _ in 0..40 {
+        assert_eq!(b.translation(), Vec2::ZERO);
+        b.pop();
+        assert_eq!(b.translation(), Vec2::ZERO);
+        b.begin(100, 50, 500, 250);
+        b.vertex(100.0, 50.0);
+        b.vertex(100.0, 50.0);
+        assert_eq!(b.flush_lines().positions[0], [0.25, 0.75, 0.0]);
+        // Past the top level the last slot keeps taking the sum.
+        for _ in 0..20 {
             b.translate(1.0, 1.0);
         }
-        b.vertex(0.0, 0.0);
-        assert_eq!(b.len(), 1);
+        assert_eq!(b.translation(), Vec2::new(20.0, 20.0));
+        b.pop();
+        assert_eq!(b.translation(), Vec2::new(14.0, 14.0));
+        b.reset();
+        assert_eq!(b.translation(), Vec2::ZERO);
     }
 
     #[test]
     fn a_flush_indexes_each_quad_as_two_triangles() {
         let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 2.0, 2.0);
+        b.begin(0, 0, 2, 2);
         for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             b.vertex(x, y);
         }
         for (x, y) in [(1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)] {
             b.vertex(x, y);
         }
+        b.vertex(0.0, 0.0);
         let batch = b.flush();
         assert_eq!(batch.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
-        // A partial quad is dropped.
-        b.vertex(0.0, 0.0);
-        b.vertex(1.0, 0.0);
-        assert!(b.flush().is_empty());
+        assert_eq!(batch.len(), 8);
+        assert_eq!(
+            batch.mesh_with(NORMALIZED_PROJECTION).primitive_topology(),
+            PrimitiveTopology::TriangleList
+        );
     }
 
     #[test]
     fn colours_and_texture_coordinates_belong_to_the_next_vertex() {
         let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 1.0, 1.0);
+        b.begin(0, 0, 1, 1);
         b.set_colour([1, 2, 3, 4]);
         b.texcoord(0.25, 0.75);
         b.vertex(0.0, 0.0);
-        b.quad_texcoords([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        b.quad_texcoords_default();
+        b.set_rgb([9, 8, 7], 6);
         b.vertex(1.0, 0.0);
         b.vertex(1.0, 1.0);
         b.vertex(0.0, 1.0);
         let batch = b.flush();
         assert_eq!(batch.uvs[0], [0.25, 0.75]);
-        assert_eq!(batch.uvs[1], [0.0, 0.0]);
-        assert_eq!(batch.uvs[2], [1.0, 0.0]);
-        assert_eq!(batch.uvs[3], [1.0, 1.0]);
+        assert_eq!(&batch.uvs[1..4], &QUAD_TEXCOORDS[..3]);
         assert_eq!(batch.colours[0], [1, 2, 3, 4]);
-        // The quad setter started at the current next vertex, so its fourth
-        // pair lands past this quad; the flush keeps it (four vertices).
-        assert_eq!(batch.positions.len(), 4);
+        assert_eq!(batch.colours[1], [9, 8, 7, 6]);
     }
 
     #[test]
-    fn the_line_variant_emits_pairs_without_indices() {
-        let mut l = LineBatcher::new();
-        l.begin(0.0, 0.0, 100.0, 100.0);
-        l.set_colour([9, 9, 9, 255]);
-        l.vertex(0.0, 0.0);
-        l.vertex(100.0, 100.0);
-        l.vertex(50.0, 0.0);
-        let batch = l.flush();
-        assert_eq!(batch.positions.len(), 2);
-        assert_eq!(batch.positions[1], [1.0, 0.0, 0.0]);
-        assert_eq!(batch.colours[0], [9, 9, 9, 255]);
+    fn the_line_draw_takes_vertex_pairs() {
+        let mut b = QuadBatcher::new();
+        b.begin(0, 0, 100, 100);
+        b.vertex(0.0, 0.0);
+        b.vertex(100.0, 100.0);
+        b.vertex(50.0, 0.0);
+        let batch = b.flush_lines();
+        assert_eq!(batch.positions, [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]);
+        assert!(batch.indices.is_empty());
         assert_eq!(
-            batch.mesh().primitive_topology(),
+            batch.mesh_with(NORMALIZED_PROJECTION).primitive_topology(),
             PrimitiveTopology::LineList
         );
     }
 
     #[test]
-    fn the_projection_matrix_maps_the_viewport_to_clip() {
+    fn the_raw_projection_maps_the_viewports_pixels_to_clip() {
         let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 800.0, 600.0);
+        b.begin(0, 0, 800, 600);
         let m = b.projection();
-        assert!((m.x_axis.x - 2.0 / 800.0).abs() < 1e-6);
-        assert!((m.y_axis.y + 2.0 / 600.0).abs() < 1e-6);
-        assert_eq!(m.z_axis.z, 1.0);
+        assert_eq!(m.x_axis.x, 2.0 * (1.0 / 800.0));
+        assert_eq!(m.y_axis.y, -(1.0 / 600.0) * 2.0);
+        assert_eq!((m.z_axis.z, m.w_axis.z), (-0.001, -0.001));
         assert_eq!((m.w_axis.x, m.w_axis.y), (-1.0, 1.0));
-        let p = m * Vec4::new(0.0, 0.0, 0.0, 1.0);
-        assert_eq!((p.x, p.y), (-1.0, 1.0));
         let p = m * Vec4::new(800.0, 600.0, 0.0, 1.0);
         assert!((p.x - 1.0).abs() < 1e-6 && (p.y + 1.0).abs() < 1e-6);
+        // A translation moves the origin.
+        b.translate(400.0, 300.0);
+        let m = b.projection();
+        assert!(m.w_axis.x.abs() < 1e-6 && m.w_axis.y.abs() < 1e-6);
     }
 
     #[test]
     fn the_vertex_words_pick_the_six_builtin_programs() {
-        assert_eq!(BUILTIN_SHADERS.len(), 6);
         assert!(BUILTIN_SHADERS[2].contains("vCol * 0.003921568"));
         assert_eq!(builtin_for(0), 0);
         assert_eq!(builtin_for(0x10), 1);
         assert_eq!(builtin_for(0x4 | 0x10), 2);
         assert_eq!(builtin_for(0x4), 3);
         assert_eq!(builtin_for(0x20), 4);
+        assert_eq!(builtin_for(0x20 | 0x10), 4);
         assert_eq!(builtin_for(0x20 | 0x4 | 0x10), 5);
-        assert_eq!(ATTRIBUTE_LOCATIONS[0], ("vPos", 0));
-        assert_eq!(ATTRIBUTE_LOCATIONS[3], ("vCol", 3));
-        assert_eq!(ATTRIBUTE_LOCATIONS[6], ("vAttr7", 7));
-    }
-
-    #[test]
-    fn the_second_texture_channel_and_clip_vertices() {
-        let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 100.0, 100.0);
-        b.texcoord2(0.5, 0.25);
-        b.vertex(0.0, 0.0);
-        b.vertex_raw(0.25, 0.75);
-        b.vertex(100.0, 100.0);
-        b.vertex_raw(0.25, 0.75);
-        let batch = b.flush();
-        assert_eq!(batch.uv2s[0], [0.5, 0.25]);
-        assert_eq!(batch.positions[1], [0.25, 0.75, 0.0]);
-        assert_eq!(batch.positions[0], [0.0, 1.0, 0.0]);
-        // The mesh applies the projection: pixel 0,0 is clip -1,1.
-        let projected = batch.mesh();
-        match projected.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
-            bevy::mesh::VertexAttributeValues::Float32x3(p) => {
-                assert_eq!(p[0], [-1.0, 1.0, 0.0])
-            }
-            _ => panic!("positions"),
-        }
-    }
-
-    #[test]
-    fn the_batch_becomes_a_triangle_mesh_with_bytes_of_colour() {
-        let mut b = QuadBatcher::new();
-        b.begin(0.0, 0.0, 1.0, 1.0);
-        for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
-            b.vertex(x, y);
-        }
-        let mesh = b.flush().mesh();
-        assert_eq!(mesh.primitive_topology(), PrimitiveTopology::TriangleList);
-        assert_eq!(mesh.count_vertices(), 4);
+        assert_eq!(ATTRIBUTE_LOCATIONS[5], ("vTng", 6, 0x8));
+        assert_eq!(ATTRIBUTE_LOCATIONS[6], ("vDlt", 7, 0x40));
     }
 }

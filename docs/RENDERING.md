@@ -914,6 +914,39 @@ the particle tick, spawn, quad and colour routines with the template's
 flags, the droplet material), and `BldPrt02`'s header (256², BC1, the
 file's wrap flags); the rules are pinned by tests.
 
+## Smoke and mist
+
+`exa_render::smoke` is the original's `shadesmk_f` draw. The original
+compiles `shading_v` + `shadesmk_f` once per state key (the material
+state's 64-bit word under `0x0003_C00F_0048_0008`), sets `UVOfst =
+(0.5, t + 0.5, t)` with `t` = the parent node's scale plus the scene time's
+milliseconds mod 80 000 over 80 000 (summed in double precision), and draws
+the mesh; with the supersampled quad passes on it repeats the draw once per
+pass. The program (`shadesmk.wesl`, line for line): `a = |N·V|·1.5 − 1`;
+with an opacity texture `a += A(uv + (0, z))·A(uv + (0, z) + (x, y))` for
+`UVOfst = (x, y, z)`, else `a += 0.25`; then `a = (a − 1 + vertex
+alpha)·0.8` over a black colour. The original's fog and dither snippets
+follow; Exarust's surfaces have neither. Nothing spawns a smoke mesh yet.
+
+## Pixel-space 2-D batcher
+
+`exa_render::quads` is the data path of the original's immediate-draw
+helpers. `begin` takes the viewport's pixel rectangle and sets `1/width`
+and `1/height`; a vertex maps to `((x + tx)·sx, (ty − y)·sy)`, where `tx` is
+the current translation's x and `ty` the viewport height less its y, both
+taken at `begin`. A translation adds to the current one and saves it on a
+16-level stack (the top slot is overwritten past it), and a pop restores
+the level below. A texture coordinate (or four, by default `(0,0), (1,0),
+(1,1), (0,1)`) belongs to the next vertex slot; a colour is RGBA bytes.
+`flush` draws every whole four vertices as two triangles from the index
+template `(0, 1, 2, 0, 2, 3)`; the line draw takes vertex pairs. The
+vertices are 0..1, drawn through the projection `2x − 1, 2y − 1` with depth
+scaled by −0.001; a raw pixel vertex uses that projection scaled by `sx`
+and `−sy` and moved by the translation. The six built-in vertex programs
+are kept verbatim with the format-word choice and the attribute locations
+(`vPos` 0, `vTex` 1, `vNrm` 2, `vCol` 3, `vTx2` 4, `vTng` 6, `vDlt` 7).
+Nothing draws a batch yet.
+
 ## Voxel GI
 
 The original's bounce light is a light volume of 20 cm voxels

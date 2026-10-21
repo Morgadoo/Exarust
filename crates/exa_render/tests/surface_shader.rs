@@ -97,6 +97,12 @@ fn wesl_files(dir: &Path, relative: &Path, out: &mut Vec<(PathBuf, PathBuf)>) {
 /// the embedded path its crate's plugin loads it from; returns the id of
 /// `exa.wesl`.
 fn cache_with_every_shader() -> (ShaderCache<naga::Module, ()>, AssetId<Shader>) {
+    cache_with_every_shader_and("embedded://exa_render/exa.wesl")
+}
+
+/// [`cache_with_every_shader`], returning the id of the shader at
+/// `wanted` instead.
+fn cache_with_every_shader_and(wanted: &str) -> (ShaderCache<naga::Module, ()>, AssetId<Shader>) {
     let mut cache = ShaderCache::new((), validate);
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut crates = bevy_sources();
@@ -116,7 +122,7 @@ fn cache_with_every_shader() -> (ShaderCache<naga::Module, ()>, AssetId<Shader>)
                 uuid: Uuid::from_u128(next),
             };
             next += 1;
-            if embedded == "embedded://exa_render/exa.wesl" {
+            if embedded == wanted {
                 surface = Some(id);
             }
             cache.set_shader(id, Shader::from_wesl(source, embedded));
@@ -124,7 +130,7 @@ fn cache_with_every_shader() -> (ShaderCache<naga::Module, ()>, AssetId<Shader>)
     }
     (
         cache,
-        surface.expect("exa.wesl is among exa_render's shaders"),
+        surface.unwrap_or_else(|| panic!("{wanted} is among the shaders")),
     )
 }
 
@@ -173,6 +179,27 @@ fn the_surface_shader_composes_and_validates() {
                 .iter()
                 .any(|entry| entry.stage == naga::ShaderStage::Fragment),
             "exa.wesl has a fragment entry point"
+        );
+    }
+}
+
+#[test]
+fn the_smoke_shader_composes_and_validates() {
+    let (mut cache, smoke) = cache_with_every_shader_and("embedded://exa_render/shadesmk.wesl");
+    let variants: [&[&'static str]; 2] = [
+        &["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_COLORS"],
+        &["VERTEX_UVS", "VERTEX_UVS_A"],
+    ];
+    for (pipeline, extra) in variants.iter().enumerate() {
+        let module = cache
+            .get(pipeline, smoke, &defs(extra))
+            .unwrap_or_else(|error| panic!("shadesmk.wesl with {extra:?}: {error}"));
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.stage == naga::ShaderStage::Fragment),
+            "shadesmk.wesl has a fragment entry point"
         );
     }
 }

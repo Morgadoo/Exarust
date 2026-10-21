@@ -66,7 +66,6 @@ impl Plugin for RenderPlugin {
             shell::ShellPlugin,
             glow::GlowPlugin,
             smoke::SmokePlugin,
-            quads::QuadPlugin,
         ))
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.
