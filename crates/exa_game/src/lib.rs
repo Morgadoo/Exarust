@@ -31,6 +31,7 @@ pub mod footprints;
 pub mod frame;
 pub mod game_event;
 pub mod gamepad;
+pub mod gui_paint;
 pub mod gui_screens;
 pub mod hand;
 pub mod hirelings;

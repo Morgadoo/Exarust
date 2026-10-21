@@ -48,6 +48,7 @@
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
+//!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
@@ -207,6 +208,8 @@ pub struct Options {
     pub debug_bodies: bool,
     /// Start with the navigation grid drawn.
     pub debug_nav: bool,
+    /// Open one empty form through the GUI draw path.
+    pub debug_gui_form: bool,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
     /// Once loaded, log every mesh over these floor points (x, z in metres).
@@ -513,6 +516,7 @@ fn main() -> AppExit {
             "--trace-all" => options.trace_all = true,
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
+            "--debug-gui-form" => options.debug_gui_form = true,
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--debug-column" => {
@@ -879,6 +883,9 @@ fn main() -> AppExit {
     .insert_resource(options.gi)
     .insert_resource(exa_ui::ShowFps(!options.no_fps))
     .insert_resource(exa_game::splash::SplashAtStart(options.splash))
+    .insert_resource(exa_game::gui_screens::DebugGuiForm {
+        enabled: options.debug_gui_form,
+    })
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_world::sun_shadow::SunShadowFit(

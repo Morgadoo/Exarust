@@ -1058,10 +1058,19 @@ hotkeys send a screen request through the hotkey handler (its
 permissions apply), the inventory and journal are forms on a `GuiTask`
 (so their focus follows the window manager), the inventory is registered
 as an open container, the journal keeps its session entries, and Escape
-closes the focused screen (Exarust's). The forms are not drawn yet, the
-item panels are not attached, the skills key's screen and the power tree
-are outside this unit, and the selector opens only from a power slot the
-HUD does not draw yet.
+closes the focused screen (Exarust's). Both screens now draw
+(`exa_game::gui_paint`): the frame, its title and close mark through the
+line skin's background painter, the title text and control captions through
+the font quads, the inventory's character view (its grey wash and 40 × 4
+preview bars), its 228 × 180 pack panel, its Encumbrance label and Primary
+button, and the journal's New and Erase buttons and the selected entry's
+text through the text box's draw. The panel's item icons are not drawn (the
+item renderer is not wired), the journal's entry list has no geometry in
+the packs (the entry count and names go into text box fields the draw path
+was not traced for), and the 0xac01 control in the inventory's records has
+no located behaviour; these are left out. The skills key's screen and the
+power tree are outside this unit, and the selector opens only from a power
+slot the HUD does not draw yet.
 
 ## Text boxes
 
@@ -1309,6 +1318,23 @@ leaves behind.
   vertex list that a frame clears and refills without reallocating. A
   texture offset in 512ths shifts sampling; the scroll bars set it while
   their thumb or trough is drawn.
+- **Submission (`exa_ui::gui_draw`).** A frame is a list of layers, each a
+  batch and the texture its textured primitives sample; the layers and the
+  primitives inside them are drawn in submission order at window physical
+  pixels. Solid mode draws the vertex ink; textured mode samples the
+  texture, mixes it by `TexCol` and multiplies it by the ink; rounded mode
+  cuts the alpha from the interpolated corner coordinate and the `Scale`
+  uniform; the subclass (skin) mode samples by the vertex's place over the
+  viewport in 512ths plus the texture shift. The blend word is the
+  original's: bits 8–11 pick the source factor and 0–3 the destination from
+  `ZERO, ONE, SRC_ALPHA, ONE_MINUS_SRC_ALPHA, DST_ALPHA,
+  ONE_MINUS_DST_ALPHA`, and 0x100 draws with blending off. The running game
+  rasterises these primitives on the CPU into one window-sized RGBA image
+  and shows it over the 3-D view as a UI image; colours are blended in sRGB
+  as the original's interface blends, and the image carries straight alpha
+  (the HUD's linear-light note above applies). Text and icon quads join the
+  frame as their own layers. This is the first submission path; it is used by
+  the in-game inventory and journal.
 - **Primitives.** Line rectangles inset half a pixel (`outline`), four-stop
   vertical gradients (0.43/0.57 and 0.4/0.6 tones), alpha-scaled gradients
   (the alphas keep their low byte), striped bars that interpolate each
