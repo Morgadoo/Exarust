@@ -46,11 +46,14 @@ payloads               at their offsets, each at the 0x2000 boundary after
 * The directory is not sorted. Sections are **not** contiguous: the bytes
   between the aligned end of one and the start of the next are free space,
   and a deleted section's payload stays in the file.
-* **Opening** a file creates it when it is missing; a file shorter than 9
-  bytes, or one whose first word is not the magic, is reset to a fresh
-  package: the magic, count 1 and the sentinel, written over the start.
-  The file is not truncated. (The slot scan and the legacy pass open every
-  matching file, so they reset a damaged one.) A file with the magic keeps
+* **Opening** a file opens it for reading and writing, creating it empty
+  when it is missing. A file of 8 bytes or fewer, or one whose first word
+  is not the magic, is given the magic and **reset** in memory: count 1
+  and the sentinel (offset 0, size 16). The open writes nothing (the reset
+  runs before the file's handle is kept, and only writes through a kept
+  handle); the next section write puts the header and the directory over
+  the file's start and leaves the rest, so a damaged file the slot scan
+  opens stays as it is. A file with the magic keeps
   its directory count as stored; a count of zero or a negative count (the
   word is signed) reads as an empty package, as the original's reader
   simply loops over no entries.
@@ -75,11 +78,10 @@ payloads               at their offsets, each at the 0x2000 boundary after
     entry covers are left as they were, and the file never shrinks.
 * **Deleting a section** removes its directory entry, shifts the entries
   after it down and rewrites the directory. The payload stays.
-* **Resetting** a package writes the sentinel alone over its directory (count
-  1, the 8-byte header and one 24-byte entry); the payloads and the tail are
-  left as they were. **Probing** a file opens it for reading and discards its
-  first eight header bytes; success means the file opened, whatever its size
-  or magic.
+* **Probing** a file opens it for reading and discards its first eight
+  header bytes; success means the file opened, whatever its size or magic.
+* **Deleting a package** closes it, resets it in memory and deletes the
+  file.
 * Copying a package to its checkpoint (or back) is a plain file copy. The
   checkpoint name is the save's extension stripped and `.rcp` appended; the
   save name is the checkpoint's extension stripped and `.rsg` appended.
@@ -171,7 +173,7 @@ package and the package is written back. The story loader forces the
 locale to `exanima05` when the transition state is 2. Once that succeeded
 from a `.rcp`, the checkpoint is copied over the `.rsg`, and the package
 switches back to the `.rsg` name. A load that fails while reading a `.rcp`
-also switches back, creating the `.rsg` from a fresh header but not
+also switches back, creating an empty `.rsg` when it is missing but not
 copying the checkpoint into it. The character screen's load prefers the
 `.rsg`; it takes the `.rcp` only when asked or when the `.rsg` is missing,
 and reads the player data with mask `0x100010` (the journal and the global

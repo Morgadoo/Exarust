@@ -305,33 +305,34 @@ impl PackageImage {
         }
     }
 
-    /// Resets the directory to the sentinel only, the original's reset: the
-    /// count is one, the sentinel covers the 8-byte header and its own
-    /// entry, and the bytes already in the file stay where they are. A
-    /// caller writing the result rewrites the header and the one entry and
-    /// leaves the old payloads and tail untouched.
+    /// Resets the directory to the sentinel alone, the original's reset:
+    /// the count becomes one and the sentinel's offset and size 0 and 16
+    /// (eight bytes per entry plus eight). The magic and the sentinel's
+    /// name are left as they are, and so are the bytes already in the file:
+    /// a write that follows puts the header and the one entry over the
+    /// file's start and leaves the old payloads and the tail untouched.
     pub fn reset(&mut self) {
-        self.magic = PACKAGE_MAGIC;
-        self.sentinel = (0, SENTINEL_SIZE, [0; NAME_LEN]);
+        self.sentinel = (0, SENTINEL_SIZE, self.sentinel.2);
         self.entries.clear();
     }
 
-    /// Opens a package from the bytes a file gave, with the original's
-    /// open rules: a file shorter than nine bytes or with another magic is
-    /// reset to a fresh package, written over its first 32 bytes without
-    /// truncating it. Returns the package and, when the open resets it, the
-    /// bytes to write back. A file whose magic is right but whose directory
-    /// does not fit reads as an empty package and is left as it is.
-    pub fn open(bytes: &[u8]) -> (Self, Option<Vec<u8>>) {
-        let magic_ok = bytes.len() >= 9 && bytes[0..4] == PACKAGE_MAGIC.to_le_bytes();
-        if magic_ok {
-            return (Self::read(bytes).unwrap_or_default(), None);
+    /// Opens a package from the bytes of a file, with the original's open
+    /// rules: a file of eight bytes or fewer, or one with another magic, is
+    /// given the magic and reset to the sentinel alone. Nothing is written:
+    /// the original resets before it keeps the file's handle, so the fresh
+    /// header reaches the file only with the next section write, over the
+    /// file as it was. A file with the magic whose directory does not fit
+    /// reads as an empty package here (the original keeps the entries its
+    /// short read filled); its bytes are kept the same way.
+    pub fn open(bytes: &[u8]) -> Self {
+        let magic_ok = bytes.len() > 8 && bytes[0..4] == PACKAGE_MAGIC.to_le_bytes();
+        if magic_ok && let Ok(package) = Self::read(bytes) {
+            return package;
         }
-        let fresh = Self::new().to_bytes();
-        let mut out = bytes.to_vec();
-        out.resize(out.len().max(fresh.len()), 0);
-        out[..fresh.len()].copy_from_slice(&fresh);
-        (Self::new(), Some(out))
+        Self {
+            original: bytes.to_vec(),
+            ..Self::new()
+        }
     }
 
     /// Reads a package whole, keeping its directory order and offsets.
@@ -2500,25 +2501,27 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_short_or_mismatched_file_writes_a_fresh_header() {
-        let (package, reset) = PackageImage::open(&[]);
+    fn opening_a_short_or_mismatched_file_resets_it_in_memory_only() {
+        let package = PackageImage::open(&[]);
         assert!(package.entries().is_empty());
-        assert_eq!(reset.as_deref(), Some(&PackageImage::new().to_bytes()[..]));
-        // Eight bytes is still short; the tail after 32 stays.
+        assert_eq!(package.to_bytes(), PackageImage::new().to_bytes());
+        // Eight bytes is still short. The bytes read are kept: a section
+        // written later goes over them and the tail stays.
         let short = [9u8; 40];
-        let (package, reset) = PackageImage::open(&short);
+        let mut package = PackageImage::open(&short);
         assert!(package.entries().is_empty());
-        let out = reset.unwrap();
+        let out = package.to_bytes();
         assert_eq!(&out[..4], &PACKAGE_MAGIC.to_le_bytes());
         assert_eq!(&out[32..], &[9u8; 8]);
-        // A wrong magic is reset too.
+        package.put_section(&name("a"), &[1; 4]);
+        let out = package.to_bytes();
+        assert_eq!(&out[32..40], &[9u8; 8], "the old bytes stay");
+        assert_eq!(&out[0x2000..0x2004], &[1; 4]);
+        // A wrong magic is reset too; the right one reads the directory.
         let mut wrong = bytes_of_magic(0x1234_5678);
-        let (_, reset) = PackageImage::open(&wrong);
-        assert!(reset.is_some());
+        assert_eq!(PackageImage::open(&wrong).magic, PACKAGE_MAGIC);
         wrong[0..4].copy_from_slice(&PACKAGE_MAGIC.to_le_bytes());
-        let (package, reset) = PackageImage::open(&wrong);
-        assert!(reset.is_none());
-        assert!(package.entries().is_empty());
+        assert!(PackageImage::open(&wrong).entries().is_empty());
     }
 
     fn bytes_of_magic(magic: u32) -> Vec<u8> {

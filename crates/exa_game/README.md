@@ -76,13 +76,12 @@ signature, shows the placed character's name from `#worldchrdb`, orders
 the rest by the `Exanima.set` key and moves a loaded slot to the front; a
 load opens the first file that exists, converts an old arena save (drops
 `arenahub`, resets the placement, removes the skipped chunks, writes the
-package back), probes slots, resets a package to its sentinel, copies the
-checkpoint over the save and back by name, forces `exanima05` for a
-mid-transition story save and
-reports whether the level section is present; the character screen's load
-prefers the save, takes the checkpoint only when asked or when the save is
+package back), copies the checkpoint over the save and back by name,
+forces `exanima05` for a mid-transition story save and reports whether
+the level section is present; the character screen's load prefers
+the save, takes the checkpoint only when asked or when the save is
 missing, and reads with mask `0x100010`. A new slot takes the lowest free
-number at the front and is an empty package (`create_empty`; `create`
+number at the front and is an empty file (`create_empty`; `create`
 writes the session too); deleting removes both files. A checkpoint (`.rcp`)
 is written once per slot by copying the save, and a manual or transition
 save refreshes it; a death deletes the save and drops the slot unless a

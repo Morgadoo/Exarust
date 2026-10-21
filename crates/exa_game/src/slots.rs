@@ -218,34 +218,27 @@ impl Slots {
         Ok(out)
     }
 
-    /// Opens a package file as the original does: a missing file is created,
-    /// and a file shorter than nine bytes or with another magic gets a fresh
-    /// package header (magic, count 1, the sentinel) written over its start,
-    /// without truncating it. A file with the magic whose directory does not
-    /// fit reads as an empty package here and is left as it is.
+    /// Opens a package file as the original does: a missing file is created
+    /// empty (the original opens with "open always"), and a file of eight
+    /// bytes or fewer or with another magic reads as a fresh package. The
+    /// open itself writes nothing; the next section write puts the header
+    /// and the directory over the file's start and keeps the rest. A file
+    /// with the magic whose directory does not fit reads as an empty
+    /// package here.
     pub fn open(path: &Path) -> io::Result<PackageImage> {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(path)?;
+                Vec::new()
+            }
             Err(error) => return Err(error),
         };
-        let (package, reset) = PackageImage::open(&bytes);
-        if let Some(out) = reset {
-            fs::write(path, out)?;
-        }
-        Ok(package)
-    }
-
-    /// The original's probe: a file that can be opened, whatever its length
-    /// or magic (its eight header bytes are read and discarded). A missing
-    /// or unreadable file is not one.
-    pub fn probe(&self, number: u32, kind: SlotKind) -> bool {
-        Self::probe_path(&self.file(number, kind))
-    }
-
-    /// [`Slots::probe`] for a path.
-    pub fn probe_path(path: &Path) -> bool {
-        fs::File::open(path).is_ok()
+        Ok(PackageImage::open(&bytes))
     }
 
     /// The original's checkpoint copy: the save copied over the checkpoint.
@@ -265,16 +258,6 @@ impl Slots {
             self.file(number, SlotKind::Save),
         )?;
         Ok(())
-    }
-
-    /// Writes an empty package over the slot's save, the original's reset
-    /// (its directory becomes the sentinel alone; the old payloads stay in
-    /// the file).
-    pub fn truncate(&self, number: u32) -> io::Result<()> {
-        let path = self.file(number, SlotKind::Save);
-        let mut package = Self::open(&path)?;
-        package.reset();
-        fs::write(path, package.to_bytes())
     }
 
     /// What the mode's player-data reader makes of a package during a scan
@@ -589,7 +572,8 @@ impl Slots {
         }
         let path = self.file(number, SlotKind::Save);
         let mut package = match fs::read(&path) {
-            Ok(bytes) => PackageImage::read(&bytes).unwrap_or_default(),
+            // The section write opens the package first, with its resets.
+            Ok(bytes) => PackageImage::open(&bytes),
             Err(error) if error.kind() == io::ErrorKind::NotFound => PackageImage::new(),
             Err(error) => return Err(error),
         };
@@ -923,13 +907,10 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_probes_and_copies_both_ways_and_truncates() {
-        let dir = folder("probe");
+    fn a_slot_copies_its_save_and_checkpoint_both_ways() {
+        let dir = folder("copies");
         let slots = Slots::arena(&dir);
         let number = slots.create(&arena("Ash")).unwrap();
-        assert!(slots.probe(number, SlotKind::Save));
-        assert!(!slots.probe(number, SlotKind::Checkpoint));
-        assert!(!Slots::probe_path(&dir.join("missing.rsg")));
         let mut later = arena("Ash");
         later.clock = 42;
         slots.save(number, &later).unwrap();
@@ -946,13 +927,19 @@ mod tests {
         slots.save(number, &arena("Bram")).unwrap();
         slots.copy_checkpoint_over_save(number).unwrap();
         assert_eq!(slots.load(number, false).unwrap().0.clock, 42);
-        // A truncate leaves the sentinel alone; the old payload bytes stay.
-        slots.truncate(number).unwrap();
-        let bytes = fs::read(slots.file(number, SlotKind::Save)).unwrap();
-        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
-        assert!(bytes.len() > 32);
-        // The checkpoint still lists the slot.
-        assert_eq!(slots.list().unwrap()[0].kind, SlotKind::Checkpoint);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opening_creates_a_missing_file_empty_and_writes_nothing_else() {
+        let dir = folder("open");
+        let path = dir.join("Arena001.rsg");
+        let package = Slots::open(&path).unwrap();
+        assert!(package.entries().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), Vec::<u8>::new());
+        fs::write(&path, b"garbage").unwrap();
+        Slots::open(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"garbage");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -984,8 +971,8 @@ mod tests {
         let dir = folder("invalid");
         let slots = Slots::story(&dir);
         let number = slots.create(&Session::story()).unwrap();
-        // A file of the right name that is not a package: left out, left on
-        // disk, and opening it wrote a fresh package header over its start.
+        // A file of the right name that is not a package: left out and left
+        // on disk as it was (the open resets it in memory only).
         fs::write(slots.file(7, SlotKind::Save), b"garbage").unwrap();
         // An older story signature: deleted, checkpoint included.
         let mut old = PackageImage::new();
@@ -1009,9 +996,7 @@ mod tests {
         let mut listed = slots.numbers().unwrap();
         listed.sort_unstable();
         assert_eq!(listed, vec![number, 10]);
-        let reset = fs::read(slots.file(7, SlotKind::Save)).unwrap();
-        assert_eq!(reset.len(), 32);
-        assert_eq!(&reset[0..4], &save_package::PACKAGE_MAGIC.to_le_bytes());
+        assert_eq!(fs::read(slots.file(7, SlotKind::Save)).unwrap(), b"garbage");
         assert!(!slots.file(8, SlotKind::Save).exists());
         assert!(!slots.file(8, SlotKind::Checkpoint).exists());
         assert!(slots.file(9, SlotKind::Save).exists());
@@ -1439,7 +1424,10 @@ mod tests {
         let number = slots.create_empty().unwrap();
         assert_eq!(number, 1);
         let bytes = fs::read(slots.file(number, SlotKind::Save)).unwrap();
-        assert_eq!(bytes, PackageImage::new().to_bytes());
+        assert!(
+            bytes.is_empty(),
+            "the open creates the file and writes nothing"
+        );
         // The empty package has no player data, so the scan leaves it out
         // (the original saves into it in the same flow).
         assert!(slots.numbers().unwrap().is_empty());
@@ -1724,17 +1712,19 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_checkpoint_load_leaves_a_fresh_save_file() {
+    fn a_failed_checkpoint_load_leaves_an_empty_save_file() {
         let dir = folder("checkpoint-fail");
         let slots = Slots::story(&dir);
         // Only a checkpoint, and it is not a readable session.
         fs::write(slots.file(3, SlotKind::Checkpoint), b"garbage").unwrap();
         assert_eq!(slots.load(3, false), Err(SaveError::Malformed));
-        let save = fs::read(slots.file(3, SlotKind::Save)).unwrap();
-        assert_eq!(save, PackageImage::new().to_bytes());
-        // Opening the checkpoint reset its bad header; the save was created
-        // fresh as well, and the checkpoint was not copied over it.
-        assert_eq!(fs::read(slots.file(3, SlotKind::Checkpoint)).unwrap(), save);
+        // The save was created empty, the checkpoint was not copied over
+        // it, and opening the checkpoint left its bad bytes alone.
+        assert_eq!(fs::read(slots.file(3, SlotKind::Save)).unwrap(), b"");
+        assert_eq!(
+            fs::read(slots.file(3, SlotKind::Checkpoint)).unwrap(),
+            b"garbage"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
