@@ -44,7 +44,8 @@ READY or CREATE), the arena and story commits return their new global
 experience and preset key, and the continue screen chooses between a save
 and a checkpoint with its own labels, list and name cut to fifteen
 characters. Appearance sliders settle and copy with the original's epsilon
-and unsigned debounce (a NaN distance writes nothing), the face variant
+and 64-bit debounce (a NaN distance takes the write branch, as the
+unordered compare does), the face variant
 steps through seven values, and sex, hair visibility, voice names, pitch,
 the voice preview's 300-unit throttle and its non-repeating random variant
 are in. The creator icon sheet is four 96-pixel cells at a scale of eight

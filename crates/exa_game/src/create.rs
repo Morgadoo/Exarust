@@ -220,9 +220,9 @@ fn unchanged(last: i32) -> CreationSettle {
 }
 
 fn debounce(value: f32, last: i32, clock: i32) -> CreationSettle {
-    // The original compares the unsigned clock with the saved stamp plus
-    // two, so a stamp near the end of its range wraps.
-    if (last as u32).wrapping_add(2) > clock as u32 {
+    // The original zero-extends the stamp and adds two in 64 bits, so it
+    // does not wrap; the clock is zero-extended too.
+    if u64::from(last as u32) + 2 > u64::from(clock as u32) {
         CreationSettle {
             stored: Some(value),
             pending: true,
@@ -241,13 +241,14 @@ fn debounce(value: f32, last: i32, clock: i32) -> CreationSettle {
 
 /// Settles an appearance value toward its target.
 ///
-/// The distance is tested as `epsilon <= |value − target|`; a NaN distance
-/// fails that test and writes nothing, as the original's ordered compare
-/// does.
+/// The distance is tested with an unordered compare: a shorter distance
+/// than `epsilon` writes nothing, while a NaN distance takes the write
+/// branch, as the original's `jp` does.
 pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
     let value = (0.5 - source) * 2.0;
     match (value - target).abs().partial_cmp(&SETTLE_EPSILON) {
-        Some(std::cmp::Ordering::Less) | None => unchanged(last),
+        Some(std::cmp::Ordering::Less) => unchanged(last),
+        // A NaN distance jumps to the write, as the unordered compare does.
         _ => debounce(value, last, clock),
     }
 }
@@ -255,7 +256,8 @@ pub fn settle_appearance(source: f32, target: f32, last: i32, clock: i32) -> Cre
 /// Copies an appearance value to its target.
 pub fn copy_appearance(source: f32, target: f32, last: i32, clock: i32) -> CreationSettle {
     match (source - target).abs().partial_cmp(&SETTLE_EPSILON) {
-        Some(std::cmp::Ordering::Less) | None => unchanged(last),
+        Some(std::cmp::Ordering::Less) => unchanged(last),
+        // A NaN distance jumps to the write, as the unordered compare does.
         _ => debounce(source, last, clock),
     }
 }
@@ -4745,17 +4747,23 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_sliders_guard_nan_and_round_like_the_original() {
+    fn the_creation_sliders_write_nan_and_round_like_the_original() {
         let epsilon = f32::from_bits(0x33ff_ffd7);
         let nan = settle_appearance(f32::NAN, 0.0, 0, 0);
-        assert_eq!(nan.stored, None);
+        assert!(nan.stored.unwrap().is_nan());
+        assert!(nan.pending);
+        assert!(!nan.callback);
+
+        let nan_due = settle_appearance(f32::NAN, 0.0, 0, 2);
+        assert!(nan_due.stored.unwrap().is_nan());
+        assert!(nan_due.callback);
 
         let boundary = settle_appearance(0.5, -epsilon, 10, 12);
         assert_eq!(boundary.stored, Some(0.0));
         assert!(boundary.callback);
 
         let copied = copy_appearance(f32::NAN, 0.0, 0, 0);
-        assert_eq!(copied.stored, None);
+        assert!(copied.stored.unwrap().is_nan());
 
         let just_below = copy_appearance(f32::from_bits(0x33ff_ffd6), 0.0, 10, 12);
         assert_eq!(just_below.stored, None);
