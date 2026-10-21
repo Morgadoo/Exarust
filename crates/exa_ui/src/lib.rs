@@ -67,10 +67,10 @@ pub use compact_skill::{
     wheel,
 };
 pub use character_view::{
-    AcceptDragInput, FigureDragEnd, FigureDrop, FigureDropInput, Hover, ViewRef, accepts_drag,
-    background_bright_rgba, background_rgba, camera_follow, camera_offset, current_card,
-    default_camera_offset, drag_end as figure_drag_end, drop_kind, find_owner, first_record,
-    hover as figure_hover, insight_blocks, supersample_level, worn_index,
+    AcceptDragInput, FigureDragEnd, FigureDrop, FigureDropInput, Shown, ViewRef, accepts_drag,
+    background_colours, camera_position, current_card, default_camera_position,
+    drag_end as figure_drag_end, drag_start as figure_drag_start, drop_kind, ease_race_share,
+    find_owner, held_index, insight_blocks, player_pack, show_item, supersample_level,
 };
 pub use cursor::{
     CursorCapture, CursorShape, DrawWorldCursor, PanelPointer, ScriptedPointer, WorldCursor,

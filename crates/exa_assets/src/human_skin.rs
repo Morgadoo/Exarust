@@ -113,7 +113,7 @@ fn engine_exp(x: f32) -> f32 {
 
 /// The engine's sRGB decode of one channel (double compares and divides,
 /// the power through the fast logarithm and exponential).
-fn srgb_decode(c: f32) -> f32 {
+pub fn srgb_decode(c: f32) -> f32 {
     let wide = f64::from(c);
     if wide > 0.04045 {
         let base = ((wide + 0.055) / 1.055) as f32;
