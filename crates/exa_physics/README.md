@@ -223,18 +223,29 @@ yet: the character generator and the item factory still build their
 bodies the old way.
 
 The dynamics world unit (`src/dynamics.rs`) holds the rest of the world's
-side of the solver as data and rules: the simulation clock and the step
-driver (a simulation is due when its step's end is reached; more than four
-steps late, its backlog is dropped; the soonest end wins), the time-scale
-helper, the default/mechanism/zero-gravity environments with their retention
-bands, the shared 600 cm grid (a body's cell from its node's translation over
-600 cm rounded to even plus the half; the nine neighbours; the flat-row
-shift with its strip clear), the node and body tree helpers (wake from a
-body's node down through body children, settle living bodies through every
-node, freeze at a matrix, disable and enable, the grab layer, held pairs),
-the purges of what left a scene or a removed sub-scene, the placement
-overlap query (nine cells, own tree and disabled bodies skipped, pair masks
-compared, the higher-order body moving first), and the watch list.
+side of the solver as data and rules, checked against the original's
+listing: the step driver (the first simulation whose step's end is reached
+runs; more than four steps past it, its base moves so that step ends now;
+otherwise it waits for the soonest end, at most 100 ms) and the closed
+simulations' sweep, the clock's time scale, the default, inert and
+mechanism environments, a simulation's two 600 cm grids (static nodes and
+bodies: a sector's cell from its node's x and z times the float 1/600
+rounded to even plus the half; a body's floored from its sector's; the
+nine offsets starting at the cell itself; the flat-table shift, cell j
+taking what j − offset held, with the original's strip clears), the
+grid rebuild (cells emptied, the sectors' cells cached again), the node and
+body tree helpers (wake down the node tree, settle with its own countdown,
+freeze at a matrix, disable/enable and hold/release down the body tree,
+the grab layer, held pairs, the marks), the particle matrix (the
+unnormalised affine fit of the rest points), the sectors' purges (static
+nodes swapped out, bodies compacted and renumbered, objects shifted, the
+pair rule as the original compares it), the update's flag order (dead,
+reset, scene left, shared scene, sub-scene, pending registration) before
+the clock advances, the placement overlap query (bound spheres apart,
+same root, layers keeping them apart or disabled skip a body; the lower
+sector index first; the child bodies after) and the watch list. Nothing in
+the running game drives these records yet: Bevy's fixed step stands in for
+the driver and the body solver keeps its own sleep and pair state.
 
 Props and items with a rigid body are bodies in the same solver
 (`src/body_rigid.rs`, `body::Ragdoll::rigid`): built as the original
@@ -384,8 +395,10 @@ sets the instability counter (the barricade sets it to 100).
   quality, wide-query and factory-weapon fit flags.
 - The dynamics world unit (`dynamics`): the fixed-step driver and its
   backlog drop, the clock's time scale, the environments and their bands,
-  the 600 cm grid and its shift, the node and body tree helpers, the scene
-  purges, the placement overlap query and the watch list.
+  the two 600 cm grids and their shift and rebuild, the node and body tree
+  helpers, the particle matrix, the sectors' purges and the update's flag
+  order, the placement overlap query and the watch list (as records, not
+  yet driven by the game).
 - A root body's world links (`body::WorldLink`): a pin or slack link, a
   slider with its travel, a horizontal drag, a damped spring and a plane,
   anchored in the node's parent frame, with the origin pivot and no level
