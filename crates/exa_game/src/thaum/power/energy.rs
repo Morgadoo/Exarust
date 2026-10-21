@@ -123,7 +123,8 @@ impl Shock {
         self.charge += self.rate;
         // The ordered compare: a charge that is not a number keeps
         // charging.
-        if !(self.charge > 1.0) {
+        let past_one = self.charge.partial_cmp(&1.0) == Some(std::cmp::Ordering::Greater);
+        if !past_one {
             if self.phase == CHARGE {
                 super::drain(body, self.focus_tick);
                 return ShockStep {
