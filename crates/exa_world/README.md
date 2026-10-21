@@ -22,10 +22,11 @@ and the grid's rooms; portal clipping is next (see
 - `scene_env`: the original's scene environment as a pure model: the sun and moon on their 45° path and the daylight factor, the time-of-day records and their pick-and-blend, cloud dimming, the fog's span and per-frame near/far, the clear colour and sky gradient, the ambient scale, the automatic sunlight rule, the sun mode and sky switch, and rain and lightning with the original's generator. `environment` turns it into the level's `Lighting` (ambient, sun, linear fog, clear colour and sky) and Bevy resources; the weather tick and the time of day are modelled but nothing drives them yet.
 - `terrain`: tiles, blend rules, height pass and plants; one mesh per 6 m
   block (`terrain::patch` is the original's shared serpentine triangle
-  list), in a grid level only the blocks its grid flags, one mesh per block
-  room; `terrain::ground` is the original's world height query
-  (`TerrainGround`), built from the same displaced heights the navigation
-  grid reads.
+  list), in a grid level only the blocks its grid flags, one mesh per block room; `terrain::ground`
+  is the original's world height query (`TerrainGround`), built from the
+  same displaced heights the navigation grid reads; `terrain::stream` holds
+  the original's streaming decisions (60 m block priorities, the 44.4 m /
+  15 m composite selection and its pools, the 3 × 3 tile gather).
 - `gi_volume`: the voxel GI occupancy block, built on the async compute pool around the camera's focus; each grid cell's floor meshes are merged and get the original's floor heightfield points (`exa_physics::voxel`) once per level, in the cell's own space, and `GiState` tells a loading screen where it stands.
 - `point_light(light)`: the original omni light approximated as a Bevy `PointLight`.
 - `particles`: the original's CPU particle emitter (`TParticleSystem`): its template record and size scaling, derived per-tick values, ring of Verlet particles, ageing (the fire's distance cap), emission with its two-thirds accumulator, light and sound walks, quad building (diamond, stretched, billboard) with the atlas variants and colour keys, and body contacts. The draws come from the engine's integer LCG and the run-time library's Mersenne twister (`Rng`, `Mt19937`), and the arithmetic follows the original's (double-precision steps, half-to-even rounding). Plain state and rules at the 83 Hz tick; no Bevy `App` needed for a test.

@@ -12,6 +12,7 @@ pub mod blend;
 pub mod ground;
 pub mod height;
 pub mod patch;
+pub mod stream;
 pub mod vegetation;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};

@@ -244,6 +244,20 @@ block the same way (`terrain::patch`), so rooms and visibility work per
 6 m block rather than per room. A hole removes the quads whose low corner
 is a hole, and each tile's edge hangs a 0.5 m skirt (an Exarust addition).
 
+**Streaming.** The original builds a tile's geometry and masks on a worker
+thread and inserts finished tiles from a frame hook, at most one per frame.
+Each block carries a distance rank, `round(6000 − d)` centimetres within
+60 m, and the hook ranks blocks against the midpoint of the blocks already
+wanted and visible, so a visible block keeps its order ahead of the rest.
+Composites are chosen around the camera moved 10 m along its view and
+snapped to a 6 m block centre: blocks within 44.4 m get one, those within
+15 m a high-resolution set, from pools of 21 high and 43 low sets (at most
+189 blocks in the list). Terrain plugins gather the 3 × 3 tiles around one,
+missing tiles as an empty placeholder. Exarust builds and inserts every
+tile behind its loading screen and then evaluates the composite per pixel,
+as the original's "block until every tile is loaded" does at the end of a
+load (`terrain::stream` holds the three rules, pinned by tests).
+
 **Height query** (`TerrainGround`): the original's ground slot floors the
 tile coordinate `width/2 + x/48 m`, floors the fraction times eight for the
 6 m block, refuses blocks the level does not build, takes the bilinear
