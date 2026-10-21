@@ -75,6 +75,7 @@ impl Plugin for AiPlugin {
                 (
                     (brain::apply_new_roles, brain::rate_the_player).chain(),
                     brain::perceive_all,
+                    brain::ai_tick,
                     duellist.in_set(DuelSystems),
                 )
                     .chain(),

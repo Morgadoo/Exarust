@@ -164,12 +164,13 @@ impl Npc {
         self.applied.as_ref().map(|a| a.state)
     }
 
-    /// Integrates the brain's contact with `sighting` and runs the target
-    /// pass over it: the level to fight at, 0 when nothing is noticed.
+    /// Integrates the brain's contact with an optional sighting this tick
+    /// and runs the target pass over it: the level to fight at, 0 when
+    /// nothing is noticed.
     #[allow(clippy::too_many_arguments)]
     pub fn run_pass(
         &mut self,
-        sighting: contacts::Sighting,
+        sighting: Option<contacts::Sighting>,
         sight: contacts::FoeSight,
         distance_cm: f32,
         in_combat: bool,
@@ -198,12 +199,16 @@ impl Npc {
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
         contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
+        // The integration's concern total feeds the next tick's courage
+        // floor.
+        self.morale.total = self.integration.total;
         let mut morale = contacts::Morale {
             courage,
             stress: self.integration.stress,
             ..contacts::Morale::default()
         };
         let attended = self.pass.attention;
+        let visible: &[contacts::Sighting] = sighting.as_slice();
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -219,13 +224,18 @@ impl Npc {
                 attended_id: attended,
                 greet_gates: (self.integration.notice_scale, self.integration.readiness),
             },
-            &[sighting],
+            visible,
             &[],
             |_| distance_cm * distance_cm,
             || false,
         );
         self.integration.level = report.level;
         self.integration.stress = report.stress;
+        // The alarm mean raises the same stress the next drift decays.
+        self.morale.stress = report.stress;
+        if self.integration.fled_alarm < report.fled_alarm {
+            self.integration.fled_alarm = report.fled_alarm;
+        }
         if let Some(attention) = report.attention {
             self.integration.attention = Some(attention);
         }
@@ -501,6 +511,83 @@ pub fn perceive_all(
     }
 }
 
+/// Runs the brain's AI tick: drifts its morale, integrates the contacts the
+/// perception filled and runs the target pass over this tick's sighting of
+/// the duellist's target, with the body's health, down state, sleep,
+/// combat state and distance, on the game clock and the brain's generator.
+/// The report stays in [`Npc::pass`] (its level, attention, stress and
+/// cursor included).
+#[allow(clippy::type_complexity)]
+pub fn ai_tick(
+    ticks: Option<Res<BodyTicks>>,
+    players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
+    targets: Query<&GlobalTransform>,
+    mut npcs: Query<(
+        Entity,
+        &mut Npc,
+        &mut Combatant,
+        Option<&crate::Duellist>,
+        Option<&Mind>,
+        Option<&GlobalTransform>,
+        &Fighter,
+        &Condition,
+    )>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let player = players.iter().next().map(|(entity, _)| entity);
+    for (_entity, mut npc, combatant, duellist, mind, gt, fighter, condition) in &mut npcs {
+        let target = duellist.map(|d| d.target).or(player);
+        let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
+        let target_cm = target
+            .and_then(|t| targets.get(t).ok())
+            .map_or(observer_cm, |g| g.translation() * 100.0);
+        let flat_cm = Vec3::new(
+            target_cm.x - observer_cm.x,
+            0.0,
+            target_cm.z - observer_cm.z,
+        );
+        let distance_cm = if (target_cm.y - observer_cm.y).abs() < 150.0 {
+            flat_cm.length()
+        } else {
+            (target_cm - observer_cm).length()
+        };
+        let sighting = target.and_then(|t| {
+            npc.contacts
+                .iter()
+                .find(|c| c.id == t.to_bits() && contacts::TINY < c.seen)
+                .copied()
+                .map(|contact| contacts::Sighting {
+                    contact,
+                    character: true,
+                })
+        });
+        let sight = contacts::FoeSight {
+            foe: target.map(Entity::to_bits),
+            sees_foe: sighting.is_some(),
+            foe_point: target_cm,
+            foe_ground_y: target_cm.y,
+            foe_room: 0,
+            focus: None,
+        };
+        let in_combat = duellist.map_or(combatant.in_combat, |d| d.fighting());
+        let asleep = mind.is_some_and(|m| m.asleep);
+        let down = condition.0 & combatant::CONDITION_DOWN != 0;
+        let mut roll = npc.roll;
+        let _ = npc.run_pass(
+            sighting,
+            sight,
+            distance_cm,
+            in_combat,
+            asleep,
+            (fighter.health.yellow, fighter.health.max),
+            down,
+            now,
+            &mut roll,
+        );
+        npc.roll = roll;
+    }
+}
+
 /// Applies the roles of brains just added.
 #[allow(clippy::type_complexity)]
 pub fn apply_new_roles(
@@ -742,7 +829,7 @@ mod tests {
         };
         let mut roll = 7;
         let level = npc.run_pass(
-            sighting(5.0),
+            Some(sighting(5.0)),
             sight,
             300.0,
             false,
@@ -756,8 +843,12 @@ mod tests {
         assert_eq!(npc.pass.enter, Some(3));
         assert_eq!(npc.pass.target, Some(1));
         assert_eq!(npc.pass.greet, Some(1));
+        // The target pass's alarm mean and the integration's total reach
+        // the next morale drift.
+        assert_eq!(npc.morale.stress, npc.integration.stress);
+        assert_eq!(npc.morale.total, npc.integration.total);
         let level = npc.run_pass(
-            sighting(0.0),
+            Some(sighting(0.0)),
             sight,
             300.0,
             false,
@@ -783,6 +874,64 @@ mod tests {
         assert!(npc.search.is_some());
         npc.apply(&d, &held(&[9]), 0);
         assert!(npc.search.is_none());
+    }
+
+    /// The AI tick runs the target pass once, keeps its report on the brain
+    /// and stores the level it decided.
+    #[test]
+    fn the_ai_tick_runs_the_target_pass_and_stores_its_level() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.contacts.push(ContactRecord {
+            id: player.to_bits(),
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 5.0,
+            ..ContactRecord::default()
+        });
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let brain = app.world().get::<Npc>(npc).unwrap();
+        assert_eq!(brain.pass.level, 3);
+        assert_eq!(brain.pass.enter, Some(3));
+        assert_eq!(brain.pass.attention, Some(player.to_bits()));
+        assert_eq!(brain.integration.level, 3);
+        assert_eq!(brain.pass.target, Some(player.to_bits()));
+        // The next tick weighs the contact again: calmed, it only notices.
+        {
+            let mut brain = app.world_mut().get_mut::<Npc>(npc).unwrap();
+            let c = brain
+                .contacts
+                .iter_mut()
+                .find(|c| c.id == player.to_bits())
+                .unwrap();
+            c.hostility = 0.0;
+            c.concern = 0.0;
+            c.seen = 1.0;
+            c.sighting = 1.0;
+        }
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().pass.level, 0);
     }
 
     /// An NPC brain and a player two metres apart, the brain's duellist

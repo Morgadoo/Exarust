@@ -125,12 +125,14 @@ replaces the lightest. The running game has no room graph yet, so no
 flight starts there.
 
 `brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
-runs the target pass over one sighting, and reports the engagement, the
-leave, the encounter and the greeting (Exarust has no dialogue engine). It
-is not scheduled: the running game's perception does not yet fill the
-contact words the integration reads (the calming term, this tick's
-sighting, the concern target), and the mind's own rating decides the
-duellist's engagement.
+runs the target pass over this tick's sighting of its target, and reports
+the engagement, the leave, the encounter and the greeting (Exarust has no
+dialogue engine). The AI tick (`brain::ai_tick`) runs it after the
+perception pass filled the contact words and before the duellist's combat
+state, keeps the report (level, attention, stress, cursor) on the brain,
+and feeds the report's stress and the integration's total back into the
+next morale drift. The mind's own rating still decides the duellist's
+engagement.
 
 The golem guardians' rules are plain functions with tests; no level has a
 golem entity or an alarm zone yet.
