@@ -310,15 +310,7 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    cursor_look,
-                    cursor_ground,
-                    toggle_combat,
-                    request_weapon_swap,
-                    player_combat,
-                    chase_camera,
-                )
-                    .chain(),
+                (cursor_look, cursor_ground, player_combat, chase_camera).chain(),
             );
     }
 }
@@ -440,7 +432,7 @@ fn cursor_look(
     capture.0 = look.active;
 }
 
-fn cursor_ground(
+pub(crate) fn cursor_ground(
     mut ground: ResMut<CursorGround>,
     scripted: Res<exa_ui::ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -862,52 +854,10 @@ fn take_player_stance(
     }
 }
 
-/// Tab turns combat mode on or off; the stance follows (the guard or the
-/// combat idle in, Idle out). The footwork's direction starts along the
-/// heading.
-fn toggle_combat(
-    keys: Res<ButtonInput<KeyCode>>,
-    bindings: Res<Bindings>,
-    mut bodies: Query<(&mut PlayerBody, &Locomotion)>,
-) {
-    if !bindings.just_pressed(&keys, Action::ToggleCombat) {
-        return;
-    }
-    for (mut pb, req) in &mut bodies {
-        pb.toggle_combat();
-        pb.aim = req.heading;
-    }
-}
-
-/// Switch Equipped (R) asks for the weapon sets to swap. The original
-/// refuses while the body is busy or a drag is in progress, swaps at once
-/// with the pack open, and otherwise puts the body in its swap state, whose
-/// animation swaps the sets. Exarust has no pack window, no drag and no
-/// swap animation: the items plugin carries the request out at once. Which
-/// of its body's states are busy is not tied to Exarust's yet.
-fn request_weapon_swap(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    bindings: Res<Bindings>,
-    bodies: Query<Entity, With<PlayerBody>>,
-) {
-    use exa_items::possession::{Possessions, SwapRequest};
-    if !bindings.just_pressed(&keys, Action::SwitchEquipped) {
-        return;
-    }
-    for body in &bodies {
-        if Possessions::swap_request(0, false, false) != SwapRequest::Refused {
-            commands
-                .entity(body)
-                .insert(exa_items::catalogue::SwapRequested);
-        }
-    }
-}
-
 /// Combat mode (Tab), each frame: the cursor's direction is the aim, and
 /// the heading turns to it once it is more than 30° off, or follows it
 /// while an attack is requested.
-fn player_combat(
+pub(crate) fn player_combat(
     cursor: Res<CursorGround>,
     look: Res<CursorLook>,
     players: Query<&GlobalTransform, With<Player>>,

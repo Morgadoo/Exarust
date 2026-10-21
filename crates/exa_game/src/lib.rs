@@ -20,6 +20,7 @@ pub mod fall;
 pub mod footprints;
 pub mod frame;
 pub mod hand;
+pub mod hotkeys;
 pub mod hud;
 pub mod hw_config;
 pub mod idle_orbit;
@@ -82,6 +83,7 @@ impl Plugin for GamePlugin {
             cursor::CursorPlugin,
             hand::HandPlugin,
             idle_orbit::IdleOrbitPlugin,
+            hotkeys::HotkeyPlugin,
             hud::HudPlugin,
             torch::TorchPlugin,
             trace::TracePlugin,

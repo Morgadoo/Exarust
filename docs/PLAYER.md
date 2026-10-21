@@ -201,11 +201,13 @@ slot for slot) has 23 slots in this order:
 left mouse (primary), W, A, S, D, X (crouch), shift (run), alt (alternate
 attack), middle mouse (orbit), V (Cursor Look), control (interact), I
 (inventory), tab (combat), K (skills), R (switch equipped), F (flip weapon),
-J (journal), T (talk), C (power bar), P (power tree), Q (use power), right
-arrow (next power), left arrow (previous power). The power slots are tied
-to the settings labels by the original's conversion from the saved key
+J (journal), T (talk), C (power bar), P (power tree), Q (use the picked
+power), right arrow (next power), left arrow (previous power): the key
+handler (Hotkeys, below) opens the power bar with slot 18, the power tree
+with slot 19 and uses the picked power with slot 20. The power slots are
+tied to the settings labels by the original's conversion from the saved key
 table into this one and by the Controls page's key captions, which read the
-saved table in row order; nothing reads those slots yet. Shift, alt
+saved table in row order. Shift, alt
 and control accept either side. The settings screen's template labels
 Cursor Look as SPACE; the shipped table's slot holds V.
 
@@ -224,6 +226,36 @@ there. The original's reader picks the older shape by the version word
 (below 101) rather than by the count, takes whatever count the payload
 gives, and clears slot 21 (next power) after reading; Exarust's `Bindings`
 does not yet follow these three rules.
+
+## Hotkeys
+
+The key handler compares a pressed key's low byte with the bound keys. A
+dead player's keys only end a dialogue. With the power bar open, a digit
+picks a power ('0' the tenth, '1' the first), Q uses the picked one and the
+arrows step through them; with a dialogue open, '1'–'9' choose an answer
+and the Talk key ends it; with neither, the Talk key starts talking, if
+allowed. Any other key then goes on, in this order: Q uses the picked power
+(if powers are allowed), Tab toggles combat mode, I opens the inventory (if
+allowed; in the modes that hide it, only while collapsing), R asks for the
+weapon sets to swap (if allowed), F lights or puts out the held light, K
+the skills and J the journal (if allowed and not hidden), P the power tree
+(if powers are allowed and the player has some), and C the power bar (when
+the player, or else the companion, has powers). The permissions are a mask
+the game sets: skills and journal 1, inventory 2, powers 4, talk 8 and swap
+0x10, all five in play.
+
+Entering combat mode lets go of what the hand holds and clears the
+request's backpedal, keys' heading and turn-about bits. The swap is refused
+while the body is busy (its condition word has any of 0x10202) or a lift is
+on the cursor. F toggles the record's light flag of the first held item
+when it gives light and the body is not switching weapons (0x10000).
+
+Wired in Exarust: Tab, R and F. Not yet: the windows, the dialogue and the
+power bar the other keys open; the extinguished light itself (the record's
+flag changes, the torch burns on); the original's cancel of a lift or drag
+on entering combat, which puts a lifted item back where its lift saved it
+and leaves a drag's link in place (Exarust lets go of the drag); the flag
+that keeps a player out of combat mode.
 
 ## Using what the cursor is over
 
