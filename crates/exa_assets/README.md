@@ -16,23 +16,28 @@ the solver registers a prop with.
 parameters. A texture's creation word (`texture::flags`) holds the
 magnification, minification and mip filters, the data bit (`0x100`: linear,
 never sRGB), the skip-LOD-bias bit (`0x200`), one wrap bit per axis, the
-anisotropy mode (`& 3`), the two-bit detail class and the target kind. The
-image's own header contributes its wrap bits, detail class and target; a
-material contributes the record's texture load flags (`Material::texture_flags`,
-offset `0x54`) and the texture quality mask, and the loader adds the per-slot
-mode bits: normal, gloss and packed specular are data, unpacked specular is
-colour, and a material with a subsurface colour loads its diffuse without the
-LOD bias. A stored word whose top byte is `0x82`, `0x92` or `0x12` is data
-whatever the slot asks.
+anisotropy mode (`& 3`), the two-bit detail class and the target kind. A
+material passes the record's texture load flags (`Material::texture_flags`,
+offset `0x54`) or-ed with the texture quality mask (`texture::material_word`),
+each slot adds its mode bits (normal, gloss and height maps, and the
+specular map of a material whose kind has bit 0, are data with no bias; a
+diffuse whose subsurface red, green and blue are not all zero skips the
+bias), and the image's header flags from bit 16 up (wrap, stored chain,
+detail class, target) join the word. An uncompressed format word with bit 16
+set, or a compressed one whose top byte is `0x82` or `0x92`, is data whatever
+the slot asks.
 
 The sampler follows the word: `0x10`/`0x20` pick linear minification and
 magnification, `0x40` samples the mip chain and `0x80` blends between levels;
 the wrap bits pick repeat or clamp per axis; anisotropy is
-`2^(quality level − mode)`, capped at 16. The LOD bias is
-`base · f(ss) / 3` in f32, with `f(ss) = ss` below 2 and `ss − 1` from 2 up;
-`TextureSettings` carries the base, the supersampling setting, `TextureDetail`
-and the driver's largest texture side (which replaces the routine's static
-65536) and its units (clamped to 16). **Bevy's sampler descriptor has no LOD
+`2^(quality level − mode)` while the mode is below the level and not 3, else
+1 (and 1 unless every filter is linear, which wgpu requires). The LOD bias is
+`base · f(ss) / 3` in f32, with `f(ss) = ss` below 2 and `ss − 1` from 2 up.
+`TextureSettings` carries what `TextureQuality` writes (`with_quality`: the
+mask, the anisotropy level and the bias base, −0.75 at quality 5),
+`TextureDetail`, the supersampling setting, the device's largest texture
+side and its units (clamped to 16); `fallback` is what the original forces
+on a generic (software) pixel format. **Bevy's sampler descriptor has no LOD
 bias**, so the value is computed and exposed but not applied; a renderer that
 wants the original's bias must pass it to the shader. The GL texture-unit and
 render-target texture calls (selecting a unit, binding, creating an empty
@@ -40,51 +45,65 @@ texture for a framebuffer attachment) have no Exarust item: Bevy owns render
 targets and binds per draw.
 
 `TextureDetail` keeps the first uploaded level at
-`max(0, class − detail + 1)`, raised while a side exceeds the driver's limit.
-A stored chain is uploaded from that level (all of it when mipmapping is on,
-the level alone otherwise); a single-level image gets the Kaiser chain from
+`max(0, class − detail + 1)`, raised while a side exceeds the device's limit;
+in the shipped data 21 of 8 839 images (class 3) start at level 1 at the
+retail detail 3. A stored chain is uploaded from that level (all of it when
+the quality mask lets the mip bit through, the level alone otherwise); a
+single-level uncompressed image gets the Kaiser chain from
 `exa_render::mipmap`, starting at that level; a compressed image with no
-stored chain keeps its base, since it cannot be downsampled. A failed image
-gets the original's 1×1 grey placeholder (64, 64, 64, 255) and a warning.
+stored chain keeps its base alone and loses its mip filter. An image that is
+shipped but cannot be read gets the original's 1×1 grey placeholder (RGB
+64, 64, 64, repeating) and a warning. One the game does not ship is no map:
+the original would draw the placeholder, but Exarust has no registry of the
+images the original builds at run time, so such a name may be one of those
+(`model::tests::shipped_materials_missing_images` lists them).
 
-`texture_cache` is the manager: names are sixteen bytes, case-folded, kept in
-name order; one record per name and colour space holds the creation word,
+`texture_cache` is the manager: a name is its first sixteen bytes, cut at the
+last dot among them and with `A`–`Z` folded, kept in the original's order
+(four little-endian words compared in turn); images are looked up by that
+stored name. One record per name and colour space holds the creation word,
 alpha flag, image handle and reference count. A second request for a live
-name joins the record and replaces its word (the last request wins, as in the
-original); the last release frees it. There is no size budget: reference
-counts are the only eviction. The original keys by name alone; Exarust adds
-the colour space because Bevy needs distinct sRGB and linear images.
+name takes a reference and leaves the record as it is (the first request's
+word stays, as in the original); a duplicate insert does the same; the last
+release frees it. There is no size budget: reference counts are the only
+eviction. The original keys by name alone; Exarust adds the colour space
+because Bevy needs distinct sRGB and linear images.
 
 ## Streaming
 
 `stream` is the exchange the original runs between its main and loader
 threads: a ring with a head, a tail, one kept-free slot and growth; requests
-in order; a promotion that moves one request to the front (the original's
-"Priority item"); removal; and an upload pass that takes only what was ready
-and honours a budget. `TextureStream` is the texture loader's queue:
-`request` (a duplicate of a queued name is refused), `promote`, `cancel`,
-one `decode_next` per pass on whatever executor the caller uses, the loader's
-yield while uploads wait, `load_now` for the priority path (promote, decode
-and upload one name), and `pump_uploads(budget, upload)` on the main thread
-with a per-upload completion callback. The original drains every ready upload each pass; the budget is
-Exarust's addition for memory-bounded loaders (unbounded when omitted).
+in order; a promotion that moves one request to the front and lets the last
+fill its place (the original's "Priority item"); removal; and an upload pass
+that takes only what was ready and honours a budget. `TextureStream` is the
+texture loader's queue: `request` (a duplicate of a queued name is refused),
+`promote` (which also finds a request decoded and waiting for its upload),
+`cancel`, one `decode_next` per pass on whatever executor the caller uses,
+the loader's wait while uploads are pending (skipped for a promoted request;
+pausing only stops the wake-ups), `load_now` for the priority path (promote,
+decode and upload one name), and `pump_uploads(budget, upload)` on the main
+thread with a per-upload completion callback. The original drains every
+ready upload each pass; the budget is Exarust's addition for memory-bounded
+loaders (unbounded with `usize::MAX`).
 
-`content_stream` is the stream thread's scheduler: placed level objects first,
-then one generic job (its completion queued for the main thread), then one
-requested database object, one requested character, and the pending streamed
-character nearest the focus point (strict `<`, so the first of equal distances
-wins), else idle. Its queues have the original's capacities (16 jobs and
-completions, 32 object and character requests/results, 16 attachments, 128
-streamed characters); `fetch_object`/`fetch_character` fetch by request key,
-`pump` runs completions and collects attachments and scene additions,
-`wait_for_level` returns the built object list and missing count, and
-`wait_for_characters` drains attachments while the caller pumps other work.
-Content builders are supplied by the caller (`ContentBuilders`), as the
-original's thread calls into the database, character and item factories. The
-queue and loop are implemented; the level-object chunk reader, the database
-object factory and the character builders remain in their own components, and
-Exarust's level loader does not drive this scheduler yet.
-
+`content_stream` is the stream thread's scheduler: while a level's list is
+unfinished, its next placed object alone; otherwise one generic job (its
+completion queued for the main thread), one requested database object and
+one requested character in the same pass, and only when none of those was
+queued the pending streamed character nearest the focus point (squared
+distance, strict `<`, so the first of equal distances wins), else idle. A
+request that builds nothing is dropped. Its rings have the original's
+capacities (16 jobs, completions and attachments, 32 object and character
+requests and results, 128 streamed results); `fetch_object`/`fetch_character`
+fetch by request key, `pump` runs completions, then hands over the streamed
+characters to insert and the characters to attach, `wait_for_level` returns
+the built object list and missing count, and `wait_for_characters` drains
+attachments while the caller pumps other work. Content builders are supplied
+by the caller (`ContentBuilders`), as the original's thread calls into the
+database, character and item factories. The queue and loop are implemented;
+the level-object chunk reader, the database object factory and the character
+builders remain in their own components, and Exarust's level loader does not
+drive this scheduler yet.
 
 Materials that show wound blood (`docs/RENDERING.md`, Blood): the human
 skin, painted and run-time apparel and factory items, any record selecting
