@@ -1044,14 +1044,18 @@ fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut 
                 }
                 _ => return,
             }
+            let mut row_bytes = [0u8; 16];
             for row in 0..4 {
                 let y = by * 4 + row;
                 if y >= h {
                     break;
                 }
                 let cols = (w - bx * 4).min(4);
+                for column in 0..cols {
+                    row_bytes[column * 4..column * 4 + 4].copy_from_slice(&tile[row * 4 + column]);
+                }
                 let dst = (y * w + bx * 4) * 4;
-                out[dst..dst + cols * 4].copy_from_slice(&tile[row * 4..row * 4 + cols].concat());
+                out[dst..dst + cols * 4].copy_from_slice(&row_bytes[..cols * 4]);
             }
         }
     }
