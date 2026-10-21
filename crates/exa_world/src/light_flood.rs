@@ -246,10 +246,16 @@ impl CellLights {
         }
     }
 
-    /// Takes light `key` out of every cell.
+    /// Takes light `key` out of every cell. Each cell drops its first entry
+    /// for the light by swapping the last entry into its place (the
+    /// original scans every cell the same way), so the order of the other
+    /// lights in a cell can change.
     pub fn remove(&mut self, key: u32) {
         for cell in self.touched.remove(&key).unwrap_or_default() {
-            self.cells[cell].retain(|e| e.0 != key);
+            let list = &mut self.cells[cell];
+            if let Some(at) = list.iter().position(|e| e.0 == key) {
+                list.swap_remove(at);
+            }
         }
     }
 
@@ -596,6 +602,17 @@ mod tests {
         // Moving a light out frees its place.
         cells.remove(0);
         assert_eq!(cells.lights(cell(&g, 1, 1)).count(), MAX_CELL_LIGHTS - 1);
+    }
+
+    #[test]
+    fn removing_a_light_swaps_the_last_one_into_its_place() {
+        let g = rooms(false);
+        let mut cells = CellLights::new(&g);
+        for key in 1..=3 {
+            cells.insert(0, key, 0.0, 1.0);
+        }
+        cells.remove(1);
+        assert_eq!(cells.lights(0).collect::<Vec<_>>(), [3, 2]);
     }
 
     #[test]
