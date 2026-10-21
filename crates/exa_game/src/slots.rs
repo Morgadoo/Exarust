@@ -554,7 +554,8 @@ impl Slots {
         let path = self.file(number, SlotKind::Save);
         let mut package = match fs::read(&path) {
             Ok(bytes) => PackageImage::read(&bytes).unwrap_or_default(),
-            Err(_) => PackageImage::new(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => PackageImage::new(),
+            Err(error) => return Err(error),
         };
         if let Some(characters) = world.world_characters {
             package.put_section(
