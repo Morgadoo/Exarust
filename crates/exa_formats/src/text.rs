@@ -395,52 +395,63 @@ fn colour_from_hex(text: &[u8], last: usize) -> [u8; 4] {
     out
 }
 
-/// The last index of `.` in `text`, or -1.
-fn last_dot(text: &[u8]) -> i32 {
+/// The original's backward byte search: the 0-based index of the last
+/// `byte` in `text`, or -1. An empty text gives 0, not -1: the scan runs no
+/// step and the zero flag left by the routine's own setup reads as a find.
+fn last_index(byte: u8, text: &[u8]) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
     text.iter()
-        .rposition(|&byte| byte == b'.')
+        .rposition(|&at| at == byte)
         .map_or(-1, |at| at as i32)
 }
 
 /// The 16-byte extension of a length-bounded name (the original's
-/// extension helper): the bytes after the last dot, or `None` when there is
-/// no dot, the dot is the first byte, or the extension does not fit sixteen
-/// bytes. The rest of the name is zero.
+/// extension helper): the bytes after the last dot, zero-padded. `None`
+/// when there is no dot or the extension is longer than sixteen bytes; a
+/// dot as the first byte is fine. An empty name gives an all-zero
+/// extension (see [`last_index`]). The original zeroes its output before
+/// it looks, so a refused name also leaves zeros there.
 pub fn extension_name(text: &[u8]) -> Option<[u8; 16]> {
     let mut out = [0u8; 16];
-    let at = last_dot(text) + 1;
+    let at = last_index(b'.', text) + 1;
     if at <= 0 {
         return None;
     }
-    let at = at as usize;
-    let len = text.len().checked_sub(at)?;
+    let len = text.len() as i64 - i64::from(at);
     if len > 16 {
         return None;
     }
-    out[..len].copy_from_slice(&text[at..]);
+    if len > 0 {
+        out[..len as usize].copy_from_slice(&text[at as usize..]);
+    }
     Some(out)
 }
 
 /// The 16-byte extension of a string ([`extension_name`], with the length
-/// taken from the string). The original copies without a bound; a longer
-/// extension is cut to sixteen bytes here.
+/// taken from the string, and an empty string also giving zeros). The
+/// original copies the whole extension without a bound, past its sixteen
+/// bytes; Exarust cuts it to sixteen.
 pub fn extension_of_str(text: &str) -> Option<[u8; 16]> {
     let bytes = text.as_bytes();
-    let at = last_dot(bytes) + 1;
+    let at = last_index(b'.', bytes) + 1;
     if at <= 0 {
         return None;
     }
     let mut out = [0u8; 16];
-    let tail = &bytes[at as usize..];
+    let tail = bytes.get(at as usize..).unwrap_or_default();
     let len = tail.len().min(16);
     out[..len].copy_from_slice(&tail[..len]);
     Some(out)
 }
 
-/// A name with a new extension: the original copies the name wholesale,
-/// finds the last dot within its sixteen bytes (its length when there is
-/// none), and writes the extension from that byte on, cut at sixteen. The
-/// dot is replaced.
+/// A name with a new extension: the original copies the name, finds the
+/// last dot among its sixteen bytes (else its length up to a zero, at most
+/// sixteen) and, when that is below sixteen, fills every byte from there
+/// to the end from the extension, itself a zero-padded 16-byte name; the
+/// dot is overwritten. `extension` is that name's leading bytes; the bytes
+/// past it are written as the zeros of its padding.
 pub fn replace_extension(name: &[u8; 16], extension: &[u8]) -> [u8; 16] {
     let mut out = *name;
     let found = name.iter().rposition(|&byte| byte == b'.');
@@ -449,10 +460,8 @@ pub fn replace_extension(name: &[u8; 16], extension: &[u8]) -> [u8; 16] {
             .position(|&byte| byte == 0)
             .unwrap_or(name.len())
     });
-    if at < 16 {
-        let room = 16 - at;
-        let len = extension.len().min(room);
-        out[at..at + len].copy_from_slice(&extension[..len]);
+    for (k, slot) in out.iter_mut().enumerate().skip(at) {
+        *slot = extension.get(k - at).copied().unwrap_or(0);
     }
     out
 }
@@ -461,7 +470,7 @@ pub fn replace_extension(name: &[u8; 16], extension: &[u8]) -> [u8; 16] {
 /// last dot when there is one, else the whole name.
 pub fn strip_extension_append(name: &str, suffix: &str) -> String {
     let bytes = name.as_bytes();
-    match last_dot(bytes) {
+    match last_index(b'.', bytes) {
         -1 => format!("{name}{suffix}"),
         at => format!("{}{suffix}", &name[..at as usize]),
     }
@@ -701,6 +710,21 @@ mod tests {
         assert_eq!(&name[14..], &[0, 0]);
         let spaced = *b"noext\0\0\0\0\0\0\0\0\0\0\0";
         assert_eq!(&replace_extension(&spaced, b"txt")[..8], b"noexttxt");
+        // Every byte after the dot comes from the zero-padded extension.
+        let long = *b"ab.cdefgh\0\0\0\0\0\0\0";
+        assert_eq!(
+            replace_extension(&long, b".x"),
+            *b"ab.x\0\0\0\0\0\0\0\0\0\0\0\0"
+        );
+        // A full name without a dot is left alone.
+        assert_eq!(
+            replace_extension(b"0123456789abcdef", b".x"),
+            *b"0123456789abcdef"
+        );
+        // An empty name counts as a dot at position 0.
+        assert_eq!(extension_name(b""), Some([0; 16]));
+        assert_eq!(extension_of_str(""), Some([0; 16]));
+        assert_eq!(strip_extension_append("", ".rcp"), ".rcp");
         assert_eq!(strip_extension_append("save.rsg", ".rcp"), "save.rcp");
         assert_eq!(strip_extension_append("save", ".rcp"), "save.rcp");
         assert_eq!(file_name_of(r"a\b\c.rfc"), "c.rfc");
