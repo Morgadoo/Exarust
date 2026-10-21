@@ -215,7 +215,7 @@ powers, the scene's weather and the AI's sight, which are not in.
 The per-character item effects (`item_effects`) are the character's
 effect list and its two impact counters, the held charge accumulator and
 its HUD flash, the power-curve glow with its level step, the worn item's
-light and, apparel effect with their 0.9/0.1 hysteresis, the skin
+light and apparel effect with their 0.9/0.1 hysteresis, the skin
 material fade (the square of the value) and the focus-item power slot with
 the power tree refresh. The golem guardians (`exa_ai::golem`) have the
 wake and sleep transitions with their limb and glow scales, the homeward

@@ -206,6 +206,51 @@ pub enum ItemEffectKind {
     Spark,
 }
 
+/// What registering a held item attaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldRegistration {
+    /// The effect tick the record's kind picks.
+    pub effect: Option<ItemEffectKind>,
+    /// A kind-2 item installs the level updater as well.
+    pub level_updater: bool,
+}
+
+/// Registers a held item: held effects must be enabled for the character
+/// and the record must name a kind 1, 2 or 3 effect. Kind 2 also installs
+/// the item's level updater (the callback the record's kind-2 changes run).
+pub fn register_held(kind: u16, enabled: bool) -> HeldRegistration {
+    let effect = enabled.then(|| effect_kind(kind)).flatten();
+    HeldRegistration {
+        effect,
+        level_updater: effect == Some(ItemEffectKind::Glow),
+    }
+}
+
+/// A visual refresh a worn or apparel effect asks the character to run: the
+/// character's parts are rebuilt from the item's materials and the view is
+/// told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualRefresh {
+    /// The item effect produced it.
+    pub effect: bool,
+    /// Every part of the body is re-set from its node.
+    pub parts: usize,
+    /// The character's view is refreshed.
+    pub view: bool,
+}
+
+impl VisualRefresh {
+    /// The refresh the garment routines run: every part re-set, the
+    /// character regenerated and its view updated.
+    pub fn garment(parts: usize) -> Self {
+        Self {
+            effect: true,
+            parts,
+            view: true,
+        }
+    }
+}
+
 /// A held item's charge outcome.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChargeOutcome {
@@ -571,6 +616,20 @@ mod tests {
         assert_eq!(effect_kind(3), Some(ItemEffectKind::Spark));
         assert_eq!(effect_kind(0), None);
         assert_eq!(effect_kind(4), None);
+    }
+
+    #[test]
+    fn a_held_item_attaches_its_kind_and_the_level_updater() {
+        let held = register_held(2, true);
+        assert_eq!(held.effect, Some(ItemEffectKind::Glow));
+        assert!(held.level_updater);
+        assert_eq!(register_held(1, true).effect, Some(ItemEffectKind::Flame));
+        assert!(!register_held(1, true).level_updater);
+        assert_eq!(register_held(3, false).effect, None);
+        assert_eq!(register_held(4, true).effect, None);
+        let refresh = VisualRefresh::garment(20);
+        assert!(refresh.effect && refresh.view);
+        assert_eq!(refresh.parts, 20);
     }
 
     #[test]
