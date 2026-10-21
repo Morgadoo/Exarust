@@ -75,7 +75,14 @@ payloads               at their offsets, each at the 0x2000 boundary after
     entry covers are left as they were, and the file never shrinks.
 * **Deleting a section** removes its directory entry, shifts the entries
   after it down and rewrites the directory. The payload stays.
-* Copying a package to its checkpoint (or back) is a plain file copy.
+* **Resetting** a package writes the sentinel alone over its directory (count
+  1, the 8-byte header and one 24-byte entry); the payloads and the tail are
+  left as they were. **Probing** a file opens it for reading and discards its
+  first eight header bytes; success means the file opened, whatever its size
+  or magic.
+* Copying a package to its checkpoint (or back) is a plain file copy. The
+  checkpoint name is the save's extension stripped and `.rcp` appended; the
+  save name is the checkpoint's extension stripped and `.rsg` appended.
 * A package's own bytes, when Exarust writes one, are the header and
   directory written over the file as it was read, then each payload at its
   offset. Bytes no entry covers — a gap, a deleted section's payload, an

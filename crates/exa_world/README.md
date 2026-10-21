@@ -8,6 +8,13 @@ and the grid's rooms; portal clipping is next (see
 [`docs/PLAN.md`](../../docs/PLAN.md)).
 
 - `spawn_model(commands, model, placement)`: a cached model with its node hierarchy, its lights, fires and voxel lights (`exa_render::gi::VoxelLight`) and its nodes' keyframe tracks (`exa_anim::tracks::NodeTracks`); a placement replaces the root transform, as level props do. Placed items dim their voxel lights and glow meshes by their condition byte. `spawn_model_nodes` also returns the node entities.
+- `db_objects`: the object manager's scene decisions: the id tier bits,
+  the record kind flags, the collision body class (a lever or push surface
+  by its operative class, a door, else none), the scene tree (a pack model,
+  a factory weapon, an invisible container volume or the 50 cm usable
+  placeholder), the recursive wearable flags, the impact-sound class, the
+  apparel `&` paint and `*` hide rules, a master cache loaded once per id
+  or model and shared by every clone, and the release mismatch check.
 - `bodies`: which rigid bodies of a level register in the solver, as the original registers them (each body tree from its top body down through its body children), and their registration: the free and hung trees of props not placed static (`Prop::STATIC`; nodes marked static, `rfc::Node::STATIC`, never register), of placed objects that are no door, lever or push surface, and of the level's own model, asleep; a hung tree's root keeps its stored links as world links anchored in its parent node (`exa_physics::body::WorldLink`), an origin pivot unless the first is a slider, and no level detection; mechanisms stay static until their steps drive their bodies (`LevelInfo::bodies` counts each).
 - `mechanisms`: the door and operative records a placed object carries (`MechanismRecords`, under its tagged placed id), converted for `exa_physics`'s door, lever, plate and signal rules; a signal can be dispatched by them. Nothing ticks a mechanism yet: its body stays static level geometry; the hung props' world links are in the solver.
 - `spawn_level(commands, loader, name)`: the level's own meshes and omni lights plus every prop from `Objlib.rpk`, with the placement's node overrides (a named node's transform or mesh positions, `exa_formats::level::PropAttachment`) applied before its bodies register; placed objects take the same overrides.
@@ -20,7 +27,10 @@ and the grid's rooms; portal clipping is next (see
 - `room_view`: the rooms in the Bevy world: `LevelRooms`, `RoomAnchor` (the player, or 20 m ahead of the fly camera), `InRoom` on meshes, rooms of props and characters, and the rooms' black shells (`RoomShell`: occluder, lid, fade overlay) shown by state; `RoomView { all }` shows every room.
 - `grid`: walls and floors from the wall and floor sets, and each room's occluder and lid merged from the pieces' `[…` and `+R…` strips and the ceiling slots (never spawned as pieces); ceiling caps. Special tile masks turn with the cell, a cell past the last piece of its type reuses it (and one with none of its type takes the set's first), a floor set named `Terrain` is not loaded, and pieces and characters look their room up by the cell they stand in.
 - `scene_env`: the original's scene environment as a pure model: the sun and moon on their 45° path and the daylight factor, the time-of-day records and their pick-and-blend, cloud dimming, the fog's span and per-frame near/far, the clear colour and sky gradient, the ambient scale, the automatic sunlight rule, the sun mode and sky switch, and rain and lightning with the original's generator. `environment` turns it into the level's `Lighting` (ambient, sun, linear fog, clear colour and sky) and Bevy resources; the weather tick and the time of day are modelled but nothing drives them yet.
-- `terrain`: tiles, blend rules, height pass and plants; the palette falls back to `default.ftb` as the original does; a tile's geometry
+- `terrain`: tiles, blend rules, height pass and plants; the palette's
+  name-sorted brush table, the ten-brush limit, the byte channel
+  accumulation, the four-per-plane mask packing, the Gaussian blur kernel
+  and the used-material merge; the palette falls back to `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
   worker), one mesh per 6 m block (`terrain::patch` is the original's
   shared serpentine triangle list), each in its block's room, and in a grid

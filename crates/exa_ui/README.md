@@ -332,7 +332,8 @@ the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
 a swinging axis and draws the original's drop shadow. The emblem editor
 (`emblem_form`) starts on palette 0xd3, 0x72, 0x5a, 0x4e and rolls with
 `state · 0x8088405 + 1`. The destination screen (`selection`) places its
-nodes by the engine's sine and cosine (`engine_math`), eases the ring
+nodes by the engine's sine and cosine (`engine_math`, forwarded from
+`exa_physics::engine_math` so there is one implementation), eases the ring
 twice and the alpha once, tries three orbit nodes, and its journey glows
 the teleporter, charges a small crystal, changes level when the resting
 bubble is told to shrink and, for the adapter, marks the teleporter and

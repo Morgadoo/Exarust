@@ -5,7 +5,18 @@ Rigid-body and articulated-body simulation: the core of Exanima's feel (physical
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
 body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
 character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
-builders (`shape`) and the shared intersection maths (`intersect`).
+builders (`shape`), the shared intersection maths (`intersect`) and the engine's own maths unit (`engine_math`).
+
+`engine_math` is the one shared implementation of the engine's fast maths: the
+sign stub, the `MINSS`/`MAXSS`/clamp compares, the floor and ceiling
+conversions, the polynomial logarithm, exponential, sine and sine-cosine,
+the arctangent and octant atan2, arcsine and arccosine, the double-precision
+angle wrap, the small linear algebra (4×3 products, triple product, fast and
+exact barycentrics), quaternion product, axis-angle and matrix conversions,
+the yaw/pitch, X, axis and look-at turns, row scaling, Euler angles, the
+Gauss-Jordan 4×4 inverse and the OpenGL frustum, perspective (with the
+sub-pixel jitter) and pixel-rectangle matrices. The UI's `engine_math`
+forwards here, and the body's twist helpers are re-exported from it.
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the

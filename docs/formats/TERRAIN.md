@@ -220,6 +220,16 @@ noise unit (REA), and are pinned by tests on a separate model of the rules.
 Painted layer weights descend through the rules. Weight the layers leave over
 (1 − Σ) goes to node 0, the first rule.
 
+The palette's rules and materials also build a **brush table**: one entry per
+name, sorted by its sixteen lower-case bytes, rules inserted before materials.
+A tile vertex evaluates at most **ten** painted brushes (the original reports
+"Maximum brushes exceeded." for the rest) plus the base rule tree. Material
+weights accumulate into one 256 × 256 byte channel each, each weight rounded
+to 0..=255 and saturated; the used materials are packed four per interleaved
+mask plane. A tile's texture pass also builds a Gaussian blur kernel: half of
+it on the negative side (zero included), mirrored, with sigma a third of the
+radius, normalised to one and widened to four equal floats an entry.
+
 ### Composition
 
 Per tile, the materials used beyond 1/510 of the tile are stacked in palette
