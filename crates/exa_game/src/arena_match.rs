@@ -832,7 +832,9 @@ pub fn return_to_hub(
 
 /// After the return, the day's match count. On a day that is a multiple of
 /// 7 with any fighter entered in the week's events the count stays (the
-/// unfit are dropped from the entries instead); otherwise it rises.
+/// unfit are dropped from the entries instead); otherwise it rises. On
+/// such a day the events before the first open entered one are then
+/// settled (`tournament::settle_after_return`).
 pub fn count_returned_match(day: u32, entered: bool, matches_today: &mut u32) {
     if day.is_multiple_of(7) && entered {
         return;

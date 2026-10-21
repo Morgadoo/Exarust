@@ -1041,11 +1041,11 @@ Forfeiting the entire tourney ("Do you wish to forfeit the entire tourney?") SHA
 - **THEN** the counts are 0, 1, 0, 0, 2, 0
 
 ### Requirement: Hub arrival
-Arriving at the hub SHALL remove the physician's mark when a physician is on the staff and SHALL build the tournament board when it holds no prize.
+Arriving at the hub SHALL, when a physician is on the staff, remove the weapon-kind object lying within 10 cm in x and z of (−2100, 0, 900) cm, as the physician's hire does, and SHALL build the tournament board when it holds no prize.
 
 #### Scenario: A physician and an empty board
 - **WHEN** the staff holds a physician and the board's prize is 0, then a merchant and a prize of 7
-- **THEN** the mark is removed and the board built, then neither
+- **THEN** the object is removed and the board built, then neither
 
 ### Requirement: Rematch lineup
 The automatic rematch SHALL enter, from the second employee on, those whose class is under 4, until the match's team size is reached or the staff ends.
@@ -1067,3 +1067,10 @@ The board SHALL open an event's lineup only for an event with an entrant, on the
 #### Scenario: Event 2
 - **WHEN** event 2's first entrant is 3 with weapon words 0x11 and 0x22, and the lineup closes with hands 0x500000007 and 0x900000008
 - **THEN** it opens on row 3 at tab 2 with 0x11 and 0x22, and the entrant keeps 0x500000007 and 0x900000000
+
+### Requirement: Tournament settled on the return
+Back at the hub after a match on a day that is a multiple of 7, each event before the first one the company entered that has no winner and no entrant SHALL take the company `2 + high(roll × 5)`, the roll stepped by `× 0x08088405 + 1`, after the day's match count.
+
+#### Scenario: Roll 1 on the return
+- **WHEN** the events are open, won by 5, open, entered, open, open, and the roll is 1
+- **THEN** the winners are 2, 5, 6 and the rest stay open, and the roll ends at 0xdc6dac1f; six open events with roll 1 take 2, 6, 3, 3, 5, 3 where the start's pass gives 2, 7, 3, 3, 6, 3

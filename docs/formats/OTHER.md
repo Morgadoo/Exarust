@@ -952,11 +952,6 @@ On loading, a special match is copied from the special table by its id (an
 id the table lacks takes its last row) and rolled again for its slot; a
 tournament event takes the tournament table's row of its id.
 
-**Character creation** (`exa_game::create`): a new record takes the
-appearance (four words, a count and a parts list, then a tail and its
-list); the source keeps its words and loses both counts and lists.
-Evidence: the 228-byte routine at `0x10012bd20`.
-
 ## Terrain (`.rft` and `.ftb`)
 
 Moved to [TERRAIN.md](TERRAIN.md) (verified).

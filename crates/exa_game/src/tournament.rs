@@ -10,10 +10,14 @@
 //! teams of the event's team size, team `t` holding id `t + 1` (or `t + 2`
 //! when the caller asks for it), each slot of strength 1 and its member
 //! index. Forfeiting the entire tourney (after "Do you wish to forfeit the
-//! entire tourney?") empties every event that has no winner.
+//! entire tourney?") empties every event that has no winner. Back at the
+//! hub after any match on a tournament day (a day that is a multiple of 7)
+//! the same pass runs again with a rival of 2 to 6 (`2 + high(roll × 5)`).
 //!
-//! Arriving at the hub removes the physician's mark when a physician is on
-//! the staff, takes the player's record as the manager's, renumbers the
+//! Arriving at the hub, when a physician is on the staff, removes the
+//! weapon-kind object lying at (−2100, 0, 900) cm, as the physician's hire
+//! does (what the object stands for is not traced); it takes the player's
+//! record as the manager's, renumbers the
 //! staff, builds the tournament board when it holds no prize, drops the
 //! unfit entrants and arms the hub's fall check. A rematch (the original's
 //! automatic replay) restores the last match and enters as many of the
@@ -69,9 +73,10 @@ pub fn fill_bracket(team_size: i32, sides: i32, rounds: i32, base: i32) -> Vec<B
     slots
 }
 
-/// Give the events before the first one the company entered a winner: an
-/// event with no winner and no entrant takes a company id of 2 to 7.
-pub fn settle_unentered(rows: &mut Roster, roll: &mut u32) {
+/// Give the events before the first open one the company entered a
+/// winner: an event with no winner and no entrant takes a company id of 2
+/// to `1 + rivals`, the high half of the stepped roll times `rivals`.
+fn settle(rows: &mut Roster, roll: &mut u32, rivals: u64) {
     for row in rows.iter_mut() {
         if row.team_id != 0 {
             continue;
@@ -80,8 +85,20 @@ pub fn settle_unentered(rows: &mut Roster, roll: &mut u32) {
             return;
         }
         *roll = roll.wrapping_mul(STEP).wrapping_add(1);
-        row.team_id = ((u64::from(*roll) * 6) >> 32) as u32 + 2;
+        row.team_id = ((u64::from(*roll) * rivals) >> 32) as u32 + 2;
     }
+}
+
+/// The settling a tournament event's start runs: a rival of 2 to 7.
+pub fn settle_unentered(rows: &mut Roster, roll: &mut u32) {
+    settle(rows, roll, 6);
+}
+
+/// The settling the return to the hub runs on a tournament day (a day
+/// that is a multiple of 7), after the day's match count: a rival of 2
+/// to 6.
+pub fn settle_after_return(rows: &mut Roster, roll: &mut u32) {
+    settle(rows, roll, 5);
 }
 
 /// A started tournament event.
@@ -126,8 +143,9 @@ pub fn forfeit_tourney(rows: &mut Roster) {
 /// What arriving at the hub does beyond the staff's renumbering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubArrival {
-    /// A physician is on the staff: his mark in the hub is removed.
-    pub remove_physician_mark: bool,
+    /// A physician is on the staff: the weapon-kind object lying within
+    /// 10 cm (x and z) of (−2100, 0, 900) cm in the hub is removed.
+    pub clear_physician_spot: bool,
     /// The tournament board holds no prize and is built.
     pub build_tournament: bool,
 }
@@ -136,7 +154,7 @@ pub struct HubArrival {
 /// board's prize word.
 pub fn arrive_at_hub(classes: &[u8], tournament_prize: u32) -> HubArrival {
     HubArrival {
-        remove_physician_mark: classes.contains(&crate::staff::PHYSICIAN),
+        clear_physician_spot: classes.contains(&crate::staff::PHYSICIAN),
         build_tournament: tournament_prize == 0,
     }
 }
@@ -228,6 +246,30 @@ mod tests {
     }
 
     #[test]
+    fn the_return_settles_with_a_rival_of_two_to_six() {
+        let mut rows = [
+            entered(0, 0),
+            entered(0, 5),
+            entered(0, 0),
+            entered(1, 0),
+            entered(0, 0),
+            entered(0, 0),
+        ];
+        let mut roll = 1;
+        settle_after_return(&mut rows, &mut roll);
+        assert_eq!(rows.map(|r| r.team_id), [2, 5, 6, 0, 0, 0]);
+        assert_eq!(roll, 0xdc6d_ac1f);
+        let mut rows = [entered(0, 0); 6];
+        let mut roll = 1;
+        settle_after_return(&mut rows, &mut roll);
+        assert_eq!(rows.map(|r| r.team_id), [2, 6, 3, 3, 5, 3]);
+        let mut rows = [entered(0, 0); 6];
+        let mut roll = 1;
+        settle_unentered(&mut rows, &mut roll);
+        assert_eq!(rows.map(|r| r.team_id), [2, 7, 3, 3, 6, 3]);
+    }
+
+    #[test]
     fn an_event_starts_on_round_zero() {
         let mut rows = [entered(1, 0); 6];
         let mut roll = 1;
@@ -259,14 +301,14 @@ mod tests {
         assert_eq!(
             arrive_at_hub(&[2, 8], 0),
             HubArrival {
-                remove_physician_mark: true,
+                clear_physician_spot: true,
                 build_tournament: true
             }
         );
         assert_eq!(
             arrive_at_hub(&[2, 4], 7),
             HubArrival {
-                remove_physician_mark: false,
+                clear_physician_spot: false,
                 build_tournament: false
             }
         );
