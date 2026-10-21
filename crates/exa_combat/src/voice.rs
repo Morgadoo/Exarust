@@ -3,10 +3,10 @@
 //! body tick, the damage routine and the collapse ask for them; the voice
 //! itself (three samples, a gain and a pitch) is the character's.
 //!
-//! Evidence: the part class notes (`+0xf30` voices, `+0xf4c` the last
-//! request's time, `+0xf38`/`+0xf58` the volume gains and `+0xf3c` the
-//! pitch gain). The samples are not played by this crate; the rules are
-//! here as plain data so the callers share them.
+//! Evidence: the part class's voice request. The character keeps three
+//! samples, the time its voice is next free, two volume gains (applied one
+//! after the other) and a pitch gain. The samples are not played by this
+//! crate; the rules are here as plain data so the callers share them.
 
 /// Which voice line a character makes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +39,11 @@ pub struct Ask {
     pub now_ms: u32,
     pub volume: f32,
     pub pitch: f32,
-    /// The character's volume and pitch gains (`+0xf58`, `+0xf3c`).
+    /// The character's two volume gains, applied in this order
+    /// (`(volume · first) · second`: single-precision products are not
+    /// associative), and its pitch gain.
     pub volume_gain: f32,
+    pub volume_gain2: f32,
     pub pitch_gain: f32,
 }
 
@@ -55,7 +58,7 @@ pub enum Answer {
     Refused,
 }
 
-/// The voice's clock: the game time of the last line played (`+0xf4c`).
+/// The voice's clock: the game time from which the next line may play.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Voice {
     pub last_ms: u32,
@@ -69,11 +72,14 @@ impl Voice {
     pub const SCREAM_WAIT: u32 = 300;
 
     /// Whether a line may play now (`now >= last` for a grunt or groan, and
-    /// `now >= last + 300` for a scream).
+    /// `now >= last + 300` for a scream, the sum taken without wrapping: a
+    /// clock behind `last` refuses).
     pub fn ready(&self, line: Line, now_ms: u32) -> bool {
         match line {
             Line::Grunt | Line::Groan => now_ms >= self.last_ms,
-            Line::Scream => now_ms.wrapping_sub(self.last_ms) >= Self::SCREAM_WAIT,
+            Line::Scream => {
+                u64::from(self.last_ms) + u64::from(Self::SCREAM_WAIT) <= u64::from(now_ms)
+            }
         }
     }
 
@@ -96,7 +102,7 @@ impl Voice {
             return Answer::Refused;
         }
         let out = Spoken {
-            volume: ask.volume * ask.volume_gain,
+            volume: ask.volume * ask.volume_gain * ask.volume_gain2,
             pitch: ask.pitch * ask.pitch_gain,
             next_ms: match line {
                 Line::Grunt => ask.now_ms.wrapping_add(Self::GRUNT_WAIT),
@@ -122,6 +128,7 @@ mod tests {
             volume,
             pitch,
             volume_gain: 1.0,
+            volume_gain2: 1.0,
             pitch_gain: 1.0,
         }
     }
@@ -129,15 +136,16 @@ mod tests {
     #[test]
     fn the_voice_waits() {
         let mut voice = Voice::default();
-        // A grunt at 1000: volume 0.4 · 1.5, pitch 0.8 · 2, wait 400.
+        // A grunt at 1000: volume 0.4 · 1.5 · 0.5, pitch 0.8 · 2, wait 400.
         assert_eq!(
             voice.request(&Ask {
                 volume_gain: 1.5,
+                volume_gain2: 0.5,
                 pitch_gain: 2.0,
                 ..ask(1, true, 1000, 0.4, 0.8)
             }),
             Answer::Played(Spoken {
-                volume: 0.4 * 1.5,
+                volume: 0.4 * 1.5 * 0.5,
                 pitch: 0.8 * 2.0,
                 next_ms: 1400,
             })
@@ -145,6 +153,7 @@ mod tests {
         assert_eq!(
             voice.request(&Ask {
                 volume_gain: 1.5,
+                volume_gain2: 0.5,
                 pitch_gain: 2.0,
                 ..ask(1, true, 1399, 0.4, 0.8)
             }),
@@ -174,6 +183,44 @@ mod tests {
             voice.request(&ask(3, true, 2500, 0.5, 1.0)),
             Answer::Played(_)
         ));
+    }
+
+    #[test]
+    fn the_volume_gains_apply_in_order() {
+        // (v · a) · b, not v · (a · b): the two differ in the last bit.
+        let (v, a, b) = (0.7_f32, 1.1_f32, 0.9_f32);
+        assert_ne!((v * a) * b, v * (a * b));
+        let mut voice = Voice::default();
+        let Answer::Played(spoken) = voice.request(&Ask {
+            volume_gain: a,
+            volume_gain2: b,
+            ..ask(1, true, 0, v, 1.0)
+        }) else {
+            panic!("a grunt on a free voice plays");
+        };
+        assert_eq!(spoken.volume, (v * a) * b);
+    }
+
+    #[test]
+    fn a_scream_does_not_wrap_before_the_clock() {
+        // The wait is added to the last time without wrapping: a clock
+        // behind the last line refuses, and so does one just short of it.
+        let mut voice = Voice { last_ms: 5000 };
+        assert_eq!(voice.request(&ask(3, true, 100, 0.5, 1.0)), Answer::Refused);
+        assert_eq!(
+            voice.request(&ask(3, true, 5299, 0.5, 1.0)),
+            Answer::Refused
+        );
+        assert!(matches!(
+            voice.request(&ask(3, true, 5300, 0.5, 1.0)),
+            Answer::Played(_)
+        ));
+        // A grunt compares without a wait: refused only before `last`.
+        let mut voice = Voice { last_ms: 5000 };
+        assert_eq!(
+            voice.request(&ask(1, true, 4999, 0.5, 1.0)),
+            Answer::Refused
+        );
     }
 
     #[test]
