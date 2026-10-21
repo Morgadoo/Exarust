@@ -874,12 +874,14 @@ impl SetRegistry {
 
     /// Switches to the variant's gameplay set.
     pub fn set_variant(&mut self, variant: Variant) -> bool {
-        let index = self
+        let Some(at) = self
             .names
             .iter()
             .position(|name| *name == variant.set_name())
-            .map_or(0, |at| at + 1);
-        self.activate(index)
+        else {
+            return false;
+        };
+        self.activate(at + 1)
     }
 }
 
@@ -1572,7 +1574,9 @@ impl Plugin for GamepadPlugin {
                 PreUpdate,
                 (
                     raw_axis_settings,
-                    read_pad.run_if(resource_exists::<crate::bindings::Bindings>),
+                    read_pad
+                        .after(bevy::input::gamepad::gamepad_event_processing_system)
+                        .run_if(resource_exists::<crate::bindings::Bindings>),
                     sync_controller_mode,
                 )
                     .chain(),
