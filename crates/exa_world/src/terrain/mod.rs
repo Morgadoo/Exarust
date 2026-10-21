@@ -71,6 +71,7 @@ impl Plugin for TerrainPlugin {
                     apply_splats,
                     give_terrain_gi,
                     exa_render::supersample::sync_split_taps::<TerrainMaterial>,
+                    sync_plant_shadows,
                 )
                     .chain(),
             );
@@ -340,9 +341,11 @@ impl Plants {
                 if v.indices.is_empty() {
                     continue;
                 }
-                // Grass and small plants are lit as if facing up; grass is smaller.
+                // Grass and small plants are lit as if facing up and shaded
+                // 0.75 (the original's plant loader); grass is smaller.
                 if kind < 2 {
                     v.normals.iter_mut().for_each(|n| *n = Vec3::Y);
+                    v.colour = [0.75, 0.75, 0.75, 0.0];
                 }
                 if kind == 0 {
                     v.positions
@@ -368,7 +371,7 @@ impl Plants {
                 params: ExaParams {
                     // The shader multiplies the texture by the tint as is.
                     diffuse: Vec4::new(tint[0], tint[1], tint[2], 1.0),
-                    flags: flags::LIT | flags::TWO_SIDED,
+                    flags: flags::LIT | flags::TWO_SIDED | flags::PLANT_TINT,
                     ..default()
                 },
                 diffuse_map: base_color_texture,
@@ -400,7 +403,6 @@ impl Plants {
         tile_entity: Entity,
     ) -> usize {
         let n = TILE_VERTICES;
-        let last = (n - 2) as f32;
         let block = |p: bevy::math::Vec2| {
             TileBlocks::of(
                 (p.x.round().max(0.0) as usize).min(n - 1),
@@ -418,8 +420,7 @@ impl Plants {
                     return -1.0;
                 }
             }
-            let i = (p.x * last / (n - 1) as f32).round() as usize;
-            let j = (p.y * last / (n - 1) as f32).round() as usize;
+            let (i, j) = vegetation::density_texel(p);
             built.density[j * n + i]
         };
         let growth = vegetation::grow(
@@ -465,11 +466,17 @@ impl Plants {
                     .collect::<Vec<_>>(),
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, baked.uvs);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, baked.colours);
             mesh.insert_indices(Indices::U32(baked.indices));
             let _ = mesh.generate_tangents();
             let e = commands
                 .spawn((
                     Name::new(format!("plants {}", k)),
+                    PlantChunk,
+                    // The original draws vegetation through its renderer
+                    // hooks: it never collides and casts shadows only above
+                    // shadow quality 4.
+                    exa_physics::NoStaticCollider,
                     Mesh3d(loader.meshes.add(mesh)),
                     MeshMaterial3d(self.material.clone()),
                     Transform::IDENTITY,
@@ -488,6 +495,12 @@ impl Plants {
         grown
     }
 }
+
+/// A baked chunk of terrain vegetation. The original draws it through its
+/// terrain's renderer hooks: no collider, and shadows only above shadow
+/// quality 4.
+#[derive(Component)]
+pub struct PlantChunk;
 
 /// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
 fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
@@ -578,6 +591,27 @@ pub struct TerrainBuild {
 /// stalled a frame.
 const UPLOAD_BUDGET: usize = 24 << 20;
 
+/// Terrain vegetation casts shadows only above shadow quality 4, as the
+/// original's grass plug-in installs its sun-shadow hook there. The chunk
+/// entities stay; the flag moves with the settings.
+fn sync_plant_shadows(
+    quality: Res<exa_render::quality::ShadowQuality>,
+    mut commands: Commands,
+    chunks: Query<(Entity, Has<bevy::light::NotShadowCaster>), With<PlantChunk>>,
+) {
+    if !quality.is_changed() {
+        return;
+    }
+    let cast = quality.0 > 4;
+    for (e, no_cast) in &chunks {
+        if cast && no_cast {
+            commands.entity(e).remove::<bevy::light::NotShadowCaster>();
+        } else if !cast && !no_cast {
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
+        }
+    }
+}
+
 /// A palette material's surface map, packed on the async compute pool:
 /// decoding, packing and filtering three maps took over 100 ms.
 enum Surface {
@@ -621,6 +655,40 @@ type MaterialTextures = (
     Option<Handle<Image>>,
 );
 
+/// The palette a terrain loads: its own name, else the file's `default`
+/// palette (the original logs "Could not find <name>.ftb" and falls back).
+/// Returns the palette, whether the fallback was used, and the message for a
+/// failed lookup.
+fn choose_palette<'a>(
+    name: &str,
+    mut lookup: impl FnMut(&str) -> Option<&'a [u8]>,
+) -> (Option<Palette>, bool, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut attempt = |name: &str, warnings: &mut Vec<String>| {
+        let entry = format!("{name}.ftb");
+        match lookup(entry.as_str()) {
+            Some(bytes) => match Palette::parse(bytes) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    warnings.push(format!("terrain palette {entry}: {e}"));
+                    None
+                }
+            },
+            None => {
+                warnings.push(format!("Could not find {entry} (Terrain Palette)"));
+                None
+            }
+        }
+    };
+    match attempt(name, &mut warnings) {
+        Some(p) => (Some(p), false, warnings),
+        None => match attempt("default", &mut warnings) {
+            Some(p) => (Some(p), true, warnings),
+            None => (None, true, warnings),
+        },
+    }
+}
+
 impl TerrainBuild {
     /// Reads the terrain beside `level` and its palette; `None` when the
     /// level has no terrain or it does not parse. In a level with a tile
@@ -641,20 +709,12 @@ impl TerrainBuild {
                 return None;
             }
         };
-        let palette = match resource
-            .get(&format!("{}.ftb", terrain.palette))
-            .map(Palette::parse)
-        {
-            Some(Ok(p)) => p,
-            Some(Err(e)) => {
-                loader.warn_once(format!("terrain palette {}: {e}", terrain.palette));
-                return None;
-            }
-            None => {
-                loader.warn_once(format!("terrain palette {} not found", terrain.palette));
-                return None;
-            }
-        };
+        let (palette, _used_default, warnings) =
+            choose_palette(&terrain.palette, |name| resource.get(name));
+        for warning in warnings {
+            loader.warn_once(warning);
+        }
+        let palette = palette?;
         let tree = RuleTree::new(&palette);
         let blocks = grid.map(|(grid, rooms)| grid_blocks(&terrain, grid, &rooms));
         let environment = loader.environment_map();
@@ -1634,6 +1694,47 @@ mod tests {
         assert!(blocks[0].has(0, 0));
         assert!(!blocks[0].has(1, 1));
         assert!(!grid_blocks(&terrain, &grid(8, 8), &Rooms::default())[0].any());
+    }
+
+    /// A palette's bytes: the 144-byte header (magic, name) and empty
+    /// material, rule and plant lists.
+    fn empty_palette(name: &str) -> Vec<u8> {
+        let mut b = vec![0u8; 144];
+        b[..4].copy_from_slice(&exa_formats::terrain::PALETTE_MAGIC_V3.to_le_bytes());
+        b[8..8 + name.len()].copy_from_slice(name.as_bytes());
+        b.extend(0u32.to_le_bytes());
+        b.extend(0u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn a_missing_palette_falls_back_to_default() {
+        let bytes = empty_palette("Default");
+        let (p, used, warnings) = choose_palette("missing", |name| {
+            (name == "default.ftb").then_some(bytes.as_slice())
+        });
+        assert!(p.is_some() && used);
+        assert!(
+            warnings[0].contains("Could not find missing.ftb"),
+            "{warnings:?}"
+        );
+        let (p, used, _) = choose_palette("missing", |name| {
+            (name == "missing.ftb").then_some(bytes.as_slice())
+        });
+        assert!(p.is_some() && !used);
+        let (p, used, warnings) = choose_palette("missing", |_| None);
+        assert!(p.is_none() && used);
+        assert_eq!(warnings.len(), 2);
+        // A palette that does not parse falls back too.
+        let (p, used, warnings) = choose_palette("bad", |name| match name {
+            "bad.ftb" => Some(&[0u8; 4][..]),
+            _ => Some(bytes.as_slice()),
+        });
+        assert!(p.is_some() && used);
+        assert!(
+            warnings[0].contains("terrain palette bad.ftb"),
+            "{warnings:?}"
+        );
     }
 
     #[test]

@@ -136,6 +136,9 @@ pub mod flags {
     /// Blood, as the original's hair program shows it
     /// ([`super::BloodProgram::Hair`]).
     pub const BLOOD_HAIR: u32 = 8388608;
+    /// The vertex colour multiplies the diffuse colour: terrain vegetation,
+    /// whose grass and small plants carry the original's 0.75 grey.
+    pub const PLANT_TINT: u32 = 16_777_216;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex

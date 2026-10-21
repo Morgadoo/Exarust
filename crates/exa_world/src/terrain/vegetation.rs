@@ -17,6 +17,10 @@ const POINT_RADIUS: f32 = 1.3;
 const ATTEMPTS: usize = 30;
 /// Tile side in vertex steps.
 const SIDE: f32 = 240.0;
+/// The density mask is sampled at 240 × 240 texels: a vertex step `p` reads
+/// texel `round(p × 239/240)`. The original's `0.9958333` is this constant's
+/// `f32`.
+pub const DENSITY_STEP: f32 = f32::from_bits(0x3f7e_eeef);
 /// Chunks per tile side (6 m each).
 pub const CHUNKS: usize = 8;
 const CHUNK_SIDE: f32 = SIDE / CHUNKS as f32;
@@ -265,12 +269,38 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
 }
 
 /// A plant shape, in metres, standing on its origin.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Variant {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<[f32; 2]>,
+    /// One colour per position, from [`Variant::colour`].
+    pub colours: Vec<[f32; 4]>,
+    /// The colour the original's plant loader gives every vertex: 0.75 grey
+    /// for grass and small plants, white for large plants (alpha is unused).
+    pub colour: [f32; 4],
     pub indices: Vec<u32>,
+}
+
+impl Default for Variant {
+    fn default() -> Self {
+        Self {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            colours: Vec::new(),
+            colour: [1.0; 4],
+            indices: Vec::new(),
+        }
+    }
+}
+
+/// The density mask texel of a vertex-step point, row-major on 240 × 240.
+pub fn density_texel(at: Vec2) -> (usize, usize) {
+    (
+        (at.x * DENSITY_STEP).round_ties_even() as usize,
+        (at.y * DENSITY_STEP).round_ties_even() as usize,
+    )
 }
 
 /// Bakes `growths` into one vertex set, tile-local metres, with `place`
@@ -295,6 +325,8 @@ pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Ve
                 .map(|n| Vec3::new(c * n.x + s * n.z, n.y, -s * n.x + c * n.z)),
         );
         out.uvs.extend_from_slice(&v.uvs);
+        out.colours
+            .extend(std::iter::repeat_n(v.colour, v.positions.len()));
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
     out
@@ -369,6 +401,34 @@ mod tests {
         assert!(plants > lush.iter().flatten().count() / 2);
         // Same seed, same growth.
         assert_eq!(grow(7, 1, 35, |_| 0.8), lush);
+    }
+
+    #[test]
+    fn the_density_texel_scales_vertex_steps_to_240() {
+        assert_eq!(density_texel(Vec2::ZERO), (0, 0));
+        assert_eq!(density_texel(Vec2::new(240.0, 240.0)), (239, 239));
+        assert_eq!(density_texel(Vec2::new(120.0, 60.0)), (120, 60));
+        assert_eq!(density_texel(Vec2::new(239.0, 1.0)), (238, 1));
+        // The constant is the original's stored `0.9958333`.
+        assert_eq!(DENSITY_STEP.to_bits(), 0x3f7e_eeef);
+    }
+
+    #[test]
+    fn growth_is_coloured_by_its_variant() {
+        let mut v = Variant::default();
+        v.positions.push(Vec3::ZERO);
+        v.colour = [0.75, 0.75, 0.75, 0.0];
+        let baked = bake(
+            &[v],
+            &[Growth {
+                variant: 0,
+                at: Vec2::ZERO,
+                scale: 1.0,
+                angle: 0.0,
+            }],
+            |_| Vec3::ZERO,
+        );
+        assert_eq!(baked.colours, [[0.75, 0.75, 0.75, 0.0]]);
     }
 
     #[test]

@@ -133,6 +133,12 @@ impl Physics {
 #[derive(Component)]
 pub struct StaticGeometry;
 
+/// A mesh under a [`StaticGeometry`] root that gets no triangle-mesh
+/// collider: terrain vegetation, which the original draws but never collides
+/// with. Its subtree is skipped whole.
+#[derive(Component)]
+pub struct NoStaticCollider;
+
 /// The static colliders being built. A level's meshes are copied a batch at
 /// a time, within [`STATIC_BUILD_BUDGET`] per frame, and built into
 /// triangle-mesh colliders on the async compute pool: one large mesh (a
@@ -326,6 +332,7 @@ fn build_static_colliders(
     parents: Query<&ChildOf>,
     body_nodes: Query<&prop::BodyNode>,
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
+    no_collider: Query<(), With<NoStaticCollider>>,
     meshes: Res<Assets<Mesh>>,
 ) {
     for root in &roots {
@@ -334,7 +341,7 @@ fn build_static_colliders(
         }
         let parts: Vec<Entity> = children
             .iter_descendants(root)
-            .filter(|&e| shapes.contains(e))
+            .filter(|&e| shapes.contains(e) && !no_collider.contains(e))
             .collect();
         build.total += parts.len();
         build.roots.push(RootBuild {
