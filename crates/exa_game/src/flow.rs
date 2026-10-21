@@ -532,16 +532,12 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
     }
 }
 
-/// The story spawn height rule: the player's pose sits `5 + health·5` cm
-/// above the spawn table's floor, or 13 cm higher for a body that wakes up
-/// (the original tests one flag of the player's record).
-pub fn spawn_height(health: f32, waking: bool) -> f32 {
-    health * 5.0 + if waking { 13.0 } else { 5.0 }
-}
-
-/// The practice spawn height: 5 cm above the arena floor.
-pub fn practice_height(health: f32) -> f32 {
-    health * 5.0 + 5.0
+/// The practice start's spawn height: the player body's smoothed standing
+/// height plus 5 cm. (The next fight computes the same plus 5, or 13 in
+/// combat mode, then overwrites it with the body's measured stand height
+/// before it places the body: [`Flow::stand_height`].)
+pub fn practice_height(standing: f32) -> f32 {
+    standing + 5.0
 }
 
 /// One row of the end-of-session menu.
@@ -981,14 +977,11 @@ pub struct PracticeStart {
 
 /// The music a practice start plays.
 pub fn practice_music(ladder: Ladder, alternative: bool) -> Track {
-    let (novice, expert) = if alternative {
-        ("Msc_ArenaNov_DnB", "Msc_ArenaExp_DnB")
-    } else {
-        ("Msc_AreanNov", "Msc_AreanExp")
-    };
-    let (name, bits) = match ladder {
-        Ladder::Novice => (novice, 0x3dcc_cccd),
-        Ladder::Expert => (expert, 0x3e80_0000),
+    let (name, bits) = match (alternative, ladder) {
+        (false, Ladder::Novice) => ("Msc_AreanNov", 0x3dcc_cccd),
+        (false, Ladder::Expert) => ("Msc_AreanExp", 0x3e80_0000),
+        (true, Ladder::Novice) => ("Msc_ArenaNov_DnB", 0x3e19_999a),
+        (true, Ladder::Expert) => ("Msc_ArenaExp_DnB", 0x3e19_999a),
     };
     Track {
         name,
@@ -1158,6 +1151,9 @@ pub struct Flow {
     /// The fifth level's respawn portal, as the host found it when the level
     /// loaded.
     pub respawn_portal: Option<Placement>,
+    /// The player body's measured stand height (its root over its lowest
+    /// contact), which the next practice fight places the body at.
+    pub stand_height: f32,
 }
 
 impl Default for Flow {
@@ -1191,6 +1187,7 @@ impl Default for Flow {
             },
             custom_hook: false,
             respawn_portal: None,
+            stand_height: 0.0,
         }
     }
 }
@@ -1405,7 +1402,7 @@ impl Flow {
     pub fn start_practice(
         &mut self,
         ladder: Ladder,
-        health: f32,
+        standing: f32,
         viewport: Viewport,
         now: u32,
     ) -> Vec<Step> {
@@ -1418,7 +1415,7 @@ impl Flow {
             start_ms: now,
             ..Default::default()
         };
-        let step = practice::next_practice(0, ladder, health, health);
+        let step = practice::next_practice(0, ladder, 0.0, 0.0);
         let start = PracticeStart {
             ladder,
             fight: FIRST_FIGHT,
@@ -1432,7 +1429,11 @@ impl Flow {
         };
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(PRACTICE_POINT.x, practice_height(health), PRACTICE_POINT.z),
+            position: Vec3::new(
+                PRACTICE_POINT.x,
+                practice_height(standing),
+                PRACTICE_POINT.z,
+            ),
         };
         self.viewport = viewport;
         vec![
@@ -1738,10 +1739,9 @@ impl Flow {
         self.phase = Phase::Playing;
         self.hook = Hook::Practice;
         self.end_menu = None;
-        let red = f32::from_bits(step.red_bits);
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(PRACTICE_POINT.x, practice_height(red), PRACTICE_POINT.z),
+            position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
         };
         let mut steps = vec![
             Step::HideEndMenu,
@@ -2499,9 +2499,7 @@ mod tests {
             villager_light.rotation_degrees,
             Vec3::new(8.0, -150.0, 50.0)
         );
-        assert_eq!(spawn_height(0.25, false), 6.25);
-        assert_eq!(spawn_height(0.25, true), 14.25);
-        assert_eq!(practice_height(0.25), 6.25);
+        assert_eq!(practice_height(90.0), 95.0);
         // The unknown spawn height follows the body's height.
         assert_eq!(
             story_start(Background::Unknown, 1.8).placement.position.y,
@@ -2617,7 +2615,13 @@ mod tests {
             ..Default::default()
         };
         flow.set_practice_health(0.2, 0.25);
+        flow.stand_height = 88.5;
         let steps = flow.practice_next(9000);
+        // The body stands at its measured stand height.
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: PRACTICE_ROTATION,
+            position: Vec3::new(0.0, 88.5, 500.0),
+        })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:
@@ -3025,8 +3029,13 @@ mod tests {
             width: 1600,
             height: 1140,
         };
-        let steps = flow.start_practice(Ladder::Expert, 0.2, view, 500);
+        let steps = flow.start_practice(Ladder::Expert, 92.0, view, 500);
         assert_eq!(flow.mode, Mode::Practice);
+        // The standing height plus 5 cm, in the ring's middle, half turned.
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: PRACTICE_ROTATION,
+            position: Vec3::new(0.0, 97.0, 500.0),
+        })));
         assert_eq!(flow.practice.fight, 1);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "arenae",
@@ -3054,6 +3063,15 @@ mod tests {
         assert_eq!(
             practice_music(Ladder::Novice, true).name,
             "Msc_ArenaNov_DnB"
+        );
+        // Both drum-and-bass ladders play at 0.15.
+        assert_eq!(
+            practice_music(Ladder::Novice, true).volume.to_bits(),
+            0x3e19_999a
+        );
+        assert_eq!(
+            practice_music(Ladder::Expert, true).volume.to_bits(),
+            0x3e19_999a
         );
         assert_eq!(practice_boss_music(false, true).name, "Msc_ArenaBossE");
         assert_eq!(
