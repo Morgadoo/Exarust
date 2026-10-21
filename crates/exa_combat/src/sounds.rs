@@ -23,14 +23,6 @@ pub enum HitSound {
     Class(u8),
 }
 
-/// `a >= b`, false when either is NaN (the original's ordered compare).
-fn at_least(a: f32, b: f32) -> bool {
-    matches!(
-        a.partial_cmp(&b),
-        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
-    )
-}
-
 /// `a > b`, false when either is NaN.
 fn above(a: f32, b: f32) -> bool {
     matches!(a.partial_cmp(&b), Some(std::cmp::Ordering::Greater))
@@ -43,8 +35,9 @@ fn above(a: f32, b: f32) -> bool {
 /// sound).
 pub fn part_hit_sound(armour: &PartArmour, golem: bool, skeleton: bool) -> Option<HitSound> {
     for layer in [armour.outer, Some(armour.inner)].into_iter().flatten() {
-        // The original's ordered `0.5 <= coverage`.
-        if !at_least(layer.coverage, 0.5) {
+        // The original skips a layer only when `0.5 > coverage` holds, so a
+        // NaN coverage counts as covering.
+        if layer.coverage < 0.5 {
             continue;
         }
         if golem {
@@ -211,7 +204,12 @@ mod tests {
             outer: Some(layer(0.3, 0)),
         };
         assert_eq!(part_hit_sound(&bare, false, false), None);
-        assert_eq!(part_hit_sound(&bare, false, false), None);
+        // A NaN coverage is not under a half: it covers.
+        let nan = PartArmour {
+            inner: layer(1.0, 2),
+            outer: Some(layer(f32::NAN, 4)),
+        };
+        assert_eq!(part_hit_sound(&nan, false, false), Some(HitSound::Class(4)));
     }
 
     #[test]
