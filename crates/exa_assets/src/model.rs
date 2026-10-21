@@ -527,7 +527,10 @@ impl ModelLoader<'_> {
             self.cache.materials.insert(key, handle.clone());
             return handle;
         }
-        let source = local.or_else(|| library_material(self.game, name));
+        // The original's material manager wins over a file's own list: the
+        // reader adds a file's material only when the manager has no record
+        // of that name, so a library material shades the surface.
+        let source = library_material(self.game, name).or(local);
         let mat = match source {
             // The body's skin is drawn as the original's built-in skin.
             Some(_) if crate::human_skin::is_race_skin(entry, name) => {
