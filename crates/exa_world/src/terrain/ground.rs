@@ -186,37 +186,47 @@ impl TerrainGround {
     /// original reports none.
     ///
     /// The tile coordinate is the engine's floor of `width/2 + x / tile
-    /// side`; the block is the floor of the fraction times eight; the
-    /// surface is [`GroundTile::height`] at the vertex coordinates. A point
-    /// with no tile, no block there, a hole, or a height at or below
-    /// [`NO_GROUND`] has no ground.
+    /// side` in centimetres; the slot is `tz · width + tx`, accepted when it
+    /// lies in `0 .. width × height` (so, as in the original, a coordinate
+    /// one past a row's end reads the next row's first tile). The block is
+    /// the floor of the fraction times eight; the surface is
+    /// [`GroundTile::height`] at the vertex coordinates. A point with no
+    /// tile, no block there, a hole, or a height at or below [`NO_GROUND`]
+    /// has no ground.
     pub fn height(&self, x: f32, z: f32) -> Option<f32> {
-        if self.spacing <= 0.0 || self.width == 0 || self.height == 0 {
-            return None;
-        }
         // The original's arithmetic is in centimetres; keep its multiply
         // and its constant rather than dividing by the tile side.
         let fx = self.width as f32 * 0.5 + (x * 100.0) * INV_TILE_CM;
         let fz = self.height as f32 * 0.5 + (z * 100.0) * INV_TILE_CM;
-        let (tx, tz) = (fx.floor(), fz.floor());
-        // The original rejects indices outside 0 .. width × height.
-        if tx < 0.0 || tz < 0.0 {
+        let (tx, tz) = (round_down(fx), round_down(fz));
+        let slot = tz.wrapping_mul(self.width as i32).wrapping_add(tx);
+        if slot < 0 || i64::from(slot) >= i64::from(self.width) * i64::from(self.height) {
             return None;
         }
-        let (tx, tz) = (tx as u32, tz as u32);
-        let tile = self.tile(tx, tz)?;
-        let (u, v) = ((fx - tx as f32) * 8.0, (fz - tz as f32) * 8.0);
-        let (bx, by) = (u.floor(), v.floor());
-        if bx < 0.0 || by < 0.0 {
-            return None;
-        }
-        let (bx, by) = (bx as usize, by as usize);
-        if bx >= TILE_BLOCKS || by >= TILE_BLOCKS || !tile.has_block(bx, by) {
+        let tile = self.tiles.get(slot as usize)?.as_ref()?;
+        let (u, v) = (fx - tx as f32, fz - tz as f32);
+        let (bx, by) = (round_down(u * 8.0), round_down(v * 8.0));
+        if !(0..TILE_BLOCKS as i32).contains(&bx)
+            || !(0..TILE_BLOCKS as i32).contains(&by)
+            || !tile.has_block(bx as usize, by as usize)
+        {
             return None;
         }
         let cells = (TILE_VERTICES - 1) as f32;
-        let h = tile.height((fx - tx as f32) * cells, (fz - tz as f32) * cells)?;
+        let h = tile.height(cells * u, cells * v)?;
         (h > NO_GROUND).then_some(h)
+    }
+}
+
+/// The engine's "round" helper: a conversion with the rounding mode set
+/// toward minus infinity, so a floor; NaN and out-of-range values give the
+/// integer indefinite (`i32::MIN`).
+fn round_down(value: f32) -> i32 {
+    let r = value.floor();
+    if r.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&r) {
+        i32::MIN
+    } else {
+        r as i32
     }
 }
 
@@ -294,6 +304,8 @@ mod tests {
         assert_eq!(g.height(24.0, 0.0), Some(2.0));
         // Outside every tile.
         assert_eq!(g.height(-100.0, 0.0), None);
+        assert_eq!(g.height(f32::NAN, 0.0), None);
+        assert_eq!(g.height(1e12, 0.0), None);
         // No ground below −100 m.
         let mut low = TerrainGround::new(1, 1, 0.2);
         low.insert(Arc::new(tile(
@@ -302,6 +314,35 @@ mod tests {
             vec![NO_GROUND; TILE_VERTICES * TILE_VERTICES],
         )));
         assert_eq!(low.height(0.0, 0.0), None);
+    }
+
+    /// The original checks the slot `tz · width + tx`, not each axis: one
+    /// tile past a row's end is the next row's first tile, and one before
+    /// a row's start the previous row's last.
+    #[test]
+    fn the_slot_runs_on_across_rows() {
+        let mut g = TerrainGround::new(2, 2, 0.2);
+        g.insert(Arc::new(tile(0, 1, sloped(5.0, 0.0, 0.0))));
+        g.insert(Arc::new(tile(1, 0, sloped(7.0, 0.0, 0.0))));
+        // x = +72 m is tile coordinate 1 + 7200/4800 = 2.5 → tx 2, past the
+        // first row (z = −24 m, tz 0): slot 2 is tile (0, 1).
+        assert_eq!(g.height(72.0, -24.0), Some(5.0));
+        // x = −72 m is tx −1 on the second row (z = +24 m, tz 1): slot 1 is
+        // tile (1, 0).
+        assert_eq!(g.height(-72.0, 24.0), Some(7.0));
+        // Before the first slot or past the last there is nothing.
+        assert_eq!(g.height(-72.0, -24.0), None);
+        assert_eq!(g.height(72.0, 24.0), None);
+    }
+
+    #[test]
+    fn the_engine_floor_gives_the_integer_indefinite() {
+        assert_eq!(round_down(2.5), 2);
+        assert_eq!(round_down(-0.5), -1);
+        assert_eq!(round_down(-1.0), -1);
+        assert_eq!(round_down(f32::NAN), i32::MIN);
+        assert_eq!(round_down(3e9), i32::MIN);
+        assert_eq!(round_down(-3e9), i32::MIN);
     }
 
     #[test]
