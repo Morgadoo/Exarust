@@ -855,24 +855,27 @@ doors each. `exa-tool mechanisms [level]` prints them.
 
 ## Saves (`.rsg`, `.rcp`)
 
-Not shipped; created in `%APPDATA%\Exanima`. Magic `0xDA7AEA02`, then a
-section table padded to `0x2000` with `#playerdata`, `#worldchrdb`,
-`#worldobjdb`, and a full modified copy of every visited level's `.rfc`.
+Moved to [SAVES.md](SAVES.md) (package verified, slot rules verified,
+player-data framing verified, chunk payloads partly known). In short: not
+shipped; created in `%APPDATA%\Exanima` as `ExanimaNNN.rsg` or
+`ArenaNNN.rsg` (with `.rcp` checkpoints), magic `0xDA7AEA02`, a 24-byte
+section directory padded to `0x2000`, `#playerdata`, `#worldchrdb`,
+`#worldobjdb` and a full modified copy of every visited level's `.rfc`.
 Character records (`0x00CDACvv`, the same as actors and the levels' own;
 layout in [RFC.md](RFC.md#starts-characters-and-placed-objects)) hold body,
-race, equipment, health, personality, skills, roles and relations. Exarust uses
-its own save format; this is documented for reference only.
+race, equipment, health, personality, skills, roles and relations. Exarust
+writes the same container and player-data framing for its own session.
 
 **Settings chunk** (`exa_formats::save_chunk`): the header `0xECADCA01`, a
 twelve-byte tag and two dwords; the old flag is set when the tag's version
 float is below one million, and the easing curve is two quadratics joined
-at 0.5. Evidence: the retail routines at `0x10017d160` (90 bytes),
-`0x10017d030` (140) and `0x10017d0c0` (104).
+at 0.5. Evidence: the three retail routines behind it (the save-settings
+writer, its reader and the curve).
 
 **Character creation** (`exa_game::create`): a new record takes the
 appearance (four words, a count and a parts list, then a tail and its
 list); the source keeps its words and loses both counts and lists.
-Evidence: the 228-byte routine at `0x10012bd20`.
+Evidence: the 228-byte creation routine.
 
 ## Terrain (`.rft` and `.ftb`)
 

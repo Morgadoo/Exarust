@@ -232,6 +232,14 @@ pub fn checkpoint_due(checkpoint_exists: bool) -> bool {
     !checkpoint_exists
 }
 
+/// Whether the `CheckpointSave` script function saves: only when it is
+/// called for the player, and only while checkpoints are enabled. It always
+/// reports success for the player; the checkpoint file itself is written
+/// when none exists.
+pub fn checkpoint_script_runs(for_player: bool, enabled: bool) -> bool {
+    for_player && enabled
+}
+
 /// The game clock: whole seconds saved at load, plus the milliseconds since
 /// then at one second each.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -388,6 +396,9 @@ mod tests {
         assert!(save_allowed(0.0, true));
         assert!(checkpoint_due(false));
         assert!(!checkpoint_due(true));
+        assert!(checkpoint_script_runs(true, true));
+        assert!(!checkpoint_script_runs(false, true));
+        assert!(!checkpoint_script_runs(true, false));
         assert_eq!(MODE_STORY, 4);
         assert_eq!(MODE_ARENA, 8);
         assert_eq!(STORY_ORDER_KEY, 0x6431_ac03);

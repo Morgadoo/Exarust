@@ -18,7 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use exa_formats::save_chunk;
-use exa_formats::save_package::{self, SlotKind};
+use exa_formats::save_package::{self, PLAYER_DATA, PackageImage, SlotKind};
 use exa_formats::settings_store::SettingsStore;
 
 use crate::session::{self, Mode, SaveError, Session, SlotInfo};
@@ -281,6 +281,57 @@ impl Slots {
         }
         save_chunk::dead_slot_without_checkpoint(number, self.has_checkpoint(number)).is_some()
     }
+
+    /// The player-data signature the mode writes now.
+    pub fn signature(&self) -> u32 {
+        match self.mode {
+            Mode::Story => save_package::STORY_SIGNATURE,
+            Mode::Arena => save_package::ARENA_SIGNATURE,
+        }
+    }
+
+    /// The start-up legacy pass: every `.rsg` whose player data signature is
+    /// below the mode's current one is deleted. A file whose signature
+    /// cannot be read is left alone, and checkpoints are never touched.
+    pub fn remove_legacy(&self) -> io::Result<usize> {
+        let mut numbers = Vec::new();
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if let Some((number, SlotKind::Save)) =
+                save_package::parse_slot_file(&name, self.prefix())
+            {
+                numbers.push(number);
+            }
+        }
+        let mut removed = 0;
+        for number in numbers {
+            let path = self.file(number, SlotKind::Save);
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(package) = PackageImage::read(&bytes) else {
+                continue;
+            };
+            let Some(section) = package.section(PLAYER_DATA) else {
+                continue;
+            };
+            let Some(word) = section.get(0..4) else {
+                continue;
+            };
+            let signature = u32::from_le_bytes(word.try_into().unwrap());
+            if signature < self.signature() {
+                fs::remove_file(&path)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +438,28 @@ mod tests {
         slots.checkpoint(number, &arena("Ash")).unwrap();
         assert!(!slots.drops_after_death(number, 0.0));
         assert!(slots.file(number, SlotKind::Save).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_legacy_pass_deletes_only_older_saves() {
+        let dir = folder("legacy");
+        let slots = Slots::story(&dir);
+        let current = slots.create(&Session::story()).unwrap();
+        let older = slots.create(&Session::story()).unwrap();
+        let mut package = PackageImage::new();
+        package.put_section(PLAYER_DATA, &0x6F5A_EA13u32.to_le_bytes());
+        fs::write(slots.file(older, SlotKind::Save), package.to_bytes()).unwrap();
+        // A checkpoint is left alone even when it is old.
+        fs::copy(
+            slots.file(older, SlotKind::Save),
+            slots.file(older, SlotKind::Checkpoint),
+        )
+        .unwrap();
+        assert_eq!(slots.remove_legacy().unwrap(), 1);
+        assert!(slots.file(current, SlotKind::Save).exists());
+        assert!(!slots.file(older, SlotKind::Save).exists());
+        assert!(slots.file(older, SlotKind::Checkpoint).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

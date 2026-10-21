@@ -788,6 +788,17 @@ impl PlayerData {
         }
     }
 
+    /// The mask the character screen loads a save with: the journal and the
+    /// global experience snapshot only.
+    pub const CHARACTER_SCREEN_MASK: u32 = 0x10_0010;
+
+    /// Applies a load mask: the original ands each chunk id with the mask
+    /// and ignores every result at or below `0xF`, so the chunks the mask
+    /// zeroes are not imported.
+    pub fn apply_mask(&mut self, mask: u32) {
+        self.chunks.retain(|chunk| (chunk.id & mask) > 0xF);
+    }
+
     /// Replaces the journal chunk; an empty journal removes it, as the
     /// original only writes the chunk when it has entries.
     pub fn set_journal(&mut self, records: &[JournalRecord]) {
@@ -878,6 +889,31 @@ pub fn name(text: &str) -> [u8; NAME_LEN] {
     let bytes = text.as_bytes();
     out[..bytes.len().min(NAME_LEN)].copy_from_slice(&bytes[..bytes.len().min(NAME_LEN)]);
     out
+}
+
+/// Whether a story save cannot be started from, the check the character
+/// creator runs while the save's started flag is clear: a save with an
+/// `exanima06` section is from a newer campaign layout, and one with an
+/// `exanima04` section is only usable when its world object database has
+/// the current magic. A missing database or a section too short to hold
+/// the magic counts as a mismatch here; the original reads past the buffer.
+pub fn story_start_incompatible(package: &PackageImage, started: bool) -> bool {
+    if started {
+        return false;
+    }
+    if package.has_section(&name("exanima06")) {
+        return true;
+    }
+    if !package.has_section(&name("exanima04")) {
+        return false;
+    }
+    match package.section(WORLD_OBJECT_DB) {
+        Some(section) => match section.get(0..4) {
+            Some(word) => u32::from_le_bytes(word.try_into().unwrap()) != WORLD_OBJECT_DB_MAGIC,
+            None => true,
+        },
+        None => false,
+    }
 }
 
 /// A 16-byte name as text, cut at the first zero.
@@ -1030,6 +1066,51 @@ mod tests {
     }
 
     #[test]
+    fn the_story_start_check_refuses_newer_and_old_object_databases() {
+        let mut package = PackageImage::new();
+        assert!(!story_start_incompatible(&package, false));
+        assert!(!story_start_incompatible(&package, true));
+        // An exanima06 section is a newer campaign.
+        package.put_section(&name("exanima06"), &[]);
+        assert!(story_start_incompatible(&package, false));
+        assert!(!story_start_incompatible(&package, true));
+        // Exanima04 with a current object database is fine.
+        let mut package = PackageImage::new();
+        package.put_section(&name("exanima04"), &[]);
+        package.put_section(WORLD_OBJECT_DB, &WORLD_OBJECT_DB_MAGIC.to_le_bytes());
+        assert!(!story_start_incompatible(&package, false));
+        // A mismatched magic, a short section or a missing database differ.
+        package.put_section(WORLD_OBJECT_DB, &0xDBA_C0D05u32.to_le_bytes());
+        assert!(story_start_incompatible(&package, false));
+        package.put_section(WORLD_OBJECT_DB, &[0, 1]);
+        assert!(story_start_incompatible(&package, false));
+        package.remove_section(WORLD_OBJECT_DB);
+        assert!(!story_start_incompatible(&package, false));
+    }
+
+    #[test]
+    fn an_old_arena_package_drops_its_hub_section() {
+        let mut data = PlayerData::arena(name("arenahub"));
+        let mut package = PackageImage::new();
+        package.put_section(&name("arenahub"), b"hub");
+        package.put_section(PLAYER_DATA, &data.write());
+        assert!(!data.convert_arena());
+        assert!(package.has_section(&name("arenahub")));
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 9;
+        assert!(!data.convert_arena());
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 4;
+        assert!(data.convert_arena());
+        package.remove_section(&name("arenahub"));
+        assert!(!package.has_section(&name("arenahub")));
+    }
+
+    #[test]
     fn a_story_section_round_trips_with_its_chunks() {
         let mut data = PlayerData::story(name("exanima04"));
         let PlayerHeader::Story(header) = &mut data.header else {
@@ -1127,6 +1208,30 @@ mod tests {
     }
 
     #[test]
+    fn the_character_screen_mask_keeps_the_journal_and_global_experience() {
+        let mut data = PlayerData::story(name("exanima02"));
+        data.set_chunk(DISCOVERY_CHUNK, vec![1]);
+        data.set_chunk(JOURNAL_CHUNK, write_journal(&[]));
+        data.set_chunk(GLOBAL_XP_CHUNK, 7u32.to_le_bytes().to_vec());
+        data.set_chunk(MEMORY_FLAGS_CHUNK, 1u32.to_le_bytes().to_vec());
+        data.set_chunk(
+            TRANSITION_CHUNK,
+            [1u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        data.apply_mask(PlayerData::CHARACTER_SCREEN_MASK);
+        let ids: Vec<u32> = data.chunks.iter().map(|chunk| chunk.id).collect();
+        assert_eq!(ids, vec![JOURNAL_CHUNK, GLOBAL_XP_CHUNK]);
+        let mut all = PlayerData::story(name("exanima02"));
+        all.set_chunk(0x100, vec![1]);
+        all.apply_mask(!0);
+        assert_eq!(all.chunks.len(), 1);
+        // Ids at or below 0xF never pass, even unmasked.
+        all.set_chunk(0xF, vec![1]);
+        all.apply_mask(!0);
+        assert_eq!(all.chunks.len(), 1);
+    }
+
+    #[test]
     fn an_old_arena_drops_its_skipped_chunks() {
         let mut data = PlayerData::arena(name("arenahub"));
         data.set_chunk(HIREABLES_CHUNK, vec![1]);
@@ -1143,6 +1248,33 @@ mod tests {
         assert!(data.chunk(HIREABLES_CHUNK).is_none());
         assert!(data.chunk(SHOP_STOCK_CHUNK).is_none());
         assert_eq!(data.chunk(ARSENAL_CHUNK), Some(&[3u8][..]));
+    }
+
+    #[test]
+    fn the_retail_executable_names_the_save_sections() {
+        // A real-data check: the section names and both extensions are in
+        // the shipped executable. It skips when the game is not configured,
+        // and no bytes are copied into the repository.
+        let Ok(dir) = std::env::var("EXANIMA_DIR") else {
+            return;
+        };
+        let Ok(exe) = std::fs::read(std::path::Path::new(&dir).join("Exanima.exe")) else {
+            return;
+        };
+        for needle in [
+            &b"#playerdata"[..],
+            &b"#worldobjdb"[..],
+            &b"#worldchrdb"[..],
+            &b".rsg"[..],
+            &b".rcp"[..],
+            &b"Exanima"[..],
+            &b"Arena"[..],
+        ] {
+            assert!(
+                exe.windows(needle.len()).any(|window| window == needle),
+                "missing {needle:?}"
+            );
+        }
     }
 
     #[test]

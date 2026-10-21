@@ -24,7 +24,7 @@ extension; the format is identified by its leading magic
 | actor | `06/07 AC CD 00` | `Resource/actors.rpk` (21) | verified (character record) | [OTHER.md](OTHER.md#actors) |
 | material library `.rml` | pack | Resource (4) | verified (texture layers) | [OTHER.md](OTHER.md#material-libraries-rml) |
 | shader library `.flb` | pack, entries obfuscated | Resource (2) | unknown | [OTHER.md](OTHER.md#shader-libraries-flb) |
-| save `.rsg` (not shipped) | `02 EA 7A DA` | `%APPDATA%\\Exanima` | reference only | [OTHER.md](OTHER.md#saves-rsg-rcp) |
+| save `.rsg` (not shipped) | `02 EA 7A DA` | `%APPDATA%\\Exanima` | verified (package, slots, player-data framing; chunk payloads partly) | [SAVES.md](SAVES.md) |
 | manual `.fds` | pack of marked-up text | Resource (2) | verified | [OTHER.md](OTHER.md#manual-pages-fds) |
 | sound | `RIFF` (PCM WAVE) | Sound (1131) | verified | [OTHER.md](OTHER.md#sound) |
 | user settings `.ini`, `.set` (not shipped) | text; nested `{tag, size}` chunks | user folder | verified (from the executable) | [SETTINGS.md](SETTINGS.md) |
