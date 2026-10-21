@@ -1497,7 +1497,7 @@ not landed is the identity and says which:
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
-| 8 | the head look (yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | identity until M8 and C13 |
+| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the foot pitch and the hunch identity until C13 |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
@@ -1659,10 +1659,35 @@ keep their own turns, so the arms hold their pose in the world while the
 chest turns under them. The original normalises with the processor's
 reciprocal square root estimate; Exarust's normalisation is exact.
 
+**Head look.** In the sampler's step 8 the head, while the condition is
+not helpless and the clip's action index is under 0x2C, looks (REA: the
+sampler's head step and the head look routine, `exe.asm`; constants from
+the PE; `exa_physics::body::locomotion::head_look`): its weight rises
+0.01 a tick (double) to 1 (it is 0 otherwise, and the head keeps the
+clip); the look is the smoothed cursor direction moved toward the head's
+physical forward by 1 − E² (a dazed head stops looking), in last tick's
+character frame, its height halved, normalised. The head's turn is taken
+apart into the original's angles (the roll asin of the x axis's height;
+past |cos roll| 0.005 the pitch atan2(−z axis's height, y axis's height)
+and the yaw atan2(−x axis's depth, x axis's width) over cos roll, in
+double precision) and composed back from (1 − w)·the clip's + w·the
+look's: the look's yaw is its direction's by the original's arc cosine,
+within ±1.2566 rad, × 0.8, followed by at most π/100 rad a tick; its
+pitch −asin(height) by the same polynomial ((0.0535·x + 0.2075)·x +
+π/2)·√(1 + x) − π/2 below 0, π/2 − (π/2 − (0.2075 − 0.0535·x)·x)·√(1 − x)
+above (the original adds a pitch offset nothing writes); its roll a
+tenth of the yaw. The head's place keeps the pose. While it looks, its
+link muscles' anchors are placed relative to the thorax where it
+physically is, not where its pose puts it, so the head keeps looking
+whatever the chest does. Not reproduced: a target's eye point while the
+character has one and its look timer runs (Exarust gives the player no
+look target), and the head step's other relative frame for a clip from
+0x2C on.
+
 Not reproduced yet: the blow sag's writer, the swing's
 weapon-in-hand wait (weapons are bodies with M24), recoil and the
 follow-through (C21, M26); the attack arm stiffness; the twist in the
-captures and the run lean's exertion, and the head look (M8); the femur posture
+captures and the run lean's exertion; the femur posture
 and the foot pitch (C13); the foot contacts' flag in the capture; the
 weak branch's rate kept from last tick (Exarust reads the base); the
 creature classes' own clock bases.

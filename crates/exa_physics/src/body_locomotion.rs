@@ -27,7 +27,10 @@ pub use gait::{
 };
 #[path = "body_twist.rs"]
 mod twist;
-pub use twist::{TwistBy, acos_approx, heading_of, look_rotation, twist, twist_spine};
+pub use twist::{
+    TwistBy, acos_approx, asin_approx, euler_of, from_euler, head_look, heading_of, look_rotation,
+    twist, twist_spine,
+};
 
 /// Bits of the request's flag word, the original's.
 pub mod flags {
@@ -178,6 +181,7 @@ impl Locomotion {
             Locomotor {
                 yaw,
                 stance_facing: yaw,
+                frame_yaw: yaw,
                 ..default()
             },
         )
@@ -320,6 +324,14 @@ pub struct Locomotor {
     /// identity while it holds) the sampler turns the spine by.
     pub twist_yaw: f32,
     pub twist: Quat,
+    /// The character frame's yaw this tick's sampler reads: the body's
+    /// yaw before this tick's turn (the original rebuilds its frame after
+    /// its sampler).
+    pub frame_yaw: f32,
+    /// The head look's weight, rising 0.01 a tick to 1 while the head
+    /// looks, and the look yaw it follows.
+    pub head_weight: f32,
+    pub head_yaw: f32,
 }
 
 impl Default for Locomotor {
@@ -349,6 +361,9 @@ impl Default for Locomotor {
             stance_facing: 0.0,
             twist_yaw: 0.0,
             twist: Quat::IDENTITY,
+            frame_yaw: 0.0,
+            head_weight: 0.0,
+            head_yaw: 0.0,
         }
     }
 }

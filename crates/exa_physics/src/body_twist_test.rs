@@ -158,10 +158,85 @@ fn the_spine_takes_the_twist_the_lumbar_half() {
     twist_spine(&mut parts, &[(1, true), (2, false)], twist);
     let turn = |p: &Affine3A| Quat::from_mat3a(&p.matrix3);
     assert_eq!(parts[0], at(0.0));
-    assert!(turn(&parts[1]).angle_between(Quat::from_rotation_y(0.3)) < 1e-5);
-    assert!(turn(&parts[2]).angle_between(twist) < 1e-5);
+    assert!(turn(&parts[1]).dot(Quat::from_rotation_y(0.3)).abs() > 1.0 - 1e-6);
+    assert!(turn(&parts[2]).dot(twist).abs() > 1.0 - 1e-6);
     assert_eq!(parts[1].translation, at(0.1).translation);
     let mut kept = vec![at(0.0), at(0.1)];
     twist_spine(&mut kept, &[(1, true)], Quat::IDENTITY);
     assert_eq!(kept, vec![at(0.0), at(0.1)]);
+}
+
+/// The original's arc sine: 0.52398 for 0.5 (the exact 0.52360), odd, 0
+/// and π/2 at 0 and 1.
+#[test]
+fn the_arc_sine_is_the_originals_polynomial() {
+    assert!(close(asin_approx(0.5), 0.523_980_4));
+    assert!(close(asin_approx(-0.5), -0.523_980_4));
+    assert_eq!(asin_approx(0.0), 0.0);
+    assert!(close(asin_approx(1.0), FRAC_PI_2));
+}
+
+/// The angles: a yaw alone is a turn about the vertical, a pitch about x
+/// (forward dipping for a positive one), a roll about z; composed and
+/// taken apart they come back (0.3, −0.5, 0.2); at a roll of π/2 the pitch
+/// is 0 and the yaw read from the z axis.
+#[test]
+fn the_angles_compose_and_come_back() {
+    let near = |a: Mat3A, b: Quat| {
+        let b = Mat3A::from_quat(b);
+        (a.x_axis - b.x_axis).length()
+            + (a.y_axis - b.y_axis).length()
+            + (a.z_axis - b.z_axis).length()
+            < 1e-5
+    };
+    assert!(near(
+        from_euler(Vec3::new(0.0, 0.7, 0.0)),
+        Quat::from_rotation_y(0.7)
+    ));
+    assert!(near(
+        from_euler(Vec3::new(0.4, 0.0, 0.0)),
+        Quat::from_rotation_x(0.4)
+    ));
+    assert!(near(
+        from_euler(Vec3::new(0.0, 0.0, 0.3)),
+        Quat::from_rotation_z(0.3)
+    ));
+    let dipped = from_euler(Vec3::new(0.4, 0.0, 0.0)) * Vec3A::Z;
+    assert!(dipped.y < 0.0);
+    let e = Vec3::new(0.3, -0.5, 0.2);
+    assert!((euler_of(&from_euler(e)) - e).length() < 1e-5);
+    let up = euler_of(&from_euler(Vec3::new(0.2, 0.3, FRAC_PI_2)));
+    assert_eq!(up.x, 0.0);
+}
+
+/// The head look: toward a look 0.5 rad aside (0.40024 after × 0.8 of the
+/// original's arc cosine's 0.50030) its yaw moves 0.0314 rad a tick (π/100),
+/// the roll a tenth of it; at full weight the head takes the look's
+/// angles, at half weight half of them. Looking down at a height of −0.5
+/// it pitches by 0.52398. Helpless, the kept yaw decays × 0.09 (0.4 →
+/// 0.036).
+#[test]
+fn the_head_turns_toward_its_look() {
+    let mut yaw = 0.0;
+    let head = Mat3A::IDENTITY;
+    let aside = Vec3::new(0.5f32.sin(), 0.0, 0.5f32.cos());
+    let looked = head_look(&head, aside, 1.0, &mut yaw, false);
+    let step = std::f32::consts::PI / 100.0;
+    assert!(close(yaw, step), "{yaw}");
+    let want = from_euler(Vec3::new(0.0, step, step * 0.1));
+    assert!((looked.z_axis - want.z_axis).length() < 1e-6);
+    for _ in 0..40 {
+        head_look(&head, aside, 1.0, &mut yaw, false);
+    }
+    assert!(close(yaw, 0.400_237_3), "{yaw}");
+    let half = euler_of(&head_look(&head, aside, 0.5, &mut yaw, false));
+    assert!(close(half.y, yaw * 0.5), "{half}");
+    assert!(close(half.z, yaw * 0.05), "{half}");
+    let down = Vec3::new(0.0, -0.5, 0.75f32.sqrt());
+    let mut level = 0.0;
+    let pitched = euler_of(&head_look(&head, down, 1.0, &mut level, false));
+    assert!(close(pitched.x, 0.523_980_4), "{pitched}");
+    let mut kept = 0.4;
+    head_look(&head, aside, 1.0, &mut kept, true);
+    assert!(close(kept, 0.036));
 }

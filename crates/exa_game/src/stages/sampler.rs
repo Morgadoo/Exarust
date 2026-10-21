@@ -35,7 +35,9 @@ use exa_combat::stance::Stance;
 use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_formats::rsq::Clip;
-use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, twist_spine};
+use exa_physics::body::locomotion::{
+    Locomotion, Locomotor, flags, forward, head_look, twist_spine,
+};
 use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
 
 use crate::limp::{Pace, clip_pose, clip_tick, physical_turns, run_overlay};
@@ -59,10 +61,10 @@ pub(crate) fn sample_clip(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     mut bodies: Query<(
-        &Ragdoll,
+        &mut Ragdoll,
         &mut Animator,
         Option<&Stature>,
-        Option<(&Locomotion, &Locomotor)>,
+        Option<(&Locomotion, &mut Locomotor)>,
         Option<&Swing>,
         Option<&SwingState>,
         Option<&mut Condition>,
@@ -78,10 +80,10 @@ pub(crate) fn sample_clip(
     let Some(motions) = motions else { return };
     let root = ticked.body;
     let Ok((
-        body,
+        mut body,
         mut anim,
         stature,
-        locomotion,
+        mut locomotion,
         swing,
         swinging,
         mut condition,
@@ -97,18 +99,22 @@ pub(crate) fn sample_clip(
         nodes.get(n).ok().map(|(t, _)| t.compute_affine())
     });
     let pace = Pace {
-        stride: locomotion.and_then(|(_, l)| l.locomoted.then_some(l.clock_step)),
-        run: locomotion.map_or(0.0, |(_, l)| l.run),
+        stride: locomotion
+            .as_ref()
+            .and_then(|(_, l)| l.locomoted.then_some(l.clock_step)),
+        run: locomotion.as_ref().map_or(0.0, |(_, l)| l.run),
         swing: swing.copied().unwrap_or(Swing::FISTS),
         attack: swinging.map(|s| s.rate),
         encumbrance: fighter.map_or(0.0, |f| f.stats.encumbrance),
-        latch: locomotion.is_some_and(|(req, _)| req.has(flags::SPRINT)),
+        latch: locomotion
+            .as_ref()
+            .is_some_and(|(req, _)| req.has(flags::SPRINT)),
         rose: branch.is_some_and(|b| b.0 == Branch::GettingUp),
         stance: stance.and_then(|s| motions.0.action_index(s.action())),
         still: condition.as_deref().is_some_and(|c| c.clip_stands_still()),
     };
     let once = !anim.looping;
-    let hold = clip_tick(&motions, &mut anim, body, &pace, |body| {
+    let hold = clip_tick(&motions, &mut anim, &body, &pace, |body| {
         physical_turns(
             body,
             root,
@@ -130,9 +136,17 @@ pub(crate) fn sample_clip(
     let Some(clip) = motions.clip(&anim, &anim.action) else {
         return;
     };
-    let still = in_place(motions.0.action_index(&anim.action));
+    let playing = motions.0.action_index(&anim.action);
+    let still = in_place(playing);
     let gait = run_overlay(&motions, &anim, &pace);
-    let twist = locomotion.map_or(Quat::IDENTITY, |(_, l)| l.twist);
+    let twist = locomotion.as_ref().map_or(Quat::IDENTITY, |(_, l)| l.twist);
+    // The head looks while the condition is not helpless and the clip is
+    // one of the first 0x2C (the original's; its weight resets otherwise).
+    let state = condition.as_deref().copied().unwrap_or_default();
+    let looks = !state.helpless() && playing.is_some_and(|a| a < LOOKING_CLIPS);
+    let mut look = locomotion
+        .as_mut()
+        .and_then(|(req, l)| look_of(&body, req, l, looks));
     sampled.0 = sample_parts(
         &mut anim,
         clip,
@@ -141,20 +155,72 @@ pub(crate) fn sample_clip(
         hold.toward(),
         stature,
         twist,
-        body,
+        look.as_mut(),
+        &body,
         root,
         &parents,
         &nodes,
     );
+    // The head's link anchors follow the physical thorax while it looks.
+    let head_looks = look.is_some();
+    if let (Some(look), Some((_, l))) = (look, locomotion.as_mut()) {
+        l.head_yaw = look.yaw;
+    }
+    if let Some(d) = body.drive.as_mut() {
+        d.bearing.head_looks = head_looks;
+    }
 }
+
+/// The clips below this action index let the head look.
+const LOOKING_CLIPS: usize = 0x2C;
+
+/// What the head look reads this tick: its direction in the character
+/// frame (last tick's), its weight and the look yaw it follows.
+pub(crate) struct Look {
+    dir: Vec3,
+    weight: f32,
+    yaw: f32,
+}
+
+/// The head look's input for a body with a head that `looks` (its weight
+/// rises 0.01 a tick, double precision, to 1; else it is 0 and the head
+/// keeps the clip): the smoothed cursor direction moved toward the head's
+/// physical forward by 1 − E² (a dazed head stops looking), in the
+/// character frame, its height halved, normalised.
+fn look_of(body: &Ragdoll, req: &Locomotion, l: &mut Locomotor, looks: bool) -> Option<Look> {
+    if !looks {
+        l.head_weight = 0.0;
+        return None;
+    }
+    let head = body.parts.iter().find(|p| p.bone == HEAD)?;
+    l.head_weight = (f64::from(l.head_weight) + LOOK_RISE) as f32;
+    if l.head_weight > 1.0 {
+        l.head_weight = 1.0;
+    }
+    let energy = body.drive.as_ref().map_or(1.0, |d| d.energy);
+    let ahead = Vec3::from(head.transform().matrix3.z_axis);
+    let cursor = forward(req.cursor);
+    let d = cursor + (ahead - cursor) * (1.0 - energy * energy);
+    let mut d = Quat::from_rotation_y(-l.frame_yaw) * d;
+    d.y *= 0.5;
+    let length = (d.y * d.y + 0.0 + d.x * d.x + d.z * d.z).sqrt();
+    Some(Look {
+        dir: d * (1.0 / length),
+        weight: l.head_weight,
+        yaw: l.head_yaw,
+    })
+}
+
+/// The head look's weight rises this much a tick (double).
+const LOOK_RISE: f64 = 0.01;
 
 /// Samples `clip` at the body's clock in the original's pipeline (the
 /// module's list): the bracket (which writes the progress), the keys
 /// blended, the gait overlay (`gait`, the Run clip and its weight while
 /// Walk plays), the hold, the pose kept as the targets and
 /// scaled by `stature`, the femur posture, the clip chain, the IK chain,
-/// the `twist` of the spine, the head look and the foot pitch; returns
-/// each part's placement.
+/// the `twist` of the spine, the head's `look` and the foot pitch;
+/// returns each part's placement.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_parts(
     anim: &mut Animator,
@@ -164,6 +230,7 @@ pub(crate) fn sample_parts(
     hold: Option<(&[Quat], f32)>,
     stature: f32,
     twist: Quat,
+    look: Option<&mut Look>,
     body: &Ragdoll,
     root: Entity,
     parents: &Query<&ChildOf>,
@@ -178,7 +245,7 @@ pub(crate) fn sample_parts(
     let chain = clip_chain(body, root, &pose, parents, nodes);
     let mut parts = ik_chain(chain);
     twist_spine(&mut parts, &spine(body, nodes), twist);
-    let parts = head_look(parts);
+    look_with_head(&mut parts, body, look);
     Some(foot_pitch(parts))
 }
 
@@ -259,11 +326,16 @@ fn spine(body: &Ragdoll, nodes: &Query<(&Transform, Option<&BodyPart>)>) -> Vec<
     chain
 }
 
-/// Step 8, the head look: the head's yaw, pitch and roll follow the look
-/// direction by a weight that ramps to 1. Until M8 lands the head keeps
-/// the clip: the parts are returned as they are.
-fn head_look(parts: Vec<Affine3A>) -> Vec<Affine3A> {
-    parts
+/// Step 8, the head look: the head's yaw, pitch and roll move by the
+/// look's weight toward the look (`exa_physics::body::locomotion::head_look`);
+/// its place keeps the pose. Without a look the head keeps the clip.
+fn look_with_head(parts: &mut [Affine3A], body: &Ragdoll, look: Option<&mut Look>) {
+    let Some(look) = look else { return };
+    let Some(i) = body.parts.iter().position(|p| p.bone == HEAD) else {
+        return;
+    };
+    let Some(p) = parts.get_mut(i) else { return };
+    p.matrix3 = head_look(&p.matrix3, look.dir, look.weight, &mut look.yaw, false);
 }
 
 /// Step 8, the foot pitch: a standing foot is pitched to the ground under
@@ -322,5 +394,50 @@ mod tests {
         };
         assert_eq!(spine_of(0.01), vec![(2, true), (3, false)]);
         assert_eq!(spine_of(0.03), vec![]);
+    }
+
+    /// The head look's input: the smoothed cursor 0.5 rad aside of a frame
+    /// at 0.2 (a head at full energy looks along it, whatever its physical
+    /// forward) is 0.3 rad aside in the frame, level; the weight rises 0.01
+    /// a tick to 1; a body that does not look has none and its weight is
+    /// 0; at energy 0 the head looks along its own forward.
+    #[test]
+    fn the_head_looks_along_the_cursor_in_the_frame() {
+        let head = |energy: f32| {
+            let setup = [PartSetup {
+                bone: HEAD,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+            }];
+            let mut body = Ragdoll::new(&setup).with_drive();
+            body.drive.as_mut().unwrap().energy = energy;
+            body
+        };
+        let req = Locomotion {
+            cursor: 0.5,
+            ..default()
+        };
+        let mut l = Locomotor {
+            frame_yaw: 0.2,
+            ..default()
+        };
+        let look = look_of(&head(1.0), &req, &mut l, true).unwrap();
+        assert!((look.dir - forward(0.3)).length() < 1e-5, "{}", look.dir);
+        assert!((look.weight - 0.01).abs() < 1e-7);
+        for _ in 0..120 {
+            look_of(&head(1.0), &req, &mut l, true);
+        }
+        assert_eq!(l.head_weight, 1.0);
+        assert!(look_of(&head(1.0), &req, &mut l, false).is_none());
+        assert_eq!(l.head_weight, 0.0);
+        let dazed = look_of(&head(0.0), &req, &mut l, true).unwrap();
+        assert!((dazed.dir - forward(-0.2)).length() < 1e-5, "{}", dazed.dir);
     }
 }

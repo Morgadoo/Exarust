@@ -244,6 +244,10 @@ pub struct Bearing {
     /// It plays its Idle clip: the thorax lead's clip share is 0.4 then,
     /// and 0.7 otherwise.
     pub idle: bool,
+    /// Its head looks this tick (its sampler's head look ran): the head's
+    /// link anchors are placed relative to the thorax where it physically
+    /// is, not where its pose puts it.
+    pub head_looks: bool,
 }
 
 impl Default for Bearing {
@@ -267,6 +271,7 @@ impl Default for Bearing {
             off_feet: false,
             progress: 0.0,
             idle: false,
+            head_looks: false,
         }
     }
 }
@@ -541,6 +546,7 @@ impl Ragdoll {
             links_of,
             &drive.targets,
             drive.race.arm_relaxation,
+            bearing.head_looks,
         );
         if drive.support > 0.0 {
             relax_legs(parts);
@@ -566,15 +572,17 @@ impl Ragdoll {
 
 /// Samples each slack link's anchor from this tick's pose: the part's point
 /// placed by its animated transform relative to its parent's (the clip's
-/// turn, at the part's origin), as weights on the parent. Each part's λ
-/// then moves toward 0.6 − 32|Δa|² (the most one of its anchors moved since
-/// the last tick, cm²) times the race's factor, capped by the part's cap.
+/// turn, at the part's origin; a looking head's relative to its parent's
+/// physical transform), as weights on the parent. Each part's λ then
+/// moves toward 0.6 − 32|Δa|² (the most one of its anchors moved since the
+/// last tick, cm²) times the race's factor, capped by the part's cap.
 fn sample_anchors(
     parts: &mut [Part],
     links: &mut [Link],
     links_of: &[std::ops::Range<usize>],
     targets: &[Affine3A],
     relaxation: f32,
+    head_looks: bool,
 ) {
     if targets.len() != parts.len() {
         return;
@@ -583,7 +591,12 @@ fn sample_anchors(
         let Some(j) = parts[i].parent.filter(|&j| j < parts.len() && j != i) else {
             continue;
         };
-        let relative = targets[j].inverse() * targets[i];
+        let parent = if head_looks && role(parts[i].bone) == Role::Head {
+            parts[j].transform()
+        } else {
+            targets[j]
+        };
+        let relative = parent.inverse() * targets[i];
         let (_, turn, _) = relative.to_scale_rotation_translation();
         let joint = Affine3A::from_rotation_translation(turn, parts[i].origin);
         let mut lowest = RELAX_TOP;

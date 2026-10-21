@@ -140,6 +140,7 @@ pub(crate) fn decide_movement(
     // The character frame the twist reads is last tick's (the original
     // rebuilds it from the new yaw after its sampler).
     let frame = body.yaw;
+    body.frame_yaw = frame;
     if held {
         locomotion::hold_turn(&mut body);
     } else {

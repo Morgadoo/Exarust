@@ -190,6 +190,102 @@ pub fn twist_spine(parts: &mut [Affine3A], spine: &[(usize, bool)], twist: Quat)
     }
 }
 
+/// The original's arc sine, the same polynomial: π/2 − (π/2 − (0.2075 −
+/// 0.0535·x)·x)·√(1 − x) for x ≥ 0 (or NaN), ((0.0535·x + 0.2075)·x +
+/// π/2)·√(1 + x) − π/2 below 0.
+pub fn asin_approx(x: f32) -> f32 {
+    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
+    const LINEAR: f32 = 0.2075;
+    const SQUARE: f32 = 0.0535;
+    if !(x < 0.0) {
+        let a = HALF_PI - (LINEAR - x * SQUARE) * x;
+        HALF_PI - a * (1.0 - x).sqrt()
+    } else {
+        ((SQUARE * x + LINEAR) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
+    }
+}
+
+/// The original's angles of a turn ([`from_euler`] composes them back):
+/// the roll z = asin(x axis's y), and with |cos z| over 0.005 (double) the
+/// pitch x = atan2(−z axis's y, y axis's y) and the yaw y = atan2(−x axis's
+/// z, x axis's x), each over cos z; otherwise no pitch and the yaw
+/// atan2(z axis's x, z axis's z). Double-precision functions, as the
+/// original's.
+pub fn euler_of(m: &Mat3A) -> Vec3 {
+    let roll = f64::from(m.x_axis.y).asin() as f32;
+    let c = f64::from(roll).cos() as f32;
+    if f64::from(c.abs()) > ROLL_LIMIT {
+        let pitch = f64::from(-m.z_axis.y / c).atan2(f64::from(m.y_axis.y / c)) as f32;
+        let yaw = f64::from(-m.x_axis.z / c).atan2(f64::from(m.x_axis.x / c)) as f32;
+        Vec3::new(pitch, yaw, roll)
+    } else {
+        let yaw = f64::from(m.z_axis.x).atan2(f64::from(m.z_axis.z)) as f32;
+        Vec3::new(0.0, yaw, roll)
+    }
+}
+
+/// Above this |cos roll| (double) the pitch and the yaw are told apart.
+const ROLL_LIMIT: f64 = 0.005;
+
+/// The turn of the original's angles (x pitch, y yaw, z roll): its x axis
+/// (cz·cy, sz, −cz·sy), y axis (sx·sy − cx·sz·cy, cx·cz, sx·cy + cx·sz·sy),
+/// z axis (cx·sy + sx·sz·cy, −sx·cz, cx·cy − sx·sz·sy).
+pub fn from_euler(e: Vec3) -> Mat3A {
+    let (sx, cx) = e.x.sin_cos();
+    let (sy, cy) = e.y.sin_cos();
+    let (sz, cz) = e.z.sin_cos();
+    let cxsz = cx * sz;
+    let sxsz = sx * sz;
+    Mat3A::from_cols(
+        Vec3A::new(cz * cy, sz, -cz * sy),
+        Vec3A::new(sx * sy + -cxsz * cy, cx * cz, sx * cy + cxsz * sy),
+        Vec3A::new(cx * sy + sxsz * cy, -sx * cz, cx * cy + -sxsz * sy),
+    )
+}
+
+/// The head's look yaw is clamped to this (rad, double), × 0.8, and
+/// followed at most this much a tick (double); held, it decays × 0.09.
+const LOOK_REACH: f64 = 1.256_637_061_435_917_2;
+const LOOK_SHARE: f64 = 0.8;
+const LOOK_RATE: f64 = 0.031_415_926_535_897_934;
+const LOOK_DECAY: f64 = 0.09;
+/// The roll is this share of the look yaw (double).
+const LOOK_ROLL: f64 = 0.1;
+
+/// The head look: the head's turn (in the character frame) `head` blended
+/// by `weight` toward the look along `dir` (unit, in the character frame):
+/// its yaw by the original's arc cosine, within ±1.2566 rad, × 0.8,
+/// followed by `yaw` (the kept look yaw) at most 0.0314 rad a tick; its
+/// pitch −asin(dir's height); its roll a tenth of the yaw. While the
+/// condition is `helpless` the kept yaw decays × 0.09 and the pitch is 0.
+/// Each of the head's angles moves `weight` of the way to the look's.
+pub fn head_look(head: &Mat3A, dir: Vec3, weight: f32, yaw: &mut f32, helpless: bool) -> Mat3A {
+    let clip = euler_of(head);
+    let pitch = if helpless {
+        *yaw = (f64::from(*yaw) * LOOK_DECAY) as f32;
+        0.0
+    } else {
+        let mut look = heading_of(dir);
+        if f64::from(look.abs()) > LOOK_REACH {
+            look = (f64::from(sign(look)) * LOOK_REACH) as f32;
+        }
+        look = (f64::from(look) * LOOK_SHARE) as f32;
+        let change = look - *yaw;
+        if f64::from(change.abs()) > LOOK_RATE {
+            look = (f64::from(sign(change)) * LOOK_RATE + f64::from(*yaw)) as f32;
+        }
+        *yaw = look;
+        -asin_approx(dir.y)
+    };
+    let roll = (f64::from(*yaw) * LOOK_ROLL) as f32;
+    let rest = 1.0 - weight;
+    from_euler(Vec3::new(
+        rest * clip.x + pitch * weight,
+        rest * clip.y + *yaw * weight,
+        rest * clip.z + roll * weight,
+    ))
+}
+
 #[cfg(test)]
 #[path = "body_twist_test.rs"]
 mod tests;

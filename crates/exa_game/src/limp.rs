@@ -552,6 +552,8 @@ pub(crate) fn bearing(
         off_feet: condition.off_feet(),
         progress: 0.0,
         idle: anim.action == "Idle",
+        // The sampler's head look sets it.
+        head_looks: false,
     }
 }
 

@@ -623,3 +623,68 @@ fn collapsing_arms_are_0_2() {
         );
     }
 }
+
+/// A looking head's link anchors are placed relative to the thorax where
+/// it physically is: with the whole pose turned 0.5 rad about the thorax,
+/// a head that does not look keeps the anchors of the unturned pose (its
+/// turn relative to the thorax's target is the same), one that looks takes
+/// the turn into its anchors.
+#[test]
+fn a_looking_heads_anchors_follow_the_physical_thorax() {
+    let thorax = Affine3A::from_translation(Vec3::new(0.0, 1.4, 0.0));
+    let neck = cm(0.0, 20.0, 0.0);
+    let setup = [
+        PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: thorax,
+            centre: Vec3::ZERO,
+            half: cm(15.0, 15.0, 10.0),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        },
+        PartSetup {
+            bone: 10,
+            entity: Entity::PLACEHOLDER,
+            parent: Some(0),
+            world: thorax * Affine3A::from_translation(neck),
+            centre: cm(0.0, 10.0, 0.0),
+            half: cm(8.0, 10.0, 8.0),
+            origin: neck,
+            links: vec![(cm(0.0, 0.0, 10.0), cm(0.0, 20.0, 10.0), 0.05)],
+            foot: None,
+            pins: Vec::new(),
+        },
+    ];
+    let still = vec![thorax, thorax * Affine3A::from_translation(neck)];
+    let turn = Affine3A::from_rotation_y(0.5);
+    let turned: Vec<Affine3A> = still
+        .iter()
+        .map(|t| thorax * turn * thorax.inverse() * *t)
+        .collect();
+    let anchors = |looks: bool, targets: &[Affine3A]| {
+        let mut body = Ragdoll::new(&setup).with_drive();
+        body.set_bearing(Bearing {
+            head_looks: looks,
+            ..Bearing::default()
+        });
+        body.aim(Affine3A::IDENTITY, targets.to_vec());
+        body.links
+            .iter()
+            .filter_map(|l| l.anchor)
+            .collect::<Vec<[f32; 4]>>()
+    };
+    let rest = anchors(false, &still);
+    assert!(!rest.is_empty());
+    assert_eq!(anchors(false, &turned), rest);
+    let looked = anchors(true, &turned);
+    let moved = looked
+        .iter()
+        .zip(&rest)
+        .any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-3));
+    assert!(moved, "{looked:?} {rest:?}");
+    assert_eq!(anchors(true, &still).len(), rest.len());
+}
