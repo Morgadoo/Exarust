@@ -11,11 +11,12 @@
 //! the record layout (`docs/formats/RFC.md`, Starts, characters and placed
 //! objects; `docs/formats/OTHER.md`, Character creation).
 
-use exa_formats::characters::{ARMOUR, CLOSE_COMBAT, SHIELDS, SKILLS, Skill, TECHNIQUE_SLOTS};
+use exa_audio::Lcg;
+use exa_formats::characters::{
+    ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, Pools, SHIELDS, SKILLS, Skill, TECHNIQUE_SLOTS,
+};
 
 use crate::experience::{LEVEL_STEP, training_skill};
-
-use exa_audio::Lcg;
 
 /// The item id of the braies, the one worn item the story screen keeps.
 pub const BRAIES: u32 = 8;
@@ -55,6 +56,36 @@ pub fn move_creation_gear(source: &mut CreationGear) -> CreationGear {
         hands: source.hands,
         worn: std::mem::take(&mut source.worn),
         carried: std::mem::take(&mut source.carried),
+    }
+}
+
+/// Writes the creator's fields into the record the character spawns from.
+///
+/// The hand slots and the worn list keep item ids (their per-instance flags
+/// belong to the equipped instances), the carried list keeps its flags, and
+/// a new character's three pools are set full.
+pub fn write_created_record(
+    record: &mut CharacterRecord,
+    name: &str,
+    gear: &CreationGear,
+    skills: &[Skill; SKILLS],
+    full_health: bool,
+) {
+    record.name = name.to_string();
+    record.hands = gear.hands.map(|slot| slot.item);
+    record.worn = gear.worn.iter().map(|slot| slot.item).collect();
+    record.inventory = gear
+        .carried
+        .iter()
+        .map(|slot| Carried {
+            item: slot.item,
+            flags: slot.flags,
+            extra: 0,
+        })
+        .collect();
+    record.skills = *skills;
+    if full_health {
+        record.pools = Pools::FULL;
     }
 }
 
@@ -1666,11 +1697,23 @@ pub enum PresetSource {
     Template,
 }
 
+/// What happens to the record's gear when a background loads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundGear {
+    /// The unknown background clears the hands and lists.
+    Reset,
+    /// The preset's gear moves into the record.
+    Preset,
+    /// The background's template gear is adopted.
+    Template,
+}
+
 /// What loading a story background does to the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackgroundPlan {
     pub preset: BackgroundPreset,
     pub source: PresetSource,
+    pub gear: BackgroundGear,
     /// The unknown background resets the record to the creator defaults.
     pub creation_defaults: bool,
 }
@@ -1699,9 +1742,15 @@ pub fn plan_background(background: i32, preset_loaded: bool) -> Option<Backgroun
             false,
         ),
     };
+    let gear = match (background, source) {
+        (0, _) => BackgroundGear::Reset,
+        (_, PresetSource::Template) => BackgroundGear::Template,
+        _ => BackgroundGear::Preset,
+    };
     Some(BackgroundPlan {
         preset,
         source,
+        gear,
         creation_defaults,
     })
 }
@@ -1723,6 +1772,8 @@ pub struct FreeCreatePlan {
     pub source: FreeCreateSource,
     /// The skills are set to [`starting_skills`] whatever the record held.
     pub reset_skills: bool,
+    /// A loaded preset's gear is cleared so the player picks a kit.
+    pub reset_gear: bool,
 }
 
 /// Plans the free creator's record for the game mode.
@@ -1734,6 +1785,7 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
                 character: PRESET_CHARACTER_BASE,
             }),
             reset_skills: false,
+            reset_gear: true,
         };
     }
     if game_mode == 8 {
@@ -1743,6 +1795,7 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
                 character: PRESET_CHARACTER_BASE - 1,
             }),
             reset_skills: false,
+            reset_gear: true,
         };
     }
     FreeCreatePlan {
@@ -1752,6 +1805,7 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
             FreeCreateSource::NewDefault
         },
         reset_skills: true,
+        reset_gear: false,
     }
 }
 
@@ -2921,6 +2975,54 @@ mod tests {
     }
 
     #[test]
+    fn the_creator_writes_the_spawned_record() {
+        let mut record = CharacterRecord::default();
+        let gear = CreationGear {
+            hands: [
+                GearSlot::new(1),
+                GearSlot::new(2),
+                GearSlot::new(3),
+                GearSlot::new(4),
+            ],
+            worn: vec![GearSlot::new(8)],
+            carried: vec![GearSlot { item: 12, flags: 7 }],
+        };
+        let skills = starting_skills();
+        write_created_record(&mut record, "Mira", &gear, &skills, true);
+        assert_eq!(record.name, "Mira");
+        assert_eq!(record.hands, [1, 2, 3, 4]);
+        assert_eq!(record.worn, vec![8]);
+        assert_eq!(
+            record.inventory,
+            vec![Carried {
+                item: 12,
+                flags: 7,
+                extra: 0
+            }]
+        );
+        assert_eq!(record.skills, skills);
+        assert_eq!(record.pools, Pools::FULL);
+
+        let mut kept = CharacterRecord {
+            pools: Pools {
+                yellow: 1,
+                red: 2,
+                focus: 3,
+            },
+            ..CharacterRecord::default()
+        };
+        write_created_record(&mut kept, "Mira", &gear, &[Skill::default(); SKILLS], false);
+        assert_eq!(
+            kept.pools,
+            Pools {
+                yellow: 1,
+                red: 2,
+                focus: 3
+            }
+        );
+    }
+
+    #[test]
     fn the_creation_appearance_labels_its_bands() {
         assert_eq!(creation_label(0x001), CreationLabel::HumanFemale);
         assert_eq!(creation_label(0x001).code(), Some("HF"));
@@ -3951,14 +4053,17 @@ mod tests {
     fn the_background_plan_resets_only_the_unknown_background() {
         let unknown = plan_background(0, false).unwrap();
         assert_eq!(unknown.source, PresetSource::NewDefault);
+        assert_eq!(unknown.gear, BackgroundGear::Reset);
         assert!(unknown.creation_defaults);
 
         let template = plan_background(1, false).unwrap();
         assert_eq!(template.source, PresetSource::Template);
+        assert_eq!(template.gear, BackgroundGear::Template);
         assert!(!template.creation_defaults);
 
         let saved = plan_background(2, true).unwrap();
         assert_eq!(saved.source, PresetSource::Saved);
+        assert_eq!(saved.gear, BackgroundGear::Preset);
         assert!(!saved.creation_defaults);
         assert_eq!(plan_background(4, true), None);
     }
@@ -3974,6 +4079,7 @@ mod tests {
             })
         );
         assert!(!story.reset_skills);
+        assert!(story.reset_gear);
 
         assert_eq!(
             plan_free_create(8, false).source,
@@ -3986,6 +4092,7 @@ mod tests {
         let kept = plan_free_create(0, true);
         assert_eq!(kept.source, FreeCreateSource::KeepRecord);
         assert!(kept.reset_skills);
+        assert!(!kept.reset_gear);
 
         let fresh = plan_free_create(0x1010, false);
         assert_eq!(fresh.source, FreeCreateSource::NewDefault);

@@ -57,7 +57,9 @@ A creator record is this crate's `CharacterRecord`: its six `Skill`s
 (`points` and the technique chosen at each level) and its four hand slots,
 worn list and carried list are the fields the creator edits. `exa_game::create`
 owns the starting skills, the mode's gear filter, the experience budget and
-the page flow; this crate reads the stored record. The creator's two
+the page flow, and writes the chosen name, hands, worn and carried lists,
+skills and full pools into the spawned record; this crate reads the stored
+record. The creator's two
 physique values and the body morphs they select remain the body's concern
 (see [`docs/formats/RFC.md`](../../docs/formats/RFC.md), Morph sets).
 

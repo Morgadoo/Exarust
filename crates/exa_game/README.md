@@ -28,7 +28,10 @@ braies only and clears the hands; the arena keeps the first two hands only
 when its kit offers them and keeps braies only; modes with the 2 bit clear
 the fist placeholder and the carried list), the three story presets and
 their settings keys, the free-create and entry plans, and full health for
-every non-continued record. The six skills start as Close Combat, Armour
+every non-continued record. The chosen name, hands, worn and carried lists,
+skills and full pools are written into the spawned record. The unknown
+background and the free creator reset the gear before the kit is offered;
+a named background keeps its preset's gear or adopts its template's. The six skills start as Close Combat, Armour
 and Shields at five levels with their first techniques; the skills page
 caps them to the account's experience (a knight or proctor has at least
 10000), keeps the first truncated slot's chosen technique, gives the
