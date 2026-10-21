@@ -33,6 +33,7 @@ use bevy::prelude::*;
 use super::balance::cm;
 use super::{CM, PUSH_STRAIN, Part, Ragdoll, SolverStage, equalise_sleep, keep_rigid, weights};
 use crate::contact::evicted;
+use crate::intersect;
 use crate::sector::{self, Bounds, Meeting};
 
 /// A character limb's contact mobility per unit of its relative inverse
@@ -270,28 +271,65 @@ fn meets(p: &Part) -> bool {
     !p.pairing.out && p.pairing.radius() > 0.0 && !p.spheres.is_empty()
 }
 
-/// The world centre of the sphere around a part's spheres.
+/// The world centre of the sphere around a part's spheres, from its
+/// particles' weights.
 fn bound_centre(p: &Part) -> Vec3 {
     p.point(&p.pairing.centre)
 }
 
-/// The world centre of the part's mesh bound.
-fn mesh_centre(p: &Part) -> Vec3 {
-    p.transform().transform_point3(p.pairing.mesh.centre)
+/// A part found for this tick's detection, with the places the meet tests
+/// read: the original's world bounds, computed when the bodies are
+/// bucketed and refreshed for both parts after a pair with hits.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    body: usize,
+    part: usize,
+    /// The grid cell of its mesh box's world centre.
+    cell: (i32, i32),
+    /// Its sphere bound's world centre (from the particle weights).
+    sphere: Vec3,
+    /// Its mesh box's world centre (from its transform).
+    mesh: Vec3,
+    /// Its transform now.
+    now: Affine3A,
+}
+
+impl Seen {
+    fn of(body: usize, part: usize, p: &Part) -> Self {
+        let now = p.transform();
+        let mesh = now.transform_point3(p.pairing.mesh.centre);
+        Self {
+            body,
+            part,
+            cell: cell_of(mesh),
+            sphere: bound_centre(p),
+            mesh,
+            now,
+        }
+    }
+
+    /// The part's world bounds again, after a hit moved it; it stays in its
+    /// cell, as the original's does until the next tick.
+    fn refresh(&mut self, p: &Part) {
+        self.now = p.transform();
+        self.mesh = self.now.transform_point3(p.pairing.mesh.centre);
+        self.sphere = bound_centre(p);
+    }
 }
 
 /// A part as the meet test sees it: its bounds and where this tick and the
 /// last left it.
-fn meeting(p: &Part) -> Meeting {
+fn meeting(p: &Part, seen: &Seen) -> Meeting {
     Meeting {
         sphere: p.pairing.sphere,
         mesh: p.pairing.mesh,
         previous: p.settled,
-        current: p.transform(),
+        current: seen.now,
     }
 }
 
-/// The grid cell (x, z) of a point.
+/// The grid cell (x, z) of a point (m): the original's round-down of
+/// x × 1/600 (cm).
 fn cell_of(x: Vec3) -> (i32, i32) {
     sector::cell_of(x * 100.0, (0, 0))
 }
@@ -502,6 +540,19 @@ pub struct Pairs {
     touches: Vec<Touch>,
     /// How parts are found.
     phase: BroadPhase,
+    /// The detection's working lists, kept from tick to tick so that the
+    /// stage does not allocate once they have grown.
+    scratch: Scratch,
+}
+
+/// The pair stage's working lists ([`Pairs::find`]).
+#[derive(Debug, Default)]
+struct Scratch {
+    found: Vec<Seen>,
+    near: HashSet<(i32, i32)>,
+    grid: sector::CellGrid,
+    met: Vec<bool>,
+    others: Vec<usize>,
 }
 
 impl Pairs {
@@ -557,13 +608,20 @@ impl Pairs {
     /// only, the sleeping ones near them.
     fn find(&mut self, bodies: &mut [&mut Ragdoll], awake: usize) {
         self.touches.clear();
+        let mut scratch = std::mem::take(&mut self.scratch);
+        self.find_with(bodies, awake, &mut scratch);
+        self.scratch = scratch;
+    }
+
+    fn find_with(&mut self, bodies: &mut [&mut Ragdoll], awake: usize, s: &mut Scratch) {
+        let found = &mut s.found;
+        found.clear();
         // Awake parts first, body by body, then (all, or those in the cells
         // around them) the sleeping parts.
-        let mut found: Vec<(usize, usize, (i32, i32))> = Vec::new();
         for (b, body) in bodies[..awake].iter().enumerate() {
             for (k, p) in body.parts.iter().enumerate() {
                 if meets(p) {
-                    found.push((b, k, cell_of(bound_centre(p))));
+                    found.push(Seen::of(b, k, p));
                 }
             }
         }
@@ -571,32 +629,29 @@ impl Pairs {
         if movers == 0 {
             return;
         }
-        match self.phase {
-            BroadPhase::AllPairs => {
-                for (b, body) in bodies.iter().enumerate().skip(awake) {
-                    for (k, p) in body.parts.iter().enumerate() {
-                        if meets(p) {
-                            found.push((b, k, cell_of(bound_centre(p))));
-                        }
+        if self.phase == BroadPhase::AllPairs {
+            for (b, body) in bodies.iter().enumerate().skip(awake) {
+                for (k, p) in body.parts.iter().enumerate() {
+                    if meets(p) {
+                        found.push(Seen::of(b, k, p));
                     }
                 }
-                let _span = bevy::log::info_span!("pairs: meet all").entered();
-                for x in 0..movers {
-                    for y in x + 1..found.len() {
-                        let (bx, px, _) = found[x];
-                        let (by, py, _) = found[y];
-                        self.meet(bodies, (bx, px), (by, py));
-                    }
-                }
-                return;
             }
-            BroadPhase::Cells => {}
+            let _span = bevy::log::info_span!("pairs: meet all").entered();
+            for x in 0..movers {
+                for y in x + 1..found.len() {
+                    self.meet(bodies, found, x, y, true);
+                }
+            }
+            return;
         }
-        let mut near: HashSet<(i32, i32)> = HashSet::new();
-        for &(_, _, (x, z)) in &found {
+        let near = &mut s.near;
+        near.clear();
+        for seen in found.iter() {
+            let (x, z) = seen.cell;
             for dx in -1..=1 {
                 for dz in -1..=1 {
-                    near.insert((x + dx, z + dz));
+                    near.insert((x.wrapping_add(dx), z.wrapping_add(dz)));
                 }
             }
         }
@@ -606,78 +661,116 @@ impl Pairs {
                 if !meets(p) {
                     continue;
                 }
-                let cell = cell_of(bound_centre(p));
-                if near.contains(&cell) {
-                    found.push((b, k, cell));
+                let seen = Seen::of(b, k, p);
+                if near.contains(&seen.cell) {
+                    found.push(seen);
                 }
             }
         }
         drop(span);
         let _span = bevy::log::info_span!("pairs: meet").entered();
-        let mut grid = sector::CellGrid::new();
-        for (i, &(_, _, cell)) in found.iter().enumerate() {
-            grid.insert(cell, i);
+        let grid = &mut s.grid;
+        grid.clear();
+        for (i, seen) in found.iter().enumerate() {
+            grid.insert(seen.cell, i);
         }
         // Each awake part in turn meets the parts of its 3 × 3 cells it has
         // not met yet: every pair once.
-        let mut met = vec![false; found.len()];
-        let mut others = Vec::new();
+        let met = &mut s.met;
+        met.clear();
+        met.resize(found.len(), false);
+        let others = &mut s.others;
         for x in 0..movers {
             met[x] = true;
             others.clear();
-            for (_, list) in grid.near(found[x].2) {
+            for (_, list) in grid.near(found[x].cell) {
                 others.extend(list.iter().copied().filter(|&y| !met[y]));
             }
             others.sort_unstable();
-            for &y in &others {
-                let (bx, px, _) = found[x];
-                let (by, py, _) = found[y];
-                self.meet(bodies, (bx, px), (by, py));
+            for &y in others.iter() {
+                self.meet(bodies, found, x, y, false);
             }
         }
     }
 
-    /// Two parts that may touch: the group or layer rule, the awake part's
-    /// sphere against the other's mesh sphere, then the original's two-way
-    /// box meet test, and contacts with the more mobile one's spheres (on a
-    /// tie, the first part's).
-    fn meet(&mut self, bodies: &mut [&mut Ragdoll], x: (usize, usize), y: (usize, usize)) {
-        let (px, py) = (&bodies[x.0].parts[x.1], &bodies[y.0].parts[y.1]);
-        let skip =
-            if x.0 == y.0 && root_of(&bodies[x.0].parts, x.1) == root_of(&bodies[y.0].parts, y.1) {
-                px.pairing.group & py.pairing.group != 0
-            } else {
-                layers_apart(px.pairing.layer, py.pairing.layer)
-            };
+    /// Two found parts that may touch: the group or layer rule; the first
+    /// part's sphere against the second's mesh sphere (touching counts);
+    /// in the all-pairs walk, also each part's sphere centre within its
+    /// own sphere radius of the other's mesh box; then the original's
+    /// two-way box meet test, and contacts with the more mobile one's
+    /// spheres (on a tie, the first part's).
+    fn meet(
+        &mut self,
+        bodies: &mut [&mut Ragdoll],
+        found: &mut [Seen],
+        x: usize,
+        y: usize,
+        all_pairs: bool,
+    ) {
+        let (sx, sy) = (found[x], found[y]);
+        let (px, py) = (
+            &bodies[sx.body].parts[sx.part],
+            &bodies[sy.body].parts[sy.part],
+        );
+        let skip = if sx.body == sy.body
+            && root_of(&bodies[sx.body].parts, sx.part) == root_of(&bodies[sy.body].parts, sy.part)
+        {
+            px.pairing.group & py.pairing.group != 0
+        } else {
+            layers_apart(px.pairing.layer, py.pairing.layer)
+        };
         if skip {
             return;
         }
-        // The broad phase's first look: the first part's sphere against
-        // the second's mesh sphere, as the original walks the pair.
-        let reach = px.pairing.sphere.radius + py.pairing.mesh.radius;
-        let d2 = bound_centre(px).distance_squared(mesh_centre(py));
-        if d2.is_nan() || d2 >= reach * reach {
+        if intersect::spheres_separated(
+            sx.sphere,
+            px.pairing.sphere.radius,
+            sy.mesh,
+            py.pairing.mesh.radius,
+        ) {
             return;
+        }
+        if all_pairs {
+            // A NaN distance lets the pair through, as the unordered
+            // compare does.
+            let rx = px.pairing.sphere.radius;
+            if sector::mesh_box_distance2(sx.sphere, &py.pairing.mesh, &sy.now) >= rx * rx {
+                return;
+            }
+            let ry = py.pairing.sphere.radius;
+            if sector::mesh_box_distance2(sy.sphere, &px.pairing.mesh, &sx.now) >= ry * ry {
+                return;
+            }
         }
         let (a, b) = if py.pairing.key() < px.pairing.key() {
             (y, x)
         } else {
             (x, y)
         };
+        let (sa, sb) = (found[a], found[b]);
         if !sector::meet(
-            &meeting(&bodies[a.0].parts[a.1]),
-            &meeting(&bodies[b.0].parts[b.1]),
+            &meeting(&bodies[sa.body].parts[sa.part], &sa),
+            &meeting(&bodies[sb.body].parts[sb.part], &sb),
         ) {
             return;
         }
-        self.generate(bodies, a, b);
+        if self.generate(bodies, (sa.body, sa.part), (sb.body, sb.part)) {
+            found[a].refresh(&bodies[sa.body].parts[sa.part]);
+            found[b].refresh(&bodies[sb.body].parts[sb.part]);
+        }
     }
 
     /// Contacts of A's spheres against B's, each sphere in turn: every hit
     /// pushes the two at once and is offered to the pair's points; a pair
     /// with any hit is kept, its touch noted, and the two bodies' sleep
-    /// countdowns equalised.
-    fn generate(&mut self, bodies: &mut [&mut Ragdoll], a: (usize, usize), b: (usize, usize)) {
+    /// countdowns equalised. True when the pair had hits (only a hit moves
+    /// the two parts).
+    fn generate(
+        &mut self,
+        bodies: &mut [&mut Ragdoll],
+        a: (usize, usize),
+        b: (usize, usize),
+    ) -> bool {
         let side = |bodies: &[&mut Ragdoll], (body, part): (usize, usize)| Side {
             key: body_key(bodies[body]),
             body,
@@ -700,12 +793,12 @@ impl Pairs {
         };
         {
             let Some((pa, pb)) = parts_mut(bodies, a, b) else {
-                return;
+                return false;
             };
             collide(pa, pb, &mut pair, &mut touch);
         }
         if touch.hits == 0 {
-            return;
+            return false;
         }
         touch.point /= touch.hits as f32;
         self.pairs.push(pair);
@@ -713,6 +806,7 @@ impl Pairs {
         if let Some((ra, rb)) = bodies_mut(bodies, a.0, b.0) {
             equalise_sleep(ra, rb);
         }
+        true
     }
 
     /// One pass of the pair friction over the pairs found this tick.
