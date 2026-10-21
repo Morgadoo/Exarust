@@ -80,18 +80,19 @@ impl KeyTrack {
     /// `t` back to the key before it is the cubic Hermite curve with
     /// tangents from the neighbouring keys, each scaled by the share of its
     /// own key span the segment takes. The first segment leaves its key
-    /// with no slope, the last arrives along its own chord. A NaN time
-    /// takes the first key, as the original's unordered comparison does.
+    /// with no slope, the last arrives along its own chord. `None` for no
+    /// keys or a time no key brackets (a NaN time), which leaves the node
+    /// as it is: the original's compares jump past on an unordered result.
     pub fn position_at(&self, t: f32) -> Option<[f32; 3]> {
         let keys = &self.keys;
         let first = keys.first()?.position;
         let last = keys.len().checked_sub(1)?;
-        let at_or_after_first = keys[0].time <= t;
-        if !at_or_after_first || t == keys[0].time {
+        // Every compare is ordered: a NaN time passes both ends and
+        // brackets no key, so the node stays as it is.
+        if t <= keys[0].time {
             return Some(first);
         }
-        let before_last = t < keys[last].time;
-        if !before_last {
+        if t >= keys[last].time {
             return Some(keys[last].position);
         }
         let i = (1..=last).find(|&i| t <= keys[i].time)?;
@@ -123,17 +124,17 @@ impl KeyTrack {
     /// position up to its time, the last key's from its time on, and in
     /// between the straight line between the bracketing keys. This is the
     /// original's other keyframe controller, which no stored chunk builds.
-    /// A NaN time takes the first key, as the original does.
+    /// `None` for no keys or a NaN time, which leaves the node as it is.
     pub fn linear_position_at(&self, t: f32) -> Option<[f32; 3]> {
         let keys = &self.keys;
         let first = keys.first()?.position;
         let last = keys.len().checked_sub(1)?;
-        let at_or_after_first = keys[0].time <= t;
-        if !at_or_after_first || t == keys[0].time {
+        // Every compare is ordered: a NaN time passes both ends and
+        // brackets no key, so the node stays as it is.
+        if t <= keys[0].time {
             return Some(first);
         }
-        let before_last = t < keys[last].time;
-        if !before_last {
+        if t >= keys[last].time {
             return Some(keys[last].position);
         }
         let i = (1..=last).find(|&i| t <= keys[i].time)?;
@@ -280,8 +281,8 @@ mod tests {
         let second = t.position_at(2.0).unwrap();
         assert!((second[0] - 6.25).abs() < 1e-6, "{second:?}");
         assert!((second[2] - 9.166_667).abs() < 1e-6, "{second:?}");
-        // A NaN time takes the first key, as the unordered compare does.
-        assert_eq!(t.position_at(f32::NAN), Some([0.0, 0.0, 0.0]));
+        // A NaN time brackets no key: the node stays as it is.
+        assert_eq!(t.position_at(f32::NAN), None);
         assert_eq!(t.position_at(-1.0), Some([0.0, 0.0, 0.0]));
     }
 
@@ -291,7 +292,7 @@ mod tests {
         assert_eq!(t.linear_position_at(0.5), Some([5.0, 0.0, 0.0]));
         assert_eq!(t.linear_position_at(2.0), Some([5.0, 0.0, 10.0]));
         assert_eq!(t.linear_position_at(1.0), Some([10.0, 0.0, 0.0]));
-        assert_eq!(t.linear_position_at(f32::NAN), Some([0.0, 0.0, 0.0]));
+        assert_eq!(t.linear_position_at(f32::NAN), None);
         let one = KeyTrack {
             mode: PlayMode::Free,
             duration: 2.0,

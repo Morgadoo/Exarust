@@ -426,34 +426,50 @@ pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
     Some((rotations, root))
 }
 
+/// The engine's quick arccosine: a polynomial for the non-negative side
+/// (a NaN takes it), and for a negative argument the same polynomial
+/// folded from π, subtracted in double precision.
+pub fn quick_acos(x: f32) -> f32 {
+    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
+    if x < 0.0 {
+        let p = x * x * 0.0535 + (x * 0.2075 + HALF_PI);
+        (std::f64::consts::PI - f64::from(p * (1.0 + x).sqrt())) as f32
+    } else {
+        (x * x * 0.0535 + (HALF_PI - x * 0.2075)) * (1.0 - x).sqrt()
+    }
+}
+
 /// The original's quaternion slerp, shortest way round: the weight of the
 /// end is `t`, of the start `1 − t`.
 ///
-/// The dot product decides the sign: with a negative dot the end is
-/// negated and its dot made positive. When `1 − dot` is at most 1.19e-7
-/// the two rotations are taken as equal and the weights are the plain
-/// `t` and `1 − t`; otherwise the angle is `acos(dot)` and the weights are
-/// `sin(t·angle)` and `sin((1 − t)·angle)` over `sin(angle)`. The sum is
-/// `w_end · end + w_start · start` per component. The original uses its
-/// own sine and arc-cosine helpers; Exarust's `sin`/`acos` stand in.
-/// Called by the clip samplers of the body's motion controller.
+/// The dot product is summed x, y, z, then w. Only a negative dot (not a
+/// NaN) negates the end (each component taken from zero) and the dot. When
+/// `1 − dot` is at most 1.19209e-7 (the float just under 2⁻²³), or not a
+/// number, the two rotations are taken as equal and the weights are the
+/// plain `t` and `1 − t`; otherwise the angle is the engine's quick
+/// arccosine of the dot and the weights are `sin((1 − t)·angle)` and
+/// `sin(t·angle)` over `sin(angle)`, with the engine's fast sine
+/// ([`exa_assets::polyhedra::fast_sin`]). The sum is `w_end · end +
+/// w_start · start` per component.
 pub fn slerp(a: Quat, b: Quat, t: f32) -> Quat {
-    let mut dot = b.w * a.w + b.z * a.z + b.y * a.y + b.x * a.x;
-    let end = if 0.0 <= dot {
-        b
-    } else {
+    const NEARLY_EQUAL: f32 = f32::from_bits(0x33ff_ffd7);
+    use exa_assets::polyhedra::fast_sin;
+    let mut dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    let end = if dot < 0.0 {
         dot = -dot;
-        Quat::from_xyzw(-b.x, -b.y, -b.z, -b.w)
-    };
-    let (w_start, w_end) = if 1.0 - dot <= 1.192_09e-7 {
-        (1.0 - t, t)
+        Quat::from_xyzw(0.0 - b.x, 0.0 - b.y, 0.0 - b.z, 0.0 - b.w)
     } else {
-        let angle = dot.acos();
-        let sin_angle = angle.sin();
+        b
+    };
+    let (w_start, w_end) = if 1.0 - dot > NEARLY_EQUAL {
+        let angle = quick_acos(dot);
+        let sin_angle = fast_sin(angle);
         (
-            ((1.0 - t) * angle).sin() / sin_angle,
-            (t * angle).sin() / sin_angle,
+            fast_sin((1.0 - t) * angle) / sin_angle,
+            fast_sin(t * angle) / sin_angle,
         )
+    } else {
+        (1.0 - t, t)
     };
     Quat::from_xyzw(
         w_end * end.x + w_start * a.x,
@@ -579,27 +595,50 @@ mod tests {
         assert!(motions.table("Other", MovesetConfig::NONE).is_none());
     }
 
-    /// The shortest-way slerp: half way from no turn to +90° about Y is
-    /// +45° (axis y = sin 22.5°), and to −90° it is −45°; the ends are
-    /// returned at 0 and 1, and two rotations closer than 1.19e-7 in dot
-    /// product are blended linearly.
+    /// The shortest-way slerp. Half way from no turn to +90° about Y is
+    /// +45° within the quick arccosine's error (2e-4 rad here), and to −90°
+    /// it is −45°; the ends come back exactly at 0 and 1 (a zero or a unit
+    /// weight over the same sine); a negative dot takes the other way round
+    /// (the result of the negated end); and two rotations whose `1 − dot`
+    /// is under 1.19e-7 blend linearly.
     #[test]
     fn slerp_takes_the_shortest_way() {
         let a = Quat::IDENTITY;
         let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
         let half = slerp(a, quarter, 0.5);
         let want = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 / 2.0);
-        assert!(half.dot(want).abs() > 1.0 - 1e-6, "{half:?}");
+        assert!(half.dot(want).abs() > 1.0 - 1e-5, "{half:?}");
         let back = slerp(a, Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2), 0.5);
         let want = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2 / 2.0);
-        assert!(back.dot(want).abs() > 1.0 - 1e-6, "{back:?}");
-        assert!(slerp(a, quarter, 0.0).dot(a).abs() > 1.0 - 1e-6);
-        assert!(slerp(a, quarter, 1.0).dot(quarter).abs() > 1.0 - 1e-6);
+        assert!(back.dot(want).abs() > 1.0 - 1e-5, "{back:?}");
+        assert_eq!(slerp(a, quarter, 0.0), a);
+        assert_eq!(slerp(a, quarter, 1.0), quarter);
+        // The same rotation as a negated quaternion: the other half of the
+        // double cover is flipped back, so the result is the same.
+        let negated = Quat::from_xyzw(-quarter.x, -quarter.y, -quarter.z, -quarter.w);
+        assert_eq!(slerp(a, negated, 0.5), half);
         // 1 − dot below 1.19e-7: a plain weighted sum.
         let close = Quat::from_rotation_y(1e-8);
         let blended = slerp(a, close, 0.25);
         assert_eq!(blended.w, 0.75 + 0.25 * close.w);
         assert_eq!(blended.y, 0.25 * close.y);
+        // A NaN dot is not negated and is taken as equal rotations.
+        let nan = Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0);
+        let mixed = slerp(a, nan, 0.25);
+        assert!(mixed.x.is_nan());
+        assert_eq!(mixed.w, 0.75 + 0.25);
+    }
+
+    /// The quick arccosine at the ends and the middle (the polynomial's
+    /// own values, hand-worked: 0.0535/4 + (π/2 − 0.2075/2) times √0.5).
+    #[test]
+    fn the_quick_arccosine_is_the_engines_polynomial() {
+        assert_eq!(quick_acos(1.0), 0.0);
+        assert_eq!(quick_acos(0.0), f32::from_bits(0x3fc9_0fdb));
+        assert_eq!(quick_acos(-1.0), std::f64::consts::PI as f32);
+        let half = quick_acos(0.5);
+        assert!((half - 1.047_198).abs() < 1.5e-3, "{half}");
+        assert!(quick_acos(f32::NAN).is_nan());
     }
 
     fn key(time: f32, angle: f32, y: f32) -> Key {

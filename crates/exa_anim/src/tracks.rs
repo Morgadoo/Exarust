@@ -101,7 +101,18 @@ pub fn clock(mode: PlayMode, duration: f32, elapsed: f32) -> (f32, bool) {
             if t <= 0.0 { (0.0, false) } else { (t, true) }
         }
         PlayMode::Loop if duration == 0.0 => (elapsed, true),
-        PlayMode::Loop => (elapsed % duration, true),
+        PlayMode::Loop => {
+            // The original truncates the quotient to a 64-bit integer (a
+            // NaN or an out-of-range quotient gives the smallest one) and
+            // subtracts its product with the duration: not a float modulo.
+            let quotient = elapsed / duration;
+            let whole = if quotient.is_nan() || quotient.abs() >= 9.223_372e18 {
+                i64::MIN
+            } else {
+                quotient as i64
+            };
+            (elapsed - whole as f32 * duration, true)
+        }
     }
 }
 
@@ -246,14 +257,14 @@ mod tests {
     }
 
     /// Outside the keys the curve holds the first and the last position;
-    /// a NaN time takes the first key, as the original's unordered compare
-    /// does; keys out of order bracket by the first key at or past the time.
+    /// a NaN time leaves the node as it is; keys out of order bracket by
+    /// the first key at or past the time.
     #[test]
     fn curve_clamps_outside_the_keys() {
         let mut b = brick();
         b.keys[3].position = [1.0, 2.0, 3.0];
         assert_eq!(position_at(&b, -1.0), Some(Vec3::ZERO));
-        assert_eq!(position_at(&b, f32::NAN), Some(Vec3::ZERO));
+        assert_eq!(position_at(&b, f32::NAN), None);
         assert_eq!(position_at(&b, 3.0), Some(Vec3::new(1.0, 2.0, 3.0)));
         assert_eq!(position_at(&b, 9.0), Some(Vec3::new(1.0, 2.0, 3.0)));
         let one = KeyTrack {

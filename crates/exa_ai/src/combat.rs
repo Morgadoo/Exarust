@@ -138,15 +138,7 @@ pub fn gap(a: f32, b: f32) -> f32 {
     wrap(a - b)
 }
 
-/// The engine's quick arccosine.
-pub fn quick_acos(x: f32) -> f32 {
-    if x < 0.0 {
-        let p = x * x * 0.0535 + (x * 0.2075 + HALF_PI);
-        (std::f64::consts::PI - f64::from(p * (1.0 + x).sqrt())) as f32
-    } else {
-        (x * x * 0.0535 + (HALF_PI - x * 0.2075)) * (1.0 - x).sqrt()
-    }
-}
+pub use exa_anim::quick_acos;
 
 /// The yaw of a direction (x, z), 0 along +z, positive toward +x.
 pub fn yaw(v: Vec3) -> f32 {
