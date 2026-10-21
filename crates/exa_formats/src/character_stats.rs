@@ -307,6 +307,14 @@ impl CharacterStats {
         weapon_record::step_reach(self.scale, self.feral, encumbrance) / CM
     }
 
+    /// The attack reach (`+0xfd0`), cm: √scale times 1 − 0.3·age (the
+    /// record's age, omitted when it is negative) times 1 − 0.2·encumbrance
+    /// times 80. A human of scale 1, age 0 and no armour reaches 80 cm.
+    pub fn attack_reach(&self, age: f32) -> f32 {
+        let aged = if age >= 0.0 { 1.0 - age * 0.3 } else { 1.0 };
+        self.scale.sqrt() * aged * (1.0 - self.encumbrance * 0.2) * 80.0
+    }
+
     /// What the character brings to the weapons it holds: its size, its
     /// scale and its encumbrance. No worn item makes its weapons weightless
     /// yet (the shield-lightening gauntlets, unpowered in every shipped

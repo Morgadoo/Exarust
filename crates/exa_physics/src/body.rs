@@ -47,7 +47,7 @@ pub use muscle::{Bearing, BodyStats, RaceMuscles};
 
 #[path = "body_balance.rs"]
 mod balance;
-pub use balance::{Balance, Leg};
+pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
 #[path = "body_feet.rs"]

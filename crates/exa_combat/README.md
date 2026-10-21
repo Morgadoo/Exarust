@@ -147,7 +147,21 @@ walking, 2 attacking, 8 combat idle, 0x20 casting, 0xC0 shocked, 0x100
 weak, 0x200 down, 0x300 getting up, 0x600 dormant, 0x800 collapsing, 0xA00
 dead, 0x8000 kicking, 0x10000/0x10004 switching weapons) and the masks its
 readers test (`helpless` 0xAC0, `fallen_or_dying` 0xA00, `off_feet` 0x200,
-`dying` 0x800, `busy` 0x10203). Each living character's posture stage
+`dying` 0x800, `busy` 0x10203). A knock-out (`condition::KnockOut`, `condition::wake`) holds a body down
+until its wake clock: down, tone and stance 0, readiness 0.4; after 1.5 s
+the tone rises 0.001 a tick (×(1 + (1 − clock)²) while getting up); after
+8 s the readiness rises 0.01 a tick to 1, when the tone and stance return,
+the wake bits clear and a dormant body announces "Awaken". A held body
+(flag 0x40) keeps its bits. The status-effect pass
+(`condition::update_statuses`) updates only the owner's effects on phase
+0, notices those whose update returns bit 4 and removes those returning
+bit 2 by swapping the last entry in. The reset facing
+(`exa_physics::body::balance::reset_heading`) is the chest over the pelvis,
+flattened and normalised. The attack reach
+(`CharacterStats::attack_reach`) is √scale × (1 − 0.3 age, omitted when
+negative) × (1 − 0.2 encumbrance) × 80 cm.
+
+Each living character's posture stage
 (`track_condition` in `exa_physics::body::CharacterStage::Posture`, after
 the daze's stance) writes it once a tick: the daze's writer, then
 `posture`, the original's decision from the

@@ -704,3 +704,14 @@ fn a_sphere_drops_onto_a_triangle_where_it_first_touches() {
     }
     assert!(hits > 300 && misses > 300, "{hits} hits, {misses} misses");
 }
+
+/// A reset facing is the chest over the pelvis, flattened: a sloped
+/// direction keeps only its horizontal part; a vertical one is zero.
+#[test]
+fn the_reset_heading() {
+    let h = super::reset_heading(Vec3::new(3.0, 2.0, 4.0), Vec3::new(0.0, 1.0, 0.0));
+    assert!((h - Vec2::new(0.6, 0.8)).length() < 1e-6);
+    let h = super::reset_heading(Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+    assert_eq!(h, Vec2::ZERO);
+    assert_eq!(super::reset_heading(Vec3::ZERO, Vec3::ZERO), Vec2::ZERO);
+}

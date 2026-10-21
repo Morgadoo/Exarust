@@ -1030,11 +1030,20 @@ stage, after the daze's stance; every `Fighter` keeps the word):
 - the health bookkeeping, in the attack stage after the posture stage,
   holds yellow regeneration while the word is 2 or Cmbt - Idle plays, and
   skips it for the dead ([OTHER.md](OTHER.md), Regeneration);
-- not yet: the kick, weapon switch and powers, knock-outs, dormancy,
-  shocks (nothing lowers tone yet), the collision layer the original
-  restores on leaving a state of 0x100 or more; Exarust's backpedal and
-  combat walk stand in for the walk played backwards and the footwork, so
-  they give 0.
+- the knock-out and wake rules (`condition::KnockOut`, `condition::wake`)
+  are modelled: down with tone, stance 0 and readiness 0.4, the tone
+  rising 0.001 a tick after 1.5 s (plus `(1 − clock)²·0.001` getting up),
+  the readiness 0.01 a tick after 8 s to 1, then the tone and stance back
+  and the wake bits cleared; a held body (0x40) keeps its bits. Nothing
+  starts a knock-out yet. The status-effect pass
+  (`condition::update_statuses`) is the original's list protocol; no
+  effect class exists to put in it. The body's reset facing is
+  `exa_physics::body::reset_heading` (the chest over the pelvis,
+  flattened).
+- not yet: the kick, weapon switch and powers, dormancy, shocks (nothing
+  lowers tone yet), the collision layer the original restores on leaving a
+  state of 0x100 or more; Exarust's backpedal and combat walk stand in for
+  the walk played backwards and the footwork, so they give 0.
 - `--shove 60 play arena`: 0 in Idle, in the daze's Defence stance and in
   Rebalance while it falls, `0x200` from balance 0.26 on, `0x300` at the
   get-up's start, 0 when `Get Up 2` ends into Idle.

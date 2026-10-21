@@ -941,6 +941,21 @@ fn end_step(
     }
 }
 
+/// The heading a reset takes from the chest over the pelvis
+/// (`0x100162af0`): the chest minus the pelvis, normalised, flattened and
+/// normalised again; zero when the two coincide (or the direction is
+/// vertical). The original then stores it as the body's facing with no
+/// pitch.
+pub fn reset_heading(chest: Vec3, pelvis: Vec3) -> Vec2 {
+    let d = chest - pelvis;
+    let len = d.length();
+    if len <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let n = d / len;
+    Vec2::new(n.x, n.z).normalize_or_zero()
+}
+
 #[cfg(test)]
 #[path = "body_balance_test.rs"]
 mod tests;

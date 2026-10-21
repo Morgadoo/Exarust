@@ -581,3 +581,30 @@ fn shipped_arena_actors() {
             .all(|(_, _, s)| s.rules.0 == BodyRules::TAKES_REMEDIES)
     );
 }
+
+/// The attack reach (`+0xfd0`): √scale × (1 − 0.3 age, omitted when the
+/// age is negative) × (1 − 0.2 encumbrance) × 80 cm.
+#[test]
+fn the_attack_reach() {
+    let human = CharacterStats::default();
+    assert!((human.attack_reach(0.0) - 80.0).abs() < 1e-6);
+    assert!((human.attack_reach(0.5) - 68.0).abs() < 1e-6);
+    assert!((human.attack_reach(-1.0) - 80.0).abs() < 1e-6);
+    let armoured = CharacterStats {
+        encumbrance: 0.5,
+        ..CharacterStats::default()
+    };
+    assert!((armoured.attack_reach(0.0) - 72.0).abs() < 1e-6);
+    let big = CharacterStats {
+        scale: 4.0,
+        ..CharacterStats::default()
+    };
+    assert!((big.attack_reach(0.0) - 160.0).abs() < 1e-6);
+    let both = CharacterStats {
+        scale: 2.25,
+        encumbrance: 0.25,
+        ..CharacterStats::default()
+    };
+    // 1.5 × 1 × 0.95 × 80.
+    assert!((both.attack_reach(0.0) - 114.0).abs() < 1e-5);
+}
