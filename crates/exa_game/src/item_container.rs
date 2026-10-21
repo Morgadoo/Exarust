@@ -411,13 +411,18 @@ pub struct Drag {
     pub objid: u32,
     pub objflags: u32,
     pub icon: u32,
-    /// The model record's body byte at `+0x1c` (the item's size), if any.
+    /// The item's bulk byte from its model record, if it has one.
     pub bulk: u8,
     pub model_found: bool,
 }
 
-/// The container's accept test, without callbacks. `own_icon` reports
-/// whether one of this container's entries carries the drag's icon.
+/// The container's accept test, without callbacks: the payload's flags miss
+/// the reject mask, the item is not the container itself and has a model
+/// record, its bulk is within the item limit, it fits the capacity unless
+/// it comes from the linked panel or this one, and its flags match the
+/// required bits. A panel that takes only its own items also needs
+/// `own_icon` to report an entry still marked dragged with the payload's
+/// icon.
 pub fn accepts<F>(a: &Accept, d: &Drag, mut own_icon: F) -> bool
 where
     F: FnMut(u32) -> bool,
@@ -705,9 +710,11 @@ pub enum MouseIntent {
     Card,
 }
 
-/// The original's mouse-down decision for the panel. `button` is the event's
-/// bit field: 0x2 right, 0x4000 drag start, 0x8000 use/open, 0x2000 card.
-/// `hit` is the 1-based hover index minus one (None for 0 or −1).
+/// The original's mouse decision for the panel. `button` is the event's bit
+/// field: bit 0x2 goes to the base form, and nothing else happens without
+/// bit 0x1; then 0x4000 starts a drag, 0x8000 uses the item (a container
+/// the use does not take opens instead) and 0x2000 shows its card. `hit`
+/// is the 1-based hover index minus one (None for 0 or −1).
 pub fn mouse_intent(
     button: u16,
     hit: Option<usize>,
@@ -715,7 +722,7 @@ pub fn mouse_intent(
     is_container: bool,
     cell: i32,
 ) -> MouseIntent {
-    if button & 0x2 != 0 {
+    if button & 0x2 != 0 || button & 0x1 == 0 {
         return MouseIntent::None;
     }
     if button & 0x4000 != 0 {
@@ -795,29 +802,34 @@ mod mouse_tests {
             MouseIntent::None
         );
         assert_eq!(
-            mouse_intent(0x4000, Some(1), true, false, 160),
+            mouse_intent(0x4001, Some(1), true, false, 160),
             MouseIntent::StartDrag {
                 grab: Cell::new(80, 80)
             }
         );
         assert_eq!(
-            mouse_intent(0x4000, Some(1), false, false, 160),
+            mouse_intent(0x4001, Some(1), false, false, 160),
             MouseIntent::None
         );
         assert_eq!(
-            mouse_intent(0x8000, Some(1), true, true, 160),
+            mouse_intent(0x8001, Some(1), true, true, 160),
             MouseIntent::Open
         );
         assert_eq!(
-            mouse_intent(0x8000, Some(1), true, false, 160),
+            mouse_intent(0x8001, Some(1), true, false, 160),
             MouseIntent::Use
         );
         assert_eq!(
-            mouse_intent(0x2000, Some(0), true, false, 160),
+            mouse_intent(0x2001, Some(0), true, false, 160),
             MouseIntent::Card
         );
         assert_eq!(
             mouse_intent(0x1, Some(0), true, false, 160),
+            MouseIntent::None
+        );
+        // Without the press bit nothing happens.
+        assert_eq!(
+            mouse_intent(0x4000, Some(1), true, false, 160),
             MouseIntent::None
         );
         assert_eq!(drag_grab(160), Cell::new(80, 80));
@@ -965,20 +977,6 @@ pub fn hold_dragged(entries: &mut [Entry]) -> Option<usize> {
             Some(i)
         }
         None => entries.len().checked_sub(1),
-    }
-}
-
-/// Removes the held entry with icon slot `icon`; false when there is none.
-pub fn remove_held_icon(entries: &mut Vec<Entry>, icon: usize) -> bool {
-    match entries
-        .iter()
-        .position(|e| e.icon == icon && e.flags & HELD != 0)
-    {
-        Some(i) => {
-            entries.remove(i);
-            true
-        }
-        None => false,
     }
 }
 
@@ -1334,9 +1332,11 @@ impl Container {
         }
     }
 
-    /// The accept test of this panel. `own_icon` reports whether an entry
-    /// carries the dragged icon.
-    pub fn accept(&self, drag: &Drag, own_icon: impl FnMut(u32) -> bool) -> bool {
+    /// The accept test of this panel. `panel` is this panel's id in the
+    /// numbering of the drag's source and of [`Container::linked`]; a
+    /// panel that takes only its own items needs an entry still marked
+    /// dragged with the payload's icon.
+    pub fn accept(&self, drag: &Drag, panel: u32) -> bool {
         accepts(
             &Accept {
                 capacity: self.capacity,
@@ -1348,11 +1348,33 @@ impl Container {
                 only_own: self.only_own,
                 container_id: self.container_id,
                 linked: self.linked,
-                this: 0,
+                this: panel,
             },
             drag,
-            own_icon,
+            |icon| {
+                self.entries
+                    .iter()
+                    .any(|e| e.drag & 1 != 0 && e.icon == icon as usize)
+            },
         )
+    }
+
+    /// Removes the held entry with icon slot `icon` and its bulk (the
+    /// item's bulk, `bulk`), as the panel's ordinary removal does; false
+    /// when no entry with that icon is marked held.
+    pub fn remove_held_icon(&mut self, icon: usize, bulk: impl FnOnce(u32) -> i32) -> bool {
+        match self
+            .entries
+            .iter()
+            .position(|e| e.icon == icon && e.flags & HELD != 0)
+        {
+            Some(at) => {
+                let id = self.entries[at].id;
+                self.remove_at(at, bulk(id));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Adds an item at the panel's centre. An item with no icon is refused
@@ -1512,13 +1534,24 @@ impl Container {
         }
     }
 
-    /// A drop of a dragged entry or a new item. `src` is the panel the drag
-    /// came from, `linked` says it is this panel's linked one. A drop from
-    /// this panel or its linked one only moves the dragged entry; any other
-    /// adds it unless this panel is already showing it as held. The item
-    /// id 499 (the AR crystal) fires the game's function 2 with the
-    /// container's id, or function 3 for a character-owned panel.
-    pub fn drop_entry(&mut self, drag: DropDrag, grab: Cell, cursor: Cell) -> Option<DropResult> {
+    /// A drop of a dragged entry or a new item, at the cursor less the
+    /// grab. A drop from the linked panel shows its held entry of the same
+    /// item again; a drop from this panel moves the entry still marked
+    /// dragged with the payload's icon. Either entry is raised to the top.
+    /// Otherwise the item is appended with the payload's flags, adding its
+    /// bulk unless it came from the linked panel, and the AR crystal (item
+    /// 499) fires the game's function 2 with the container's id, or
+    /// function 3 for a pack (no container) that has an owner. The entry is
+    /// then kept inside the panel by `half`, its icon's half extents
+    /// (right, left, top, then bottom). A payload without an icon appends
+    /// nothing.
+    pub fn drop_entry(
+        &mut self,
+        drag: DropDrag,
+        grab: Cell,
+        cursor: Cell,
+        half: (i32, i32),
+    ) -> Option<DropResult> {
         let DropDrag {
             same_panel,
             linked,
@@ -1527,76 +1560,87 @@ impl Container {
             flags,
             bulk,
         } = drag;
+        let at_cursor = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
         let mut index = None;
-        if same_panel
-            && let Some(at) = self
-                .entries
-                .iter()
-                .position(|e| e.drag & 1 != 0 && e.id == id)
-        {
-            self.entries[at].drag = 0;
-            self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
-            index = Some(at);
-        } else if linked
+        if linked
             && let Some(at) = self
                 .entries
                 .iter()
                 .position(|e| e.id == id && e.flags & HELD != 0)
         {
             self.entries[at].flags &= !HELD;
-            self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
+            self.entries[at].cell = at_cursor;
+            index = Some(at);
+        }
+        if same_panel
+            && let Some(at) = self
+                .entries
+                .iter()
+                .position(|e| e.drag & 1 != 0 && e.icon == icon)
+        {
+            self.entries[at].drag = 0;
+            self.entries[at].cell = at_cursor;
             index = Some(at);
         }
         let mut added = None;
+        let mut fired = None;
         let index = match index {
-            Some(at) => at,
+            Some(at) => raise(&mut self.entries, at)?,
             None => {
+                if icon == 0 {
+                    return None;
+                }
                 self.entries.push(Entry {
-                    cell: Cell::new(cursor.x - grab.x, cursor.y - grab.y),
+                    cell: at_cursor,
                     id,
                     icon,
                     flags,
                     drag: 0,
                 });
-                self.used += bulk;
+                if !linked {
+                    self.used += bulk;
+                }
                 added = Some(id);
+                if id == 499 {
+                    fired = if self.container_id != 0 {
+                        Some((2, self.container_id))
+                    } else {
+                        self.owner.map(|_| (3, 0))
+                    };
+                }
                 self.entries.len() - 1
             }
         };
-        let index = raise(&mut self.entries, index)?;
-        if let Some(entry) = self.entries.get_mut(index) {
-            clamp_entry(
-                &mut entry.cell,
-                (self.icon_size >> 1, self.icon_size >> 1),
-                self.icon_size,
-                self.client.0,
-                self.client.1,
-            );
+        let h = self.icon_size >> 1;
+        let (width, height) = self.client;
+        let cell = &mut self.entries[index].cell;
+        if width < half.0 + cell.x + h {
+            cell.x = width - half.0 - h;
         }
-        let fired = added.and_then(|_| {
-            (id == 499).then(|| {
-                if self.container_id == 0 {
-                    if self.owner.is_some() { (3, 0) } else { (0, 0) }
-                } else {
-                    (2, self.container_id)
-                }
-            })
-        });
+        if h + cell.x < half.0 {
+            cell.x = half.0 - h;
+        }
+        if h + cell.y < half.1 {
+            cell.y = half.1 - h;
+        }
+        if height < half.1 + cell.y + h {
+            cell.y = height - half.1 - h;
+        }
         Some(DropResult {
             index,
             added,
-            fired: fired.filter(|f| f.0 != 0),
+            fired,
         })
     }
 
-    /// The drag ended over another panel. `source` is that panel's id,
-    /// `linked` says it is this panel's linked one. A cancelled drag only
-    /// clears the mark; a refused drag-out keeps the entry and takes the
-    /// payload's flags; otherwise the entry leaves, charging this panel's
-    /// bulk unless it moved to the linked panel.
+    /// This panel's drag ended. `dst` is the panel the payload was dropped
+    /// on. A cancelled drag only clears the drag word; a drag-out the
+    /// panel's callback refuses keeps the entry and takes the payload's
+    /// flags; otherwise the entry leaves, and the panel loses its bulk
+    /// unless the drop went to the linked panel.
     pub fn finish_drag(
         &mut self,
-        src: u32,
+        dst: u32,
         cancelled: bool,
         allowed_out: bool,
         payload_flags: u32,
@@ -1611,7 +1655,7 @@ impl Container {
             self.entries[at].flags = payload_flags;
             return Some(DragEnd::SnapBack);
         }
-        let same = self.linked.is_some_and(|linked_id| linked_id == src);
+        let same = self.linked.is_some_and(|linked_id| linked_id == dst);
         if same {
             self.entries.remove(at);
             return Some(DragEnd::Transfer);
@@ -1651,27 +1695,40 @@ impl Container {
         }
     }
 
-    /// The topmost entry whose rectangle and icon alpha hold the point.
-    /// `alpha` reports whether an icon's pixel is opaque.
-    pub fn hit_alpha<F>(&self, x: i32, y: i32, mut alpha: F) -> Option<usize>
+    /// The topmost entry whose cell and icon hold the point, by two passes
+    /// from the top: first `opaque` (the icon's own pixels), then, when
+    /// nothing was hit and `second` is given (the GUI's switch for it is on
+    /// by default), the icon cache's second test. Held entries are skipped;
+    /// an icon-less entry never passes either test. Points are given
+    /// relative to the cell.
+    pub fn hit_alpha<F, G>(&self, x: i32, y: i32, mut opaque: F, second: Option<G>) -> Option<usize>
     where
         F: FnMut(usize, i32, i32) -> bool,
+        G: FnMut(usize, i32, i32) -> bool,
     {
-        for (i, entry) in self.entries.iter().enumerate().rev() {
-            if entry.flags & HELD != 0 || entry.icon == 0 {
-                continue;
-            }
-            let h = self.icon_size;
-            if x >= entry.cell.x
+        let h = self.icon_size;
+        let inside = |entry: &Entry| {
+            entry.flags & HELD == 0
+                && entry.icon != 0
+                && x >= entry.cell.x
                 && x < entry.cell.x + h
                 && y >= entry.cell.y
                 && y < entry.cell.y + h
-                && alpha(entry.icon, x - entry.cell.x, y - entry.cell.y)
-            {
+        };
+        for (i, entry) in self.entries.iter().enumerate().rev() {
+            if inside(entry) && opaque(entry.icon, x - entry.cell.x, y - entry.cell.y) {
                 return Some(i);
             }
         }
-        None
+        let mut second = second?;
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, entry)| {
+                inside(entry) && second(entry.icon, x - entry.cell.x, y - entry.cell.y)
+            })
+            .map(|(i, _)| i)
     }
 }
 
@@ -1720,8 +1777,14 @@ mod entry_tests {
         assert_eq!(hold_dragged(&mut es), Some(1));
         assert_eq!((es[1].drag, es[1].flags), (0, HELD));
         assert_eq!(hold_dragged(&mut es), Some(2));
-        assert!(remove_held_icon(&mut es, 6));
-        assert!(!remove_held_icon(&mut es, 6));
+        let mut panel = Container {
+            entries: es.clone(),
+            used: 9,
+            ..Default::default()
+        };
+        assert!(panel.remove_held_icon(6, |id| id as i32));
+        assert_eq!((panel.entries.len(), panel.used), (2, 3));
+        assert!(!panel.remove_held_icon(6, |id| id as i32));
         es[0].drag = 3;
         clear_drags(&mut es);
         assert_eq!(es[0].drag, 2);
@@ -1795,80 +1858,83 @@ mod entry_tests {
     }
 }
 
-/// The card builder's text box: the title's height above it (`0xb4`), the
-/// box's own vertical inset (`0xa0`), and the two-unit text margin.
-pub const CARD_TEXT_TITLE: i32 = 0xb4;
-pub const CARD_TEXT_INSET: i32 = 0xa0;
+/// The card builder's description box: it starts `0xb4` pixels below the
+/// page's own top, 4 pixels in from the left, and is first `0xa0` pixels
+/// tall (the builder then sizes it to its lines plus a unit).
+pub const CARD_TEXT_TOP: i32 = 0xb4;
+pub const CARD_TEXT_HEIGHT: i32 = 0xa0;
 pub const CARD_TEXT_MARGIN: i32 = 4;
 
-/// The height of the card's text box from the page's client size (its
-/// inner size less twice the border and twice the text margin).
-pub fn card_text_width(client_width: i32, border: i32) -> i32 {
-    client_width - border * 2 - CARD_TEXT_MARGIN * 2
+/// The width of the card's description box: the card's width less twice
+/// its border and twice the box's 4-pixel left margin.
+pub fn card_text_width(card_width: i32, border: i32) -> i32 {
+    card_width - border * 2 - CARD_TEXT_MARGIN * 2
 }
 
-/// The item card the mouse opens: a released "use" on types 0–2 shows the
-/// card after running the game's function for type 2, and a right click
-/// toggles the card of the same item. A container is opened instead.
+/// What the card request of a panel's mouse event (its 0x2000 bit) does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardAction {
-    /// No card.
+    /// No card: no item under the pointer, or a card request is pending.
     None,
-    /// Show the card; `run_use` when a type-2 usable item runs first.
-    Show { run_use: bool },
-    /// Close the card already open for this item.
-    Toggle,
-    /// Open the item as a container.
-    OpenContainer,
+    /// Ask for the card on the delay timer ([`CardTimer`]); `run_use`
+    /// when the game first runs its use for an item of use type 2.
+    Delayed { run_use: bool },
+    /// Build the card at once (no use section, or a use type above 2).
+    Immediate,
 }
 
-/// The card action for a use (a double click) or a right click.
-pub fn card_action(right_click: bool, usable_type: Option<u8>, has_card: bool) -> CardAction {
-    if right_click {
-        return if has_card {
-            CardAction::Toggle
-        } else {
-            CardAction::Show { run_use: false }
-        };
+/// The card request: nothing without a hit or while a request is pending;
+/// an item whose use section has type 0 or 1 asks for a delayed card, type
+/// 2 runs the game's use first, and anything else builds the card at once.
+pub fn card_action(hit: bool, pending: bool, use_type: Option<u8>) -> CardAction {
+    if !hit || pending {
+        return CardAction::None;
     }
-    match usable_type {
-        Some(2) => CardAction::Show { run_use: true },
-        Some(0 | 1) => CardAction::Show { run_use: false },
-        Some(_) => CardAction::None,
-        None => CardAction::None,
+    match use_type {
+        Some(2) => CardAction::Delayed { run_use: true },
+        Some(0 | 1) => CardAction::Delayed { run_use: false },
+        _ => CardAction::Immediate,
     }
 }
 
-/// The card's delayed opening: the timer asked for two frames and, when it
-/// fires, the card is built for the item and flags remembered at the
-/// toggle. A zero item cancels nothing.
+/// The card's delay: two steps of the GUI timer's 100 ms, real time.
+pub const CARD_DELAY_MS: u32 = 2 * 100;
+
+/// The card's delayed opening. A request cancels any pending one and
+/// remembers the item and flags; when the timer comes due the card is
+/// built for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CardTimer {
-    pub pending: u32,
+    /// The real-time millisecond the request comes due, while pending.
+    pub due: Option<u32>,
     pub item: u32,
     pub flags: u32,
-    /// The card's top, as the popped-up form gets it.
-    pub top: i32,
 }
 
 impl CardTimer {
-    /// Asks for a card after two frames, cancelling any pending one.
-    pub fn request(item: u32, flags: u32, top: i32) -> Self {
-        Self {
-            pending: 2,
-            item,
-            flags,
-            top,
-        }
+    /// Asks for a card [`CARD_DELAY_MS`] after `now`, replacing any
+    /// pending request.
+    pub fn request(&mut self, item: u32, flags: u32, now: u32) {
+        self.item = item;
+        self.flags = flags;
+        self.due = Some(now.wrapping_add(CARD_DELAY_MS));
     }
 
-    /// One frame passes; returns the card to build this frame.
-    pub fn tick(&mut self) -> Option<(u32, u32)> {
-        if self.pending == 0 {
-            return None;
+    /// The close request: a pending timer is cancelled (true); otherwise
+    /// the caller closes the open card (false).
+    pub fn cancel(&mut self) -> bool {
+        self.due.take().is_some()
+    }
+
+    /// The card to build at `now`, once, when the request has come due.
+    pub fn take_due(&mut self, now: u32) -> Option<(u32, u32)> {
+        let due = self.due?;
+        if now.wrapping_sub(due) as i32 >= 0 {
+            self.due = None;
+            Some((self.item, self.flags))
+        } else {
+            None
         }
-        self.pending -= 1;
-        (self.pending == 0).then_some((self.item, self.flags))
     }
 }
 
@@ -1900,24 +1966,27 @@ mod container_tests {
         );
         assert_eq!(exa_items::card::pronoun(8, true), None);
         assert_eq!(card_text_width(228, 8), 204);
-        assert_eq!(card_action(true, None, true), CardAction::Toggle);
+        assert_eq!(card_action(false, false, Some(1)), CardAction::None);
+        assert_eq!(card_action(true, true, Some(1)), CardAction::None);
         assert_eq!(
-            card_action(true, None, false),
-            CardAction::Show { run_use: false }
+            card_action(true, false, Some(2)),
+            CardAction::Delayed { run_use: true }
         );
         assert_eq!(
-            card_action(false, Some(2), false),
-            CardAction::Show { run_use: true }
+            card_action(true, false, Some(0)),
+            CardAction::Delayed { run_use: false }
         );
-        assert_eq!(
-            card_action(false, Some(1), false),
-            CardAction::Show { run_use: false }
-        );
-        assert_eq!(card_action(false, Some(3), false), CardAction::None);
-        let mut timer = CardTimer::request(7, 0x10, 33);
-        assert_eq!(timer.tick(), None);
-        assert_eq!(timer.tick(), Some((7, 0x10)));
-        assert_eq!(timer.tick(), None);
+        assert_eq!(card_action(true, false, Some(3)), CardAction::Immediate);
+        assert_eq!(card_action(true, false, None), CardAction::Immediate);
+        let mut timer = CardTimer::default();
+        timer.request(7, 0x10, 1000);
+        assert_eq!(timer.take_due(1199), None);
+        assert_eq!(timer.take_due(1200), Some((7, 0x10)));
+        assert_eq!(timer.take_due(1300), None);
+        timer.request(8, 0, 2000);
+        assert!(timer.cancel());
+        assert!(!timer.cancel());
+        assert_eq!(timer.take_due(5000), None);
     }
 
     #[test]
@@ -2084,11 +2153,13 @@ mod container_tests {
                 },
                 Cell::new(0, 0),
                 Cell::new(100, 20),
+                (60, 50),
             )
             .unwrap();
         assert_eq!((r.index, r.added), (0, None));
         assert_eq!(panel.entries[0].flags, 0);
-        assert_eq!(panel.entries[0].cell, Cell::new(68, 20));
+        // The icon's half width keeps it in: 228 − 60 − 80 = 88.
+        assert_eq!(panel.entries[0].cell, Cell::new(88, 20));
         assert_eq!(panel.used, 0);
 
         let r = panel
@@ -2103,13 +2174,14 @@ mod container_tests {
                 },
                 Cell::new(80, 80),
                 Cell::new(20, 20),
+                (40, 40),
             )
             .unwrap();
         assert_eq!(r.index, 1);
         assert_eq!(r.added, Some(499));
         assert_eq!(r.fired, Some((3, 0)));
         assert_eq!(panel.used, 5);
-        assert_eq!(panel.entries[1].cell, Cell::new(0, 0));
+        assert_eq!(panel.entries[1].cell, Cell::new(-40, -40));
         panel.container_id = 77;
         let r = panel
             .drop_entry(
@@ -2123,9 +2195,68 @@ mod container_tests {
                 },
                 Cell::new(80, 80),
                 Cell::new(20, 20),
+                (40, 40),
             )
             .unwrap();
         assert_eq!(r.fired, Some((2, 77)));
+    }
+
+    #[test]
+    fn a_drop_matches_its_own_entry_by_icon_and_clamps_top_then_bottom() {
+        let mut panel = Container {
+            client: (228, 60),
+            icon_size: 160,
+            ..Default::default()
+        };
+        panel.entries.push(Entry {
+            id: 5,
+            icon: 2,
+            drag: 1,
+            ..Entry::default()
+        });
+        panel.entries.push(Entry {
+            id: 6,
+            icon: 3,
+            ..Entry::default()
+        });
+        // The dragged entry is found by its icon (the id may have changed)
+        // and raised; y −60 is lifted to −40 by the top, then the bottom
+        // pulls it to 60 − 40 − 80 = −60.
+        let drag = DropDrag {
+            same_panel: true,
+            linked: false,
+            id: 77,
+            icon: 2,
+            flags: 0,
+            bulk: 4,
+        };
+        let r = panel
+            .drop_entry(drag, Cell::new(0, 0), Cell::new(0, -60), (40, 40))
+            .unwrap();
+        assert_eq!((r.index, r.added), (1, None));
+        assert_eq!(panel.entries[1].id, 5);
+        assert_eq!(panel.entries[1].drag, 0);
+        assert_eq!(panel.entries[1].cell, Cell::new(-40, -60));
+        assert_eq!(panel.used, 0);
+        // From the linked panel with no held entry: appended, no bulk.
+        let linked = DropDrag {
+            same_panel: false,
+            linked: true,
+            id: 8,
+            icon: 4,
+            flags: 0,
+            bulk: 4,
+        };
+        let r = panel
+            .drop_entry(linked, Cell::new(0, 0), Cell::new(0, 0), (40, 40))
+            .unwrap();
+        assert_eq!((r.index, r.added, panel.used), (2, Some(8), 0));
+        // A payload without an icon appends nothing.
+        let empty = DropDrag { icon: 0, ..linked };
+        assert_eq!(
+            panel.drop_entry(empty, Cell::new(0, 0), Cell::new(0, 0), (40, 40)),
+            None
+        );
     }
 
     #[test]
@@ -2233,9 +2364,17 @@ mod container_tests {
             ],
             ..Default::default()
         };
-        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| true), Some(1));
-        assert_eq!(panel.hit_alpha(6, 6, |icon, _, _| icon == 1), Some(0));
-        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| false), None);
-        assert_eq!(panel.hit_alpha(20, 20, |_, _, _| true), None);
+        let no = None::<fn(usize, i32, i32) -> bool>;
+        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| true, no), Some(1));
+        assert_eq!(panel.hit_alpha(6, 6, |icon, _, _| icon == 1, no), Some(0));
+        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| false, no), None);
+        assert_eq!(panel.hit_alpha(20, 20, |_, _, _| true, no), None);
+        // The second pass runs only when the first finds nothing.
+        let second = Some(|icon: usize, _: i32, _: i32| icon == 1);
+        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| false, second), Some(0));
+        assert_eq!(
+            panel.hit_alpha(6, 6, |icon, _, _| icon == 2, second),
+            Some(1)
+        );
     }
 }
