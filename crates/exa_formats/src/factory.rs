@@ -1142,14 +1142,15 @@ impl Factory {
                 continue;
             }
             let variant = &part.variants[sel - 1];
+            let twist = |i: usize| g.twist.get(i).copied().unwrap_or(0.0);
             let mut rotation = part.rotation;
             if part.flags & 0x10 != 0 && variant.flags & 8 == 0 {
-                rotation[1] += g.twist[i];
+                rotation[1] += twist(i);
             }
             let mut up = part.attach_to as usize;
             while up > 0 && up <= n {
                 if self.parts[up - 1].flags & 0x10 != 0 {
-                    rotation[1] += g.twist[up - 1];
+                    rotation[1] += twist(up - 1);
                 }
                 up = self.parts[up - 1].attach_to as usize;
             }
@@ -1188,7 +1189,8 @@ impl Factory {
                     }
                     _ => {}
                 }
-                for (d, &value) in par.deforms.iter().zip(&g.deform[pi]) {
+                let values = g.deform.get(pi).copied().unwrap_or([0.0; 3]);
+                for (d, value) in par.deforms.iter().zip(values) {
                     if d.kind == 0 {
                         continue;
                     }
