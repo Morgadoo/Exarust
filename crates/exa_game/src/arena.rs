@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(unpack_money(256), 12);
         assert_eq!(pack_money(12), 256);
         assert_eq!(unpack_money(pack_money(1727)), 1727);
-        assert_eq!(cash_prize(template(1).unwrap(), 1), pack_money(24));
+        assert_eq!(cash_prize(super::template(1).unwrap(), 1), pack_money(24));
         assert_eq!(
             cash_prize(template(8).unwrap(), 5),
             pack_money(unpack_money(768) * 6)
@@ -1196,6 +1196,37 @@ impl MatchInstance {
             reject: template.reject,
         }
     }
+}
+
+/// Restores a saved day's special match after its template has been rolled
+/// again at the saved slot: a positive rolled rank that is not flag-2 takes
+/// the saved rank, a template other than the Challenger (id 8) keeps the
+/// roll's rank window, and the saved flags always replace the template's.
+/// The saved word after the flags is unused.
+pub fn restore_special(instance: &mut MatchInstance, saved_rank: u32, saved_flags: u32) {
+    if instance.rank > 0 && instance.flags & 2 == 0 {
+        instance.rank = saved_rank as i32;
+    }
+    if instance.id != 8 {
+        instance.min_rank = instance.slot as i32;
+        instance.max_rank = instance.rank;
+    }
+    instance.flags = saved_flags;
+}
+
+/// Whether a weapon row holds the current item: the row's entries end at
+/// the first zero, and a match before it is found. Used by the board's
+/// tournament reward check.
+pub fn row_holds(entries: &[u32], current: u32) -> bool {
+    for &entry in entries {
+        if entry == 0 {
+            return false;
+        }
+        if entry == current {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the rank roll needs the MT19937 stream.
@@ -1827,5 +1858,50 @@ mod spawn_tests {
         assert_eq!(spawn_level(true, &mut rng), 60_000 + roll);
         let mut rng = Rng(12345);
         assert_eq!(spawn_level(false, &mut rng), 50_000 + roll);
+    }
+
+    #[test]
+    fn a_saved_special_restores_its_rank_window_and_flags() {
+        let challenger = super::template(8).unwrap();
+        let mut instance = MatchInstance::from_template(challenger, 3);
+        instance.rank = 4;
+        instance.min_rank = 0;
+        instance.max_rank = 5;
+        restore_special(&mut instance, 2, 0x10);
+        // The Challenger's flag 2 keeps the roll's rank.
+        assert_eq!(instance.rank, 4);
+        assert_eq!((instance.min_rank, instance.max_rank), (0, 5));
+        assert_eq!(instance.flags, 0x10);
+        // A ranked template keeps the roll's window and takes the saved
+        // rank only when the roll gave one.
+        let mut duel = roll_instance(
+            super::template(1).unwrap(),
+            4,
+            0.0,
+            &mut crate::item_container::Rng(1),
+        );
+        restore_special(&mut duel, 1, 0);
+        assert_eq!(duel.rank, 1);
+        assert_eq!(duel.min_rank, 4);
+        assert_eq!(duel.max_rank, 1);
+        let mut zero = roll_instance(
+            super::template(1).unwrap(),
+            4,
+            0.0,
+            &mut crate::item_container::Rng(1),
+        );
+        zero.rank = 0;
+        restore_special(&mut zero, 5, 0);
+        assert_eq!(zero.rank, 0);
+    }
+
+    #[test]
+    fn a_weapon_row_stops_at_its_first_empty_entry() {
+        assert!(!row_holds(&[0, 0, 0], 0));
+        assert!(!row_holds(&[0, 7, 0], 7));
+        assert!(row_holds(&[7, 0, 0], 7));
+        assert!(row_holds(&[3, 7, 0], 7));
+        assert!(!row_holds(&[3, 0, 7], 7));
+        assert!(!row_holds(&[], 7));
     }
 }

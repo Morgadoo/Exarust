@@ -223,6 +223,19 @@ impl Staff {
         self.employees.iter().any(|e| e.class == class)
     }
 
+    /// Whether a character's profession word (its high nibble) is on the
+    /// staff: a combatant, trainer, merchant or physician. The manager is
+    /// not counted, as the original reads only the employees' records.
+    pub fn has_profession_word(&self, word: u32) -> bool {
+        self.employees.iter().any(|e| match word {
+            0x2000_0000 => e.class & COMBATANT != 0,
+            0x3000_0000 => e.class & TRAINER != 0,
+            0x4000_0000 => e.class & MERCHANT != 0,
+            0x5000_0000 => e.class & PHYSICIAN != 0,
+            _ => false,
+        })
+    }
+
     fn note_order(&mut self) {
         if !self.order.is_empty() {
             self.order.push(self.employees.len() as i32);
@@ -947,5 +960,17 @@ mod tests {
         assert_eq!(roles, vec![CONTROLLED, 2, 3, 4 | CONTROLLED, 5]);
         assert_eq!(number_fighters(&[]), (1, vec![CONTROLLED]));
         assert_eq!(number_fighters(&[PHYSICIAN]), (1, vec![CONTROLLED, 2]));
+    }
+
+    #[test]
+    fn a_profession_word_finds_a_specialist_or_combatant() {
+        let mut staff = staff_of(&["A", "B", "C"]);
+        staff.employees[0].class = COMBATANT;
+        staff.employees[1].class = MERCHANT;
+        staff.employees[2].class = RECRUIT;
+        assert!(staff.has_profession_word(0x2000_0000));
+        assert!(staff.has_profession_word(0x4000_0000));
+        assert!(!staff.has_profession_word(0x8000_0000));
+        assert!(!staff.has_profession_word(0x5000_0000));
     }
 }

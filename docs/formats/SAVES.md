@@ -344,6 +344,16 @@ and the tournament `0xA0600000`; the observed arena save holds, after the
 placement, `0xA0100000`, `0xA0300000`, `0xA0DC0000`, `0xA0D10000`,
 `0xA0500000`, `0x00010000`, `0xA0600000` (no employees yet).
 
+The arena's employees chunk is a count followed by one record per
+employee: two unused words, the profession word, a custom-fighter flag
+(a flagged record then has no character id), the character id otherwise,
+an item list (a count and twelve-byte item references) and four words. The
+merchant chunk is the stock type, the specialisation word (kept raw; it
+starts at −1), two unused words and the stock's count and ids; a loader
+that regenerates the stock reads only the header. The hireables chunk
+(`0x00010000`) is a count and, per candidate, an unused word and a
+character export.
+
 A loader passes a **mask**: the reader ands each chunk id with it, ignores
 a result of `0xF` or less and dispatches the rest on the **masked** id
 (with a narrow mask an unrelated id can land on a known one). The full
