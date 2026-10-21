@@ -10,8 +10,8 @@
 //! gain 0.0003; its body meanwhile follows its pelvis with its frame
 //! exactly, its lift fades by its tone squared and its arms' stiffness is
 //! 0.2 (`exa_physics::body::Bearing::collapsing`). At a tone of 0.25,
-//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), the dormant
-//! flag and wake clock settled, its yellow health 0 (it regenerates while
+//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), the may-rise
+//! rule and rise clock settled, its yellow health 0 (it regenerates while
 //! collapsing), a plain ragdoll that keeps the motion it has. Rules:
 //! `docs/formats/RSQ.md` (Condition, The collapse).
 
@@ -462,7 +462,7 @@ impl Plugin for CollapsePlugin {
 /// running, it walks the stagger from the chest and its fast velocity.
 /// At a tone of 0.25 it dies
 /// there and then: [`crate::condition::settle_death`] writes the condition,
-/// the dormant flag and the wake clock, its yellow health becomes 0, its
+/// the may-rise rule and the rise clock, its yellow health becomes 0, its
 /// muscles go, it keeps its motion, and the rest of its tick does not run
 /// ([`crate::condition::ticked_lives`]); the frame strips its clip and
 /// controller.
@@ -474,7 +474,6 @@ pub fn dying_tick(
     mut roll: Local<Roll>,
     mut bodies: Query<(
         &mut Condition,
-        &mut StateFlags,
         &FallDeath,
         &mut Collapse,
         &mut Ragdoll,
@@ -485,17 +484,8 @@ pub fn dying_tick(
     )>,
 ) {
     let entity = ticked.body;
-    if let Ok((
-        mut condition,
-        mut flags,
-        fall,
-        mut collapse,
-        mut body,
-        mut anim,
-        mut fighter,
-        gt,
-        hands,
-    )) = bodies.get_mut(entity)
+    if let Ok((mut condition, fall, mut collapse, mut body, mut anim, mut fighter, gt, hands)) =
+        bodies.get_mut(entity)
     {
         if !condition.is_collapsing() {
             return;
@@ -545,14 +535,14 @@ pub fn dying_tick(
             let now_ms = ticks.as_ref().map(|t| t.millis() as u32).unwrap_or(0);
             if let Some(settled) = settle_death(
                 *condition,
-                *flags,
+                fighter.stats.rules,
                 fall.stage.death_stage(),
-                fighter.health.yellow,
+                fighter.health.red,
                 fighter.first_flag_red,
                 now_ms,
             ) {
                 *condition = settled.condition;
-                *flags = settled.flags;
+                fighter.stats.rules = settled.rules;
                 commands.entity(entity).insert(DeathClock {
                     wake_at_ms: settled.wake_at_ms,
                     died_at_ms: now_ms,

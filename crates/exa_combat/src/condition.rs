@@ -148,69 +148,70 @@ impl Condition {
     }
 }
 
-/// How long a dormant corpse waits before it may stir, when death leaves
-/// the dormant flag set and the shock stagger clear.
+/// How long a body that may still rise waits, when death leaves the
+/// may-rise rule set and red regeneration is not blocked.
 pub const DEATH_WAKE_MS: u32 = 10_000;
-/// Health below this, compared in double, clears the dormant flag unless
-/// the race's first flag word carries red regeneration.
+/// Red health below this, compared in double, clears the may-rise rule
+/// unless the race's first flag word carries red regeneration.
 pub const DEATH_HEALTH: f64 = 0.01;
 
 /// What death writes when the body was not already dead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettledDeath {
     pub condition: Condition,
-    pub flags: StateFlags,
-    /// When the corpse may stir. `None` is the disabled clock.
+    pub rules: exa_formats::character_stats::BodyRules,
+    /// When the body may rise. `None` is the disabled clock.
     pub wake_at_ms: Option<u32>,
 }
 
-/// The clocks death stamps on the body: when it died, and when a dormant
-/// corpse may stir.
+/// The clocks death stamps on the body: when it died, and when a body that
+/// may still rise is allowed to.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeathClock {
-    /// When the corpse may stir. `None` is the disabled clock.
+    /// When the body may rise. `None` is the disabled clock.
     pub wake_at_ms: Option<u32>,
     /// The game clock when death wrote the clocks.
     pub died_at_ms: u32,
 }
 
-/// Death's condition, dormant flag and wake clock.
+/// Death's condition, may-rise rule and rise clock.
 ///
 /// A body that is already dead is left alone. Otherwise the condition
-/// becomes dead. The dormant flag is cleared when `fall_stage` is greater
-/// than 1 (the fall-to-death counter: 2 lost, 3 fading, 4 gone) or when
-/// `health` is below [`DEATH_HEALTH`] and `first_flag_red` is false.
+/// becomes dead. [`BodyRules::MAY_RISE`] is cleared when `fall_stage` is
+/// greater than 1 (the fall-to-death counter: 2 lost, 3 fading, 4 gone) or
+/// when `red` is below [`DEATH_HEALTH`] and `first_flag_red` is false.
 /// `first_flag_red` is the race record's first flag word bit `0x80` (the
 /// golem suit). The second flag word's regeneration bit is a different
 /// test and does not count here.
 ///
-/// When the flags then still have the dormant bit and not the shock
-/// stagger, the wake clock is `now_ms` plus [`DEATH_WAKE_MS`]. Otherwise
-/// the clock is disabled.
+/// When the rules then still have [`BodyRules::MAY_RISE`] and not
+/// [`BodyRules::NO_RED_REGENERATION`], the rise clock is `now_ms` plus
+/// [`DEATH_WAKE_MS`]. Otherwise the clock is disabled.
 pub fn settle_death(
     condition: Condition,
-    flags: StateFlags,
+    rules: exa_formats::character_stats::BodyRules,
     fall_stage: u32,
-    health: f32,
+    red: f32,
     first_flag_red: bool,
     now_ms: u32,
 ) -> Option<SettledDeath> {
+    use exa_formats::character_stats::BodyRules;
     if condition == Condition::DEAD {
         return None;
     }
-    let mut bits = flags.0;
-    if fall_stage > 1 || (f64::from(health) < DEATH_HEALTH && !first_flag_red) {
-        bits &= !StateFlags::DORMANT;
+    let mut bits = rules.0;
+    if fall_stage > 1 || (f64::from(red) < DEATH_HEALTH && !first_flag_red) {
+        bits &= !BodyRules::MAY_RISE;
     }
     let wake_at_ms =
-        if bits & (StateFlags::DORMANT | StateFlags::SHOCK_STAGGER) == StateFlags::DORMANT {
+        if bits & (BodyRules::MAY_RISE | BodyRules::NO_RED_REGENERATION) == BodyRules::MAY_RISE {
             Some(now_ms.wrapping_add(DEATH_WAKE_MS))
         } else {
             None
         };
     Some(SettledDeath {
         condition: Condition::DEAD,
-        flags: StateFlags(bits),
+        rules: BodyRules(bits),
         wake_at_ms,
     })
 }
@@ -223,8 +224,7 @@ pub fn clear_death_strikes(first_children: &mut [Option<u32>]) {
     }
 }
 
-/// The original's state flags beside the condition word. [`settle_death`]
-/// returns them with the dormant bit cleared in death's cases. Knock-outs,
+/// The original's state flags beside the condition word. Knock-outs,
 /// shocks and potions still have no writer on the running body.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StateFlags(pub u32);
@@ -790,41 +790,46 @@ mod knockout_tests {
     }
 
     #[test]
-    fn death_clears_a_lost_body_and_keeps_a_dormant_corpse_waiting() {
-        let dormant = StateFlags(StateFlags::DORMANT | StateFlags::WAKING);
-        let lost = settle_death(Condition::COLLAPSING, dormant, 2, 1.0, true, 50).unwrap();
+    fn death_clears_may_rise_on_a_lost_body_and_keeps_a_suited_one_waiting() {
+        use exa_formats::character_stats::BodyRules;
+        let may = BodyRules(BodyRules::MAY_RISE | BodyRules::TAKES_REMEDIES);
+        let lost = settle_death(Condition::COLLAPSING, may, 2, 1.0, true, 50).unwrap();
         assert_eq!(lost.condition, Condition::DEAD);
-        assert_eq!(lost.flags.0, StateFlags::WAKING);
+        assert_eq!(lost.rules.0 & BodyRules::MAY_RISE, 0);
+        assert_eq!(
+            lost.rules.0 & BodyRules::TAKES_REMEDIES,
+            BodyRules::TAKES_REMEDIES
+        );
         assert_eq!(lost.wake_at_ms, None);
 
-        let kept = settle_death(Condition::COLLAPSING, dormant, 1, 1.0, true, 50).unwrap();
-        assert_eq!(kept.flags.0, dormant.0);
+        let kept = settle_death(Condition::COLLAPSING, may, 1, 1.0, true, 50).unwrap();
+        assert_eq!(kept.rules, may);
         assert_eq!(kept.wake_at_ms, Some(50 + DEATH_WAKE_MS));
 
-        let low = settle_death(Condition::COLLAPSING, dormant, 0, 0.0, false, 50).unwrap();
-        assert_eq!(low.flags.0, StateFlags::WAKING);
-        assert!(settle_death(Condition::DEAD, dormant, 0, 0.0, false, 50).is_none());
+        let low = settle_death(Condition::COLLAPSING, may, 0, 0.0, false, 50).unwrap();
+        assert_eq!(low.rules.0 & BodyRules::MAY_RISE, 0);
+        assert!(settle_death(Condition::DEAD, may, 0, 0.0, false, 50).is_none());
 
         // The f32 value 0.01 promotes to a double just under the f64
         // threshold, so it clears. The next f32 promotes above it. A NaN
         // does not compare below.
-        let edge = settle_death(Condition::NORMAL, dormant, 0, 0.01, false, 0).unwrap();
-        assert_eq!(edge.flags.0 & StateFlags::DORMANT, 0);
+        let edge = settle_death(Condition::NORMAL, may, 0, 0.01, false, 0).unwrap();
+        assert_eq!(edge.rules.0 & BodyRules::MAY_RISE, 0);
         let above = f32::from_bits(0.01f32.to_bits() + 1);
-        let held_health = settle_death(Condition::NORMAL, dormant, 0, above, false, 0).unwrap();
+        let held_health = settle_death(Condition::NORMAL, may, 0, above, false, 0).unwrap();
         assert_eq!(
-            held_health.flags.0 & StateFlags::DORMANT,
-            StateFlags::DORMANT
+            held_health.rules.0 & BodyRules::MAY_RISE,
+            BodyRules::MAY_RISE
         );
-        let suited = settle_death(Condition::NORMAL, dormant, 0, 0.01, true, 0).unwrap();
-        assert_eq!(suited.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
-        let nan = settle_death(Condition::NORMAL, dormant, 0, f32::NAN, false, 0).unwrap();
-        assert_eq!(nan.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
+        let suited = settle_death(Condition::NORMAL, may, 0, 0.01, true, 0).unwrap();
+        assert_eq!(suited.rules.0 & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
+        let nan = settle_death(Condition::NORMAL, may, 0, f32::NAN, false, 0).unwrap();
+        assert_eq!(nan.rules.0 & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
 
-        let shocked = StateFlags(StateFlags::DORMANT | StateFlags::SHOCK_STAGGER);
-        let held = settle_death(Condition::NORMAL, shocked, 0, 1.0, true, 10).unwrap();
+        let blocked = BodyRules(BodyRules::MAY_RISE | BodyRules::NO_RED_REGENERATION);
+        let held = settle_death(Condition::NORMAL, blocked, 0, 1.0, true, 10).unwrap();
         assert_eq!(held.wake_at_ms, None);
-        assert_eq!(held.flags.0, shocked.0);
+        assert_eq!(held.rules, blocked);
     }
 
     #[test]

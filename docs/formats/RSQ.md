@@ -1001,16 +1001,17 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x100`, a potion `0x800000`). Death (`exa_combat::condition::settle_death`),
 called once the fall counter is past 1 and when a collapse's tone gives
 out, leaves a body that is already dead alone. Otherwise the word becomes
-dead. The dormant flag is cleared when that counter is greater than 1, or
-when the health word is below 0.01 in double and the race's first flag
-word lacks `0x80` (that test reads the first flag word). If the dormant
-flag remains and the shock stagger does not, the
-wake clock is the game clock plus 10000 ms; otherwise the clock is
-disabled. Each part's class word becomes 0 and each part's first child
-takes 0x30, and that first child loses the strike-chain bit. The dying
-tick and a fall that has reached its death call this and stamp both
-clocks (`DeathClock`): the f32 value 0.01 promotes to a double just under
-the threshold, so it clears the flag.
+dead. The may-rise rule (body rule bit `0x10`) is cleared when that
+counter is greater than 1, or when red health is below 0.01 in double and
+the race's first flag word lacks `0x80` (that test reads the first flag
+word). If may-rise remains and red regeneration is not blocked (rule bit
+`0x100` clear), the rise clock is the game clock plus 10000 ms; otherwise
+the clock is disabled. Each part's class word becomes 0 and each part's
+first child takes 0x30, and that first child loses the strike-chain bit.
+The dying tick and a fall that has reached its death call this and stamp
+both clocks (`DeathClock`): the f32 value 0.01 promotes to a double just
+under the threshold, so it clears the rule. A fatal fall zeroes yellow
+and red before that call, so the call reads red 0.
 
 The body tick writes the word once, in this order: the daze block makes a
 dazed character normal unless the word holds `0xAC0` or is 2; then the

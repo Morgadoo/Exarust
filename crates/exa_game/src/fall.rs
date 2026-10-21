@@ -17,7 +17,7 @@ use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
-use exa_combat::condition::{Branch, DeathClock, PostureBranch, StateFlags, settle_death};
+use exa_combat::condition::{Branch, DeathClock, PostureBranch, settle_death};
 use exa_combat::fall::{FallDeath, FallReading, scream_voice};
 use exa_combat::{Condition, Fighter, Roll};
 use exa_physics::body::{
@@ -121,7 +121,6 @@ pub(crate) fn fall_to_death(
         &PostureBranch,
         &mut FallDeath,
         &mut Condition,
-        &mut StateFlags,
         &mut Fighter,
         &mut Ragdoll,
         Option<&PlayerBody>,
@@ -129,17 +128,8 @@ pub(crate) fn fall_to_death(
     )>,
 ) {
     let now = ticks.millis();
-    if let Ok((
-        entity,
-        branch,
-        mut fall,
-        mut condition,
-        mut flags,
-        mut fighter,
-        mut body,
-        player,
-        parent,
-    )) = bodies.get_mut(ticked.body)
+    if let Ok((entity, branch, mut fall, mut condition, mut fighter, mut body, player, parent)) =
+        bodies.get_mut(ticked.body)
     {
         let Some(drive) = body.drive.as_ref() else {
             return;
@@ -193,23 +183,23 @@ pub(crate) fn fall_to_death(
         }
         if step.dies {
             let now_ms = now as u32;
+            fighter.health.yellow = 0.0;
+            fighter.health.red = 0.0;
             if let Some(settled) = settle_death(
                 *condition,
-                *flags,
+                fighter.stats.rules,
                 fall.stage.death_stage(),
-                fighter.health.yellow,
+                fighter.health.red,
                 fighter.first_flag_red,
                 now_ms,
             ) {
                 *condition = settled.condition;
-                *flags = settled.flags;
+                fighter.stats.rules = settled.rules;
                 commands.entity(entity).insert(DeathClock {
                     wake_at_ms: settled.wake_at_ms,
                     died_at_ms: now_ms,
                 });
             }
-            fighter.health.yellow = 0.0;
-            fighter.health.red = 0.0;
             body.set_class_word(0);
             body.clear_death_strikes();
             take_out(&mut commands, entity, parent);

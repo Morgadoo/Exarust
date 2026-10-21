@@ -281,16 +281,18 @@ fn the_body_dies_250_ticks_after_the_blow() {
     assert_eq!(yellow(&app), 0.0);
 }
 
-/// One dying tick from a tone that crosses 0.25. A low body loses the
-/// dormant flag. The golem suit keeps it and waits 10000 ms. A lost fall
-/// clears it even for that suit.
+/// One dying tick from a tone that crosses 0.25. Low red clears may-rise.
+/// The golem suit keeps it and waits 10000 ms. A lost fall clears it even
+/// for that suit. The dormant state flag is left alone.
 #[test]
-fn a_collapsing_death_settles_the_dormant_flag() {
+fn a_collapsing_death_settles_may_rise() {
     use crate::condition::{DeathClock, StateFlags};
     use crate::fall::{FallDeath, FallStage};
+    use exa_formats::character_stats::BodyRules;
     use exa_physics::body::BodyTicks;
 
-    let run = |fighter, stage| {
+    let run = |mut fighter: Fighter, stage| {
+        fighter.stats.rules = BodyRules(BodyRules::MAY_RISE);
         let mut app = App::new();
         app.add_systems(Update, dying_tick);
         let mut body = Ragdoll::new(&[]).with_drive();
@@ -317,45 +319,48 @@ fn a_collapsing_death_settles_the_dormant_flag() {
         });
         app.insert_resource(BodyTicks(0));
         app.update();
+        let rules = app.world().get::<Fighter>(id).unwrap().stats.rules.0;
         let flags = app.world().get::<StateFlags>(id).unwrap().0;
         let clock = *app.world().get::<DeathClock>(id).unwrap();
-        (flags, clock)
+        (rules, flags, clock)
     };
 
     let low = Fighter {
         health: crate::Health {
-            yellow: 0.0,
+            red: 0.0,
             ..crate::Health::of_race(1.0)
         },
         ..Fighter::default()
     };
-    let (flags, clock) = run(low, FallStage::Steady);
-    assert_eq!(flags, StateFlags::WAKING);
+    let (rules, flags, clock) = run(low, FallStage::Steady);
+    assert_eq!(rules & BodyRules::MAY_RISE, 0);
+    assert_eq!(flags, StateFlags::DORMANT | StateFlags::WAKING);
     assert_eq!(clock.wake_at_ms, None);
     assert_eq!(clock.died_at_ms, 0);
 
     let suited = Fighter {
         health: crate::Health {
-            yellow: 0.01,
+            red: 0.01,
             ..crate::Health::of_race(1.0)
         },
         first_flag_red: true,
         ..Fighter::default()
     };
-    let (flags, clock) = run(suited, FallStage::Steady);
+    let (rules, flags, clock) = run(suited, FallStage::Steady);
+    assert_eq!(rules & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
     assert_eq!(flags, StateFlags::DORMANT | StateFlags::WAKING);
     assert_eq!(clock.wake_at_ms, Some(crate::condition::DEATH_WAKE_MS));
 
     let lost = Fighter {
         first_flag_red: true,
         health: crate::Health {
-            yellow: 1.0,
+            red: 1.0,
             ..crate::Health::of_race(1.0)
         },
         ..Fighter::default()
     };
-    let (flags, clock) = run(lost, FallStage::Lost);
-    assert_eq!(flags, StateFlags::WAKING);
+    let (rules, _, clock) = run(lost, FallStage::Lost);
+    assert_eq!(rules & BodyRules::MAY_RISE, 0);
     assert_eq!(clock.wake_at_ms, None);
 }
 
