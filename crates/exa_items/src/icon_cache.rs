@@ -37,10 +37,12 @@ pub const UNDERFLOW: &str = "Item reference underflow.";
 /// messages).
 pub const ERROR_TITLE: &str = "Item Error";
 
-/// The manager's icon-atlas flags.
-pub const MANAGER_ICON_FLAGS: u32 = 0x103;
-/// The manager's atlas texture flags.
-pub const MANAGER_TEXTURE_FLAGS: u32 = 0x100e608;
+/// The blend word the manager's icon atlas draws with (the atlas's own
+/// default is 0x203).
+pub const MANAGER_BLEND: u32 = 0x103;
+/// The pixel format word the manager gives its icon atlas (the atlas's
+/// default, set again).
+pub const MANAGER_FORMAT: u32 = 0x100e608;
 /// The apparel painter's texture side at texture detail 3 and above.
 pub const APPAREL_SIZE_HIGH: i32 = 0x400;
 /// The apparel painter's texture side below it.
@@ -48,17 +50,17 @@ pub const APPAREL_SIZE_LOW: i32 = 0x200;
 /// The two flags the manager sets on its scene reader.
 pub const MANAGER_RFC_FLAGS: [u8; 2] = [1, 1];
 
-/// The manager's construction: the atlas flags, the icon size and the
-/// scene reader's flags. The original makes the object database access,
-/// the shared apparel painter (once), the item renderer, an icon atlas
-/// with [`MANAGER_ICON_FLAGS`], the icon size ([`icon_size`], set when the
-/// GUI unit is) and [`MANAGER_TEXTURE_FLAGS`], and a scene reader whose
-/// scene is the renderer's, with [`MANAGER_RFC_FLAGS`].
+/// The manager's construction: the atlas's blend, icon size and format and
+/// the scene reader's flags. The original makes the object database
+/// access, the shared apparel painter (once), the item renderer, an icon
+/// atlas with [`MANAGER_BLEND`], the icon size ([`icon_size`], set when the
+/// GUI unit is) and [`MANAGER_FORMAT`], and a scene reader whose scene is
+/// the renderer's, with [`MANAGER_RFC_FLAGS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerSetup {
     pub unit: i32,
-    pub icon_flags: u32,
-    pub texture_flags: u32,
+    pub blend: u32,
+    pub format: u32,
     pub icon_size: i32,
     pub rfc_flags: [u8; 2],
 }
@@ -68,8 +70,8 @@ impl ManagerSetup {
     pub fn new(unit: i32) -> Self {
         Self {
             unit,
-            icon_flags: MANAGER_ICON_FLAGS,
-            texture_flags: MANAGER_TEXTURE_FLAGS,
+            blend: MANAGER_BLEND,
+            format: MANAGER_FORMAT,
             icon_size: icon_size(unit),
             rfc_flags: MANAGER_RFC_FLAGS,
         }
@@ -603,8 +605,8 @@ mod tests {
     #[test]
     fn the_manager_is_built_for_forty_unit_icons() {
         let setup = ManagerSetup::new(5);
-        assert_eq!(setup.icon_flags, 0x103);
-        assert_eq!(setup.texture_flags, 0x100e608);
+        assert_eq!(setup.blend, 0x103);
+        assert_eq!(setup.format, 0x100e608);
         assert_eq!(setup.icon_size, 200);
         assert_eq!(setup.rfc_flags, [1, 1]);
         // The apparel painter follows the texture detail at each render.
