@@ -155,16 +155,24 @@ images are squared too.
 
 Which stored level becomes the uploaded base follows `TextureDetail`
 (header flags bits 22–23 are the image's detail class 0–3):
-`first = max(0, class − TextureDetail + 1)`, then raised while width or
-height shifted by it is larger than the driver's largest texture side (the
-static 65536 before the driver reports its own). With the mip bit (`0x40`)
-in the creation word every stored level from `first` is uploaded and a
-generated chain runs to its end; without it only level `first` is uploaded
-(or generated), which halves the stored resolution instead of changing the
-format. A compressed image without a stored chain keeps its base level: the
-CPU cannot downsample it. The image's flag bits 16–18 repeat it on S, T and
-R, and the stored word's top byte marks data formats (`0x82`, `0x92`,
-`0x12`) that are never uploaded as sRGB.
+`first = max(0, class − TextureDetail + 1)`, then raised while the width,
+and then the height, shifted by it is larger than the driver's largest
+texture side (read before any upload). With the mip bit (`0x40`) in the
+creation word, and in the texture quality mask, every stored level from
+`first` is uploaded and a generated chain runs to its end; without it only
+level `first` is uploaded (or generated), which halves the stored resolution
+instead of changing the format. A compressed image without a stored chain
+keeps its base level and its mip bits are cleared: the CPU cannot downsample
+it. In the shipped data 8 616 of 8 839 images are class 2, 200 class 0, 2
+class 1 and 21 class 3, so at the retail `TextureDetail = 3` only those 21
+start at level 1 (established by reverse engineering of the upload routine;
+counts by `exa_assets` `every_shipped_image_converts`).
+
+The image's flag bits from 16 up join the requested word when a named
+image is loaded: bits 16–18 repeat it on S, T and R. Linear or sRGB storage
+is decided by the word's data bit (`0x100`) and, for an uncompressed image,
+by format bit 16 (the `0x0111` and `0x1111` words), which the upload routine
+treats as data; the compressed `0x82` and `0x92` words are data too.
 
 ## Packed storage (`0x50000000`)
 

@@ -209,9 +209,13 @@ impl Material {
     }
 
     /// Whether the record carries a subsurface (secondary) colour: the
-    /// original's diffuse texture then skips the LOD bias.
+    /// squared length of its red, green and blue, summed in that order in
+    /// single precision, is above zero (alpha does not count; NaN or values
+    /// whose squares underflow do not either). The original's diffuse
+    /// texture then skips the LOD bias.
     pub fn has_secondary_colour(&self) -> bool {
-        self.subsurface != [0.0; 4]
+        let [r, g, b, _] = self.subsurface;
+        r * r + g * g + b * b > 0.0
     }
 
     /// What a rigid body's stored mobility is divided by when the body is
@@ -306,6 +310,22 @@ mod tests {
         assert_eq!(Material::parse(&p).unwrap().texture_flags, 0);
         p[0x54..0x58].copy_from_slice(&0x0007_0000u32.to_le_bytes());
         assert_eq!(Material::parse(&p).unwrap().texture_flags, 0x0007_0000);
+    }
+
+    #[test]
+    fn a_secondary_colour_is_a_non_zero_rgb() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        assert!(!Material::parse(&p).unwrap().has_secondary_colour());
+        // Alpha alone does not count.
+        p[0x78..0x7C].copy_from_slice(&1.0f32.to_le_bytes());
+        assert!(!Material::parse(&p).unwrap().has_secondary_colour());
+        // A blue whose square underflows does not either.
+        p[0x74..0x78].copy_from_slice(&1e-30f32.to_le_bytes());
+        assert!(!Material::parse(&p).unwrap().has_secondary_colour());
+        p[0x74..0x78].copy_from_slice(&0.46f32.to_le_bytes());
+        assert!(Material::parse(&p).unwrap().has_secondary_colour());
+        p[0x6C..0x70].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(!Material::parse(&p).unwrap().has_secondary_colour());
     }
 
     #[test]

@@ -12,8 +12,9 @@ The original works in **linear light with sRGB storage**:
 - Material, light and environment colours are linearised on the CPU (the
   exact sRGB transfer function).
 - Colour textures upload as sRGB, and data textures (normal, gloss, height,
-  packed specular) as linear. The `.rfi` format word's top byte decides:
-  `0x81`/`0x01`/`0x02` colour, `0x82`/`0x92`/`0x12` data. A loader can force
+  packed specular) as linear. The `.rfi` format word decides: an
+  uncompressed word is data when bit 16 is set (`0x0111`, `0x1111`), a
+  compressed one when its top byte is `0x82` or `0x92`; the rest is colour. A loader can force
   data: the race's skin textures load that way (see Skin).
 - No shader applies a gamma power.
 - The scene renders into an 8-bit sRGB target, so the lit result **clamps

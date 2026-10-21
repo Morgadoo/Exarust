@@ -21,7 +21,7 @@ use crate::paint::{
     Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
 };
 use crate::skin::{Joint, VertexSkin, auto_skin};
-use crate::texture::{self, ColorSpace, has_alpha, material_flags, rfi_to_texture};
+use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
@@ -567,11 +567,11 @@ impl ModelLoader<'_> {
             ..default()
         };
         // The record's texture load flags, with the mode bits the original
-        // adds per slot: normal and gloss (and specular of a packed
-        // material) are data, and a diffuse with a secondary colour skips
-        // the LOD bias.
+        // adds per slot: normal, gloss and height maps (and the specular map
+        // of a material whose kind has bit 0) are data, and a diffuse with a
+        // secondary colour skips the LOD bias.
         let settings = *self.cache.textures.settings();
-        let base_flags = material_flags(m.texture_flags, &settings);
+        let base_flags = material_word(m.texture_flags, &settings);
         let data_flags = base_flags | texture::flags::DATA | texture::flags::NO_LOD_BIAS;
         let bias_skipped = base_flags | texture::flags::NO_LOD_BIAS;
         let mut cut_out = false;
@@ -625,7 +625,8 @@ impl ModelLoader<'_> {
         if let Some(layer) = m.layer(TextureSlot::Height)
             && layer.amount > 0.0
             && mat.normal_map.is_some()
-            && let Some((img, _)) = self.texture(&layer.texture, ColorSpace::Linear)
+            && let Some((img, _)) =
+                self.texture_with_flags(&layer.texture, ColorSpace::Linear, data_flags)
             && let Some(size) = self.images.get(&img).map(|i| i.size())
             && size.x > 1
             && size.y > 1
@@ -928,8 +929,16 @@ impl ModelLoader<'_> {
     }
 
     /// Image handle and whether it has alpha, with the creation/sampler
-    /// word a material asks for. The cache replaces the word of a live
-    /// record, as the original does; the image is decoded once.
+    /// word a material asks for. The image is looked up by its stored name
+    /// (cut at the last dot, folded) and decoded once; a live record keeps
+    /// the word it was created with, as the original's manager does.
+    ///
+    /// An image that is shipped but cannot be read uploads the original's
+    /// 1x1 grey placeholder, which the record keeps. One the game does not
+    /// ship is no map: the original would draw the placeholder too, but
+    /// Exarust has no registry of the images it builds at run time
+    /// (painted apparel, skins), so a name it cannot find may be one the
+    /// original makes.
     pub fn texture_with_flags(
         &mut self,
         name: &str,
@@ -940,24 +949,23 @@ impl ModelLoader<'_> {
         let created = self.cache.textures.acquire(key, flags).created;
         if created {
             let settings = *self.cache.textures.settings();
-            let result = match self.game.texture(name) {
-                None => Err(format!("texture {name:?} not found")),
-                Some(bytes) => Rfi::parse(bytes)
-                    .and_then(|rfi| {
-                        let alpha = has_alpha(&rfi);
-                        rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings)
-                            .map(|img| (img, alpha))
-                    })
-                    .map_err(|e| format!("texture {name:?}: {e}")),
+            let Some(bytes) = self.game.texture(key.name.as_str()) else {
+                self.warn_once(format!("texture {name:?} not found"));
+                return None;
             };
+            let result = Rfi::parse(bytes)
+                .and_then(|rfi| {
+                    let alpha = has_alpha(&rfi);
+                    rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings)
+                        .map(|img| (img, alpha))
+                })
+                .map_err(|e| format!("texture {name:?}: {e}"));
             match result {
                 Ok((img, alpha)) => {
                     let handle = self.images.add(img);
                     self.cache.textures.finish(&key, handle, alpha);
                 }
                 Err(msg) => {
-                    // The original uploads a 1x1 grey placeholder when the
-                    // image cannot be read, and the record keeps it.
                     self.warn_once(msg);
                     let image = crate::texture::placeholder_image(space, flags, &settings);
                     let handle = self.images.add(image);
@@ -1981,6 +1989,62 @@ mod tests {
             .count() as f32
             / red.len() as f32;
         assert!((bleeding - 0.13).abs() < 0.015, "{bleeding}");
+    }
+
+    /// How many material layers name an image the game does not ship, by
+    /// the stored (cut and folded) name the original looks up: the original
+    /// draws its 1x1 grey placeholder for each, Exarust no map (run with
+    /// `cargo test -p exa_assets -- --ignored --nocapture` and the game
+    /// installed). Most are in development scenes and apparel bases.
+    #[test]
+    #[ignore]
+    fn shipped_materials_missing_images() {
+        use exa_formats::FileKind;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut layers = 0usize;
+        let mut missing: HashMap<(String, String), usize> = HashMap::new();
+        let mut names: std::collections::BTreeSet<String> = Default::default();
+        for (kind, pack) in game.packs() {
+            for e in pack.entries() {
+                let bytes = pack.bytes(e);
+                if !matches!(
+                    FileKind::detect(bytes),
+                    FileKind::ChunkTree | FileKind::ChunkTreeAlt
+                ) {
+                    continue;
+                }
+                let Ok(scene) = Scene::parse(bytes) else {
+                    continue;
+                };
+                for (_, m) in scene.materials {
+                    let Ok(m) = m else { continue };
+                    for layer in &m.layers {
+                        layers += 1;
+                        // The original looks the image up by its stored
+                        // name: cut at the last dot, folded.
+                        let stored = crate::texture_cache::TextureName::new(&layer.texture);
+                        if game.texture(stored.as_str()).is_none() {
+                            if layer.slot != TextureSlot::Reflection {
+                                names.insert(format!("{kind:?}:{}", stored.as_str()));
+                            }
+                            *missing
+                                .entry((format!("{kind:?}"), format!("{:?}", layer.slot)))
+                                .or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let mut rows: Vec<_> = missing.into_iter().collect();
+        rows.sort();
+        eprintln!("{layers} layers; missing images by pack and slot: {rows:?}");
+        eprintln!(
+            "{} distinct names outside reflections: {names:?}",
+            names.len()
+        );
     }
 
     /// The corpus records the rule was established on (run with
