@@ -140,8 +140,7 @@ pub struct SceneMaterials {
     /// The global plug-in names, in registration order, copied into the
     /// scene's list after the default material.
     plugins: Vec<String>,
-    /// The manager's active and previous material indices (`+0x2C`,
-    /// `+0x14`), -1 when none.
+    /// The manager's active and previous material indices, -1 when none.
     pub active: i32,
     pub previous: i32,
 }

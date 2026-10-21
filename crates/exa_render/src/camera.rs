@@ -125,9 +125,8 @@ impl Default for ViewSettings {
 
 impl ViewSettings {
     /// The settings when the view's camera is bound to a scene: the scene
-    /// counts the view's camera (the original's scene node at `+0x228`).
-    /// Exarust has no separate scene camera count, so this only reports
-    /// whether a camera is bound.
+    /// counts the view's camera. Exarust has no separate scene camera
+    /// count, so this only reports whether a camera is bound.
     pub fn binds_camera(&self, camera: Option<Entity>) -> bool {
         camera.is_some()
     }

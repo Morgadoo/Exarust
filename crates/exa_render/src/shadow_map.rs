@@ -117,8 +117,8 @@ pub fn cube_fade_distance(q: i32) -> f32 {
     }
 }
 
-/// The map-size fields a shadow map carries (`+0x78`, `+0x7C`), as the
-/// original's base-class slot sets them.
+/// The map-size fields a shadow map carries, as the original's base-class
+/// slot sets them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct ShadowMapSize {
     pub width: u32,

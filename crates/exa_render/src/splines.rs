@@ -148,12 +148,12 @@ pub struct SplineStrip {
     /// The previous and current spline points.
     previous: [f32; 2],
     current: [f32; 2],
-    /// The vertex count the original keeps at `+0x0C`.
+    /// The vertex count the original keeps.
     count: i32,
-    /// The strip's width (the original's `+0x10`).
+    /// The strip's width.
     width: f32,
-    /// The spline's length in segments (the original's `+0x36090`), which
-    /// the fade divides each vertex's share by.
+    /// The spline's length in segments, which the fade divides each
+    /// vertex's share by.
     pub segments: i32,
     /// The colour of the vertices added next.
     pub colour: [u8; 4],
@@ -162,7 +162,8 @@ pub struct SplineStrip {
     pub curvature: f32,
     /// When set, each vertex's alpha byte is the segment share
     /// (`index / segments · 0x?.? · 0.5`, rounded to even); the original
-    /// writes it at `+0x1606B` when the render object's flag byte is set.
+    /// writes it in the vertex's alpha byte when the render object's flag
+    /// byte is set.
     pub fade: bool,
     /// The alpha the fade writes at full share.
     pub fade_alpha: u8,
@@ -201,7 +202,7 @@ impl SplineStrip {
         &self.vertices
     }
 
-    /// The vertex count the original tracks at `+0x0C`.
+    /// The vertex count the original tracks.
     pub fn count(&self) -> i32 {
         self.count
     }

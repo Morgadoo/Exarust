@@ -42,8 +42,8 @@ pub struct ConvexVolume {
     /// The plane array is shared with another volume: its polygons are not
     /// freed with it.
     pub shared: bool,
-    /// A polygon buffer at the original's `+0x18` pointer is owned
-    /// elsewhere; its polygons are not freed with the volume.
+    /// A polygon buffer owned elsewhere; its polygons are not freed with
+    /// the volume.
     pub borrowed: bool,
     /// The original's count field: −1 for a fresh volume, else the number
     /// of planes it holds.

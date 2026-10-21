@@ -238,30 +238,27 @@ impl GiEmissive for NoGiShape {}
 /// crystal's or embers' glow). Every step it adds its colour straight into
 /// the voxels around it; it never lights a surface directly.
 ///
-/// The original's node keeps the base colour (`+0x1C8`), the current
-/// intensity (`+0x1D4`), the derived linear colour (`+0x1E8`), a node flag
-/// word (`+0x1D8`), the active radius (`+0x214`) and its base radius and
-/// intensity (`+0x230`, `+0x234`). The constructor only sets colour 1 and
-/// intensity 1; the file reader then fills the record's values, and
-/// activation copies the base radius to the active one.
+/// The original's node keeps the base colour, the current intensity, the
+/// derived linear colour, a node flag word, the active radius, and its base
+/// radius and intensity. The constructor only sets colour 1 and intensity
+/// 1; the file reader then fills the record's values, and activation copies
+/// the base radius to the active one.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct VoxelLight {
-    /// The node's sRGB colour (`+0x1C8`).
+    /// The node's sRGB colour.
     pub color: [f32; 3],
-    /// The current intensity (`+0x1D4`): the colour counts by its square
-    /// root.
+    /// The current intensity: the colour counts by its square root.
     pub intensity: f32,
-    /// The base intensity (`+0x234`) the condition share is taken from.
+    /// The base intensity the condition share is taken from.
     pub base_intensity: f32,
-    /// The base radius (`+0x230`), metres.
+    /// The base radius, metres.
     pub radius: f32,
-    /// The active radius (`+0x214`), metres; activation copies the base
-    /// radius here.
+    /// The active radius, metres; activation copies the base radius here.
     pub active_radius: f32,
     /// lin(colour)·√intensity·3 (×0.6 on the legacy path).
     pub colour: Vec3,
-    /// The node flag word (`+0x1D8`): bit 2 marks the colour changed, bit 1
-    /// the light activated.
+    /// The node flag word: bit 2 marks the colour changed, bit 1 the light
+    /// activated.
     pub flags: u32,
 }
 
@@ -317,8 +314,8 @@ impl VoxelLight {
 
     /// Recomputes the derived colour from the node's colour and current
     /// intensity, as the original's colour update does, and marks the node's
-    /// colour dirty. The colour update also clears the node's `+0xE4`
-    /// field, which no Exarust reader uses.
+    /// colour dirty. The colour update also clears an unread field of the
+    /// node, kept as no field here.
     pub fn colour_update(&mut self, legacy: bool) {
         self.colour = Self::colour_for(self.color, self.intensity, legacy);
         self.flags |= voxel_flags::COLOUR_DIRTY;

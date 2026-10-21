@@ -1146,10 +1146,9 @@ add straight into the volume, after the propagation, every step and in
 the warm-up:
 - colour C = lin(rgb)·√intensity·3 (the original's linear workflow; 0.6
   in double precision on its legacy path), × 0.1 per step. The node keeps
-  its base colour, current intensity (`+0x1D4`), base intensity (`+0x234`),
-  base radius (`+0x230`) and active radius (`+0x214`, copied from the base
-  by activation), plus a flag word whose bit 2 marks a colour update and
-  bit 1 an active light. A clone copies the master's colour, intensities,
+  its base colour, current intensity, base intensity, base radius and
+  active radius (copied from the base by activation), plus a flag word
+  whose bit 2 marks a colour update and bit 1 an active light. A clone copies the master's colour, intensities,
   radii and derived linear colour. An item whose model section sets
   bit 0 scales the intensity of the voxel lights under its root by
   k = (1 − c/255)², c its placement's condition byte, and the emissive

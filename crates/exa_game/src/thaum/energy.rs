@@ -178,10 +178,9 @@ pub fn shock_charge(clip_ms: u32, cost: f32) -> ShockCharge {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShockPower {
     pub owner: u64,
-    /// The object's cast flag (`+0x18`, 1).
+    /// The object's cast flag (1).
     pub cast_flag: i32,
-    /// The cost the cast was made with (`+0x60`), before the charge scales
-    /// it.
+    /// The cost the cast was made with, before the charge scales it.
     pub base_cost: f32,
     pub charge: ShockCharge,
     /// The hand arcs the charge object creates (`0x201`, 20 tendrils of 5
