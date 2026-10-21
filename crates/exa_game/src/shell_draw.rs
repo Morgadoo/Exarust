@@ -1,15 +1,17 @@
 //! Turns a skinned shell's index room into the mesh the play renderer
-//! submits: the compacted vertices placed at `position + 2·normal`, their
-//! normals, and the remapped index buffer. The original's element-buffer
-//! upload becomes the room and its [`ShellUpload`] description; wgpu keeps
-//! the buffer, so no GL calls are issued.
+//! submits: the compacted vertices placed at `position + 2·normal` (the skin
+//! controller's normal, not re-normalised, as the original's render step
+//! places them), their normals, and the remapped index buffer. The
+//! original's element-buffer upload becomes the room and its
+//! [`ShellUpload`] description; wgpu keeps the buffer, so no GL calls are
+//! issued.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 
 use crate::thaum::{
     ShellIndexError, ShellIndexRoom, ShellSpan, ShellUpload, shell_apply_compact, shell_index_room,
-    shell_index_unmap, shell_index_upload, shell_vertex,
+    shell_index_unmap, shell_index_upload,
 };
 
 /// The index buffer a play draw submits, and whether the finish unmaps it.
@@ -61,12 +63,12 @@ pub struct ShellDraw {
 }
 
 /// Builds the shell's draw: each kept vertex moves out to
-/// `position + 2·normal` (its sum unit-ed), and the index buffer is the
-/// source indices through the compacted map. The upload's payload is a
-/// quarter of the index count, as the original's element room.
+/// `position + 2·normal`, and the index buffer is the source indices
+/// through the compacted map. The upload is sized from the room (four bytes
+/// a counted triangle).
 pub fn draw_shell(
     positions: &[[f32; 3]],
-    sums: &[[f32; 3]],
+    normals: &[[f32; 3]],
     indices: &[u32],
     compact: &[Option<u32>],
     spans: &[ShellSpan],
@@ -79,27 +81,30 @@ pub fn draw_shell(
     let unmap = shell_index_unmap(if upload.is_some() { name } else { 0 });
     let remapped = shell_apply_compact(indices, compact)?;
     let mut placed = vec![[0.0f32; 3]; kept];
-    let mut normals = vec![[0.0f32; 3]; kept];
+    let mut kept_normals = vec![[0.0f32; 3]; kept];
     for (k, slot) in compact.iter().enumerate() {
         let Some(id) = slot else { continue };
         let Some(&position) = positions.get(k) else {
             return Err(ShellIndexError::Short);
         };
-        let sum = sums.get(k).copied().unwrap_or([0.0; 3]);
-        let vertex = shell_vertex(position, sum);
+        let normal = normals.get(k).copied().unwrap_or([0.0; 3]);
         let id = *id as usize;
         if kept <= id {
             return Err(ShellIndexError::Remap);
         }
-        placed[id] = vertex.at;
-        normals[id] = vertex.normal;
+        placed[id] = [
+            position[0] + normal[0] * 2.0,
+            position[1] + normal[1] * 2.0,
+            position[2] + normal[2] * 2.0,
+        ];
+        kept_normals[id] = normal;
     }
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, placed);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, kept_normals);
     mesh.insert_indices(Indices::U32(remapped.clone()));
     Ok(ShellDraw {
         room,
@@ -157,14 +162,14 @@ mod tests {
             [0.0, 1.0, 0.0],
             [1.0, 1.0, 0.0],
         ];
-        let sums = [[0.0; 3], [0.0, 0.0, 2.0], [0.0; 3], [0.0; 3]];
+        let along = [[0.0; 3], [0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]];
         let compact = [Some(0), Some(1), Some(2), None];
         let spans = [ShellSpan {
             flags: SHELL_SKINNED,
             start: 0,
             end: 0,
         }];
-        let draw = draw_shell(&positions, &sums, &[0, 1, 2], &compact, &spans, true, 1).unwrap();
+        let draw = draw_shell(&positions, &along, &[0, 1, 2], &compact, &spans, true, 1).unwrap();
         assert_eq!(draw.vertices, 3);
         assert_eq!(draw.triangles, 1);
         assert_eq!(draw.upload.unwrap().payload_bytes, 4);
@@ -174,17 +179,17 @@ mod tests {
             panic!("no positions");
         };
         assert_eq!(placed[0], [0.0, 0.0, 0.0]);
-        assert!((placed[1][2] - 2.0).abs() < 1e-3);
+        assert_eq!(placed[1], [1.0, 0.0, 2.0]);
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(normals)) =
             draw.mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
         else {
             panic!("no normals");
         };
-        assert!((normals[1][2] - 1.0).abs() < 1e-3);
+        assert_eq!(normals[1], [0.0, 0.0, 1.0]);
         assert_eq!(draw.mesh.indices(), Some(&Indices::U32(vec![0, 1, 2])));
         // A vertex outside the kept set is refused.
         assert_eq!(
-            draw_shell(&positions, &sums, &[0, 1, 3], &compact, &spans, false, 0).unwrap_err(),
+            draw_shell(&positions, &along, &[0, 1, 3], &compact, &spans, false, 0).unwrap_err(),
             ShellIndexError::Remap
         );
     }
