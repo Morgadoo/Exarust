@@ -358,6 +358,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
             skills: [0; 6],
             skill_xp: [0; 6],
             techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
         });
@@ -400,6 +401,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
             tournaments_won,
             deaths: 0,
             stock: Vec::new(),
+            emblem: exa_ui::EmblemRecord::default(),
         },
         focus,
         clock,

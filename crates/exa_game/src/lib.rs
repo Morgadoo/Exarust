@@ -11,6 +11,7 @@ pub mod body_overlay;
 pub mod career;
 pub mod create;
 pub mod cursor;
+pub mod destination;
 pub mod drag;
 pub mod effects;
 pub mod emblem;
@@ -23,6 +24,7 @@ pub mod item_container;
 pub mod item_effects;
 pub mod joint_trace;
 pub mod limp;
+pub mod loadout;
 pub mod look_overlay;
 pub mod menu;
 pub mod menu_pages;
@@ -39,6 +41,7 @@ pub mod sim_control;
 pub mod slots;
 pub mod stages;
 pub mod steering;
+pub mod techniques;
 pub mod teleporters;
 pub mod thaum;
 pub mod torch;
@@ -79,6 +82,7 @@ impl Plugin for GamePlugin {
             thaum::live::ThaumEffectsPlugin,
             teleporters::TeleportPlugin,
             hw_config::HardwareConfigPlugin,
+            destination::DestinationPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

@@ -318,6 +318,44 @@ pub struct SymbolQuad {
     pub tex_ofs: [f32; 2],
 }
 
+/// One step of the screen's paint.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SelectionDraw {
+    /// The full-screen backdrop skin and its shader.
+    Backdrop,
+    /// A destination symbol: its row, box and colour mix.
+    Symbol {
+        row: usize,
+        corners: [f32; 4],
+        mix: f32,
+    },
+}
+
+/// The screen's paint: the backdrop, then every row's symbol with its
+/// arrival fade and hover mix. The card's size and colour are applied by
+/// the caller from the interface's palette.
+pub fn draw_order(
+    screen: &DestinationScreen,
+    width: i32,
+    height: i32,
+    unit: i32,
+    now: u32,
+) -> Vec<SelectionDraw> {
+    let mut draw = vec![SelectionDraw::Backdrop];
+    for (row, slot) in screen.slots.iter().enumerate() {
+        let (x, y) = place_node(row, screen.rows(), width, height, unit, screen.turn);
+        let fade = arrival_fade(slot, now);
+        let mix = node_mix(fade, row, screen.selected);
+        let quad = symbol_quad((x, y), unit, 1.0, slot.symbol);
+        draw.push(SelectionDraw::Symbol {
+            row,
+            corners: quad.corners,
+            mix,
+        });
+    }
+    draw
+}
+
 /// Steps a slot's wobble by one frame's flash. `random` returns [0, 1) as
 /// the original's generator does; it is called twice per axis, in order.
 pub fn wobble_step(slot: &mut DestinationSlot, flash: f32, mut random: impl FnMut() -> f32) {
@@ -690,6 +728,42 @@ mod tests {
         // The flash is 0.02 a millisecond.
         assert!((flash_amount(1_050, 1_000) - 1.0).abs() < 1e-6);
         assert_eq!(flash_amount(1_000, 1_000), 0.0);
+    }
+
+    #[test]
+    fn the_paint_draws_the_backdrop_then_every_symbol() {
+        let mut screen = DestinationScreen::open(vec![7, 10, 12, 13], 4, true, 1_000);
+        screen.turn = 1.0;
+        screen.selected = 2;
+        let draw = draw_order(&screen, 200, 100, 4, 1_000);
+        assert_eq!(draw[0], SelectionDraw::Backdrop);
+        assert_eq!(draw.len(), 5);
+        // Row 0 is the centre, row 1 the left node and the selected one
+        // (selected is 1-based); the others keep the base ink.
+        assert_eq!(
+            draw[1],
+            SelectionDraw::Symbol {
+                row: 0,
+                corners: [36.0, -14.0, 164.0, 114.0],
+                mix: 0.0,
+            }
+        );
+        assert_eq!(
+            draw[2],
+            SelectionDraw::Symbol {
+                row: 1,
+                corners: [-124.0, -14.0, 4.0, 114.0],
+                mix: 1.0,
+            }
+        );
+        assert_eq!(
+            draw[3],
+            SelectionDraw::Symbol {
+                row: 2,
+                corners: [116.0, 125.0, 244.0, 253.0],
+                mix: 0.0,
+            }
+        );
     }
 
     #[test]

@@ -128,6 +128,8 @@ pub struct Member {
     pub skill_xp: [u16; 6],
     /// Technique ids, six skills by six slots. Slot `level` is in training.
     pub techniques: [[u8; 6]; 6],
+    /// One arena kit per rank.
+    pub loadouts: [crate::loadout::CharacterLoadout; crate::loadout::RANKS],
     /// Health, 0 to 65535. A full pool is 65535.
     pub health: u16,
     /// Still named in a tournament entry.
@@ -328,6 +330,8 @@ pub struct Company {
     pub deaths: u32,
     /// The shop's shelf, oldest first. The session save does not store this.
     pub stock: Vec<u32>,
+    /// The company's emblem.
+    pub emblem: exa_ui::EmblemRecord,
 }
 
 /// Copper one shop line is worth, before a sale quarters the basket.
@@ -369,6 +373,7 @@ impl Company {
             tournaments_won: 0,
             deaths: 0,
             stock: Vec::new(),
+            emblem: exa_ui::EmblemRecord::default(),
         }
     }
 
@@ -469,6 +474,7 @@ impl Company {
             skills: [0; 6],
             skill_xp: [0; 6],
             techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
         });
@@ -531,6 +537,7 @@ impl Company {
             skills: [0; 6],
             skill_xp: [0; 6],
             techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
         });

@@ -39,6 +39,7 @@ pub mod hud;
 pub mod icon_atlas;
 pub mod item_view;
 pub mod loading;
+pub mod loadout;
 pub mod match_board;
 pub mod menu;
 pub mod scale;
@@ -83,6 +84,12 @@ pub use gui_level::GuiLevelState;
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
+pub use loadout::{
+    ARSENAL_HEIGHT, DropResult, DropSource, EQUIP_HEIGHT, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,
+    LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot,
+    apply_drop, can_equip, copies, encumbrance, layout as loadout_layout,
+    opacity as loadout_opacity, points_used, save_on_close, unequip,
+};
 pub use match_board::{
     Board, BoardAction, BoardHit, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,
     CloseState, CoinDraw, Column, EventEntry, Fighter, MatchBoardDestroy, MatchBoardShow,
@@ -113,8 +120,9 @@ pub use menu::{
 pub use scale::GuiScale;
 pub use selection::{
     Click as PortalClick, DestinationScreen, DestinationSlot, Frame as PortalFrame, Journey,
-    TravelStep, arrival_fade, bubble_origin, bump_flash, crystal_charge, fill_rows, flash_amount,
-    hit_node, journey, node_mix, place_node, quarter_sine, symbol_quad, travel_step, wobble_step,
+    SelectionDraw, TravelStep, arrival_fade, bubble_origin, bump_flash, crystal_charge,
+    draw_order as selection_draw_order, fill_rows, flash_amount, hit_node, journey, node_mix,
+    place_node, quarter_sine, symbol_quad, travel_step, wobble_step,
 };
 pub use skill::{
     SkillBounds, SkillHit, SkillHover, SkillHoverInput, SkillInputInput, SkillInputOutput,
@@ -161,6 +169,12 @@ pub use skin::{
     scroll_arrow_horizontal, scroll_arrow_vertical, selection_band, set_skin_metrics, shadow_ring,
     skin_constructor, skin_measures, solid_rect, stripe_bar, sunken_ring, two_ink_band,
     two_ink_outline, vertical_gradient, vertical_gradient_frame, with_alpha,
+};
+pub use technique_selector::{
+    ASSIGNED, BASE_WORD, CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, ROWS, RowKind, SLOTS, SelectorDraw,
+    SelectorKey, SkillRows, SkillTraining, TechniqueChange, TechniqueRow, TechniqueSelector,
+    TechniqueText, TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
+    draw_order as technique_draw_order, refresh_tree, selector_key, text_places,
 };
 
 pub struct UiPlugin;
