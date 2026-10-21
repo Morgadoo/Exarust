@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **52.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 47.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **54.7% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 48.2% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
@@ -19,11 +19,11 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Rendering & GPU | 823 | 334 | 63 | 62% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
 | World, levels & terrain | 454 | 174 | 31 | 54% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 54% | 0% | RFE_Dynamics_Cloth, TSimObject |
-| Characters, motion & animation | 506 | 198 | 23 | 42% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
+| Characters, motion & animation | 506 | 198 | 23 | 45% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 58% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
-| AI & behaviour | 437 | 206 | 17 | 53% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
-| Thaumaturgy & effects | 697 | 296 | 83 | 48% | 0% | TForceBlastEmissive, TForceBlastGeometry, TForceTorrentGeometry |
+| AI & behaviour | 437 | 206 | 17 | 58% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
+| Thaumaturgy & effects | 697 | 296 | 83 | 58% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 64% | 0% | TDialogueChoices, TScriptRole, TGameTips |
 | Game modes, arena & session | 646 | 193 | 23 | 50% | 0% | TCharCreation, XA_Arena save and rank helpers (TMatchBoard by address), TShopWindow |
@@ -53,7 +53,6 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
-| SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TCharCreation | Game modes, arena & session | 12 | 3 | 3% |
 | XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 9 | 3 | 0% |
 | SG_Character_DBs | Data, assets & I/O | 15 | 3 | 10% |
@@ -78,13 +77,14 @@ Ordered by code size; these are where most of the original still has no counterp
 | TDialogueChoices | Script, dialogue & story | 5 | 2 | 0% |
 | Screen-quad GLSL snippets | Rendering & GPU | 7 | 1 | 0% |
 | RF_Splines | Rendering & GPU | 8 | 1 | 0% |
+| Steam API glue | Runtime & platform | 16 | 1 | 7% |
 
 ## Best covered components
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
+| TMotileAI | AI & behaviour | 60 | 59% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | XA_Arena | Game modes, arena & session | 71 | 50% | exa_game/src/manage.rs; exa_game/src/tournament.rs |
-| TMotileAI | AI & behaviour | 60 | 50% | exa_ai/src/combat.rs; exa_ai/src/combat_test.rs |
 | TGUIDrawSkin | UI | 35 | 85% | exa_ui/src/skin.rs; exa_ui/src/lib.rs |
 | TPathFinder | AI & behaviour | 32 | 86% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_world/src/cloth_draw.rs |
@@ -94,6 +94,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_SceneNodes | World, levels & terrain | 24 | 75% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | TMesh | Rendering & GPU | 25 | 71% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | TVXGIManager | Rendering & GPU | 29 | 60% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
+| SG_Thaum_Mind | Thaumaturgy & effects | 21 | 80% | exa_game/src/mind/casts.rs; exa_game/src/mind/sight.rs |
 | SG_Character_Data | Characters, motion & animation | 20 | 83% | exa_formats/src/characters.rs; exa_character/src/record.rs |
 | TGUIItemContainer | Items, materials & crafting | 26 | 64% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | TParticleSystem | Thaumaturgy & effects | 19 | 82% | exa_world/src/particles.rs; exa_world/src/flame.rs |
@@ -102,7 +103,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | TSimSector | Physics, bodies & cloth | 28 | 53% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
 | SG_ObjectDB2 | Data, assets & I/O | 19 | 74% | exa_formats/src/objdb.rs; exa_formats/src/objdb/store.rs |
 | TCombatant | AI & behaviour | 17 | 85% | exa_ai/src/combatant.rs; exa_ai/src/place.rs |
-| TMatchBoard | Game modes, arena & session | 17 | 82% | exa_ui/src/match_board.rs; exa_game/src/arena_board.rs |
 
 ## Combat rules
 
