@@ -1018,13 +1018,21 @@ pub enum CreationCloseForm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreationCloseInput {
     pub active: bool,
-    pub has_208: bool,
-    pub has_220: bool,
-    pub has_218: bool,
-    pub has_238: bool,
-    pub has_210: bool,
-    pub has_228: bool,
-    pub has_1d0: bool,
+    /// The weapons panel is built.
+    pub has_weapon_panel: bool,
+    /// The skills panel is built.
+    pub has_skill_panel: bool,
+    /// The versus lobby form is built.
+    pub has_lobby_form: bool,
+    /// The versus equipment page's skills panel is built.
+    pub has_versus_skills: bool,
+    /// The equipment form on show (the apparel panel, or the form the
+    /// versus equipment hook built) is set.
+    pub has_equipment_form: bool,
+    /// The body page (physique, height and skin tone) is built.
+    pub has_body_form: bool,
+    /// The hair page is built.
+    pub has_hair_form: bool,
     pub mode: i32,
 }
 
@@ -1033,7 +1041,9 @@ pub struct CreationCloseInput {
 pub struct CreationClose {
     pub scheduled: Option<CreationCloseForm>,
     pub released: [bool; 7],
-    pub call_2d: bool,
+    /// The form is set back to its 45-unit width (closing the skills panel,
+    /// which widened it).
+    pub width_restored: bool,
     pub widgets_reset: bool,
     pub ticked: bool,
     pub strings: bool,
@@ -1051,7 +1061,7 @@ pub fn close_creation_screen(input: CreationCloseInput) -> CreationClose {
                 CreationCloseForm::Regular
             }),
             released: [false; 7],
-            call_2d: false,
+            width_restored: false,
             widgets_reset: false,
             ticked: false,
             strings: false,
@@ -1060,26 +1070,26 @@ pub fn close_creation_screen(input: CreationCloseInput) -> CreationClose {
         };
     }
     let mut released = [false; 7];
-    let mut call_2d = false;
-    if input.has_208 {
+    let mut width_restored = false;
+    if input.has_weapon_panel {
         released[0] = true;
-    } else if input.has_220 {
+    } else if input.has_skill_panel {
         released[1] = true;
-        call_2d = true;
-    } else if input.has_218 {
+        width_restored = true;
+    } else if input.has_lobby_form {
         released[2] = true;
     }
-    released[3] = input.has_238;
-    released[4] = input.has_210;
+    released[3] = input.has_versus_skills;
+    released[4] = input.has_equipment_form;
     let widgets_reset = input.mode != 12;
     if widgets_reset {
-        released[5] = input.has_228;
-        released[6] = input.has_1d0;
+        released[5] = input.has_body_form;
+        released[6] = input.has_hair_form;
     }
     CreationClose {
         scheduled: None,
         released,
-        call_2d,
+        width_restored,
         widgets_reset,
         ticked: true,
         strings: true,
@@ -3820,24 +3830,24 @@ mod tests {
     fn the_creation_close_schedules_or_releases() {
         let empty = CreationCloseInput {
             active: false,
-            has_208: false,
-            has_220: false,
-            has_218: false,
-            has_238: false,
-            has_210: false,
-            has_228: false,
-            has_1d0: false,
+            has_weapon_panel: false,
+            has_skill_panel: false,
+            has_lobby_form: false,
+            has_versus_skills: false,
+            has_equipment_form: false,
+            has_body_form: false,
+            has_hair_form: false,
             mode: 0,
         };
 
         let inactive = close_creation_screen(CreationCloseInput {
-            has_208: true,
-            has_220: true,
-            has_218: true,
-            has_238: true,
-            has_210: true,
-            has_228: true,
-            has_1d0: true,
+            has_weapon_panel: true,
+            has_skill_panel: true,
+            has_lobby_form: true,
+            has_versus_skills: true,
+            has_equipment_form: true,
+            has_body_form: true,
+            has_hair_form: true,
             mode: 10,
             ..empty
         });
@@ -3851,10 +3861,10 @@ mod tests {
 
         let active = close_creation_screen(CreationCloseInput {
             active: true,
-            has_220: true,
-            has_218: true,
-            has_210: true,
-            has_228: true,
+            has_skill_panel: true,
+            has_lobby_form: true,
+            has_equipment_form: true,
+            has_body_form: true,
             mode: 12,
             ..empty
         });
@@ -3863,7 +3873,7 @@ mod tests {
             active.released,
             [false, true, false, false, true, false, false]
         );
-        assert!(active.call_2d);
+        assert!(active.width_restored);
         assert!(!active.widgets_reset);
         assert!(active.ticked);
         assert!(active.strings);
@@ -3872,18 +3882,18 @@ mod tests {
 
         let full = close_creation_screen(CreationCloseInput {
             active: true,
-            has_208: true,
-            has_220: true,
-            has_218: true,
-            has_238: true,
-            has_210: true,
-            has_228: true,
-            has_1d0: true,
+            has_weapon_panel: true,
+            has_skill_panel: true,
+            has_lobby_form: true,
+            has_versus_skills: true,
+            has_equipment_form: true,
+            has_body_form: true,
+            has_hair_form: true,
             mode: 3,
         });
         assert_eq!(full.released, [true, false, false, true, true, true, true]);
         assert!(full.widgets_reset);
-        assert!(!full.call_2d);
+        assert!(!full.width_restored);
     }
 
     #[test]

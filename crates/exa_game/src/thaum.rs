@@ -1157,7 +1157,8 @@ pub struct TreeShowInput {
     pub pane_word: u32,
     pub clock: u32,
     pub offset: i32,
-    pub value_1bc: u32,
+    /// The tree page on show, which the show keeps as the page to reopen.
+    pub shown_tree: u32,
 }
 
 /// The tree show's calls and stores.
@@ -1180,7 +1181,7 @@ pub fn show_tree(input: TreeShowInput) -> TreeShow {
         refresh_calls: u32::from((input.pane_word & 0x20) != 0),
         flags_or: 2,
         stamp: input.clock.wrapping_add(input.offset as u32),
-        stored: input.value_1bc,
+        stored: input.shown_tree,
     }
 }
 
@@ -1480,40 +1481,48 @@ pub struct TreeDecayInput {
     pub first: f32,
     pub second: f32,
     pub base: f32,
-    pub field_17c: f32,
-    pub field_180: f32,
+    /// The view's pan target across and down; a drag moves it and the shown
+    /// pan eases toward it.
+    pub pan_x: f32,
+    pub pan_y: f32,
     pub runtime: f32,
     pub mode: i32,
     pub dim_flag: bool,
     pub has_started: bool,
-    pub has_250: bool,
-    pub has_248: bool,
+    /// The creation tree's back action (return to the creation screen) is
+    /// set.
+    pub has_back: bool,
+    /// The creation tree's accept action (finish the character) is set.
+    pub has_accept: bool,
 }
 
 /// The tree decay's results.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TreeDecay {
-    pub field_17c: f32,
-    pub field_180: f32,
+    /// The moved pan target.
+    pub pan_x: f32,
+    pub pan_y: f32,
     pub started: bool,
     pub start_clock: Option<u32>,
     pub scaled: Option<i32>,
-    pub call_250: bool,
-    pub call_248: bool,
+    /// The back action ran (event 0x200 on the creation tree).
+    pub back_called: bool,
+    /// The accept action ran (event 0x100 on the creation tree).
+    pub accept_called: bool,
     pub dim_calls: u32,
     pub result: i32,
 }
 
 /// Applies the tree's decay terms, virtual and mode callbacks.
 pub fn decay_tree(input: TreeDecayInput, now: u32) -> TreeDecay {
-    let mut field_17c = input.field_17c;
-    let mut field_180 = input.field_180;
+    let mut pan_x = input.pan_x;
+    let mut pan_y = input.pan_y;
     let mut started = false;
     let mut start_clock = None;
     if (input.mask & 0x10) != 0 {
         let base = 2.0 + input.base;
-        field_17c -= base * input.first * 4.0;
-        field_180 -= base * input.second * 4.0;
+        pan_x -= base * input.first * 4.0;
+        pan_y -= base * input.second * 4.0;
         if !input.has_started {
             started = true;
             start_clock = Some(now);
@@ -1526,13 +1535,13 @@ pub fn decay_tree(input: TreeDecayInput, now: u32) -> TreeDecay {
     };
     let mode3 = input.mode == 3;
     TreeDecay {
-        field_17c,
-        field_180,
+        pan_x,
+        pan_y,
         started,
         start_clock,
         scaled,
-        call_250: mode3 && input.mask == 0x200 && input.has_250,
-        call_248: mode3 && input.mask == 0x100 && input.has_248,
+        back_called: mode3 && input.mask == 0x200 && input.has_back,
+        accept_called: mode3 && input.mask == 0x100 && input.has_accept,
         dim_calls: u32::from(!mode3 && (input.mask & 0x300) != 0 && !input.dim_flag),
         result: if (input.mask & 0x30) != 0 { 3 } else { 0 },
     }
@@ -2319,7 +2328,7 @@ mod tests {
             pane_word: 0x20,
             clock: 1000,
             offset: 250,
-            value_1bc: 7,
+            shown_tree: 7,
         });
         assert_eq!(shown.focus_word, Some(0x807));
         assert_eq!(shown.focus_calls, 1);
@@ -2334,7 +2343,7 @@ mod tests {
             pane_word: 0,
             clock: 10,
             offset: 5,
-            value_1bc: 1,
+            shown_tree: 1,
         });
         assert_eq!(quiet.focus_word, None);
         assert_eq!(quiet.focus_calls, 0);
@@ -2537,19 +2546,19 @@ mod tests {
             first: 1.0,
             second: 2.0,
             base: 3.0,
-            field_17c: 100.0,
-            field_180: 200.0,
+            pan_x: 100.0,
+            pan_y: 200.0,
             runtime: 2.5,
             mode,
             dim_flag: dim,
             has_started: false,
-            has_250: true,
-            has_248: true,
+            has_back: true,
+            has_accept: true,
         };
 
         let terms = decay_tree(input(0x10, 0, false), 500);
-        assert!((terms.field_17c - 80.0).abs() < 1e-5);
-        assert!((terms.field_180 - 160.0).abs() < 1e-5);
+        assert!((terms.pan_x - 80.0).abs() < 1e-5);
+        assert!((terms.pan_y - 160.0).abs() < 1e-5);
         assert!(terms.started);
         assert_eq!(terms.start_clock, Some(500));
         assert_eq!(terms.result, 3);
@@ -2559,12 +2568,12 @@ mod tests {
         assert_eq!(scaled.result, 3);
 
         let call = decay_tree(input(0x200, 3, false), 0);
-        assert!(call.call_250);
-        assert!(!call.call_248);
+        assert!(call.back_called);
+        assert!(!call.accept_called);
 
         let call_two = decay_tree(input(0x100, 3, false), 0);
-        assert!(call_two.call_248);
-        assert!(!call_two.call_250);
+        assert!(call_two.accept_called);
+        assert!(!call_two.back_called);
 
         assert_eq!(decay_tree(input(0x100, 0, false), 0).dim_calls, 1);
         assert_eq!(decay_tree(input(0x100, 0, true), 0).dim_calls, 0);
