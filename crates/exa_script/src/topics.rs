@@ -8,11 +8,12 @@
 //! witness mask, `0x4000` no re-activation while active, bits 16–19 how long
 //! an activation lasts, bits 20–22 the delay before it opens.
 //!
-//! Memory is filed under (relation role id, key): a role-to-role dialogue
-//! uses (partner's role, owner's role), a relation role's dialogue
-//! (owner's relation role, partner's role). Loading pads a shorter block
-//! with zeros; when the stored count differs from the dialogue's, the
-//! stored count word itself lands in the first slot, as in the original.
+//! Memory is filed under (relation role entry, key): a role-to-role
+//! dialogue uses (the aimed-at role, the owner's role), a relation role's
+//! dialogue (the relation role, the aimed-at role). Loading pads a shorter
+//! block with zeros; when the stored count differs from the dialogue's,
+//! the dialogue's own count word lands in the first slot and the stored
+//! words follow it, as in the original.
 //!
 //! Evidence: the topic gate, the activation updater, the memory load and
 //! store of the run-time dialogue, the cooldown table (16 words), the
@@ -182,11 +183,17 @@ pub fn load(owner: &Character, at: MemoryKey, count: usize) -> (Option<Vec<u32>>
     if stored.len() == count {
         words.copy_from_slice(stored);
     } else {
-        // The original copies from the stored count word on: slot 1 gets
-        // the count, the words follow shifted by one.
-        let shifted = std::iter::once(stored.len() as u32).chain(stored.iter().copied());
-        for (w, s) in words.iter_mut().zip(shifted).take(stored.len().min(count)) {
-            *w = s;
+        // The original writes the requested node count into the first slot
+        // and copies the stored words behind it: the node words end up
+        // shifted by one, and the tail (or the excess) is cut.
+        if let Some(first) = words.first_mut() {
+            *first = count as u32;
+        }
+        let n = stored.len().min(count.saturating_sub(1));
+        for (i, &w) in stored.iter().take(n).enumerate() {
+            if let Some(slot) = words.get_mut(i + 1) {
+                *slot = w;
+            }
         }
     }
     (Some(words), true)

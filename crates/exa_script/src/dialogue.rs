@@ -510,6 +510,8 @@ struct SceneHost<'s, 'a> {
     conv: Option<&'s mut Conversation>,
     leaving: &'s mut Vec<u32>,
     end_requested: &'s mut bool,
+    /// `StartDialogue` requests, run once the script returns.
+    start_requests: &'s mut Vec<(Option<u32>, Option<u32>, Name)>,
 }
 
 impl SceneHost<'_, '_> {
@@ -685,8 +687,9 @@ impl Host for SceneHost<'_, '_> {
     fn checkpoint_save(&mut self) {
         self.scene.effects.push(Effect::CheckpointSave);
     }
-    fn start_dialogue(&mut self, topic: Name) {
+    fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
         self.scene.effects.push(Effect::StartDialogue(topic));
+        self.start_requests.push((a, b, topic));
     }
     fn end_dialogue(&mut self) {
         *self.end_requested = true;
@@ -1182,13 +1185,16 @@ impl Engine {
         let mut ctx = Context::new(actors);
         ctx.role = role;
         self.last_run = None;
+        let mut requests = Vec::new();
         let mut host = SceneHost {
             scene,
             conv: None,
             leaving: &mut self.leaving,
             end_requested: &mut self.end_requested,
+            start_requests: &mut requests,
         };
         let r = interp::run(&mut host, &mut ctx, text);
+        self.run_start_requests(scene, requests);
         self.settle(scene);
         r
     }
@@ -1203,16 +1209,19 @@ impl Engine {
             return 0;
         };
         let mut ctx = std::mem::replace(&mut conv.ctx, Context::new(Vec::new()));
+        let mut requests = Vec::new();
         let mut host = SceneHost {
             scene,
             conv: Some(conv),
             leaving: &mut self.leaving,
             end_requested: &mut self.end_requested,
+            start_requests: &mut requests,
         };
         let r = interp::run(&mut host, &mut ctx, text);
         if let Some(conv) = self.conv_mut(id) {
             conv.ctx = ctx;
         }
+        self.run_start_requests(scene, requests);
         r
     }
 
@@ -1225,17 +1234,34 @@ impl Engine {
             return text.to_vec();
         };
         let mut ctx = std::mem::replace(&mut conv.ctx, Context::new(Vec::new()));
+        let mut requests = Vec::new();
         let mut host = SceneHost {
             scene,
             conv: Some(conv),
             leaving: &mut self.leaving,
             end_requested: &mut self.end_requested,
+            start_requests: &mut requests,
         };
         let out = interp::substitute(&mut host, &mut ctx, text);
         if let Some(conv) = self.conv_mut(id) {
             conv.ctx = ctx;
         }
+        self.run_start_requests(scene, requests);
         out
+    }
+
+    /// Start the dialogues `StartDialogue` asked for (the original starts
+    /// them inside the call; the request runs when the script returns).
+    fn run_start_requests(
+        &mut self,
+        scene: &mut Scene<'_>,
+        requests: Vec<(Option<u32>, Option<u32>, Name)>,
+    ) {
+        for (a, b, topic) in requests {
+            if let (Some(a), Some(b)) = (a, b) {
+                self.start_dialogue(scene, a, b, topic);
+            }
+        }
     }
 
     /// Apply what scripts deferred: leaving characters end their

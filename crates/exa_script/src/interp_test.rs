@@ -28,6 +28,7 @@ struct World {
     with: Vec<(u32, u32, Name, u32, u32)>,
     activated: Vec<(Name, i32)>,
     witnessed: Vec<u32>,
+    started: Vec<(Option<u32>, Option<u32>, Name)>,
 }
 
 impl Host for World {
@@ -114,6 +115,9 @@ impl Host for World {
     }
     fn witness_role(&mut self, role: u32) {
         self.witnessed.push(role);
+    }
+    fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
+        self.started.push((a, b, topic));
     }
 }
 
@@ -523,4 +527,20 @@ fn witness_role_reaches_eighteen_metres() {
     assert!(!witness_range(1801.0, 0.0, 0.0));
     assert!(!witness_range(1500.0, 0.0, 1500.0));
     assert!(witness_range(1000.0, 1000.0, 1000.0));
+}
+
+/// `StartDialogue` is handed the first two actor slots, as the original
+/// passes the request to the role unit.
+#[test]
+fn start_dialogue_carries_the_first_two_actors() {
+    let mut w = World::default();
+    let mut c = ctx();
+    run(&mut w, &mut c, "StartDialogue(Wake);");
+    assert_eq!(w.started.len(), 1);
+    assert_eq!(w.started[0].0, Some(GOLEM));
+    assert_eq!(w.started[0].1, Some(PLAYER));
+    assert_eq!(w.started[0].2.text(), "Wake");
+    let mut empty: Context<u32> = Context::new(Vec::new());
+    run(&mut w, &mut empty, "StartDialogue(Wake);");
+    assert_eq!(w.started[1], (None, None, w.started[1].2));
 }

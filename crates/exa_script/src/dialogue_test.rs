@@ -226,8 +226,8 @@ fn memory_loads_shifted_when_counts_differ() {
     assert_eq!(topics::load(&c, at, 3), (None, false));
     topics::store(&mut c, at, &[7, 8, 9]);
     assert_eq!(topics::load(&c, at, 3), (Some(vec![7, 8, 9]), true));
-    assert_eq!(topics::load(&c, at, 5), (Some(vec![3, 7, 8, 0, 0]), true));
-    assert_eq!(topics::load(&c, at, 2), (Some(vec![3, 7]), true));
+    assert_eq!(topics::load(&c, at, 5), (Some(vec![5, 7, 8, 9, 0]), true));
+    assert_eq!(topics::load(&c, at, 2), (Some(vec![2, 7]), true));
     let other = MemoryKey { key: 20, ..at };
     assert_eq!(topics::load(&c, other, 3), (None, true));
     assert_eq!(topics::world_time(100, 5500, 1000), 104);
