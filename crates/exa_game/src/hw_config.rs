@@ -45,6 +45,9 @@ pub struct HardwareConfig {
     pub settings_file: Option<PathBuf>,
     /// The benchmark in progress.
     pub benchmark: Option<Benchmark>,
+    /// Whether the benchmark was started by opening the page: its result
+    /// then fills the page's draft, as the original's show handler does.
+    pub refresh_after_benchmark: bool,
     /// The Music checkbox's session state. The option itself keeps the
     /// startup value, as the original's does.
     pub session_music: bool,
@@ -61,6 +64,7 @@ impl Default for HardwareConfig {
             screen: None,
             settings_file: None,
             benchmark: None,
+            refresh_after_benchmark: false,
             session_music: live.music,
             window_size: None,
         }
@@ -87,16 +91,24 @@ impl HardwareConfig {
         self
     }
 
-    /// Opens the settings screen over the live options, or keeps it open.
+    /// Opens the settings screen over the live options, or keeps it open, and
+    /// runs the GPU benchmark its show handler runs: the result fills the
+    /// page's draft when it arrives.
     pub fn open(&mut self) {
         if self.screen.is_none() {
             self.screen = Some(Screen::open(&self.live));
         }
+        if self.benchmark.is_none() {
+            self.benchmark = Some(Benchmark::new(BENCHMARK_FREQUENCY));
+        }
+        self.refresh_after_benchmark = true;
     }
 
     /// Closes the screen without applying (the original's page switch).
     pub fn close(&mut self) {
         self.screen = None;
+        self.benchmark = None;
+        self.refresh_after_benchmark = false;
     }
 
     /// Cancel: pushes the options the screen opened with back into the live
@@ -105,6 +117,8 @@ impl HardwareConfig {
         let screen = self.screen.take()?;
         self.live = screen.cancel();
         self.session_music = self.live.music;
+        self.benchmark = None;
+        self.refresh_after_benchmark = false;
         Some(self.live)
     }
 
@@ -112,6 +126,8 @@ impl HardwareConfig {
     /// live and closes the screen.
     pub fn apply(&mut self) -> Option<Applied> {
         let screen = self.screen.take()?;
+        self.benchmark = None;
+        self.refresh_after_benchmark = false;
         let draft = screen.draft;
         let quality = screen.quality_change();
         let fullscreen_changed = draft.window_mode != screen.baseline.window_mode;
@@ -161,6 +177,12 @@ impl HardwareConfig {
         self.benchmark = None;
         self.live = Options::auto_detected(&self.live, perf_index, width, height);
         self.session_music = self.live.music;
+        if std::mem::take(&mut self.refresh_after_benchmark)
+            && let Some(screen) = &mut self.screen
+        {
+            screen.draft = Options::opened_from(&self.live);
+            screen.baseline = self.live;
+        }
     }
 
     /// The Deck's fixed preset, instead of a benchmark.
@@ -352,6 +374,7 @@ impl Plugin for HardwareConfigPlugin {
                     apply_options,
                     apply_window,
                     start_benchmark_scene,
+                    cleanup_benchmark,
                 )
                     .chain(),
             );
@@ -598,12 +621,9 @@ fn start_benchmark_scene(
 /// Counts the benchmark's frames on the real clock, and when the third run
 /// ends takes the auto-detected quality and tears the scene down.
 fn drive_benchmark(
-    mut commands: Commands,
     time: Res<Time<Real>>,
     mut config: ResMut<HardwareConfig>,
-    scene: Option<Res<BenchmarkScene>>,
-    mut images: ResMut<Assets<Image>>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     let ticks = (time.elapsed_secs_f64() * BENCHMARK_FREQUENCY as f64) as u64;
     let Some(perf) = config
@@ -613,6 +633,7 @@ fn drive_benchmark(
     else {
         return;
     };
+    info!("GPU benchmark: performance index {perf:.2}");
     let Ok(window) = windows.single() else {
         // The window may have closed; keep the measurement for the next one.
         return;
@@ -622,21 +643,36 @@ fn drive_benchmark(
         i64::from(window.physical_height()),
     );
     config.finish_benchmark(perf, width, height);
-    if let Some(scene) = scene {
-        commands.entity(scene.camera).despawn();
-        for quad in &scene.quads {
-            commands.entity(*quad).despawn();
-        }
-        images.remove(&scene.target);
-        images.remove(&scene.source);
-        let present_mode = scene.present_mode;
-        if let Ok(mut window) = windows.single_mut()
-            && window.present_mode != present_mode
-        {
-            window.present_mode = present_mode;
-        }
-        commands.remove_resource::<BenchmarkScene>();
+}
+
+/// Tears the benchmark's scene down once no benchmark is running, restoring
+/// the window's present mode.
+fn cleanup_benchmark(
+    mut commands: Commands,
+    config: Res<HardwareConfig>,
+    scene: Option<Res<BenchmarkScene>>,
+    mut images: ResMut<Assets<Image>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    if config.benchmark.is_some() {
+        return;
     }
+    let Some(scene) = scene else {
+        return;
+    };
+    commands.entity(scene.camera).despawn();
+    for quad in &scene.quads {
+        commands.entity(*quad).despawn();
+    }
+    images.remove(&scene.target);
+    images.remove(&scene.source);
+    let present_mode = scene.present_mode;
+    if let Ok(mut window) = windows.single_mut()
+        && window.present_mode != present_mode
+    {
+        window.present_mode = present_mode;
+    }
+    commands.remove_resource::<BenchmarkScene>();
 }
 
 #[cfg(test)]
@@ -700,10 +736,11 @@ mod tests {
         assert_eq!(config.live.supersample, 3);
         assert_eq!(config.live.shading_quality, 5);
         assert_eq!(config.live.shadow_quality, 4);
-        // The original's Defaults does not refresh the open page.
+        // The benchmark came from opening the page, so its result fills the
+        // draft, as the original's show handler does.
         let screen = config.screen.as_ref().unwrap();
-        assert_eq!(screen.draft.supersample, 0);
-        assert_eq!(screen.baseline.supersample, 0);
+        assert_eq!(screen.draft.supersample, 3);
+        assert_eq!(screen.baseline.supersample, 3);
     }
 
     #[test]

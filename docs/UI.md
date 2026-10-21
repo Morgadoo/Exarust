@@ -764,8 +764,11 @@ The page's show handler runs the GPU benchmark and takes its quality levels
 on every opening outside the Deck, whose fixed preset is super sampling 3,
 shading 5, texture detail 2, texture quality 5, shadow detail 5 and shadow
 quality 3. Exarust has the screen's model and the benchmark, but the form is
-not drawn yet: `HardwareConfig::open` prepares the rows and
-`start_benchmark` runs the same protocol when a screen asks for it.
+not drawn yet: `HardwareConfig::open` prepares the rows and starts the
+benchmark (its result fills the draft), `deck_preset` takes the Deck's
+levels, and `--benchmark` runs it at start. The benchmark's workload is
+Exarust's own, so it also runs in the game's window rather than a
+"Configuration" message box.
 
 ### Apply, Cancel and Defaults
 

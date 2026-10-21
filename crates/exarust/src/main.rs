@@ -19,6 +19,7 @@
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
 //!          --no-settings              ignore the user's settings files (see below)
+//!          --benchmark                run the GPU benchmark and take its quality levels
 //!          --screenshot <file.png>    save a frame and exit
 //!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
@@ -129,6 +130,8 @@ pub struct Options {
     pub no_supersample: bool,
     /// Hide the frame-rate readout.
     pub no_fps: bool,
+    /// Run the GPU benchmark after the start and take its quality levels.
+    pub benchmark: bool,
     /// Present frames as soon as they are drawn (for measuring).
     pub no_vsync: bool,
     /// Window size in logical pixels.
@@ -386,6 +389,7 @@ fn main() -> AppExit {
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
             "--no-fps" => options.no_fps = true,
+            "--benchmark" => options.benchmark = true,
             "--no-vsync" => options.no_vsync = true,
             "--no-settings" => options.no_settings = true,
             "--gi-warm-up" => {
@@ -644,15 +648,21 @@ fn main() -> AppExit {
     }
     // The settings screen's options as the launcher starts with them; its
     // plugin applies the renderer, audio and window parts.
-    let hardware = user.as_ref().map(|user| {
-        user.hardware(
+    let hardware = if let Some(user) = &user {
+        let mut hardware = user.hardware(
             options.fullscreen,
             options.size,
             options.no_vsync,
             options.no_supersample,
             options.no_fps,
-        )
-    });
+        );
+        if options.benchmark {
+            hardware.start_benchmark();
+        }
+        Some(hardware)
+    } else {
+        None
+    };
     let trace = match options
         .trace
         .as_deref()
