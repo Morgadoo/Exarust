@@ -59,6 +59,10 @@ pub const NOISE_FLAGS: u32 = 0x0100_4200;
 /// The noise texture's usage word.
 pub const NOISE_USAGE: u32 = 0x0200_7000;
 
+/// The vertex attributes the effect shader binding declares.
+pub const EFFECT_SHADER_ATTRIBUTES: u32 = 4;
+/// A creator that returns no callback.
+pub const NO_EFFECT_CALLBACK: u32 = 0;
 /// The node flags every Force effect node starts with.
 pub const EFFECT_NODE: u32 = 0x2100_0000;
 /// The shell subobject's flag.

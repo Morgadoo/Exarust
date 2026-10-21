@@ -501,12 +501,27 @@ the body for 32 ticks, knocks a character back a step and sets its
 instability, each part it strikes in front lowers the character's energy
 again while it is above 0.25, and its line is stamped on the navigation
 grid's penalty until the wall falls;
-wisps ride their parts. The power tree and its bar are modelled in `thaum::tree` but no play mode
-opens the screen or reads the bar yet, so the player cannot cast:
-`--debug-arcs`, `--debug-barricade` and `--debug-wisps` put the effects on
-the player ([DEBUGGING.md](DEBUGGING.md)).
+wisps ride their parts. The running game opens the tree with `P` and the bar with `C` (`hotkeys`),
+routes the pointer through the tree's hover/click/drag/zoom rules, draws
+the tree, bar, tooltip and preview with the six fragment programs in
+`exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`), and casts the
+chosen slot with the use key through the Force, Displacement and Energy
+front ends, spawning the creators' scene nodes (`thaum::visuals`). The
+`--debug-arcs`, `--debug-barricade` and `--debug-wisps` flags still put
+those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Drawing
+
+The power tree's drawing is `exa_ui::tree_draw`: the six immediate
+programs with their exact sources, uniform sets and textures, the empty
+slot, icon, frame, glow, flame, marked-ring and link-ribbon geometry, and
+the tree, bar, prompt, tooltip and drag-preview draw orders. The running
+screen rasterises those batches in software (`power_screen::render`) with
+each fragment program's arithmetic and the loaded sheets; the shader
+bindings of the Force and Displacement effects are data in
+`thaum::visuals` (materials, blocks, `gi_multipoint`, the noise picture and
+the per-pass texture offsets). The EffectShell, EffectShell pass selection
+and the tendril geometry are in `thaum::veil`/`thaum::visuals`.
 
 The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's
