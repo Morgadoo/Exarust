@@ -116,14 +116,14 @@ pub use gui_text::{
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use line_skin::{
-    LINE_BAR, LINE_CAP, LINE_CLOSE, LINE_CORNER, LINE_EDGE, LINE_EDGE_ALT, LINE_END, LINE_FACE,
-    LINE_FACE_HOT, LINE_FRAME, LINE_FRAME_ALT, LINE_OPEN, LINE_RIGHT, LINE_SCROLL_BAR,
-    LINE_SCROLL_EDGE, LINE_SCROLL_THUMB, LINE_SLIDER_CAP, LINE_SLIDER_MIDDLE, LINE_SLIDER_THUMB,
-    LINE_TRACK, LineDraw, LineInks, LineLabelDraw, LineMetrics, LineOwner, LineQuad, LineScroll,
-    LineShadow, LineSolid, LineSpans, LineTitle, LineWidget, draw_line_bar, draw_line_border,
-    draw_line_detail, draw_line_label, draw_line_marker, draw_line_progress, draw_line_rect,
-    draw_line_rule, draw_line_scroll, draw_line_widget, refresh_line_scroll, register_line_skin,
-    release_line_text, set_line_metrics,
+    LINE_BAR, LINE_CAP, LINE_CLOSE, LINE_CLOSE_INK, LINE_CORNER, LINE_EDGE, LINE_EDGE_ALT,
+    LINE_END, LINE_FACE, LINE_FACE_HOT, LINE_FRAME, LINE_FRAME_ALT, LINE_OPEN, LINE_RIGHT,
+    LINE_SCROLL_BAR, LINE_SCROLL_EDGE, LINE_SCROLL_THUMB, LINE_SLIDER_CAP, LINE_SLIDER_MIDDLE,
+    LINE_SLIDER_THUMB, LINE_TRACK, LineDraw, LineInks, LineLabelDraw, LineMetrics, LineOwner,
+    LineQuad, LineScroll, LineShadow, LineSolid, LineSpans, LineTitle, LineWidget, draw_line_bar,
+    draw_line_border, draw_line_detail, draw_line_label, draw_line_marker, draw_line_progress,
+    draw_line_rect, draw_line_rule, draw_line_scroll, draw_line_widget, refresh_line_scroll,
+    register_line_skin, release_line_text, set_line_metrics,
 };
 pub use loading::LoadingStatus;
 pub use loadout::{

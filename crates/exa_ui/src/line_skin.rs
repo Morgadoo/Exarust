@@ -19,6 +19,10 @@ use crate::skin::{LINE_RAIL, SPAN_BAR, SPAN_CAP, SPAN_END, SkinInk};
 /// The skin's alpha byte for an opaque force, 255.
 pub const LINE_OPAQUE: u8 = 0xff;
 
+/// The orange the original hard-codes for an active close edge and for the
+/// late close square.
+pub const LINE_CLOSE_INK: SkinInk = [0xff, 0xcc, 0x99, 0xff];
+
 /// A sample used by the thin window edges: 0, 0, 0, 0.3 and 0.15, 0.3, 0.15, 0.
 pub const LINE_EDGE: [u32; 8] = [
     0,
@@ -355,8 +359,6 @@ pub struct LineInks {
     pub icon_focus: SkinInk,
     /// A raised centred icon, whose alpha is lifted when it is drawn.
     pub icon_raised: SkinInk,
-    /// The orange tint of an active close edge.
-    pub close: SkinInk,
 }
 
 impl LineInks {
@@ -377,7 +379,6 @@ impl LineInks {
             icon_hot: ink,
             icon_focus: ink,
             icon_raised: ink,
-            close: [0xff, 0xcc, 0x99, 0xff],
         }
     }
 }
@@ -1263,7 +1264,7 @@ fn draw_line_bars(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInks, uni
             widget.client_top.wrapping_add(unit.wrapping_shl(1))
         };
         if widget.close_mark == -9 {
-            draw.bind(inks.close);
+            draw.bind(LINE_CLOSE_INK);
         } else {
             draw.bind(inks.normal);
         }
@@ -1288,7 +1289,7 @@ fn draw_line_bars(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInks, uni
             widget.client_bottom.wrapping_sub(unit.wrapping_shl(1))
         };
         if widget.close_mark == -10 {
-            draw.bind(inks.close);
+            draw.bind(LINE_CLOSE_INK);
         } else {
             draw.bind(inks.normal);
         }
@@ -1310,7 +1311,7 @@ fn draw_line_bars(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInks, uni
         let thumb = widget.thumb.wrapping_sub(unit);
         let left = widget.client_right.wrapping_add(slant);
         if widget.close_mark == -8 {
-            draw.bind(inks.close);
+            draw.bind(LINE_CLOSE_INK);
         } else {
             draw.bind(inks.normal);
         }
@@ -1814,7 +1815,7 @@ pub fn draw_line_widget(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInk
 
     if widget.close_mark == -4 {
         let side = f(unit.wrapping_shl(2));
-        draw.bind(inks.close);
+        draw.bind(LINE_CLOSE_INK);
         draw.begin_calls += 1;
         draw.push(
             LINE_CLOSE,
@@ -1851,7 +1852,6 @@ mod tests {
             icon_hot: [42, 43, 44, 45],
             icon_focus: [46, 47, 48, 49],
             icon_raised: [50, 51, 52, 53],
-            close: [0xff, 0xcc, 0x99, 0xff],
         }
     }
 
@@ -1893,6 +1893,20 @@ mod tests {
 
     fn corners(quad: &LineQuad) -> [(i32, i32); 4] {
         quad.corners.map(|(x, y)| (x as i32, y as i32))
+    }
+
+    #[test]
+    fn the_float_conversions_round_to_even_and_keep_the_indefinite_value() {
+        assert_eq!(float_to_int(0.5), 0);
+        assert_eq!(float_to_int(1.5), 2);
+        assert_eq!(float_to_int(2.5), 2);
+        assert_eq!(float_to_int(-0.5), 0);
+        assert_eq!(float_to_int(-1.5), -2);
+        assert_eq!(float_to_int(f32::NAN), i32::MIN);
+        assert_eq!(float_to_int(2_147_483_648.0), i32::MIN);
+        assert_eq!(double_to_int(6.5), 6);
+        assert_eq!(double_to_int(-6.5), -6);
+        assert_eq!(double_to_int(f64::INFINITY), i32::MIN);
     }
 
     #[test]
@@ -2226,7 +2240,7 @@ mod tests {
             corners(&draw.quads[17]),
             [(100, 0), (80, 0), (80, 20), (100, 20)]
         );
-        assert_eq!(draw.quads[17].ink, inks().close);
+        assert_eq!(draw.quads[17].ink, LINE_CLOSE_INK);
     }
 
     #[test]
@@ -2272,6 +2286,24 @@ mod tests {
             corners(&draw.quads[12]),
             [(30, 80), (30, 70), (70, 70), (70, 80)]
         );
+    }
+
+    #[test]
+    fn a_plain_bar_draws_only_its_progress_track() {
+        let mut place = widget();
+        place.style = 0x80;
+        let mut draw = LineDraw::new();
+        draw_line_widget(&mut draw, &place, &inks(), 5);
+        assert_eq!(draw.quads.len(), 3);
+        assert_eq!(
+            corners(&draw.quads[0]),
+            [(20, 10), (20, 20), (40, 20), (40, 10)]
+        );
+
+        place.state = 1;
+        let mut draw = LineDraw::new();
+        draw_line_widget(&mut draw, &place, &inks(), 5);
+        assert_eq!(draw.quads.len(), 0);
     }
 
     #[test]
