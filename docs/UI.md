@@ -1854,8 +1854,12 @@ plain draw and input records.
 - **Story background picker** (`exa_ui::class_select`): the four
   portraits of `startcharsxa.rfi` at a scale of the screen height
   quantised to 1/135 and scaled by 1/8, 256 by 512 cards 288 apart,
-  centred, only the unlocked ones, the chosen card cream; the chosen
-  portrait and name sit below.
+  centred and 140 down from a 1024-high frame, only the unlocked ones
+  (the first always), the chosen card cream. The chosen background's name
+  sits centred below, with its description wrapped in a 145 by 60 unit box.
+  The hit test uses the same layout and the cards' own rectangle. Keys:
+  confirm with a card hovered, two keys go back, and left and right step to
+  the previous or next offered card.
 - **Reply choices** (`exa_ui::dialogue_choices`): a 400 by 120 panel
   eight units above its parent's bottom. The hit test answers the entry
   number from 1; an entry's band is its wrapped line count times four units

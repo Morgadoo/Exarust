@@ -515,8 +515,8 @@ field. `modal_screens` holds the message box, the shader warm-up screen's
 three phases and its 200-unit fades, and the key-capture screen's warning
 and binding table. `transition` is the state machine between game states
 (600/800/300/2000-unit fades, the switch, the hold and the fade back).
-`class_select` lays out and paints the four story portraits and their
-chosen card. `dialogue_choices` is the reply list's hit test, pick, fading colours,
+`class_select` lays out the four story portraits and their chosen card,
+and has the picker's hit test and key steps. `dialogue_choices` is the reply list's hit test, pick, fading colours,
 rows and height animation. `picker_fields` has the creator's marker fields and the
 physique point's body-shape weights. `popups` has the item card, the
 container popup and the parchment. `dialogs` has the colour window's six
