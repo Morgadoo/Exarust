@@ -148,20 +148,15 @@ impl LightSource {
                 self.flicker -= r * step;
             } else if scale <= -0.9 {
                 let r = random();
-                self.flicker = r * step + self.flicker;
+                self.flicker += r * step;
             } else {
                 let r = random();
-                self.flicker = 2.0 * step * (r - 0.5) + self.flicker;
+                self.flicker += 2.0 * step * (r - 0.5);
             }
             let r = random();
             let moved = f64::from(frame_ms) * 0.1 * f64::from(r * self.flicker) + scale;
-            self.scale = moved as f32;
             // A NaN scale is kept.
-            if self.scale > 1.0 {
-                self.scale = 1.0;
-            } else if self.scale < -1.0 {
-                self.scale = -1.0;
-            }
+            self.scale = (moved as f32).clamp(-1.0, 1.0);
             self.fixture_scale = self.scale * self.emissive + 1.0;
             let gain = f64::from(self.scale * self.amplitude) * 0.1 + 1.0;
             self.intensity = (gain * f64::from(self.base_intensity)) as f32;
@@ -215,18 +210,12 @@ pub fn frame_ms(delta_ms: u128) -> f32 {
 /// The engine's generator the flicker draws from: `x ← x·0x08088405 + 1`,
 /// a draw `x·2⁻³²` rounded to single precision. The original shares one
 /// generator across the engine; the flicker keeps a stream of its own.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FlickerRng(pub u32);
-
-impl Default for FlickerRng {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl FlickerRng {
     /// The next draw in `[0, 1)`.
-    pub fn next(&mut self) -> f32 {
+    pub fn draw(&mut self) -> f32 {
         self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
         (f64::from(self.0) * f64::from_bits(0x3DF0_0000_0000_0000)) as f32
     }
@@ -261,7 +250,7 @@ fn flicker_lights(
         if !source.animates() {
             continue;
         }
-        source.flicker_step(&mut || rng.next(), ms);
+        source.flicker_step(&mut || rng.draw(), ms);
     }
 }
 
@@ -461,10 +450,10 @@ mod tests {
     #[test]
     fn the_generator_steps_and_scales_by_two_to_the_minus_32() {
         let mut rng = FlickerRng(0);
-        assert_eq!(rng.next(), (1.0f64 / 4_294_967_296.0) as f32);
+        assert_eq!(rng.draw(), (1.0f64 / 4_294_967_296.0) as f32);
         assert_eq!(rng.0, 1);
         assert_eq!(
-            rng.next(),
+            rng.draw(),
             (f64::from(0x0808_8406u32) / 4_294_967_296.0) as f32
         );
     }
