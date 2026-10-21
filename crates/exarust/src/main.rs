@@ -923,7 +923,7 @@ mod tests {
         let key = |key, at: u32| (Press::Key(key), at..at + 1);
         let button = |button, at: u32| (Press::Button(button), at..at + 1);
         assert_eq!(
-            parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5,LMB@6,RMB@7,MMB@8"),
+            parse_presses(".@400, P@500,F3@1,]@2,[@3,Tab@4,f@5,LMB@6,RMB@7,MMB@8,Esc@9"),
             Some(vec![
                 key(KeyCode::Period, 400),
                 key(KeyCode::KeyP, 500),
@@ -935,13 +935,14 @@ mod tests {
                 button(MouseButton::Left, 6),
                 button(MouseButton::Right, 7),
                 button(MouseButton::Middle, 8),
+                key(KeyCode::Escape, 9),
             ])
         );
         assert_eq!(parse_presses(""), Some(vec![]));
         assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
         assert_eq!(parse_clicks("300,x"), None);
         for bad in [
-            "P", "P@x", "F13@1", "Esc@2", "@3", "lmb@4", "XMB@5", "RMB@5-5", "RMB@9-4", "W@1-x",
+            "P", "P@x", "F13@1", "esc@2", "@3", "lmb@4", "XMB@5", "RMB@5-5", "RMB@9-4", "W@1-x",
         ] {
             assert_eq!(parse_presses(bad), None, "{bad}");
         }
