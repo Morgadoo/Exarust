@@ -1554,6 +1554,111 @@ pub fn render_words(game: &GameData) -> Result<()> {
     Ok(())
 }
 
+/// `corpus colours`: the RGBA8 colour stream of every mesh, per pack: how
+/// many meshes carry one, how many of those have a vertex whose alpha is
+/// below 255 (the blood channel's "wounded" values) and how many have a
+/// vertex that is not white, with the vertex totals; and how many of the
+/// coloured meshes draw a group whose material (the library's, else the
+/// file's own) has a dirt mode (bits 12..14 of its extra flags), the only
+/// programs that read the stream, and how many of those have mode 4 (wound
+/// blood).
+pub fn colours(game: &GameData) -> Result<()> {
+    #[derive(Default)]
+    struct Row {
+        meshes: usize,
+        coloured: usize,
+        translucent: usize,
+        tinted: usize,
+        vertices: usize,
+        low_alpha: usize,
+        dirt_mode: usize,
+        blood_mode: usize,
+        examples: Vec<String>,
+    }
+    let archives: Vec<exa_rpk::Archive> = game
+        .project()
+        .material_libraries
+        .iter()
+        .map(String::as_str)
+        .chain(["humanbase.rml"])
+        .filter_map(|lib| exa_rpk::Archive::parse(game.resource_file(lib)?).ok())
+        .collect();
+    let library = |name: &str| {
+        archives
+            .iter()
+            .find_map(|archive| exa_formats::material::Material::parse(archive.get(name)?).ok())
+    };
+    let mut rows: BTreeMap<&'static str, Row> = BTreeMap::new();
+    for (kind, pack) in game.packs() {
+        for e in pack.entries() {
+            let b = pack.bytes(e);
+            if !matches!(
+                FileKind::detect(b),
+                FileKind::ChunkTree | FileKind::ChunkTreeAlt
+            ) {
+                continue;
+            }
+            let Ok(scene) = Scene::parse(b) else { continue };
+            let row = rows.entry(kind.file_stem()).or_default();
+            for node in &scene.nodes {
+                let NodeBody::Mesh(m) = &node.body else {
+                    continue;
+                };
+                row.meshes += 1;
+                let Some(colours) = &m.colors else { continue };
+                row.coloured += 1;
+                row.vertices += colours.len();
+                let low = colours.iter().filter(|c| c[3] < 255).count();
+                row.low_alpha += low;
+                let translucent = low > 0;
+                row.translucent += usize::from(translucent);
+                row.tinted += usize::from(colours.iter().any(|c| c[..3] != [255; 3]));
+                let modes: Vec<u32> = m
+                    .groups
+                    .iter()
+                    .filter_map(|g| {
+                        library(&g.material)
+                            .or_else(|| scene.material(&g.material).cloned())
+                            .map(|mat| mat.extra & 0x7000)
+                    })
+                    .collect();
+                row.dirt_mode += usize::from(modes.iter().any(|&mode| mode != 0));
+                row.blood_mode += usize::from(modes.contains(&0x4000));
+                if translucent && row.examples.len() < 4 {
+                    row.examples.push(format!("{}:{}", e.name, node.name));
+                }
+            }
+        }
+    }
+    println!(
+        "{:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6}  examples",
+        "pack",
+        "meshes",
+        "coloured",
+        "translucent",
+        "tinted",
+        "vertices",
+        "alpha<255",
+        "dirt",
+        "mode 4"
+    );
+    for (pack, r) in &rows {
+        println!(
+            "{pack:<12} {:>7} {:>8} {:>11} {:>7} {:>10} {:>10} {:>6} {:>6}  {}",
+            r.meshes,
+            r.coloured,
+            r.translucent,
+            r.tinted,
+            r.vertices,
+            r.low_alpha,
+            r.dirt_mode,
+            r.blood_mode,
+            r.examples.join(", ")
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
