@@ -1799,13 +1799,20 @@ drawn yet: the rules wait for the forms that will show them.
   description's pronoun marker names `HeShe`, `HimHer`, `HisHer` or
   `HisHers`, giving he/she, him/her, his/her or his/hers by the owner's
   sex bit; the description box sits `0xb4` pixels below the page's top.
-- **Inventory** (`exa_items::inventory_window`): 244 × 644 units (628
-  compact, 590 inside the arsenal), the doll above a 228 × 180 pack of
-  capacity 400 and items up to 50; worn items count against the pack.
-  A right-button release closes it.
-- **Arsenal** (`exa_items::arsenal`): up to five 236-unit columns, 60 units
-  apart, scrolled by two arrows; borrowed items stay in their column
-  marked `0x200` until returned.
+- **Inventory** (`exa_items::inventory_window`): 244 wide and 644 high (628
+  compact, 590 inside the arsenal), the doll above a 228 × 180 pack at the
+  bottom of the client area, of capacity 400 and items up to 50; only what
+  the character wears counts against the pack when it is bound. A
+  right-button release closes it. Not wired into the running game.
+- **Arsenal** (`exa_items::arsenal`): up to five 236-pixel columns laid 60
+  units apart (240 pixels at unit 4), as many as fit after a 12-unit margin
+  (and 61 for the inventory while shown), scrolled by two arrows. The form
+  has eight controls on one row: the arrows, five template buttons and the
+  inventory toggle. Escape or a right-button release closes it; the
+  inventory key shows or hides the inventory. A borrowed item stays in its
+  column marked `0x200`, which the inventory refuses, until it is returned.
+  Closing saves the five columns into the chosen set, if any. Not wired
+  into the running game.
 - **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
   item and variant (lit models by their condition byte), counted by
   reference; 40 units square; framed at 70 (30 for apparel, 20 close),

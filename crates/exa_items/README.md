@@ -28,6 +28,9 @@ renderbuffers at twice that, the two RGBA image headers, the sun along
 pack at the bottom of the client area and the equipment panel above it; a
 drag off the body drops a held weapon, or takes the item off the record,
 marks the character and rebuilds apparel, and Power Crystal AL (500) runs
-the body's "Activate" dialogue. The inventory (`inventory_window`) and arsenal
-(`arsenal`) gained their constructors' geometry, close plans and
-position memory.
+the body's "Activate" dialogue. The inventory (`inventory_window`) has its
+constructor geometry, the pack's place at the client bottom, bind and close
+plans, drag permissions, drop-back rules and position memory; the arsenal
+(`arsenal`) its layout (five columns, eight controls on the top row),
+close order, key, scroll and release handling, drag hooks and drop rules.
+Neither window is wired into the running game.
