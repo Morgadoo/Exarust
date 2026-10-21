@@ -190,9 +190,12 @@ fn run_texture_loader(
         loader.stream.finish_decode(request, decoded);
     }
 
+    pump_uploads(&mut loader, &mut cache, &mut images);
+
     // The loader's pass: one request at a time per free slot, and none
     // while the upload list is waiting on the main thread (the original's
-    // yield rule).
+    // yield rule). The pump above has just drained the list, so the loader
+    // only waits when a capped upload budget left entries behind.
     while loader.decoding.len() < loader.decodes_in_flight.max(1) && loader.stream.can_decode() {
         let Some(request) = loader.stream.take_next() else {
             break;
@@ -222,7 +225,14 @@ fn run_texture_loader(
         }
     }
 
-    let ModelCache { textures, .. } = &mut *cache;
+    // Requests that failed on the spot are ready now.
+    pump_uploads(&mut loader, &mut cache, &mut images);
+}
+
+/// Uploads the decoded images that are ready into the texture records'
+/// placeholder handles.
+fn pump_uploads(loader: &mut TextureLoader, cache: &mut ModelCache, images: &mut Assets<Image>) {
+    let ModelCache { textures, .. } = cache;
     let budget = loader.upload_budget;
     loader.stream.pump_uploads(budget, |upload| {
         let Some(record) = textures.get(&upload.key) else {
