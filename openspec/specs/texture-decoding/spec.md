@@ -96,7 +96,7 @@ A material texture's creation word SHALL be the material record's texture load f
 - **THEN** the texture repeats across its width and clamps along its height
 
 ### Requirement: Texture sampler
-The sampler SHALL follow the creation word: bit 5 linear magnification, bit 4 linear minification, bit 6 mipmapping and bit 7 linear blending between levels, bits 16 and 17 repeat (else clamp). Anisotropy SHALL be 2^(level − mode) for a mode (bits 0–1) below the quality's level and not 3, else 1, and 1 unless every filter is linear. The LOD bias SHALL be the base times (the supersampling factor times the single-precision third).
+The sampler SHALL follow the creation word: bit 5 linear magnification, bit 4 linear minification, bit 6 mipmapping and bit 7 linear blending between levels, bits 16 and 17 repeat (else clamp). Anisotropy SHALL be 2^(level − mode) for a mode (bits 0–1) below the quality's level and not 3, else 1, and 1 unless every filter is linear.
 
 #### Scenario: A material texture at the retail settings
 - **WHEN** a material with load flags 0x70000 asks for a diffuse map at texture quality 5
@@ -109,6 +109,13 @@ The sampler SHALL follow the creation word: bit 5 linear magnification, bit 4 li
 #### Scenario: The quality table
 - **WHEN** texture quality 0, 3, 4 and 5 are set
 - **THEN** the mask, anisotropy level and bias base are 0x00, 0, 0; 0x70, 1, 0; 0xF0, 2, −0.5; and 0xF0, 4, −0.75
+
+### Requirement: Texture LOD bias
+The LOD bias SHALL be the base times (the supersampling factor times the single-precision third), evaluated in that order, where the factor is the supersampling level below 2 and that level less one from 2 up. Every material path, painted, race-skin and run-time apparel included, SHALL take the bias.
+
+#### Scenario: Supersampling factor
+- **WHEN** the supersampling level is 1, 2 and 4 at a bias base of −0.75
+- **THEN** the biases are −0.25, −0.25 and −0.75
 
 ### Requirement: Colour space of an upload
 A texture SHALL be uploaded as sRGB only when the request asks for colour, its word lacks the data bit and its stored format is colour. An uncompressed format word with bit 16 set, and a compressed one whose top byte is 0x82 or 0x92, SHALL count as data.
@@ -153,3 +160,10 @@ Textures SHALL be kept by their stored name: the first sixteen bytes, cut at the
 #### Scenario: Order and first word
 - **WHEN** `stone01d`, `brick02d` and `wood03d` are added and `stone01d` is requested again with another word
 - **THEN** the records are in the order brick02d, wood03d, stone01d, and stone01d keeps its first word with two references
+
+### Requirement: Single-channel diffuse
+A diffuse map stored as BC4, the original's luminance format, SHALL be uploaded as one channel and shown as grey on every material path, with no diffuse bias for a record that has a secondary colour.
+
+#### Scenario: A BC4 diffuse
+- **WHEN** a run-time apparel or race-skin material takes a BC4 diffuse
+- **THEN** the shader repeats the red channel as grey
