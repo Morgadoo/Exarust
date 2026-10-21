@@ -82,6 +82,7 @@ fn poisson_disc() -> Vec<Vec2> {
         for _ in 0..ATTEMPTS {
             let angle = rng.unit() * std::f32::consts::TAU;
             let radius = (rng.unit() + 1.0) * r;
+            // The runtime's SinCos gives sin first, then cos.
             let p = centre + Vec2::new(angle.sin(), angle.cos()) * radius;
             if p.x <= margin || p.y <= margin || p.x >= SIDE - margin || p.y >= SIDE - margin {
                 continue;
@@ -268,6 +269,17 @@ pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scatter_starts_at_the_seeds_first_two_draws() {
+        let mut rng = Lcg(POINT_SEED);
+        let first = Vec2::new(rng.unit() * SIDE, rng.unit() * SIDE);
+        let all: Vec<Vec2> = points().iter().flatten().copied().collect();
+        assert!(
+            all.iter().any(|p| p.distance(first) < 1e-6),
+            "{first:?} is not in the set"
+        );
+    }
 
     #[test]
     fn points_are_spaced_and_cover_the_tile() {

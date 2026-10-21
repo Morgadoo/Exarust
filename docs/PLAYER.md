@@ -218,6 +218,8 @@ does not yet follow these three rules.
 
 A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door. A drag pulls along the cursor direction by the nearest accepted hit, and that reach starts at 1000 cm. The grabbed box is refused when any placed corner is higher than 280 cm or lower than 1000 cm.
 
+The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`), its layer against the view's, its option flag (`0x4000000` skips it) and its bounding sphere, and each mesh asked for its nearest face, keeping the nearest. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles, and the kinesis variant also needs the node's `0x200000` flag.
+
 ## Combat mode
 
 **Tab** toggles it, and every practice or arena fight starts with it on, as

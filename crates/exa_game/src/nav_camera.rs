@@ -52,13 +52,14 @@ pub fn align_behind(camera_yaw: f32, body_yaw: f32) -> f32 {
 
 /// The pitch the zoom asks for: 0.8 rad below the horizon under zoom 1000,
 /// then 0.000125 rad steeper per unit. The sum is a double, as the
-/// original's is.
+/// original's is; an unordered compare takes the steep branch too, so a NaN
+/// zoom gives a NaN floor.
 pub fn pitch_floor(zoom: f32) -> f32 {
-    if PITCH_ZOOM_BASE <= zoom {
+    if zoom < PITCH_ZOOM_BASE {
+        PITCH_BASE
+    } else {
         ((f64::from(zoom) - f64::from(PITCH_ZOOM_BASE)) * PITCH_PER_ZOOM + f64::from(PITCH_BASE))
             as f32
-    } else {
-        PITCH_BASE
     }
 }
 
@@ -167,8 +168,9 @@ pub fn place(at: Vec3, back: Vec3, distance: Option<f32>, limits: HeightLimits) 
     let (back, distance) = match distance {
         // The original takes a given direction as it is; a caller that
         // gives a distance gives a unit vector (guess: no normalisation
-        // there).
-        Some(distance) if distance >= DISTANCE_EPSILON => (back, distance),
+        // there). A NaN distance takes this branch too, as its unordered
+        // compare does.
+        Some(distance) if distance.is_nan() || distance >= DISTANCE_EPSILON => (back, distance),
         _ => {
             let vector = back - at;
             let distance = vector.length();
@@ -322,10 +324,11 @@ pub fn fov_scale(value: f32) -> f32 {
     value / PRESET_SCALE
 }
 
-/// `exp(log2(value) / 59)`: the preset's 59th-root scaling, as the original
-/// does it with the runtime library's log2 and exp in double precision.
+/// `exp(ln(value) / 59)`: the preset's 59th-root scaling, as the original
+/// does it with the runtime library's logarithm and exponential in double
+/// precision.
 fn root59(value: f32) -> f32 {
-    (f64::from(value).log2() / 59.0).exp2() as f32
+    (f64::from(value).ln() / 59.0).exp() as f32
 }
 
 /// Applies a preset as the original's routine does. The GUI callbacks and
@@ -476,6 +479,8 @@ mod tests {
         assert!((pitch_floor(1300.0) - 0.8375).abs() < 1e-6);
         // The original adds in double precision.
         assert_eq!(pitch_floor(1000.5), 0.8 + 0.5 * 0.000125);
+        // An unordered compare takes the steep branch: the floor is NaN.
+        assert!(pitch_floor(f32::NAN).is_nan());
     }
 
     #[test]
