@@ -57,10 +57,11 @@ pub const FADE_OUT_MS: u32 = 300;
 pub const FADE_IN_MS: u32 = 400;
 /// How long the tail lasts, in milliseconds.
 pub const TAIL_MS: u32 = 300;
-/// How long the summon's effect grows, in milliseconds.
-pub const SUMMON_GROW_MS: u32 = 3000;
+/// How long the summon's effect waits before it starts to fade, in
+/// milliseconds.
+pub const SUMMON_WAIT_MS: u32 = 2000;
 /// How long the summon's effect fades, in milliseconds.
-pub const SUMMON_FADE_MS: u32 = 1000;
+pub const SUMMON_FADE_MS: u32 = 3000;
 /// How long the summon's tail lasts, in milliseconds.
 pub const SUMMON_TAIL_MS: u32 = 1000;
 /// The shell bit that marks a shell shared with Constant Displacement.
@@ -100,6 +101,63 @@ impl VanishBase {
     }
 }
 
+/// One body image the vanish effect shows and hides: the shell's shown
+/// value and its flags (bit 2 is the distortion's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VanishPart {
+    pub shown: f32,
+    pub flags: u32,
+    /// The after-image's shown value.
+    pub trail: f32,
+}
+
+/// The flag a hidden distortion keeps off.
+pub const PART_DISTORTION: u32 = 4;
+
+impl VanishPart {
+    /// Shows the part at full strength. The original also asks its draw
+    /// routine for a 0x30-long fade (a guess at that argument's meaning).
+    pub fn show(&mut self) {
+        self.shown = 1.0;
+    }
+
+    /// Hides the part: its shown value and trail fall to 0 and its
+    /// distortion flag clears.
+    pub fn hide(&mut self) {
+        self.flags &= !PART_DISTORTION;
+        self.shown = 0.0;
+        self.trail = 0.0;
+    }
+}
+
+/// The demon the summon brings in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DemonSummon {
+    pub record: &'static str,
+    pub role: u32,
+    pub relation: f32,
+    pub topic: u32,
+}
+
+/// The demon's record name.
+pub const DEMON_RECORD: &str = "demon a01";
+/// The role it takes.
+pub const DEMON_ROLE: u32 = 0x21;
+/// The relation the two characters gain toward each other.
+pub const DEMON_RELATION: f32 = 300.0;
+/// The relation topic.
+pub const DEMON_TOPIC: u32 = 0x1c;
+
+/// The demon record the summon loads and the roles it is given.
+pub fn demon_summon() -> DemonSummon {
+    DemonSummon {
+        record: DEMON_RECORD,
+        role: DEMON_ROLE,
+        relation: DEMON_RELATION,
+        topic: DEMON_TOPIC,
+    }
+}
+
 /// What a vanish tick asks the game to do.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VanishStep {
@@ -116,8 +174,9 @@ pub struct VanishStep {
     pub spend: f32,
     /// Drop the shell this tick.
     pub drop_shell: bool,
-    /// Mark the shell closing.
-    pub close_shell: bool,
+    /// The displacement shell's state word: 2 when the body vanishes,
+    /// 1 when it moves, 2 when it reappears; 0 leaves it alone.
+    pub shell_state: i32,
 }
 
 impl VanishStep {
@@ -130,7 +189,7 @@ impl VanishStep {
             moved: false,
             spend: 0.0,
             drop_shell: false,
-            close_shell: false,
+            shell_state: 0,
         }
     }
 }
@@ -145,7 +204,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
             base.shown = 1.0;
             VanishStep {
                 hide: true,
-                close_shell: true,
+                shell_state: 2,
                 ..VanishStep::quiet(1.0)
             }
         }
@@ -178,7 +237,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
                 base.step = base.step.wrapping_add(1);
                 VanishStep {
                     moved: true,
-                    close_shell: true,
+                    shell_state: 1,
                     ..VanishStep::quiet(0.0)
                 }
             }
@@ -194,6 +253,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
                 VanishStep {
                     show: true,
                     drop_shell: true,
+                    shell_state: 2,
                     ..VanishStep::quiet(1.0)
                 }
             }
@@ -464,7 +524,7 @@ impl Summon {
             SUMMON_SPAWN => {
                 if created {
                     self.phase = SUMMON_GROW;
-                    self.deadline = now.wrapping_add(SUMMON_GROW_MS);
+                    self.deadline = now.wrapping_add(SUMMON_WAIT_MS);
                     return SummonStep {
                         phase: self.phase,
                         ..quiet
@@ -580,6 +640,30 @@ mod tests {
     }
 
     #[test]
+    fn vanish_parts_show_and_hide() {
+        let mut part = VanishPart {
+            shown: 0.0,
+            flags: PART_DISTORTION,
+            trail: 0.0,
+        };
+        part.show();
+        assert_eq!(part.shown, 1.0);
+        assert_eq!(part.flags, PART_DISTORTION);
+        part.hide();
+        assert_eq!(part.shown, 0.0);
+        assert_eq!(part.flags, 0);
+    }
+
+    #[test]
+    fn the_demon_carries_its_roles() {
+        let demon = demon_summon();
+        assert_eq!(demon.record, "demon a01");
+        assert_eq!(demon.role, 0x21);
+        assert_eq!(demon.relation, 300.0);
+        assert_eq!(demon.topic, 0x1c);
+    }
+
+    #[test]
     fn a_summon_runs_its_five_phases() {
         let mut summon = Summon::new(0, true);
         assert_eq!(summon.control(0, 1, NavAnswer::Waiting, false).result, 0);
@@ -594,18 +678,18 @@ mod tests {
             SUMMON_GROW
         );
         assert_eq!(
-            summon.control(0, 3003, NavAnswer::Found, true).phase,
+            summon.control(0, 2003, NavAnswer::Found, true).phase,
             SUMMON_GROW
         );
         assert_eq!(
-            summon.control(0, 3004, NavAnswer::Found, true).phase,
+            summon.control(0, 2004, NavAnswer::Found, true).phase,
             SUMMON_FADE
         );
         assert_eq!(
-            summon.control(0, 4004, NavAnswer::Found, true).phase,
+            summon.control(0, 5004, NavAnswer::Found, true).phase,
             SUMMON_TAIL
         );
-        let done = summon.control(0, 5005, NavAnswer::Found, true);
+        let done = summon.control(0, 6005, NavAnswer::Found, true);
         assert_eq!(done.result, DONE);
         assert!(done.cleanup);
 

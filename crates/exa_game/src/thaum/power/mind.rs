@@ -187,7 +187,7 @@ impl MindSenseInstant {
         }
     }
 
-    /// The HUD word: the timed row while it runs, the active row once its
+    /// The HUD word: the active row while it runs, the timed row once its
     /// end has passed.
     pub fn hud(&self, now: u32) -> super::HudState {
         if self.end < now {

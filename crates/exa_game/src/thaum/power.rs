@@ -173,6 +173,21 @@ impl PowerBase {
     }
 }
 
+/// The words a power's save routine writes: its id and a kind word, then —
+/// for a power that names a target — the target's id. The kind is 4 for
+/// Loyalty and Command Dead, 0 for the self powers.
+pub fn save_power(id: u32, target: Option<u32>) -> Vec<u32> {
+    match target {
+        None => vec![id, 0],
+        Some(target) => vec![id, 4, target],
+    }
+}
+
+/// The id a save's first word carries, or `None` for an empty record.
+pub fn load_power(words: &[u32]) -> Option<u32> {
+    words.first().copied()
+}
+
 /// A tick of a sustained power's focus: adds it to what the body spent.
 pub fn drain(body: &mut CastBody, cost: f32) {
     spend_tick(body, cost);
@@ -598,6 +613,14 @@ mod tests {
         assert!(spirit.visible);
         assert_eq!(spirit.powers, powers);
         assert_eq!(spirit.traits, [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_saved_power_writes_its_id_and_target() {
+        assert_eq!(save_power(0x20208, None), vec![0x20208, 0]);
+        assert_eq!(save_power(0x2010A, Some(7)), vec![0x2010A, 4, 7]);
+        assert_eq!(load_power(&save_power(0x401, None)), Some(0x401));
+        assert_eq!(load_power(&[]), None);
     }
 
     #[test]
