@@ -613,11 +613,12 @@ The original's own forms and controls that Exarust rebuilds, with the
   randomiser (`state · 0x8088405 + 1`, each draw the high half of `state ·
   n`, four records of history), previewed by the four-texture shader.
 - **In-game screens** (`exa_ui::game_gui`, `exa_game::gui_screens`): the
-  character/inventory, loot and journal show rules, the eight-slot open
+  inventory, loot window and journal show rules, the eight-slot open
   container registry, the journal's entries, the power-slot and counter
-  controls, the HUD's extra layers and the close/save scopes; the running
-  app opens them from the bound keys. The form base class's ordering,
-  fade, traversal, scroll and hit rules are in `exa_ui::form`.
+  controls, the HUD's marker, alert, curtain and compass and the close and
+  save scopes; the running app opens the inventory and journal from the I
+  and J hotkeys. The form base class's layers, fade, scroll, hit, Tab and
+  frame-code rules are in `exa_ui::form`.
 - **Destination screen** (`exa_ui::selection`, `exa_game::destination`):
   the teleporter's four (or one) rows on a ring of 40 units, node `i` at
   `(1 − turn) + (2.5 − i)·2π/(count − 1)` with the engine's sine across and
@@ -878,145 +879,188 @@ the task's state. A control value of `i32::MIN` means none.
 
 ### The form base class
 
-`exa_ui::form` now carries the form's own rules beside its metrics.
+`exa_ui::form` carries the form's own rules beside its metrics. A form has
+three words: the style word places an unplaced form and anchors it in a
+resize (0x800 and 0x8000 centre, 0x20000 alone the right edge, 0x80000
+alone the bottom, both bits of a pair stretch), the attribute word selects
+the frame parts and the sibling layer (1 title, 0x100 horizontal and 0x200
+vertical scrollbar, 0x400 snapping fractions, 0x800 locked vertical scroll
+for screen points, 0x1000 upper and 0x2000 lower layer, 0x10000
+maximising), and the state word the bookkeeping (low bits 2 maximised, 4
+"parent not a task", 0x10 caret lit, 0x1000 layout, 0x2000 restyle, 0x4000
+placed). A control record has its own style word (2 not hit, 4 caret, 8
+tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
+0xf0000 hover).
 
-- **Constructor.** 302 × 402, border 2, content 300 × 800, the horizontal
-  scroll step 0.025, the wheel step 0.25, the smallest page 76 × 90, the
-  attribute word 0x30022 and the state word 0x3000, unplaced, shown. (The
-  component map says the wheel step is 0.1; the instruction stores 0.25,
-  which is followed.)
-- **Placement.** An unset x is the parent's width less the form's over two
-  (truncating), the right edge less four for style 0x20000, else four. An
-  unset y is the span over two (an arithmetic shift, a floor), the bottom
-  less four for style 0x80000, else 36. Showing re-centres a style 0x800 or
-  0x8000 form; an unset y with neither centring nor bottom placement takes
-  36; a form with style 0x60 rescales its view. Show also attaches the form,
-  adopts the task's empty title, lays out and rescales the controls,
-  rebuilds the snap edges of the parent, itself and its children, and asks
-  for a redraw.
-- **Sibling order.** Raising a child moves it to the last (top) place,
-  except that style 0x2000 forms stay below the others and style 0x1000
-  forms stay on top. The topmost active child is the last visible child
-  whose attribute word is not 0x1000.
-- **Fade.** A form shows over 256 ticks: the alpha is `1 − remaining/256`
-  (or `1 − (3 − 2t)t²` of the remaining share in the eased mode); hiding
-  gives `remaining/256` (or the ease of it) and closes the form when the
-  clock passes. Both start at the current tick if no fade of that
-  direction is already running.
-- **Scrollbars.** A bar's step is `10 / (content − client)`, zero when the
-  content fits. The thumb is `round((track) × client / content)` (ties to
-  even), at least 9 and at most the track. Setting a fraction clamps it
-  below 0 and above 1 with ordered compares (a NaN passes), snaps it to
-  whole steps with `CVTSS2SI`'s round-to-even, forces zero when the content
-  fits, and places the thumb at `border + rail + (track − thumb)·f`. The
-  wheel moves by `round(delta · 1/120)` steps (ties to even), vertically
-  `−` and horizontally `+`; a held arrow repeats ±1 step; the -10/-9 and
-  -13/-14 controls are the vertical and horizontal arrows and pages.
-- **Hit test.** A point off a form's rectangle hits nothing. Otherwise the
-  visible children are tried last first, each only when strictly inside
-  (all four edges outside); the point is then taken into the form's content
-  coordinates (the scroll offset plus the client's inset) and the controls
-  are tried in order, a control hit within two units of its rectangle and
-  skipped while its state has 0x10 or 2 or its answer passes the point
-  through (0x800000). The answer's 0x7f0000 bits come back (0x10000 added
-  when empty) and its high byte is the cursor, else the skin's.
-- **Tab.** Forward from the focused control to the next with state bit 8
-  and not 0x10, then round to the first focusable; backward the other way,
-  the wrap ignoring the skip bit. The wheel takes a 1-based control code
-  within the form. The caret blinks every fifth tick while the record has
-  state bit 4.
-- **Close and visibility.** A form already closing is left alone. Closing
-  the task's active child unlinks it and tells its owner; any other form
-  detaches, closes the siblings that name it as owner and its own children,
-  hides, runs its callback and redraws. Hiding hides the children and
-  either the task's active parent chain (when active) or the form, which is
-  detached from its owner. Showing focuses the form, or its parent when it
-  is the active child.
-- **Control lookup and points.** A control code is 1-based in its low 16
-  bits; a code of 0 or past the form's last control names none. The first
-  control with a record code is searched on the form, then its children.
-  A form-local point becomes a screen point through each ancestor's border
-  and place, minus its scroll offset (zero when the form's scroll is
-  locked). Hovering a valid code clears the record's 0x40000 bit and asks
-  for its 0x20 message; focusing clears the old record's 0x400, sets the
-  new one's and the form's state bit 0x10 (or clears it when no control
-  takes the focus).
-- **Runtime resize.** A right- or bottom-anchored form moves by the size
-  change. A stretched child takes the change (its size becomes its size
-  plus the change) and is resized recursively; a right/bottom-anchored
-  child moves; otherwise a centred style re-centres it (a floor). The
-  records follow the same rules in their 16-bit fields, the centred ones
-  from their owner's client span.
-- **Style and destroy.** Setting a style and attribute word raises the
-  layout bit; a form whose parent is not a task gets state bit 4; a
-  maximised form (attribute 0x10000) on a task adds style 0x10 and
-  attributes 0x41, and off one clears 0x20000. Destroying frees the
-  children, the controls when it owns them and the name, clears the
-  active form when it is this one, and frees the object when the caller
-  owns it.
-- **Close edges and snap slots.** The close-band codes are -21…-19,
-  -14…-13, -10…-9 and -6…-4, and -8 when the skin's first flag bit is set;
-  the resize codes 0x80000011/12/14/18/15/16/19/1a give the four cursor
-  shapes. The snap slots are the free rectangles of the visible siblings'
-  frames widened by their grip, between their sorted unique edges; a
-  wider-than-tall free run is filled vertically, else horizontally.
+- **Constructor.** 302 × 402, border 2, content 300 × 800, horizontal step
+  0.025 and vertical step 0.25 (the layout recomputes only the horizontal
+  one, as `10 / overflow`), the minimum page 76 high and 90 wide, the
+  attribute word 0x30022, the state word 0x3000, unplaced, visible, closing
+  once, no controls.
+- **Placement.** An unset x in the parent's client is `(right − left −
+  width) / 2` (truncating) when centred, `right − width − 4` when
+  right-anchored, else 4; an unset y `(bottom − top − height) >> 1` (a
+  floor), `bottom − height − 4`, else 36. Showing gives an unset y 36
+  unless the style centres or bottom-anchors it, lays the form out at unit
+  4 and rescales its records to the unit, re-centres both axes (truncating),
+  and rebuilds the snap slots of the parent (when not the root), the form
+  and each child that is a snap container with children.
+- **Sibling order.** Raising a top-level form among the root's children:
+  a lower-layer form goes to the first child outside the lower layer (one
+  less when that is above it), an upper-layer form to the top, any other
+  just below the upper layer. Raising a child in its parent is the same
+  except that the lower-layer search starts at the second child, and every
+  child below that the raised form owns is raised after it. A new child
+  goes above the last lower-layer child, at the end for the upper layer, or
+  below the trailing upper-layer children. A form is its task's active one
+  when it is the last child outside the upper layer, or, when its attribute
+  word is exactly 0x1000, when it is the first child (visibility is not
+  looked at).
+- **Maximise and restore.** The record saves place, size, border, spacing,
+  client edges, words and unit; the form goes to 0, 0 at the screen's size
+  with the four anchor bits, a free form (0x40000) losing its border,
+  spacing, attributes 0x4f and style 0xf0, the others attributes 0xc000.
+  Restoring divides every saved coordinate and size by the saved unit
+  (truncating) before multiplying by the current one; the border is
+  rounded (ties to even).
+- **Resize.** A form with a parent keeps its right or bottom edge when
+  anchored there; a stretching child takes the change and is resized, an
+  anchored child moves, any other is re-centred (truncating). The records
+  follow in 16-bit arithmetic, the centred ones in their owner's client.
+- **Fade.** Showing a hidden form starts a 256-tick fade (a visible one
+  does not fade in) and raises it; hiding starts one unless already
+  hiding. In mode 0 the alpha is `1 − left/256` showing and `left/256`
+  hiding; mode 1 computes the eased value and discards it, so the form
+  draws at full alpha. A hide that ends closes the form without drawing it.
+- **Scrollbars.** The horizontal thumb is `round(track · client /
+  content)` (ties to even), at least 9 and at most the track; setting the
+  fraction clamps it with ordered compares (a NaN passes), snaps it when the
+  attribute word asks, stores 0 when the content fits, and places the
+  thumb from the snapped fraction unless the thumb itself is held. The
+  vertical track runs from the client's top plus the rail to the height
+  less the border and the rail, its thumb `2·unit + 1` when not above
+  `2·unit`; its setter does nothing for an unchanged fraction. The wheel
+  moves a form with a vertical bar by `round(delta / 120)` vertical steps
+  and otherwise its horizontal bar by `round(−delta / 120)` horizontal
+  steps, both the same way; held arrows -10/-9 and -13/-14 repeat one step.
+  A dragged thumb's fraction is the pointer's offset less the grab over the
+  track left for it.
+- **Points.** Scroll offsets are the overflow times the fraction rounded
+  with `CVTSS2SI`. A root point reaches a form through each ancestor's
+  place, inset and scroll; a form-local point reaches the screen through
+  the border, the client top less the vertical scroll (not for a locked
+  form) and the place.
+- **Hit test.** Off the client the skin's frame code answers, and the
+  resize codes 0x80000011…0x8000001a set the cursor unless the skin's
+  cursor is -2. On it the visible children that are hit are tried last
+  first when the content point is strictly inside them; then the records
+  that are neither disabled nor style 2 and do not pass the point through
+  (0x800000), first on their rectangles (edges included) and then within
+  two units (squared distance strictly less). A record answers its 1-based
+  index with its 0x7f0000 bits (0x10000 when none) and its cursor; a client
+  without a record answers -1, or 0 for a form without attribute bits 0x30.
+- **Hover, focus and caret.** The hover clears the old record's hover bits
+  and gives the new one the word's; a close-band code (-21, -20, -14, -13,
+  -10, -9, -6…-4, and -8 with the skin's first flag) redraws. The focus
+  moves the record's 0x400 bit and sets the form's caret bit for any word
+  but 0. The caret blinks every fifth frame while the focused record's
+  style (or the form's) has 4.
+- **Tab and routes.** Tab moves from the focused record to the next
+  enabled tab stop, else wraps to the first tab stop before it (the wrap
+  ignores the disabled bit); Shift+Tab the other way. A key goes to a
+  record as 0x2000 unless it ignores keys, a press as 0x3000 (a drop's
+  payload code to the payload's form), a drag to the held record as 0x4000;
+  codes off the records go to the parent when the form passes them up.
+- **Press, drag and release.** A left press on a grip saves the form's x
+  or width and y or height (the codes are bit sets, so corners move two
+  edges), on the title (-3) its place unless fixed, on a thumb its offset
+  (or the thumb jumps, grabbed at its middle), on an arrow or page it
+  starts the repeat. A grip drag keeps the place at 0 or more and the page
+  at least 90 wide and 76 high. A release over -6 maximises or restores,
+  -5 hides, -4 closes; a snapping form snaps a released thumb.
+- **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
+  space between its client's edges and its visible children's widened
+  client rectangles into slots: from each free cell the longer free run
+  (the row on a tie) becomes a slot one cell thick. A record rescales from
+  an old unit by whole old units (sizes made even), anchored records from
+  their owner's right or bottom, the y moved into and out of the row's
+  centre. The control draw skips records whose state has 0x100 and 0x10.
 
 ### The in-game GUI unit
 
-`exa_ui::game_gui` holds what the original's `SG_GameGUI` does without the
-drawing classes:
+`exa_ui::game_gui` holds what the original's `SG_GameGUI` does without
+drawing:
 
-- **Open containers.** Eight slots hold the tagged ids (`id | 0x20000000`)
-  of the container popups; opening a ninth leaves it out, closing clears
-  the first slot with that id, and the scan answers whether an id is open.
-- **Show rules.** The character screen refuses unless the controller is
-  ready and its mode is not 0xa00; an open view is closed when it is on top
-  and the call allows a toggle, focused otherwise. The loot window refuses
-  when the character's second flag byte is 3. The journal refuses when the
-  player is not ready or the mode is 0xa00, toggles when on top and focuses
-  otherwise. Its window is 244 × 518 with its text box 228 × 412 at (0, 88),
-  titled "Journal"; its first entry is "New Entry", adding an entry stores
-  the current text and appends and selects a new one, deleting the last
-  entry resets it, closing stores the text and the window place, and the
-  close mask needs both bits 0x2000 and 0x2.
-- **The player's screen.** The inventory is 244 × 644 (628 compact, 590 in
-  the arsenal) and, for the player, sits at the screen's right less its
-  width and four units; a mind-controlled character locks the transfer and
-  the flag 0x1000000 picks the second page.
-- **Power slot and counter.** The HUD registers a 40 × 40 power slot
-  (0xac3) and two 28 × 16 counters (0xac2, 0xac4). A slot's status
-  answers 3, or 0x103 with a text code; its press opens the skill selector
-  (3) unless the slot is text-only (0) or already held (0x40); its tooltip
-  asks for the registered class. A counter clamps a negative value to zero
-  (−0 and NaN stay), shows `value × 100` with one decimal and `%`, and
-  fills `round(width / (segments + 1) − 1)`-wide blocks four pixels apart
-  from two in, the partial block by the share past a whole one.
-- **HUD.** The bars' two shares give the fill, a mixed boundary pixel and
-  the two further spans; the status marker sits 53 units right of the
-  centre and 8 above the bottom (the skill-ready alert 60 units left),
-  pulsing with `(3 − 2t)t² × 0.6` at `t = |1000 − elapsed mod 2000|/1000`;
-  the level curtain is black at `round(t × 255)` for `t` of three seconds
-  with the world at `1 − t`; the bars ride up when yellow health changes,
-  the focus capacity drops, a power is cast, the player is out of action or
-  the interaction delay has not passed, and the stamina gauge when a shield
-  item is held out of action; the heartbeat's fade-out is `1 − elapsed/1000`
-  with the sound at 0.3 of it; the menu cursor is `round(scale × height ×
-  32/1080)` at most 128 with a 0.176/0.08 hotspot; the compass is a
-  12-unit diamond two units plus its half width from the left and bottom.
-- **Scopes.** The close scopes select the forms whose tag matches
-  0xce1c0000 (container and journal family) or 0xce100000 (power trees),
-  front to back or back to front; saving the open screens saves a
-  container, a character screen's pack or worn list when loaded, and the
-  journal's text. Closing the character screens takes a form whose flags
-  have 0x80000 or whose mode is not 0xa00.
+- **Tags.** The inventory is 0xce1c2010, a container popup 0xce1c2013,
+  the journal 0xce1c2030 and the loot window 0xce1c2040; the mask
+  0xce1c0000 selects that family and 0xce100000 every in-game screen.
+- **Open containers.** Eight slots hold the ids (`record id | 0x20000000`)
+  of the open containers; a ninth is left out, closing clears the first
+  slot with the id.
+- **Show rules.** The inventory and journal refuse unless the player's
+  controller is ready and its condition is not 0xa00 (dead). An open
+  inventory still filling is left alone, an active one closes when the
+  call toggles, another is activated. The journal closes when active and
+  is activated otherwise. The loot window refuses a character whose flag
+  word's second byte is 3 and activates an open one.
+- **Inventory.** 244 wide and 644 high (628 compact, 590 in the arsenal),
+  titled "Inventory", at (8, 8); the player's own goes to its remembered
+  place, another character's to the screen's right less its width and four
+  units. The record flag 0x1000000 lights the fourth tab record instead of
+  the third; the scene is told the first of the character's items 431,
+  500, 451, 452 or 499. Its preview bars are the HUD's layout with the
+  record's two health words over 65535; their draw callback is registered
+  only when the switch changes.
+- **Journal.** 244 × 518 with its text box 228 × 412 at (0, 88), titled
+  "Journal", at its remembered place when set. Adding an entry stores the
+  text box, appends "New Entry" and selects it; deleting with fewer than
+  two entries resets the first, otherwise removes the selection; the list
+  renames the selected entry while editing and otherwise stores the text
+  and selects the picked row.
+- **Controls.** The power slot (0xac3, 40 × 40) answers its hint with 3
+  (0x103 for a hovered slot with a count) and hides a visible tooltip;
+  a press with 0x2000 on an enabled slot with an icon or a kind opens the
+  technique selector (kind 1 answers 0). The counter (0xac2, 28 × 16)
+  turns a negative value into 0 (−0 and NaN stay), shows `value × 100`
+  with one decimal and `%`, and draws `round(width / (n + 1) − 1)`-wide
+  blocks whose backs step one pixel and whose fills are three narrower and
+  `block + 1` apart. The bar control (0xac4) draws the HUD's two-share
+  bar two pixels in.
+- **HUD.** The status marker (53 units right of the centre, 8 above the
+  bottom) draws while no status entry has 0x2000; the skill-ready alert (60
+  units left) while the six skills' levels sum below 15 and no skill has
+  more techniques among its first `level + 1` bytes than its level. Both
+  pulse with `(3 − 2t)t²` at `t = |1000 − (now − start) mod 2000| / 1000`,
+  the glow at 0.6 of it. The level curtain falls to black over three
+  seconds (`round(t · 255)`, the world at `1 − t`) and raises the GUI's
+  hold count once it has fallen; the screen reset releases it. The compass
+  is a 12-unit diamond two units plus its half from the left and bottom at
+  `round((1 − fade) · 192)`. The heartbeat's fade-out lowers its sound to
+  `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
+  The menu cursor is `round(scale · height / 1080 · 32)`, at most 128, with
+  a 0.176/0.08 hotspot. The draw order is the heartbeat, a hook, then (with
+  the HUD on and a player) the curtain, compass, marker, bars and gauge,
+  then the dialogue and the centred message.
+- **Scopes.** Saving the open screens saves a container, a loaded
+  inventory or loot panel into its character and the journal's text.
+  Closing a family takes the active task's forms front to back, then the
+  root's back to front. The deferred close takes the loot windows whose
+  character has flag 0x80000 or is no longer dead. The technique selector
+  is placed at the record's right and top with its left and bottom as the
+  fallbacks; its rows are all disabled when the owner trains and the
+  record's level is reached, otherwise the chosen techniques' rows and the
+  rows whose requirement is not among the skill's first `level`
+  techniques; a positive count opens its forget row.
 
-`exa_game::gui_screens` runs these for the running app: the screens are
-forms on a `GuiTask` (so their focus follows the window manager), I opens
-or toggles the inventory, J the journal and K the skill selector, and
-Escape closes the focused one. The forms are not drawn yet, the pack and
-worn lists are not saved (Exarust has no item windows), the skill selector
-shows no tree, and the power tree and power bar need powers, which the
-game does not have yet.
+`exa_game::gui_screens` runs these for the running app: the I and J
+hotkeys send a screen request through the hotkey handler (its
+permissions apply), the inventory and journal are forms on a `GuiTask`
+(so their focus follows the window manager), the inventory is registered
+as an open container, the journal keeps its session entries, and Escape
+closes the focused screen (Exarust's). The forms are not drawn yet, the
+item panels are not attached, the skills key's screen and the power tree
+are outside this unit, and the selector opens only from a power slot the
+HUD does not draw yet.
 
 ## Text boxes
 

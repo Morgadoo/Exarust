@@ -451,3 +451,17 @@ fn the_technique_selector_opening() {
     assert_eq!(rows, [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0]);
     assert!(!forget);
 }
+
+#[test]
+fn the_preview_bars_and_journal_flag() {
+    let mut flag = false;
+    assert_eq!(preview_bars_toggle(&mut flag, true), Some(true));
+    assert_eq!(preview_bars_toggle(&mut flag, true), None);
+    assert_eq!(preview_bars_toggle(&mut flag, false), Some(false));
+    assert_eq!(preview_shares(65535, 0), (1.0, 0.0));
+    assert!((preview_shares(32768, 16384).0 - 0.500_007_6).abs() < 1e-6);
+    assert_eq!(
+        (journal_controls_flag(true), journal_controls_flag(false)),
+        (0, 1)
+    );
+}

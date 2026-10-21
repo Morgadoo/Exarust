@@ -265,6 +265,31 @@ pub fn rescales_view(state: u32) -> bool {
     state & 0x60 != 0
 }
 
+/// The inventory's preview bars switch: the draw callback is registered
+/// when the flag turns on and removed when it turns off (`Some(on)`); an
+/// unchanged flag does nothing.
+pub fn preview_bars_toggle(flag: &mut bool, on: bool) -> Option<bool> {
+    if *flag == on {
+        return None;
+    }
+    *flag = on;
+    Some(on)
+}
+
+/// The preview bars' two health shares from the character record's 16-bit
+/// words: each times `1 / 65535` in single precision. The bars are drawn
+/// with [`crate::hud::layout`]'s places in the inventory's view.
+pub fn preview_shares(first: u16, second: u16) -> (f32, f32) {
+    const SCALE: f32 = 1.525_902_2e-5;
+    (f32::from(first) * SCALE, f32::from(second) * SCALE)
+}
+
+/// The player controls' GUI flag the journal passes: 0 when it opens, 1
+/// from its close callback.
+pub fn journal_controls_flag(opening: bool) -> u8 {
+    u8::from(!opening)
+}
+
 /// The journal window's size: 244 × 518.
 pub const JOURNAL_SIZE: (i32, i32) = (244, 518);
 /// The journal's text box: 228 × 412 at (0, 88), stretched downwards, with

@@ -337,28 +337,26 @@ are not drawn by a form yet.
 ## Form base and the in-game unit
 
 `form` extends its metrics with the original form class's own rules: the
-302 × 402 constructor defaults (border 2, content 300 × 800, scroll step
-0.025, wheel step 0.25, page minimum 76 × 90, attributes 0x30022, state
-0x3000), the unset and show placements (centre, right/bottom, defaults 4
-and 36), the sibling layering (0x2000 stays below, 0x1000 on top), the
-256 ms show/hide fade in its linear and eased modes, the vertical
-scrollbar beside the horizontal one (thumb ties to even, snapping with
-`CVTSS2SI`, NaN passing the clamps), the wheel's eighths and a held
-arrow's steps, Tab traversal, the caret blink, the close-band codes and
-resize cursors, the tree hit test (children last first, strictly inside,
-controls within two units, the pass-through bit) and the magnetic snap
-slots. It also plans show, close, hide/show and maximise/restore.
+constructor's defaults (the 0.25 float is the vertical scroll step), the
+unset and show places in the parent's client, the sibling layers read
+from the attribute word (the child raise searching from the second child
+and taking owned popups along), the active-form test, maximise and
+restore, the runtime resize, the 256-tick fade (whose eased mode sets no
+alpha), both scrollbars and their setters, the wheel, held arrows and
+thumb drags, the point conversions rounded with `CVTSS2SI`, the hit test
+(client, children, then records exactly and within two units), hover,
+focus, caret, Tab, the key/press/drag routes, the frame codes a press,
+grip drag and release act on, the snap slots and the records' rescale.
 
-`game_gui` is the in-game unit's non-drawing half: the eight-slot
-open-container registry, the character/loot/journal show rules, the
-journal's entries and geometry, the player's inventory place and page,
-the 40 × 40 power slot's and 28 × 16 counters' message rules, the health
-and focus bars' spans, the status marker and skill-ready alert's places
-and pulse, the three-second level curtain, the heartbeat's fade-out, the
-menu cursor's size, the compass anchors, the HUD's layer order and three
-control classes, and the close/save scopes. `exa_game::gui_screens` opens
-the screens from the bound I, J and K keys on a `GuiTask`, and Escape
-closes the focused one; the forms are not drawn yet.
+`game_gui` is the in-game unit's non-drawing half: the screens' tags
+(0xce1c2010 inventory, 0xce1c2040 loot window, 0xce1c2030 journal), the
+eight-slot open-container registry, the inventory, loot and journal show
+rules and places, the journal's entries, the power slot's and counter's
+messages and blocks, the status marker, skill-ready alert, level curtain,
+compass, heartbeat sound fade, menu cursor and HUD draw order, and the
+save and close scopes. The bars and their frames are `hud`'s.
+`exa_game::gui_screens` opens the inventory and journal from the I and J
+hotkeys on a `GuiTask`; the forms are not drawn yet.
 
 ## Scope
 
