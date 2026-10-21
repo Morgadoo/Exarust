@@ -47,15 +47,16 @@ A blocked striker recoils (`recoil`): strength and the stall rate become
 0.5 and the released bit clears. A class word of 0x90 that is already
 continuing, or whose clock widens past 0.4 while a counter starts, stops
 there. Any other swing sets stalling, cleaving and recoiled, blend 40 and
-both arm stiffnesses to 0.2. The stance returns after the truncated widened
-drive times 0.1 times 400, plus 200 ms. A wound's follow-through
+both arm stiffnesses to 0.2. The stance returns after the widened drive
+times 0.1 times 400, rounded half to even (the conversion rounds, it does
+not truncate), plus 200 ms. A wound's follow-through
 (`follow_through`) uses that same skip and otherwise writes nothing until
 it runs. The scale is the widened gain times recoil times speed times 0.15,
 floored at 0. A body zone at or under the epsilon sets strength 0, and a
 larger zone uses its square root times the scale. An edge uses one minus
 the zone times the scale plus the zone. Strength caps at 1. The stall is
-the widened one minus strength times 0.05. The end truncates the scale
-times 400.
+the widened one minus strength times 0.05. The end is the scale times 400,
+rounded half to even.
 
 ## Damage
 

@@ -806,7 +806,9 @@ fn a_striker_recoils_and_follows_through() {
         drive: 13.0 * 0.001,
         ..blocked()
     });
-    assert_eq!(short.rest.unwrap().end_ms, 1200);
+    // 0.0013·400 = 0.52 rounds to 1 ms (the conversion rounds, it does not
+    // truncate).
+    assert_eq!(short.rest.unwrap().end_ms, 1201);
     let continued = recoil(&RecoilStrike {
         class_word: 0x90,
         flags: flags::CONTINUATION | flags::RELEASED,
@@ -888,7 +890,8 @@ fn a_striker_recoils_and_follows_through() {
         ..wound()
     })
     .unwrap();
-    assert_eq!(glancing.end_ms, 1000);
+    // 0.00135·400 = 0.54 rounds to 1 ms.
+    assert_eq!(glancing.end_ms, 1001);
     assert!(
         follow_through(&FollowStrike {
             class_word: 0x90,

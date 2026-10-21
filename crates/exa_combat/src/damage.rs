@@ -759,8 +759,9 @@ pub fn resolve(
         slash = 0.0;
         crush = 0.0;
         pierce = if w.thrust > 0.0 {
-            // From an energy of 2 (or a non-number) the thrust's √2.
-            if 2.0 > stab_energy {
+            // From an energy of 2 the thrust's √2; under it (a non-number
+            // too) the root of the energy, once the shove is something.
+            if stab_energy < 2.0 || stab_energy.is_nan() {
                 if j > EPSILON {
                     (f64::from(w.thrust) * 1.58 * f64::from(stab_energy.sqrt())) as f32
                 } else {
@@ -1440,6 +1441,14 @@ mod tests {
             smoothing = 0.0,
         );
         assert!(o.central && !o.edge);
+        // A stab whose contact is no number has no energy to speak of: its
+        // shove is nothing, so it pierces nothing (not the thrust's √2).
+        let lost = Strike {
+            along: f32::NAN,
+            ..stab
+        };
+        let o = on(&sword_a(), &lost, &bare(), 9, &human(), 0.5);
+        assert_eq!((o.penetration, o.wound, o.impact), (0.0, 0.0, 0.0));
         let layers = armour_layers(None, &[plate()], false);
         let o = on(&sword_a(), &stab, &layers[8], 9, &human(), 0.5);
         pin!(

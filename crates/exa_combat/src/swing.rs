@@ -882,7 +882,8 @@ pub struct Recoil {
 /// the released bit clears. Two weapons that are already continuing, or
 /// whose clock widens above 0.4 while a counter starts, stop there. Any
 /// other swing sets stalling, cleaving and recoiled, and the stance returns
-/// after the truncated widened drive times 0.1 times 400, plus 200 ms.
+/// after the widened drive times 0.1 times 400, rounded half to even, plus
+/// 200 ms.
 pub fn recoil(strike: &RecoilStrike) -> Recoil {
     let cleared = strike.flags & !flags::RELEASED;
     if dual_wield_holds(
@@ -904,7 +905,7 @@ pub fn recoil(strike: &RecoilStrike) -> Recoil {
         stall: 0.5,
         flags: cleared | flags::STALLING | flags::CLEAVING | flags::RECOILED,
         rest: Some(RecoilRest {
-            end_ms: (scaled * END_SCALE) as i32 + strike.now_ms + RECOIL_TAIL_MS,
+            end_ms: (scaled * END_SCALE).round_ties_even() as i32 + strike.now_ms + RECOIL_TAIL_MS,
             blend: RECOIL_BLEND,
             stiffness: ARM_STIFFNESS,
             held: HELD_SCALE,
@@ -948,7 +949,8 @@ pub struct FollowThrough {
 /// and a larger zone uses its square root times the scale. An edge uses
 /// one minus the zone, times the scale, plus the zone. Strength caps at 1.
 /// The stall is the widened one minus strength times 0.05. Stalling and
-/// cleaving are set. The end truncates the scale times 400 and adds now.
+/// cleaving are set. The end rounds the scale times 400 half to even (the
+/// conversion in the default rounding) and adds now.
 pub fn follow_through(strike: &FollowStrike) -> Option<FollowThrough> {
     if dual_wield_holds(
         strike.class_word,
@@ -973,7 +975,7 @@ pub fn follow_through(strike: &FollowStrike) -> Option<FollowThrough> {
         strength,
         stall: (f64::from(1.0_f32 - strength) * STALL_SHARE) as f32,
         flags: strike.flags | flags::STALLING | flags::CLEAVING,
-        end_ms: (scaled * END_SCALE) as i32 + strike.now_ms,
+        end_ms: (scaled * END_SCALE).round_ties_even() as i32 + strike.now_ms,
     })
 }
 

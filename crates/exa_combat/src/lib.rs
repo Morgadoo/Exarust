@@ -636,7 +636,17 @@ fn react_to_hits(
         // The struck part's sound cooldown draws from the generator.
         let _ = roll.below(PART_SOUND_SPREAD_MS);
         if flags.has(StateFlags::TURNS_BLOWS) {
-            // The blow is turned: the striker recoils, nothing is dealt.
+            // The blow is turned: the striker recoils, nothing is dealt. The
+            // blow sag was set with the armour, before the turn, so the
+            // stance still gives.
+            shoves.write(Shove {
+                body: hit.target,
+                bone: hit.bone,
+                velocity: Vec3::ZERO,
+                daze: 0.0,
+                step: None,
+                sag: outcome.sag,
+            });
             after.push((
                 hit,
                 StrikerReaction::Recoils {
@@ -1089,8 +1099,9 @@ mod tests {
         assert_eq!(state.strength, 1.0);
     }
 
-    /// A body that turns blows takes nothing: no shove, its health whole,
-    /// and the striker recoils (strength 0.5, recoiled).
+    /// A body that turns blows takes nothing: no push or daze, its health
+    /// whole, only the blow sag the armour pass set before the turn; the
+    /// striker recoils (strength 0.5, recoiled).
     #[test]
     fn a_turned_blow_deals_nothing() {
         let mut app = reactions();
@@ -1106,7 +1117,19 @@ mod tests {
         swung(&mut app, attacker, blade, victim, cut());
         let f = app.world().get::<Fighter>(victim).unwrap();
         assert_eq!(f.health.yellow, Fighter::default().health.yellow);
-        assert!(shoves(&app).is_empty());
+        let shoved = shoves(&app);
+        assert_eq!(shoved.len(), 1);
+        assert_eq!((shoved[0].velocity, shoved[0].daze), (Vec3::ZERO, 0.0));
+        assert!(shoved[0].step.is_none());
+        let blow = damage::resolve(
+            &damage::sword_a(),
+            &cut(),
+            Some((&PartArmour::default(), Roll::default().next())),
+            9,
+            &damage::Victim::new(0.25, 0.0),
+        )
+        .unwrap();
+        assert_eq!(shoved[0].sag, Some((blow.hit_impact * 2.0).min(1.0)));
         let state = app.world().get::<SwingState>(attacker).unwrap();
         assert!(state.has(swing::flags::RECOILED));
         assert_eq!(state.strength, 0.5);
