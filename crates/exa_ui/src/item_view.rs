@@ -356,7 +356,11 @@ impl ItemView {
     /// slot ([`ItemView::select`]) as events, an icons-only view showing
     /// the entry's name.
     pub fn hover_entry(&mut self, index: i32) -> Vec<ViewEvent> {
-        self.select(index).1.map(ViewEvent::Tooltip).into_iter().collect()
+        self.select(index)
+            .1
+            .map(ViewEvent::Tooltip)
+            .into_iter()
+            .collect()
     }
 
     /// Empties the view: no rename, no selection (reported when there
@@ -1321,16 +1325,40 @@ mod tests {
         let mut v = view(style::RENAME, 9);
         v.selected = 6;
         v.begin_rename();
-        assert_eq!(v.edit, EditView { anchor: 0, caret: 5, length: 0, first: 0 });
+        assert_eq!(
+            v.edit,
+            EditView {
+                anchor: 0,
+                caret: 5,
+                length: 0,
+                first: 0
+            }
+        );
         v.scroll_rename(&RAYFORM_10);
         // "Item5" in 30 pixels: 10 + 14 fit from the end, "e" does not.
-        assert_eq!(v.edit, EditView { anchor: 0, caret: 5, length: 5, first: 3 });
+        assert_eq!(
+            v.edit,
+            EditView {
+                anchor: 0,
+                caret: 5,
+                length: 5,
+                first: 3
+            }
+        );
         // Line 1: x less 30, a unit and the icon; the walk starts at the
         // first visible byte, "m" (14, half 7).
         assert_eq!(v.edit_caret_hit(&RAYFORM_10, 55, 0), 3);
         assert_eq!(v.edit_caret_hit(&RAYFORM_10, 62, 0), 4);
         assert_eq!(v.rename_move(&RAYFORM_10, 62, 0), ViewReply::Code(3));
-        assert_eq!(v.edit, EditView { anchor: 0, caret: 4, length: 5, first: 3 });
+        assert_eq!(
+            v.edit,
+            EditView {
+                anchor: 0,
+                caret: 4,
+                length: 5,
+                first: 3
+            }
+        );
         v.renaming = false;
         assert_eq!(v.rename_move(&RAYFORM_10, 0, 0), ViewReply::Form);
         assert_eq!(v.edit.caret, 4);
