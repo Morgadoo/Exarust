@@ -456,6 +456,7 @@ fn the_carry_takes_the_locomotion_push() {
     body.measure_balance(&floor[..]);
     body.set_bearing(Bearing {
         moving: true,
+        walking: true,
         push: Vec3::X * 2.0,
         push_gain: 0.5,
         facing: Vec3::Z,
@@ -474,4 +475,32 @@ fn the_carry_takes_the_locomotion_push() {
     });
     body.aim(Affine3A::IDENTITY, pose);
     assert_eq!(drive(&body).carry().x, 0.0);
+}
+
+/// Only a walking condition measures the feet's lag: any other condition
+/// (an attack, say) pushes with the factor 1 even with a foot far behind.
+#[test]
+fn only_a_walking_condition_measures_the_lag() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let floor = floor_quad(0.0, 5.0);
+    body.measure_balance(&floor[..]);
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= Vec3::Z * 0.7;
+        }
+    }
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: false,
+        push: Vec3::X * 2.0,
+        push_gain: 0.5,
+        facing: Vec3::Z,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    let d = drive(&body);
+    assert_eq!(d.bearing.lag, 1.0);
+    let expected = 2.0 * d.support() * d.support() * 0.5 / CM;
+    assert!(close(d.carry().x, expected, 1e-6), "{}", d.carry().x);
 }

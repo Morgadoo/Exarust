@@ -287,13 +287,18 @@ impl Ragdoll {
         // the body moves: drive × S² × the gait's push gain × the feet's
         // lag, in cm a tick².
         if bearing.moving && drive.support > 0.0 {
-            let lag = feet_lag(
-                parts,
-                legs,
-                &drive.targets,
-                bearing.facing,
-                drive.stats.scale,
-            );
+            // Only a walking condition measures it; any other keeps 1.
+            let lag = if bearing.walking {
+                feet_lag(
+                    parts,
+                    legs,
+                    &drive.targets,
+                    bearing.facing,
+                    drive.stats.scale,
+                )
+            } else {
+                1.0
+            };
             drive.bearing.lag = lag;
             let push = bearing.push * (drive.support * drive.support * bearing.push_gain * lag);
             drive.carry += push / CM;
