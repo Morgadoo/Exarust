@@ -240,6 +240,8 @@ fn bubble_durations() {
     let s = Speaker::Character(GUARD);
     assert_eq!(bubbles::duration(s, 10, None), 1500);
     assert_eq!(bubbles::duration(Speaker::Narrator, 10, None), 2775);
+    // (2 − 0.105) · 1050 = 1989.75 converts to nearest.
+    assert_eq!(bubbles::duration(Speaker::Narrator, 1, None), 1990);
     assert_eq!(bubbles::duration(Speaker::Narrator, 200, None), 11_000);
     assert_eq!(bubbles::duration(s, 10, Some(GUARD)), 750);
 }

@@ -76,8 +76,9 @@ fn smoothstep(t: f32) -> f32 {
 pub fn duration(speaker: Speaker, len: usize, player: Option<u32>) -> u32 {
     let mut d = (len as u32).wrapping_mul(50).wrapping_add(1000);
     if speaker == Speaker::Narrator && d < 10_000 {
-        // The original's ROUND helper is a floor.
-        d = ((2.0 - f64::from(d) * 0.0001) * f64::from(d)).floor() as u32;
+        // Converted with CVTSD2SI in the default rounding mode: nearest,
+        // ties to even.
+        d = ((2.0 - f64::from(d) * 0.0001) * f64::from(d)).round_ties_even() as u32;
     }
     if player.is_some_and(|p| speaker == Speaker::Character(p)) {
         d >>= 1;

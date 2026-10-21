@@ -416,10 +416,10 @@ pub fn zone_marker_matches(zone: i32, markers: &[ZoneMarker]) -> bool {
     })
 }
 
-/// The original's `Round` helper, a floor (the instruction's note on the
-/// pseudo-code's ROUND): `Trust` and `Concern` round down.
+/// `Trust` and `Concern` convert with CVTSS2SI in the default rounding
+/// mode: to nearest, ties to even (an unordered value gives 0).
 fn round(v: f32) -> i32 {
-    v.floor() as i32
+    v.round_ties_even() as i32
 }
 
 pub(crate) fn call_actor<H: Host>(

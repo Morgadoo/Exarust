@@ -413,21 +413,23 @@ fn every_prefix_runs() {
     }
 }
 
-/// `Trust` and `Concern` round with the original's floor, not to nearest.
+/// `Trust` and `Concern` convert to nearest with ties to even (CVTSS2SI
+/// in the default mode), not down.
 #[test]
-fn trust_and_concern_round_down() {
+fn trust_and_concern_round_to_nearest_even() {
     let mut w = World::default();
     w.trust.insert((GOLEM, PLAYER), 70.9);
-    w.trust.insert((PLAYER, GOLEM), -30.1);
-    w.concern.insert((PLAYER, GOLEM), 2.9);
+    w.trust.insert((PLAYER, GOLEM), -30.5);
+    w.concern.insert((PLAYER, GOLEM), 2.5);
     let mut c = ctx();
     assert_eq!(
         run(&mut w, &mut c, "result = Actor[0].Trust(Actor[1]);"),
-        70
+        71
     );
     assert_eq!(
         run(&mut w, &mut c, "result = Actor[1].Trust(Actor[0]);"),
-        -31
+        -30,
+        "a tie goes to the even value"
     );
     assert_eq!(
         run(&mut w, &mut c, "result = Actor[0].Trust(Actor[0]);"),
