@@ -59,11 +59,11 @@ pub struct ShockStep {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shock {
     pub state: i32,
-    /// The charge amount (`+0x58`).
+    /// The charge amount.
     pub charge: f32,
-    /// What one tick adds (`+0x5c`).
+    /// What one tick adds.
     pub rate: f32,
-    /// What one charging tick spends (`+0x60`).
+    /// What one charging tick spends.
     pub focus_tick: f32,
     /// Charging, fired or cleared.
     pub phase: i32,

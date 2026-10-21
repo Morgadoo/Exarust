@@ -35,7 +35,7 @@ pub struct SpiritStep {
     pub state: i32,
     pub value: f32,
     pub strength: f32,
-    /// The screen's fade (`+0xe0`), absent while fading.
+    /// The screen effect's fade, absent while fading.
     pub screen: Option<f32>,
     /// The smooth fade the strength follows, absent while fading.
     pub smooth: Option<f32>,

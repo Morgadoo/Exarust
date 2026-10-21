@@ -11,7 +11,7 @@
 //!
 //! Evidence: the control handlers and the target-side markers of the Mind
 //! classes, read from `Exanima.exe`; the status bits are the body's
-//! `+0xdf8` word (0x1_0000 masked, 0x4_0000 confused, 0x8_0000 enraged,
+//! status word (0x1_0000 masked, 0x4_0000 confused, 0x8_0000 enraged,
 //! 0x20_0000 ... ).
 
 use super::PowerBase;
@@ -27,7 +27,7 @@ pub const ENRAGED: u32 = 0x0008_0000;
 /// effect from its target.
 pub const GONE: u32 = 0x0000_0800;
 
-/// The overlay word meaning "off": the Sense Minds overlay's `+0x54`.
+/// The overlay word meaning "off": the Sense Minds overlay's word.
 pub const OVERLAY_OFF: i32 = 2;
 
 /// How long Confusion keeps its bit, in milliseconds.
@@ -541,11 +541,11 @@ impl Default for LoyaltyCaster {
 pub struct LoyaltyTarget {
     pub state: i32,
     pub caster: Option<u32>,
-    /// The target's trust in its caster (`+0x30`), creeping toward 10.
+    /// The target's trust in its caster, creeping toward 10.
     pub trust: f32,
-    /// The loyalty's strength (`+0x38`).
+    /// The loyalty's strength.
     pub strength: f32,
-    /// Ticks the effect has run (`+0x3c`).
+    /// Ticks the effect has run.
     pub ticks: u32,
 }
 
@@ -707,9 +707,9 @@ pub struct ControlMindCaster {
     pub state: i32,
     pub held: f32,
     pub target: Option<u32>,
-    /// The focus still to spend on the binding (`+0x3c`).
+    /// The focus still to spend on the binding.
     pub drain: f32,
-    /// When the binding started (`+0x38`).
+    /// When the binding started.
     pub stamp: u32,
     /// The control has moved to the target.
     pub transferred: bool,
@@ -853,7 +853,7 @@ impl ControlMindCaster {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Possession {
     pub state: i32,
-    /// The marker's own trust word (`+0x30`), creeping toward 10 like the
+    /// The marker's own trust word, creeping toward 10 like the
     /// other targets.
     pub trust: f32,
 }
@@ -895,7 +895,7 @@ impl Default for Possession {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpiritPower {
     pub state: i32,
-    /// Focus taken each tick (`+0x38`).
+    /// Focus taken each tick.
     pub drain: f32,
 }
 

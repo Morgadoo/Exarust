@@ -82,7 +82,7 @@ pub struct VanishBase {
     pub shared: bool,
     /// The body's published visibility, 1 shown and 0 hidden.
     pub shown: f32,
-    /// How many fades have run (the original's `+0x50`).
+    /// How many fades have run (the fade counter).
     pub step: i32,
 }
 
@@ -276,7 +276,7 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vanish {
     pub base: VanishBase,
-    /// The focus a vanished tick spends (`+0xb8`).
+    /// The focus a vanished tick spends.
     pub drain: f32,
 }
 

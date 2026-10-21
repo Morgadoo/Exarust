@@ -5,7 +5,7 @@
 //! [`super::super::force`]; these are the classes that run afterwards.
 //!
 //! - **Shell** ([`Shell`]): activation sets the body's hit damping to one
-//!   half (`+0x1298`). The first control tick starts cast motion 0x24 and
+//!   half (the body's hit damping). The first control tick starts cast motion 0x24 and
 //!   registers the hit-ripple hook; ending clears the damping.
 //! - **Bubble and barricade** ([`RemotePower`]): a control event carrying
 //!   bit 1 or 3 ends the effect; otherwise, once the effect's centre is more
@@ -511,7 +511,7 @@ pub struct Throw {
     pub held: f32,
     pub phase: i32,
     pub stamp: u32,
-    /// The lift's strength (`+0x70`).
+    /// The lift's strength.
     pub lift: f32,
 }
 

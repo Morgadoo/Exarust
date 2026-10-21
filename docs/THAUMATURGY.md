@@ -44,6 +44,66 @@ AI evaluators and effect classes of `Exanima.exe`; research notes in
   long door 0.8 times (both in double precision, so a focus of exactly
   0.12 is short of a 0.1 blast), barrier twice and vanish 80 times.
 
+## Power classes
+
+`exa_game::thaum::power`. The casts hand their work to these classes; each
+has a state (1 ready, 0 running, 2 ending), the focus it holds and,
+where it names one, its target.
+
+- **The base** (`PowerBase`): taking focus adds it to what the body has
+  spent, three quarters with the reserve technique; releasing it takes the
+  same amount back. A control event 2 marks a power ending and answers 0;
+  the next tick releases its focus and answers 2. A persistent power (id
+  bit 0x2_0000) publishes HUD word 2 while it runs and 12 with the clock
+  and a 200 ms fade once it ends. The power list is walked by id (an index,
+  and an order to end one), a saved `(id, size)` list rebuilds Force
+  powers (three quarters of their cost with the reserve technique), and AI
+  evaluation dispatches on the id's domain byte (0x200 Force, 0x400
+  Energy, 0x600 Displacement; anything else answers 0x400_0000).
+- **Mind**: Sense Minds (continuous, overlay on while it runs; instant,
+  end stamp plus a 2 s fade) and Mask Mind (continuous, body bit 0x1_0000;
+  instant, 15 s with an intensity that fades between 5 and 10 s over a
+  10 s square curve and a second that fades between 10 and 15 s, at 0.9
+  and 0.8). Confusion and Enrage clear body bits 0x4_0000 and 0x8_0000
+  after 15 s; Trust and Suspicion last 20 s. Loyalty binds a living target
+  (its marker id 0x10010A), builds the target's trust toward 10 by a ten-
+  thousandth of the gap a tick, and after 800 ticks pulls its strength
+  toward `((relation + 100)·0.005)²·100·0.05` while keeping 0.95;
+  ending one half ends the other. Command Dead (0x2010D) does the same
+  with marker 0x10010D. Control Mind (0x2010C) spends 0.002 of focus a
+  tick for 2 s, then hands the player to the target body (handover bit
+  0x10_0000 on the caster, 0x60_0000 on the target) with a possession
+  marker (0x10010C) that ends the caster's half when it ends. Spirit Form
+  drains its tick cost, clamps the focus at zero and fades over 1.2 s
+  through `exa_game::mind`.
+- **Force**: Shell halves a blow's energy (the body's hit damping is 0.5) and clears
+  it at the end; a bubble or barricade ends once its centre is more than
+  20 m from the caster; Strikes sets the strike factor 1.0 and the swing
+  factor 3.0, keeps at most four weapon auras and reports a swing of an
+  armed weapon; Kinesis steers its held body by its reach (half its
+  radius plus one) toward the aim (`1/dist`, 0.02 within 50 cm), turns it
+  by `reach²·0.001` a tick and stamps its user for 2 s; Throw lifts at
+  `record·strength·0.00125`, launches along the aim at
+  `mass/(mass + 0.1)` (a fiftieth within 50 cm), drops the shell after
+  800 ms and restores the materials 200 ms later.
+- **Energy**: Shock charges by its rate, fires one arc burst when it
+  passes 1, spends its focus while charging and answers 2 on the next
+  cycle; Shock Weapons starts motion 0x25 and clears its weapon arcs when
+  it ends.
+- **Displacement**: the vanish effect hides the body (status bit 0x800),
+  fades out over 300 ms, holds (Vanish spends half its cost a tick), moves
+  the body on release (the long door to the grid's place, the summon to
+  the demon's), fades in over 400 ms and cleans up after 300 ms. Constant
+  Displacement's shell grows 0.002 a tick up to 0.12. The summon waits
+  2 s, fades over 3 s, waits 1 s and brings in `demon a01` with role 0x21
+  and a 300 relation both ways.
+
+The classes are plain functions with tests; nothing in the running game
+calls them yet, and the combat factors they publish are not read by
+`exa_combat`'s hit formula. The player swap, the spirit body's character
+generation and the effect meshes are descriptions here, not spawned
+entities.
+
 ## Force
 
 `exa_game::thaum::force`. The table: blast 0x201 (0.10), bolt 0x202

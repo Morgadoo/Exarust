@@ -5,7 +5,7 @@
 //! ([`mind`], [`force`], [`energy`], [`displacement`]).
 //!
 //! - **Base** ([`PowerBase`]): a power holds the focus it has taken
-//!   (`+0x24`), its state (1 ready, 0 running, 2 ending) and its id. Taking
+//!   (its held focus), its state (1 ready, 0 running, 2 ending) and its id. Taking
 //!   focus adds it to what the body has spent, three quarters with the
 //!   reserve technique; releasing it subtracts the same amount. The
 //!   original's control event 2 marks a power ending and answers 0 for that
@@ -363,13 +363,13 @@ pub fn glean(
 /// The fields the spirit body copies from the caster's record.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SpiritRecord {
-    /// The record's look word (`+0x124`).
+    /// The record's look word.
     pub look: u32,
-    /// The five words at `+0x198`.
+    /// The five trait words.
     pub traits: [u32; 5],
-    /// The caster's learnt technique bits (`+0xc40`).
+    /// The caster's learnt technique bits.
     pub techniques: u32,
-    /// Whether the caster's hands hold anything (`+0x58` of the behaviour).
+    /// Whether the caster's hands hold anything.
     pub visible: bool,
 }
 
