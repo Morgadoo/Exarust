@@ -73,9 +73,11 @@ pub fn meshes(game: &GameData) -> Result<()> {
                         t.other_nodes += 1;
                         t.voxel_lights += 1;
                     }
-                    NodeBody::NotMesh | NodeBody::Light(_) | NodeBody::Emitter { .. } => {
-                        t.other_nodes += 1
-                    }
+                    NodeBody::NotMesh
+                    | NodeBody::Light(_)
+                    | NodeBody::Emitter { .. }
+                    | NodeBody::Camera { .. }
+                    | NodeBody::Sector => t.other_nodes += 1,
                     NodeBody::Invalid(err) => {
                         t.invalid += 1;
                         note(
