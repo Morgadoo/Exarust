@@ -385,11 +385,17 @@ pub const SHOW_SOUND: TreeSound = TreeSound {
     volume: 0.25,
     pitch: 1.0,
 };
-/// A power is marked or the selected bar slot moves.
-pub const SELECT_SOUND: TreeSound = TreeSound {
+/// An unlearnt power is marked new.
+pub const LEARN_SOUND: TreeSound = TreeSound {
+    name: "ThaumSel01",
+    volume: 0.2,
+    pitch: 1.0,
+};
+/// A bar slot is selected.
+pub const SLOT_SELECT_SOUND: TreeSound = TreeSound {
     name: "ThaumSel01",
     volume: 0.1,
-    pitch: 1.0,
+    pitch: 0.8,
 };
 /// A power is dropped onto the bar.
 pub const SLOT_SOUND: TreeSound = TreeSound {
@@ -473,6 +479,9 @@ pub struct PowerDrag {
     pub power: u32,
     /// The node's or slot's flags.
     pub flags: u32,
+    /// The third word of the payload: a bar slot's first word, or the
+    /// domain a tree power was dragged from. The drop does not read it.
+    pub extra: u32,
     /// The kind word the bar's drop handler matches.
     pub kind: u32,
     /// The bar slot it came from, one-based, or 0 from the tree.
@@ -523,6 +532,8 @@ pub struct PressInput {
     pub word: u32,
     pub width: f32,
     pub now: u32,
+    /// The screen is hidden: a right press does not open it.
+    pub hidden: bool,
 }
 
 /// A key with the screen's hide state.
@@ -594,12 +605,16 @@ pub struct TreeScreen {
     pub choice_stamp: u32,
     /// The node under the pointer, one-based.
     pub node_under: i32,
-    /// The node a mark or pick last flashed.
+    /// The node (0-based) a pick or a drop last flashed, or -1.
     pub flash: i32,
     /// When the flash ends.
     pub flash_until: u32,
-    /// When another new power may be marked.
+    /// When another new power may be marked; the node marked last fades
+    /// in until then.
     pub learn_until: u32,
+    /// The node (one-based) that lost its new mark when another was
+    /// marked, or 0; it fades out until `learn_until`.
+    pub retired_new: u32,
     /// A refused mark or pick turns its frame red.
     pub denied: bool,
     /// The drag state.
@@ -718,9 +733,10 @@ impl TreeScreen {
             shown_choice: 0,
             choice_stamp: 0,
             node_under: 0,
-            flash: 0,
+            flash: -1,
             flash_until: 0,
             learn_until: 0,
+            retired_new: 0,
             denied: false,
             drag: DragState::Idle,
             drag_origin: [0.0; 2],
@@ -983,15 +999,18 @@ impl TreeScreen {
         0
     }
 
-    /// Handles a press word at `x`,`y`. `width` lays the bar out; `record`
-    /// is the tree's character record; `bar` is the power bar.
+    /// Handles a press word. `record` is the tree's character record; `bar`
+    /// is the power bar. A click on a bar slot selects the slot the pointer
+    /// went down on, so a press comes before its click.
     pub fn press(
         &mut self,
         input: PressInput,
         mut record: Option<&mut PowerRecord>,
         bar: &mut PowerBar,
     ) -> PressResult {
-        let PressInput { word, now, .. } = input;
+        let PressInput {
+            word, now, hidden, ..
+        } = input;
         let mut out = PressResult {
             result: press::HANDLED,
             ..PressResult::default()
@@ -1008,11 +1027,10 @@ impl TreeScreen {
                 return out;
             }
             if id > 0 && id & focus::SLOT != 0 {
-                let slot = (id & focus::NODE) as usize;
-                if slot > 0 {
-                    bar.select(slot - 1);
-                    out.slot = Some(slot - 1);
-                    out.sound = Some(SELECT_SOUND);
+                let slot = self.node_under - 1;
+                if (0..10).contains(&slot) && bar.select(slot as usize) {
+                    out.slot = Some(slot as usize);
+                    out.sound = Some(SLOT_SELECT_SOUND);
                 }
                 return out;
             }
@@ -1030,129 +1048,146 @@ impl TreeScreen {
             return out;
         }
         if word & press::RIGHT != 0 {
+            // Only the play screen answers a right press: it opens the
+            // tree unless the screen is hidden.
             if self.mode == TreeMode::Play {
-                out.open = true;
+                out.open = !hidden;
+                out.result = 1;
             }
             return out;
         }
-        if word & press::LEFT != 0 {
-            self.node_under = if id > 0 { id & focus::NODE } else { 0 };
-            let plain = self.node_under > 0
-                && word & press::CLICK != 0
-                && id & focus::LINK == 0
-                && now >= self.learn_until
-                && id & focus::SLOT == 0;
-            if plain {
-                let node = self.node_under as usize - 1;
-                if self.marks[node] & LEARNED == 0 {
-                    let learnable = record
-                        .as_deref()
-                        .is_some_and(|record| can_learn(record, self.nodes[node].power));
-                    if learnable && self.marks[node] & (NEW | LEARNED) == 0 {
-                        self.flash = 0;
-                        for index in 0..self.nodes.len() {
-                            if self.marks[index] & NEW != 0 {
-                                self.marks[index] &= !NEW;
-                                self.flash = index as i32 + 1;
-                                if let Some(record) = record.as_deref_mut() {
-                                    record.store_pair(self.nodes[index].power, self.marks[index]);
-                                }
-                            }
-                        }
-                        out.sound = Some(SELECT_SOUND);
-                        self.flash = node as i32 + 1;
-                        self.marks[node] |= NEW;
-                        if let Some(record) = record {
-                            record.store_pair(self.nodes[node].power, self.marks[node]);
-                        }
-                        self.learn_until = now.wrapping_add(200);
-                    }
-                    return out;
-                }
-                self.flash = node as i32;
-                self.flash_until = now.wrapping_add(300);
-                let picked = self.marks[node] & PICKED != 0;
-                if picked {
-                    for index in 0..self.nodes.len() {
-                        if self.marks[index] & PICKED == 0 {
-                            continue;
-                        }
-                        if self.links[index]
-                            .iter()
-                            .any(|link| link.end as usize == node + 1)
-                        {
-                            out.sound = Some(FAIL_SOUND);
-                            self.denied = true;
-                            return out;
-                        }
-                    }
-                    self.marks[node] &= !PICKED;
-                    out.sound = Some(DROP_SOUND);
-                } else {
-                    let domain = domain_of(self.nodes[node].power);
-                    let cost = if (1..=6).contains(&domain) {
-                        self.costs[usize::from(domain) - 1]
-                    } else {
-                        4.0
-                    };
-                    if self.available < cost {
-                        out.sound = Some(FAIL_SOUND);
-                        self.denied = true;
-                        return out;
-                    }
-                    for link in &self.links[node] {
-                        let end = link.end as usize;
-                        if end < 1 || end > self.nodes.len() || self.marks[end - 1] & PICKED == 0 {
-                            out.sound = Some(FAIL_SOUND);
-                            self.denied = true;
-                            return out;
-                        }
-                    }
-                    self.marks[node] |= PICKED;
-                    out.sound = Some(PICK_SOUND);
-                }
-                if let Some(record) = record {
-                    record.store_pair(self.nodes[node].power, self.marks[node]);
-                    self.read_record(record);
-                }
+        if word & press::LEFT == 0 {
+            return out;
+        }
+        self.node_under = if id > 0 { id & focus::NODE } else { 0 };
+        if self.node_under > 0 && word & press::CLICK != 0 {
+            if id & focus::LINK != 0 || now < self.learn_until {
                 return out;
             }
-        }
-        if word & press::DRAG != 0 && id > 0 {
-            let node = id & focus::NODE;
-            if node > 0 {
-                if id & focus::SLOT != 0 {
-                    let slot = node as usize - 1;
-                    if bar.slots.get(slot).is_some_and(|entry| entry.word != 0) {
-                        let entry = bar.slots[slot];
-                        out.result = 0x105;
-                        out.drag = Some(PowerDrag {
-                            power: entry.word,
-                            flags: entry.state,
-                            kind: press::POWER_DRAG,
-                            origin: node as usize,
-                        });
-                    }
-                } else if self
-                    .marks
-                    .get(node as usize - 1)
-                    .is_some_and(|mark| mark & LEARNED != 0)
-                {
-                    let node = &self.nodes[node as usize - 1];
-                    out.result = 0x105;
-                    out.drag = Some(PowerDrag {
-                        power: node.power,
-                        // The original leaves this word to the caller; its
-                        // preview frame reads the picked bit.
-                        flags: self.marks[(id & focus::NODE) as usize - 1],
-                        kind: press::POWER_DRAG,
-                        origin: 0,
-                    });
-                }
+            if id & focus::SLOT != 0 {
+                return out;
+            }
+            let node = self.node_under as usize - 1;
+            if node < self.nodes.len() {
+                self.click_node(node, now, record.as_deref_mut(), &mut out);
             }
             return out;
         }
+        if word & press::DRAG != 0 && id > 0 {
+            self.node_under = id & focus::NODE;
+            if self.node_under > 0 {
+                self.start_power_drag(id, bar, &mut out);
+            }
+        }
         out
+    }
+
+    /// A click on a node: an unlearnt power that can be learnt is marked
+    /// new, a learnt one is picked or dropped.
+    fn click_node(
+        &mut self,
+        node: usize,
+        now: u32,
+        mut record: Option<&mut PowerRecord>,
+        out: &mut PressResult,
+    ) {
+        if self.marks[node] & LEARNED == 0 {
+            let learnable = record
+                .as_deref()
+                .is_some_and(|record| can_learn(record, self.nodes[node].power));
+            if !learnable || self.marks[node] & (NEW | LEARNED) != 0 {
+                return;
+            }
+            // Any other new mark is retired and stored.
+            self.retired_new = 0;
+            for index in 0..self.nodes.len() {
+                if self.marks[index] & NEW != 0 {
+                    self.marks[index] &= !NEW;
+                    self.retired_new = index as u32 + 1;
+                    if let Some(record) = record.as_deref_mut() {
+                        record.store_pair(self.nodes[index].power, self.marks[index]);
+                    }
+                }
+            }
+            out.sound = Some(LEARN_SOUND);
+            self.marks[node] |= NEW;
+            if let Some(record) = record {
+                record.store_pair(self.nodes[node].power, self.marks[node]);
+            }
+            self.learn_until = now.wrapping_add(200);
+            return;
+        }
+        self.flash = node as i32;
+        self.flash_until = now.wrapping_add(300);
+        if self.marks[node] & PICKED != 0 {
+            // A picked power another picked power needs stays picked.
+            let needed = (0..self.nodes.len()).any(|index| {
+                self.marks[index] & PICKED != 0
+                    && self.links[index]
+                        .iter()
+                        .any(|link| link.end as usize == node + 1)
+            });
+            if needed {
+                out.sound = Some(FAIL_SOUND);
+                self.denied = true;
+                return;
+            }
+            self.marks[node] &= !PICKED;
+            out.sound = Some(DROP_SOUND);
+        } else {
+            // The cost is the one of the domain the screen shows.
+            let cost = match usize::from(self.domain).checked_sub(1) {
+                Some(index) if index < self.costs.len() => self.costs[index],
+                _ => 0.0,
+            };
+            // A cost that is not above what is left (or not comparable)
+            // passes.
+            let short = cost > self.available;
+            let unmet = self.links[node].iter().any(|link| {
+                let end = link.end as usize;
+                end < 1 || end > self.nodes.len() || self.marks[end - 1] & PICKED == 0
+            });
+            if short || unmet {
+                out.sound = Some(FAIL_SOUND);
+                self.denied = true;
+                return;
+            }
+            self.marks[node] |= PICKED;
+            out.sound = Some(PICK_SOUND);
+        }
+        if let Some(record) = record {
+            record.store_pair(self.nodes[node].power, self.marks[node]);
+            self.read_record(record);
+        }
+    }
+
+    /// A drag that starts on a bar slot or a learnt node carries its
+    /// power.
+    fn start_power_drag(&mut self, id: i32, bar: &PowerBar, out: &mut PressResult) {
+        let at = self.node_under as usize - 1;
+        if id & focus::SLOT != 0 {
+            if let Some(entry) = bar.slots.get(at).filter(|entry| entry.word != 0) {
+                out.result = 0x105;
+                out.drag = Some(PowerDrag {
+                    power: entry.word,
+                    flags: entry.state,
+                    extra: entry.extra,
+                    kind: press::POWER_DRAG,
+                    origin: self.node_under as usize,
+                });
+            }
+        } else if let Some(node) = self.nodes.get(at).filter(|_| self.marks[at] & LEARNED != 0) {
+            out.result = 0x105;
+            out.drag = Some(PowerDrag {
+                power: node.power,
+                // The original leaves this word as the heap held it; the
+                // preview frame reads its picked bit, so the marks fill it.
+                flags: self.marks[at],
+                extra: u32::from(self.domain),
+                kind: press::POWER_DRAG,
+                origin: 0,
+            });
+        }
     }
 
     /// Moves a drag to `(x, y)`. A pan moves the goal by the whole pixels
@@ -1772,7 +1807,7 @@ impl TreeScreen {
             links,
             bar: slots,
             hovered: self.node_under,
-            marked: self.flash,
+            marked: self.flash + 1,
             hover_until: self.flash_until,
             hover_flip: self.denied,
             marked_until: self.flash_until,
@@ -2034,18 +2069,20 @@ impl PowerBar {
         }
     }
 
-    /// Selects a slot (0-based) whose word is set. Returns whether it
-    /// moved.
+    /// Selects a slot (0-based) whose word is set: the slot takes the
+    /// chosen bit and the previously chosen slot loses it, so selecting
+    /// the chosen slot again leaves none chosen. Returns whether the slot
+    /// was set.
     pub fn select(&mut self, slot: usize) -> bool {
         if slot > 9 || self.slots[slot].word == 0 {
             return false;
         }
         self.slots[slot].word |= word::CHOSEN;
         let chosen = self.chosen;
-        if chosen > 0 && chosen - 1 != slot {
+        if chosen > 0 {
             self.slots[chosen - 1].word &= !word::CHOSEN;
         }
-        self.chosen = slot + 1;
+        self.chosen = if chosen == slot + 1 { 0 } else { slot + 1 };
         true
     }
 
@@ -2098,9 +2135,9 @@ impl PowerBar {
     }
 
     /// Drops a power on the bar at `x`,`y`. A hit fills the slot (keeping
-    /// its bits 20 to 22) with the power word and its flags; a power from
-    /// another slot is copied back to it. A miss empties the slot the
-    /// power came from. Returns whether a slot was hit.
+    /// its bits 20 to 22) with the power word and its flags, and the slot's
+    /// old entry goes to the slot the power came from. A miss empties the
+    /// slot the power came from. Returns whether a slot was hit.
     pub fn drop(
         &mut self,
         x: f32,
@@ -2120,14 +2157,14 @@ impl PowerBar {
             }
             return (false, None);
         };
+        // The slot's old entry moves to the slot the power came from, then
+        // the slot takes the power (keeping its bits 20 to 22).
+        if drag.origin > 0 && drag.origin <= 10 {
+            self.slots[drag.origin - 1] = self.slots[slot];
+        }
         let target = &mut self.slots[slot];
         target.word = (target.word & 0x70_0000) | drag.power;
         target.state = drag.flags;
-        if drag.origin > 0 && drag.origin <= 10 && drag.origin - 1 != slot {
-            let copy = *target;
-            let source = drag.origin - 1;
-            self.slots[source] = copy;
-        }
         (true, Some(SLOT_SOUND))
     }
 
@@ -2300,6 +2337,7 @@ mod tests {
                 word,
                 width: 1000.0,
                 now,
+                hidden: false,
             },
             record,
             bar,
@@ -2755,7 +2793,11 @@ mod tests {
             Some(&mut record),
             &mut bar,
         );
-        assert_eq!(out.sound, Some(SELECT_SOUND));
+        assert_eq!(out.sound, Some(LEARN_SOUND));
+        assert_eq!(screen.learn_until, 300);
+        // A mark does not flash the node, and nothing was retired.
+        assert_eq!(screen.flash, -1);
+        assert_eq!(screen.retired_new, 0);
         assert_eq!(screen.marks[1] & NEW, NEW);
         assert_eq!(
             record.pairs,
@@ -2767,6 +2809,161 @@ mod tests {
         let committed = screen.commit(&mut record);
         assert_eq!(committed.map(|pair| pair.flags), Some(LEARNED | PICKED));
         assert_eq!(screen.marks[1] & (LEARNED | PICKED), LEARNED | PICKED);
+    }
+
+    #[test]
+    fn a_second_new_mark_retires_the_first() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Create,
+            vec![node(0x101, vec![]), node(0x102, vec![])],
+        );
+        screen.marks = vec![SHOWN, SHOWN];
+        let mut record = PowerRecord::empty(4.0);
+        record.skills.thaumaturgy = vec![0, 2, 0, 0];
+        let mut bar = PowerBar::default();
+        screen.set_focus(1, 0);
+        press(
+            &mut screen,
+            press::LEFT | press::CLICK,
+            100,
+            Some(&mut record),
+            &mut bar,
+        );
+        assert_eq!(screen.marks[0] & NEW, NEW);
+        // The mark's fade runs for 200 ms; a click inside it does nothing.
+        screen.set_focus(2, 0);
+        press(
+            &mut screen,
+            press::LEFT | press::CLICK,
+            250,
+            Some(&mut record),
+            &mut bar,
+        );
+        assert_eq!(screen.marks[1] & NEW, 0);
+        let out = press(
+            &mut screen,
+            press::LEFT | press::CLICK,
+            300,
+            Some(&mut record),
+            &mut bar,
+        );
+        assert_eq!(out.sound, Some(LEARN_SOUND));
+        assert_eq!(screen.marks[0] & NEW, 0);
+        assert_eq!(screen.marks[1] & NEW, NEW);
+        // The first is kept for its fade out, one-based.
+        assert_eq!(screen.retired_new, 1);
+        assert_eq!(screen.learn_until, 500);
+    }
+
+    #[test]
+    fn a_pick_flashes_its_node_and_a_refusal_turns_it_red() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![]), node(0x102, vec![link_to(1)])],
+        );
+        let mut record = PowerRecord::empty(8.0);
+        record.pairs = vec![
+            KnownPower {
+                power: 0x101,
+                flags: LEARNED,
+            },
+            KnownPower {
+                power: 0x102,
+                flags: LEARNED,
+            },
+        ];
+        screen.apply_marks(&record.pairs);
+        screen.read_record(&record);
+        assert_eq!(screen.flash, -1);
+        let mut bar = PowerBar::default();
+        // The second power needs the first one picked.
+        screen.set_focus(2, 0);
+        press(
+            &mut screen,
+            press::LEFT | press::CLICK,
+            1000,
+            Some(&mut record),
+            &mut bar,
+        );
+        assert!(screen.denied);
+        assert_eq!(screen.flash, 1);
+        assert_eq!(screen.flash_until, 1300);
+    }
+
+    #[test]
+    fn a_cost_is_the_one_of_the_domain_shown() {
+        // A power of another domain than the screen's is charged the
+        // screen's domain cost.
+        let mut screen =
+            TreeScreen::from_nodes(DOMAIN_FORCE, TreeMode::Play, vec![node(0x101, vec![])]);
+        let mut record = PowerRecord::empty(1.0);
+        record.pairs = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED,
+        }];
+        screen.apply_marks(&record.pairs);
+        screen.read_record(&record);
+        screen.costs = [4.0, 0.5, 4.0, 4.0, 4.0, 4.0];
+        screen.set_focus(1, 0);
+        let mut bar = PowerBar::default();
+        let out = press(
+            &mut screen,
+            press::LEFT | press::CLICK,
+            10,
+            Some(&mut record),
+            &mut bar,
+        );
+        assert_eq!(out.sound, Some(PICK_SOUND));
+    }
+
+    #[test]
+    fn a_right_press_opens_only_the_visible_play_screen() {
+        let mut bar = PowerBar::default();
+        let mut play = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let out = press(&mut play, press::RIGHT, 10, None, &mut bar);
+        assert!(out.open);
+        assert_eq!(out.result, 1);
+        let hidden = play.press(
+            PressInput {
+                x: 0.0,
+                y: 0.0,
+                word: press::RIGHT,
+                width: 1000.0,
+                now: 10,
+                hidden: true,
+            },
+            None,
+            &mut bar,
+        );
+        assert!(!hidden.open);
+        assert_eq!(hidden.result, 1);
+        let mut practice = TreeScreen::empty(DOMAIN_MIND, TreeMode::Practice);
+        let out = press(&mut practice, press::RIGHT, 10, None, &mut bar);
+        assert!(!out.open);
+        assert_eq!(out.result, press::HANDLED);
+    }
+
+    #[test]
+    fn a_slot_click_selects_the_slot_the_press_went_down_on() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        screen.set_focus(focus::SLOT | 3, 0);
+        // The press names the slot; the click reads it back.
+        press(&mut screen, press::LEFT | press::PRESS, 10, None, &mut bar);
+        assert_eq!(screen.node_under, 3);
+        let out = press(&mut screen, press::LEFT | press::CLICK, 20, None, &mut bar);
+        assert_eq!(out.slot, Some(2));
+        assert_eq!(out.sound, Some(SLOT_SELECT_SOUND));
+        assert_eq!(bar.chosen, 3);
+        // An empty slot cannot be selected and plays nothing.
+        bar.slots[4].word = 0;
+        screen.set_focus(focus::SLOT | 5, 0);
+        press(&mut screen, press::LEFT | press::PRESS, 30, None, &mut bar);
+        let out = press(&mut screen, press::LEFT | press::CLICK, 40, None, &mut bar);
+        assert_eq!(out.slot, None);
+        assert_eq!(out.sound, None);
     }
 
     #[test]
@@ -2783,6 +2980,7 @@ mod tests {
             Some(PowerDrag {
                 power: 0x201,
                 flags: SHOWN | LEARNED | PICKED,
+                extra: u32::from(DOMAIN_FORCE),
                 kind: press::POWER_DRAG,
                 origin: 0
             })
@@ -2794,25 +2992,32 @@ mod tests {
     }
 
     #[test]
-    fn a_slot_drop_copies_and_a_miss_clears() {
+    fn a_slot_drop_swaps_and_a_miss_clears() {
         let mut bar = PowerBar::default();
         bar.slots[0] = BarSlot {
             word: 0x101,
             state: 0x4000,
             ..BarSlot::default()
         };
-        bar.slots[9] = BarSlot::default();
+        bar.slots[9] = BarSlot {
+            word: 0x103 | 0x20_0000,
+            ..BarSlot::default()
+        };
         let drag = PowerDrag {
             power: 0x102,
             flags: 0x4000,
+            extra: 0,
             kind: press::POWER_DRAG,
             origin: 1,
         };
         let (hit, sound) = bar.drop(194.0 + 68.0 * 9.0, 32.0, 1000.0, &drag);
         assert!(hit);
         assert_eq!(sound, Some(SLOT_SOUND));
-        assert_eq!(bar.slots[9].word, 0x102);
-        assert_eq!(bar.slots[0].word, 0x102);
+        // The slot keeps its bits 20 to 22 and takes the power; its old
+        // entry goes to the slot the power came from.
+        assert_eq!(bar.slots[9].word, 0x102 | 0x20_0000);
+        assert_eq!(bar.slots[9].state, 0x4000);
+        assert_eq!(bar.slots[0].word, 0x103 | 0x20_0000);
         let (hit, _) = bar.drop(0.0, 0.0, 1000.0, &drag);
         assert!(!hit);
         assert_eq!(bar.slots[0].word, 0);
@@ -2834,6 +3039,10 @@ mod tests {
         assert!(bar.cycle(-1, None));
         assert_eq!(bar.chosen, 3);
         assert!(!bar.select(9));
+        // Selecting the chosen slot again takes the chosen bit off it.
+        assert!(bar.select(2));
+        assert_eq!(bar.chosen, 0);
+        assert_eq!(bar.slots[2].word & word::CHOSEN, 0);
     }
 
     #[test]
@@ -2999,6 +3208,7 @@ mod tests {
             word: press::MIDDLE,
             width: 1000.0,
             now: 10,
+            hidden: false,
         };
         let out = screen.press(input, None, &mut bar);
         assert_eq!(out.result, 0x15);

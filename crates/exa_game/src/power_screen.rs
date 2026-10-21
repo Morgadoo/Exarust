@@ -56,6 +56,8 @@ pub struct PowerScreen {
     last_draw: u128,
     /// The dragged power's preview.
     drag: Option<try_drag::Dragged>,
+    /// Where the left button went down, until it has dragged or let go.
+    press_origin: Option<[f32; 2]>,
 }
 
 mod try_drag {
@@ -64,6 +66,7 @@ mod try_drag {
     pub struct Dragged {
         pub power: u32,
         pub flags: u32,
+        pub extra: u32,
         pub origin: usize,
         pub at: [f32; 2],
     }
@@ -84,6 +87,7 @@ impl Default for PowerScreen {
             dirty: true,
             last_draw: 0,
             drag: None,
+            press_origin: None,
         }
     }
 }
@@ -393,6 +397,9 @@ fn hotkeys(
     let _ = body;
 }
 
+/// How far the pointer goes with the left button down before a drag starts.
+const DRAG_DISTANCE: f32 = 6.0;
+
 /// The pointer's tree input.
 #[allow(clippy::too_many_arguments)]
 fn pointer(
@@ -437,6 +444,7 @@ fn pointer(
         bar,
         dirty,
         drag,
+        press_origin,
         ..
     } = &mut *screen;
     let hidden = !*open;
@@ -456,40 +464,55 @@ fn pointer(
             word: crate::thaum::tree::press::LEFT | crate::thaum::tree::press::PRESS,
             width,
             now,
+            hidden,
         };
         *dirty = true;
         tree.drag = crate::thaum::tree::DragState::Idle;
         let _ = tree.press(input, Some(record), bar);
-        // A learnt node starts a power drag.
+        *press_origin = Some([x, y]);
+    }
+    if buttons.pressed(MouseButton::Left)
+        && let Some(origin) = *press_origin
+        && drag.is_none()
+        && (x - origin[0]).hypot(y - origin[1]) >= DRAG_DISTANCE
+    {
+        // A learnt node or a bar slot starts a power drag once the pointer
+        // has moved; a press that stays is a click.
+        *press_origin = None;
         let drag_input = crate::thaum::tree::PressInput {
-            x,
-            y,
+            x: origin[0],
+            y: origin[1],
             word: crate::thaum::tree::press::LEFT | crate::thaum::tree::press::DRAG,
             width,
             now,
+            hidden,
         };
         if let Some(started) = tree.press(drag_input, Some(record), bar).drag {
             *drag = Some(try_drag::Dragged {
                 power: started.power,
                 flags: started.flags,
+                extra: started.extra,
                 origin: started.origin,
                 at: [x, y],
             });
         }
     }
     if buttons.just_released(MouseButton::Left) {
+        *press_origin = None;
         let input = crate::thaum::tree::PressInput {
             x,
             y,
             word: crate::thaum::tree::press::LEFT | crate::thaum::tree::press::CLICK,
             width,
             now,
+            hidden,
         };
         if let Some(held) = drag.take() {
             // A drag ends on the bar: the tree's drop rule fills a slot.
             let power = crate::thaum::tree::PowerDrag {
                 power: held.power,
                 flags: held.flags,
+                extra: held.extra,
                 kind: crate::thaum::tree::press::POWER_DRAG,
                 origin: held.origin,
             };
@@ -507,6 +530,7 @@ fn pointer(
             word: crate::thaum::tree::press::MIDDLE,
             width,
             now,
+            hidden,
         };
         let _ = tree.press(input, Some(record), bar);
         *dirty = true;
