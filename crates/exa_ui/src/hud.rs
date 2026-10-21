@@ -683,13 +683,18 @@ fn draw(
     }
     let now = time.elapsed().as_millis() as i64;
     // Shown while in combat mode, in a frame where the yellow health
-    // changed or the focus dropped.
+    // changed or the focus dropped. The values compared against are taken
+    // only in a frame that shows the bars, as the original's show rule
+    // stores them (a rise of the focus while hidden is not remembered).
     let changed = state
         .last
         .is_some_and(|(yellow, focus)| hud.yellow != yellow || hud.focus < focus);
-    let bars_fade = state.bars.step(hud.combat || changed, now);
+    let shown = hud.combat || changed;
+    let bars_fade = state.bars.step(shown, now);
     let gauge_fade = state.gauge.step(hud.combat && hud.shield, now);
-    state.last = Some((hud.yellow, hud.focus));
+    if shown || state.last.is_none() {
+        state.last = Some((hud.yellow, hud.focus));
+    }
     if bars_fade <= INVISIBLE && gauge_fade <= INVISIBLE {
         hide(&mut visibility);
         return;
