@@ -336,12 +336,19 @@ humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
     - Arm stiffness (both arms): 0.5 off balance (balance under 0.6,
       falling, lying, getting up); 0.2 at tone under 0.85; in the walk and
       run cycles the character's walking arms (0.2, or 0.2 − 0.15 × its
-      feral level, at least 0.05: a zombie's arms hang at 0.05); otherwise
+      feral level, at least 0.05: a zombie's arms hang at 0.05); a power
+      sets both to 0.3 and a weapon switch both to 0.4 (the attack
+      setter's floor, relaxation cap and saturation, the saturation from
+      the drive the last attack stored, 0 until then); a kick leaves the
+      arms as the last tick wrote them; otherwise
       x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
-      least 0.4 × the turn left (rad), at most 0.4. An idle arm pulls at
-      σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
-      parry, recoil and power states are not reproduced: attacks use the
-      relaxed value.
+      least 0.4 × the turn left (rad), at most 0.4, except a kick which
+      is not floored. An idle arm pulls at
+      σ = 0.25, walking 0.175, off balance 0.31. An attack tick replaces
+      both with the swing's pair (the swing routine's body side, below).
+      Not reproduced on this path: the parry blend, the clinch, and easing
+      the two stored stiffnesses apart once the attack has ended (the
+      standing ease is still one value).
     - A leg limit link's strength s ← 0.9s + 0.1t each tick (double
       precision), t = 0.4 walking or running, 0.5·S² standing or
       backpedalling (0.2 → 0.5 standing); kept while the body collapses.

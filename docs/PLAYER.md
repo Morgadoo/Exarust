@@ -772,9 +772,9 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   some, [DEBUGGING.md](DEBUGGING.md)).
 - The swinging arm's stiffness (W20·L(p)) runs in the muscle tune while
   an attack plays: each side's shoulder, upper arm, forearm and hand
-  take that arm's stiffness, and the turn floors it. Not yet: swing
-  sounds, the
-  AI's own release and attack choice (L11), recoil and the
+  take that arm's stiffness, and the turn floors it. A power sets both
+  arms to 0.3 and a weapon switch to 0.4; a kick leaves them. Not yet:
+  swing sounds, the AI's own release and attack choice (L11), recoil and the
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).
 

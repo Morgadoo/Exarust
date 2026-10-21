@@ -7,8 +7,8 @@
 //! striding, off balance while its posture stage takes an off-balance
 //! branch, getting up and rising through its get-up's first quarter,
 //! carried by its controller, turning unless its condition is helpless,
-//! collapsing, walking and off its feet by its condition, its clip's
-//! progress.
+//! collapsing, kicking, casting, switching weapons, walking and off its
+//! feet by its condition, its clip's progress.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};

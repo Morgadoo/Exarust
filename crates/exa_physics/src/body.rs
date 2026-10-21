@@ -1275,6 +1275,10 @@ pub struct Drive {
     /// writes each side's arm parts from it. Absent, the eased stiffness
     /// stands. The swing stage clears it at the start of every tick.
     attack_arms: Option<muscle::AttackArmTune>,
+    /// The drive each arm's saturation last took from an attack, right
+    /// then left. A power and a weapon switch keep using it. Zero until
+    /// an attack writes one.
+    arm_drive: (f32, f32),
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -1321,6 +1325,7 @@ impl Default for Drive {
             posture_rate: RaceMuscles::HUMAN.clip_rate,
             dormant: false,
             attack_arms: None,
+            arm_drive: (0.0, 0.0),
         }
     }
 }

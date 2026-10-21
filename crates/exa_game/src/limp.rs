@@ -586,6 +586,9 @@ pub(crate) fn bearing(
         },
         gait_floor: None,
         collapsing: condition.is_collapsing(),
+        kicking: condition == Condition::KICKING,
+        casting: condition == Condition::CASTING,
+        switching: condition == Condition::SWITCHING || condition == Condition::SWITCHED,
         walking: condition == Condition::WALKING,
         off_feet: condition.off_feet(),
         progress: 0.0,
@@ -1139,6 +1142,11 @@ pub(crate) mod tests {
         }
         let b = of(Branch::Standing, Condition::COMBAT_IDLE);
         assert!(!b.walking && !b.off_feet);
+        assert!(of(Branch::Standing, Condition::KICKING).kicking);
+        assert!(of(Branch::Standing, Condition::CASTING).casting);
+        assert!(of(Branch::Standing, Condition::SWITCHING).switching);
+        assert!(of(Branch::Standing, Condition::SWITCHED).switching);
+        assert!(!of(Branch::Standing, Condition::NORMAL).kicking);
     }
 
     /// A drive whose body does what `bearing` says, at `tone`.

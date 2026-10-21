@@ -270,6 +270,13 @@ pub struct Bearing {
     /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
     /// instead of following the leg mode.
     pub stepping: bool,
+    /// It plays a kick, at the tone a standing body keeps. The arms are
+    /// left as the last tick wrote them.
+    pub kicking: bool,
+    /// It plays a power. Both arms are set to 0.3.
+    pub casting: bool,
+    /// It plays a weapon switch. Both arms are set to 0.4.
+    pub switching: bool,
     /// Its golem suit is powered: the standing thigh factor and the leg
     /// limit's target are halved a second time.
     pub golem_powered: bool,
@@ -306,6 +313,9 @@ impl Default for Bearing {
             lag: 1.0,
             facing: Vec3::Z,
             stepping: false,
+            kicking: false,
+            casting: false,
+            switching: false,
             golem_powered: false,
             jump: false,
             jump_progress: 0.0,
@@ -401,11 +411,18 @@ fn leg_gains(legs: LegMode, limbs: f32, support: f32, bearing: &Bearing) -> (f32
     }
 }
 
+/// A power's arms, both of them.
+const ARM_POWER: f32 = 0.3;
+/// A weapon switch's arms, both of them.
+const ARM_SWITCH: f32 = 0.4;
+
 /// The arms' stiffness after one tick, `x` last tick's: 0.2 collapsing;
 /// 0.5 off balance; 0.2 dazed (tone under 0.85); striding, the
-/// character's walking arms (0.2, looser for the feral); else easing to
-/// 0.4·(0.5 + 0.5·race arm relaxation). While the body turns it is at
-/// least min(0.4·|turn left|, 0.4).
+/// character's walking arms (0.2, looser for the feral); a kick leaves
+/// `x`; a power sets 0.3 and a weapon switch 0.4, each floored by the
+/// attack setter's compare; else easing to 0.4·(0.5 + 0.5·race arm
+/// relaxation). While the body turns, except on a kick, it is at least
+/// min(0.4·|turn left|, 0.4).
 pub(super) fn arm_stiffness(
     x: f32,
     bearing: &Bearing,
@@ -413,18 +430,37 @@ pub(super) fn arm_stiffness(
     race: &RaceMuscles,
     stats: &BodyStats,
 ) -> f32 {
-    let x = if bearing.collapsing {
-        ARM_LOOSE
-    } else if bearing.off_balance {
-        ARM_OFF_BALANCE
-    } else if tone < ARM_DAZED_TONE {
-        ARM_LOOSE
-    } else if bearing.striding {
-        stats.walking_arms
-    } else {
-        ARM_KEEP * x + ARM_EASE * (0.5 + 0.5 * race.arm_relaxation)
-    };
-    x.max((ARM_TURN * bearing.turn.abs()).min(ARM_TURN))
+    if bearing.collapsing {
+        return floor_arm(ARM_LOOSE, bearing.turn);
+    }
+    if bearing.off_balance {
+        return floor_arm(ARM_OFF_BALANCE, bearing.turn);
+    }
+    if tone < ARM_DAZED_TONE {
+        return floor_arm(ARM_LOOSE, bearing.turn);
+    }
+    if bearing.striding {
+        return floor_arm(stats.walking_arms, bearing.turn);
+    }
+    // A kick does not write the arms, so the turn does not floor them.
+    if bearing.kicking {
+        return x;
+    }
+    if bearing.casting {
+        return attack_stiffness_floor(ARM_POWER, bearing.turn);
+    }
+    if bearing.switching {
+        return attack_stiffness_floor(ARM_SWITCH, bearing.turn);
+    }
+    floor_arm(
+        ARM_KEEP * x + ARM_EASE * (0.5 + 0.5 * race.arm_relaxation),
+        bearing.turn,
+    )
+}
+
+/// The idle floor: at least 0.4·|turn|, at most 0.4, in single precision.
+fn floor_arm(x: f32, turn: f32) -> f32 {
+    x.max((ARM_TURN * turn.abs()).min(ARM_TURN))
 }
 
 /// An arm part's anchor relaxation cap at stiffness `x`.
@@ -612,6 +648,20 @@ impl Ragdoll {
             ..bearing
         };
         drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
+        // An attack's drives stay on the body: a later power or weapon
+        // switch saturates each arm from the one it stored.
+        if let Some(tune) = drive.attack_arms {
+            drive.arm_drive = tune.drive;
+        }
+        // Standing, at full tone, not in a walk or a run: a kick leaves
+        // the arms, and a power or a weapon switch writes both through
+        // the attack setter.
+        let posed = !unsteady.collapsing
+            && !unsteady.off_balance
+            && drive.tone >= ARM_DAZED_TONE
+            && !unsteady.striding;
+        let hold_arms = posed && unsteady.kicking;
+        let snap = posed && (unsteady.casting || unsteady.switching);
         let limbs = LIMB_SCALE * drive.stats.scale;
         let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support, &bearing);
         for i in 0..parts.len() {
@@ -638,12 +688,18 @@ impl Ragdoll {
                     }
                 }
                 Role::Arm => {
+                    // A kick leaves whatever the last tick wrote.
+                    if hold_arms {
+                        continue;
+                    }
                     let bone = parts[i].bone;
                     let p = &mut parts[i];
                     // An attack tick's arms replace the eased stiffness on
                     // every bone of that side. The idle tune already drives
                     // those bones together; the swing's pair is what this
-                    // tick's muscles pull with.
+                    // tick's muscles pull with. A power or a weapon switch
+                    // writes the one stiffness on both sides, and each side
+                    // keeps the saturation of the drive its last attack stored.
                     if let Some(tune) = drive.attack_arms
                         && let Some(side) = attack_side(bone)
                     {
@@ -655,6 +711,15 @@ impl Ragdoll {
                         let stiff = attack_stiffness_floor(stiff, drive.bearing.turn);
                         p.factor = stiff * limbs;
                         p.relax_cap = attack_relax_cap(stiff);
+                        p.saturation = attack_saturation(drv);
+                    } else if snap && let Some(side) = attack_side(bone) {
+                        let drv = if side == 0 {
+                            drive.arm_drive.0
+                        } else {
+                            drive.arm_drive.1
+                        };
+                        p.factor = drive.arm * limbs;
+                        p.relax_cap = attack_relax_cap(drive.arm);
                         p.saturation = attack_saturation(drv);
                     } else {
                         p.factor = drive.arm * limbs;

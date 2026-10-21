@@ -191,7 +191,8 @@ fn the_stance_factor_rises_with_the_gait() {
 
 /// The arms' stiffness: easing 0.8x + 0.08 to 0.4 standing (a skeleton's
 /// to 0.3), 0.2 striding or dazed, 0.5 off balance, and at least 0.4 × the
-/// turn left (at most 0.4). Its arm parts' anchors relax at most
+/// turn left (at most 0.4). A kick keeps it. A power is 0.3 and a weapon
+/// switch 0.4. Its arm parts' anchors relax at most
 /// 0.6 − (x − 0.1)·0.8: 0.36 standing, 0.52 striding, 0.28 off balance.
 #[test]
 fn arm_stiffness_follows_the_bodys_state() {
@@ -237,6 +238,49 @@ fn arm_stiffness_follows_the_bodys_state() {
     for (x, cap) in [(0.4, 0.36), (0.2, 0.52), (0.5, 0.28)] {
         assert!((arm_relax_cap(x) - cap).abs() < 1e-6, "{x}");
     }
+    // A kick keeps the stiffness, turn and all. A power is 0.3 and a
+    // weapon switch 0.4, and the attack setter's floor raises either.
+    let kicking = Bearing {
+        kicking: true,
+        turn: 2.0,
+        ..still
+    };
+    assert_eq!(arm_stiffness(0.55, &kicking, 1.0, &human), 0.55);
+    assert_eq!(
+        arm_stiffness(
+            0.55,
+            &Bearing {
+                kicking: true,
+                ..fallen
+            },
+            1.0,
+            &human
+        ),
+        0.5
+    );
+    let casting = Bearing {
+        casting: true,
+        ..still
+    };
+    assert_eq!(arm_stiffness(0.8, &casting, 1.0, &human), 0.3);
+    assert_eq!(
+        arm_stiffness(
+            0.8,
+            &Bearing {
+                casting: true,
+                turn: 2.0,
+                ..still
+            },
+            1.0,
+            &human
+        ),
+        0.4
+    );
+    let switching = Bearing {
+        switching: true,
+        ..still
+    };
+    assert_eq!(arm_stiffness(0.2, &switching, 1.0, &human), 0.4);
 }
 
 /// A feral character's arms hang looser in the walk and run cycles, at its
@@ -810,8 +854,59 @@ fn an_attack_writes_each_arms_stiffness() {
 
     body.set_bearing(Bearing::default());
     body.set_attack_arms(None);
-    body.aim(Affine3A::IDENTITY, pose);
+    body.aim(Affine3A::IDENTITY, pose.clone());
     let eased = body.arm_stiffness().unwrap();
     assert_eq!(body.parts[0].factor, eased * limbs);
     assert_eq!(body.parts[0].saturation, SATURATION);
+
+    // A power sets both arms to 0.3 through the attack setter, and keeps
+    // each side's drive from the attack that stored it (1 and 0).
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    body.set_attack_arms(None);
+    body.set_bearing(Bearing {
+        casting: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.parts[0].factor, 0.3 * limbs);
+    assert_eq!(body.parts[2].factor, 0.3 * limbs);
+    assert_eq!(body.parts[0].relax_cap, attack_relax_cap(0.3));
+    assert_eq!(body.parts[0].saturation, attack_saturation(1.0));
+    assert_eq!(body.parts[2].saturation, attack_saturation(0.0));
+
+    // A weapon switch sets both to 0.4. The drives are still the attack's.
+    body.set_bearing(Bearing {
+        switching: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.parts[0].factor, 0.4 * limbs);
+    assert_eq!(body.parts[2].relax_cap, attack_relax_cap(0.4));
+    assert_eq!(body.parts[2].saturation, attack_saturation(0.0));
+
+    // A kick writes nothing: the switch's arms stay, turn or not.
+    let kept = (
+        body.parts[0].factor,
+        body.parts[2].factor,
+        body.parts[0].saturation,
+    );
+    body.set_bearing(Bearing {
+        kicking: true,
+        turn: 2.0,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(
+        (
+            body.parts[0].factor,
+            body.parts[2].factor,
+            body.parts[0].saturation
+        ),
+        kept
+    );
+    assert_eq!(body.arm_stiffness(), Some(0.4));
 }
