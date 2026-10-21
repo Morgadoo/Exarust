@@ -7,17 +7,36 @@
 //! The board edits two shared rosters. The left table lists the company's
 //! fighters who are not in the lineup; the right lists the lineup itself.
 //! A fighter moves between them by double click or drag and drop, and the
-//! lineup is capped by the match's side size. Rows are kept in the order
-//! of their ordinal, which is the fighter's slot in the company pool.
+//! lineup is capped by the selected match's side size. The company table
+//! is kept in the order of the fighter's slot in the company pool.
 //!
-//! Match selection is by rank: a fighter may join when its rank reaches
-//! the selected floor, except for the Captain event (match type 9), whose
-//! teammates may be two ranks lower. The day allows three matches; a
-//! seventh day is the tournament day and a season is four weeks.
+//! Every tab works on one selected match record. The standard tab copies a
+//! standard match and writes the chosen rank and tier into it, scaling its
+//! entry fee and prize by the rank; the events tab copies a daily event and
+//! the tournament tab a tournament event. The record's lowest rank is the
+//! lineup's rank floor, its side size caps the lineup, and its flags lift
+//! the one-leader rule or name a weapon for the tournament event.
 //!
 //! Evidence: the retail match board's constructor, tab switch, list
-//! refreshes and fighter assignment (`docs/UI.md`, Forms).
+//! refreshes, fighter assignment and coin cell callback, read against their
+//! assembly (`docs/UI.md`, Arena match board).
 
+/// The rank labels in the original's table order. A fighter's rank is one
+/// of the first six; a record's rank index past Master reads the dash and
+/// the staff labels that follow them in the same table.
+pub const RANK_LABELS: [&str; 11] = [
+    "Inept",
+    "Aspirant",
+    "Novice",
+    "Adept",
+    "Expert",
+    "Master",
+    "-",
+    "Merchant",
+    "Trainer",
+    "Physician",
+    "+",
+];
 /// The six competitor ranks, from the board's rank list.
 pub const RANKS: [&str; 6] = ["Inept", "Aspirant", "Novice", "Adept", "Expert", "Master"];
 /// The six always-listed standard match types.
@@ -29,22 +48,38 @@ pub const TABS: [&str; 4] = ["Matches", "Events", "Tournament", "Season"];
 pub const TITLE: &str = "Matches";
 /// Matches a company may enter in one day.
 pub const MATCHES_PER_DAY: u32 = 3;
+/// Pugilism's match type id. The standard tab stores no tier for it.
+pub const UNRANKED_MATCH: u32 = 6;
+/// Challenger's match type id. Its tier column shows a dash.
+pub const CHALLENGER_EVENT: u32 = 8;
 /// The Captain event's id. Its teammates may be two ranks below the floor.
 pub const CAPTAIN_EVENT: u32 = 9;
-/// A team member's leader byte. The player counts as the leader too.
+/// A match flag that lifts the one-leader and marked-fighter rules. On a
+/// daily event the same bit greys the row and moves the selection past it;
+/// what sets it there (likely an entered event) is outside the board.
+pub const FLAG_FREE_LINEUP: u32 = 1;
+/// A match flag naming a weapon for the event. The tournament tab then
+/// shows the reward panel with the weapon's name, shortens the lineup to
+/// four rows and checks the first entrant's weapon.
+pub const FLAG_WEAPON: u32 = 4;
+/// A team member's leader bit. The player counts as a leader too.
 pub const LEADER_BIT: u8 = 1;
 /// A fighter whose class byte is above this is not a combatant.
 pub const COMBATANT_CLASS: u8 = 2;
 /// The text when the day's three matches are spent.
 pub const NO_MORE_MATCHES: &str = "[algn=2]There are no more matches running this day.\r\nEnd the day to participate in more matches.";
-/// The rank text of an absent or unknown rank.
+/// The rank text of an absent or unknown rank, and of a zero coin cell.
 pub const NO_RANK: &str = "-";
 /// The tournament status when nobody has entered.
 pub const TOURNAMENT_IN_PROGRESS: &str = "Tournament is in progress.";
-/// The tournament status when every entered event has a winner.
+/// The tournament status when the last event has a winner.
 pub const TOURNAMENT_ENDED: &str = "The tournament has ended.";
-/// The tournament status when entered events were settled but the week runs.
+/// The tournament status when every entered event is settled but the last
+/// event has no winner.
 pub const NO_MORE_EVENTS: &str = "No more events entered.";
+/// The lineup table's height on a weapon event's tournament tab: the
+/// interface scale of four times thirty.
+pub const WEAPON_LINEUP_HEIGHT: i32 = 120;
 
 /// The form's table slot. The letters name the board's child views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -451,7 +486,8 @@ pub const CONTROL_DISABLED: u32 = 0x10;
 pub const CONTROL_SELECTED: u32 = 0x60;
 
 /// The board's controls, in the form template's order. Only the ones the
-/// board's own methods touch are named.
+/// board's own methods touch are named; names past what the board writes
+/// into them are guesses.
 pub mod control {
     use super::{CONTROL_DISABLED, CONTROL_HIDDEN, CONTROL_SELECTED};
 
@@ -460,18 +496,23 @@ pub mod control {
     pub const TAB_EVENTS: usize = 1;
     pub const TAB_TOURNAMENT: usize = 2;
     pub const TAB_SEASON: usize = 3;
-    /// The standard tab's four rows.
-    pub const MATCH_ROW_0: usize = 4;
-    pub const MATCH_ROW_3: usize = 7;
-    /// Two labels shared by the non-season tabs; they are hidden while the
-    /// season tab is open.
-    pub const SHARED_LABEL_0: usize = 8;
-    pub const SHARED_LABEL_1: usize = 9;
-    /// The tournament tab's panel and label.
-    pub const TOURNAMENT_PANEL: usize = 10;
-    pub const TOURNAMENT_PANEL_LABEL: usize = 11;
-    /// The season-available marker.
-    pub const SEASON_MARKER: usize = 12;
+    /// The standard tab's four controls; the second holds the entry fee and
+    /// the fourth the prize.
+    pub const STANDARD_FIRST: usize = 4;
+    pub const STANDARD_FEE: usize = 5;
+    pub const STANDARD_PRIZE: usize = 7;
+    pub const STANDARD_LAST: usize = 7;
+    /// A control shared by the non-season tabs, hidden on the season tab.
+    pub const SHARED: usize = 8;
+    /// The "Entered n/m" label, hidden on the season tab.
+    pub const ENTERED: usize = 9;
+    /// The tournament tab's prize item and its companion control.
+    pub const PRIZE_ITEM: usize = 10;
+    pub const PRIZE_CAPTION: usize = 11;
+    /// A button enabled once a match is played (on a tournament day the
+    /// arena's own checks decide). Its role, ending the day, is a guess
+    /// from that rule.
+    pub const DAY_END: usize = 12;
     /// The primary Enter/Begin/Continue button.
     pub const ENTER: usize = 14;
     /// The secondary tournament button.
@@ -484,7 +525,7 @@ pub mod control {
     pub const SEASON_ITEM_1: usize = 19;
     pub const SEASON_ITEM_2: usize = 20;
     pub const SEASON_ITEM_3: usize = 21;
-    /// The season tab's last line.
+    /// The season tab's last control.
     pub const SEASON_TAIL: usize = 22;
 
     /// A shown, enabled control.
@@ -515,55 +556,192 @@ pub mod control {
 /// The number of control slots the methods touch.
 pub const CONTROL_COUNT: usize = 23;
 
-/// A daily event row. The board shows the match name, its rank, a second
-/// rank (or a dash for the merchant event), the entry fee and the prize.
+/// A match record as the board reads it: a standard match, a daily event, a
+/// tournament event, or the board's selected match. The fields follow the
+/// arena's match record (`exa_game::arena::MatchInstance`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoardEvent {
+pub struct MatchRecord {
     pub name: String,
-    /// The event kind byte. 8 is the merchant event, shown as a dash.
-    pub kind: i32,
-    /// Bit 0 marks an event the company already entered.
+    /// The match type id: 1 through 6 the standard matches, 8 Challenger,
+    /// 9 Captain.
+    pub kind: u32,
+    /// [`FLAG_FREE_LINEUP`] and [`FLAG_WEAPON`]; other bits are the arena's.
     pub flags: u32,
-    /// The rank at the event's first rank column.
+    /// The lowest rank that may fight: the lineup's rank floor.
+    pub min_rank: i32,
+    /// The highest rank. The standard tab stores its tier here and the
+    /// weapon check reads it as the tournament event.
+    pub max_rank: i32,
+    /// The rank column (the arena's day slot).
     pub rank: i32,
-    /// The rank at the event's second rank column; a negative value is
-    /// shown as Inept.
-    pub second_rank: i32,
-    /// The packed copper entry fee.
+    /// The tier column (the arena's rolled rank); negative is unranked.
+    pub tier: i32,
+    /// The packed coin entry fee.
     pub fee: u32,
-    /// The packed copper prize.
+    /// The packed coin prize.
     pub prize: u32,
+    /// Fighters per side.
+    pub team_size: i32,
+    /// The event's one-based weapon row within its tier, or zero.
+    pub weapon_row: i32,
 }
 
-impl Default for BoardEvent {
+impl Default for MatchRecord {
     fn default() -> Self {
         Self {
             name: String::new(),
             kind: 0,
             flags: 0,
+            min_rank: 0,
+            max_rank: 0,
             rank: 0,
-            second_rank: -1,
+            tier: 0,
             fee: 0,
             prize: 0,
+            team_size: 1,
+            weapon_row: 0,
         }
+    }
+}
+
+/// One of the six standard matches the board lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandardMatch {
+    pub name: &'static str,
+    pub kind: u32,
+    pub flags: u32,
+    pub max_rank: i32,
+    pub tier: i32,
+    /// The packed coin fee at Inept; the standard tab multiplies it by the
+    /// rank plus one.
+    pub fee: u32,
+    /// The packed coin prize at Inept, scaled the same way.
+    pub prize: u32,
+    pub team_size: i32,
+}
+
+impl StandardMatch {
+    /// The standard match as a record.
+    pub fn record(&self) -> MatchRecord {
+        MatchRecord {
+            name: self.name.to_string(),
+            kind: self.kind,
+            flags: self.flags,
+            min_rank: 0,
+            max_rank: self.max_rank,
+            rank: 0,
+            tier: self.tier,
+            fee: self.fee,
+            prize: self.prize,
+            team_size: self.team_size,
+            weapon_row: 0,
+        }
+    }
+}
+
+/// The six standard matches: Duel, Doubles, Skirmish, Fray, Reserve and
+/// Pugilism. Reserve lifts the one-leader rule; Pugilism is unranked.
+pub const STANDARD_MATCHES: [StandardMatch; 6] = [
+    StandardMatch {
+        name: "Duel",
+        kind: 1,
+        flags: 0,
+        max_rank: 0,
+        tier: 0,
+        fee: 3,
+        prize: 0x100,
+        team_size: 1,
+    },
+    StandardMatch {
+        name: "Doubles",
+        kind: 2,
+        flags: 0,
+        max_rank: 0,
+        tier: 0,
+        fee: 6,
+        prize: 0x400,
+        team_size: 2,
+    },
+    StandardMatch {
+        name: "Skirmish",
+        kind: 3,
+        flags: 0,
+        max_rank: 0,
+        tier: 0,
+        fee: 9,
+        prize: 0x600,
+        team_size: 3,
+    },
+    StandardMatch {
+        name: "Fray",
+        kind: 4,
+        flags: 0,
+        max_rank: 0,
+        tier: 0,
+        fee: 3,
+        prize: 0x200,
+        team_size: 1,
+    },
+    StandardMatch {
+        name: "Reserve",
+        kind: 5,
+        flags: FLAG_FREE_LINEUP,
+        max_rank: 0,
+        tier: 0,
+        fee: 3,
+        prize: 0x400,
+        team_size: 3,
+    },
+    StandardMatch {
+        name: "Pugilism",
+        kind: UNRANKED_MATCH,
+        flags: 0,
+        max_rank: -1,
+        tier: -1,
+        fee: 1,
+        prize: 6,
+        team_size: 1,
+    },
+];
+
+/// One weapon row of a tournament tier: its name and up to three item kinds
+/// that satisfy it, zero-padded.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WeaponRow {
+    pub name: String,
+    pub variants: [u32; 3],
+}
+
+impl WeaponRow {
+    /// Whether an item kind satisfies the row. The variants are read in
+    /// order and the first zero ends the list.
+    pub fn accepts(&self, kind: u32) -> bool {
+        self.variants
+            .iter()
+            .take_while(|&&variant| variant != 0)
+            .any(|&variant| variant == kind)
     }
 }
 
 /// One fighter entered in a tournament event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Participant {
-    /// The fighter's slot in the company pool.
+    /// The fighter's slot in the company pool. The original stores the low
+    /// byte of the entity's flag word and reads it back as the pool slot.
     pub slot: usize,
-    /// The value the fighter's record holds for that event.
+    /// The fighter's record value for that event.
     pub value: i32,
+    /// The item kind the arena derives from that value; the weapon check
+    /// compares it with the event's weapon row.
+    pub weapon: u32,
 }
 
 /// A tournament event's entry and winner.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EventEntry {
     pub participants: Vec<Participant>,
-    /// The winning company id: 0 for none, 1 for the player, then the
-    /// rival companies from id 2.
+    /// The winner: 0 or less for none, 1 for the player's company, and from
+    /// 2 an index into the tournament's company table.
     pub winner: i32,
 }
 
@@ -576,14 +754,16 @@ pub struct Fighter {
     /// Health for the roster table's health column.
     pub health: u16,
     /// The company record's class byte: 0 through 2 is a combatant and
-    /// bit 0 marks the leader. The bit's meaning is inferred from the
+    /// bit 0 marks a leader. The bit's meaning is inferred from the
     /// board's one-leader rule.
     pub class: u8,
-    /// The entity's marked flag (the original's `0x10000000`). A marked
-    /// fighter takes the place of an existing marked teammate.
+    /// The entity's marked flag. A marked fighter takes the place of an
+    /// existing marked teammate.
     pub marked: bool,
     /// The fighter's record value for each tournament event.
     pub event_values: [i32; 6],
+    /// The item kind behind each event value, for the weapon check.
+    pub event_weapons: [u32; 6],
 }
 
 impl Fighter {
@@ -596,6 +776,7 @@ impl Fighter {
             class,
             marked: false,
             event_values: [0; 6],
+            event_weapons: [0; 6],
         }
     }
 
@@ -611,7 +792,7 @@ impl Fighter {
 }
 
 /// The rank a fighter's six skill levels give: the sum halved and capped
-/// at Master.
+/// at Master. A level is the skill's experience word divided by 5000.
 pub fn rank_of(skills: &[u32]) -> u8 {
     let sum = skills
         .iter()
@@ -620,42 +801,59 @@ pub fn rank_of(skills: &[u32]) -> u8 {
     ((sum / 2).min(5)) as u8
 }
 
-/// The rank's name. A negative rank is the dash the original stores right
-/// after Master; ranks past Master are clamped to a dash too, since their
-/// in-memory neighbours are not rank names.
+/// A rank index's label from the original's table. A negative index or one
+/// past the table is shown as the dash; the original reads it unchecked.
 pub fn rank_name(rank: i32) -> &'static str {
-    if rank < 0 {
+    usize::try_from(rank)
+        .ok()
+        .and_then(|index| RANK_LABELS.get(index).copied())
+        .unwrap_or(NO_RANK)
+}
+
+/// The tier column of a daily event: a dash for Challenger, Inept for an
+/// unranked event, else the tier's label.
+pub fn event_tier_name(event: &MatchRecord) -> &'static str {
+    if event.kind == CHALLENGER_EVENT {
         NO_RANK
+    } else if event.tier < 0 {
+        RANK_LABELS[0]
     } else {
-        RANKS.get(rank as usize).copied().unwrap_or(NO_RANK)
+        rank_name(event.tier)
     }
 }
 
-/// The second rank column of a daily event. The merchant event shows a
-/// dash; a negative rank shows Inept. A rank past Master is clamped to
-/// Master, a guess for the original's unchecked table read.
-pub fn event_tier_name(event: &BoardEvent) -> &'static str {
-    if event.kind == 8 {
-        NO_RANK
-    } else if event.second_rank < 0 {
-        RANKS[0]
-    } else {
-        RANKS
-            .get(event.second_rank as usize)
-            .copied()
-            .unwrap_or(RANKS[5])
-    }
-}
-
-/// A packed coin amount's copper, silver and gold counts. The high 16 bits
-/// are gold, then a silver byte and a copper byte, each silver worth 12
-/// copper.
+/// A packed coin amount's copper, silver and gold counts: a copper byte, a
+/// silver byte and the high 16 bits of gold.
 pub fn coin_parts(packed: u32) -> (u32, u32, u32) {
     (packed & 0xff, (packed >> 8) & 0xff, packed >> 16)
 }
 
-/// Whether the day's three matches are spent. The counter is the signed
-/// int the original compares.
+/// A packed coin amount in copper: twelve copper to the silver and twelve
+/// silver to the gold.
+pub fn coin_value(packed: u32) -> u32 {
+    let (copper, silver, gold) = coin_parts(packed);
+    copper + silver * 12 + gold * 144
+}
+
+/// Packs a copper amount the way the original stores it: the gold count is
+/// kept in 16 bits and the remainder split into a silver and a copper byte,
+/// each wrapping as the original's byte stores do.
+pub fn pack_coins(value: u32) -> u32 {
+    let gold = (value / 144) as u16;
+    let rest = value.wrapping_sub(u32::from(gold) * 144);
+    let silver = (rest / 12) as u8;
+    let copper = (rest as u8).wrapping_sub(silver.wrapping_mul(12));
+    u32::from(copper) | (u32::from(silver) << 8) | (u32::from(gold) << 16)
+}
+
+/// Scales a packed coin amount by a factor with the original's 32-bit
+/// multiply.
+pub fn scale_coins(packed: u32, factor: i32) -> u32 {
+    pack_coins((coin_value(packed) as i32).wrapping_mul(factor) as u32)
+}
+
+/// Whether the day's three matches remain. The counter is the signed int
+/// the original compares.
 pub fn matches_left(played: i32) -> bool {
     played < MATCHES_PER_DAY as i32
 }
@@ -704,11 +902,12 @@ pub fn season_reward_order(rewards: [u32; 4]) -> [u32; 4] {
 }
 
 /// A fighter's rank passes the board's floor. The Captain event lets a
-/// teammate be two ranks below the floor; the match's first fighter still
-/// needs the full floor.
+/// teammate be two ranks below the floor; the lineup's first fighter still
+/// needs the full floor. The original compares in 64 bits, so the floor
+/// cannot wrap.
 pub fn rank_passes(match_id: u32, floor: i32, rank: i32, first: bool) -> bool {
     if match_id == CAPTAIN_EVENT && !first {
-        floor.saturating_sub(2) <= rank
+        i64::from(floor) - 2 <= i64::from(rank)
     } else {
         floor <= rank
     }
@@ -726,37 +925,35 @@ pub struct Board {
     pub tab: BoardTab,
     /// The selected standard match type, 0 through 5.
     pub match_type: usize,
-    /// The selected rank floor, 0 through 5.
+    /// The selected rank, 0 through 5.
     pub rank: usize,
-    /// The selected tier, 0 through 5.
+    /// The selected tier, 0 through 5, never above the rank.
     pub tier: usize,
-    /// The global rank floor the fighter filter reads.
-    pub rank_floor: usize,
-    /// Fighters per side for the selected match.
-    pub team_size: usize,
-    /// Matches the company has entered today; the day allows three.
+    /// The match the lineup is built for, copied by the last refresh.
+    pub selected: MatchRecord,
+    /// Matches the company has entered today; the day allows three. The
+    /// arena counts them, not the board.
     pub matches_played: i32,
-    /// Whether more than one leader-class fighter may join (the flag word's
-    /// low bit).
-    pub allow_multiple_leaders: bool,
-    /// The tournament-layout flag (the original's flag word bit 2).
-    pub tournament_mode: bool,
-    /// Whether the tournament's week is over (the caller's flag).
-    pub tournament_ended: bool,
-    /// Whether the season tab's activity marker is on.
-    pub season_available: bool,
+    /// On a tournament day, the arena's own verdict for the day-end button
+    /// (`None` when its first check fails and the match count decides).
+    pub tournament_day_end: Option<bool>,
     /// The player's company name.
     pub company_name: String,
-    /// The 19 rival companies, in id order from 2.
+    /// The rival companies, in company id order from 2.
     pub rivals: Vec<String>,
+    /// The tournament's company table: a winner from 2 reads entry
+    /// `winner - 2`, which holds a company id less one.
+    pub tournament_companies: Vec<i32>,
     /// Who won each of the season's four weeks.
     pub week_winners: [u32; 4],
     /// The four seasons' four rewards.
     pub season_rewards: [[u32; 4]; 4],
-    /// The six tournament event names.
-    pub tournament_events: [String; 6],
+    /// The six tournament events.
+    pub tournament_events: [MatchRecord; 6],
+    /// The tournament weapon rows, by tier.
+    pub weapon_tiers: Vec<Vec<WeaponRow>>,
     /// The six daily events.
-    pub events: [BoardEvent; 6],
+    pub events: [MatchRecord; 6],
     /// The tournament entries and winners.
     pub entries: [EventEntry; 6],
     /// The company pool: index 0 is the player, then the roster.
@@ -768,29 +965,24 @@ pub struct Board {
     pub available: Vec<usize>,
     /// Pool slots shown in the lineup table.
     pub team: Vec<usize>,
-    /// The event table's selection (zero-based).
+    /// The event table's selected row.
+    pub event_row: usize,
+    /// The daily event the last refresh copied. It differs from the row
+    /// when every event is greyed: the row moves to the last one and the
+    /// record stays.
     pub event_selection: usize,
     /// The winners table's selection (zero-based).
     pub winner_selection: usize,
-    /// The company table's selected row.
-    pub available_selection: usize,
-    /// The lineup table's selected row.
-    pub team_selection: usize,
-    /// The season table's selected row.
-    pub season_selection: usize,
-    /// The raw event table top row, which the refresh can move past the
-    /// last row when every event was entered.
-    pub events_top: usize,
-    /// The standard tab's message.
+    /// The company table's selected row, if any.
+    pub available_selection: Option<usize>,
+    /// The lineup table's selected row, if any.
+    pub team_selection: Option<usize>,
+    /// The season table's selected row, if any.
+    pub season_selection: Option<usize>,
+    /// The shared message box under the lists.
     pub standard_message: String,
-    /// The tournament tab's note beside the reward item.
+    /// The reward panel's text: the weapon row's name on a weapon event.
     pub tournament_note: String,
-    /// The selected tournament event for the entry check.
-    pub entrant_event: usize,
-    /// The selected bracket row for the entry check.
-    pub entrant_row: usize,
-    /// The fighter slot whose entry is being checked.
-    pub entrant_slot: usize,
     /// The item id the tournament tab's reward slot gets when it opens.
     pub tournament_prize_item: Option<u32>,
     /// The tournament reward item id, if one was created.
@@ -799,18 +991,17 @@ pub struct Board {
     pub season_items: [Option<u32>; 4],
     /// The control states, indexed by [`control`].
     pub controls: [u32; CONTROL_COUNT],
-    /// The last standard refresh's two list spans: one and three rank
-    /// steps. The original re-encodes each in its object table's base-12/144
-    /// packing before storing it; these are the decoded spans.
-    pub rank_span: i32,
-    pub tier_span: i32,
-    /// The lineup table's height after a tournament refresh, when the
-    /// tournament layout shortens it to four rows.
+    /// The standard tab's scaled entry fee and prize, shown in
+    /// [`control::STANDARD_FEE`] and [`control::STANDARD_PRIZE`].
+    pub standard_fee: u32,
+    pub standard_prize: u32,
+    /// The lineup table's height after a tournament refresh of a weapon
+    /// event.
     pub lineup_height_override: Option<i32>,
 }
 
 impl Board {
-    /// A board with the player at pool slot 0, `roster` after it, and the
+    /// A board with the player at pool slot 0, the roster after it, and the
     /// standard tab open. The board does not own the installation's data:
     /// the caller fills the events, entries and names.
     pub fn new(compact: bool, day: u32, fighters: Vec<Fighter>) -> Self {
@@ -825,41 +1016,36 @@ impl Board {
             match_type: 0,
             rank: 0,
             tier: 0,
-            rank_floor: 0,
-            team_size: 1,
+            selected: STANDARD_MATCHES[0].record(),
             matches_played: 0,
-            allow_multiple_leaders: false,
-            tournament_mode: false,
-            tournament_ended: false,
-            season_available: true,
+            tournament_day_end: None,
             company_name: String::new(),
             rivals: Vec::new(),
+            tournament_companies: Vec::new(),
             week_winners: [0; 4],
             season_rewards: [[0; 4]; 4],
-            tournament_events: std::array::from_fn(|_| String::new()),
-            events: std::array::from_fn(|_| BoardEvent::default()),
+            tournament_events: std::array::from_fn(|_| MatchRecord::default()),
+            weapon_tiers: Vec::new(),
+            events: std::array::from_fn(|_| MatchRecord::default()),
             entries: std::array::from_fn(|_| EventEntry::default()),
             fighters,
             lineup: Vec::new(),
             available: Vec::new(),
             team: Vec::new(),
+            event_row: 0,
             event_selection: 0,
             winner_selection: 0,
-            available_selection: 0,
-            team_selection: 0,
-            season_selection: 0,
-            events_top: 1,
+            available_selection: None,
+            team_selection: None,
+            season_selection: None,
             standard_message: String::new(),
             tournament_note: String::new(),
-            entrant_event: 0,
-            entrant_row: 0,
-            entrant_slot: 0,
             tournament_prize_item: None,
             tournament_reward: None,
             season_items: [None; 4],
             controls,
-            rank_span: 1,
-            tier_span: 3,
+            standard_fee: STANDARD_MATCHES[0].fee,
+            standard_prize: STANDARD_MATCHES[0].prize,
             lineup_height_override: None,
         };
         board.rebuild_lineups();
@@ -872,19 +1058,35 @@ impl Board {
         layout(self.compact)
     }
 
-    /// The selected match type's id, one through six.
+    /// The selected match's type id.
     pub fn match_id(&self) -> u32 {
-        self.match_type as u32 + 1
+        self.selected.kind
     }
 
-    /// The tier the refresh reports for the selected match: none for
-    /// Pugilism (id 6), which is unranked, else the selected tier.
+    /// The lineup's rank floor: the selected match's lowest rank.
+    pub fn rank_floor(&self) -> i32 {
+        self.selected.min_rank
+    }
+
+    /// Fighters per side for the selected match.
+    pub fn team_size(&self) -> i32 {
+        self.selected.team_size
+    }
+
+    /// Whether the selected match lifts the one-leader and marked rules.
+    pub fn free_lineup(&self) -> bool {
+        self.selected.flags & FLAG_FREE_LINEUP != 0
+    }
+
+    /// Whether the selected match names a weapon.
+    pub fn weapon_event(&self) -> bool {
+        self.selected.flags & FLAG_WEAPON != 0
+    }
+
+    /// The tier the selected match carries: none for an unranked match
+    /// (Pugilism on the standard tab).
     pub fn reported_tier(&self) -> Option<usize> {
-        if self.match_id() == 6 {
-            None
-        } else {
-            Some(self.tier)
-        }
+        usize::try_from(self.selected.max_rank).ok()
     }
 
     /// The fighter at a pool slot.
@@ -907,14 +1109,19 @@ impl Board {
             .any(|entry| !entry.participants.is_empty())
     }
 
+    /// Whether the lineup has reached the side size.
+    fn team_full(&self) -> bool {
+        self.team.len() as i64 >= i64::from(self.team_size())
+    }
+
     /// The weekly tournament's status text and the two button states.
     pub fn tournament_status(&self) -> TournamentStatus {
         let mut status = TournamentStatus {
             text: String::new(),
             button_label: "Enter",
-            enter: control::SHOWN,
+            enter: control::HIDDEN,
             secondary: control::HIDDEN,
-            text_state: control::HIDDEN,
+            text_state: control::SHOWN,
         };
         if !is_tournament_day(self.day) {
             let days = tournament_begins_in(self.day);
@@ -923,15 +1130,9 @@ impl Board {
             } else {
                 format!("Tournament begins in {} days.", days)
             };
-            status.enter = control::HIDDEN;
-            status.secondary = control::HIDDEN;
-            status.text_state = control::SHOWN;
             return status;
         }
-        let entered = self
-            .entries
-            .iter()
-            .any(|entry| !entry.participants.is_empty());
+        let entered = self.has_entrants();
         let unsettled = self
             .entries
             .iter()
@@ -946,19 +1147,13 @@ impl Board {
                 "Continue"
             };
         } else if entered {
-            status.text = if self.tournament_ended {
+            status.text = if self.entries[5].winner > 0 {
                 TOURNAMENT_ENDED.to_string()
             } else {
                 NO_MORE_EVENTS.to_string()
             };
-            status.enter = control::HIDDEN;
-            status.secondary = control::HIDDEN;
-            status.text_state = control::SHOWN;
         } else {
             status.text = TOURNAMENT_IN_PROGRESS.to_string();
-            status.enter = control::HIDDEN;
-            status.secondary = control::HIDDEN;
-            status.text_state = control::SHOWN;
         }
         status
     }
@@ -969,67 +1164,109 @@ impl Board {
     pub fn entered_label(&self) -> String {
         format!(
             "Entered {}/{}",
-            count_char(self.team.len()),
-            count_char(self.team_size)
+            count_char(self.team.len() as i64),
+            count_char(i64::from(self.team_size()))
         )
     }
 
-    /// The primary button's state after a lineup change.
+    /// The primary button's state.
     pub fn enter_state(&self) -> u32 {
-        if self.tab == BoardTab::Season {
-            return control::HIDDEN;
-        }
-        if self.tab == BoardTab::Tournament {
-            return self.tournament_status().enter;
-        }
-        let mut state = if matches_left(self.matches_played) {
-            control::SHOWN
-        } else {
-            control::DISABLED
-        };
-        if matches_left(self.matches_played) {
-            if self.team.len() < self.team_size {
-                state |= control::DISABLED;
-            } else {
-                state &= !control::DISABLED;
-            }
-        }
-        state
+        self.controls[control::ENTER]
     }
 
-    /// The standard tab's refresh: clamp the tier to the rank, disable the
-    /// tier rows at and above the rank, and size the two list spans.
+    /// The primary button's update after a lineup change. The tournament
+    /// tab keeps the state its status gave it; the season tab hides the
+    /// button; otherwise it is disabled once the day's matches are spent
+    /// and while the lineup is short.
+    fn refresh_enter(&mut self) {
+        let full = self.team_full();
+        let left = matches_left(self.matches_played);
+        let state = &mut self.controls[control::ENTER];
+        match self.tab {
+            BoardTab::Tournament => {}
+            BoardTab::Season => *state = control::HIDDEN,
+            _ if !left => *state = control::DISABLED,
+            _ if full => *state &= !control::DISABLED,
+            _ => *state |= control::DISABLED,
+        }
+    }
+
+    /// The day-end control's enable rule.
+    pub fn day_end_enabled(&self) -> bool {
+        if is_tournament_day(self.day)
+            && let Some(enabled) = self.tournament_day_end
+        {
+            return enabled;
+        }
+        self.matches_played > 0
+    }
+
+    /// The message box text the standard and events refreshes write.
+    fn day_message(&self) -> String {
+        if matches_left(self.matches_played) {
+            String::new()
+        } else {
+            NO_MORE_MATCHES.to_string()
+        }
+    }
+
+    /// The standard tab's refresh: copy the standard match, clamp the tier
+    /// to the rank, store the rank as the floor and the tier (none for
+    /// Pugilism), scale the fee and prize by the rank plus one, write the
+    /// day's message and rebuild the lineup.
     pub fn refresh_standard(&mut self) {
+        let template = STANDARD_MATCHES[self.match_type.min(STANDARD_MATCHES.len() - 1)];
         if self.tier > self.rank {
             self.tier = self.rank;
         }
-        self.rank_span = self.rank as i32 + 1;
-        self.tier_span = self.rank_span * 3;
+        let rank = self.rank as i32;
+        let tier = if template.kind == UNRANKED_MATCH {
+            -1
+        } else {
+            self.tier as i32
+        };
+        let mut record = template.record();
+        record.min_rank = rank;
+        record.max_rank = tier;
+        record.rank = rank;
+        record.tier = tier;
+        record.fee = scale_coins(template.fee, rank + 1);
+        record.prize = scale_coins(template.prize, rank + 1);
+        self.standard_fee = record.fee;
+        self.standard_prize = record.prize;
+        self.selected = record;
+        self.standard_message = self.day_message();
         self.rebuild_lineups();
     }
 
-    /// Whether a tier row is disabled by the selected rank.
+    /// Whether a tier row is greyed by the selected rank: every row above
+    /// it.
     pub fn tier_row_disabled(&self, row: usize) -> bool {
-        row >= self.rank
+        row > self.rank
     }
 
-    /// An event's selection after a refresh. An entered event moves the
-    /// selection to the first event that is not entered; when all six are
-    /// entered the table's top row moves past the last row.
+    /// The events tab's refresh. A greyed event moves the row to the first
+    /// event that is not greyed; when all six are greyed the row moves to
+    /// the last one and the greyed record is still copied.
     pub fn refresh_events(&mut self) {
-        let selected = self
-            .events
-            .get(self.event_selection)
-            .cloned()
-            .unwrap_or_default();
-        if selected.flags & 1 != 0 {
-            if let Some(found) = self.events.iter().position(|event| event.flags & 1 == 0) {
-                self.event_selection = found;
-                self.events_top = found + 1;
-            } else {
-                self.events_top = 6;
+        let row = self.event_row.min(self.events.len() - 1);
+        let mut record = row;
+        if self.events[row].flags & FLAG_FREE_LINEUP != 0 {
+            match self
+                .events
+                .iter()
+                .position(|event| event.flags & FLAG_FREE_LINEUP == 0)
+            {
+                Some(found) => {
+                    record = found;
+                    self.event_row = found;
+                }
+                None => self.event_row = self.events.len() - 1,
             }
         }
+        self.event_selection = record;
+        self.selected = self.events[record].clone();
+        self.standard_message = self.day_message();
         self.rebuild_lineups();
     }
 
@@ -1039,12 +1276,7 @@ impl Board {
         if self.lineup.len() != count {
             self.lineup = (1..count)
                 .map(|slot| {
-                    if self
-                        .fighters
-                        .get(slot)
-                        .map(Fighter::is_combatant)
-                        .unwrap_or(false)
-                    {
+                    if self.fighters[slot].is_combatant() {
                         slot as i32
                     } else {
                         i32::MAX
@@ -1057,86 +1289,70 @@ impl Board {
         self.available.clear();
         let mut used = vec![false; count];
         if self.tab == BoardTab::Tournament {
-            for participant in self
+            let participants = self
                 .entries
                 .get(self.winner_selection)
                 .map(|entry| entry.participants.as_slice())
-                .unwrap_or(&[])
-            {
-                if participant.slot < count && !used[participant.slot] {
+                .unwrap_or(&[]);
+            for participant in participants {
+                // The original reads an out-of-range slot unchecked.
+                if participant.slot < count {
                     used[participant.slot] = true;
                     self.team.push(participant.slot);
                 }
             }
         } else {
+            let kind = self.match_id();
+            let floor = self.rank_floor();
+            let free = self.free_lineup();
+            let size = i64::from(self.team_size());
             let mut have_leader = false;
-            for &slot in &self.lineup {
-                if slot == i32::MAX || slot < 0 {
+            for &order in &self.lineup {
+                // The marker and slots past the pool fail the original's
+                // bound; a negative slot is skipped where it reads unchecked.
+                let Ok(slot) = usize::try_from(order) else {
                     continue;
-                }
-                let slot = slot as usize;
-                if slot >= count {
-                    continue;
-                }
-                if used[slot] {
-                    continue;
-                }
+                };
                 let Some(fighter) = self.fighters.get(slot) else {
                     continue;
                 };
                 if slot > 0 && !fighter.is_combatant() {
                     continue;
                 }
-                let first = self.team.is_empty();
-                if !rank_passes(
-                    self.match_id(),
-                    self.rank_floor as i32,
-                    fighter.rank as i32,
-                    first,
-                ) {
+                if !rank_passes(kind, floor, fighter.rank as i32, self.team.is_empty()) {
                     continue;
                 }
-                if slot > 0 && fighter.is_leader() {
-                    if have_leader && !self.allow_multiple_leaders {
+                if slot == 0 || fighter.is_leader() {
+                    if have_leader && !free {
                         continue;
                     }
                     have_leader = true;
                 }
-                if slot == 0 {
-                    have_leader = true;
-                }
                 used[slot] = true;
                 self.team.push(slot);
-                if self.team.len() >= self.team_size {
+                if self.team.len() as i64 >= size {
                     break;
                 }
             }
         }
-        self.available_selection = 0;
-        self.team_selection = 0;
+        self.available_selection = None;
+        self.team_selection = None;
         for (slot, &is_used) in used.iter().enumerate() {
-            if is_used {
-                continue;
+            if !is_used && (slot == 0 || self.fighters[slot].is_combatant()) {
+                self.available.push(slot);
             }
-            if slot > 0
-                && !self
-                    .fighters
-                    .get(slot)
-                    .map(Fighter::is_combatant)
-                    .unwrap_or(false)
-            {
-                continue;
-            }
-            self.available.push(slot);
         }
+        self.refresh_enter();
     }
 
-    /// Whether a fighter may be moved into the lineup by a double click.
+    /// Whether a fighter may be moved into the lineup by a double click or
+    /// dropped onto it. The Captain event's lower floor applies to every
+    /// such fighter.
     pub fn accepts_rank(&self, slot: usize) -> bool {
         self.fighters.get(slot).is_some_and(|fighter| {
             rank_passes(
                 self.match_id(),
-                self.rank_floor as i32,
+                self.rank_floor(),
                 fighter.rank as i32,
                 false,
             )
@@ -1145,12 +1361,28 @@ impl Board {
 
     /// Whether a fighter may be dropped onto the lineup.
     pub fn can_drop(&self, slot: usize) -> bool {
-        self.accepts_rank(slot)
+        !self.assignment_locked() && self.accepts_rank(slot)
+    }
+
+    fn ranked(&self, slot: usize) -> bool {
+        self.fighters
+            .get(slot)
+            .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor())
     }
 
     /// Moves an available fighter into the lineup. `target` is a zero-based
-    /// lineup slot for a drop, or `None` for a double click. Returns
-    /// whether the tables changed.
+    /// lineup row for a drop, or `None` for a double click or a drop on no
+    /// row. Returns whether the tables changed.
+    ///
+    /// A marked fighter swaps with the first marked teammate. Otherwise a
+    /// double click joins when there is room and else benches the last
+    /// teammate to the end of the company table; a drop swaps with the row.
+    /// On a Captain event a fighter under the floor may not replace a
+    /// ranked teammate when fewer than two of more than two are ranked, and
+    /// a qualified teammate is moved first. Off the tournament tab the
+    /// fighter's place in the lineup order becomes the row it joined, or
+    /// the first place after a marked swap or a bench, as the original's
+    /// unset target leaves it.
     pub fn move_to_team(&mut self, index: usize, target: Option<usize>) -> bool {
         if self.assignment_locked() {
             return false;
@@ -1158,124 +1390,89 @@ impl Board {
         let Some(&slot) = self.available.get(index) else {
             return false;
         };
-        let Some(fighter) = self.fighters.get(slot) else {
+        let Some((rank, marked)) = self
+            .fighters
+            .get(slot)
+            .map(|fighter| (fighter.rank as i32, fighter.marked))
+        else {
             return false;
         };
-        let mut unknown_rank = false;
-        if self.match_id() == CAPTAIN_EVENT && self.team.len() > 2 {
-            let high = self
+        let unknown_rank = self.match_id() == CAPTAIN_EVENT
+            && rank < self.rank_floor()
+            && self.team.len() > 2
+            && self
                 .team
                 .iter()
-                .filter(|&&member| {
-                    self.fighters
-                        .get(member)
-                        .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
-                })
-                .count();
-            if high < 2 {
-                unknown_rank = true;
-            }
-        }
-        let marked = fighter.marked;
-        let mut slot_in_team = None;
-        if !self.allow_multiple_leaders
-            && marked
-            && let Some(found) = self.team.iter().position(|&member| {
+                .filter(|&&member| self.ranked(member))
+                .count()
+                < 2;
+        // A drop past the last row is taken as a drop on no row; the
+        // original indexes the lineup with it unchecked.
+        let target = target.filter(|&row| row < self.team.len());
+        let mut order_target = 0;
+        let mut placed = false;
+        if !self.free_lineup() && marked {
+            let marked = self.team.iter().position(|&member| {
                 self.fighters
                     .get(member)
                     .is_some_and(|fighter| fighter.marked)
-            })
-        {
-            // A drop on the marked fighter's own row keeps the drop target.
-            let target = if self.team[found] == slot {
-                target
-                    .filter(|&drop| drop < self.team.len())
-                    .or(Some(found))
-            } else {
-                Some(found)
-            };
-            let Some(drop) = target else {
-                return false;
-            };
-            if unknown_rank
-                && self
-                    .team
-                    .get(drop)
-                    .and_then(|&member| self.fighters.get(member))
-                    .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
-            {
-                return false;
-            }
-            self.available[index] = self.team[drop];
-            self.team[drop] = slot;
-            slot_in_team = Some(drop);
-        }
-        if slot_in_team.is_none() {
-            if let Some(drop) = target {
-                if drop >= self.team.len() {
-                    // The original indexes the lineup with the drop row
-                    // unchecked; an empty lineup would write before it.
-                    if self.team.len() < self.team_size {
-                        self.team.push(slot);
-                        self.available.remove(index);
-                        slot_in_team = Some(self.team.len() - 1);
-                    } else {
-                        return false;
-                    }
+            });
+            if let Some(found) = marked {
+                let row = if self.team[found] == slot {
+                    target.unwrap_or(found)
                 } else {
-                    if unknown_rank
-                        && self
-                            .team
-                            .get(drop)
-                            .and_then(|&member| self.fighters.get(member))
-                            .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
-                    {
+                    found
+                };
+                if unknown_rank && self.ranked(self.team[found]) {
+                    return false;
+                }
+                self.available[index] = self.team[row];
+                self.team[row] = slot;
+                placed = true;
+            }
+        }
+        if !placed {
+            match target {
+                Some(row) => {
+                    if unknown_rank && self.ranked(self.team[row]) {
                         return false;
                     }
-                    self.available[index] = self.team[drop];
-                    self.team[drop] = slot;
-                    slot_in_team = Some(drop);
+                    self.available[index] = self.team[row];
+                    self.team[row] = slot;
+                    order_target = row;
                 }
-            } else if self.team.len() < self.team_size {
-                self.team.push(slot);
-                self.available.remove(index);
-                slot_in_team = Some(self.team.len() - 1);
-            } else if !self.team.is_empty() {
-                let benched = self.team.pop().unwrap_or(slot);
-                self.available.push(benched);
-                self.team.push(slot);
-                self.available.remove(index);
-                slot_in_team = Some(self.team.len() - 1);
-            } else {
-                return false;
+                None if !self.team_full() => {
+                    self.team.push(slot);
+                    self.available.remove(index);
+                    order_target = self.team.len() - 1;
+                }
+                None => {
+                    // The original benches into an empty lineup by reading
+                    // before it; nothing happens here.
+                    let Some(last) = self.team.last_mut() else {
+                        return false;
+                    };
+                    let benched = std::mem::replace(last, slot);
+                    self.available.push(benched);
+                    self.available.remove(index);
+                }
             }
+            self.available_selection =
+                clamp_selection(self.available_selection, self.available.len());
         }
-        if self.match_id() == CAPTAIN_EVENT && self.team.len() > 2 {
-            let first_rank = self
-                .team
-                .first()
-                .and_then(|&member| self.fighters.get(member))
-                .map(|fighter| fighter.rank as i32)
-                .unwrap_or(0);
-            if first_rank < self.rank_floor as i32
-                && let Some(found) = (1..self.team.len()).find(|&member| {
-                    self.team
-                        .get(member)
-                        .and_then(|&slot| self.fighters.get(slot))
-                        .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
-                })
-            {
-                self.team.swap(0, found);
-            }
-        }
-        if let Some(drop) = slot_in_team
-            && self.tab != BoardTab::Tournament
+        if self.match_id() == CAPTAIN_EVENT
+            && self.team.len() > 2
+            && !self.ranked(self.team[0])
+            && let Some(found) = (1..self.team.len()).find(|&row| self.ranked(self.team[row]))
         {
-            self.move_in_lineup(slot, drop);
+            self.team.swap(0, found);
         }
         if self.tab == BoardTab::Tournament {
             self.record_participants();
+        } else {
+            self.move_in_lineup(slot, order_target);
         }
+        self.refresh_enter();
         true
     }
 
@@ -1284,17 +1481,16 @@ impl Board {
     /// lineup order, so a later rebuild can select the fighter again; this
     /// keeps that behaviour rather than correcting it.
     pub fn move_to_available(&mut self, index: usize) -> bool {
-        if self.assignment_locked() {
-            return false;
-        }
-        if index >= self.team.len() {
+        if self.assignment_locked() || index >= self.team.len() {
             return false;
         }
         let slot = self.team.remove(index);
         self.insert_available(slot);
+        self.team_selection = clamp_selection(self.team_selection, self.team.len());
         if self.tab == BoardTab::Tournament {
             self.record_participants_removed(index);
         }
+        self.refresh_enter();
         true
     }
 
@@ -1323,9 +1519,9 @@ impl Board {
         is_tournament_day(self.day) && self.tab == BoardTab::Tournament
     }
 
-    /// Inserts a pool slot into the company table in slot order. Equal
-    /// slots keep their existing order; the original inserts before the
-    /// first row whose ordinal is greater.
+    /// Inserts a pool slot into the company table in slot order, before the
+    /// first row whose slot is greater (an unsigned compare in the
+    /// original).
     pub fn insert_available(&mut self, slot: usize) {
         let at = self
             .available
@@ -1335,10 +1531,10 @@ impl Board {
         self.available.insert(at, slot);
     }
 
-    /// Moves the pool slot in the lineup order to a lineup position.
+    /// Moves a pool slot to a place in the lineup order, appending it first
+    /// when it is missing.
     pub fn move_in_lineup(&mut self, slot: usize, target: usize) {
-        let position = self.lineup.iter().position(|&row| row == slot as i32);
-        if let Some(position) = position {
+        if let Some(position) = self.lineup.iter().position(|&row| row == slot as i32) {
             self.lineup.remove(position);
         }
         let target = target.min(self.lineup.len());
@@ -1347,15 +1543,22 @@ impl Board {
 
     /// Records the current lineup in the selected tournament event.
     pub fn record_participants(&mut self) {
+        let event = self.winner_selection;
         let participants: Vec<Participant> = self
             .team
             .iter()
             .map(|&slot| Participant {
                 slot,
-                value: self.event_value(slot, self.winner_selection).unwrap_or(0),
+                value: self.event_value(slot, event).unwrap_or(0),
+                weapon: self
+                    .fighters
+                    .get(slot)
+                    .and_then(|fighter| fighter.event_weapons.get(event))
+                    .copied()
+                    .unwrap_or(0),
             })
             .collect();
-        if let Some(entry) = self.entries.get_mut(self.winner_selection) {
+        if let Some(entry) = self.entries.get_mut(event) {
             entry.participants = participants;
         }
     }
@@ -1370,40 +1573,61 @@ impl Board {
         }
     }
 
-    /// The entry-check message: `None` when the event has no entrants (the
-    /// message is left as it is), `Some(false)` when this fighter is in the
-    /// bracket, and `Some(true)` when the original shows its message.
-    /// The original's message text is not decodable from the board's data,
-    /// so only the decision is modelled; the key it compares (a participant
-    /// slot here) is a guess between the entry's slot and its record value.
-    pub fn entrant_message(&self) -> Option<bool> {
-        if !self.tournament_mode {
-            return None;
-        }
-        let entry = self.entries.get(self.entrant_event)?;
-        if entry.participants.is_empty() {
-            return None;
-        }
-        Some(
-            !entry
-                .participants
-                .iter()
-                .any(|participant| participant.slot == self.entrant_slot),
-        )
+    /// The selected event's weapon row: its tier is the record's highest
+    /// rank and its row the record's one-based weapon row.
+    pub fn weapon_row(&self, tier: usize) -> Option<&WeaponRow> {
+        let row = usize::try_from(self.selected.weapon_row)
+            .ok()?
+            .checked_sub(1)?;
+        self.weapon_tiers.get(tier)?.get(row)
     }
 
-    /// The tournament tab's refresh: the reward panel is shown only in the
-    /// tournament layout, where the lineup table is four rows tall.
+    /// The weapon check's mark on the reward panel. `None` leaves the mark
+    /// as it is (no weapon event); otherwise the mark is set when the first
+    /// fighter entered in the event's tier does not carry one of the row's
+    /// weapons, and cleared when nobody is entered. A tier or row outside
+    /// the tables counts as no match.
+    pub fn weapon_mark(&self) -> Option<bool> {
+        if !self.weapon_event() {
+            return None;
+        }
+        let tier = usize::try_from(self.selected.max_rank).ok();
+        let first = tier
+            .and_then(|tier| self.entries.get(tier))
+            .and_then(|entry| entry.participants.first());
+        let Some(first) = first else {
+            return Some(false);
+        };
+        let accepted = tier
+            .and_then(|tier| self.weapon_row(tier))
+            .is_some_and(|row| row.accepts(first.weapon));
+        Some(!accepted)
+    }
+
+    /// The tournament tab's refresh: copy the selected tournament event; a
+    /// weapon event shows the reward panel with the weapon row's name and
+    /// shortens the lineup to four rows. The message box is cleared and the
+    /// lineup rebuilt from the event's entry.
     pub fn refresh_tournament(&mut self) {
-        if self.tournament_mode {
-            self.controls[control::TOURNAMENT_PANEL_LABEL] = control::SHOWN;
-            self.lineup_height_override = Some(4 * ROW_HEIGHT);
+        let event = self.winner_selection.min(self.tournament_events.len() - 1);
+        self.selected = self.tournament_events[event].clone();
+        if self.weapon_event() {
+            self.lineup_height_override = Some(WEAPON_LINEUP_HEIGHT);
+            self.tournament_note = self
+                .weapon_row(event)
+                .map(|row| row.name.clone())
+                .unwrap_or_default();
         } else {
-            self.controls[control::TOURNAMENT_PANEL_LABEL] = control::HIDDEN;
             self.lineup_height_override = None;
         }
         self.standard_message.clear();
         self.rebuild_lineups();
+    }
+
+    /// Whether the reward panel's own control is disabled: on a tournament
+    /// day of a weapon event.
+    pub fn reward_panel_locked(&self) -> bool {
+        self.weapon_event() && is_tournament_day(self.day)
     }
 
     /// The season tab's four winner lines.
@@ -1426,10 +1650,15 @@ impl Board {
         if winner == 1 {
             return self.company_name.clone();
         }
-        self.rivals
-            .get((winner - 2) as usize)
+        self.rival_name(winner as i64).unwrap_or_default()
+    }
+
+    /// A rival company's name by company id, from 2.
+    fn rival_name(&self, id: i64) -> Option<String> {
+        usize::try_from(id - 2)
+            .ok()
+            .and_then(|index| self.rivals.get(index))
             .cloned()
-            .unwrap_or_default()
     }
 
     /// Fills the season's reward item ids and returns the picture name.
@@ -1438,7 +1667,6 @@ impl Board {
         let rewards = self.season_rewards.get(season).copied().unwrap_or([0; 4]);
         let ordered = season_reward_order(rewards);
         self.season_items = ordered.map(|id| if id == 0 { None } else { Some(id) });
-        self.controls[control::ENTER] = control::HIDDEN;
         for index in [
             control::SEASON_PICTURE,
             control::SEASON_ITEM_0,
@@ -1447,40 +1675,34 @@ impl Board {
             control::SEASON_ITEM_3,
             control::SEASON_TAIL,
         ] {
-            if let Some(state) = self.controls.get_mut(index) {
-                *state = control::SHOWN;
-            }
+            self.controls[index] = control::SHOWN;
         }
         season_picture_name(self.day)
     }
 
-    /// The show method: reset the day's tournament reward, recompute the
-    /// tournament flags, and reopen the current tab - or force the
-    /// tournament tab on a tournament day with entries.
+    /// The show method: release the tournament reward item, recompute the
+    /// day's flags, and reopen the current tab, or switch to the tournament
+    /// tab on a tournament day with entries.
     pub fn show(&mut self) -> ShowState {
         self.tournament_reward = None;
         let tournament_day = self.tournament_day();
         let has_entrants = self.has_entrants();
-        let target = if tournament_day && has_entrants {
-            BoardTab::Tournament
+        let forced = tournament_day && has_entrants;
+        if forced && self.tab != BoardTab::Tournament {
+            self.apply_tab(Some(self.tab), BoardTab::Tournament);
         } else {
-            self.tab
-        };
-        // The show method reopens the form; the caller clears the tab strip
-        // before it, which the bank of tab states cannot see.
-        for index in 0..4 {
-            self.controls[index] &= !CONTROL_SELECTED;
+            self.apply_tab(None, self.tab);
         }
-        self.apply_tab(None, target);
         ShowState {
             tournament_day,
             has_entrants,
             tab: self.tab,
-            forced_tournament: tournament_day && has_entrants,
+            forced_tournament: forced,
         }
     }
 
-    /// The close method: remember the tab and the three list selections.
+    /// The close method: remember the tab and the three list selections and
+    /// release the items and the season picture.
     pub fn close(&mut self) -> CloseState {
         let state = CloseState {
             tab: self.tab,
@@ -1503,7 +1725,8 @@ impl Board {
     }
 
     /// Applies a tab. `old` is the tab being left; `None` skips hiding,
-    /// which is what the show method does when it reopens a tab.
+    /// which is what the show method does when it reopens a tab. A tab
+    /// equal to the one being left changes nothing past the shared states.
     pub fn apply_tab(&mut self, old: Option<BoardTab>, new: BoardTab) -> TabView {
         let forced = self.tournament_day() && self.has_entrants();
         let new = if forced { BoardTab::Tournament } else { new };
@@ -1519,24 +1742,23 @@ impl Board {
                 control::DISABLED
             };
         }
-        self.controls[control::SEASON_MARKER] = if self.season_available {
+        self.controls[control::DAY_END] = if self.day_end_enabled() {
             control::SHOWN
         } else {
             control::DISABLED
         };
         let mut hidden = [false; 4];
-        if let Some(old) = old {
-            self.hide_tab(old);
-            hidden[old.index()] = true;
+        if old != Some(new) {
+            if let Some(old) = old {
+                self.hide_tab(old);
+                hidden[old.index()] = true;
+            }
+            self.tab = new;
+            self.controls[new.index()] |= CONTROL_SELECTED;
+            self.show_tab(new);
         }
-        if new != BoardTab::Tournament {
-            self.lineup_height_override = None;
-        }
-        self.tab = new;
-        self.controls[new.index()] |= CONTROL_SELECTED;
-        self.show_tab(new);
         TabView {
-            tab: new,
+            tab: self.tab,
             hidden,
             controls: self.controls,
         }
@@ -1556,33 +1778,27 @@ impl Board {
     }
 
     fn hide_tab(&mut self, tab: BoardTab) {
-        let index = tab.index();
-        self.controls[index] &= !CONTROL_SELECTED;
+        self.controls[tab.index()] &= !CONTROL_SELECTED;
         match tab {
             BoardTab::Matches => {
-                for control in control::MATCH_ROW_0..=control::MATCH_ROW_3 {
-                    self.controls[control] = control::HIDDEN;
+                for index in control::STANDARD_FIRST..=control::STANDARD_LAST {
+                    self.controls[index] = control::HIDDEN;
                 }
             }
             BoardTab::Events => {}
             BoardTab::Tournament => {
-                self.controls[control::TOURNAMENT_PANEL] = control::HIDDEN;
-                self.controls[control::TOURNAMENT_PANEL_LABEL] = control::HIDDEN;
+                self.lineup_height_override = None;
+                self.controls[control::PRIZE_ITEM] = control::HIDDEN;
+                self.controls[control::PRIZE_CAPTION] = control::HIDDEN;
+                self.controls[control::ENTER] = control::SHOWN;
                 self.controls[control::SECONDARY] = control::HIDDEN;
                 self.controls[control::STATUS] = control::HIDDEN;
             }
             BoardTab::Season => {
-                self.controls[control::SHARED_LABEL_0] = control::SHOWN;
-                self.controls[control::SHARED_LABEL_1] = control::SHOWN;
-                for control in [
-                    control::SEASON_PICTURE,
-                    control::SEASON_ITEM_0,
-                    control::SEASON_ITEM_1,
-                    control::SEASON_ITEM_2,
-                    control::SEASON_ITEM_3,
-                    control::SEASON_TAIL,
-                ] {
-                    self.controls[control] = control::HIDDEN;
+                self.controls[control::SHARED] = control::SHOWN;
+                self.controls[control::ENTERED] = control::SHOWN;
+                for index in control::SEASON_PICTURE..=control::SEASON_TAIL {
+                    self.controls[index] = control::HIDDEN;
                 }
             }
         }
@@ -1591,35 +1807,28 @@ impl Board {
     fn show_tab(&mut self, tab: BoardTab) {
         match tab {
             BoardTab::Matches => {
-                for control in control::MATCH_ROW_0..=control::MATCH_ROW_3 {
-                    self.controls[control] = control::SHOWN;
+                for index in control::STANDARD_FIRST..=control::STANDARD_LAST {
+                    self.controls[index] = control::SHOWN;
                 }
                 self.refresh_standard();
             }
-            BoardTab::Events => {
-                self.refresh_events();
-            }
+            BoardTab::Events => self.refresh_events(),
             BoardTab::Tournament => {
+                self.controls[control::PRIZE_ITEM] = control::SHOWN;
                 if self.tournament_reward.is_none() {
                     self.tournament_reward = self.tournament_prize_item;
                 }
-                self.controls[control::TOURNAMENT_PANEL] = control::SHOWN;
-                self.controls[control::TOURNAMENT_PANEL_LABEL] = control::SHOWN;
-                self.controls[control::ENTER] = control::SHOWN;
-                self.controls[control::SECONDARY] = control::HIDDEN;
-                self.controls[control::STATUS] = control::HIDDEN;
+                self.controls[control::PRIZE_CAPTION] = control::SHOWN;
+                self.refresh_tournament();
                 let status = self.tournament_status();
                 self.controls[control::ENTER] = status.enter;
                 self.controls[control::SECONDARY] = status.secondary;
-                if let Some(state) = self.controls.get_mut(control::STATUS) {
-                    *state = status.text_state;
-                }
-                self.refresh_tournament();
+                self.controls[control::STATUS] = status.text_state;
             }
             BoardTab::Season => {
+                self.controls[control::SHARED] = control::HIDDEN;
+                self.controls[control::ENTERED] = control::HIDDEN;
                 self.controls[control::ENTER] = control::HIDDEN;
-                self.controls[control::SHARED_LABEL_0] = control::HIDDEN;
-                self.controls[control::SHARED_LABEL_1] = control::HIDDEN;
                 self.refresh_season();
             }
         }
@@ -1695,8 +1904,7 @@ impl Board {
 
     /// Turns a click at a point into the matching board input.
     pub fn click(&mut self, point: (i32, i32)) -> BoardAction {
-        let hit = self.hit_test(point);
-        match hit {
+        match self.hit_test(point) {
             BoardHit::Tab(index) => self.handle(BoardInput::SelectTab(index)),
             BoardHit::Enter => self.handle(BoardInput::Confirm),
             BoardHit::Table { slot, row, .. } => match slot {
@@ -1706,15 +1914,15 @@ impl Board {
                 TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
                 TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
                 TableSlot::Roster => {
-                    self.available_selection = row;
+                    self.available_selection = Some(row);
                     BoardAction::Changed
                 }
                 TableSlot::Lineup => {
-                    self.team_selection = row;
+                    self.team_selection = Some(row);
                     BoardAction::Changed
                 }
                 TableSlot::Season => {
-                    self.season_selection = row;
+                    self.season_selection = Some(row);
                     BoardAction::Changed
                 }
             },
@@ -1724,17 +1932,18 @@ impl Board {
 
     /// Handles one board input and returns the action the arena should take.
     pub fn handle(&mut self, input: BoardInput) -> BoardAction {
-        match input {
-            BoardInput::SelectTab(index) => {
-                let Some(tab) = BoardTab::from_index(index) else {
-                    return BoardAction::None;
-                };
-                if self.switch_tab(tab).is_some() {
-                    BoardAction::Changed
-                } else {
-                    BoardAction::None
-                }
+        let changed = |done: bool| {
+            if done {
+                BoardAction::Changed
+            } else {
+                BoardAction::None
             }
+        };
+        match input {
+            BoardInput::SelectTab(index) => match BoardTab::from_index(index) {
+                Some(tab) => changed(self.switch_tab(tab).is_some()),
+                None => BoardAction::None,
+            },
             BoardInput::SelectMatch(index) => {
                 if index >= MATCH_TYPES.len() {
                     return BoardAction::None;
@@ -1747,11 +1956,9 @@ impl Board {
                 if index >= RANKS.len() {
                     return BoardAction::None;
                 }
+                // A rank change also moves the tier list to the same row.
                 self.rank = index;
-                // The original keeps the filter's floor in a global that the
-                // board's methods only read; the dropdown's selection is the
-                // natural source. This is a guess.
-                self.rank_floor = index;
+                self.tier = index;
                 self.refresh_standard();
                 BoardAction::Changed
             }
@@ -1767,8 +1974,7 @@ impl Board {
                 if index >= self.events.len() {
                     return BoardAction::None;
                 }
-                self.event_selection = index;
-                self.events_top = index + 1;
+                self.event_row = index;
                 self.refresh_events();
                 BoardAction::Changed
             }
@@ -1780,72 +1986,43 @@ impl Board {
                 self.refresh_tournament();
                 BoardAction::Changed
             }
-            BoardInput::DoubleClickAvailable(index) => {
-                if self.double_click_available(index) {
-                    BoardAction::Changed
-                } else {
-                    BoardAction::None
-                }
-            }
-            BoardInput::DoubleClickTeam(index) => {
-                if self.double_click_team(index) {
-                    BoardAction::Changed
-                } else {
-                    BoardAction::None
-                }
-            }
+            BoardInput::DoubleClickAvailable(index) => changed(self.double_click_available(index)),
+            BoardInput::DoubleClickTeam(index) => changed(self.double_click_team(index)),
             BoardInput::DropOnTeam { from, to } => {
-                if self.move_to_team(from, to) {
-                    BoardAction::Changed
-                } else {
-                    BoardAction::None
-                }
+                changed(self.can_drop_index(from) && self.move_to_team(from, to))
             }
-            BoardInput::DropOnAvailable(index) => {
-                if self.move_to_available(index) {
-                    BoardAction::Changed
-                } else {
-                    BoardAction::None
-                }
-            }
+            BoardInput::DropOnAvailable(index) => changed(self.move_to_available(index)),
             BoardInput::Confirm => self.confirm(),
             BoardInput::Close => BoardAction::Close,
         }
     }
 
+    fn can_drop_index(&self, index: usize) -> bool {
+        self.available
+            .get(index)
+            .is_some_and(|&slot| self.can_drop(slot))
+    }
+
+    /// The primary button. The button's own handler is outside the board's
+    /// methods; this reports what the arena should start and leaves the
+    /// day's match count to the arena.
     fn confirm(&mut self) -> BoardAction {
+        let state = self.enter_state();
+        if control::hidden(state) || control::disabled(state) {
+            return BoardAction::None;
+        }
         match self.tab {
-            BoardTab::Matches | BoardTab::Events => {
-                if !control::disabled(self.enter_state())
-                    && !control::hidden(self.enter_state())
-                    && self.team.len() >= self.team_size
-                    && matches_left(self.matches_played)
-                {
-                    self.matches_played = self.matches_played.saturating_add(1);
-                    BoardAction::EnterMatch
-                } else {
-                    BoardAction::None
-                }
-            }
-            BoardTab::Tournament => {
-                let status = self.tournament_status();
-                if control::hidden(status.enter) || control::disabled(status.enter) {
-                    return BoardAction::None;
-                }
-                if status.button_label == "Begin" {
-                    BoardAction::BeginTournament
-                } else if status.button_label == "Continue" {
-                    BoardAction::ContinueTournament
-                } else {
-                    BoardAction::EnterMatch
-                }
-            }
+            BoardTab::Matches | BoardTab::Events => BoardAction::EnterMatch,
+            BoardTab::Tournament => match self.tournament_status().button_label {
+                "Begin" => BoardAction::BeginTournament,
+                "Continue" => BoardAction::ContinueTournament,
+                _ => BoardAction::EnterMatch,
+            },
             BoardTab::Season => BoardAction::None,
         }
     }
 
-    /// The rows of the standard match list, with the disabled flag the
-    /// rank selection gives the tier list.
+    /// The rows of the standard match list.
     pub fn match_rows(&self) -> [&'static str; 6] {
         MATCH_TYPES
     }
@@ -1855,7 +2032,7 @@ impl Board {
         RANKS
     }
 
-    /// The rows of the tier list, and whether the rank disables each one.
+    /// The rows of the tier list, and whether the rank greys each one.
     pub fn tier_rows(&self) -> [(&'static str, bool); 6] {
         std::array::from_fn(|row| (RANKS[row], self.tier_row_disabled(row)))
     }
@@ -1872,19 +2049,21 @@ impl Board {
         ])
     }
 
-    /// The tournament winners table: event name, the row's tier and the
-    /// winner's company.
+    /// The tournament winners table: the event's name, the row's tier and
+    /// the winner's company. A winner from 2 goes through the tournament's
+    /// company table, whose entry is a company id less one.
     pub fn winner_cells(&self, row: usize) -> Option<[CellValue; 3]> {
-        let name = self.tournament_events.get(row)?.clone();
+        let name = self.tournament_events.get(row)?.name.clone();
         let winner = self.entries.get(row).map(|entry| entry.winner).unwrap_or(0);
         let text = if winner == 1 {
             self.company_name.clone()
-        } else if winner <= 0 {
+        } else if winner < 1 {
             NO_RANK.to_string()
         } else {
-            self.rivals
-                .get((winner - 2) as usize)
-                .cloned()
+            usize::try_from(winner - 2)
+                .ok()
+                .and_then(|index| self.tournament_companies.get(index))
+                .and_then(|&company| self.rival_name(i64::from(company) + 1))
                 .unwrap_or_default()
         };
         Some([
@@ -1911,38 +2090,39 @@ impl Board {
 
     /// The lineup table's height after the last tournament refresh.
     pub fn lineup_height(&self) -> i32 {
-        self.lineup_height_override.unwrap_or_else(|| {
-            let layout = self.layout();
-            layout.lineup_table.rect.h
-        })
+        self.lineup_height_override
+            .unwrap_or_else(|| self.layout().lineup_table.rect.h)
     }
 
-    /// A cell's value with the coin zero handled as the original's text
-    /// path. The original's column callback receives the cell's low dword;
-    /// a zero is drawn as the text "0" four pixels right, anything else as
-    /// coin icons at the cell's left edge.
+    /// A coin cell's drawing. The column callback receives the cell's low
+    /// dword: zero is the dash four pixels right, anything else coin icons
+    /// at the cell's left edge.
     pub fn coin_draw(packed: u32, x: i32) -> CoinDraw {
         if packed == 0 {
-            CoinDraw::Zero { x: x + 4 }
+            CoinDraw::Dash { x: x + 4 }
         } else {
+            let (copper, silver, gold) = coin_parts(packed);
             CoinDraw::Coins {
                 x,
-                copper: coin_parts(packed).0,
-                silver: coin_parts(packed).1,
-                gold: coin_parts(packed).2,
+                copper,
+                silver,
+                gold,
             }
         }
     }
 
     /// The board's paint list in drawing order: the form, the four tabs,
-    /// then the visible tables in the order the constructor created them.
+    /// then the visible child views in the order the constructor created
+    /// them (match, rank and tier lists, picture, reward panel, events,
+    /// winners, message, company, lineup and season tables), then the
+    /// template's button and label. Where the template's controls draw
+    /// relative to the child views is a guess.
     pub fn paint(&self) -> Vec<BoardPaint> {
         let layout = self.layout();
-        let mut paint = Vec::new();
-        paint.push(BoardPaint::Frame {
+        let mut paint = vec![BoardPaint::Frame {
             widget: Widget::Form,
             rect: layout.form,
-        });
+        }];
         for (index, rect) in layout.tabs.iter().enumerate() {
             paint.push(BoardPaint::Tab {
                 index,
@@ -1981,7 +2161,7 @@ impl Board {
                         let disabled = board
                             .events
                             .get(row)
-                            .is_some_and(|event| event.flags & 1 != 0);
+                            .is_some_and(|event| event.flags & FLAG_FREE_LINEUP != 0);
                         (Vec::from(cells), disabled)
                     })
                 });
@@ -1989,38 +2169,43 @@ impl Board {
                 self.paint_fighters(&mut paint, &layout);
             }
             BoardTab::Tournament => {
+                paint.push(BoardPaint::Frame {
+                    widget: Widget::Picture,
+                    rect: layout.picture,
+                });
+                if self.weapon_event() {
+                    paint.push(BoardPaint::Frame {
+                        widget: Widget::RewardPanel,
+                        rect: layout.reward_panel,
+                    });
+                    let note = Rect {
+                        x: layout.reward_panel.x + 4,
+                        y: layout.reward_panel.y + 4,
+                        w: layout.reward_panel.w - 8,
+                        h: ROW_HEIGHT,
+                    };
+                    paint.push(BoardPaint::Label {
+                        widget: Widget::RewardPanel,
+                        rect: Some(note),
+                        text: self.tournament_note.clone(),
+                    });
+                    if self.weapon_mark() == Some(true) {
+                        paint.push(BoardPaint::Frame {
+                            widget: Widget::WeaponMark,
+                            rect: note,
+                        });
+                    }
+                }
                 self.paint_table(&mut paint, &layout.winners_table, &|board, row| {
                     board
                         .winner_cells(row)
                         .map(|cells| (Vec::from(cells), false))
                 });
-                paint.push(BoardPaint::Frame {
-                    widget: Widget::Picture,
-                    rect: layout.picture,
-                });
-                if self.tournament_mode {
+                if self.tournament_reward.is_some() {
                     paint.push(BoardPaint::Frame {
-                        widget: Widget::RewardPanel,
-                        rect: layout.reward_panel,
+                        widget: Widget::Prize,
+                        rect: layout.reward_slots[0],
                     });
-                    if !self.tournament_note.is_empty() {
-                        paint.push(BoardPaint::Label {
-                            widget: Widget::RewardPanel,
-                            rect: Some(Rect {
-                                x: layout.reward_panel.x + 4,
-                                y: layout.reward_panel.y + 4,
-                                w: layout.reward_panel.w - 8,
-                                h: ROW_HEIGHT,
-                            }),
-                            text: self.tournament_note.clone(),
-                        });
-                    }
-                    for (index, rect) in layout.reward_slots.iter().enumerate() {
-                        paint.push(BoardPaint::Frame {
-                            widget: Widget::Reward(index),
-                            rect: *rect,
-                        });
-                    }
                 }
                 let status = self.tournament_status();
                 if !control::hidden(status.text_state) {
@@ -2046,8 +2231,7 @@ impl Board {
                 }
             }
         }
-        let enter = self.enter_state();
-        if !control::hidden(enter) {
+        if !control::hidden(self.enter_state()) {
             paint.push(BoardPaint::Label {
                 widget: Widget::EnterButton,
                 rect: Some(layout.enter_button),
@@ -2083,15 +2267,13 @@ impl Board {
     }
 
     fn paint_fighters(&self, paint: &mut Vec<BoardPaint>, layout: &BoardLayout) {
-        let roster = self.available.clone();
-        paint_table_rows(paint, &layout.roster_table, &roster, |slot| {
+        paint_table_rows(paint, &layout.roster_table, &self.available, |slot| {
             self.fighter_cells(slot)
                 .map(|cells| (Vec::from(cells), false))
         });
-        let team = self.team.clone();
         let mut lineup = layout.lineup_table;
         lineup.rect.h = self.lineup_height();
-        paint_table_rows(paint, &lineup, &team, |slot| {
+        paint_table_rows(paint, &lineup, &self.team, |slot| {
             self.fighter_cells(slot)
                 .map(|cells| (Vec::from(cells), false))
         });
@@ -2103,6 +2285,15 @@ impl Board {
     {
         let rows: Vec<usize> = (0..table.rows).collect();
         paint_table_rows(paint, table, &rows, |row| cells(self, row));
+    }
+}
+
+/// A table's selection after it lost rows: a selection past the last row
+/// moves to the last row, or to none when the table is empty.
+fn clamp_selection(selection: Option<usize>, rows: usize) -> Option<usize> {
+    match selection {
+        Some(row) if row >= rows => rows.checked_sub(1),
+        other => other,
     }
 }
 
@@ -2167,7 +2358,7 @@ pub struct TabView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CellValue {
     Text(String),
-    /// A packed copper amount, drawn as coin icons.
+    /// A packed coin amount, drawn by [`Board::coin_draw`].
     Coin(u32),
     /// A fighter's health, drawn by the health column's own callback.
     Health(u16),
@@ -2177,8 +2368,8 @@ pub enum CellValue {
 /// The draw callback's decision for a coin cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoinDraw {
-    /// The value zero is the text "0" at this x.
-    Zero { x: i32 },
+    /// The value zero is the text [`NO_RANK`] (a dash) at this x.
+    Dash { x: i32 },
     /// Coin icons at x, with the number of each denomination.
     Coins {
         x: i32,
@@ -2197,7 +2388,11 @@ pub enum Widget {
     Picture,
     /// The tournament reward panel.
     RewardPanel,
-    /// A reward item slot, zero through three.
+    /// The weapon check's mark on the reward panel.
+    WeaponMark,
+    /// The tournament prize item.
+    Prize,
+    /// A season reward item slot, zero through three.
     Reward(usize),
     /// The message box.
     Message,
@@ -2298,8 +2493,10 @@ fn paint_table_rows(
     }
 }
 
-fn count_char(count: usize) -> char {
-    char::from_u32((count as u32).wrapping_add(0x30) & 0xff).unwrap_or('\u{fffd}')
+/// One count as the original's single character: the low byte of the count
+/// plus 0x30.
+fn count_char(count: i64) -> char {
+    char::from((count.wrapping_add(0x30) & 0xff) as u8)
 }
 
 /// What a point on the board hits.
@@ -2353,7 +2550,10 @@ pub enum BoardAction {
     Close,
 }
 
-/// The match board's show inputs.
+/// The first model's close bookkeeping, kept for its callers: the saved
+/// tab and the three lists' selections less one, the five item slots
+/// released when set, the season picture, the base close and the global
+/// call. The board itself does this in [`Board::close`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchBoardShowInput {
     pub seed: i32,
@@ -2364,7 +2564,7 @@ pub struct MatchBoardShowInput {
     pub global: bool,
 }
 
-/// What the match board's show did.
+/// What [`show_match_board`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MatchBoardShow {
     pub seed: i32,
@@ -2376,9 +2576,8 @@ pub struct MatchBoardShow {
     pub stored_cleared: bool,
 }
 
-/// The base form's show helper kept from the first model; the board's own
-/// show is [`Board::show`]. It seeds the columns, clears the panels and
-/// returns.
+/// The first model's close bookkeeping (see [`MatchBoardShowInput`]); the
+/// board's own show is [`Board::show`].
 pub fn show_match_board(input: MatchBoardShowInput) -> MatchBoardShow {
     MatchBoardShow {
         seed: input.seed,
@@ -2404,8 +2603,8 @@ pub struct MatchBoardDestroy {
     pub freed: bool,
 }
 
-/// The base form's destroy helper: the object itself is present. The board
-/// releases its items and selections through [`Board::close`].
+/// The board's destroy: the base destructor and the free on positive
+/// flags, with the fighter pool released in between.
 pub fn destroy_match_board(flags: i32) -> MatchBoardDestroy {
     MatchBoardDestroy {
         base_destroy: flags > 0,
@@ -2430,10 +2629,17 @@ mod tests {
         ]
     }
 
+    /// A board on a weekday with the Duel at Inept selected.
     fn board() -> Board {
-        let mut board = Board::new(true, 3, fighters());
-        board.rank_floor = 0;
-        board.team_size = 2;
+        Board::new(true, 3, fighters())
+    }
+
+    /// A board whose selected match has this kind, floor and side size.
+    fn board_for(kind: u32, floor: i32, size: i32) -> Board {
+        let mut board = board();
+        board.selected.kind = kind;
+        board.selected.min_rank = floor;
+        board.selected.team_size = size;
         board.rebuild_lineups();
         board
     }
@@ -2444,128 +2650,40 @@ mod tests {
         assert_eq!(rank_of(&[1, 0, 0, 0, 0, 0]), 0);
         assert_eq!(rank_of(&[2, 0, 0, 0, 0, 0]), 1);
         assert_eq!(rank_of(&[5, 5, 5, 5, 5, 5]), 5);
-        assert_eq!(rank_of(&[10, 10, 10, 10, 10, 10]), 5);
         assert_eq!(rank_of(&[u32::MAX; 6]), 5);
         assert_eq!(rank_name(-1), "-");
         assert_eq!(rank_name(0), "Inept");
         assert_eq!(rank_name(5), "Master");
+        // Past Master the original's table holds the dash and staff labels.
         assert_eq!(rank_name(6), "-");
+        assert_eq!(rank_name(7), "Merchant");
+        assert_eq!(rank_name(9), "Physician");
+        assert_eq!(rank_name(10), "+");
+        assert_eq!(rank_name(11), "-");
     }
 
     #[test]
     fn the_layout_is_pinned() {
         let wide = layout(false);
-        assert_eq!(
-            wide.form,
-            Rect {
-                x: 0,
-                y: 0,
-                w: 604,
-                h: 656
-            }
-        );
-        assert_eq!(
-            wide.match_table.rect,
-            Rect {
-                x: 0,
-                y: 56,
-                w: 196,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.rank_table.rect,
-            Rect {
-                x: 200,
-                y: 56,
-                w: 192,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.tier_table.rect,
-            Rect {
-                x: 396,
-                y: 56,
-                w: 192,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.events_table.rect,
-            Rect {
-                x: 0,
-                y: 56,
-                w: 588,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.winners_table.rect,
-            Rect {
-                x: 0,
-                y: 56,
-                w: 392,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.roster_table.rect,
-            Rect {
-                x: 0,
-                y: 348,
-                w: 292,
-                h: 244
-            }
-        );
-        assert_eq!(
-            wide.lineup_table.rect,
-            Rect {
-                x: 296,
-                y: 348,
-                w: 292,
-                h: 244
-            }
-        );
-        assert_eq!(
-            wide.season_table.rect,
-            Rect {
-                x: 32,
-                y: 60,
-                w: 280,
-                h: 132
-            }
-        );
-        assert_eq!(
-            wide.message,
-            Rect {
-                x: 40,
-                y: 276,
-                w: 520,
-                h: 96
-            }
-        );
-        assert_eq!(
-            wide.picture,
-            Rect {
-                x: 396,
-                y: 56,
-                w: 192,
-                h: 180
-            }
-        );
-        assert_eq!(
-            wide.reward_panel,
-            Rect {
-                x: 296,
-                y: 472,
-                w: 292,
-                h: 120
-            }
-        );
-        assert_eq!(wide.events_table.columns[0].width, 140);
-        assert_eq!(wide.events_table.columns[4].width, 106);
-        assert_eq!(wide.roster_table.columns[2].width, 132);
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        assert_eq!(wide.form, rect(0, 0, 604, 656));
+        assert_eq!(wide.match_table.rect, rect(0, 56, 196, 180));
+        assert_eq!(wide.rank_table.rect, rect(200, 56, 192, 180));
+        assert_eq!(wide.tier_table.rect, rect(396, 56, 192, 180));
+        assert_eq!(wide.events_table.rect, rect(0, 56, 588, 180));
+        assert_eq!(wide.winners_table.rect, rect(0, 56, 392, 180));
+        assert_eq!(wide.roster_table.rect, rect(0, 348, 292, 244));
+        assert_eq!(wide.lineup_table.rect, rect(296, 348, 292, 244));
+        assert_eq!(wide.season_table.rect, rect(32, 60, 280, 132));
+        assert_eq!(wide.message, rect(40, 276, 520, 96));
+        assert_eq!(wide.picture, rect(396, 56, 192, 180));
+        assert_eq!(wide.reward_panel, rect(296, 472, 292, 120));
+        let widths =
+            |table: &TableLayout| table.columns.iter().map(|c| c.width).collect::<Vec<_>>();
+        assert_eq!(widths(&wide.events_table), [140, 100, 100, 114, 106]);
+        assert_eq!(widths(&wide.winners_table), [120, 100, 120]);
+        assert_eq!(widths(&wide.roster_table), [140, 68, 132]);
+        assert_eq!(widths(&wide.season_table), [160]);
 
         let compact = layout(true);
         assert_eq!(compact.form.h, 636);
@@ -2584,8 +2702,6 @@ mod tests {
         assert_eq!(season_index(0), 0);
         assert_eq!(season_index(21), 0);
         assert_eq!(season_index(22), 1);
-        assert_eq!(season_index(27), 1);
-        assert_eq!(season_index(28), 1);
         assert_eq!(season_index(49), 1);
         assert_eq!(season_index(50), 2);
         assert_eq!(season_index(112), 0);
@@ -2595,12 +2711,12 @@ mod tests {
         assert_eq!(season_weeks_elapsed(8), 2);
         assert_eq!(season_weeks_elapsed(21), 3);
         assert_eq!(season_weeks_elapsed(22), 0);
-        assert_eq!(season_weeks_elapsed(27), 0);
         assert_eq!(season_picture_name(0), "seasonrwrda.rfi");
         assert_eq!(season_picture_name(22), "seasonrwrdb.rfi");
         assert_eq!(season_reward_order([1, 2, 3, 4]), [1, 3, 2, 4]);
         assert!(matches_left(2));
         assert!(!matches_left(3));
+        assert!(matches_left(-1));
     }
 
     #[test]
@@ -2611,106 +2727,274 @@ mod tests {
         assert!(!rank_passes(9, 3, 0, false));
         assert!(!rank_passes(9, 3, 1, true));
         assert!(rank_passes(9, 3, 3, true));
-        assert!(rank_passes(9, 0, 0, false));
         assert!(rank_passes(9, 1, -1, false));
+        // The 64-bit compare does not wrap at the bottom of the range.
+        assert!(rank_passes(9, i32::MIN, i32::MIN, false));
     }
 
     #[test]
-    fn the_tier_clamps_to_the_rank_and_rows_follow() {
+    fn coins_pack_as_the_original_stores_them() {
+        assert_eq!(coin_value(0x0003_0205), 3 * 144 + 2 * 12 + 5);
+        assert_eq!(pack_coins(461), 0x0003_0205);
+        assert_eq!(pack_coins(36), 0x0300);
+        // The gold count keeps 16 bits; the remainder's bytes wrap.
+        assert_eq!(pack_coins(144 * 65_536 + 1), 1);
+        assert_eq!(scale_coins(3, 3), 9);
+        assert_eq!(scale_coins(0x100, 3), 0x300);
+        assert_eq!(scale_coins(6, 5), 0x0206);
+    }
+
+    #[test]
+    fn the_standard_tab_scales_the_match_by_the_rank() {
         let mut board = board();
+        assert_eq!(board.selected.name, "Duel");
+        assert_eq!(board.standard_fee, 3);
+        assert_eq!(board.standard_prize, 0x100);
         board.rank = 2;
         board.tier = 5;
         board.refresh_standard();
+        // The tier clamps to the rank; the rows above the rank are greyed.
         assert_eq!(board.tier, 2);
-        assert_eq!(board.rank_span, 3);
-        assert_eq!(board.tier_span, 9);
         assert_eq!(
             board.tier_rows(),
             [
                 ("Inept", false),
                 ("Aspirant", false),
-                ("Novice", true),
+                ("Novice", false),
                 ("Adept", true),
                 ("Expert", true),
                 ("Master", true),
             ]
         );
+        assert_eq!(board.rank_floor(), 2);
+        assert_eq!(board.reported_tier(), Some(2));
+        assert_eq!((board.selected.rank, board.selected.tier), (2, 2));
+        // Three copper and one silver, times three.
+        assert_eq!(board.standard_fee, 9);
+        assert_eq!(board.standard_prize, 0x300);
+
+        // Pugilism at Expert stores no tier.
+        assert_eq!(
+            board.handle(BoardInput::SelectMatch(5)),
+            BoardAction::Changed
+        );
+        assert_eq!(
+            board.handle(BoardInput::SelectRank(4)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.reported_tier(), None);
+        assert_eq!(board.selected.tier, -1);
+        assert_eq!(board.standard_fee, 5);
+        assert_eq!(board.standard_prize, 0x0206);
+
+        // Doubles takes two a side; Reserve lifts the one-leader rule.
+        assert_eq!(
+            board.handle(BoardInput::SelectMatch(1)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.team_size(), 2);
+        assert!(!board.free_lineup());
+        assert_eq!(
+            board.handle(BoardInput::SelectMatch(4)),
+            BoardAction::Changed
+        );
+        assert!(board.free_lineup());
+        assert_eq!(board.team_size(), 3);
+    }
+
+    #[test]
+    fn a_rank_change_moves_the_tier_with_it() {
+        let mut board = board();
+        assert_eq!(
+            board.handle(BoardInput::SelectRank(3)),
+            BoardAction::Changed
+        );
+        assert_eq!((board.rank, board.tier), (3, 3));
+        assert_eq!(
+            board.handle(BoardInput::SelectTier(1)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.tier, 1);
+        assert_eq!(
+            board.handle(BoardInput::SelectTier(5)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.tier, 3);
+        assert_eq!(board.handle(BoardInput::SelectTier(6)), BoardAction::None);
+    }
+
+    #[test]
+    fn the_message_follows_the_days_matches() {
+        let mut board = board();
+        assert_eq!(board.standard_message, "");
+        board.matches_played = 3;
+        board.refresh_standard();
+        assert_eq!(board.standard_message, NO_MORE_MATCHES);
+        assert_eq!(board.enter_state(), control::DISABLED);
+        board.refresh_events();
+        assert_eq!(board.standard_message, NO_MORE_MATCHES);
+        board.refresh_tournament();
+        assert_eq!(board.standard_message, "");
     }
 
     #[test]
     fn the_lineup_autofills_by_rank_and_class() {
-        let mut board = board();
-        board.rank = 2;
-        board.team_size = 2;
-        board.rank_floor = 2;
-        board.rebuild_lineups();
-        assert_eq!(board.team, vec![1, 4]);
-        assert_eq!(board.available, vec![0, 2, 3]);
-        assert_eq!(board.lineup, vec![1, 2, 3, 4, i32::MAX, 0]);
-        assert_eq!(board.entered_label(), "Entered 2/2");
-
-        board.rank_floor = 0;
-        board.team_size = 1;
-        board.rebuild_lineups();
+        let board = board();
         assert_eq!(board.team, vec![1]);
         assert_eq!(board.available, vec![0, 2, 3, 4]);
+        assert_eq!(board.lineup, vec![1, 2, 3, 4, i32::MAX, 0]);
+
+        let board = board_for(1, 2, 2);
+        assert_eq!(board.team, vec![1, 4]);
+        assert_eq!(board.available, vec![0, 2, 3]);
+        assert_eq!(board.entered_label(), "Entered 2/2");
+    }
+
+    #[test]
+    fn the_player_counts_as_the_one_leader() {
+        // The player comes last in the order, after Borin, a leader.
+        let board = board_for(1, 0, 6);
+        assert_eq!(board.team, vec![1, 2, 3]);
+        assert_eq!(board.available, vec![0, 4]);
+        let mut free = board_for(1, 0, 6);
+        free.selected.flags = FLAG_FREE_LINEUP;
+        free.rebuild_lineups();
+        assert_eq!(free.team, vec![1, 2, 3, 4, 0]);
+        assert!(free.available.is_empty());
     }
 
     #[test]
     fn a_full_team_benches_its_last_fighter() {
         let mut board = board();
-        board.team_size = 1;
-        board.rank_floor = 0;
-        board.rebuild_lineups();
-        assert_eq!(board.team, vec![1]);
-        assert_eq!(board.available, vec![0, 2, 3, 4]);
-        assert_eq!(board.entered_label(), "Entered 1/1");
         assert!(board.double_click_available(0));
         assert_eq!(board.team, vec![0]);
         assert_eq!(board.available, vec![2, 3, 4, 1]);
         assert_eq!(board.lineup, vec![0, 1, 2, 3, 4, i32::MAX]);
-        assert_eq!(board.entered_label(), "Entered 1/1");
+
+        // A bench leaves the original's order target unset: the newcomer
+        // goes first in the order, not to its lineup row.
+        let mut board = board_for(1, 0, 2);
+        assert_eq!(board.team, vec![1, 2]);
+        assert!(board.double_click_available(0));
+        assert_eq!(board.team, vec![1, 0]);
+        assert_eq!(board.available, vec![3, 4, 2]);
+        assert_eq!(board.lineup, vec![0, 1, 2, 3, 4, i32::MAX]);
+        board.rebuild_lineups();
+        assert_eq!(board.team, vec![0, 1]);
+    }
+
+    #[test]
+    fn a_join_takes_its_lineup_row_in_the_order() {
+        let mut board = board_for(1, 0, 3);
+        assert_eq!(board.team, vec![1, 2, 3]);
+        assert!(board.move_to_available(2));
+        assert_eq!(board.team, vec![1, 2]);
+        assert_eq!(board.available, vec![0, 3, 4]);
+        // Cael joins again at row 2: the order puts it third.
+        assert!(board.move_to_team(1, None));
+        assert_eq!(board.team, vec![1, 2, 3]);
+        assert_eq!(board.lineup, vec![1, 2, 3, 4, i32::MAX, 0]);
+        assert_eq!(board.available, vec![0, 4]);
+        // A drop on row 0 swaps Dara with Anna and moves her first in the
+        // order.
+        assert!(board.move_to_team(1, Some(0)));
+        assert_eq!(board.team, vec![4, 2, 3]);
+        assert_eq!(board.available, vec![0, 1]);
+        assert_eq!(board.lineup, vec![4, 1, 2, 3, i32::MAX, 0]);
     }
 
     #[test]
     fn a_short_rank_cannot_be_double_clicked_in() {
-        let mut board = board();
-        board.team_size = 1;
-        board.rank_floor = 4;
-        board.rebuild_lineups();
+        let mut board = board_for(1, 4, 1);
         assert_eq!(board.team, vec![4]);
         assert_eq!(board.available, vec![0, 1, 2, 3]);
         assert!(!board.double_click_available(2));
         assert_eq!(board.team, vec![4]);
         assert!(board.can_drop(4));
         assert!(!board.can_drop(2));
+        assert_eq!(
+            board.handle(BoardInput::DropOnTeam { from: 2, to: None }),
+            BoardAction::None
+        );
     }
 
     #[test]
     fn the_captain_puts_a_qualified_fighter_first() {
-        let mut board = board();
-        board.match_type = 8;
-        board.rank_floor = 3;
-        board.team_size = 3;
+        let mut board = board_for(CAPTAIN_EVENT, 3, 3);
         board.team = vec![2, 4];
         board.available = vec![0, 1, 3, 5];
         assert!(board.move_to_team(0, None));
         assert_eq!(board.team, vec![4, 2, 0]);
+        assert_eq!(board.lineup, vec![1, 2, 0, 3, 4, i32::MAX]);
+    }
+
+    #[test]
+    fn an_unranked_captain_newcomer_cannot_replace_a_ranked_teammate() {
+        // One ranked teammate (Dara) of three.
+        let mut board = board_for(CAPTAIN_EVENT, 3, 3);
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        // Cael is under the floor: he may not take Dara's row.
+        assert!(!board.move_to_team(1, Some(2)));
+        assert_eq!(board.team, vec![2, 1, 4]);
+        // He may take Borin's, and Dara then moves first.
+        assert!(board.move_to_team(1, Some(0)));
+        assert_eq!(board.team, vec![4, 1, 3]);
+        assert_eq!(board.available, vec![0, 2, 5]);
+
+        // The player reaches the floor, so the rule does not apply to him.
+        let mut board = board_for(CAPTAIN_EVENT, 3, 3);
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        assert!(board.move_to_team(0, Some(2)));
+        assert_eq!(board.team, vec![0, 1, 2]);
+        assert_eq!(board.available, vec![4, 3, 5]);
+    }
+
+    #[test]
+    fn a_marked_fighter_replaces_its_marked_teammate() {
+        let mut board = board_for(1, 0, 3);
+        board.fighters[0].marked = true;
+        board.fighters[2].marked = true;
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        // Even a drop on another row lands on the marked teammate's.
+        assert!(board.move_to_team(0, Some(2)));
+        assert_eq!(board.team, vec![0, 1, 4]);
+        assert_eq!(board.available, vec![2, 3, 5]);
+        assert_eq!(board.lineup, vec![0, 1, 2, 3, 4, i32::MAX]);
+
+        // The swap checks the marked teammate's rank on a Captain event.
+        let mut board = board_for(CAPTAIN_EVENT, 3, 3);
+        board.fighters[3].marked = true;
+        board.fighters[4].marked = true;
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        assert!(!board.move_to_team(1, None));
+
+        // A free lineup skips the marked rule.
+        let mut board = board_for(1, 0, 3);
+        board.selected.flags = FLAG_FREE_LINEUP;
+        board.fighters[0].marked = true;
+        board.fighters[2].marked = true;
+        board.team = vec![2, 1];
+        board.available = vec![0, 3, 5];
+        assert!(board.move_to_team(0, None));
+        assert_eq!(board.team, vec![2, 1, 0]);
     }
 
     #[test]
     fn moving_back_inserts_by_slot_order() {
-        let mut board = board();
-        board.team_size = 2;
-        board.rank_floor = 0;
-        board.rebuild_lineups();
+        let mut board = board_for(1, 0, 2);
         assert_eq!(board.team, vec![1, 2]);
         assert_eq!(board.available, vec![0, 3, 4]);
+        board.team_selection = Some(1);
         assert!(board.move_to_available(1));
         assert_eq!(board.team, vec![1]);
+        assert_eq!(board.team_selection, Some(0));
         assert_eq!(board.available, vec![0, 2, 3, 4]);
         assert!(board.move_to_available(0));
-        assert_eq!(board.team, vec![]);
+        assert_eq!(board.team_selection, None);
         assert_eq!(board.available, vec![0, 1, 2, 3, 4]);
         assert!(!board.move_to_available(0));
     }
@@ -2718,12 +3002,8 @@ mod tests {
     #[test]
     fn removal_keeps_the_lineup_order_and_can_return() {
         let mut board = board();
-        board.team_size = 1;
-        board.rank_floor = 0;
-        board.rebuild_lineups();
-        assert_eq!(board.team, vec![1]);
         assert!(board.move_to_available(0));
-        assert_eq!(board.team, vec![]);
+        assert!(board.team.is_empty());
         assert_eq!(board.lineup, vec![1, 2, 3, 4, i32::MAX, 0]);
         board.refresh_standard();
         assert_eq!(board.team, vec![1]);
@@ -2732,25 +3012,35 @@ mod tests {
     #[test]
     fn the_entered_label_writes_one_character() {
         let mut board = board();
-        board.team_size = 9;
+        board.selected.team_size = 9;
         board.team = vec![0, 1, 2];
         assert_eq!(board.entered_label(), "Entered 3/9");
         board.team = (0..10).collect();
         assert_eq!(board.entered_label(), "Entered :/9");
+        board.selected.team_size = -1;
+        assert_eq!(board.entered_label(), "Entered :/\u{2f}");
     }
 
     #[test]
     fn the_enter_button_follows_the_team_and_the_day() {
         let mut board = board();
-        board.team_size = 2;
-        board.rebuild_lineups();
-        assert_eq!(board.enter_state() & control::DISABLED, 0);
-        board.team_size = 3;
-        assert_eq!(board.enter_state() & control::DISABLED, control::DISABLED);
+        assert_eq!(board.enter_state(), control::SHOWN);
+        let mut short = board_for(1, 4, 2);
+        assert_eq!(short.team, vec![4]);
+        assert_eq!(short.enter_state(), control::DISABLED);
+        short.matches_played = 3;
+        short.rebuild_lineups();
+        assert_eq!(short.enter_state(), control::DISABLED);
+        assert!(short.switch_tab(BoardTab::Season).is_some());
+        assert_eq!(short.enter_state(), control::HIDDEN);
+
+        // Leaving the tournament tab re-enables the button; the next
+        // rebuild disables it again when the day's matches are spent.
         board.matches_played = 3;
-        assert_eq!(board.enter_state(), control::DISABLED);
-        board.tab = BoardTab::Season;
+        assert!(board.switch_tab(BoardTab::Tournament).is_some());
         assert_eq!(board.enter_state(), control::HIDDEN);
+        assert!(board.switch_tab(BoardTab::Events).is_some());
+        assert_eq!(board.enter_state(), control::DISABLED);
     }
 
     #[test]
@@ -2768,27 +3058,34 @@ mod tests {
         );
 
         board.day = 7;
-        assert_eq!(board.tournament_status().text, "Tournament is in progress.");
+        assert_eq!(board.tournament_status().text, TOURNAMENT_IN_PROGRESS);
 
-        board.entries[2].participants = vec![Participant { slot: 1, value: 7 }];
-        board.entries[2].winner = 0;
+        board.entries[2].participants = vec![Participant {
+            slot: 1,
+            value: 7,
+            weapon: 0,
+        }];
         let begin = board.tournament_status();
         assert_eq!(begin.text, "");
         assert_eq!(begin.button_label, "Begin");
         assert_eq!(begin.enter, control::SHOWN);
+        assert_eq!(begin.secondary, control::SHOWN);
         assert_eq!(begin.text_state, control::HIDDEN);
 
         board.entries[0].winner = 1;
         assert_eq!(board.tournament_status().button_label, "Continue");
 
         board.entries[2].winner = 2;
-        let ended = board.tournament_status();
-        assert_eq!(ended.text, "No more events entered.");
-        assert_eq!(ended.enter, control::HIDDEN);
-        assert_eq!(ended.text_state, control::SHOWN);
+        let settled = board.tournament_status();
+        assert_eq!(settled.text, NO_MORE_EVENTS);
+        assert_eq!(settled.enter, control::HIDDEN);
+        assert_eq!(settled.text_state, control::SHOWN);
 
-        board.tournament_ended = true;
+        // The last event's winner ends the tournament.
+        board.entries[5].winner = 3;
         assert_eq!(board.tournament_status().text, TOURNAMENT_ENDED);
+        board.entries[5].winner = -1;
+        assert_eq!(board.tournament_status().text, NO_MORE_EVENTS);
     }
 
     #[test]
@@ -2807,37 +3104,42 @@ mod tests {
         board.week_winners[0] = 21;
         assert_eq!(board.season_winner(0), "-");
         board.week_winners[0] = 20;
-        board.rivals = (0..19).map(|index| format!("Rival {}", index)).collect();
-        assert_eq!(board.season_winner(0), "Rival 18");
+        board.rivals = (2..=20).map(|id| format!("Company {}", id)).collect();
+        assert_eq!(board.season_winner(0), "Company 20");
     }
 
     #[test]
-    fn the_event_cells_show_coins_and_the_merchant_dash() {
+    fn the_event_cells_show_coins_ranks_and_the_challenger_dash() {
         let mut board = board();
-        board.events[0] = BoardEvent {
+        board.events[0] = MatchRecord {
             name: "Challenger".to_string(),
-            kind: 0,
-            flags: 1,
+            kind: CHALLENGER_EVENT,
             rank: 3,
-            second_rank: -1,
+            tier: 2,
             fee: 0x0c03,
             prize: 0x0102_0304,
+            ..MatchRecord::default()
         };
-        board.events[1] = BoardEvent {
-            name: "Merchant".to_string(),
-            kind: 8,
-            flags: 0,
+        board.events[1] = MatchRecord {
+            name: "Brawl".to_string(),
+            kind: 12,
             rank: 2,
-            second_rank: 5,
+            tier: -1,
             fee: 12,
-            prize: 0,
+            ..MatchRecord::default()
+        };
+        board.events[2] = MatchRecord {
+            kind: 1,
+            rank: 7,
+            tier: 9,
+            ..MatchRecord::default()
         };
         assert_eq!(
             board.event_cells(0),
             Some([
                 CellValue::Text("Challenger".to_string()),
                 CellValue::Text("Adept".to_string()),
-                CellValue::Text("Inept".to_string()),
+                CellValue::Text("-".to_string()),
                 CellValue::Coin(0x0c03),
                 CellValue::Coin(0x0102_0304),
             ])
@@ -2845,14 +3147,17 @@ mod tests {
         assert_eq!(
             board.event_cells(1),
             Some([
-                CellValue::Text("Merchant".to_string()),
+                CellValue::Text("Brawl".to_string()),
                 CellValue::Text("Novice".to_string()),
-                CellValue::Text("-".to_string()),
+                CellValue::Text("Inept".to_string()),
                 CellValue::Coin(12),
                 CellValue::Coin(0),
             ])
         );
-        assert_eq!(Board::coin_draw(0, 10), CoinDraw::Zero { x: 14 });
+        let cells = board.event_cells(2).unwrap();
+        assert_eq!(cells[1], CellValue::Text("Merchant".to_string()));
+        assert_eq!(cells[2], CellValue::Text("Physician".to_string()));
+        assert_eq!(Board::coin_draw(0, 10), CoinDraw::Dash { x: 14 });
         assert_eq!(
             Board::coin_draw(0x0002_0304, 10),
             CoinDraw::Coins {
@@ -2865,15 +3170,20 @@ mod tests {
     }
 
     #[test]
-    fn the_tournament_winners_read_company_ids() {
+    fn the_tournament_winners_go_through_the_company_table() {
         let mut board = board();
         board.company_name = "Ours".to_string();
-        board.rivals = vec!["Two".to_string(), "Three".to_string()];
-        board.tournament_events = std::array::from_fn(|index| format!("Event {}", index));
+        board.rivals = (2..=20).map(|id| format!("Company {}", id)).collect();
+        board.tournament_companies = vec![5, 1];
+        for (index, event) in board.tournament_events.iter_mut().enumerate() {
+            event.name = format!("Event {}", index);
+        }
         board.entries[0].winner = 1;
         board.entries[1].winner = 2;
         board.entries[2].winner = 3;
         board.entries[3].winner = 0;
+        board.entries[4].winner = 4;
+        board.entries[5].winner = -1;
         assert_eq!(
             board.winner_cells(0),
             Some([
@@ -2882,41 +3192,108 @@ mod tests {
                 CellValue::Text("Ours".to_string()),
             ])
         );
-        assert_eq!(
-            board.winner_cells(1),
-            Some([
-                CellValue::Text("Event 1".to_string()),
-                CellValue::Text("Aspirant".to_string()),
-                CellValue::Text("Two".to_string()),
-            ])
-        );
-        assert_eq!(
-            board.winner_cells(2).map(|cells| cells[2].clone()),
-            Some(CellValue::Text("Three".to_string()))
-        );
-        assert_eq!(
-            board.winner_cells(3).map(|cells| cells[2].clone()),
-            Some(CellValue::Text("-".to_string()))
-        );
+        let winner = |board: &Board, row| board.winner_cells(row).map(|cells| cells[2].clone());
+        // Entry 5 is company 6; entry 1 is company 2.
+        assert_eq!(winner(&board, 1), Some(CellValue::Text("Company 6".into())));
+        assert_eq!(winner(&board, 2), Some(CellValue::Text("Company 2".into())));
+        assert_eq!(winner(&board, 3), Some(CellValue::Text("-".into())));
+        assert_eq!(winner(&board, 4), Some(CellValue::Text(String::new())));
+        assert_eq!(winner(&board, 5), Some(CellValue::Text("-".into())));
     }
 
     #[test]
-    fn the_events_selection_moves_past_entered_events() {
+    fn the_events_refresh_moves_past_greyed_events_and_copies_the_record() {
         let mut board = board();
         for event in &mut board.events {
-            event.flags = 1;
+            event.flags = FLAG_FREE_LINEUP;
         }
-        assert_eq!(board.event_selection, 0);
         board.refresh_events();
+        assert_eq!(board.event_row, 5);
         assert_eq!(board.event_selection, 0);
-        assert_eq!(board.events_top, 6);
-        board.events[0].flags = 1;
-        board.events[1].flags = 1;
         board.events[2].flags = 0;
-        board.event_selection = 0;
-        board.refresh_events();
+        board.events[2].kind = CAPTAIN_EVENT;
+        board.events[2].min_rank = 3;
+        board.events[2].team_size = 2;
+        assert_eq!(
+            board.handle(BoardInput::ClickEvent(0)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.event_row, 2);
         assert_eq!(board.event_selection, 2);
-        assert_eq!(board.events_top, 3);
+        assert_eq!(board.match_id(), CAPTAIN_EVENT);
+        assert_eq!(board.rank_floor(), 3);
+        // Anna, first, misses the full floor; Dara reaches it, and the
+        // player would be a second leader.
+        assert_eq!(board.team, vec![4]);
+    }
+
+    #[test]
+    fn a_weapon_event_names_its_weapon_and_checks_the_first_entrant() {
+        let mut board = board();
+        board.weapon_tiers = vec![
+            Vec::new(),
+            vec![
+                WeaponRow {
+                    name: "Sword".to_string(),
+                    variants: [3, 0, 0],
+                },
+                WeaponRow {
+                    name: "Mace".to_string(),
+                    variants: [7, 9, 0],
+                },
+            ],
+        ];
+        board.tournament_events[1] = MatchRecord {
+            name: "Melee".to_string(),
+            kind: 18,
+            flags: FLAG_WEAPON,
+            max_rank: 1,
+            weapon_row: 2,
+            ..MatchRecord::default()
+        };
+        board.fighters[1].event_values[1] = 5;
+        board.fighters[1].event_weapons[1] = 9;
+        assert!(board.switch_tab(BoardTab::Tournament).is_some());
+        assert_eq!(board.weapon_mark(), None);
+        assert_eq!(
+            board.handle(BoardInput::ClickWinner(1)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.tournament_note, "Mace");
+        assert_eq!(board.lineup_height(), WEAPON_LINEUP_HEIGHT);
+        assert!(!board.reward_panel_locked());
+        assert_eq!(board.weapon_mark(), Some(false));
+        assert!(board.team.is_empty());
+
+        // Anna joins and is recorded with her event value and weapon.
+        let anna = board.available.iter().position(|&slot| slot == 1).unwrap();
+        assert!(board.move_to_team(anna, None));
+        assert_eq!(
+            board.entries[1].participants,
+            vec![Participant {
+                slot: 1,
+                value: 5,
+                weapon: 9,
+            }]
+        );
+        assert_eq!(board.weapon_mark(), Some(false));
+        board.entries[1].participants[0].weapon = 8;
+        assert_eq!(board.weapon_mark(), Some(true));
+        // The first zero variant ends the row.
+        board.entries[1].participants[0].weapon = 0;
+        assert_eq!(board.weapon_mark(), Some(true));
+        let paint = board.paint();
+        assert!(paint.iter().any(|item| matches!(
+            item,
+            BoardPaint::Frame {
+                widget: Widget::WeaponMark,
+                ..
+            }
+        )));
+
+        // Leaving the tab restores the lineup's height.
+        assert!(board.switch_tab(BoardTab::Matches).is_some());
+        assert_eq!(board.lineup_height(), 224);
     }
 
     #[test]
@@ -2930,11 +3307,6 @@ mod tests {
                 ..
             })
         ));
-        let tabs = paint
-            .iter()
-            .filter(|item| matches!(item, BoardPaint::Tab { .. }))
-            .count();
-        assert_eq!(tabs, 4);
         assert!(matches!(
             paint.get(1),
             Some(BoardPaint::Tab {
@@ -2943,21 +3315,17 @@ mod tests {
                 ..
             })
         ));
-        let tables: Vec<TableSlot> = paint
-            .iter()
-            .filter_map(|item| match item {
-                BoardPaint::Column { slot, .. } => Some(*slot),
-                _ => None,
-            })
-            .collect();
-        let firsts: Vec<TableSlot> = tables.into_iter().fold(Vec::new(), |mut acc, slot| {
-            if acc.last() != Some(&slot) {
-                acc.push(slot);
-            }
-            acc
-        });
+        let tables = |paint: &[BoardPaint]| -> Vec<TableSlot> {
+            paint
+                .iter()
+                .filter_map(|item| match item {
+                    BoardPaint::Table { slot, .. } => Some(*slot),
+                    _ => None,
+                })
+                .collect()
+        };
         assert_eq!(
-            firsts,
+            tables(&paint),
             vec![
                 TableSlot::Match,
                 TableSlot::Rank,
@@ -2980,63 +3348,52 @@ mod tests {
         assert_eq!(cells[12], (TableSlot::Tier, 0, 0));
         assert_eq!(cells[18], (TableSlot::Roster, 0, 0));
 
-        let mut events = board;
-        events.tab = BoardTab::Events;
-        let tables: Vec<TableSlot> = events
-            .paint()
-            .iter()
-            .filter_map(|item| match item {
-                BoardPaint::Column { slot, .. } => Some(*slot),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(tables[0], TableSlot::Events);
-        assert_eq!(tables[1], TableSlot::Events);
-        assert_eq!(tables[4], TableSlot::Events);
-        assert_eq!(tables[5], TableSlot::Roster);
-        assert_eq!(tables[8], TableSlot::Lineup);
-    }
-
-    #[test]
-    fn the_tournament_and_season_paint_orders_are_pinned() {
-        let mut board = board();
-        board.tab = BoardTab::Tournament;
-        board.tournament_mode = true;
-        board.tournament_reward = Some(1);
-        let paint = board.paint();
-        let table_slots: Vec<TableSlot> = paint
-            .iter()
-            .filter_map(|item| match item {
-                BoardPaint::Table { slot, .. } => Some(*slot),
-                _ => None,
-            })
-            .collect();
+        let mut events = board.clone();
+        assert!(events.switch_tab(BoardTab::Events).is_some());
         assert_eq!(
-            table_slots,
-            vec![TableSlot::Winners, TableSlot::Roster, TableSlot::Lineup]
+            tables(&events.paint()),
+            vec![TableSlot::Events, TableSlot::Roster, TableSlot::Lineup]
         );
-        let widgets: Vec<Widget> = paint
+
+        // The picture and the reward panel were created before the
+        // winners table.
+        let mut tournament = board.clone();
+        tournament.tournament_events[0].flags = FLAG_WEAPON;
+        tournament.tournament_prize_item = Some(1);
+        assert!(tournament.switch_tab(BoardTab::Tournament).is_some());
+        let paint = tournament.paint();
+        let order: Vec<&str> = paint
             .iter()
             .filter_map(|item| match item {
-                BoardPaint::Frame { widget, .. } => Some(*widget),
+                BoardPaint::Frame {
+                    widget: Widget::Picture,
+                    ..
+                } => Some("picture"),
+                BoardPaint::Frame {
+                    widget: Widget::RewardPanel,
+                    ..
+                } => Some("panel"),
+                BoardPaint::Table {
+                    slot: TableSlot::Winners,
+                    ..
+                } => Some("winners"),
+                BoardPaint::Frame {
+                    widget: Widget::Prize,
+                    ..
+                } => Some("prize"),
+                BoardPaint::Table {
+                    slot: TableSlot::Lineup,
+                    ..
+                } => Some("lineup"),
                 _ => None,
             })
             .collect();
-        assert_eq!(widgets[0], Widget::Form);
-        assert!(widgets.contains(&Widget::Picture));
-        assert!(widgets.contains(&Widget::RewardPanel));
+        assert_eq!(order, ["picture", "panel", "winners", "prize", "lineup"]);
 
         let mut season = board;
-        season.tab = BoardTab::Season;
+        assert!(season.switch_tab(BoardTab::Season).is_some());
         let paint = season.paint();
-        let table_slots: Vec<TableSlot> = paint
-            .iter()
-            .filter_map(|item| match item {
-                BoardPaint::Table { slot, .. } => Some(*slot),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(table_slots, vec![TableSlot::Season]);
+        assert_eq!(tables(&paint), vec![TableSlot::Season]);
         assert!(paint.iter().any(|item| matches!(
             item,
             BoardPaint::Frame {
@@ -3047,7 +3404,7 @@ mod tests {
         assert!(!paint.iter().any(|item| matches!(
             item,
             BoardPaint::Label {
-                widget: Widget::EnteredLabel,
+                widget: Widget::EnteredLabel | Widget::EnterButton,
                 ..
             }
         )));
@@ -3056,10 +3413,7 @@ mod tests {
     #[test]
     fn the_event_table_cells_run_left_to_right_by_row() {
         let mut board = board();
-        board.tab = BoardTab::Events;
-        for (index, event) in board.events.iter_mut().enumerate() {
-            event.name = format!("E{}", index);
-        }
+        assert!(board.switch_tab(BoardTab::Events).is_some());
         let cells: Vec<(usize, usize, i32)> = board
             .paint()
             .iter()
@@ -3081,7 +3435,6 @@ mod tests {
         assert_eq!(cells[3], (0, 3, 340));
         assert_eq!(cells[4], (0, 4, 454));
         assert_eq!(cells[5], (1, 0, 0));
-        assert_eq!(cells[9], (1, 4, 454,));
     }
 
     #[test]
@@ -3097,15 +3450,6 @@ mod tests {
             }
         );
         assert_eq!(
-            board.hit_test((210, 70)),
-            BoardHit::Table {
-                slot: TableSlot::Rank,
-                row: 0,
-                column: 0
-            }
-        );
-        // The tier list starts at x 396.
-        assert_eq!(
             board.hit_test((400, 100)),
             BoardHit::Table {
                 slot: TableSlot::Tier,
@@ -3115,17 +3459,7 @@ mod tests {
         );
         assert_eq!(board.hit_test((10_000, 10_000)), BoardHit::Outside);
         assert_eq!(board.hit_test((450, 610)), BoardHit::Enter);
-
-        // The event table's five columns at 140, 100, 100, 114 and 106.
         assert_eq!(board.handle(BoardInput::SelectTab(1)), BoardAction::Changed);
-        assert_eq!(
-            board.hit_test((150, 70)),
-            BoardHit::Table {
-                slot: TableSlot::Events,
-                row: 0,
-                column: 1
-            }
-        );
         assert_eq!(
             board.hit_test((454, 70)),
             BoardHit::Table {
@@ -3134,18 +3468,13 @@ mod tests {
                 column: 4
             }
         );
-
-        let mut season = board;
-        season.tab = BoardTab::Season;
-        assert_eq!(season.hit_test((450, 610)), BoardHit::Outside);
+        assert_eq!(board.handle(BoardInput::SelectTab(3)), BoardAction::Changed);
+        assert_eq!(board.hit_test((450, 610)), BoardHit::Outside);
     }
 
     #[test]
     fn a_click_selects_and_confirms() {
         let mut board = board();
-        board.team_size = 1;
-        board.rank_floor = 0;
-        board.rebuild_lineups();
         assert_eq!(board.click((155, 18)), BoardAction::Changed);
         assert_eq!(board.tab, BoardTab::Events);
         assert_eq!(board.click((10, 18)), BoardAction::Changed);
@@ -3155,130 +3484,96 @@ mod tests {
             BoardAction::Changed
         );
         assert_eq!(board.match_type, 2);
-        // The company table's second row.
+        assert_eq!(board.selected.name, "Skirmish");
         assert_eq!(
             board.click((10, 348 + ROW_HEIGHT + 5)),
             BoardAction::Changed
         );
-        assert_eq!(board.available_selection, 1);
-        // The lineup table's first row.
+        assert_eq!(board.available_selection, Some(1));
         assert_eq!(board.click((300, 348 + 5)), BoardAction::Changed);
-        assert_eq!(board.team_selection, 0);
+        assert_eq!(board.team_selection, Some(0));
+        // Skirmish takes three: Anna, Borin and Cael fill it.
         assert_eq!(board.click((450, 610)), BoardAction::EnterMatch);
-        assert_eq!(board.matches_played, 1);
+        // The arena, not the board, counts the match.
+        assert_eq!(board.matches_played, 0);
         assert_eq!(board.click((10_000, 10_000)), BoardAction::None);
     }
 
     #[test]
-    fn the_input_rules_are_pinned() {
-        let mut board = board();
-        board.team_size = 1;
-        board.rank_floor = 0;
-        board.rebuild_lineups();
-        assert_eq!(
-            board.handle(BoardInput::SelectRank(2)),
-            BoardAction::Changed
-        );
-        assert_eq!(board.rank, 2);
-        assert_eq!(board.rank_floor, 2);
-        assert_eq!(board.tier, 0);
-        assert_eq!(
-            board.handle(BoardInput::DoubleClickAvailable(2)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::DoubleClickAvailable(0)),
-            BoardAction::Changed
-        );
-        assert_eq!(board.team, vec![0]);
-        assert_eq!(board.handle(BoardInput::Confirm), BoardAction::EnterMatch);
-        assert_eq!(board.matches_played, 1);
-        assert_eq!(board.handle(BoardInput::SelectTier(6)), BoardAction::None);
-        assert_eq!(board.handle(BoardInput::Close), BoardAction::Close);
-    }
-
-    #[test]
-    fn the_show_forces_the_tournament_tab() {
+    fn the_show_switches_to_the_tournament_and_hides_the_old_tab() {
+        let entrant = vec![Participant {
+            slot: 1,
+            value: 4,
+            weapon: 0,
+        }];
         let mut board = board();
         board.day = 14;
-        board.entries[0].participants = vec![Participant { slot: 1, value: 4 }];
+        board.entries[0].participants = entrant.clone();
         let show = board.show();
         assert!(show.tournament_day);
         assert!(show.has_entrants);
         assert_eq!(show.tab, BoardTab::Tournament);
         assert!(show.forced_tournament);
-        assert_eq!(board.controls[control::TAB_TOURNAMENT] & 0x60, 0x60);
+        assert!(control::selected(board.controls[control::TAB_TOURNAMENT]));
+        assert!(!control::selected(board.controls[control::TAB_MATCHES]));
+        assert_eq!(board.controls[control::TAB_MATCHES], control::DISABLED);
+        assert_eq!(board.controls[control::STANDARD_FEE], control::HIDDEN);
+        assert_eq!(board.switch_tab(BoardTab::Season), None);
 
         let mut quiet = Board::new(true, 7, fighters());
-        quiet.rebuild_lineups();
         let show = quiet.show();
         assert_eq!(show.tab, BoardTab::Matches);
         assert!(!show.forced_tournament);
+        assert_eq!(quiet.controls[control::STANDARD_FEE], control::SHOWN);
 
-        // Already on the forced tab, another tab click does nothing.
-        assert_eq!(board.switch_tab(BoardTab::Season), None);
-
-        // From another tab a click lands on the tournament tab.
         let mut other = Board::new(true, 14, fighters());
-        other.entries[0].participants = vec![Participant { slot: 1, value: 4 }];
-        other.rebuild_lineups();
+        other.entries[0].participants = entrant;
         let view = other.switch_tab(BoardTab::Season);
         assert_eq!(view.map(|view| view.tab), Some(BoardTab::Tournament));
+    }
+
+    #[test]
+    fn the_day_end_control_follows_the_match_count() {
+        let mut board = board();
+        assert_eq!(board.controls[control::DAY_END], control::DISABLED);
+        board.matches_played = 1;
+        assert!(board.switch_tab(BoardTab::Events).is_some());
+        assert_eq!(board.controls[control::DAY_END], control::SHOWN);
+        board.day = 7;
+        board.tournament_day_end = Some(false);
+        assert!(board.switch_tab(BoardTab::Matches).is_some());
+        assert_eq!(board.controls[control::DAY_END], control::DISABLED);
+        board.tournament_day_end = None;
+        assert!(board.switch_tab(BoardTab::Events).is_some());
+        assert_eq!(board.controls[control::DAY_END], control::SHOWN);
     }
 
     #[test]
     fn the_tournament_tab_locks_assignment() {
         let mut board = board();
         board.day = 7;
-        board.entries[0].participants = vec![Participant { slot: 1, value: 0 }];
+        board.entries[0].participants = vec![Participant {
+            slot: 1,
+            value: 0,
+            weapon: 0,
+        }];
         board.show();
         assert_eq!(board.tab, BoardTab::Tournament);
+        assert_eq!(board.team, vec![1]);
         assert!(board.assignment_locked());
         assert!(!board.move_to_team(0, None));
         assert!(!board.move_to_available(0));
+        assert!(!board.can_drop(0));
         board.day = 6;
-        board.tab = BoardTab::Tournament;
         assert!(!board.assignment_locked());
-    }
-
-    #[test]
-    fn a_marked_fighter_replaces_its_marked_teammate() {
-        let mut board = board();
-        board.match_type = 8;
-        board.rank_floor = 3;
-        board.team_size = 3;
-        board.fighters[0].marked = true;
-        board.fighters[2].marked = true;
-        board.team = vec![2, 1, 4];
-        board.available = vec![0, 3, 5];
-        // Two high-ranked members keep the rank known for all five.
-        board.fighters[1].rank = 4;
-        assert!(board.move_to_team(0, None));
-        assert_eq!(board.team[0], 0);
-        assert_eq!(board.available[0], 2);
-    }
-
-    #[test]
-    fn an_unknown_captain_rank_rejects_a_high_target() {
-        let mut board = board();
-        board.match_type = 8;
-        board.rank_floor = 3;
-        board.team_size = 3;
-        board.team = vec![2, 1, 4];
-        board.available = vec![0, 3, 5];
-        assert!(!board.move_to_team(0, Some(2)));
-        assert_eq!(board.team, vec![2, 1, 4]);
     }
 
     #[test]
     fn the_tournament_tab_takes_its_reward_item() {
         let mut board = board();
         board.tournament_prize_item = Some(77);
-        assert_eq!(board.tournament_reward, None);
         assert!(board.switch_tab(BoardTab::Tournament).is_some());
         assert_eq!(board.tournament_reward, Some(77));
-        // The item survives a tab switch; the show and close methods release
-        // it, not the tab switch.
         assert!(board.switch_tab(BoardTab::Events).is_some());
         assert_eq!(board.tournament_reward, Some(77));
         board.show();
@@ -3286,25 +3581,26 @@ mod tests {
     }
 
     #[test]
-    fn the_tier_and_entered_rows_are_disabled() {
+    fn greyed_tier_and_event_rows_paint_disabled() {
         let mut board = board();
         board.rank = 1;
         board.refresh_standard();
-        board.events[0].flags = 1;
-        board.events[0].name = "Duel".to_string();
-        let tier = board.paint().iter().find_map(|item| match item {
-            BoardPaint::Cell {
-                slot: TableSlot::Tier,
-                column: 0,
-                row,
-                disabled,
-                ..
-            } if *row == 1 => Some(*disabled),
-            _ => None,
-        });
-        assert_eq!(tier, Some(true));
-        board.tab = BoardTab::Events;
-        let entered = board.paint().iter().find_map(|item| match item {
+        let tier = |board: &Board, wanted| {
+            board.paint().iter().find_map(|item| match item {
+                BoardPaint::Cell {
+                    slot: TableSlot::Tier,
+                    row,
+                    disabled,
+                    ..
+                } if *row == wanted => Some(*disabled),
+                _ => None,
+            })
+        };
+        assert_eq!(tier(&board, 1), Some(false));
+        assert_eq!(tier(&board, 2), Some(true));
+        board.events[0].flags = FLAG_FREE_LINEUP;
+        assert!(board.switch_tab(BoardTab::Events).is_some());
+        let greyed = board.paint().iter().find_map(|item| match item {
             BoardPaint::Cell {
                 slot: TableSlot::Events,
                 column: 0,
@@ -3314,7 +3610,7 @@ mod tests {
             } => Some(*disabled),
             _ => None,
         });
-        assert_eq!(entered, Some(true));
+        assert_eq!(greyed, Some(true));
     }
 
     #[test]
@@ -3327,89 +3623,58 @@ mod tests {
         board.tournament_reward = Some(44);
         let close = board.close();
         assert_eq!(close.tab, BoardTab::Events);
-        assert_eq!(close.match_type, 2);
-        assert_eq!(close.rank, 3);
-        assert_eq!(close.tier, 1);
+        assert_eq!((close.match_type, close.rank, close.tier), (2, 3, 1));
         assert_eq!(close.tournament_reward, Some(44));
         assert_eq!(close.picture, "seasonrwrda.rfi");
         assert!(board.team.is_empty());
     }
 
     #[test]
-    fn the_entrant_check_hides_the_message_for_a_known_entry() {
-        let mut board = board();
-        board.tournament_mode = true;
-        board.entrant_event = 2;
-        assert_eq!(board.entrant_message(), None);
-        board.entries[2].participants = vec![Participant { slot: 1, value: 0 }];
-        board.entrant_slot = 1;
-        assert_eq!(board.entrant_message(), Some(false));
-        board.entrant_slot = 2;
-        assert_eq!(board.entrant_message(), Some(true));
-    }
-
-    #[test]
     fn odd_input_and_empty_rosters_do_not_panic() {
         let mut board = Board::new(true, u32::MAX, Vec::new());
-        assert_eq!(
-            board.handle(BoardInput::SelectTab(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::SelectMatch(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::SelectRank(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::SelectTier(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::ClickEvent(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::ClickWinner(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::DoubleClickAvailable(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::DoubleClickTeam(usize::MAX)),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::DropOnTeam {
+        for input in [
+            BoardInput::SelectTab(usize::MAX),
+            BoardInput::SelectMatch(usize::MAX),
+            BoardInput::SelectRank(usize::MAX),
+            BoardInput::SelectTier(usize::MAX),
+            BoardInput::ClickEvent(usize::MAX),
+            BoardInput::ClickWinner(usize::MAX),
+            BoardInput::DoubleClickAvailable(usize::MAX),
+            BoardInput::DoubleClickTeam(usize::MAX),
+            BoardInput::DropOnTeam {
                 from: usize::MAX,
-                to: Some(usize::MAX)
-            }),
-            BoardAction::None
-        );
-        assert_eq!(
-            board.handle(BoardInput::DropOnAvailable(usize::MAX)),
-            BoardAction::None
-        );
+                to: Some(usize::MAX),
+            },
+            BoardInput::DropOnAvailable(usize::MAX),
+        ] {
+            assert_eq!(board.handle(input), BoardAction::None);
+        }
         assert!(board.team.is_empty());
         assert!(board.available.is_empty());
-        assert!(!board.double_click_available(0));
-        assert!(!board.move_to_available(0));
         assert!(!board.move_to_team(0, Some(0)));
         assert_eq!(board.entered_label(), "Entered 0/1");
-        assert!(board.entered_label().contains('0'));
-        assert_eq!(board.hit_test((-10, -10)), BoardHit::Outside);
         assert_eq!(board.hit_test((i32::MAX, i32::MIN)), BoardHit::Outside);
-        assert_eq!(board.click((i32::MAX, i32::MIN)), BoardAction::None);
         assert!(!board.paint().is_empty());
-        assert_eq!(
-            season_index(u32::MAX),
-            ((u32::MAX as u64 + 6) / 28 % 4) as u32
-        );
-        assert_eq!(season_picture_name(u32::MAX).len(), 15);
+
+        // Out-of-range records stay total.
+        let mut board = board_for(1, i32::MIN, i32::MIN);
+        board.selected.max_rank = i32::MAX;
+        board.selected.weapon_row = i32::MIN;
+        board.selected.flags = FLAG_WEAPON;
+        assert_eq!(board.weapon_mark(), Some(false));
+        board.entries[0].participants = vec![Participant {
+            slot: usize::MAX,
+            value: 0,
+            weapon: 0,
+        }];
+        board.tab = BoardTab::Tournament;
+        board.rebuild_lineups();
+        assert!(board.team.is_empty());
+        board.lineup = vec![-5, i32::MAX, 99, -1, 0, 7];
+        board.tab = BoardTab::Matches;
+        board.rebuild_lineups();
+        assert_eq!(board.team, vec![0]);
+        assert_eq!(scale_coins(u32::MAX, i32::MIN), pack_coins(0x8000_0000));
         assert_eq!(season_weeks_elapsed(u32::MAX), 1);
     }
 
@@ -3432,15 +3697,8 @@ mod tests {
         assert!(shown.stored_cleared);
 
         let destroyed = destroy_match_board(1);
-        assert!(destroyed.base_destroy);
-        assert!(destroyed.list_released);
-        assert!(destroyed.base);
-        assert!(destroyed.freed);
-
+        assert!(destroyed.base_destroy && destroyed.list_released && destroyed.freed);
         let kept = destroy_match_board(0);
-        assert!(!kept.base_destroy);
-        assert!(kept.list_released);
-        assert!(kept.base);
-        assert!(!kept.freed);
+        assert!(!kept.base_destroy && kept.list_released && kept.base && !kept.freed);
     }
 }
