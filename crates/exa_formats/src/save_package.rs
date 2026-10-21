@@ -136,6 +136,18 @@ pub fn slot_file_name(prefix: &str, number: u32, kind: SlotKind) -> String {
     )
 }
 
+/// The checkpoint name of a save file: the save's extension stripped and
+/// `.rcp` appended, as the original's copy-over-the-save routine builds it.
+pub fn checkpoint_file_name(save_file: &str) -> String {
+    crate::text::strip_extension_append(save_file, EXT_CHECKPOINT)
+}
+
+/// The save name of a checkpoint file: the checkpoint's extension stripped
+/// and `.rsg` appended, as the original's copy-back routine builds it.
+pub fn save_file_name(checkpoint_file: &str) -> String {
+    crate::text::strip_extension_append(checkpoint_file, EXT_SAVE)
+}
+
 /// The number the original's scanner reads from three bytes: no digit check,
 /// just `(b0 − '0')·100 + (b1 − '0')·10 + (b2 − '0')` as a signed 32-bit
 /// value.
@@ -291,6 +303,35 @@ impl PackageImage {
             entries: Vec::new(),
             original: Vec::new(),
         }
+    }
+
+    /// Resets the directory to the sentinel only, the original's reset: the
+    /// count is one, the sentinel covers the 8-byte header and its own
+    /// entry, and the bytes already in the file stay where they are. A
+    /// caller writing the result rewrites the header and the one entry and
+    /// leaves the old payloads and tail untouched.
+    pub fn reset(&mut self) {
+        self.magic = PACKAGE_MAGIC;
+        self.sentinel = (0, SENTINEL_SIZE, [0; NAME_LEN]);
+        self.entries.clear();
+    }
+
+    /// Opens a package from the bytes a file gave, with the original's
+    /// open rules: a file shorter than nine bytes or with another magic is
+    /// reset to a fresh package, written over its first 32 bytes without
+    /// truncating it. Returns the package and, when the open resets it, the
+    /// bytes to write back. A file whose magic is right but whose directory
+    /// does not fit reads as an empty package and is left as it is.
+    pub fn open(bytes: &[u8]) -> (Self, Option<Vec<u8>>) {
+        let magic_ok = bytes.len() >= 9 && bytes[0..4] == PACKAGE_MAGIC.to_le_bytes();
+        if magic_ok {
+            return (Self::read(bytes).unwrap_or_default(), None);
+        }
+        let fresh = Self::new().to_bytes();
+        let mut out = bytes.to_vec();
+        out.resize(out.len().max(fresh.len()), 0);
+        out[..fresh.len()].copy_from_slice(&fresh);
+        (Self::new(), Some(out))
     }
 
     /// Reads a package whole, keeping its directory order and offsets.
@@ -2434,6 +2475,64 @@ mod tests {
                 "missing {needle:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_reset_package_is_the_sentinel_alone_and_keeps_the_old_bytes() {
+        let mut package = PackageImage::new();
+        package.put_section(&name("a"), &[1u8; 0x10]);
+        package.put_section(&name("b"), &[2u8; 0x10]);
+        let bytes = package.to_bytes();
+        let mut image = PackageImage::read(&bytes).unwrap();
+        image.reset();
+        assert!(image.entries().is_empty());
+        let out = image.to_bytes();
+        assert_eq!(out.len(), bytes.len(), "the file does not shrink");
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(out[12..16].try_into().unwrap()),
+            SENTINEL_SIZE
+        );
+        assert_eq!(&out[0x2000..0x2010], &[1u8; 0x10], "the old payload stays");
+        // A section written after the reset starts at the sentinel's end.
+        image.put_section(&name("c"), &[3u8; 4]);
+        assert_eq!(image.entries()[0].offset, 0x2000);
+    }
+
+    #[test]
+    fn opening_a_short_or_mismatched_file_writes_a_fresh_header() {
+        let (package, reset) = PackageImage::open(&[]);
+        assert!(package.entries().is_empty());
+        assert_eq!(reset.as_deref(), Some(&PackageImage::new().to_bytes()[..]));
+        // Eight bytes is still short; the tail after 32 stays.
+        let short = [9u8; 40];
+        let (package, reset) = PackageImage::open(&short);
+        assert!(package.entries().is_empty());
+        let out = reset.unwrap();
+        assert_eq!(&out[..4], &PACKAGE_MAGIC.to_le_bytes());
+        assert_eq!(&out[32..], &[9u8; 8]);
+        // A wrong magic is reset too.
+        let mut wrong = bytes_of_magic(0x1234_5678);
+        let (_, reset) = PackageImage::open(&wrong);
+        assert!(reset.is_some());
+        wrong[0..4].copy_from_slice(&PACKAGE_MAGIC.to_le_bytes());
+        let (package, reset) = PackageImage::open(&wrong);
+        assert!(reset.is_none());
+        assert!(package.entries().is_empty());
+    }
+
+    fn bytes_of_magic(magic: u32) -> Vec<u8> {
+        let mut out = PackageImage::new().to_bytes();
+        out[0..4].copy_from_slice(&magic.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn the_checkpoint_and_save_names_swap_extensions() {
+        assert_eq!(checkpoint_file_name("Exanima001.rsg"), "Exanima001.rcp");
+        assert_eq!(save_file_name("Exanima001.rcp"), "Exanima001.rsg");
+        assert_eq!(checkpoint_file_name("Arena007"), "Arena007.rcp");
+        assert_eq!(save_file_name("Arena007"), "Arena007.rsg");
     }
 
     #[test]

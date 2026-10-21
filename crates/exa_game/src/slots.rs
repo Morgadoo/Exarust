@@ -229,18 +229,52 @@ impl Slots {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error),
         };
-        let magic_ok = bytes.len() >= 9 && bytes[0..4] == save_package::PACKAGE_MAGIC.to_le_bytes();
-        if !magic_ok {
-            let fresh = PackageImage::new().to_bytes();
-            let mut out = bytes;
-            if out.len() < fresh.len() {
-                out.resize(fresh.len(), 0);
-            }
-            out[..fresh.len()].copy_from_slice(&fresh);
+        let (package, reset) = PackageImage::open(&bytes);
+        if let Some(out) = reset {
             fs::write(path, out)?;
-            return Ok(PackageImage::new());
         }
-        Ok(PackageImage::read(&bytes).unwrap_or_default())
+        Ok(package)
+    }
+
+    /// The original's probe: a file that can be opened, whatever its length
+    /// or magic (its eight header bytes are read and discarded). A missing
+    /// or unreadable file is not one.
+    pub fn probe(&self, number: u32, kind: SlotKind) -> bool {
+        Self::probe_path(&self.file(number, kind))
+    }
+
+    /// [`Slots::probe`] for a path.
+    pub fn probe_path(path: &Path) -> bool {
+        fs::File::open(path).is_ok()
+    }
+
+    /// The original's checkpoint copy: the save copied over the checkpoint.
+    pub fn copy_save_over_checkpoint(&self, number: u32) -> io::Result<()> {
+        fs::copy(
+            self.file(number, SlotKind::Save),
+            self.file(number, SlotKind::Checkpoint),
+        )?;
+        Ok(())
+    }
+
+    /// The original's copy-back: the checkpoint copied over the save, which
+    /// a load from a checkpoint does once the level is up.
+    pub fn copy_checkpoint_over_save(&self, number: u32) -> io::Result<()> {
+        fs::copy(
+            self.file(number, SlotKind::Checkpoint),
+            self.file(number, SlotKind::Save),
+        )?;
+        Ok(())
+    }
+
+    /// Writes an empty package over the slot's save, the original's reset
+    /// (its directory becomes the sentinel alone; the old payloads stay in
+    /// the file).
+    pub fn truncate(&self, number: u32) -> io::Result<()> {
+        let path = self.file(number, SlotKind::Save);
+        let mut package = Self::open(&path)?;
+        package.reset();
+        fs::write(path, package.to_bytes())
     }
 
     /// What the mode's player-data reader makes of a package during a scan
@@ -510,10 +544,7 @@ impl Slots {
         let loaded = self.load_package(number, prefer_checkpoint)?;
         let session = session::read_package(&loaded.package)?;
         if loaded.kind == SlotKind::Checkpoint {
-            let _ = fs::copy(
-                self.file(number, SlotKind::Checkpoint),
-                self.file(number, SlotKind::Save),
-            );
+            let _ = self.copy_checkpoint_over_save(number);
         }
         Ok((session, loaded.kind))
     }
@@ -659,10 +690,7 @@ impl Slots {
             return Ok(false);
         }
         self.save_full(number, session, world)?;
-        fs::copy(
-            self.file(number, SlotKind::Save),
-            self.file(number, SlotKind::Checkpoint),
-        )?;
+        self.copy_save_over_checkpoint(number)?;
         Ok(true)
     }
 
@@ -683,10 +711,7 @@ impl Slots {
         world: &SaveWorld<'_>,
     ) -> io::Result<bool> {
         let saved = self.save_full(number, session, world)?;
-        fs::copy(
-            self.file(number, SlotKind::Save),
-            self.file(number, SlotKind::Checkpoint),
-        )?;
+        self.copy_save_over_checkpoint(number)?;
         Ok(saved)
     }
 
@@ -806,7 +831,7 @@ impl Slots {
             return Ok(false);
         }
         self.save_full(number, session, world)?;
-        fs::copy(&path, self.file(number, SlotKind::Checkpoint))?;
+        self.copy_save_over_checkpoint(number)?;
         Ok(true)
     }
 
@@ -894,6 +919,40 @@ mod tests {
         assert_eq!(slots.numbers().unwrap(), vec![2, 1, 3]);
         let reloaded = Slots::arena(&dir);
         assert_eq!(reloaded.numbers().unwrap(), vec![2, 1, 3]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_slot_probes_and_copies_both_ways_and_truncates() {
+        let dir = folder("probe");
+        let slots = Slots::arena(&dir);
+        let number = slots.create(&arena("Ash")).unwrap();
+        assert!(slots.probe(number, SlotKind::Save));
+        assert!(!slots.probe(number, SlotKind::Checkpoint));
+        assert!(!Slots::probe_path(&dir.join("missing.rsg")));
+        let mut later = arena("Ash");
+        later.clock = 42;
+        slots.save(number, &later).unwrap();
+        slots.copy_save_over_checkpoint(number).unwrap();
+        let checkpoint = fs::read(slots.file(number, SlotKind::Checkpoint)).unwrap();
+        let package = PackageImage::read(&checkpoint).unwrap();
+        let data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Arena,
+        )
+        .unwrap();
+        assert_eq!(data.header.clock(), 42);
+        // The copy-back overwrites the save with the checkpoint.
+        slots.save(number, &arena("Bram")).unwrap();
+        slots.copy_checkpoint_over_save(number).unwrap();
+        assert_eq!(slots.load(number, false).unwrap().0.clock, 42);
+        // A truncate leaves the sentinel alone; the old payload bytes stay.
+        slots.truncate(number).unwrap();
+        let bytes = fs::read(slots.file(number, SlotKind::Save)).unwrap();
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
+        assert!(bytes.len() > 32);
+        // The checkpoint still lists the slot.
+        assert_eq!(slots.list().unwrap()[0].kind, SlotKind::Checkpoint);
         let _ = fs::remove_dir_all(&dir);
     }
 
