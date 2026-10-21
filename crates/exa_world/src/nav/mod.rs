@@ -27,6 +27,7 @@
 //! Evidence (reverse engineering of `Exanima.exe` 0.9.5, the corpus) and
 //! the rules in full: `docs/NAVIGATION.md`. The planner is [`path`].
 
+pub mod finder;
 pub mod footprint;
 pub mod headless;
 pub mod mover;
@@ -40,6 +41,7 @@ pub mod walkable;
 use bevy::math::{DVec3, Vec2, Vec3};
 
 pub use crate::terrain::ground::GroundTile;
+pub use finder::{AbstractPathFinder, FALLBACK_SIZE, InstalledPathfinder};
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,

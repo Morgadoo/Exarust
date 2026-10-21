@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
 
+use super::finder::InstalledPathfinder;
 use super::source::FloorMesh;
 use super::{CELL, GroundTile, Layer, NavGrid, NavSource, PASSABLE};
 use crate::gi_volume::{GiFloor, GiPoints};
@@ -21,6 +22,7 @@ pub struct NavPlugin;
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NavState>()
+            .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
             .add_systems(
                 PostUpdate,
@@ -93,6 +95,7 @@ fn collect_source(
     ground: Query<&Ground>,
     meshes: Res<Assets<Mesh>>,
     mut state: ResMut<NavState>,
+    mut installed: ResMut<InstalledPathfinder>,
 ) {
     let Some(pending) = pending else { return };
     let pending = *pending;
@@ -130,6 +133,9 @@ fn collect_source(
     let task = AsyncComputeTaskPool::get().spawn(async move { source.build() });
     commands.insert_resource(NavBuild(task));
     *state = NavState::Building;
+    // The level's pathfinder is not installed until its grid is built: the
+    // global falls back to the abstract one meanwhile.
+    *installed = InstalledPathfinder::install_fallback();
 }
 
 /// A floor mesh's copy for the build.
@@ -149,6 +155,7 @@ fn finish_build(
     mut commands: Commands,
     build: Option<ResMut<NavBuild>>,
     mut state: ResMut<NavState>,
+    mut installed: ResMut<InstalledPathfinder>,
 ) {
     let Some(mut build) = build else { return };
     let Some(grid) = block_on(poll_once(&mut build.0)) else {
@@ -162,6 +169,7 @@ fn finish_build(
     );
     commands.insert_resource(grid);
     *state = NavState::Built;
+    *installed = InstalledPathfinder::install_level();
 }
 
 fn overlay_key(keys: Option<Res<ButtonInput<KeyCode>>>, mut overlay: ResMut<NavOverlay>) {

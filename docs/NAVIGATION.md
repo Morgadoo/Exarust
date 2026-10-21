@@ -258,6 +258,14 @@ each search with a fresh map.
   `NavSource` what it is built from, and `NavPlugin` builds it for each
   level when the load ends, from what is under the level root, on the
   async compute pool. The log gives the inputs and the counts.
+- The game's one pathfinder is `nav::InstalledPathfinder`: the level's
+  grid once built, or the abstract 64 × 64 fallback while the grid is
+  being built or when the level has none. The fallback answers every
+  query with nothing (no obstacle, no clamped line, no snap, no reach,
+  zero cost, the point unchanged), which is why a level without a grid
+  never blocks the player's look-ahead. `NavPlugin` installs the
+  fallback for each new level and the grid when its build finishes; the
+  fallback needs no teardown (Rust drops it).
 - The NPC chase route (`exa_ai::chase`, `exa_ai::route`) plans through
   `nav::find_path`, one brain a frame (the original's plan turn), and is
   followed when its ends lie more than 150 cm apart.
