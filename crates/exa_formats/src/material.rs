@@ -230,32 +230,93 @@ impl Default for Material {
             render_state: 0,
             plugin_mask: 0,
             reserved: [0; 4],
-            physical_divisor: DEFAULT_PHYSICAL_DIVISOR,
+            physical_divisor: 0.0,
             tail: [0; 2],
             collision_sound: String::new(),
-            texture_flags: DEFAULT_TEXTURE_FLAGS,
+            texture_flags: 0,
             raw_block: [0; PARAMETER_BLOCK / 4],
             layers: Vec::new(),
         }
     }
 }
 
+/// The 3 × 4 texture-coordinate transform a material object is constructed
+/// with, row-major: a 3 × 3 identity followed by a zero translation row. The
+/// parameter record does not store it; the object only holds it.
+pub const CONSTRUCTED_TEXTURE_TRANSFORM: [f32; 12] =
+    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
 /// The texture load flags a material object starts from: the original's
 /// `0xF0` with its `0x70000` sampler bits (repeat wrapping on every axis).
 pub const DEFAULT_TEXTURE_FLAGS: u32 = 0xF0 | 0x70000;
 /// The physical divisor a material object starts from.
 pub const DEFAULT_PHYSICAL_DIVISOR: f32 = 1.0;
-/// The material record used for a name the libraries do not know: the
-/// original's built-in `_Default`, opaque grey with no texture.
+
+/// The material the original falls back to for a name the libraries do not
+/// know: its built-in `_Default`.
 pub const DEFAULT_MATERIAL_NAME: &str = "_Default";
-/// The built-in `_Default` material's diffuse colour (sRGB grey) and
-/// opacity, as its 32-byte payload stores them (emissive black).
-pub const DEFAULT_MATERIAL_DIFFUSE: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
-/// The reference count the built-in `_Default` material starts with: it is
-/// never freed.
+/// The reference count the built-in `_Default` material is created with
+/// before its first user is counted: the manager never frees it.
 pub const DEFAULT_MATERIAL_REFERENCES: i32 = 0x3FFF_FFFF;
 
+/// The built-in `_Default` parameter block: the non-zero 32-bit words of its
+/// 184 bytes as `(byte offset, word)` pairs, floats as their bit patterns.
+/// The record is mid-grey diffuse, a 0.22 grey specular colour, dirt 0.5,
+/// opacity 1, glossiness 0.1, specular level 1, render class `0x100`,
+/// shading flags 7, kind 1, texture flags `0x70000`, displacement step 1 and
+/// bias 0.5, fall-off exponent 2; the words at `0x34`, `0x84`, `0x88`,
+/// `0x90` and `0x94` carry their stored values into the decoded record's
+/// refraction, scale, render-state and plug-in fields (the extra flags have
+/// no `0x40`, so no texture transform is built).
+const DEFAULT_MATERIAL_WORDS: [(usize, u32); 25] = [
+    (0x10, 0x3F00_0000),
+    (0x14, 0x3F00_0000),
+    (0x18, 0x3F00_0000),
+    (0x1C, 0x3F80_0000),
+    (0x20, 0x3E61_47AE),
+    (0x24, 0x3E61_47AE),
+    (0x28, 0x3E61_47AE),
+    (0x2C, 0x3F80_0000),
+    (0x30, 0x3F00_0000),
+    (0x34, 0x3F00_0000),
+    (0x38, 0x3F80_0000),
+    (0x3C, 0x3DCC_CCCD),
+    (0x40, 0x3F80_0000),
+    (0x44, 0x100),
+    (0x48, 7),
+    (0x50, 1),
+    (0x54, 0x7_0000),
+    (0x58, 0x3F80_0000),
+    (0x5C, 0x3F80_0000),
+    (0x60, 0x3F00_0000),
+    (0x68, 0x4000_0000),
+    (0x84, 0x3F80_0000),
+    (0x88, 0x3F80_0000),
+    (0x90, 3),
+    (0x94, 1),
+];
+
 impl Material {
+    /// A material object as its constructor leaves it: every shading
+    /// parameter zero except the texture load flags (`0x700F0`) and the
+    /// physical divisor (1).
+    pub fn constructed() -> Self {
+        Self {
+            texture_flags: DEFAULT_TEXTURE_FLAGS,
+            physical_divisor: DEFAULT_PHYSICAL_DIVISOR,
+            ..Self::default()
+        }
+    }
+
+    /// The built-in `_Default` material, parsed from its stored parameter
+    /// block: opaque mid-grey and lit, with no texture layer.
+    pub fn builtin_default() -> Self {
+        let mut block = [0u8; PARAMETER_BLOCK];
+        for (offset, word) in DEFAULT_MATERIAL_WORDS {
+            block[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        Self::parse(&block).expect("the built-in block is a whole parameter block")
+    }
+
     pub fn parse(payload: &[u8]) -> Result<Self> {
         if payload.len() < PARAMETER_BLOCK {
             return Err(Error::Truncated {
@@ -616,18 +677,49 @@ mod tests {
         assert_eq!((m[0], m[9]), (2.0, -0.5));
     }
 
-    /// The constructor's defaults: texture load flags 0x700F0 (0xF0 and the
-    /// 0x70000 sampler bits) and a physical divisor of 1. The built-in
-    /// `_Default` material is opaque grey with a reference count it never
-    /// loses.
+    /// The constructor's defaults: texture load flags `0x700F0` (`0xF0` and
+    /// the `0x70000` sampler bits), a physical divisor of 1 and a 3 × 3
+    /// identity texture transform with a zero translation row.
     #[test]
     fn constructed_material_defaults() {
-        let m = Material::default();
-        assert_eq!(m.uv_transform, None);
+        let m = Material::constructed();
         assert_eq!(m.texture_flags, 0x700F0);
         assert_eq!(m.physical_divisor, 1.0);
         assert_eq!(m.mobility_divisor(), 1.0);
-        assert_eq!(DEFAULT_MATERIAL_DIFFUSE, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(m.opacity, 0.0);
+        assert!(m.layers.is_empty());
+        let t = CONSTRUCTED_TEXTURE_TRANSFORM;
+        assert_eq!(&t[0..3], &[1.0, 0.0, 0.0]);
+        assert_eq!(&t[3..6], &[0.0, 1.0, 0.0]);
+        assert_eq!(&t[6..9], &[0.0, 0.0, 1.0]);
+        assert_eq!(&t[9..12], &[0.0, 0.0, 0.0]);
+        // A parsed record takes its flags from the block, not the constructor.
+        assert_eq!(
+            Material::parse(&[0u8; PARAMETER_BLOCK])
+                .unwrap()
+                .texture_flags,
+            0
+        );
+    }
+
+    /// The built-in `_Default` is the full parameter block: lit and
+    /// specular (flags 7), class `0x100`, kind 1, no texture layer.
+    #[test]
+    fn the_builtin_default_is_a_full_parameter_block() {
+        let m = Material::builtin_default();
+        assert_eq!(m.diffuse, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(m.emissive, [0.0; 4]);
+        assert_eq!(m.opacity, 1.0);
+        assert_eq!(m.flags, 7);
+        assert_eq!(m.class, 0x100);
+        assert_eq!(m.kind, 1);
+        assert_eq!(m.texture_flags, 0x7_0000);
+        assert_eq!((m.displacement_step, m.displacement_bias), (1.0, 0.5));
+        assert_eq!(m.falloff_exponent, 2.0);
+        assert!((m.glossiness - 0.1).abs() < 1e-7);
+        assert!(m.layers.is_empty());
+        // Stored as 0, loaded as 1.
+        assert_eq!(m.mobility_divisor(), 1.0);
         assert_eq!(DEFAULT_MATERIAL_NAME, "_Default");
         assert_eq!(DEFAULT_MATERIAL_REFERENCES, 0x3FFF_FFFF);
     }

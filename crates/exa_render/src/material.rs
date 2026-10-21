@@ -417,28 +417,6 @@ impl ExaMaterial {
         self.cut_shadow || matches!(self.alpha_mode, AlphaMode::Mask(_))
     }
 
-    /// Releases the material object's texture slots, as its destructor and
-    /// texture-slot helper do (seven slots; a handle that was never set is
-    /// skipped). Returns how many were released. The original maps the
-    /// seven slots to its own texture objects; Exarust's map is diffuse,
-    /// normal, specular, gloss, height, emissive and opacity, which is
-    /// **inferred** from the slot order and not observable.
-    pub fn release_maps(&mut self) -> usize {
-        let maps = [
-            &mut self.diffuse_map,
-            &mut self.normal_map,
-            &mut self.specular_map,
-            &mut self.gloss_map,
-            &mut self.height_map,
-            &mut self.emissive_map,
-            &mut self.opacity_map,
-        ];
-        maps.into_iter()
-            .map(|slot| slot.take().is_some())
-            .filter(|released| *released)
-            .count()
-    }
-
     /// One material per cloth draw. Each pass culls the face the pass names,
     /// so the pipeline submits the front and the back separately.
     pub fn cloth_draws(&self, culls: &[bevy::render::render_resource::Face]) -> Vec<Self> {
@@ -722,30 +700,5 @@ mod tests {
                 .cloth_cull
                 .is_none()
         );
-    }
-
-    #[test]
-    fn releasing_material_slots_clears_the_seven_maps() {
-        let mut m = ExaMaterial::default();
-        let map = || Some(Handle::<Image>::default());
-        m.diffuse_map = map();
-        m.normal_map = map();
-        m.specular_map = map();
-        m.gloss_map = map();
-        m.height_map = map();
-        m.emissive_map = map();
-        m.opacity_map = map();
-        assert_eq!(m.release_maps(), 7);
-        assert!(m.diffuse_map.is_none());
-        assert!(m.normal_map.is_none());
-        assert!(m.specular_map.is_none());
-        assert!(m.gloss_map.is_none());
-        assert!(m.height_map.is_none());
-        assert!(m.emissive_map.is_none());
-        assert!(m.opacity_map.is_none());
-        // Nothing left to release, and unset slots are skipped.
-        assert_eq!(m.release_maps(), 0);
-        m.normal_map = map();
-        assert_eq!(m.release_maps(), 1);
     }
 }

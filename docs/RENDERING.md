@@ -324,15 +324,26 @@ of a record with extra flag `0x40` in the loader's order (the engine's sine
 and cosine of the negated angle, scale about the centre, then the
 translation); nothing draws with it yet.
 
-A newly constructed material object starts with the texture load word
-`0x700F0` (0xF0 and repeat wrapping in the `0x70000` sampler bits) and a
-physical divisor of 1. The manager's built-in
-`_Default` material is opaque grey (0.5, 0.5, 0.5, 1) with no texture and no
-shading flags, and a reference count of `0x3FFFFFFF` that never reaches
-zero; an unknown material name logs once and returns it. The material
-object's seven texture slots are released by its destructor helper, and the
-global cache's counts rise on a get-or-load and fall on a release, a
-negative count being an error.
+A newly constructed material object holds a 3 × 3 identity texture transform
+with a zero translation row (twelve floats), the texture load word `0x700F0`
+(0xF0 and repeat wrapping in the `0x70000` sampler bits) and a physical
+divisor of 1; the parameter record does not store the transform. The
+manager's built-in `_Default` material is a full 184-byte record: mid-grey
+diffuse (0.5, 0.5, 0.5, 1), a 0.22 grey specular colour, opacity 1,
+glossiness 0.1, specular level 1, render class `0x100`, flags 7 (lit and
+specular), kind 1, load word `0x70000`, displacement step 1 and bias 0.5,
+fall-off exponent 2, and no texture layer. It is created on first need with a
+count of `0x3FFFFFFF` and gains one user per request. The manager keeps its
+own provider in slot 0 with the global plug-in providers behind it, a
+material table that reuses the first empty slot from a search hint, a list
+of the loaded slots, a list of objects waiting to be freed and the slot of
+`_Default`; a get-or-load finds the name in the table or asks the providers
+from the last to the first and falls back to `_Default` for an unknown name
+or unreadable data. Dropping a count below zero is an error; reaching zero
+queues the object for freeing and empties its slot
+(`exa_assets::material_manager`, bookkeeping only, not driven by the loader).
+An unknown name in Exarust shades with the `_Default` record, shared by all
+such names.
 
 **Texture slots**:
 - `0x20000` diffuse

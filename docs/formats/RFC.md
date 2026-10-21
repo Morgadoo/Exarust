@@ -50,11 +50,13 @@ layer records. Of the block, the colours, opacity, gloss, specular level,
 render class, flags, kind, extra flags, displacement and opacity fall-off
 are read for shading (`docs/RENDERING.md`), and two fields for physics
 (REA on the original's material constructor and loader; corpus below). A
-newly constructed material object, before any payload is loaded, has an
-identity 3 × 4 texture transform, the texture load word `0x700F0` (0xF0 and
-the `0x70000` repeat-wrapping sampler bits) and a physical divisor of 1;
-the manager's built-in `_Default` record is opaque grey (0.5, 0.5, 0.5, 1)
-with no shading flags and a reference count that never reaches zero.
+newly constructed material object, before any payload is loaded, has a 3 × 3
+identity texture transform with a zero translation row (it is not part of
+the record), the texture load word `0x700F0` (0xF0 and the `0x70000`
+repeat-wrapping sampler bits) and a physical divisor of 1. The manager's
+built-in `_Default` record is a full block: diffuse (0.5, 0.5, 0.5, 1),
+specular (0.22, 0.22, 0.22, 1), opacity 1, glossiness 0.1, specular level 1,
+class `0x100`, flags 7, kind 1, texture flags `0x70000`, no layers.
 
 | off | field |
 |---|---|

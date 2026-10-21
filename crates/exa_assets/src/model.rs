@@ -647,7 +647,9 @@ impl ModelLoader<'_> {
             }
             None => {
                 self.warn_once(format!("material {name:?} not found"));
-                crate::material_manager::default_material()
+                let handle = self.builtin_default_material();
+                self.cache.materials.insert(key, handle.clone());
+                return handle;
             }
         };
         let handle = self.materials.add(mat);
@@ -655,18 +657,10 @@ impl ModelLoader<'_> {
         handle
     }
 
-    /// The get-or-load entry point of the original's material manager: the
-    /// scene's own record first, then the project's libraries, cached by
-    /// name; an unknown name logs once and returns the built-in `_Default`
-    /// material.
-    pub fn get_material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
-        self.material(entry, scene, name)
-    }
-
-    /// The built-in `_Default` material, created once and cached. It is
-    /// opaque grey with no texture and, in the original, a reference count
-    /// that never reaches zero.
-    pub fn default_material(&mut self) -> Handle<ExaMaterial> {
+    /// The built-in `_Default` material every unknown name resolves to,
+    /// shaded from its stored parameter block and created once: the original
+    /// keeps a single `_Default` object and counts its users.
+    fn builtin_default_material(&mut self) -> Handle<ExaMaterial> {
         let key = format!(
             "lib#{}",
             exa_formats::material::DEFAULT_MATERIAL_NAME.to_ascii_lowercase()
@@ -674,17 +668,10 @@ impl ModelLoader<'_> {
         if let Some(h) = self.cache.materials.get(&key) {
             return h.clone();
         }
-        let handle = self
-            .materials
-            .add(crate::material_manager::default_material());
+        let shaded = self.exa_material(&Material::builtin_default());
+        let handle = self.materials.add(shaded);
         self.cache.materials.insert(key, handle.clone());
         handle
-    }
-
-    /// The cached material of a key ([`ModelLoader::material_key`]) once it
-    /// was loaded.
-    pub fn cached_material(&self, key: &str) -> Option<&Handle<ExaMaterial>> {
-        self.cache.materials.get(key)
     }
 
     /// A material shaded like the original's from its library record.

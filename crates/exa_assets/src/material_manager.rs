@@ -1,206 +1,274 @@
-//! The original's material bookkeeping outside the model loader: the
-//! built-in `_Default` material, the reference counts of the global cache
-//! and the per-scene manager (a default material plus a copy of the global
-//! plug-in list).
+//! The original's per-scene material manager: a table of material objects
+//! counted by their users, filled on demand from a list of providers, with
+//! the built-in `_Default` material as the fallback for names nobody knows.
 //!
-//! The original keeps one material object per record, counts the users of
-//! each and frees a record at zero. Exarust shares a Bevy [`Handle`] per
-//! record and never frees it while the cache lives; [`MaterialRefs`] keeps
-//! the same counts so a caller can follow the original's acquire/release
-//! rules (a negative count is an error, and only the `_Default` material
-//! never drops to zero).
+//! Exarust's [`ModelLoader`](crate::model::ModelLoader) shares one cached
+//! handle per material and never frees it; this module is the manager's
+//! bookkeeping on its own, for code that has to follow the original's slot
+//! reuse and reference-count rules. Nothing in the game drives it yet.
+//!
+//! What the manager does, as read from the original:
+//!
+//! - **Providers.** Slot 0 is the manager's own provider; the global plug-in
+//!   providers are copied behind it when the manager is built. A lookup asks
+//!   them from the last to the first, so a plug-in wins over the own one.
+//! - **Table.** Materials sit in a table indexed by slot. Adding takes the
+//!   first empty slot at or after a search hint, or grows the table by one;
+//!   the hint moves behind the slot taken, and back to a slot that is
+//!   freed. The table never shrinks.
+//! - **Get-or-load.** A name already in the table (searched from the highest
+//!   slot down) gains a user. Otherwise a provider is asked for it; the
+//!   material is added, remembers its provider and entry, and starts with
+//!   one user. A name no provider has, or whose data cannot be read, gives
+//!   the `_Default` material instead.
+//! - **`_Default`.** Created on first need under the name `_Default` with a
+//!   count of `0x3FFF_FFFF`, remembered by slot, and given one more user per
+//!   request, so it does not reach zero in practice.
+//! - **Release.** Dropping below zero is an error (the original logs
+//!   "Negative material reference count." and leaves the count there).
+//!   Reaching zero takes the material out of the loaded list, queues the
+//!   object for freeing, unloads it from the own provider when it came
+//!   from there, forgets the `_Default` slot if that was it, and empties the
+//!   table slot.
+//!
+//! The name comparison is assumed to ignore ASCII case, like the library
+//! lookups; the original's comparison routine was not traced.
 //!
 //! Rules: `docs/RENDERING.md` (Materials).
 
-use std::collections::HashMap;
+use exa_formats::material::{DEFAULT_MATERIAL_NAME, DEFAULT_MATERIAL_REFERENCES};
 
-use bevy::prelude::*;
-use exa_formats::material::{
-    DEFAULT_MATERIAL_DIFFUSE, DEFAULT_MATERIAL_NAME, DEFAULT_MATERIAL_REFERENCES, Material,
-};
-use exa_render::material::{ExaMaterial, ExaParams};
-
-/// The built-in `_Default` material object, as the original builds it from
-/// its 32-byte payload: black emissive, opaque grey diffuse, no texture and
-/// no shading flags.
-pub fn default_material() -> ExaMaterial {
-    ExaMaterial {
-        params: ExaParams {
-            diffuse: Vec4::from_array(DEFAULT_MATERIAL_DIFFUSE),
-            flags: 0,
-            ..default()
-        },
-        ..default()
-    }
+/// What a provider answers for a material name.
+#[derive(Debug)]
+pub enum Lookup<T> {
+    /// The provider has the material: its entry number there and the object
+    /// built from its data.
+    Found { entry: usize, value: T },
+    /// The provider does not know the name.
+    Missing,
+    /// The provider knows the name but its data cannot be read (the
+    /// original logs "Material has no data" and falls back).
+    NoData,
 }
 
-/// The source record the built-in material stands for, for callers that
-/// read the record rather than the shader material.
-pub fn default_material_record() -> Material {
-    Material {
-        diffuse: DEFAULT_MATERIAL_DIFFUSE,
-        ..default()
-    }
-}
-
-/// Why a release failed.
+/// The release dropped the count below zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefcountError {
-    /// The name was never acquired.
-    Unknown,
-    /// The count was already zero (the original's "Negative material
-    /// reference count.").
-    Negative,
-}
+pub struct NegativeCount;
 
-impl std::fmt::Display for RefcountError {
+impl std::fmt::Display for NegativeCount {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("negative material reference count")
     }
 }
 
-impl std::error::Error for RefcountError {}
+impl std::error::Error for NegativeCount {}
 
-/// The reference counts of the material cache, by lower-case name. A count
-/// of zero means the record is free; the built-in `_Default` starts at the
-/// original's permanent count.
-#[derive(Clone, Debug)]
-pub struct MaterialRefs {
-    counts: HashMap<String, i32>,
+/// What a release did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Released {
+    /// Other users remain.
+    Counted(i32),
+    /// The last user left and the slot was emptied. `unload` is set when the
+    /// material came from the own provider and has to be unloaded there.
+    Freed { unload: bool },
 }
 
-impl Default for MaterialRefs {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Debug)]
+struct Entry<T> {
+    name: String,
+    users: i32,
+    /// The provider slot the material came from (0 is the own provider).
+    provider: usize,
+    /// The material's entry number in that provider.
+    entry: usize,
+    value: T,
 }
 
-impl MaterialRefs {
-    /// Counts holding only the built-in `_Default`.
-    pub fn new() -> Self {
-        let mut counts = HashMap::new();
-        counts.insert(
-            DEFAULT_MATERIAL_NAME.to_ascii_lowercase(),
-            DEFAULT_MATERIAL_REFERENCES,
-        );
-        Self { counts }
-    }
-
-    /// The count of `name`, zero when it was never acquired or has been
-    /// released to zero.
-    pub fn count(&self, name: &str) -> i32 {
-        self.counts
-            .get(&name.to_ascii_lowercase())
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// Records a new user of `name` and returns the new count, as a
-    /// get-or-load does.
-    pub fn acquire(&mut self, name: &str) -> i32 {
-        let count = self.counts.entry(name.to_ascii_lowercase()).or_insert(0);
-        *count = count.saturating_add(1);
-        *count
-    }
-
-    /// Drops a user of `name` and returns the new count. Releasing at zero
-    /// is the original's negative-count error; the built-in material can
-    /// never reach zero.
-    pub fn release(&mut self, name: &str) -> Result<i32, RefcountError> {
-        let key = name.to_ascii_lowercase();
-        if key == DEFAULT_MATERIAL_NAME.to_ascii_lowercase() {
-            return Ok(self.count(&key).saturating_sub(1).max(1));
-        }
-        let Some(count) = self.counts.get_mut(&key) else {
-            return Err(RefcountError::Unknown);
-        };
-        if *count <= 0 {
-            return Err(RefcountError::Negative);
-        }
-        *count -= 1;
-        Ok(*count)
-    }
-
-    /// Whether the record named `name` may be freed: its count reached
-    /// zero.
-    pub fn freeable(&self, name: &str) -> bool {
-        self.counts
-            .get(&name.to_ascii_lowercase())
-            .is_some_and(|&c| c == 0)
-    }
+/// A scene's material manager over material objects of type `T`.
+#[derive(Debug)]
+pub struct MaterialManager<T> {
+    providers: usize,
+    table: Vec<Option<Entry<T>>>,
+    hint: usize,
+    loaded: Vec<usize>,
+    pending_free: Vec<T>,
+    default_slot: Option<usize>,
 }
 
-/// A scene's material manager: the scene's default material and its own
-/// copy of the global plug-in list (one entry per material type). The
-/// original builds it when the scene is created, slots the default material
-/// in first and keeps the active and prior name indices at -1.
-#[derive(Clone, Debug)]
-pub struct SceneMaterials {
-    slots: Vec<Handle<ExaMaterial>>,
-    /// The global plug-in names, in registration order, copied into the
-    /// scene's list after the default material.
-    plugins: Vec<String>,
-    /// The manager's active and previous material indices, -1 when none.
-    pub active: i32,
-    pub previous: i32,
-}
-
-impl SceneMaterials {
-    /// A scene manager from its default material and the global plug-in
-    /// list.
-    pub fn new(default: Handle<ExaMaterial>, plugins: impl IntoIterator<Item = String>) -> Self {
-        let plugins: Vec<String> = plugins.into_iter().collect();
-        let mut slots = Vec::with_capacity(plugins.len() + 1);
-        slots.push(default);
-        slots.extend(std::iter::repeat_n(Handle::default(), plugins.len()));
+impl<T> MaterialManager<T> {
+    /// A manager over its own provider and `global_providers` plug-in
+    /// providers.
+    pub fn new(global_providers: usize) -> Self {
         Self {
-            slots,
-            plugins,
-            active: -1,
-            previous: -1,
+            providers: global_providers + 1,
+            table: Vec::new(),
+            hint: 0,
+            loaded: Vec::new(),
+            pending_free: Vec::new(),
+            default_slot: None,
         }
     }
 
-    /// The scene's default material.
-    pub fn default_material(&self) -> &Handle<ExaMaterial> {
-        &self.slots[0]
+    /// The number of providers, the own one included.
+    pub fn provider_count(&self) -> usize {
+        self.providers
     }
 
-    /// The plug-in names in the scene's list.
-    pub fn plugins(&self) -> &[String] {
-        &self.plugins
+    /// The highest slot ever used, `None` while the table is empty.
+    pub fn highest_slot(&self) -> Option<usize> {
+        self.table.len().checked_sub(1)
     }
 
-    /// The number of slots (the default plus every plug-in), the
-    /// constructor's ``global count + 1``.
-    pub fn len(&self) -> usize {
-        self.slots.len()
+    /// The slots holding a material, in the order they were loaded (a freed
+    /// slot is replaced by the last one).
+    pub fn loaded(&self) -> &[usize] {
+        &self.loaded
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
+    /// The slot of the `_Default` material, once it was created.
+    pub fn default_slot(&self) -> Option<usize> {
+        self.default_slot
     }
 
-    /// Puts a material in the slot of plug-in `index` (0-based in the
-    /// plug-in list).
-    pub fn set_plugin_material(&mut self, index: usize, material: Handle<ExaMaterial>) {
-        if index < self.plugins.len() {
-            self.slots[index + 1] = material;
+    /// The material in `slot`.
+    pub fn material(&self, slot: usize) -> Option<&T> {
+        self.table.get(slot)?.as_ref().map(|e| &e.value)
+    }
+
+    /// The users of the material in `slot`.
+    pub fn users(&self, slot: usize) -> Option<i32> {
+        self.table.get(slot)?.as_ref().map(|e| e.users)
+    }
+
+    /// The provider slot and entry number the material in `slot` came from.
+    pub fn source(&self, slot: usize) -> Option<(usize, usize)> {
+        self.table
+            .get(slot)?
+            .as_ref()
+            .map(|e| (e.provider, e.entry))
+    }
+
+    /// Material objects waiting to be freed.
+    pub fn pending_free(&self) -> usize {
+        self.pending_free.len()
+    }
+
+    /// Hands the objects waiting to be freed to the caller.
+    pub fn take_pending_free(&mut self) -> Vec<T> {
+        std::mem::take(&mut self.pending_free)
+    }
+
+    /// The slot holding `name`, searched from the highest slot down.
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.table.iter().rposition(|e| {
+            e.as_ref()
+                .is_some_and(|e| e.name.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// Puts a material in the first empty slot at or after the search hint
+    /// (growing the table by one if there is none), moves the hint behind
+    /// it and lists the slot as loaded. The material starts with no users.
+    pub fn add(&mut self, name: &str, provider: usize, entry: usize, value: T) -> usize {
+        let free = (self.hint..self.table.len()).find(|&i| self.table[i].is_none());
+        let slot = free.unwrap_or_else(|| {
+            self.table.push(None);
+            self.table.len() - 1
+        });
+        self.hint = slot + 1;
+        self.table[slot] = Some(Entry {
+            name: name.to_string(),
+            users: 0,
+            provider,
+            entry,
+            value,
+        });
+        self.loaded.push(slot);
+        slot
+    }
+
+    /// The `_Default` material's slot with one more user, creating the
+    /// material with `make` on first need.
+    pub fn default_material(&mut self, make: impl FnOnce() -> T) -> usize {
+        let slot = match self.default_slot {
+            Some(slot) => slot,
+            None => {
+                let slot = self.add(DEFAULT_MATERIAL_NAME, 0, 0, make());
+                self.table[slot].as_mut().expect("just added").users = DEFAULT_MATERIAL_REFERENCES;
+                self.default_slot = Some(slot);
+                slot
+            }
+        };
+        self.table[slot]
+            .as_mut()
+            .expect("the default is kept")
+            .users += 1;
+        slot
+    }
+
+    /// The material called `name` with one more user: the one already in
+    /// the table, else the one a provider builds (`ask` gets the provider
+    /// slot, last to first, and the name), else the `_Default` material
+    /// built by `make`.
+    pub fn get_or_load(
+        &mut self,
+        name: &str,
+        mut ask: impl FnMut(usize, &str) -> Lookup<T>,
+        make: impl FnOnce() -> T,
+    ) -> usize {
+        if let Some(slot) = self.find(name) {
+            self.table[slot].as_mut().expect("found").users += 1;
+            return slot;
         }
+        for provider in (0..self.providers).rev() {
+            match ask(provider, name) {
+                Lookup::Found { entry, value } => {
+                    let slot = self.add(name, provider, entry, value);
+                    self.table[slot].as_mut().expect("just added").users += 1;
+                    return slot;
+                }
+                Lookup::NoData => return self.default_material(make),
+                Lookup::Missing => {}
+            }
+        }
+        self.default_material(make)
     }
 
-    /// The material in a plug-in slot.
-    pub fn plugin_material(&self, index: usize) -> Option<&Handle<ExaMaterial>> {
-        self.slots.get(index + 1)
-    }
-
-    /// Clears the plug-in list and its slots, keeping the default material,
-    /// as the destructor frees them.
-    pub fn clear(&mut self) {
-        self.plugins.clear();
-        self.slots.truncate(1);
-        self.active = -1;
-        self.previous = -1;
+    /// Drops a user of the material in `slot`. `own_provider_has` tells
+    /// whether the own provider holds an entry of that name, which decides
+    /// between unloading it there and forgetting the `_Default` slot.
+    pub fn release(
+        &mut self,
+        slot: usize,
+        own_provider_has: impl FnOnce(&str) -> bool,
+    ) -> Result<Released, NegativeCount> {
+        let entry = self
+            .table
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or(NegativeCount)?;
+        entry.users -= 1;
+        if entry.users < 0 {
+            return Err(NegativeCount);
+        }
+        if entry.users > 0 {
+            return Ok(Released::Counted(entry.users));
+        }
+        if let Some(at) = self.loaded.iter().position(|&s| s == slot) {
+            self.loaded.swap_remove(at);
+        }
+        let entry = self.table[slot].take().expect("checked above");
+        let mut unload = false;
+        if entry.provider == 0 {
+            if own_provider_has(&entry.name) {
+                unload = true;
+            } else if self.default_slot == Some(slot) {
+                self.default_slot = None;
+            }
+        }
+        self.pending_free.push(entry.value);
+        self.hint = self.hint.min(slot);
+        Ok(Released::Freed { unload })
     }
 }
 
@@ -208,56 +276,169 @@ impl SceneMaterials {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_builtin_default_is_opaque_grey() {
-        let m = default_material();
-        assert_eq!(m.params.diffuse, Vec4::new(0.5, 0.5, 0.5, 1.0));
-        assert_eq!(m.params.emissive, Vec4::new(0.0, 0.0, 0.0, 1.0));
-        assert_eq!(m.params.flags, 0);
-        assert!(m.diffuse_map.is_none());
-        let record = default_material_record();
-        assert_eq!(record.diffuse, DEFAULT_MATERIAL_DIFFUSE);
-        assert_eq!(record.uv_transform, None);
+    type Manager = MaterialManager<&'static str>;
+
+    fn ask_only<'a>(
+        provider: usize,
+        known: &'a [(&'static str, &'static str)],
+    ) -> impl FnMut(usize, &str) -> Lookup<&'static str> + 'a {
+        move |p, name| {
+            if p != provider {
+                return Lookup::Missing;
+            }
+            known
+                .iter()
+                .position(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map_or(Lookup::Missing, |entry| Lookup::Found {
+                    entry,
+                    value: known[entry].1,
+                })
+        }
     }
 
     #[test]
-    fn reference_counts_rise_and_fall_and_the_default_never_frees() {
-        let mut refs = MaterialRefs::new();
-        assert_eq!(refs.count("_Default"), 0x3FFF_FFFF);
-        assert!(!refs.freeable("_Default"));
-        assert_eq!(refs.acquire("Cobweb01"), 1);
-        assert_eq!(refs.acquire("cobweb01"), 2);
-        assert_eq!(refs.count("COBWEB01"), 2);
-        assert!(!refs.freeable("cobweb01"));
-        assert_eq!(refs.release("Cobweb01"), Ok(1));
-        assert_eq!(refs.release("cobweb01"), Ok(0));
-        assert!(refs.freeable("cobweb01"));
-        assert_eq!(refs.release("cobweb01"), Err(RefcountError::Negative));
-        assert_eq!(refs.release("missing"), Err(RefcountError::Unknown));
-        // The default's count cannot fall to zero.
-        let before = refs.count("_Default");
-        assert_eq!(refs.release("_Default"), Ok(before - 1));
-        assert!(refs.count("_Default") > 0);
+    fn a_manager_counts_its_own_provider_plus_the_global_ones() {
+        let m = Manager::new(3);
+        assert_eq!(m.provider_count(), 4);
+        assert_eq!(m.highest_slot(), None);
+        assert_eq!(m.default_slot(), None);
+        assert!(m.loaded().is_empty());
     }
 
     #[test]
-    fn a_scene_copies_the_plugin_list_behind_its_default_material() {
-        let default = Handle::<ExaMaterial>::default();
-        let global = vec!["surface".to_string(), "flame".to_string()];
-        let mut scene = SceneMaterials::new(default.clone(), global.clone());
-        assert_eq!(scene.len(), 3);
-        assert_eq!(scene.default_material(), &default);
-        assert_eq!(scene.plugins(), global.as_slice());
-        assert_eq!((scene.active, scene.previous), (-1, -1));
-        let plugin = Handle::<ExaMaterial>::default();
-        scene.set_plugin_material(1, plugin.clone());
-        assert_eq!(scene.plugin_material(1), Some(&plugin));
-        assert_eq!(scene.plugin_material(9), None);
-        // The copy is the scene's own: clearing it leaves the global list.
-        scene.clear();
-        assert_eq!(scene.len(), 1);
-        assert!(scene.plugins().is_empty());
-        assert_eq!(global.len(), 2);
-        assert_eq!((scene.active, scene.previous), (-1, -1));
+    fn the_default_material_starts_far_from_zero_and_gains_a_user_per_request() {
+        let mut m = Manager::new(0);
+        let a = m.default_material(|| "grey");
+        assert_eq!(m.users(a), Some(0x4000_0000));
+        assert_eq!(m.default_material(|| unreachable!()), a);
+        assert_eq!(m.users(a), Some(0x4000_0001));
+        assert_eq!(m.find("_default"), Some(a));
+        assert_eq!(m.default_slot(), Some(a));
+        assert_eq!(m.source(a), Some((0, 0)));
+    }
+
+    #[test]
+    fn get_or_load_counts_a_name_and_falls_back_to_the_default() {
+        let known = [("Cobweb01", "web")];
+        let mut m = Manager::new(0);
+        let web = m.get_or_load("Cobweb01", ask_only(0, &known), || "grey");
+        assert_eq!(m.material(web), Some(&"web"));
+        assert_eq!(m.users(web), Some(1));
+        assert_eq!(m.source(web), Some((0, 0)));
+        // The second request finds it in the table without asking.
+        let again = m.get_or_load("cobweb01", |_, _| unreachable!(), || "grey");
+        assert_eq!((again, m.users(web)), (web, Some(2)));
+        // An unknown name gives the default.
+        let unknown = m.get_or_load("nothing", ask_only(0, &known), || "grey");
+        assert_eq!(m.material(unknown), Some(&"grey"));
+        assert_eq!(m.default_slot(), Some(unknown));
+        assert_eq!(m.users(unknown), Some(0x4000_0000));
+        // A provider whose data cannot be read gives the default as well.
+        let broken = m.get_or_load("broken", |_, _| Lookup::NoData, || unreachable!());
+        assert_eq!(broken, unknown);
+        assert_eq!(m.users(unknown), Some(0x4000_0001));
+    }
+
+    #[test]
+    fn the_last_provider_is_asked_first() {
+        let own = [("Wall", "own wall")];
+        let plugin = [("Wall", "plug-in wall")];
+        let mut m = Manager::new(1);
+        let slot = m.get_or_load(
+            "Wall",
+            |p, name| match p {
+                0 => ask_only(0, &own)(0, name),
+                _ => ask_only(1, &plugin)(1, name),
+            },
+            || "grey",
+        );
+        assert_eq!(m.material(slot), Some(&"plug-in wall"));
+        assert_eq!(m.source(slot), Some((1, 0)));
+    }
+
+    #[test]
+    fn slots_are_reused_from_the_search_hint() {
+        let mut m = Manager::new(0);
+        let a = m.add("a", 0, 0, "a");
+        let b = m.add("b", 0, 1, "b");
+        let c = m.add("c", 0, 2, "c");
+        assert_eq!((a, b, c), (0, 1, 2));
+        assert_eq!(m.highest_slot(), Some(2));
+        for slot in [a, b, c] {
+            m.table[slot].as_mut().unwrap().users = 1;
+        }
+        assert_eq!(
+            m.release(b, |_| false),
+            Ok(Released::Freed { unload: false })
+        );
+        assert_eq!(m.material(b), None);
+        // The hint went back to the freed slot, which the next add takes.
+        assert_eq!(m.add("d", 0, 3, "d"), 1);
+        // The hint now sits behind it, and the table has not grown.
+        assert_eq!(m.add("e", 0, 4, "e"), 3);
+        assert_eq!(m.highest_slot(), Some(3));
+        // Freed slots stay in the table when the highest is released.
+        assert_eq!(
+            m.release(c, |_| false),
+            Ok(Released::Freed { unload: false })
+        );
+        assert_eq!(m.highest_slot(), Some(3));
+    }
+
+    #[test]
+    fn releasing_counts_down_then_frees_and_a_further_release_is_an_error() {
+        let known = [("Cobweb01", "web")];
+        let mut m = Manager::new(0);
+        let web = m.get_or_load("Cobweb01", ask_only(0, &known), || "grey");
+        m.get_or_load("Cobweb01", |_, _| unreachable!(), || "grey");
+        assert_eq!(m.release(web, |_| true), Ok(Released::Counted(1)));
+        // Loaded from the own provider, so it is unloaded there.
+        assert_eq!(
+            m.release(web, |n| n == "Cobweb01"),
+            Ok(Released::Freed { unload: true })
+        );
+        assert_eq!(m.material(web), None);
+        assert!(m.loaded().is_empty());
+        assert_eq!(m.pending_free(), 1);
+        assert_eq!(m.take_pending_free(), vec!["web"]);
+        // The slot is empty: nothing to release.
+        assert_eq!(m.release(web, |_| false), Err(NegativeCount));
+    }
+
+    #[test]
+    fn a_count_below_zero_is_an_error_and_stays_there() {
+        let mut m = Manager::new(0);
+        let slot = m.add("x", 3, 0, "x");
+        assert_eq!(m.users(slot), Some(0));
+        assert_eq!(m.release(slot, |_| false), Err(NegativeCount));
+        assert_eq!(m.users(slot), Some(-1));
+    }
+
+    #[test]
+    fn freeing_a_loaded_material_moves_the_last_one_into_its_place() {
+        let mut m = Manager::new(0);
+        for (i, name) in ["a", "b", "c"].into_iter().enumerate() {
+            let slot = m.add(name, 1, i, name);
+            m.table[slot].as_mut().unwrap().users = 1;
+        }
+        assert_eq!(m.loaded(), &[0, 1, 2]);
+        m.release(0, |_| false).unwrap();
+        assert_eq!(m.loaded(), &[2, 1]);
+    }
+
+    #[test]
+    fn freeing_the_default_forgets_its_slot() {
+        let mut m = Manager::new(0);
+        let slot = m.default_material(|| "grey");
+        // Run its count down to the last user.
+        m.table[slot].as_mut().unwrap().users = 1;
+        assert_eq!(
+            m.release(slot, |_| false),
+            Ok(Released::Freed { unload: false })
+        );
+        assert_eq!(m.default_slot(), None);
+        // The next request builds a new one in the freed slot.
+        assert_eq!(m.default_material(|| "grey again"), slot);
+        assert_eq!(m.material(slot), Some(&"grey again"));
     }
 }
