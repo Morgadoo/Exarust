@@ -2497,76 +2497,72 @@ pub fn change_sex(word: i32, radio: i32) -> SexChange {
     }
 }
 
-/// A starting kit table.
+/// A starting kit table. The original keeps seven: five offered only as
+/// apparel, one only as weapons and one offered as apparel in versus and
+/// as weapons in mode 2's alternative setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KitTable {
-    Story,
-    StoryUnknown,
-    StoryIntro,
-    Versus,
+    /// The apparel most modes offer.
+    Default,
+    /// Mode 2's apparel when its alternative setup flag is set.
+    Intro,
+    /// The arena recruit's apparel, also the kit the arena filter keeps
+    /// hand items from.
     ArenaRecruit,
+    /// The arena career character's apparel.
     ArenaContinue,
+    /// The unknown story background's apparel.
+    StoryUnknown,
+    /// Versus apparel, and mode 2's weapons with its alternative setup.
+    Versus,
+    /// The weapons every other mode but story offers.
+    Weapons,
 }
 
 impl KitTable {
     /// The entries the table holds.
-    pub fn apparel_len(self) -> usize {
+    pub fn entries(self) -> usize {
         match self {
-            Self::Story => 6,
-            Self::StoryUnknown => 5,
-            Self::StoryIntro | Self::Versus | Self::ArenaRecruit => 10,
+            Self::Default | Self::Weapons => 6,
+            Self::Intro | Self::ArenaRecruit => 10,
             Self::ArenaContinue => 15,
-        }
-    }
-
-    /// The weapon entries of the table.
-    pub fn weapons_len(self) -> usize {
-        match self {
+            Self::StoryUnknown => 5,
             Self::Versus => 7,
-            _ => 6,
         }
     }
 }
 
 /// The apparel kit table a mode offers, or none.
+///
+/// The arena offers the recruit's or the career's table; mode 2 its own or
+/// its alternative one (`intro`); story only the unknown background's
+/// (a named background's panel is built and left unfilled); versus its
+/// own; every other mode the default table.
 pub fn apparel_kit_table(
     game_mode: i32,
     screen_mode: i32,
     background: i32,
     intro: bool,
 ) -> Option<KitTable> {
-    if game_mode == 8 {
-        return Some(if screen_mode == 10 {
-            KitTable::ArenaRecruit
-        } else {
-            KitTable::ArenaContinue
-        });
+    match game_mode {
+        8 if screen_mode == 10 => Some(KitTable::ArenaRecruit),
+        8 => Some(KitTable::ArenaContinue),
+        2 if intro => Some(KitTable::Intro),
+        4 => (background == 0).then_some(KitTable::StoryUnknown),
+        0x1010 => Some(KitTable::Versus),
+        _ => Some(KitTable::Default),
     }
-    if game_mode == 2 {
-        return Some(if intro {
-            KitTable::StoryIntro
-        } else {
-            KitTable::Story
-        });
-    }
-    if game_mode == 4 {
-        return (background == 0).then_some(KitTable::StoryUnknown);
-    }
-    if game_mode == 0x1010 {
-        return Some(KitTable::Versus);
-    }
-    Some(KitTable::Story)
 }
 
-/// The weapon kit table a mode offers, or none.
+/// The weapon kit table a mode offers, or none: story offers no weapons
+/// (its panel is built empty), mode 2's alternative setup offers the
+/// versus table, every other mode the weapon table.
 pub fn weapon_kit_table(game_mode: i32, intro: bool) -> Option<KitTable> {
-    if game_mode == 4 {
-        return None;
+    match game_mode {
+        4 => None,
+        2 if intro => Some(KitTable::Versus),
+        _ => Some(KitTable::Weapons),
     }
-    if game_mode == 2 && intro {
-        return Some(KitTable::Versus);
-    }
-    Some(KitTable::Story)
 }
 
 /// One starting kit entry: an item and the appearance it is given.
@@ -2634,7 +2630,8 @@ pub fn missing_apparel(
 
 /// The kit entries missing from the first two hand slots.
 ///
-/// Weapons match by database base id, not by colour.
+/// Weapons match by database base id, not by colour. An empty hand is
+/// looked up like any other item, so `base_of` must answer for id 0.
 pub fn missing_weapons(
     hands: &[GearSlot; 4],
     table: &[KitItem],
@@ -2645,7 +2642,7 @@ pub fn missing_weapons(
         .filter(|spec| {
             !hands[..2]
                 .iter()
-                .any(|slot| slot.item != 0 && base_of(slot.item) == spec.item)
+                .any(|slot| base_of(slot.item) == spec.item)
         })
         .copied()
         .collect()
@@ -2679,10 +2676,12 @@ impl From<&KitItem> for KitAppearance {
 
 /// Resolves a kit entry by the database flags it meets.
 ///
-/// A plain database item is added as itself. An instance item keeps its id
-/// and takes the entry's variant, dyes and colours. An item with a colour
-/// block is an alias: when the entry names another item the target is added
-/// with the entry's appearance, otherwise the item is added unchanged.
+/// A plain database item is added as itself. Otherwise the database makes
+/// a new item for the entry (`created`): an item with a colour block is an
+/// alias whose target is made, any other a fresh instance of the item, and
+/// either takes the entry's variant, dyes and colours. When an alias makes
+/// nothing the item is added unchanged; when an instance cannot be made
+/// nothing is added (item 0).
 ///
 /// The database's sub-record flags are reduced to these cases here; their
 /// exact layout belongs to the object database.
@@ -2690,7 +2689,7 @@ pub fn resolve_kit_item(
     spec: &KitItem,
     database_flag: bool,
     has_colour_block: bool,
-    alias: Option<u32>,
+    created: Option<u32>,
 ) -> ResolvedKitItem {
     if !database_flag {
         return ResolvedKitItem {
@@ -2698,21 +2697,19 @@ pub fn resolve_kit_item(
             appearance: None,
         };
     }
-    if has_colour_block {
-        return match alias {
-            Some(target) => ResolvedKitItem {
-                item: target,
-                appearance: Some(KitAppearance::from(spec)),
-            },
-            None => ResolvedKitItem {
-                item: spec.item,
-                appearance: None,
-            },
-        };
-    }
-    ResolvedKitItem {
-        item: spec.item,
-        appearance: Some(KitAppearance::from(spec)),
+    match (created, has_colour_block) {
+        (Some(item), _) => ResolvedKitItem {
+            item,
+            appearance: Some(KitAppearance::from(spec)),
+        },
+        (None, true) => ResolvedKitItem {
+            item: spec.item,
+            appearance: None,
+        },
+        (None, false) => ResolvedKitItem {
+            item: 0,
+            appearance: None,
+        },
     }
 }
 
@@ -4611,8 +4608,8 @@ mod tests {
             apparel_kit_table(8, 12, 0, false),
             Some(KitTable::ArenaContinue)
         );
-        assert_eq!(apparel_kit_table(2, 0, 0, true), Some(KitTable::StoryIntro));
-        assert_eq!(apparel_kit_table(2, 0, 0, false), Some(KitTable::Story));
+        assert_eq!(apparel_kit_table(2, 0, 0, true), Some(KitTable::Intro));
+        assert_eq!(apparel_kit_table(2, 0, 0, false), Some(KitTable::Default));
         assert_eq!(
             apparel_kit_table(4, 0, 0, false),
             Some(KitTable::StoryUnknown)
@@ -4622,19 +4619,22 @@ mod tests {
             apparel_kit_table(0x1010, 0, 0, false),
             Some(KitTable::Versus)
         );
-        assert_eq!(apparel_kit_table(0, 0, 0, false), Some(KitTable::Story));
+        assert_eq!(apparel_kit_table(0, 0, 0, false), Some(KitTable::Default));
 
-        assert_eq!(KitTable::ArenaRecruit.apparel_len(), 10);
-        assert_eq!(KitTable::ArenaContinue.apparel_len(), 15);
-        assert_eq!(KitTable::StoryUnknown.apparel_len(), 5);
-        assert_eq!(KitTable::Story.apparel_len(), 6);
-        assert_eq!(KitTable::StoryIntro.weapons_len(), 6);
-        assert_eq!(KitTable::Versus.weapons_len(), 7);
+        assert_eq!(KitTable::ArenaRecruit.entries(), 10);
+        assert_eq!(KitTable::ArenaContinue.entries(), 15);
+        assert_eq!(KitTable::StoryUnknown.entries(), 5);
+        assert_eq!(KitTable::Default.entries(), 6);
+        assert_eq!(KitTable::Intro.entries(), 10);
+        // The versus apparel and mode 2's alternative weapons share one
+        // seven-entry table.
+        assert_eq!(KitTable::Versus.entries(), 7);
+        assert_eq!(KitTable::Weapons.entries(), 6);
 
         assert_eq!(weapon_kit_table(4, false), None);
         assert_eq!(weapon_kit_table(2, true), Some(KitTable::Versus));
-        assert_eq!(weapon_kit_table(2, false), Some(KitTable::Story));
-        assert_eq!(weapon_kit_table(8, true), Some(KitTable::Story));
+        assert_eq!(weapon_kit_table(2, false), Some(KitTable::Weapons));
+        assert_eq!(weapon_kit_table(8, true), Some(KitTable::Weapons));
     }
 
     #[test]
@@ -4715,8 +4715,10 @@ mod tests {
             }
         );
 
-        let instance = resolve_kit_item(&spec, true, false, None);
-        assert_eq!(instance.item, 12);
+        // An instance is a new item the database made for the entry.
+        assert_eq!(resolve_kit_item(&spec, true, false, None).item, 0);
+        let instance = resolve_kit_item(&spec, true, false, Some(30));
+        assert_eq!(instance.item, 30);
         assert_eq!(
             instance.appearance,
             Some(KitAppearance {
