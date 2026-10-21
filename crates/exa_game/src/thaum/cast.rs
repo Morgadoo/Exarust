@@ -990,12 +990,14 @@ fn tick_casters(
         Option<&Locomotion>,
         Option<&Locomotor>,
         Option<&Ragdoll>,
+        Option<&mut Animator>,
     )>,
     walls: Query<&LiveBarricade>,
     ticks: Option<Res<BodyTicks>>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (mut caster, condition, swing, locomotion, locomotor, ragdoll) in &mut casters {
+    for (mut caster, condition, swing, locomotion, locomotor, ragdoll, mut animator) in &mut casters
+    {
         let caster = &mut *caster;
         refresh_body(
             &mut caster.body,
@@ -1103,6 +1105,15 @@ fn tick_casters(
                 entry.state = state;
             }
             if result & 2 != 0 {
+                // The cast motion ends with the power: its id and hook go.
+                if body.casting == entry.cast_id {
+                    body.casting = 0;
+                    body.cast_hook = None;
+                    body.condition &= !casting::CASTING;
+                    if let Some(animator) = animator.as_deref_mut() {
+                        play_follow(animator);
+                    }
+                }
                 let entry = active.swap_remove(index);
                 if let Some(entity) = entry.entity
                     && !matches!(entry.class, ActiveClass::Remote(_))
@@ -1118,6 +1129,19 @@ fn tick_casters(
         }
         caster.sync_body();
     }
+}
+
+/// Return to the stance after a cast motion: the combat idle or the
+/// defence stance when one was playing, else Idle. The original's motion
+/// table's own follow-up is not in the packs; this is Exarust's, as its
+/// attacks return to the combat idle.
+fn play_follow(animator: &mut Animator) {
+    let follow = if matches!(animator.action.as_str(), "Cmbt - Idle" | "Defence stance") {
+        animator.action.clone()
+    } else {
+        "Idle".to_string()
+    };
+    animator.play_loop(&follow);
 }
 
 /// Play the cast motions the body recorded, by the motion id's action name.

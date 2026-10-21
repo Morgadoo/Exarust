@@ -110,6 +110,37 @@ fn constant_displacement_casts_and_hangs_wisps() {
     assert_eq!(count::<LiveWisps>(&mut app), 1);
 }
 
+/// A power told to end releases, clears the cast motion and can start
+/// again; the shell's second press ends it rather than releasing.
+#[test]
+fn an_ended_power_clears_its_cast_and_restarts() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    assert_eq!(
+        app.world().get::<PowerCaster>(caster).unwrap().last_result,
+        1
+    );
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(cast_body(&app, caster).casting, SHELL);
+    // The second press finds the shell running and tells it to end.
+    cast(&mut app, caster);
+    let told = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(told.last_result, code::ENDED);
+    assert_eq!(told.active[0].state, ENDING);
+    app.world_mut().run_schedule(FixedUpdate);
+    let ended = app.world().get::<PowerCaster>(caster).unwrap();
+    assert!(ended.active.is_empty());
+    assert_eq!(ended.body.casting, 0);
+    assert!((ended.body.reserved - 0.0).abs() < 1e-6);
+    // A new press starts it again instead of releasing a stale cast.
+    cast(&mut app, caster);
+    let again = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(again.last_result, code::STARTED);
+    assert_eq!(again.active.len(), 1);
+}
+
 /// A cast short of focus, and one with no persistent slot, create nothing.
 #[test]
 fn a_refused_cast_creates_nothing() {
