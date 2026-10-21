@@ -124,23 +124,10 @@ locomotion routine while it moves (`body::locomotion::locomote`: the run
 blend and its bleeds, the gait columns from the race's per-tick table
 `GaitTable`, the walk's start key or resume, the boost ramp, the drive,
 the speed along the heading and the locomotion clock's step) or the fall
-of its run blend while it stands (`stand`; `src/body_gait.rs`). The
-routine also keeps the original's exertion value and the head tilt the
-torso twist reads from it, the held items' grip mode, the dead jump
-branch's clock decay, and the start's notice: another clip playing clears
-the held items' motion flag. A body with muscles walks by its carry: the
-movement stage adds the drive × S² × the gait's push column × the feet's
-lag to `Drive::carry` (`Ragdoll::lift`; the lag cuts a foot that trails its
-animated spot by (throw/60·scale)²), and its capsule only follows its
-frame (`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`). The
-move branch sets the held items' static-only flag (their level queries
-never sweep) and leaving the walk plants the rearmost foot at its stance
-spot under the frame (`Ragdoll::plant_trailing_foot`). A stepping foot that
-is anchored blends its leg limit to 0.2, and a powered golem suit halves
-the standing thigh factor and quarters the limit's target
-(`src/body_muscle.rs`). A behaviour's look target (`Locomotion::look_target`
-and `look_until`) turns the head while its deadline is in the past. The
-pose is put on the original's character
+of its run blend while it stands (`stand`; `src/body_gait.rs`); its
+capsule carries the decision out until the body walks by its carry
+(`capsule_velocity`, `CapsuleGaits`; `src/body_locomotion.rs`), and the
+drive is kept, not yet added to the carry. The pose is put on the original's character
 frame, whose origin follows the pelvis by its rules: on the pelvis while
 moving, frozen while standing steady, behind dead-bands of 5 and 10 cm
 otherwise (`src/body_frame.rs`, `body::Drive::anchor`). The controller
@@ -542,18 +529,3 @@ sets the instability counter (the barricade sets it to 100).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).
 - Decision recorded in docs/plan: rapier3d for level colliders and the character controller; the
   body solver and its level contacts are in-house, as the original's (`docs/formats/RSQ.md`).
-
-The body kernel also keeps the original's class and state words
-(`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the
-class word to every part and `word | 0x30` to each first child,
-`raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
-children, and `raise_state_flag` walks the whole tree. `push_at` applies a
-push at a world point with the original's weighting (`push_fraction`, the
-`4·dot` test against the push's squared length). The stagger helper
-(`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
-countdown; `step_phase` advances the footstep phase from the pelvis travel;
-`femur_posture_turn` is the thigh posture's alternating 5° (splayed) or
-(1 − height)·−1.5° (combat) turn, applied by the sampler to the clip's
-thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init's unused
-0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
-original's resets.

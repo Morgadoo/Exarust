@@ -270,24 +270,19 @@ saying so (posture; a body that dies there skips the later stages); the
 original's movement decision from its character's locomotion request
 (walk or stop, brake, the gates, the turn by the table of rates, the
 alignment), then the original's locomotion routine (run blend, gait
-columns, the walk's start key or resume, drive, clock step, exertion and
-head tilt) or the standing run blend's fall, and the torso twist toward
-the look. A body with muscles walks by its carry (the drive joins the
-carry with S², the push column and the feet's lag; the capsule only
-follows its frame), a body without them is carried by its capsule at
-Exarust's speeds; the stage measures its walk's lowest ankle while it
-moves and its balance against the level, and plants the rearmost foot when
-it leaves the walk (movement); its clip (the capture of a start
+columns, the walk's start key or resume, drive, clock step) or the
+standing run blend's fall, and the torso twist toward the look (its
+capsule carries the decision out at Exarust's speeds), its walk's
+lowest ankle while it moves and its balance against the level
+(movement); its clip (the capture of a start
 from the body's physical turns, the original's clock rate for what the
 body does (the base in its stance whatever its balance, twice it
 kicking), the pose it holds while dazed, the sample taken in the
 original's per-part pipeline (the Run clip overlaid on the Walk by
 0.7 × the run blend, or by the blend with the sprint latch), the spine
-turned by the torso twist (the lumbar half) and lowered by the run lean
-the exertion makes, the head turned toward the look (a behaviour's look
-target while its deadline is past, else the cursor) by its ramping weight
-(its anchors then on the physical thorax), with
-the femur posture (the thighs' combat turn) and identity slots for the IK chain and the foot pitch; the
+turned by the torso twist (the lumbar half), the head turned toward the
+look by its ramping weight (its anchors then on the physical thorax), with
+identity slots for the femur posture, the IK chain and the foot pitch; the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character
 frame, and its lift, its controller told to follow the frame (carry); a body asked to go limp keeps its motion unless given a
