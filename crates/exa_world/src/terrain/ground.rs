@@ -21,9 +21,9 @@ pub const TILE_BLOCKS: usize = 8;
 /// Below this height (metres) the original reports no ground: the height
 /// slot answers −1000 m for a hole and checks its result against −100 m.
 pub const NO_GROUND: f32 = -100.0;
-/// The original's tile-coordinate step: 1/48 m, from its 1/4800 per
-/// centimetre (a 48 m tile of 20 cm cells).
-const INV_TILE: f32 = 0.020_833_334;
+/// The original's tile-coordinate step, 1/4800 of a 48 m tile, in
+/// centimetres (its literal single-precision constant).
+const INV_TILE_CM: f32 = 0.000_208_333_34;
 
 /// A terrain tile's ground as the original samples it: the vertex heights
 /// (displaced by the height pass, as the game moves its vertices), the
@@ -194,8 +194,10 @@ impl TerrainGround {
         if self.spacing <= 0.0 || self.width == 0 || self.height == 0 {
             return None;
         }
-        let fx = self.width as f32 * 0.5 + x * INV_TILE;
-        let fz = self.height as f32 * 0.5 + z * INV_TILE;
+        // The original's arithmetic is in centimetres; keep its multiply
+        // and its constant rather than dividing by the tile side.
+        let fx = self.width as f32 * 0.5 + (x * 100.0) * INV_TILE_CM;
+        let fz = self.height as f32 * 0.5 + (z * 100.0) * INV_TILE_CM;
         let (tx, tz) = (fx.floor(), fz.floor());
         // The original rejects indices outside 0 .. width × height.
         if tx < 0.0 || tz < 0.0 {
