@@ -71,7 +71,7 @@ pub const UNARMED_REACH: f32 = 0.5;
 pub const READINESS_RATE: f32 = 0.004;
 /// The posture switch needs a balance and a muscle tone of at least these.
 const POSTURE_BALANCE: f32 = 0.8;
-const POSTURE_TONE: f32 = 0.85;
+pub(crate) const POSTURE_TONE: f32 = 0.85;
 /// The helper's start of a new stance: 30 frames of blend, eased smoothly.
 const HELPER_BLEND: u32 = 30;
 /// The posture switch's start: 30 frames, linear.

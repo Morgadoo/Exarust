@@ -38,7 +38,6 @@ pub mod grip;
 pub mod parry;
 pub mod regen;
 pub mod sounds;
-pub mod stagger;
 pub mod stance;
 pub mod strike_body;
 pub mod swing;
@@ -92,17 +91,11 @@ impl Plugin for CombatPlugin {
             .add_systems(
                 CharacterTick,
                 (
-                    // The blow stagger's decay and countdown, before the
-                    // swing routine reads its speed.
-                    stagger::advance_staggers
-                        .in_set(CharacterStage::Attack)
-                        .before(swing::run_swings)
-                        .run_if(condition::ticked_lives),
                     swing::run_swings
                         .in_set(CharacterStage::Attack)
                         .run_if(condition::ticked_lives)
                         .before(regen::keep_health),
-                    // The parry trigger, as the original's body tick runs it
+                    // The parry check, as the original's body tick runs it
                     // after the swing routine.
                     parry::run_parries
                         .in_set(CharacterStage::Attack)
@@ -621,8 +614,12 @@ fn react_to_hits(
                                 sag: Some(damage::parried(outcome.hit_impact)),
                             });
                             f.parry.end();
+                            f.guard = damage::Guard::Open;
                         }
-                        parry::Clash::Countering => f.parry.end(),
+                        parry::Clash::Countering => {
+                            f.parry.end();
+                            f.guard = damage::Guard::Open;
+                        }
                         parry::Clash::Plain => {}
                     }
                     break 'struck Some(StrikerReaction::Clashed {
@@ -884,11 +881,7 @@ fn react_to_hits(
                 slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
                 now_ms: now as i32,
             };
-            if let Some(stagger) =
-                strike_back(&mut state, &striker, hit, reaction, &mut roll, true, now)
-            {
-                commands.entity(hit.attacker).insert(stagger);
-            }
+            strike_back(&mut state, &striker, hit, reaction, &mut roll);
         }
     }
     for (e, _, _, _, anim, attacking, ..) in &fighters {
@@ -909,26 +902,11 @@ fn strike_back(
     hit: &Hit,
     reaction: StrikerReaction,
     roll: &mut Roll,
-    can_parry: bool,
-    now: u64,
-) -> Option<exa_physics::body::stagger::Stagger> {
+) {
     let small = f64::from(striker.size) < swing::LARGE_STRIKER;
-    let before = state.flags;
-    let mut stagger = None;
     match reaction {
         StrikerReaction::Wounded(blow) => {
-            if let Some(gain) = state.after_wound(&blow, hit.weapon.recoil, striker) {
-                stagger = stagger::wound_stagger(
-                    gain,
-                    &blow,
-                    &hit.weapon,
-                    striker.class_word as i32,
-                    before,
-                    striker.clock,
-                    can_parry,
-                    now,
-                );
-            }
+            state.after_wound(&blow, hit.weapon.recoil, striker);
             debug!(
                 "{:?} wounded: strength {:.3}, stall {:.3}, flags {:#x}, stance at {} ms",
                 hit.attacker, state.strength, state.stall, state.flags, state.end_ms
@@ -947,28 +925,12 @@ fn strike_back(
         } => {
             if recoils && (turned || small) {
                 state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-                stagger = Some(stagger::recoil_stagger(
-                    blow.speed * hit.weapon.recoil,
-                    striker.class_word as i32,
-                    before,
-                    striker.clock,
-                    can_parry,
-                    now,
-                ));
             }
             state.flags |= swing::flags::WEAPON_RUNG;
         }
         StrikerReaction::Blocked(blow) => {
             if small {
                 state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-                stagger = Some(stagger::recoil_stagger(
-                    blow.speed * hit.weapon.recoil,
-                    striker.class_word as i32,
-                    before,
-                    striker.clock,
-                    can_parry,
-                    now,
-                ));
             }
             state.flags |= swing::flags::WEAPON_RUNG;
             if state.flags & swing::flags::SHIELD_RUNG == 0 {
@@ -978,17 +940,8 @@ fn strike_back(
         }
         StrikerReaction::Turned(blow) => {
             state.recoil_from(blow.speed, hit.weapon.recoil, striker);
-            stagger = Some(stagger::recoil_stagger(
-                blow.speed * hit.weapon.recoil,
-                striker.class_word as i32,
-                before,
-                striker.clock,
-                can_parry,
-                now,
-            ));
         }
     }
-    stagger
 }
 
 /// The low-health check of a fighter left low but alive: a second wind
@@ -1221,108 +1174,6 @@ mod tests {
         let state = app.world().get::<SwingState>(attacker).unwrap();
         assert!(state.has(swing::flags::CLEAVING) && !state.has(swing::flags::STALLING));
         assert_eq!(state.strength, 1.0);
-    }
-
-    /// A body-zone wound whose follow-through gain is kept starts the blow
-    /// stagger on the striker with the helper's strength, decay and
-    /// countdown; a tip-zone cleave keeps no gain and starts none.
-    #[test]
-    fn a_followed_wound_starts_the_stagger() {
-        let body = Strike {
-            along: 40.0,
-            ..cut()
-        };
-        let mut app = reactions();
-        let (attacker, blade) = swordsman(&mut app);
-        let victim = app
-            .world_mut()
-            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
-            .id();
-        swung(&mut app, attacker, blade, victim, body);
-        let blow = damage::resolve(
-            &damage::sword_a(),
-            &body,
-            Some((&PartArmour::default(), Roll::default().next())),
-            9,
-            &damage::Victim::new(0.25, 0.0),
-        )
-        .unwrap();
-        assert!(blow.central && blow.hit_impact < 2.0, "{blow:?}");
-        let gain = 1.0 - blow.hit_impact * 0.5;
-        let expected = stagger::wound_stagger(
-            gain,
-            &blow,
-            &damage::sword_a(),
-            0x10,
-            swing::flags::WINDOW_OPENED,
-            0.8,
-            true,
-            0,
-        )
-        .unwrap();
-        let found = app
-            .world()
-            .get::<exa_physics::body::stagger::Stagger>(attacker)
-            .unwrap();
-        assert_eq!(*found, expected);
-        assert_eq!(
-            (found.speed.to_bits(), found.decay.to_bits()),
-            (expected.speed.to_bits(), expected.decay.to_bits())
-        );
-        assert!(found.until_ms > 0);
-
-        // The tip zone cleaves on and keeps no gain.
-        let mut app = reactions();
-        let (attacker, blade) = swordsman(&mut app);
-        let victim = app
-            .world_mut()
-            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
-            .id();
-        swung(&mut app, attacker, blade, victim, cut());
-        assert!(
-            app.world()
-                .get::<exa_physics::body::stagger::Stagger>(attacker)
-                .is_none()
-        );
-    }
-
-    /// A parried blow starts the smaller body stagger on the striker: speed
-    /// and decay 0.5, flags 0x26, and the original's countdown
-    /// round(speed·W17·0.1·400) + 200 ms on.
-    #[test]
-    fn a_parried_blow_staggers_the_striker() {
-        let mut app = reactions();
-        let (attacker, blade) = swordsman(&mut app);
-        let parrier = Fighter {
-            guard: damage::Guard::Parry,
-            parry: parry::ParryState {
-                active: true,
-                ..parry::ParryState::default()
-            },
-            ..Fighter::default()
-        };
-        let victim = app
-            .world_mut()
-            .spawn((parrier, Animator::new("Default", "Idle")))
-            .id();
-        swung(&mut app, attacker, blade, victim, cut());
-        let stagger = app
-            .world()
-            .get::<exa_physics::body::stagger::Stagger>(attacker)
-            .unwrap();
-        assert_eq!((stagger.speed, stagger.decay), (0.5, 0.5));
-        let blow = damage::resolve(
-            &damage::sword_a(),
-            &cut(),
-            Some((&PartArmour::default(), Roll::default().next())),
-            9,
-            &damage::Victim::new(0.25, 0.0),
-        )
-        .unwrap();
-        let drive = blow.speed * damage::sword_a().recoil;
-        let ticks = (((f64::from(drive) * 0.1) as f32) * 400.0).round_ties_even() as u64;
-        assert_eq!(stagger.until_ms, ticks + 200);
-        assert_eq!(stagger.flags, 0x26);
     }
 
     /// A body that turns blows takes nothing: no push or daze, its health
@@ -1783,8 +1634,6 @@ mod tests {
             &hit,
             StrikerReaction::Blocked(blow),
             &mut roll,
-            true,
-            0,
         );
         let mut once = Roll::default();
         let _ = once.below(PART_SOUND_SPREAD_MS);
@@ -1795,8 +1644,6 @@ mod tests {
             &hit,
             StrikerReaction::Blocked(blow),
             &mut roll,
-            true,
-            0,
         );
         assert_eq!(roll.0, once.0);
         let mut wounded = SwingState {
@@ -1810,8 +1657,6 @@ mod tests {
             &hit,
             StrikerReaction::Blocked(blow),
             &mut roll,
-            true,
-            0,
         );
         assert_eq!(roll.0, Roll::default().0);
     }
