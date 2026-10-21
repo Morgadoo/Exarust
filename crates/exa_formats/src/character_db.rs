@@ -327,7 +327,7 @@ impl CharacterDb {
             });
         }
         let table_bytes = crate::read_u32(bytes, 4)? as usize;
-        if table_bytes < ENTRY || table_bytes % ENTRY != 0 {
+        if table_bytes < ENTRY || !table_bytes.is_multiple_of(ENTRY) {
             return Err(Error::Malformed(format!(
                 "character database table of {table_bytes} bytes"
             )));
