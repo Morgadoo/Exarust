@@ -2034,6 +2034,56 @@ pub fn degenerate_control(points: [[f32; 3]; 3], base: [f32; 3], epsilon: f32) -
     })
 }
 
+/// The nearest control point for every owner point, or `None` where the
+/// nearest is farther than `limit` (the squared distance compared with
+/// it). The per-vertex auxiliary records of the old morph layout are copied
+/// from the nearest control point's record this way; the records' contents
+/// are not interpreted.
+pub fn nearest_controls(
+    points: &[[f32; 3]],
+    controls: &[[f32; 3]],
+    limit: f32,
+) -> Vec<Option<usize>> {
+    points
+        .iter()
+        .map(|p| {
+            let mut best = None;
+            let mut best_distance = limit;
+            for (i, c) in controls.iter().enumerate() {
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let distance = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                if distance < best_distance {
+                    best_distance = distance;
+                    best = Some(i);
+                }
+            }
+            best
+        })
+        .collect()
+}
+
+/// One numbered target node's part of a morph set: the target's vertex
+/// positions become deltas from the base mesh's positions, and its origin
+/// (in the base's frame) is the part's pivot. A target whose vertex count
+/// differs from the base's is refused.
+pub fn numbered_target_part(
+    base: &[[f32; 3]],
+    target: &[[f32; 3]],
+    pivot: [f32; 3],
+) -> Option<MorphPartData> {
+    if base.len() != target.len() {
+        return None;
+    }
+    Some(MorphPartData {
+        pivot,
+        deltas: base
+            .iter()
+            .zip(target)
+            .map(|(b, t)| [t[0] - b[0], t[1] - b[1], t[2] - b[2]])
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod registration_tests {
     use super::*;
@@ -2064,6 +2114,35 @@ mod registration_tests {
         let mut close = p;
         close[1] += 5e-5;
         assert!(degenerate_control([p, close, p], p, 1e-8));
+    }
+
+    /// The old layout's per-vertex records: every point takes the nearest
+    /// control within the limit, and none past it.
+    #[test]
+    fn the_nearest_controls_are_copied_within_the_limit() {
+        let controls = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        let points = [[0.1, 0.0, 0.0], [0.9, 0.0, 0.0], [3.0, 0.0, 0.0]];
+        assert_eq!(
+            nearest_controls(&points, &controls, 5.0),
+            [Some(0), Some(1), Some(1)]
+        );
+        assert_eq!(
+            nearest_controls(&points, &controls, 1.0),
+            [Some(0), Some(1), None]
+        );
+        assert!(nearest_controls(&[], &controls, 5.0).is_empty());
+    }
+
+    /// A numbered target becomes a part: its positions less the base's,
+    /// with the node origin as the pivot; a mismatched count is refused.
+    #[test]
+    fn a_numbered_target_becomes_a_morph_part() {
+        let base = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [[0.0, 1.0, 0.0], [1.0, 2.0, 0.0]];
+        let part = numbered_target_part(&base, &target, [0.0, 0.0, 3.0]).unwrap();
+        assert_eq!(part.pivot, [0.0, 0.0, 3.0]);
+        assert_eq!(part.deltas, [[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]]);
+        assert_eq!(numbered_target_part(&base, &target[..1], [0.0; 3]), None);
     }
 
     #[test]
