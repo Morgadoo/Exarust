@@ -857,12 +857,10 @@ mod tests {
     #[test]
     fn fifteen_techniques_lock_the_empty_slots_from_the_level() {
         let mut t = TechniqueTraining::default();
-        for record in &mut t.skills {
-            *record = SkillRecord {
-                points: 10_000,
-                techniques: [1, 2, 3, 0, 0, 0],
-            };
-        }
+        t.skills.fill(SkillRecord {
+            points: 10_000,
+            techniques: [1, 2, 3, 0, 0, 0],
+        });
         let tree = refresh_tree(&t, false);
         assert_eq!(tree.total, 18);
         let skill = &tree.skills[0];

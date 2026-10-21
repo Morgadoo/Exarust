@@ -492,11 +492,8 @@ pub fn wobble_step(slot: &mut DestinationSlot, flash: f32, mut random: impl FnMu
         }
         let r = random();
         slot.wobble[axis] += flash * 2.0 * slot.drift[axis] * r;
-        if slot.wobble[axis] > WOBBLE_LIMIT {
-            slot.wobble[axis] = WOBBLE_LIMIT;
-        } else if slot.wobble[axis] < -WOBBLE_LIMIT {
-            slot.wobble[axis] = -WOBBLE_LIMIT;
-        }
+        // A NaN passes both compares and stays, as `clamp` keeps it.
+        slot.wobble[axis] = slot.wobble[axis].clamp(-WOBBLE_LIMIT, WOBBLE_LIMIT);
     }
 }
 

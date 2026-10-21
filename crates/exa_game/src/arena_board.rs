@@ -117,6 +117,7 @@ mod tests {
             skills,
             skill_xp: [0; 6],
             techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
             health: 65_000,
             in_entry: false,
         }

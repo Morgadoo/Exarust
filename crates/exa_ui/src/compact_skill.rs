@@ -486,8 +486,10 @@ pub fn wheel(
     y: &mut i32,
     amount: [f32; 2],
 ) -> Option<u32> {
-    let vertical = !(f32::from_bits(amount[1].to_bits() & 0x7fff_ffff)
-        < f32::from_bits(amount[0].to_bits() & 0x7fff_ffff));
+    // An unordered compare: a NaN magnitude counts as vertical.
+    let vertical = f32::from_bits(amount[1].to_bits() & 0x7fff_ffff)
+        .partial_cmp(&f32::from_bits(amount[0].to_bits() & 0x7fff_ffff))
+        != Some(std::cmp::Ordering::Less);
     let mut line =
         (f64::from(unit) * (f64::from(metrics.margin) + NODE_Y_UNITS)).round_ties_even() as i32;
     let mut best: i32 = -100_000;
@@ -528,7 +530,7 @@ pub fn wheel(
     }
     let mut px = unit * 11 * column + unit * 2;
     if !vertical {
-        if !(amount[0] < 0.0) {
+        if amount[0].partial_cmp(&0.0) != Some(std::cmp::Ordering::Less) {
             if i64::from(column) < i64::from(slots) - 1 && *x > unit {
                 column += 1;
                 px += unit * 11;
