@@ -12,11 +12,11 @@ use crate::form::ClientRect;
 use crate::gui_font::{GuiFont, round_i32};
 use crate::text_edit::{self, EditAction, EditView};
 
-/// The style bits the table's constructor sets (the original's `0x88`): the
-/// table draws its own frame and takes the focus on a press.
+/// The style word the table's constructor gives its form (the meaning of
+/// the individual bits is not established).
 pub const STYLE: u32 = 0x88;
-/// The control flags the constructor adds (`0xc10`): visible, enabled and
-/// the table's own keyboard handling.
+/// The control flags the constructor adds to the form (the meaning of the
+/// individual bits is not established).
 pub const CONTROL_FLAGS: u32 = 0xc10;
 
 /// Column flags.
@@ -129,31 +129,27 @@ pub struct ChoiceList {
     pub selected: i32,
     /// The list's top-left corner, client coordinates.
     pub at: (i32, i32),
-    /// The list's width and total height.
+    /// The list's width.
     pub width: i32,
-    pub height: i32,
     pub open: bool,
 }
 
 impl ChoiceList {
-    /// The list a press opens for `column`: its entries and width from the
-    /// column, its top-left corner under the column's cell. The original
-    /// places it one row down from the cell's left edge, `row_height + unit`
-    /// tall.
+    /// The list a press opens for `column`: its entries from the column, at
+    /// `at` and `width` wide (the placement the press passes on; the list's
+    /// height is the list control's own business and is not modelled).
     pub fn for_column(table: &TableView, column: i32, at: (i32, i32), width: i32) -> Self {
         let entries = table
             .columns
             .get(column.max(0) as usize)
             .map(|c| c.choices.clone())
             .unwrap_or_default();
-        let height = entries.len() as i32 * table.row_height + table.unit - 1;
         Self {
             column,
             entries,
             selected: 0,
             at,
             width,
-            height,
             open: true,
         }
     }
@@ -232,12 +228,12 @@ impl TableView {
         }
     }
 
-    /// The table's default row and the centre of a rectangle: selects the
-    /// first row when none is selected and the table has rows, and returns
-    /// the selected row with the rectangle's midpoint (each side less the
-    /// other, halved toward zero).
-    pub fn centre_and_default(&mut self, rect: [i32; 4]) -> (i32, (i32, i32)) {
-        let centre = ((rect[2] - rect[0]) / 2, (rect[3] - rect[1]) / 2);
+    /// The table's default row and the centre of its client area: selects
+    /// the first row when none is selected and the table has rows, and
+    /// returns the selected row with half the client's width and height
+    /// (halved toward zero).
+    pub fn centre_and_default(&mut self) -> (i32, (i32, i32)) {
+        let centre = (self.client.width() / 2, self.client.height() / 2);
         if self.selected == 0 && self.row_count() > 0 {
             self.selected = 1;
         }
@@ -321,12 +317,19 @@ impl TableView {
         row
     }
 
-    /// The pointer moves over row `row` (from `row_at`): the result word the
-    /// original returns (3 for a row, 0 otherwise). A row also becomes the
-    /// table's press row, which the drag payload copies.
-    pub fn hover_row(&mut self, row: i32) -> u32 {
-        self.hover = row;
-        if row > 0 { 3 } else { 0 }
+    /// The pointer moves over row `row` (from `row_at`). A row becomes the
+    /// hovered row and the result is 3; no row (`row < 1`) leaves the
+    /// hovered row as it was and returns the form's own reply
+    /// (`form_reply`), with bits 3 added while a row is still hovered.
+    pub fn hover_row(&mut self, row: i32, form_reply: u32) -> u32 {
+        if row > 0 {
+            self.hover = row;
+            3
+        } else if self.hover > 0 {
+            form_reply | 3
+        } else {
+            form_reply
+        }
     }
 
     /// The column under `x` (client coordinates): the first whose right
@@ -414,6 +417,7 @@ impl TableView {
 
     /// The edit's caret under `x` (client coordinates): bytes from the
     /// column's left edge, before the first byte whose middle is past it.
+    /// Leaves the edit untouched.
     pub fn edit_caret_at(&self, x: i32, font: &GuiFont) -> i32 {
         let mut view = self.edit_view;
         let x = x - self.column_x(self.edit_column);
@@ -482,8 +486,8 @@ impl TableView {
                 return TableReply::Code(0x10);
             }
             if column == self.edit_column || flags & pointer::STRICT != pointer::STRICT {
-                self.edit_caret = self.edit_caret_at(x, font);
-                self.edit_anchor = self.edit_caret;
+                let width = self.column_width(self.edit_column);
+                self.move_edit_caret(x, font, width, true);
                 return TableReply::Code(5);
             }
             events.extend(self.commit_edit());
@@ -509,25 +513,39 @@ impl TableView {
         TableReply::Code(0x10)
     }
 
-    /// The pointer moves to `x` with a press held: an open edit moves its
-    /// caret there and scrolls its visible window (3); otherwise the form
-    /// handles it.
-    pub fn pointer_move(&mut self, x: i32, font: &GuiFont) -> TableReply {
-        if !self.editing {
-            return TableReply::Form;
-        }
-        let width = self
-            .columns
-            .get(self.edit_column.max(0) as usize)
-            .map_or(0, |c| c.width);
+    /// The width of `column` (0 for none).
+    fn column_width(&self, column: i32) -> i32 {
+        self.columns
+            .get(column.max(0) as usize)
+            .map_or(0, |c| c.width)
+    }
+
+    /// Moves the open edit's caret to `x` (client coordinates) and scrolls
+    /// the visible window for a field `width` wide. A press also collapses
+    /// the selection onto the caret (`collapse`); a drag leaves the anchor.
+    fn move_edit_caret(&mut self, x: i32, font: &GuiFont, width: i32, collapse: bool) {
         let mut view = self.edit_view;
         let x = x - self.column_x(self.edit_column);
-        view.caret = text_edit::caret_from_x(font, &self.edit, &mut view, x);
-        view.anchor = view.caret;
+        text_edit::caret_from_x(font, &self.edit, &mut view, x);
+        if collapse {
+            view.anchor = view.caret;
+        }
         text_edit::scroll_view(font, &self.edit, &mut view, width);
         self.edit_view = view;
         self.edit_caret = i32::from(view.caret);
         self.edit_anchor = i32::from(view.anchor);
+    }
+
+    /// The pointer moves to `x` with a press held: an open edit moves its
+    /// caret there, keeping the anchor so the drag selects, and scrolls its
+    /// visible window (3); otherwise the form handles it. The original
+    /// scrolls with the first column's width, not the edited column's.
+    pub fn pointer_move(&mut self, x: i32, font: &GuiFont) -> TableReply {
+        if !self.editing {
+            return TableReply::Form;
+        }
+        let width = self.column_width(0);
+        self.move_edit_caret(x, font, width, false);
         TableReply::Code(3)
     }
 
@@ -739,9 +757,11 @@ pub struct TableDraw {
     /// Header boxes (x0, x1) from the top to 6 units down; the last runs
     /// to the client's width.
     pub headers: Vec<(i32, i32)>,
-    /// The vertical separator inside each header cell: from two pixels in
-    /// at the top to two pixels short of six units down.
-    pub header_lines: Vec<[i32; 4]>,
+    /// The inset rectangle inside each header cell (x0, y0, x1, y1): two
+    /// pixels in from the cell's sides and top, two pixels short of six
+    /// units down. The original submits it as four corner vertices, in the
+    /// order top-left, bottom-left, bottom-right, top-right.
+    pub header_insets: Vec<[i32; 4]>,
     /// The selected row's highlight (x, y, w, h) and whether it is filled
     /// (the pointer is on it and no edit is open).
     pub selection: Option<([i32; 4], bool)>,
@@ -760,7 +780,11 @@ pub struct TableDraw {
     pub titles: Vec<(i32, (i32, i32))>,
     /// Header icons: handle and position.
     pub icons: Vec<(i32, (i32, i32))>,
-    /// The drop shadow under the table's last row: x, y, width, height.
+    /// The drop shadow below the header line: x, y, width and height (the
+    /// client's height less the header's six units, which can be negative
+    /// for a short client). The original also passes the skin unit and the
+    /// word 0x30 (what they select is not established) and skips the call
+    /// when the skin's first flag bit is set; that flag is not modelled.
     pub shadow: Option<[i32; 4]>,
 }
 
@@ -778,7 +802,7 @@ impl TableView {
         for (i, c) in self.columns.iter().enumerate() {
             let x1 = if i + 1 == n { width } else { c.width + x0 };
             out.headers.push((x0, x1));
-            out.header_lines.push([x0 + 2, 2, x0 + 2, 6 * u - 2]);
+            out.header_insets.push([x0 + 2, 2, x1 - 2, 6 * u - 2]);
             x0 = x1;
         }
         out.scroll_offset = -round_i32(f64::from(
@@ -838,10 +862,7 @@ impl TableView {
             }
             x += c.width;
         }
-        // The original's drop shadow under the last drawn row, six units
-        // less the client's height tall (its arguments' exact roles are a
-        // guess: x, y, width, height here).
-        out.shadow = Some([0, 6 * u, width, (self.client.height() - 6 * u).max(0)]);
+        out.shadow = Some([0, 6 * u, width, self.client.height() - 6 * u]);
         out
     }
 
@@ -1117,13 +1138,35 @@ mod tests {
     #[test]
     fn the_default_row_is_the_first_and_the_centre_is_halved() {
         let mut t = table(3);
-        assert_eq!(t.centre_and_default([10, 20, 110, 80]), (1, (50, 30)));
+        // The client is 300 wide and 200 tall.
+        assert_eq!(t.centre_and_default(), (1, (150, 100)));
         assert_eq!(t.selected, 1);
-        // An existing selection stays; an empty table selects nothing.
+        // An existing selection stays; an odd extent halves toward zero.
         t.selected = 2;
-        assert_eq!(t.centre_and_default([0, 0, 9, 5]), (2, (4, 2)));
+        t.client = ClientRect {
+            left: 0,
+            top: 0,
+            right: 9,
+            bottom: 5,
+        };
+        assert_eq!(t.centre_and_default(), (2, (4, 2)));
+        // An empty table selects nothing.
         let mut empty = table(0);
-        assert_eq!(empty.centre_and_default([0, 0, 1, 1]), (0, (0, 0)));
+        assert_eq!(empty.centre_and_default(), (0, (150, 100)));
+        assert_eq!(empty.selected, 0);
+    }
+
+    #[test]
+    fn hovering_a_row_returns_3_and_no_row_defers_to_the_form() {
+        let mut t = table(3);
+        assert_eq!(t.hover_row(2, 0x10), 3);
+        assert_eq!(t.hover, 2);
+        // No row under the pointer: the hovered row stays, bits 3 are added
+        // to the form's reply while one is hovered.
+        assert_eq!(t.hover_row(-1, 0x10), 0x13);
+        assert_eq!(t.hover, 2);
+        t.hover = 0;
+        assert_eq!(t.hover_row(-1, 0x10), 0x10);
     }
 
     #[test]
@@ -1143,13 +1186,34 @@ mod tests {
         );
         let list = t.open_choices().unwrap();
         assert_eq!((list.column, list.width, list.entries.len()), (1, 80, 2));
-        // The list is two rows tall: each 30 plus the unit less one.
-        assert_eq!((list.at, list.height), ((105, 5), 2 * 30 + 5 - 1));
+        assert_eq!(list.at, (105, 5));
         assert_eq!(t.choose(2), vec![TableEvent::Chosen(1, 1)]);
         assert_eq!(t.rows[1].cells[1], b"Axe");
         assert!(t.open_choices().is_none());
         // An out-of-range pick changes no cell and reports nothing.
         assert!(t.choose(9).is_empty());
+    }
+
+    #[test]
+    fn a_press_collapses_the_selection_and_a_drag_keeps_the_anchor() {
+        let mut t = table(3);
+        t.selected = 2;
+        t.hover = 2;
+        t.edit_column = 0;
+        t.begin_edit();
+        assert_eq!((t.edit_view.anchor, t.edit_view.caret), (0, 2));
+        let mut ev = Vec::new();
+        // A press inside the edited column puts the caret and anchor there.
+        assert_eq!(
+            t.press(5, pointer::PRESS, &RAYFORM_10, &mut ev),
+            TableReply::Code(5)
+        );
+        assert_eq!((t.edit_view.anchor, t.edit_view.caret), (0, 0));
+        // A drag to the right moves only the caret.
+        assert_eq!(t.pointer_move(300, &RAYFORM_10), TableReply::Code(3));
+        assert_eq!(t.edit_view.anchor, 0);
+        assert_eq!(t.edit_view.caret, 2);
+        assert_eq!((t.edit_caret, t.edit_anchor), (2, 0));
     }
 
     #[test]
@@ -1193,8 +1257,12 @@ mod tests {
         let d = t.draw(&RAYFORM_10, 28);
         assert_eq!(d.custom[0], (3, 2, 185, 11 * 5 + 6 * 5 * 2, 300 - 185));
         assert_eq!(d.custom.len(), 3);
-        assert!(d.header_lines.contains(&[2, 2, 2, 28]));
+        assert_eq!(d.header_insets[0], [2, 2, 98, 28]);
+        assert_eq!(d.header_insets[2], [182, 2, 298, 28]);
         assert_eq!(d.shadow, Some([0, 30, 300, 200 - 30]));
+        // A client shorter than the header gives a negative height.
+        t.client.bottom = t.client.top + 20;
+        assert_eq!(t.draw(&RAYFORM_10, 28).shadow, Some([0, 30, 300, -10]));
     }
 
     #[test]

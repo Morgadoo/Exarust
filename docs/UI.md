@@ -1205,14 +1205,20 @@ units (centred ones by their width), a header icon centred in its column.
 It scrolls over all its rows but one; rows behind the header are not hit.
 A press selects a row unless it is greyed; a second press edits an
 editable cell (all of its text selected) or opens the column's choice
-list under the cell (a modal drop-down whose entries are the column's,
-two units lower than the cell's row band); a double press activates. A
-press past the last row
-of a table that grows adds a row and edits it, and committing an emptied
+list under the cell (a modal drop-down of the column's entries); a double
+press activates. A press past the last row of a table that grows adds a row and edits it, and committing an emptied
 first cell of the last row deletes it. Enter commits, Escape abandons,
 Delete on an empty edit deletes the row; every other key goes to the
 single-line edit field (typing, Backspace/Delete, arrows, Home/End,
-Ctrl+C/X/V), which scrolls its visible window inside the column. Down
+Ctrl+C/X/V), which scrolls its visible window inside the column; a press
+inside the open edit puts the caret and anchor there, a drag moves only the
+caret (and scrolls by the first column's width, whichever column is
+edited). Hovering a row answers 3; hovering no row keeps the last hovered
+row. The default row is the first when none is selected, and the table's
+centre is half its client's width and height. A header's inset rectangle
+runs two pixels in from its sides and top to two pixels short of six units
+down, and the drop shadow starts at the header's bottom line, the client's
+height less six units tall. Down
 passes greyed rows, Up does not. Owner-drawn columns start at the first
 visible row. The table never sorts.
 
@@ -1264,7 +1270,7 @@ with the word `0x133`. The textured skin's own file loads with `0x70133`. Its
 textured frame draws an edge two pixels in, an edge one pixel in and the
 fill; a pressed frame (which wins over hot) reads two slots of the skin's
 table twice each, an idle one two slots paired with the next, a hot one a
-second pair, and the fill takes the ink in slot `0x6c` (`0x9c` when hot).
+second pair, and the fill takes the skin's fill ink (its hot fill ink when hot).
 Binding a skin texture different from the current one sets `TexCol` to 1
 when the texture word has one of the `0xc000` bits, else 0, and writes the
 uniform only in the textured renderer mode. The per-frame `TexScl` is the

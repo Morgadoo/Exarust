@@ -463,14 +463,17 @@ presets).
 ## Table, skin and blend details
 
 `table_view` now keeps the column choice list that a press opens (its
-entries, width, anchor, height and picked entry) and routes every key that
+entries, width, anchor and picked entry) and routes every key that
 is not Enter, Escape or the empty-edit Delete through `text_edit` (typing,
 Backspace/Delete, arrows, Home/End, Ctrl+C/X/V, horizontal scroll), so an
-edited cell behaves like the original's field. The draw reports the
-header separators, the owner-drawn cells from the first visible row, the
-open field's text state and the shadow under the last row; the table's
-default selection is the first row and its centre is each side's
-difference halved.
+edited cell behaves like the original's field. A press inside the edit
+puts the caret and anchor together; a drag moves only the caret and scrolls
+by the first column's width. The draw reports each header's inset
+rectangle, the owner-drawn cells from the first visible row, the open
+field's text state and the shadow below the header (the client's height
+less six units, negative when the client is shorter); the table's default
+selection is the first row and its centre is half the client's width and
+height. Hovering a row answers 3; no row keeps the last hovered row.
 
 `skin` carries the two traced hooks of the abstract base (`SkinHooks`),
 the GUI globals (lazily made default skin, active skin prepared once per
