@@ -58,7 +58,11 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
     let r2 = pow(s.rough, 4.0);
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
     let denom = ndh * ndh * (r2 - 1.0) + 1.0;
-    let dg = r2 * ndl / (denom * denom * (ndl * (1.0 - k) + k));
+    // A mirror (roughness 0, as the terrain's full gloss gives) has no
+    // highlight but at N·H = 1, where the formula is 0/0; the floor keeps
+    // that point at 0 instead of NaN and never touches another value (with
+    // roughness 0.02 the divisor is at least 3e-15).
+    let dg = r2 * ndl / max(denom * denom * (ndl * (1.0 - k) + k), 1e-30);
     let d = 0.25 / (s.ndv * (1.0 - k) + k);
     if s.legacy {
         out.specular = dg * d * colour;

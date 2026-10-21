@@ -355,7 +355,9 @@ fn fragment(
     s.v = v;
     s.ndv = abs(dot(v, n));
     // The composite gloss is an 8-bit value; roughness is 1 - it, with no
-    // other floor.
+    // other floor (the model program's 0.02 is Exarust's). Full gloss is a
+    // mirror without a highlight, as in the original; the shared light
+    // keeps its one singular point at 0.
     s.rough = 1.0 - clamp(gloss.x, 0.0, 1.0);
     s.f0 = vec3(0.04);
     s.legacy = false;
