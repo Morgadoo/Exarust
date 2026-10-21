@@ -175,6 +175,20 @@ pub struct ModelCache {
 }
 
 /// Everything conversion needs from the world.
+/// The shading flags a diffuse slot adds from its texture word: a BC4 image
+/// is one grey channel, and a word that skips the LOD bias makes the
+/// material select a zero bias for its diffuse sample.
+fn diffuse_shading_flags(word: u32, grey: bool) -> u32 {
+    let mut flags = 0;
+    if grey {
+        flags |= flags::GREY_DIFFUSE;
+    }
+    if word & texture::flags::NO_LOD_BIAS != 0 {
+        flags |= flags::SKIP_DIFFUSE_BIAS;
+    }
+    flags
+}
+
 pub struct ModelLoader<'a> {
     pub game: &'a GameData,
     pub cache: &'a mut ModelCache,
@@ -647,9 +661,7 @@ impl ModelLoader<'_> {
             if let Some(info) = self.texture_info(t, ColorSpace::Srgb, flags) {
                 mat.diffuse_map = Some(info.image);
                 cut_out = info.alpha;
-                if info.grey {
-                    mat.params.flags |= flags::GREY_DIFFUSE;
-                }
+                mat.params.flags |= diffuse_shading_flags(flags, info.grey);
             }
         }
         if let Some(t) = m.texture(TextureSlot::Normal) {
@@ -2302,6 +2314,26 @@ mod tests {
             ..glow.clone()
         };
         assert!(opacity_falloff(&faint).is_none());
+    }
+
+    /// The diffuse slot's shading flags: a BC4 upload shows one grey
+    /// channel, and the bias-skip word bit turns the shader's bias to zero.
+    #[test]
+    fn the_diffuse_slot_sets_grey_and_bias_skip_flags() {
+        assert_eq!(diffuse_shading_flags(0x700F0, false), 0);
+        assert_eq!(
+            diffuse_shading_flags(0x700F0, true),
+            exa_render::material::flags::GREY_DIFFUSE
+        );
+        assert_eq!(
+            diffuse_shading_flags(0x702F0, false),
+            exa_render::material::flags::SKIP_DIFFUSE_BIAS
+        );
+        assert_eq!(
+            diffuse_shading_flags(0x702F0, true),
+            exa_render::material::flags::GREY_DIFFUSE
+                | exa_render::material::flags::SKIP_DIFFUSE_BIAS
+        );
     }
 
     #[test]

@@ -140,6 +140,9 @@ pub mod flags {
     /// original's luminance LATC format: its red channel stands for all
     /// three colour channels, and there is no sRGB variant to decode it.
     pub const GREY_DIFFUSE: u32 = 16777216;
+    /// The diffuse map skips the LOD bias: a record with a secondary colour
+    /// loads its diffuse that way (the original's per-slot skip bit).
+    pub const SKIP_DIFFUSE_BIAS: u32 = 33554432;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex

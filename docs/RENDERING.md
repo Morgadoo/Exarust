@@ -370,8 +370,9 @@ quality (`TextureQuality = 5`) and 4× supersampling:
   right, with base −0.75 at quality 5 (−0.5 at 4, 0 below) and g = ss below
   2 and ss − 1 above. That gives −0.75. It applies
   to colour textures (diffuse, emissive, opacity, legacy specular), not to
-  normal, gloss or packed specular maps. wgpu samplers have no bias, so the
-  shader applies it.
+  normal, gloss or packed specular maps; a diffuse whose record carries a
+  secondary colour skips it. wgpu samplers have no bias, so the
+  shader applies it (`SKIP_DIFFUSE_BIAS` and the data slots select zero).
 
 Compressed images upload as their stored block format: BC1 and BC3 with an
 sRGB variant for colour, BC5 linear for two-channel normal maps, and BC4 as
