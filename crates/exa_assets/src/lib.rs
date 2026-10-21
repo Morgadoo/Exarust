@@ -8,6 +8,7 @@ pub mod content_stream;
 pub mod human_skin;
 pub mod mesh_edit;
 pub mod mesh_smooth;
+pub mod mesh_weld;
 pub mod model;
 pub mod morph;
 pub mod morph_controller;

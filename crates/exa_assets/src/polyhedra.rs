@@ -205,6 +205,183 @@ fn normalised(v: [f32; 3]) -> [f32; 3] {
     v.map(|x| x * inv)
 }
 
+/// The engine's fast sine: a quadrant fold (multiply by 4/π, round to an
+/// even quadrant) and a degree-7 polynomial for the sine or cosine of the
+/// remainder. The result is the original's, bit for bit (its final sign is
+/// the input's sign xor the quadrant's bit 2).
+pub fn fast_sin(x: f32) -> f32 {
+    const FOUR_OVER_PI: f32 = 1.273_239_5;
+    const QUARTER_PI: f32 = 0.785_398_2;
+    let bits = x.to_bits();
+    let magnitude = f32::from_bits(bits & 0x7FFF_FFFF);
+    let t = magnitude * FOUR_OVER_PI;
+    // CVTTSS2SI's out-of-range result is the integer's smallest value.
+    let truncated = if t.is_nan() || t >= 2_147_483_648.0 || t < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        t as i32
+    };
+    let quadrant = truncated.wrapping_add(1) as u32 & !1;
+    let f = magnitude - (quadrant as i32 as f32) * QUARTER_PI;
+    let f2 = f * f;
+    let sine = (((-0.000_195_152_96 * f2 + 0.008_332_161) * f2 - 0.166_666_55) * f2 * f) + f;
+    let cosine =
+        (((2.443_315_7e-5 * f2 - 0.001_388_731_6) * f2 + 0.041_666_646) * f2 * f2 - 0.5 * f2) + 1.0;
+    let selected = if quadrant & 2 == 0 { sine } else { cosine };
+    let sign = (bits & 0x8000_0000) ^ ((quadrant & 4) << 29);
+    f32::from_bits(selected.to_bits() ^ sign)
+}
+
+/// The UV sphere's attribute mask: per-vertex normals.
+pub const SPHERE_NORMALS: u32 = 0x2;
+/// The UV sphere's attribute mask: a colour word per vertex (always
+/// 0xFFFF_FFFF).
+pub const SPHERE_COLOURS: u32 = 0x4;
+/// The UV sphere's attribute mask: a tangent (with w = −1) per vertex.
+pub const SPHERE_TANGENTS: u32 = 0x8;
+/// The UV sphere's attribute mask: texture coordinates per vertex.
+pub const SPHERE_UVS: u32 = 0x10;
+
+/// A sphere built as the mind effects' geometry: a column of triangle
+/// strips. The vertices are written pair by pair, and a strip's indices
+/// point at vertices of the next strip (the original's GL strips), so the
+/// list of indices is kept rather than turned into independent triangles.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UvSphere {
+    pub positions: Vec<[f32; 3]>,
+    /// Filled when [`SPHERE_NORMALS`] is set.
+    pub normals: Vec<[f32; 3]>,
+    /// Filled when [`SPHERE_UVS`] is set.
+    pub uvs: Vec<[f32; 2]>,
+    /// Filled when [`SPHERE_TANGENTS`] is set.
+    pub tangents: Vec<[f32; 4]>,
+    /// Filled when [`SPHERE_COLOURS`] is set.
+    pub colours: Vec<u32>,
+    /// One triangle strip per column pair; its indices name [`positions`].
+    pub strips: Vec<Vec<u32>>,
+}
+
+/// Builds the UV sphere of `segments` columns (even in every use) and
+/// `segments / 2` rows per hemisphere. `u_scale` and `v_scale` tile the
+/// texture coordinates; `flags` is the attribute mask (see the
+/// `SPHERE_*` constants). The angle step is 2π / segments on both axes,
+/// so the rows run from the north pole (row 0) to the south pole
+/// (`segments / 2`). An invalid segment count builds nothing.
+pub fn uv_sphere(segments: usize, radius: f32, u_scale: f32, v_scale: f32, flags: u32) -> UvSphere {
+    let rows = segments / 2;
+    if segments == 0 || rows == 0 {
+        return UvSphere::default();
+    }
+    let inv_segments = 1.0f32 / segments as f32;
+    let inv_rows = 1.0f32 / rows as f32;
+    let mut out = UvSphere::default();
+    let write = |col: usize, row: usize, out: &mut UvSphere| -> u32 {
+        let index = out.positions.len() as u32;
+        let col_angle = (col as f32 * std::f32::consts::TAU) * inv_segments;
+        let row_angle = (row as f32 * std::f32::consts::TAU) * inv_segments;
+        if row == 0 || row == rows {
+            let u = (col as f32 * inv_segments - inv_segments * 0.5) * u_scale;
+            let v = row as f32 * -inv_rows * v_scale;
+            let cosine = (row_angle as f64).cos() as f32;
+            out.positions
+                .push([0.0, (radius as f64 * f64::from(cosine)) as f32, 0.0]);
+            if flags & SPHERE_NORMALS != 0 {
+                out.normals.push([0.0, cosine, 0.0]);
+            }
+            if flags & SPHERE_UVS != 0 {
+                out.uvs.push([u, v]);
+            }
+        } else {
+            let u = col as f32 * inv_segments * u_scale;
+            let v = row as f32 * -inv_rows * v_scale;
+            let sin_col = fast_sin(col_angle);
+            let sin_row = fast_sin(row_angle);
+            let cos_col = (col_angle as f64).cos() as f32;
+            let cos_row = (row_angle as f64).cos() as f32;
+            out.positions.push([
+                sin_row * sin_col * radius,
+                (radius as f64 * f64::from(cos_row)) as f32,
+                radius * sin_row * cos_col,
+            ]);
+            if flags & SPHERE_TANGENTS != 0 {
+                let next_angle = ((col as f32 + 1.0) * std::f32::consts::TAU) * inv_segments;
+                let a = [fast_sin(col_angle), 0.0, cos_col];
+                let b = [fast_sin(next_angle), 0.0, (next_angle as f64).cos() as f32];
+                let d = normalised([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+                out.tangents.push([d[0], d[1], d[2], -1.0]);
+            }
+            if flags & SPHERE_NORMALS != 0 {
+                out.normals
+                    .push([sin_row * sin_col, cos_row, sin_row * cos_col]);
+            }
+            if flags & SPHERE_UVS != 0 {
+                out.uvs.push([u, v]);
+            }
+        }
+        if flags & SPHERE_COLOURS != 0 {
+            out.colours.push(0xFFFF_FFFF);
+        }
+        index
+    };
+
+    let mut col = 0usize;
+    loop {
+        if col >= segments {
+            break;
+        }
+        let mut strip = Vec::new();
+        strip.push(write(col, 0, &mut out));
+        for row in 1..rows {
+            strip.push(write(col, row, &mut out));
+            strip.push(write(col + 1, row, &mut out));
+        }
+        strip.push(write(col, rows, &mut out));
+        let next = col + 1;
+        if next == segments {
+            out.strips.push(strip);
+            break;
+        }
+        let mut continuation = Vec::new();
+        let first = write(next, rows, &mut out);
+        continuation.push(first);
+        if next == segments - 1 {
+            // The closing strip: one writer per row, its index stepping
+            // back three vertices each time (the writer's own index is
+            // replaced by the patched one).
+            let mut row = rows;
+            while row > 1 {
+                row -= 1;
+                let vertex = write(next, row, &mut out);
+                continuation.push(vertex.wrapping_sub(3 * (rows - row) as u32));
+            }
+            continuation.push(write(next, 0, &mut out));
+        } else {
+            // The strip borrows vertices of the next column pair: two
+            // patched indices per row, then its own bottom vertex.
+            let mut patched = vec![0u32; segments];
+            patched[0] = first;
+            let mut position = 0usize;
+            let mut row = rows;
+            while row > 1 {
+                row -= 1;
+                position += 2;
+                patched[position - 1] = first.wrapping_add(1 + 2 * row as u32);
+                patched[position] = first.wrapping_sub(2 * (rows - row) as u32);
+            }
+            let last = write(next, 0, &mut out);
+            patched[segments - 1] = last;
+            continuation = patched;
+        }
+        out.strips.push(strip);
+        out.strips.push(continuation);
+        if next == segments - 1 {
+            break;
+        }
+        col += 2;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +477,71 @@ mod tests {
         assert_eq!(one.edges.len(), 35);
         assert_eq!(one.points[16], [0.0; 3]);
         assert!(one.faces.iter().flatten().all(|&p| p < 16));
+    }
+
+    #[test]
+    fn the_fast_sine_is_the_originals_polynomial() {
+        assert_eq!(fast_sin(0.0), 0.0);
+        assert_eq!(fast_sin(1.0), 0.841_470_96);
+        assert_eq!(fast_sin(0.5), 0.479_425_55);
+        assert_eq!(fast_sin(std::f32::consts::FRAC_PI_2), 1.0);
+        assert_eq!(fast_sin(-std::f32::consts::FRAC_PI_2), -1.0);
+        // The polynomial rounds 2.0 a little above the library sine.
+        assert_eq!(fast_sin(2.0), 0.909_297_47);
+        // The quadrant fold makes π a signed zero.
+        assert_eq!(fast_sin(std::f32::consts::PI).to_bits(), 0x8000_0000);
+    }
+
+    #[test]
+    fn the_uv_sphere_writes_strips_that_borrow_the_next_columns_vertices() {
+        let s = uv_sphere(
+            4,
+            1.0,
+            1.0,
+            1.0,
+            SPHERE_NORMALS | SPHERE_UVS | SPHERE_TANGENTS | SPHERE_COLOURS,
+        );
+        assert_eq!(s.positions.len(), 13);
+        assert_eq!(
+            s.strips,
+            vec![
+                vec![0, 1, 2, 3],
+                vec![4, 7, 2, 5],
+                vec![6, 7, 8, 9],
+                vec![10, 8, 12],
+            ]
+        );
+        // Poles at ±y, the equator ring at the four quarter turns.
+        assert_eq!(s.positions[0], [0.0, 1.0, 0.0]);
+        assert_eq!(s.positions[3], [0.0, -1.0, 0.0]);
+        assert_eq!(s.positions[1], [0.0, -4.371_139e-8, 1.0]);
+        assert_eq!(s.positions[2], [1.0, -4.371_139e-8, -4.371_139e-8]);
+        assert_eq!(s.positions[6], [0.0, 1.0, 0.0]);
+        assert_eq!(s.positions[8], [-1.0, -4.371_139e-8, 1.192_488_1e-8]);
+        // UVs tile once across and once down; poles shift half a column.
+        assert_eq!(s.uvs[0], [-0.125, 0.0]);
+        assert_eq!(s.uvs[1], [0.0, -0.5]);
+        assert_eq!(s.uvs[3], [-0.125, -1.0]);
+        assert_eq!(s.uvs[2], [0.25, -0.5]);
+        // The tangent runs from a column point to the next round the equator.
+        let t = s.tangents[0];
+        assert!((t[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((t[2] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(t[3], -1.0);
+        assert!(s.colours.iter().all(|&c| c == 0xFFFF_FFFF));
+        for p in &s.positions {
+            assert!((length(*p) - 1.0).abs() < 1e-6, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn the_uv_sphere_leaves_out_the_attributes_it_is_not_asked_for() {
+        let s = uv_sphere(8, 2.0, 1.0, 1.0, SPHERE_NORMALS);
+        assert!(s.uvs.is_empty());
+        assert!(s.tangents.is_empty());
+        assert!(s.colours.is_empty());
+        assert_eq!(s.normals.len(), s.positions.len());
+        assert_eq!(s.positions[0], [0.0, 2.0, 0.0]);
+        assert!(uv_sphere(0, 1.0, 1.0, 1.0, 0).positions.is_empty());
     }
 }

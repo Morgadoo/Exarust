@@ -306,8 +306,41 @@ fn different_smoothing_groups_crease_the_diagonal() {
 }
 
 #[test]
+fn the_face_limit_is_four_times_one_more_face() {
+    assert!(can_subdivide(MAX_FACES));
+    assert!(!can_subdivide(MAX_FACES + 1));
+    assert_eq!(MAX_FACES, 16_382);
+}
+
+#[test]
+fn a_refused_mesh_is_still_refitted_and_converted() {
+    let faces = MAX_FACES + 1;
+    let m = Mesh {
+        positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
+        normals: vec![[0.0, 1.0, 0.0]; 3],
+        position_ids: vec![0, 1, 2],
+        position_count: 3,
+        smoothing: vec![0; 3],
+        indices: [0, 1, 2].repeat(faces),
+        groups: vec![MeshGroup {
+            material: "mat".into(),
+            first_index: 0,
+            index_count: (faces * 3) as u32,
+        }],
+        ..Mesh::default()
+    };
+    let smoothed = smooth_mesh(&m, &[0]).unwrap();
+    assert!(!smoothed.subdivided);
+    assert_eq!(smoothed.degenerate_faces, 0);
+    assert_eq!(smoothed.mesh.indices.len(), faces * 3);
+    assert_eq!(smoothed.mesh.positions.len(), 3);
+    let (centre, _, _) = smoothed.bounds.unwrap();
+    assert_eq!(centre, [0.5, 0.0, -0.5]);
+}
+
+#[test]
 fn too_many_faces_are_left_alone() {
-    let faces = MAX_FACES / 4 + 1;
+    let faces = MAX_FACES + 1;
     let m = Mesh {
         positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
         normals: vec![[0.0, 1.0, 0.0]; 3],
@@ -369,7 +402,8 @@ fn shipped_hair_smooths() {
                 continue;
             };
             let flags = vec![SPLIT_UVS; mesh.groups.len()];
-            let smoothed = smooth_mesh(mesh, &flags).unwrap().unwrap();
+            let smoothed = smooth_mesh(mesh, &flags).unwrap();
+            assert!(smoothed.subdivided);
             let out = &smoothed.mesh;
             assert_eq!(out.indices.len(), mesh.indices.len() * 4, "{}", node.name);
             assert!(

@@ -1254,7 +1254,10 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
         return;
     };
     match smooth_mesh(mesh, flags) {
-        Ok(Some(smoothed)) => {
+        Ok(smoothed) => {
+            if !smoothed.subdivided {
+                warn!("MeshSmooth: {} has too many faces to subdivide", node.name);
+            }
             if smoothed.degenerate_faces > 0 {
                 warn!(
                     "Meshsmooth: {} degenerate faces found in {}",
@@ -1268,7 +1271,6 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
             }
             **mesh = smoothed.mesh;
         }
-        Ok(None) => warn!("MeshSmooth: {} has too many faces to subdivide", node.name),
         Err(e) => warn!("MeshSmooth: {}: {e}", node.name),
     }
 }

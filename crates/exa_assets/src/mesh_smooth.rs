@@ -30,9 +30,14 @@ use crate::mesh_edit::{
     SHARES_CHANNEL, Smoothing, StreamData, TYPE_MASK, TYPE_RGBA8, bounds,
 };
 
-/// A subdivided mesh may have at most this many faces (the original
-/// indexes faces with 16 bits).
-pub const MAX_FACES: usize = 0xFFFF;
+/// A subdivided mesh may have at most this many faces: the original refuses
+/// when four times one more face would pass its 16-bit limit of 65 535
+/// (`(faces + 1) × 4 > 65 535`), so 16 382 faces still divide and 16 383 do
+/// not.
+pub const MAX_FACES: usize = 16_382;
+/// The original's 16-bit face word. Four children per face, plus one face
+/// for the check itself, must fit it.
+const FACE_LIMIT: usize = 0xFFFF;
 
 /// Squared distance past which a shared texture coordinate is split.
 const SPLIT_DISTANCE: f32 = 1e-6;
@@ -80,20 +85,22 @@ pub struct Smoothed {
     pub bounds: Option<([f32; 3], [f32; 3], f32)>,
     /// Faces found with a repeated point (the original logs the count).
     pub degenerate_faces: usize,
+    /// Whether the pass subdivided; a mesh with too many faces is only
+    /// refitted and converted to render form, as the original still does.
+    pub subdivided: bool,
 }
 
 /// Smooths a decoded mesh as the original smooths a mesh node: subdivided
 /// once with sharpness 0, its bounds refitted from every position, then
-/// converted back to render form with the vertex-cache order. `None` when
-/// the mesh has too many faces: the original logs it and leaves the faces,
-/// but its pass still refits the bounds and runs the conversion on the
-/// mesh as loaded, not in editable form (that result is not modelled; the
-/// caller keeps the mesh as it is). The GI points are kept.
-pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Option<Smoothed>, MeshError> {
+/// converted back to render form with the vertex-cache order. A mesh whose
+/// faces would pass the original's 16-bit limit is not subdivided, but its
+/// bounds are still refitted and it is still converted (the original logs
+/// the refusal and carries on). The GI points are kept.
+pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Smoothed, MeshError> {
     let mut edit = EditMesh::from_mesh(mesh, group_flags)?;
-    let degenerate_faces = match subdivide(&mut edit, 0.0)? {
-        Subdivided::TooManyFaces => return Ok(None),
-        Subdivided::Done { degenerate_faces } => degenerate_faces,
+    let (degenerate_faces, subdivided) = match subdivide(&mut edit, 0.0)? {
+        Subdivided::TooManyFaces => (0, false),
+        Subdivided::Done { degenerate_faces } => (degenerate_faces, true),
     };
     let refit = match &edit.streams[0].data {
         StreamData::Vec3(p) => bounds(p),
@@ -101,11 +108,18 @@ pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Option<Smoothed>,
     };
     let mut out = edit.render(true)?;
     out.gi_points = mesh.gi_points.clone();
-    Ok(Some(Smoothed {
+    Ok(Smoothed {
         mesh: out,
         bounds: refit,
         degenerate_faces,
-    }))
+        subdivided,
+    })
+}
+
+/// Whether a mesh with `faces` faces may be subdivided: four times one
+/// more face must fit the original's 16-bit word.
+pub fn can_subdivide(faces: usize) -> bool {
+    (faces + 1) * 4 <= FACE_LIMIT
 }
 
 /// Subdivides `mesh` once. `sharpness` is the weight of points on fewer
@@ -113,7 +127,7 @@ pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Option<Smoothed>,
 pub fn subdivide(mesh: &mut EditMesh, sharpness: f32) -> Result<Subdivided, MeshError> {
     mesh.validate()?;
     let faces = mesh.face_count();
-    if MAX_FACES < faces * 4 {
+    if !can_subdivide(faces) {
         return Ok(Subdivided::TooManyFaces);
     }
     mesh.incidence()?;
@@ -339,8 +353,8 @@ impl Rule<'_> {
                         };
                         if edges[g][shared] != pos[g][shared] {
                             edges[f][i] = edges[g][shared];
+                            break;
                         }
-                        break;
                     }
                 }
             }

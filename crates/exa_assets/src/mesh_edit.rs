@@ -198,13 +198,42 @@ impl Incidence {
     /// links each new corner in right after the element's head and walks
     /// the ring from there, so the first corner met ends the list.
     pub fn build(positions: &[[u32; 3]], elements: usize) -> Result<Self, MeshError> {
+        Self::build_with(positions, elements, |_, _, v| Ok(v))
+    }
+
+    /// The same incidence for a mesh whose channel stores a reference per
+    /// corner instead of the element itself (the original's generic
+    /// render-form variant): `elements_at[refs[face][corner]]` is the
+    /// element. Exarust decodes meshes with their element per corner, so
+    /// this variant has no caller in the loaders; it is kept for a
+    /// generic-format import.
+    pub fn build_indirect(
+        refs: &[[u32; 3]],
+        elements_at: &[u32],
+        elements: usize,
+    ) -> Result<Self, MeshError> {
+        Self::build_with(refs, elements, |f, k, _| {
+            let r = refs[f][k] as usize;
+            elements_at
+                .get(r)
+                .copied()
+                .ok_or_else(|| malformed(format!("face {f} corner {k} names reference {r}")))
+        })
+    }
+
+    /// Builds the ring lists, mapping each corner to its element.
+    fn build_with(
+        corners: &[[u32; 3]],
+        elements: usize,
+        element: impl Fn(usize, usize, u32) -> Result<u32, MeshError>,
+    ) -> Result<Self, MeshError> {
         let mut count = vec![0u32; elements + 1];
-        for (f, t) in positions.iter().enumerate() {
-            for &v in t {
-                let v = v as usize;
+        for (f, t) in corners.iter().enumerate() {
+            for (k, &raw) in t.iter().enumerate() {
+                let v = element(f, k, raw)? as usize;
                 if v >= elements {
                     return Err(malformed(format!(
-                        "face {f} names position {v} of {elements}"
+                        "face {f} names element {v} of {elements}"
                     )));
                 }
                 count[v + 1] += 1;
@@ -215,18 +244,21 @@ impl Incidence {
         }
         let starts = count;
         let mut fill = starts.clone();
-        let mut corners = vec![Corner { face: 0, corner: 0 }; positions.len() * 3];
-        for (f, t) in positions.iter().enumerate().rev() {
+        let mut out = vec![Corner { face: 0, corner: 0 }; corners.len() * 3];
+        for (f, t) in corners.iter().enumerate().rev() {
             for k in (0..3).rev() {
-                let v = t[k] as usize;
-                corners[fill[v] as usize] = Corner {
+                let v = element(f, k, t[k])? as usize;
+                out[fill[v] as usize] = Corner {
                     face: f as u32,
                     corner: k as u8,
                 };
                 fill[v] += 1;
             }
         }
-        Ok(Self { corners, starts })
+        Ok(Self {
+            corners: out,
+            starts,
+        })
     }
 
     /// The positions in [`Incidence::corners`] of element `v`'s corners.
@@ -531,6 +563,31 @@ impl EditMesh {
             self.incidence = Some(Incidence::build(&self.channels[0].corners, positions)?);
         }
         Ok(self.incidence.as_mut().expect("just built"))
+    }
+
+    /// Rebuilds the master incidence from the positions channel (the
+    /// original's internal-mesh rebuild), dropping one that edits left
+    /// behind. The position stream's element count bounds its elements.
+    pub fn rebuild_incidence(&mut self) -> Result<(), MeshError> {
+        self.validate()?;
+        let elements = self.streams.first().map_or(0, |s| s.data.len());
+        let inc = Incidence::build(&self.channels[0].corners, elements)?;
+        self.incidence = Some(inc);
+        self.smoothing = Smoothing::Unset;
+        Ok(())
+    }
+
+    /// Reverses every face's winding: the original's flip swaps the first
+    /// and third element of each corner triple on every channel. Stream
+    /// values and faces keep their order.
+    pub fn flip_winding(&mut self) {
+        for channel in &mut self.channels {
+            for corner in &mut channel.corners {
+                corner.swap(0, 2);
+            }
+        }
+        self.incidence = None;
+        self.smoothing = Smoothing::Unset;
     }
 
     /// Replaces the smoothing channel by one numbering the smoothing
