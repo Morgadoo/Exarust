@@ -311,6 +311,25 @@ impl MadeCondition {
     }
 }
 
+/// What a handling sound is played as: its recorded index, its pitch and
+/// its volume. Index 0 means the item has no handling sound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HandlingSound {
+    pub index: u8,
+    pub pitch: f32,
+    pub volume: f32,
+}
+
+/// The handling sound of an item whose sound index is `index`: silence for
+/// 0, else the sound at pitch `0.8 + 0.2r` and volume 0.3.
+pub fn handling_sound(index: u8, random: f64) -> Option<HandlingSound> {
+    (index != 0).then_some(HandlingSound {
+        index,
+        pitch: (random * 0.2 + 0.8) as f32,
+        volume: 0.3,
+    })
+}
+
 /// The engine's entropy word: the clock's four bytes reversed.
 pub fn entropy_of(clock: u32) -> u32 {
     clock.swap_bytes()
@@ -445,6 +464,16 @@ mod tests {
         let b = roll_share(0.9, 0.5, &mut s0);
         assert_eq!(s0, 1);
         assert!(b >= 102);
+    }
+
+    #[test]
+    fn a_handling_sound_keeps_its_pitch_and_volume() {
+        assert_eq!(handling_sound(0, 0.5), None);
+        let sound = handling_sound(7, 0.5).unwrap();
+        assert_eq!(sound.index, 7);
+        assert_eq!(sound.volume.to_bits(), 0.3f32.to_bits());
+        assert!((sound.pitch - 0.9).abs() < 1e-6);
+        assert!((handling_sound(1, 1.0).unwrap().pitch - 1.0).abs() < 1e-6);
     }
 
     #[test]

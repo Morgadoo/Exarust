@@ -304,6 +304,18 @@ pub fn shield_points(show: bool, skill: u8) -> Option<f32> {
     }
 }
 
+/// The number of rows of each phrase table the sentence builders read. The
+/// original stores longer tables but stops at these counts.
+pub const MADE_ROWS: usize = 15;
+pub const HIGH_ROWS: usize = 8;
+pub const FLAWLESS_ROWS: usize = 11;
+pub const PERFECT_ROWS: usize = 10;
+pub const GREAT_ROWS: usize = 6;
+
+fn rows<'a>(table: &'a [Phrase<'a>], count: usize) -> &'a [Phrase<'a>] {
+    &table[..table.len().min(count)]
+}
+
 /// One description phrase and the inclusive byte range that may use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phrase<'a> {
@@ -423,7 +435,11 @@ pub fn item_sentence(
         if dashed {
             name.remove(0);
         }
-        let rows = if dashed { tables.high } else { tables.made };
+        let rows = if dashed {
+            rows(tables.high, HIGH_ROWS)
+        } else {
+            rows(tables.made, MADE_ROWS)
+        };
         let (state, chosen) = raw_phrase(state, scale_mark(quality), rows);
         (state, chosen.unwrap_or_default(), dashed)
     };
@@ -440,11 +456,26 @@ pub fn item_sentence(
         format!("{quality_text} {name}")
     };
     let picked = if dashed {
-        pick_phrase(state, condition_mark, tables.great, &quality_text)
+        pick_phrase(
+            state,
+            condition_mark,
+            rows(tables.great, GREAT_ROWS),
+            &quality_text,
+        )
     } else {
-        let first = pick_phrase(state, condition_mark, tables.flawless, &quality_text);
+        let first = pick_phrase(
+            state,
+            condition_mark,
+            rows(tables.flawless, FLAWLESS_ROWS),
+            &quality_text,
+        );
         if first.text.is_none() {
-            pick_phrase(first.state, condition_mark, tables.perfect, &quality_text)
+            pick_phrase(
+                first.state,
+                condition_mark,
+                rows(tables.perfect, PERFECT_ROWS),
+                &quality_text,
+            )
         } else {
             first
         }
@@ -618,8 +649,8 @@ pub fn apparel_sentence(
     let (state, quality_text) = if crafted {
         (state, String::new())
     } else {
-        let rows = tables.made.len().min(14);
-        let (state, chosen) = raw_phrase(state, quality_mark, &tables.made[..rows]);
+        let made = rows(tables.made, MADE_ROWS);
+        let (state, chosen) = raw_phrase(state, quality_mark, made);
         let (edited, next_side) = apply_material(&name, line.material, line.material_name, &side);
         name = edited;
         side = next_side;
@@ -638,9 +669,19 @@ pub fn apparel_sentence(
     } else {
         format!("{quality_text} {name}")
     };
-    let first = pick_phrase(state, condition_mark, tables.flawless, &quality_text);
+    let first = pick_phrase(
+        state,
+        condition_mark,
+        rows(tables.flawless, FLAWLESS_ROWS),
+        &quality_text,
+    );
     let picked = if first.text.is_none() {
-        pick_phrase(first.state, condition_mark, tables.perfect, &quality_text)
+        pick_phrase(
+            first.state,
+            condition_mark,
+            rows(tables.perfect, PERFECT_ROWS),
+            &quality_text,
+        )
     } else {
         first
     };
@@ -660,6 +701,48 @@ pub fn apparel_sentence(
         text,
         side,
     }
+}
+
+/// A sample "well made … plate armour" sentence: "well made ", then (one
+/// draw in four) a material name from the two-entry table followed by a
+/// space, "plate armour", then a phrase from the flawless table with a
+/// leading space unless the phrase starts with a comma, a dot, and the
+/// indefinite article. The original builds it with no caller; Exarust keeps
+/// it for the same reason.
+pub fn plate_armour_phrase(
+    state: u32,
+    materials: [Option<&str>; 2],
+    phrases: &[&str],
+) -> ItemSentence {
+    let mut text = String::from("well made ");
+    let mut state = state;
+    if !phrases.is_empty() {
+        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let branch = ((u64::from(state) << 2) >> 32) as u32;
+        if branch == 0 {
+            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let pick = (state >> 31) as usize;
+            text.push_str(materials[pick].unwrap_or(""));
+            text.push(' ');
+        }
+        text.push_str("plate armour");
+        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let index = ((u64::from(state) * phrases.len() as u64) >> 32) as usize;
+        let phrase = phrases[index];
+        if !phrase.starts_with(',') {
+            text.push(' ');
+        }
+        text.push_str(phrase);
+    } else {
+        text.push_str("plate armour");
+    }
+    text.push('.');
+    if takes_an(&text) {
+        text.insert_str(0, "An ");
+    } else {
+        text.insert_str(0, "A ");
+    }
+    ItemSentence { state, text }
 }
 
 fn apply_material(name: &str, material: u8, material_name: &str, side: &str) -> (String, String) {
@@ -1186,6 +1269,31 @@ mod tests {
     }
 
     #[test]
+    fn the_sample_plate_armour_sentence() {
+        let none = [None, Some("light")];
+        let phrases = [", but old", "in fine condition"];
+        assert_eq!(
+            plate_armour_phrase(8, none, &phrases),
+            ItemSentence {
+                state: 0xAB31_C4CE,
+                text: "A well made plate armour in fine condition.".to_string()
+            }
+        );
+        let rows: Vec<&str> = vec!["x"; 11];
+        assert_eq!(
+            plate_armour_phrase(0, none, &rows),
+            ItemSentence {
+                state: 0xDC6D_AC1F,
+                text: "A well made  plate armour x.".to_string()
+            }
+        );
+        assert_eq!(
+            plate_armour_phrase(0, none, &[]).text,
+            "A well made plate armour."
+        );
+    }
+
+    #[test]
     fn an_apparel_sentence_wraps_the_phrase_it_picks() {
         let made = [phrase("well", 0, 255)];
         let edge = [phrase("edge", 0, 255)];
@@ -1303,8 +1411,8 @@ mod tests {
                 &tables(&wide, &[], &missed, &perfect, &[])
             ),
             ApparelSentence {
-                state: 1,
-                text: "A  coat ok.".to_string(),
+                state: 0x0808_8406,
+                text: "A yes coat ok.".to_string(),
                 side: "line".to_string(),
             }
         );
