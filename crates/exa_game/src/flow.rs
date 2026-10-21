@@ -629,12 +629,14 @@ pub enum RoundEnd {
     Last,
     /// A round before the last was won.
     Next,
+    /// The player is dead: the death path runs.
+    PlayerDead,
 }
 
-/// The practice round's check: the phase must be playing, the start guard
-/// must have passed, and the first dead other character ends the round. A
-/// dying player is not a round end; the caller's death path owns it. `None`
-/// means the check does not run.
+/// The practice round's check: the phase must be playing and the start guard
+/// must have passed. A falling player ends nothing unless it is dead (then
+/// the death path runs); otherwise the first dead other character ends the
+/// round. `None` means the check does not run.
 pub fn practice_round(
     phase: Phase,
     now: u32,
@@ -649,7 +651,11 @@ pub fn practice_round(
         return None;
     }
     if player_condition & DYING != 0 {
-        return Some(RoundEnd::None);
+        return Some(if player_condition == DEAD {
+            RoundEnd::PlayerDead
+        } else {
+            RoundEnd::None
+        });
     }
     if others.contains(&DEAD) {
         return Some(if fight == practice::PRACTICE_FIGHTS {
@@ -883,6 +889,8 @@ pub enum Step {
     },
     /// Delete the current slot's save.
     DropSave,
+    /// Keep the save just written as the checkpoint.
+    Checkpoint,
     /// Leave the world: props, bodies, particles, blood and the level.
     TeardownWorld,
     /// Show the end-of-session menu.
@@ -948,8 +956,8 @@ pub enum Action {
     Revive,
     /// Start the next practice fight.
     NextPracticeFight,
-    /// Load a named level.
-    Locale(&'static str),
+    /// Load a named level at a spawn point.
+    Locale { locale: &'static str, spawn: u32 },
 }
 
 /// The running transition.
@@ -1070,51 +1078,41 @@ pub struct CheckpointRule {
     pub level: u32,
     /// The `CheckPoints` setting.
     pub setting: bool,
-    /// The level already has a section in the save.
+    /// The save already holds `exanima04` or the level the exit leads to (no
+    /// new checkpoint is made then).
     pub already_saved: bool,
-    /// The save package can be written.
-    pub can_save: bool,
 }
 
 /// What a level exit writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitSave {
-    /// Save the session: the transition save or the checkpoint refresh.
+    /// The session is saved (the player's state gathered, the save written
+    /// without the death rule) and the written save is kept as the
+    /// checkpoint; on level 6 the level's time is stamped.
+    Checkpoint,
+    /// The session is saved, without a checkpoint.
     Save,
-    /// Delete the save (the player died on the way).
-    Drop,
-    Nothing,
 }
 
-/// The level-exit save rule. Levels 1 to 6 use the transition save unless
-/// the `CheckPoints` setting is off or the level is already in the save;
-/// level 6 also stamps the level's time. Past level 6 nothing is written
-/// here. A save that cannot be written leaves the exit unsaved.
-pub fn exit_save(rule: CheckpointRule, player_health: f32) -> ExitSave {
-    if rule.level >= 7 {
-        return ExitSave::Nothing;
-    }
-    if f64::from(player_health) < ALIVE_HEALTH {
-        return ExitSave::Drop;
-    }
-    if !rule.setting || rule.already_saved {
-        return ExitSave::Nothing;
-    }
-    if rule.can_save {
-        ExitSave::Save
+/// The level-exit save rule: every exit saves. Levels below 7 make a
+/// checkpoint when the `CheckPoints` setting is on (level 6 always asks for
+/// one) and the save holds neither `exanima04` nor the level yet; every
+/// other exit saves plainly.
+pub fn exit_save(rule: CheckpointRule) -> ExitSave {
+    let wanted = rule.level < 7 && (rule.setting || rule.level == 6);
+    if wanted && !rule.already_saved {
+        ExitSave::Checkpoint
     } else {
-        ExitSave::Nothing
+        ExitSave::Save
     }
 }
 
-/// The campaign level's locale. Level numbers are 1-based; an unknown number
-/// falls back to the first level (the original formats the number into the
-/// `exanima` name and loads the first level when the load fails).
-pub fn level_locale(level: u32) -> &'static str {
+/// The campaign level's locale, 1-based, or `None` for a number the locale
+/// table does not name (the exit then does nothing).
+pub fn level_locale(level: u32) -> Option<&'static str> {
     exa_script::story::CAMPAIGN
-        .get(level.saturating_sub(1) as usize)
+        .get(usize::try_from(level).ok()?.checked_sub(1)?)
         .copied()
-        .unwrap_or("exanima01")
 }
 
 /// The reconstruction state that can be rebuilt (a reconstruction device was
@@ -1589,11 +1587,11 @@ impl Flow {
             Action::StoryRespawn => self.story_respawn(now),
             Action::Revive => self.revive(now),
             Action::NextPracticeFight => self.practice_next(now),
-            Action::Locale(locale) => {
+            Action::Locale { locale, spawn } => {
                 self.phase = Phase::Playing;
                 vec![Step::LoadLevel {
                     locale,
-                    spawn: 0,
+                    spawn,
                     teardown: true,
                 }]
             }
@@ -1695,9 +1693,6 @@ impl Flow {
         others: &[u32],
     ) -> Vec<Step> {
         let player_condition = player.map_or(0, |p| p.condition);
-        if player_condition == DEAD {
-            return self.die(player.map_or(0.0, |p| p.health));
-        }
         match practice_round(
             self.phase,
             now,
@@ -1707,6 +1702,7 @@ impl Flow {
             self.practice.fight,
         ) {
             Some(RoundEnd::None) | None => Vec::new(),
+            Some(RoundEnd::PlayerDead) => self.die(player.map_or(0.0, |p| p.health)),
             Some(RoundEnd::Last) => {
                 self.phase = Phase::Won;
                 self.hook = Hook::None;
@@ -1724,7 +1720,7 @@ impl Flow {
                     steps.push(Step::Tip(6));
                 }
                 steps.push(Step::EndMenu(menu));
-                steps.push(Step::SessionTask(false));
+                steps.push(Step::Hook(Hook::None));
                 steps
             }
             Some(RoundEnd::Next) => {
@@ -1734,11 +1730,7 @@ impl Flow {
                 self.end_menu = Some(menu);
                 let tip = if self.practice.next_tip { 1 } else { 0 };
                 self.practice.next_tip = false;
-                vec![
-                    Step::Tip(tip),
-                    Step::EndMenu(menu),
-                    Step::SessionTask(false),
-                ]
+                vec![Step::Tip(tip), Step::EndMenu(menu), Step::Hook(Hook::None)]
             }
         }
     }
@@ -1804,7 +1796,7 @@ impl Flow {
         let mut steps = vec![
             Step::GameGui(false),
             Step::Controls(false),
-            Step::SessionTask(false),
+            Step::Hook(Hook::None),
         ];
         let alive = f64::from(health) >= ALIVE_HEALTH;
         steps.push(Step::Tip(if alive { 2 } else { 3 }));
@@ -1927,24 +1919,23 @@ impl Flow {
         steps
     }
 
-    /// The in-game quit and its autosave: an arena pause screen runs the
-    /// arena's own pause callback; a story session always saves (dropping the
-    /// save when the player is dead); the arena saves from its in-game page
-    /// and forfeits from its pause page; practice writes nothing. Going back
-    /// to the title runs behind the transition.
-    pub fn quit_session(&mut self, page: Page, now: u32) -> Vec<Step> {
+    /// The application's quit callback, which the session begin installs:
+    /// in the paused phase the arena unit's pause callback runs (whatever
+    /// the mode); while playing, the game's interface closes and the session
+    /// autosaves: a story always with the death rule (a dead player's save
+    /// is dropped), an arena from its in-game page without it, or a forfeit
+    /// from its pause page; practice writes nothing. `page` is the main
+    /// menu's page. Nothing returns to the title: the application is closing.
+    pub fn quit_session(&mut self, page: Page) -> Vec<Step> {
         let mut steps = Vec::new();
-        if self.phase == Phase::Paused && self.mode == Mode::Arena {
+        if self.phase == Phase::Paused {
             steps.push(Step::ArenaPaused);
         }
         if self.phase == Phase::Playing {
             steps.push(Step::GameGui(false));
             match self.mode {
-                // A reconstructed player has already been stripped: the quit
-                // saves without the death rule. Every other story quit saves
-                // with it.
                 Mode::Story => steps.push(Step::Save {
-                    drop_on_low_health: self.story.reconstruction != STRIPPED,
+                    drop_on_low_health: true,
                 }),
                 Mode::Arena => match page {
                     Page::InGame => steps.push(Step::Save {
@@ -1955,9 +1946,7 @@ impl Flow {
                 },
                 _ => {}
             }
-            steps.push(Step::SessionTask(false));
         }
-        steps.extend(self.transition(Action::QuitToMenu, now));
         steps
     }
 
@@ -2009,54 +1998,46 @@ impl Flow {
         steps
     }
 
-    /// The story level change (a trigger, a portal or a script). The level's
-    /// number names its locale; the save rule writes the transition save, the
-    /// fade bit hands the frame over, and the new level is loaded behind the
-    /// transition.
+    /// The story level change (a trigger, a portal or a script). Nothing
+    /// happens during a transition or for a level the locale table does not
+    /// name. Otherwise a player whose condition has neither dead bit loses
+    /// the controls, the game view goes, the save rule runs (every exit
+    /// saves; early levels also keep a checkpoint) and the new level loads at
+    /// the exit's spawn point behind the transition. The fade bit's effects
+    /// and AI hand-over and the locale's ambient music are the host's.
     pub fn level_exit(
         &mut self,
         exit: LevelExit,
         rule: CheckpointRule,
-        health: f32,
+        player_condition: u32,
         now: u32,
     ) -> Vec<Step> {
         if self.phase == Phase::Transition {
             return Vec::new();
         }
-        let locale = level_locale(exit.level);
+        let Some(locale) = level_locale(exit.level) else {
+            return Vec::new();
+        };
         let mut steps = Vec::new();
-        if self.phase == Phase::Playing {
+        if player_condition & DEAD == 0 {
             steps.push(Step::Controls(false));
-            steps.push(Step::GameGui(false));
         }
-        match exit_save(rule, health) {
-            ExitSave::Save => steps.push(Step::Save {
-                drop_on_low_health: false,
-            }),
-            ExitSave::Drop => steps.push(Step::DropSave),
-            ExitSave::Nothing => {}
-        }
-        if exit.flags & 1 == 1 {
-            steps.push(Step::GameGui(false));
-        }
-        steps.extend(self.transition(Action::Locale(locale), now));
-        steps.push(Step::LoadLevel {
-            locale,
-            spawn: exit.spawn,
-            teardown: true,
+        steps.push(Step::GameGui(false));
+        let checkpoint = exit_save(rule) == ExitSave::Checkpoint;
+        steps.push(Step::Save {
+            drop_on_low_health: false,
         });
+        if checkpoint {
+            steps.push(Step::Checkpoint);
+        }
+        steps.extend(self.transition(
+            Action::Locale {
+                locale,
+                spawn: exit.spawn,
+            },
+            now,
+        ));
         steps
-    }
-
-    /// The story's level-exit trigger: the story continues through the exit
-    /// and the save is a transition save when the level is new.
-    pub fn story_level_exit(
-        &mut self,
-        exit: LevelExit,
-        rule: CheckpointRule,
-        now: u32,
-    ) -> Vec<Step> {
-        self.level_exit(exit, rule, 1.0, now)
     }
 
     /// The title's EXIT: leave whatever session runs and quit.
@@ -2076,7 +2057,7 @@ impl Flow {
         if !exists {
             return Vec::new();
         }
-        self.transition(Action::Locale(locale), now)
+        self.transition(Action::Locale { locale, spawn: 0 }, now)
     }
 
     /// The class select's cancel: a scripted mode's end hook runs, then the
@@ -2397,9 +2378,8 @@ fn travel(
                 level: journey.level,
                 setting: true,
                 already_saved: false,
-                can_save: true,
             },
-            1.0,
+            0,
             now,
         );
         for step in steps {
@@ -2619,6 +2599,20 @@ mod tests {
             )
             .is_empty()
         );
+        // A dead player dies only once the guard second has passed and in
+        // the playing phase, as the round check's own branch.
+        let dead = Some(PlayerReading {
+            condition: DEAD,
+            health: 0.0,
+        });
+        flow.practice.start_ms = 5000;
+        assert!(flow.practice_tick(5999, dead, &[]).is_empty());
+        assert_eq!(flow.phase, Phase::Playing);
+        let steps = flow.practice_tick(6000, dead, &[]);
+        assert_eq!(flow.phase, Phase::Ended);
+        assert!(steps.contains(&Step::Hook(Hook::None)));
+        assert!(!steps.contains(&Step::SessionTask(false)));
+        assert!(flow.practice_tick(7000, dead, &[]).is_empty());
     }
 
     #[test]
@@ -2812,57 +2806,51 @@ mod tests {
     }
 
     #[test]
-    fn a_level_exit_saves_the_early_levels_only() {
+    fn every_level_exit_saves_and_early_ones_keep_a_checkpoint() {
         let rule = CheckpointRule {
-            level: 2,
+            level: 3,
             setting: true,
             already_saved: false,
-            can_save: true,
         };
-        assert_eq!(exit_save(rule, 0.2), ExitSave::Save);
-        assert_eq!(exit_save(rule, 0.0), ExitSave::Drop);
+        assert_eq!(exit_save(rule), ExitSave::Checkpoint);
+        // The setting off, or a save that already holds the level (or the
+        // fourth): a plain save.
+        let off = CheckpointRule {
+            setting: false,
+            ..rule
+        };
+        assert_eq!(exit_save(off), ExitSave::Save);
+        let held = CheckpointRule {
+            already_saved: true,
+            ..rule
+        };
+        assert_eq!(exit_save(held), ExitSave::Save);
+        // Level 6 asks for its checkpoint whatever the setting says.
         assert_eq!(
-            exit_save(
-                CheckpointRule {
-                    setting: false,
-                    ..rule
-                },
-                0.2
-            ),
-            ExitSave::Nothing
+            exit_save(CheckpointRule { level: 6, ..off }),
+            ExitSave::Checkpoint
         );
+        // Past level 6 every exit saves plainly.
         assert_eq!(
-            exit_save(
-                CheckpointRule {
-                    already_saved: true,
-                    ..rule
-                },
-                0.2
-            ),
-            ExitSave::Nothing
+            exit_save(CheckpointRule { level: 7, ..rule }),
+            ExitSave::Save
         );
-        assert_eq!(
-            exit_save(
-                CheckpointRule {
-                    can_save: false,
-                    ..rule
-                },
-                0.2
-            ),
-            ExitSave::Nothing
-        );
-        assert_eq!(
-            exit_save(CheckpointRule { level: 7, ..rule }, 0.2),
-            ExitSave::Nothing
-        );
-        assert_eq!(level_locale(1), "exanima01");
-        assert_eq!(level_locale(5), "exanima05");
-        assert_eq!(level_locale(99), "exanima01");
+        assert_eq!(level_locale(1), Some("exanima01"));
+        assert_eq!(level_locale(5), Some("exanima05"));
+        assert_eq!(level_locale(0), None);
+        assert_eq!(level_locale(99), None);
         let mut flow = Flow {
             mode: Mode::Story,
             phase: Phase::Playing,
             ..Default::default()
         };
+        // A level the table does not name does nothing.
+        let none = LevelExit {
+            level: 40,
+            spawn: 0,
+            flags: 0,
+        };
+        assert!(flow.level_exit(none, rule, 0, 1000).is_empty());
         let steps = flow.level_exit(
             LevelExit {
                 level: 3,
@@ -2870,33 +2858,45 @@ mod tests {
                 flags: 1,
             },
             rule,
-            0.2,
+            0,
             1000,
         );
-        assert!(steps.contains(&Step::Save {
-            drop_on_low_health: false
-        }));
-        assert!(steps.contains(&Step::LoadLevel {
-            locale: "exanima03",
-            spawn: 4,
-            teardown: true,
-        }));
-        assert!(steps.contains(&Step::Transition));
+        assert_eq!(
+            steps,
+            vec![
+                Step::Controls(false),
+                Step::GameGui(false),
+                Step::Save {
+                    drop_on_low_health: false
+                },
+                Step::Checkpoint,
+                Step::Transition,
+            ]
+        );
         assert_eq!(flow.phase, Phase::Transition);
         // A transition already up swallows another exit.
-        assert!(
-            flow.level_exit(
-                LevelExit {
-                    level: 4,
-                    spawn: 0,
-                    flags: 0
-                },
-                rule,
-                0.2,
-                1000
-            )
-            .is_empty()
+        let next = LevelExit {
+            level: 4,
+            spawn: 0,
+            flags: 0,
+        };
+        assert!(flow.level_exit(next, rule, 0, 1000).is_empty());
+        // The level loads at the exit's spawn point when the transition runs.
+        assert!(flow.transition_due(1099).is_none());
+        let steps = flow.transition_due(1100).unwrap();
+        assert_eq!(
+            steps,
+            vec![Step::LoadLevel {
+                locale: "exanima03",
+                spawn: 4,
+                teardown: true,
+            }]
         );
+        assert_eq!(flow.phase, Phase::Playing);
+        // A dead player keeps no controls to lose.
+        let steps = flow.level_exit(next, held, DEAD, 2000);
+        assert_eq!(steps[0], Step::GameGui(false));
+        assert!(!steps.contains(&Step::Checkpoint));
     }
 
     #[test]
@@ -3182,12 +3182,18 @@ mod tests {
         let steps = flow.resume();
         assert_eq!(flow.phase, Phase::Playing);
         assert!(steps.contains(&Step::Controls(true)));
-        let steps = flow.quit_session(Page::InGame, 100);
-        // A story quit saves with the death rule.
+        let steps = flow.quit_session(Page::InGame);
+        // The application quit's story autosave keeps the death rule, and
+        // nothing returns to the title.
         assert!(steps.contains(&Step::Save {
             drop_on_low_health: true
         }));
-        assert!(steps.contains(&Step::Transition));
+        assert!(!steps.contains(&Step::Transition));
+        // The quit to the title runs behind the transition.
+        assert_eq!(
+            flow.transition(Action::QuitToMenu, 100),
+            vec![Step::Transition]
+        );
         let steps = flow.transition_due(200).unwrap();
         assert_eq!(flow.mode, Mode::Menu);
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
@@ -3313,7 +3319,7 @@ mod tests {
             phase: Phase::Playing,
             ..Default::default()
         };
-        let steps = flow.quit_session(Page::InGame, 10);
+        let steps = flow.quit_session(Page::InGame);
         assert!(steps.contains(&Step::Save {
             drop_on_low_health: false
         }));
@@ -3323,20 +3329,22 @@ mod tests {
             phase: Phase::Playing,
             ..Default::default()
         };
-        let steps = flow.quit_session(Page::ArenaPause, 10);
+        let steps = flow.quit_session(Page::ArenaPause);
         assert!(steps.contains(&Step::Forfeit));
         assert!(!steps.contains(&Step::Save {
             drop_on_low_health: false
         }));
-        // A paused arena quit runs the arena's pause callback first.
-        let mut flow = Flow {
-            mode: Mode::Arena,
-            phase: Phase::Paused,
-            ..Default::default()
-        };
-        let steps = flow.quit_session(Page::InGame, 10);
-        assert_eq!(steps.first(), Some(&Step::ArenaPaused));
-        // A stripped story player's quit saves without the death rule.
+        // A paused quit runs the arena unit's pause callback, in any mode,
+        // and saves nothing.
+        for mode in [Mode::Arena, Mode::Story] {
+            let mut flow = Flow {
+                mode,
+                phase: Phase::Paused,
+                ..Default::default()
+            };
+            assert_eq!(flow.quit_session(Page::InGame), vec![Step::ArenaPaused]);
+        }
+        // A stripped story player's quit keeps the death rule too.
         let mut flow = Flow {
             mode: Mode::Story,
             phase: Phase::Playing,
@@ -3346,9 +3354,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let steps = flow.quit_session(Page::InGame, 10);
+        let steps = flow.quit_session(Page::InGame);
         assert!(steps.contains(&Step::Save {
-            drop_on_low_health: false
+            drop_on_low_health: true
         }));
         // A practice quit writes no save.
         let mut flow = Flow {
@@ -3356,9 +3364,8 @@ mod tests {
             phase: Phase::Playing,
             ..Default::default()
         };
-        let steps = flow.quit_session(Page::InGame, 10);
-        assert!(!steps.iter().any(|step| matches!(step, Step::Save { .. })));
-        assert!(steps.contains(&Step::Transition));
+        let steps = flow.quit_session(Page::InGame);
+        assert_eq!(steps, vec![Step::GameGui(false)]);
     }
 
     #[test]
