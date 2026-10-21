@@ -202,6 +202,18 @@ pub fn ragdoll_state(state: PartState) -> PartState {
     state.with(PartState::MUSCLED)
 }
 
+/// A struck part waits this long, plus a draw below [`PART_SOUND_SPREAD_MS`],
+/// before its impact sound may play again.
+pub const PART_SOUND_WAIT_MS: u32 = 300;
+/// The draw a blow takes for the struck part's sound clock: 0 up to 149.
+pub const PART_SOUND_SPREAD_MS: u32 = 150;
+
+/// The game clock when a struck part may sound again: `now_ms` plus 300 ms,
+/// less `spread` (a draw below 150). The sum is the original's 32-bit clock.
+pub fn part_sound_ready(now_ms: u32, spread: u32) -> u32 {
+    now_ms.wrapping_add(PART_SOUND_WAIT_MS).wrapping_sub(spread)
+}
+
 /// Stamps the sound cooldown `stamp` on a part, its first-child
 /// chain and its weapon ancestors: the part, each first
 /// child down the chain, then each parent while it is a striking weapon
@@ -1174,6 +1186,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_struck_part_sounds_again_300_ms_minus_the_draw() {
+        assert_eq!(part_sound_ready(1_000, 0), 1_300);
+        assert_eq!(part_sound_ready(1_000, 149), 1_151);
+        assert_eq!(part_sound_ready(u32::MAX, 0), 299);
+        // Seed 0 stepped once, then a draw below 150: the state is
+        // 0x08088406 and the high half of that times 150 is 18.
+        let mut seed = 0u32;
+        seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+        seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let spread = ((u64::from(seed) * u64::from(PART_SOUND_SPREAD_MS)) >> 32) as u32;
+        assert_eq!(spread, 18);
+        assert_eq!(part_sound_ready(0, spread), 282);
+    }
+
     fn a_sound_cooldown_stamps_the_first_chain_and_weapon_parents() {
         // 0 (striking weapon) ← 1 (striking) ← 2, with first children
         // 0→3→4.

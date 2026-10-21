@@ -313,6 +313,9 @@ pub struct Part {
     /// controller), which the body tick sets bits of (bit 4 marks a part
     /// in a tangle or a hit reaction).
     pub state_word: u32,
+    /// When this part may play its impact sound again, on the 32-bit game
+    /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
+    pub sound_ready_ms: u32,
 }
 
 /// The share of a push at a point of a body that acts, as the original's
@@ -443,6 +446,7 @@ impl Part {
             static_only: false,
             class_word: 0,
             state_word: 0,
+            sound_ready_ms: 0,
         }
         .settle()
     }
@@ -1776,6 +1780,14 @@ impl Ragdoll {
             (0..self.parts.len()).map(|i| self.first_child(i)).collect();
         for child in first.into_iter().flatten() {
             self.parts[child].state.0 &= !crate::part::PartState::STRIKE_CHAIN;
+        }
+    }
+
+    /// Stamps the impact-sound clock on the part of `bone`. A bone with no
+    /// part leaves the body as it is.
+    pub fn mark_part_sound(&mut self, bone: usize, ready_ms: u32) {
+        if let Some(part) = self.parts.iter_mut().find(|p| p.bone == bone) {
+            part.sound_ready_ms = ready_ms;
         }
     }
 

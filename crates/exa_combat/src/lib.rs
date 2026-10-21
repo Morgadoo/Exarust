@@ -60,6 +60,7 @@ use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
+use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
 pub use fighter::{
     Damage, DamageTaken, Fighter, Health, LowAnswer, SecondWind, SecondWindFired, StoryMode, Taken,
@@ -681,8 +682,13 @@ fn react_to_hits(
                     break 'struck Some(StrikerReaction::Blocked(outcome));
                 }
             }
-            // The struck part's sound cooldown draws from the generator.
-            let _ = roll.below(PART_SOUND_SPREAD_MS);
+            // A blow on flesh stamps the struck part: the game clock plus
+            // 300 ms, less a draw below 150. A turned blow still stamps.
+            // A body with no part for the bone keeps the draw.
+            let spread = roll.below(PART_SOUND_SPREAD_MS);
+            if let Some(body) = body.as_mut() {
+                body.mark_part_sound(hit.bone, part_sound_ready(now as u32, spread));
+            }
             if flags.has(StateFlags::TURNS_BLOWS) {
                 // The blow is turned: the striker recoils, nothing is dealt. The
                 // blow sag was set with the armour, before the turn, so the
@@ -869,7 +875,7 @@ fn react_to_hits(
             }
             Some(StrikerReaction::Wounded(outcome))
         };
-        if let Some(reaction) = reaction
+        let shield_spread = if let Some(reaction) = reaction
             && let Ok((_, f, .., Some(mut state), _)) = fighters.get_mut(hit.attacker)
         {
             let striker = swing::Striker {
@@ -881,7 +887,16 @@ fn react_to_hits(
                 slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
                 now_ms: now as i32,
             };
-            strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            strike_back(&mut state, &striker, hit, reaction, &mut roll)
+        } else {
+            None
+        };
+        // The shield's first ring in a swing stamps the same clock. The
+        // attacker is borrowed above, so the victim is stamped after.
+        if let Some(spread) = shield_spread
+            && let Ok((_, _, _, _, _, _, _, Some(mut body), _, _)) = fighters.get_mut(hit.target)
+        {
+            body.mark_part_sound(hit.bone, part_sound_ready(now as u32, spread));
         }
     }
     for (e, _, _, _, anim, attacking, ..) in &fighters {
@@ -894,15 +909,16 @@ fn react_to_hits(
 /// The striker's swing after a contact: a wound cleaves on or bogs down; a
 /// parry or a shield recoils a striker under the large size, and a body
 /// that turns blows any striker. A clash rings the weapon once a swing; a
-/// shield the weapon and then the shield, whose sound cooldown draws from
-/// the generator.
+/// shield the weapon and then the shield. The shield's first ring in a
+/// swing draws its sound cooldown and returns that draw, for the struck
+/// part's clock.
 fn strike_back(
     state: &mut SwingState,
     striker: &swing::Striker,
     hit: &Hit,
     reaction: StrikerReaction,
     roll: &mut Roll,
-) {
+) -> Option<u32> {
     let small = f64::from(striker.size) < swing::LARGE_STRIKER;
     match reaction {
         StrikerReaction::Wounded(blow) => {
@@ -917,6 +933,7 @@ fn strike_back(
                     hit.attacker, blow.bite
                 );
             }
+            None
         }
         StrikerReaction::Clashed {
             blow,
@@ -927,6 +944,7 @@ fn strike_back(
                 state.recoil_from(blow.speed, hit.weapon.recoil, striker);
             }
             state.flags |= swing::flags::WEAPON_RUNG;
+            None
         }
         StrikerReaction::Blocked(blow) => {
             if small {
@@ -935,11 +953,14 @@ fn strike_back(
             state.flags |= swing::flags::WEAPON_RUNG;
             if state.flags & swing::flags::SHIELD_RUNG == 0 {
                 state.flags |= swing::flags::SHIELD_RUNG;
-                let _ = roll.below(PART_SOUND_SPREAD_MS);
+                Some(roll.below(PART_SOUND_SPREAD_MS))
+            } else {
+                None
             }
         }
         StrikerReaction::Turned(blow) => {
             state.recoil_from(blow.speed, hit.weapon.recoil, striker);
+            None
         }
     }
 }
@@ -968,9 +989,6 @@ fn answer_low(
     }
 }
 
-/// The struck part's sound cooldown spreads over this many ms (it draws
-/// from the generator once a blow on flesh).
-const PART_SOUND_SPREAD_MS: u32 = 150;
 /// An armed blow that bites in deeper sticks the weapon in the part.
 const BITES_FROM: f32 = 0.1;
 
@@ -1659,6 +1677,121 @@ mod tests {
             &mut roll,
         );
         assert_eq!(roll.0, Roll::default().0);
+    }
+
+    fn one_part(bone: usize) -> Ragdoll {
+        Ragdoll::new(&[exa_physics::body::PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            spheres: None,
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        }])
+    }
+
+    fn part_clock(app: &App, fighter: Entity, bone: usize) -> u32 {
+        app.world()
+            .get::<Ragdoll>(fighter)
+            .unwrap()
+            .parts
+            .iter()
+            .find(|p| p.bone == bone)
+            .unwrap()
+            .sound_ready_ms
+    }
+
+    /// A blow on flesh stamps the struck part's sound clock: the game clock
+    /// plus 300 ms, less the draw below 150 that follows the armour roll.
+    /// Seed 0, stepped once and then drawn below 150, is 18, so at clock 0
+    /// the part is ready at 282. A turned blow stamps the same clock. A
+    /// shield's first ring draws before any armour roll (spread 0, ready at
+    /// 300) and a second block of that swing leaves the clock. A bone with
+    /// no part leaves the body as it is.
+    #[test]
+    fn a_blow_stamps_the_struck_parts_sound_clock() {
+        let mut roll = Roll::default();
+        let _ = roll.next();
+        let spread = roll.below(PART_SOUND_SPREAD_MS);
+        assert_eq!(spread, 18);
+        assert_eq!(part_sound_ready(0, spread), 282);
+
+        let mut app = reactions();
+        app.insert_resource(BodyTicks(100));
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                one_part(9),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), part_sound_ready(1_200, spread));
+        assert_eq!(part_clock(&app, victim, 9), 1_482);
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                StateFlags(StateFlags::TURNS_BLOWS),
+                one_part(9),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), 282);
+        assert_eq!(
+            app.world().get::<Fighter>(victim).unwrap().health.yellow,
+            Fighter::default().health.yellow
+        );
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                one_part(1),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 1), 0);
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let mut shielded = Fighter::default();
+        shielded.guard = damage::Guard::Shield(damage::ShieldGuard::default());
+        let victim = app
+            .world_mut()
+            .spawn((shielded, Animator::new("Default", "Idle"), one_part(9)))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        let mut shield_roll = Roll::default();
+        let shield_spread = shield_roll.below(PART_SOUND_SPREAD_MS);
+        assert_eq!(shield_spread, 0);
+        assert_eq!(
+            part_clock(&app, victim, 9),
+            part_sound_ready(0, shield_spread)
+        );
+        assert_eq!(part_clock(&app, victim, 9), 300);
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), 300);
+        assert!(
+            app.world()
+                .get::<SwingState>(attacker)
+                .unwrap()
+                .has(swing::flags::SHIELD_RUNG)
+        );
     }
 
     /// A sword cut that wounds but does not kill starts no clip: a bare

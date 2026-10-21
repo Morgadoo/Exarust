@@ -157,6 +157,7 @@ impl Part {
             static_only: false,
             class_word: 0,
             state_word: 0,
+            sound_ready_ms: 0,
         }
         .settle()
     }

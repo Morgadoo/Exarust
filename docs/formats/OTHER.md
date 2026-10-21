@@ -1715,8 +1715,11 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
   the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
 - Applying a blow: see Applying damage below.
-- A blow on flesh draws one more number from the generator (the struck
-  part's sound cooldown, 300 − 0..150 ms; not kept in Exarust).
+- A blow on flesh draws one more number from the generator and stamps
+  the struck part's sound clock (`exa_physics::part::part_sound_ready`):
+  the game clock plus 300 ms, less a draw below 150. A blow the body
+  then turns still stamps it. A shield's first ring in a swing draws
+  the same number and stamps that same clock.
 - A body whose state flag 0x400 is set turns the blow: nothing is dealt
   (no push, daze or wound) and the striker recoils whatever its size; the
   blow sag the armour pass set before the turn stays (what sets the flag
@@ -1763,7 +1766,8 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
 - A clash and a block set the swing's weapon-sound bit 0x1000 (the
   weapon's hit sound once a swing); a block sets the shield-sound bit
   0x200 once a swing (a wound's bits already hold it) and then draws the
-  shield's sound cooldown from the generator (300 − 0..150 ms).
+  shield's sound cooldown from the generator (300 − 0..150 ms) onto the
+  struck part's sound clock.
 - The routine runs per contact: each contact's striker is dealt right
   after its struck side, before the frame's next contact, so two fighters
   wounding each other in one frame take a follow-through before the other
