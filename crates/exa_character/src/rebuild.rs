@@ -76,27 +76,64 @@ impl Rebuild {
     }
 }
 
-/// The dressed-mesh plan: the chosen node of
-/// each slot, the body slots still drawn, and the merge order through the
-/// tree.
+/// One worn garment as the dressed-mesh pass takes it: the roots of its
+/// node trees in the body, its occupancy and coverage words per slot
+/// (slot 1 first) and the slots it has nodes in (bit `slot - 1`).
 #[derive(Clone, Debug, PartialEq)]
-pub struct DressPlan {
+pub struct WornGarment {
+    pub roots: Vec<usize>,
+    pub occupancy: [u64; 18],
+    pub coverage: [u64; 18],
+    pub slots: u32,
+}
+
+/// One garment's part of the dressed mesh: its chosen node per slot, its
+/// visible mask (for the cull bits) and its nodes in merge order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GarmentMerge {
     pub chosen: [Option<usize>; 19],
     pub visible: u32,
     pub merge: Vec<usize>,
 }
 
-/// Plans a dressed body from the garment coverage words:
-/// assemble the slots, compute the visible body slots, then merge the
-/// chosen parts in body order.
-pub fn dress_plan(body: &Body, coverage: &[u64; 19], visibility: &[u32; 18]) -> DressPlan {
-    let roots = body.roots();
-    let selection = crate::layers::assemble_all(body, &roots, coverage, visibility);
-    let merge = body.merge_order(&selection.chosen, selection.visible);
+/// The dressed-mesh plan: each garment's merge, in the order given (the
+/// builder's layer-level order), and the body's visible mask and the body
+/// slots it still merges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DressPlan {
+    pub garments: Vec<GarmentMerge>,
+    pub body_visible: u32,
+    pub body_slots: u32,
+}
+
+/// Plans a dressed body: the coverage union of the worn set, then for each
+/// garment its coverage pass, slot assembly and merge order, then the body
+/// mask from the union.
+pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
+    use crate::layers;
+    let mut union = [0u64; 18];
+    for g in garments {
+        for (u, w) in union.iter_mut().zip(&g.coverage) {
+            *u |= w;
+        }
+    }
+    let garments = garments
+        .iter()
+        .map(|g| {
+            let pass = layers::garment_pass(&g.occupancy, &union, g.slots);
+            let chosen = layers::assemble_garment(body, &g.roots, &pass);
+            GarmentMerge {
+                chosen,
+                visible: pass.visible,
+                merge: body.merge_order(&chosen, u32::MAX),
+            }
+        })
+        .collect();
+    let body_visible = layers::visible_body_slots(&union);
     DressPlan {
-        chosen: selection.chosen,
-        visible: selection.visible,
-        merge,
+        garments,
+        body_visible,
+        body_slots: layers::drawn_body_slots(body_visible),
     }
 }
 
@@ -244,18 +281,30 @@ mod tests {
         assert_eq!(Rebuild::heights(1.0), (98.25, 97.25));
     }
 
+    /// A garment of a pelvis (layer bits `00`, occupancy `0x01`) with a
+    /// chest under it: the pelvis scores 16 against an empty cover, is
+    /// chosen, and merges with the chest mesh below it; nothing hides a
+    /// body part.
     #[test]
     fn the_dress_plan_assembles_and_orders_the_merge() {
         let mut b = body();
         b.nodes[0].mesh = true;
         b.nodes[1].mesh = true;
-        let mut coverage = [0u64; 19];
-        coverage[1] = 1;
-        let visibility = [!0u32; 18];
-        let plan = dress_plan(&b, &coverage, &visibility);
-        assert_eq!(plan.chosen[1], Some(0));
-        assert_eq!(plan.merge, [0, 1]);
-        assert_eq!(plan.visible, !0);
+        let mut occupancy = [0u64; 18];
+        occupancy[0] = 0x01;
+        let garment = WornGarment {
+            roots: vec![0],
+            occupancy,
+            coverage: occupancy,
+            slots: crate::layers::slot_bit(1),
+        };
+        let plan = dress_plan(&b, &[garment]);
+        assert_eq!(plan.garments[0].chosen[1], Some(0));
+        assert_eq!(plan.garments[0].merge, [0, 1]);
+        // The pelvis holds none of its partial mask, so its partial bit goes.
+        assert_eq!(plan.garments[0].visible & 0x10_0001, 0x1);
+        assert_eq!(plan.body_visible, !0);
+        assert_eq!(plan.body_slots, 0x3_FFFF);
     }
 
     #[test]
