@@ -536,3 +536,37 @@ its inner width over one more than the steps, at least 4 units); keys and
 the stick step it, a continuous bar moving by a hundredth of a stick
 axis (a float; the sum is taken in double precision). A picture is its
 texture's size over 12, in units, centred.
+
+## Item windows
+
+The item GUI's rules, read by REA from the original's item panel, icon
+cache, inventory, arsenal and item-card code. None of these windows is
+drawn yet: the rules wait for the forms that will show them.
+
+- **Panel entries** (`exa_game::item_container`): an entry is drawn
+  unless it is dragged, held (`0x100`, the item in a hand) or has no icon,
+  tinted green by the panel's green mask, yellow at half opacity by the
+  yellow mask alone, green at half opacity by both, else black. A load
+  keeps each icon's centre its half extent inside the panel (right, left,
+  bottom, top); replacing an entry's item moves its bulk and keeps it
+  inside (right, left, top, bottom). An item given back to an open pack
+  that still lists it as held is shown again; the dragged entry taken
+  into a hand becomes held. A looted body's worn panel scatters its
+  items and shield over the middle half of the panel and relaxes them in
+  four rounds (overlap ÷ 6, 5, 4, 3, twice each). A map opens as a
+  parchment of its texture's size in sixths of a unit.
+- **Inventory** (`exa_items::inventory_window`): 244 × 644 units (628
+  compact, 590 inside the arsenal), the doll above a 228 × 180 pack of
+  capacity 400 and items up to 50; worn items count against the pack.
+  A right-button release closes it.
+- **Arsenal** (`exa_items::arsenal`): up to five 236-unit columns, 60 units
+  apart, scrolled by two arrows; borrowed items stay in their column
+  marked `0x200` until returned.
+- **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
+  item and variant (lit models by their condition byte), counted by
+  reference; 40 units square; framed at 70 (30 for apparel, 20 close),
+  the weapon light preset for weapons, and given a one-pixel alpha halo
+  (the highlighted one also lifts green). Cards show rating dots (whole
+  up to the value less a quarter, then a half dot), a slider, coin groups
+  and crystal sockets; a popup opens centred on the cursor, its bottom 8
+  units below it.
