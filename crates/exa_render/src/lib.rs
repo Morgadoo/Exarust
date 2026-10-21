@@ -3,9 +3,11 @@
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
 pub mod bound_sphere;
+pub mod capture;
 pub mod cube_shadows;
 pub mod electricity;
 pub mod flame;
+pub mod geometry;
 pub mod gi;
 pub mod glow;
 pub mod image_noise;
@@ -17,6 +19,7 @@ pub mod passes;
 pub mod post;
 pub mod quads;
 pub mod quality;
+pub mod queue;
 pub mod shader_program;
 pub mod shader_template;
 pub mod shader_uniforms;

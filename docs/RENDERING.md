@@ -210,6 +210,15 @@ highest opacity; the opacity to beat starts at −1 for each slot and is
 reset neither by a lower layer nor by the first state found by layer
 alone, so an opacity seen earlier in the scan still has to be beaten.
 
+`passes::state_list` is the factory's list choice from a material's flag
+word: `0x10000` first (the decal list), then `0x8000` (the alpha-tested
+list), then the low nibble (0 opaque, 1–4 blended, anything else no
+state); the second renderer mode sends every class but a blending nibble
+to its `+0xC8` list. `queue::DrawQueue` keeps the deferred draws: at most
+1023 entries, one bucket per light count (the sector chain's on lights
+weighing at least 0.004, capped at six), flushed bucket by bucket in
+first-seen order.
+
 Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
 the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
 for the depth-write-free classes and the particles. The clear is the
@@ -2007,3 +2016,22 @@ running action is ended by the next press and decides its release, and in a
 view drag it gets the moves until it answers 0x80. Exarust renders its
 still through `exa_render::supersample`; these rules are ready for a
 viewport that hosts a view inside a form.
+
+## Still capture and vertex layouts
+
+`exa_render::capture` is the still-image path: eight jittered samples, each
+blended in at `1 − 1/(index + 1)` with a projection offset of twice its
+jitter, then the post chain and a half-size downsample (`width >> 1`,
+`height >> 1`) to RGBA8. The plain downsample sharpens with the original's
+4-tap contrast term (`a · 48`, `1 − a²`, a quarter of the neighbour sum);
+the icon variant also widens alpha from the four texels three pixels away.
+The first four jitter pairs are the recorded bytes; the rest are a
+labelled guess.
+
+`exa_render::geometry` holds the original's planar vertex layouts and
+index batches: position, texture (two or three floats), colour, normal,
+tangent, morph and second texture in allocation order, attribute
+locations 0/1/2/3/4/6/7, and index batches with 1-, 2- or 4-byte indices
+behind a 12-byte CPU header (or a 20-byte GPU header with 16-byte batch
+records). Bevy's mesh allocator and per-pipeline layouts take their place
+in the running renderer.

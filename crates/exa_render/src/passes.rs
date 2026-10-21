@@ -88,7 +88,6 @@ impl Pass {
                 | Self::ParticleDepth
         )
     }
-
     /// The Bevy phase or node that stands in for the pass. `None` marks a
     /// pass Exarust has no separate equivalent for.
     pub fn bevy_phase(self) -> Option<&'static str> {
@@ -204,6 +203,60 @@ pub fn group_by_key(entries: &[RenderEntry]) -> Vec<RenderEntry> {
         }
     }
     out
+}
+
+/// The render-state list a material's flag word files it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateList {
+    /// Opaque, drawn with depth writes on (list `+0xB8`).
+    Opaque,
+    /// The alpha-tested class (list `+0xE8`).
+    AlphaTest,
+    /// The decal class, drawn after depth writes go off (list `+0xC8`).
+    Decal,
+    /// Blended (list `+0xF8`).
+    Blend,
+    /// The second renderer mode's decal/opaque list (`+0xC8`).
+    SecondDecal,
+    /// The second renderer mode's blended list (`+0x108`).
+    SecondBlend,
+}
+
+/// The list a material's flag word picks, or `None` when the word gets no
+/// state (a low nibble above 4 in the first renderer mode).
+///
+/// The original checks the bits in this order: `0x10000` first, then
+/// `0x8000`, then the low nibble. In the second renderer mode (`+0x1FC`
+/// non-zero) every class but a blending nibble 1–4 goes to the `+0xC8`
+/// list, which is drawn after depth writes are switched off.
+pub fn state_list(flags: u32, second_mode: bool) -> Option<StateList> {
+    if flags & 0x10000 != 0 {
+        return Some(if second_mode {
+            StateList::SecondDecal
+        } else {
+            StateList::Decal
+        });
+    }
+    if flags & 0x8000 != 0 {
+        return Some(if second_mode {
+            StateList::SecondDecal
+        } else {
+            StateList::AlphaTest
+        });
+    }
+    match flags & 0xF {
+        0 => Some(if second_mode {
+            StateList::SecondDecal
+        } else {
+            StateList::Opaque
+        }),
+        1..=4 => Some(if second_mode {
+            StateList::SecondBlend
+        } else {
+            StateList::Blend
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -330,5 +383,29 @@ mod tests {
         let order: Vec<u32> = group_by_key(&entries).iter().map(|e| e.material).collect();
         assert_eq!(order, [0, 1, 4, 3, 2]);
         assert!(group_by_key(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_flag_word_picks_the_state_list() {
+        // First renderer mode: the bit order is 0x10000, 0x8000, nibble.
+        assert_eq!(state_list(0x10000, false), Some(StateList::Decal));
+        assert_eq!(state_list(0x18000, false), Some(StateList::Decal));
+        assert_eq!(state_list(0x8000, false), Some(StateList::AlphaTest));
+        assert_eq!(state_list(0x8001, false), Some(StateList::AlphaTest));
+        assert_eq!(state_list(0x0000, false), Some(StateList::Opaque));
+        assert_eq!(state_list(0x0004, false), Some(StateList::Blend));
+        for nibble in 1..=4 {
+            assert_eq!(state_list(nibble, false), Some(StateList::Blend));
+        }
+        // 5 and above create no state at all.
+        assert_eq!(state_list(5, false), None);
+        assert_eq!(state_list(0xF, false), None);
+        // Second mode: only a blending nibble 1–4 differs.
+        assert_eq!(state_list(0x10000, true), Some(StateList::SecondDecal));
+        assert_eq!(state_list(0x8000, true), Some(StateList::SecondDecal));
+        assert_eq!(state_list(0, true), Some(StateList::SecondDecal));
+        assert_eq!(state_list(1, true), Some(StateList::SecondBlend));
+        assert_eq!(state_list(4, true), Some(StateList::SecondBlend));
+        assert_eq!(state_list(5, true), None);
     }
 }
