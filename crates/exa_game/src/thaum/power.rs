@@ -5,9 +5,10 @@
 //! ([`mind`], [`force`], [`energy`], [`displacement`]).
 //!
 //! - **Base** ([`PowerBase`]): a power holds the focus it has taken
-//!   (its held focus), its state (1 ready, 0 running, 2 ending) and its id. Taking
-//!   focus adds it to what the body has spent, three quarters with the
-//!   reserve technique; releasing it subtracts the same amount. The
+//!   (its held focus), its state (1 ready, 0 running, 2 ending) and its id.
+//!   Taking focus adds it to the body's reserve and to what it has spent,
+//!   three quarters with the reserve technique; releasing it takes the held
+//!   amount back off the reserve only. The
 //!   original's control event 2 marks a power ending and answers 0 for that
 //!   tick; the next tick releases what it held and answers 2. A persistent
 //!   power (id bit `0x2_0000`) publishes a HUD state: 2 while it runs, 12
@@ -36,7 +37,9 @@ pub mod energy;
 pub mod force;
 pub mod mind;
 
-use super::casting::{AiView, CastBody, ID_MASK, PERSISTENT, RESERVE_TECHNIQUE, code, spend_tick};
+use super::casting::{
+    AiView, CastBody, ID_MASK, PERSISTENT, code, release_reserve, reserve, spend_tick,
+};
 use super::force::restore_force_power;
 
 /// The original's power states: a power starts ready, runs, and ends.
@@ -129,22 +132,20 @@ impl PowerBase {
     }
 
     /// Takes `cost` of focus for the power and keeps it until the power
-    /// ends. The reserve technique takes three quarters. Returns what was
-    /// taken.
+    /// ends: the body's reserve and spent focus both grow by it, three
+    /// quarters with the reserve technique ([`reserve`]), and so does what
+    /// the power holds. Returns what was taken.
     pub fn accrue(&mut self, body: &mut CastBody, cost: f32) -> f32 {
-        let amount = if body.techniques & RESERVE_TECHNIQUE != 0 {
-            cost * 0.75
-        } else {
-            cost
-        };
-        body.spent += amount;
+        let amount = reserve(body, cost);
         self.held += amount;
         amount
     }
 
-    /// Returns the focus the power holds to the pool's spent count.
-    pub fn release(&mut self, body: &mut CastBody) {
-        body.spent -= self.held;
+    /// Gives what the power holds back to the body's reserve
+    /// ([`release_reserve`]); the spent focus is left to the pool's own
+    /// recovery.
+    pub fn release(&self, body: &mut CastBody) {
+        release_reserve(body, self.held);
     }
 
     /// One control tick: event 2 marks the power ending and answers 0; a
@@ -440,7 +441,7 @@ pub const STARTED: i32 = code::STARTED;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thaum::casting::ActivePower;
+    use crate::thaum::casting::{ActivePower, RESERVE_TECHNIQUE};
 
     #[test]
     fn the_base_power_holds_its_cost_and_returns_it() {
@@ -449,11 +450,16 @@ mod tests {
         assert_eq!(power.accrue(&mut body, 0.35), 0.35);
         assert_eq!(power.held, 0.35);
         assert_eq!(body.spent, 0.35);
+        assert_eq!(body.reserved, 0.35);
         body.techniques = RESERVE_TECHNIQUE;
         assert_eq!(power.accrue(&mut body, 0.4), 0.3);
         assert!((body.spent - 0.65).abs() < 1e-6);
+        assert!((body.reserved - 0.65).abs() < 1e-6);
+        // Releasing returns the reserve; the spent focus stays for the
+        // pool to recover.
         power.release(&mut body);
-        assert!(body.spent.abs() < 1e-6);
+        assert!(body.reserved.abs() < 1e-6);
+        assert!((body.spent - 0.65).abs() < 1e-6);
     }
 
     #[test]
@@ -470,7 +476,8 @@ mod tests {
         assert_eq!(power.control(2, &mut body), 0);
         assert_eq!(power.state, ENDING);
         assert_eq!(power.control(0, &mut body), 2);
-        assert_eq!(body.spent, 0.0);
+        assert_eq!(body.reserved, 0.0);
+        assert_eq!(body.spent, 0.5);
     }
 
     #[test]

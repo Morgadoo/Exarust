@@ -264,13 +264,13 @@ mod tests {
         let mut body = CastBody::default();
         let mut weapons = ShockWeapons::new();
         weapons.held = 0.3;
-        body.spent = 0.3;
+        body.reserved = 0.3;
         assert!(weapons.control(0, &mut body).motion);
         assert_eq!(weapons.state, super::super::RUNNING);
         assert_eq!(weapons.control(0, &mut body).result, 0);
         let end = weapons.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.cleared && end.released);
-        assert_eq!(body.spent, 0.0);
+        assert_eq!(body.reserved, 0.0);
     }
 }

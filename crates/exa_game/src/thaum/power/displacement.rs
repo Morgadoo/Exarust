@@ -636,7 +636,7 @@ mod tests {
         let mut body = CastBody::default();
         let mut power = ConstantDisplacement::new();
         power.held = 0.35;
-        body.spent = 0.35;
+        body.reserved = 0.35;
         for _ in 0..100 {
             power.grow();
         }
@@ -645,7 +645,7 @@ mod tests {
         let end = power.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.released && end.closing);
-        assert_eq!(body.spent, 0.0);
+        assert_eq!(body.reserved, 0.0);
     }
 
     #[test]

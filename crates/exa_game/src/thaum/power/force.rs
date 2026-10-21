@@ -667,7 +667,7 @@ mod tests {
         let mut body = CastBody::default();
         let mut shell = Shell::new();
         shell.held = 0.35;
-        body.spent = 0.35;
+        body.reserved = 0.35;
         shell.apply(&mut body);
         assert_eq!(body.hit_damping, 0.5);
         let first = shell.control(0, &mut body);
@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(end.result, 2);
         assert!(end.released);
         assert_eq!(body.hit_damping, 0.0);
-        assert_eq!(body.spent, 0.0);
+        assert_eq!(body.reserved, 0.0);
     }
 
     #[test]
@@ -787,7 +787,7 @@ mod tests {
 
         let mut ending = Throw::new(1.0);
         ending.held = 0.1;
-        body.spent = 0.1;
+        body.reserved = 0.1;
         let end = ending.control(2, 0, false, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.restore);

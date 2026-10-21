@@ -15,7 +15,7 @@
 //! 0x20_0000 ... ).
 
 use super::PowerBase;
-use crate::thaum::casting::{CastBody, code};
+use crate::thaum::casting::{CastBody, code, release_reserve};
 
 /// The bit a masked mind carries in the body's status word.
 pub const MASKED: u32 = 0x0001_0000;
@@ -126,7 +126,7 @@ impl MindSense {
         }
         if self.state == super::ENDING {
             if 0.0 < self.held {
-                body.spent -= self.held;
+                release_reserve(body, self.held);
             }
             self.overlay = false;
             2
@@ -225,7 +225,7 @@ impl MindMask {
         if self.state == super::ENDING {
             body.status_bits &= !MASKED;
             if 0.0 < self.held {
-                body.spent -= self.held;
+                release_reserve(body, self.held);
             }
             2
         } else {
@@ -1092,7 +1092,7 @@ mod tests {
         let mut body = CastBody::default();
         let mut loyalty = LoyaltyCaster::new();
         loyalty.held = 0.4;
-        body.spent = 0.4;
+        body.reserved = 0.4;
         let bound = loyalty.control(0, Some((7, 0)), &mut body);
         assert_eq!(bound.link, Some(7));
         assert_eq!(loyalty.state, super::super::RUNNING);
@@ -1101,7 +1101,7 @@ mod tests {
         let cleanup = loyalty.control(2, Some((7, 0)), &mut body);
         assert_eq!(cleanup.result, 2);
         assert!(cleanup.released && cleanup.unlink);
-        assert_eq!(body.spent, 0.0);
+        assert_eq!(body.reserved, 0.0);
     }
 
     #[test]
@@ -1181,7 +1181,7 @@ mod tests {
         // A gone target releases the binding at once.
         let mut other = ControlMindCaster::new(0.35, 0);
         other.held = 0.35;
-        body.spent = 0.35;
+        body.reserved = 0.35;
         let gone = other.control(0, 100, true, &mut body);
         assert_eq!(gone.result, 2);
         assert!(gone.released);
