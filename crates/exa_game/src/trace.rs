@@ -1,5 +1,5 @@
 //! `--trace <csv>`: the body state at the end of every 83 Hz tick, one row
-//! per traced body (the player's, or, without a player, every simulated
+//! per traced body (the player's, or, without a player or with `--trace-all`, every simulated
 //! character body; props' bodies are left out). Lengths are in the original's centimetres and the clip clock in
 //! frames, in the columns of the retail body probe, so that the two can be
 //! compared row by row. What Exarust does not simulate yet is left empty.
@@ -110,6 +110,9 @@ pub struct BodyTrace {
     out: BufWriter<File>,
     ticks: u64,
     failed: bool,
+    /// Every simulated character body, the player's among them
+    /// (`--trace-all`), not only the player's.
+    every: bool,
 }
 
 impl BodyTrace {
@@ -121,7 +124,14 @@ impl BodyTrace {
             out,
             ticks: 0,
             failed: false,
+            every: false,
         })
+    }
+
+    /// Traces every simulated character body, the player's among them,
+    /// when `every` is set.
+    pub fn every_body(self, every: bool) -> Self {
+        Self { every, ..self }
     }
 }
 
@@ -227,7 +237,7 @@ fn trace_bodies(
     if trace.failed {
         return;
     }
-    let player = bodies.iter().any(|(.., p)| p);
+    let player = !trace.every && bodies.iter().any(|(.., p)| p);
     let mut text = String::new();
     for (root, body, anim, stature, condition, swing, locomotion, is_player) in &bodies {
         if player && !is_player {

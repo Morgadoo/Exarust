@@ -6,7 +6,10 @@
 //! a link stretches past its slack (`--pause-on-stretch`), pause a number
 //! of ticks after the first blood jet (`--pause-after-jet`), after the
 //! player's first blow lands (`--pause-on-hit`) or after the first
-//! killing blow starts a body's collapse (`--pause-after-collapse`).
+//! killing blow starts a body's collapse (`--pause-after-collapse`). A
+//! fighter marked [`Undying`] (the player, `--undying`) has its health
+//! refilled after every frame's blows and every body tick, so long scripted
+//! fights run on.
 //! Rendering and the cameras keep running on real time, so a paused body
 //! can be looked at from every side. The starting speed and the scripted pauses wait
 //! for the loading screen's end where they can: the load waits on things
@@ -27,6 +30,21 @@ pub const SLOWER_KEY: KeyCode = KeyCode::BracketLeft;
 pub const FASTER_KEY: KeyCode = KeyCode::BracketRight;
 /// The speeds the keys step through.
 pub const SPEEDS: [f32; 5] = [0.1, 0.25, 0.5, 1.0, 2.0];
+
+/// A debug marker: the fighter's yellow and red health are refilled to its
+/// most after every frame's blows and every body tick (`--undying`). A
+/// single blow from full health can still kill it.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Undying;
+
+/// Refills every [`Undying`] fighter's health.
+fn refill_undying(mut fighters: Query<&mut exa_combat::Fighter, With<Undying>>) {
+    for mut f in &mut fighters {
+        let max = f.health.max;
+        f.health.yellow = max;
+        f.health.red = max;
+    }
+}
 
 /// The simulation controls' state.
 #[derive(Resource, Debug, Clone)]
@@ -148,9 +166,11 @@ impl Plugin for SimControlPlugin {
                     arm_pause_on_hit.run_if(|c: Res<SimControl>| c.pause_on_hit.is_some()),
                     arm_pause_after_collapse
                         .run_if(|c: Res<SimControl>| c.pause_after_collapse.is_some()),
+                    refill_undying,
                 )
                     .after(exa_combat::CombatSystems),
             )
+            .add_systems(FixedUpdate, refill_undying.after(BodySystems))
             .add_systems(Update, sim_keys)
             .add_systems(
                 RunFixedMainLoop,
@@ -392,6 +412,23 @@ mod tests {
     use exa_physics::body::BodyPlugin;
 
     use super::*;
+
+    /// An undying fighter's health is refilled; another's is left as it is.
+    #[test]
+    fn an_undying_fighter_is_refilled() {
+        let mut app = App::new();
+        app.add_systems(Update, refill_undying);
+        let mut hurt = exa_combat::Fighter::default();
+        hurt.health.yellow = 0.01;
+        hurt.health.red = 0.1;
+        let undying = app.world_mut().spawn((hurt.clone(), Undying)).id();
+        let mortal = app.world_mut().spawn(hurt).id();
+        app.update();
+        let health = |e| app.world().get::<exa_combat::Fighter>(e).unwrap().health;
+        let full = health(undying);
+        assert_eq!((full.yellow, full.red), (full.max, full.max));
+        assert_eq!((health(mortal).yellow, health(mortal).red), (0.01, 0.1));
+    }
 
     #[test]
     fn a_stretch_pauses_once_each_time_it_crosses() {

@@ -861,6 +861,11 @@ fn spawn_players(
             fighter.health.yellow = yellow;
             fighter.health.red = red;
         }
+        if options.undying {
+            commands
+                .entity(model)
+                .insert(exa_game::sim_control::Undying);
+        }
         commands.entity(model).insert((
             fighter,
             exa_physics::body::Physical {

@@ -45,6 +45,7 @@
 //!                                     12 brawl, 13 valiance, 14 valour): the player takes the company's first place and a
 //!                                     duellist stands on each opponent's place; the match tick ends its rounds
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
+//!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
@@ -78,6 +79,8 @@
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
+//!          --undying                  play mode: the player's health is refilled after every frame and body tick, so long
+//!                                     scripted fights run on (a single blow from full health can still kill)
 //!          --feral <f>                play mode: the player's record has feral level f (0–1): its blows' red damage
 //!                                     goes to yellow, and it spawns with a feral character's stats
 //! ```
@@ -197,6 +200,8 @@ pub struct Options {
     pub arena_match: Option<i32>,
     /// Write the body state after every tick here (CSV).
     pub trace: Option<PathBuf>,
+    /// Trace every simulated character body, the player's among them.
+    pub trace_all: bool,
     /// Start with the body overlay shown.
     pub debug_bodies: bool,
     /// Start with the navigation grid drawn.
@@ -249,6 +254,8 @@ pub struct Options {
     pub perks: exa_formats::characters::Perks,
     /// Let the low-health heartbeat play in any level.
     pub heartbeat: bool,
+    /// Refill the player's health after every frame and body tick.
+    pub undying: bool,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
 }
@@ -476,6 +483,7 @@ fn main() -> AppExit {
                 options.still_opponent = true;
             }
             "--trace" => options.trace = args.next().map(PathBuf::from),
+            "--trace-all" => options.trace_all = true,
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
@@ -539,6 +547,7 @@ fn main() -> AppExit {
                 }
             }
             "--heartbeat" => options.heartbeat = true,
+            "--undying" => options.undying = true,
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
@@ -721,7 +730,7 @@ fn main() -> AppExit {
             eprintln!("cannot write the trace: {e}");
             return AppExit::from_code(2);
         }
-        Some(Ok(t)) => Some(t),
+        Some(Ok(t)) => Some(t.every_body(options.trace_all)),
         None => None,
     };
     let joint_trace = match options
