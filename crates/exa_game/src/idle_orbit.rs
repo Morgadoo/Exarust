@@ -133,9 +133,10 @@ impl Plugin for IdleOrbitPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<IdleWatch>().add_systems(
             Update,
-            watch_idle
-                .after(crate::hand::HandSystems)
-                .before(crate::player::chase_camera),
+            // After the hand (it reads what the hand holds this frame), and
+            // so after the chase camera the hand picks through: the turned
+            // yaw is followed from the next frame.
+            watch_idle.after(crate::hand::HandSystems),
         );
     }
 }
@@ -190,6 +191,27 @@ mod tests {
             stepping: false,
             holding: false,
             buttons: false,
+        }
+    }
+
+    /// The frame's order of the camera, the hand, the idle turn, the hotkeys
+    /// and the cursor has no cycle (a cycle stops the game at its first
+    /// frame).
+    #[test]
+    fn the_frame_order_has_no_cycle() {
+        let mut app = App::new();
+        app.add_plugins((
+            crate::player::PlayerPlugin,
+            crate::cursor::CursorPlugin,
+            crate::hand::HandPlugin,
+            IdleOrbitPlugin,
+            crate::hotkeys::HotkeyPlugin,
+            crate::player_light::PlayerLightPlugin,
+        ));
+        let world = app.world_mut();
+        let mut update = world.resource_mut::<Schedules>().remove(Update).unwrap();
+        if let Err(e) = update.initialize(world) {
+            panic!("{e}");
         }
     }
 

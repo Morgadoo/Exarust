@@ -4,8 +4,9 @@
 //! a wheel, and kind 5 is a crank unless it is held. A dead character is a
 //! corpse and a living one a person. A loose prop whose mobility is under
 //! 0.08 is too heavy to move, unless it is tagged bulky. A prop tagged as
-//! needing strength is refused when the player's strength is under 0.9. A
-//! usable item on a prop stays usable. No body at all is nothing, even when
+//! needing strength is refused when the player's strength is under 0.9.
+//! Both limits are double-precision constants, so a single-precision 0.08
+//! or 0.9 is already under them. A usable item on a prop stays usable. No body at all is nothing, even when
 //! the item was usable.
 //!
 //! A point farther than 70 cm is turned toward before it is used. A point is
@@ -132,11 +133,13 @@ pub fn classify(target: &Target) -> Pick {
         Body::Scene => Pick::Scene,
         Body::Other => kind,
         Body::Prop => {
+            // Both limits are compared in double precision: a single
+            // 0.08 or 0.9 is just under them.
             if target.heavy {
-                if target.strength < 0.9 {
+                if f64::from(target.strength) < 0.9 {
                     return Pick::Nothing;
                 }
-            } else if !target.bulky && target.mobility < 0.08 {
+            } else if !target.bulky && f64::from(target.mobility) < 0.08 {
                 return Pick::Nothing;
             }
             if kind == Pick::Nothing {
@@ -231,7 +234,10 @@ mod tests {
         assert_eq!(classify(&person), Pick::Corpse);
 
         assert_eq!(classify(&prop(0.07)), Pick::Nothing);
-        assert_eq!(classify(&prop(0.08)), Pick::Loose);
+        // The single 0.08 is under the double 0.08: too heavy.
+        assert_eq!(classify(&prop(0.08)), Pick::Nothing);
+        assert_eq!(classify(&prop(0.080_001)), Pick::Loose);
+        assert_eq!(classify(&prop(f32::NAN)), Pick::Loose);
         let mut bulky = prop(0.07);
         bulky.bulky = true;
         assert_eq!(classify(&bulky), Pick::Loose);
@@ -239,7 +245,10 @@ mod tests {
         heavy.heavy = true;
         heavy.strength = 0.89;
         assert_eq!(classify(&heavy), Pick::Nothing);
+        // The single 0.9 is under the double 0.9: refused.
         heavy.strength = 0.9;
+        assert_eq!(classify(&heavy), Pick::Nothing);
+        heavy.strength = 0.900_001;
         assert_eq!(classify(&heavy), Pick::Loose);
 
         let mut vial = prop(0.2);

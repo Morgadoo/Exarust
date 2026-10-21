@@ -263,7 +263,9 @@ A click names the object. A free hinge is a door or a lever, and a
 blocked one is left alone. A dead character is a corpse and a living one a
 person. A loose prop whose mobility is under 0.08 is too heavy to move
 unless it is tagged bulky, and one tagged as needing strength is refused
-under strength 0.9. A usable item on a prop stays usable; with no body it is
+under strength 0.9 (both limits compared in double precision, so a
+mobility or strength of exactly 0.08 or 0.9 in single precision is under
+them). A usable item on a prop stays usable; with no body it is
 nothing. A point farther than 70 cm is turned toward before it is used. A
 drag pulls along the cursor direction by the nearest accepted hit, and that
 reach starts at 1000 cm. The grabbed box is refused when any placed corner
@@ -277,9 +279,12 @@ player's hip is at most 300 cm up or down and 300 cm across the ground. A
 door is measured from the door's own place with 300 cm of height and 350 cm
 across; a wheel from its own place with the plain limits. A comparison with
 a NaN passes, as the original's unordered compares do. The reach is measured
-each frame while the right button is not walking to the cursor (in combat
-mode only with Ctrl held or something held); a drag in hand is always within
-reach. Outside combat mode the cursor shows the pointer within reach and the
+each frame: outside combat mode while the right button is not walking to the
+cursor, in combat mode only with Ctrl held or something held, whatever the
+right button does; a drag in hand is always within reach. (The original
+keeps its walk to the cursor latched after the right button's release until
+the player stops moving, and skips the reach meanwhile; Exarust reads the
+button.) Outside combat mode the cursor shows the pointer within reach and the
 cross beyond it. The player down, collapsing or dead lets go of everything
 and is out of reach. Not in Exarust: the original's further test that the
 point lies in the player's navigation region with nothing between.

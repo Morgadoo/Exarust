@@ -39,8 +39,9 @@
 //! the heading takes the cursor's direction. (The original then names or
 //! uses what was clicked; Exarust has no description to show yet.)
 //!
-//! **The reach** is measured each frame while the right button is not
-//! walking to the cursor: a held drag is always in reach, else the pick
+//! **The reach** is measured each frame: outside combat mode while the
+//! right button is not walking to the cursor, in combat mode only with Ctrl
+//! held or something held (the right button aside). A held drag is always in reach, else the pick
 //! under the cursor must be within [`crate::pick::within_reach`] of the
 //! hip. The player down, collapsing or dead lets go of everything and is
 //! out of reach. A refused press and a lift leave the reach alone.
@@ -263,6 +264,13 @@ pub fn drag_anchor(origin: Vec3, dir: Vec3, height: f32, hip: Vec3) -> Option<Ve
         return Some(kept / CM);
     }
     Some(at / CM)
+}
+
+/// Whether the frame measures the reach: in combat mode only with Ctrl
+/// held or something held, whatever the right button does; outside it while
+/// the right button is not walking to the cursor (it shows chevrons then).
+pub fn measures_reach(combat: bool, ctrl: bool, holding: bool, walking: bool) -> bool {
+    if combat { ctrl || holding } else { !walking }
 }
 
 /// What the pick hit.
@@ -721,11 +729,9 @@ fn reach_hand(
     if hand.keeps_the_request() {
         return;
     }
-    // In combat mode the request runs only with Ctrl held or a hold; the
-    // right button walking to the cursor shows chevrons, not the reach.
     let ctrl = bindings.pressed(&keys, Action::Interact);
     let walking = buttons.pressed(MouseButton::Right);
-    if walking || (pb.combat && !ctrl && hand.holding == Holding::Nothing) {
+    if !measures_reach(pb.combat, ctrl, hand.holding != Holding::Nothing, walking) {
         return;
     }
     let in_reach = match hand.holding {
@@ -853,6 +859,17 @@ mod tests {
         assert!(starts_drag(at, IVec2::new(501, 300), 185));
         assert!(!click_turns(70.0));
         assert!(click_turns(70.1));
+    }
+
+    /// Outside combat mode the right button's walk skips the reach; in
+    /// combat mode Ctrl or a hold measures it, the right button aside.
+    #[test]
+    fn when_the_reach_is_measured() {
+        assert!(measures_reach(false, false, false, false));
+        assert!(!measures_reach(false, true, true, true));
+        assert!(!measures_reach(true, false, false, false));
+        assert!(measures_reach(true, true, false, true));
+        assert!(measures_reach(true, false, true, true));
     }
 
     /// The point lets go beyond 330 cm in any direction.

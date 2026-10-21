@@ -198,11 +198,15 @@ While sprinting, the capsule's forward speed SHALL blend from the walk speed to 
 - **THEN** the forward speed is 3.6 metres per second
 
 ### Requirement: Cursor pick
-A click SHALL name a free hinge as a door, a dead character as a corpse and a living one as a person. A loose prop whose mobility is under 0.08 SHALL be ignored unless it is tagged bulky, and a prop needing strength SHALL be ignored when strength is under 0.9. A usable item on a prop SHALL stay usable, and a usable item with no body SHALL be nothing. A point farther than 70 cm SHALL be turned toward first.
+A click SHALL name a free hinge as a door, a dead character as a corpse and a living one as a person. A loose prop whose mobility is under 0.08 SHALL be ignored unless it is tagged bulky, and a prop needing strength SHALL be ignored when strength is under 0.9, both compared in double precision. A usable item on a prop SHALL stay usable, and a usable item with no body SHALL be nothing. A point farther than 70 cm SHALL be turned toward first.
 
 #### Scenario: A door, a light prop, and the reach
-- **WHEN** a free hinge, a blocked hinge, a prop of mobility 0.07, a prop of mobility 0.08, a bulky prop of mobility 0.07, a usable prop, that usable prop with its body removed, a point 70 cm away and a point 70.1 cm away are read, and the reach is tried at 245 cm high and 300 cm away, then 0.1 cm farther, then as a door at 350 cm
-- **THEN** the names are a door, nothing, nothing, a loose prop, a loose prop, usable, nothing; 70 cm does not turn and 70.1 cm does; the first reach holds, the farther one does not, and the door does
+- **WHEN** a free hinge, a blocked hinge, a prop of mobility 0.07, a prop of mobility 0.08, a prop of mobility 0.080001, a bulky prop of mobility 0.07, a usable prop, that usable prop with its body removed, a point 70 cm away and a point 70.1 cm away are read
+- **THEN** the names are a door, nothing, nothing, nothing, a loose prop, a loose prop, usable, nothing; 70 cm does not turn and 70.1 cm does
+
+#### Scenario: Strength
+- **WHEN** a prop needing strength is read with strength 0.89, 0.9 and 0.900001
+- **THEN** the first two are nothing and the third is a loose prop
 
 ### Requirement: Drag reach
 A drag SHALL pull along the cursor direction by the nearest accepted hit, starting from 1000 cm. A hit at or beyond 1000 cm SHALL leave that reach. The grabbed box SHALL be refused when any placed corner is higher than 280 cm or lower than 1000 cm, and a corner on either limit SHALL be kept.
@@ -510,7 +514,7 @@ A point under the cursor SHALL be within reach when the point the pick hit is at
 - **THEN** the first holds, the next four do not, the door holds and the NaN values pass
 
 ### Requirement: When the reach is measured
-The reach SHALL be measured each frame while the right button is not walking to the cursor, in combat mode only with Ctrl held or something held. A drag in hand SHALL be within reach. The player down, collapsing or dead SHALL let go of everything and be out of reach. Outside combat mode the cursor SHALL show the pointer within reach and the cross beyond it.
+The reach SHALL be measured each frame: outside combat mode while the right button is not walking to the cursor, and in combat mode only with Ctrl held or something held, whatever the right button does. A drag in hand SHALL be within reach. The player down, collapsing or dead SHALL let go of everything and be out of reach. Outside combat mode the cursor SHALL show the pointer within reach and the cross beyond it.
 
 #### Scenario: A refused press and the cursor
 - **WHEN** a press is refused outside combat mode over a point within reach while walking to the cursor
@@ -559,11 +563,15 @@ The pick SHALL look 40 m along the cursor's ray at the level and the props' mesh
 - **THEN** the pick hits the dead one at 2.8 m and names a corpse, and a ray beside them hits nothing
 
 ### Requirement: Idle camera turn
-Each frame the player SHALL be idle when the pointer stayed within 2 pixels of where it was last seen on both axes, the condition word is 0, no foot steps, the hand holds nothing and no mouse button is held; a dead player SHALL always be idle. A busy frame SHALL note the pointer and the game clock.
+Each frame the player SHALL be idle when the pointer stayed within 2 pixels of where it was last seen on both axes, the condition word is 0, no foot steps, the hand holds nothing and no mouse button is held; a dead player SHALL always be idle. A busy frame SHALL note the pointer and the game clock. The test SHALL follow the hand's frame, and the frame's systems SHALL be ordered without a cycle.
 
 #### Scenario: Busy and idle frames
 - **WHEN** the pointer moves 2 pixels, then 3 pixels, and the player walks, steps, holds an object or holds a button, and a dead player's pointer jumps
 - **THEN** 2 pixels stays idle, 3 pixels and the busy cases are busy, and the dead player is idle
+
+#### Scenario: The frame's order
+- **WHEN** the frame's schedule of the player, the cursor, the hand, the idle turn, the hotkeys and the player light is built
+- **THEN** it builds
 
 ### Requirement: Idle turn rate
 Once the game clock is past the noted time plus 10 000 ms, an idle frame SHALL turn the camera's target yaw by 0.0001 rad for each millisecond since the last frame, in double precision then single, less 2π once past it, and the behaviour SHALL stop reading the cursor until the player is busy again.
