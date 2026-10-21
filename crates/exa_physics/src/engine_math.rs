@@ -571,29 +571,43 @@ pub fn rotate_about(axis: Vec3, v: Vec3, angle: f32) -> Vec3 {
     )
 }
 
-/// The orthonormal basis whose forward (last axis) is `forward`: the fixed
-/// up vector made square to it (the original's component subtraction), the
-/// side as their cross. [`Vec3A::normalize_or_zero`] stands in for the
-/// original's reciprocal square root.
+/// The basis whose forward (last axis) is `forward`: the fixed [`UP`]
+/// less its component along `forward`, then the side as that up crossed
+/// with the forward. The up and the side are each scaled by the
+/// processor's approximate reciprocal square root of their squared length
+/// ([`reciprocal_sqrt`], `RSQRTSS`), as the original's normalise does, so
+/// they are unit only to about 12 bits; a forward along the up gives NaN.
 pub fn look_rotation(forward: Vec3) -> Mat3A {
     let z = Vec3A::from(forward);
-    let y = perpendicular(Vec3A::Y, z).normalize_or_zero();
-    let x = y.cross(z).normalize_or_zero();
+    let y = fast_normalize(perpendicular(Vec3A::from(UP), z));
+    let x = fast_normalize(y.cross(z));
     Mat3A::from_cols(x, y, z)
 }
 
-/// `a` less its component along `b`: the original's projection helper. The
-/// dot sums x and z first, then y.
-fn perpendicular(a: Vec3A, b: Vec3A) -> Vec3A {
-    let dot = a.x * b.x + a.z * b.z + a.y * b.y;
-    a - b * dot
+/// The original's three-lane dot: the lane products folded high onto low,
+/// `(x + z) + (y + w)` with the empty fourth lane `+0`.
+fn dot3(a: Vec3A, b: Vec3A) -> f32 {
+    let p = a * b;
+    (p.x + p.z) + (p.y + 0.0)
 }
 
-/// Each row of a 3×3 turn scaled by the matching component of `scale`.
+/// `a` less its component along `b`: the original's projection helper.
+fn perpendicular(a: Vec3A, b: Vec3A) -> Vec3A {
+    a - b * dot3(a, b)
+}
+
+/// `v` times the approximate reciprocal square root of its squared length.
+fn fast_normalize(v: Vec3A) -> Vec3A {
+    v * reciprocal_sqrt(dot3(v, v))
+}
+
+/// Each row of a 3×3 turn multiplied component by component by `scale`
+/// (every row's x by `scale.x`, and so on).
 pub fn scale_rows(m: &mut Mat3A, scale: Vec3) {
-    m.x_axis *= scale.x;
-    m.y_axis *= scale.y;
-    m.z_axis *= scale.z;
+    let scale = Vec3A::from(scale);
+    m.x_axis *= scale;
+    m.y_axis *= scale;
+    m.z_axis *= scale;
 }
 
 /// Every row of a 3×3 turn scaled by `scale`.
@@ -934,10 +948,14 @@ mod tests {
         let (sin_p, cos_p) = sin_cos(0.5);
         assert!(close(m.x_axis.x, cos_p));
         assert!(close(m.x_axis.z, -sin_p));
-        // The look rotation's forward is its last axis.
+        // The look rotation's forward is its last axis; the up and side
+        // carry the approximate reciprocal square root.
         let look = look_rotation(Vec3::new(0.0, 0.0, -1.0));
-        assert!(close(look.z_axis.z, -1.0));
-        assert!(close(look.y_axis.y, 1.0));
+        assert_eq!(look.z_axis, Vec3A::new(0.0, 0.0, -1.0));
+        assert_eq!(look.y_axis, Vec3A::new(0.0, reciprocal_sqrt(1.0), 0.0));
+        assert!((look.y_axis.y - 1.0).abs() < 1e-3);
+        assert!((look.x_axis.x + 1.0).abs() < 1e-3);
+        assert!(look_rotation(Vec3::Y).x_axis.x.is_nan());
         // The euler angles round-trip a small turn.
         let e = Vec3::new(0.2, 0.3, 0.1);
         assert!((mat3_to_euler(&from_euler(e)) - e).length() < 1e-5);
@@ -948,6 +966,12 @@ mod tests {
         let mut m = Mat3A::IDENTITY;
         scale_rows(&mut m, Vec3::new(1.0, 2.0, 3.0));
         scale(&mut m, 1.0);
+        // Every row is scaled by component: the first row's x by 1, its
+        // y by 2.
+        let mut full = Mat3A::from_cols(Vec3A::ONE, Vec3A::ONE, Vec3A::ONE);
+        scale_rows(&mut full, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(full.x_axis, Vec3A::new(1.0, 2.0, 3.0));
+        assert_eq!(full.z_axis, Vec3A::new(1.0, 2.0, 3.0));
         m.x_axis.x + m.y_axis.y + m.z_axis.z
     }
 
