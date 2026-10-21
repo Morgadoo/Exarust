@@ -40,6 +40,7 @@ pub struct Slot {
     /// The file the scan found; loading checks both, the preferred one
     /// first.
     pub kind: SlotKind,
+    /// What the save's player data says.
     pub info: SlotInfo,
 }
 

@@ -371,12 +371,16 @@ impl PackageImage {
             out.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
             out.extend_from_slice(&entry.name);
         }
+        let end = self
+            .entries
+            .iter()
+            .map(|entry| entry.offset as usize + entry.data.len())
+            .max()
+            .unwrap_or(0);
+        out.resize(out.len().max(end), 0);
         for entry in &self.entries {
             let at = entry.offset as usize;
-            if out.len() < at {
-                out.resize(at, 0);
-            }
-            out.extend_from_slice(&entry.data);
+            out[at..at + entry.data.len()].copy_from_slice(&entry.data);
         }
         out
     }
@@ -413,7 +417,9 @@ pub struct Chunk<'a> {
 /// An owned chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedChunk {
+    /// The chunk's tag.
     pub id: u32,
+    /// The payload.
     pub data: Vec<u8>,
 }
 
@@ -1028,6 +1034,32 @@ mod tests {
         package.put_section(&name("c"), &[1u8; 0x3000]);
         assert_eq!(package.entries()[2].offset, 0x8000);
         assert_eq!(package.entries()[2].data.len(), 0x3000);
+    }
+
+    #[test]
+    fn an_out_of_order_directory_writes_each_section_at_its_offset() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&PACKAGE_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&SENTINEL_SIZE.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; NAME_LEN]);
+        bytes.extend_from_slice(&0x4000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&name("a"));
+        bytes.extend_from_slice(&0x2000u32.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&name("b"));
+        bytes.resize(0x2000, 0);
+        bytes.extend_from_slice(b"abc");
+        bytes.resize(0x4000, 0);
+        bytes.extend_from_slice(b"AB");
+        let image = PackageImage::read(&bytes).unwrap();
+        let out = image.to_bytes();
+        assert_eq!(&out[0x2000..0x2003], b"abc");
+        assert_eq!(&out[0x4000..0x4002], b"AB");
+        assert_eq!(out.len(), 0x4002);
+        assert_eq!(PackageImage::read(&out).unwrap(), image);
     }
 
     #[test]
