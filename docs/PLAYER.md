@@ -426,11 +426,12 @@ sprint latch when sprint is on, crouches on `CrouchC`, and in combat mode
 steps along and across the aim. The attack trigger holds the attack request
 (so attacks repeat after their cooldown), and `AltAction` asks for a stab;
 the trigger's first frame is also latched for a click that falls between
-ticks. `WepSwp` swaps the weapon sets. R3 turns combat mode on and off: the
-original has no Steam action for that, so Exarust gives the right stick's
-click the job, as `Look` (Cursor Look) has no meaning on a pad. The aim
-stick sets the combat aim, `Zoom_In`/`Zoom_Out` change the camera's zoom,
-and `Camera` orbits it.
+ticks. Guard has no action of its own: in combat mode the stance rule holds
+the guard (or Cmbt - Idle) while no attack plays, as with the keyboard.
+`WepSwp` swaps the weapon sets. R3 turns combat mode on and off: the original has no
+Steam action for that, so Exarust gives the right stick's click the job, as
+`Look` (Cursor Look) has no meaning on a pad. The aim stick sets the combat
+aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` orbits it.
 
 The command bits for inventory, skills, powers, the power tree, use power,
 select/use, talk, pause and camera mode reach the word, but Exarust has no
