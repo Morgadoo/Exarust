@@ -205,6 +205,7 @@ impl Ragdoll {
                     axis,
                     length,
                     origin: false,
+                    last_pass: None,
                 });
             }
             if s.links[0].flags & world_link::SLIDER == 0 {
@@ -219,6 +220,7 @@ impl Ragdoll {
                     axis: Vec3::ZERO,
                     length: 0.0,
                     origin: true,
+                    last_pass: None,
                 });
             }
         }
@@ -245,14 +247,13 @@ impl Ragdoll {
                         on_parent: super::weights(&parts[parent], l.on_parent + s.origin),
                         slack: l.slack.max(0.0),
                         strength: l.strength,
-                        flags: l.flags | super::LINK_BODY,
+                        flags: (l.flags & super::LINK_SOFT_WELD) | super::LINK_BODY,
                         softness: super::PIVOT_SOFTENING,
-                        axis: l.axis,
                         iteration_limit: None,
-                        state: 0.0,
                         smoothing: l.smoothing,
                         length: 0.0,
                         shares,
+                        mobility: (parts[i].inverse_mass, parts[parent].inverse_mass),
                         origin: k == s.links.len(),
                         anchor: None,
                         kept: None,
@@ -289,7 +290,6 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             grabs: Vec::new(),
-            world_links: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),
             pass: 0,

@@ -79,8 +79,6 @@ pub use pairs::{Pairing, Pairs, Touch};
 mod drag;
 #[path = "body_rigid.rs"]
 mod rigid;
-#[path = "body_world.rs"]
-pub mod world;
 pub use drag::{Grab, drag_pull};
 pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
 
@@ -705,13 +703,9 @@ pub struct Link {
     pub flags: u32,
     /// A pivot's softening per cm² of its gap (the original's 0.001).
     pub softness: f32,
-    /// A breakable grab's axis in the part's frame.
-    pub axis: Vec3,
     /// A link that runs only in the passes up to this one (flag
     /// [`LINK_ITERATION_LIMIT`]).
     pub iteration_limit: Option<u32>,
-    /// A breakable grab's remaining strain; a soft weld's current length.
-    pub state: f32,
     /// How fast a limp joint's smoothed length follows its links inside the
     /// slack: (1 − (r² − 25)·0.001)², at most 0.99, r the point's distance
     /// from the part's origin in cm (0 within √0.1 cm of it).
@@ -723,6 +717,9 @@ pub struct Link {
     /// The shares of a correction the part and its parent take, by their
     /// mobilities: m/(m + m_parent) and m_parent/(m + m_parent).
     shares: (f32, f32),
+    /// The part's and its parent's mobilities (a soft weld shares by these
+    /// directly).
+    mobility: (f32, f32),
     /// The pivot at the part's origin, not one of the skeleton's links.
     pub origin: bool,
     /// A living slack link's muscle: where the animated joint angle puts
@@ -771,23 +768,27 @@ impl Link {
     /// excess, and L is the slack.
     fn limp(&mut self, d: Vec3) -> Option<Vec3> {
         let len2 = d.length_squared();
+        // The original has no guard on a pivot's gap; here gaps under the
+        // epsilon (3.4 µm) are left alone, as they always were: closing them
+        // too only lengthens a resting limp body's settling.
         if len2 <= LINK_EPSILON2 {
             return None;
         }
         if self.slack <= LIMP_PIVOT_SLACK {
-            return Some(d * (self.strength / (1.0 + self.softness * len2 * CM * CM)));
+            return Some(d * (self.strength / (len2 * CM * CM * self.softness + 1.0)));
         }
         let len = len2.sqrt();
         if len > self.slack {
             self.length = self.slack;
-            return Some(d * (self.strength * (len - self.slack) / len));
+            return Some(d * ((len - self.slack) / len * self.strength));
         }
         let old = self.length;
-        if (len - old).abs() <= LENGTH_EPSILON {
+        // A NaN length change is left alone too (the original's compare).
+        if !((len - old).abs() > LENGTH_EPSILON) {
             return None;
         }
         self.length = old * self.smoothing + (1.0 - self.smoothing) * len;
-        Some(d * (self.strength * (len - old) / len))
+        Some(d * ((len - old) / len * self.strength))
     }
 
     /// Starts a limp slack link's smoothed length at the gap `d`, within
@@ -805,14 +806,24 @@ impl Link {
     }
 
     /// The correction of a soft weld with gap `d` (m) whose two link points
-    /// moved `moved` (m) this tick: a quarter of the strength times the gap,
-    /// less 0.4 of the points' motion. The caller takes a tenth of it and
-    /// shares it by the mobilities. None under the general epsilon.
+    /// moved `moved` (m) in total this tick: a quarter of the strength times
+    /// the gap, less 0.4 of the points' motion. The shares are
+    /// [`Link::weld_shares`]. None under the general epsilon (a NaN gap is
+    /// not under it).
     fn welded(&self, d: Vec3, moved: Vec3) -> Option<Vec3> {
         if d.length_squared() < GENERAL_EPSILON / (CM * CM) {
             return None;
         }
-        Some(d * (0.25 * self.strength) - moved * 0.4)
+        Some(d * (self.strength * 0.25) + moved * -0.4)
+    }
+
+    /// The shares a soft weld's correction takes on the part and its parent:
+    /// each mobility times a tenth over their sum, the tenth divided in
+    /// double as the original's constant is.
+    fn weld_shares(&self) -> (f32, f32) {
+        let (m, m_parent) = self.mobility;
+        let share = (0.1_f64 / f64::from(m + m_parent)) as f32;
+        (m * share, m_parent * share)
     }
 }
 
@@ -906,9 +917,23 @@ pub mod world_link {
     pub const HORIZONTAL: u32 = 0x200;
     /// A plane: the correction's axis component mostly removed.
     pub const PLANE: u32 = 0x800;
-    /// The link is solved in the first iteration only (a drag).
+    /// The link is solved in the passes up to its last one only.
     pub const ITERATION_LIMIT: u32 = 0x4000;
+    /// A horizontal drag's step cap per root of the part's mobility, and its
+    /// most (cm).
+    pub(super) const DRAG_PER_ROOT_MOBILITY: f32 = 3.0;
+    pub(super) const DRAG_MAX_STEP: f32 = 5.0;
+    /// A zero-slack link's longest full pull per unit of strength (cm), and
+    /// the squared length (cm²) its longer pulls are cut to.
+    pub(super) const PLAIN_MAX_STEP: f32 = 10.0;
+    pub(super) const PLAIN_CAP_SQUARED: f32 = 100.0;
+    /// The share of the gap along a plane's axis a plane link removes (a
+    /// double in the original).
+    pub(super) const PLANE_REMOVAL: f64 = 0.8;
 }
+use world_link::{
+    DRAG_MAX_STEP, DRAG_PER_ROOT_MOBILITY, PLAIN_CAP_SQUARED, PLAIN_MAX_STEP, PLANE_REMOVAL,
+};
 
 /// A link from a body part to its node (the world): a point on the part
 /// held to an anchor in world space. A hung body's root has these instead
@@ -933,75 +958,102 @@ pub struct WorldLink {
     pub length: f32,
     /// Whether this is the part's origin pivot.
     pub origin: bool,
+    /// With [`world_link::ITERATION_LIMIT`], the last iteration pass the
+    /// link runs in.
+    pub last_pass: Option<u32>,
 }
 
 impl WorldLink {
     /// The correction of this link for its part: the original's world-link
-    /// law (horizontal drag, slider, damped spring, plain pin or slack
-    /// link). A slider also updates its fraction; a plain slack link
-    /// records the distance once it is taut. None when the link is inside
-    /// its slack or the points coincide.
+    /// law, worked in centimetres in its branch order (horizontal drag,
+    /// slider, damped spring, plain pin or slack link). The point's motion
+    /// this tick is how far it moved from where the tick began. A slider
+    /// also updates its fraction; a plain slack link records the distance
+    /// once it is taut. None when the link is inside its slack or the
+    /// points coincide.
     fn correction(&mut self, p: &Part) -> Option<Vec3> {
         let point = p.point(&self.on_part);
-        let moved: Vec3 = (0..4)
-            .map(|i| (p.positions[i] - p.previous[i]) * self.on_part[i])
-            .sum();
+        let mut gap = (self.anchor - point) * CM;
+        let moved = (point - p.point_at_start(&self.on_part)) * CM;
+        if self.flags & world_link::HORIZONTAL != 0 {
+            gap.y = 0.0;
+            let len2 = gap.x * gap.x + gap.z * gap.z;
+            if len2 < GENERAL_EPSILON {
+                return None;
+            }
+            let len = len2.sqrt();
+            let unit = gap * (1.0 / len);
+            let mut cap = p.inverse_mass.sqrt() * DRAG_PER_ROOT_MOBILITY;
+            if cap > DRAG_MAX_STEP {
+                cap = DRAG_MAX_STEP;
+            }
+            let mut pull = if cap < len {
+                gap * (cap / len * self.strength * 2.0)
+            } else {
+                gap * (self.strength * 2.0)
+            };
+            let toward = moved.dot(unit);
+            if toward > GENERAL_EPSILON {
+                pull -= unit * toward;
+            }
+            return Some(pull / CM);
+        }
         if self.flags & world_link::SLIDER != 0 {
             let travel = self.slack;
             if travel <= 0.0 || !travel.is_finite() || !self.axis.is_finite() {
                 return None;
             }
+            // Positions in metres (the fraction is a ratio, so it has no
+            // unit): the point is drawn `smoothing` of the way to where its
+            // last fraction put it, then projected on the axis.
             let target = self.anchor + self.axis * self.length;
-            let q = point + (target - point) * self.smoothing;
+            let pull = (target - point) * self.smoothing;
+            let q = point + pull;
             let t = (self.axis.dot(q - self.anchor) / (travel * travel)).clamp(0.0, 1.0);
             self.length = t;
-            return Some(self.anchor + self.axis * t - point);
-        }
-        let mut d = self.anchor - point;
-        if self.flags & world_link::PLANE != 0 {
-            d -= self.axis * (d.dot(self.axis) * 0.8);
-        }
-        if self.flags & world_link::HORIZONTAL != 0 {
-            d.y = 0.0;
-            let len2 = d.length_squared();
-            if len2 <= LINK_EPSILON2 {
-                return None;
-            }
-            let dir = d * (1.0 / len2.sqrt());
-            let step = (3.0 * p.inverse_mass.max(0.0).sqrt()).min(5.0) / CM;
-            let pull = (d * (2.0 * self.strength)).clamp_length_max(step);
-            let toward = moved.dot(dir).max(0.0);
-            return Some(pull - dir * toward);
+            let slid = self.anchor + self.axis * t;
+            return Some((slid - q) + pull);
         }
         if self.flags & world_link::SPRING != 0 {
-            let len2 = d.length_squared();
-            if len2 <= LINK_EPSILON2 {
+            let len2 = gap.length_squared();
+            if len2 < GENERAL_EPSILON {
                 return None;
             }
-            let dir = d * (1.0 / len2.sqrt());
-            let toward = moved.dot(dir).max(0.0);
-            return Some(d * (0.1 * self.strength) - moved * 0.4 - dir * toward);
-        }
-        let len2 = d.length_squared();
-        if len2 <= LINK_EPSILON2 {
-            return None;
-        }
-        let len = len2.sqrt();
-        let factor = if self.slack <= LIMP_PIVOT_SLACK {
-            let reach = 10.0 * self.strength / CM;
-            if len > reach {
-                10.0 * self.strength * self.strength / len
-            } else {
-                self.strength
+            // A tenth of the strength, in double as the original's constant.
+            let mut pull = gap * (f64::from(self.strength) * 0.1) as f32;
+            // The original normalises the scaled pull by the raw gap's
+            // length, so this "unit" is a tenth of the strength long.
+            let unit = pull * (1.0 / len2.sqrt());
+            let toward = moved.dot(unit);
+            if toward > GENERAL_EPSILON {
+                pull -= unit * toward;
             }
-        } else if len > self.slack {
-            self.length = len;
-            self.strength * (len - self.slack) / len
-        } else {
+            pull += moved * -0.4;
+            return Some(pull / CM);
+        }
+        if self.flags & world_link::PLANE != 0 {
+            let along = (f64::from(gap.dot(self.axis)) * PLANE_REMOVAL) as f32;
+            gap -= self.axis * along;
+        }
+        let len2 = gap.length_squared();
+        let slack = self.slack * CM;
+        if slack * slack >= len2 {
             self.length = 0.0;
             return None;
+        }
+        let factor = if !(slack > GENERAL_EPSILON) {
+            let reach = self.strength * PLAIN_MAX_STEP;
+            if reach * reach >= len2 {
+                self.strength
+            } else {
+                (PLAIN_CAP_SQUARED / len2).sqrt() * self.strength * self.strength
+            }
+        } else {
+            let len = len2.sqrt();
+            self.length = len / CM;
+            (len - slack) / len * self.strength
         };
-        Some(d * factor)
+        Some(gap * factor / CM)
     }
 }
 
@@ -1046,9 +1098,6 @@ pub struct Ragdoll {
     fell_out: bool,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
     grabs: Vec<Grab>,
-    /// Links from its parts to points in scene nodes (a body hung from the
-    /// world: a lamp, a chain, a door).
-    world_links: Vec<world::WorldLink>,
     /// Scratch lists for the level detection, kept across ticks so a tick
     /// does not allocate.
     pieces: Vec<u32>,
@@ -1446,6 +1495,7 @@ impl Ragdoll {
                     LINK_MOBILITY * parts[parent].inverse_mass,
                 );
                 let shares = (m / (m + m_parent), m_parent / (m + m_parent));
+                let mobility = (m, m_parent);
                 let pivot = (Vec3::ZERO, Vec3::ZERO, 0.0);
                 for (k, &(on_part, on_parent, slack)) in s.links.iter().chain([&pivot]).enumerate()
                 {
@@ -1463,12 +1513,11 @@ impl Ragdoll {
                             LINK_BODY
                         },
                         softness: PIVOT_SOFTENING,
-                        axis: Vec3::ZERO,
                         iteration_limit: None,
-                        state: 0.0,
                         smoothing: setup_smoothing(on_part),
                         length: 0.0,
                         shares,
+                        mobility,
                         origin,
                         anchor: None,
                         kept: None,
@@ -1531,7 +1580,6 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             grabs: Vec::new(),
-            world_links: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),
             pass: 0,
@@ -2201,6 +2249,27 @@ impl Ragdoll {
         }
     }
 
+    /// A hung root's links to its node: unshared, the world does not move.
+    /// A slider's correction is applied twice.
+    fn pull_world_links(&mut self, i: usize) {
+        let (world, parts) = (&mut self.world, &mut self.parts);
+        for link in world.iter_mut().filter(|l| l.part == i) {
+            if link.flags & LINK_DISABLED != 0
+                || (link.flags & world_link::ITERATION_LIMIT != 0
+                    && link.last_pass.is_some_and(|last| self.pass > last))
+            {
+                continue;
+            }
+            let Some(c) = link.correction(&parts[i]).filter(|c| c.is_finite()) else {
+                continue;
+            };
+            parts[i].push(&link.on_part, c);
+            if link.flags & world_link::SLIDER != 0 {
+                parts[i].push(&link.on_part, c);
+            }
+        }
+    }
+
     /// One constraint iteration over the body tree. A living body is solved
     /// children first, from its hands and feet in to its pelvis; a limp one
     /// parents first, from the pelvis out. Each part takes its links to its
@@ -2242,54 +2311,25 @@ impl Ragdoll {
                         l.muscle(part, parent, anchor, gains)
                     }
                     (Some(_), _) => l.living(d),
-                    (None, _) if l.flags & LINK_SOFT_WELD != 0 => l
-                        .welded(d, part.slip(&l.on_part) + parent.slip(&l.on_parent))
-                        .map(|c| c * 0.1),
-                    (None, _) if l.flags & LINK_BREAKABLE != 0 => {
-                        let len2 = d.length_squared();
-                        if len2 < GENERAL_EPSILON / (CM * CM) {
-                            None
-                        } else if l.flags & LINK_REANCHOR != 0 {
-                            l.flags &= !LINK_REANCHOR;
-                            if let Some(w) = parent.weights_now(a) {
-                                l.on_parent = w;
-                            }
-                            None
-                        } else {
-                            let local =
-                                part.transform().to_scale_rotation_translation().1.inverse() * d;
-                            let q = 1.0 + local.dot(l.axis);
-                            let len_cm = len2.sqrt() * CM;
-                            let drop = if q > 0.0 { 1.0 + 2.0 * q / len_cm } else { 1.0 };
-                            l.state -= drop;
-                            if l.state < 0.0 {
-                                l.flags |= LINK_DISABLED;
-                                None
-                            } else {
-                                Some(d * (l.strength / (1.0 + PIVOT_SOFTENING * len_cm)))
-                            }
-                        }
-                    }
+                    (None, _) if l.flags & LINK_SOFT_WELD != 0 => l.welded(
+                        d,
+                        (a - part.point_at_start(&l.on_part))
+                            + (b - parent.point_at_start(&l.on_parent)),
+                    ),
                     (None, _) => l.limp(d),
                 };
                 let Some(c) = correction.filter(|c| c.is_finite()) else {
                     continue;
                 };
-                self.parts[l.part].push(&l.on_part, c * l.shares.0);
-                self.parts[l.parent].push(&l.on_parent, -c * l.shares.1);
-            }
-            // A hung root's links to its node: unshared, the world does not
-            // move. A slider's correction is applied twice.
-            let (world, parts) = (&mut self.world, &mut self.parts);
-            for link in world.iter_mut().filter(|l| l.part == i) {
-                let Some(c) = link.correction(&parts[i]).filter(|c| c.is_finite()) else {
-                    continue;
+                let (own, other) = if l.flags & LINK_SOFT_WELD != 0 {
+                    l.weld_shares()
+                } else {
+                    l.shares
                 };
-                parts[i].push(&link.on_part, c);
-                if link.flags & world_link::SLIDER != 0 {
-                    parts[i].push(&link.on_part, c);
-                }
+                self.parts[l.part].push(&l.on_part, c * own);
+                self.parts[l.parent].push(&l.on_parent, -c * other);
             }
+            self.pull_world_links(i);
             // The hand's grabs come last among a limp part's links.
             if gains.is_none() && !self.grabs.is_empty() {
                 self.pull_grabs(i);
@@ -2320,54 +2360,44 @@ impl Ragdoll {
     }
 
     /// Repairs a part whose tetrahedron is inverted, as the original's
-    /// post-iteration repair does: the edges are restored, the part moves by
-    /// its box centre's displacement, its previous points become its current
-    /// ones, its body matrix is rebuilt from the current points and the rest
-    /// basis, each axis is re-formed as the cross of the other two when it
-    /// leans against it (`dot < 0.1`), and the particles are put back on the
-    /// rest tetrahedron under that matrix. The inverted state is tested on
-    /// the vector between the midpoints of opposite edges against the cross
-    /// of those edges: a positive dot inverts the part.
+    /// post-iteration repair does. The inside-out state is the vector
+    /// between the midpoints of two opposite edges (p0p1 and p2p3) leaning
+    /// along the cross of those edges. The edges are restored, the part
+    /// goes back to the shape its tick began with, moved by how far its box
+    /// centre has come since, its body matrix is built from those points
+    /// and the rest basis, each axis that leans against the cross of the
+    /// other two (`dot < 0.1`, in the order y z, z x, x y) is re-formed as
+    /// that cross made unit length, and the particles are put back on the
+    /// rest tetrahedron under that matrix and the edges restored again. The
+    /// previous points (the velocity) are left alone.
+    ///
+    /// The original tests the sign alone, its files' rest tetrahedra all
+    /// having the same handedness; here the sign is compared with the rest
+    /// tetrahedron's own, so a body built the other way round is not
+    /// repaired every tick.
     fn repair_inverted(&mut self) {
         for p in &mut self.parts {
-            let [p0, p1, p2, p3] = p.positions;
-            let a = p0 - p1;
-            let b = p2 - p3;
-            let mid_a = p1 + a * 0.5;
-            let mid_b = p3 + b * 0.5;
-            // The original's test is tied to its rest particles' order; a
-            // body is inverted when the current sign is the rest sign's
-            // opposite.
-            let current = (mid_a - mid_b).dot(a.cross(b));
-            let [r0, r1, r2, r3] = p.rest;
-            let (ra, rb) = (r0 - r1, r2 - r3);
-            let rest = (r1 + ra * 0.5 - (r3 + rb * 0.5)).dot(ra.cross(rb));
-            if current * rest >= 0.0 {
+            let current = opposite_edges_lean(&p.positions);
+            let rest = opposite_edges_lean(&p.rest);
+            if !((current > 0.0 && rest < 0.0) || (current < 0.0 && rest > 0.0)) {
                 continue;
             }
             keep_rigid(p);
             let centre = p.pairing.centre_weights();
             let shift = p.point(&centre) - p.point_at_start(&centre);
-            p.previous = p.positions;
-            for x in &mut p.positions {
-                *x += shift;
+            for (x, start) in p.positions.iter_mut().zip(p.start) {
+                *x = start + shift;
             }
-            let edges = Mat3::from_cols(
-                p.positions[1] - p.positions[0],
-                p.positions[2] - p.positions[0],
-                p.positions[3] - p.positions[0],
-            );
-            let m = edges * p.rest_inverse;
-            let translation = p.positions[0] - m * p.rest[0];
-            let mut axes = [m.x_axis, m.y_axis, m.z_axis];
+            let m = affine_from_points(&p.rest, &p.rest_inverse, &p.positions);
+            let mut axes = [m.matrix3.x_axis, m.matrix3.y_axis, m.matrix3.z_axis].map(Vec3::from);
             for (i, (a, b)) in [(1, 2), (2, 0), (0, 1)].into_iter().enumerate() {
                 let cross = axes[a].cross(axes[b]);
-                if axes[i].dot(cross) < 0.1 {
-                    axes[i] = cross.try_normalize().unwrap_or(Vec3::ZERO);
+                if dot_zyx(cross, axes[i]) < 0.1 {
+                    axes[i] = cross.normalize_or_zero();
                 }
             }
-            let fixed = Mat3::from_cols(axes[0], axes[1], axes[2]);
-            p.positions = p.rest.map(|r| fixed * r + translation);
+            let (m, translation) = (Mat3::from_cols(axes[0], axes[1], axes[2]), m.translation);
+            p.positions = p.rest.map(|r| m * r + Vec3::from(translation));
             keep_rigid(p);
         }
     }
@@ -2567,6 +2597,22 @@ fn affine_from_points(rest: &[Vec3; 4], rest_inverse: &Mat3, points: &[Vec3; 4])
     );
     let m = edges * *rest_inverse;
     Affine3A::from_mat3_translation(m, points[0] - m * rest[0])
+}
+
+/// The dot product summed as the original's inverted-tetrahedron test sums
+/// it: z, then y, then x.
+fn dot_zyx(a: Vec3, b: Vec3) -> f32 {
+    a.z * b.z + a.y * b.y + a.x * b.x
+}
+
+/// How far the vector between the midpoints of the tetrahedron's edges p0p1
+/// and p2p3 leans along those edges' cross product: positive when the
+/// original takes the tetrahedron for inverted.
+fn opposite_edges_lean(p: &[Vec3; 4]) -> f32 {
+    let a = p[0] - p[1];
+    let b = p[2] - p[3];
+    let between = (p[1] + a * 0.5) - (p[3] + b * 0.5);
+    dot_zyx(between, a.cross(b))
 }
 
 /// Restores a part's six edge lengths.

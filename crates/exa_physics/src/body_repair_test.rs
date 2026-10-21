@@ -1,10 +1,10 @@
-//! The inverted-tetrahedron repair and the other plain-link kinds, pinned to
-//! the original's arithmetic.
+//! The inverted-tetrahedron repair, the soft weld and the world links' laws,
+//! pinned to the original's arithmetic (its centimetres worked by hand).
 
 use bevy::math::Affine3A;
 
 use super::*;
-use crate::body::{LINK_BREAKABLE, Ragdoll, RigidLink, RigidPart};
+use crate::body::{Ragdoll, RigidLink, RigidPart, WorldLink, world_link};
 
 fn rigid_part(world: Affine3A, origin: Vec3, links: Vec<RigidLink>) -> RigidPart {
     RigidPart {
@@ -14,9 +14,11 @@ fn rigid_part(world: Affine3A, origin: Vec3, links: Vec<RigidLink>) -> RigidPart
         rest: [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z],
         point_masses: [4.0; 4],
         mobility: 1.0,
+        parent_world: Affine3A::IDENTITY,
         spheres: vec![(Vec3::ZERO, 0.1)],
         origin,
         links,
+        mesh: None,
     }
 }
 
@@ -192,56 +194,171 @@ fn resetting_link_lengths_takes_the_current_distance_within_the_slack() {
     assert!((body.links[0].length - 0.1).abs() < 1e-6);
 }
 
+/// A world link on the single part's first particle, anchored at `anchor`.
+fn world_link_to(anchor: Vec3, slack: f32, strength: f32, flags: u32) -> WorldLink {
+    WorldLink {
+        part: 0,
+        on_part: [1.0, 0.0, 0.0, 0.0],
+        anchor,
+        slack,
+        strength,
+        smoothing: 0.5,
+        flags,
+        axis: Vec3::ZERO,
+        length: 0.0,
+        origin: false,
+        last_pass: None,
+    }
+}
+
+/// The correction (m) a world link gives the single part at rest.
+fn pull(mut link: WorldLink, body: &Ragdoll) -> Vec3 {
+    link.correction(&body.parts[0]).unwrap_or(Vec3::ZERO)
+}
+
 #[test]
-fn a_breakable_link_spends_its_strain_and_lets_go_below_zero() {
-    let link = RigidLink {
-        on_body: Vec3::ZERO,
-        on_parent: Vec3::ZERO,
-        slack: 0.0,
-        strength: 1.0,
-        smoothing: 0.0,
-        flags: LINK_BREAKABLE,
-        axis: Vec3::X,
-    };
-    let mut body = Ragdoll::rigid(&[
-        rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new()),
-        RigidPart {
-            parent: Some(0),
-            ..rigid_part(
-                Affine3A::from_translation(Vec3::X * 0.015),
-                Vec3::ZERO,
-                vec![link],
-            )
-        },
-    ]);
-    body.links[0].state = 1.0;
-    body.iterate();
-    // The child's point is 1.5 cm from the parent's, q = 1 − 0.015 > 0,
-    // so the strain falls by 1 + 2q/1.5 > 2 and the link breaks.
-    assert!(body.links[0].flags & crate::body::LINK_DISABLED != 0);
-    // With the axis opposed the strain falls by one only and stays.
-    let link = RigidLink {
-        on_body: Vec3::ZERO,
-        on_parent: Vec3::ZERO,
-        slack: 0.0,
-        strength: 1.0,
-        smoothing: 0.0,
-        flags: LINK_BREAKABLE,
-        axis: Vec3::X,
-    };
-    let mut body = Ragdoll::rigid(&[
-        rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new()),
-        RigidPart {
-            parent: Some(0),
-            ..rigid_part(
-                Affine3A::from_translation(Vec3::X * 2.0),
-                Vec3::ZERO,
-                vec![link],
-            )
-        },
-    ]);
-    body.links[0].state = 1.0;
-    body.iterate();
-    assert_eq!(body.links[0].state, 0.0);
-    assert!(body.links[0].flags & crate::body::LINK_DISABLED == 0);
+fn a_plain_world_link_takes_the_excess_over_its_slack() {
+    let body = one_part();
+    // 20 cm gap, 10 cm slack: half the gap, 10 cm, and the taut length.
+    let mut link = world_link_to(Vec3::X * 0.2, 0.1, 1.0, 0);
+    let c = link.correction(&body.parts[0]).unwrap();
+    assert!((c - Vec3::X * 0.1).length() < 1e-6, "{c}");
+    assert!((link.length - 0.2).abs() < 1e-6);
+    // Inside its slack it does nothing and forgets the length.
+    let mut link = world_link_to(Vec3::X * 0.05, 0.1, 1.0, 0);
+    link.length = 0.3;
+    assert_eq!(link.correction(&body.parts[0]), None);
+    assert_eq!(link.length, 0.0);
+}
+
+#[test]
+fn a_zero_slack_world_link_steps_at_most_ten_strength_centimetres() {
+    let body = one_part();
+    // 30 cm at strength 1: the pull is cut to 10 cm.
+    let c = pull(world_link_to(Vec3::X * 0.3, 0.0, 1.0, 0), &body);
+    assert!((c - Vec3::X * 0.1).length() < 1e-6, "{c}");
+    // Strength 2 reaches 20 cm; beyond it the factor is s²·sqrt(100/d²):
+    // 4·(10/30)·30 cm = 40 cm.
+    let c = pull(world_link_to(Vec3::X * 0.3, 0.0, 2.0, 0), &body);
+    assert!((c - Vec3::X * 0.4).length() < 1e-6, "{c}");
+    // Within 10·strength it is the strength times the gap.
+    let c = pull(world_link_to(Vec3::X * 0.05, 0.0, 2.0, 0), &body);
+    assert!((c - Vec3::X * 0.1).length() < 1e-6, "{c}");
+}
+
+#[test]
+fn a_plane_world_link_removes_eighty_percent_along_its_axis() {
+    let body = one_part();
+    let mut link = world_link_to(Vec3::X * 0.1, 0.0, 1.0, world_link::PLANE);
+    link.axis = Vec3::X;
+    // 10 cm along the axis loses 80 %, leaving 2 cm.
+    let c = pull(link, &body);
+    assert!((c - Vec3::X * 0.02).length() < 1e-6, "{c}");
+}
+
+#[test]
+fn a_horizontal_drag_is_twice_the_strength_capped_by_the_root_mobility() {
+    // Mobility 1: the step is capped at 3 cm of a 10 cm gap, 0.3 of it
+    // twice: 6 cm, level with the ground.
+    let body = one_part();
+    let link = world_link_to(Vec3::new(0.1, 5.0, 0.0), 0.0, 1.0, world_link::HORIZONTAL);
+    let c = pull(link, &body);
+    assert!((c - Vec3::X * 0.06).length() < 1e-6, "{c}");
+    // Mobility 4 would cap at 6 cm but 5 cm is the most: 0.5·2 of the gap.
+    let mut body = one_part();
+    body.parts[0].inverse_mass = 4.0;
+    let link = world_link_to(Vec3::X * 0.1, 0.0, 1.0, world_link::HORIZONTAL);
+    let c = pull(link, &body);
+    assert!((c - Vec3::X * 0.1).length() < 1e-6, "{c}");
+}
+
+#[test]
+fn motion_toward_the_anchor_is_taken_off_a_drag_and_a_spring() {
+    // The point moved 1 cm toward the anchor this tick: the drag's 6 cm
+    // pull is 5.
+    let mut body = one_part();
+    body.parts[0].start[0] = Vec3::X * -0.01;
+    let link = world_link_to(Vec3::X * 0.1, 0.0, 1.0, world_link::HORIZONTAL);
+    let c = pull(link, &body);
+    assert!((c - Vec3::X * 0.05).length() < 1e-6, "{c}");
+    // The spring pulls a tenth of the strength times the gap, 1 cm of 10.
+    let body = one_part();
+    let spring = world_link_to(Vec3::X * 0.1, 0.0, 1.0, world_link::SPRING);
+    let c = pull(spring.clone(), &body);
+    assert!((c - Vec3::X * 0.01).length() < 1e-6, "{c}");
+    // With 2 cm of approach: the approach along the scaled pull's own
+    // direction (0.1·2 = 0.2 cm) comes off, then 0.4 of the motion:
+    // 1 − 0.02 − 0.8 = 0.18 cm.
+    let mut body = one_part();
+    body.parts[0].start[0] = Vec3::X * -0.02;
+    let c = pull(spring, &body);
+    assert!((c - Vec3::X * 0.0018).length() < 1e-6, "{c}");
+}
+
+#[test]
+fn a_slider_projects_the_point_on_its_axis_and_applies_the_pull_twice() {
+    let body = one_part();
+    let mut link = world_link_to(Vec3::new(-0.002, -0.001, 0.0), 0.1, 1.0, world_link::SLIDER);
+    link.axis = Vec3::X * 0.1;
+    // The point (the origin) is drawn half the way to the fraction's point
+    // (the anchor): q = (−1, −0.5) mm from the anchor's (−2, −1); the
+    // fraction is 0.1·1 mm / 0.01 = 0.01, which puts the axis point at
+    // (−1, −1) mm: the correction is (slid − q) + the half-step, (−1, −1) mm.
+    let c = link.correction(&body.parts[0]).unwrap();
+    assert!((c - Vec3::new(-0.001, -0.001, 0.0)).length() < 1e-7, "{c}");
+    assert!((link.length - 0.01).abs() < 1e-7);
+    // The iteration applies it twice: the point moves (−2, −2) mm.
+    let mut body = Ragdoll::rigid(&[RigidPart {
+        links: vec![RigidLink {
+            on_body: Vec3::ZERO,
+            on_parent: Vec3::new(-0.002, -0.001, 0.0),
+            slack: 0.1,
+            strength: 1.0,
+            smoothing: 0.5,
+            flags: world_link::SLIDER,
+            axis: Vec3::X * 0.1,
+        }],
+        ..rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new())
+    }]);
+    body.world[0].length = 0.0;
+    let on_part = body.world[0].on_part;
+    let before = body.parts[0].point(&on_part);
+    body.pull_world_links(0);
+    let moved = body.parts[0].point(&on_part) - before;
+    assert!(
+        (moved - Vec3::new(-0.002, -0.002, 0.0)).length() < 1e-6,
+        "{moved}"
+    );
+}
+
+#[test]
+fn a_disabled_or_late_world_link_is_skipped_and_only_its_part_moves() {
+    let mut body = Ragdoll::rigid(&[RigidPart {
+        links: vec![RigidLink {
+            on_body: Vec3::ZERO,
+            on_parent: Vec3::X * 0.2,
+            slack: 0.0,
+            strength: 1.0,
+            smoothing: 0.5,
+            flags: world_link::ITERATION_LIMIT,
+            axis: Vec3::ZERO,
+        }],
+        ..rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new())
+    }]);
+    // Keep only the stored link: it runs while the pass is within its last.
+    body.world.retain(|l| !l.origin);
+    body.world[0].last_pass = Some(0);
+    let before = body.parts[0].positions[0];
+    body.pull_world_links(0);
+    let first = body.parts[0].positions[0];
+    assert!(first.x > before.x, "{first} vs {before}");
+    // A later pass is past its last: no further pull.
+    body.pass = 1;
+    body.pull_world_links(0);
+    assert_eq!(body.parts[0].positions[0], first);
+    // A disabled link never runs.
+    body.pass = 0;
+    body.world[0].flags |= crate::body::LINK_DISABLED;
+    body.pull_world_links(0);
+    assert_eq!(body.parts[0].positions[0], first);
 }
