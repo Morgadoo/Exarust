@@ -2,35 +2,40 @@
 //! how well it sees them, how much it worries about them, and what it does
 //! with references when a character dies or is swapped.
 //!
-//! A [`Combatant`] keeps one [`Contact`] per character it has met. Each
-//! contact carries the observer's effective attitude, its tolerance, its
-//! hostility, the concern (raised by threats and by the script call
-//! [`Combatant::add_concern`]) and the currently published threat. The
-//! perceived values live in [`Perception`]: closeness, how noticeable the
-//! other character is, the observer's view weight, and the threat the
-//! observer estimates from the other's contacts.
+//! A [`Combatant`] keeps one [`Contact`] per character it has met: its
+//! flags, the noticed level and the noticeability, the concern and the
+//! concern target, the effective attitude and tolerance, the threat, the
+//! crowd penalty, closeness, view weight, the third party the threat
+//! estimate points at, and its event bits.
 //!
-//! [`perceive`] is one character looking at another once. It returns
-//! `false` once the other is out of sight and drops the tracked flag; a
-//! character that was watching the observer when it is lost raises the
-//! observer's alert to [`LOST_ALERT`].
+//! [`perceive`] is one character looking at another once. It skips an
+//! invisible character, measures the distance with vertical offsets under
+//! 150 cm ignored, keeps the contact tracked inside a 1200 cm radius
+//! (halved while asleep, cut for a hidden character, 600 cm more for a
+//! contact already tracked) and drops it outside both of its two radii; a
+//! lost contact that was the observer's target raises the observer's alert
+//! to [`LOST_ALERT`]. Inside, it writes closeness, noticeability, the
+//! effective attitude and tolerance and the view weight; for a character
+//! that is not dead or asleep it then blends the attitude toward trusted
+//! third parties and estimates the threat from the other's own contacts.
 //!
-//! Relationships come from the role database. [`effective_attitude`] applies
-//! the active mind powers to a raw attitude, and [`trust`] is the same
-//! without the effects that only lower an attitude. Neither reads the role
-//! database itself: the raw attitude and tolerance are inputs, as they are
-//! in the original. The paths that call into the script layer are not
-//! reproduced here; their arithmetic is.
+//! Relationships come from the role database. [`effective_attitude`] and
+//! [`trust`] apply the active mind powers to a raw attitude; neither reads
+//! the role database itself, so the raw values are inputs.
 //!
-//! Look target, combat target, holder and the published combat rating and
-//! reach are kept on the combatant too, so [`Combatant::forget`] and
-//! [`Combatant::replace`] clear and remap every reference in one place.
+//! The target, attention target, other target and holder references are kept
+//! on the combatant, so [`Combatant::forget`] and [`Combatant::replace`]
+//! clear and remap every reference in one place.
 //!
 //! Nav footprints: a character stamps the 30 cm grid cell it stands in
-//! ([`Footprint`]). A character off the walkable part of the grid is moved
-//! to the fallback cell and flagged once.
+//! ([`Footprint`]). A cell within five of the grid's edge is replaced by
+//! cell 8 on that axis and is not stamped; the body is flagged once.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::prelude::*;
+
+pub use exa_combat::aim::head_atan2_xz as atan2_xz;
 
 /// The detection radius of an awake character (cm).
 pub const PERCEPTION_CM: f32 = 1200.0;
@@ -38,66 +43,81 @@ pub const PERCEPTION_CM: f32 = 1200.0;
 pub const TRACKED_CM: f32 = 600.0;
 /// Vertical offsets under this are ignored when measuring the distance (cm).
 pub const FLAT_BAND_CM: f32 = 150.0;
-/// Closeness never reaches one.
-pub const CLOSENESS_CAP: f32 = 0.99;
 /// The alert level a character sets when a contact that targeted it is lost.
 pub const LOST_ALERT: f32 = 40.0;
-/// A dead contact is dropped from the group blend after this long (ms).
+/// A dead third party counts as untrusted after this long (ms).
 pub const DEAD_MEMORY_MS: u64 = 5000;
 /// The script call's concern cap.
 pub const CONCERN_CAP: f32 = 15.0;
-/// Concern at which the contact's event bit 4 is raised.
-pub const CONCERN_EVENT: f32 = 1.2;
-/// Concern at which the contact's event bit 8 is raised.
+/// Concern at which the contact's [`EVENT_CONCERNED`] bit is raised.
+pub const CONCERN_EVENT: f32 = f32::from_bits(0x3f99_999a);
+/// Concern at which the contact's [`EVENT_ALARMED`] bit is raised.
 pub const CONCERN_EVENT_HIGH: f32 = 4.0;
-/// The most the look direction may leave the body's facing (radians).
-pub const LOOK_LIMIT: f32 = std::f32::consts::FRAC_PI_4;
 /// The nav grid's cell size (cm).
 pub const NAV_CELL_CM: f32 = 30.0;
 /// The 1/30 factor the original keeps as a float.
-pub const NAV_INVERSE_CELL: f32 = 0.033_333_335;
-/// The cell a character off the grid is moved to.
+pub const NAV_INVERSE_CELL: f32 = f32::from_bits(0x3d08_8889);
+/// The cell a character off the grid is moved to, on the offending axis.
 pub const NAV_FALLBACK_CELL: i32 = 8;
-/// How far outside the grid a cell may be before it is off the grid.
+/// How far inside the grid's edge a cell must be.
 pub const NAV_MARGIN: i32 = 5;
-/// How far ahead the point of interest lies without a target (cm).
-pub const INTEREST_AHEAD_CM: f32 = 100.0;
-/// The technique bit that halves a mind power's hold on a character.
-pub const RESIST_MIND: u32 = 0x1_0000;
+/// How far above the body the point of interest lies without a target (cm).
+pub const INTEREST_ABOVE_CM: f32 = 100.0;
+/// The most contacts a character keeps.
+pub const MAX_CONTACTS: usize = 12;
 
-/// A mind power's marker on a body. Only the marker and the two links are
-/// read by the attitude rules.
-pub trait MindEffect {
-    /// The power's marker (its effect kind).
-    fn kind(&self) -> u32;
-    /// The character the power comes from.
-    fn source(&self) -> Option<Entity>;
-    /// The character the power is aimed at, for the powers that carry one.
-    fn target(&self) -> Option<Entity>;
-}
+// The power names below are Exarust's, read from what each does to an
+// attitude.
 
-/// One active mind effect, as [`effective_attitude`] reads it.
+/// A mind power's kind is compared under this mask.
+const EFFECT_KIND_MASK: u32 = 0x10_ffff;
+/// The power that turns a character against everyone.
+pub const POWER_FRENZY: u32 = 0x105;
+/// The power aimed at a character that makes the bearer trust it.
+pub const POWER_CHARM: u32 = 0x10_0109;
+/// The two powers sourced on a character that bind the bearer to it.
+pub const POWER_BIND: u32 = 0x10_010a;
+pub const POWER_COMMAND: u32 = 0x10_010d;
+/// The power that lowers every attitude by 50.
+pub const POWER_SUSPICION: u32 = 0x10_010b;
+
+/// Contact flag: tracked (the 600 cm hysteresis applies).
+pub const CONTACT_TRACKED: u32 = 1;
+/// Contact flag: seen by the last perception pass that reached it.
+pub const CONTACT_NOTICED: u32 = 4;
+/// The flags word the script's concern call writes.
+pub const CONTACT_CONCERN_FLAGS: u32 = 3;
+
+/// Contact event: the other attacks at mid swing with a high threat.
+pub const EVENT_QUICK_SWING: u32 = 1;
+/// Contact event: concern reached [`CONCERN_EVENT`].
+pub const EVENT_CONCERNED: u32 = 4;
+/// Contact event: concern reached [`CONCERN_EVENT_HIGH`].
+pub const EVENT_ALARMED: u32 = 8;
+
+/// The condition word's attacking value.
+pub const CONDITION_ATTACKING: u32 = 2;
+/// The condition word's down bit.
+pub const CONDITION_DOWN: u32 = 0x200;
+/// The condition word's getting-up value.
+pub const CONDITION_GETTING_UP: u32 = 0x300;
+/// The condition word's unconscious bit (decays concern while down).
+pub const CONDITION_OUT: u32 = 0x800;
+/// The condition word's dead value.
+pub const CONDITION_DEAD: u32 = 0xA00;
+
+/// One active mind effect on the observer's body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Effect {
     pub kind: u32,
+    /// The character the power comes from.
     pub source: Option<Entity>,
+    /// The character the power is aimed at, for the powers that carry one.
     pub target: Option<Entity>,
 }
 
-impl MindEffect for Effect {
-    fn kind(&self) -> u32 {
-        self.kind
-    }
-    fn source(&self) -> Option<Entity> {
-        self.source
-    }
-    fn target(&self) -> Option<Entity> {
-        self.target
-    }
-}
-
 /// A raw attitude and the tolerance beside it, both from the role database.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Attitude {
     /// The role-derived attitude, −100 through 100.
     pub value: f32,
@@ -105,79 +125,59 @@ pub struct Attitude {
     pub tolerance: f32,
 }
 
-impl Default for Attitude {
-    fn default() -> Self {
-        Self {
-            value: 0.0,
-            tolerance: 0.0,
+/// The power overrides shared by [`effective_attitude`] and [`trust`].
+fn bound_or_charmed(effect: &Effect, other: Entity, value: f32, resist_mind: bool) -> Option<f32> {
+    match effect.kind & EFFECT_KIND_MASK {
+        POWER_BIND | POWER_COMMAND if effect.source == Some(other) => Some(if resist_mind {
+            (value + 100.0) * 0.5
+        } else {
+            100.0
+        }),
+        POWER_CHARM if effect.target == Some(other) => Some(100.0),
+        POWER_SUSPICION => {
+            let lowered = value - 50.0;
+            Some(if lowered < -100.0 { -100.0 } else { lowered })
         }
+        _ => None,
     }
 }
 
-/// The effective attitude of `me` toward `other`, with the mind powers
-/// applied: a power of kind 0x105 sets it to half the negated aggression
-/// toward everyone and stops the search; a loyalty or command power of kind
-/// 0x10010a or 0x10010d sourced on `other` makes it 100, or averages it
-/// with 100 when the character has the resistance technique; a power of
-/// kind 0x100109 aimed at `other` makes it 100; kind 0x10010b takes 50,
-/// not below −100. A character's attitude toward itself is 100.
+/// The effective attitude toward `other`, with the observer's mind powers
+/// applied in order: frenzy sets it to half the negated `aggression` (the
+/// record's) and stops; a binding or command power sourced on `other`
+/// makes it 100, or averages it with 100 under the resistance technique; a
+/// charm aimed at `other` makes it 100; suspicion takes 50, not below −100.
 pub fn effective_attitude(
-    me: Entity,
     other: Entity,
     raw: Attitude,
     aggression: f32,
     resist_mind: bool,
-    effects: impl IntoIterator<Item = Effect>,
+    effects: &[Effect],
 ) -> f32 {
-    if me == other {
-        return 100.0;
-    }
     let mut value = raw.value;
     for effect in effects {
-        match effect.kind {
-            0x105 => return -aggression * 0.5,
-            0x10_010a | 0x10_010d if effect.source == Some(other) => {
-                value = if resist_mind {
-                    (value + 100.0) * 0.5
-                } else {
-                    100.0
-                };
-            }
-            0x10_0109 if effect.target == Some(other) => value = 100.0,
-            0x10_010b => value = (value - 50.0).max(-100.0),
-            _ => {}
+        if effect.kind & EFFECT_KIND_MASK == POWER_FRENZY {
+            return -aggression * 0.5;
+        }
+        if let Some(v) = bound_or_charmed(effect, other, value, resist_mind) {
+            value = v;
         }
     }
     value
 }
 
-/// Trust of `me` toward `other`: the same power overrides as
-/// [`effective_attitude`], without the power that lowers an attitude, and
-/// clamped to nothing. The script's `Trust` reads this.
-pub fn trust(
-    me: Entity,
-    other: Entity,
-    raw: Attitude,
-    aggression: f32,
-    resist_mind: bool,
-    effects: impl IntoIterator<Item = Effect>,
-) -> f32 {
-    if me == other {
-        return 100.0;
-    }
-    let mut value = raw.value;
+/// Trust toward `other` (the script's `Trust` reads it): the role
+/// database's trust value with the same overrides as
+/// [`effective_attitude`], except that frenzy makes it 0. The script adds
+/// "100 toward oneself" on top; this rule does not.
+pub fn trust(other: Entity, raw: f32, resist_mind: bool, effects: &[Effect]) -> f32 {
+    let mut value = raw;
     for effect in effects {
-        match effect.kind {
-            0x105 => return -aggression * 0.5,
-            0x10_010a | 0x10_010d if effect.source == Some(other) => {
-                value = if resist_mind {
-                    (value + 100.0) * 0.5
-                } else {
-                    100.0
-                };
-            }
-            0x10_0109 if effect.target == Some(other) => value = 100.0,
-            _ => {}
+        if effect.kind & EFFECT_KIND_MASK == POWER_FRENZY {
+            return 0.0;
+        }
+        if let Some(v) = bound_or_charmed(effect, other, value, resist_mind) {
+            value = v;
         }
     }
     value
@@ -188,33 +188,48 @@ pub fn trust(
 pub struct Contact {
     /// The other character.
     pub character: Entity,
-    /// The contact's kind. Only kind 1 (another character) is scored.
+    /// The other's kind. Only kind 1 (a character) enters the threat rules.
     pub kind: i32,
-    /// The contact's level, set to 3 when the script raises concern.
-    pub level: i32,
-    /// The observer's effective attitude, −100 through 100.
-    pub attitude: f32,
-    /// The observer's tolerance, 0 through 100.
-    pub tolerance: f32,
-    /// Hostility, raised by a negative attitude and decaying by 0.999.
-    pub hostility: f32,
+    /// [`CONTACT_TRACKED`] and [`CONTACT_NOTICED`].
+    pub flags: u32,
+    /// The noticed level, which rises toward the noticeability elsewhere; a
+    /// dead or asleep character's noticeability caps it.
+    pub noticed: f32,
+    /// How noticeable the other is: 3·c² dead or asleep, 24·c down,
+    /// otherwise the look, facing and closeness product, +10 attacking.
+    pub noticeability: f32,
     /// Concern, 0 through 15.
     pub concern: f32,
     /// Where the concern is heading.
     pub concern_target: f32,
-    /// The alarm rate the observer estimates from the contact's threats.
+    /// A rate cleared with the concern when the other dies (its rule lives
+    /// in the contact integration, not here).
     pub alarm: f32,
-    /// How close the contact is to the observer, 0 through 0.99, and how
-    /// much of the observer's view it takes.
-    pub closeness: f32,
-    pub facing: f32,
-    /// The threat the observer published for it.
+    /// The effective attitude, −100 through 100, after the group blend.
+    pub attitude: f32,
+    /// The tolerance over 100.
+    pub tolerance: f32,
+    /// The threat this pass estimated.
     pub threat: f32,
-    /// Whether the contact is currently seen.
-    pub seen: bool,
-    /// The distance the last perception measured (cm).
+    /// The largest crowd penalty seen, kept across passes.
+    pub crowd: f32,
+    /// The familiarity units the drift multiplies (counted elsewhere).
+    pub elapsed: i32,
+    /// 1 − distance/1200, at most 0.99.
+    pub closeness: f32,
+    /// The observer's view weight toward the other.
+    pub view: f32,
+    /// The other's contact the threat estimate points at.
+    pub selected: Option<Entity>,
+    /// [`EVENT_QUICK_SWING`], [`EVENT_CONCERNED`], [`EVENT_ALARMED`].
+    pub events: u32,
+    /// Hostility, raised by a negative attitude in the contact integration.
+    pub hostility: f32,
+    /// The distance the last pass measured (cm). Exarust keeps it for its
+    /// callers; the original does not store it.
     pub distance_cm: f32,
-    /// When the contact died on the game clock, if it did.
+    /// When the other died on the game clock, if it did (the original reads
+    /// it from the other's body).
     pub died_ms: Option<u64>,
 }
 
@@ -224,223 +239,73 @@ impl Contact {
         Self {
             character,
             kind: 1,
-            level: 0,
-            attitude: 0.0,
-            tolerance: 0.0,
-            hostility: 0.0,
+            flags: 0,
+            noticed: 0.0,
+            noticeability: 0.0,
             concern: 0.0,
             concern_target: 0.0,
             alarm: 0.0,
-            closeness: 0.0,
-            facing: 0.0,
+            attitude: 0.0,
+            tolerance: 0.0,
             threat: 0.0,
-            seen: false,
+            crowd: 0.0,
+            elapsed: 0,
+            closeness: 0.0,
+            view: 0.0,
+            selected: None,
+            events: 0,
+            hostility: 0.0,
             distance_cm: 0.0,
             died_ms: None,
         }
     }
-}
 
-/// The perceived values the observer keeps for the character it is looking
-/// at, as one perception pass leaves them.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Perception {
-    /// The other is inside the detection radius.
-    pub noticed: bool,
-    /// Whether the contact stays tracked after this pass.
-    pub tracked: bool,
-    /// 1 − distance / 1200, at most 0.99.
-    pub closeness: f32,
-    /// How noticeable the other is: 3·c² dead, 24·c down, otherwise the
-    /// view-and-closeness product; +10 while attacking.
-    pub noticeability: f32,
-    /// The largest noticeability the contact has had.
-    pub noticeability_peak: f32,
-    /// The raw attitude before the mind powers (the familiarity drift's
-    /// factor), −100 through 100.
-    pub raw_attitude: f32,
-    /// The observer's view weight: 0.25·((1 − look·u)/2)² + 0.75·(1 −
-    /// forward·u)/2, with u the direction from the observer to the other.
-    pub view: f32,
-    /// The observer's attitude after the group blend, 0 through 100.
-    pub attitude: f32,
-    /// Trust toward the selected third party, 0 through 1.
-    pub trust: f32,
-    /// The threat estimate, before the ×4 for a fast other.
-    pub threat: f32,
-    /// The largest threat this contact has ever had.
-    pub threat_peak: f32,
-    /// The most negative third-party term: a crowd penalty, ≤ 0.
-    pub crowd: f32,
-    /// The contact the threat estimate points at, if any.
-    pub selected: Option<Entity>,
-    /// 1 − the cosine of the other's facing toward the observer.
-    pub facing: f32,
-    /// The distance measured (cm).
-    pub distance_cm: f32,
-    /// The bearing of the observer's measured point from the other.
-    pub bearing: f32,
-    /// The familiarity change factor (elapsed units times the terms).
-    pub familiarity: f32,
-    /// An alert level this pass asks the observer to take when a tracked
-    /// target is lost, if it asked.
-    pub alert_floor: Option<f32>,
-    /// The other is attacking and its phase is just past one half with a
-    /// threat over 16 and its back turned: the original raises a
-    /// behaviour flag for it.
-    pub quick_swing: bool,
-}
+    /// The contact is tracked.
+    pub fn tracked(&self) -> bool {
+        self.flags & CONTACT_TRACKED != 0
+    }
 
-impl Default for Perception {
-    fn default() -> Self {
-        Self {
-            noticed: false,
-            tracked: false,
-            closeness: 0.0,
-            noticeability: 0.0,
-            noticeability_peak: 0.0,
-            raw_attitude: 0.0,
-            view: 0.0,
-            attitude: 0.0,
-            trust: 0.0,
-            threat: 0.0,
-            threat_peak: 0.0,
-            crowd: 0.0,
-            selected: None,
-            facing: 0.0,
-            distance_cm: 0.0,
-            bearing: 0.0,
-            familiarity: 0.0,
-            alert_floor: None,
-            quick_swing: false,
+    /// Store a new concern, raising [`EVENT_CONCERNED`] when it first
+    /// reaches [`CONCERN_EVENT`], or else [`EVENT_ALARMED`] when it first
+    /// reaches [`CONCERN_EVENT_HIGH`].
+    pub fn set_concern(&mut self, concern: f32) {
+        // A NaN concern compares as reached.
+        if self.concern < CONCERN_EVENT {
+            if concern >= CONCERN_EVENT || concern.is_nan() {
+                self.events |= EVENT_CONCERNED;
+            }
+        } else if self.concern < CONCERN_EVENT_HIGH
+            && (concern >= CONCERN_EVENT_HIGH || concern.is_nan())
+        {
+            self.events |= EVENT_ALARMED;
         }
+        self.concern = concern;
     }
 }
 
-/// The character doing the looking.
-#[derive(Debug, Clone, Copy)]
-pub struct Observer {
-    pub entity: Entity,
-    /// The measured position the score and distance start from (cm).
-    pub origin_cm: Vec3,
-    /// The body's look direction (unit).
-    pub look: Vec3,
-    /// The body's facing (unit).
-    pub forward: Vec3,
-    /// The condition word.
-    pub condition: u32,
-    /// The body's state flags.
-    pub flags: u32,
-    /// The combat flags word (wants melee, presses, wide).
-    pub combat_flags: u32,
-    /// Combat skill, 0 through 1.
-    pub skill: f32,
-    /// Calm, 0 through 1.
-    pub calm: f32,
-    /// Aggression, the trait the original keeps negative in its hostility
-    /// rule.
-    pub aggression: f32,
-    /// The perception value, 0 through 1, that scales a hidden target's
-    /// radius.
-    pub perception: f32,
-    /// A masking power's two radius factors, if one is active.
-    pub mask: Option<(f32, f32)>,
-    /// The contact is already tracked.
-    pub tracked: bool,
-    /// The combatant the observer is fighting, if any.
-    pub target: Option<Entity>,
-    /// The body's reach (cm).
-    pub reach_cm: f32,
-    /// The body's speed in cm a tick.
-    pub speed: f32,
-}
-
-/// The character being looked at.
-#[derive(Debug, Clone, Copy)]
-pub struct Observed {
-    pub entity: Entity,
-    /// Its position (cm).
-    pub position_cm: Vec3,
-    /// Its look direction (unit).
-    pub look: Vec3,
-    /// Its facing (unit).
-    pub forward: Vec3,
-    pub condition: u32,
-    pub flags: u32,
-    /// The combat flags word (a power's resistance, large, down).
-    pub combat_flags: u32,
-    /// Its speed in cm a tick.
-    pub speed: f32,
-    /// Its size.
-    pub size: f32,
-    /// Its reach (cm).
-    pub reach_cm: f32,
-    /// Combat skill, 0 through 1.
-    pub skill: f32,
-    /// Its attack phase.
-    pub phase: f32,
-    /// The mode byte that makes the non-combat threat multipliers 32/16/8.
-    pub combat_mode: bool,
-    /// The extra flag that picks 16 rather than 8 in combat.
-    pub armed: bool,
-    /// The other extra flag that picks 16 rather than 8 out of combat.
-    pub guard_up: bool,
-    /// Whether it is invisible to perception.
-    pub hidden: bool,
-    /// Whether it is asleep.
-    pub asleep: bool,
-    /// The separate death flag the original keeps beside the condition word.
-    pub dead: bool,
-}
-
-/// The condition word's attacking value.
-pub const CONDITION_ATTACKING: u32 = 2;
-/// The condition word's down bits.
-pub const CONDITION_DOWN: u32 = 0x200;
-/// The condition word's getting-up bits.
-pub const CONDITION_GETTING_UP: u32 = 0x300;
-/// The condition word's dead value.
-pub const CONDITION_DEAD: u32 = 0xA00;
-/// The state-flag bit for sleep.
-pub const FLAG_ASLEEP: u32 = 0x10;
-/// The state-flag bit for a hidden character whose detection radius
-/// shrinks.
-pub const FLAG_HIDDEN: u32 = 0x1_0000;
-/// The state-flag bit for a character perception skips entirely.
-pub const FLAG_INVISIBLE: u32 = 0x2_0000;
-/// The state-flag bit that makes a blow's threat raise happen once.
-pub const FLAG_THREAT_NOTED: u32 = 0x10_0000;
-
-/// The engine's `atan2(x, z)`: zero when the horizontal length is under
-/// 1e-8, otherwise the engine's cheap inverse cosine, negated for x < 0.
-pub fn atan2_xz(x: f32, z: f32) -> f32 {
-    let length_squared = x * x + z * z;
-    if length_squared < 1e-8 {
-        return 0.0;
-    }
-    let cosine = (z / length_squared.sqrt()).clamp(-1.0, 1.0);
-    let angle = if cosine <= -1.0 {
-        std::f32::consts::PI
-    } else if cosine >= 1.0 {
-        0.0
+/// The engine's cheap `asin`, in single precision (the record's constants:
+/// π/2, 0.2075 and 0.0535).
+pub fn asin_fast(x: f32) -> f32 {
+    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
+    const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
+    const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);
+    if 0.0 <= x {
+        HALF_PI - (HALF_PI - (LINEAR - SQUARE * x) * x) * (1.0 - x).sqrt()
     } else {
-        (f64::from(std::f32::consts::FRAC_PI_2) - asin_poly(f64::from(cosine))) as f32
-    };
-    if x < 0.0 { -angle } else { angle }
-}
-
-fn asin_poly(x: f64) -> f64 {
-    (std::f64::consts::FRAC_PI_2 + 0.2075 * x + 0.0535 * x * x) * (1.0 + x).sqrt()
-        - std::f64::consts::FRAC_PI_2
-}
-
-fn wrap(mut angle: f32) -> f32 {
-    if angle < -std::f32::consts::PI {
-        angle += std::f32::consts::TAU;
-    } else if angle > std::f32::consts::PI {
-        angle -= std::f32::consts::TAU;
+        ((SQUARE * x + LINEAR) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
     }
-    angle
+}
+
+/// Bring an angle back into ±π by one turn, testing the bounds in double
+/// precision.
+fn wrap(angle: f32) -> f32 {
+    if f64::from(angle) < -std::f64::consts::PI {
+        angle + std::f32::consts::TAU
+    } else if f64::from(angle) > std::f64::consts::PI {
+        angle - std::f32::consts::TAU
+    } else {
+        angle
+    }
 }
 
 /// The polar direction from a pitch and a yaw as the engine builds it:
@@ -453,72 +318,32 @@ pub fn direction(pitch: f32, yaw: f32) -> Vec3 {
     )
 }
 
-/// The look direction toward `point` (cm), with its yaw held within
-/// [`LOOK_LIMIT`] of the body's look and its pitch kept. The original
-/// measures the bearing from the point back to the eye before building the
-/// direction, which gives the same result as measuring toward the point.
-///
-/// Guess: the original's pitch is the engine's `asin` of the eye's height
-/// over the distance, negated through the direction builder; the same
-/// construction is used here.
-pub fn look_direction(origin_cm: Vec3, body_look: Vec3, point_cm: Vec3) -> Vec3 {
-    let delta = point_cm - origin_cm;
-    let flat = Vec2::new(delta.x, delta.z);
-    let pitch = if flat.length() < 1e-4 {
-        0.0
+/// The direction the original builds from the behaviour's own point
+/// `from_cm` (its eye) and a point `to_cm`: the unit vector from `to_cm`
+/// to `from_cm`, its yaw held within 45° of the body's facing and its
+/// pitch the engine's `asin` of the height. The original normalises with
+/// the hardware reciprocal square root; this uses the exact one.
+pub fn look_direction(from_cm: Vec3, to_cm: Vec3, body_forward: Vec3) -> Vec3 {
+    let delta = from_cm - to_cm;
+    let length_squared = delta.length_squared();
+    let unit = if length_squared == 0.0 {
+        Vec3::ZERO
     } else {
-        -(delta.y / delta.length().max(1e-6)).clamp(-1.0, 1.0).asin()
+        delta * (1.0 / length_squared.sqrt())
     };
-    let bearing = atan2_xz(delta.x, delta.z);
-    let body = atan2_xz(body_look.x, body_look.z);
-    let offset = wrap(bearing - body);
-    let yaw = if offset > LOOK_LIMIT {
-        wrap(body + LOOK_LIMIT)
-    } else if offset < -LOOK_LIMIT {
-        wrap(body - LOOK_LIMIT)
+    let yaw = atan2_xz(unit.x, unit.z);
+    let pitch = asin_fast(unit.y);
+    let body = atan2_xz(body_forward.x, body_forward.z);
+    let offset = wrap(yaw + -body);
+    let quarter = std::f32::consts::FRAC_PI_4;
+    let yaw = if f64::from(offset) > std::f64::consts::FRAC_PI_4 {
+        wrap(body + quarter)
+    } else if f64::from(offset) < -std::f64::consts::FRAC_PI_4 {
+        wrap(body + -quarter)
     } else {
-        bearing
+        yaw
     };
-    direction(pitch, yaw)
-}
-
-/// Add to a contact's concern with the attitude and aggression weighting,
-/// capped at [`CONCERN_CAP`]. Only a character contact is affected. The
-/// amount is multiplied by `gain`, and the contact's event bits are raised
-/// when the concern first passes [`CONCERN_EVENT`] and
-/// [`CONCERN_EVENT_HIGH`].
-///
-/// Returns the new concern, and whether the low and high event bits rose.
-pub fn add_concern(
-    contact: &mut Contact,
-    aggression: f32,
-    amount: f32,
-    gain: f32,
-) -> (f32, bool, bool) {
-    if contact.kind != 1 {
-        return (contact.concern, false, false);
-    }
-    contact.level = 3;
-    if contact.concern >= CONCERN_CAP {
-        return (contact.concern, false, false);
-    }
-    let before = contact.concern;
-    let f = contact.attitude * 0.005 + 0.5;
-    let p = aggression;
-    let f = 1.0 - ((2.0 - f) * f * p + (1.0 - p) * f);
-    let a8 = amount * amount * amount * amount;
-    let a8 = a8 * a8;
-    let half = f * 0.5 + 0.5;
-    let mut concern = half * half * ((1.0 - f) * a8 + amount * f) * gain + contact.concern;
-    if concern > CONCERN_CAP {
-        concern = CONCERN_CAP;
-    }
-    contact.concern = concern;
-    (
-        concern,
-        before < CONCERN_EVENT && concern >= CONCERN_EVENT,
-        before < CONCERN_EVENT_HIGH && concern >= CONCERN_EVENT_HIGH,
-    )
+    direction(-pitch, yaw)
 }
 
 /// The engine's smoothstep used for threat and concern weights:
@@ -527,373 +352,469 @@ pub fn blend(t: f32, p: f32) -> f32 {
     (2.0 - t) * t * p + (1.0 - p) * t
 }
 
-/// One perception pass: `observer` looks at `observed`, whose contacts are
-/// `observed_contacts`; the observer's own contacts are `own_contacts`.
-///
-/// `raw` is the role database's attitude and tolerance of the observer
-/// toward the other; the mind powers are applied to it and the group blend
-/// and the familiarity drift then overwrite the stored attitude. The trust
-/// is the tolerance over 100.
-///
-/// The pass updates the distance and clears the notice flag when the other
-/// is out of sight; it returns `false` then. A tracked contact that targets
-/// the observer raises `out.alert_floor` when it is lost.
-///
-/// The observer's `tracked` flag adds [`TRACKED_CM`] to both radius tests.
-/// A masked contact uses the mask's two factors; otherwise the perception
-/// value scales a hidden contact's radius by 1 − 0.9·(1 − v) for the first
-/// test and by 1 − 0.8·(1 − v) for the second.
-#[allow(clippy::too_many_arguments)]
-pub fn perceive(
-    observer: &Observer,
-    observed: &Observed,
-    observed_contacts: &[Contact],
-    own_contacts: &mut [Contact],
-    out: &mut Perception,
-    raw: Attitude,
-    resist_mind: bool,
-    effects: &[Effect],
-    now_ms: u64,
-    elapsed: f32,
-) -> bool {
-    let mut delta = observer.origin_cm - observed.position_cm;
-    if delta.y.abs() < FLAT_BAND_CM {
-        delta.y = 0.0;
+/// The script's `AddConcern` on a contact: the flags word becomes
+/// [`CONTACT_CONCERN_FLAGS`]; below the cap the concern rises by
+/// `h²·((1 − g)·a⁸ + a·g)·gain` with `f = attitude·0.005 + 0.5` (double
+/// precision), `g = 1 − blend(f, p)` and `h = g/2 + 1/2`, capped at
+/// [`CONCERN_CAP`]. `p` is the observer's aggression trait. Returns the
+/// new concern.
+pub fn add_concern(contact: &mut Contact, aggression: f32, amount: f32, gain: f32) -> f32 {
+    contact.flags = CONTACT_CONCERN_FLAGS;
+    if contact.concern >= CONCERN_CAP || contact.concern.is_nan() {
+        return contact.concern;
     }
-    let distance_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-    out.distance_cm = distance_squared.sqrt();
-    out.noticed = false;
-    out.alert_floor = None;
-    out.quick_swing = false;
-    if observed.flags & FLAG_INVISIBLE != 0 {
-        return false;
+    let f = (f64::from(contact.attitude) * 0.005 + 0.5) as f32;
+    let g = 1.0 - blend(f, aggression);
+    let a2 = amount * amount;
+    let a4 = a2 * a2;
+    let a8 = a4 * a4;
+    let h = g * 0.5 + 0.5;
+    let mut concern = h * h * ((1.0 - g) * a8 + amount * g) * gain + contact.concern;
+    if concern > CONCERN_CAP {
+        concern = CONCERN_CAP;
     }
-
-    let mut radius = PERCEPTION_CM;
-    if observer.flags & FLAG_ASLEEP != 0 {
-        radius *= 0.5;
-    }
-    let mut inner = radius;
-    if observed.hidden || observed.flags & FLAG_HIDDEN != 0 {
-        match observer.mask {
-            Some((first, second)) => {
-                radius *= 1.0 - (1.0 - observer.perception) * first;
-                inner = (1.0 - (1.0 - observer.perception) * second) * radius;
-            }
-            None => {
-                let v = f64::from(observer.perception);
-                radius *= (1.0 - (1.0 - v) * 0.9) as f32;
-                inner = ((1.0 - (1.0 - v) * 0.8) * f64::from(radius)) as f32;
-            }
-        }
-    }
-    if observer.tracked {
-        radius += TRACKED_CM;
-        inner += TRACKED_CM;
-    }
-    if distance_squared >= radius * radius && distance_squared >= inner * inner {
-        if observer.tracked && observer.target == Some(observed.entity) {
-            out.alert_floor = Some(LOST_ALERT);
-        }
-        out.tracked = false;
-        return false;
-    }
-    out.noticed = true;
-    out.tracked = true;
-    out.raw_attitude = raw.value;
-    out.trust = raw.tolerance * 0.01;
-    out.attitude = effective_attitude(
-        observer.entity,
-        observed.entity,
-        raw,
-        observer.aggression,
-        resist_mind,
-        effects.iter().copied(),
-    );
-
-    let distance = distance_squared.sqrt();
-    let dir = delta / distance.max(f32::EPSILON);
-    let closeness = (1.0 - distance / PERCEPTION_CM).min(CLOSENESS_CAP);
-    out.closeness = closeness;
-    out.facing = 1.0 - observed.look.dot(delta) / distance.max(f32::EPSILON);
-
-    if observed.condition & 0xA00 != 0 || observed.dead || observed.asleep {
-        if observed.condition == CONDITION_DEAD || observed.dead {
-            let noticeability = closeness * closeness * 3.0;
-            out.noticeability = noticeability;
-            if out.noticeability_peak < noticeability {
-                out.noticeability_peak = noticeability;
-            }
-            out.facing = 0.0;
-            out.selected = None;
-            out.threat = 0.0;
-        } else {
-            if observed.condition & 0x800 != 0 {
-                out.facing *= 0.99;
-            }
-            out.noticeability = closeness * 24.0;
-        }
-    } else {
-        let look_toward = observed.look.dot(dir) * 0.5 + 0.5;
-        let forward_toward = observed.forward.dot(dir) * 0.5 + 0.5;
-        let c2 = closeness * closeness;
-        out.noticeability = (look_toward * look_toward * 0.5 + 1.0)
-            * (forward_toward + 2.0)
-            * (c2 * c2 * 2.0 + (1.0 - c2) * closeness)
-            + if observed.condition == CONDITION_ATTACKING {
-                10.0
-            } else {
-                0.0
-            };
-    }
-
-    let view_look = observer.look.dot(dir) * -0.5 + 0.5;
-    let view_forward = observer.forward.dot(dir) * -0.5 + 0.5;
-    out.view = view_look * view_look * 0.25 + view_forward * 0.75;
-
-    let bearing = atan2_xz(delta.x, delta.z);
-    out.bearing = if bearing >= 0.0 {
-        wrap(bearing - std::f32::consts::PI)
-    } else {
-        wrap(bearing + std::f32::consts::PI)
-    };
-
-    group_attitude(observer, observed_contacts, own_contacts, out, now_ms);
-
-    if observed.condition == CONDITION_DEAD || observer.flags & FLAG_ASLEEP != 0 {
-        out.threat = 0.0;
-        return true;
-    }
-
-    let friendly = threat_multiplier(observed);
-    let p = observer.aggression;
-    let a = out.attitude * 0.01;
-    let base = blend(a * 0.5 + 0.5, p);
-    let mut best: f32 = 0.0;
-    let mut max: f32 = 0.0;
-    let mut own: f32 = 0.0;
-    let mut max_negative: f32 = 0.0;
-    let mut selected = None;
-    for contact in observed_contacts {
-        if contact.kind != 1 {
-            continue;
-        }
-        let trust_value = if contact.character == observer.entity {
-            1.0
-        } else if contact.died_ms.is_some_and(|t| now_ms > t + DEAD_MEMORY_MS) {
-            continue;
-        } else {
-            own_contacts
-                .iter()
-                .find(|c| c.character == contact.character)
-                .map_or(0.0, |c| c.attitude * 0.01)
-        };
-        let share = blend(trust_value * 0.5 + 0.5, p) - base;
-        let weight = contact_weight(observed, contact, friendly);
-        let w2 = weight * weight;
-        let w6 = w2 * w2 * w2;
-        let value = if share > 0.0 {
-            let half = share * 0.5 + 0.5;
-            half * half * ((1.0 - share) * w6 + weight * share)
-        } else {
-            let negative = (weight * share - (share + 1.0) * w6) * share;
-            if max_negative < negative {
-                max_negative = negative;
-            }
-            if let Some(i) = own_contacts
-                .iter()
-                .position(|c| c.character == contact.character)
-            {
-                let published = negative * friendly;
-                if own_contacts[i].threat < published {
-                    own_contacts[i].threat = published;
-                }
-            }
-            let half = share * 0.5 + 0.5;
-            half * half * w6
-        };
-        if best < value {
-            selected = Some(contact.character);
-            best = value;
-        }
-        if max < value {
-            max = value;
-        }
-        if contact.character == observer.entity {
-            own = value;
-        }
-    }
-    let crowd = out.crowd.max(max_negative);
-    out.crowd = crowd;
-    let scale = 1.0 - base * base * base;
-    let scaled_negative = crowd * scale;
-    let friendly = friendly * 0.85;
-    let all = (max - scaled_negative) * friendly;
-    let threat = (own / (own + 0.5) - scaled_negative) * friendly;
-    out.threat = if threat > 0.0 { threat * 0.1 } else { 0.0 };
-    out.quick_swing = threat > 16.0
-        && observed.condition == CONDITION_ATTACKING
-        && observed.phase > 0.5
-        && observed.phase < 0.55
-        && out.facing > 1.5;
-    out.selected = selected;
-    if observed.speed > 1.3 {
-        out.threat *= 4.0;
-    }
-    if out.threat_peak < all {
-        out.threat_peak = all;
-    }
-    let raw = (1.0 - (out.raw_attitude * 0.01).abs()).max(0.0);
-    out.familiarity = elapsed * raw * raw * ((base + 0.25) - all * 0.75) * 0.01;
-    true
+    contact.set_concern(concern);
+    concern
 }
 
-/// The weight the observed's condition puts on a third party's threat: 32
-/// while it attacks, 16 or 8 in or out of combat (a guard picks 16), 2
-/// down, and `(phase·0.5 + 0.5)·4` while getting up and moving.
+/// The character doing the looking.
+#[derive(Debug, Clone, Copy)]
+pub struct Observer {
+    pub entity: Entity,
+    /// Its body position (cm).
+    pub position_cm: Vec3,
+    /// The body's look direction (unit).
+    pub look: Vec3,
+    /// The body's facing (unit).
+    pub forward: Vec3,
+    /// Asleep: the detection radius is halved.
+    pub asleep: bool,
+    /// The perception value, 0 through 1, that scales a hidden character's
+    /// radius.
+    pub perception: f32,
+    /// Calm, 0 through 1.
+    pub calm: f32,
+    /// The aggression trait the blends use.
+    pub aggression: f32,
+    /// The record's aggression that the frenzy power halves.
+    pub mind_aggression: f32,
+    /// The technique that halves a binding power's hold.
+    pub resist_mind: bool,
+    /// The character its body targets, if any.
+    pub target: Option<Entity>,
+}
+
+/// The character being looked at.
+#[derive(Debug, Clone, Copy)]
+pub struct Observed {
+    pub entity: Entity,
+    /// Its body position (cm).
+    pub position_cm: Vec3,
+    /// Its look direction (unit).
+    pub look: Vec3,
+    /// Its facing (unit).
+    pub forward: Vec3,
+    /// Its condition word ([`CONDITION_DEAD`], …).
+    pub condition: u32,
+    /// Perception skips it.
+    pub invisible: bool,
+    /// Hidden: the detection radius shrinks with the observer's perception.
+    pub hidden: bool,
+    /// A masking power's two radius factors, if it carries one.
+    pub mask: Option<(f32, f32)>,
+    /// Asleep.
+    pub asleep: bool,
+    /// The behaviour is being removed (counts as dead for noticeability;
+    /// its attitude is zeroed).
+    pub removed: bool,
+    /// Its attack or getting-up phase.
+    pub phase: f32,
+    /// In its combat stance.
+    pub in_combat: bool,
+    /// A queued combat step is moving it (picks 16 over 8 in combat).
+    pub stepping: bool,
+    /// A body byte that picks 16 over 8 out of combat (not identified).
+    pub poised: bool,
+    /// Its body speed.
+    pub speed: f32,
+}
+
+/// What a perception pass reports beside the contact it updates.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Sight {
+    /// The other is in range this pass.
+    pub seen: bool,
+    /// An alert level the observer must at least take.
+    pub alert_floor: Option<f32>,
+    /// The familiarity drift for the role database, when the pass reached
+    /// it.
+    pub familiarity: Option<f32>,
+    /// The concern and the attitude call for the mind power check the
+    /// original makes here (it is not reproduced).
+    pub mind_check: bool,
+}
+
+/// The weight the observed character's condition puts on a third party's
+/// threat: 32 while it attacks, 2 down, `(phase·0.5 + 0.5)·4` getting up
+/// with a phase, otherwise 16 or 8.
 fn threat_multiplier(observed: &Observed) -> f32 {
     if observed.condition == CONDITION_ATTACKING {
         32.0
     } else if observed.condition & CONDITION_DOWN != 0 {
-        if observed.condition == CONDITION_GETTING_UP && observed.phase > 0.0 {
+        if observed.condition == CONDITION_GETTING_UP && 0.0 < observed.phase {
             (observed.phase * 0.5 + 0.5) * 4.0
         } else {
             2.0
         }
-    } else if observed.combat_mode {
-        if observed.armed { 16.0 } else { 8.0 }
-    } else if observed.guard_up {
+    } else if observed.in_combat {
+        if observed.stepping { 16.0 } else { 8.0 }
+    } else if observed.poised {
         16.0
     } else {
         8.0
     }
 }
 
-/// One third party's weight in the threat estimate: its closeness and how
-/// much it faces the observed, raised to the sixth power, with the
-/// attacking, down and combat variants.
-fn contact_weight(observed: &Observed, contact: &Contact, friendly: f32) -> f32 {
-    let closeness = contact.closeness * contact.closeness;
+/// One third party's weight in the threat estimate, from the observed
+/// character's closeness to it and view of it.
+fn contact_weight(observed: &Observed, contact: &Contact, multiplier: f32) -> f32 {
+    let c = contact.closeness;
+    let v = contact.view;
     if observed.condition == CONDITION_ATTACKING {
-        let f2 = contact.facing * contact.facing;
-        return (f2 * 0.8 + 0.2) * (2.0 - closeness) * closeness;
+        let c2 = c * c;
+        return ((f64::from(v * v) * 0.8 + 0.2) * f64::from((2.0 - c2) * c2)) as f32;
     }
     if observed.condition & CONDITION_DOWN != 0 {
-        return (contact.facing * contact.facing * 0.75 + 0.25) * closeness;
+        return (v * 0.75 + 0.25) * (c * c);
     }
-    let mut weight = if observed.combat_mode {
-        (contact.facing * contact.facing * 0.75 + 0.25) * contact.closeness
+    let weight = if observed.in_combat {
+        (v * v * 0.75 + 0.25) * c
     } else {
-        (contact.facing * 0.5 + 0.5) * contact.closeness
+        (v * 0.5 + 0.5) * c
     };
-    let mut t = closeness;
-    if friendly < 12.0 {
+    let mut t = c * c;
+    if multiplier < 12.0 {
         t = t * t;
         t = t * t;
         t = t * (2.0 - t);
     }
-    weight *= t * 0.6 + 0.4;
-    weight
+    ((f64::from(t) * 0.6 + 0.4) * f64::from(weight)) as f32
 }
 
-/// The attitude after the group blend: the observer's calm-weighted
-/// attitude, moved halfway toward the best third party it trusts and whose
-/// attitude toward that party is positive. The result is 0 through 100.
-fn group_attitude(
+/// One perception pass: `observer` looks at `observed`, whose contacts are
+/// `observed_contacts`. `own` are the observer's contacts and
+/// `own[index]` is the one for `observed`; the threat estimate also raises
+/// the concern target of the observer's contacts with the third parties
+/// the observed character threatens.
+///
+/// `raw` is the role database's attitude and tolerance toward the observed
+/// character; `trust_of` gives the observer's trust ([`trust`]) toward a
+/// third party. `effects` are the observer's mind powers.
+#[allow(clippy::too_many_arguments)]
+pub fn perceive(
     observer: &Observer,
+    observed: &Observed,
     observed_contacts: &[Contact],
-    own_contacts: &[Contact],
-    out: &mut Perception,
+    own: &mut [Contact],
+    index: usize,
+    raw: Attitude,
+    trust_of: &dyn Fn(Entity) -> f32,
+    effects: &[Effect],
     now_ms: u64,
-) {
-    let a = ((100.0 - out.attitude) * observer.calm * 0.25 + out.attitude) * 0.01;
-    let mut best = a;
-    for contact in observed_contacts {
-        if contact.kind != 1 {
+) -> Sight {
+    own[index].threat = 0.0;
+    if observed.invisible {
+        return Sight::default();
+    }
+    let mut delta = observer.position_cm - observed.position_cm;
+    if delta.y.abs() < FLAT_BAND_CM {
+        delta.y = 0.0;
+    }
+    let distance_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+    let mut radius = PERCEPTION_CM;
+    if observer.asleep {
+        radius *= 0.5;
+    }
+    let mut inner = radius;
+    if observed.hidden {
+        let dark = 1.0 - observer.perception;
+        match observed.mask {
+            Some((first, second)) => {
+                radius *= 1.0 - dark * first;
+                inner = (1.0 - dark * second) * radius;
+            }
+            None => {
+                let dark = f64::from(dark);
+                radius = ((1.0 - dark * 0.9) * f64::from(radius)) as f32;
+                inner = ((1.0 - dark * 0.8) * f64::from(radius)) as f32;
+            }
+        }
+    }
+    let contact = &mut own[index];
+    if contact.tracked() {
+        radius += TRACKED_CM;
+        inner += TRACKED_CM;
+    }
+    if distance_squared < radius * radius {
+        contact.flags |= CONTACT_TRACKED;
+    } else if distance_squared.partial_cmp(&(inner * inner)) != Some(std::cmp::Ordering::Less) {
+        let mut sight = Sight::default();
+        if contact.tracked() {
+            if observer.target == Some(observed.entity) {
+                sight.alert_floor = Some(LOST_ALERT);
+            }
+            contact.flags &= !CONTACT_TRACKED;
+        }
+        return sight;
+    }
+    contact.flags |= CONTACT_NOTICED;
+    let distance = distance_squared.sqrt();
+    contact.distance_cm = distance;
+    let toward_observer = delta * (1.0 / distance);
+    let mut closeness = 1.0 - distance / PERCEPTION_CM;
+    if f64::from(closeness) > 0.99 {
+        closeness = 0.99;
+    }
+    contact.closeness = closeness;
+    let facing = observed.forward.dot(toward_observer) * 0.5 + 0.5;
+    let looking = observed.look.dot(toward_observer) * 0.5 + 0.5;
+    let looking = looking * looking;
+    let lying = observed.removed || observed.asleep;
+    if observed.condition & CONDITION_DEAD != 0 || lying {
+        if observed.condition == CONDITION_DEAD || lying {
+            contact.noticeability = closeness * closeness * 3.0;
+            if contact.noticed > contact.noticeability {
+                contact.noticed = contact.noticeability;
+            }
+            contact.concern = 0.0;
+            contact.alarm = 0.0;
+            contact.selected = None;
+        } else {
+            if observed.condition & CONDITION_OUT != 0 {
+                contact.concern = (f64::from(contact.concern) * 0.99) as f32;
+            }
+            contact.noticeability = closeness * 24.0;
+        }
+    } else {
+        let c2 = closeness * closeness;
+        let near = c2 * c2 * 2.0 + (1.0 - c2) * closeness;
+        contact.noticeability = (looking * 0.5 + 1.0) * ((facing * 1.0 + 2.0) * near);
+        if observed.condition == CONDITION_ATTACKING {
+            contact.noticeability += 10.0;
+        }
+    }
+    contact.attitude = effective_attitude(
+        observed.entity,
+        raw,
+        observer.mind_aggression,
+        observer.resist_mind,
+        effects,
+    );
+    contact.tolerance = (f64::from(raw.tolerance) * 0.01) as f32;
+    let view_look = observer.look.dot(toward_observer) * -0.5 + 0.5;
+    let view_forward = observer.forward.dot(toward_observer) * -0.5 + 0.5;
+    contact.view = view_look * view_look * 0.25 + view_forward * 0.75;
+    let mut sight = Sight {
+        seen: true,
+        ..Sight::default()
+    };
+    if observed.condition == CONDITION_DEAD || observed.asleep {
+        return sight;
+    }
+
+    // The group blend: the calm-weighted attitude, moved halfway toward the
+    // best trusted third party the observed character likes.
+    let attitude = contact.attitude;
+    let mut blended =
+        (f64::from((100.0 - attitude) * (observer.calm * 0.25) + attitude) * 0.01) as f32;
+    let mut trusts = vec![0.0f32; observed_contacts.len()];
+    let mut best = blended;
+    for (i, third) in observed_contacts.iter().enumerate() {
+        if third.character == observer.entity {
+            trusts[i] = 1.0;
             continue;
         }
-        if contact.died_ms.is_some_and(|t| now_ms > t + DEAD_MEMORY_MS) {
+        if third.kind != 1 {
             continue;
         }
-        let trust_value = own_contacts
-            .iter()
-            .find(|c| c.character == contact.character)
-            .map_or(0.0, |c| c.attitude * 0.01);
-        let toward = contact.attitude * 0.01;
-        if trust_value > 0.0 && toward > 0.0 {
-            let candidate = trust_value * toward;
+        if third
+            .died_ms
+            .is_some_and(|t| now_ms > t.saturating_add(DEAD_MEMORY_MS))
+        {
+            continue;
+        }
+        let t = (f64::from(trust_of(third.character)) * 0.01) as f32;
+        trusts[i] = t;
+        if t > 0.0 && third.attitude > 0.0 {
+            let candidate = (f64::from(t) * (f64::from(third.attitude) * 0.01)) as f32;
             if best < candidate {
                 best = candidate;
             }
         }
     }
-    out.attitude = if a < best {
-        (a + (best - a) * 0.5) * 100.0
+    if blended < best {
+        blended += (best - blended) * 0.5;
+    }
+    own[index].attitude = blended * 100.0;
+
+    // The threat estimate over the observed character's contacts.
+    let p = observer.aggression;
+    let base = blend(blended * 0.5 + 0.5, p);
+    let multiplier = threat_multiplier(observed);
+    let mut best = 0.0f32;
+    let mut most = 0.0f32;
+    let mut mine = 0.0f32;
+    let mut crowd = 0.0f32;
+    let mut selected = None;
+    for (i, third) in observed_contacts.iter().enumerate() {
+        if third.kind != 1 {
+            continue;
+        }
+        let is_observer = third.character == observer.entity;
+        let liking = if is_observer {
+            1.0
+        } else {
+            blend(trusts[i] * 0.5 + 0.5, p)
+        };
+        let weight = contact_weight(observed, third, multiplier);
+        let share = liking - base;
+        let w2 = weight * weight;
+        let w4 = w2 * w2;
+        let w8 = w4 * w4;
+        let value = if share > 0.0 {
+            let half = share * 0.5 + 0.5;
+            half * half * ((1.0 - share) * w8 + weight * share)
+        } else {
+            let against = (weight * share - (1.0 + share) * w8) * share;
+            if crowd < against {
+                crowd = against;
+            }
+            if let Some(friend) = own.iter_mut().find(|c| c.character == third.character) {
+                let raised = against * multiplier;
+                if raised > friend.concern_target {
+                    friend.concern_target = raised;
+                }
+            }
+            let half = share * 0.5 + 0.5;
+            half * half * w8
+        };
+        if best < value {
+            best = value;
+            selected = Some(third.character);
+        }
+        if most < value {
+            most = value;
+        }
+        if is_observer {
+            mine = value;
+        }
+    }
+    let contact = &mut own[index];
+    if crowd > contact.crowd {
+        contact.crowd = crowd;
     } else {
-        a * 100.0
-    };
+        crowd = contact.crowd;
+    }
+    let multiplier = (f64::from(multiplier) * 0.85) as f32;
+    let fade = 1.0 - base * base * base;
+    let all = (most - crowd * fade) * multiplier;
+    let drift = (base + 0.25) - all * 0.75;
+    let threat = (mine / (0.5 + mine) - crowd * fade) * multiplier;
+    if threat > 0.0 {
+        contact.threat = (f64::from(threat) * 0.1) as f32;
+        if observed.condition == CONDITION_ATTACKING
+            && observed.phase > 0.5
+            && f64::from(observed.phase) < 0.55
+            && threat > 16.0
+            && contact.concern > 1.0
+        {
+            contact.events |= EVENT_QUICK_SWING;
+        }
+    } else {
+        contact.threat = 0.0;
+    }
+    contact.selected = selected;
+    if f64::from(observed.speed) > 1.3 {
+        contact.threat *= 4.0;
+    }
+    let unfamiliar = (1.0 - (f64::from(raw.value) * 0.01).abs()) as f32;
+    sight.mind_check =
+        contact.concern > 1.5 && f64::from(raw.value) + 0.1 < f64::from(contact.attitude);
+    let familiarity =
+        (f64::from(contact.elapsed as f32 * (unfamiliar * unfamiliar) * drift) * 0.01) as f32;
+    if all > contact.concern_target {
+        contact.concern_target = all;
+    }
+    if observed.removed {
+        contact.attitude = 0.0;
+    } else {
+        sight.familiarity = Some(familiarity);
+    }
+    sight
 }
 
 /// A candidate footwork step's terrain cost from the pathfinder's clearance
-/// and penalty samples: `(a² + a)·120 + b·40 + 1`.
+/// and penalty samples: `b·40 + ((a² + a)·120 + 1)`.
 pub fn candidate_cost(clearance: f32, penalty: f32) -> f32 {
-    (clearance * clearance + clearance) * 120.0 + penalty * 40.0 + 1.0
+    penalty * 40.0 + ((clearance * clearance + clearance) * 120.0 + 1.0)
 }
 
-/// Whether a point `offset` from a body centre is outside the body's
+/// Whether a point `offset` from an object's centre is outside its
 /// bounding radius (cm). With `half_height` the vertical offset counts at
-/// half weight, the test the original uses for a carried point; without it
-/// the test is flat.
+/// half weight; without it the test is flat.
 pub fn outside_radius(radius_cm: f32, offset_cm: Vec3, half_height: bool) -> bool {
-    let y = if half_height { offset_cm.y * 0.5 } else { 0.0 };
+    let y = offset_cm.y * if half_height { 0.5 } else { 0.0 };
     radius_cm * radius_cm < offset_cm.x * offset_cm.x + y * y + offset_cm.z * offset_cm.z
 }
 
 /// The farthest a queued move point may lie from the body: eight times the
 /// body's speed plus 20 cm.
 pub fn move_limit(speed_cm: f32) -> f32 {
-    speed_cm * 8.0 + 20.0
+    8.0 * speed_cm + 20.0
 }
 
-/// Clamp a move point to `limit_cm` from `from`, keeping its direction.
-pub fn clamp_step(from_cm: Vec3, to_cm: Vec3, limit_cm: f32) -> Vec3 {
-    let delta = to_cm - from_cm;
-    let length = delta.length();
-    if length <= limit_cm || length <= f32::EPSILON || !length.is_finite() {
-        return to_cm;
+/// A move point farther than [`move_limit`] from the body is put at that
+/// distance straight ahead of the body (along `forward`, not toward the
+/// point). The measure is taken to be the squared distance between the
+/// two points (the original calls a vector helper for it).
+pub fn clamp_move_point(position_cm: Vec3, forward: Vec3, point_cm: Vec3, speed_cm: f32) -> Vec3 {
+    let limit = move_limit(speed_cm);
+    if point_cm.distance_squared(position_cm) > limit * limit {
+        position_cm + forward * limit
+    } else {
+        point_cm
     }
-    from_cm + delta * (limit_cm / length)
-}
-
-/// The published combat rating and reach of a combatant.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Fighting {
-    /// The experience-derived combat rating.
-    pub rating: f32,
-    /// The body's reach (cm).
-    pub reach_cm: f32,
 }
 
 /// A character's nav footprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Footprint {
-    /// The grid cell (x, y) it stands in.
+    /// The grid cell (x, y).
     pub cell: (i32, i32),
-    /// Whether the cell is on the walkable grid.
+    /// Whether the cell was stamped on the grid.
     pub in_grid: bool,
 }
 
-/// The grid cell a world position stamps: `floor(size/2 + pos/30 − 0.5)` on
-/// each horizontal axis, with a cell outside the margin moved to
-/// [`NAV_FALLBACK_CELL`] and flagged off the grid.
-pub fn foot_cell(position_cm: Vec3, grid_size: i32) -> Footprint {
-    let half = grid_size as f32 * 0.5;
-    let x = (half + position_cm.x * NAV_INVERSE_CELL - 0.5).floor() as i32;
-    let y = (half + position_cm.z * NAV_INVERSE_CELL - 0.5).floor() as i32;
-    let valid = |c: i32| c >= NAV_MARGIN && c < grid_size - NAV_MARGIN;
-    if !valid(x) || !valid(y) {
+/// The grid cell a world position stamps: `size/2 + (pos/30 − 0.5)` on each
+/// horizontal axis, rounded to the nearest (ties to even). A cell closer
+/// than [`NAV_MARGIN`] to the edge on x is replaced by
+/// [`NAV_FALLBACK_CELL`] there and y is not checked; otherwise a bad y is
+/// replaced the same way. Either way the footprint is not on the grid.
+pub fn foot_cell(position_cm: Vec3, width: i32, height: i32) -> Footprint {
+    let axis = |size: i32, pos: f32| {
+        (size as f32 * 0.5 + (pos * NAV_INVERSE_CELL - 0.5)).round_ties_even() as i64 as i32
+    };
+    let x = axis(width, position_cm.x);
+    let y = axis(height, position_cm.z);
+    let bad = |c: i32, size: i32| c < NAV_MARGIN || i64::from(size) - 5 <= i64::from(c);
+    if bad(x, width) {
         Footprint {
-            cell: (NAV_FALLBACK_CELL, NAV_FALLBACK_CELL),
+            cell: (NAV_FALLBACK_CELL, y),
+            in_grid: false,
+        }
+    } else if bad(y, height) {
+        Footprint {
+            cell: (x, NAV_FALLBACK_CELL),
             in_grid: false,
         }
     } else {
@@ -904,14 +825,22 @@ pub fn foot_cell(position_cm: Vec3, grid_size: i32) -> Footprint {
     }
 }
 
+static OVERFLOW_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The original logs "Character position overflow" once per run, for the
+/// first body found off the grid. True the first time it is asked.
+pub fn take_overflow_log() -> bool {
+    !OVERFLOW_LOGGED.swap(true, Ordering::Relaxed)
+}
+
 /// The queued combat step and the body bits the two clear routines touch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Movement {
     /// The queued step's command or counter.
     pub queued_step: u32,
     /// A queued step is locked in.
     pub locked: bool,
-    /// The step is paused.
+    /// The step is paused (only the plain clear drops it).
     pub paused: bool,
     /// The step is stopped.
     pub stopped: bool,
@@ -919,6 +848,8 @@ pub struct Movement {
     pub moving: bool,
     /// The body's movement flags word.
     pub flags: u32,
+    /// The body's queued move point (cm), if any.
+    pub move_point_cm: Option<Vec3>,
 }
 
 /// Everything the original keeps on a character behaviour besides its
@@ -926,11 +857,14 @@ pub struct Movement {
 /// fighting values and its nav footprint.
 #[derive(Component, Debug, Clone)]
 pub struct Combatant {
-    /// The character being fought, if any.
+    /// The character its body targets, if any.
     pub target: Option<Entity>,
-    /// The character being looked at, if any.
+    /// The character it pays attention to (looks at), if any.
     pub look_target: Option<Entity>,
-    /// The character held or carried, if any.
+    /// A non-character target, if any (only forget and replace touch it).
+    pub other_target: Option<Entity>,
+    /// The second body reference forget clears (taken to be the holder; a
+    /// guess).
     pub holder: Option<Entity>,
     /// The published combat rating.
     pub combat_rating: f32,
@@ -938,43 +872,42 @@ pub struct Combatant {
     pub reach_cm: f32,
     /// Courage, which a clean blow lowers.
     pub courage: f32,
+    /// The highest combat rating among those it struck (raised once per
+    /// mark by the struck).
+    pub struck_rating: f32,
+    /// Its body carries the mark a blow leaves on the attacker.
+    pub marked: bool,
     /// Attention or alert level.
     pub alert: f32,
-    /// The contacts, in insertion order. At most [`MAX_CONTACTS`].
+    /// The contacts. At most [`MAX_CONTACTS`].
     pub contacts: Vec<Contact>,
-    /// The last perception pass's values.
-    pub perception: Perception,
-    /// The threat flag a blow sets once on the attacker.
-    pub threat_raised: bool,
     /// The queued combat step.
     pub movement: Movement,
     /// The nav footprint.
     pub footprint: Option<Footprint>,
-    /// The off-grid warning has been logged.
-    pub footprint_logged: bool,
+    /// The body has been flagged off the grid.
+    pub overflowed: bool,
     /// Whether the character has entered combat.
     pub in_combat: bool,
 }
-
-/// The most contacts a character keeps.
-pub const MAX_CONTACTS: usize = 12;
 
 impl Default for Combatant {
     fn default() -> Self {
         Self {
             target: None,
             look_target: None,
+            other_target: None,
             holder: None,
             combat_rating: 0.0,
             reach_cm: 0.0,
             courage: 0.5,
+            struck_rating: 0.0,
+            marked: false,
             alert: 0.0,
             contacts: Vec::new(),
-            perception: Perception::default(),
-            threat_raised: false,
             movement: Movement::default(),
             footprint: None,
-            footprint_logged: false,
+            overflowed: false,
             in_combat: false,
         }
     }
@@ -986,119 +919,137 @@ impl Combatant {
         self.contacts.iter().find(|c| c.character == character)
     }
 
-    /// The contact with `character`, made at attitude 0 if there is none.
-    pub fn contact_mut(&mut self, character: Entity) -> &mut Contact {
+    /// The index of the contact with `character`, made if there is none.
+    /// Exarust's choice when the list is full: the oldest contact goes.
+    pub fn contact_index(&mut self, character: Entity) -> usize {
         if let Some(i) = self.contacts.iter().position(|c| c.character == character) {
-            return &mut self.contacts[i];
+            return i;
         }
         if self.contacts.len() >= MAX_CONTACTS {
             self.contacts.remove(0);
         }
         self.contacts.push(Contact::new(character));
-        self.contacts.last_mut().expect("just pushed")
+        self.contacts.len() - 1
     }
 
-    /// Publish the fighting values from the experience rating and reach.
+    /// The contact with `character`, made if there is none.
+    pub fn contact_mut(&mut self, character: Entity) -> &mut Contact {
+        let i = self.contact_index(character);
+        &mut self.contacts[i]
+    }
+
+    /// Publish the fighting values from the experience rating and the
+    /// body's reach.
     pub fn refresh_fighting(&mut self, rating: f32, reach_cm: f32) {
         self.combat_rating = rating;
         self.reach_cm = reach_cm * 1.0;
     }
 
-    /// A blow landed on this character. A clean hit lowers its courage by
-    /// `0.95 + 0.025·(trait1 + 1)`; the attacker's threat is raised to this
-    /// character's combat rating once, unless the attacker is already
-    /// marked. Returns the attacker whose threat should be raised.
+    /// A blow landed on this character. Nothing happens while it is down or
+    /// dead, or being removed. A clean hit lowers its courage to
+    /// `((trait1 + 1)·0.025 + 0.95)·courage`. An attacker without the mark
+    /// takes this character's combat rating as its struck rating, if
+    /// higher, and is marked.
     pub fn take_hit(
         &mut self,
-        attacker: Option<Entity>,
+        attacker: Option<&mut Combatant>,
         clean: bool,
         trait1: f32,
-    ) -> Option<Entity> {
+        down_or_dead: bool,
+        removed: bool,
+    ) {
+        if down_or_dead || removed {
+            return;
+        }
         if clean {
-            self.courage *= 0.95 + (trait1 + 1.0) * 0.025;
+            self.courage *= (trait1 + 1.0) * 0.025 + 0.95;
         }
-        let attacker = attacker?;
-        if self.threat_raised {
-            None
-        } else {
-            self.threat_raised = true;
-            Some(attacker)
+        if let Some(attacker) = attacker
+            && !attacker.marked
+        {
+            if attacker.struck_rating < self.combat_rating {
+                attacker.struck_rating = self.combat_rating;
+            }
+            attacker.marked = true;
         }
     }
 
-    /// Forget every reference to `character`: its contact, the target, the
-    /// look target, the holder, and the target of its own body.
+    /// Forget every reference to `character`: its contact (the last contact
+    /// takes its slot), the other target, the attention target, the body's
+    /// target and the holder.
     pub fn forget(&mut self, character: Entity) {
-        self.contacts.retain(|c| c.character != character);
-        if self.target == Some(character) {
-            self.target = None;
+        if let Some(i) = self.contacts.iter().position(|c| c.character == character) {
+            self.contacts.swap_remove(i);
         }
-        if self.look_target == Some(character) {
-            self.look_target = None;
-        }
-        if self.holder == Some(character) {
-            self.holder = None;
-        }
-    }
-
-    /// Replace every reference to `old` with `new`.
-    pub fn replace(&mut self, old: Entity, new: Entity) {
-        for contact in &mut self.contacts {
-            if contact.character == old {
-                contact.character = new;
+        for slot in [
+            &mut self.other_target,
+            &mut self.look_target,
+            &mut self.target,
+            &mut self.holder,
+        ] {
+            if *slot == Some(character) {
+                *slot = None;
             }
         }
-        if self.target == Some(old) {
-            self.target = Some(new);
+    }
+
+    /// Replace the references to `old` with `new`: the first contact with
+    /// it and every other reference.
+    pub fn replace(&mut self, old: Entity, new: Entity) {
+        if let Some(contact) = self.contacts.iter_mut().find(|c| c.character == old) {
+            contact.character = new;
         }
-        if self.look_target == Some(old) {
-            self.look_target = Some(new);
-        }
-        if self.holder == Some(old) {
-            self.holder = Some(new);
+        for slot in [
+            &mut self.other_target,
+            &mut self.look_target,
+            &mut self.target,
+            &mut self.holder,
+        ] {
+            if *slot == Some(old) {
+                *slot = Some(new);
+            }
         }
     }
 
-    /// Reset the combatant: leave the nav grid, drop every contact and
-    /// reference, and clear the combat state.
+    /// Reset: drop every contact, the attention target, the body's target
+    /// and the holder. The nav footprint, the alert and the other target
+    /// stay; the room list, the activity goal and the search reservation the
+    /// original also releases are not kept here.
     pub fn reset(&mut self) {
         self.contacts.clear();
-        self.target = None;
         self.look_target = None;
+        self.target = None;
         self.holder = None;
-        self.perception = Perception::default();
-        self.alert = 0.0;
-        self.movement = Movement::default();
-        self.footprint = None;
-        self.footprint_logged = false;
-        self.in_combat = false;
-        self.threat_raised = false;
     }
 
-    /// Add concern toward `character` through the script weighting.
+    /// The script's `AddConcern` toward `character`, if it is a contact.
     pub fn add_concern(
         &mut self,
         character: Entity,
         aggression: f32,
         amount: f32,
         gain: f32,
-    ) -> (f32, bool, bool) {
-        let contact = self.contact_mut(character);
-        add_concern(contact, aggression, amount, gain)
+    ) -> Option<f32> {
+        let contact = self
+            .contacts
+            .iter_mut()
+            .find(|c| c.character == character)?;
+        Some(add_concern(contact, aggression, amount, gain))
     }
 
-    /// Stamp the 30 cm grid cell the character stands in. Returns whether
-    /// this is the first time it is off the grid on this reset (the caller
-    /// logs the original's "Character position overflow" once).
-    pub fn stamp_footprint(&mut self, position_cm: Vec3, grid_size: i32) -> bool {
-        let cell = foot_cell(position_cm, grid_size);
+    /// Stamp the nav cell the character stands in, leaving the old one
+    /// first. Returns true when this stamp first flags the body off the
+    /// grid (the original then unlinks it from the nav list and tells the
+    /// scene); [`take_overflow_log`] says whether to log it.
+    pub fn stamp_footprint(&mut self, position_cm: Vec3, width: i32, height: i32) -> bool {
+        self.leave_grid();
+        let cell = foot_cell(position_cm, width, height);
         self.footprint = Some(cell);
-        if !cell.in_grid && !self.footprint_logged {
-            self.footprint_logged = true;
-            true
-        } else {
-            false
+        if !cell.in_grid && !self.overflowed {
+            self.overflowed = true;
+            return true;
         }
+        false
     }
 
     /// Leave the nav grid.
@@ -1106,34 +1057,35 @@ impl Combatant {
         self.footprint = None;
     }
 
-    /// Clear the queued combat step and mark the body as not moving, its
-    /// movement flag word keeping bit 2 clear and gaining bit 5.
-    pub fn clear_combat_step(&mut self) {
-        let flags = (self.movement.flags & !0x4) | 0x20;
-        self.movement = Movement {
-            flags,
-            ..Movement::default()
-        };
+    /// Clear the queued combat step (the paused byte stays), mark the body
+    /// as not moving with movement flag bit 2 clear and bit 5 set, and pull
+    /// a far move point in ([`clamp_move_point`]).
+    pub fn clear_combat_step(&mut self, position_cm: Vec3, forward: Vec3, speed_cm: f32) {
+        let m = &mut self.movement;
+        m.queued_step = 0;
+        m.locked = false;
+        m.stopped = false;
+        m.moving = false;
+        m.flags = (m.flags & !0x4) | 0x20;
+        if let Some(point) = m.move_point_cm {
+            m.move_point_cm = Some(clamp_move_point(position_cm, forward, point, speed_cm));
+        }
     }
 
-    /// Clear the queued step without touching any other movement flag.
+    /// Clear the queued step, its paused byte too, and movement flag bit 2.
     pub fn clear_step(&mut self) {
-        let flags = self.movement.flags & !0x4;
-        self.movement = Movement {
-            flags,
-            ..Movement::default()
-        };
+        let m = &mut self.movement;
+        m.queued_step = 0;
+        m.locked = false;
+        m.paused = false;
+        m.stopped = false;
+        m.moving = false;
+        m.flags &= !0x4;
     }
 
-    /// Clamp a queued move point to the body's speed limit
-    /// ([`move_limit`]).
-    pub fn clamp_move_point(&self, position_cm: Vec3, point_cm: Vec3, speed_cm: f32) -> Vec3 {
-        clamp_step(position_cm, point_cm, move_limit(speed_cm))
-    }
-
-    /// The point of interest the interaction code asks for: the body's
-    /// look-at point, with the height of the combat target's chest, or the
-    /// body's own height plus [`INTEREST_AHEAD_CM`] without a target.
+    /// The point of interest: the body's look-at point at the height of the
+    /// targeted body's root, or 100 cm above the body's own reference point
+    /// without a target.
     pub fn point_of_interest(
         &self,
         look_at_cm: Vec3,
@@ -1142,7 +1094,7 @@ impl Combatant {
     ) -> Vec3 {
         Vec3::new(
             look_at_cm.x,
-            target_height_cm.unwrap_or(own_height_cm + INTEREST_AHEAD_CM),
+            target_height_cm.unwrap_or(own_height_cm + INTEREST_ABOVE_CM),
             look_at_cm.z,
         )
     }
@@ -1152,434 +1104,351 @@ impl Combatant {
 mod tests {
     use super::*;
 
-    fn observer() -> Observer {
+    fn ids() -> (Entity, Entity, Entity, Entity) {
+        let mut world = World::new();
+        (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+        )
+    }
+
+    fn observer(entity: Entity) -> Observer {
         Observer {
-            entity: Entity::from_raw_u32(1).unwrap(),
-            origin_cm: Vec3::ZERO,
+            entity,
+            position_cm: Vec3::ZERO,
             look: Vec3::Z,
             forward: Vec3::Z,
-            condition: 0,
-            flags: 0,
-            combat_flags: 0,
-            skill: 0.0,
+            asleep: false,
+            perception: 1.0,
             calm: 0.0,
             aggression: 0.0,
-            perception: 1.0,
-            mask: None,
-            tracked: false,
+            mind_aggression: 0.0,
+            resist_mind: false,
             target: None,
-            reach_cm: 50.0,
-            speed: 0.0,
         }
     }
 
-    fn observed(distance: f32) -> Observed {
+    /// Facing the observer from `distance` cm along +z.
+    fn observed(entity: Entity, distance: f32) -> Observed {
         Observed {
-            entity: Entity::from_raw_u32(2).unwrap(),
+            entity,
             position_cm: Vec3::new(0.0, 0.0, distance),
             look: -Vec3::Z,
             forward: -Vec3::Z,
             condition: 0,
-            flags: 0,
-            combat_flags: 0,
-            speed: 0.0,
-            size: 1.0,
-            reach_cm: 50.0,
-            skill: 0.0,
-            phase: 0.0,
-            combat_mode: false,
-            armed: false,
-            guard_up: false,
+            invisible: false,
             hidden: false,
+            mask: None,
             asleep: false,
-            dead: false,
+            removed: false,
+            phase: 0.0,
+            in_combat: false,
+            stepping: false,
+            poised: false,
+            speed: 0.0,
         }
     }
 
+    fn look(
+        o: &Observer,
+        seen: &Observed,
+        theirs: &[Contact],
+        mine: &mut [Contact],
+        raw: f32,
+        trusted: f32,
+    ) -> Sight {
+        perceive(
+            o,
+            seen,
+            theirs,
+            mine,
+            0,
+            Attitude {
+                value: raw,
+                tolerance: 50.0,
+            },
+            &|_| trusted,
+            &[],
+            10_000,
+        )
+    }
+
     #[test]
-    fn a_distant_character_is_not_noticed_and_a_lost_target_raises_the_alert() {
-        let mut o = observer();
-        let mut out = Perception::default();
-        assert!(!perceive(
-            &o,
-            &observed(1200.0),
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!(!out.tracked);
-        o.tracked = true;
-        o.target = Some(observed(0.0).entity);
-        assert!(!perceive(
-            &o,
-            &observed(1800.0),
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert_eq!(out.alert_floor, Some(LOST_ALERT));
-        // Tracked, 1799 cm is inside the 1800 cm radius.
-        assert!(perceive(
-            &o,
-            &observed(1799.0),
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!(out.tracked);
-        assert_eq!(out.alert_floor, None);
+    fn a_distant_character_is_lost_and_a_lost_target_raises_the_alert() {
+        let (me, them, ..) = ids();
+        let mut o = observer(me);
+        let mut mine = [Contact::new(them)];
+        // 1200 cm is not inside the 1200 cm radius.
+        assert!(!look(&o, &observed(them, 1200.0), &[], &mut mine, 0.0, 0.0).seen);
+        assert!(!mine[0].tracked());
+        // Tracked and targeted: lost beyond 1800 cm, with the alert raised.
+        mine[0].flags = CONTACT_TRACKED;
+        o.target = Some(them);
+        let lost = look(&o, &observed(them, 1800.0), &[], &mut mine, 0.0, 0.0);
+        assert_eq!(lost.alert_floor, Some(LOST_ALERT));
+        assert!(!mine[0].tracked());
+        // Tracked, 1799 cm is inside.
+        mine[0].flags = CONTACT_TRACKED;
+        let kept = look(&o, &observed(them, 1799.0), &[], &mut mine, 0.0, 0.0);
+        assert!(kept.seen && mine[0].tracked());
+        assert_ne!(mine[0].flags & CONTACT_NOTICED, 0);
+        // An invisible character is skipped, and its threat cleared.
+        mine[0].threat = 3.0;
+        let mut ghost = observed(them, 100.0);
+        ghost.invisible = true;
+        assert!(!look(&o, &ghost, &[], &mut mine, 0.0, 0.0).seen);
+        assert_eq!(mine[0].threat, 0.0);
     }
 
     #[test]
     fn vertical_offsets_under_one_and_a_half_metres_are_ignored() {
-        let o = observer();
-        let mut out = Perception::default();
-        let mut near = observed(1100.0);
+        let (me, them, ..) = ids();
+        let o = observer(me);
+        let mut mine = [Contact::new(them)];
+        let mut near = observed(them, 1100.0);
         near.position_cm.y = 100.0;
-        // The 100 cm lift is ignored: the distance is the flat 1100 cm.
-        assert!(perceive(
-            &o,
-            &near,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!((out.distance_cm - 1100.0).abs() < 1e-3, "{out:?}");
-        let mut high = observed(1100.0);
+        assert!(look(&o, &near, &[], &mut mine, 0.0, 0.0).seen);
+        assert!((mine[0].distance_cm - 1100.0).abs() < 1e-3);
+        let mut high = observed(them, 1100.0);
         high.position_cm.y = 600.0;
-        // A 600 cm lift is counted: 1253 cm, out of the 1200 cm radius.
-        assert!(!perceive(
-            &o,
-            &high,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
+        // 600 cm up counts: 1253 cm, out of the radius.
+        let mut fresh = [Contact::new(them)];
+        assert!(!look(&o, &high, &[], &mut fresh, 0.0, 0.0).seen);
+        // Hidden, with full perception the radius stays 1200 cm; with none
+        // it is 120 cm and the inner radius 24 cm.
+        let mut hidden = observed(them, 119.0);
+        hidden.hidden = true;
+        let mut dim = o;
+        dim.perception = 0.0;
+        let mut fresh = [Contact::new(them)];
+        assert!(look(&dim, &hidden, &[], &mut fresh, 0.0, 0.0).seen);
+        hidden.position_cm.z = 121.0;
+        let mut fresh = [Contact::new(them)];
+        assert!(!look(&dim, &hidden, &[], &mut fresh, 0.0, 0.0).seen);
     }
 
     #[test]
-    fn closeness_and_noticeability_follow_the_original_products() {
-        let o = observer();
-        let mut out = Perception::default();
-        assert!(perceive(
-            &o,
-            &observed(600.0),
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!((out.closeness - 0.5).abs() < 1e-6);
-        // look and forward turn toward the observer: both factors 1.
-        let c = 0.5f32;
-        let expected = 1.5 * 3.0 * (2.0 * c.powi(4) + (1.0 - c * c) * c);
-        assert!((out.noticeability - expected).abs() < 1e-5, "{out:?}");
-        assert!((out.view - 1.0).abs() < 1e-6);
-        let mut attacking = observed(600.0);
-        attacking.condition = CONDITION_ATTACKING;
-        assert!(perceive(
-            &o,
-            &attacking,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!((out.noticeability - (expected + 10.0)).abs() < 1e-5);
+    fn closeness_noticeability_and_view_follow_the_products() {
+        let (me, them, ..) = ids();
+        let o = observer(me);
+        let mut mine = [Contact::new(them)];
+        let mut seen = observed(them, 600.0);
+        assert!(look(&o, &seen, &[], &mut mine, 0.0, 0.0).seen);
+        // c = 0.5: (1·0.5 + 1)·((1 + 2)·(2c⁴ + (1 − c²)c)) = 1.5·1.5.
+        assert_eq!(mine[0].closeness, 0.5);
+        assert_eq!(mine[0].noticeability, 2.25);
+        assert_eq!(mine[0].view, 1.0);
+        assert_eq!(mine[0].tolerance, 0.5);
+        seen.condition = CONDITION_ATTACKING;
+        look(&o, &seen, &[], &mut mine, 0.0, 0.0);
+        assert_eq!(mine[0].noticeability, 12.25);
+        // Closeness stops at 0.99.
+        look(&o, &observed(them, 1.0), &[], &mut mine, 0.0, 0.0);
+        assert_eq!(mine[0].closeness, 0.99);
     }
 
     #[test]
-    fn a_dead_or_down_character_is_less_noticeable() {
-        let o = observer();
-        let mut out = Perception::default();
-        let mut down = observed(600.0);
-        down.condition = CONDITION_DOWN;
-        assert!(perceive(
-            &o,
-            &down,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!((out.noticeability - 12.0).abs() < 1e-6);
-        let mut dead = observed(600.0);
-        dead.condition = CONDITION_DEAD;
-        assert!(perceive(
-            &o,
-            &dead,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            0.0
-        ));
-        assert!((out.noticeability - 0.75).abs() < 1e-6);
+    fn a_dead_down_or_sleeping_character_is_scored_apart() {
+        let (me, them, ..) = ids();
+        let o = observer(me);
+        let mut mine = [Contact::new(them)];
+        let mut seen = observed(them, 600.0);
+        seen.condition = CONDITION_DEAD;
+        mine[0].noticed = 5.0;
+        mine[0].concern = 3.0;
+        mine[0].selected = Some(me);
+        look(&o, &seen, &[], &mut mine, -40.0, 0.0);
+        // 3c², which also caps the noticed level; concern and the selection
+        // are cleared, and the attitude is not blended.
+        assert_eq!(mine[0].noticeability, 0.75);
+        assert_eq!(mine[0].noticed, 0.75);
+        assert_eq!(mine[0].concern, 0.0);
+        assert_eq!(mine[0].selected, None);
+        assert_eq!(mine[0].attitude, -40.0);
+        // Down and out: 24c, and the concern decays by 0.99.
+        seen.condition = CONDITION_OUT;
+        mine[0].concern = 2.0;
+        look(&o, &seen, &[], &mut mine, 0.0, 0.0);
+        assert_eq!(mine[0].noticeability, 12.0);
+        assert_eq!(mine[0].concern, 1.98);
+        // Asleep counts as dead.
+        seen.condition = 0;
+        seen.asleep = true;
+        mine[0].noticed = 0.0;
+        look(&o, &seen, &[], &mut mine, 0.0, 0.0);
+        assert_eq!(mine[0].noticeability, 0.75);
     }
 
     #[test]
-    fn effectiveness_attitude_applies_the_mind_powers() {
-        let me = Entity::from_raw_u32(1).unwrap();
-        let other = Entity::from_raw_u32(2).unwrap();
+    fn the_mind_powers_override_the_attitude_and_the_trust() {
+        let (me, other, third, _) = ids();
         let raw = Attitude {
             value: 20.0,
-            tolerance: 10.0,
+            tolerance: 0.0,
         };
-        assert_eq!(effective_attitude(me, me, raw, 0.0, false, []), 100.0);
-        assert_eq!(effective_attitude(me, other, raw, 4.0, false, []), 20.0);
-        assert_eq!(
-            effective_attitude(
-                me,
-                other,
-                raw,
-                4.0,
-                false,
-                [Effect {
-                    kind: 0x105,
-                    source: None,
-                    target: None
-                }]
-            ),
-            -2.0
-        );
-        let loyalty = Effect {
-            kind: 0x10_010a,
-            source: Some(other),
-            target: None,
+        let power = |kind, source, target| Effect {
+            kind,
+            source,
+            target,
         };
+        assert_eq!(effective_attitude(other, raw, 4.0, false, &[]), 20.0);
+        // The kind is compared under its mask.
+        let frenzy = power(0x20_0105, None, None);
+        assert_eq!(effective_attitude(other, raw, 4.0, false, &[frenzy]), -2.0);
+        assert_eq!(trust(other, 20.0, false, &[frenzy]), 0.0);
+        let bind = power(POWER_BIND, Some(other), None);
+        assert_eq!(effective_attitude(other, raw, 0.0, false, &[bind]), 100.0);
+        assert_eq!(effective_attitude(other, raw, 0.0, true, &[bind]), 60.0);
+        let elsewhere = power(POWER_COMMAND, Some(third), None);
         assert_eq!(
-            effective_attitude(me, other, raw, 0.0, false, [loyalty]),
-            100.0
+            effective_attitude(other, raw, 0.0, false, &[elsewhere]),
+            20.0
         );
+        let charm = power(POWER_CHARM, None, Some(other));
+        assert_eq!(effective_attitude(other, raw, 0.0, false, &[charm]), 100.0);
+        let suspicion = power(POWER_SUSPICION, Some(me), None);
         assert_eq!(
-            effective_attitude(me, other, raw, 0.0, true, [loyalty]),
-            60.0
-        );
-        let aimed = Effect {
-            kind: 0x10_0109,
-            source: None,
-            target: Some(other),
-        };
-        assert_eq!(
-            effective_attitude(me, other, raw, 0.0, false, [aimed]),
-            100.0
-        );
-        let suspect = Effect {
-            kind: 0x10_010b,
-            source: None,
-            target: None,
-        };
-        assert_eq!(
-            effective_attitude(me, other, raw, 0.0, false, [suspect]),
+            effective_attitude(other, raw, 0.0, false, &[suspicion]),
             -30.0
         );
+        assert_eq!(trust(other, 20.0, false, &[suspicion]), -30.0);
+        let hostile = Attitude {
+            value: -80.0,
+            tolerance: 0.0,
+        };
         assert_eq!(
-            effective_attitude(me, other, raw, 0.0, false, [suspect, suspect]),
-            -80.0
+            effective_attitude(other, hostile, 0.0, false, &[suspicion]),
+            -100.0
         );
-        // Trust ignores the lowering power.
-        assert_eq!(trust(me, other, raw, 0.0, false, [suspect]), 20.0);
+        // Order matters: a later suspicion lowers a bound attitude.
+        assert_eq!(
+            effective_attitude(other, raw, 0.0, false, &[bind, suspicion]),
+            50.0
+        );
     }
 
     #[test]
-    fn concern_rises_with_the_weighting_and_stops_at_fifteen() {
-        let mut c = Contact::new(Entity::from_raw_u32(2).unwrap());
-        c.attitude = 20.0;
-        // f = 0.6, p = 0: f' = 1 − 0.6 = 0.4; half = 0.7; a = 1.3.
-        let amount = 1.3f32;
-        let (now, low, high) = add_concern(&mut c, 0.0, amount, 1.0);
-        let expected = 0.49 * (0.6 * amount.powi(8) + amount * 0.4);
-        assert!((now - expected).abs() < 1e-5, "{now}");
-        assert!(low && !high, "{now}");
-        let (now, _, _) = add_concern(&mut c, 0.0, 1.0, 1000.0);
-        assert_eq!(now, CONCERN_CAP);
-        assert_eq!(add_concern(&mut c, 0.0, 1.0, 1.0).0, CONCERN_CAP);
+    fn concern_rises_with_the_weighting_and_raises_one_event_at_a_time() {
+        let (_, other, ..) = ids();
+        let mut c = Contact::new(other);
+        // f = 0.5, g = 0.5, h = 0.75: 0.5625·(0.5 + 0.5) a step.
+        assert_eq!(add_concern(&mut c, 0.0, 1.0, 1.0), 0.5625);
+        assert_eq!(c.flags, CONTACT_CONCERN_FLAGS);
+        assert_eq!(add_concern(&mut c, 0.0, 1.0, 1.0), 1.125);
+        assert_eq!(c.events, 0);
+        assert_eq!(add_concern(&mut c, 0.0, 1.0, 1.0), 1.6875);
+        assert_eq!(c.events, EVENT_CONCERNED);
+        for _ in 0..4 {
+            add_concern(&mut c, 0.0, 1.0, 1.0);
+        }
+        assert_eq!(c.concern, 3.9375);
+        assert_eq!(c.events, EVENT_CONCERNED);
+        add_concern(&mut c, 0.0, 1.0, 1.0);
+        assert_eq!(c.events, EVENT_CONCERNED | EVENT_ALARMED);
+        // A jump from below 1.2 past 4 raises only the first event, and the
+        // concern stops at the cap; at the cap nothing more is added.
+        let mut jump = Contact::new(other);
+        assert_eq!(add_concern(&mut jump, 0.0, 2.0, 1.0), CONCERN_CAP);
+        assert_eq!(jump.events, EVENT_CONCERNED);
+        assert_eq!(add_concern(&mut jump, 0.0, 2.0, 1.0), CONCERN_CAP);
     }
 
     #[test]
-    fn the_look_is_held_within_forty_five_degrees() {
-        let out = look_direction(Vec3::ZERO, Vec3::Z, Vec3::new(100.0, 0.0, 0.0));
-        assert!((out.x / out.z - 1.0).abs() < 1e-5, "{out}");
-        let out = look_direction(Vec3::ZERO, Vec3::Z, Vec3::new(-100.0, 0.0, 0.0));
-        assert!((out.x / out.z + 1.0).abs() < 1e-5, "{out}");
-        let out = look_direction(Vec3::ZERO, Vec3::Z, Vec3::new(100.0, 0.0, 100.0));
-        assert!((out.x / out.z - 1.0).abs() < 1e-4, "{out}");
-        let out = look_direction(Vec3::ZERO, Vec3::Z, Vec3::new(50.0, 0.0, 100.0));
-        let want = atan2_xz(50.0, 100.0);
-        assert!((out.x / out.z - want.tan()).abs() < 1e-4, "{out}");
-    }
-
-    #[test]
-    fn a_footprint_off_the_grid_is_moved_and_flagged() {
-        let on = foot_cell(Vec3::new(0.0, 0.0, 0.0), 100);
-        assert_eq!(on.cell, (49, 49));
-        assert!(on.in_grid);
-        let off = foot_cell(Vec3::new(100_000.0, 0.0, 0.0), 100);
-        assert_eq!(off.cell, (NAV_FALLBACK_CELL, 8));
-        assert!(!off.in_grid);
-    }
-
-    #[test]
-    fn the_threat_estimate_weights_the_observer_and_its_friends() {
-        let mut world = World::new();
-        let observer_id = world.spawn_empty().id();
-        let seen_id = world.spawn_empty().id();
-        let mut o = observer();
-        o.entity = observer_id;
-        let mut seen = observed(600.0);
-        seen.entity = seen_id;
-        let mut own = Contact::new(observer_id);
-        own.attitude = 0.0;
-        let mut seen_group = Contact::new(observer_id);
-        seen_group.attitude = 80.0;
-        seen_group.closeness = 1.0;
-        seen_group.facing = 1.0;
-        let mut out = Perception::default();
-        assert!(perceive(
+    fn the_group_blend_moves_halfway_toward_a_trusted_friend() {
+        let (me, them, friend, _) = ids();
+        let o = observer(me);
+        let mut theirs = Contact::new(friend);
+        theirs.attitude = 80.0;
+        let mut mine = [Contact::new(them)];
+        // Trust 50 toward the friend they like at 80: candidate 0.4, so the
+        // attitude moves from 0 to 20.
+        look(
             &o,
-            &seen,
-            &[seen_group],
-            std::slice::from_mut(&mut own),
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            1.0
-        ));
-        assert!((out.threat - 0.36).abs() < 1e-4, "{}", out.threat);
-        assert!(
-            (out.threat_peak - 3.825).abs() < 1e-4,
-            "{}",
-            out.threat_peak
+            &observed(them, 600.0),
+            &[theirs.clone()],
+            &mut mine,
+            0.0,
+            50.0,
         );
-        assert_eq!(out.selected, Some(observer_id));
-        assert_eq!(out.attitude, 0.0);
+        assert_eq!(mine[0].attitude, 20.0);
+        // Their liking for the observer is no candidate.
+        let mut fond = Contact::new(me);
+        fond.attitude = 80.0;
+        look(&o, &observed(them, 600.0), &[fond], &mut mine, 0.0, 50.0);
+        assert_eq!(mine[0].attitude, 0.0);
+        // A friend dead for more than 5 s is not trusted.
+        theirs.died_ms = Some(1000);
+        look(&o, &observed(them, 600.0), &[theirs], &mut mine, 0.0, 50.0);
+        assert_eq!(mine[0].attitude, 0.0);
     }
 
     #[test]
-    fn a_quick_swing_with_a_high_threat_raises_the_flag() {
-        let mut world = World::new();
-        let observer_id = world.spawn_empty().id();
-        let seen_id = world.spawn_empty().id();
-        let mut o = observer();
-        o.entity = observer_id;
-        let mut seen = observed(600.0);
-        seen.entity = seen_id;
+    fn the_threat_estimate_weights_the_observer_and_raises_a_quick_swing() {
+        let (me, them, ..) = ids();
+        let o = observer(me);
+        // They attack (×32, ×0.85) with the observer close and in view:
+        // weight 1, share 1 against a base of 0, so (1/1.5)·27.2.
+        let mut onto_me = Contact::new(me);
+        onto_me.closeness = 1.0;
+        onto_me.view = 1.0;
+        let mut seen = observed(them, 600.0);
         seen.condition = CONDITION_ATTACKING;
         seen.phase = 0.52;
-        // Its back is turned to the observer, the facing term over 1.5.
-        seen.look = Vec3::Z;
-        seen.forward = Vec3::Z;
-        let mut own = Contact::new(observer_id);
-        own.closeness = 1.0;
-        own.facing = 1.0;
-        let mut out = Perception::default();
-        assert!(perceive(
-            &o,
-            &seen,
-            &[own],
-            &mut [],
-            &mut out,
-            Attitude {
-                value: -100.0,
-                tolerance: 0.0
-            },
-            false,
-            &[],
-            0,
-            1.0
-        ));
-        assert!((out.threat - 1.8133).abs() < 1e-3, "{}", out.threat);
-        assert!(out.quick_swing);
-        seen.phase = 0.45;
-        assert!(perceive(
-            &o,
-            &seen,
-            &[],
-            &mut [],
-            &mut out,
-            Attitude::default(),
-            false,
-            &[],
-            0,
-            1.0
-        ));
-        assert!(!out.quick_swing);
+        let mut mine = [Contact::new(them)];
+        mine[0].concern = 2.0;
+        let sight = look(&o, &seen, &[onto_me.clone()], &mut mine, -100.0, 0.0);
+        assert_eq!(mine[0].threat.to_bits(), 0x3fe8_1b50);
+        assert_eq!(mine[0].selected, Some(me));
+        assert_eq!(mine[0].events, EVENT_QUICK_SWING);
+        assert_eq!(mine[0].concern_target, 27.2);
+        assert_eq!(mine[0].attitude, -100.0);
+        // The drift: elapsed 0 gives 0; the raw attitude of −100 leaves no
+        // familiarity factor either.
+        assert_eq!(sight.familiarity, Some(0.0));
+        // Without concern the flag is not raised; a fast body quadruples it.
+        let mut calm = [Contact::new(them)];
+        seen.speed = 1.5;
+        look(&o, &seen, &[onto_me], &mut calm, -100.0, 0.0);
+        assert_eq!(calm[0].events, 0);
+        assert_eq!(calm[0].threat, f32::from_bits(0x3fe8_1b50) * 4.0);
     }
 
     #[test]
-    fn the_group_blend_moves_toward_a_trusted_friend() {
-        let mut world = World::new();
-        let observer_id = world.spawn_empty().id();
-        let seen_id = world.spawn_empty().id();
-        let friend = world.spawn_empty().id();
-        let mut o = observer();
-        o.entity = observer_id;
-        o.calm = 0.5;
-        let mut seen = observed(600.0);
-        seen.entity = seen_id;
-        let mut own_friend = Contact::new(friend);
-        own_friend.attitude = 50.0;
-        let mut seen_friend = Contact::new(friend);
-        seen_friend.attitude = 80.0;
-        let mut out = Perception::default();
-        assert!(perceive(
+    fn a_threatened_third_party_raises_the_crowd_and_its_concern_target() {
+        let (me, them, stranger, _) = ids();
+        let o = observer(me);
+        let mut seen = observed(them, 600.0);
+        seen.condition = CONDITION_ATTACKING;
+        let mut onto_me = Contact::new(me);
+        onto_me.closeness = 1.0;
+        onto_me.view = 1.0;
+        let mut onto_stranger = Contact::new(stranger);
+        onto_stranger.closeness = 1.0;
+        onto_stranger.view = 1.0;
+        // Liking 100 makes the base 1; the stranger (trust 0, liking 0.5)
+        // has a share of −0.5: against (−0.5 − 0.5)·(−0.5) = 0.5.
+        let mut mine = [Contact::new(them), Contact::new(stranger)];
+        look(
             &o,
             &seen,
-            &[seen_friend],
-            std::slice::from_mut(&mut own_friend),
-            &mut out,
-            Attitude {
-                value: 20.0,
-                tolerance: 0.0
-            },
-            false,
-            &[],
-            0,
-            1.0
-        ));
-        assert!((out.attitude - 35.0).abs() < 1e-4, "{}", out.attitude);
+            &[onto_me.clone(), onto_stranger.clone()],
+            &mut mine,
+            100.0,
+            0.0,
+        );
+        assert_eq!(mine[0].crowd, 0.5);
+        assert_eq!(mine[1].concern_target, 16.0);
+        // The observer's own share is 0: value 0.25, threat (0.25/0.75)·27.2.
+        assert_eq!(
+            mine[0].threat,
+            (f64::from((0.25f32 / 0.75) * 27.2) * 0.1) as f32
+        );
+        assert_eq!(mine[0].concern_target, 0.25 * 27.2);
+        // The crowd penalty is carried to a pass without the stranger.
+        look(&o, &seen, &[onto_me], &mut mine, 100.0, 0.0);
+        assert_eq!(mine[0].crowd, 0.5);
     }
 
     #[test]
@@ -1590,109 +1459,131 @@ mod tests {
     }
 
     #[test]
-    fn a_move_point_is_limited_by_the_body_speed() {
-        assert_eq!(move_limit(0.0), 20.0);
-        assert_eq!(move_limit(5.0), 60.0);
-        assert_eq!(move_limit(-1.0), 12.0);
-    }
-
-    #[test]
     fn a_point_outside_the_radius_counts_height_at_half() {
         assert!(outside_radius(50.0, Vec3::new(60.0, 0.0, 0.0), false));
         assert!(!outside_radius(50.0, Vec3::new(40.0, 0.0, 0.0), false));
-        // 40² + (60·0.5)² = 2500: on the sphere, not outside it.
         assert!(!outside_radius(50.0, Vec3::new(40.0, 60.0, 0.0), true));
         assert!(outside_radius(50.0, Vec3::new(40.0, 61.0, 0.0), true));
-        // Flattened, the height does not count.
-        assert!(!outside_radius(50.0, Vec3::new(40.0, 60.0, 0.0), false));
+        assert!(!outside_radius(50.0, Vec3::new(40.0, 600.0, 0.0), false));
     }
 
     #[test]
-    fn a_move_point_is_clamped_to_its_limit() {
-        let from = Vec3::ZERO;
-        assert_eq!(
-            clamp_step(from, Vec3::new(10.0, 0.0, 0.0), 20.0),
-            Vec3::new(10.0, 0.0, 0.0)
-        );
-        assert_eq!(
-            clamp_step(from, Vec3::new(30.0, 0.0, 0.0), 20.0),
-            Vec3::new(20.0, 0.0, 0.0)
-        );
-        let to = clamp_step(from, Vec3::new(30.0, 40.0, 0.0), 10.0);
-        assert_eq!(to, Vec3::new(6.0, 8.0, 0.0));
-        assert_eq!(clamp_step(from, from, 10.0), from);
-    }
-
-    #[test]
-    fn clearing_a_step_drops_it_and_sets_the_body_flags() {
+    fn clearing_a_step_keeps_the_pause_and_pulls_the_move_point_ahead() {
         let mut c = Combatant {
             movement: Movement {
-                queued_step: 4,
+                queued_step: 7,
                 locked: true,
                 paused: true,
                 stopped: true,
                 moving: true,
                 flags: 0x6,
+                move_point_cm: Some(Vec3::new(100.0, 0.0, 0.0)),
             },
             ..Combatant::default()
         };
-        c.clear_combat_step();
+        // Speed 2: 8·2 + 20 = 36 cm, straight ahead along +z.
+        c.clear_combat_step(Vec3::ZERO, Vec3::Z, 2.0);
         assert_eq!(c.movement.queued_step, 0);
         assert!(!c.movement.moving && !c.movement.locked && !c.movement.stopped);
+        assert!(c.movement.paused);
         assert_eq!(c.movement.flags, 0x22);
-        c.movement = Movement {
-            queued_step: 2,
-            flags: 0x6,
-            ..Movement::default()
-        };
+        assert_eq!(c.movement.move_point_cm, Some(Vec3::new(0.0, 0.0, 36.0)));
+        c.movement.flags = 0x6;
         c.clear_step();
-        assert_eq!(c.movement.queued_step, 0);
+        assert!(!c.movement.paused);
         assert_eq!(c.movement.flags, 0x2);
-        let point = c.clamp_move_point(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), 2.0);
-        assert_eq!(point, Vec3::new(36.0, 0.0, 0.0));
+        assert_eq!(
+            clamp_move_point(Vec3::ZERO, Vec3::Z, Vec3::new(30.0, 0.0, 0.0), 2.0),
+            Vec3::new(30.0, 0.0, 0.0)
+        );
     }
 
     #[test]
-    fn an_off_grid_footprint_warns_once() {
+    fn a_footprint_rounds_to_even_and_an_edge_cell_falls_back_on_its_axis() {
+        // 50 + (0/30 − 0.5) = 49.5 → 50; 50 + (30/30 − 0.5) = 50.5 → 50.
+        assert_eq!(foot_cell(Vec3::ZERO, 100, 100).cell, (50, 50));
+        assert_eq!(
+            foot_cell(Vec3::new(30.0, 0.0, 60.0), 100, 100).cell,
+            (50, 52)
+        );
+        let far_x = foot_cell(Vec3::new(100_000.0, 0.0, 0.0), 100, 100);
+        assert_eq!(far_x.cell, (NAV_FALLBACK_CELL, 50));
+        assert!(!far_x.in_grid);
+        let far_y = foot_cell(Vec3::new(0.0, 0.0, -100_000.0), 100, 100);
+        assert_eq!(far_y.cell, (50, NAV_FALLBACK_CELL));
+        // Cell 95 is within five of a 100-cell edge; 94 is not.
+        assert!(!foot_cell(Vec3::new(1365.0, 0.0, 0.0), 100, 100).in_grid);
+        assert!(foot_cell(Vec3::new(1335.0, 0.0, 0.0), 100, 100).in_grid);
         let mut c = Combatant::default();
-        assert!(!c.stamp_footprint(Vec3::ZERO, 100));
-        assert!(c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100));
-        assert!(!c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100));
-        assert_eq!(c.footprint.unwrap().cell, (NAV_FALLBACK_CELL, 8));
+        assert!(!c.stamp_footprint(Vec3::ZERO, 100, 100));
+        assert!(c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100, 100));
+        assert!(!c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100, 100));
+        assert!(take_overflow_log());
+        assert!(!take_overflow_log());
     }
 
     #[test]
-    fn references_are_forgotten_and_replaced() {
-        let a = Entity::from_raw_u32(2).unwrap();
-        let b = Entity::from_raw_u32(3).unwrap();
-        let mut c = Combatant::default();
-        c.contact_mut(a).attitude = 10.0;
-        c.target = Some(a);
-        c.look_target = Some(a);
-        c.holder = Some(a);
-        c.replace(a, b);
-        assert!(c.contact(a).is_none());
-        assert_eq!(c.contact(b).unwrap().attitude, 10.0);
-        assert_eq!(c.target, Some(b));
-        c.forget(b);
-        assert!(c.contacts.is_empty());
-        assert_eq!(c.target, None);
+    fn references_are_forgotten_with_the_last_contact_moved_up() {
+        let (a, b, c, d) = ids();
+        let mut combatant = Combatant::default();
+        for e in [a, b, c] {
+            combatant.contact_mut(e);
+        }
+        combatant.target = Some(a);
+        combatant.look_target = Some(a);
+        combatant.other_target = Some(b);
+        combatant.forget(a);
+        let order: Vec<_> = combatant.contacts.iter().map(|x| x.character).collect();
+        assert_eq!(order, vec![c, b]);
+        assert_eq!(combatant.target, None);
+        assert_eq!(combatant.look_target, None);
+        assert_eq!(combatant.other_target, Some(b));
+        // Replace remaps the first matching contact only.
+        combatant.contacts.push(Contact::new(b));
+        combatant.replace(b, d);
+        let order: Vec<_> = combatant.contacts.iter().map(|x| x.character).collect();
+        assert_eq!(order, vec![c, d, b]);
+        assert_eq!(combatant.other_target, Some(d));
+        combatant.reset();
+        assert!(combatant.contacts.is_empty());
+        assert_eq!(combatant.other_target, Some(d));
     }
 
     #[test]
-    fn a_clean_hit_lowers_courage_and_raises_the_threat_once() {
-        let attacker = Entity::from_raw_u32(2).unwrap();
-        let mut c = Combatant {
-            courage: 1.0,
+    fn a_clean_hit_lowers_courage_and_marks_the_attacker_once() {
+        let mut struck = Combatant {
+            combat_rating: 30.0,
             ..Combatant::default()
         };
-        assert_eq!(c.take_hit(Some(attacker), true, 0.0), Some(attacker));
-        assert!((c.courage - 0.975).abs() < 1e-6);
-        assert_eq!(c.take_hit(Some(attacker), true, 0.0), None);
-        assert!((c.courage - 0.950_625).abs() < 1e-6);
-        // A glancing blow leaves courage alone but still raises the threat.
-        let mut c = Combatant::default();
-        assert_eq!(c.take_hit(None, true, 1.0), None);
-        assert!((c.courage - (0.5 * 1.0)).abs() < 1e-6);
+        let mut attacker = Combatant {
+            struck_rating: 10.0,
+            ..Combatant::default()
+        };
+        struck.take_hit(Some(&mut attacker), true, 0.0, false, false);
+        let lowered = (1.0f32 * 0.025 + 0.95) * 0.5;
+        assert_eq!(struck.courage, lowered);
+        assert_eq!(attacker.struck_rating, 30.0);
+        assert!(attacker.marked);
+        struck.combat_rating = 50.0;
+        struck.take_hit(Some(&mut attacker), false, 0.0, false, false);
+        assert_eq!(struck.courage, lowered);
+        assert_eq!(attacker.struck_rating, 30.0);
+        // Down, nothing happens.
+        struck.take_hit(None, true, 0.0, true, false);
+        assert_eq!(struck.courage, lowered);
+    }
+
+    #[test]
+    fn the_built_direction_points_back_to_the_eye_within_forty_five_degrees() {
+        // The point lies straight behind: the direction is +z.
+        let back = look_direction(Vec3::ZERO, Vec3::new(0.0, 0.0, -100.0), Vec3::Z);
+        assert!((back - Vec3::Z).length() < 1e-6, "{back}");
+        // A point to the −x side gives +x, held at 45° off the facing.
+        let side = look_direction(Vec3::ZERO, Vec3::new(-100.0, 0.0, 0.0), Vec3::Z);
+        assert!((side.x / side.z - 1.0).abs() < 1e-5, "{side}");
+        assert!(side.y.abs() < 1e-6);
+        assert_eq!(asin_fast(0.0), 0.0);
+        assert_eq!(asin_fast(1.0), std::f32::consts::FRAC_PI_2);
+        assert_eq!(asin_fast(-1.0), -std::f32::consts::FRAC_PI_2);
     }
 }

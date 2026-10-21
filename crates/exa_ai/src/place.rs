@@ -439,7 +439,7 @@ pub fn publish_arc(swing: Swing) -> Arc {
     }
     let offset = |degrees: f32| wrap(swing.heading + DEG * degrees);
     let hand_edge = swing.hand.map(hand_bearing).unwrap_or(swing.heading);
-    let late = !(f64::from(swing.phase) < 0.4);
+    let late = f64::from(swing.phase) >= 0.4 || swing.phase.is_nan();
     let (kind, start, end, look) = if !swing.armed {
         let kind = if swing.recovering { 4 } else { 3 };
         (kind, offset(110.0), offset(-110.0), look)
@@ -541,16 +541,16 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         danger = blow_danger;
         match scale {
             ApproachScale::Keep => {}
-            ApproachScale::By(factor) => approach = factor * approach,
+            ApproachScale::By(factor) => approach *= factor,
             ApproachScale::Doubled(factor) => approach = factor * approach * 2.0,
         }
     }
     if spot.presses {
         let scale = (1.0 - spot.other_ahead) * 10.0 + 1.0;
-        strike = scale * strike;
-        approach = scale * approach;
+        strike *= scale;
+        approach *= scale;
     } else if !spot.in_attack {
-        approach = (1.0 + (1.0 - spot.observer_ahead)) * approach;
+        approach *= 1.0 + (1.0 - spot.observer_ahead);
     }
     if !spot.fight {
         close *= 2.0;
@@ -934,8 +934,11 @@ mod tests {
         // g = (3 − 0.4)·0.04 = 0.104, 1.5·g² = 0.016224.
         let near = score_place(10.0, spot).approach;
         assert!((near - 0.016_224).abs() < 1e-6, "{near}");
-        // A fraction of 0.1 (5 cm) is not above the floor.
-        assert_eq!(score_place(5.0, spot).approach, 0.0);
+        // The floor is a double compare: the f32 fraction 0.1 (5 cm) lies
+        // above the double 0.1 and still counts, 1.5·(2.8·0.01)².
+        let floor = score_place(5.0, spot).approach;
+        assert!((floor - 0.001_176).abs() < 1e-7, "{floor}");
+        assert_eq!(score_place(4.0, spot).approach, 0.0);
         // A recovering swing outside a fight still lowers the close term.
         let mut idle = spot;
         idle.fight = false;

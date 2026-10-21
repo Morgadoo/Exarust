@@ -278,7 +278,7 @@ fn duellist(
             // experience system, which is not wired here.
             ai.in_combat = true;
             combatant.in_combat = true;
-            combatant.clear_combat_step();
+            combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
             combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
             stance::set_stance(&mut stance, &mut anim, Stance::Defence);
             info!("duellist {entity:?} enters combat: {:?}", *stance);
@@ -341,70 +341,56 @@ fn duellist(
             look: target_forward,
             forward: target_forward,
             condition: target_condition.0,
-            flags: 0,
-            combat_flags: 0,
-            speed: 0.0,
-            size: target_fighter.map_or(1.0, |f| f.stats.size),
-            reach_cm: reach_of(ai.target, &blades) * 100.0,
-            skill: 0.0,
-            phase,
-            combat_mode: target_condition != Condition::NORMAL,
-            armed: blades
-                .iter()
-                .any(|b| b.wielder == ai.target && b.record.armed()),
-            guard_up: false,
+            invisible: false,
             hidden: false,
+            mask: None,
             asleep: false,
-            dead: target_condition.is_dead(),
+            removed: false,
+            phase,
+            in_combat: target_condition != Condition::NORMAL,
+            stepping: false,
+            poised: false,
+            speed: 0.0,
         };
         let observer = Observer {
             entity,
-            origin_cm: gt.translation() * 100.0,
+            position_cm: gt.translation() * 100.0,
             look: facing,
             forward: facing,
-            condition: condition.0,
-            flags: 0,
-            combat_flags: 0,
-            skill: 0.0,
+            asleep: false,
+            perception: fighter.stats.perception,
             calm: 0.0,
             aggression: 0.0,
-            perception: fighter.stats.perception,
-            mask: None,
-            tracked: combatant.contact(ai.target).is_some_and(|c| c.seen),
+            mind_aggression: 0.0,
+            resist_mind: false,
             target: Some(ai.target),
-            reach_cm: reach_of(entity, &blades) * 100.0,
-            speed: 0.0,
         };
-        let raw = combatant
-            .contact(ai.target)
-            .map_or(Attitude::default(), |c| Attitude {
-                value: c.attitude,
-                tolerance: c.tolerance,
-            });
-        let mut perception = combatant.perception;
-        let noticed = perceive(
+        // The role database is not wired into the duellist: its stored
+        // attitude toward the target stands in for the raw one, and the
+        // target's own contacts (none for the player) carry no trust.
+        let index = combatant.contact_index(ai.target);
+        let raw = Attitude {
+            value: combatant.contacts[index].attitude,
+            tolerance: combatant.contacts[index].tolerance * 100.0,
+        };
+        let sight = perceive(
             &observer,
             &observed,
             &[],
             &mut combatant.contacts,
-            &mut perception,
+            index,
             raw,
-            false,
+            &|_| 0.0,
             &[],
             now,
-            1.0,
         );
-        combatant.perception = perception;
         combatant.target = Some(ai.target);
-        if let Some(floor) = perception.alert_floor {
-            combatant.alert = combatant.alert.max(floor);
+        if let Some(floor) = sight.alert_floor
+            && combatant.alert < floor
+        {
+            combatant.alert = floor;
         }
-        let contact = combatant.contact_mut(ai.target);
-        contact.seen = noticed;
-        contact.distance_cm = perception.distance_cm;
-        contact.closeness = perception.closeness;
-        contact.facing = perception.facing;
-        contact.attitude = perception.attitude;
+        let contact = &mut combatant.contacts[index];
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }
@@ -441,8 +427,7 @@ fn duellist(
             dull: fighter.stats.rules.has(4),
             blow,
             wide: false,
-            observer_ahead: Vec3::new(order.heading.sin(), 0.0, order.heading.cos())
-                .dot(dir_to_me),
+            observer_ahead: Vec3::new(order.heading.sin(), 0.0, order.heading.cos()).dot(dir_to_me),
             other_ahead: target_forward.dot(dir_to_me),
             in_attack: *condition == Condition::ATTACKING,
             presses: false,
@@ -616,10 +601,12 @@ mod tests {
         let combatant = app.world().get::<Combatant>(foe).unwrap();
         assert_eq!(combatant.target, Some(target));
         let contact = combatant.contact(target).unwrap();
-        assert!(contact.seen);
+        assert!(contact.tracked());
+        assert_ne!(contact.flags & combatant::CONTACT_NOTICED, 0);
         assert!((contact.distance_cm - 200.0).abs() < 0.1);
         assert!((contact.closeness - (1.0 - 200.0 / 1200.0)).abs() < 1e-5);
-        assert!(combatant.perception.noticed);
+        // Facing each other 2 m apart: the observer's view weight is 1.
+        assert!((contact.view - 1.0).abs() < 1e-5, "{}", contact.view);
     }
 
     /// A chosen footwork is held for its timer before the next decision.
