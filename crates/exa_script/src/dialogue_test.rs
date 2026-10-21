@@ -825,3 +825,33 @@ fn near_activation_checks_the_contact_and_files_the_word() {
     let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 0, 5).and_then(|m| m.words.clone());
     assert_eq!(words, Some(vec![ACTIVATED | 1000]));
 }
+
+/// A topic event that stores a word checks the actor's roles against the
+/// database: a role it lacks is reported.
+#[test]
+fn a_stored_event_reports_an_unknown_role() {
+    let memory = node(0x100, "Rumour", &[], vec![]);
+    let db = RoleDb {
+        roles: vec![
+            role(5, 0, 0, vec![entry(0x2, 9, Some(graph(9, vec![memory])))]),
+            role(9, 0, 0, vec![]),
+        ],
+    };
+    let mut player = person(PLAYER, &[5], &db);
+    // A role the database does not have (added as the original does, with
+    // no record behind it).
+    player.add_role(&db, 77);
+    player.contacts.push(Contact::new(GUARD));
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[9], &db), player],
+    };
+    let mut s = scene(&db, None, &mut cast, 0);
+    dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
+    assert_eq!(
+        s.effects,
+        vec![Effect::Report(
+            "Near Activation".to_string(),
+            "Invalid role identifier.".to_string()
+        )]
+    );
+}
