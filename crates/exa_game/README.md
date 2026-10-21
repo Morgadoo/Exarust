@@ -523,3 +523,20 @@ PRACTICE, VERSUS, MANUAL and SETTINGS is named, not performed. Escape goes
 back from the arena and practice pages and closes the screen elsewhere. The
 rows are measured with the menu font's record (`titlefont.rfi`) and drawn in
 the base font until its quads are wired.
+
+## The trade window and the camera's wall probe
+
+`shop_window` is the arena shop's `TShopWindow`: the 0x36c × 0x244 page
+titled "Trade", the stock and pack panels, the two 0xc4 × 0x174 baskets,
+the buy total at full price less the sell total quartered, "Pay:" or
+"Receive:" with the purse test disabling the button, the right-button
+close, the stock drop and the confirm through the company's coins or a
+real item transaction.
+
+`nav_camera` gained the stepped camera's wall avoidance: the probe's
+length and radius, the alternating raised flag, the step count (to four)
+and its eased tilt, the intersection offset and the released node's
+words. `player`'s chase camera probes the physics level with a 25 cm ball
+along the backward vector and applies the tilt, so a wall behind the
+player raises the view instead of pulling the eye in; `fov_from_zoom` is
+the same field-of-view rule the renderer uses.

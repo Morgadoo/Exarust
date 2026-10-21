@@ -1496,6 +1496,7 @@ pub(crate) fn chase_camera(
     scroll: Res<AccumulatedMouseScroll>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    physics: Res<exa_physics::Physics>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
@@ -1553,6 +1554,15 @@ pub(crate) fn chase_camera(
         }
         let floor = pitch_floor(cam.shown_zoom);
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
+        // The stepped camera's wall probe: a 25 cm ball from just above
+        // the focus along the backward vector. The original casts in its
+        // centimetre units (a 20 or 30 cm radius over twice the extent less
+        // 150); Exarust's fixed eye distance is 20 m.
+        let from = focus + Vec3::Y * 0.1;
+        let obstructed = physics
+            .level_sweep(from, cam.backward(), CAMERA_DISTANCE + 1.0, 0.25)
+            .is_some();
+        cam.apply_wall(obstructed, CAMERA_DISTANCE * 100.0);
         let along = cam.advance(time.delta_secs());
         let (backward, zoom, shake) = cam.shown(along);
         t.translation = focus + backward * CAMERA_DISTANCE;

@@ -409,3 +409,33 @@ three paths, and the markup tags. `viewport` keeps the 3D viewport
 control's supersampling levels, jitter table and samples, camera scale,
 stereo eye, overlays, frame-rate counter, pixel/space conversions and its
 cursor actions.
+
+## Layers, pickers, swatches, pickers and help
+
+`gui_task` is the top-level layer (`TGUITask`): its forms drawn in order and
+hit from the top down, its 16-byte shortcut table with the best modifier
+match (a required modifier that is not held refuses the entry; held extras
+cost nothing; a zero score never fires), the active/root 1.0 draw against
+the inactive 0.75 and 0.5, a raise word, the frame callback list, and the
+save/restore/clear focus hooks the form base class calls. `colour_picker`
+is the colour picker logic: one picker per swatch, re-focused on a second
+open, RGB sliders in 0–255 or 0–1, HSV sliders, the six channel-gradient
+ends, the four field corners and the write-back to the swatch with its
+owner callback, guarded against recursion. `drop_down` is the combo box's
+popup: six-unit rows, sixteen then a scrollbar, the row under the pointer,
+the press's armed row, the release's write-back and the close word.
+`col_swatch` is the palette popup: 32 columns of 8 cells of three units,
+clamped hit testing, the two-hex-digit label, the set-value word and the
+direction words.
+
+`pickers` holds the character-creation fields: the tone picker's 2 × 2
+checker over a 3 × 3 table with the original's divisors and 0.6 scale, and
+the hair picker's 3 × 3 horizontal run with its value scale, grey marker,
+shade quad and the character generator's shading buffers. `skill_gui`
+builds the three skill atlases (five groups of eight 96-pixel cells, six
+288-pixel single icons, the 44 × 20-unit background), the once-only
+resource pass and the full and compact window constructors. `help_system`
+is the manual (topic directory records of a 16-byte title and an index word,
+the two `.fds` files by input mode, the topic page and the stick scroll
+words) and the one-time tips (the settings mask, the 504-unit popup and the
+text's laid-out height plus 0x60).

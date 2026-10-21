@@ -9,3 +9,12 @@ Item database and procedural items: weapons assembled from components by factori
 - Object database (`objdb.rdb`, `objstrings.rdb`), item instances and inventory/containers.
 - Weapon factories (`Factories.rpk`) assembling `Components.rpk` parts; mass/balance derived from geometry.
 - Procedural material grades (steel, iron, copper alloy, leather, wood...) and their texture generation.
+
+## The icon manager's tail
+
+`icon_cache` now also carries the manager's construction (`ManagerSetup`:
+the 0x103 icon flags, the 0x100e608 texture flags, forty-unit icons and the
+512/1024 apparel size by shade quality), the draw, the two pixel tests, a
+handle refresh for the debug editor, the user-item tag split (level, world
+or game) and the exact release: a freed slot clears only its id and its
+reference count, keeping its cell, variant and half extents for the caller.
