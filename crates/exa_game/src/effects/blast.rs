@@ -248,19 +248,24 @@ impl Blast {
         spawn_span(self.setup.chunks)
     }
 
-    /// Creates the chunks at their first positions: a ring of 16
-    /// directions stepped by 1.2566371 rad, scaled by 4, then the height
-    /// by 1.5 less 30 cm.
+    /// Creates the chunks at their first positions: the sixteen birth
+    /// directions times 4 cm, their height 1.5 times less 0.5 cm.
     pub fn spawn(&mut self) {
         let count = self.chunk_count();
         self.chunks.clear();
-        let mut angle = 0.0f32;
-        for index in 0..count {
-            let dir = [angle.cos(), angle.sin(), 0.0];
-            let at = Vec3::new(dir[0] * RIBBON_WIDTH, dir[1] * RIBBON_WIDTH, 0.0);
-            let at = Vec3::new(at.x, at.y, at.z * 1.5 - 30.0);
+        for (index, dir) in spawn_directions().into_iter().enumerate().take(count) {
+            let local = [
+                dir[0] * RIBBON_WIDTH,
+                dir[1] * RIBBON_WIDTH,
+                dir[2] * 1.5 - 0.5,
+            ];
+            let at = Vec3::new(
+                self.hand.x + local[0],
+                self.hand.y + local[1],
+                self.hand.z + local[2],
+            );
             let (tint0, tint1) = self.tints.get(index).copied().unwrap_or((0.0, 0.0));
-            let mut chunk = Chunk::new(self.hand + at, tint0, tint1);
+            let mut chunk = Chunk::new(at, tint0, tint1);
             for (slot, point) in chunk.trail.iter_mut().enumerate() {
                 point.at = [
                     chunk.at.x + slot as f32 * dir[0],
@@ -272,7 +277,6 @@ impl Blast {
             }
             chunk.write = 0;
             self.chunks.push(chunk);
-            angle += 1.256_637_1;
         }
     }
 
@@ -614,10 +618,14 @@ pub fn ribbon(chunk: &Chunk) -> Vec<[f32; 3]> {
             a[2] + (b[2] - a[2]) * t,
         ];
         let width = chunk.reach * TRAIL_SCALE * (1.0 - t) + 0.5;
-        let side = normalize3(cross3(
-            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-            [0.0, 0.0, 1.0],
-        ));
+        let along = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let mut side = normalize3(cross3(along, [0.0, 0.0, 1.0]));
+        if side == [0.0; 3] {
+            side = normalize3(cross3(along, [1.0, 0.0, 0.0]));
+        }
+        if side == [0.0; 3] {
+            side = [1.0, 0.0, 0.0];
+        }
         out.push([
             at[0] + side[0] * width,
             at[1] + side[1] * width,
@@ -798,6 +806,39 @@ pub fn trail_life_ticks(seconds: f32) -> i32 {
     (seconds * TICK_HZ as f32) as i32
 }
 
+/// The sixteen birth directions: +Z, five points on a cone 26.565° from it
+/// stepped by 1.2566371 rad, then the five midpoints to +Z and the five
+/// midpoints between neighbours. The engine's fast trigonometric helpers
+/// are replaced by the standard ones.
+pub fn spawn_directions() -> [[f32; 3]; 16] {
+    let mut out = [[0.0f32; 3]; 16];
+    out[0] = [0.0, 0.0, 1.0];
+    let tilt = 0.463_647_6f32;
+    let (sin_tilt, cos_tilt) = tilt.sin_cos();
+    let mut angle = 0.0f32;
+    for slot in &mut out[1..=5] {
+        angle += 1.256_637_1;
+        let (sin, cos) = angle.sin_cos();
+        *slot = [sin * sin_tilt, cos * sin_tilt, cos_tilt];
+    }
+    for index in 1..=5 {
+        out[5 + index] = normalize3(lerp3(out[0], out[index], 0.5));
+    }
+    for index in 1..=5 {
+        let previous = if index == 1 { 5 } else { index - 1 };
+        out[10 + index] = normalize3(lerp3(out[index], out[previous], 0.5));
+    }
+    out
+}
+
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
 /// The push a chunk gives a simulation object's point, as the tuning's
 /// contact scale (0.8) times the fixed 0.025.
 pub const SIM_OBJECT_PUSH: f32 = 0.8;
@@ -960,6 +1001,12 @@ impl Blast {
         )
     }
 
+    /// Aims the blast from the hand at the view's origin, limited to 45°
+    /// around the body's aim yaw.
+    pub fn aim_at(&mut self, origin: Vec3, body_yaw: f32) -> crate::effects::torrent::TorrentAim {
+        blast_aim(self.hand, origin, body_yaw)
+    }
+
     /// A rebound: the chunk moves half the way to the contact point and its
     /// trail keeps 90 % of its width.
     pub fn rebound(&mut self, index: usize, point: Vec3) -> bool {
@@ -1045,6 +1092,27 @@ mod tests {
         let step = blast.step(Vec3::ZERO);
         assert!(step.finished);
         assert_eq!(blast.phase, FINISHED);
+    }
+
+    #[test]
+    fn the_birth_directions_are_the_sixteen_slot_table() {
+        let directions = spawn_directions();
+        assert_eq!(directions[0], [0.0, 0.0, 1.0]);
+        let first = directions[1];
+        assert!((first[0] - 0.425_325).abs() < 1e-4);
+        assert!((first[1] - 0.138_197).abs() < 1e-4);
+        assert!((first[2] - 0.894_427).abs() < 1e-4);
+        let midpoint = directions[6];
+        assert!((midpoint[0] - 0.218_507).abs() < 1e-4);
+        assert!((midpoint[1] - 0.070_998).abs() < 1e-4);
+        assert!((midpoint[2] - 0.973_249).abs() < 1e-4);
+        for direction in directions {
+            let length = (direction[0] * direction[0]
+                + direction[1] * direction[1]
+                + direction[2] * direction[2])
+                .sqrt();
+            assert!((length - 1.0).abs() < 1e-5);
+        }
     }
 
     #[test]

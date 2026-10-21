@@ -183,14 +183,12 @@ impl Torrent {
         }
     }
 
-    /// The sixteen births: a ring of directions stepped by 1.2566371 rad,
-    /// each scaled by 16, its height by 1.5 less 30 cm.
+    /// The sixteen births: the shared sixteen directions scaled by 16,
+    /// their height by 1.5 less 30 cm.
     pub fn spawn(&mut self, tints: impl Iterator<Item = (f32, f32)>) {
         let mut tints = tints;
-        let mut angle = 0.0f32;
         self.streams.clear();
-        for _ in 0..STREAMS {
-            let dir = [angle.cos(), angle.sin(), 0.0];
+        for dir in crate::effects::blast::spawn_directions() {
             let local = Vec3::new(
                 dir[0] * BIRTH_RADIUS,
                 dir[1] * BIRTH_RADIUS,
@@ -218,7 +216,6 @@ impl Torrent {
                 point.at = [origin.x, origin.y, origin.z];
             }
             self.streams.push(stream);
-            angle += 1.256_637_1;
         }
     }
 
@@ -511,7 +508,8 @@ mod tests {
     fn the_streams_are_born_on_a_sphere() {
         let torrent = torrent();
         assert_eq!(torrent.streams.len(), 16);
-        assert_eq!(torrent.streams[0].newest().at, [16.0, 0.0, -30.0]);
+        assert_eq!(torrent.streams[0].newest().at, [0.0, 0.0, -28.5]);
+        assert!((torrent.streams[1].newest().at[0] - 6.805_2).abs() < 1e-3);
         assert_eq!(Torrent::spawn_delay(0.0), 8);
         assert_eq!(Torrent::spawn_delay(0.5), 7);
         assert_eq!(Torrent::spawn_delay(0.9), 6);
@@ -838,6 +836,14 @@ pub struct TorrentTeardown {
 }
 
 impl Torrent {
+    /// Aims the torrent from the hand at the view's origin, limited to 45°
+    /// around the body's aim yaw.
+    pub fn aim_at(&mut self, origin: Vec3, body_yaw: f32) -> TorrentAim {
+        let aim = torrent_aim(self.hand, origin, body_yaw);
+        self.aim = aim.direction;
+        aim
+    }
+
     /// The contact a body's hit begins with.
     pub fn contact(&mut self, origin: Vec3) -> TorrentContact {
         self.hit_scale = 0.25;
@@ -995,6 +1001,10 @@ mod hit_tests {
     #[test]
     fn the_contact_and_destroy_keep_the_numbers() {
         let mut torrent = torrent();
+        torrent.hand = Vec3::new(0.0, 0.0, 10.0);
+        let aim = torrent.aim_at(Vec3::ZERO, 0.0);
+        assert!(aim.direction.z > 0.99);
+        assert!(torrent.aim.z > 0.99);
         let contact = torrent.contact(Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(
             (contact.push, contact.share, contact.callback),
