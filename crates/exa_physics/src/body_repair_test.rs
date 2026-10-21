@@ -98,6 +98,44 @@ fn a_soft_weld_is_a_quarter_of_its_strength_less_four_tenths_of_the_motion() {
 }
 
 #[test]
+fn the_iteration_uses_a_soft_weld_link() {
+    let link = RigidLink {
+        on_body: Vec3::splat(0.25),
+        on_parent: Vec3::ZERO,
+        slack: 0.2,
+        strength: 1.0,
+        smoothing: 0.5,
+        flags: crate::body::LINK_SOFT_WELD,
+        axis: Vec3::ZERO,
+    };
+    let mut body = Ragdoll::rigid(&[
+        rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new()),
+        RigidPart {
+            parent: Some(0),
+            ..rigid_part(
+                Affine3A::from_translation(Vec3::X * 0.6),
+                Vec3::X * 0.5,
+                vec![link],
+            )
+        },
+    ]);
+    // The origin pivot would take most of the gap: disable it, leaving the
+    // soft weld's own law.
+    body.links[1].flags |= crate::body::LINK_DISABLED;
+    let before = body.parts[1].positions[0].x;
+    body.iterate();
+    // The child's centroid is 35 cm from the parent's point (0.85 − 0.5):
+    // 0.25·1·(−35) = −8.75 cm, a tenth −0.875 cm, shared half to the child
+    // −0.4375 cm; each particle takes a quarter of it as its weight.
+    assert!(
+        (body.parts[1].positions[0].x - (before - 0.00109375)).abs() < 1e-6,
+        "{} vs {}",
+        body.parts[1].positions[0].x,
+        before - 0.00109375
+    );
+}
+
+#[test]
 fn resetting_link_lengths_takes_the_current_distance_within_the_slack() {
     let link = RigidLink {
         on_body: Vec3::ZERO,
