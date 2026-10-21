@@ -1,6 +1,6 @@
 use super::*;
 use crate::characters::{
-    self, ARMOUR, CHARACTERS, ID_MASK, LOCAL_ITEM, LevelCharacters, SHIELDS, Skill,
+    self, ARMOUR, CHARACTERS, ID_MASK, ItemRef, LOCAL_ITEM, LevelCharacters, SHIELDS, Skill,
 };
 use crate::objdb;
 use crate::rdb::Database;
@@ -174,8 +174,16 @@ fn a_records_encumbrance() {
     ];
     let find = |id: u32| items.iter().find(|i| i.id == id & ID_MASK);
     let mut r = characters::CharacterRecord {
-        worn: vec![LOCAL_ITEM | 3, LOCAL_ITEM | 99],
-        hands: [LOCAL_ITEM | 9, LOCAL_ITEM | 7, 0, 0],
+        worn: vec![
+            ItemRef::new(LOCAL_ITEM | 3, 0),
+            ItemRef::new(LOCAL_ITEM | 99, 0),
+        ],
+        hands: [
+            ItemRef::new(LOCAL_ITEM | 9, 0),
+            ItemRef::new(LOCAL_ITEM | 7, 0),
+            ItemRef::NONE,
+            ItemRef::NONE,
+        ],
         ..Default::default()
     };
     assert_eq!(held_shield(&r, find).map(|s| s.bulk), Some(0.6));
@@ -192,9 +200,19 @@ fn a_records_encumbrance() {
     };
     assert_eq!(of_record(&r, find), 0.0);
     // A weapon in the off hand is no shield.
-    r.hands = [LOCAL_ITEM | 7, LOCAL_ITEM | 9, 0, 0];
+    r.hands = [
+        ItemRef::new(LOCAL_ITEM | 7, 0),
+        ItemRef::new(LOCAL_ITEM | 9, 0),
+        ItemRef::NONE,
+        ItemRef::NONE,
+    ];
     assert_eq!(held_shield(&r, find).map(|s| s.bulk), Some(0.6));
-    r.hands = [LOCAL_ITEM | 9, 0, LOCAL_ITEM | 7, 0];
+    r.hands = [
+        ItemRef::new(LOCAL_ITEM | 9, 0),
+        ItemRef::NONE,
+        ItemRef::new(LOCAL_ITEM | 7, 0),
+        ItemRef::NONE,
+    ];
     assert_eq!(held_shield(&r, find), None);
 }
 

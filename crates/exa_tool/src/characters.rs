@@ -206,7 +206,7 @@ fn print_record(
         roles.join(" "),
         r.worn.len(),
         r.inventory.len(),
-        r.relations,
+        r.relation_count(),
         saved.join(", "),
         r.powers.as_ref().map_or(0, |p| p.known.len())
     );

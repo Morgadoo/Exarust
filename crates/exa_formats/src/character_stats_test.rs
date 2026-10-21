@@ -294,7 +294,7 @@ fn body_rule_bits() {
     // for the `0x1000` kind) regenerates red health; another's does not.
     let cored = |r: &Race, byte: u8, core: u32| {
         let mut rec = record(byte, 0.0, 0.0);
-        rec.worn = vec![7, core];
+        rec.worn = vec![ItemRef::new(7, 0), ItemRef::new(core, 0)];
         CharacterStats::derive(&rec, Some(r), ALIVE).rules.0
     };
     assert_eq!(cored(&suit, 18, 500), 0x70);

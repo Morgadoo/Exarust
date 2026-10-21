@@ -119,7 +119,7 @@ pub fn of_record<'a>(record: &CharacterRecord, find: impl Fn(u32) -> Option<&'a 
     let worn: Vec<Burden> = record
         .worn
         .iter()
-        .filter_map(|&id| find(id)?.burden)
+        .filter_map(|worn| find(worn.id)?.burden)
         .collect();
     let shield = held_shield(record, find);
     encumbrance(&worn, shield.as_ref(), Skills::of_record(record))
@@ -133,8 +133,8 @@ pub fn held_shield<'a>(
 ) -> Option<ShieldRecord> {
     record.hands[..2]
         .iter()
-        .filter(|&&id| id != 0)
-        .filter_map(|&id| find(id))
+        .filter(|hand| hand.is_some())
+        .filter_map(|hand| find(hand.id))
         .filter(|item| item.weapon.is_none())
         .filter_map(|item| item.shield)
         .last()

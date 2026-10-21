@@ -171,7 +171,6 @@ fn generalise(reason: &str) -> String {
 /// `exa-tool corpus levels`: grids and props of every level file, and what
 /// its placed humans wear.
 pub fn levels(game: &GameData) -> Result<()> {
-    use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
     let Some(resource) = game.pack(exa_rpk::PackKind::Resource) else {
         return Ok(());
     };
@@ -217,10 +216,10 @@ pub fn levels(game: &GameData) -> Result<()> {
                     .or_default() += 1;
                 // Race byte 0: humans.
                 let (human, mut groin) = (rec.race == 0, false);
-                for &item in &rec.worn {
+                for item in &rec.worn {
                     worn += 1;
-                    let local = item & LOCAL_ITEM != 0;
-                    let id = item & ID_MASK;
+                    let local = item.is_local();
+                    let id = item.index();
                     if local && scene.local_items.iter().any(|i| i.id == id) {
                         worn_found += 1;
                     }

@@ -175,17 +175,17 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
             let held = record
                 .hands
                 .first()
-                .filter(|&&id| id != 0)
-                .and_then(|&id| find(id))
+                .filter(|hand| hand.is_some())
+                .and_then(|hand| find(hand.id))
                 .filter(|item| !item.model.is_empty())
                 .map(|item| (item.model.clone(), item.weapon));
             let worn = record
                 .worn
                 .iter()
-                .filter_map(|&id| {
+                .filter_map(|worn| {
                     // Worn as the model its body names, which may differ
                     // from the one it shows on the ground or lack one.
-                    let item = find(id)?;
+                    let item = find(worn.id)?;
                     (!item.worn_model.is_empty()).then(|| Worn {
                         model: item.worn_model.clone(),
                         appearance: item.appearance,
@@ -1045,7 +1045,9 @@ mod tests {
     use super::*;
     use bevy::ecs::world::CommandQueue;
     use exa_assets::{GameData, ModelCache};
-    use exa_formats::characters::{CharacterRecord, LOCAL_ITEM, LevelCharacters, Placement};
+    use exa_formats::characters::{
+        CharacterRecord, ItemRef, LOCAL_ITEM, LevelCharacters, Placement,
+    };
 
     /// The skinned shadow maps that Bevy still renders for characters keep
     /// the original's 3 cm near plane, not Bevy's 10 cm default. At 10 cm the
@@ -1414,7 +1416,7 @@ mod tests {
         CharacterRecord {
             id,
             name: format!("record {id}"),
-            worn,
+            worn: worn.into_iter().map(|id| ItemRef::new(id, 0)).collect(),
             ..Default::default()
         }
     }

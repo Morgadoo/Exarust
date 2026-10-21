@@ -826,7 +826,7 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 | roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
 | relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
 | saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (game clock) |
-| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: u32, ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC00` and `CDEC12` never occur |
+| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: u32, ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12`: two words; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
 
 Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
 `i32 n`, n × {u32 role, u32 ignored}, each added in turn (with its parents
@@ -860,8 +860,35 @@ yellow and red to max × stored value / 65535 and focus to stored value /
 (harmless with one entry; with both, the heal pool gets the potion's
 expiry), a quirk left to the save system to decide.
 
-Evidence: REA on both record readers, the inventory and relation readers,
-the technique routine, the armour builder, the save hook and load, and the
+**Writing.** The game's writer stores version 7 only: the fields in the
+order above, then the roles as `u32 count`, `u32 length` and the entries
+(each keeps its stored weight), the relation tables, the saved state, and
+the sub-chunks it has (powers always under `CDEC01`, the reserved words,
+then the loadouts). Three details of its behaviour:
+- the voice field is rebuilt from the record's voice number as `vi` and the
+  number plus one, zero-padded to two digits (`vi01` is number 0); the
+  stored name is not copied.
+- the four traits are written as `round(value) + 100` in a byte, wrapping.
+- a skill is written only when it has a chosen technique: its points, the
+  technique count up to the first empty slot (at most five, so a sixth
+  technique is dropped) and that many technique bytes. A skill with points
+  but no technique yet is lost.
+- an inventory entry's third word is `0x00040028` on an entry the game
+  appends; its meaning is not traced.
+
+`CharacterRecord::to_bytes` writes exactly those bytes: all 485 version 7
+records of the shipped levels and actors (478 + 7) come back byte for byte
+(`exa_formats::characters` test `shipped_records_write_back_byte_for_byte`).
+
+**Defaults.** A new record (`CharacterRecord::new`) is blank, with yellow
+and red at 0xFFFF and voice pitch 1. The creator's `reset` also sets a male
+human (`profession` 0), physique 0.5/0.5, skin colour 0x8000/0x8000, hair
+style 0, hair colour bytes `40 80 40 00`, voice number 0, pitch 1, full
+pools, and appends the underwear (item 8, flags 0) to the worn items.
+
+Evidence: REA on both record readers, the writer, the constructor and the
+creator's reset, the inventory and relation readers and writers, the
+technique routine, the armour builder, the save hook and load, and the
 skill and technique name tables; every record of the 13 level databases
 (478 version 7, 20 version 6, 4 version 5; 26 deleted entries and two
 stubs that are not records) and of `actors.rpk` parses to its end

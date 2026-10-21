@@ -10,7 +10,7 @@
 //! Lengths are returned in metres; the rules are the original's, in its
 //! centimetres, some of them in double precision as it computes them.
 
-use crate::characters::{CharacterRecord, FULL_POOL, Pools};
+use crate::characters::{CharacterRecord, FULL_POOL, ItemRef, Pools};
 use crate::races::{Gait, Race, RaceBody, RaceStats, SCALE_CAP};
 use crate::weapon_record::{self, Holder};
 
@@ -364,7 +364,14 @@ fn max_health(byte: u8, factor: f32) -> f32 {
 /// The body rule bits: by race byte, then by the race's flag words, then
 /// by the feral level, then the armour pass's golem bit, cleared by a worn
 /// core (`worn`: the record's worn item ids as stored).
-fn rules(byte: u8, feral: f32, flags: u32, flags2: u32, story: bool, worn: &[u32]) -> BodyRules {
+fn rules(
+    byte: u8,
+    feral: f32,
+    flags: u32,
+    flags2: u32,
+    story: bool,
+    worn: &[ItemRef],
+) -> BodyRules {
     let creature = BodyRules::CREATURE | BodyRules::TAKES_REMEDIES | BodyRules::FIERCE;
     let mut bits = match byte {
         0 if feral > 0.0 => BodyRules::NO_LASTING_WOUNDS,
@@ -407,7 +414,7 @@ fn rules(byte: u8, feral: f32, flags: u32, flags2: u32, story: bool, worn: &[u32
         bits |= BodyRules::NO_RED_REGENERATION;
         let cored = GOLEM_CORES
             .iter()
-            .any(|&(kind, core)| flags & kind != 0 && worn.contains(&core));
+            .any(|&(kind, core)| flags & kind != 0 && worn.iter().any(|item| item.id == core));
         if cored {
             bits &= !BodyRules::NO_RED_REGENERATION;
         }

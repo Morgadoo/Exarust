@@ -135,11 +135,9 @@ fn whole_version_7_record() {
     assert_eq!((r.physique, r.height, r.age), ([0.25, 0.75], -0.5, 0.3));
     assert!(r.female);
     assert_eq!(r.race, 11);
-    assert_eq!(r.profession, 0x0000_0B01);
     assert_eq!((r.voice.as_str(), r.voice_pitch), ("vi03", 1.05));
-    assert_eq!(r.hands, [0x17, 0, 0x22, 0]);
-    assert_eq!(r.hand_flags, [0x100, 0, 0, 0]);
-    assert_eq!(r.worn, [0x8000_0010, 0x8000_00CE]);
+    assert_eq!(r.hands.map(|h| h.id), [0x17, 0, 0x22, 0]);
+    assert_eq!(r.worn_ids().collect::<Vec<_>>(), [0x8000_0010, 0x8000_00CE]);
     assert_eq!(r.feral, 0.84);
     assert_eq!(
         r.pools,
@@ -180,19 +178,21 @@ fn whole_version_7_record() {
         [
             Role {
                 id: 8,
+                weight: 0.0,
                 explicit: true,
                 inherited: 0,
                 variables: vec![]
             },
             Role {
                 id: 2,
+                weight: 0.5,
                 explicit: false,
                 inherited: 1,
                 variables: vec![7, 9]
             }
         ]
     );
-    assert_eq!(r.relations, 1);
+    assert_eq!(r.relation_count(), 1);
     assert_eq!((r.heal_pool(), r.potion_expiry()), (Some(0.25), Some(1800)));
     let powers = r.powers.unwrap();
     assert_eq!((powers.word, powers.slots[0]), (7, 0x0002_020B));
@@ -201,11 +201,13 @@ fn whole_version_7_record() {
         [
             Power {
                 id: 3,
-                flags: 0x0001_5FFF
+                flags: 0x0001_5FFF,
+                blob: Vec::new()
             },
             Power {
                 id: 4,
-                flags: POWER_BLOB
+                flags: POWER_BLOB,
+                blob: vec![0xAA, 0, 0, 0, 0xBB, 0, 0, 0]
             }
         ]
     );
@@ -296,13 +298,13 @@ fn legacy_version_6_record() {
     body.extend(powers);
     let r = CharacterRecord::parse(3, &frame(6, &body)).unwrap();
     assert_eq!((r.version, r.race, r.female), (6, 1, false));
-    assert_eq!(r.worn, [0x8000_0001]);
+    assert_eq!(r.worn_ids().collect::<Vec<_>>(), [0x8000_0001]);
     assert_eq!(r.feral, 0.84);
     assert_eq!(r.inventory.len(), 1);
     let ids: Vec<u32> = r.roles.iter().map(|x| x.id).collect();
     assert_eq!(ids, [1, 9]);
     assert!(r.roles.iter().all(|x| x.explicit && x.variables.is_empty()));
-    assert_eq!(r.relations, 0);
+    assert_eq!(r.relation_count(), 0);
     assert_eq!(r.potion_expiry(), Some(99));
     assert_eq!(
         r.perks().iter().collect::<Vec<_>>(),
@@ -312,7 +314,8 @@ fn legacy_version_6_record() {
         r.powers.unwrap().known,
         [Power {
             id: 5,
-            flags: POWER_BLOB
+            flags: POWER_BLOB,
+            blob: Vec::new()
         }]
     );
 }
@@ -373,21 +376,15 @@ fn saved_entries_read_their_own_values() {
 
 #[test]
 fn voice_numbers() {
-    let index = |voice: &str| {
-        CharacterRecord {
-            voice: voice.into(),
-            ..Default::default()
-        }
-        .voice_index()
-    };
-    assert_eq!(index("vi01"), 0);
-    assert_eq!(index("vi03"), 2);
-    assert_eq!(index("vm09"), 8);
-    assert_eq!(index("vi00"), 0);
-    assert_eq!(index("vm12"), 0);
-    assert_eq!(index("vi0"), 0);
-    // A stored byte 0xE9 reads as 'é': 233 − 49.
-    assert_eq!(index("vi0\u{e9}"), 184);
+    let index = voice_number_of;
+    assert_eq!(index(b"vi01"), 0);
+    assert_eq!(index(b"vi03"), 2);
+    assert_eq!(index(b"vm09"), 8);
+    assert_eq!(index(b"vi00"), 0);
+    assert_eq!(index(b"vm12"), 0);
+    assert_eq!(index(b"vi0"), 0);
+    // A stored byte 0xE9 is one character: 233 − 49.
+    assert_eq!(index(b"vi0\xe9"), 184);
 }
 
 #[test]
@@ -472,7 +469,7 @@ fn placements_and_their_database() {
     assert!(p.is_dead());
     let r = c.record(p.id).unwrap();
     assert_eq!(r.name, "Zombie03");
-    assert_eq!(r.worn, [0x8000_0010, 0x8000_00CE]);
+    assert_eq!(r.worn_ids().collect::<Vec<_>>(), [0x8000_0010, 0x8000_00CE]);
     assert_eq!(r.roles[0].id, 8);
 }
 
@@ -569,7 +566,10 @@ fn shipped_level_records() {
     let dual_wield = all.iter().filter(|r| r.skills[CLOSE_COMBAT].knows(8));
     assert_eq!(dual_wield.count(), 37);
     assert_eq!(all.iter().filter(|r| r.powers.is_some()).count(), 5);
-    assert!(all.iter().all(|r| r.relations == 0 && r.saved.is_empty()));
+    assert!(
+        all.iter()
+            .all(|r| r.relation_count() == 0 && r.saved.is_empty())
+    );
 }
 
 /// The arena's actors in `actors.rpk` (skipped without the game): 21
@@ -642,4 +642,219 @@ fn shipped_actors() {
     assert_eq!(perks("demon a01"), ["Remise", "Feint"]);
     let ids = |name: &str| actor(name).roles.iter().map(|r| r.id).collect::<Vec<_>>();
     assert_eq!(ids("xac_derrin"), [1, 33, 20]);
+}
+
+/// A fresh record takes the default constructor's pools and pitch; the
+/// creator's reset adds its identity defaults and the underwear.
+#[test]
+fn a_new_record_starts_blank_and_a_reset_one_takes_the_creators_defaults() {
+    let new = CharacterRecord::new();
+    assert_eq!(new.pools, Pools::FULL);
+    assert_eq!(new.voice_pitch, 1.0);
+    assert_eq!(new.physique, [0.0, 0.0]);
+    assert!(new.worn.is_empty());
+    assert!(new.name.is_empty() && new.hands.iter().all(|h| !h.is_some()));
+    assert_eq!(&new.to_bytes().unwrap()[..4], &RECORD.to_le_bytes());
+
+    let fresh = CharacterRecord::reset();
+    assert_eq!(fresh.physique, [DEFAULT_PHYSIQUE; 2]);
+    assert_eq!(fresh.skin, DEFAULT_SKIN);
+    assert_eq!(fresh.hair_colour, DEFAULT_HAIR_COLOUR);
+    assert_eq!((fresh.race, fresh.female), (0, false));
+    assert_eq!(fresh.voice_number, 0);
+    assert_eq!(fresh.voice, "vi01");
+    assert_eq!(fresh.pools, Pools::FULL);
+    assert_eq!(fresh.worn, [ItemRef::new(UNDERWEAR_ITEM, 0)]);
+    // The reset keeps the name: the creator sets it, not the defaults.
+    assert!(fresh.name.is_empty());
+}
+
+/// A record with every part, written and read back.
+#[test]
+fn written_records_read_back_the_same() {
+    let mut r = CharacterRecord::reset();
+    r.id = 9;
+    r.name = "Zombie03".into();
+    r.surname = "Smith".into();
+    r.physique = [0.25, 0.75];
+    r.height = -0.5;
+    r.age = 0.3;
+    r.skin = [0x1234, 0x5678];
+    r.hair_style = 3;
+    r.hair_colour = [1, 2, 3, 4];
+    r.face = [5, 6];
+    r.voice_number = 4;
+    r.voice = voice_name(4);
+    r.voice_pitch = 1.05;
+    r.female = true;
+    r.race = 11;
+    r.locale = 2;
+    r.hands = [
+        ItemRef::new(0x17, 0x1),
+        ItemRef::new(0x8000_0002, 0),
+        ItemRef::NONE,
+        ItemRef::new(0x22, 0x100),
+    ];
+    r.worn = vec![ItemRef::new(8, 0), ItemRef::new(0x8000_0003, 0x100)];
+    r.feral = 0.84;
+    r.pools = Pools {
+        yellow: 0x8000,
+        red: 0x4000,
+        focus: 0x1000,
+    };
+    r.seed = 0x1234;
+    r.combat_skill = 25.0;
+    r.undead_voice = 3;
+    r.traits = [0.0, -50.0, 100.0, -100.0];
+    r.search_seed = 0xDEAD;
+    r.experience = 25000;
+    r.extra_word = 0;
+    r.skills[CLOSE_COMBAT] = Skill {
+        points: 15000,
+        techniques: [1, 4, 2, 0, 0, 0],
+    };
+    r.inventory = vec![
+        Carried {
+            item: 0x8000_0010,
+            flags: 0x100,
+            extra: NEW_ENTRY_WORD,
+        },
+        Carried::default(),
+    ];
+    r.roles = vec![
+        Role {
+            id: 8,
+            weight: 0.0,
+            explicit: true,
+            inherited: 0,
+            variables: Vec::new(),
+        },
+        Role {
+            id: 2,
+            weight: 0.5,
+            explicit: false,
+            inherited: 1,
+            variables: vec![7, 9],
+        },
+    ];
+    r.relations = Relations {
+        entries: vec![(5, 0), (6, 0x14)],
+        blob: vec![1, 2, 3],
+    };
+    r.level_relations = vec![RelationTable {
+        words: [0x8000_0001, 0],
+        relations: Relations::default(),
+    }];
+    r.saved = vec![
+        SavedState {
+            tag: SAVED_HEAL_POOL,
+            value: 0.25f32.to_bits(),
+        },
+        SavedState {
+            tag: SAVED_POTION,
+            value: 1800,
+        },
+    ];
+    r.loadouts = vec![Loadout {
+        word: 3,
+        hands: [
+            ItemRef::new(0x17, 0),
+            ItemRef::new(0x18, 0),
+            ItemRef::NONE,
+            ItemRef::NONE,
+        ],
+        worn: vec![ItemRef::new(0x8000_0004, 0)],
+    }];
+    r.powers = Some(Powers {
+        word: 7,
+        slots: [0x0B; POWER_SLOTS],
+        known: vec![
+            Power {
+                id: 3,
+                flags: 0x15FFF,
+                blob: Vec::new(),
+            },
+            Power {
+                id: 4,
+                flags: POWER_BLOB,
+                blob: vec![0xAA, 0xBB],
+            },
+        ],
+    });
+    r.reserved = Some([1, 2]);
+    let bytes = r.to_bytes().unwrap();
+    let read = CharacterRecord::parse(9, &bytes).unwrap();
+    assert_eq!(read, r);
+    // Roles keep their stored weight; traits round.
+    assert_eq!(read.roles[1].weight, 0.5);
+    assert_eq!(read.traits, [0.0, -50.0, 100.0, -100.0]);
+    // Sub-chunks are only written when present: a reset record is the
+    // fixed part and no sub-chunk at all.
+    let plain = CharacterRecord::reset().to_bytes().unwrap();
+    assert_eq!(plain.len(), 8 + 200);
+    let size = u32::from_le_bytes(plain[4..8].try_into().unwrap());
+    assert_eq!(size as usize + 8, plain.len());
+}
+
+/// Every version 7 record of the installed game writes back byte for byte
+/// (skipped without the game): levels and the arena's actors.
+#[test]
+fn shipped_records_write_back_byte_for_byte() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let mut checked = 0;
+    let mut bad = Vec::new();
+    let mut check = |name: &str, payload: &[u8]| {
+        let Ok(r) = CharacterRecord::parse(0, payload) else {
+            return;
+        };
+        if r.version != RECORD_VERSION {
+            return;
+        }
+        let size = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+        let written = r.to_bytes().unwrap();
+        checked += 1;
+        if written != payload[..8 + size] {
+            let at = written
+                .iter()
+                .zip(&payload[..8 + size])
+                .position(|(a, b)| a != b);
+            bad.push(format!(
+                "{name} {}: {} bytes written, {} stored, first difference at {at:?}",
+                r.name,
+                written.len(),
+                8 + size
+            ));
+        }
+    };
+    for e in resource.entries() {
+        let Ok(chunks) = crate::chunk::rfc_chunks(resource.bytes(e)) else {
+            continue;
+        };
+        for c in chunks.flatten().filter(|c| c.tag == CHARACTERS) {
+            let Ok((_, sections)) = sections(c.data) else {
+                continue;
+            };
+            for (tag, body) in sections {
+                if tag != CHARACTER_DB {
+                    continue;
+                }
+                let Ok(db) = Database::parse(body) else {
+                    continue;
+                };
+                for rec in &db.records {
+                    check(&e.name, db.payload(rec));
+                }
+            }
+        }
+    }
+    let actors = exa_rpk::Archive::parse(resource.get("actors.rpk").unwrap()).unwrap();
+    for e in actors.entries() {
+        check(&e.name, actors.bytes(e));
+    }
+    assert_eq!(checked, 485, "{checked} records");
+    assert!(bad.is_empty(), "{bad:#?}");
 }

@@ -10,6 +10,10 @@
 //! at each level, the inventory, the roles, the relations, the saved body
 //! state and the thaumaturge's powers. The techniques give the character
 //! its perks ([`CharacterRecord::perks`]).
+//!
+//! A version 7 record can be written back ([`CharacterRecord::to_bytes`]),
+//! which is how the game saves it; a fresh one takes the defaults the
+//! original's creator starts from ([`CharacterRecord::reset`]).
 
 use crate::rdb::Database;
 use crate::{Error, Result};
@@ -38,8 +42,14 @@ const VERSION_6: u8 = 6;
 const POWERS: [u32; 2] = [0x00CD_EC01, 0x00CD_EC02];
 /// A power entry with this flag carries a sized blob after it.
 const POWER_BLOB: u32 = 0x1000_0000;
+/// The powers sub-chunk the writer emits.
+const POWERS_OUT: u32 = 0x00CD_EC01;
 /// Power slots of the powers chunk.
 pub const POWER_SLOTS: usize = 10;
+/// Sub-chunk of the character's saved loadouts (hands and worn items).
+const LOADOUTS: u32 = 0x00CD_EC00;
+/// Sub-chunk of two words whose meaning is not traced (never shipped).
+const RESERVED: u32 = 0x00CD_EC12;
 /// Saved-state entry: red health still to heal from bandages (an `f32`).
 pub const SAVED_HEAL_POOL: u32 = 0xCECC_0001;
 /// Saved-state entry: a drunk potion's expiry on the game clock.
@@ -47,14 +57,33 @@ pub const SAVED_POTION: u32 = 0xCECC_0002;
 /// A pool stored full (share 1).
 pub const FULL_POOL: u16 = 0xFFFF;
 /// Character traits are stored as bytes offset by this.
-const TRAIT_BIAS: f32 = 100.0;
+const TRAIT_BIAS: i32 = 100;
+/// The word a new inventory entry carries after its item and flags.
+pub const NEW_ENTRY_WORD: u32 = 0x0004_0028;
+/// The voice name the writer builds: this prefix, then the number.
+const VOICE_PREFIX: &str = "vi";
+/// The item a fresh record wears: "Braies_A", the object database's
+/// underwear.
+pub const UNDERWEAR_ITEM: u32 = 8;
+/// Skin colour of a fresh record (a mid grey).
+pub const DEFAULT_SKIN: [u16; 2] = [0x8000, 0x8000];
+/// Hair colour bytes of a fresh record.
+pub const DEFAULT_HAIR_COLOUR: [u8; 4] = [0x40, 0x80, 0x40, 0x00];
+/// Physique of a fresh record, both values.
+pub const DEFAULT_PHYSIQUE: f32 = 0.5;
 
 /// Skills a record holds, in slot order.
 pub const SKILLS: usize = 6;
-/// Techniques stored per skill (one per level).
+/// Techniques stored per skill (one per level). The writer emits at most
+/// [`WRITTEN_TECHNIQUES`]; the reader takes the record's own byte count.
 pub const TECHNIQUE_SLOTS: usize = 6;
+/// The techniques the writer reads from a skill (it stops at the first
+/// empty slot, so a sixth is never stored).
+pub const WRITTEN_TECHNIQUES: usize = 5;
 /// Skill points per level: each level learns one technique.
 pub const POINTS_PER_TECHNIQUE: u16 = 5000;
+/// The most levels a character's skills may add up to.
+pub const MAX_TOTAL_LEVELS: u32 = 15;
 /// Skill slots.
 pub const CLOSE_COMBAT: usize = 0;
 pub const RANGED_COMBAT: usize = 1;
@@ -138,6 +167,49 @@ pub fn technique_name(skill: usize, technique: u8) -> Option<&'static str> {
     (!name.is_empty()).then_some(*name)
 }
 
+/// An item reference as a record stores it: the item's id and the flags
+/// beside it. A record's hands, worn items, inventory, loadouts and its
+/// roles' variables all use this pair. Id 0 is an empty slot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ItemRef {
+    pub id: u32,
+    pub flags: u32,
+}
+
+impl ItemRef {
+    /// An empty slot.
+    pub const NONE: Self = Self { id: 0, flags: 0 };
+
+    pub const fn new(id: u32, flags: u32) -> Self {
+        Self { id, flags }
+    }
+
+    /// Whether the slot holds an item.
+    pub const fn is_some(self) -> bool {
+        self.id != 0
+    }
+
+    /// The id without its database bits.
+    pub const fn index(self) -> u32 {
+        self.id & ID_MASK
+    }
+
+    /// The item is the level's own, in its local object database.
+    pub const fn is_local(self) -> bool {
+        self.id & LOCAL_ITEM != 0
+    }
+
+    /// The item is the game's, in the world object database.
+    pub const fn is_world(self) -> bool {
+        self.id & WORLD_DB != 0
+    }
+
+    /// The reference names a record of either object database.
+    pub const fn is_shared(self) -> bool {
+        self.id & (LOCAL_ITEM | WORLD_DB) != 0
+    }
+}
+
 /// A character standing (or lying) in a level.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placement {
@@ -162,8 +234,8 @@ impl Placement {
     }
 }
 
-/// A character's record: who they are, what they wear and carry, their saved
-/// health, skills, roles and powers.
+/// A character's record: who they are, how they look, what they wear and
+/// carry, their saved health, skills, roles, relations and powers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CharacterRecord {
     pub id: u32,
@@ -178,28 +250,36 @@ pub struct CharacterRecord {
     pub height: f32,
     /// The creator's age, 0…1.
     pub age: f32,
-    pub female: bool,
-    pub race: u8,
-    /// The whole word the sex and race are read from: bit 0 female, the
-    /// race in bits 8–15, and `0x0100_0000` while the second weapon set is
-    /// out (REA on the weapon-set swap, which toggles it).
-    pub profession: u32,
+    /// Two skin colour words.
+    pub skin: [u16; 2],
+    /// Hair style.
+    pub hair_style: u32,
+    /// Hair colour, four bytes.
+    pub hair_colour: [u8; 4],
+    /// Two face style words.
+    pub face: [u16; 2],
+    /// The voice name as stored (`vi01`…`vi99`).
     pub voice: String,
+    /// The voice number the name gives (`vi0N` → N − 1), at least 0.
+    pub voice_number: u32,
     /// Voice pitch as stored (the character's init clamps it).
     pub voice_pitch: f32,
-    /// Items held in the hands (two loadouts), 0 = none.
-    pub hands: [u32; 4],
-    /// The flags word stored after each hand's item: `0x0100_0000` the
-    /// weapon is held flipped, `0x0200_0000` the held light burns.
-    pub hand_flags: [u32; 4],
+    pub female: bool,
+    pub race: u8,
+    /// The last level the character was in.
+    pub locale: u32,
+    /// Four hand slots: two hands, then a second pair of hands.
+    pub hands: [ItemRef; HANDS],
     /// Worn apparel items.
-    pub worn: Vec<u32>,
+    pub worn: Vec<ItemRef>,
     /// How far gone an undead character is, 0…1 (0 for the living and for
     /// every race but humans). The name is the research notes' reading of
     /// what it does (weaker, looser, the undead voices).
     pub feral: f32,
     /// Health and focus as saved.
     pub pools: Pools,
+    /// A random word made when the character is saved.
+    pub seed: u16,
     /// The AI's fighting skill, 0…100.
     pub combat_skill: f32,
     /// Which undead voice a feral character uses.
@@ -207,23 +287,46 @@ pub struct CharacterRecord {
     /// Four personality traits, −100…100 (the AI reads the second and the
     /// third).
     pub traits: [f32; 4],
+    /// A random seed the AI's search activity reads.
+    pub search_seed: u32,
     pub experience: i32,
+    /// A word the game keeps at zero in every shipped record (its reader
+    /// does not use it).
+    pub extra_word: u32,
     pub skills: [Skill; SKILLS],
     pub inventory: Vec<Carried>,
     /// Roles, newest first. A legacy record lists only the roles its reader
     /// adds; their parent roles come from the role database.
     pub roles: Vec<Role>,
-    /// Relations kept toward other characters (always none in the shipped
-    /// data; a legacy reader drops them).
-    pub relations: usize,
+    /// Relations toward other characters in this level.
+    pub relations: Relations,
+    /// Relations kept per other level.
+    pub level_relations: Vec<RelationTable>,
     /// Saved body state (heal pool, potion), as stored.
     pub saved: Vec<SavedState>,
+    /// The character's saved loadouts of hands and worn items.
+    pub loadouts: Vec<Loadout>,
     /// A thaumaturge's powers.
     pub powers: Option<Powers>,
+    /// The two words of the reserved sub-chunk, when a record has one.
+    pub reserved: Option<[u32; 2]>,
 }
 
+/// Hand slots of a record or a loadout: two hands, then a second pair.
+pub const HANDS: usize = 4;
+
 impl Default for CharacterRecord {
+    /// The original's new record: a blank identity, full health pools and
+    /// pitch 1 ([`CharacterRecord::new`]).
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CharacterRecord {
+    /// The original's constructor: a blank record whose pools are full and
+    /// whose voice pitch is 1. Everything else is empty.
+    pub fn new() -> Self {
         Self {
             id: 0,
             version: RECORD_VERSION,
@@ -232,27 +335,145 @@ impl Default for CharacterRecord {
             physique: [0.0; 2],
             height: 0.0,
             age: 0.0,
+            skin: [0; 2],
+            hair_style: 0,
+            hair_colour: [0; 4],
+            face: [0; 2],
+            voice: String::new(),
+            voice_number: 0,
+            voice_pitch: 1.0,
             female: false,
             race: 0,
-            profession: 0,
-            voice: String::new(),
-            voice_pitch: 1.0,
-            hands: [0; 4],
-            hand_flags: [0; 4],
+            locale: 0,
+            hands: [ItemRef::NONE; HANDS],
             worn: Vec::new(),
             feral: 0.0,
             pools: Pools::FULL,
+            seed: 0,
             combat_skill: 0.0,
             undead_voice: 0,
             traits: [0.0; 4],
+            search_seed: 0,
             experience: 0,
+            extra_word: 0,
             skills: [Skill::default(); SKILLS],
             inventory: Vec::new(),
             roles: Vec::new(),
-            relations: 0,
+            relations: Relations::default(),
+            level_relations: Vec::new(),
             saved: Vec::new(),
+            loadouts: Vec::new(),
             powers: None,
+            reserved: None,
         }
+    }
+
+    /// The defaults the character creator starts from: a male human of
+    /// average physique, the default skin and hair, no voice number, pitch
+    /// 1, full yellow and red health, wearing the underwear.
+    pub fn reset() -> Self {
+        let mut record = Self::new();
+        record.race = 0;
+        record.female = false;
+        record.physique = [DEFAULT_PHYSIQUE; 2];
+        record.skin = DEFAULT_SKIN;
+        record.hair_style = 0;
+        record.hair_colour = DEFAULT_HAIR_COLOUR;
+        record.voice_number = 0;
+        record.voice = voice_name(0);
+        record.voice_pitch = 1.0;
+        record.pools = Pools::FULL;
+        record.worn.push(ItemRef::new(UNDERWEAR_ITEM, 0));
+        record
+    }
+
+    /// The profession word: bit 0 female, byte 1 the race.
+    pub fn profession(&self) -> u32 {
+        u32::from(self.female) | u32::from(self.race) << 8
+    }
+
+    /// Sets sex and race from the profession word, as the reader does.
+    pub fn set_profession(&mut self, profession: u32) {
+        self.female = profession & 1 != 0;
+        self.race = (profession >> 8) as u8;
+    }
+
+    /// The worn item ids, without their flags.
+    pub fn worn_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.worn.iter().map(|w| w.id)
+    }
+
+    /// The ids of the hand items held (slots with an item).
+    pub fn held_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.hands.iter().filter(|h| h.is_some()).map(|h| h.id)
+    }
+
+    /// The first hand's item, the one a spawn puts in the right hand.
+    pub fn main_hand(&self) -> Option<ItemRef> {
+        self.hands[0].is_some().then_some(self.hands[0])
+    }
+
+    /// The perks the learnt techniques give.
+    pub fn perks(&self) -> Perks {
+        let mut perks = Perks::default();
+        for perk in Perk::ALL {
+            let (skill, technique) = perk.source();
+            if self.skills[skill].knows(technique) {
+                perks.insert(perk);
+            }
+        }
+        perks
+    }
+
+    /// The highest "Manoeuvring in Armour" tier learnt (0–3); each tier
+    /// takes 0.3 off the armour's encumbrance.
+    pub fn manoeuvring_tier(&self) -> u8 {
+        self.skills[ARMOUR]
+            .learnt()
+            .iter()
+            .copied()
+            .filter(|t| MANOEUVRING.contains(t))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether Deflection is learnt (worn armour covers more).
+    pub fn deflection(&self) -> bool {
+        self.skills[ARMOUR].knows(DEFLECTION)
+    }
+
+    /// Red health still to heal from bandages, as saved in its own entry.
+    pub fn heal_pool(&self) -> Option<f32> {
+        self.saved_value(SAVED_HEAL_POOL).map(f32::from_bits)
+    }
+
+    /// A drunk potion's expiry on the game clock, as saved in its own entry.
+    pub fn potion_expiry(&self) -> Option<u32> {
+        self.saved_value(SAVED_POTION)
+    }
+
+    fn saved_value(&self, tag: u32) -> Option<u32> {
+        self.saved.iter().find(|s| s.tag == tag).map(|s| s.value)
+    }
+
+    /// How many relations the record keeps in its own level.
+    pub fn relation_count(&self) -> usize {
+        self.relations.entries.len()
+    }
+}
+
+/// The voice name a number makes: `vi` and the number plus one, at least
+/// two digits (`vi01`…`vi99`). Longer numbers are written as they are.
+pub fn voice_name(number: u32) -> String {
+    format!("{VOICE_PREFIX}{:02}", number + 1)
+}
+
+/// The voice number a stored name gives (`vi0N` → N − 1, at least 0), else
+/// 0. Names hold one character per stored byte.
+pub fn voice_number_of(name: &[u8]) -> u32 {
+    match (name.get(2), name.get(3)) {
+        (Some(b'0'), Some(n)) => n.saturating_sub(b'1') as u32,
+        _ => 0,
     }
 }
 
@@ -301,6 +522,20 @@ impl Skill {
 
     pub fn knows(&self, technique: u8) -> bool {
         technique != 0 && self.learnt().contains(&technique)
+    }
+
+    /// The levels the skill's points fund.
+    pub fn levels(&self) -> u32 {
+        u32::from(self.points / POINTS_PER_TECHNIQUE)
+    }
+
+    /// How many techniques are chosen in a row from the first slot, at most
+    /// the five the writer stores.
+    pub fn chosen(&self) -> usize {
+        self.techniques[..WRITTEN_TECHNIQUES]
+            .iter()
+            .position(|&t| t == 0)
+            .unwrap_or(WRITTEN_TECHNIQUES)
     }
 }
 
@@ -383,6 +618,13 @@ impl Perk {
 pub struct Perks(u32);
 
 impl Perks {
+    /// The perk of a technique, when the technique grants one.
+    pub fn of(skill: usize, technique: u8) -> Option<Perk> {
+        Perk::ALL
+            .into_iter()
+            .find(|p| p.source() == (skill, technique))
+    }
+
     pub fn has(self, perk: Perk) -> bool {
         self.0 & perk.bit() != 0
     }
@@ -406,20 +648,92 @@ pub struct Carried {
     /// Item id (`LOCAL_ITEM` = the level's object database); 0 = empty.
     pub item: u32,
     pub flags: u32,
-    /// A third word whose meaning is not traced.
+    /// A third word: [`NEW_ENTRY_WORD`] on an entry the game appends, its
+    /// meaning not traced.
     pub extra: u32,
 }
 
+impl Default for Carried {
+    fn default() -> Self {
+        Self {
+            item: 0,
+            flags: 0,
+            extra: NEW_ENTRY_WORD,
+        }
+    }
+}
+
 /// A role held by the character (`charroles.rdb`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Role {
     pub id: u32,
+    /// The weight as stored (the role database's own weight is what the
+    /// game uses).
+    pub weight: f32,
     /// Assigned explicitly, not only pulled in as a parent.
     pub explicit: bool,
     /// How many explicit roles pulled this one in as a parent.
     pub inherited: u8,
     /// The role's variables, in its declaration order.
     pub variables: Vec<u32>,
+}
+
+/// A relation table toward other characters: 8-byte entries (a character
+/// and an offset) and a blob whose layout is not traced. Empty (`n < 1`)
+/// records keep nothing after the count.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Relations {
+    /// Pairs of words, one per relation.
+    pub entries: Vec<(u32, u32)>,
+    /// The bytes that follow the entries.
+    pub blob: Vec<u8>,
+}
+
+impl Relations {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.blob.is_empty()
+    }
+
+    /// The entry pairs, as words.
+    pub fn pairs(&self) -> impl Iterator<Item = [u32; 2]> + '_ {
+        self.entries.iter().map(|&(a, b)| [a, b])
+    }
+}
+
+/// A saved loadout: four hand slots and the items worn with them. The same
+/// shape the record's hand and worn fields have, plus a leading word.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Loadout {
+    /// A word whose meaning is not traced (its tag or index).
+    pub word: u32,
+    pub hands: [ItemRef; HANDS],
+    pub worn: Vec<ItemRef>,
+}
+
+/// A relation table kept for another level: two words (the level and an
+/// offset) and the relations toward its characters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelationTable {
+    pub words: [u32; 2],
+    pub relations: Relations,
+}
+
+impl Loadout {
+    /// The record's hands and worn items, as the game saves them.
+    pub fn of_record(record: &CharacterRecord) -> Self {
+        Self {
+            word: 0,
+            hands: record.hands,
+            worn: record.worn.clone(),
+        }
+    }
+
+    /// Puts the loadout's hands and worn items on a record, as the arena
+    /// does (and then ensures the underwear).
+    pub fn apply_to(&self, record: &mut CharacterRecord) {
+        record.hands = self.hands;
+        record.worn = self.worn.clone();
+    }
 }
 
 /// A saved body-state entry: a tag and its value word.
@@ -438,10 +752,13 @@ pub struct Powers {
     pub known: Vec<Power>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Power {
     pub id: u32,
     pub flags: u32,
+    /// The bytes after a power flagged [`POWER_BLOB`], without the size
+    /// word the file stores.
+    pub blob: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -617,60 +934,18 @@ impl CharacterRecord {
         let mut rec = Self {
             id,
             version,
-            ..Self::default()
+            ..Self::new()
         };
-        rec.name = r.name()?;
-        rec.surname = r.name()?;
-        rec.physique = [r.f32()?, r.f32()?];
-        rec.height = r.f32()?;
-        rec.age = r.f32()?;
-        r.bytes(3 * 4)?; // skin colour, hair style, hair colour
-        r.bytes(2 * 2)?; // face styles (read by every version)
-        rec.voice = r.name()?;
-        rec.voice_pitch = r.f32()?;
-        let profession = r.u32()?;
-        rec.profession = profession;
-        rec.female = profession & 1 != 0;
-        rec.race = (profession >> 8) as u8;
-        r.i32()?; // last locale
-        for (h, f) in rec.hands.iter_mut().zip(rec.hand_flags.iter_mut()) {
-            *h = r.u32()?;
-            *f = r.u32()?;
-        }
-        let worn = r.count("worn items")?;
-        rec.worn = r.entries::<8>(worn)?.iter().map(|e| word(e)).collect();
-        rec.feral = r.f32()?;
-        rec.pools = Pools {
-            yellow: r.u16()?,
-            red: r.u16()?,
-            focus: r.u16()?,
-        };
-        r.u16()?; // random seed
-        rec.combat_skill = r.f32()?;
-        rec.undead_voice = r.u32()?;
-        for t in &mut rec.traits {
-            *t = f32::from(r.u8()?) - TRAIT_BIAS;
-        }
-        r.u32()?; // random seed of the AI's search
-        rec.experience = r.i32()?;
-        r.u32()?; // a word always 0 in the shipped data
-        rec.skills = read_skills(&mut r)?;
-        let carried = r.count("carried items")?;
-        rec.inventory = r
-            .entries::<12>(carried)?
-            .iter()
-            .map(|e| Carried {
-                item: word(&e[..4]),
-                flags: word(&e[4..8]),
-                extra: word(&e[8..]),
-            })
-            .collect();
+        rec.read_common(&mut r)?;
         if version == RECORD_VERSION {
             rec.roles = read_roles(&mut r)?;
             rec.relations = read_relations(&mut r)?;
             for _ in 0..r.count("level relation tables")? {
-                r.bytes(8)?;
-                rec.relations += read_relations(&mut r)?;
+                let words = [r.u32()?, r.u32()?];
+                rec.level_relations.push(RelationTable {
+                    words,
+                    relations: read_relations(&mut r)?,
+                });
             }
         } else {
             rec.roles = read_legacy_roles(&mut r)?;
@@ -692,65 +967,318 @@ impl CharacterRecord {
                 b: r.bytes(size)?,
                 pos: 0,
             };
-            if POWERS.contains(&tag) {
-                rec.powers = Some(read_powers(&mut chunk, version == RECORD_VERSION)?);
+            match tag {
+                t if POWERS.contains(&t) => {
+                    rec.powers = Some(read_powers(&mut chunk, version == RECORD_VERSION)?);
+                }
+                LOADOUTS => rec.loadouts = read_loadouts(&mut chunk)?,
+                RESERVED => rec.reserved = Some([chunk.u32()?, chunk.u32()?]),
+                _ => {}
             }
         }
         Ok(rec)
     }
 
-    /// The voice number the voice name gives (`xx0N` → N − 1, at least 0),
-    /// else 0. Names hold one character per stored byte.
-    pub fn voice_index(&self) -> u32 {
-        let mut c = self.voice.chars().skip(2);
-        match (c.next(), c.next()) {
-            (Some('0'), Some(n)) => u32::from(n).saturating_sub(u32::from('1')),
-            _ => 0,
+    /// The fields every version shares, up to and including the inventory.
+    fn read_common(&mut self, r: &mut Reader<'_>) -> Result<()> {
+        self.name = r.name()?;
+        self.surname = r.name()?;
+        self.physique = [r.f32()?, r.f32()?];
+        self.height = r.f32()?;
+        self.age = r.f32()?;
+        self.skin = [r.u16()?, r.u16()?];
+        self.hair_style = r.u32()?;
+        self.hair_colour = r.bytes(4)?.try_into().expect("four bytes");
+        self.face = [r.u16()?, r.u16()?];
+        let voice = r.bytes(16)?;
+        self.voice_number = voice_number_of(voice);
+        self.voice = latin1(voice);
+        self.voice_pitch = r.f32()?;
+        let profession = r.u32()?;
+        self.set_profession(profession);
+        self.locale = r.u32()?;
+        for hand in &mut self.hands {
+            *hand = ItemRef::new(r.u32()?, r.u32()?);
         }
-    }
-
-    /// The perks the learnt techniques give.
-    pub fn perks(&self) -> Perks {
-        let mut perks = Perks::default();
-        for perk in Perk::ALL {
-            let (skill, technique) = perk.source();
-            if self.skills[skill].knows(technique) {
-                perks.insert(perk);
-            }
-        }
-        perks
-    }
-
-    /// The highest "Manoeuvring in Armour" tier learnt (0–3); each tier
-    /// takes 0.3 off the armour's encumbrance.
-    pub fn manoeuvring_tier(&self) -> u8 {
-        self.skills[ARMOUR]
-            .learnt()
+        let worn = r.count("worn items")?;
+        self.worn = r
+            .entries::<8>(worn)?
             .iter()
-            .copied()
-            .filter(|t| MANOEUVRING.contains(t))
-            .max()
-            .unwrap_or(0)
+            .map(|e| ItemRef::new(word(&e[..4]), word(&e[4..])))
+            .collect();
+        self.feral = r.f32()?;
+        self.pools = Pools {
+            yellow: r.u16()?,
+            red: r.u16()?,
+            focus: r.u16()?,
+        };
+        self.seed = r.u16()?;
+        self.combat_skill = r.f32()?;
+        self.undead_voice = r.u32()?;
+        for t in &mut self.traits {
+            *t = f32::from(r.u8()?) - TRAIT_BIAS as f32;
+        }
+        self.search_seed = r.u32()?;
+        self.experience = r.i32()?;
+        self.extra_word = r.u32()?;
+        self.skills = read_skills(r)?;
+        let carried = r.count("carried items")?;
+        self.inventory = r
+            .entries::<12>(carried)?
+            .iter()
+            .map(|e| Carried {
+                item: word(&e[..4]),
+                flags: word(&e[4..8]),
+                extra: word(&e[8..]),
+            })
+            .collect();
+        Ok(())
     }
 
-    /// Whether Deflection is learnt (worn armour covers more).
-    pub fn deflection(&self) -> bool {
-        self.skills[ARMOUR].knows(DEFLECTION)
+    /// The voice number the voice name gives (`vi0N` → N − 1, at least 0),
+    /// else 0.
+    pub fn voice_index(&self) -> u32 {
+        self.voice_number
     }
 
-    /// Red health still to heal from bandages, as saved in its own entry.
-    pub fn heal_pool(&self) -> Option<f32> {
-        self.saved_value(SAVED_HEAL_POOL).map(f32::from_bits)
+    /// Writes the record as the game saves it: tag `0x00CDAC07`, the size,
+    /// then the fields in their file order, sub-chunks last. Only version 7
+    /// is written.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        self.write(&mut out)?;
+        Ok(out)
     }
 
-    /// A drunk potion's expiry on the game clock, as saved in its own entry.
-    pub fn potion_expiry(&self) -> Option<u32> {
-        self.saved_value(SAVED_POTION)
+    /// [`CharacterRecord::to_bytes`] into `out`.
+    pub fn write(&self, out: &mut Vec<u8>) -> Result<()> {
+        let start = out.len();
+        out.extend_from_slice(&RECORD.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        self.write_body(out)?;
+        let size = u32::try_from(out.len() - start - 8)
+            .map_err(|_| Error::Malformed("character record too large".into()))?;
+        out[start + 4..start + 8].copy_from_slice(&size.to_le_bytes());
+        Ok(())
     }
 
-    fn saved_value(&self, tag: u32) -> Option<u32> {
-        self.saved.iter().find(|s| s.tag == tag).map(|s| s.value)
+    fn write_body(&self, out: &mut Vec<u8>) -> Result<()> {
+        put_name(out, &self.name)?;
+        put_name(out, &self.surname)?;
+        for v in self.physique {
+            put_f32(out, v);
+        }
+        put_f32(out, self.height);
+        put_f32(out, self.age);
+        for v in self.skin {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out.extend_from_slice(&self.hair_style.to_le_bytes());
+        out.extend_from_slice(&self.hair_colour);
+        for v in self.face {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        // The stored name comes from the voice number, not the name read.
+        put_name(out, &voice_name(self.voice_number))?;
+        put_f32(out, self.voice_pitch);
+        out.extend_from_slice(&self.profession().to_le_bytes());
+        out.extend_from_slice(&self.locale.to_le_bytes());
+        for hand in self.hands {
+            put_ref(out, hand);
+        }
+        put_count(out, self.worn.len())?;
+        for worn in &self.worn {
+            put_ref(out, *worn);
+        }
+        put_f32(out, self.feral);
+        out.extend_from_slice(&self.pools.yellow.to_le_bytes());
+        out.extend_from_slice(&self.pools.red.to_le_bytes());
+        out.extend_from_slice(&self.pools.focus.to_le_bytes());
+        out.extend_from_slice(&self.seed.to_le_bytes());
+        put_f32(out, self.combat_skill);
+        out.extend_from_slice(&self.undead_voice.to_le_bytes());
+        for t in self.traits {
+            let biased = (t.round() as i64 + i64::from(TRAIT_BIAS)) & 0xFF;
+            out.push(biased as u8);
+        }
+        out.extend_from_slice(&self.search_seed.to_le_bytes());
+        out.extend_from_slice(&self.experience.to_le_bytes());
+        out.extend_from_slice(&self.extra_word.to_le_bytes());
+        self.write_skills(out)?;
+        put_count(out, self.inventory.len())?;
+        for carried in &self.inventory {
+            out.extend_from_slice(&carried.item.to_le_bytes());
+            out.extend_from_slice(&carried.flags.to_le_bytes());
+            out.extend_from_slice(&carried.extra.to_le_bytes());
+        }
+        let blob = roles_blob(&self.roles)?;
+        put_count(out, self.roles.len())?;
+        put_count(out, blob.len())?;
+        out.extend_from_slice(&blob);
+        put_relations(out, &self.relations)?;
+        put_count(out, self.level_relations.len())?;
+        for level in &self.level_relations {
+            put_u32(out, level.words[0]);
+            put_u32(out, level.words[1]);
+            put_relations(out, &level.relations)?;
+        }
+        put_count(out, self.saved.len())?;
+        for saved in &self.saved {
+            out.extend_from_slice(&saved.tag.to_le_bytes());
+            out.extend_from_slice(&saved.value.to_le_bytes());
+        }
+        if let Some(powers) = &self.powers {
+            put_chunk(out, POWERS_OUT, |c| {
+                c.extend_from_slice(&powers.word.to_le_bytes());
+                for slot in powers.slots {
+                    c.extend_from_slice(&slot.to_le_bytes());
+                }
+                put_count(c, powers.known.len())?;
+                for power in &powers.known {
+                    c.extend_from_slice(&power.id.to_le_bytes());
+                    if power.blob.is_empty() {
+                        c.extend_from_slice(&(power.flags & !POWER_BLOB).to_le_bytes());
+                    } else {
+                        c.extend_from_slice(&(power.flags | POWER_BLOB).to_le_bytes());
+                        let size = u32::try_from(power.blob.len() + 4)
+                            .map_err(|_| Error::Malformed("power blob too large".into()))?;
+                        c.extend_from_slice(&size.to_le_bytes());
+                        c.extend_from_slice(&power.blob);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        if let Some([a, b]) = self.reserved {
+            put_chunk(out, RESERVED, |c| {
+                c.extend_from_slice(&a.to_le_bytes());
+                c.extend_from_slice(&b.to_le_bytes());
+                Ok(())
+            })?;
+        }
+        if !self.loadouts.is_empty() {
+            put_chunk(out, LOADOUTS, |c| {
+                put_count(c, self.loadouts.len())?;
+                for loadout in &self.loadouts {
+                    c.extend_from_slice(&loadout.word.to_le_bytes());
+                    for hand in loadout.hands {
+                        put_ref(c, hand);
+                    }
+                    put_count(c, loadout.worn.len())?;
+                    for worn in &loadout.worn {
+                        put_ref(c, *worn);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
+
+    /// The skills a record stores: one entry per skill that has a technique,
+    /// with the points and the techniques up to the first empty slot.
+    fn write_skills(&self, out: &mut Vec<u8>) -> Result<()> {
+        let entries: Vec<(usize, &Skill)> = self
+            .skills
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.chosen() > 0)
+            .collect();
+        put_count(out, entries.len())?;
+        for (slot, skill) in entries {
+            out.extend_from_slice(&(slot as u16).to_le_bytes());
+            out.extend_from_slice(&skill.points.to_le_bytes());
+            let k = skill.chosen().min(WRITTEN_TECHNIQUES);
+            out.push(k as u8);
+            out.extend_from_slice(&skill.techniques[..k]);
+        }
+        Ok(())
+    }
+}
+
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_f32(out: &mut Vec<u8>, v: f32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_ref(out: &mut Vec<u8>, item: ItemRef) {
+    put_u32(out, item.id);
+    put_u32(out, item.flags);
+}
+
+/// A signed count; a list longer than the format's `i32` is an error.
+fn put_count(out: &mut Vec<u8>, n: usize) -> Result<()> {
+    let n = i32::try_from(n).map_err(|_| Error::Malformed(format!("{n} entries")))?;
+    out.extend_from_slice(&n.to_le_bytes());
+    Ok(())
+}
+
+/// A name field: 16 bytes, cut at the first byte that does not fit.
+fn put_name(out: &mut Vec<u8>, name: &str) -> Result<()> {
+    let bytes = name.as_bytes();
+    let n = bytes.len().min(16);
+    out.extend_from_slice(&bytes[..n]);
+    out.resize(out.len() + (16 - n), 0);
+    Ok(())
+}
+
+/// A tagged sub-chunk: tag, size, then what `body` writes.
+fn put_chunk(
+    out: &mut Vec<u8>,
+    tag: u32,
+    body: impl FnOnce(&mut Vec<u8>) -> Result<()>,
+) -> Result<()> {
+    put_u32(out, tag);
+    let start = out.len();
+    put_u32(out, 0);
+    body(out)?;
+    let size = u32::try_from(out.len() - start - 4)
+        .map_err(|_| Error::Malformed("sub-chunk too large".into()))?;
+    out[start..start + 4].copy_from_slice(&size.to_le_bytes());
+    Ok(())
+}
+
+/// The tagged blob the roles are stored as: per role 12 bytes (id, weight,
+/// flags, inherited count, variable count, a pad byte) and its variables.
+fn roles_blob(roles: &[Role]) -> Result<Vec<u8>> {
+    let mut blob = Vec::new();
+    for role in roles {
+        put_u32(&mut blob, role.id);
+        put_f32(&mut blob, role.weight);
+        let flags = u8::from(role.explicit);
+        let n = u8::try_from(role.variables.len()).map_err(|_| {
+            Error::Malformed(format!("role with {} variables", role.variables.len()))
+        })?;
+        blob.extend_from_slice(&[flags, role.inherited, n, 0]);
+        for v in &role.variables {
+            put_u32(&mut blob, *v);
+        }
+    }
+    Ok(blob)
+}
+
+fn put_relations(out: &mut Vec<u8>, relations: &Relations) -> Result<()> {
+    put_count(out, relations.entries.len())?;
+    if relations.entries.is_empty() {
+        return Ok(());
+    }
+    for &(a, b) in &relations.entries {
+        put_u32(out, a);
+        put_u32(out, b);
+    }
+    put_count(out, relations.blob.len())?;
+    out.extend_from_slice(&relations.blob);
+    Ok(())
+}
+
+/// A fixed name field as text: up to its first zero byte, one byte per
+/// character.
+fn latin1(raw: &[u8]) -> String {
+    let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+    raw[..end].iter().map(|&c| c as char).collect()
 }
 
 fn word(b: &[u8]) -> u32 {
@@ -790,7 +1318,7 @@ fn read_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
     let mut roles = Vec::new();
     for _ in 0..count {
         let id = blob.u32()?;
-        blob.f32()?; // weight (the role database's is used)
+        let weight = blob.f32()?;
         let flags = blob.u8()?;
         let inherited = blob.u8()?;
         let n = usize::from(blob.u8()?);
@@ -798,6 +1326,7 @@ fn read_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
         let variables = blob.entries::<4>(n)?.iter().map(|e| word(e)).collect();
         roles.push(Role {
             id,
+            weight,
             explicit: flags & 1 != 0,
             inherited,
             variables,
@@ -831,6 +1360,7 @@ fn read_legacy_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
         .rev()
         .map(|id| Role {
             id,
+            weight: 0.0,
             explicit: true,
             inherited: 0,
             variables: Vec::new(),
@@ -839,17 +1369,23 @@ fn read_legacy_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
 }
 
 /// A relation table: `i32 n`; if n ≥ 1, n × {u32 character, u32 offset},
-/// `i32 len` and the `len`-byte blob. Returns n.
-fn read_relations(r: &mut Reader<'_>) -> Result<usize> {
+/// `i32 len` and the `len`-byte blob.
+fn read_relations(r: &mut Reader<'_>) -> Result<Relations> {
     let n = r.i32()?;
     if n < 1 {
-        return Ok(0);
+        return Ok(Relations::default());
     }
     let n = n as usize;
-    r.table(n, 8)?;
+    let entries = r
+        .entries::<8>(n)?
+        .iter()
+        .map(|e| (word(&e[..4]), word(&e[4..])))
+        .collect();
     let len = r.count("relation bytes")?;
-    r.bytes(len)?;
-    Ok(n)
+    Ok(Relations {
+        entries,
+        blob: r.bytes(len)?.to_vec(),
+    })
 }
 
 /// The relations a legacy reader skips: version 5 `i32 n`, n × 16 bytes,
@@ -889,18 +1425,45 @@ fn read_powers(r: &mut Reader<'_>, v7: bool) -> Result<Powers> {
     for _ in 0..n {
         let id = r.u32()?;
         let flags = r.u32()?;
+        let mut blob = Vec::new();
         if !v7 {
             r.bytes(8)?;
         } else if flags & POWER_BLOB != 0 {
             let size = r.count("power bytes")?;
-            r.bytes(
-                size.checked_sub(4)
-                    .ok_or_else(|| Error::Malformed(format!("power blob of {size} bytes")))?,
-            )?;
+            let payload = size
+                .checked_sub(4)
+                .ok_or_else(|| Error::Malformed(format!("power blob of {size} bytes")))?;
+            blob = r.bytes(payload)?.to_vec();
         }
-        known.push(Power { id, flags });
+        known.push(Power { id, flags, blob });
     }
     Ok(Powers { word, slots, known })
+}
+
+/// The saved loadouts: `i32 n`, then per loadout a word, four hand items,
+/// a worn count and the worn items.
+fn read_loadouts(r: &mut Reader<'_>) -> Result<Vec<Loadout>> {
+    let n = r.count("loadouts")?;
+    let mut out = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        let tag = r.u32()?;
+        let mut hands = [ItemRef::NONE; HANDS];
+        for hand in &mut hands {
+            *hand = ItemRef::new(r.u32()?, r.u32()?);
+        }
+        let worn = r.count("loadout items")?;
+        let worn = r
+            .entries::<8>(worn)?
+            .iter()
+            .map(|e| ItemRef::new(word(&e[..4]), word(&e[4..])))
+            .collect();
+        out.push(Loadout {
+            word: tag,
+            hands,
+            worn,
+        });
+    }
+    Ok(out)
 }
 
 struct Reader<'a> {
@@ -968,9 +1531,7 @@ impl<'a> Reader<'a> {
     }
 
     fn name(&mut self) -> Result<String> {
-        let raw = self.bytes(16)?;
-        let end = raw.iter().position(|&c| c == 0).unwrap_or(16);
-        Ok(raw[..end].iter().map(|&c| c as char).collect())
+        Ok(latin1(self.bytes(16)?))
     }
 
     fn matrix(&mut self) -> Result<[[f32; 3]; 4]> {
