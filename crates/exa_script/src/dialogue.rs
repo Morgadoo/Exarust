@@ -896,14 +896,11 @@ pub fn activate_with(
 }
 
 /// A witnessed event (`GameEvent`'s memory flashes): for each contact of
-/// A witnessed event (`GameEvent`'s memory flashes): for every contact of
-/// `actor` that holds `target` (and, when `role` is a relation role, holds
-/// it toward `actor`), activate `topic` of `role`'s dialogue aimed at
-/// `target` in that contact's memory of `actor`. When `role` is not a
-/// relation role, `actor` must hold it. The word is filed under entry
-/// `role`, key `target`, exactly as the original stores it (for a
-/// non-relation role that is not where the dialogue search looks, a quirk
-/// of the original worth keeping).
+/// `actor` that holds `role` (and, when `target` is a relation role,
+/// holds it toward `actor`), activate `topic` of `role`'s dialogue aimed
+/// at `target` in that contact's memory of `actor`, filed under entry
+/// `target`, key `role`. When `target` is not a relation role, `actor`
+/// must hold it; a `target` the database lacks ends the call.
 pub fn witness_event(
     scene: &mut Scene<'_>,
     actor: u32,
@@ -913,17 +910,21 @@ pub fn witness_event(
     topic: Name,
 ) {
     let library = scene.library;
-    let Some(rec) = library.roles.get(role) else {
+    let Some(aimed) = library.roles.get(target) else {
         return;
     };
-    let relation = rec.is_relation_role_byte();
+    let relation = aimed.is_relation_role_byte();
     let Some(me) = scene.cast.get(actor) else {
         return;
     };
-    if !relation && !me.holds(role) {
+    if !relation && !me.holds(target) {
         return;
     }
-    let Some(graph) = rec.dialogue_for(target, 0) else {
+    let Some(graph) = library
+        .roles
+        .get(role)
+        .and_then(|r| r.dialogue_for(target, 0))
+    else {
         return;
     };
     let Some(n) = graph.find(&topic) else {
@@ -936,14 +937,14 @@ pub fn witness_event(
         let witness = scene
             .cast
             .get(other)
-            .is_some_and(|c| c.holds(target) && (!relation || c.holds_toward(actor, role)));
+            .is_some_and(|c| c.holds(role) && (!relation || c.holds_toward(actor, target)));
         if !witness {
             continue;
         }
         let at = MemoryKey {
             other: actor,
-            role,
-            key: target,
+            role: target,
+            key: role,
         };
         let hit = Hit {
             count: graph.nodes.len(),

@@ -606,9 +606,9 @@ fn ended_conversations_are_released() {
     assert_eq!(State::Ended, State::Ended);
 }
 
-/// `GameEvent`'s memory flash: when XA_Derrin (19, which the event's actor
-/// holds) says "XAU_Memory" toward the Player role (7), every contact that
-/// holds that role remembers it, filed under entry 19 and key 7.
+/// `GameEvent`'s memory flash: a contact holding XA_Derrin (19) has
+/// "XAU_Memory" of its dialogue toward the Player role (7, which the
+/// event's actor holds) activated, filed under entry 7 and key 19.
 #[test]
 fn a_witnessed_event_activates_the_contacts_topic() {
     let memory = node(0x100, "XAU_Memory", &[], vec![]);
@@ -618,15 +618,15 @@ fn a_witnessed_event_activates_the_contacts_topic() {
             role(7, 0, 0, vec![]),
         ],
     };
-    let mut player = person(PLAYER, &[19, 7], &db);
+    let mut player = person(PLAYER, &[7], &db);
     player.contacts.push(Contact::new(GUARD));
     let mut cast = Cast {
-        characters: vec![person(GUARD, &[7], &db), player],
+        characters: vec![person(GUARD, &[19], &db), player],
     };
     let mut s = scene(&db, None, &mut cast, 0);
     dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory"));
     let words =
-        topics::block(cast.get(GUARD).unwrap(), PLAYER, 19, 7).and_then(|m| m.words.clone());
+        topics::block(cast.get(GUARD).unwrap(), PLAYER, 7, 19).and_then(|m| m.words.clone());
     assert_eq!(words, Some(vec![ACTIVATED | 1000]));
 }
 
