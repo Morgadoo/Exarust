@@ -319,13 +319,9 @@ pub fn eye_offset(eye: i32, camera_scale: f32) -> [f32; 2] {
 /// target, the distance held to 100 through 3000 (a not-a-number distance
 /// passes both tests and stays one).
 pub fn camera_scale(field_of_view: f32, distance: f32) -> f32 {
-    let distance = if distance < 100.0 {
-        100.0
-    } else if distance > 3000.0 {
-        3000.0
-    } else {
-        distance
-    };
+    // Both compares are unordered in the original, as `clamp`'s are: a
+    // not-a-number distance stays one.
+    let distance = distance.clamp(100.0, 3000.0);
     2.0 * field_of_view * 0.5 / distance
 }
 

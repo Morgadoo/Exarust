@@ -574,7 +574,7 @@ pub struct TooltipShow {
 /// The drag-and-drop hand-over: a payload kind (0: none), its source
 /// form and control, the form under the pointer and the form and control
 /// that accepted it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DropState {
     pub kind: u32,
     pub source: Option<FormId>,
@@ -586,21 +586,6 @@ pub struct DropState {
     pub flags: u32,
     /// A drag image follows the pointer (every move redraws).
     pub image: bool,
-}
-
-impl Default for DropState {
-    fn default() -> Self {
-        Self {
-            kind: 0,
-            source: None,
-            source_control: 0,
-            under: None,
-            target: None,
-            target_control: 0,
-            flags: 0,
-            image: false,
-        }
-    }
 }
 
 /// The pointer's state in the task.

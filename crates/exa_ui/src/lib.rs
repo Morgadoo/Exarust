@@ -87,7 +87,7 @@ pub use gui_controls::{
     check_label_ink, label_draw, layout_records, register_class, register_default_classes,
 };
 pub use gui_core::{
-    DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiRect, GuiTask, HitResult, MessageBoxPlan,
+    DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiTask, HitResult, MessageBoxPlan,
     PlaceRequest, PlainForm, PointerState, TickResult, TooltipClasses, TooltipRequest, TooltipShow,
     clamp_form, drag_limit, drag_threshold, edge_rect, message_box_plan, place_form, set_control,
     set_control_on, set_control_text, set_modal,
