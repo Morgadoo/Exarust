@@ -520,12 +520,12 @@ impl Host for SceneHost<'_, '_> {
         c.roles
             .iter()
             .find(|r| r.id == role)
-            .map(|r| r.values.clone())
+            .map(|r| r.values.iter().map(|&v| v as i32).collect())
     }
     fn set_role_values(&mut self, actor: u32, role: u32, values: &[i32]) {
         if let Some(c) = self.character_mut(actor) {
             if let Some(r) = c.roles.iter_mut().find(|r| r.id == role) {
-                r.values = values.to_vec();
+                r.values = values.iter().map(|&v| v as u32).collect();
             }
             c.roles_changed = true;
         }

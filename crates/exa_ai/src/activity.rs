@@ -12,14 +12,18 @@
 //!
 //! The init scripts of the shipped roles are single assignments:
 //! `Actor.Activity = 7;`, `Actor.IdleActivity = 6;` and
-//! `Actor.Activity = Role.Activity;`. [`run_init`] runs exactly those
-//! statements; Exarust has no script engine yet, so any other statement is
-//! skipped and reported.
+//! `Actor.Activity = Role.Activity;`. They run through the same interpreter
+//! as every other role and dialogue script ([`exa_script::interp`]); the
+//! host below only gives that interpreter the two activity slots and the
+//! role's variable values. A statement the interpreter reports an error for
+//! is returned to the caller.
 //!
 //! Evidence: the original's apply-roles routine, the shipped role scripts,
 //! the idle-activity registry and its one registration (id 6, the search).
 
-use exa_formats::roles::{Role, RoleDb};
+use exa_formats::roles::{Name, Role, RoleDb};
+use exa_script::builtins::Host;
+use exa_script::interp::{self, Context};
 
 use crate::roles::Roles;
 
@@ -75,59 +79,67 @@ pub struct Assigned {
     pub idle_activity: i32,
 }
 
-/// A statement the init interpreter does not run.
+/// A statement the init interpreter reported an error for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
     pub role: u32,
+    /// The error the interpreter reported.
     pub statement: String,
 }
 
-fn literal(text: &str) -> Option<i32> {
-    match text.strip_prefix('$') {
-        Some(hex) => u32::from_str_radix(hex, 16).ok().map(|v| v as i32),
-        None => text.parse::<i64>().ok().map(|v| v as i32),
+/// The script host of one role's init script: the two activity slots and the
+/// held role's variable values. Everything else scripts can call does
+/// nothing, as it would for a character with no contacts or items.
+struct InitHost<'a> {
+    record: &'a Role,
+    values: &'a [u32],
+    out: Assigned,
+    reports: Vec<String>,
+}
+
+impl Host for InitHost<'_> {
+    type Actor = ();
+
+    fn report(&mut self, title: &str, message: &str) {
+        self.reports.push(format!("{title}: {message}"));
+    }
+    fn role_variables(&self, role: u32) -> Vec<Name> {
+        if role == self.record.id {
+            self.record.variables.iter().map(|v| v.name).collect()
+        } else {
+            Vec::new()
+        }
+    }
+    fn role_values(&self, _actor: (), role: u32) -> Option<Vec<i32>> {
+        (role == self.record.id).then(|| self.values.iter().map(|&v| v as i32).collect())
+    }
+    fn set_activity(&mut self, _actor: (), slot: i32, value: i32) {
+        match slot {
+            0 => self.out.activity = value,
+            1 => self.out.idle_activity = value,
+            _ => {}
+        }
     }
 }
 
-/// The value of `Role.<name>`: the held role's variable in the role's
-/// declaration order, 0 when the held role stores none [guess: what the
-/// engine reads for a role added without variables].
-fn role_variable(record: &Role, values: &[u32], name: &str) -> i32 {
-    record
-        .variables
-        .iter()
-        .position(|v| v.name.bytes().eq_ignore_ascii_case(name.as_bytes()))
-        .and_then(|i| values.get(i))
-        .map_or(0, |v| *v as i32)
-}
-
-/// Runs one role's init script on `out`. Statements other than the two
-/// assignments are returned unrun.
+/// Runs one role's init script on `out`. Errors the interpreter reports (an
+/// unknown class, a malformed condition) are returned in `skipped`.
 pub fn run_init(record: &Role, values: &[u32], out: &mut Assigned, skipped: &mut Vec<Skipped>) {
-    let text: String = record.init_script.iter().map(|&c| c as char).collect();
-    for statement in text.split(';') {
-        let statement: String = statement.chars().filter(|c| !c.is_whitespace()).collect();
-        if statement.is_empty() {
-            continue;
-        }
-        let ran = statement.split_once('=').and_then(|(target, value)| {
-            let value = match value.strip_prefix("Role.") {
-                Some(name) => role_variable(record, values, name),
-                None => literal(value)?,
-            };
-            match target {
-                "Actor.Activity" | "Actor[0].Activity" => out.activity = value,
-                "Actor.IdleActivity" | "Actor[0].IdleActivity" => out.idle_activity = value,
-                _ => return None,
-            }
-            Some(())
+    let mut host = InitHost {
+        record,
+        values,
+        out: *out,
+        reports: Vec::new(),
+    };
+    let mut ctx = Context::new(vec![Some(())]);
+    ctx.role = record.id;
+    interp::run(&mut host, &mut ctx, &record.init_script);
+    *out = host.out;
+    for statement in host.reports {
+        skipped.push(Skipped {
+            role: record.id,
+            statement,
         });
-        if ran.is_none() {
-            skipped.push(Skipped {
-                role: record.id,
-                statement,
-            });
-        }
     }
 }
 
@@ -181,7 +193,7 @@ pub fn apply_roles(book: &RoleDb, roles: &Roles, before: Before<'_>) -> Applied 
         if let Some(record) = book.get(held.id)
             && !record.init_script.is_empty()
         {
-            run_init(record, &held.variables, &mut out, &mut skipped);
+            run_init(record, &held.values, &mut out, &mut skipped);
         }
     }
     if before
@@ -305,7 +317,7 @@ mod tests {
                     weight: 0.5,
                     explicit: true,
                     inherited: 0,
-                    variables: vars.to_vec(),
+                    values: vars.to_vec(),
                 })
                 .collect(),
         )
@@ -439,27 +451,41 @@ mod tests {
         );
     }
 
-    /// Statements other than the two assignments are skipped and reported;
-    /// a `$hex` literal is read.
+    /// Other statements run through the same interpreter: an `AddConcern`
+    /// with no second actor does nothing (and is not an error), while an
+    /// unknown class is reported.
     #[test]
-    fn other_statements_are_skipped() {
+    fn other_statements_run_or_report() {
         let b = book();
         let a = apply_roles(&b, &held(&[(50, &[])]), calm());
         assert_eq!(a.activity, 1);
-        assert_eq!(a.skipped.len(), 1);
-        assert_eq!(a.skipped[0].role, 50);
+        assert!(a.skipped.is_empty(), "{:?}", a.skipped);
         let mut out = Assigned {
             activity: 0,
             idle_activity: 0,
         };
         let mut skipped = Vec::new();
         run_init(
-            &role(1, "Actor.Activity=$7;", &[]),
+            &role(1, "Actor[0].Activity = 7;", &[]),
             &[],
             &mut out,
             &mut skipped,
         );
         assert_eq!(out.activity, 7);
+        assert!(skipped.is_empty());
+        run_init(
+            &role(1, "Ghost.Activity = 7;", &[]),
+            &[],
+            &mut out,
+            &mut skipped,
+        );
+        assert_eq!(out.activity, 7);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].role, 1);
+        assert_eq!(
+            skipped[0].statement,
+            "Script Error: Invalid class identifier."
+        );
     }
 
     /// The registry refuses a taken id and knows only what was registered.

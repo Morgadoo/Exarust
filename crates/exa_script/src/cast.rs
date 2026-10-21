@@ -23,19 +23,9 @@
 //! routines and the relation-record accessors (REA on `Exanima.exe`
 //! 0.9.5); the record layouts in `docs/formats/RFC.md`.
 
-use exa_formats::roles::RoleDb;
-
-/// A role held by a character.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HeldRole {
-    pub id: u32,
-    /// The role's weight / 100 when added.
-    pub weight: f32,
-    pub explicit: bool,
-    /// Explicit roles that pulled this one in as a parent.
-    pub refs: u8,
-    pub values: Vec<i32>,
-}
+use exa_formats::roles::{
+    HeldRole, RoleDb, add_held_role, held_role_bytes, held_role_word, remove_held_role,
+};
 
 /// A memory block: the words of one dialogue's nodes; `None` before any
 /// were stored.
@@ -173,23 +163,12 @@ impl Character {
     /// byte and the variables. One routine indexes this blob as if every
     /// entry were 12 bytes; [`Character::role_list_word`] reads it so.
     pub fn role_list_bytes(&self) -> Vec<u8> {
-        let mut b = Vec::new();
-        for r in &self.roles {
-            b.extend(r.id.to_le_bytes());
-            b.extend(r.weight.to_le_bytes());
-            b.extend([u8::from(r.explicit), r.refs, r.values.len() as u8, 0]);
-            for v in &r.values {
-                b.extend(v.to_le_bytes());
-            }
-        }
-        b
+        held_role_bytes(&self.roles)
     }
 
     /// The u32 at byte `12 * i` of the stored role list (0 past its end).
     pub fn role_list_word(&self, i: usize) -> u32 {
-        let b = self.role_list_bytes();
-        b.get(12 * i..12 * i + 4)
-            .map_or(0, |s| u32::from_le_bytes(s.try_into().expect("slice of 4")))
+        held_role_word(&self.roles, i)
     }
 
     pub fn holds(&self, role: u32) -> bool {
@@ -218,76 +197,13 @@ impl Character {
 
     /// Add a role and the parents it inherits; whether anything changed.
     pub fn add_role(&mut self, db: &RoleDb, role: u32) -> bool {
-        let mut added = Vec::new();
-        let mut id = role;
-        while id != 0 {
-            let mut found = false;
-            if let Some(held) = self.roles.iter_mut().find(|r| r.id == id) {
-                if id == role {
-                    if held.explicit {
-                        return true;
-                    }
-                    held.explicit = true;
-                } else {
-                    held.refs = held.refs.wrapping_add(1);
-                }
-                found = true;
-            }
-            let rec = db.get(id);
-            if !found {
-                let weight = rec.map_or(0, |r| r.weight & 0xFF) as f32 * 0.01;
-                added.push(HeldRole {
-                    id,
-                    weight,
-                    explicit: id == role,
-                    refs: u8::from(id != role),
-                    values: Vec::new(),
-                });
-            }
-            match rec {
-                Some(r) if r.inherits_parent() => id = r.parent,
-                _ => break,
-            }
-        }
-        if added.is_empty() {
-            return false;
-        }
-        added.append(&mut self.roles);
-        self.roles = added;
-        true
+        add_held_role(db, &mut self.roles, role)
     }
 
     /// Remove an explicitly added role; its inherited parents lose a
-    /// reference (and go when it was their last).
+    /// reference (and go when it was their last). Whether it was explicit.
     pub fn remove_role(&mut self, db: &RoleDb, role: u32) -> bool {
-        let Some(i) = self.roles.iter().position(|r| r.id == role) else {
-            return false;
-        };
-        if !self.roles[i].explicit {
-            return false;
-        }
-        self.roles.remove(i);
-        let Some(rec) = db.get(role) else {
-            return true;
-        };
-        if !rec.inherits_parent() {
-            return true;
-        }
-        let mut id = rec.parent;
-        while id != 0 {
-            if let Some(j) = self.roles.iter().position(|r| r.id == id) {
-                if self.roles[j].refs < 2 {
-                    self.roles.remove(j);
-                } else {
-                    self.roles[j].refs -= 1;
-                }
-            }
-            match db.get(id) {
-                Some(r) if r.inherits_parent() => id = r.parent,
-                _ => break,
-            }
-        }
-        true
+        remove_held_role(db, &mut self.roles, role)
     }
 
     /// Hold `role` toward `other`; a non-zero `value` also files an empty

@@ -238,6 +238,130 @@ pub fn latin1(b: &[u8]) -> String {
     b.iter().map(|&c| char::from(c)).collect()
 }
 
+/// One role a character holds, as the role list keeps it: newest first, a
+/// role id, the role's weight share when it was added, whether it was added
+/// explicitly, how many explicit roles pulled it in as a parent, and the
+/// values of its variables.
+///
+/// The original packs these into one blob of 12 bytes plus the values. One
+/// routine (the dialogue search's memory lookup) walks it as if every entry
+/// were 12 bytes even when values follow, so [`held_role_word`] reads that
+/// layout rather than the logical list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldRole {
+    pub id: u32,
+    /// The role's weight / 100 when it was added.
+    pub weight: f32,
+    pub explicit: bool,
+    /// Explicit roles that pulled this one in as a parent.
+    pub inherited: u8,
+    pub values: Vec<u32>,
+}
+
+/// Bytes of one held role before its values: id, weight, the explicit flag,
+/// the parent reference count and the value count, then a pad byte.
+pub const HELD_ROLE_HEADER: usize = 12;
+
+/// Add `role` and the parents it inherits. A role already held is marked
+/// explicit when it is the one asked for (and nothing changes if it already
+/// was); a parent already held gains a reference. True when something
+/// changed or the role was already explicit.
+pub fn add_held_role(db: &RoleDb, list: &mut Vec<HeldRole>, role: u32) -> bool {
+    let mut added = Vec::new();
+    let mut id = role;
+    while id != 0 {
+        let mut found = false;
+        if let Some(held) = list.iter_mut().find(|r| r.id == id) {
+            if id == role {
+                if held.explicit {
+                    return true;
+                }
+                held.explicit = true;
+            } else {
+                held.inherited = held.inherited.wrapping_add(1);
+            }
+            found = true;
+        }
+        let record = db.get(id);
+        if !found {
+            let weight = record.map_or(0, |r| r.weight & 0xFF) as f32 * 0.01;
+            added.push(HeldRole {
+                id,
+                weight,
+                explicit: id == role,
+                inherited: u8::from(id != role),
+                values: Vec::new(),
+            });
+        }
+        match record.filter(|r| r.inherits_parent()) {
+            Some(r) => id = r.parent,
+            None => break,
+        }
+    }
+    if added.is_empty() {
+        return false;
+    }
+    added.append(list);
+    *list = added;
+    true
+}
+
+/// Remove an explicitly added role; its inherited parents lose a reference
+/// (and go when it was their last). True when the role was explicit.
+pub fn remove_held_role(db: &RoleDb, list: &mut Vec<HeldRole>, role: u32) -> bool {
+    let Some(at) = list.iter().position(|r| r.id == role) else {
+        return false;
+    };
+    if !list[at].explicit {
+        return false;
+    }
+    list.remove(at);
+    let Some(record) = db.get(role) else {
+        return true;
+    };
+    if !record.inherits_parent() {
+        return true;
+    }
+    let mut id = record.parent;
+    while id != 0 {
+        if let Some(j) = list.iter().position(|r| r.id == id) {
+            if list[j].inherited < 2 {
+                list.remove(j);
+            } else {
+                list[j].inherited -= 1;
+            }
+        }
+        match db.get(id).filter(|r| r.inherits_parent()) {
+            Some(r) => id = r.parent,
+            None => break,
+        }
+    }
+    true
+}
+
+/// The stored role-list blob: per entry id, weight, the explicit flag, the
+/// parent reference count, the value count, a pad byte and the values.
+pub fn held_role_bytes(list: &[HeldRole]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for r in list {
+        b.extend(r.id.to_le_bytes());
+        b.extend(r.weight.to_le_bytes());
+        b.extend([u8::from(r.explicit), r.inherited, r.values.len() as u8, 0]);
+        for v in &r.values {
+            b.extend(v.to_le_bytes());
+        }
+    }
+    b
+}
+
+/// The u32 at byte `12 * i` of the stored role list (0 past its end), the
+/// way the dialogue search reads it.
+pub fn held_role_word(list: &[HeldRole], i: usize) -> u32 {
+    let b = held_role_bytes(list);
+    b.get(12 * i..12 * i + 4)
+        .map_or(0, |s| u32::from_le_bytes(s.try_into().expect("slice of 4")))
+}
+
 /// One entry of a role.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoleEntry {

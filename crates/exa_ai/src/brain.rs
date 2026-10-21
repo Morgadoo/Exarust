@@ -253,7 +253,7 @@ mod tests {
                     weight: 0.5,
                     explicit: true,
                     inherited: 0,
-                    variables: Vec::new(),
+                    values: Vec::new(),
                 })
                 .collect(),
         )

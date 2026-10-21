@@ -2417,6 +2417,7 @@ dependencies = [
  "exa_combat",
  "exa_formats",
  "exa_physics",
+ "exa_script",
  "exa_world",
 ]
 

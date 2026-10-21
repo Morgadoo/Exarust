@@ -125,16 +125,24 @@ fn roles_inherit_and_count_their_parents() {
     };
     let mut c = Character::new(1, "Golem");
     assert!(c.add_role(&db, 41));
-    let ids: Vec<(u32, bool, u8)> = c.roles.iter().map(|r| (r.id, r.explicit, r.refs)).collect();
+    let ids: Vec<(u32, bool, u8)> = c
+        .roles
+        .iter()
+        .map(|r| (r.id, r.explicit, r.inherited))
+        .collect();
     assert_eq!(ids, [(41, true, 0), (12, false, 1), (6, false, 1)]);
     assert_eq!(c.roles[0].weight, 0.5);
     // Asking for a parent marks it explicit and counts its own parents.
     c.add_role(&db, 12);
-    let ids: Vec<(u32, bool, u8)> = c.roles.iter().map(|r| (r.id, r.explicit, r.refs)).collect();
+    let ids: Vec<(u32, bool, u8)> = c
+        .roles
+        .iter()
+        .map(|r| (r.id, r.explicit, r.inherited))
+        .collect();
     assert_eq!(ids, [(41, true, 0), (12, true, 1), (6, false, 2)]);
     // Removing the child drops a parent held once, explicit or not.
     assert!(c.remove_role(&db, 41));
-    let ids: Vec<(u32, u8)> = c.roles.iter().map(|r| (r.id, r.refs)).collect();
+    let ids: Vec<(u32, u8)> = c.roles.iter().map(|r| (r.id, r.inherited)).collect();
     assert_eq!(ids, [(6, 1)]);
     // Only explicit roles are removed.
     assert!(!c.remove_role(&db, 6));

@@ -473,7 +473,7 @@ fn a_record_gives_its_roles() {
     };
     let saved = Roles::of_record(&record, &b);
     assert_eq!(saved.ids().collect::<Vec<_>>(), vec![9]);
-    assert_eq!(saved.0[0].variables, vec![3]);
+    assert_eq!(saved.0[0].values, vec![3]);
     record.version = 6;
     let legacy = Roles::of_record(&record, &b);
     assert_eq!(legacy.ids().collect::<Vec<_>>(), vec![9, 2]);

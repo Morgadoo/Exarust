@@ -53,17 +53,9 @@ pub const LOCAL_ID: u32 = 0x8000_0000;
 /// Relations are kept by the id's low 28 bits.
 const KEY_BITS: u32 = 0x0FFF_FFFF;
 
-/// One role a character holds.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HeldRole {
-    pub id: u32,
-    /// The role's weight share when it was added.
-    pub weight: f32,
-    pub explicit: bool,
-    /// How many explicit roles pulled it in as a parent.
-    pub inherited: u8,
-    pub variables: Vec<u32>,
-}
+/// One role a character holds, as [`exa_formats::roles::held_role_bytes`]
+/// stores it.
+pub use exa_formats::roles::HeldRole;
 
 /// A character's roles, newest first.
 #[derive(Component, Debug, Clone, Default, PartialEq)]
@@ -142,10 +134,6 @@ fn share(record: Option<&Role>) -> f32 {
     record.map_or(0.0, Role::share)
 }
 
-fn inherits(record: Option<&Role>) -> Option<u32> {
-    record.filter(|r| r.inherits_parent()).map(|r| r.parent)
-}
-
 impl Roles {
     /// A record's roles. A version 7 list is kept as saved; an older list
     /// is added again in its order, so its parents come back.
@@ -155,7 +143,7 @@ impl Roles {
             weight: share(role(book, r.id)),
             explicit: r.explicit,
             inherited: r.inherited,
-            variables: r.variables.clone(),
+            values: r.variables.clone(),
         });
         if record.version >= 7 {
             return Self(saved.collect());
@@ -178,67 +166,12 @@ impl Roles {
     /// Adds `id` and the parents it inherits. True when something changed
     /// or the role was already explicit.
     pub fn add(&mut self, book: &RoleDb, id: u32) -> bool {
-        let mut added = Vec::new();
-        let mut current = id;
-        while current != 0 {
-            let mut found = false;
-            if let Some(held) = self.0.iter_mut().find(|r| r.id == current) {
-                if current == id {
-                    if held.explicit {
-                        return true;
-                    }
-                    held.explicit = true;
-                } else {
-                    held.inherited = held.inherited.wrapping_add(1);
-                }
-                found = true;
-            }
-            let record = role(book, current);
-            if !found {
-                added.push(HeldRole {
-                    id: current,
-                    weight: share(record),
-                    explicit: current == id,
-                    inherited: u8::from(current != id),
-                    variables: Vec::new(),
-                });
-            }
-            match inherits(record) {
-                Some(parent) => current = parent,
-                None => break,
-            }
-        }
-        if added.is_empty() {
-            return false;
-        }
-        added.append(&mut self.0);
-        self.0 = added;
-        true
+        exa_formats::roles::add_held_role(book, &mut self.0, id)
     }
 
     /// Removes an explicit `id`, and counts its inherited parents down.
     pub fn remove(&mut self, book: &RoleDb, id: u32) {
-        let Some(at) = self.0.iter().position(|r| r.id == id) else {
-            return;
-        };
-        if !self.0[at].explicit {
-            return;
-        }
-        self.0.remove(at);
-        let mut next = inherits(role(book, id));
-        while let Some(parent) = next {
-            if parent == 0 {
-                break;
-            }
-            if let Some(at) = self.0.iter().position(|r| r.id == parent) {
-                if self.0[at].inherited < 2 {
-                    self.0.remove(at);
-                } else {
-                    self.0[at].inherited -= 1;
-                }
-            }
-            next = inherits(role(book, parent));
-        }
+        exa_formats::roles::remove_held_role(book, &mut self.0, id);
     }
 
     /// A new story character: Player, Human, then its background (0 the
