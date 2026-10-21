@@ -317,9 +317,14 @@ impl ScriptRole {
         let tail = end.saturating_sub(after);
         let tail_at = after + slots.len() * 4;
         let tail_end = if tail > 0 { tail_at + tail } else { 0 };
-        let needed = tail_end.max(at + HELD_ROLE_HEADER + 4 * slots.len());
-        let mut out = vec![0u8; allocated.max(needed)];
+        // The head (the old entry's end) is copied whole whatever the new
+        // size, so a shrinking commit with no tail writes past the
+        // allocation in the original; the copy here makes room for it.
         let head = after.min(blob.bytes.len());
+        let needed = tail_end
+            .max(head)
+            .max(at + HELD_ROLE_HEADER + 4 * slots.len());
+        let mut out = vec![0u8; allocated.max(needed)];
         out[..head].copy_from_slice(&blob.bytes[..head]);
         if tail > 0 {
             let src_end = (after + tail).min(blob.bytes.len());
@@ -328,11 +333,7 @@ impl ScriptRole {
         }
         out[at + COUNT_AT] = slots.len() as u8;
         RoleBlob::write_values(&mut out, at, slots);
-        let overrun = if tail > 0 {
-            (tail_at + tail).saturating_sub(allocated)
-        } else {
-            0
-        };
+        let overrun = tail_end.max(head).saturating_sub(allocated);
         blob.bytes = out;
         Commit::Rebuilt {
             overrun,
@@ -572,7 +573,15 @@ mod tests {
         let mut role = ScriptRole::new();
         role.bind(7, Some(&variables(&["A", "B"])));
         let done = role.commit(&mut b, None);
-        assert!(matches!(done, Commit::Rebuilt { .. }));
+        // Shrinking with nothing after it: the whole old entry is still
+        // copied, one value past the new allocation.
+        assert_eq!(
+            done,
+            Commit::Rebuilt {
+                overrun: 4,
+                gap: 12
+            }
+        );
         // The first entry is as it was; the second took two values.
         assert_eq!(b.values_at(0), [1]);
         assert_eq!(b.bytes[16 + COUNT_AT], 2);
