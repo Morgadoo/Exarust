@@ -11,7 +11,7 @@
 use bevy::math::Vec3;
 use exa_ai::search::quick_asin;
 
-use crate::thaum::engine::normalize;
+use crate::thaum::engine::{length, normalize, sin_cos};
 
 /// Orbit and camera-look sensitivity on a screen 1920 pixels wide (rad per
 /// pixel); [`orbit_per_pixel`] gives it for any width.
@@ -293,180 +293,222 @@ pub fn clamp_fixed_pitch(pitch: f32, floor: f32, cap: f32) -> f32 {
 pub const WALL_TILT_STEP: f32 = 0.15;
 /// The most steps the wall avoidance climbs.
 pub const WALL_TILT_MAX: i32 = 4;
-/// The deepest the raised orbit may lie (rad).
+/// The highest the camera's axis or a wall probe may look from (the
+/// controller's pitch, negative with the eye above the point; the compare
+/// is in double precision against −1.54, the stored value its single).
 pub const WALL_PITCH_FLOOR: f32 = -1.54;
-/// The obstruction probe's radius, per the raised flag: 30 or 20.
-pub const PROBE_RADIUS_RAISED: f32 = 30.0;
-pub const PROBE_RADIUS_PLAIN: f32 = 20.0;
-/// The pitch offset the probe starts from.
-pub const WALL_PITCH_START: f32 = 0.05;
+/// A wall probe looks this much higher than the camera (rad, double).
+pub const WALL_PROBE_LIFT: f64 = 0.05;
+/// The probe's radius (cm): 30 for the probe that may climb, 20 for the
+/// one that may come down.
+pub const PROBE_RADIUS_CLIMB: f32 = 30.0;
+pub const PROBE_RADIUS_DESCEND: f32 = 20.0;
+/// The probe starts this far (cm) below the followed point.
+pub const PROBE_DROP: f32 = 50.0;
+/// The share of a rising tilt change that is taken (double).
+const TILT_RISE: f64 = 0.35;
+/// A tilt change is held to this size per tick (double).
+const TILT_STEP_LIMIT: f64 = 0.005;
+/// The tilt keeps this share of its motion per tick (double).
+const TILT_CARRY: f64 = 0.96;
 
-/// The obstruction probe's length from the camera's extent: twice the
-/// extent less 150, as the original's `extent · 2 − 150`.
+/// The wall probe's length (cm) from the camera's extent (the stepped
+/// camera's eye distance, 2000 cm in the game): `extent · 2 − 150`, in
+/// single precision.
 pub fn probe_length(extent: f32) -> f32 {
     extent * 2.0 - 150.0
 }
 
-/// The probe's radius: 30 with the raised flag, else 20.
-pub fn probe_radius(raised: bool) -> f32 {
-    if raised {
-        PROBE_RADIUS_RAISED
-    } else {
-        PROBE_RADIUS_PLAIN
-    }
+/// One wall probe's set-up, as the camera's per-tick probe makes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WallProbe {
+    /// The pitch the probe looks along (the controller's convention).
+    pub pitch: f32,
+    /// The probe's radius (cm).
+    pub radius: f32,
+    /// The probe's flag after the set-up: set when this probe tests the
+    /// present step (a hit climbs), clear when it tests the step below (a
+    /// miss comes down).
+    pub climb: bool,
 }
 
-/// The pitch the probe looks down from: the camera pitch less 0.05, less
-/// one step per tilt already taken (or one fewer while the raised flag is
-/// set), held to −1.54. The original tests `steps < 1` first, so a
-/// non-positive count uses the un-raised form.
-pub fn wall_probe_pitch(pitch: f32, steps: i32, raised: bool) -> f32 {
-    let offset = if steps < 1 || !raised {
-        steps as f32
+/// Sets a wall probe up from the controller's `pitch` (negative with the
+/// eye above the point), the step count and the flag the last probe left.
+/// With steps taken and the flag set, the probe tests one step below and
+/// clears the flag; otherwise it tests the present step and sets it. The
+/// pitch is `(pitch − 0.05) − level · 0.15`, the product in single
+/// precision and the differences in double, held to −1.54 (a NaN passes).
+pub fn wall_probe(pitch: f32, steps: i32, climb: bool) -> WallProbe {
+    let (level, climb) = if steps > 0 && climb {
+        (i64::from(steps) - 1, false)
     } else {
-        (steps - 1) as f32
+        (i64::from(steps), true)
     };
-    let value = (pitch - WALL_PITCH_START) - offset * WALL_TILT_STEP;
-    if value < WALL_PITCH_FLOOR {
-        WALL_PITCH_FLOOR
-    } else {
-        value
+    let lowered = level as f32 * WALL_TILT_STEP;
+    let mut probe = ((f64::from(pitch) - WALL_PROBE_LIFT) - f64::from(lowered)) as f32;
+    if f64::from(probe) < -1.54 {
+        probe = WALL_PITCH_FLOOR;
+    }
+    WallProbe {
+        pitch: probe,
+        radius: if climb {
+            PROBE_RADIUS_CLIMB
+        } else {
+            PROBE_RADIUS_DESCEND
+        },
+        climb,
     }
 }
 
-/// The tilt a step count stores, `−steps · 0.15`.
-pub fn wall_tilt(steps: i32) -> f32 {
-    -(steps as f32) * WALL_TILT_STEP
-}
-
-/// The next tilt step count: a raised camera that sees no obstruction
-/// lowers its count (never below 0); a raised camera that sees one climbs
-/// (at most four). A camera that is not raised never moves.
-pub fn wall_steps(steps: i32, raised: bool, obstructed: bool) -> i32 {
+/// The step count after a probe: a hit on a climbing probe climbs (at most
+/// four), a miss on a descending probe comes down; anything else keeps the
+/// count. Only a descending probe follows a taken step, so the count stays
+/// within 0–4.
+pub fn wall_steps(steps: i32, climb: bool, obstructed: bool) -> i32 {
     if obstructed {
-        if raised && steps < WALL_TILT_MAX {
+        if climb && steps < WALL_TILT_MAX {
             return steps + 1;
         }
-    } else if raised {
+    } else if !climb {
         return steps - 1;
     }
     steps
 }
 
-/// One tilt ease: `target` less the stored tilt, half again when rising,
-/// worked through the previous frame's change, scaled by the rate, the
-/// change capped at 0.005 in magnitude, and the tilt moved by
-/// `(previous change + change) · 0.96`. Returns the new tilt and the
-/// change the next frame measures from.
-pub fn wall_tilt_ease(stored: f32, previous: f32, target: f32, rate: f32) -> (f32, f32) {
+/// The tilt a step count asks for, `steps · −0.15` in single precision.
+pub fn wall_tilt(steps: i32) -> f32 {
+    steps as f32 * -WALL_TILT_STEP
+}
+
+/// One tick's tilt ease. The change is `target − stored`, a rising change
+/// taken at 0.35 (in double), then scaled by `rate` less the last motion
+/// (`stored − previous`). A change under 0.005 (compared in double) is
+/// added to the last motion as it is; a larger one is held to 0.005 in
+/// magnitude in double. The new tilt is `motion · 0.96 + stored`, in
+/// double. The caller keeps `stored` as the next `previous`.
+pub fn wall_tilt_ease(stored: f32, previous: f32, target: f32, rate: f32) -> f32 {
     let mut change = target - stored;
     let last = stored - previous;
     if change > 0.0 {
-        change *= 0.35;
+        change = (f64::from(change) * TILT_RISE) as f32;
     }
     change = change * rate - last;
-    if change.abs() >= 0.005 {
-        change = 0.005 / change.abs() * change;
-    }
-    let tilt = (last + change) * 0.96 + stored;
-    (tilt, change)
+    let motion = if f64::from(change.abs()) < TILT_STEP_LIMIT {
+        last + change
+    } else {
+        (TILT_STEP_LIMIT / f64::from(change.abs()) * f64::from(change) + f64::from(last)) as f32
+    };
+    (f64::from(motion) * TILT_CARRY + f64::from(stored)) as f32
 }
 
-/// The backward unit vector of a camera pitch and yaw, as the original's
-/// camera-axis helper: the cosine of the pitch across by the sine and
-/// cosine of the yaw, and minus the pitch's sine up. [guess: the helper's
-/// two arguments are the pitch and yaw; their order is the one its callers
-/// pass]
+/// The pitch the camera's axis is built from: the controller's pitch plus
+/// the wall tilt, held to −1.54 (compared in double; a NaN passes).
+pub fn tilted_pitch(pitch: f32, tilt: f32) -> f32 {
+    let sum = pitch + tilt;
+    if f64::from(sum) < -1.54 {
+        WALL_PITCH_FLOOR
+    } else {
+        sum
+    }
+}
+
+/// The pitch ease of one tick: when the target lies more than 2e-6 away
+/// (the gap in single precision, compared in double), the pitch moves a
+/// tenth of the way, worked in double; a NaN gap leaves it.
+pub fn ease_pitch(pitch: f32, target: f32) -> f32 {
+    let gap = target - pitch;
+    if f64::from(gap.abs()) > 2e-6 {
+        (f64::from(pitch) + f64::from(gap) * 0.1) as f32
+    } else {
+        pitch
+    }
+}
+
+/// The backward unit vector of a controller pitch (negative with the eye
+/// above the point) and a yaw, as the original's camera-axis helper builds
+/// it from the engine's sine and cosine: `(cos p · sin y, −sin p, cos p ·
+/// cos y)`.
 pub fn camera_axis(pitch: f32, yaw: f32) -> Vec3 {
-    let (sin_pitch, cos_pitch) = pitch.sin_cos();
-    let (sin_yaw, cos_yaw) = yaw.sin_cos();
+    let (sin_pitch, cos_pitch) = sin_cos(pitch);
+    let (sin_yaw, cos_yaw) = sin_cos(yaw);
     Vec3::new(cos_pitch * sin_yaw, -sin_pitch, cos_pitch * cos_yaw)
 }
 
-/// The obstruction probe's segment: it starts a radius back from the focus
-/// along the probe direction and runs the probe's length. The original
-/// offsets the look-at point by the radius before casting.
-pub fn probe_segment(focus: Vec3, direction: Vec3, radius: f32, length: f32) -> (Vec3, Vec3) {
-    (
-        focus + direction * radius,
-        focus + direction * (radius + length),
-    )
+/// The move one contact puts on a ball: `(point − centre) · (1 − radius /
+/// |point − centre|)`, which sets the centre `radius` from the point on
+/// the line through both. Single precision, the length summed `(x² + z²)
+/// + y²`; a contact at the centre divides by zero, as the original does,
+/// and gives NaN.
+pub fn hit_offset(centre: Vec3, point: Vec3, radius: f32) -> Vec3 {
+    let vector = point - centre;
+    vector * (1.0 - radius / length(vector))
 }
 
-/// Whether a swept sphere meets the scene: the original casts from the
-/// focus along the probe direction with the probe's radius and length and
-/// asks each mesh's own test. The mesh walk is a closure here.
-pub fn sweep_obstructed(
-    from: Vec3,
-    to: Vec3,
-    radius: f32,
-    mut hit: impl FnMut(Vec3, Vec3, f32) -> bool,
-) -> bool {
-    hit(from, to, radius)
+/// Whether a mesh is near enough for the push-out to ask its triangles: its
+/// squared distance (from the scene's test) not beyond the radius squared;
+/// a NaN distance passes, as the unordered compare does.
+pub fn mesh_in_reach(radius: f32, distance_squared: f32) -> bool {
+    let reach = radius * radius;
+    reach >= distance_squared || reach.is_nan() || distance_squared.is_nan()
 }
 
-/// Lifts a point out of nearby geometry: for every surface point a probe
-/// returns within `radius`, the point is pushed away from it by `radius`.
-/// The original walks the scene's sectors and asks each mesh's probe; this
-/// is the same push with the mesh walk supplied as a closure. [guess: the
-/// push direction is away from the nearest surface point]
+/// Lifts a ball out of nearby geometry: each contact the meshes report, in
+/// order, moves the centre to `radius` from it ([`hit_offset`]). The
+/// original walks the scene's sectors and their flagged meshes in each
+/// sector's space ([`mesh_in_reach`] first) and has each mesh call back per
+/// contact; the scene walk is the caller's here. The free camera lifts its
+/// looked-at point this way with a 30 cm ball after a tick that moved it.
 pub fn lift_out_of_geometry(
-    point: Vec3,
+    centre: Vec3,
     radius: f32,
-    mut nearest: impl FnMut(Vec3, f32) -> Option<Vec3>,
+    contacts: impl IntoIterator<Item = Vec3>,
 ) -> Vec3 {
-    let Some(surface) = nearest(point, radius) else {
-        return point;
-    };
-    let away = point - surface;
-    if away.length_squared() > 1e-12 {
-        point + away.normalize() * radius
-    } else {
-        point
-    }
+    contacts.into_iter().fold(centre, |centre, point| {
+        centre + hit_offset(centre, point, radius)
+    })
 }
 
-/// A frame's eye between the last two ticks: the backward vectors blended
-/// and normalised and the zooms blended, as the original's interpolated
-/// placement does.
+/// A frame's backward vector and zoom between the last two ticks: the
+/// vectors blended `a + (b − a)·t` and normalised by the reciprocal of
+/// their exact length (no guard for zero, as the original's), the zooms
+/// blended `(now − before)·t + before`.
 pub fn interpolate_eye(before: (Vec3, f32), now: (Vec3, f32), alpha: f32) -> (Vec3, f32) {
+    let blend = before.0 + (now.0 - before.0) * alpha;
     (
-        before.0.lerp(now.0, alpha).normalize_or(Vec3::Z),
-        before.1 + (now.1 - before.1) * alpha,
+        blend * (1.0 / length(blend)),
+        (now.1 - before.1) * alpha + before.1,
     )
 }
 
-/// The intersection callback's adjusted offset: `(to − from) · (1 −
-/// radius / |to − from|)`, the original's subtract, length and scale in
-/// single precision. A zero-length vector divides by zero, as the original
-/// does, and the result is NaN.
-pub fn hit_offset(from: Vec3, to: Vec3, radius: f32) -> Vec3 {
-    let vector = to - from;
-    let length = vector.length();
-    vector * (1.0 - radius / length)
-}
-
-/// The words a released camera node raises on the current layer: 0x47 when
-/// the node was updated (its state was under 2), else 0x10 unless the node
-/// carries its leaving flag. `None` when the node was not updated and the
-/// flag is set.
-pub fn release_notice(updated: bool, leaving: bool) -> Option<u32> {
-    if updated {
+/// The word the camera's frame handler raises on the GUI task after it
+/// places the view: 0x47 when the camera node needed its matrix rebuilt
+/// (its state under 2), else 0x10 unless the camera stayed still through
+/// its last tick; `None` when it did.
+pub fn frame_notice(rebuilt: bool, still: bool) -> Option<u32> {
+    if rebuilt {
         Some(0x47)
-    } else if !leaving {
+    } else if !still {
         Some(0x10)
     } else {
         None
     }
 }
 
-/// The field of view (rad) at a zoom: `zoom / divisor · 45° · √(1.6 /
-/// aspect)`, held between 10° and 100°. The original divides the zoom by
-/// the preset's view scale and clamps the same way.
-pub fn fov_from_zoom(zoom: f32, divisor: f32, aspect: f32) -> f32 {
-    (zoom / divisor * 45.0 * (1.6 / aspect.max(0.1)).sqrt())
-        .clamp(10.0, 100.0)
-        .to_radians()
+/// The field of view (rad) at a zoom: `zoom / divisor · 45 · √(1.6 /
+/// aspect)` degrees, the root taken in double precision and the rest in
+/// single, then 10° when below 10 and 100° when above 100 (a NaN passes).
+/// The stepped camera divides by its extent (2000 in the game).
+pub fn fov_from_zoom(zoom: f32, divisor: f32, aspect: f64) -> f32 {
+    let scale = (1.6 / aspect).sqrt() as f32;
+    let fov = zoom / divisor * 45.0 * scale;
+    let fov = if fov < 10.0 {
+        10.0
+    } else if fov > 100.0 {
+        100.0
+    } else {
+        fov
+    };
+    fov.to_radians()
 }
 
 /// One camera frame's ticks: given the time until the next tick (`ahead`,
@@ -1042,63 +1084,105 @@ mod tests {
     }
 
     #[test]
-    fn the_wall_probe_rises_and_eases_into_its_tilt() {
-        assert_eq!(probe_length(100.0), 50.0);
-        assert_eq!(probe_radius(true), 30.0);
-        assert_eq!(probe_radius(false), 20.0);
-        // 0.3 − 0.05 = 0.25; the raised flag with one step takes none off.
-        assert!((wall_probe_pitch(0.3, 1, true) - 0.25).abs() < 1e-6);
-        // Two steps take one off: 0.10.
-        assert!((wall_probe_pitch(0.3, 2, true) - 0.10).abs() < 1e-6);
-        // Not raised: every step counts, and a negative count adds pitch.
-        assert!((wall_probe_pitch(0.3, 2, false) - (0.25 - 0.3)).abs() < 1e-6);
-        assert!((wall_probe_pitch(0.3, -1, false) - 0.4).abs() < 1e-6);
-        // Held to −1.54.
-        assert_eq!(wall_probe_pitch(-2.0, 4, false), -1.54);
-        assert!((wall_tilt(3) + 0.45).abs() < 1e-6);
-        // A raised camera climbs on a hit, lowers without, and stops at 4.
+    fn a_wall_probe_alternates_between_the_step_and_the_one_below() {
+        assert_eq!(probe_length(2000.0), 3850.0);
+        // No step taken: the present step, 0.05 higher, climbing, 30 cm.
+        let probe = wall_probe(-0.3, 0, true);
+        assert!(probe.climb);
+        assert_eq!(probe.radius, 30.0);
+        assert_eq!(probe.pitch, (f64::from(-0.3f32) - 0.05) as f32);
+        // Two steps with the flag set: the step below, descending, 20 cm.
+        let probe = wall_probe(-0.3, 2, true);
+        assert!(!probe.climb);
+        assert_eq!(probe.radius, 20.0);
+        let lowered = f64::from(0.15f32);
+        assert_eq!(probe.pitch, ((f64::from(-0.3f32) - 0.05) - lowered) as f32);
+        // Two steps with the flag clear: the present step again.
+        let probe = wall_probe(-0.3, 2, false);
+        assert!(probe.climb);
+        let lowered = f64::from(2.0f32 * 0.15);
+        assert_eq!(probe.pitch, ((f64::from(-0.3f32) - 0.05) - lowered) as f32);
+        // Held to −1.54; a NaN passes.
+        assert_eq!(wall_probe(-1.5, 0, false).pitch, -1.54);
+        assert!(wall_probe(f32::NAN, 0, false).pitch.is_nan());
+        // A climbing hit climbs to four at most; a descending miss comes
+        // down; the other two keep the count.
         assert_eq!(wall_steps(0, true, true), 1);
         assert_eq!(wall_steps(4, true, true), 4);
-        assert_eq!(wall_steps(2, true, false), 1);
-        assert_eq!(wall_steps(0, true, false), -1);
-        // A plain camera never moves.
+        assert_eq!(wall_steps(2, false, false), 1);
+        assert_eq!(wall_steps(2, true, false), 2);
         assert_eq!(wall_steps(2, false, true), 2);
-        assert_eq!(wall_steps(2, false, false), 2);
-        // The ease: from 0 toward −0.15, a rate of 1, previous 0.
-        let (tilt, change) = wall_tilt_ease(0.0, 0.0, -0.15, 1.0);
-        assert_eq!(change, -0.005);
-        assert!((tilt + 0.0048).abs() < 1e-6);
-        // A rising change is taken at 0.35 first.
-        let (_, change) = wall_tilt_ease(0.0, 0.0, 1.0, 1.0);
-        assert_eq!(change, 0.005);
-        // A still target still moves by the previous change: the change
-        // is the previous tilt less the previous previous tilt.
-        let (tilt, change) = wall_tilt_ease(-1.0, 0.0, -1.0, 1.0);
-        assert_eq!(change, 0.005);
-        assert!((tilt - (-0.9552 - 1.0)).abs() < 1e-5, "{tilt}");
+        assert_eq!(wall_tilt(3), 3.0 * -0.15f32);
+        // The axis takes the tilt, held to −1.54.
+        assert_eq!(tilted_pitch(-0.5, -0.3), -0.8);
+        assert_eq!(tilted_pitch(-1.4, -0.6), -1.54);
+        assert_eq!(tilted_pitch(-0.5, 0.0), -0.5);
     }
 
     #[test]
-    fn the_intersection_offset_pulls_back_by_the_radius() {
+    fn the_wall_tilt_eases_by_at_most_5_mrad_a_tick() {
+        // From rest toward one step: the change −0.15 is held to −0.005,
+        // and 0.96 of it is taken.
+        let tilt = wall_tilt_ease(0.0, 0.0, -0.15, 1.0);
+        let held = (0.005 / f64::from(0.15f32) * f64::from(-0.15f32)) as f32;
+        assert_eq!(tilt, (f64::from(held) * 0.96) as f32);
+        // A small change passes as it is.
+        let tilt = wall_tilt_ease(0.0, 0.0, -0.003, 1.0);
+        assert_eq!(tilt, (f64::from(-0.003f32) * 0.96) as f32);
+        // A rising change is taken at 0.35 first: 0.01 becomes 0.0035.
+        let tilt = wall_tilt_ease(-0.01, -0.01, 0.0, 1.0);
+        let rise = (f64::from(0.01f32) * 0.35) as f32;
+        assert_eq!(tilt, (f64::from(rise) * 0.96 + f64::from(-0.01f32)) as f32);
+        // At rest on its target it stays.
+        assert_eq!(wall_tilt_ease(-0.15, -0.15, -0.15, 1.0), -0.15);
+        // On a still target the last motion is taken back: a motion of
+        // −0.004 and a change of +0.004 cancel.
+        let tilt = wall_tilt_ease(-0.1, -0.096, -0.1, 1.0);
+        let last = -0.1f32 - -0.096f32;
+        // The still target's change is 0, at a rate of 1, less the motion.
+        let change = -last;
+        assert_eq!(
+            tilt,
+            (f64::from(last + change) * 0.96 + f64::from(-0.1f32)) as f32
+        );
+    }
+
+    #[test]
+    fn the_pitch_eases_a_tenth_in_double_over_a_small_gap() {
+        let eased = (f64::from(0.8f32) + f64::from(0.9f32 - 0.8f32) * 0.1) as f32;
+        assert_eq!(ease_pitch(0.8, 0.9), eased);
+        assert_eq!(ease_pitch(0.8, 0.8 + 1e-6), 0.8);
+        assert!(ease_pitch(f32::NAN, 0.8).is_nan());
+        assert_eq!(ease_pitch(0.8, f32::NAN), 0.8);
+    }
+
+    #[test]
+    fn a_contact_sets_the_ball_its_radius_away() {
         let offset = hit_offset(Vec3::ZERO, Vec3::new(0.0, 0.0, 10.0), 2.0);
-        assert!((offset - Vec3::new(0.0, 0.0, 8.0)).length() < 1e-6);
+        assert_eq!(offset, Vec3::new(0.0, 0.0, 8.0));
         assert_eq!(
             hit_offset(Vec3::ZERO, Vec3::new(0.0, 0.0, 10.0), 10.0),
             Vec3::ZERO
         );
         assert!(hit_offset(Vec3::Z, Vec3::Z, 1.0).x.is_nan());
-        assert_eq!(release_notice(true, true), Some(0x47));
-        assert_eq!(release_notice(false, false), Some(0x10));
-        assert_eq!(release_notice(false, true), None);
-        assert!(sweep_obstructed(
-            Vec3::ZERO,
-            Vec3::Z,
-            20.0,
-            |from, to, radius| { (from, to, radius) == (Vec3::ZERO, Vec3::Z, 20.0) }
-        ));
-        assert!(!sweep_obstructed(Vec3::ZERO, Vec3::Z, 20.0, |_, _, _| {
-            false
-        }));
+        // A surface point at x = 1 inside a 4 cm ball at x = 2 sets the
+        // centre at x = 5; a second contact 2 above it then sets it 4
+        // below that one.
+        let lifted = lift_out_of_geometry(Vec3::new(2.0, 0.0, 0.0), 4.0, [Vec3::X]);
+        assert_eq!(lifted, Vec3::new(5.0, 0.0, 0.0));
+        let lifted = lift_out_of_geometry(
+            Vec3::new(2.0, 0.0, 0.0),
+            4.0,
+            [Vec3::X, Vec3::new(5.0, 2.0, 0.0)],
+        );
+        assert_eq!(lifted, Vec3::new(5.0, -2.0, 0.0));
+        assert_eq!(lift_out_of_geometry(Vec3::X, 4.0, []), Vec3::X);
+        assert!(mesh_in_reach(2.0, 4.0));
+        assert!(!mesh_in_reach(2.0, 4.5));
+        assert!(mesh_in_reach(2.0, f32::NAN));
+        assert_eq!(frame_notice(true, true), Some(0x47));
+        assert_eq!(frame_notice(false, false), Some(0x10));
+        assert_eq!(frame_notice(false, true), None);
     }
 
     #[test]
@@ -1107,23 +1191,24 @@ mod tests {
         assert!((axis - Vec3::Z).length() < 1e-6);
         let axis = camera_axis(0.0, std::f32::consts::FRAC_PI_2);
         assert!((axis - Vec3::X).length() < 1e-6);
-        let axis = camera_axis(std::f32::consts::FRAC_PI_2, 0.0);
-        assert!((axis - -Vec3::Y).length() < 1e-6);
-        let (start, end) = probe_segment(Vec3::Z, Vec3::Z, 20.0, 30.0);
-        assert_eq!(start, Vec3::new(0.0, 0.0, 21.0));
-        assert_eq!(end, Vec3::new(0.0, 0.0, 51.0));
-        // A surface at x = 1 pushes a point at x = 2 out by the radius.
-        let lifted = lift_out_of_geometry(Vec3::new(2.0, 0.0, 0.0), 4.0, |_, _| {
-            Some(Vec3::new(1.0, 0.0, 0.0))
-        });
-        assert_eq!(lifted, Vec3::new(6.0, 0.0, 0.0));
-        assert_eq!(lift_out_of_geometry(Vec3::X, 4.0, |_, _| None), Vec3::X);
+        // A negative pitch puts the eye above the point.
+        let axis = camera_axis(-std::f32::consts::FRAC_PI_2, 0.0);
+        assert!((axis - Vec3::Y).length() < 1e-6);
         let (back, zoom) = interpolate_eye((Vec3::Z, 800.0), (Vec3::X, 2000.0), 0.5);
         assert!((back - Vec3::new(0.70710677, 0.0, 0.70710677)).length() < 1e-6);
         assert_eq!(zoom, 1400.0);
+        // Opposite vectors meet at zero: no guard, as the original's.
+        assert!(
+            interpolate_eye((Vec3::Z, 0.0), (-Vec3::Z, 0.0), 0.5)
+                .0
+                .x
+                .is_nan()
+        );
         assert!((fov_from_zoom(2000.0, 2000.0, 1.6).to_degrees() - 45.0).abs() < 1e-3);
-        assert_eq!(fov_from_zoom(1.0, 2000.0, 1.6).to_degrees(), 10.0);
-        assert_eq!(fov_from_zoom(1e9, 1.0, 1.6).to_degrees(), 100.0);
+        assert_eq!(fov_from_zoom(1.0, 2000.0, 1.6), 10f32.to_radians());
+        assert_eq!(fov_from_zoom(1e9, 1.0, 1.6), 100f32.to_radians());
+        // A zero aspect makes an infinite view, held to 100°.
+        assert_eq!(fov_from_zoom(2000.0, 2000.0, 0.0), 100f32.to_radians());
     }
 
     #[test]

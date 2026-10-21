@@ -1285,6 +1285,15 @@ const SHAKE_KEEP: f32 = 0.99;
 /// original's 1e-7 cm² and the offset squared within 1e-4 cm² (here in m²).
 const SHAKE_STILL_CHANGE: f32 = 1e-11;
 const SHAKE_STILL: f32 = 1e-8;
+/// The original's centimetre, in metres: the wall probe's sizes are in
+/// its units.
+const CM: f32 = 0.01;
+/// The stepped camera's extent in the original's units: its eye distance
+/// and the zoom that is 45°.
+const CAMERA_EXTENT: f32 = 2000.0;
+/// The rate the wall tilt's ease scales its change by. [guess: the
+/// preset's rate, 1 by default; the game's preset value is not traced]
+const WALL_RATE: f32 = 1.0;
 
 #[derive(Component, Debug)]
 pub struct ChaseCamera {
@@ -1309,11 +1318,12 @@ pub struct ChaseCamera {
     /// the two.
     shake: Vec3,
     shake_before: Vec3,
-    /// The wall-avoidance tilt's step count, its raised flag (which
-    /// alternates each probe), the stored tilt and the tilt the last probe
-    /// left.
+    /// The wall avoidance: the step count (0–4), whether the last probe
+    /// tested the present step (a climbing probe) or the one below, the
+    /// tilt the axis takes (rad, the controller's sign: negative raises
+    /// the eye) and the tilt the tick before left.
     wall_steps: i32,
-    wall_raised: bool,
+    wall_climb: bool,
     wall_tilt: f32,
     wall_before: f32,
 }
@@ -1333,7 +1343,7 @@ impl Default for ChaseCamera {
             shake: Vec3::ZERO,
             shake_before: Vec3::ZERO,
             wall_steps: 0,
-            wall_raised: false,
+            wall_climb: false,
             wall_tilt: 0.0,
             wall_before: 0.0,
         };
@@ -1355,9 +1365,12 @@ impl ChaseCamera {
         cam
     }
 
-    /// The unit vector from the focus to the eye the last tick left.
+    /// The unit vector from the focus to the eye the last tick left: the
+    /// shown yaw and the pitch with the wall tilt, which the original adds
+    /// to its (negated) pitch and holds to 1.54 rad.
     fn backward(&self) -> Vec3 {
-        Quat::from_euler(EulerRot::YXZ, self.shown_yaw, -self.pitch, 0.0) * Vec3::Z
+        let pitch = -crate::nav_camera::tilted_pitch(-self.pitch, self.wall_tilt);
+        Quat::from_euler(EulerRot::YXZ, self.shown_yaw, -pitch, 0.0) * Vec3::Z
     }
 
     /// Shakes the camera: the eye's offset moves by `by` (m) and the tick
@@ -1382,32 +1395,30 @@ impl ChaseCamera {
         self.kick(offset);
     }
 
-    /// One wall-avoidance probe, as the stepped camera runs every frame:
-    /// the step count climbs on an obstruction (at most four) and falls
-    /// without one; the raised flag alternates, picking the probe's
-    /// radius and whether the tilt eases from the step or one fewer; the
-    /// stored tilt eases toward `−steps · 0.15`. The tilt is applied to
-    /// the held pitch at the next tick (negative raises the view).
-    ///
-    /// The live game calls this only when a scene probe answers; Exarust
-    /// has no camera probe on the live path yet, so the ticks leave it at
-    /// zero.
-    pub fn apply_wall(&mut self, obstructed: bool, extent: f32) {
-        // The original's first branch takes the plain step count and sets
-        // its flag; the second takes one fewer and clears it. The flag
-        // after the branch picks the radius and whether a hit climbs.
-        let first_branch = self.wall_steps < 1 || !self.wall_raised;
-        self.wall_raised = first_branch;
-        self.wall_steps =
-            crate::nav_camera::wall_steps(self.wall_steps, self.wall_raised, obstructed);
-        let _ = (
-            crate::nav_camera::wall_probe_pitch(self.pitch, self.wall_steps, !first_branch),
-            crate::nav_camera::probe_radius(self.wall_raised),
-            crate::nav_camera::probe_length(extent),
-        );
-        let target = crate::nav_camera::wall_tilt(self.wall_steps);
-        let (tilt, _) =
-            crate::nav_camera::wall_tilt_ease(self.wall_tilt, self.wall_before, target, 1.0);
+    /// The wall probe that ends each tick of the stepped camera. It looks
+    /// from 50 cm below `focus` along the camera's yaw (the planar yaw of
+    /// the backward vector) and a pitch 0.05 rad higher than the camera's,
+    /// less 0.15 rad per step: alternately at the present step with a
+    /// 30 cm ball (a hit climbs, to four) and at the step below with a
+    /// 20 cm ball (a miss comes down). `obstructed` answers the probe
+    /// (start, unit direction, radius and length in metres; the length is
+    /// twice the extent less 1.5 m, 38.5 m). The tilt then eases toward
+    /// `−0.15` per step.
+    fn probe_wall(
+        &mut self,
+        focus: Vec3,
+        obstructed: &mut impl FnMut(Vec3, Vec3, f32, f32) -> bool,
+    ) {
+        use crate::nav_camera as nav;
+        let probe = nav::wall_probe(-self.pitch, self.wall_steps, self.wall_climb);
+        self.wall_climb = probe.climb;
+        let direction = nav::camera_axis(probe.pitch, nav::planar_yaw(self.backward()));
+        let start = focus - Vec3::Y * (nav::PROBE_DROP * CM);
+        let length = nav::probe_length(CAMERA_EXTENT) * CM;
+        let hit = obstructed(start, direction, probe.radius * CM, length);
+        self.wall_steps = nav::wall_steps(self.wall_steps, probe.climb, hit);
+        let target = nav::wall_tilt(self.wall_steps);
+        let tilt = nav::wall_tilt_ease(self.wall_tilt, self.wall_before, target, WALL_RATE);
         self.wall_before = self.wall_tilt;
         self.wall_tilt = tilt;
     }
@@ -1428,24 +1439,31 @@ impl ChaseCamera {
         let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
         self.yaw_speed = ORBIT_RETENTION * (self.yaw_speed + ORBIT_STIFFNESS * lead);
         self.shown_yaw += self.yaw_speed;
-        // A negative wall tilt raises the view: the original adds it to
-        // its negative pitch, which is the same as subtracting it here.
-        let target_pitch = pitch_held(
-            self.user_pitch - self.wall_tilt,
-            pitch_floor(self.shown_zoom),
-        );
-        self.pitch += (target_pitch - self.pitch) * 0.1;
+        let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
+        self.pitch = crate::nav_camera::ease_pitch(self.pitch, target_pitch);
         let ease = 5.0 / 59.0;
         self.shown_zoom += (self.zoom - self.shown_zoom) * ease;
     }
 
     /// Runs the ticks whose start the frame has reached, `dt` (s) after the
     /// last frame: at most nine, the rest of a backlog dropped. Returns how
-    /// far the frame is into the last tick (0–1).
+    /// far the frame is into the last tick (0–1). No wall probe answers.
     fn advance(&mut self, dt: f32) -> f32 {
+        self.advance_probing(dt, Vec3::ZERO, &mut |_, _, _, _| false)
+    }
+
+    /// [`Self::advance`] with each tick's wall probe asked of
+    /// `obstructed` from `focus`.
+    fn advance_probing(
+        &mut self,
+        dt: f32,
+        focus: Vec3,
+        obstructed: &mut impl FnMut(Vec3, Vec3, f32, f32) -> bool,
+    ) -> f32 {
         let (ran, t) = frame_step(&mut self.ahead, dt);
         for _ in 0..ran {
             self.tick();
+            self.probe_wall(focus, obstructed);
         }
         t
     }
@@ -1453,8 +1471,8 @@ impl ChaseCamera {
     /// The backward vector, zoom and eye offset to show `t` of the way from
     /// the tick before the last to the last.
     fn shown(&self, t: f32) -> (Vec3, f32, Vec3) {
-        let backward = self.before.0.lerp(self.backward(), t).normalize_or(Vec3::Z);
-        let zoom = self.before.1 + (self.shown_zoom - self.before.1) * t;
+        let (backward, zoom) =
+            crate::nav_camera::interpolate_eye(self.before, (self.backward(), self.shown_zoom), t);
         // The present offset decides whether there is a shake at all, as the
         // original tests it: one ending drops out at once.
         let shake = if self.shake.length_squared() > SHAKE_FLOOR {
@@ -1472,8 +1490,8 @@ fn min_pitch(zoom: f32) -> f32 {
 }
 
 /// The field of view (rad) at a zoom, for the window's aspect.
-fn zoom_fov(zoom: f32, aspect: f32) -> f32 {
-    crate::nav_camera::fov_from_zoom(zoom, 2000.0, aspect)
+fn zoom_fov(zoom: f32, aspect: f64) -> f32 {
+    crate::nav_camera::fov_from_zoom(zoom, CAMERA_EXTENT, aspect)
 }
 
 /// Where the camera looks: the player's pelvis, drawn between its last two
@@ -1496,7 +1514,6 @@ pub(crate) fn chase_camera(
     scroll: Res<AccumulatedMouseScroll>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
-    physics: Res<exa_physics::Physics>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<&Transform, (With<Player>, Without<ChaseCamera>)>,
     bodies: Query<&Ragdoll, With<PlayerBody>>,
@@ -1511,7 +1528,10 @@ pub(crate) fn chase_camera(
         fixed.overstep_fraction(),
     );
     let (width, aspect) = windows.single().map_or((1600.0, 1.6), |w| {
-        (w.width().max(1.0), w.width() / w.height().max(1.0))
+        (
+            w.width().max(1.0),
+            f64::from(w.width()) / f64::from(w.height().max(1.0)),
+        )
     });
     for (mut cam, mut t, mut projection) in &mut cameras {
         if bindings.mouse_pressed(&buttons, Action::Orbit) {
@@ -1554,15 +1574,12 @@ pub(crate) fn chase_camera(
         }
         let floor = pitch_floor(cam.shown_zoom);
         cam.user_pitch = clamp_pitch(cam.user_pitch, floor, MAX_PITCH);
-        // The stepped camera's wall probe: a 25 cm ball from just above
-        // the focus along the backward vector. The original casts in its
-        // centimetre units (a 20 or 30 cm radius over twice the extent less
-        // 150); Exarust's fixed eye distance is 20 m.
-        let from = focus + Vec3::Y * 0.1;
-        let obstructed = physics
-            .level_sweep(from, cam.backward(), CAMERA_DISTANCE + 1.0, 0.25)
-            .is_some();
-        cam.apply_wall(obstructed, CAMERA_DISTANCE * 100.0);
+        // The wall probe runs at the end of each tick but nothing answers
+        // it: the original sweeps only level meshes with particular flag
+        // bits (what they mark is not traced), while Exarust's level
+        // colliders hold every static mesh, ceilings included, which a
+        // 38.5 m probe up and back would meet in any room and hold the
+        // view steep. Until the scene keeps those bits the tilt stays 0.
         let along = cam.advance(time.delta_secs());
         let (backward, zoom, shake) = cam.shown(along);
         t.translation = focus + backward * CAMERA_DISTANCE;
@@ -2560,41 +2577,60 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_probe_raises_the_view_and_never_shows_without_one() {
-        let mut cam = ChaseCamera::behind(0.0);
-        // The first probe takes the first branch and, seeing nothing,
-        // drops the count to −1.
-        cam.apply_wall(false, 100.0);
-        assert_eq!(cam.wall_steps, -1);
-        assert!(cam.wall_raised);
-        // A hit climbs back to 0 and the stored tilt follows the step
-        // (a positive tilt at a negative count).
-        cam.apply_wall(true, 100.0);
-        assert_eq!(cam.wall_steps, 0);
-        assert!(cam.wall_tilt > 0.0);
-        cam.apply_wall(true, 100.0);
-        assert_eq!(cam.wall_steps, 1);
-        assert!(cam.wall_tilt < 0.0);
-        // The next probe takes the second branch and does not climb.
-        cam.apply_wall(true, 100.0);
-        assert_eq!(cam.wall_steps, 1);
-        assert!(!cam.wall_raised);
-        // No obstruction on a first branch lowers the count again.
-        cam.apply_wall(false, 100.0);
-        assert_eq!(cam.wall_steps, 0);
-        // The tilt is subtracted from the held pitch (a negative tilt
-        // raises the view by its magnitude).
-        let before = cam.pitch;
-        cam.user_pitch = 1.0;
-        cam.wall_tilt = -0.1;
-        cam.tick();
-        assert!(cam.pitch > before);
-        // Five more steps at most above the start.
-        let mut tall = ChaseCamera::behind(0.0);
-        for _ in 0..12 {
-            tall.apply_wall(true, 100.0);
+    fn a_wall_probe_climbs_on_hits_comes_down_on_misses_and_raises_the_eye() {
+        let focus = Vec3::new(1.0, 2.0, 3.0);
+        // Nothing in the way: no step and no tilt, so the view is as it
+        // was without the probe.
+        let mut cam = ChaseCamera::behind(0.3);
+        for _ in 0..5 {
+            cam.tick();
+            cam.probe_wall(focus, &mut |_, _, _, _| false);
         }
-        assert_eq!(tall.wall_steps, 4);
+        assert_eq!((cam.wall_steps, cam.wall_tilt), (0, 0.0));
+        let plain = Quat::from_euler(EulerRot::YXZ, cam.shown_yaw, -cam.pitch, 0.0) * Vec3::Z;
+        assert_eq!(cam.backward(), plain);
+        // The first probe tests the present step: 30 cm, from 50 cm under
+        // the focus, 38.5 m long, looking 0.05 rad higher than the view.
+        let mut cam = ChaseCamera::behind(0.3);
+        let back = cam.backward();
+        let mut asked = Vec::new();
+        cam.probe_wall(focus, &mut |start, direction, radius, length| {
+            asked.push((start, direction, radius, length));
+            true
+        });
+        let (start, direction, radius, length) = asked[0];
+        assert_eq!(start, focus - Vec3::Y * 0.5);
+        assert!((radius - 0.3).abs() < 1e-7 && (length - 38.5).abs() < 1e-5);
+        let lift = direction.y.asin() - back.y.asin();
+        assert!((lift - 0.05).abs() < 1e-4, "{lift}");
+        let across = |v: Vec3| Vec3::new(v.x, 0.0, v.z).normalize();
+        assert!((across(direction) - across(back)).length() < 1e-4);
+        // Hits climb every other probe to four; misses come down the same
+        // way to none, never below.
+        let mut steps = Vec::new();
+        for _ in 0..9 {
+            cam.probe_wall(focus, &mut |_, _, _, _| true);
+            steps.push(cam.wall_steps);
+        }
+        assert_eq!(steps, [1, 2, 2, 3, 3, 4, 4, 4, 4]);
+        // The tilt has eased upward and lifts the eye over the plain view.
+        assert!(cam.wall_tilt < 0.0);
+        let plain = Quat::from_euler(EulerRot::YXZ, cam.shown_yaw, -cam.pitch, 0.0) * Vec3::Z;
+        assert!(cam.backward().y > plain.y);
+        steps.clear();
+        for _ in 0..9 {
+            cam.probe_wall(focus, &mut |_, _, _, _| false);
+            steps.push(cam.wall_steps);
+        }
+        assert_eq!(steps, [4, 3, 3, 2, 2, 1, 1, 0, 0]);
+        // Each tick probes once.
+        let mut cam = ChaseCamera::behind(0.0);
+        let mut probes = 0;
+        cam.advance_probing(0.05, focus, &mut |_, _, _, _| {
+            probes += 1;
+            false
+        });
+        assert_eq!(probes, 3);
     }
 
     #[test]
