@@ -155,6 +155,82 @@ pub fn reload_source(page: u32, selected_employee: i32) -> ListSource {
     }
 }
 
+/// The text and meters the editor's refresh writes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormRefresh {
+    /// "Name (Rank)" or "Name (Profession)".
+    pub title: String,
+    /// The hire page's "Profession: ..." line; empty on the other pages.
+    pub profession: String,
+    /// The hire fee, in the packed coin word.
+    pub price: u32,
+    /// The employee's daily wage.
+    pub wage: u32,
+    /// The health bar's yellow share and red share, 0…1.
+    pub health: (f32, f32),
+    /// The page's current rank row.
+    pub rank: usize,
+}
+
+/// One loadout-form refresh (the original's refresh routine).
+///
+/// A specialist's title is its profession; a fighter's is its rank name.
+/// The hire page (1) shows "Profession: …" and the hire fee, which is
+/// `(rank + 1)² · 12` plus four fifths of the kit value, rounded, and the
+/// daily wage. The health shares are the record's two words over 65535.
+/// The event page (3) keeps the event's rank row.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn refresh(
+    page: u32,
+    name: &str,
+    profession: Option<crate::career::Profession>,
+    rank: usize,
+    kit_value: u32,
+    wage: u32,
+    yellow: u16,
+    red: u16,
+    event_rank: usize,
+) -> FormRefresh {
+    let rank = rank.min(RANKS - 1);
+    let specialist = profession.is_some_and(|p| !matches!(p, crate::career::Profession::Combatant));
+    let title = if specialist {
+        super::manage::record_title(name, profession, rank)
+    } else {
+        super::manage::record_title(name, None, rank)
+    };
+    let price = if page == 1 {
+        let step = (rank as u32).saturating_add(1);
+        step.saturating_mul(step)
+            .saturating_mul(crate::career::COIN)
+            .saturating_add(((u64::from(kit_value) * 4 + 2) / 5) as u32)
+    } else {
+        0
+    };
+    FormRefresh {
+        title,
+        profession: if page == 1 {
+            let mut line = String::from("Profession: ");
+            line.push_str(match profession {
+                Some(crate::career::Profession::Combatant) | None => "Combatant",
+                Some(crate::career::Profession::Trainer) => "Trainer",
+                Some(crate::career::Profession::Merchant) => "Merchant",
+                Some(crate::career::Profession::Physician) => "Physician",
+            });
+            line
+        } else {
+            String::new()
+        },
+        price,
+        wage,
+        health: (
+            f32::from(yellow) * f32::from_bits(0x3780_0080),
+            f32::from(red) * f32::from_bits(0x3780_0080),
+        ),
+        rank: if page == 3 { event_rank } else { rank },
+    }
+}
+
 /// The ranks a fighter has loadouts for.
 pub const RANKS: usize = 6;
 
@@ -357,5 +433,43 @@ mod tests {
         assert_eq!(reload_source(0, 2), ListSource::EmployeeList(1));
         assert_eq!(reload_source(1, 0), ListSource::Record);
         assert_eq!(reload_source(2, 5), ListSource::Record);
+    }
+
+    #[test]
+    fn a_refresh_names_a_specialist_and_prices_a_hire() {
+        let fighter = refresh(
+            0,
+            "Bran",
+            Some(Profession::Combatant),
+            2,
+            0,
+            5,
+            32_767,
+            0,
+            0,
+        );
+        assert_eq!(fighter.title, "Bran (Novice)");
+        assert_eq!(fighter.profession, "");
+        assert_eq!(fighter.price, 0);
+        assert!((fighter.health.0 - 0.499_992_37).abs() < 1e-6);
+        let hire = refresh(
+            1,
+            "Mira",
+            Some(Profession::Physician),
+            2,
+            100,
+            12,
+            0,
+            65_535,
+            0,
+        );
+        assert_eq!(hire.title, "Mira (Physician)");
+        assert_eq!(hire.profession, "Profession: Physician");
+        // (2 + 1)² · 12 + round(100 · 4 / 5) = 108 + 80.
+        assert_eq!(hire.price, 188);
+        assert_eq!(hire.wage, 12);
+        assert_eq!(hire.health.1, 1.0);
+        let event = refresh(3, "Bran", None, 0, 0, 0, 0, 0, 4);
+        assert_eq!(event.rank, 4);
     }
 }
