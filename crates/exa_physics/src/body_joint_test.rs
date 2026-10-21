@@ -556,3 +556,16 @@ fn a_body_keeps_its_part_states() {
     assert_eq!(body.arm_stiffness(), None);
     assert!(body.parts[0].state.has(crate::part::PartState::MUSCLED));
 }
+
+/// A knock-out wakes the body at 256 and takes its tone, stance factor and
+/// pin gain to the knocked-out state.
+#[test]
+fn a_knock_out_takes_the_drive() {
+    let mut body = pelvis_and_femur().with_drive();
+    body.wake_to(3);
+    body.knock_out();
+    assert_eq!(body.countdown(), 256);
+    let drive = body.drive.as_ref().unwrap();
+    assert_eq!(drive.tone, 0.0);
+    assert_eq!(drive.pin_gain, crate::body::PIN_GAIN);
+}

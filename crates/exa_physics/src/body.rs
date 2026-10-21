@@ -1816,6 +1816,19 @@ impl Ragdoll {
         }
     }
 
+    /// Knocks the body out (`0x100156a90`'s body side): it wakes at 256
+    /// and its drive loses its tone and stance factor while the support
+    /// pins fall back to the living gain (0.08). The character's condition,
+    /// state bits and wake timer are `exa_combat::condition`'s.
+    pub fn knock_out(&mut self) {
+        self.wake();
+        if let Some(d) = self.drive.as_mut() {
+            d.tone = 0.0;
+            d.stance = 0.0;
+            d.pin_gain = PIN_GAIN;
+        }
+    }
+
     /// Wakes the body to 256 (see [`Ragdoll::wake_to`]).
     pub fn wake(&mut self) {
         self.wake_to(WAKE_COUNT);
