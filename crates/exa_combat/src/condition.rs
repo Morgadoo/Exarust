@@ -7,14 +7,18 @@
 //! in the original's order: the daze first (a dazed fighter is normal
 //! unless it is helpless or attacking), then the posture decision
 //! ([`posture`]) from the clip it plays, its balance, its summed limb
-//! motion and its tone. A few events write it between: a get-up's start
-//! (getting up) and its clip's end (normal), a killing blow (dead until the
-//! collapse lands), placed corpses (dead). Rules: `docs/formats/RSQ.md`
-//! (Condition).
+//! motion and its tone. That write also restores the living lower-leg
+//! layer when it replaces a condition above 0xFF, and an attack that
+//! replaces one puts the shins in 0x10. A few events write it between: a
+//! get-up's start (getting up) and its clip's end (normal), a killing blow
+//! (dead until the collapse lands), placed corpses (dead). Rules:
+//! `docs/formats/RSQ.md` (Condition).
 
 use bevy::prelude::*;
 use exa_anim::Motions;
-use exa_physics::body::{CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter};
+use exa_physics::body::{
+    CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter, pairs,
+};
 
 use crate::stance::StanceTick;
 
@@ -405,6 +409,35 @@ pub fn posture(condition: Condition, p: &Posture) -> (Condition, Branch) {
     (next, Branch::Standing)
 }
 
+/// The attack's lower-leg layer: the foot channel's membership bit, without
+/// the exclusive bit. The setter ORs the feet's layer onto each foot.
+const ATTACK_SHIN_LAYER: u32 = 0x10;
+
+/// The lower-leg layer a posture store writes when it replaces a condition
+/// above 0xFF. Weak, a kick, a walk and normal put the living lower legs
+/// back. An attack puts [`ATTACK_SHIN_LAYER`]. Anything else, and a store
+/// whose condition was already at most 0xFF, writes nothing: getting up,
+/// down, a collapse, the dead, a shock and an off-balance body that keeps
+/// its word leave the layers alone.
+pub fn leg_layer_for(entering: Condition, next: Condition, branch: Branch) -> Option<u32> {
+    if entering.0 <= 0xFF {
+        return None;
+    }
+    if next == Condition::ATTACKING && branch == Branch::Attack {
+        return Some(ATTACK_SHIN_LAYER);
+    }
+    let restore = match next {
+        Condition::WEAK => branch == Branch::Weak,
+        Condition::KICKING | Condition::WALKING | Condition::NORMAL => branch == Branch::Standing,
+        _ => false,
+    };
+    if restore {
+        Some(pairs::LIVING_SHIN_LAYER)
+    } else {
+        None
+    }
+}
+
 /// The posture work that still runs over every character, after the daze's
 /// stance and before the character ticks ([`CharacterTicks`]). The
 /// condition, the collapse's dying tick, the falls and get-ups and the
@@ -447,7 +480,9 @@ pub fn ticked_lives(
 /// writer while its energy is more than 0.05 under its most (not in a
 /// shock's stagger), then the posture decision from the clip it plays,
 /// last tick's balance, summed limb motion and tone; the branch it takes
-/// is kept beside it.
+/// is kept beside it. When that decision replaces a condition above 0xFF,
+/// weak, a kick, a walk or normal restore the living lower-leg layer, and
+/// an attack puts the shins in 0x10.
 #[allow(clippy::type_complexity)]
 pub fn track_condition(
     ticked: Res<TickedCharacter>,
@@ -455,7 +490,7 @@ pub fn track_condition(
     mut bodies: Query<(
         &mut Condition,
         &StateFlags,
-        &Ragdoll,
+        &mut Ragdoll,
         &exa_anim::Animator,
         Option<&crate::Fighter>,
         Option<&mut PostureBranch>,
@@ -464,28 +499,36 @@ pub fn track_condition(
     let Some(motions) = motions else { return };
     let set = &*motions.0;
     let entity = ticked.body;
-    let Ok((mut condition, flags, body, anim, fighter, taken)) = bodies.get_mut(entity) else {
+    let Ok((mut condition, flags, mut body, anim, fighter, taken)) = bodies.get_mut(entity) else {
         return;
     };
-    let Some(drive) = body.drive.as_ref() else {
-        return;
+    let (dazed, balance, tone) = match body.drive.as_ref() {
+        Some(drive) => (
+            drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER),
+            drive.balance().value,
+            drive.tone,
+        ),
+        None => return,
     };
-    let mut next = *condition;
-    if drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER) {
-        next.daze();
+    let mut entering = *condition;
+    if dazed {
+        entering.daze();
     }
     let p = Posture {
         motion: set.action_index(&anim.action),
         progress: motions
             .clip(anim, &anim.action)
             .map_or(0.0, |c| anim.clip_progress(c)),
-        balance: drive.balance().value,
+        balance,
         exertion: body.exertion(),
-        tone: drive.tone,
+        tone,
         parrying: fighter.is_some_and(|f| f.parry.active),
         shock_over: false,
     };
-    let (next, branch) = posture(next, &p);
+    let (next, branch) = posture(entering, &p);
+    if let Some(layer) = leg_layer_for(entering, next, branch) {
+        pairs::set_leg_layers(&mut body.parts, layer);
+    }
     if let Some(mut taken) = taken
         && taken.0 != branch
     {

@@ -1071,10 +1071,13 @@ stage, after the daze's stance; every `Fighter` keeps the word):
   effect class exists to put in it. The body's reset facing is
   `exa_physics::body::reset_heading` (the chest over the pelvis,
   flattened).
-- not yet: the kick, weapon switch and powers, dormancy, shocks (nothing
-  lowers tone yet), the collision layer the original restores on leaving a
-  state of 0x100 or more; Exarust's backpedal and combat walk stand in for
-  the walk played backwards and the footwork, so they give 0.
+- the posture write restores the living lower-leg layer (0x300, feet
+  0x330) when weak, a kick, a walk or normal replaces a condition above
+  0xFF; an attack that replaces one puts the shins in 0x10 (the feet stay
+  0x30);
+- not yet: dormancy, shocks (nothing lowers tone yet). Exarust's backpedal
+  and combat walk stand in for the walk played backwards and the footwork,
+  so they give 0.
 - `--shove 60 play arena`: 0 in Idle, in the daze's Defence stance and in
   Rebalance while it falls, `0x200` from balance 0.26 on, `0x300` at the
   get-up's start, 0 when `Get Up 2` ends into Idle.
