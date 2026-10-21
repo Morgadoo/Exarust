@@ -177,9 +177,9 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
         return Err(Error::Malformed("negative text count".into()));
     }
     // The header's count is the last string's index: the table holds one
-    // more string than the count.
+    // offset, and so one string, more than the count.
     let count = (last as usize).saturating_add(1);
-    let table = count.saturating_add(1).saturating_mul(4);
+    let table = count.saturating_mul(4);
     if table > bytes.len().saturating_sub(offset) {
         return Err(Error::Truncated {
             offset,
@@ -187,8 +187,8 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
             len: bytes.len().saturating_sub(offset),
         });
     }
-    let mut offsets = Vec::with_capacity(count + 1);
-    for _ in 0..count + 1 {
+    let mut offsets = Vec::with_capacity(count);
+    for _ in 0..count {
         offsets.push(take_u32(bytes, &mut offset)?);
     }
     let size = take_u32(bytes, &mut offset)? as usize;
@@ -201,7 +201,7 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
     }
     let blob = &bytes[offset..offset + size];
     let mut texts = Vec::with_capacity(count);
-    for at in offsets.iter().take(count).map(|at| *at as usize) {
+    for at in offsets.iter().map(|at| *at as usize) {
         if blob.len().saturating_sub(at) < 4 {
             texts.push(Vec::new());
             continue;
@@ -678,11 +678,11 @@ mod tests {
         put_u32(&mut bytes, 0);
         put_u32(&mut bytes, 0);
         bytes.extend_from_slice(&[0; 12]);
-        // The last string's index, one less than the number of strings.
+        // The last string's index, one less than the number of strings and
+        // of offsets.
         put_u32(&mut bytes, 1);
         put_u32(&mut bytes, 0);
         put_u32(&mut bytes, 9);
-        put_u32(&mut bytes, 13);
         put_u32(&mut bytes, 13);
         put_u32(&mut bytes, 5);
         bytes.extend_from_slice(b"Blast");
