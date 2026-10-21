@@ -19,6 +19,19 @@ use crate::possession::crystal;
 /// The item drag payload's type, and a scene object's.
 pub const ITEM_PAYLOAD: u32 = 0xFB01;
 pub const OBJECT_PAYLOAD: u32 = 0xFB02;
+/// The return codes of the item GUI's control procedures.
+pub const IGNORE: u32 = 0x80_0000;
+pub const HANDLED: u32 = 1;
+pub const DROP_HANDLED: u32 = 3;
+pub const CARD_OPENED: u32 = 0x40;
+pub const DRAG_STARTED: u32 = 0x105;
+/// The event bits a control procedure is called with.
+pub const EVENT_DRAW: u32 = 2;
+pub const EVENT_HOVER: u32 = 0x10;
+pub const EVENT_MOUSE: u32 = 0x40;
+pub const EVENT_DRAG_OVER: u32 = 0x2000;
+pub const EVENT_DROP: u32 = 0x3000;
+pub const EVENT_DRAG_START: u32 = 0x4000;
 /// A socket exists.
 pub const SOCKET: u8 = 0x80;
 /// The kind bits of a socket.
@@ -27,7 +40,52 @@ pub const KIND: u16 = 0x7F;
 pub const AR_FUNCTION: u32 = 4;
 /// The size of a rating dot and of the slider's knob, in pixels.
 pub const DOT: i32 = 22;
-/// The sprite sheets the item GUI loads, and how many cells each has.
+/// The crystals a socket takes, by database id.
+pub const SOCKET_CRYSTALS: [u32; 4] = [crystal::A, crystal::B, crystal::C, crystal::AR];
+/// The sprite sheets the item GUI loads, how many cells each has and the
+/// size and stored places of its cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteSheet {
+    pub name: &'static str,
+    pub cells: u32,
+    pub cell: i32,
+    /// The stored cell corners, top-left first (the sheets are stored bottom
+    /// row first like every texture).
+    pub places: &'static [(i32, i32)],
+}
+
+const DOTRATING_PLACES: [(i32, i32); 3] = [(0, 0), (64, 0), (128, 0)];
+const COIN_PLACES: [(i32, i32); 3] = [(0, 0), (48, 0), (96, 0)];
+const GRIP_PLACES: [(i32, i32); 3] = [(0, 96), (96, 96), (192, 96)];
+const CRYSTAL_PLACES: [(i32, i32); 6] = [(0, 128), (64, 128), (0, 64), (0, 0), (64, 0), (64, 64)];
+
+pub const SPRITE_SHEETS: [SpriteSheet; 4] = [
+    SpriteSheet {
+        name: "dotrating.rfi",
+        cells: 3,
+        cell: 64,
+        places: &DOTRATING_PLACES,
+    },
+    SpriteSheet {
+        name: "coinicons.rfi",
+        cells: 3,
+        cell: 48,
+        places: &COIN_PLACES,
+    },
+    SpriteSheet {
+        name: "wpnflpgrpico.rfi",
+        cells: 3,
+        cell: 96,
+        places: &GRIP_PLACES,
+    },
+    SpriteSheet {
+        name: "crystalicons.rfi",
+        cells: 6,
+        cell: 64,
+        places: &CRYSTAL_PLACES,
+    },
+];
+/// The names and cell counts of the sheets the item GUI loads.
 pub const SPRITES: [(&str, u32); 4] = [
     ("dotrating.rfi", 3),
     ("coinicons.rfi", 3),
@@ -125,7 +183,66 @@ impl Sockets {
         if (0..4).contains(&i) && self.exists(i as usize) {
             ((i + 1) as u32) << 16
         } else {
-            0x80_0000
+            IGNORE
+        }
+    }
+
+    /// Whether a crystal can be dropped on the row: only the four power
+    /// crystals.
+    pub fn accepts_id(id: u32) -> bool {
+        SOCKET_CRYSTALS.contains(&id)
+    }
+
+    /// The crystal shown by a right click on socket `i`: its id and the
+    /// flags that carry its charge.
+    pub fn card_at(&self, i: usize) -> Option<(u32, u32)> {
+        self.drag_out(i)
+    }
+
+    /// Starts dragging the crystal in socket `i`; the socket keeps its
+    /// crystal until the drag ends (`hold_drag`). Returns the crystal and
+    /// the drag flag word.
+    pub fn start_drag(&self, i: usize) -> Option<(u32, u32)> {
+        self.drag_out(i)
+    }
+
+    /// Drops a crystal dragged over the row into socket `i`. A crystal
+    /// already there is handed back unless the drag came from this very
+    /// socket, in which case nothing changes.
+    pub fn drop_from(
+        &mut self,
+        i: usize,
+        id: u32,
+        flags: u32,
+        from_here: bool,
+    ) -> SocketDropResult {
+        match self.drop_crystal(i, id, flags, from_here) {
+            SocketDrop::Refused => SocketDropResult {
+                back: None,
+                code: 0,
+            },
+            SocketDrop::Placed { back } => SocketDropResult {
+                back,
+                code: DROP_HANDLED,
+            },
+        }
+    }
+
+    /// The drag that took the crystal out of socket `i` ended: the socket
+    /// is left empty.
+    pub fn drag_ended(&mut self, i: usize) {
+        self.emptied(i);
+    }
+
+    /// What committing the row into an item does: an existing socket's
+    /// crystal is written into the weapon's or apparel's four sockets, the
+    /// weapon's effects refresh or the apparel refreshes the player's
+    /// abilities, and an AR crystal fires the game's fourth function.
+    pub fn commit(&self) -> SocketCommit {
+        SocketCommit {
+            weapon: true,
+            apparel: true,
+            ar: self.holds_ar(),
         }
     }
 
@@ -175,6 +292,25 @@ pub enum SocketDrop {
     Placed {
         back: Option<(u32, u32)>,
     },
+}
+
+/// What dropping a crystal on the socket row did, with the control's
+/// return code (`3` handled).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketDropResult {
+    pub back: Option<(u32, u32)>,
+    pub code: u32,
+}
+
+/// What committing a socket row into its item does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketCommit {
+    /// A weapon item's electric effect refreshes.
+    pub weapon: bool,
+    /// An apparel item refreshes the player's abilities.
+    pub apparel: bool,
+    /// An AR crystal fires the game's fourth function.
+    pub ar: bool,
 }
 
 /// One drawn crystal.
@@ -264,6 +400,34 @@ pub fn slider(x: i32, width: i32, share: f32) -> Slider {
     }
 }
 
+/// One row of a weapon card's striking side: its place (raised by a row
+/// when an earlier one is absent), whether it shows and its value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrikingRow {
+    pub visible: bool,
+    pub value: f32,
+    /// The row's place from the side's first row, in the original's rows.
+    pub row: usize,
+}
+
+/// The three striking rows of side `side` (the grip button's): slash,
+/// crush and pierce at `sides[side][r]`. An absent row is hidden; the
+/// visible rows keep their original places (the card's nodes are fixed).
+pub fn striking_rows(sides: [[u8; 3]; 2], side: usize) -> [StrikingRow; 3] {
+    let bytes = sides[side.min(1)];
+    std::array::from_fn(|r| StrikingRow {
+        visible: bytes[r] != 0,
+        value: f32::from(bytes[r]) * 0.05,
+        row: r,
+    })
+}
+
+/// The side the card's striking rows show: the second when the grip
+/// button's mask carries either grip bit.
+pub fn card_side(mask: u32) -> usize {
+    usize::from(mask & 0x60 != 0)
+}
+
 /// A drag in progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Payload {
@@ -293,6 +457,33 @@ pub fn object_payload(condition: u32) -> Payload {
         icon: 0,
         flags: condition,
         grab: (0, 0),
+    }
+}
+
+/// An item payload started from a database id: the id's icon is looked up
+/// through `resolve`, and a missing icon starts no drag.
+pub fn item_payload_for_id<F>(
+    id: u32,
+    flags: u32,
+    icon_size: i32,
+    mut resolve: F,
+) -> Option<Payload>
+where
+    F: FnMut(u32, u32) -> Option<usize>,
+{
+    let icon = resolve(id, flags & 0x0FFF_FFFF)?;
+    item_payload(icon, flags, icon_size)
+}
+
+impl Payload {
+    /// Cancelling a drag releases the item icon it held; an object payload
+    /// holds none.
+    pub fn cancel<T>(&self, mut release: impl FnMut(usize) -> T) -> bool {
+        if self.kind != ITEM_PAYLOAD {
+            return false;
+        }
+        release(self.icon);
+        true
     }
 }
 
@@ -336,6 +527,25 @@ pub fn side_rows(sides: [[u8; 3]; 2], side: usize) -> Vec<(usize, f32)> {
         .filter(|&r| bytes[r] != 0)
         .map(|r| (r, f32::from(bytes[r]) * 0.05))
         .collect()
+}
+
+/// The icon manager a drawn control uses, and its cell size in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconManager {
+    /// Coins: a cell four units wide.
+    Coins,
+    /// The grip-side icons: eight units.
+    Grip,
+    /// The crystal sockets: the rating-dot size, 22 pixels.
+    Sockets,
+}
+
+pub fn manager_cell(manager: IconManager, unit: i32) -> i32 {
+    match manager {
+        IconManager::Coins => unit * 4,
+        IconManager::Grip => unit * 8,
+        IconManager::Sockets => DOT,
+    }
 }
 
 /// How the icon renderer frames an item.
@@ -518,10 +728,83 @@ mod tests {
     }
 
     #[test]
+    fn the_socket_row_takes_only_crystals_and_hands_old_ones_back() {
+        assert!(Sockets::accepts_id(crystal::A));
+        assert!(Sockets::accepts_id(crystal::AR));
+        assert!(!Sockets::accepts_id(crystal::AL));
+        assert!(!Sockets::accepts_id(7));
+        let mut s = Sockets([0x80 | 2 | 0x4000, 0x80, 0, 0]);
+        let r = s.drop_from(0, crystal::C, 0x0030_0000, false);
+        assert_eq!(r.back, Some((crystal::B, 0x0040_0000)));
+        assert_eq!(r.code, DROP_HANDLED);
+        assert_eq!(s.kind(0), 4);
+        assert_eq!(s.charge(0), 0x30);
+        assert_eq!(s.drop_from(0, crystal::A, 0, true).code, 0);
+        assert_eq!(s.card_at(0), Some((crystal::C, 0x0030_0000)));
+        assert_eq!(s.start_drag(0), Some((crystal::C, 0x0030_0000)));
+        s.drag_ended(0);
+        assert_eq!(s.0[0], 0x80);
+        assert_eq!(s.card_at(0), None);
+        let s = Sockets([0x80 | 0x11, 0, 0, 0]);
+        assert_eq!(
+            s.commit(),
+            SocketCommit {
+                weapon: true,
+                apparel: true,
+                ar: true
+            }
+        );
+        assert!(!Sockets::default().commit().ar);
+    }
+
+    #[test]
+    fn a_weapon_card_switches_its_striking_side() {
+        let rows = striking_rows([[10, 0, 40], [0, 20, 0]], 0);
+        assert_eq!(
+            rows,
+            [
+                StrikingRow {
+                    visible: true,
+                    value: 0.5,
+                    row: 0
+                },
+                StrikingRow {
+                    visible: false,
+                    value: 0.0,
+                    row: 1
+                },
+                StrikingRow {
+                    visible: true,
+                    value: 2.0,
+                    row: 2
+                },
+            ]
+        );
+        assert_eq!(card_side(0x40), 1);
+        assert_eq!(card_side(0x10), 0);
+        assert_eq!(card_side(0x60), 1);
+        assert_eq!(manager_cell(IconManager::Coins, 4), 16);
+        assert_eq!(manager_cell(IconManager::Grip, 3), 24);
+        assert_eq!(manager_cell(IconManager::Sockets, 4), 22);
+        assert_eq!(SPRITE_SHEETS[0].cell, 64);
+        assert_eq!(SPRITE_SHEETS[3].cells, 6);
+    }
+
+    #[test]
     fn payloads_and_placement() {
         let p = item_payload(3, 0x10, 160).unwrap();
         assert_eq!((p.kind, p.grab), (ITEM_PAYLOAD, (80, 80)));
         assert_eq!(item_payload(0, 0, 160), None);
+        let q = item_payload_for_id(431, 0x1234_0000, 160, |id, flags| {
+            (id == 431 && flags == 0x234_0000).then_some(9)
+        })
+        .unwrap();
+        assert_eq!((q.icon, q.flags, q.grab), (9, 0x1234_0000, (80, 80)));
+        assert!(item_payload_for_id(431, 0, 160, |_, _| None).is_none());
+        let mut released = Vec::new();
+        assert!(p.cancel(|icon| released.push(icon)));
+        assert_eq!(released, vec![3]);
+        assert!(!object_payload(0).cancel(|_| {}));
         assert_eq!(object_payload(0x0012_0000).kind, OBJECT_PAYLOAD);
         assert_eq!(drag_icon_at((100, 90), (80, 80), None), Some((20, 10)));
         assert_eq!(drag_icon_at((100, 90), (80, 80), Some(0x10)), None);

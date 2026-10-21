@@ -1015,6 +1015,547 @@ pub fn parchment_size(texture: (u16, u16), unit: i32) -> (i32, i32) {
     )
 }
 
+/// The container's form flags and style word from its constructor.
+pub const FORM_FLAGS: u32 = 0x80;
+pub const STYLE: u32 = 0x0010_0010;
+
+/// One child of a container record: the item, its flags and its stored
+/// position in eightieths of a GUI unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ContainerChild {
+    pub id: u32,
+    pub flags: u32,
+    pub x: i16,
+    pub y: i16,
+}
+
+/// The fields a panel loads from a container's record section: the panel's
+/// size in units, its capacity and item limit, and its children. The
+/// original's section is an object-database record; these are the fields
+/// the panel reads (at the header offsets the pseudo-code shows). Bytes
+/// past the children are not kept.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContainerRecord {
+    pub size: (u16, u16),
+    pub capacity: u16,
+    pub max_item: u16,
+    pub children: Vec<ContainerChild>,
+}
+
+/// The header of a container record section, in bytes.
+pub const CONTAINER_HEADER: usize = 0x20;
+/// One child entry of a container record, in bytes.
+pub const CONTAINER_CHILD: usize = 12;
+
+impl ContainerRecord {
+    /// Reads the fields the panel uses. `None` for a section shorter than
+    /// its header or whose child count does not fit.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < CONTAINER_HEADER {
+            return None;
+        }
+        let field = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        let count = u32::from_le_bytes([bytes[0x1c], bytes[0x1d], bytes[0x1e], bytes[0x1f]]);
+        let count = usize::try_from(count).ok()?;
+        let end = CONTAINER_HEADER.checked_add(count.checked_mul(CONTAINER_CHILD)?)?;
+        if end > bytes.len() {
+            return None;
+        }
+        let mut children = Vec::with_capacity(count);
+        for at in 0..count {
+            let base = CONTAINER_HEADER + at * CONTAINER_CHILD;
+            children.push(ContainerChild {
+                id: u32::from_le_bytes([
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                ]),
+                flags: u32::from_le_bytes([
+                    bytes[base + 4],
+                    bytes[base + 5],
+                    bytes[base + 6],
+                    bytes[base + 7],
+                ]),
+                x: i16::from_le_bytes([bytes[base + 8], bytes[base + 9]]),
+                y: i16::from_le_bytes([bytes[base + 10], bytes[base + 11]]),
+            });
+        }
+        Some(Self {
+            size: (field(0x8), field(0x0a)),
+            capacity: field(0x10),
+            max_item: field(0x12),
+            children,
+        })
+    }
+
+    /// Writes the fields back: the size at `0x8`/`0xa`, the capacity at
+    /// `0x10`, the item limit at `0x12` and the children after the header.
+    pub fn write(&self) -> Vec<u8> {
+        let mut bytes = vec![0u8; CONTAINER_HEADER];
+        bytes[0x08..0x0a].copy_from_slice(&self.size.0.to_le_bytes());
+        bytes[0x0a..0x0c].copy_from_slice(&self.size.1.to_le_bytes());
+        bytes[0x10..0x12].copy_from_slice(&self.capacity.to_le_bytes());
+        bytes[0x12..0x14].copy_from_slice(&self.max_item.to_le_bytes());
+        bytes[0x1c..0x20].copy_from_slice(&(self.children.len() as u32).to_le_bytes());
+        for child in &self.children {
+            bytes.extend_from_slice(&child.id.to_le_bytes());
+            bytes.extend_from_slice(&child.flags.to_le_bytes());
+            bytes.extend_from_slice(&child.x.to_le_bytes());
+            bytes.extend_from_slice(&child.y.to_le_bytes());
+        }
+        bytes
+    }
+}
+
+/// A character-list entry: the item, its flags and its position in
+/// sixteenths of a GUI unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ListChild {
+    pub id: u32,
+    pub flags: u32,
+    pub x: i16,
+    pub y: i16,
+}
+
+/// Reads a character's saved inventory list: 12-byte entries, `id`, `flags`,
+/// `x`, `y`. `None` when the length is not a multiple of twelve.
+pub fn parse_list(bytes: &[u8]) -> Option<Vec<ListChild>> {
+    if !bytes.len().is_multiple_of(12) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 12);
+    for at in (0..bytes.len()).step_by(12) {
+        out.push(ListChild {
+            id: u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]),
+            flags: u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]),
+            x: i16::from_le_bytes([bytes[at + 8], bytes[at + 9]]),
+            y: i16::from_le_bytes([bytes[at + 10], bytes[at + 11]]),
+        });
+    }
+    Some(out)
+}
+
+/// Writes a character's saved inventory list.
+pub fn write_list(entries: &[ListChild]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(entries.len() * 12);
+    for child in entries {
+        bytes.extend_from_slice(&child.id.to_le_bytes());
+        bytes.extend_from_slice(&child.flags.to_le_bytes());
+        bytes.extend_from_slice(&child.x.to_le_bytes());
+        bytes.extend_from_slice(&child.y.to_le_bytes());
+    }
+    bytes
+}
+
+/// What a drop did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropResult {
+    /// The entry's index after the drop.
+    pub index: usize,
+    /// The item whose bulk entered the panel, when one did.
+    pub added: Option<u32>,
+    /// The game function and argument the AR crystal drop fires.
+    pub fired: Option<(u32, u32)>,
+}
+
+/// A free-form panel's state, kept as the original keeps it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Container {
+    pub entries: Vec<Entry>,
+    pub used: i32,
+    pub capacity: i32,
+    pub max_item: i32,
+    /// The container record this panel shows (0 for a character's pack).
+    pub container_id: u32,
+    /// The panel a move to or from does not charge capacity.
+    pub linked: Option<u32>,
+    /// The character that owns the panel, if any.
+    pub owner: Option<u32>,
+    pub reject_mask: u32,
+    pub required_mask: u32,
+    pub required_value: u32,
+    pub green_mask: u32,
+    pub yellow_mask: u32,
+    /// The vertical position scale.
+    pub vscale: f32,
+    pub only_own: bool,
+    pub loaded: bool,
+    /// The client area the entries stay inside.
+    pub client: (i32, i32),
+    pub icon_size: i32,
+}
+
+impl Default for Container {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            used: 0,
+            capacity: 0,
+            max_item: 0,
+            container_id: 0,
+            linked: None,
+            owner: None,
+            reject_mask: 0,
+            required_mask: 0,
+            required_value: 0,
+            green_mask: 0,
+            yellow_mask: 0,
+            vscale: 1.0,
+            only_own: false,
+            loaded: false,
+            client: (228, 180),
+            icon_size: 160,
+        }
+    }
+}
+
+/// A drop from a drag payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropDrag {
+    /// The panel the drag came from (0 for a new item from elsewhere).
+    pub src: u32,
+    /// The source is this panel's linked one.
+    pub linked: bool,
+    pub id: u32,
+    pub icon: usize,
+    pub flags: u32,
+    pub bulk: i32,
+}
+
+impl Container {
+    /// The accept test of this panel. `own_icon` reports whether an entry
+    /// carries the dragged icon.
+    pub fn accept(&self, drag: &Drag, own_icon: impl FnMut(u32) -> bool) -> bool {
+        accepts(
+            &Accept {
+                capacity: self.capacity,
+                used: self.used,
+                max_item_size: self.max_item,
+                reject_mask: self.reject_mask,
+                required_mask: self.required_mask,
+                required_value: self.required_value,
+                only_own: self.only_own,
+                container_id: self.container_id,
+                linked: self.linked,
+                this: 0,
+            },
+            drag,
+            own_icon,
+        )
+    }
+
+    /// Adds an item at the panel's centre. An item with no icon is refused
+    /// (the original's "user item" error path) and nothing changes.
+    pub fn add_at_centre(&mut self, id: u32, icon: usize, flags: u32, bulk: i32) -> bool {
+        if icon == 0 {
+            return false;
+        }
+        let half = self.icon_size >> 1;
+        let cell = Cell::new((self.client.0 >> 1) - half, (self.client.1 >> 1) - half);
+        self.entries.push(Entry {
+            cell,
+            id,
+            icon,
+            flags,
+            drag: 0,
+        });
+        self.used += bulk;
+        true
+    }
+
+    /// Removes entry `at` and its bulk, shifting the tail left.
+    pub fn remove_at(&mut self, at: usize, bulk: i32) -> Option<Entry> {
+        let entry = remove_entry(&mut self.entries, at)?;
+        self.used -= bulk;
+        Some(entry)
+    }
+
+    /// A character-list load: every resolved child takes its saved place,
+    /// its bulk counts, and the whole panel is then clamped by the icons'
+    /// half extents (`halves` maps an icon slot to them). Unresolved items
+    /// are skipped.
+    pub fn load_list<F, H>(
+        &mut self,
+        children: &[ListChild],
+        mut resolve: F,
+        mut halves: H,
+    ) -> usize
+    where
+        F: FnMut(u32, u32) -> Option<(usize, i32)>,
+        H: FnMut(usize) -> Option<(i32, i32)>,
+    {
+        self.entries.clear();
+        self.used = 0;
+        let unit = 4;
+        for child in children {
+            let Some((icon, bulk)) = resolve(child.id, child.flags) else {
+                continue;
+            };
+            self.entries.push(Entry {
+                cell: from_list_pos((child.x, child.y), unit, self.vscale),
+                id: child.id,
+                icon,
+                flags: child.flags,
+                drag: 0,
+            });
+            self.used += bulk;
+        }
+        self.clamp_all(&mut halves);
+        self.loaded = true;
+        self.entries.len()
+    }
+
+    /// The inverse of [`Container::load_list`], in sixteenths of a unit.
+    pub fn save_list(&self) -> Vec<ListChild> {
+        let unit = 4;
+        self.entries
+            .iter()
+            .map(|entry| {
+                let (x, y) = to_list_pos(entry.cell.x, unit, self.vscale);
+                ListChild {
+                    id: entry.id,
+                    flags: entry.flags,
+                    x,
+                    y,
+                }
+            })
+            .collect()
+    }
+
+    /// A container-record load: the size sets the client, the capacity and
+    /// item limit come from the record, and each resolved child takes its
+    /// place in eightieths of a unit.
+    pub fn load_record<F>(&mut self, record: &ContainerRecord, mut resolve: F) -> usize
+    where
+        F: FnMut(u32, u32) -> Option<(usize, i32)>,
+    {
+        self.container_id = self.container_id.max(1);
+        self.capacity = i32::from(record.capacity);
+        self.max_item = i32::from(record.max_item);
+        self.entries.clear();
+        self.used = 0;
+        let unit = 4;
+        for child in &record.children {
+            let Some((icon, bulk)) = resolve(child.id, child.flags & 0x0FFF_FFFF) else {
+                continue;
+            };
+            self.entries.push(Entry {
+                cell: Cell::new(from_db_pos(child.x, unit), from_db_pos(child.y, unit)),
+                id: child.id,
+                icon,
+                flags: child.flags,
+                drag: 0,
+            });
+            self.used += bulk;
+        }
+        self.loaded = true;
+        self.entries.len()
+    }
+
+    /// The inverse of [`Container::load_record`]. The size, capacity and
+    /// item limit come from what the panel loaded.
+    pub fn save_record(&self, size: (u16, u16)) -> ContainerRecord {
+        let unit = 4;
+        ContainerRecord {
+            size,
+            capacity: self.capacity as u16,
+            max_item: self.max_item as u16,
+            children: self
+                .entries
+                .iter()
+                .map(|entry| ContainerChild {
+                    id: entry.id,
+                    flags: entry.flags,
+                    x: to_db_pos(entry.cell.x, unit),
+                    y: to_db_pos(entry.cell.y, unit),
+                })
+                .collect(),
+        }
+    }
+
+    /// Keeps every entry inside the panel, each by its icon's half extents.
+    pub fn clamp_all<H>(&mut self, mut halves: H)
+    where
+        H: FnMut(usize) -> Option<(i32, i32)>,
+    {
+        for entry in &mut self.entries {
+            if entry.icon == 0 {
+                continue;
+            }
+            if let Some(half) = halves(entry.icon) {
+                clamp_entry(
+                    &mut entry.cell,
+                    half,
+                    self.icon_size,
+                    self.client.0,
+                    self.client.1,
+                );
+            }
+        }
+    }
+
+    /// A drop of a dragged entry or a new item. `src` is the panel the drag
+    /// came from, `linked` says it is this panel's linked one. A drop from
+    /// this panel or its linked one only moves the dragged entry; any other
+    /// adds it unless this panel is already showing it as held. The item
+    /// id 499 (the AR crystal) fires the game's function 2 with the
+    /// container's id, or function 3 for a character-owned panel.
+    pub fn drop_entry(&mut self, drag: DropDrag, grab: Cell, cursor: Cell) -> Option<DropResult> {
+        let DropDrag {
+            src,
+            linked,
+            id,
+            icon,
+            flags,
+            bulk,
+        } = drag;
+        let mut index = None;
+        if linked
+            && let Some(at) = self
+                .entries
+                .iter()
+                .position(|e| e.id == id && e.flags & HELD != 0)
+        {
+            self.entries[at].flags &= !HELD;
+            self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
+            index = Some(at);
+        }
+        let index = match index {
+            Some(at) => at,
+            None => {
+                if src == 0 {
+                    self.entries.push(Entry {
+                        cell: Cell::new(cursor.x - grab.x, cursor.y - grab.y),
+                        id,
+                        icon,
+                        flags,
+                        drag: 0,
+                    });
+                    self.used += bulk;
+                    self.entries.len() - 1
+                } else {
+                    let at = self
+                        .entries
+                        .iter()
+                        .position(|e| e.drag & 1 != 0 && e.id == id)
+                        .or_else(|| self.entries.iter().position(|e| e.id == id))?;
+                    self.entries[at].drag = 0;
+                    self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
+                    at
+                }
+            }
+        };
+        let index = raise(&mut self.entries, index)?;
+        if let Some(entry) = self.entries.get_mut(index) {
+            clamp_entry(
+                &mut entry.cell,
+                (self.icon_size >> 1, self.icon_size >> 1),
+                self.icon_size,
+                self.client.0,
+                self.client.1,
+            );
+        }
+        let fired = (id == 499).then(|| {
+            if self.container_id == 0 {
+                if self.owner.is_some() { (3, 0) } else { (0, 0) }
+            } else {
+                (2, self.container_id)
+            }
+        });
+        Some(DropResult {
+            index,
+            added: (src == 0).then_some(id),
+            fired: fired.filter(|f| f.0 != 0),
+        })
+    }
+
+    /// The drag ended over another panel. `source` is that panel's id,
+    /// `linked` says it is this panel's linked one. A cancelled drag only
+    /// clears the mark; a refused drag-out keeps the entry and takes the
+    /// payload's flags; otherwise the entry leaves, charging this panel's
+    /// bulk unless it moved to the linked panel.
+    pub fn finish_drag(
+        &mut self,
+        src: u32,
+        cancelled: bool,
+        allowed_out: bool,
+        payload_flags: u32,
+        bulk: i32,
+    ) -> Option<DragEnd> {
+        let at = self.entries.iter().position(|e| e.drag & 1 != 0)?;
+        if cancelled {
+            self.entries[at].drag = 0;
+            return Some(DragEnd::Cancel);
+        }
+        if !allowed_out {
+            self.entries[at].flags = payload_flags;
+            return Some(DragEnd::SnapBack);
+        }
+        let same = self.linked.is_some_and(|linked_id| linked_id == src);
+        if same {
+            self.entries.remove(at);
+            return Some(DragEnd::Transfer);
+        }
+        self.remove_at(at, bulk);
+        Some(DragEnd::Remove)
+    }
+
+    /// A UI-scale change rescales every entry's place from `old_unit` to
+    /// the current unit (`round(unit · place / old)`).
+    pub fn rescale(&mut self, old_unit: i32, unit: i32) {
+        if old_unit <= 0 {
+            return;
+        }
+        for entry in &mut self.entries {
+            entry.cell.x = (f64::from(unit) * (f64::from(entry.cell.x) / f64::from(old_unit)))
+                .round_ties_even() as i32;
+            entry.cell.y = (f64::from(unit) * (f64::from(entry.cell.y) / f64::from(old_unit)))
+                .round_ties_even() as i32;
+        }
+    }
+
+    /// Draws each entry that is not dragged, held or icon-less, from
+    /// `origin` (where its icon goes) with its tint.
+    pub fn paint<F, G>(&self, mut origin: F, mut draw: G)
+    where
+        F: FnMut(usize) -> Option<(i32, i32)>,
+        G: FnMut(usize, (i32, i32), [u8; 4]),
+    {
+        for entry in &self.entries {
+            let Some(tint) = tint(entry, self.green_mask, self.yellow_mask) else {
+                continue;
+            };
+            if let Some(at) = origin(entry.icon) {
+                draw(entry.icon, at, tint);
+            }
+        }
+    }
+
+    /// The topmost entry whose rectangle and icon alpha hold the point.
+    /// `alpha` reports whether an icon's pixel is opaque.
+    pub fn hit_alpha<F>(&self, x: i32, y: i32, mut alpha: F) -> Option<usize>
+    where
+        F: FnMut(usize, i32, i32) -> bool,
+    {
+        for (i, entry) in self.entries.iter().enumerate().rev() {
+            if entry.flags & HELD != 0 || entry.icon == 0 {
+                continue;
+            }
+            let h = self.icon_size;
+            if x >= entry.cell.x
+                && x < entry.cell.x + h
+                && y >= entry.cell.y
+                && y < entry.cell.y + h
+                && alpha(entry.icon, x - entry.cell.x, y - entry.cell.y)
+            {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod entry_tests {
     use super::*;
@@ -1132,5 +1673,430 @@ mod entry_tests {
         }
         assert!(worn_layout(&[], &mut icon, (228, 228), 160, &mut state).is_empty());
         assert_eq!(parchment_size((768, 512), 4), (512, 341));
+    }
+}
+
+/// The pronoun kinds an item description's template can name.
+pub const PRONOUN_SUBJECT: u32 = 5;
+pub const PRONOUN_OBJECT: u32 = 6;
+pub const PRONOUN_POSSESSIVE: u32 = 7;
+
+/// The word for a pronoun kind, by the owner's sex bit (bit 0 of its body
+/// word at `+0x54`).
+pub fn pronoun(kind: u32, female: bool) -> Option<&'static str> {
+    Some(match (kind, female) {
+        (PRONOUN_SUBJECT, false) => "he",
+        (PRONOUN_SUBJECT, true) => "she",
+        (PRONOUN_OBJECT, false) => "him",
+        (PRONOUN_OBJECT, true) => "her",
+        (PRONOUN_POSSESSIVE, false) => "his",
+        (PRONOUN_POSSESSIVE, true) => "her",
+        _ => return None,
+    })
+}
+
+/// The card builder's text box: the title's height above it (`0xb4`), the
+/// box's own vertical inset (`0xa0`), and the two-unit text margin.
+pub const CARD_TEXT_TITLE: i32 = 0xb4;
+pub const CARD_TEXT_INSET: i32 = 0xa0;
+pub const CARD_TEXT_MARGIN: i32 = 4;
+
+/// The height of the card's text box from the page's client size (its
+/// inner size less twice the border and twice the text margin).
+pub fn card_text_width(client_width: i32, border: i32) -> i32 {
+    client_width - border * 2 - CARD_TEXT_MARGIN * 2
+}
+
+/// The item card the mouse opens: a released "use" on types 0–2 shows the
+/// card after running the game's function for type 2, and a right click
+/// toggles the card of the same item. A container is opened instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardAction {
+    /// No card.
+    None,
+    /// Show the card; `run_use` when a type-2 usable item runs first.
+    Show { run_use: bool },
+    /// Close the card already open for this item.
+    Toggle,
+    /// Open the item as a container.
+    OpenContainer,
+}
+
+/// The card action for a use (a double click) or a right click.
+pub fn card_action(right_click: bool, usable_type: Option<u8>, has_card: bool) -> CardAction {
+    if right_click {
+        return if has_card {
+            CardAction::Toggle
+        } else {
+            CardAction::Show { run_use: false }
+        };
+    }
+    match usable_type {
+        Some(2) => CardAction::Show { run_use: true },
+        Some(0 | 1) => CardAction::Show { run_use: false },
+        Some(_) => CardAction::None,
+        None => CardAction::None,
+    }
+}
+
+/// The card's delayed opening: the timer asked for two frames and, when it
+/// fires, the card is built for the item and flags remembered at the
+/// toggle. A zero item cancels nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CardTimer {
+    pub pending: u32,
+    pub item: u32,
+    pub flags: u32,
+    /// The card's top, as the popped-up form gets it.
+    pub top: i32,
+}
+
+impl CardTimer {
+    /// Asks for a card after two frames, cancelling any pending one.
+    pub fn request(item: u32, flags: u32, top: i32) -> Self {
+        Self {
+            pending: 2,
+            item,
+            flags,
+            top,
+        }
+    }
+
+    /// One frame passes; returns the card to build this frame.
+    pub fn tick(&mut self) -> Option<(u32, u32)> {
+        if self.pending == 0 {
+            return None;
+        }
+        self.pending -= 1;
+        (self.pending == 0).then_some((self.item, self.flags))
+    }
+}
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+
+    fn child(id: u32, flags: u32, x: i16, y: i16) -> ListChild {
+        ListChild { id, flags, x, y }
+    }
+
+    #[test]
+    fn pronouns_follow_the_owner_sex_bit() {
+        assert_eq!(pronoun(PRONOUN_SUBJECT, false), Some("he"));
+        assert_eq!(pronoun(PRONOUN_SUBJECT, true), Some("she"));
+        assert_eq!(pronoun(PRONOUN_OBJECT, true), Some("her"));
+        assert_eq!(pronoun(PRONOUN_POSSESSIVE, false), Some("his"));
+        assert_eq!(pronoun(8, true), None);
+        assert_eq!(card_text_width(228, 8), 204);
+        assert_eq!(card_action(true, None, true), CardAction::Toggle);
+        assert_eq!(
+            card_action(true, None, false),
+            CardAction::Show { run_use: false }
+        );
+        assert_eq!(
+            card_action(false, Some(2), false),
+            CardAction::Show { run_use: true }
+        );
+        assert_eq!(
+            card_action(false, Some(1), false),
+            CardAction::Show { run_use: false }
+        );
+        assert_eq!(card_action(false, Some(3), false), CardAction::None);
+        let mut timer = CardTimer::request(7, 0x10, 33);
+        assert_eq!(timer.tick(), None);
+        assert_eq!(timer.tick(), Some((7, 0x10)));
+        assert_eq!(timer.tick(), None);
+    }
+
+    #[test]
+    fn a_container_record_round_trips_and_refuses_short_input() {
+        let record = ContainerRecord {
+            size: (12, 8),
+            capacity: 400,
+            max_item: 50,
+            children: vec![ContainerChild {
+                id: 7,
+                flags: 0x100,
+                x: 40,
+                y: -80,
+            }],
+        };
+        let bytes = record.write();
+        assert_eq!(ContainerRecord::parse(&bytes), Some(record.clone()));
+        let mut short = bytes.clone();
+        short.truncate(0x1f);
+        assert_eq!(ContainerRecord::parse(&short), None);
+        let mut over = bytes.clone();
+        over[0x1c] = 9;
+        assert_eq!(ContainerRecord::parse(&over), None);
+        assert_eq!(ContainerRecord::parse(&[0u8; 3]), None);
+    }
+
+    #[test]
+    fn a_character_list_round_trips_and_rejects_a_ragged_length() {
+        let entries = [child(3, 0x100, 560, -32), child(4, 0, 1, 2)];
+        let bytes = write_list(&entries);
+        assert_eq!(bytes.len(), 24);
+        assert_eq!(parse_list(&bytes), Some(entries.to_vec()));
+        assert_eq!(parse_list(&bytes[..11]), None);
+        assert_eq!(parse_list(&[]), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_list_load_counts_bulk_and_clamps_the_icons() {
+        let mut panel = Container {
+            client: (228, 180),
+            icon_size: 160,
+            vscale: 1.0,
+            ..Default::default()
+        };
+        let children = [child(5, 0x10, 560, 560), child(6, 0, -1000, 0)];
+        let mut halves = |icon: usize| (icon == 5).then_some((40, 40));
+        let loaded = panel.load_list(
+            &children,
+            |id, flags| (id != 6).then_some((id as usize, flags as i32)),
+            &mut halves,
+        );
+        assert_eq!(loaded, 1);
+        assert!(panel.loaded);
+        assert_eq!(panel.used, 0x10);
+        // 560 / 16 × 4 = 140; the centre stays 40 inside each edge.
+        assert_eq!(panel.entries[0].cell, Cell::new(108, 60));
+        assert_eq!(panel.save_list(), vec![child(5, 0x10, 432, 432)]);
+    }
+
+    #[test]
+    fn a_record_load_uses_eightieths_of_a_unit() {
+        let mut panel = Container {
+            container_id: 9,
+            ..Default::default()
+        };
+        let record = ContainerRecord {
+            size: (10, 6),
+            capacity: 120,
+            max_item: 30,
+            children: vec![ContainerChild {
+                id: 12,
+                flags: 0x2,
+                x: 2800,
+                y: -80,
+            }],
+        };
+        let loaded = panel.load_record(&record, |id, flags| {
+            (id == 12 && flags == 2).then_some((3, 7))
+        });
+        assert_eq!(loaded, 1);
+        assert_eq!((panel.capacity, panel.max_item), (120, 30));
+        assert_eq!(panel.entries[0].cell, Cell::new(140, -4));
+        assert_eq!(
+            panel.save_record((10, 6)).children,
+            vec![ContainerChild {
+                id: 12,
+                flags: 2,
+                x: 2800,
+                y: -80
+            }]
+        );
+    }
+
+    #[test]
+    fn adding_removing_and_rescaling_keep_the_bulk() {
+        let mut panel = Container {
+            client: (228, 180),
+            icon_size: 160,
+            ..Default::default()
+        };
+        assert!(!panel.add_at_centre(1, 0, 0, 4));
+        assert!(panel.add_at_centre(1, 2, 0x10, 4));
+        assert_eq!(panel.entries[0].cell, Cell::new(34, 10));
+        assert_eq!(panel.used, 4);
+        panel.entries[0].cell = Cell::new(100, 50);
+        panel.rescale(4, 5);
+        assert_eq!(panel.entries[0].cell, Cell::new(125, 62));
+        assert_eq!(panel.remove_at(0, 4).unwrap().id, 1);
+        assert_eq!(panel.used, 0);
+        assert_eq!(panel.remove_at(0, 4), None);
+    }
+
+    #[test]
+    fn a_drop_moves_a_linked_item_and_raises_an_external_one() {
+        let mut panel = Container {
+            client: (228, 180),
+            icon_size: 160,
+            owner: Some(9),
+            ..Default::default()
+        };
+        panel.entries.push(Entry {
+            cell: Cell::new(10, 10),
+            id: 5,
+            icon: 2,
+            flags: HELD,
+            drag: 0,
+        });
+        let r = panel
+            .drop_entry(
+                DropDrag {
+                    src: 4,
+                    linked: true,
+                    id: 5,
+                    icon: 2,
+                    flags: HELD,
+                    bulk: 4,
+                },
+                Cell::new(0, 0),
+                Cell::new(100, 20),
+            )
+            .unwrap();
+        assert_eq!((r.index, r.added), (0, None));
+        assert_eq!(panel.entries[0].flags, 0);
+        assert_eq!(panel.entries[0].cell, Cell::new(68, 20));
+        assert_eq!(panel.used, 0);
+
+        let r = panel
+            .drop_entry(
+                DropDrag {
+                    src: 0,
+                    linked: false,
+                    id: 499,
+                    icon: 3,
+                    flags: 0,
+                    bulk: 5,
+                },
+                Cell::new(80, 80),
+                Cell::new(20, 20),
+            )
+            .unwrap();
+        assert_eq!(r.index, 1);
+        assert_eq!(r.added, Some(499));
+        assert_eq!(r.fired, Some((3, 0)));
+        assert_eq!(panel.used, 5);
+        assert_eq!(panel.entries[1].cell, Cell::new(0, 0));
+        panel.container_id = 77;
+        let r = panel
+            .drop_entry(
+                DropDrag {
+                    src: 0,
+                    linked: false,
+                    id: 499,
+                    icon: 3,
+                    flags: 0,
+                    bulk: 5,
+                },
+                Cell::new(80, 80),
+                Cell::new(20, 20),
+            )
+            .unwrap();
+        assert_eq!(r.fired, Some((2, 77)));
+    }
+
+    #[test]
+    fn a_drag_end_clears_snaps_back_transfers_or_removes() {
+        let mut panel = Container {
+            linked: Some(4),
+            ..Default::default()
+        };
+        panel.entries.push(Entry {
+            cell: Cell::new(1, 2),
+            id: 5,
+            icon: 1,
+            flags: 0,
+            drag: 1,
+        });
+        assert_eq!(
+            panel.finish_drag(9, true, true, 0, 4),
+            Some(DragEnd::Cancel)
+        );
+        assert_eq!(panel.entries[0].drag, 0);
+        panel.entries[0].drag = 1;
+        assert_eq!(
+            panel.finish_drag(9, false, false, 0x10, 4),
+            Some(DragEnd::SnapBack)
+        );
+        assert_eq!(panel.entries[0].flags, 0x10);
+        assert_eq!(
+            panel.finish_drag(4, false, true, 0, 4),
+            Some(DragEnd::Transfer)
+        );
+        assert!(panel.entries.is_empty());
+        panel.entries.push(Entry {
+            cell: Cell::new(1, 2),
+            id: 6,
+            icon: 1,
+            flags: 0,
+            drag: 1,
+        });
+        panel.used = 4;
+        assert_eq!(
+            panel.finish_drag(9, false, true, 0, 4),
+            Some(DragEnd::Remove)
+        );
+        assert_eq!(panel.used, 0);
+        assert_eq!(panel.finish_drag(9, false, true, 0, 4), None);
+    }
+
+    #[test]
+    fn a_paint_skips_held_dragged_and_iconless_entries() {
+        let panel = Container {
+            green_mask: 0x400,
+            yellow_mask: 0x200,
+            entries: vec![
+                Entry {
+                    cell: Cell::new(0, 0),
+                    id: 1,
+                    icon: 1,
+                    flags: 0x400,
+                    drag: 0,
+                },
+                Entry {
+                    cell: Cell::new(1, 1),
+                    id: 2,
+                    icon: 2,
+                    flags: 0x200,
+                    drag: 1,
+                },
+                Entry {
+                    cell: Cell::new(2, 2),
+                    id: 3,
+                    icon: 0,
+                    flags: 0,
+                    drag: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut drawn = Vec::new();
+        panel.paint(
+            |icon| (icon != 0).then_some((icon as i32, 0)),
+            |icon, at, tint| drawn.push((icon, at, tint)),
+        );
+        assert_eq!(drawn, vec![(1, (1, 0), [0, 255, 0, 255])]);
+    }
+
+    #[test]
+    fn the_alpha_hit_test_takes_the_topmost_opaque_icon() {
+        let panel = Container {
+            icon_size: 10,
+            entries: vec![
+                Entry {
+                    cell: Cell::new(0, 0),
+                    id: 1,
+                    icon: 1,
+                    flags: 0,
+                    drag: 0,
+                },
+                Entry {
+                    cell: Cell::new(5, 5),
+                    id: 2,
+                    icon: 2,
+                    flags: 0,
+                    drag: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| true), Some(1));
+        assert_eq!(panel.hit_alpha(6, 6, |icon, _, _| icon == 1), Some(0));
+        assert_eq!(panel.hit_alpha(6, 6, |_, _, _| false), None);
+        assert_eq!(panel.hit_alpha(20, 20, |_, _, _| true), None);
     }
 }
