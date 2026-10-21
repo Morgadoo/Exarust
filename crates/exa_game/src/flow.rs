@@ -1836,8 +1836,11 @@ impl Flow {
         }
     }
 
-    /// The revived story player: the lens returns, the body gets its waking
-    /// flag, a two-second delay and the wake-up; the story hook resumes.
+    /// The revived story player, behind the transition: a session in a game
+    /// mode is saved first (without the death rule), the controls and the
+    /// game view return, the body gets its waking flag and a two-second
+    /// delay, the wake-up animation is watched again two seconds on, and the
+    /// story hook resumes.
     pub fn revive(&mut self, now: u32) -> Vec<Step> {
         self.phase = Phase::Playing;
         self.hook = Hook::Story;
@@ -1847,7 +1850,13 @@ impl Flow {
             delayed: false,
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
-        vec![
+        let mut steps = Vec::new();
+        if self.mode.is_game() {
+            steps.push(Step::Save {
+                drop_on_low_health: false,
+            });
+        }
+        steps.extend([
             Step::Controls(true),
             Step::GameGui(true),
             Step::Wake(WakePose {
@@ -1859,8 +1868,8 @@ impl Flow {
                 flags: 0x40,
             }),
             Step::Hook(Hook::Story),
-            Step::SessionTask(true),
-        ]
+        ]);
+        steps
     }
 
     /// The story's death screen CONTINUE: the save is written (without the
@@ -2670,6 +2679,13 @@ mod tests {
                 .any(|step| matches!(step, Step::Wake(WakePose { flags: 0x40, .. })))
         );
         assert_eq!(flow.story.wake.start_ms, 8101);
+        // The revival saves the story first.
+        assert_eq!(
+            steps.first(),
+            Some(&Step::Save {
+                drop_on_low_health: false
+            })
+        );
         // A dead body dies instead.
         let mut flow = Flow {
             mode: Mode::Story,
