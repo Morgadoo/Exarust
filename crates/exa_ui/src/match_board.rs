@@ -772,6 +772,12 @@ pub struct Board {
     pub event_selection: usize,
     /// The winners table's selection (zero-based).
     pub winner_selection: usize,
+    /// The company table's selected row.
+    pub available_selection: usize,
+    /// The lineup table's selected row.
+    pub team_selection: usize,
+    /// The season table's selected row.
+    pub season_selection: usize,
     /// The raw event table top row, which the refresh can move past the
     /// last row when every event was entered.
     pub events_top: usize,
@@ -837,6 +843,9 @@ impl Board {
             team: Vec::new(),
             event_selection: 0,
             winner_selection: 0,
+            available_selection: 0,
+            team_selection: 0,
+            season_selection: 0,
             events_top: 1,
             standard_message: String::new(),
             tournament_note: String::new(),
@@ -1091,6 +1100,8 @@ impl Board {
                 }
             }
         }
+        self.available_selection = 0;
+        self.team_selection = 0;
         for (slot, &is_used) in used.iter().enumerate() {
             if is_used {
                 continue;
@@ -1681,7 +1692,18 @@ impl Board {
                 TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
                 TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
                 TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
-                TableSlot::Roster | TableSlot::Lineup | TableSlot::Season => BoardAction::None,
+                TableSlot::Roster => {
+                    self.available_selection = row;
+                    BoardAction::Changed
+                }
+                TableSlot::Lineup => {
+                    self.team_selection = row;
+                    BoardAction::Changed
+                }
+                TableSlot::Season => {
+                    self.season_selection = row;
+                    BoardAction::Changed
+                }
             },
             BoardHit::Outside => BoardAction::None,
         }
@@ -3106,6 +3128,15 @@ mod tests {
             BoardAction::Changed
         );
         assert_eq!(board.match_type, 2);
+        // The company table's second row.
+        assert_eq!(
+            board.click((10, 348 + ROW_HEIGHT + 5)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.available_selection, 1);
+        // The lineup table's first row.
+        assert_eq!(board.click((300, 348 + 5)), BoardAction::Changed);
+        assert_eq!(board.team_selection, 0);
         assert_eq!(board.click((450, 610)), BoardAction::EnterMatch);
         assert_eq!(board.matches_played, 1);
         assert_eq!(board.click((10_000, 10_000)), BoardAction::None);
