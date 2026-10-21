@@ -151,6 +151,17 @@ fn planner_height(y: f32, base: f32) -> i32 {
 /// The line shortcut's max cell step: `|b − a|` on the longer axis.
 fn line_clear(grid: &NavGrid, from: (i32, i32), to: (i32, i32), budget: i32, shift: u32) -> bool {
     let (width, depth) = grid.size();
+    if from.0 <= 0
+        || from.1 <= 0
+        || from.0 as usize >= width
+        || from.1 as usize >= depth
+        || to.0 <= 0
+        || to.1 <= 0
+        || to.0 as usize >= width
+        || to.1 as usize >= depth
+    {
+        return false;
+    }
     let dx = to.0 - from.0;
     let dz = to.1 - from.1;
     let x_major = dx.abs() <= dz.abs();
@@ -478,7 +489,7 @@ fn search(grid: &NavGrid, from: Vec3, to: Vec3, size: u8, accept_cm: f32, shift:
                 }
             }
         }
-        if (best_h as f32) < accept_cm {
+        if best_h < accept_cm.round_ties_even() as i32 {
             check_end = false;
             break;
         }

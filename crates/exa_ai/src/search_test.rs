@@ -1061,6 +1061,16 @@ fn the_executors_carry_wear_wield_and_stow() {
     assert!(pack.carried.is_empty());
     assert!(apply_deed(&mut scene, &mut pack, &Deed::Stow { item: 12 }));
     assert_eq!(pack.hands[2], 12);
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Drop {
+            item: 12,
+            container: 40,
+        }
+    ));
+    assert_eq!(scene.containers[&40].items, vec![7, 12]);
+    assert_eq!(pack.hands[2], 0);
 }
 
 /// Dropping into a container appends while its known capacity has room.

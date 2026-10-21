@@ -1459,8 +1459,8 @@ impl Search {
 /// a carried entry removes that entry. Carrying adds to the pack, wearing
 /// adds to the worn list after taking it out of its source, wielding fills
 /// the main hand and stowing the first stowed slot. Dropping into a
-/// container refuses when its capacity is known and full. A comment changes
-/// no state.
+/// container refuses when its capacity is known and full, and otherwise
+/// takes the item out of the pack. A comment changes no state.
 pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
     match deed {
         Deed::Take {
@@ -1508,6 +1508,7 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
                 return false;
             }
             c.items.push(*item);
+            remove_from_pack(pack, *item);
             true
         }
         Deed::Comment { .. } => true,
