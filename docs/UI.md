@@ -491,7 +491,8 @@ The original's own forms and controls that Exarust rebuilds, with the
 - **Match board** (`exa_ui::match_board`): the board's constructor, tab
   switch, list refreshes and fighter assignment.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
-  at `0x100224570`.
+  at `0x100224570`; the requirements, states, ring icons, tooltips and
+  forget dialog below.
 - **Character creation** (`exa_game::create`, `exa_ui::creation`): the
   appearance page's NAME/HAIR/NEXT, the equipment page's APPAREL/WEAPONS
   tabs, or EQUIPMENT/LOBBY when the versus lobby script is installed, and
@@ -842,6 +843,109 @@ its inner width over one more than the steps, at least 4 units); keys and
 the stick step it, a continuous bar moving by a hundredth of a stick
 axis (a float; the sum is taken in double precision). A picture is its
 texture's size over 12, in units, centred.
+
+The extended controls (`exa_ui::controls`) are registered in this order:
+text field 80 × 24, combo box 80 × 24, colour swatch 24 tall, spinner
+60 × 20, progress bar 24 tall, separator 3 tall, image, texture view,
+trackbar 28 tall, caption 20 tall and scroll bar 16 tall. Their metrics
+and states:
+
+- **Text field.** Its usable span is `w − 2·pad − 2·unit`; the initial
+  field has no 255-byte limit. A press puts the caret before the first
+  byte whose middle is right of the pointer; Shift keeps the anchor, a
+  selection is replaced by typing, and Enter commits.
+- **Combo box.** Its span is `w − (4·unit|1) − 2·pad − unit`; the arrow is
+  `(4·unit|1) − unit/2 + 1` wide and `(unit+1) − (unit&1)` down. A press on
+  the closed arrow opens the list below the control, flipping above when
+  it would leave the window (a guess); an open list edits the text. The
+  selected item is 1-based and clamps to the list.
+- **Colour swatch.** A left press with the drag bit opens the colour
+  picker (result 0x105) and starts a 20-byte payload with the colour and
+  the control's rectangle; the callback bit calls the owner instead. The
+  drag accepts code 0xcd0c and writes the dropped colour.
+- **Spinner.** Its span is `w − (3·unit|1) − 2·pad − 2·unit`. A zero step
+  becomes 1, a zero maximum 100. Typed values clamp to `min ≤ v ≤ max`
+  (NaN to the minimum) and a clamped entry raises the invalid flag; an
+  integer-styled spinner takes the parsed integer without clamping. A
+  change under 1e-8 keeps the old value. The auto-repeat step is
+  `round(unit × 96 / ((max − min) / step))` clamped to `unit/2 .. 8·unit`.
+  Typed bytes are digits, one dot and a leading minus only.
+- **Progress bar.** A zero step becomes 1, a zero maximum 100, a negative
+  value or NaN zero. The text is `value × 100` with one digit and `%`; the
+  fill is `round(width × value)`.
+- **Separator.** One line when it has no text; with text it draws two
+  segments round a gap of one glyph height a byte, or one segment ending
+  before the gap when its alignment's 0x2000 bit is set.
+- **Image and texture view.** The image picks `u = (x − pad)/(w − pad)`
+  and `v = 1 − (y − pad)/(h − pad)`, both clamped (NaN to 0). The texture
+  view centres its texture in the control.
+- **Trackbar and scroll bar.** The trackbar's thumb is `pad + round(travel
+  × value)`; a NaN cursor value is zero. The scroll bar's thumb is
+  `4·unit + 1` wide and its value is `(x − left − pad − thumb/2)/travel`.
+  Its captions are the control text at the left, its unit text at the
+  right and the rounded `(max − min) × value + min` at the centre.
+- **Caption.** Text is centred vertically (style 0x300); a caption without
+  a callback does not take the press.
+- **Label alignment.** The horizontal switch has cases 1, 3, 4 and 5 only:
+  left of the box, centred in it, ending before the right edge, and past
+  the right edge. The vertical switch likewise has 1, 3, 4 and 5, centred
+  by the line height or the font base. A 2 is the default. The unit's
+  cached text inset is `3·unit|1`.
+
+## Skill screen
+
+The skill tree (`exa_ui::skill`) has six groups of eight nodes. A node code
+keeps the 1-based group in bits 8–10 and the 1-based node in bits 0–2.
+A level costs 5000 skill points; the record stores the points, the chosen
+techniques and the prerequisite table.
+
+- **Requirements.** A node's state is chosen, available, requirements not
+  met, or empty. The screen marks the five written chosen techniques, marks
+  a slot empty when its prerequisite entry is empty, and marks a node's
+  requirements unmet when one of its two table prerequisites is not among
+  the first `points / 5000` choices. The record's table supplies the pairs
+  (Close Combat's Dual Wield needs Remise or Riposte; Armour's I–III,
+  Shields' Synchrony and Ward, and Concentration's Continuity chain need
+  the one before).
+- **Tooltip state.** A node below the group's level is available. The next
+  node is unavailable while no level is ready; with a ready level and no
+  choice there it asks for requirements; with a chosen technique at that
+  level it is available only while more than ten points remain past the
+  level (otherwise requirements are not met). The status texts are
+  "Already chosen.", "Requirements not met." and "Unavailable.".
+- **Ready level.** No chosen technique may sit more than ten points past
+  its level, the scan stopping at the first group whose next technique is
+  chosen, and the count of levels up to that group must stay under fifteen.
+- **Learning and forgetting.** Choosing writes the node's slot at its
+  level; a technique past the funded levels is unlearned first with its
+  dependents. Unlearning removes the level's technique, moves the later
+  choices down and takes every technique whose table entry names a removed
+  node, losing 5000 points for each in 16-bit arithmetic
+  ([`exa_character::record::CharacterData`]).
+- **Ring.** Groups sit on a circle of radius 64 units (58 compact); a node
+  sits at `(1 − zoom) + (slot − 3.5) × 2π / count`. Its satellites are five
+  points `round(18.3 × unit × cos/sin) × zoom` out at 72° steps. The node
+  hit circle is 23 units; each satellite is hit within 5 units after the
+  node's 23-unit square.
+- **Group icons.** A group draws one icon per level, plus the next while a
+  level is ready or while a chosen technique sits at the current level,
+  on a pentagon of radius 18.3 units four units left and up. Five orbit
+  spokes run from 14 to 20.3 units.
+- **Tooltips.** The selected node's tip is 82 × 28 units, centred one unit
+  above the node and clamped into the window; a group tip puts seven node
+  icons 10 units apart. It slides in over 200 ms. The text is the group
+  and technique names from the record's tables, the node's status
+  ("Already chosen.", "Requirements not met.", "Unavailable.") and its
+  level's cost of 5000 points a level. The forget dialog
+  ("Forget Technique", "Forget all knowledge of this technique?", Yes and
+  No) opens with `(t × 0.005)²` over its last 200 ms, closes with
+  `(1 − t × 0.00333) × (2 − …)` and its Yes sits twelve units left of the
+  centre and No twelve right.
+- **Experience.** The screen distributes experience with a weight of four
+  plus the levels shown: a partial group takes `remainder × weight / 4`
+  first, then complete levels at `weight × 5000 / 4` each. The selector for
+  the last group is outside the traced code; Exarust takes the record's
+  surplus choice, else the first group below eight levels (a guess).
 
 ## Item windows
 

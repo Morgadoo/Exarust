@@ -612,6 +612,33 @@ fn a_skill_slots_prerequisites_come_from_the_table() {
     assert_eq!(slot_prerequisites(0, 9), [0, 0]);
 }
 
+/// The screen's ready scan stops at the first skill with a chosen next
+/// technique, rejects one more than ten points past its level, and keeps
+/// the counted levels under the cap.
+#[test]
+fn the_skill_screen_ready_scan_reads_the_next_technique() {
+    let mut data = CharacterData::new();
+    assert!(data.skill_ready());
+    data.record.skills[0] = Skill {
+        points: 10_011,
+        techniques: [1, 2, 0, 0, 0, 0],
+    };
+    assert!(data.skill_ready());
+    data.record.skills[0].techniques[2] = 3;
+    assert!(!data.skill_ready());
+    data.record.skills[0].points = 10_010;
+    assert!(data.skill_ready());
+
+    let mut full = CharacterData::new();
+    for (slot, skill) in full.record.skills.iter_mut().enumerate() {
+        *skill = Skill {
+            points: (slot as u16 + 2) * 5000,
+            techniques: [1, 2, 0, 0, 0, 0],
+        };
+    }
+    assert!(!full.skill_ready());
+}
+
 /// Choosing a technique spends a level the record already funds and takes
 /// the slot; a technique past the funded levels is a surplus choice and is
 /// unlearned first.

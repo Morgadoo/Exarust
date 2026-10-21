@@ -723,6 +723,28 @@ impl CharacterData {
         self.total_levels() < MAX_TOTAL_LEVELS
     }
 
+    /// Whether the skill screen shows a level ready to spend. The scan
+    /// stops at the first skill whose next technique is chosen; no such
+    /// skill may sit more than ten points past its level, and the levels
+    /// counted up to that point must stay under the total cap. Unlike
+    /// [`Self::can_spend_level`], this is the screen's own per-group scan,
+    /// not the record consistency check.
+    pub fn skill_ready(&self) -> bool {
+        let mut total = 0u32;
+        for skill in &self.record.skills {
+            let level = usize::try_from(skill.levels()).unwrap_or(usize::MAX);
+            total = total.saturating_add(skill.levels());
+            if level < skill.techniques.len() && skill.techniques[level] != 0 {
+                let spent = (level as u16).wrapping_mul(POINTS_PER_TECHNIQUE);
+                if skill.points.wrapping_sub(spent) > 10 {
+                    return false;
+                }
+                break;
+            }
+        }
+        total < MAX_TOTAL_LEVELS
+    }
+
     /// The first skill (1-based) and level (1-based) that holds a technique
     /// past the levels its points fund, or none. The game asks which record
     /// a technique choice belongs to by this slot.

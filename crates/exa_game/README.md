@@ -253,6 +253,12 @@ told to shrink, and for the adapter the teleporter's single-row flag and
 `JourneySave` when the bubble is freed. The screen's drawing, the player's
 controls, the level change and the save are not in.
 
+The skill screen's rules now live in `exa_ui::skill`: node requirement
+states from the character record, the ready-level scan, level costs,
+learning and forgetting, ring and tooltip geometry. No play mode opens the
+screen yet; the character creator and the in-game menu still show only
+stand-ins.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

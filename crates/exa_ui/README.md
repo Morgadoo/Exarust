@@ -305,6 +305,17 @@ the teleporter, charges a small crystal, changes level when the resting
 bubble is told to shrink and, for the adapter, marks the teleporter and
 saves when the bubble is freed.
 
+The skill tree's rules are in `skill`: the record's prerequisite table and
+chosen techniques give every node its requirement state, the ready-level
+scan, the 5000-point level cost and the learning/forgetting calls into
+`exa_character`; the ring, its five-satellite hit test, group icons, orbit
+spokes, selected and group tooltips, their fades and the forget dialog's
+placement are modelled with tests. The extended controls in `controls`
+cover the text field, combo box, colour swatch, spinner, progress bar,
+separator, image and texture views, caption, trackbar and scroll bar
+metrics and states, and the label alignment now keeps only the original's
+1/3/4/5 cases. The screen and the controls are not drawn by a form yet.
+
 ## Scope
 
 - GUI skin and icon atlases from `Resource.rpk` (`guiskin`, `guitex`, icon sheets).

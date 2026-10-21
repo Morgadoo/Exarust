@@ -1398,8 +1398,212 @@ mod extended_tests {
     }
 
     #[test]
+    fn a_text_and_combo_field_trace_their_inner_parts() {
+        assert_eq!(text_border((10, 20, 80, 24)), (11, 21, 78, 22));
+        assert_eq!(combo_arrow((10, 20, 80, 24), 4), (10 + 80 - 16, 20 + 5));
+    }
+
+    #[test]
+    fn a_combo_press_opens_or_edits() {
+        assert_eq!(combo_press(false, true, true), ComboPress::Open);
+        assert_eq!(combo_press(false, false, true), ComboPress::Edit);
+        assert_eq!(combo_press(true, false, true), ComboPress::Edit);
+        assert_eq!(combo_press(false, true, false), ComboPress::Ignored);
+    }
+
+    #[test]
+    fn a_spinner_splits_its_buttons_and_filters_its_bytes() {
+        let buttons = spinner_buttons((0, 0, 60, 20), 35);
+        assert_eq!(buttons.text, (0, 0, 25, 20));
+        assert_eq!(buttons.up, (25, 0, 35, 10));
+        assert_eq!(buttons.down, (25, 10, 35, 10));
+
+        let mut field = TextField::new(b"", 0, true);
+        assert!(spinner_accepts(&field, b'5'));
+        assert!(!spinner_accepts(&field, b'x'));
+        assert!(spinner_accepts(&field, b'-'));
+        field.insert(b"5");
+        field.place(1, false);
+        assert!(!spinner_accepts(&field, b'-'));
+        field.insert(b".");
+        field.place(1, false);
+        assert!(!spinner_accepts(&field, b'.'));
+
+        let mut spinner = Spinner {
+            value: 1.0,
+            min: 0.0,
+            max: 2.0,
+            step: 1.0,
+            ..Spinner::default()
+        };
+        let mut field = TextField::new(b"", 0, true);
+        assert_eq!(
+            spinner_key(&mut spinner, &field, 0x26),
+            SpinnerKey::Stepped(true)
+        );
+        assert_eq!(spinner.value, 2.0);
+        assert_eq!(
+            spinner_key(&mut spinner, &field, 0x28),
+            SpinnerKey::Stepped(false)
+        );
+        assert_eq!(spinner.value, 1.0);
+        assert_eq!(
+            spinner_key(&mut spinner, &field, b'7' as i32),
+            SpinnerKey::Edited
+        );
+        assert_eq!(spinner_key(&mut spinner, &field, 13), SpinnerKey::Committed);
+        assert_eq!(
+            spinner_key(&mut spinner, &field, b'x' as i32),
+            SpinnerKey::Ignored
+        );
+        field.insert(b"1");
+    }
+
+    #[test]
+    fn a_scroll_bar_labels_its_current_value() {
+        let labels = scroll_labels(b"volume", b"%", 0.5, 0.0, 100.0);
+        assert_eq!(labels.text, b"volume");
+        assert_eq!(labels.unit, b"%");
+        assert_eq!(labels.value, "50");
+        assert_eq!(colour_drag_rect(20, 10), (0, 0, 20, 10));
+    }
+
+    #[test]
     fn a_caption_uses_the_centred_vertical_style() {
         assert_eq!(caption_align(0x1000), 0x1300);
         assert_eq!(caption_align(0), 0x300);
     }
+}
+
+/// A text control's inner border: the rectangle one pixel inside the
+/// control, as the text field's draw-back pass traces it.
+pub fn text_border(rect: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    (rect.0 + 1, rect.1 + 1, rect.2 - 2, rect.3 - 2)
+}
+
+/// A combo box's drop-down arrow: its left edge and top, from the class's
+/// `(4·unit|1) − unit/2 + 1` width and `(unit+1) − (unit&1)` height.
+pub fn combo_arrow(rect: (i32, i32, i32, i32), unit: i32) -> (i32, i32) {
+    let width = ((4 * unit) | 1) - unit / 2 + 1;
+    let height = (unit + 1) - (unit & 1);
+    (rect.0 + rect.2 - width, rect.1 + height)
+}
+
+/// What a combo box's press did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComboPress {
+    Ignored,
+    /// The button opened the list.
+    Open,
+    /// The press landed in the text and moves the caret.
+    Edit,
+}
+
+/// The combo box's press rule: while open the text takes the caret, while
+/// closed the arrow opens the list.
+pub fn combo_press(open: bool, on_arrow: bool, button_left: bool) -> ComboPress {
+    if !button_left {
+        return ComboPress::Ignored;
+    }
+    if open || on_arrow {
+        if open {
+            ComboPress::Edit
+        } else {
+            ComboPress::Open
+        }
+    } else {
+        ComboPress::Edit
+    }
+}
+
+/// A spinner's two step buttons and text zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpinnerButtons {
+    pub text: (i32, i32, i32, i32),
+    pub up: (i32, i32, i32, i32),
+    pub down: (i32, i32, i32, i32),
+}
+
+/// Splits a spinner into its text zone and its up and down halves.
+pub fn spinner_buttons(rect: (i32, i32, i32, i32), span: i32) -> SpinnerButtons {
+    let (x, y, w, h) = rect;
+    let text_w = w - span;
+    SpinnerButtons {
+        text: (x, y, text_w, h),
+        up: (x + text_w, y, span, h / 2),
+        down: (x + text_w, y + h / 2, span, h - h / 2),
+    }
+}
+
+/// Whether the spinner takes a typed byte: a digit, a dot unless one is
+/// already at the caret, or a minus only at an empty caret.
+pub fn spinner_accepts(field: &TextField, byte: u8) -> bool {
+    if byte == b'.' {
+        field.text.get(field.caret).copied() != Some(b'.')
+    } else if byte == b'-' {
+        field.caret == 0 && field.anchor == 0
+    } else {
+        byte.is_ascii_digit()
+    }
+}
+
+/// What a spinner's key did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpinnerKey {
+    Ignored,
+    /// A byte was accepted by the text edit unit.
+    Edited,
+    /// Enter committed the typed value.
+    Committed,
+    /// The up or down key stepped the value.
+    Stepped(bool),
+}
+
+/// A spinner's key: up and down step, Enter commits, the filter admits the
+/// numeric bytes and the rest goes to the text edit unit.
+pub fn spinner_key(spinner: &mut Spinner, field: &TextField, key: i32) -> SpinnerKey {
+    match key {
+        0x26 => {
+            if spinner.step(true) {
+                SpinnerKey::Stepped(true)
+            } else {
+                SpinnerKey::Ignored
+            }
+        }
+        0x28 => {
+            if spinner.step(false) {
+                SpinnerKey::Stepped(false)
+            } else {
+                SpinnerKey::Ignored
+            }
+        }
+        13 => SpinnerKey::Committed,
+        _ if (0..=255).contains(&key) && spinner_accepts(field, key as u8) => SpinnerKey::Edited,
+        _ => SpinnerKey::Ignored,
+    }
+}
+
+/// The scroll bar's three captions: its own text at the left, its unit text
+/// at the right and the current value in the middle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollLabels {
+    pub text: Vec<u8>,
+    pub unit: Vec<u8>,
+    pub value: String,
+}
+
+/// The scroll bar's captions; the value is `(max − min) × value + min`,
+/// rounded to a whole number.
+pub fn scroll_labels(text: &[u8], suffix: &[u8], value: f32, min: f32, max: f32) -> ScrollLabels {
+    let shown = (max - min) * value + min;
+    ScrollLabels {
+        text: text.to_vec(),
+        unit: suffix.to_vec(),
+        value: format!("{:.0}", shown),
+    }
+}
+
+/// A colour drag payload's draw rectangle, relative to the control.
+pub fn colour_drag_rect(w: i32, h: i32) -> (i32, i32, i32, i32) {
+    (0, 0, w, h)
 }
