@@ -171,15 +171,12 @@ fn grid_half(coordinate: f32) -> (usize, f32) {
     if s > 1.0 { (1, s - 1.0) } else { (0, s) }
 }
 
-/// The skin tone multiplier of the creator's grid at the record's two
-/// 16-bit words, in sRGB values: the generated diffuse map multiplies the
-/// race's stored texels by it. The grid is interpolated in linear light,
-/// divided by the base texture's colour, scaled by 0.6, encoded and scaled
-/// by 1.4, in the original's order and precision.
-pub fn tone_colour(tone: [u16; 2]) -> [f32; 3] {
-    // The column in double precision, the row in single, as the original.
-    let u = (f64::from(tone[0]) * 1.525_902_189_669_642_2e-5) as f32;
-    let v = f32::from(tone[1]) * 1.525_902_2e-5;
+/// The tone picker's colour at a point of its field (`u` across, `v`
+/// down, both 0–1): the grid interpolated in linear light, divided by the
+/// base texture's colour and scaled by 0.6, in the original's order and
+/// precision. This is the creation tone picker's own routine; the skin job
+/// encodes it ([`tone_colour`]).
+pub fn tone_linear(u: f32, v: f32) -> [f32; 3] {
     let (column, s) = grid_half(u);
     let (row, t) = grid_half(v);
     let upper = mix(tone_grid(row, column), tone_grid(row, column + 1), s);
@@ -190,7 +187,44 @@ pub fn tone_colour(tone: [u16; 2]) -> [f32; 3] {
     );
     let grid = mix(upper, lower, t);
     let reference = TONE_REFERENCE.map(srgb_decode);
-    [0, 1, 2].map(|i| srgb_encode(grid[i] / reference[i] * TONE_SCALE) * TONE_GAIN)
+    [0, 1, 2].map(|i| grid[i] / reference[i] * TONE_SCALE)
+}
+
+/// The skin tone multiplier of the creator's grid at the record's two
+/// 16-bit words, in sRGB values: the generated diffuse map multiplies the
+/// race's stored texels by it. It is [`tone_linear`] at the record's
+/// point, encoded and scaled by 1.4.
+pub fn tone_colour(tone: [u16; 2]) -> [f32; 3] {
+    // The column in double precision, the row in single, as the original.
+    let u = (f64::from(tone[0]) * 1.525_902_189_669_642_2e-5) as f32;
+    let v = f32::from(tone[1]) * 1.525_902_2e-5;
+    tone_linear(u, v).map(|c| srgb_encode(c) * TONE_GAIN)
+}
+
+/// The colour the tone picker blends a skin toward (a quarter of the way)
+/// on a material whose level is under 0.1: the grid's top-right tone
+/// (`v` 0, `u` 1) over the base texture's colour, times 0.8 in double.
+pub fn tone_blend_target() -> [f32; 3] {
+    let tone = tone_grid(0, 2);
+    let reference = TONE_REFERENCE.map(srgb_decode);
+    [0, 1, 2].map(|i| (f64::from(tone[i] / reference[i]) * 0.8) as f32)
+}
+
+/// The tone picker's nine field colours as bytes, rows `v` = 0, ½, 1 and
+/// columns `u` = 0, ½, 1: each tone's value lowered by 0.1 and doubled
+/// 2.2 times (in double), raised to the power 1.5 through the engine's
+/// fast logarithm and exponential, converted to RGB and stored × 255,
+/// rounded to even and saturated. The original builds them at start-up
+/// over its byte table.
+pub fn tone_field_bytes() -> [[[u8; 3]; 3]; 3] {
+    TONE_HSV.map(|row| {
+        row.map(|[h, s, v]| {
+            let lowered = ((f64::from(v) - 0.1) * 2.2) as f32;
+            let value = engine_exp(engine_ln(lowered) * 1.5);
+            hsv_to_rgb([h, s, value])
+                .map(|c| exa_formats::pixel::round_f32(c * 255.0).clamp(0, 255) as u8)
+        })
+    })
 }
 /// The share of the diffuse colour that scatters under a human's skin (sRGB).
 pub const SCATTER: [f32; 3] = [1.0, 0.8, 0.46];
@@ -372,6 +406,27 @@ mod tests {
         assert!((srgb_decode(0.8) - 0.6038).abs() < 1e-3);
         assert!((srgb_encode(0.6038) - 0.8).abs() < 1e-3);
         assert_eq!(srgb_decode(0.04), (0.04f64 / 12.92) as f32);
+    }
+
+    /// The tone picker's field bytes and its point colour, against an
+    /// independent single-precision emulation of the start-up routine.
+    #[test]
+    fn the_tone_field_and_point_follow_the_picker() {
+        assert_eq!(
+            tone_field_bytes(),
+            [
+                [[104, 86, 68], [123, 104, 89], [123, 111, 105]],
+                [[64, 52, 41], [92, 74, 64], [123, 99, 86]],
+                [[30, 24, 20], [64, 47, 39], [98, 74, 61]],
+            ]
+        );
+        let u = (f64::from(MIDDLE_TONE[0]) * 1.525_902_189_669_642_2e-5) as f32;
+        let v = f32::from(MIDDLE_TONE[1]) * 1.525_902_2e-5;
+        assert_eq!(
+            tone_linear(u, v).map(|c| srgb_encode(c) * TONE_GAIN),
+            tone_colour(MIDDLE_TONE)
+        );
+        assert!(tone_blend_target().iter().all(|c| c.is_finite() && *c > 0.0));
     }
 
     /// The tone pipeline bit for bit, against an independent single

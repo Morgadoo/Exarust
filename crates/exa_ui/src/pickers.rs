@@ -1,250 +1,249 @@
-//! The character-creation pickers (`THairColPicker`, `TTonePicker`): a
-//! field whose picked point becomes a colour, a marker and a small preview.
+//! The character-creation pickers (`TTonePicker`, `THairColPicker`): a
+//! field whose picked point becomes a colour, drawn as coloured quads, with
+//! the picker base's marker.
 //!
-//! The tone picker is a 2 × 2 grid of quads over a 3 × 3 table of skin
-//! tones; the picked point bilinearly interpolates the table, the channel
-//! divisors of 0.8, 0.651 and 0.573 and the 0.6 scale are the original's.
-//! The hair picker is a 3 × 3 grid whose columns run through a four-colour
-//! table, the picked column interpolated and the value scaling the colour,
-//! with a grey marker whose level is 140 times the value.
+//! - **Tone picker.** A 160 × 160 field drawn as a 2 × 2 checkerboard of
+//!   quads over the 3 × 3 tone colours the original builds at start-up
+//!   ([`exa_assets::human_skin::tone_field_bytes`]). The picked point's
+//!   colour is the creator's skin tone in linear light
+//!   ([`exa_assets::human_skin::tone_linear`]); a refresh hands it to the
+//!   owner's callback when there is one, else tints the character's skin
+//!   materials with it and raises task notice 7.
+//! - **Hair picker.** A 160 × 112 field: three columns blending the hair
+//!   hue run left to right, repeated in three rows, under a vertical shade
+//!   from black to white. The point's colour is the column blend scaled by
+//!   `v·½ + ¼`, the marker a grey of `140·v`. With a hair material attached
+//!   a refresh also re-shades it through the hair picker's colour routine
+//!   (ported on the character generator's side) and raises notice 7.
 //!
-//! The table values are the bytes and floats the original's pickers read;
-//! the helper that turns the tone table into floats is outside the pack, so
-//! the bilinear form is a guess pinned to the original's table. Evidence:
-//! both constructors, the tone field's pick and draw, the hair picker's
-//! refresh, set and draw, and the task notification word 7.
+//! Evidence: both constructors, the press slots, the tone colour, refresh
+//! and skin apply, the hair refresh, set, attach and child hooks, the two
+//! field draws and the start-up routine that fills the tone table, read
+//! from their assembly, with the picker base's pick ([`pick_point`]). The
+//! rest of the picker base (`TPickerForm`: the marker draw and the gamepad
+//! nudge) and the hair routine that shades the material are not here.
 
-use exa_formats::palette::{hsv as hsv_to_rgb_parts, rgb_to_hsv};
+use exa_assets::human_skin::{tone_blend_target, tone_field_bytes, tone_linear};
 
-/// The tone table's 3 × 3 colours, red green blue, raw bytes read as
-/// floats.
-pub const TONE_TABLE: [[[f32; 3]; 3]; 3] = [
-    [
-        [170.0, 143.0, 132.0],
-        [198.0, 154.0, 118.0],
-        [173.0, 122.0, 85.0],
-    ],
-    [
-        [199.0, 156.0, 101.0],
-        [140.0, 118.0, 96.0],
-        [125.0, 90.0, 65.0],
-    ],
-    [[134.0, 104.0, 62.0], [90.0, 70.0, 46.0], [62.0, 50.0, 30.0]],
+/// The task notice a picker raises when it changed the character.
+pub const PICKER_NOTICE: u32 = 7;
+/// What the press slots add to the pick's answer on the field.
+pub const PRESS_ANSWER: u32 = 5;
+/// What the picker base's pick answers.
+pub const PICK_ANSWER: u32 = 3;
+
+/// The hair picker's colour table, sixteen stored colours in rows of four:
+/// black, the hue run (dark red, blonde, reddish, dark red), grey and
+/// white. The picker blends within the hue run; a point at the field's
+/// right edge reads the grey after it with weight 0, and the original
+/// reads on unchecked for points the set slot puts outside 0–1.
+pub const HAIR_TABLE: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+    [164, 98, 48],
+    [170, 130, 82],
+    [152, 75, 54],
+    [164, 98, 48],
+    [128, 128, 128],
+    [128, 128, 128],
+    [128, 128, 128],
+    [128, 128, 128],
+    [255, 255, 255],
+    [255, 255, 255],
+    [255, 255, 255],
+    [255, 255, 255],
 ];
-/// The per-channel divisors the tone picker applies.
-pub const TONE_DIVISOR: [f32; 3] = [0.8, 0.651, 0.573];
-/// The scale the tone colour takes after the division.
-pub const TONE_SCALE: f32 = 0.6;
-
-/// The tone field's 3 × 3 vertex colours, drawn as four quads.
-pub const TONE_VERTICES: [[u8; 3]; 9] = [
-    [170, 145, 121],
-    [198, 198, 154],
-    [118, 173, 122],
-    [85, 140, 118],
-    [96, 125, 90],
-    [65, 134, 131],
-    [62, 90, 70],
-    [46, 60, 50],
-    [40, 0, 0],
-];
-
-/// The hair table's three rows of four colours: each row is a horizontal
-/// run, the field interpolating left to right.
-pub const HAIR_TABLE: [[[u8; 3]; 4]; 3] = [
-    [[164, 98, 48], [170, 130, 82], [152, 75, 54], [164, 98, 48]],
-    [
-        [128, 128, 128],
-        [128, 128, 128],
-        [128, 128, 128],
-        [128, 128, 128],
-    ],
-    [
-        [128, 128, 128],
-        [255, 255, 255],
-        [255, 255, 255],
-        [255, 255, 255],
-    ],
-];
-/// The marker's brightness per unit of value.
+/// Where the hue run starts in [`HAIR_TABLE`].
+const HUE_RUN: usize = 4;
+/// The marker's grey per unit of the point's `v`.
 pub const HAIR_MARKER_SCALE: f32 = 140.0;
-/// The task notification a hair-picker refresh raises.
-pub const HAIR_CHANGED_WORD: u32 = 7;
+/// Where the hair picker's attached control sits below the picker.
+pub const ATTACHED_DROP: i32 = 0x78;
+/// The attached control's height.
+pub const ATTACHED_HEIGHT: i32 = 0x28;
+/// The attached control's starting value (the hair routine's third input).
+pub const ATTACHED_VALUE: f32 = 0.25;
 
-/// A picker's picked point, both coordinates in 0–1.
+/// The three form words the tone picker's constructor sets on top of the
+/// form's own (the hair picker inherits them).
+pub const PICKER_LAYOUT_BITS: u32 = 0x80;
+pub const PICKER_STATE_BITS: u32 = 0x40_0010;
+pub const PICKER_STYLE_BITS: u32 = 0x400;
+
+/// The quarter-way blend the tone apply uses toward
+/// [`tone_blend_target`] on a material whose level is under 0.1.
+const TONE_BLEND: f32 = 0.25;
+
+/// A picker's picked point, both coordinates nominally 0–1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PickPoint {
     pub u: f32,
     pub v: f32,
 }
 
-/// The linear blend of two colours at `t`.
-fn blend(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-    ]
-}
-
-/// The bilinear tone colour of a point: the point scaled by two, split into
-/// a cell (0 or 1) and its fraction, the four table corners blended across
-/// and then down, each channel divided by its divisor and the result scaled
-/// by 0.6. The result stays in the table's raw 0–255 scale.
-pub fn tone_rgb(u: f32, v: f32) -> [f32; 3] {
-    let mut x = u * 2.0;
-    let right = x > 1.0;
-    if right {
-        x -= 1.0;
-    }
-    let mut y = v * 2.0;
-    let down = y > 1.0;
-    if down {
-        y -= 1.0;
-    }
-    let (column, row) = (usize::from(right), usize::from(down));
-    let top = blend(TONE_TABLE[row][column], TONE_TABLE[row][column + 1], x);
-    let bottom = blend(
-        TONE_TABLE[row + 1][column],
-        TONE_TABLE[row + 1][column + 1],
-        x,
-    );
-    let mixed = blend(top, bottom, y);
-    [
-        mixed[0] / TONE_DIVISOR[0] * TONE_SCALE,
-        mixed[1] / TONE_DIVISOR[1] * TONE_SCALE,
-        mixed[2] / TONE_DIVISOR[2] * TONE_SCALE,
-    ]
-}
-
-/// One drawn vertex: its colour and position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One drawn vertex: its colour and position in the field.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldVertex {
     pub colour: [u8; 3],
-    pub at: (i32, i32),
+    pub at: (f32, f32),
 }
 
-/// One quad of a picker field: six vertices, two triangles.
+/// One tone cell: six vertices, two triangles.
 pub type FieldQuad = [FieldVertex; 6];
 
-/// The marker: where it sits and which way it points (the original's picker
-/// base draws it), with the hair picker's grey level.
+/// The picker base's pick (`TPickerForm`): a point in the field's client
+/// coordinates becomes `u = x/width` and `v′ = 1 − y/height`, each worked
+/// in double, narrowed and held to 0–1 (a NaN passes). When both differ
+/// from the stored point by less than the base's epsilon (just under
+/// 2⁻²³) nothing happens;
+/// otherwise the point takes `u` and `1 − v′` and the picker refreshes.
+/// Answers whether the point moved.
+pub fn pick_point(point: &mut PickPoint, x: i32, y: i32, size: (i32, i32)) -> bool {
+    let hold = |c: f32| {
+        if c < 0.0 {
+            0.0
+        } else if c > 1.0 {
+            1.0
+        } else {
+            c
+        }
+    };
+    let u = hold((f64::from(x) / f64::from(size.0)) as f32);
+    let flipped = hold((1.0 - f64::from(y) / f64::from(size.1)) as f32);
+    let epsilon = f32::from_bits(0x33ff_ffd7);
+    if (point.u - u).abs() < epsilon && ((point.v - 1.0) + flipped).abs() < epsilon {
+        return false;
+    }
+    point.u = u;
+    point.v = 1.0 - flipped;
+    true
+}
+
+/// The engine's byte blend `a + (b − a)·t`, rounded to even and saturated.
+fn byte_mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [0, 1, 2].map(|i| {
+        let (a, b) = (f32::from(a[i]), f32::from(b[i]));
+        exa_formats::pixel::round_f32(a + (b - a) * t).clamp(0, 255) as u8
+    })
+}
+
+/// The engine's byte scale `c·s`, rounded to even and saturated.
+fn byte_scale(c: [u8; 3], s: f32) -> [u8; 3] {
+    c.map(|c| exa_formats::pixel::round_f32(f32::from(c) * s).clamp(0, 255) as u8)
+}
+
+/// The engine's colour blend `a + (b − a)·t` per channel.
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+/// How a picker change reached the character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PickerMarker {
-    pub at: (i32, i32),
-    /// The marker's grey, red green and blue equal.
-    pub grey: u8,
+pub enum ToneTarget {
+    /// The owner's callback heard the colour; no notice is raised.
+    Callback,
+    /// The skin materials were tinted and notice 7 raised.
+    Skin,
 }
 
 /// The tone picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TonePicker {
     pub point: PickPoint,
-    /// The field's size in pixels (160 square).
+    /// The field's size in pixels.
     pub size: (i32, i32),
-    /// The form's style word after the constructor (0x80 and 0x400).
-    pub style: u32,
-    /// The form's state word after the constructor.
+    pub layout: u32,
     pub state: u32,
-    /// The colour the field last produced, in the table's raw scale.
+    pub style: u32,
+    /// The colour the last refresh produced, in linear light.
     pub colour: [f32; 3],
-    pub shown: bool,
+    /// Whether the owner set a colour callback.
+    pub callback: bool,
 }
 
 impl TonePicker {
-    /// The constructor: a 160 × 160 field with its point at the middle and
-    /// the first refresh.
+    /// The constructor: a 160 × 160 field, its form words and the point at
+    /// the middle. The colour stays zero until the first refresh.
     pub fn new() -> Self {
-        let mut picker = Self {
+        Self {
             point: PickPoint { u: 0.5, v: 0.5 },
             size: (0xa0, 0xa0),
-            style: 0x80 | 0x400,
-            state: 0x40_0010,
+            layout: PICKER_LAYOUT_BITS,
+            state: PICKER_STATE_BITS,
+            style: PICKER_STYLE_BITS,
             colour: [0.0; 3],
-            shown: false,
+            callback: false,
+        }
+    }
+
+    /// The refresh slot: the point's colour, then the owner's callback or
+    /// the skin apply.
+    pub fn refresh(&mut self) -> ToneTarget {
+        self.colour = tone_linear(self.point.u, self.point.v);
+        if self.callback {
+            ToneTarget::Callback
+        } else {
+            ToneTarget::Skin
+        }
+    }
+
+    /// The colour a skin material of the character takes from the apply:
+    /// on a material whose level (compared in double) is under 0.1 the
+    /// colour moves a quarter of the way to [`tone_blend_target`];
+    /// otherwise, and for a NaN level, it is the colour itself.
+    pub fn skin_colour(&self, level: f32) -> [f32; 3] {
+        if f64::from(level) < 0.1 {
+            mix(self.colour, tone_blend_target(), TONE_BLEND)
+        } else {
+            self.colour
+        }
+    }
+
+    /// The press slot: a press over the field itself (no control under the
+    /// pointer, `at` its client position) picks the point, refreshing when
+    /// it moved, and answers the pick's answer with [`PRESS_ANSWER`]; any
+    /// other press answers what the form base did.
+    pub fn press(&mut self, at: Option<(i32, i32)>, base_answer: u32) -> u32 {
+        let Some((x, y)) = at else {
+            return base_answer;
         };
-        picker.refresh();
-        picker
+        if pick_point(&mut self.point, x, y, self.size) {
+            self.refresh();
+        }
+        PICK_ANSWER | PRESS_ANSWER
     }
 
-    /// Recomputes the colour from the point.
-    pub fn refresh(&mut self) {
-        self.colour = tone_rgb(self.point.u, self.point.v);
-    }
-
-    /// The pick slot: a point in the field's coordinates becomes the
-    /// point, held to 0–1, and the colour follows. The original divides by
-    /// the field's size and clamps through the picker base. A NaN passes
-    /// the clamp.
-    pub fn pick(&mut self, x: i32, y: i32) -> [f32; 3] {
-        self.point.u = (x as f32 / self.size.0 as f32).clamp(0.0, 1.0);
-        self.point.v = (y as f32 / self.size.1 as f32).clamp(0.0, 1.0);
-        self.refresh();
-        self.colour
-    }
-
-    /// The four quads of the field's 2 × 2 grid, each over the 3 × 3
-    /// vertex table. The vertices are the top-left, bottom-left and
-    /// bottom-right colours in one triangle and the bottom-right, top-right
-    /// and top-left in the other, alternating for the checkerboard, at
-    /// half the field per cell.
+    /// The field's four cells, a 2 × 2 grid over the 3 × 3 tone colours at
+    /// half the field per cell. A cell whose row and column add up odd is
+    /// split top-left/bottom-left/top-right, top-right/bottom-left/
+    /// bottom-right; an even cell top-left/bottom-left/bottom-right,
+    /// bottom-right/top-right/top-left.
     pub fn quads(&self) -> [FieldQuad; 4] {
-        let half_w = (self.size.0 as f32 * 0.5) as i32;
-        let half_h = (self.size.1 as f32 * 0.5) as i32;
+        let bytes = tone_field_bytes();
+        let half_w = self.size.0 as f32 * 0.5;
+        let half_h = self.size.1 as f32 * 0.5;
         let mut quads = [[FieldVertex {
             colour: [0; 3],
-            at: (0, 0),
+            at: (0.0, 0.0),
         }; 6]; 4];
-        let mut slot = 0;
         for row in 0..2usize {
             for column in 0..2usize {
-                let (x0, y0) = (column as i32 * half_w, row as i32 * half_h);
-                let (x1, y1) = (x0 + half_w, y0 + half_h);
-                let top_left = TONE_VERTICES[row * 3 + column];
-                let top_right = TONE_VERTICES[row * 3 + column + 1];
-                let bottom_left = TONE_VERTICES[(row + 1) * 3 + column];
-                let bottom_right = TONE_VERTICES[(row + 1) * 3 + column + 1];
-                let vertex = |colour, at| FieldVertex { colour, at };
-                quads[slot] = if (row + column) % 2 == 0 {
-                    [
-                        vertex(top_left, (x0, y0)),
-                        vertex(bottom_left, (x0, y1)),
-                        vertex(bottom_right, (x1, y1)),
-                        vertex(bottom_right, (x1, y1)),
-                        vertex(top_right, (x1, y0)),
-                        vertex(top_left, (x0, y0)),
-                    ]
-                } else {
-                    [
-                        vertex(top_left, (x0, y0)),
-                        vertex(bottom_left, (x0, y1)),
-                        vertex(top_right, (x1, y0)),
-                        vertex(top_right, (x1, y0)),
-                        vertex(bottom_left, (x0, y1)),
-                        vertex(bottom_right, (x1, y1)),
-                    ]
+                let vertex = |r: usize, c: usize| FieldVertex {
+                    colour: bytes[r][c],
+                    at: (c as f32 * half_w, r as f32 * half_h),
                 };
-                slot += 1;
+                let (tl, tr) = (vertex(row, column), vertex(row, column + 1));
+                let (bl, br) = (vertex(row + 1, column), vertex(row + 1, column + 1));
+                quads[row * 2 + column] = if (row + column) % 2 == 1 {
+                    [tl, bl, tr, tr, bl, br]
+                } else {
+                    [tl, bl, br, br, tr, tl]
+                };
             }
         }
         quads
-    }
-
-    /// The press slot: a press on the field itself (the pointer's control
-    /// code −1) picks the point and answers 5, the picker's hold word.
-    pub fn press(&mut self, x: i32, y: i32) -> ([f32; 3], u32) {
-        (self.pick(x, y), 5)
-    }
-
-    /// Where the marker sits: the point over the field's size.
-    pub fn marker(&self) -> PickerMarker {
-        PickerMarker {
-            at: (
-                (self.point.u * self.size.0 as f32) as i32,
-                (self.point.v * self.size.1 as f32) as i32,
-            ),
-            grey: 0,
-        }
     }
 }
 
@@ -254,311 +253,204 @@ impl Default for TonePicker {
     }
 }
 
-/// The preview node a hair picker attaches to: the colour it shows, the
-/// owner and callback marks, its place and its version.
+/// The control a hair picker attaches below itself (its third input).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HairPreviewNode {
-    pub colour: [u8; 3],
-    pub owner: bool,
-    pub callback: bool,
+pub struct AttachedControl {
+    /// x, y, width and height.
     pub place: (i32, i32, i32, i32),
-    pub version: f32,
-}
-
-impl Default for HairPreviewNode {
-    fn default() -> Self {
-        Self {
-            colour: [0; 3],
-            owner: false,
-            callback: false,
-            place: (0, 0, 0, 0),
-            version: 0.0,
-        }
-    }
+    /// The control's value: the hair routine's third input.
+    pub value: f32,
+    /// The control shows the picker's colour record and calls the
+    /// picker's child refresh on a change.
+    pub linked: bool,
 }
 
 /// The hair-colour picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HairColPicker {
     pub point: PickPoint,
+    /// The picker's place.
+    pub at: (i32, i32),
     /// The field's size: 160 wide, 112 tall.
     pub size: (i32, i32),
-    /// The shading version the character generator passes (the picker base's
-    /// third argument).
-    pub version: f32,
-    /// The colour of the picked point, scaled by the value, in bytes.
-    pub colour: [u8; 3],
-    /// The marker's grey.
-    pub grey: u8,
-    /// The style and state words after the constructor.
-    pub style: u32,
-    pub state: u32,
-    /// Whether the owner hears a change (the original's +0x180 callback).
+    /// The colour of the picked point in bytes, alpha 255.
+    pub colour: [u8; 4],
+    /// The marker's grey, alpha 255.
+    pub marker: [u8; 4],
+    /// The control attached below the picker.
+    pub attached: Option<AttachedControl>,
+    /// Whether a hair material is attached (re-shaded on refresh).
+    pub material: bool,
+    /// Whether the owner hears a change.
     pub callback: bool,
-    /// The task notification the last refresh raised.
-    pub notice: u32,
-    pub shown: bool,
 }
 
 impl HairColPicker {
-    /// The constructor: the tone base at 160 square, moved to 160 × 112,
-    /// the point at (0.25, 0.5) and the first refresh. The value sets the
-    /// marker grey and the field's flag byte.
-    pub fn new() -> Self {
+    /// The constructor: the tone picker's, then a 160 × 112 field, the
+    /// point at (¼, ½), opaque colour and marker records and a refresh.
+    pub fn new(at: (i32, i32)) -> Self {
         let mut picker = Self {
             point: PickPoint { u: 0.25, v: 0.5 },
+            at,
             size: (0xa0, 0x70),
-            version: 0.5,
-            colour: [0; 3],
-            grey: 0,
-            style: 0x80 | 0x400,
-            state: 0x40_0010,
-            callback: true,
-            notice: 0,
-            shown: false,
+            colour: [0, 0, 0, 255],
+            marker: [0, 0, 0, 255],
+            attached: None,
+            material: false,
+            callback: false,
         };
         picker.refresh();
         picker
     }
 
-    /// The colour at a point of the table before the value scale: the
-    /// column is `floor(u · 3)`, the blend across it to the next column,
-    /// each byte rounded to nearest even.
-    pub fn table_colour(u: f32) -> [u8; 3] {
+    /// The colour at `u` before the value scale: the hue run blended at
+    /// `3u`, the index truncated. Points outside the table (`u` under
+    /// −4/3 or past 11/3) are held to its ends, where the original reads
+    /// whatever follows.
+    pub fn hue_at(u: f32) -> [u8; 3] {
         let scaled = u * 3.0;
-        let index = (scaled as i32).clamp(0, 2) as usize;
+        let index = scaled as i32;
         let fraction = scaled - index as f32;
-        let a = HAIR_TABLE[0][index];
-        let b = HAIR_TABLE[0][index + 1];
-        let mut out = [0u8; 3];
-        for channel in 0..3 {
-            let value =
-                f32::from(a[channel]) + (f32::from(b[channel]) - f32::from(a[channel])) * fraction;
-            out[channel] = value.round_ties_even() as u8;
-        }
-        out
+        let at = (index + HUE_RUN as i32).clamp(0, HAIR_TABLE.len() as i32 - 2) as usize;
+        byte_mix(HAIR_TABLE[at], HAIR_TABLE[at + 1], fraction)
     }
 
-    /// Recomputes the colour and the marker: the table colour scaled by
-    /// `v · 0.5 + 0.25`, the marker's grey `round(v · 140)`. The owner is
-    /// told and the task notified with word 7 when the picker has one.
-    pub fn refresh(&mut self) {
-        let base = Self::table_colour(self.point.u);
+    /// The refresh: the colour is the hue at `u` scaled by `v·½ + ¼`, the
+    /// marker grey `140·v` rounded to even (its low byte). Answers whether
+    /// the attached hair material was re-shaded (and notice 7 raised).
+    pub fn refresh(&mut self) -> bool {
         let scale = self.point.v * 0.5 + 0.25;
-        for (out, channel) in self.colour.iter_mut().zip(base) {
-            *out = (f32::from(channel) * scale).round_ties_even() as u8;
+        let [r, g, b] = byte_scale(Self::hue_at(self.point.u), scale);
+        self.colour = [r, g, b, 255];
+        let grey = exa_formats::pixel::round_f32(HAIR_MARKER_SCALE * self.point.v) as u8;
+        self.marker = [grey, grey, grey, 255];
+        self.material
+    }
+
+    /// The hair routine's three inputs for the material: the point's `u`
+    /// and `v` and the attached control's value. The material then takes
+    /// the routine's diffuse, its specular × 1.3 (both sRGB-decoded when
+    /// the engine's linear lighting flag is set), a copy of the specular
+    /// and the specular scaled by the material's own level.
+    pub fn material_inputs(&self) -> Option<(f32, f32, f32)> {
+        if !self.material {
+            return None;
         }
-        self.grey = (self.point.v * HAIR_MARKER_SCALE).round_ties_even() as u8;
-        if self.callback {
-            self.notice |= HAIR_CHANGED_WORD;
+        let value = self.attached.map_or(0.0, |a| a.value);
+        Some((self.point.u, self.point.v, value))
+    }
+
+    /// The refresh slot: the refresh, then the owner's callback when set.
+    /// Answers whether the owner is called.
+    pub fn refresh_with(&mut self) -> bool {
+        self.refresh();
+        self.callback
+    }
+
+    /// The set slot: the point and the attached control's value as given
+    /// (no clamp), then the refresh.
+    pub fn set(&mut self, point: PickPoint, value: f32) -> bool {
+        self.point = point;
+        if let Some(attached) = self.attached.as_mut() {
+            attached.value = value;
         }
+        self.refresh()
     }
 
-    /// The pick slot: a point in the field becomes the point (held to 0–1)
-    /// and the colour follows.
-    pub fn pick(&mut self, x: i32, y: i32) -> [u8; 3] {
-        self.point.u = (x as f32 / self.size.0 as f32).clamp(0.0, 1.0);
-        self.point.v = (y as f32 / self.size.1 as f32).clamp(0.0, 1.0);
-        self.refresh();
-        self.colour
-    }
-
-    /// The press slot: a press on the field picks the point and answers 5.
-    pub fn press(&mut self, x: i32, y: i32) -> ([u8; 3], u32) {
-        (self.pick(x, y), 5)
-    }
-
-    /// The refresh callback choice: when the owner has a callback it hears
-    /// the new colour; otherwise the marker node is updated in place. The
-    /// task is notified with word 7 either way.
-    pub fn refresh_with(&mut self, owner: Option<&mut dyn FnMut([u8; 3])>) {
-        self.refresh();
-        if let Some(callback) = owner {
-            callback(self.colour);
-        }
-    }
-
-    /// The child callback: the picker refreshes and tells its owner (the
-    /// original's +0x198 hook).
-    pub fn child_refresh(&mut self, owner: Option<&mut dyn FnMut([u8; 3])>) {
-        self.refresh_with(owner);
-    }
-
-    /// Attaches the character generator's version: it becomes the picker's
-    /// shading version and the refresh runs.
-    pub fn attach(&mut self, version: f32) -> [u8; 3] {
-        self.version = version;
-        self.refresh();
-        self.colour
-    }
-
-    /// Attaches a preview node: the node takes the picker's colour, the
-    /// picker as its owner, the child callback and the version 0.25, and
-    /// its place follows the picker's (x, y, width, 0x28 tall). The node's
-    /// callback then hears the picker's colour.
-    pub fn attach_node(&mut self, node: &mut HairPreviewNode) -> [u8; 3] {
-        node.colour = self.colour;
-        node.owner = true;
-        node.callback = true;
-        node.place = (self.size.0 / 2, self.size.1 / 2, 0x28, 0x28);
-        node.version = 0.25;
-        self.version = 0.25;
-        self.refresh();
-        node.colour = self.colour;
-        self.colour
-    }
-
-    /// The set slot: a point and the shading version, then a refresh.
-    pub fn set(&mut self, point: PickPoint, version: f32) -> [u8; 3] {
-        self.point = PickPoint {
-            u: point.u.clamp(0.0, 1.0),
-            v: point.v.clamp(0.0, 1.0),
-        };
-        self.version = version;
-        self.refresh();
-        self.colour
-    }
-
-    /// The marker's place.
-    pub fn marker(&self) -> PickerMarker {
-        PickerMarker {
-            at: (
-                (self.point.u * self.size.0 as f32) as i32,
-                (self.point.v * self.size.1 as f32) as i32,
+    /// Attaches the control below the picker: it shows the picker's colour
+    /// record, calls the picker's child refresh on a change, sits at the
+    /// picker's x, 120 below its y, as wide as the picker and 40 tall, and
+    /// starts at ¼.
+    pub fn attach(&mut self) -> AttachedControl {
+        let control = AttachedControl {
+            place: (
+                self.at.0,
+                self.at.1 + ATTACHED_DROP,
+                self.size.0,
+                ATTACHED_HEIGHT,
             ),
-            grey: self.grey,
-        }
+            value: ATTACHED_VALUE,
+            linked: true,
+        };
+        self.attached = Some(control);
+        control
     }
 
-    /// The field's cells: three columns of three rows. Each cell's left
-    /// edge takes the column's table colour, its right edge the next
-    /// column's; all nine cells repeat the same three colour pairs.
+    /// The attached control's change hook: the control's value, then the
+    /// picker's refresh and the owner's callback. Answers whether the owner
+    /// is called.
+    pub fn child_refresh(&mut self, value: f32) -> bool {
+        if let Some(attached) = self.attached.as_mut() {
+            attached.value = value;
+        }
+        self.refresh_with()
+    }
+
+    /// The press slot, as the tone picker's (a moved point runs the
+    /// refresh slot, [`HairColPicker::refresh_with`]).
+    pub fn press(&mut self, at: Option<(i32, i32)>, base_answer: u32) -> u32 {
+        let Some((x, y)) = at else {
+            return base_answer;
+        };
+        if pick_point(&mut self.point, x, y, self.size) {
+            self.refresh_with();
+        }
+        PICK_ANSWER | PRESS_ANSWER
+    }
+
+    /// The field's cells: three columns of three rows, each a quad whose
+    /// left edge takes the column's hue and right edge the next one's (all
+    /// rows alike). The cell size is a third of the field, in double,
+    /// narrowed.
     pub fn cells(&self) -> Vec<[FieldVertex; 4]> {
-        let cell_w = (self.size.0 as f64 / 3.0) as i32;
-        let cell_h = (self.size.1 as f64 / 3.0) as i32;
+        let cell_w = (f64::from(self.size.0) * (1.0 / 3.0)) as f32;
+        let cell_h = (f64::from(self.size.1) * (1.0 / 3.0)) as f32;
         let mut out = Vec::with_capacity(9);
         for row in 0..3usize {
-            let y0 = row as i32 * cell_h;
-            let y1 = (row as i32 + 1) * cell_h;
+            let (y0, y1) = (row as f32 * cell_h, (row + 1) as f32 * cell_h);
             for column in 0..3usize {
-                let x0 = column as i32 * cell_w;
-                let x1 = (column as i32 + 1) * cell_w;
-                let left = HAIR_TABLE[0][column];
-                let right = HAIR_TABLE[0][column + 1];
+                let (x0, x1) = (column as f32 * cell_w, (column + 1) as f32 * cell_w);
+                let (left, right) = (
+                    HAIR_TABLE[HUE_RUN + column],
+                    HAIR_TABLE[HUE_RUN + column + 1],
+                );
+                let vertex = |colour, at| FieldVertex { colour, at };
                 out.push([
-                    FieldVertex {
-                        colour: left,
-                        at: (x0, y0),
-                    },
-                    FieldVertex {
-                        colour: left,
-                        at: (x0, y1),
-                    },
-                    FieldVertex {
-                        colour: right,
-                        at: (x1, y1),
-                    },
-                    FieldVertex {
-                        colour: right,
-                        at: (x1, y0),
-                    },
+                    vertex(left, (x0, y0)),
+                    vertex(left, (x0, y1)),
+                    vertex(right, (x1, y1)),
+                    vertex(right, (x1, y0)),
                 ]);
             }
         }
         out
     }
 
-    /// The darkening quad drawn over the field: black at the top and white
-    /// at 1.2 times the field's height, across the whole width.
-    pub fn shade_quad(&self) -> FieldQuad {
-        let height = (self.size.1 as f32 * 1.2) as i32;
-        let width = self.size.0;
+    /// The shade drawn over the field (in the draw's second blend mode):
+    /// black along the top, white at 1.2 times the field's height (in
+    /// double, narrowed), across the whole width.
+    pub fn shade_quad(&self) -> [FieldVertex; 4] {
+        let height = (f64::from(self.size.1) * 1.2) as f32;
+        let width = self.size.0 as f32;
         [
             FieldVertex {
                 colour: [0, 0, 0],
-                at: (width, 0),
+                at: (width, 0.0),
             },
             FieldVertex {
                 colour: [0, 0, 0],
-                at: (0, 0),
+                at: (0.0, 0.0),
             },
             FieldVertex {
                 colour: [255, 255, 255],
-                at: (0, height),
-            },
-            FieldVertex {
-                colour: [255, 255, 255],
-                at: (0, height),
+                at: (0.0, height),
             },
             FieldVertex {
                 colour: [255, 255, 255],
                 at: (width, height),
             },
-            FieldVertex {
-                colour: [255, 255, 255],
-                at: (width, 0),
-            },
         ]
     }
-}
-
-impl Default for HairColPicker {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// The two colour buffers the hair picker's shading routine produces from
-/// its point and the character generator's version: the first a lighter
-/// highlight and the second the shaded hair colour. The routine blends the
-/// column's table colours, folds in the value and the version, and hands
-/// both through the engine's colour helpers. The helpers' exact transfer
-/// (the linear/sRGB pair and the brightness adjustment) is outside the
-/// pack; they are modelled here as a clamp to 0–1, a channel scale,
-/// `rgb_to_hsv`, a saturation of 1.5 and a value from the version, and the
-/// numbers are pinned to those guesses.
-pub fn hair_shading(u: f32, v: f32, version: f32) -> ([f32; 3], [f32; 3]) {
-    let scaled = u * 3.0;
-    let index = (scaled as i32).clamp(0, 2) as usize;
-    let fraction = scaled - index as f32;
-    let a = HAIR_TABLE[0][index];
-    let b = HAIR_TABLE[0][index + 1];
-    let mixed = [
-        (f32::from(a[0]) + (f32::from(b[0]) - f32::from(a[0])) * fraction) / 255.0,
-        (f32::from(a[1]) + (f32::from(b[1]) - f32::from(a[1])) * fraction) / 255.0,
-        (f32::from(a[2]) + (f32::from(b[2]) - f32::from(a[2])) * fraction) / 255.0,
-    ];
-    let value = v + 0.1;
-    // The brightness adjustment's first pass.
-    let adjusted = [
-        mixed[0] * value * value * 0.1,
-        mixed[1] * value * value * 0.1,
-        mixed[2] * value * value * 0.1,
-    ];
-    let grey = 0.75 * value * 0.3;
-    let t = version * 0.8 + 0.2;
-    let blended = [
-        adjusted[0] + (grey - adjusted[0]) * t,
-        adjusted[1] + (grey - adjusted[1]) * t,
-        adjusted[2] + (grey - adjusted[2]) * t,
-    ];
-    let first = {
-        let scale = value * 0.4 + 0.3;
-        [
-            (blended[0] * scale * 2.0).clamp(0.0, 1.0),
-            (blended[1] * scale * 2.0).clamp(0.0, 1.0),
-            (blended[2] * scale * 2.0).clamp(0.0, 1.0),
-        ]
-    };
-    let mut hsv = rgb_to_hsv([
-        blended[0].clamp(0.0, 1.0),
-        blended[1].clamp(0.0, 1.0),
-        blended[2].clamp(0.0, 1.0),
-    ]);
-    hsv[1] *= 1.5;
-    hsv[2] = ((value * 0.9 + 0.3) - version * 0.1) * 0.8;
-    let second = hsv_to_rgb_parts(hsv[0], hsv[1], hsv[2]);
-    (first, second)
 }
 
 #[cfg(test)]
@@ -566,124 +458,122 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tone_point_bilinearly_interpolates_the_table() {
-        // Exactly 0.5 is the end of the first cell (the split is strictly
-        // above one): the middle row's first table colour.
-        let middle = tone_rgb(0.5, 0.5);
-        let raw = [140.0, 118.0, 96.0];
-        let expected = [
-            raw[0] / 0.8 * 0.6,
-            raw[1] / 0.651 * 0.6,
-            raw[2] / 0.573 * 0.6,
-        ];
-        for (a, b) in middle.iter().zip(expected) {
-            assert!((a - b).abs() < 1e-5, "{middle:?}");
-        }
-        // The top-left corner is the first table colour.
-        let corner = tone_rgb(0.0, 0.0);
-        assert!((corner[0] - 170.0 / 0.8 * 0.6).abs() < 1e-5);
-        assert!((corner[1] - 143.0 / 0.651 * 0.6).abs() < 1e-5);
-        assert!((corner[2] - 132.0 / 0.573 * 0.6).abs() < 1e-5);
-        // The bottom-right corner is the last.
-        let corner = tone_rgb(1.0, 1.0);
+    fn the_tone_field_is_drawn_from_the_start_up_bytes() {
+        // An independent single-precision emulation of the start-up
+        // routine (value lowered, raised to 1.5 with the fast ln/exp,
+        // HSV to RGB, × 255).
         assert_eq!(
-            corner,
-            [62.0 / 0.8 * 0.6, 50.0 / 0.651 * 0.6, 30.0 / 0.573 * 0.6]
+            tone_field_bytes(),
+            [
+                [[104, 86, 68], [123, 104, 89], [123, 111, 105]],
+                [[64, 52, 41], [92, 74, 64], [123, 99, 86]],
+                [[30, 24, 20], [64, 47, 39], [98, 74, 61]],
+            ]
         );
-        // A point in the second cell uses its own corners.
-        let point = tone_rgb(0.75, 0.25);
-        let a = [159.0, 121.0, 91.0];
-        assert!((point[0] - a[0] / 0.8 * 0.6).abs() < 1e-5, "{point:?}");
+        let picker = TonePicker::new();
+        let quads = picker.quads();
+        let bytes = tone_field_bytes();
+        // Cell (0, 0) is even: top-left, bottom-left, bottom-right first.
+        assert_eq!(quads[0][0].colour, bytes[0][0]);
+        assert_eq!(quads[0][2].colour, bytes[1][1]);
+        assert_eq!(quads[0][2].at, (80.0, 80.0));
+        assert_eq!(quads[0][4].colour, bytes[0][1]);
+        // Cell (0, 1) is odd: its third vertex is the top-right.
+        assert_eq!(quads[1][2].colour, bytes[0][2]);
+        assert_eq!(quads[1][2].at, (160.0, 0.0));
+        assert_eq!(quads[3][5].at, (80.0, 80.0));
     }
 
     #[test]
-    fn the_tone_picker_picks_and_draws_the_checker() {
+    fn the_tone_picker_colour_is_the_skin_tone_before_encoding() {
         let mut picker = TonePicker::new();
         assert_eq!(
-            (picker.size, picker.point.u, picker.point.v),
-            ((160, 160), 0.5, 0.5)
+            (picker.size, picker.point, picker.colour),
+            ((160, 160), PickPoint { u: 0.5, v: 0.5 }, [0.0; 3])
         );
-        assert_eq!((picker.style, picker.state), (0x480, 0x40_0010));
-        let colour = picker.pick(40, 120);
-        assert!((picker.point.u - 0.25).abs() < 1e-6);
-        assert!((picker.point.v - 0.75).abs() < 1e-6);
-        assert_eq!(colour, tone_rgb(0.25, 0.75));
-        // Out-of-field points clamp.
-        picker.pick(-100, 1000);
-        assert_eq!(picker.point.u, 0.0);
-        assert_eq!(picker.point.v, 1.0);
-        let marker = picker.marker();
-        assert_eq!(marker.at, (0, 160));
-        let quads = picker.quads();
         assert_eq!(
-            quads[0][0],
-            FieldVertex {
-                colour: TONE_VERTICES[0],
-                at: (0, 0)
-            }
+            (picker.layout, picker.state, picker.style),
+            (0x80, 0x40_0010, 0x400)
         );
-        // The first cell splits from its top-left to its bottom-right.
-        assert_eq!(quads[0][2].colour, TONE_VERTICES[4]);
-        assert_eq!(quads[0][2].at, (80, 80));
-        assert_eq!(quads[1][0].colour, TONE_VERTICES[1]);
-        assert_eq!(quads[3][0].colour, TONE_VERTICES[4]);
-        assert_eq!(quads[3][5].at, (80, 80));
+        assert_eq!(picker.refresh(), ToneTarget::Skin);
+        assert_eq!(picker.colour, tone_linear(0.5, 0.5));
+        picker.callback = true;
+        assert_eq!(picker.refresh(), ToneTarget::Callback);
+        // A material under 0.1 is pulled a quarter of the way to the pale
+        // tone; others and NaN take the colour.
+        let pale = tone_blend_target();
+        let pulled = picker.skin_colour(0.0);
+        assert_eq!(
+            pulled[0],
+            picker.colour[0] + (pale[0] - picker.colour[0]) * 0.25
+        );
+        assert_eq!(picker.skin_colour(0.1), picker.colour);
+        assert_eq!(picker.skin_colour(f32::NAN), picker.colour);
+        assert_eq!(picker.press(None, 0x10), 0x10);
+        picker.callback = false;
+        assert_eq!(picker.press(Some((40, 120)), 0x10), 7);
+        assert_eq!(picker.point, PickPoint { u: 0.25, v: 0.75 });
+        assert_eq!(picker.colour, tone_linear(0.25, 0.75));
+        // Out-of-field points are held to the edges.
+        assert!(pick_point(&mut picker.point, -100, 1000, picker.size));
+        assert_eq!(picker.point, PickPoint { u: 0.0, v: 1.0 });
+        // The same point again does not move it.
+        assert!(!pick_point(&mut picker.point, -100, 1000, picker.size));
     }
 
     #[test]
     fn the_hair_colour_is_the_column_blend_scaled_by_the_value() {
-        // u = 0.25 is three quarters through the first third: from (164,
-        // 98, 48) three quarters to (170, 130, 82) is (169, 122, 74).
-        assert_eq!(HairColPicker::table_colour(0.25), [168, 122, 74]);
-        assert_eq!(HairColPicker::table_colour(0.0), [164, 98, 48]);
-        assert_eq!(HairColPicker::table_colour(1.0), [164, 98, 48]);
-        let mut picker = HairColPicker::new();
+        // u = ¼: 3u = 0.75 between the dark red and the blonde:
+        // 164 + 6·0.75 = 168.5 → 168 (even), 98 + 32·0.75 = 122,
+        // 48 + 34·0.75 = 73.5 → 74.
+        assert_eq!(HairColPicker::hue_at(0.25), [168, 122, 74]);
+        assert_eq!(HairColPicker::hue_at(0.0), [164, 98, 48]);
+        // The right edge reads the last hue with weight 0 toward the grey.
+        assert_eq!(HairColPicker::hue_at(1.0), [164, 98, 48]);
+        // Past the run the grey takes over, and black before it.
+        assert_eq!(HairColPicker::hue_at(4.0 / 3.0), [128, 128, 128]);
+        assert_eq!(HairColPicker::hue_at(-1.0), [0, 0, 0]);
+        let mut picker = HairColPicker::new((10, 20));
         assert_eq!(
             (picker.size, picker.point.u, picker.point.v),
             ((160, 112), 0.25, 0.5)
         );
-        // Scale 0.5 × 0.5 + 0.25 = 0.5.
-        assert_eq!(picker.colour, [84, 61, 37]);
-        assert_eq!(picker.grey, 70);
-        assert_eq!(picker.notice, HAIR_CHANGED_WORD);
-        // Another point: u = 0.5 is the second third's start, v = 1 scales
-        // by 0.75.
-        let colour = picker.pick(80, 112);
-        assert_eq!(HairColPicker::table_colour(0.5), [161, 102, 68]);
-        assert_eq!(colour, [121, 76, 51]);
-        assert_eq!(picker.grey, 140);
-        assert_eq!(picker.marker().at, (80, 112));
-        // The set slot takes a point and a version.
-        picker.set(PickPoint { u: 0.0, v: 0.0 }, 0.9);
-        assert_eq!(picker.colour, [41, 24, 12]);
-        assert_eq!(picker.version, 0.9);
-        // A callback-less picker raises no notice.
-        picker.callback = false;
-        picker.notice = 0;
-        picker.refresh();
-        assert_eq!(picker.notice, 0);
+        // Scale ½·½ + ¼ = ½: 84, 61, 37.
+        assert_eq!(picker.colour, [84, 61, 37, 255]);
+        assert_eq!(picker.marker, [70, 70, 70, 255]);
+        assert!(!picker.refresh());
+        assert_eq!(picker.material_inputs(), None);
+        // The set slot does not clamp and needs no attached control.
+        picker.set(PickPoint { u: 0.5, v: 1.0 }, 0.9);
+        // 3u = 1.5: 170 − 18·½ = 161, 130 − 55·½ = 102.5 → 102, 82 − 28·½
+        // = 68, scaled by ¾: 120.75 → 121, 76.5 → 76, 51.
+        assert_eq!(picker.colour, [121, 76, 51, 255]);
+        assert_eq!(picker.marker[0], 140);
+        // Attaching places the control 120 below, picker-wide, 40 tall.
+        let control = picker.attach();
+        assert_eq!(control.place, (10, 140, 160, 40));
+        assert_eq!(control.value, 0.25);
+        picker.material = true;
+        assert!(picker.set(PickPoint { u: 0.0, v: 0.0 }, 0.6));
+        assert_eq!(picker.material_inputs(), Some((0.0, 0.0, 0.6)));
+        picker.callback = true;
+        assert!(picker.child_refresh(0.3));
+        assert_eq!(picker.attached.unwrap().value, 0.3);
+    }
+
+    #[test]
+    fn the_hair_field_draws_three_columns_and_a_shade() {
+        let picker = HairColPicker::new((0, 0));
         let cells = picker.cells();
         assert_eq!(cells.len(), 9);
-        assert_eq!(cells[0][0].colour, HAIR_TABLE[0][0]);
-        assert_eq!(cells[0][3].colour, HAIR_TABLE[0][1]);
-        assert_eq!((cells[0][0].at, cells[0][3].at), ((0, 0), (53, 0)));
-        // Attaching a node copies the colour, the two marks, the place and
-        // the version.
-        let mut node = HairPreviewNode::default();
-        let colour = picker.attach_node(&mut node);
-        assert_eq!(node.colour, colour);
-        assert!(node.owner && node.callback);
-        assert_eq!(node.place, (80, 56, 0x28, 0x28));
-        assert_eq!((node.version, picker.version), (0.25, 0.25));
-        // The shading's two buffers: the table's first colour at u = 0
-        // with v = 0.5 and version 0.5.
-        let (light, shaded) = hair_shading(0.0, 0.5, 0.5);
-        assert_eq!(light, [0.09748208, 0.093456864, 0.09040745]);
-        assert_eq!(shaded, [0.632, 0.5928554, 0.5632003]);
+        assert_eq!(cells[0][0].colour, [164, 98, 48]);
+        assert_eq!(cells[0][3].colour, [170, 130, 82]);
+        assert_eq!(cells[8][2].colour, [164, 98, 48]);
+        let third = (160.0f64 * (1.0 / 3.0)) as f32;
+        assert_eq!(cells[0][3].at, (third, 0.0));
         let quad = picker.shade_quad();
-        assert_eq!(quad[1].at, (0, 0));
-        assert_eq!(quad[2].at, (0, 134));
-        assert_eq!(quad[0].colour, [0, 0, 0]);
-        assert_eq!(quad[4].colour, [255, 255, 255]);
+        assert_eq!(quad[0].at, (160.0, 0.0));
+        assert_eq!(quad[2].at, (0.0, (112.0f64 * 1.2) as f32));
+        assert_eq!((quad[1].colour, quad[3].colour), ([0; 3], [255; 3]));
     }
 }

@@ -367,8 +367,14 @@ mod tests {
     #[test]
     fn rgb_to_hsv_reads_the_sextants_and_its_thresholds() {
         assert_eq!(rgb_to_hsv([1.0, 0.0, 0.0]), [0.0, 1.0, 1.0]);
-        assert_eq!(rgb_to_hsv([0.0, 1.0, 0.0]), [(1.0f64 / 3.0) as f32, 1.0, 1.0]);
-        assert_eq!(rgb_to_hsv([0.0, 0.0, 1.0]), [(2.0f64 / 3.0) as f32, 1.0, 1.0]);
+        assert_eq!(
+            rgb_to_hsv([0.0, 1.0, 0.0]),
+            [(1.0f64 / 3.0) as f32, 1.0, 1.0]
+        );
+        assert_eq!(
+            rgb_to_hsv([0.0, 0.0, 1.0]),
+            [(2.0f64 / 3.0) as f32, 1.0, 1.0]
+        );
         // A red with more blue than green wraps: 1 + (0 − 0.5)/6.
         assert_eq!(rgb_to_hsv([1.0, 0.0, 0.5]), [1.0 - 0.5 / 6.0, 1.0, 1.0]);
         assert_eq!(rgb_to_hsv([0.5, 0.5, 0.5]), [0.0, 0.0, 0.5]);
