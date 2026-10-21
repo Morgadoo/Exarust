@@ -253,15 +253,16 @@ fn a_combatant_contact_is_classified() {
     );
 }
 
-/// A contact that is seen and has a soothe term and a rising concern.
+/// A contact seen this tick, with a soothe term, a rising concern and a
+/// sighting of 2 its noticed level rises toward.
 fn seen(id: u64) -> ContactRecord {
     ContactRecord {
         id,
-        sighting: 1.0,
+        seen: 1.0,
         soothe: 20.0,
         concern: 1.0,
         concern_target: 2.0,
-        noticeability: 2.0,
+        sighting: 2.0,
         hostility: 1.0,
         ..ContactRecord::default()
     }
@@ -287,7 +288,7 @@ fn the_contacts_sober_and_rise_toward_their_targets() {
     // Hostility: 1 − 20·5e-05 = 0.999, then ×0.999.
     assert!((c.hostility - 0.998_001).abs() < 1e-6, "{}", c.hostility);
     // Concern rises 0.5 % of the gap, the noticed level 0.5 % of the
-    // noticeability.
+    // sighting.
     assert!((c.concern - 1.005).abs() < 1e-6);
     assert!((c.noticed - 0.01).abs() < 1e-6);
     assert!(state.fresh);
@@ -313,11 +314,11 @@ fn a_contact_above_its_targets_falls_and_a_bad_route_expires() {
     let mut state = Integration::default();
     let mut contacts = vec![ContactRecord {
         id: 2,
-        sighting: 1.0,
+        seen: 1.0,
         concern: 2.0,
         concern_target: 1.0,
         noticed: 1.0,
-        noticeability: 0.5,
+        sighting: 0.5,
         soothe: 0.0,
         hostility: 2.0,
         flags: UNREACHABLE,
@@ -347,6 +348,7 @@ fn a_passive_brain_lets_its_contacts_fade() {
     };
     let mut contacts = vec![ContactRecord {
         id: 1,
+        seen: 1.0,
         sighting: 1.0,
         concern: 1.0,
         noticed: 1.0,
@@ -357,7 +359,8 @@ fn a_passive_brain_lets_its_contacts_fade() {
     integrate(&mut state, &mut contacts, &FoeSight::default(), 0);
     let c = contacts[0];
     assert_eq!(c.ticks_seen, 0);
-    assert_eq!(c.sighting, 0.0);
+    // This tick's sighting clears; the admission's sighting stays.
+    assert_eq!((c.seen, c.sighting), (0.0, 1.0));
     assert!((c.concern - 0.9997).abs() < 1e-6);
     assert!((c.noticed - 0.999).abs() < 1e-6);
     assert!((c.attention - 0.999).abs() < 1e-6);
@@ -393,7 +396,7 @@ fn a_noticed_character_is_met_greeted_and_entered_in_combat() {
         },
         &[sighting],
         &[],
-        |_| 500.0,
+        |_| 250_000.0,
         || false,
     );
     assert_eq!(report.outcome, Outcome::Fight { id: 1, level: 1 });
@@ -406,7 +409,7 @@ fn a_noticed_character_is_met_greeted_and_entered_in_combat() {
 }
 
 #[test]
-fn a_greeting_stays_inside_its_ten_metres_and_its_gates() {
+fn a_greeting_stays_inside_its_six_metres_and_its_gates() {
     let contacts = Vec::new();
     let morale = Morale::default();
     let sighting = Sighting {
@@ -419,6 +422,7 @@ fn a_greeting_stays_inside_its_ten_metres_and_its_gates() {
         character: true,
     };
     let pass = |distance: f32, gates: (f32, f32)| {
+        let distance2 = distance * distance;
         target_pass(
             PassInput {
                 contacts: &mut contacts.clone(),
@@ -436,7 +440,7 @@ fn a_greeting_stays_inside_its_ten_metres_and_its_gates() {
             },
             &[sighting],
             &[],
-            |_| distance,
+            |_| distance2,
             || false,
         )
     };
@@ -444,6 +448,8 @@ fn a_greeting_stays_inside_its_ten_metres_and_its_gates() {
     assert_eq!(pass(601.0, (0.99, 1.0)).greet, None);
     assert_eq!(pass(500.0, (6.01, 1.0)).greet, None);
     assert_eq!(pass(500.0, (0.99, 1.01)).greet, None);
+    // A NaN gate or distance passes, as the original's unordered compares.
+    assert_eq!(pass(f32::NAN, (f32::NAN, 1.0)).greet, Some(1));
     // A first meeting touches both before the greeting.
     assert_eq!(pass(500.0, (6.01, 1.0)).encounter, Some(1));
 }
@@ -486,7 +492,7 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
         },
         &[seen],
         &[],
-        |_| 500.0,
+        |_| 250_000.0,
         || false,
     );
     // The watch wins the scripted focus's level 0 notice.
@@ -518,7 +524,7 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
         },
         &[],
         &[],
-        |_| 500.0,
+        |_| 250_000.0,
         || false,
     );
     assert_eq!(report.attention, Some(9));
@@ -528,7 +534,7 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
 }
 
 #[test]
-fn the_round_robin_never_steps_onto_the_last_contact() {
+fn the_round_robin_looks_two_on_from_its_cursor() {
     let mut contacts = vec![
         ContactRecord {
             id: 1,
@@ -536,21 +542,91 @@ fn the_round_robin_never_steps_onto_the_last_contact() {
         },
         ContactRecord {
             id: 2,
-            sighting: 1.0,
+            seen: 1.0,
             ..ContactRecord::default()
         },
         ContactRecord {
             id: 3,
-            sighting: 1.0,
+            seen: 1.0,
             ..ContactRecord::default()
         },
     ];
-    // From the cursor it steps twice before the first sighting: the seen
-    // second contact is skipped from the first slot.
-    assert_eq!(refresh_slot(&contacts, 0), Some(2));
-    // With only the second seen, the first slot's walk stops at itself.
-    contacts[2].sighting = 0.0;
-    assert_eq!(refresh_slot(&contacts, 0), None);
-    // From the second slot the second contact is reached.
-    assert_eq!(refresh_slot(&contacts, 1), Some(1));
+    // From the cursor the first slot looked at is two on: the seen second
+    // contact is passed over for the third.
+    assert_eq!(refresh_slot(&contacts, 0), (2, Some(2)));
+    // With only the second seen, the walk wraps to the cursor and stops
+    // there, unseen.
+    contacts[2].seen = 0.0;
+    assert_eq!(refresh_slot(&contacts, 0), (0, None));
+    // From the second slot the walk wraps round to it.
+    assert_eq!(refresh_slot(&contacts, 1), (1, Some(1)));
+    // An object asks for no refresh, but the cursor still moves.
+    contacts[1].object = true;
+    assert_eq!(refresh_slot(&contacts, 1), (1, None));
+}
+
+/// The calming drift is `(1 − restraint)·5e-5`, scaled by the calming
+/// scale; an object is not calmed.
+#[test]
+fn the_restraint_slows_the_calming() {
+    let mut state = Integration {
+        restraint: 0.5,
+        soothe_scale: 2.0,
+        ..Integration::default()
+    };
+    let mut contacts = vec![
+        seen(5),
+        ContactRecord {
+            object: true,
+            ..seen(6)
+        },
+    ];
+    integrate(&mut state, &mut contacts, &FoeSight::default(), 0);
+    let drift = (0.5f64 * 5e-05) as f32;
+    let calmed = 1.0 - (20.0 * drift) * 2.0;
+    assert_eq!(contacts[0].hostility, (f64::from(calmed) * 0.999) as f32);
+    assert_eq!(contacts[1].hostility, (1.0f64 * 0.999) as f32);
+}
+
+/// The pass clears the concern targets and this tick's sightings, keeps
+/// the noticed levels, and cleans an unkept contact's level, concern
+/// target, sighting and stamp.
+#[test]
+fn the_pass_clears_the_concern_targets_and_cleans_the_unkept() {
+    let mut contacts = vec![ContactRecord {
+        id: 4,
+        noticed: 0.7,
+        sighting: 0.3,
+        concern_target: 2.0,
+        seen: 1.0,
+        level: 2,
+        ..ContactRecord::default()
+    }];
+    let mut morale = Morale::default();
+    let _ = target_pass(
+        PassInput {
+            contacts: &mut contacts,
+            morale: &mut morale,
+            level: 0,
+            fresh: false,
+            foe: None,
+            asleep: false,
+            in_combat: false,
+            attended: None,
+            scripted: None,
+            cursor: 0,
+            attended_id: None,
+            greet_gates: (0.99, 1.0),
+        },
+        &[],
+        &[],
+        |_| 0.0,
+        || false,
+    );
+    let c = contacts[0];
+    assert_eq!(c.noticed, 0.7);
+    assert_eq!(
+        (c.level, c.sighting, c.concern_target, c.seen),
+        (0, 0.0, 0.0, 0.0)
+    );
 }

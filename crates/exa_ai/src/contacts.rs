@@ -59,10 +59,8 @@ pub struct ContactRecord {
     /// Bit 2: engaged; bit 1: cleared while the brain engages [?].
     pub marks: u32,
     pub level: i32,
-    /// What the noticed level rises toward: the last perception's
-    /// noticeability.
-    pub noticeability: f32,
-    /// Where the concern is heading.
+    /// Where the concern is heading (the pass clears it; the perception
+    /// sets it again).
     pub concern_target: f32,
     /// How long it has been seen (ticks).
     pub ticks_seen: i32,
@@ -70,11 +68,18 @@ pub struct ContactRecord {
     pub decay: f32,
     /// Its bad-route mark holds until this clock (ms).
     pub unreachable_until_ms: u32,
-    /// A float the integration subtracts from hostility [guess: the
-    /// contact's +0x28 word].
+    /// A float the integration subtracts from hostility [guess: name].
     pub soothe: f32,
-    /// The perception's stamp word the passive branch clears [?].
+    /// How much the perception saw it this tick: above the smallest float
+    /// the integration calms its hostility, and the round-robin refresh
+    /// stops at it [guess: name].
+    pub seen: f32,
+    /// The perception's stamp word the pass and the passive branch clear
+    /// [?].
     pub stamp: f32,
+    /// It is an object, not a character: no calming, no encounter, no
+    /// refresh.
+    pub object: bool,
     /// The other is dead (its body's death bit).
     pub dead: bool,
     /// The priority the combat state writes when it weighs the contact.
@@ -106,13 +111,14 @@ impl ContactRecord {
             threat: c.threat,
             marks: 0,
             level: 0,
-            noticeability: c.noticeability,
             concern_target: c.concern_target,
             ticks_seen: 0,
             decay: 0.0,
             unreachable_until_ms: c.unreachable_until_ms,
             soothe: 0.0,
+            seen: 0.0,
             stamp: 0.0,
+            object: false,
             dead: false,
             priority: 0.0,
         }
@@ -364,24 +370,27 @@ pub const MOST_NEARBY: usize = 16;
 pub const NEARBY_CM2: f32 = 9e6;
 
 /// The nearby characters of a brain: the characters its room and the
-/// rooms its exits lead to hold, the ones in sight within 3000 cm, nearest
-/// first, at most sixteen. `around` gives each candidate's id, squared
-/// distance and whether the brain sees it, in the rooms' order; a new
-/// candidate is placed by its distance and a full list drops the farthest
-/// when the new one sorts past the last [guess: equal distances keep the
-/// order the rooms give them].
+/// rooms its exits lead to hold (the caller's walk; the original skips a
+/// room only when the exit before led to the same one), the ones in sight
+/// within 3000 cm (squared, 3-D; a NaN distance passes), at most sixteen,
+/// by squared distance. `around` gives each candidate's id, squared
+/// distance and whether the brain sees it, in the rooms' order. A new one
+/// goes in front of every entry it is not farther than (so before equal
+/// ones, and a NaN in front of all); a full list drops its last.
 pub fn nearby(around: &[(u64, f32, bool)]) -> Vec<(u64, f32)> {
     let mut kept: Vec<(u64, f32)> = Vec::with_capacity(MOST_NEARBY);
     for &(id, squared, seen) in around {
-        if !seen || squared > NEARBY_CM2 || squared.is_nan() {
+        if !seen || squared > NEARBY_CM2 {
             continue;
         }
-        let d = squared.sqrt();
-        let at = kept.partition_point(|&(_, other)| other < d);
+        let mut at = kept.len();
+        while 0 < at && !(squared > kept[at - 1].1) {
+            at -= 1;
+        }
         if MOST_NEARBY <= at {
             continue;
         }
-        kept.insert(at, (id, d));
+        kept.insert(at, (id, squared));
         if MOST_NEARBY < kept.len() {
             kept.pop();
         }
@@ -395,8 +404,8 @@ pub const TINY: f32 = f32::from_bits(0x33ff_ffd7);
 pub const QUIET_NOTICE: f32 = f32::from_bits(0x3f7d_70a4);
 /// The alarm a brain without a focus or foe keeps while it is not fleeing.
 pub const CALM_ALARM: f32 = 0.75;
-/// The satisfaction above which the readiness rises instead of falling.
-pub const READINESS_STEP: f32 = 0.0125;
+/// The readiness falls by this a tick while above it (in double).
+pub const READINESS_STEP: f64 = 0.0125;
 /// A wake knocks its sleeper out (the knockout call's delay).
 pub const KNOCKOUT: i32 = 0;
 /// A greeting reaches this far (cm).
@@ -440,8 +449,12 @@ pub struct Integration {
     pub anger: f32,
     /// How ready the brain is, 0 through 1.
     pub readiness: f32,
-    /// A per-tick value that damps the soothe term.
+    /// A per-tick value that damps the soothe term (it falls 0.001 a tick
+    /// to 0).
     pub decay: f32,
+    /// The personality's restraint: the calming drift is
+    /// `(1 − restraint)·5e-5`.
+    pub restraint: f32,
     pub alarm: f32,
     pub stress: f32,
     pub courage: f32,
@@ -449,13 +462,15 @@ pub struct Integration {
     pub attention: Option<u64>,
     /// The scripted focus.
     pub scripted: Option<u64>,
-    /// The soothe scale the perception sets.
+    /// The calming scale: the personality's eagerness term
+    /// `((3 − restraint) + confidence + 3)/8`.
     pub soothe_scale: f32,
     /// The body is running, and its locomotion flags.
     pub running: bool,
     pub run_flags: u32,
-    /// The body's position overflowed the navigation grid.
-    pub over_map: bool,
+    /// The body's second flag word has 0x80000: its contacts' hostility is
+    /// taken down by `(1 − decay)·(soothe − 100)·0.0001` instead [?].
+    pub marked_body: bool,
     /// The brain perceives (its live state).
     pub active: bool,
     /// The room it stands in.
@@ -474,6 +489,7 @@ impl Default for Integration {
             anger: 0.0,
             readiness: 0.0,
             decay: 0.0,
+            restraint: 0.0,
             alarm: 0.0,
             stress: 0.0,
             courage: 0.0,
@@ -482,7 +498,7 @@ impl Default for Integration {
             soothe_scale: 1.0,
             running: false,
             run_flags: 0,
-            over_map: false,
+            marked_body: false,
             active: true,
             room: 0,
         }
@@ -543,7 +559,7 @@ pub fn integrate(
     if state.decay < 0.0 {
         state.decay = 0.0;
     }
-    let drift = ((1.0 - state.decay) as f64 * 5e-05) as f32;
+    let drift = (f64::from(1.0 - state.restraint) * 5e-05) as f32;
     let one_minus = 1.0 - state.decay;
     let soothe_scale = state.soothe_scale;
     let scripted = state.scripted;
@@ -555,14 +571,16 @@ pub fn integrate(
     for c in contacts.iter_mut() {
         if active {
             c.ticks_seen = c.ticks_seen.wrapping_add(1);
-            if c.sighting > TINY && !c.dead {
-                if state.over_map {
-                    let drop = (f64::from(one_minus) * f64::from(c.soothe - 100.0) * 0.0001) as f32;
-                    c.hostility -= drop;
+            if !c.object && c.seen > TINY && !c.dead {
+                if state.marked_body {
+                    let drop = f64::from(one_minus) * (f64::from(c.soothe - 100.0) * 0.0001);
+                    c.hostility = (f64::from(c.hostility) - drop) as f32;
                 } else if 0.0 < c.soothe {
-                    c.hostility -= (c.soothe * drift) * soothe_scale * one_minus;
+                    c.hostility -= one_minus * ((c.soothe * drift) * soothe_scale);
                 }
             }
+            // [Not kept: the original raises the concern through its
+            // concern setter, which also flags rises past 1.2 and 4.]
             if c.concern < c.concern_target {
                 let value =
                     (f64::from(c.concern_target - c.concern) * 0.005 + f64::from(c.concern)) as f32;
@@ -576,15 +594,16 @@ pub fn integrate(
             if anger < c.hostility {
                 anger = c.hostility;
             }
-            if c.noticeability < c.noticed {
-                c.noticed = (f64::from(c.noticed) - 0.01) as f32;
+            if c.sighting > c.noticed {
+                c.noticed = (f64::from(c.sighting) * 0.005 + f64::from(c.noticed)) as f32;
             } else {
-                c.noticed = (f64::from(c.noticeability) * 0.005 + f64::from(c.noticed)) as f32;
+                c.noticed = (f64::from(c.noticed) - 0.01) as f32;
             }
             noticed_sum += c.noticed;
             if attention == Some(c.id) {
                 if scripted != Some(c.id) && state.level < 1 {
-                    c.attention += (f64::from(state.notice_scale) * 0.0006) as f32;
+                    c.attention =
+                        (f64::from(state.notice_scale) * 0.0006 + f64::from(c.attention)) as f32;
                 }
             } else if 0.0 < c.attention {
                 c.attention = (f64::from(c.attention) - 0.002) as f32;
@@ -606,37 +625,41 @@ pub fn integrate(
             if 0.0 < c.attention {
                 c.attention = (f64::from(c.attention) - 0.001) as f32;
             }
-            c.sighting = 0.0;
+            c.seen = 0.0;
             c.stamp = 0.0;
         }
     }
     state.concern_sum = concern_sum;
-    state.notice_scale = if noticed_sum <= 1.0 {
-        QUIET_NOTICE
+    // A NaN sum takes the quiet scale.
+    state.notice_scale = if 1.0 < noticed_sum {
+        (noticed_sum / (100.0 + noticed_sum)) * 100.0
     } else {
-        (noticed_sum / (noticed_sum + 100.0)) * 100.0
+        QUIET_NOTICE
     };
     state.anger = anger;
     state.total = anger + concern_sum;
     let mut interest = concern_sum;
     if TINY < concern_sum {
         let squared = concern_sum * concern_sum;
-        interest = (squared / (squared + 10.0)) * 40.0;
+        interest = (squared / (10.0 + squared)) * 40.0;
     }
+    // The floors replace the interest only past an ordered compare (a NaN
+    // interest stays).
     if state.running {
         let floor = if state.run_flags & 4 == 0 { 5.0 } else { 15.0 };
-        interest = interest.max(floor);
+        if floor > interest {
+            interest = floor;
+        }
     }
     let stress = ((state.stress + state.alarm) - state.courage) * 10.0;
-    interest = interest.max(stress);
-    if interest <= state.readiness {
-        if READINESS_STEP < state.readiness {
-            state.readiness -= READINESS_STEP;
-        } else {
-            state.readiness += 0.0;
-        }
-    } else {
-        state.readiness += (interest - state.readiness) * 0.01;
+    if stress > interest {
+        interest = stress;
+    }
+    if state.readiness < interest {
+        state.readiness =
+            (f64::from(interest - state.readiness) * 0.01 + f64::from(state.readiness)) as f32;
+    } else if f64::from(state.readiness) > READINESS_STEP {
+        state.readiness = (f64::from(state.readiness) - READINESS_STEP) as f32;
     }
     out
 }
@@ -671,6 +694,8 @@ pub struct PassReport {
     pub remove_sleep_role: bool,
     /// The contact the round-robin dialogue refresh asks for.
     pub refresh: Option<usize>,
+    /// The round-robin cursor after the pass.
+    pub cursor: usize,
     /// The new attention target.
     pub attention: Option<u64>,
     /// The new level.
@@ -689,7 +714,8 @@ impl Default for Outcome {
 
 /// The target pass over a brain's contacts.
 ///
-/// The contacts are cleared of their noticed and sighting marks, the foe
+/// The contacts' concern targets, sightings this tick and stamps are
+/// cleared with their noticed flag, the foe
 /// it flees stays a flight and the foe it fights stays an engagement while
 /// its heat passes the raw stress plus 2, a scripted focus is weighed
 /// first, then every visible character and every nearby one. A sleeper
@@ -719,15 +745,16 @@ pub struct PassInput<'a> {
     pub greet_gates: (f32, f32),
 }
 
-/// Runs the pass. `visible` then `nearby` are weighed in order; `distance`
-/// gives a character's distance for the greeting; `way_out` answers
+/// Runs the pass. `visible` then `nearby` are weighed in order (one seen in
+/// both is weighed twice, as in the original); `distance2` gives a
+/// character's squared distance (cm²) for the greeting; `way_out` answers
 /// whether a flight has somewhere to go.
 #[allow(clippy::too_many_arguments)]
 pub fn target_pass(
     input: PassInput<'_>,
     visible: &[Sighting],
     nearby: &[Sighting],
-    mut distance: impl FnMut(u64) -> f32,
+    mut distance2: impl FnMut(u64) -> f32,
     mut way_out: impl FnMut() -> bool,
 ) -> PassReport {
     let scripted_id = input.scripted.map(|s| s.contact.id);
@@ -745,9 +772,10 @@ pub fn target_pass(
         greet_gates,
         attended_id,
     } = input;
+    let level_before = level;
     for c in contacts.iter_mut() {
-        c.noticed = 0.0;
-        c.sighting = 0.0;
+        c.concern_target = 0.0;
+        c.seen = 0.0;
         c.stamp = 0.0;
         c.flags &= !crate::combatant::CONTACT_NOTICED;
     }
@@ -765,12 +793,13 @@ pub fn target_pass(
         stress: 0.0,
         ..PassReport::default()
     };
-    let weigh = |sighting: &Sighting,
-                 best: &mut Best,
-                 contacts: &mut Vec<ContactRecord>,
-                 morale: &mut Morale,
-                 way_out: &mut dyn FnMut() -> bool|
-     -> (Option<usize>, i32, f32) {
+    // Classifies a sighting into the contact list; the visible and nearby
+    // ones are then weighed against the best.
+    let classify_into = |sighting: &Sighting,
+                         contacts: &mut Vec<ContactRecord>,
+                         morale: &mut Morale,
+                         way_out: &mut dyn FnMut() -> bool|
+     -> (i32, f32) {
         let mut record = sighting.contact;
         let at = Standing {
             level,
@@ -778,42 +807,43 @@ pub fn target_pass(
         };
         let (l, score) = classify(&mut record, morale, at, &mut *way_out);
         record.level = l;
-        let index = if let Some(i) = contacts.iter().position(|c| c.id == record.id) {
+        if let Some(i) = contacts.iter().position(|c| c.id == record.id) {
             contacts[i] = record;
-            Some(i)
         } else if contacts.len() < MOST_CONTACTS {
             contacts.push(record);
-            Some(contacts.len() - 1)
-        } else {
-            admit(contacts, &record).inspect(|&i| {
-                contacts[i] = record;
-            })
-        };
+        } else if let Some(i) = admit(contacts, &record) {
+            contacts[i] = record;
+        }
+        (l, score)
+    };
+    let weigh = |sighting: &Sighting,
+                 best: &mut Best,
+                 contacts: &mut Vec<ContactRecord>,
+                 morale: &mut Morale,
+                 way_out: &mut dyn FnMut() -> bool| {
+        let (l, score) = classify_into(sighting, contacts, morale, way_out);
         if l >= 0 {
             best.weigh(Candidate {
-                id: record.id,
+                id: sighting.contact.id,
                 level: l,
                 score,
             });
         }
-        (index, l, score)
     };
     if let Some(scripted) = &scripted {
-        let (_, level, score) = weigh(
+        // The scripted focus is taken outright, not weighed: its level, the
+        // strong and noticed picks and the noticed score are its own; the
+        // strong score stays what the start left.
+        let (level, score) = classify_into(
             scripted,
-            &mut best,
             contacts,
             morale,
             &mut way_out as &mut dyn FnMut() -> bool,
         );
-        // The scripted focus becomes what the brain attends outright; its
-        // strong score is the 0 the original leaves unset, so any sighting
-        // of the same level wins the tie.
         best.level = level;
         best.strong = Some(scripted.contact.id);
-        best.strong_score = 0.0;
         best.noticed = Some(scripted.contact.id);
-        best.noticed_score = score.min(scripted.contact.concern);
+        best.noticed_score = score;
     }
     for sighting in visible.iter().chain(nearby.iter()) {
         weigh(
@@ -834,9 +864,9 @@ pub fn target_pass(
         c.ticks_seen = 0;
         if c.flags & crate::combatant::CONTACT_NOTICED == 0 && Some(c.id) != strong {
             c.level = 0;
-            c.noticed = 0.0;
-            c.noticeability = 0.0;
+            c.concern_target = 0.0;
             c.sighting = 0.0;
+            c.seen = 0.0;
             c.stamp = 0.0;
         }
         if c.level < 1 {
@@ -873,8 +903,7 @@ pub fn target_pass(
                     && sighting.character
                 {
                     report.encounter = Some(id);
-                    let (notice, readiness) = greet_gates;
-                    if notice <= 6.0 && readiness <= 1.0 && distance(id) <= GREETING_CM {
+                    if greets(greet_gates, distance2(id)) {
                         report.greet = Some(id);
                     }
                 }
@@ -892,29 +921,40 @@ pub fn target_pass(
                 && sighting.character
             {
                 report.encounter = Some(id);
-                let (notice, readiness) = greet_gates;
-                if notice <= 6.0 && readiness <= 1.0 && distance(id) <= GREETING_CM {
+                if greets(greet_gates, distance2(id)) {
                     report.greet = Some(id);
                 }
             }
-            report.target = Some(id);
-            report.enter = if in_combat { None } else { Some(level) };
-            // A level char enters at 3 for an engagement (2 and above),
-            // else at its own level; already fighting it keeps the level.
-            report.level = if in_combat || level < 2 { level } else { 3 };
+            // Only a brain entering combat takes the level (3 for an
+            // engagement, 2 and above) and the target; one already in combat
+            // keeps both.
+            if in_combat {
+                report.level = level_before;
+            } else {
+                report.enter = Some(level);
+                report.target = Some(id);
+                report.level = if level < 2 { level } else { 3 };
+            }
         }
     }
-    report.refresh = refresh_slot(contacts, cursor);
+    (report.cursor, report.refresh) = refresh_slot(contacts, cursor);
     report
 }
 
-/// The round-robin's next contact: from the cursor it steps at least once,
-/// wrapping at the second-to-last slot, and stops at the first it has
-/// seen; a character there asks for the dialogue refresh. The last slot is
-/// never stepped onto by the wrap, as in the original.
-pub fn refresh_slot(contacts: &[ContactRecord], cursor: usize) -> Option<usize> {
+/// The greeting's gates: a notice scale and a readiness not above 6 and 1,
+/// and the other within 600 cm (squared, 3-D); a NaN passes each.
+fn greets((notice, readiness): (f32, f32), distance2: f32) -> bool {
+    !(notice > 6.0) && !(readiness > 1.0) && !(distance2 > GREETING_CM * GREETING_CM)
+}
+
+/// The round-robin's next contact: the cursor (0 when past the list) is
+/// stepped from one past itself, so the first slot looked at is two on,
+/// wrapping to 0 at the last slot, until a slot seen this tick or the
+/// cursor itself. The cursor keeps where it stopped; a seen character
+/// there asks for the dialogue refresh.
+pub fn refresh_slot(contacts: &[ContactRecord], cursor: usize) -> (usize, Option<usize>) {
     if contacts.is_empty() {
-        return None;
+        return (cursor, None);
     }
     let mut cursor = cursor;
     if contacts.len() <= cursor {
@@ -927,15 +967,12 @@ pub fn refresh_slot(contacts: &[ContactRecord], cursor: usize) -> Option<usize> 
         } else {
             at = 0;
         }
-        if TINY < contacts[at].sighting || cursor == at {
+        if TINY < contacts[at].seen || cursor == at {
             break;
         }
     }
-    if TINY < contacts[at].sighting {
-        Some(at)
-    } else {
-        None
-    }
+    let c = &contacts[at];
+    (at, (TINY < c.seen && !c.object).then_some(at))
 }
 
 #[cfg(test)]
@@ -951,9 +988,18 @@ mod nearby_tests {
         let kept = nearby(&around);
         assert_eq!(kept.len(), MOST_NEARBY);
         assert!(kept.windows(2).all(|w| w[0].1 <= w[1].1));
+        // The distances kept are squared.
         assert_eq!(kept[0], (100, 0.0));
-        assert_eq!(kept[15], (115, 15.0));
+        assert_eq!(kept[15], (115, 225.0));
         assert!(!kept.iter().any(|&(id, _)| id == 1 || id == 3));
+    }
+
+    /// An equal distance goes in front of the one already kept, and a NaN
+    /// distance (which passes the range test) in front of all.
+    #[test]
+    fn ties_go_first_and_a_nan_leads() {
+        let kept = nearby(&[(1, 4.0, true), (2, 4.0, true), (3, f32::NAN, true)]);
+        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), vec![3, 2, 1]);
     }
 }
 

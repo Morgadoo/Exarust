@@ -22,10 +22,8 @@ use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::RoleDb;
 use exa_physics::body::BodyTicks;
 
-use crate::Duellist;
 use crate::activity::{self, Applied, Before, IdleKind, IdleRegistry, IdleState};
 use crate::combat;
-use crate::combatant::Combatant;
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
 use crate::idle::Routine;
 use crate::personality::{self, Personality};
@@ -174,6 +172,10 @@ impl Npc {
             roll,
         );
         let courage = self.morale.courage;
+        if let Some(p) = self.personality {
+            self.integration.restraint = p.restraint;
+            self.integration.soothe_scale = p.eagerness;
+        }
         self.integration.courage = courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
@@ -201,7 +203,7 @@ impl Npc {
             },
             &[sighting],
             &[],
-            |_| distance_cm,
+            |_| distance_cm * distance_cm,
             || false,
         );
         self.integration.level = report.level;
@@ -209,9 +211,7 @@ impl Npc {
         if let Some(attention) = report.attention {
             self.integration.attention = Some(attention);
         }
-        if let Some(at) = report.refresh {
-            self.cursor = at;
-        }
+        self.cursor = report.cursor;
         let level = report.level;
         self.pass = report;
         level
@@ -287,101 +287,6 @@ pub fn rate_the_player(
                 "{who} wakes: activity {} ({:?})",
                 applied.activity, applied.state
             );
-        }
-    }
-}
-
-/// Integrates each fighting brain's contact with its target and runs the
-/// target pass: the contact's noticeability and concern, the mind's rating
-/// and the body's unreachable mark feed it, and the pass decides whether
-/// the brain engages, leaves combat or attends. The greeting and encounter
-/// are logged (Exarust has no dialogue engine).
-#[allow(clippy::type_complexity)]
-pub fn run_target_passes(
-    ticks: Option<Res<BodyTicks>>,
-    targets: Query<&GlobalTransform, Without<Npc>>,
-    mut npcs: Query<(
-        &mut Npc,
-        &Mind,
-        &Combatant,
-        &mut Duellist,
-        &GlobalTransform,
-        &exa_combat::Fighter,
-        &exa_combat::Condition,
-        Option<&Name>,
-    )>,
-) {
-    let now = ticks.map_or(0, |t| t.millis() as u32);
-    for (mut npc, mind, combatant, mut duellist, gt, fighter, condition, name) in &mut npcs {
-        if npc.personality.is_none() {
-            continue;
-        }
-        let Ok(target) = targets.get(duellist.target) else {
-            continue;
-        };
-        let id = duellist.target.to_bits();
-        let at = target.translation();
-        let distance_cm = (at - gt.translation()).length() * 100.0;
-        let contact = combatant.contact(duellist.target);
-        let seen = contact.is_some_and(|c| c.flags & crate::combatant::CONTACT_TRACKED != 0);
-        let noticeability = contact.map_or(0.0, |c| c.noticeability);
-        let sighting = contacts::Sighting {
-            contact: ContactRecord {
-                id,
-                flags: contact
-                    .filter(|c| c.unreachable_until_ms > now)
-                    .map_or(0, |_| contacts::UNREACHABLE),
-                noticed: contact.map_or(0.0, |c| c.noticed),
-                sighting: if seen {
-                    noticeability.max(contacts::TINY * 2.0)
-                } else {
-                    0.0
-                },
-                attention: contact.map_or(0.0, |c| c.concern_target),
-                concern: contact.map_or(0.0, |c| c.concern).max(mind.concern),
-                hostility: contact.map_or(0.0, |c| c.hostility).max(mind.hostility),
-                tolerance: contact.map_or(0.0, |c| c.tolerance),
-                alarm: contact.map_or(0.0, |c| c.alarm),
-                soothe: contact.map_or(0.0, |c| c.threat),
-                ..ContactRecord::default()
-            },
-            character: true,
-        };
-        let sight = contacts::FoeSight {
-            foe: Some(id),
-            sees_foe: seen,
-            foe_point: at * 100.0,
-            foe_ground_y: at.y * 100.0,
-            foe_room: 0,
-            focus: None,
-        };
-        let mut roll = npc.personality.map_or(0, |p| (p.skill * 1000.0) as u32);
-        npc.run_pass(
-            sighting,
-            sight,
-            distance_cm,
-            duellist.fighting(),
-            mind.asleep,
-            (fighter.health.yellow, fighter.health.max),
-            condition.0 & 0x200 != 0,
-            now,
-            &mut roll,
-        );
-        if npc.pass.leave {
-            duellist.leave();
-        }
-        if npc.pass.enter.is_some() {
-            duellist.engage();
-        }
-        let who = name.map_or("character", |n| n.as_str());
-        if let Some(encounter) = npc.pass.encounter {
-            debug!("{who} meets {encounter:016x}");
-        }
-        if let Some(greet) = npc.pass.greet {
-            info!("{who} greets {greet:016x} at {distance_cm:.0} cm");
-        }
-        if npc.pass.wake {
-            info!("{who} wakes at a contact and drops the sleep role");
         }
     }
 }

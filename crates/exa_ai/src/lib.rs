@@ -57,12 +57,7 @@ impl Plugin for AiPlugin {
         app.add_systems(
             Update,
             (
-                (
-                    brain::apply_new_roles,
-                    brain::rate_the_player,
-                    brain::run_target_passes,
-                )
-                    .chain(),
+                (brain::apply_new_roles, brain::rate_the_player).chain(),
                 duellist,
             )
                 .chain(),
@@ -754,10 +749,6 @@ fn duellist(
                     outcome: None,
                 }),
             };
-            let brain_level = brains
-                .get(entity)
-                .ok()
-                .map_or(3, |b| b.pass.level.clamp(1, 3));
             // A chase mark lapses once its time has passed (the contact
             // integration's rule).
             let held = &mut combatant.contacts[index];
@@ -768,7 +759,7 @@ fn duellist(
             }
             let marked = held.flags & crate::contacts::UNREACHABLE != 0;
             let mut contacts = [combat::Contact {
-                level: brain_level,
+                level: 3,
                 is_foe: true,
                 character: true,
                 concern: held.concern,
