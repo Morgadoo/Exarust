@@ -12,6 +12,10 @@
 //!
 //! Evidence: the unarmed parry decision, the height table, and the armed grip.
 
+// The original compares floats so that a NaN takes the other branch; the
+// negated compares here keep that.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::math::Vec3;
 use std::f32::consts::PI;
 
@@ -119,7 +123,7 @@ pub fn armed_grip(arm: &Arm) -> Option<Grip> {
         } else {
             arm.handling * arm.handling
         };
-        return Some(grip(speed, 0.0, slot, 0x100000, false, true));
+        return Some(grip(speed, 0.0, slot, 0x10_0000, false, true));
     }
     if arm.shield {
         let speed = 1.0 - arm.shield_weight * arm.stamina * 0.5_f32;
@@ -462,7 +466,7 @@ mod tests {
         .unwrap();
         assert_eq!(passed.speed.to_bits(), 0x3e80_0000);
         assert_eq!(passed.blend, 5);
-        assert_eq!(passed.flags, 0x100000);
+        assert_eq!(passed.flags, 0x10_0000);
         assert!(!passed.enabled);
         assert!(passed.other_disabled);
         let shield = armed_grip(&Arm {

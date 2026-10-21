@@ -313,17 +313,24 @@ droplets, 60 at most, even when the wound is dropped from a full queue.
 ## Swing body rules, grips and burn
 
 `swing` also reproduces the swing routine's body-side rules: the
-weapon-in-hand gate (unarmed, or within 50·scale cm and 60° of the hand),
-the attack arms' stiffness by stance class and swing progress, the swing's
-sound pitch and volume (W25/W26), the fatigue ramp, and the start curves
-(smoothstep `(3 − 2x)x²` and the fall ease `0.11x + 1 − 1/(8x + 1)`).
-`strike_body` has the aim nudges the routine applies at a striker's point
-(the fist's cursor push, the edge alignment, the overhead's plane pull and
-the side swing's vertical homing), the two-hand group's class bit
-0x40000000, Break Tangle's counter and the clinch clear (grip links disabled
-with 0x100000, arm bit 8 cleared, countered motion reset, parry ended into
-the 0x28 stance blend). Grip link bodies are another lane's
-(`exa_physics::grip`); only the drop/clinch logic is here.
+weapon-in-hand gate (unarmed, or the squared distance under (50·scale)² and
+the axes' dot over 0.5; a failed gate takes 0.1 off the rate in double), the
+attack arms' stiffness by stance class and swing progress, the swing's sound
+pitch and volume (W25/W26, in double as the original does), the fatigue ramp
+(added only while positive, capped at 1), and the start curves (smoothstep
+`(3 − 2x)x²` and the fall ease `0.11x + 1 − 1/(8x + 1)`).
+`strike_body` has the aim nudges the routine applies at a striker's point:
+the fist's cursor push (none from a clock of 0.9), the edge alignment (the
+velocity across the weapon's axis, scaled to 20 cm and combined with the
+guide and push points, shared out as two opposed pushes), the overhead's
+plane pull and the side swing's vertical homing (both reduced by the tip's
+own motion toward the target), the two-hand group's class bit (mode 1 leaves
+it off the second item and its grandparent), Break Tangle's counter and the
+clinch clear (grip links assigned the disabled flag, arm bit 8 cleared,
+countered motion reset, parry ended into the 0x28 stance blend unless the
+condition holds the clip still). Grip link bodies are another lane's
+(`exa_physics::grip`); only the drop/clinch logic is here. None of these is
+called by the running game yet: its weapons are bone-attached meshes.
 
 `parry` adds the trigger (`parry_trigger`): a helpless body, the
 break-tangle motion or yellow under 0.01 end a parry; otherwise the attacker

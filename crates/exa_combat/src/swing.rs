@@ -71,7 +71,14 @@ const DAZE_STALL_LENGTH: f32 = 80.0;
 /// human).
 const DAZE_HEALTH: f32 = 0.25;
 /// Below this the original counts a strength as none.
-const EPSILON: f32 = 1.192_09e-7;
+/// The failed gate's loss from the rate, in double.
+const GATE_LOSS: f64 = 0.1;
+/// The swing sound: the speed's scale, where the late fade starts and its
+/// slope.
+const SOUND_SPEED: f64 = 0.1;
+const SOUND_LATE: f64 = 0.8;
+const SOUND_FADE: f64 = 5.0;
+const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 /// The window region: the trackers run past 30 % of a clip, or within the
 /// first 25 % of a chained one (its carried window).
 const REGION_FROM: f64 = 0.3;
@@ -1181,37 +1188,44 @@ mod tests;
 
 /// The attack's weapon-in-hand gate, run once per swing after the lead-in:
 /// unarmed, it opens; armed, the primary weapon anchors within 50·scale cm
-/// of its hand and its axis is within 60° (dot over 0.5) of the hand's.
-/// A failed gate takes 0.1 off the rate (if it is over 0.1) and the tick
-/// makes no window or nudge.
+/// of its hand (squared distances, strictly less) and its axis is within
+/// 60° (dot over 0.5) of the hand's. A failed gate, including a NaN
+/// distance or dot, takes 0.1 off the rate in double (if it is over 0.1)
+/// and the tick makes no window or nudge.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeaponGate {
     /// The gate opened (the original's flag 8 set).
     pub open: bool,
-    /// The rate's loss this tick when it did not.
-    pub rate_loss: f32,
+    /// The rate after this tick's loss.
+    pub rate: f32,
 }
 
-/// The weapon-in-hand gate at `scale`. `distance` and `axis_dot` are the
-/// primary weapon's grip anchor from the hand's, in cm, and the dot of the
-/// weapon's and hand's axes; unarmed skips them.
+/// The weapon-in-hand gate at `scale`. `distance2` is the squared distance
+/// of the primary weapon's grip anchor from the hand's, in cm², and the
+/// axes are the weapon's and the hand's; unarmed skips them.
 pub fn weapon_gate(
     unarmed: bool,
-    distance: f32,
-    axis_dot: f32,
+    distance2: f32,
+    weapon_axis: Vec3,
+    hand_axis: Vec3,
     scale: f32,
     rate: f32,
 ) -> WeaponGate {
-    if unarmed || (distance < 50.0 * scale && axis_dot > 0.5) {
-        return WeaponGate {
-            open: true,
-            rate_loss: 0.0,
-        };
+    if unarmed {
+        return WeaponGate { open: true, rate };
     }
-    WeaponGate {
-        open: false,
-        rate_loss: if rate > 0.1 { 0.1 } else { 0.0 },
+    let reach = 50.0 * scale;
+    let (a, b) = (weapon_axis, hand_axis);
+    let dot = (a.z * b.z) + ((a.y * b.y) + (a.x * b.x));
+    if reach * reach > distance2 && dot > 0.5 {
+        return WeaponGate { open: true, rate };
     }
+    let rate = if f64::from(rate) > GATE_LOSS {
+        (f64::from(rate) - GATE_LOSS) as f32
+    } else {
+        rate
+    };
+    WeaponGate { open: false, rate }
 }
 
 /// The two arms' stiffness through an attack tick: the swing arm's and the
@@ -1257,39 +1271,52 @@ pub fn attack_arm_stiffness(
     (swing, other)
 }
 
-/// The swing's sound at a tracker speed² and progress: speed f =
-/// 0.1·√speed² (×(1 − 5(p − 0.8)) past 0.8); pitch = W26·(0.5f + 0.4), a
-/// stab's W26·(0.5·(0.1f + 1 − 1/(40f + 1)) + 0.6); volume =
-/// base·W25·f·0.07. None with no speed.
+/// The swing sound's volume and pitch at a tracker speed² and progress.
+/// f = 0.1·√speed² in double (the speed² itself when it is not over the
+/// epsilon: the sound still plays), × (1 − 5(p − 0.8)) in double past a
+/// clock of 0.8. Pitch is W26·(0.5f + 0.4) in double, a stab's
+/// f becoming 0.5·((0.1f + 1) − 1/(40f + 1)) first (and that f also
+/// drives the volume), pitch W26·(f + 0.6). Volume is
+/// `base_volume`·(`loudness`·(W25·(0.07f))) in double.
 pub fn swing_sound(
     speed2: f32,
     progress: f32,
     stab: bool,
     pitch_factor: f32,
     volume_factor: f32,
+    loudness: f32,
     base_volume: f32,
-) -> Option<(f32, f32)> {
-    if speed2 <= EPSILON {
-        return None;
-    }
-    let mut f = speed2.sqrt() * 0.1;
-    if progress > 0.8 {
-        f *= 1.0 - (progress - 0.8) * 5.0;
+) -> (f32, f32) {
+    let mut f = if speed2 > EPSILON {
+        (f64::from(speed2.sqrt()) * SOUND_SPEED) as f32
+    } else {
+        speed2
+    };
+    if f64::from(progress) > SOUND_LATE {
+        f = ((1.0 - (f64::from(progress) - SOUND_LATE) * SOUND_FADE) * f64::from(f)) as f32;
     }
     let pitch = if stab {
-        pitch_factor * ((f * 0.1 + 1.0 - 1.0 / (f * 40.0 + 1.0)) * 0.5 + 0.6)
+        let narrow = 1.0 / (f * 40.0 + 1.0);
+        f = (((f64::from(f) * SOUND_SPEED + 1.0) - f64::from(narrow)) * 0.5) as f32;
+        (f64::from(pitch_factor) * (f64::from(f) + 0.6)) as f32
     } else {
-        pitch_factor * (f * 0.5 + 0.4)
+        (f64::from(pitch_factor) * (f64::from(f * 0.5) + 0.4)) as f32
     };
-    let volume = base_volume * volume_factor * f * 0.07;
-    Some((volume, pitch))
+    let volume = f64::from(base_volume)
+        * (f64::from(loudness) * (f64::from(volume_factor) * (f64::from(f) * 0.07)));
+    (volume as f32, pitch)
 }
 
-/// The fatigue after an attack tick: (1 − clock²)·0.25, capped
-/// at 1.
+/// The fatigue after an attack tick: (1 − clock²)·0.25 added when it is
+/// over zero, capped at 1 (a NaN clock adds nothing).
 pub fn fatigue_add(fatigue: f32, progress: f32) -> f32 {
-    let next = fatigue + (1.0 - progress * progress) * 0.25;
-    if next > 1.0 { 1.0 } else { next }
+    let add = (1.0 - progress * progress) * 0.25;
+    if add > 0.0 {
+        let next = fatigue + add;
+        if next < 1.0 { next } else { 1.0 }
+    } else {
+        fatigue
+    }
 }
 
 #[cfg(test)]
@@ -1300,22 +1327,33 @@ mod routine_tests {
         (a - b).abs() < 1e-4
     }
 
-    /// The gate opens unarmed and armed within 50·scale cm and 60°; a
-    /// failed armed gate takes 0.1 off a rate over 0.1.
+    /// The gate opens unarmed and armed within 50·scale cm (the squared
+    /// distance strictly under) and 60°; a failed armed gate takes 0.1 off
+    /// a rate over 0.1, in double.
     #[test]
     fn the_weapon_gate_is_the_originals() {
+        let (z, half) = (Vec3::Z, Vec3::new(0.0, 0.0, 0.5));
         assert_eq!(
-            weapon_gate(true, 999.0, -1.0, 1.0, 1.0),
+            weapon_gate(true, 99_999.0, -z, z, 1.0, 1.0),
             WeaponGate {
                 open: true,
-                rate_loss: 0.0
+                rate: 1.0
             }
         );
-        assert!(weapon_gate(false, 49.0, 0.6, 1.0, 1.0).open);
-        let far = weapon_gate(false, 50.0, 0.6, 1.0, 1.0);
-        assert_eq!((far.open, far.rate_loss), (false, 0.1));
-        let turned = weapon_gate(false, 49.0, 0.5, 1.0, 0.05);
-        assert_eq!((turned.open, turned.rate_loss), (false, 0.0));
+        assert!(weapon_gate(false, 2401.0, z, z, 1.0, 1.0).open);
+        let far = weapon_gate(false, 2500.0, z, z, 1.0, 1.0);
+        assert!(!far.open && close(far.rate, 0.9), "{far:?}");
+        // Scale 2 reaches 100 cm.
+        assert!(weapon_gate(false, 9999.0, z, z, 2.0, 1.0).open);
+        // A dot of exactly 0.5 fails; the rate under 0.1 keeps.
+        let turned = weapon_gate(false, 100.0, z, half, 1.0, 0.05);
+        assert_eq!((turned.open, turned.rate), (false, 0.05));
+        // The f32 0.1 is over the double 0.1: it still loses its excess.
+        let edge = weapon_gate(false, 100.0, -z, z, 1.0, 0.1);
+        assert!(edge.rate < 1e-8 && edge.rate > 0.0, "{edge:?}");
+        // A NaN distance or dot fails the gate.
+        assert!(!weapon_gate(false, f32::NAN, z, z, 1.0, 1.0).open);
+        assert!(!weapon_gate(false, 100.0, Vec3::splat(f32::NAN), z, 1.0, 1.0).open);
     }
 
     /// p = 0.5, P = 1: base 0.775, L 1.19995, swing 0.47998 at W20 0.4;
@@ -1333,24 +1371,36 @@ mod routine_tests {
         assert!(close(same, 0.479_98));
     }
 
-    /// At speed² 100, f = 1: pitch W26·0.9, volume base·W25·0.07; a stab's
-    /// pitch W26·(0.5·(0.1 + 1 − 1/41) + 0.6).
+    /// At speed² 100, f = 1: pitch W26·0.9, volume base·loud·W25·0.07·0.5;
+    /// a stab's f becomes 0.5·(1.1 − 1/41), which also drives its volume;
+    /// the late fade halves f at a clock of 0.9; no speed still sounds.
     #[test]
     fn the_swing_sound_is_the_originals() {
-        let (volume, pitch) = swing_sound(100.0, 0.5, false, 2.0, 0.5, 1.0).unwrap();
+        let (volume, pitch) = swing_sound(100.0, 0.5, false, 2.0, 0.5, 1.0, 1.0);
         assert!(close(volume, 0.035));
         assert!(close(pitch, 1.8));
-        let (_, stab) = swing_sound(100.0, 0.5, true, 2.0, 0.5, 1.0).unwrap();
-        assert!(close(stab, 2.0 * ((0.1 + 1.0 - 1.0 / 41.0) * 0.5 + 0.6)));
-        assert!(swing_sound(0.0, 0.5, false, 1.0, 1.0, 1.0).is_none());
+        let (volume, _) = swing_sound(100.0, 0.5, false, 2.0, 0.5, 2.0, 3.0);
+        assert!(close(volume, 0.21));
+        let f = (1.1 - 1.0 / 41.0) * 0.5;
+        let (volume, stab) = swing_sound(100.0, 0.5, true, 2.0, 0.5, 1.0, 1.0);
+        assert!(close(stab, 2.0 * (f + 0.6)));
+        assert!(close(volume, f * 0.5 * 0.07));
+        let (_, late) = swing_sound(100.0, 0.9, false, 2.0, 0.5, 1.0, 1.0);
+        assert!(close(late, 2.0 * (0.25 + 0.4)));
+        let (volume, quiet) = swing_sound(0.0, 0.5, false, 2.0, 0.5, 1.0, 1.0);
+        assert_eq!((volume, quiet), (0.0, 0.8));
     }
 
-    /// The fatigue rises (1 − p²)·0.25 a tick, capped at 1.
+    /// The fatigue rises (1 − p²)·0.25 a tick, capped at 1; a clock past 1
+    /// or a NaN one adds nothing, and a NaN fatigue takes the cap.
     #[test]
     fn fatigue_is_the_originals() {
         assert_eq!(fatigue_add(0.0, 0.0), 0.25);
         assert_eq!(fatigue_add(0.0, 1.0), 0.0);
         assert_eq!(fatigue_add(0.9, 0.0), 1.0);
+        assert_eq!(fatigue_add(0.5, 2.0), 0.5);
+        assert_eq!(fatigue_add(0.5, f32::NAN), 0.5);
+        assert_eq!(fatigue_add(f32::NAN, 0.0), 1.0);
     }
 }
 

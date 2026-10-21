@@ -99,7 +99,7 @@ pub fn burn_tick(
         // The share of red left scales yellow, by the red the tick began
         // with: none worth dividing by takes all of it.
         if old_red > RED_LEAST {
-            yellow = red / old_red * yellow;
+            yellow *= red / old_red;
         } else {
             yellow = 0.0;
         }
