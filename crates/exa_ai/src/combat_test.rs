@@ -915,3 +915,61 @@ fn the_guard_leans_against_a_side_swing() {
     let g = gap(mind.aim, 0.0);
     assert_eq!(mind.heading, wrap(0.0 + (f64::from(g) * 0.03) as f32));
 }
+
+#[test]
+fn a_fighting_follower_answers_its_leader() {
+    let leader = Leader {
+        position: Vec3::ZERO,
+        facing: Vec3::Z,
+        sprinting: false,
+        running: false,
+    };
+    // The band eases toward 700 cm: 600 → 601 (in double).
+    let mut f = Following {
+        band: 600.0,
+        following: true,
+        route_to: Some(Vec3::ZERO),
+    };
+    let near = follow_check(Vec3::new(0.0, 0.0, 300.0), &leader, &mut f);
+    assert_eq!(f.band, (600.0f64 * 0.99 + 700.0 * 0.01) as f32);
+    assert_eq!(
+        near,
+        FollowCheck {
+            stop: true,
+            ..FollowCheck::default()
+        }
+    );
+    // Past 0.7 of the band a follower with a route answers; three bands off
+    // it runs; a leader 100 cm from the route's end asks for a new route.
+    let far = follow_check(Vec3::new(0.0, 0.0, 2000.0), &leader, &mut f);
+    assert_eq!((far.calls, far.replan, far.urgency), (true, false, 2));
+    f.route_to = Some(Vec3::new(101.0, 0.0, 0.0));
+    let mid = follow_check(Vec3::new(0.0, 0.0, 500.0), &leader, &mut f);
+    assert_eq!((mid.calls, mid.replan, mid.urgency), (true, true, 1));
+    // Not yet following, it plans; within the band it does nothing.
+    let mut g = Following {
+        band: 700.0,
+        following: false,
+        route_to: None,
+    };
+    let start = follow_check(Vec3::new(0.0, 0.0, 800.0), &leader, &mut g);
+    assert_eq!(
+        (start.calls, start.replan, start.stop),
+        (false, true, false)
+    );
+    let idle = follow_check(Vec3::new(0.0, 0.0, 600.0), &leader, &mut g);
+    assert_eq!(idle, FollowCheck::default());
+    // A sprinting leader pulls the band toward 500 + 100 × ahead: behind it
+    // (ahead −1), 400.
+    let sprint = Leader {
+        sprinting: true,
+        ..leader
+    };
+    let mut h = Following {
+        band: 400.0,
+        following: false,
+        route_to: None,
+    };
+    follow_check(Vec3::new(0.0, 0.0, -300.0), &sprint, &mut h);
+    assert_eq!(h.band, (400.0f64 * 0.8 + 400.0 * 0.2) as f32);
+}

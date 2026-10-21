@@ -1575,6 +1575,86 @@ pub enum Exit {
     NoPlace,
 }
 
+/// The leader a fighting follower keeps track of.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leader {
+    pub position: Vec3,
+    pub facing: Vec3,
+    /// Its locomotion asks for a sprint (bit 4) or a run (bit 8).
+    pub sprinting: bool,
+    pub running: bool,
+}
+
+/// The follower's side of the follow check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Following {
+    /// How far the leader may go before the follower breaks off (cm).
+    pub band: f32,
+    /// It is following (its walk state is the follow).
+    pub following: bool,
+    /// Where its route to the leader leads, when it has one.
+    pub route_to: Option<Vec3>,
+}
+
+/// What the follow check decided.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FollowCheck {
+    /// Close enough: a follower stops its walk.
+    pub stop: bool,
+    /// The leader calls: the combat tick ends to follow.
+    pub calls: bool,
+    /// Plan a route to the leader (its ground point, 20 cm up, stop 40 cm).
+    pub replan: bool,
+    /// The gait the follow walks in: 2 to run, 1 to walk.
+    pub urgency: i32,
+}
+
+/// The follow check a fighting follower makes each combat tick: the band
+/// eases toward 700 cm (or, while the leader sprints, toward 500 cm plus
+/// 100 cm × how far ahead of the leader the follower is), 0.7 of it while
+/// following; inside it a follower stops; outside it the follower runs
+/// when the leader runs or is three bands away, and a follower with a
+/// route answers the call (replanning when the leader has moved 100 cm
+/// from the route's end).
+pub fn follow_check(me: Vec3, leader: &Leader, f: &mut Following) -> FollowCheck {
+    let d = me - leader.position;
+    let dist = ((d.x * d.x + d.z * d.z) + (d.y * d.y + 0.0)).sqrt();
+    let ahead = (d.z * leader.facing.z + (d.y * leader.facing.y + d.x * leader.facing.x)) / dist;
+    f.band = if leader.sprinting {
+        let toward = ahead * 100.0 + 500.0;
+        (f64::from(f.band) * 0.8 + f64::from(toward) * 0.2) as f32
+    } else {
+        (f64::from(f.band) * 0.99 + f64::from(700.0f32) * 0.01) as f32
+    };
+    let band = if f.following {
+        (f64::from(f.band) * 0.7) as f32
+    } else {
+        f.band
+    };
+    let mut out = FollowCheck::default();
+    if band > dist {
+        out.stop = f.following;
+        return out;
+    }
+    out.urgency = if leader.running || f.band * 3.0 < dist {
+        2
+    } else {
+        1
+    };
+    if f.following {
+        match f.route_to {
+            None => out.replan = true,
+            Some(end) => {
+                out.calls = true;
+                out.replan = distance2(end, leader.position) > 10_000.0;
+            }
+        }
+    } else {
+        out.replan = true;
+    }
+    out
+}
+
 /// The rest of the world one tick needs.
 pub struct World<'a> {
     pub foe: Option<&'a Foe>,
