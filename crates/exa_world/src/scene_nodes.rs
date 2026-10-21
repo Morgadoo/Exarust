@@ -137,6 +137,104 @@ pub const INHERIT_HIDDEN: u32 = 0x20;
 /// sector.
 pub const CLASS_SECTOR: u32 = 0x11;
 
+/// Scene word: the node is queued for deletion (its subtree is marked with
+/// it when the queue entry detaches instead of hiding).
+pub const DELETING: u32 = 0x8000_0000;
+/// Sector change word a queued removal sets: the node left and its light
+/// links changed.
+pub const REMOVAL_CHANGES: u32 = MOVED_OUT | LINKS_CHANGED;
+/// How many removal entries the scene queue holds; the original's ring is
+/// 256 entries and refuses the 256th.
+pub const REMOVAL_QUEUE: usize = 256;
+
+/// What a released scene node owned, so the caller can free it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeOwner {
+    #[default]
+    None,
+    /// A character, by the identity its data carries.
+    Character(u64),
+    /// An object-database entry, by its slot.
+    Object(u32),
+}
+
+/// A node waiting in the scene's removal queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Removal {
+    pub node: usize,
+    /// Whether the entry detaches the subtree (the original's flag) or only
+    /// hides the node.
+    pub detach: bool,
+    /// The sector the node was in when it was queued.
+    pub sector: Option<usize>,
+}
+
+/// A queued scene node removal: the original's 256-entry ring.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemovalQueue {
+    entries: Vec<Removal>,
+}
+
+impl RemovalQueue {
+    /// Whether the queue refuses another entry (255 entries is full: the
+    /// original's write index must not meet its read index).
+    pub fn is_full(&self) -> bool {
+        self.entries.len() + 1 >= REMOVAL_QUEUE
+    }
+
+    /// Queues a removal; false when the queue was full.
+    pub fn push(&mut self, removal: Removal) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        self.entries.push(removal);
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Removal> + '_ {
+        self.entries.iter()
+    }
+}
+
+/// One timed node transition: a controller evaluates against the time since
+/// the entry was added.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    pub node: usize,
+    pub controller: u32,
+    /// The scene's game time when the entry was added (ms).
+    pub start: u32,
+    /// The controller's 1/2 state, which adding the entry flips.
+    pub state: i32,
+}
+
+/// What releasing a scene node found.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Released {
+    pub owner: NodeOwner,
+    /// The node whose removal was queued (the instance's master when it had
+    /// one).
+    pub node: usize,
+    /// Whether the queue accepted the entry.
+    pub queued: bool,
+}
+
+/// The scene's constructor defaults: the render fraction of a placed
+/// object's cells and the far plane, as the original writes them.
+pub const DEFAULT_DETAIL_SCALE: f32 = 0.05;
+/// The original's far plane (cm).
+pub const DEFAULT_FAR_PLANE: f32 = -100_000.0;
+/// The scene time scale's default.
+pub const DEFAULT_TIME_SCALE: f32 = 1.0;
+
 /// The scene's own sector, first in its sector list.
 pub const SCENE_SECTOR: usize = 0;
 
@@ -605,6 +703,13 @@ pub struct SceneNode {
     pub moved: bool,
     /// The sector that owns the node; `None` is the global `_World`.
     pub sector: Option<usize>,
+    /// The instance's master node, when this node shares its geometry.
+    pub master: Option<usize>,
+    /// What the node's geometry owns (a character's data or a database
+    /// slot), released when the node is despawned.
+    pub owner: NodeOwner,
+    /// The node was flushed from the removal queue.
+    pub removed: bool,
     /// A light's aliases (copies of it registered in other sectors).
     pub aliases: Vec<usize>,
     /// The node's cell and spill mask.
@@ -637,6 +742,9 @@ impl SceneNode {
             stale: true,
             moved: false,
             sector: None,
+            master: None,
+            owner: NodeOwner::None,
+            removed: false,
             aliases: Vec::new(),
             cell: CellSpill::MARKED,
             inherited: 0,
@@ -769,6 +877,21 @@ impl Sector {
             bounds: SectorBounds::default(),
         }
     }
+
+    /// The sector's destructor: child node, lights, portals and the
+    /// material lists are dropped and it leaves the scene. (The original's
+    /// slot 0 also releases the two callbacks and the dynarrays.)
+    pub fn destroy(&mut self) {
+        self.meshes.clear();
+        self.lights.clear();
+        self.auxiliary.clear();
+        self.portals.clear();
+        self.visible_portals.clear();
+        self.views.clear();
+        self.in_scene = false;
+        self.node = None;
+        self.scissor = None;
+    }
 }
 
 /// The whole scene graph.
@@ -784,6 +907,22 @@ pub struct Scene {
     /// The scene works in 6 m cells (a grid was set up): the visibility
     /// passes keep moved meshes' cells current.
     pub grid_mode: bool,
+    /// The game time the scene's clock reads (ms).
+    pub time: u32,
+    /// The detail level and its 0.01 scale (the original's two words the
+    /// item and character views set).
+    pub detail: i32,
+    pub detail_scale: f32,
+    /// The timed node transitions.
+    pub transitions: Vec<Transition>,
+    /// The controller states, by controller id.
+    pub controller_states: Vec<(u32, i32)>,
+    /// Nodes queued for removal.
+    pub removals: RemovalQueue,
+    /// The renderers registered with the scene.
+    pub renderers: Vec<u32>,
+    /// The scene-wide lights.
+    pub lights: Vec<u32>,
 }
 
 impl Scene {
@@ -798,6 +937,14 @@ impl Scene {
             geometry: Vec::new(),
             grid,
             grid_mode: grid.0 > 0 && grid.1 > 0,
+            time: 0,
+            detail: 0,
+            detail_scale: DEFAULT_DETAIL_SCALE,
+            transitions: Vec::new(),
+            controller_states: Vec::new(),
+            removals: RemovalQueue::default(),
+            renderers: Vec::new(),
+            lights: Vec::new(),
         }
     }
 
@@ -1270,6 +1417,205 @@ impl Scene {
     ///
     /// Returns how many meshes changed their mark (the original returns
     /// nothing useful).
+    /// Sets the detail level and its 0.01 scale (the original's item and
+    /// character views call this).
+    pub fn set_detail(&mut self, detail: i32) {
+        self.detail = detail;
+        self.detail_scale = (f64::from(detail) * 0.01) as f32;
+    }
+
+    /// Registers a renderer and points it at the scene.
+    pub fn add_renderer(&mut self, renderer: u32) {
+        self.renderers.push(renderer);
+    }
+
+    /// Registers a scene-wide light (the shadow object is the caller's).
+    pub fn add_light(&mut self, light: u32) {
+        self.lights.push(light);
+    }
+
+    /// Removes a scene-wide light, swapping the last into its place and
+    /// calling `removed` for the removal hook. The cell lists are
+    /// [`crate::light_flood::CellLights::remove`]'s.
+    pub fn remove_light(&mut self, light: u32, mut removed: impl FnMut(u32)) -> bool {
+        let Some(at) = self.lights.iter().position(|&l| l == light) else {
+            return false;
+        };
+        removed(light);
+        self.lights.swap_remove(at);
+        true
+    }
+
+    /// Adds a timed transition. An entry for the same node and controller
+    /// exists already, so the call does nothing; otherwise the controller's
+    /// 1/2 state flips and the entry starts at the scene's clock.
+    pub fn add_transition(&mut self, node: usize, controller: u32) -> bool {
+        if self
+            .transitions
+            .iter()
+            .any(|t| t.node == node && t.controller == controller)
+        {
+            return false;
+        }
+        let state = match self
+            .controller_states
+            .iter_mut()
+            .find(|(id, _)| *id == controller)
+        {
+            Some((_, state)) => {
+                *state = if *state == 1 { 2 } else { 1 };
+                *state
+            }
+            None => {
+                self.controller_states.push((controller, 1));
+                1
+            }
+        };
+        self.transitions.push(Transition {
+            node,
+            controller,
+            start: self.time,
+            state,
+        });
+        true
+    }
+
+    /// Advances every transition: `evaluate` gets the controller and the
+    /// seconds since its start, and returns whether it is still running.
+    /// A finished entry is swap-removed (the original's count decrement),
+    /// and its node is marked unchanged; a running one advances the index.
+    pub fn advance_transitions(&mut self, mut evaluate: impl FnMut(u32, f32) -> bool) -> usize {
+        let now = self.time;
+        let mut i = 0;
+        let mut finished = 0;
+        while i < self.transitions.len() {
+            let t = self.transitions[i];
+            let seconds = (f64::from(now.wrapping_sub(t.start)) * 0.001) as f32;
+            let running = evaluate(t.controller, seconds);
+            if let Some(node) = self.nodes.get_mut(t.node) {
+                node.moved = false;
+            }
+            if running {
+                i += 1;
+            } else {
+                self.transitions.swap_remove(i);
+                finished += 1;
+            }
+        }
+        finished
+    }
+
+    /// Queues a node for removal. The sector's change word gains the
+    /// removal bits; with `detach` false the node leaves the scene and its
+    /// visibility and moved word are cleared, otherwise the node and its
+    /// whole subtree are marked deleting, lose the scene bit and move to
+    /// the global world. A full queue keeps the marking and reports false.
+    pub fn queue_removal(&mut self, node: usize, detach: bool) -> bool {
+        let Some(n) = self.nodes.get(node) else {
+            return false;
+        };
+        let sector = n.sector;
+        let queued = self.removals.push(Removal {
+            node,
+            detach,
+            sector,
+        });
+        if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
+            s.changes |= REMOVAL_CHANGES;
+        }
+        if detach {
+            self.mark_deleting(node);
+        } else if let Some(n) = self.nodes.get_mut(node) {
+            n.scene_flags &= !IN_SCENE;
+            n.mask = 0;
+            n.moved = false;
+        }
+        queued
+    }
+
+    fn mark_deleting(&mut self, node: usize) {
+        let children = if let Some(n) = self.nodes.get_mut(node) {
+            n.scene_flags = (n.scene_flags & !IN_SCENE) | DELETING;
+            n.mask = 0;
+            n.moved = true;
+            n.sector = None;
+            n.children.clone()
+        } else {
+            return;
+        };
+        for child in children.into_iter().flatten() {
+            self.mark_deleting(child);
+        }
+    }
+
+    /// Flushes the removal queue: each entry and its subtree is taken out
+    /// of its sector's lists, the geometry list and its parent's slots, and
+    /// marked removed (node slots stay, so indices remain valid).
+    pub fn flush_removals(&mut self) -> usize {
+        let entries: Vec<Removal> = self.removals.iter().copied().collect();
+        self.removals = RemovalQueue::default();
+        let mut removed = 0;
+        for entry in entries {
+            removed += self.remove_subtree(entry.node, entry.sector);
+        }
+        removed
+    }
+
+    fn remove_subtree(&mut self, node: usize, sector: Option<usize>) -> usize {
+        let Some(n) = self.nodes.get(node) else {
+            return 0;
+        };
+        let children = n.children.clone();
+        let sector = sector.or(n.sector);
+        let parent = n.parent;
+        let mut count = 0;
+        if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
+            s.meshes.retain(|&m| m != node);
+            s.lights.retain(|&l| l != node);
+            s.auxiliary.retain(|&a| a != node);
+        }
+        self.geometry.retain(|&g| g != node);
+        if let Some(p) = parent.and_then(|p| self.nodes.get_mut(p)) {
+            for slot in p.children.iter_mut() {
+                if *slot == Some(node) {
+                    *slot = None;
+                }
+            }
+        }
+        if let Some(n) = self.nodes.get_mut(node) {
+            if !n.removed {
+                count += 1;
+            }
+            n.removed = true;
+            n.scene_flags &= !IN_SCENE;
+            n.mask = 0;
+            n.sector = None;
+        }
+        for child in children.into_iter().flatten() {
+            count += self.remove_subtree(child, sector);
+        }
+        count
+    }
+
+    /// The original's scene-node despawn: an instance is replaced by its
+    /// master, the owner is reported (character data or a database slot),
+    /// and the node's removal is queued with the detach flag.
+    pub fn release_node(&mut self, node: usize) -> Released {
+        let master = self
+            .nodes
+            .get(node)
+            .and_then(|n| n.master)
+            .filter(|&m| m < self.nodes.len());
+        let node = master.unwrap_or(node);
+        let owner = self.nodes.get(node).map_or(NodeOwner::None, |n| n.owner);
+        let queued = self.queue_removal(node, true);
+        Released {
+            owner,
+            node,
+            queued,
+        }
+    }
+
     pub fn detect_cut_away(
         &mut self,
         from: Vec3,
@@ -2444,5 +2790,129 @@ mod tests {
         assert_eq!(portal.quad[1].z, -0.5);
         assert_eq!(portal.quad[2].y, 2.5);
         assert!((portal.distance(Vec3::new(-1.0, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_sector_destroy_drops_its_lists() {
+        let mut sector = Sector::new("room", Some(3));
+        sector.meshes.push(4);
+        sector.lights.push(5);
+        sector.auxiliary.push(6);
+        sector.portals.push(Portal::between_cells(
+            0,
+            1,
+            Vec2::ZERO,
+            Vec2::X,
+            Vec2::new(1.0, 2.0),
+            0.0,
+        ));
+        sector.in_scene = true;
+        sector.destroy();
+        assert!(sector.meshes.is_empty() && sector.lights.is_empty());
+        assert!(sector.auxiliary.is_empty() && sector.portals.is_empty());
+        assert!(!sector.in_scene && sector.node.is_none());
+    }
+
+    #[test]
+    fn the_detail_level_sets_its_scale() {
+        let mut scene = Scene::new((0, 0));
+        assert_eq!(scene.detail_scale, DEFAULT_DETAIL_SCALE);
+        scene.set_detail(300);
+        assert_eq!(scene.detail, 300);
+        assert_eq!(scene.detail_scale, 3.0);
+        scene.set_detail(-50);
+        assert_eq!(scene.detail_scale, -0.5);
+    }
+
+    #[test]
+    fn transitions_flip_a_controller_and_drop_finished_entries() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Auxiliary, None);
+        assert!(scene.add_transition(node, 9));
+        assert!(!scene.add_transition(node, 9));
+        assert_eq!(scene.transitions[0].state, 1);
+        assert!(scene.add_transition(node, 10));
+        assert_eq!(scene.transitions[1].state, 1);
+        scene.time = 500;
+        let node2 = scene.add_node(NodeKind::Auxiliary, None);
+        assert!(scene.add_transition(node2, 10));
+        assert_eq!(scene.transitions[2].state, 2, "the same controller flips");
+        scene.time = 2500;
+        let mut seen = Vec::new();
+        let finished = scene.advance_transitions(|controller, seconds| {
+            seen.push((controller, seconds));
+            seconds < 1.0
+        });
+        // The first two started at 500 ms and are 2 s old; the third at
+        // 500 too (the clock was set before adding), so all finish.
+        assert_eq!(finished, 3);
+        assert_eq!(seen[0], (9, 2.5));
+        assert_eq!(seen[2], (10, 2.5));
+        assert!(scene.transitions.is_empty());
+        assert!(!scene.nodes[node].moved);
+    }
+
+    #[test]
+    fn a_removal_marks_the_sector_and_the_subtree() {
+        let mut scene = Scene::new((2, 2));
+        let sector = 1;
+        scene.sectors.push(Sector::new("room", None));
+        scene.sectors[sector].in_scene = true;
+        let root = scene.add_node(NodeKind::Mesh, None);
+        let child = scene.add_node(NodeKind::Mesh, Some(root));
+        scene.register(root, sector);
+        scene.register(child, sector);
+        assert!(scene.queue_removal(root, true));
+        assert_eq!(
+            scene.sectors[sector].changes & REMOVAL_CHANGES,
+            REMOVAL_CHANGES
+        );
+        assert_eq!(scene.nodes[root].scene_flags & IN_SCENE, 0);
+        assert_ne!(scene.nodes[root].scene_flags & DELETING, 0);
+        assert_ne!(scene.nodes[child].scene_flags & DELETING, 0);
+        assert_eq!(scene.nodes[child].sector, None);
+        assert_eq!(scene.flush_removals(), 2);
+        assert!(scene.nodes[root].removed && scene.nodes[child].removed);
+        assert!(scene.sectors[sector].meshes.is_empty());
+        assert!(scene.nodes[root].children.is_empty() || scene.nodes[root].children[0].is_none());
+    }
+
+    #[test]
+    fn a_full_removal_queue_keeps_marking() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        for _ in 0..(REMOVAL_QUEUE - 1) {
+            assert!(scene.queue_removal(node, false));
+        }
+        assert!(scene.removals.is_full());
+        assert!(!scene.queue_removal(node, false));
+        assert_eq!(scene.nodes[node].scene_flags & IN_SCENE, 0);
+        assert_eq!(scene.nodes[node].mask, 0);
+    }
+
+    #[test]
+    fn releasing_an_instance_queues_its_master() {
+        let mut scene = Scene::new((0, 0));
+        let master = scene.add_node(NodeKind::Mesh, None);
+        let instance = scene.add_node(NodeKind::Mesh, None);
+        scene.nodes[master].owner = NodeOwner::Object(17);
+        scene.nodes[instance].master = Some(master);
+        let released = scene.release_node(instance);
+        assert_eq!(released.owner, NodeOwner::Object(17));
+        assert_eq!(released.node, master);
+        assert!(released.queued);
+        assert!(!scene.nodes[master].removed);
+    }
+
+    #[test]
+    fn scene_lights_add_and_remove_by_swap() {
+        let mut scene = Scene::new((0, 0));
+        scene.add_light(4);
+        scene.add_light(5);
+        let mut removed = Vec::new();
+        assert!(scene.remove_light(4, |l| removed.push(l)));
+        assert_eq!(scene.lights, [5]);
+        assert_eq!(removed, [4]);
+        assert!(!scene.remove_light(9, |l| removed.push(l)));
     }
 }

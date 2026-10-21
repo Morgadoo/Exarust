@@ -591,3 +591,15 @@ tick, but nothing answers it in the live game: Exarust's level colliders
 include ceilings, which the original's mesh filter leaves out, so the tilt
 stays 0. The pitch ease (in double, only over a gap above 2e-6), the eye
 blend and the field of view are the original's.
+`scene_editor` is the live scene runner's model (`RF_SceneEditor`,
+`TSceneTaskInt`, and the paper-doll viewport step): the viewport rectangle
+and 15-character title, the run-scene options (physics start, maximised
+view, task bar, wireframe, audio, camera record, renderer minimum, render
+flags), the camera-mode switch that creates the navigation controller once,
+flips the viewport's mode word and notifies the GUI, the maximised-viewport
+scroll count, the `.rfc` entry name, the frame cap at 1/60 s with its time
+scale and half-step audio mark, the task's paused tick and its repaint and
+message asks, the destroy that unhooks and reports the viewport decrement,
+and the scene-node despawn that reports the released character or database
+owner. The actual camera, level and listener stay in `exarust::viewer` and
+`crate::player`.

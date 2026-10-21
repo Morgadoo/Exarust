@@ -44,6 +44,49 @@ const SPECIAL_HAS_FLOOR: [bool; 10] = [
 
 const CELL_CM: f32 = 600.0;
 
+/// A part is fully transparent below this material alpha; its vertices are
+/// marked in the added vertex channel.
+pub const TRANSPARENT_ALPHA: f32 = 0.01;
+/// The value a fully transparent part writes into the vertex channel.
+pub const TRANSPARENT_MARK: f32 = 0.0;
+/// The extent a set piece's eligible children are subdivided to (cm).
+pub const SUBDIVIDE_EXTENT: f32 = 20.0;
+/// Piece word: the set piece has been marked (the original's `+8` bit).
+pub const PIECE_MARKED: u32 = 0x1000;
+/// Piece word: the piece is linked to a grid cell (the original's `+0x204`
+/// bit).
+pub const PIECE_GRID_LINKED: u32 = 0x1_0000;
+/// Piece word: the piece is not to be subdivided (the original's `+0xc`
+/// word).
+pub const PIECE_NO_SUBDIVIDE: u32 = 0x1000_0000;
+
+/// Whether a material's alpha makes the part fully transparent.
+pub fn marks_transparent(alpha: f32) -> bool {
+    alpha < TRANSPARENT_ALPHA
+}
+
+/// Writes the transparent mark into `channel` at `indices`, as the wall-set
+/// loader does for a fully transparent part; false when the part is not
+/// fully transparent.
+pub fn mark_transparent_vertices(alpha: f32, indices: &[u32], channel: &mut [f32]) -> bool {
+    if !marks_transparent(alpha) {
+        return false;
+    }
+    for &index in indices {
+        if let Some(v) = channel.get_mut(index as usize) {
+            *v = TRANSPARENT_MARK;
+        }
+    }
+    true
+}
+
+/// Whether a set piece child is subdivided: the original skips the `#`, `+`
+/// and `[` children and sends every other child through the subdivider at
+/// 20 cm.
+pub fn subdivides_piece_child(name: &str) -> bool {
+    !matches!(name.as_bytes(), [b'#', ..] | [b'+', ..] | [b'[', ..])
+}
+
 /// Floor and ceiling edge slots.
 const SLOT_MIDDLE: usize = 0;
 const SLOT_LEFT: usize = 1;
@@ -948,6 +991,7 @@ fn spawn_piece(
                     shell.occluder.append(uvs.meshes, model, kids, k, at());
                 }
             }
+            [b'#', ..] => {}
             [b'+', b'R', ..] => {
                 strips.ceiling = true;
                 if let Some(shell) = shell.as_deref_mut() {
@@ -1341,5 +1385,26 @@ mod tests {
             (front - Vec3::new(0.0, 0.0, 3.0)).length() < 1e-5,
             "{front}"
         );
+    }
+
+    #[test]
+    fn only_fully_transparent_parts_are_marked() {
+        assert!(marks_transparent(0.009));
+        assert!(!marks_transparent(0.01));
+        let mut channel = vec![1.0; 6];
+        assert!(mark_transparent_vertices(0.0, &[1, 4], &mut channel));
+        assert_eq!(channel, [1.0, 0.0, 1.0, 1.0, 0.0, 1.0]);
+        assert!(!mark_transparent_vertices(0.5, &[0], &mut channel));
+        assert_eq!(channel[0], 1.0);
+    }
+
+    #[test]
+    fn subdivision_skips_hash_plus_and_open_bracket() {
+        assert!(!subdivides_piece_child("#child"));
+        assert!(!subdivides_piece_child("+Floor"));
+        assert!(!subdivides_piece_child("[occluder"));
+        assert!(subdivides_piece_child("brick"));
+        assert!(subdivides_piece_child(""));
+        assert_eq!(SUBDIVIDE_EXTENT, 20.0);
     }
 }

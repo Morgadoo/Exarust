@@ -12,11 +12,14 @@
 //! does them; [`patch`] is the original's shared triangle list, [`ground`]
 //! its world height query, and [`stream`] its streaming decisions.
 
+pub mod manager;
+
 pub mod blend;
 pub mod frame;
 pub mod ground;
 pub mod height;
 pub mod patch;
+pub mod plugins;
 pub mod stream;
 pub mod vegetation;
 

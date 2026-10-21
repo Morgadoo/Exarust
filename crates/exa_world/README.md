@@ -60,3 +60,33 @@ and the grid's rooms; portal clipping is next (see
 - `sun_shadow`: the sun's one fitted orthographic shadow map in a level with a terrain: each frame it clips every active camera's frustum (out to the original camera's 125 m far plane) at the level's box and the record's floor and ceiling on the sides the camera looks towards, fits it with `exa_render::sun_fit` (200 cm radius steps with hysteresis, texel-snapped centre, ±8000 cm depth) and writes the matrices into the sun's single Bevy cascade before Bevy derives the shadow frusta; a frame that fits nothing keeps the last map. Other levels, and `--bevy-sun-cascades`, keep Bevy's two cascades ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `cloth`: the level's cloth-marked meshes (long hair, four banners, the wraith's robe) become a simulated cloth (`ClothInstance`) over their vertex positions, pinned at the shipped meshes' rest points with the loose 0.1 weight (the pin rule is a labelled guess), stepped once per 83 Hz body tick with gravity and written back into the mesh's positions (each cloth takes a copy of the mesh asset, since one asset is shared by every copy of a model, and a node whose mesh has no triangles is marked `ClothSkipped`); the two-face draw passes come from `cloth_draw`.
 - `nav`: the original's navigation grid (30 cm cells, two layers, cost bytes), built for each level when its load ends from its terrain (the 6 m blocks the level builds), its meshes' GI sample points and its tile-grid floors, on the async compute pool (`NavGrid` resource, `NavState`, `nav::finder::InstalledPathfinder`: the level's grid or the 64 × 64 abstract fallback, whose queries answer nothing); its queries (`nav::query`: the line walk, the straight walk, the obstacle test; `nav::walkable`: a point's cost and the nearest walkable point by the original's flood; `nav::path`: the planner — the 256-cell window with its blocked border, the two-layer step rule, its LIFO open list and unsigned strict-total pop, the relaxation rule, the goal-height heuristic, the node cap, the closest-node answer with the 100 cm rule and the rough cut, and the corners' budget line walk; `nav::mover`: dirty rectangles, the sixteen-slot ring, the scene-wide countdown and the refresh from the floors as built, which the grid keeps beside the current ones; `nav::stamp`: a line stamped on the penalty bytes, as a barricade stamps its wall — its cells, their ring and the cells beside the ring, on the layer whose height band holds them, and the stamp taken back); `--debug-nav`/F6 draws it, `nav::headless` builds it without a window ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)).
+- `presets`: the environment unit's six-preset preparation: the sRGB
+  linearisation of the twelve colour words and the separately converted
+  ambient word, the 0.75 scale of five sky words, and the 25 % blend that
+  fills an empty ambient colour; applied by `PresetTable::configure` when
+  linear lighting is on. The shipped six records stay with the level data;
+  Exarust's level lighting still chooses Indoor/Outdoor/FromRecord.
+- `scene_nodes` also carries the live scene's bookkeeping: the timed
+  transition list (an add flips the controller's 1/2 state, the advance
+  passes seconds since the start, removes finished entries by swap and
+  clears the node's moved word), the 256-entry node-removal queue (255
+  usable; a full queue still marks the node and the sector's removal bits),
+  the despawn that resolves an instance to its master and reports the
+  character data or object-database slot, the detail level's 0.01 scale, the
+  renderer and light lists with swap removal, and the sector destructor.
+- `scene_plugin`: the scene extension list with its attach and node-batch
+  hooks, in attach order.
+- `terrain::manager`: the manager's construction numbers (48 m of 240 cm
+  cells, 241 vertices, 244 apron rows, detail size 4096/8192 and palette
+  scale), the tile record's allocation (heights, centred vertices, the
+  0x7f-filled channel, the 12/24-byte vertex stride), the 8 × 8 translated
+  block kd-trees, the 16 × 16 height bounds with the original's running
+  min/max, the 6 m block radius and centre, the layered normal y and the
+  opacity byte.
+- `terrain::plugins`: the terrain extension list (attach order, activate
+  forward and deactivate backward) and the static terrain's create-or-reuse
+  set-up with one 8 × 8 shadow-receiver set per tile and the room-mode
+  variant.
+- `grid` marks a fully transparent part's vertices in the added channel
+  (alpha below 0.01 writes the zero mark), skips a piece's `#` children, and
+  defines the piece flags and the 20 cm child subdivision extent.
