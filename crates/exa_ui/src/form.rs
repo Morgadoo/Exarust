@@ -1,15 +1,21 @@
 //! The GUI form's own layout metrics and base-class rules (`TGUIForm`):
 //! skin measures, the 302×402 default form, anchoring, the client
-//! rectangle, the scrollbars, the sibling order, showing and hiding with
-//! the 256 ms fade, keyboard traversal, the wheel and the close edges.
-//! The row spacing of the main menu is not modelled here; the binary's
-//! `70·0.5·round(H/135)` does not fit its own list and needs a screenshot
-//! to reconcile.
+//! rectangle and both scrollbars, the unset and shown places, the sibling
+//! layers, the active-form tests, maximise and restore, the runtime resize,
+//! the 256-tick show/hide fade, the point conversions, the hit test with
+//! its control slop, hover, focus, Tab traversal, the caret, the wheel and
+//! held-arrow scrolls, the frame codes a press, drag and release act on,
+//! the magnetic snap slots and the controls' rescale. The row spacing of
+//! the main menu is not modelled here; the binary's `70·0.5·round(H/135)`
+//! does not fit its own list and needs a screenshot to reconcile.
 //!
-//! The style word (`+0x5c`) says where an unplaced form goes and how it is
-//! layered; the attribute word (`+0x64`) selects the frame parts; the state
-//! word (`+0x60`) carries the layout bookkeeping. Positions and sizes are
-//! physical pixels.
+//! Three words describe a form: the style word places an unplaced form and
+//! anchors it in a resize; the attribute word selects the frame parts
+//! (title, scrollbars, snapping) and the sibling layer; the state word
+//! carries the layout bookkeeping, the maximised bit and the caret. A
+//! control record has its own style word (anchors, tab stop, caret) and
+//! state word (disabled, focus, hover bits). Positions and sizes are
+//! physical pixels. Rules: `docs/UI.md` (The form base class).
 
 /// A GUI unit and the DPI border.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,7 +25,7 @@ pub struct FormMetrics {
 }
 
 impl FormMetrics {
-    /// The minimum scrollbar thumb.
+    /// The minimum horizontal scrollbar thumb (a skin value, 9).
     pub const MIN_THUMB: i32 = 9;
 
     /// `6·unit − border` (the skin's base measure).
@@ -53,8 +59,24 @@ pub const DEFAULT_WIDTH: i32 = 302;
 pub const DEFAULT_HEIGHT: i32 = 402;
 pub const DEFAULT_BORDER: i32 = 2;
 pub const DEFAULT_CONTENT: (i32, i32) = (300, 800);
+/// The horizontal scroll step; the layout recomputes it from the overflow.
 pub const DEFAULT_SCROLL_STEP: f32 = 0.025;
+/// The vertical scroll step. Nothing in the form base recomputes it; the
+/// wheel and the held arrows move by it.
+pub const DEFAULT_VERTICAL_STEP: f32 = 0.25;
+/// The smallest page the grips resize to: 76 high and 90 wide (the
+/// constructor's two words in field order; the resize reads the second as
+/// the width and the first as the height).
 pub const PAGE_MIN: (i32, i32) = (76, 90);
+/// The constructor's attribute word: a close mark, a client fill and the
+/// 0x30000 bits.
+pub const DEFAULT_ATTRIBUTES: u32 = 0x30022;
+/// The constructor's state word: laid out and the style pending.
+pub const DEFAULT_STATE: u32 = 0x3000;
+/// An unplaced coordinate (the constructor's sentinel).
+pub const UNPLACED: i32 = -987_654_321;
+/// The scroll rail the layout uses (four units less one; 15 at unit 4).
+pub const RAIL_AT_UNIT_FOUR: i32 = 15;
 
 /// An anchor's axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,8 +119,9 @@ pub fn anchor(position: Option<i32>, parent: i32, size: i32, axis_y: bool, mode:
     }
 }
 
-/// A form's client rectangle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A form's client rectangle: `left` is the border, `top` the title's
+/// bottom (or the border), `right` and `bottom` inside the scrollbars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClientRect {
     pub left: i32,
     pub top: i32,
@@ -116,12 +139,11 @@ impl ClientRect {
     }
 }
 
-/// The form's client rectangle from its size, border, the
-/// style word (`+0x5c`, which picks the title and control spans) and the
-/// attribute word (`+0x64`, which picks the title, fill and scrollbars).
-/// `title_text` is the skin's title-bar text offset, `scroll_inset` the
-/// scrollbar's inset, `title_span` the title bar's height (0 without a
-/// title), `rail` the skin rail and `border_metric` the DPI border (2).
+/// The form's client rectangle from its size, border and attribute word.
+/// `title_text` is the skin's title-bar height, `scroll_inset` the
+/// vertical scrollbar's width, `title_span` the form's own title spacing
+/// (0 without the style word's 0xc0 bits), `rail` the skin rail and
+/// `border_metric` the DPI border (2).
 #[allow(clippy::too_many_arguments)]
 pub fn client_rect(
     width: i32,
@@ -144,17 +166,17 @@ pub fn client_rect(
     } else {
         border
     };
-    let right = if attributes & attribute::HSCROLL != 0 {
+    let right = if attributes & attribute::VSCROLL != 0 {
         width - border - scroll_inset
     } else {
         width - border
     };
-    let bottom = if attributes & attribute::VSCROLL != 0 {
-        (height - border - 15) - 1 - 2 * border_metric
+    let bottom = if attributes & attribute::HSCROLL != 0 {
+        (height - border - rail) - 1 - 2 * border_metric
     } else {
         height - border
     };
-    let _ = (style, rail);
+    let _ = style;
     ClientRect {
         left: border,
         top,
@@ -163,7 +185,7 @@ pub fn client_rect(
     }
 }
 
-/// The scrollbar's metrics.
+/// The horizontal scrollbar's metrics.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollMetrics {
     pub step: f32,
@@ -171,8 +193,11 @@ pub struct ScrollMetrics {
     pub thumb_x: i32,
 }
 
-/// The scrollbar for a form of `width` pixels, `content_w` content, the
-/// given border and rail at scroll fraction `f`.
+/// The horizontal scrollbar for a form of `width` pixels, `content_w`
+/// content, the given border and rail at scroll fraction `f`: the step is
+/// `10 / overflow` (0 without one), the thumb `round(track · client /
+/// content)` (ties to even) clamped to 9 and the track, placed at
+/// `border + rail + round((track − thumb) · f)`.
 pub fn scroll_metrics(width: i32, content_w: i32, border: i32, rail: i32, f: f32) -> ScrollMetrics {
     let cw = width - 2 * border;
     let overflow = content_w - width;
@@ -182,13 +207,13 @@ pub fn scroll_metrics(width: i32, content_w: i32, border: i32, rail: i32, f: f32
         0.0
     };
     let track = cw - 2 * rail;
-    let mut thumb = ((cw as f64 / content_w as f64) * track as f64).round_ties_even() as i32;
+    let mut thumb = cvtsd2si(track as f64 * (cw as f64 / content_w as f64));
     if thumb < FormMetrics::MIN_THUMB {
         thumb = FormMetrics::MIN_THUMB;
     } else if track < thumb {
         thumb = track;
     }
-    let x = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
+    let x = border + rail + cvtss2si((track - thumb) as f32 * f);
     ScrollMetrics {
         step,
         thumb,
@@ -196,32 +221,39 @@ pub fn scroll_metrics(width: i32, content_w: i32, border: i32, rail: i32, f: f32
     }
 }
 
-/// Sets the scroll fraction: clamped to 0..1, optionally snapped to whole
-/// steps, forced to 0 when there is no overflow. Returns the fraction and
-/// thumb x.
+/// Sets the horizontal scroll fraction: clamped to 0..1 with ordered
+/// compares (a NaN passes), snapped to whole steps when `snap` (the
+/// attribute word's 0x400), stored as 0 when the content fits. The thumb is
+/// placed from the snapped fraction, except while the thumb itself is held
+/// (`thumb_held`), when it follows the unsnapped one; the no-overflow 0
+/// does not move it. Returns the stored fraction and the thumb's x.
 #[allow(clippy::too_many_arguments)]
 pub fn set_scroll_x(
-    mut f: f32,
+    f: f32,
     step: f32,
     snap: bool,
+    thumb_held: bool,
     width: i32,
     content_w: i32,
     border: i32,
     rail: i32,
     thumb: i32,
 ) -> (f32, i32) {
-    f = ordered_clamp(f);
-    if snap && step > 0.0 {
-        // The original's CVTSS2SI rounds to nearest, ties to even.
-        f = (f / step).round_ties_even() * step;
+    let mut placed = ordered_clamp(f);
+    let mut stored = placed;
+    if snap {
+        stored = cvtss2si64(placed / step) as f32 * step;
+        if !thumb_held {
+            placed = stored;
+        }
     }
     let cw = width - 2 * border;
-    if cw >= content_w {
-        f = 0.0;
+    if content_w <= cw {
+        stored = 0.0;
     }
     let track = cw - 2 * rail;
-    let x = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
-    (f, x)
+    let x = cvtss2si((track - thumb) as f32 * placed) + border + rail;
+    (stored, x)
 }
 
 /// The label's bracket style: 0 plain, 1 `[t]`, 2 `[[t]]`.
@@ -233,304 +265,145 @@ pub fn styled_label(style: u32, text: &str) -> String {
     }
 }
 
-/// Finds a form by its type tag in a tree: the form itself
-/// first, then its children in order.
-pub fn find_form_by_tag(node: &HitNode, tag: u32) -> Option<&HitNode> {
-    if node.id == tag {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| find_form_by_tag(child, tag))
-}
-
-/// The index of the first form with a tag in a sibling list.
-pub fn form_index_by_tag(tags: &[u32], tag: u32) -> Option<usize> {
-    tags.iter().position(|candidate| *candidate == tag)
-}
-
-/// Applies a style and attribute word: a form whose parent
-/// is not a task gets state bit 4; a maximised form (attribute 0x10000)
-/// clears 0x20000 when it is not a task's or adds style 0x10 and attributes
-/// 0x41 when it is; the state's layout bit is raised.
-pub fn set_style(style: u32, attributes: u32, parent_is_task: bool) -> (u32, u32, u32) {
-    let mut style = style;
-    let mut attributes = attributes;
-    let mut state = 0u32;
-    if !parent_is_task {
-        state |= 4;
-    }
-    if attributes & 0x1_0000 != 0 {
-        if state & 4 == 4 {
-            attributes &= !0x2_0000;
-        } else {
-            style |= 0x10;
-            attributes |= 0x41;
-        }
-    }
-    state = (state & !0x2000) | 0x1000;
-    (style, attributes, state)
-}
-
-/// The destroy's work: free the children, the control array
-/// and the name, clear the active form if it is this one, and the final
-/// free when the caller owns it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DestroyPlan {
-    pub children_freed: usize,
-    pub controls_freed: usize,
-    pub name_freed: bool,
-    pub clears_active: bool,
-    pub final_free: bool,
-}
-
-/// Plans a destroy from the form's counts and its ownership.
-pub fn destroy_plan(
-    child_count: usize,
-    control_count: usize,
-    owns_controls: bool,
-    is_active: bool,
-    caller_frees: bool,
-) -> DestroyPlan {
-    DestroyPlan {
-        children_freed: child_count,
-        controls_freed: if owns_controls { control_count } else { 0 },
-        name_freed: true,
-        clears_active: is_active,
-        final_free: caller_frees,
-    }
-}
-
-/// A control record for the runtime resize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResizeControl {
-    pub x: i16,
-    pub y: i16,
-    pub width: i16,
-    pub height: i16,
-    pub style: u32,
-    /// Its owner's client width and height, for the centred placements.
-    pub client: (i32, i32),
-}
-
-/// A form for the runtime resize: its size, style, children and records.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResizeNode {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    pub style: u32,
-    pub children: Vec<ResizeNode>,
-    pub controls: Vec<ResizeControl>,
-}
-
-/// Resizes a form in place (`0x10002c9e0`): a right/bottom-anchored form
-/// moves by the size change; a stretched child takes the change, a
-/// right/bottom-anchored child moves, and an unanchored child of a centred
-/// style is re-centred (a floor). The controls follow the same rules, with
-/// their stored 16-bit places. The original also calls the form's resize
-/// callback, which is the caller's.
-pub fn resize_form(form: &mut ResizeNode, new_width: i32, new_height: i32) {
-    let old = (form.width, form.height);
-    let dw = new_width - old.0;
-    let dh = new_height - old.1;
-    if form.style & style::X_MASK == style::RIGHT {
-        form.x = form.x + old.0 - new_width;
-    }
-    if form.style & style::Y_MASK == style::BOTTOM {
-        form.y = form.y + old.1 - new_height;
-    }
-    for child in &mut form.children {
-        let mut resized = false;
-        let mut child_w = child.width;
-        let mut child_h = child.height;
-        if child.style & style::X_MASK == style::X_MASK {
-            child_w = child.width + new_width - old.0;
-            resized = true;
-        } else if child.style & style::X_MASK == style::RIGHT {
-            child.x += dw;
-        }
-        if child.style & style::Y_MASK == style::Y_MASK {
-            child_h = child.height + new_height - old.1;
-            resized = true;
-        } else if child.style & style::Y_MASK == style::BOTTOM {
-            child.y += dh;
-        }
-        if resized {
-            resize_form(child, child_w, child_h);
-        } else {
-            if child.style & style::CENTRE_X != 0 {
-                child.x = (new_width - child.width) >> 1;
-            }
-            if child.style & style::CENTRE_Y != 0 {
-                child.y = (new_height - child.height) >> 1;
-            }
-        }
-    }
-    form.width = new_width;
-    form.height = new_height;
-    for control in &mut form.controls {
-        let mut resized = false;
-        let mut w = control.width;
-        let mut h = control.height;
-        if control.style & style::X_MASK == style::X_MASK {
-            w = (i32::from(control.width) + new_width - old.0) as i16;
-            resized = true;
-        } else if control.style & style::X_MASK == style::RIGHT {
-            control.x = (i32::from(control.x) + dw) as i16;
-        }
-        if control.style & style::Y_MASK == style::Y_MASK {
-            h = (i32::from(control.height) + new_height - old.1) as i16;
-            resized = true;
-        } else if control.style & style::Y_MASK == style::BOTTOM {
-            control.y = (i32::from(control.y) + dh) as i16;
-        }
-        if resized {
-            control.width = w;
-            control.height = h;
-        } else {
-            if control.style & style::CENTRE_X != 0 {
-                control.x = ((control.client.0 - i32::from(control.width)) >> 1) as i16;
-            }
-            if control.style & style::CENTRE_Y != 0 {
-                control.y = ((control.client.1 - i32::from(control.height)) >> 1) as i16;
-            }
-        }
-    }
-}
-
-/// The 1-based control code's index, when it names a control.
-pub fn control_index(code: i32, last: i32) -> Option<usize> {
-    let index = (code & 0xffff) - 1;
-    if code <= 0 || index < 0 || last < index {
-        return None;
-    }
-    Some(index as usize)
-}
-
-/// The first control with a record code: the form's own
-/// controls first, then the children's recursively.
-pub fn find_control(controls: &[i32], children: &[Vec<i32>], code: i32) -> Option<i32> {
-    controls
-        .iter()
-        .copied()
-        .find(|candidate| *candidate == code)
-        .or_else(|| {
-            children
-                .iter()
-                .find_map(|child| find_control(child, &[], code))
-        })
-}
-
-/// The centre of a form's content: each span over two,
-/// truncating.
-pub fn content_centre(width: i32, height: i32) -> (i32, i32) {
-    (width / 2, height / 2)
-}
-
-/// A form's part of the local-to-screen chain: the form's
-/// place, client inset, content and scroll.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScreenOffset {
-    pub x: i32,
-    pub y: i32,
-    pub border: i32,
-    pub top: i32,
-    pub content: (i32, i32),
-    pub client: (i32, i32),
-    pub scroll_x: f32,
-    pub scroll_y: f32,
-    /// The form's scroll is locked at zero (attribute 0x800).
-    pub locked: bool,
-}
-
-/// Takes a form-local point to the screen through its ancestors' offsets
-/// (the innermost first).
-pub fn local_to_screen(mut point: (i32, i32), forms: &[ScreenOffset]) -> (i32, i32) {
-    for form in forms {
-        point.0 += form.border + form.x;
-        if form.locked {
-            point.1 += form.top;
-        } else {
-            let scrolled = ((form.content.1 - form.client.1) as f32 * form.scroll_y) as i32;
-            point.1 += form.top - scrolled;
-        }
-        point.1 += form.y;
-    }
-    point
-}
-
-/// A hover change: the control hovered (0-based) and whether
-/// the form redraws. A code outside the controls clears the old hover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct HoverChange {
-    pub index: Option<usize>,
-    pub redraw: bool,
-}
-
-/// The hover change from the pointer's control word. `last` is the form's
-/// highest 0-based control index.
-pub fn hover_change(word: u32, last: i32) -> HoverChange {
-    match control_index(word as i32, last) {
-        Some(index) => HoverChange {
-            index: Some(index),
-            redraw: true,
-        },
-        None => HoverChange {
-            index: None,
-            redraw: false,
-        },
-    }
-}
-
-/// A focus change: the new 0-based control, whether the
-/// focus moved and whether the form redraws. The original clears bit 0x400
-/// on the old record and sets it on the new, and clears the form's state bit
-/// 0x10 when no control takes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FocusChange {
-    pub index: Option<usize>,
-    pub changed: bool,
-    pub redraw: bool,
-    pub lit: bool,
-}
-
-/// The focus change from the focused control word (1-based; 0 none).
-pub fn focus_change(word: u32, current: u32, last: i32) -> FocusChange {
-    if word == current {
-        return FocusChange {
-            index: control_index(word as i32, last),
-            ..Default::default()
-        };
-    }
-    let index = control_index(word as i32, last);
-    FocusChange {
-        index,
-        changed: true,
-        redraw: true,
-        lit: index.is_some(),
-    }
-}
-
 /// The selected row's nudge: `unit / 3`.
 pub fn selected_nudge(unit: i32) -> i32 {
     unit / 3
 }
 
-/// The form class's shared ease `(3 − 2t)t²`.
+/// The form class's shared ease `(3 − 2t)t²`, in the instructions' order.
 pub fn ease(t: f32) -> f32 {
-    (3.0 - 2.0 * t) * t * t
+    (3.0 - 2.0 * t) * (t * t)
 }
 
-/// The constructor's wheel step (`+0x1c`). The component map says 0.1; the
-/// instruction stores 0.25, which is what this follows.
-pub const DEFAULT_WHEEL_STEP: f32 = 0.25;
-/// The constructor's attribute word: a page, no gutters, a vertical
-/// scrollbar and a snapping scroll.
-pub const DEFAULT_ATTRIBUTES: u32 = 0x30022;
-/// The constructor's state word: laid out, the page shown.
-pub const DEFAULT_STATE: u32 = 0x3000;
+/// `CVTSS2SI` into a 64-bit register, keeping the low 32 bits: rounds to
+/// nearest, ties to even; a NaN or out-of-range value gives the indefinite
+/// integer, whose low half is 0.
+pub fn cvtss2si(v: f32) -> i32 {
+    cvtss2si64(v) as i32
+}
+
+/// `CVTSS2SI` into a 64-bit register.
+pub fn cvtss2si64(v: f32) -> i64 {
+    let r = v.round_ties_even();
+    if r.is_nan() || !(-9.223_372e18..9.223_372e18).contains(&r) {
+        i64::MIN
+    } else {
+        r as i64
+    }
+}
+
+/// `CVTSD2SI` into a 64-bit register, keeping the low 32 bits.
+pub fn cvtsd2si(v: f64) -> i32 {
+    let r = v.round_ties_even();
+    if r.is_nan() || !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&r) {
+        0
+    } else {
+        (r as i64) as i32
+    }
+}
+
+/// Clamps a scroll fraction with the original's ordered comparisons: a
+/// NaN passes through both, which `f32::clamp` would not do.
+#[allow(clippy::manual_clamp)]
+fn ordered_clamp(v: f32) -> f32 {
+    if 0.0 <= v {
+        if 1.0 < v { 1.0 } else { v }
+    } else if v.is_nan() {
+        v
+    } else {
+        0.0
+    }
+}
+
+/// A form's style word: where an unplaced form goes and how a resize
+/// anchors it.
+pub mod style {
+    /// Centre the unplaced x in the parent's client.
+    pub const CENTRE_X: u32 = 0x800;
+    /// Centre the unplaced y in the parent's client.
+    pub const CENTRE_Y: u32 = 0x8000;
+    /// The x anchor bits: `RIGHT` alone anchors to the right edge, both
+    /// bits stretch the form with its parent.
+    pub const X_MASK: u32 = 0x3_0000;
+    pub const RIGHT: u32 = 0x2_0000;
+    /// The y anchor bits: `BOTTOM` alone anchors to the bottom edge, both
+    /// bits stretch.
+    pub const Y_MASK: u32 = 0xc_0000;
+    pub const BOTTOM: u32 = 0x8_0000;
+    /// A child the parent's hit test passes over.
+    pub const NO_HIT: u32 = 2;
+    /// A press on the form's client takes the press-through bit 0x10.
+    pub const PRESS_THROUGH: u32 = 8;
+    /// The form's caret blinks (when no control has the focus).
+    pub const CARET: u32 = 4;
+}
+
+/// A form's attribute word.
+pub mod attribute {
+    /// A title bar.
+    pub const TITLE: u32 = 1;
+    /// A client fill (and a snap container: its children's free space is
+    /// cut into slots).
+    pub const CLIENT_FILL: u32 = 0x20;
+    /// A form that takes part in its parent's snap slots (either bit).
+    pub const SNAPS: u32 = 0x30;
+    /// A horizontal scrollbar along the bottom.
+    pub const HSCROLL: u32 = 0x100;
+    /// A vertical scrollbar along the right.
+    pub const VSCROLL: u32 = 0x200;
+    /// The scroll fractions snap to whole steps.
+    pub const SNAP_SCROLL: u32 = 0x400;
+    /// The vertical scroll offset is not applied to a point taken to the
+    /// screen.
+    pub const LOCK_SCROLL: u32 = 0x800;
+    /// The sibling layer kept on top.
+    pub const UPPER_LAYER: u32 = 0x1000;
+    /// The sibling layer kept at the bottom.
+    pub const LOWER_LAYER: u32 = 0x2000;
+    /// The form maximises to the screen.
+    pub const MAXIMISED: u32 = 0x1_0000;
+    /// The x placement bit a maximise of a free form clears.
+    pub const FREE_MAXIMISE: u32 = 0x4_0000;
+}
+
+/// A form's state word.
+pub mod state {
+    /// The form is maximised (the low two bits are 2).
+    pub const MAXIMISED: u32 = 2;
+    /// The parent is not a task.
+    pub const NOT_TASK_CHILD: u32 = 4;
+    /// The caret is lit.
+    pub const CARET_LIT: u32 = 0x10;
+    /// The client rectangle is out of date.
+    pub const LAYOUT: u32 = 0x1000;
+    /// The style and attribute words are to be applied again.
+    pub const RESTYLE: u32 = 0x2000;
+    /// The form has been placed in its parent.
+    pub const PLACED: u32 = 0x4000;
+}
+
+/// A control record's style bits the form reads.
+pub mod record_style {
+    /// The record is passed over by the hit test.
+    pub const NO_HIT: u32 = 2;
+    /// The record's caret blinks while it has the focus.
+    pub const CARET: u32 = 4;
+    /// A Tab stop.
+    pub const TAB_STOP: u32 = 8;
+    /// The record ignores keys.
+    pub const NO_KEYS: u32 = 0x10_0000;
+}
+
+/// A control record's state bits the form reads or writes.
+pub mod record_state {
+    pub const DISABLED: u32 = 0x10;
+    /// Hidden and disabled together: the record is not drawn.
+    pub const NOT_DRAWN: u32 = 0x110;
+    /// The record has the focus.
+    pub const FOCUSED: u32 = 0x400;
+    /// The pointer's hover bits.
+    pub const HOVER: u32 = 0xf_0000;
+}
 
 /// The form constructor's fields.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -541,14 +414,18 @@ pub struct FormDefaults {
     pub height: i32,
     pub border: i32,
     pub content: (i32, i32),
-    /// The horizontal scroll step and the wheel step.
+    /// The horizontal and vertical scroll steps.
     pub step: f32,
-    pub wheel: f32,
-    /// The smallest page (width, height).
+    pub vertical_step: f32,
+    /// The smallest page (height, width).
     pub min_page: (i32, i32),
     pub attributes: u32,
     pub state: u32,
     pub visible: bool,
+    /// A close marks the form as closing, so a second close does nothing.
+    pub closes_once: bool,
+    /// The last control index (none).
+    pub last_control: i32,
 }
 
 /// The original's form constructor defaults.
@@ -561,741 +438,851 @@ pub fn form_defaults() -> FormDefaults {
         border: DEFAULT_BORDER,
         content: DEFAULT_CONTENT,
         step: DEFAULT_SCROLL_STEP,
-        wheel: DEFAULT_WHEEL_STEP,
+        vertical_step: DEFAULT_VERTICAL_STEP,
         min_page: PAGE_MIN,
         attributes: DEFAULT_ATTRIBUTES,
         state: DEFAULT_STATE,
         visible: true,
+        closes_once: true,
+        last_control: -1,
     }
 }
 
-/// What showing a form does to it and its children.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ShowPlan {
-    pub attach_to_root: bool,
-    pub attach_to_parent: bool,
-    /// The task takes the shown form's title when its own is empty.
-    pub adopt_title: bool,
-    /// The unplaced y becomes the default 36.
-    pub default_y: bool,
-    pub layout: bool,
-    pub rescale_controls: bool,
-    /// Re-centre x or y from the style word.
-    pub recentre_x: bool,
-    pub recentre_y: bool,
-    pub snap_parent: bool,
-    pub snap_self: bool,
-    pub snap_children: bool,
-    pub redraw: bool,
-}
-
-/// The show's inputs.
+/// A child form as a parent's tag searches see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShowInput {
-    pub attached: bool,
-    /// The call attaches the form (its `param_2`).
-    pub attach: bool,
-    pub y_unset: bool,
-    /// The style word's centring/placement bits.
-    pub style: u32,
-    /// The task's own name is empty and the form is its active child.
-    pub adopt_title: bool,
-    /// The form's parent is not the root.
-    pub parent_not_root: bool,
-    pub child_count: usize,
-    /// The GUI unit differs from the base 4.
-    pub unit_differs: bool,
-}
-
-/// The show's rule: attach, adopt the task's empty title,
-/// give an unset y 36 (unless centred or bottom-placed), lay out and rescale,
-/// re-centre, rebuild the snap edges and redraw.
-pub fn show_plan(input: ShowInput) -> ShowPlan {
-    ShowPlan {
-        attach_to_root: !input.attached,
-        attach_to_parent: input.attached && input.attach,
-        adopt_title: input.adopt_title,
-        default_y: input.y_unset && input.style & 0xc_8000 == 0,
-        layout: true,
-        rescale_controls: input.unit_differs,
-        recentre_x: input.style & style::CENTRE_X != 0,
-        recentre_y: input.style & style::CENTRE_Y != 0,
-        snap_parent: input.parent_not_root,
-        snap_self: true,
-        snap_children: input.child_count > 0,
-        redraw: true,
-    }
-}
-
-/// What closing a form does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ClosePlan {
-    /// Mark the form as closing (its 0x11b).
-    pub mark_closing: bool,
-    pub task_message: bool,
-    pub hide_tooltip: bool,
-    pub run_callback: bool,
-    /// The form is the task's active child: unlink it, calling the owner.
-    pub unlink_active: bool,
-    /// Close the siblings whose owner is this form.
-    pub close_owner_children: bool,
-    /// Close this form's own children.
-    pub close_children: bool,
-    pub hide: bool,
-    pub redraw: bool,
-    pub result: u32,
-}
-
-/// The close's inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CloseInput {
-    pub already_closing: bool,
-    /// The form's 0x119 bit marks the session as closing.
-    pub mark_session: bool,
-    pub is_main_menu: bool,
-    pub is_tooltip: bool,
-    /// The form is the task's active child.
-    pub is_active_child: bool,
-    pub has_callback: bool,
-    pub owner_children: usize,
-    pub children: usize,
-}
-
-/// The close's rule: a form already closing is left alone;
-/// the task's active child is unlinked with its owner told, every other form
-/// detaches, tells its dependants and children, hides and runs its callback.
-pub fn close_plan(input: CloseInput) -> ClosePlan {
-    if input.already_closing {
-        return ClosePlan {
-            result: 1,
-            ..Default::default()
-        };
-    }
-    let mut plan = ClosePlan {
-        mark_closing: true,
-        task_message: input.is_main_menu,
-        hide_tooltip: input.is_tooltip,
-        run_callback: input.has_callback,
-        redraw: true,
-        result: 1,
-        ..Default::default()
-    };
-    let _ = input.mark_session;
-    if input.is_active_child {
-        plan.unlink_active = true;
-    } else {
-        plan.close_owner_children = input.owner_children > 0;
-        plan.close_children = input.children > 0;
-        plan.hide = true;
-    }
-    plan
-}
-
-/// What hiding or showing a form does to its tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct VisibilityPlan {
+pub struct TaggedForm {
+    pub tag: u32,
     pub visible: bool,
-    pub hide_children: bool,
-    /// Hiding the task's active child hides the task too.
-    pub hide_parent: bool,
-    /// Hiding a non-active form detaches it from its owner.
-    pub detach: bool,
-    pub focus: bool,
-    pub redraw: bool,
 }
 
-/// The visibility rule: showing focuses the form (or its
-/// parent when it is the task's active child); hiding hides the children and
-/// either the parent (when active) or the form itself.
-pub fn visibility_plan(visible: bool, is_active_child: bool, child_count: usize) -> VisibilityPlan {
-    if visible {
-        VisibilityPlan {
-            visible: true,
-            focus: !is_active_child,
-            hide_parent: is_active_child,
-            redraw: false,
-            ..Default::default()
-        }
-    } else {
-        VisibilityPlan {
-            visible: false,
-            hide_children: child_count > 0,
-            hide_parent: is_active_child,
-            detach: !is_active_child,
-            redraw: true,
-            ..Default::default()
-        }
+/// Finds a visible child by its type tag among a task's children (one
+/// level, first first). A tag of 0 finds nothing.
+pub fn find_form_by_tag(children: &[TaggedForm], tag: u32) -> Option<usize> {
+    if tag == 0 {
+        return None;
     }
+    children
+        .iter()
+        .position(|child| child.tag == tag && child.visible)
 }
 
-/// The form's saved window record for a maximise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FormRecord {
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-    pub border: i32,
-    pub tail: i32,
-    pub right: i32,
-    pub top: i32,
-    pub bottom: i32,
-    pub style: u32,
-    pub attributes: u32,
-    pub unit: i32,
-}
-
-/// Maximises a form: the record saves its geometry and words,
-/// the place becomes 0, 0, the style keeps the bottom/right anchors and the
-/// size becomes the screen's. `already_free` is attribute bit 0x40000; a free
-/// form clears its 0x4f attributes and its spacing instead.
-///
-/// The fields the original stores in the record's spare words are not
-/// modelled (their meaning is not established); the geometry, style and
-/// attributes are.
-pub fn maximise(
-    record: FormRecord,
-    screen: (i32, i32),
-    already_free: bool,
-) -> (FormRecord, FormRecord) {
-    let saved = record;
-    let mut maximised = record;
-    maximised.x = 0;
-    maximised.y = 0;
-    maximised.style |= 0xf_0000;
-    if already_free {
-        maximised.attributes &= !0xc04f;
-        maximised.style &= !0xf0;
-    } else {
-        maximised.attributes &= !0xc000;
+/// The child the focus-by-tag routine activates: the first with the tag,
+/// visible or not. A tag of 0 finds nothing.
+pub fn focus_by_tag(tags: &[u32], tag: u32) -> Option<usize> {
+    if tag == 0 {
+        return None;
     }
-    maximised.width = screen.0;
-    maximised.height = screen.1;
-    (saved, maximised)
+    tags.iter().position(|candidate| *candidate == tag)
 }
 
-/// Restores a maximised form: the unit is rescaled back from
-/// the saved record's unit and the saved geometry goes to the screen-sized
-/// stored values. Returns the restored record.
-pub fn restore(saved: FormRecord, unit: i32) -> FormRecord {
-    let saved_unit = if saved.unit == 0 { 1 } else { saved.unit };
-    FormRecord {
-        x: unit * (saved.x / saved_unit),
-        y: unit * (saved.y / saved_unit),
-        width: ((unit as f64) * (saved.width as f64 / saved_unit as f64)).round_ties_even() as i32,
-        style: saved.style,
-        attributes: saved.attributes,
-        unit,
-        ..saved
+/// Applies a style and attribute word to a form's `state`: a form whose
+/// parent is not a task gets state bit 4; a maximising form then clears
+/// its attribute bit 0x20000 when it has that bit, or else gains style
+/// 0x10 and attributes 0x41; the restyle bit clears and the layout bit
+/// sets. Returns the style, attribute and state words.
+pub fn set_style(style: u32, attributes: u32, state: u32, parent_is_task: bool) -> (u32, u32, u32) {
+    let mut style = style;
+    let mut attributes = attributes;
+    let mut state = state;
+    if !parent_is_task {
+        state |= state::NOT_TASK_CHILD;
     }
-}
-
-/// An unplaced coordinate (the constructor's sentinel).
-pub const UNPLACED: i32 = -987_654_321;
-
-/// A form's style word (`+0x5c`). The two layering words are named from
-/// where the sibling ordering puts them; the words themselves are the
-/// original's.
-pub mod style {
-    /// Centre the unplaced x in the parent's client.
-    pub const CENTRE_X: u32 = 0x800;
-    /// Centre the unplaced y in the parent's client.
-    pub const CENTRE_Y: u32 = 0x8000;
-    /// Put an unplaced form at the right edge, four pixels in.
-    pub const RIGHT: u32 = 0x20000;
-    /// Put an unplaced form at the bottom edge, four pixels in.
-    pub const BOTTOM: u32 = 0x80000;
-    /// The x placement bits; `RIGHT` alone picks the right edge.
-    pub const X_MASK: u32 = 0x30_000;
-    /// The y placement bits; `BOTTOM` alone picks the bottom edge.
-    pub const Y_MASK: u32 = 0xc_0000;
-    /// A child kept at the bottom of the draw order when raised.
-    pub const LOWER_LAYER: u32 = 0x2000;
-    /// A child kept at the top of the draw order when raised.
-    pub const UPPER_LAYER: u32 = 0x1000;
-    /// A child whose own frame is not hit (`style & 2`).
-    pub const NO_FRAME_HIT: u32 = 2;
-}
-
-/// A form's attribute word (`+0x64`).
-pub mod attribute {
-    /// Draw a title bar.
-    pub const TITLE: u32 = 1;
-    /// A close mark.
-    pub const CLOSE: u32 = 2;
-    /// A large mark.
-    pub const LARGE: u32 = 4;
-    /// A small mark.
-    pub const SMALL: u32 = 8;
-    /// A page hidden by the state word's bit 1.
-    pub const PAGE: u32 = 0x10;
-    /// A client fill.
-    pub const CLIENT_FILL: u32 = 0x20;
-    /// A rounded shell and outline frame.
-    pub const ROUNDED: u32 = 0x40;
-    /// A vertical scrollbar.
-    pub const VSCROLL: u32 = 0x100;
-    /// A horizontal scrollbar.
-    pub const HSCROLL: u32 = 0x200;
-    /// The scroll fraction snaps to whole steps.
-    pub const SNAP_SCROLL: u32 = 0x400;
-    /// The scroll offset is locked at zero.
-    pub const LOCK_SCROLL: u32 = 0x800;
-    /// A form skipped when the task looks for its active child.
-    pub const NOT_ACTIVE: u32 = 0x1000;
-    /// The tree is laid out in a single pass.
-    pub const EAGER_LAYOUT: u32 = 0x2000;
-}
-
-/// A form's state word (`+0x60`).
-pub mod state {
-    /// The layout has run.
-    pub const LAID_OUT: u32 = 0x1000;
-    /// The form is placed in its parent.
-    pub const PLACED: u32 = 0x4000;
-    /// The form holds the focus (a control's caret lit).
-    pub const FOCUSED: u32 = 0x10;
-    /// The form draws a flat frame.
-    pub const FLAT: u32 = 0x1;
-    /// No gutters.
-    pub const NO_GUTTERS: u32 = 0x4;
-}
-
-/// The rectangle a hit test needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FormRect {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
-}
-
-impl FormRect {
-    pub fn new(left: i32, top: i32, width: i32, height: i32) -> Self {
-        Self {
-            left,
-            top,
-            right: left + width,
-            bottom: top + height,
-        }
-    }
-
-    pub fn width(self) -> i32 {
-        self.right - self.left
-    }
-
-    pub fn height(self) -> i32 {
-        self.bottom - self.top
-    }
-
-    /// Strictly inside: every edge is outside.
-    pub fn strictly_inside(self, x: i32, y: i32) -> bool {
-        self.left < x && x < self.right && self.top < y && y < self.bottom
-    }
-
-    /// Within `slop` pixels of the rectangle, measured from the nearest
-    /// point (the original's control hit slop). A point exactly on the
-    /// radius is not inside (the original's `!=` guard).
-    pub fn near(self, x: i32, y: i32, slop: i32) -> bool {
-        let dx = if x < self.left {
-            self.left - x
-        } else if self.right < x {
-            x - self.right
+    if attributes & attribute::MAXIMISED != 0 {
+        if state & state::NOT_TASK_CHILD != 0 {
+            attributes &= !0x2_0000;
         } else {
-            0
-        };
-        let dy = if y < self.top {
-            self.top - y
-        } else if self.bottom < y {
-            y - self.bottom
-        } else {
-            0
-        };
-        let r2 = (slop as i64) * (slop as i64);
-        let d2 = (dx as i64) * (dx as i64) + (dy as i64) * (dy as i64);
-        d2 < r2
+            style |= 0x10;
+            attributes |= 0x41;
+        }
     }
+    state = (state & !state::RESTYLE) | state::LAYOUT;
+    (style, attributes, state)
 }
 
-/// Resolves a form's unset place against its parent's client rectangle.
-/// `parent` is `None` for a form attached to the root.
+/// Resolves a form's unset place in its parent's client rectangle: a
+/// centred x is `(right − left − width) / 2` (truncating), a right-anchored
+/// x `right − width − 4`, else 4; a centred y is `(bottom − top − height)
+/// >> 1` (a floor), a bottom-anchored y `bottom − height − 4`, else 36.
 pub fn place_unset(
     x: i32,
     y: i32,
     width: i32,
     height: i32,
     style: u32,
-    parent: Option<FormRect>,
+    parent: ClientRect,
 ) -> (i32, i32) {
-    let Some(parent) = parent else {
-        return (x, y);
-    };
-    let x = if x == UNPLACED {
-        if style & style::CENTRE_X != 0 {
-            // Signed division truncates toward zero, as the original's idiv.
-            (parent.width() - width) / 2
-        } else if style & style::X_MASK == style::RIGHT {
-            parent.width() - width - 4
-        } else {
-            4
-        }
-    } else {
+    let x = if x != UNPLACED {
         x
-    };
-    let y = if y == UNPLACED {
-        if style & style::CENTRE_Y != 0 {
-            // The original shifts the span arithmetically (a floor).
-            (parent.height() - height) >> 1
-        } else if style & style::Y_MASK == style::BOTTOM {
-            parent.height() - height - 4
-        } else {
-            36
-        }
+    } else if style & style::CENTRE_X != 0 {
+        ((i64::from(parent.right) - i64::from(parent.left) - i64::from(width)) / 2) as i32
+    } else if style & style::X_MASK == style::RIGHT {
+        parent.right - width - 4
     } else {
+        4
+    };
+    let y = if y != UNPLACED {
         y
+    } else if style & style::CENTRE_Y != 0 {
+        ((i64::from(parent.bottom) - i64::from(parent.top) - i64::from(height)) >> 1) as i32
+    } else if style & style::Y_MASK == style::BOTTOM {
+        parent.bottom - height - 4
+    } else {
+        36
     };
     (x, y)
 }
 
-/// The place a form takes when it is shown: a centred style is re-centred
-/// in the parent's client every time (the original's show rule).
+/// The place a shown form takes after its layout: a centred style is
+/// re-centred in the parent's client every time, both axes truncating.
 pub fn show_place(
     x: i32,
     y: i32,
     width: i32,
     height: i32,
     style: u32,
-    parent: FormRect,
+    parent: ClientRect,
 ) -> (i32, i32) {
     let x = if style & style::CENTRE_X != 0 {
-        (parent.width() - width) / 2
+        ((i64::from(parent.right) - i64::from(parent.left) - i64::from(width)) / 2) as i32
     } else {
         x
     };
     let y = if style & style::CENTRE_Y != 0 {
-        (parent.height() - height) / 2
+        ((i64::from(parent.bottom) - i64::from(parent.top) - i64::from(height)) / 2) as i32
     } else {
         y
     };
     (x, y)
 }
 
-/// The destination index for raising the child at `moving`, given the
-/// children's style words in draw order (the last is the topmost). Pinned
-/// children (`ON_TOP`) stay above the others; children at the back stay
-/// below them.
-pub fn raise_index(styles: &[u32], moving: usize) -> usize {
-    let count = styles.len();
-    if count == 0 || moving >= count {
-        return moving;
+/// What showing a form does, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShowPlan {
+    /// A form with no parent joins the root task.
+    pub attach_to_root: bool,
+    /// The call asked to raise the form in its parent.
+    pub raise: bool,
+    /// The task takes the shown form's title when its own is empty.
+    pub adopt_title: bool,
+    /// The unplaced y becomes 36 before the layout.
+    pub default_y: bool,
+    /// The layout runs at unit 4, then the controls are rescaled to the
+    /// unit (only when it is not 4).
+    pub rescale_controls: bool,
+    /// Re-centre x or y from the style word read before the layout.
+    pub recentre_x: bool,
+    pub recentre_y: bool,
+    /// Rebuild the parent's snap slots (a parent that is not the root).
+    pub snap_parent: bool,
+}
+
+/// The show's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowInput {
+    pub has_parent: bool,
+    pub raise: bool,
+    pub y_unset: bool,
+    pub style: u32,
+    /// The form is its task's active child and the task's title is empty.
+    pub adopt_title: bool,
+    /// The form's parent is not the root.
+    pub parent_not_root: bool,
+    pub unit: i32,
+}
+
+/// The show's rule: join the root (or raise), adopt the task's empty
+/// title, give an unset y 36 unless the style centres or bottom-anchors
+/// it, lay out at unit 4 and rescale, re-centre, then rebuild the snap
+/// slots of the parent (not the root), the form and each child that
+/// [`snaps_on_show`], and redraw.
+pub fn show_plan(input: ShowInput) -> ShowPlan {
+    ShowPlan {
+        attach_to_root: !input.has_parent,
+        raise: input.has_parent && input.raise,
+        adopt_title: input.adopt_title,
+        default_y: input.y_unset && input.style & 0xc_8000 == 0,
+        rescale_controls: input.unit != 4,
+        recentre_x: input.style & style::CENTRE_X != 0,
+        recentre_y: input.style & style::CENTRE_Y != 0,
+        snap_parent: input.parent_not_root,
     }
-    let moving_style = styles[moving];
-    let mut target;
-    if moving_style & style::LOWER_LAYER != 0 {
-        // The first child that is not pinned; 0 when all are pinned.
-        target = 0;
-        for (index, s) in styles.iter().enumerate().take(count.saturating_sub(1)) {
-            target = index;
-            if s & style::LOWER_LAYER == 0 {
-                break;
-            }
-            target = 0;
+}
+
+/// Whether a child's snap slots are rebuilt when its parent is shown: it
+/// is a snap container (attribute 0x20) with children.
+pub fn snaps_on_show(attributes: u32, children: usize) -> bool {
+    attributes & attribute::CLIENT_FILL != 0 && children > 0
+}
+
+/// The order the show's propagation pass visits a form tree: each form,
+/// then its children in order (depth first). `children[i]` lists form
+/// `i`'s children.
+pub fn propagation_order(children: &[Vec<usize>], root: usize) -> Vec<usize> {
+    let mut order = Vec::new();
+    let mut stack = vec![root];
+    while let Some(form) = stack.pop() {
+        order.push(form);
+        if let Some(kids) = children.get(form) {
+            stack.extend(kids.iter().rev().copied());
         }
-        if moving < target {
-            target -= 1;
-        }
-    } else if moving_style & style::UPPER_LAYER != 0 {
-        target = count - 1;
+    }
+    order
+}
+
+/// A form's place, size and words as the maximise record saves them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowRecord {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub border: i32,
+    /// The form's second border word (its title spacing reserve).
+    pub spacing: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub style: u32,
+    pub attributes: u32,
+    /// The GUI unit at the time.
+    pub unit: i32,
+}
+
+/// A form after a maximise or restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowPlace {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub border: i32,
+    pub spacing: i32,
+    pub style: u32,
+    pub attributes: u32,
+    pub state: u32,
+}
+
+/// Maximises a form to the screen's client (`screen` is the root's right
+/// and bottom): the record saves the form, the place becomes 0, 0, the
+/// style takes the four anchor bits; a free form (attribute 0x40000)
+/// also loses its border, spacing, attributes 0x4f and style 0xf0, the
+/// others only attributes 0xc000. The state's low bits become 2, then the
+/// form is resized (see [`resize_form`]).
+pub fn maximise(form: WindowRecord, state: u32, screen: (i32, i32)) -> WindowPlace {
+    let mut place = WindowPlace {
+        x: 0,
+        y: 0,
+        width: screen.0,
+        height: screen.1,
+        border: form.border,
+        spacing: form.spacing,
+        style: form.style | 0xf_0000,
+        attributes: form.attributes,
+        state: (state & !3) | state::MAXIMISED,
+    };
+    if form.attributes & attribute::FREE_MAXIMISE == 0 {
+        place.attributes &= !0xc000;
     } else {
-        // The last child from the end that is not at the back; 0 if all are.
-        target = 0;
-        for index in (0..count).rev() {
-            target = index;
-            if styles[index] & style::UPPER_LAYER == 0 {
-                break;
-            }
-            target = 0;
-        }
+        place.border = 0;
+        place.spacing = 0;
+        place.attributes &= 0xffff_3fb0;
+        place.style &= !0xf0;
     }
-    target
+    place
 }
 
-/// Moves `ids[moving]` to the destination [`raise_index`] gives and returns
-/// the destination. The ids are the window manager's form ids.
-pub fn raise_child(ids: &mut Vec<u32>, styles: &[u32], moving: usize) -> usize {
-    let target = raise_index(styles, moving);
-    if moving < ids.len() {
-        let id = ids.remove(moving);
-        ids.insert(target.min(ids.len()), id);
+/// Restores a maximised form from its record at the current `unit`: each
+/// coordinate and size is the saved one divided by the saved unit
+/// (truncating) times the unit, the border `round(unit · border / saved
+/// unit)` (ties to even); the spacing and words come back and the state's
+/// low bits clear. `None` for a record whose unit is 0 (the original
+/// divides by it).
+pub fn restore(saved: WindowRecord, unit: i32, state: u32) -> Option<WindowPlace> {
+    let su = saved.unit;
+    if su == 0 {
+        return None;
     }
-    target
-}
-
-/// The index of the topmost visible child in draw order: the last child
-/// whose attribute word does not mark it inactive.
-pub fn topmost_child(attributes: &[u32], visible: &[bool]) -> Option<usize> {
-    (0..attributes.len()).rev().find(|&i| {
-        attributes[i] & attribute::NOT_ACTIVE == 0 && visible.get(i).copied().unwrap_or(true)
+    Some(WindowPlace {
+        x: unit.wrapping_mul(saved.x / su),
+        y: unit.wrapping_mul(saved.y / su),
+        width: (i64::from(unit) * (i64::from(saved.width) / i64::from(su))) as i32,
+        height: (i64::from(unit) * (i64::from(saved.height) / i64::from(su))) as i32,
+        border: cvtsd2si(f64::from(unit) * (f64::from(saved.border) / f64::from(su))),
+        spacing: saved.spacing,
+        style: saved.style,
+        attributes: saved.attributes,
+        state: state & !3,
     })
 }
 
-/// Whether a form is the active one: the topmost visible sibling.
-pub fn is_active(form: usize, attributes: &[u32], visible: &[bool]) -> bool {
-    topmost_child(attributes, visible) == Some(form)
+/// The destination when a top-level form is raised among the root's
+/// children, from their attribute words in draw order (the last is the
+/// topmost): a lower-layer form goes to the first child not in the lower
+/// layer (one less when that is above it; 0 when all are), an upper-layer
+/// form to the top, any other below the upper layer.
+pub fn raise_top_level_index(attributes: &[u32], moving: usize) -> usize {
+    raise_index(attributes, moving, 0)
 }
 
-/// A form's 256 ms show/hide fade. The mode is 0 for a linear ramp and 1
-/// for the smooth `(3 − 2t)t²` ramp; a form may set either.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct FormFade {
-    /// 0 none, 1 showing, 2 hiding.
-    pub state: u8,
-    /// The clock tick at which the fade ends.
-    pub end: i64,
-    /// The ramp: 0 linear, 1 eased.
-    pub mode: u8,
+/// The destination when a child is raised within its parent. The rule is
+/// [`raise_top_level_index`]'s, except that the lower-layer search starts
+/// at the second child.
+pub fn raise_child_index(attributes: &[u32], moving: usize) -> usize {
+    raise_index(attributes, moving, 1)
 }
 
-/// The fade's length in clock ticks (the original's 256 ms tick count).
-pub const FADE_TICKS: i64 = 256;
-
-impl FormFade {
-    /// Starts showing at `now`; the form is fully visible at `now + 256`.
-    pub fn start_show(&mut self, now: i64) {
-        if self.state != 1 {
-            self.state = 1;
-            self.end = now + FADE_TICKS;
-        }
-    }
-
-    /// Starts hiding at `now`; the form is gone at `now + 256`.
-    pub fn start_hide(&mut self, now: i64) {
-        if self.state != 2 {
-            self.state = 2;
-            self.end = now + FADE_TICKS;
-        }
-    }
-
-    /// The global GUI alpha at `now`. `None` when a hiding fade has ended
-    /// (the caller closes the form); `Some(1.0)` when idle or shown.
-    pub fn step(&mut self, now: i64) -> Option<f32> {
-        if self.state == 0 {
-            return Some(1.0);
-        }
-        let hiding = self.state == 2;
-        let remaining = (self.end - now).max(0) as f64;
-        if self.end <= now {
-            self.state = 0;
-            return if hiding { None } else { Some(1.0) };
-        }
-        let t = (remaining / FADE_TICKS as f64) as f32;
-        let eased = (3.0 - 2.0 * t) * t * t;
-        Some(match (self.state, self.mode) {
-            (1, 0) => 1.0 - t,
-            (1, _) => 1.0 - eased,
-            (2, 0) => t,
-            _ => eased,
-        })
-    }
-}
-
-/// The vertical scrollbar's metrics.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VerticalScroll {
-    pub step: f32,
-    pub thumb: i32,
-    pub thumb_y: i32,
-}
-
-/// The vertical scrollbar for a form `height` pixels tall, `content_h`
-/// content, the given border and rail at fraction `f`.
-pub fn vertical_scroll_metrics(
-    height: i32,
-    content_h: i32,
-    border: i32,
-    rail: i32,
-    f: f32,
-) -> VerticalScroll {
-    let ch = height - 2 * border;
-    let overflow = content_h - height;
-    let step = if overflow > 0 {
-        (10.0 / overflow as f64) as f32
-    } else {
-        0.0
+fn raise_index(attributes: &[u32], moving: usize, first: usize) -> usize {
+    let count = attributes.len();
+    let Some(&own) = attributes.get(moving) else {
+        return moving;
     };
-    let track = ch - 2 * rail;
-    let mut thumb = ((ch as f64 / content_h as f64) * track as f64).round_ties_even() as i32;
-    if thumb < FormMetrics::MIN_THUMB {
-        thumb = FormMetrics::MIN_THUMB;
-    } else if track < thumb {
-        thumb = track;
-    }
-    let y = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
-    VerticalScroll {
-        step,
-        thumb,
-        thumb_y: y,
-    }
-}
-
-/// Clamps a scroll fraction with the original's ordered comparisons: a
-/// NaN passes through both, which `f32::clamp` would not do.
-#[allow(clippy::manual_clamp)]
-fn ordered_clamp(v: f32) -> f32 {
-    if v < 0.0 {
-        0.0
-    } else if 1.0 < v {
-        1.0
+    if own & attribute::LOWER_LAYER != 0 {
+        let mut target = (first..count)
+            .find(|&i| attributes[i] & attribute::LOWER_LAYER == 0)
+            .unwrap_or(0);
+        if moving < target {
+            target -= 1;
+        }
+        target
+    } else if own & attribute::UPPER_LAYER != 0 {
+        count - 1
     } else {
-        v
+        (0..count)
+            .rev()
+            .find(|&i| attributes[i] & attribute::UPPER_LAYER == 0)
+            .unwrap_or(0)
     }
 }
 
-/// The scroll fraction after `set_scroll_y`: clamped, optionally snapped to
-/// whole steps (ties to even, as `CVTSS2SI` does), and forced to zero when
-/// the content fits. Returns the fraction and the thumb's y.
-#[allow(clippy::too_many_arguments)]
-pub fn set_scroll_y(
-    f: f32,
-    step: f32,
-    snap: bool,
-    height: i32,
-    content_h: i32,
-    border: i32,
-    rail: i32,
-    thumb: i32,
-) -> (f32, i32) {
-    let mut value = ordered_clamp(f);
-    if snap && step > 0.0 {
-        value = (value / step).round_ties_even() * step;
-    }
-    let ch = height - 2 * border;
-    if content_h <= ch {
-        value = 0.0;
-    }
-    let track = ch - 2 * rail;
-    let y = border + rail + ((track - thumb) as f32 * value).round_ties_even() as i32;
-    (value, y)
+/// A child in a parent's draw order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sibling {
+    pub id: u32,
+    pub attributes: u32,
+    /// The form this one belongs to (a popup's opener).
+    pub owner: Option<u32>,
 }
 
-/// The wheel's effect on the vertical scroll: `delta` in wheel units, each
-/// an eighth of a step less a hundredth of a step (the original's double
-/// `0.0083333…` conversion, ties to even).
-pub fn wheel_scroll(delta: i32, step: f32, current: f32, horizontal: bool) -> f32 {
-    let v = (delta as f64
-        * if horizontal {
-            -0.008_333_333_333_333_333
+/// Raises the child `id` within its parent ([`raise_child_index`]), then
+/// raises every child below it that it owns, each pulling its owner's
+/// place down by one. Returns whether the child was found.
+pub fn raise_child(children: &mut Vec<Sibling>, id: u32) -> bool {
+    let Some(moving) = children.iter().position(|c| c.id == id) else {
+        return false;
+    };
+    let attributes: Vec<u32> = children.iter().map(|c| c.attributes).collect();
+    let mut target = raise_child_index(&attributes, moving);
+    let child = children.remove(moving);
+    children.insert(target.min(children.len()), child);
+    let mut index = 0;
+    while index < target {
+        if children[index].owner == Some(id) {
+            let owned = children[index].id;
+            raise_child(children, owned);
+            target -= 1;
         } else {
-            0.008_333_333_333_333_333
-        })
-    .round_ties_even() as f32;
-    current - v * step
+            index += 1;
+        }
+    }
+    true
 }
 
-/// The scroll a held scroll arrow or page repeats: `word` is the held
-/// control's code, the base is the fraction when the drag began, the steps
-/// the form's. The original names -10/-9 for the vertical arrows and
-/// -13/-14 for the horizontal ones.
-pub fn repeat_scroll(
-    word: i32,
-    base_x: f32,
-    x: f32,
-    y: f32,
-    step_x: f32,
-    step_y: f32,
-) -> (f32, f32) {
-    match word {
-        -10 => (x, y + step_y),
-        -9 => (x, y - step_y),
-        -13 => (base_x - step_x, y),
-        -14 => (base_x + step_x, y),
-        _ => (x, y),
+/// Raises a top-level form among the root's children
+/// ([`raise_top_level_index`]); owned forms are not moved.
+pub fn raise_top_level(children: &mut Vec<Sibling>, id: u32) -> bool {
+    let Some(moving) = children.iter().position(|c| c.id == id) else {
+        return false;
+    };
+    let attributes: Vec<u32> = children.iter().map(|c| c.attributes).collect();
+    let target = raise_top_level_index(&attributes, moving);
+    let child = children.remove(moving);
+    children.insert(target.min(children.len()), child);
+    true
+}
+
+/// Where a new child goes in its parent's draw order: a lower-layer child
+/// just above the last lower-layer child (at the bottom when there is
+/// none), an upper-layer child at the end, any other just below the
+/// trailing upper-layer children.
+pub fn add_child_index(attributes: &[u32], new: u32) -> usize {
+    let count = attributes.len();
+    if new & attribute::LOWER_LAYER != 0 {
+        (0..count)
+            .rev()
+            .find(|&i| attributes[i] & attribute::LOWER_LAYER != 0)
+            .map_or(0, |i| i + 1)
+    } else if new & attribute::UPPER_LAYER != 0 {
+        count
+    } else {
+        (0..count)
+            .rev()
+            .find(|&i| attributes[i] & attribute::UPPER_LAYER == 0)
+            .map_or(0, |i| i + 1)
     }
 }
 
-/// A control's tab state bits: `focusable` is the record state's 8 and
-/// `skip` its 0x10.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ControlTab {
-    pub focusable: bool,
-    pub skip: bool,
+/// Whether a form is its task's active one. A form whose attribute word is
+/// exactly 0x1000 is active when it is the task's first child; any other
+/// when it is the last child outside the upper layer. Visibility is not
+/// looked at.
+pub fn is_active(task_children: &[u32], form: usize) -> bool {
+    let Some(&own) = task_children.get(form) else {
+        return false;
+    };
+    if own == attribute::UPPER_LAYER {
+        return form == 0;
+    }
+    (0..task_children.len())
+        .rev()
+        .find(|&i| task_children[i] & attribute::UPPER_LAYER == 0)
+        == Some(form)
 }
 
-/// The next focusable control for Tab: forward from `current + 1`, then
-/// round to the first focusable one; backward the other way. The wrap
-/// ignores the skip bit, as the original's does.
-pub fn tab_target(
-    controls: &[ControlTab],
-    current: Option<usize>,
-    backward: bool,
-) -> Option<usize> {
-    let count = controls.len();
-    if count == 0 {
+/// Moves an activated task to the end of the recently-active list (a
+/// task not in the list is left out).
+pub fn touch_task(list: &mut Vec<u32>, task: u32) {
+    if let Some(at) = list.iter().position(|t| *t == task) {
+        let id = list.remove(at);
+        list.push(id);
+    }
+}
+
+/// The root's child the focus falls back to when the active task closes:
+/// the last child that is a task and visible; `None` means the root.
+pub fn fallback_focus(children: &[(bool, bool)]) -> Option<usize> {
+    (0..children.len())
+        .rev()
+        .find(|&i| children[i].0 && children[i].1)
+}
+
+/// What closing a form does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClosePlan {
+    /// Mark the form as closing (and raise the GUI's "a form closed" flag).
+    pub mark_closing: bool,
+    /// Tell the GUI main that its tracked form closes (message 0x800).
+    pub notify_main: bool,
+    pub hide_tooltip: bool,
+    /// The form is its task's active child: the callback runs, the task's
+    /// active child clears and the task closes instead.
+    pub close_task: bool,
+    /// Otherwise: detach from the task, close the task's children owned by
+    /// this form and this form's children (those not closing yet), hide,
+    /// run the callback and redraw.
+    pub close_owned: bool,
+    pub run_callback: bool,
+    pub redraw: bool,
+}
+
+/// The close's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseInput {
+    /// The form is already closing.
+    pub closing: bool,
+    /// The form closes once (the constructor sets it).
+    pub closes_once: bool,
+    /// The GUI main tracks this form.
+    pub tracked_by_main: bool,
+    pub is_tooltip: bool,
+    pub is_active_child: bool,
+    pub has_callback: bool,
+}
+
+/// The close's rule. A form already closing does nothing; the result is
+/// always 1.
+pub fn close_plan(input: CloseInput) -> ClosePlan {
+    if input.closing {
+        return ClosePlan::default();
+    }
+    let mut plan = ClosePlan {
+        mark_closing: input.closes_once,
+        notify_main: input.tracked_by_main,
+        hide_tooltip: input.is_tooltip,
+        run_callback: input.has_callback,
+        ..ClosePlan::default()
+    };
+    if input.is_active_child {
+        plan.close_task = true;
+    } else {
+        plan.close_owned = true;
+        plan.redraw = true;
+    }
+    plan
+}
+
+/// What changing a form's visibility does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VisibilityPlan {
+    pub changed: bool,
+    /// The task follows its active child's visibility.
+    pub task_follows: bool,
+    /// Showing: the form is activated.
+    pub activate: bool,
+    /// Hiding: the hide hook runs, the form's hidden virtual is told, the
+    /// GUI's references to it clear and the screen redraws.
+    pub clear_references: bool,
+}
+
+/// The visibility rule from the current and wanted visibility.
+pub fn visibility_plan(visible: bool, wanted: bool, is_active_child: bool) -> VisibilityPlan {
+    if visible == wanted {
+        return VisibilityPlan::default();
+    }
+    VisibilityPlan {
+        changed: true,
+        task_follows: is_active_child,
+        activate: wanted && !is_active_child,
+        clear_references: !wanted && !is_active_child,
+    }
+}
+
+/// The destroy's work: the before-destroy hook when the caller frees the
+/// object, the children, the control records when the form owns them (each
+/// record's text), the snap slots, the name, the focus when it was this
+/// form (back to the root) and the maximise record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DestroyPlan {
+    pub before_hook: bool,
+    pub children_freed: usize,
+    pub records_freed: usize,
+    pub focus_to_root: bool,
+    pub frees_object: bool,
+}
+
+/// Plans a destroy from the form's counts and its ownership.
+pub fn destroy_plan(
+    children: usize,
+    last_control: i32,
+    owns_records: bool,
+    focused: bool,
+    caller_frees: bool,
+) -> DestroyPlan {
+    DestroyPlan {
+        before_hook: caller_frees,
+        children_freed: children,
+        records_freed: if owns_records {
+            (last_control + 1).max(0) as usize
+        } else {
+            0
+        },
+        focus_to_root: focused,
+        frees_object: caller_frees,
+    }
+}
+
+/// A control record for the runtime resize: its 16-bit place and size and
+/// its style word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeControl {
+    pub x: i16,
+    pub y: i16,
+    pub width: i16,
+    pub height: i16,
+    pub style: u32,
+    /// Its owner's client rectangle after the resize, for the centred
+    /// placements.
+    pub client: ClientRect,
+}
+
+/// A form for the runtime resize: its place, size, style, children and
+/// records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResizeNode {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub style: u32,
+    pub has_parent: bool,
+    pub children: Vec<ResizeNode>,
+    pub controls: Vec<ResizeControl>,
+}
+
+/// Resizes a form in place: a form with a parent that is right- or
+/// bottom-anchored keeps its far edge; a child that stretches takes the
+/// change and is resized itself, a right/bottom-anchored child moves by
+/// it, and a child that did not stretch is re-centred by its style
+/// (truncating). The records follow the same rules in 16-bit arithmetic,
+/// the centred ones in their owner's client. The original then calls the
+/// form's layout and, when it has snap slots, rebuilds them (the caller's).
+pub fn resize_form(form: &mut ResizeNode, new_width: i32, new_height: i32) {
+    let (old_w, old_h) = (form.width, form.height);
+    if form.has_parent {
+        if form.style & style::X_MASK == style::RIGHT {
+            form.x = form.width + form.x - new_width;
+        }
+        if form.style & style::Y_MASK == style::BOTTOM {
+            form.y = form.height + form.y - new_height;
+        }
+    }
+    for child in &mut form.children {
+        let mut stretched = false;
+        let child_w = if child.style & style::X_MASK == style::X_MASK {
+            stretched = true;
+            child.width + new_width - old_w
+        } else {
+            if child.style & style::X_MASK == style::RIGHT {
+                child.x = child.x + new_width - old_w;
+            }
+            child.width
+        };
+        let child_h = if child.style & style::Y_MASK == style::Y_MASK {
+            stretched = true;
+            child.height + new_height - old_h
+        } else {
+            if child.style & style::Y_MASK == style::BOTTOM {
+                child.y = child.y + new_height - old_h;
+            }
+            child.height
+        };
+        if stretched {
+            resize_form(child, child_w, child_h);
+        } else {
+            if child.style & style::CENTRE_X != 0 {
+                child.x = ((i64::from(new_width) - i64::from(child.width)) / 2) as i32;
+            }
+            if child.style & style::CENTRE_Y != 0 {
+                child.y = ((i64::from(new_height) - i64::from(child.height)) / 2) as i32;
+            }
+        }
+    }
+    form.width = new_width;
+    form.height = new_height;
+    let (dw, dh) = (new_width as i16, new_height as i16);
+    let (ow, oh) = (old_w as i16, old_h as i16);
+    for c in &mut form.controls {
+        let mut stretched = false;
+        let w = if c.style & style::X_MASK == style::X_MASK {
+            stretched = true;
+            c.width.wrapping_add(dw).wrapping_sub(ow)
+        } else {
+            if c.style & style::X_MASK == style::RIGHT {
+                c.x = c.x.wrapping_add(dw).wrapping_sub(ow);
+            }
+            c.width
+        };
+        let h = if c.style & style::Y_MASK == style::Y_MASK {
+            stretched = true;
+            c.height.wrapping_add(dh).wrapping_sub(oh)
+        } else {
+            if c.style & style::Y_MASK == style::BOTTOM {
+                c.y = c.y.wrapping_add(dh).wrapping_sub(oh);
+            }
+            c.height
+        };
+        if stretched {
+            c.width = w;
+            c.height = h;
+        } else {
+            if c.style & style::CENTRE_X != 0 {
+                c.x = ((i64::from(c.client.right) - i64::from(c.client.left) - i64::from(c.width))
+                    / 2) as i16;
+            }
+            if c.style & style::CENTRE_Y != 0 {
+                c.y = ((i64::from(c.client.bottom) - i64::from(c.client.top) - i64::from(c.height))
+                    / 2) as i16;
+            }
+        }
+    }
+}
+
+/// The 1-based control code's index (its low 16 bits less one), when the
+/// code is positive and the index is at most `last`. A code whose low half
+/// is 0 gives none.
+pub fn control_index(code: i32, last: i32) -> Option<usize> {
+    if code <= 0 {
         return None;
     }
-    match (current, backward) {
-        (Some(current), false) => {
-            for (index, c) in controls.iter().enumerate().skip(current + 1) {
-                if c.focusable && !c.skip {
-                    return Some(index);
-                }
-            }
-            (0..current).find(|&i| controls[i].focusable)
-        }
-        (Some(current), true) => {
-            for (index, c) in controls.iter().enumerate().take(current).rev() {
-                if c.focusable && !c.skip {
-                    return Some(index);
-                }
-            }
-            ((current + 1)..count)
-                .rev()
-                .find(|&i| controls[i].focusable)
-        }
-        (None, false) => (0..count).find(|&i| controls[i].focusable && !controls[i].skip),
-        (None, true) => (0..count)
-            .rev()
-            .find(|&i| controls[i].focusable && !controls[i].skip),
+    let index = (code & 0xffff) - 1;
+    (index >= 0 && index <= last).then_some(index as usize)
+}
+
+/// A form's control ids and its children, for the find-by-id search.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControlTree {
+    pub ids: Vec<u16>,
+    pub children: Vec<ControlTree>,
+}
+
+/// Finds the first record with `id`: the form's own records first, then
+/// each child's tree depth first. Returns the child path and the record.
+pub fn find_control(tree: &ControlTree, id: u16) -> Option<(Vec<usize>, usize)> {
+    if let Some(record) = tree.ids.iter().position(|candidate| *candidate == id) {
+        return Some((Vec::new(), record));
+    }
+    tree.children.iter().enumerate().find_map(|(i, child)| {
+        find_control(child, id).map(|(mut path, record)| {
+            path.insert(0, i);
+            (path, record)
+        })
+    })
+}
+
+/// The centre of a form's client for a control code: none for a code
+/// below 1 other than -1; otherwise the client's spans over two,
+/// truncating.
+pub fn content_centre(code: i32, client: ClientRect) -> Option<(i32, i32)> {
+    if code != -1 && code < 1 {
+        return None;
+    }
+    Some((
+        ((i64::from(client.right) - i64::from(client.left)) / 2) as i32,
+        ((i64::from(client.bottom) - i64::from(client.top)) / 2) as i32,
+    ))
+}
+
+/// A form's geometry as the point conversions read it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormFrame {
+    pub x: i32,
+    pub y: i32,
+    pub client: ClientRect,
+    pub content: (i32, i32),
+    pub scroll: (f32, f32),
+    pub attributes: u32,
+}
+
+impl FormFrame {
+    /// The scroll offset: each axis' overflow over the client times its
+    /// fraction, rounded with `CVTSS2SI`.
+    pub fn scroll_offset(&self) -> (i32, i32) {
+        let ox = i64::from(self.content.0)
+            - (i64::from(self.client.right) - i64::from(self.client.left));
+        let oy = i64::from(self.content.1)
+            - (i64::from(self.client.bottom) - i64::from(self.client.top));
+        (
+            cvtss2si(ox as f32 * self.scroll.0),
+            cvtss2si(oy as f32 * self.scroll.1),
+        )
+    }
+
+    /// A form-local point in content coordinates: less the client's inset,
+    /// plus the scroll offset.
+    pub fn local_to_content(&self, (x, y): (i32, i32)) -> (i32, i32) {
+        let (sx, sy) = self.scroll_offset();
+        (sx + (x - self.client.left), sy + (y - self.client.top))
+    }
+
+    /// The control-at-point helper's conversion: plus the client's inset
+    /// and the scroll offset.
+    pub fn offset_point(&self, (x, y): (i32, i32)) -> (i32, i32) {
+        let (sx, sy) = self.scroll_offset();
+        (sx + x + self.client.left, sy + y + self.client.top)
     }
 }
 
-/// The wheel's control: a 1-based record code within the form's controls.
-pub fn wheel_control(word: i32, last_control: i32) -> Option<usize> {
-    let index = (word & 0xffff) - 1;
-    if index < 0 || last_control < index {
-        None
+/// A root point in a form's own coordinates: less the form's place, then
+/// through each ancestor below the root (innermost first) less its place
+/// and inset and plus its scroll offset.
+pub fn root_to_local(point: (i32, i32), form: (i32, i32), ancestors: &[FormFrame]) -> (i32, i32) {
+    let (mut x, mut y) = (point.0 - form.0, point.1 - form.1);
+    for a in ancestors {
+        let (sx, sy) = a.scroll_offset();
+        x = sx + ((x - a.x) - a.client.left);
+        y = sy + ((y - a.y) - a.client.top);
+    }
+    (x, y)
+}
+
+/// Takes a form-local point to the root through the form and its
+/// ancestors below the root (innermost first): x adds the border and the
+/// place; y adds the client top, less the vertical scroll offset unless
+/// the attribute word locks it, then the place. The horizontal scroll is
+/// not applied.
+pub fn local_to_screen(mut point: (i32, i32), forms: &[FormFrame]) -> (i32, i32) {
+    for form in forms {
+        point.0 = form.client.left + point.0 + form.x;
+        if form.attributes & attribute::LOCK_SCROLL != 0 {
+            point.1 += form.client.top;
+        } else {
+            point.1 = (point.1 + form.client.top) - form.scroll_offset().1;
+        }
+        point.1 += form.y;
+    }
+    point
+}
+
+/// A control record as the form's hover, focus, Tab and hit test see it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitControl {
+    pub x: i16,
+    pub y: i16,
+    pub width: i16,
+    pub height: i16,
+    pub style: u32,
+    pub state: u32,
+    /// The record's answer to the hit query: its 0x7f0000 bits pass back
+    /// to the form, its high byte is the cursor, and 0x800000 lets the
+    /// point through.
+    pub answer: u32,
+}
+
+/// A form for the hit test.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitNode {
+    pub id: u32,
+    pub frame: FormFrame,
+    pub width: i32,
+    pub height: i32,
+    pub visible: bool,
+    pub style: u32,
+    /// The answer of the skin's frame hit test for points off the client
+    /// (0 for none).
+    pub frame_code: u32,
+    pub children: Vec<HitNode>,
+    pub controls: Vec<HitControl>,
+}
+
+/// The hit test's context: the skin's cursor (-2: the controls do not set
+/// it), the control slop (two units, off in some modes), the unit and
+/// whether a modal task elsewhere blocks this form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitContext {
+    pub cursor: i32,
+    pub slop: bool,
+    pub unit: i32,
+    pub blocked: bool,
+}
+
+/// What a hit test found: the form, its code and the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TreeHit {
+    pub form: Option<u32>,
+    /// A 1-based control code with its answer bits, -1 for the client, a
+    /// frame code, or 0 for nothing.
+    pub code: u32,
+    pub cursor: i32,
+}
+
+/// Whether a point hits a control's rectangle. Without the slop the
+/// rectangle's edges are inclusive; with it, a point within two units of
+/// it (the squared distance strictly below the squared radius) hits.
+pub fn control_hit(x: i32, y: i32, rect: (i32, i32, i32, i32), slop: bool, unit: i32) -> bool {
+    let (left, top, right, bottom) = rect;
+    if !slop {
+        return !(x < left || right < x || y < top || bottom < y);
+    }
+    let dx = if x < left {
+        left - x
+    } else if right < x {
+        x - right
     } else {
-        Some(index as usize)
-    }
+        0
+    };
+    let dy = if y < top {
+        top - y
+    } else if bottom < y {
+        y - bottom
+    } else {
+        0
+    };
+    let r = i64::from(unit) * 2 * i64::from(unit) * 2;
+    let d = i64::from(dy) * i64::from(dy) + i64::from(dx) * i64::from(dx);
+    r != d && d <= r
 }
 
-/// The caret blink: while the focused control (or form) has state bit 4,
-/// the form's lit bit toggles every fifth tick.
-pub fn caret_blink(caret: bool, counter: &mut u32, lit: &mut bool) -> bool {
-    if !caret {
-        return false;
-    }
-    *counter += 1;
-    if *counter > 4 {
-        *counter = 0;
-        *lit = !*lit;
-        return true;
-    }
-    false
-}
-
-/// Whether a close-band code is a close edge. [`attribute::SMALL`]'s skin
-/// flag decides -8 (the original reads the skin's first field bit).
-pub fn is_close_edge(code: i32, thin_frame: bool) -> bool {
-    match code {
-        -21..=-19 | -14..=-13 | -10..=-9 | -6..=-4 => true,
-        -8 => thin_frame,
-        _ => false,
-    }
-}
-
-/// The cursor shape a resize code asks for (1 horizontal, 2 vertical,
-/// 3 diagonal one way, 4 the other), or `None`.
+/// The cursor shape a resize frame code asks for (1 horizontal, 2
+/// vertical, 3 and 4 the diagonals), or `None`.
 pub fn resize_cursor(code: u32) -> Option<i32> {
     match code {
         0x8000_0011 | 0x8000_0012 => Some(2),
@@ -1306,893 +1293,937 @@ pub fn resize_cursor(code: u32) -> Option<i32> {
     }
 }
 
-/// One control rectangle for a hit test.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HitControl {
-    pub id: i32,
-    pub rect: FormRect,
-    pub state: u32,
-    /// The control's own hit answer: its high byte is the cursor, its
-    /// 0x7f0000 bits pass back to the form; a 0x800000 bit lets the point
-    /// through to the form.
-    pub answer: u32,
-}
-
-/// A form for the base hit test: its rectangle, children in draw order and
-/// its controls in content coordinates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HitNode {
-    pub id: u32,
-    pub rect: FormRect,
-    pub visible: bool,
-    pub style: u32,
-    pub unit: i32,
-    /// The content's width and height (the client plus the scroll overflow).
-    pub content: (i32, i32),
-    pub client: ClientRect,
-    pub scroll_x: f32,
-    pub scroll_y: f32,
-    pub children: Vec<HitNode>,
-    pub controls: Vec<HitControl>,
-    /// The skin's default cursor shape.
-    pub cursor: i32,
-}
-
-impl HitNode {
-    /// The point in the form's content coordinates.
-    pub fn content_point(&self, x: i32, y: i32) -> (i32, i32) {
-        let cw = self.client.width();
-        let ch = self.client.height();
-        let sx = ((self.content.0 - cw) as f32 * self.scroll_x) as i32;
-        let sy = ((self.content.1 - ch) as f32 * self.scroll_y) as i32;
-        (sx + (x - self.client.left), sy + (y - self.client.top))
+/// The base form's hit test at a form-local point. Off the client the
+/// skin's frame code answers. On it, the visible children not marked
+/// [`style::NO_HIT`] are tried last first, each when the content point is
+/// strictly inside it; then the records, first without the slop and then
+/// (when the slop is on) with it, each when it is neither disabled nor
+/// [`record_style::NO_HIT`] and its answer does not pass the point
+/// through. A record answers its 1-based index with its answer's 0x7f0000
+/// bits (0x10000 when it has none) and its cursor. A client hit with no
+/// record is -1, or 0 for a form whose attribute word has no 0x30 bits.
+pub fn hit_test(node: &HitNode, x: i32, y: i32, ctx: HitContext) -> TreeHit {
+    if ctx.blocked {
+        return TreeHit::default();
+    }
+    let client = node.frame.client;
+    let mut code = 0u32;
+    let mut content = (x, y);
+    if client.left <= x && x < client.right && client.top <= y && y < client.bottom {
+        content = node.frame.local_to_content((x, y));
+        for child in node.children.iter().rev() {
+            let (cx, cy) = content;
+            let inside = child.frame.x < cx
+                && child.frame.y < cy
+                && i64::from(cx) < i64::from(child.frame.x) + i64::from(child.width)
+                && i64::from(cy) < i64::from(child.height) + i64::from(child.frame.y);
+            if child.visible && child.style & style::NO_HIT == 0 && inside {
+                let hit = hit_test(child, cx - child.frame.x, cy - child.frame.y, ctx);
+                if hit.code != 0 {
+                    return hit;
+                }
+            }
+        }
+        code = u32::MAX;
+    }
+    let mut cursor = ctx.cursor;
+    if code == 0 {
+        code = node.frame_code;
+    }
+    if ctx.cursor != -2
+        && let Some(shape) = resize_cursor(code)
+    {
+        cursor = shape;
+    }
+    if code == u32::MAX {
+        let passes: &[bool] = if ctx.slop { &[false, true] } else { &[false] };
+        for &slop in passes {
+            for (i, c) in node.controls.iter().enumerate() {
+                let rect = (
+                    i32::from(c.x),
+                    i32::from(c.y),
+                    i32::from(c.width) + i32::from(c.x),
+                    i32::from(c.height) + i32::from(c.y),
+                );
+                if c.state & record_state::DISABLED != 0
+                    || c.style & record_style::NO_HIT != 0
+                    || !control_hit(content.0, content.1, rect, slop, ctx.unit)
+                    || c.answer & 0x80_0000 != 0
+                {
+                    continue;
+                }
+                let mut answer = c.answer;
+                if answer & 0x7f_0000 == 0 {
+                    answer |= 0x1_0000;
+                }
+                if ctx.cursor != -2 {
+                    cursor = (answer >> 24) as i32;
+                    if cursor == 0 {
+                        cursor = ctx.cursor;
+                    }
+                }
+                return TreeHit {
+                    form: Some(node.id),
+                    code: (i as u32 + 1) | (answer & 0x7f_0000),
+                    cursor,
+                };
+            }
+        }
+        if node.frame.attributes & attribute::SNAPS == 0 {
+            code = 0;
+        }
+    }
+    TreeHit {
+        form: Some(node.id),
+        code,
+        cursor,
     }
 }
 
-/// What a hit test found.
+/// Whether a code is one of the frame's close-band codes the hover redraws
+/// for: -21, -20, -14, -13, -10, -9, -6, -5, -4, and -8 when the skin's
+/// first flag bit is set.
+pub fn is_close_edge(code: i32, thin_frame: bool) -> bool {
+    match code {
+        -21..=-20 | -14..=-13 | -10..=-9 | -6..=-4 => true,
+        -8 => thin_frame,
+        _ => false,
+    }
+}
+
+/// A hover change on a form's records: the old record's hover bits clear
+/// and it is sent the leave (message 0x20 with 0); a new valid record
+/// takes the word's hover bits and is sent message 0x20 with its 0x7f0000
+/// bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TreeHit {
-    pub form: Option<u32>,
-    pub control: i32,
-    pub cursor: i32,
-    /// The control's answer bits, or 0 for the form itself.
-    pub answer: u32,
+pub struct HoverChange {
+    pub leave: Option<usize>,
+    pub enter: Option<(usize, u32)>,
+    /// The frame's close band was or is hovered: the result is 3.
+    pub edge_redraw: bool,
 }
 
-/// The base form's hit test: the deepest visible child first (the last
-/// child at the top), then the controls in content coordinates. A point
-/// outside every form is `None`.
-pub fn hit_test_tree(node: &HitNode, x: i32, y: i32) -> Option<TreeHit> {
-    hit_node(node, x - node.rect.left, y - node.rect.top)
+/// Moves the hover from the stored word `old` to `new`, updating the
+/// records' state bits. The form stores `new` afterwards.
+pub fn hover_change(states: &mut [u32], old: u32, new: u32, thin_frame: bool) -> HoverChange {
+    let last = states.len() as i32 - 1;
+    let mut change = HoverChange::default();
+    if let Some(i) = control_index(old as i32, last) {
+        states[i] &= !record_state::HOVER;
+        change.leave = Some(i);
+    }
+    if (new as i32) < 1 {
+        change.edge_redraw =
+            is_close_edge(old as i32, thin_frame) || is_close_edge(new as i32, thin_frame);
+    } else if let Some(i) = control_index(new as i32, last) {
+        states[i] |= new & record_state::HOVER;
+        change.enter = Some((i, new & 0x7f_0000));
+    }
+    change
 }
 
-/// `lx` and `ly` are relative to the node's own top-left corner.
-fn hit_node(node: &HitNode, lx: i32, ly: i32) -> Option<TreeHit> {
-    if !node.visible || lx < 0 || ly < 0 || lx >= node.rect.width() || ly >= node.rect.height() {
+/// A focus change on a form's records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FocusChange {
+    /// The old record loses the focus bit and is sent message 0xb0 with 0.
+    pub blur: Option<usize>,
+    /// The new record gains it and is sent message 0xb0 with the word's
+    /// 0x7f0000 bits.
+    pub focus: Option<(usize, u32)>,
+}
+
+/// Moves the focus from `current` to `new` (1-based words, 0 none): `None`
+/// when they are equal (result 0); otherwise the result is 3 with the
+/// records' answers, the form's caret bit is set for any non-zero word
+/// and cleared for 0, and the caret's blink counter restarts.
+pub fn focus_change(
+    states: &mut [u32],
+    form_state: &mut u32,
+    current: u32,
+    new: u32,
+) -> Option<FocusChange> {
+    if new == current {
         return None;
     }
-    let (cx, cy) = node.content_point(lx, ly);
-    for child in node.children.iter().rev() {
-        if !child.visible || child.style & style::NO_FRAME_HIT != 0 {
-            continue;
-        }
-        let rx = cx - child.rect.left;
-        let ry = cy - child.rect.top;
-        if child.rect.strictly_inside(cx, cy)
-            && let Some(hit) = hit_node(child, rx, ry)
-        {
-            return Some(hit);
-        }
+    let last = states.len() as i32 - 1;
+    let mut change = FocusChange::default();
+    if let Some(i) = control_index(current as i32, last) {
+        states[i] &= !record_state::FOCUSED;
+        change.blur = Some(i);
     }
-    for control in &node.controls {
-        if control.state & 0x10 != 0 || control.state & 0x2 != 0 {
-            continue;
+    if new == 0 {
+        *form_state &= !state::CARET_LIT;
+    } else {
+        if let Some(i) = control_index(new as i32, last) {
+            states[i] |= record_state::FOCUSED;
+            change.focus = Some((i, new & 0x7f_0000));
         }
-        if control.answer & 0x80_0000 != 0 {
-            continue;
-        }
-        if control.rect.near(cx, cy, 2 * node.unit) {
-            let mut answer = control.answer;
-            if answer & 0x7f_0000 == 0 {
-                answer |= 0x1_0000;
-            }
-            let cursor = if answer >> 24 == 0 {
-                node.cursor
-            } else {
-                (answer >> 24) as i32
-            };
-            return Some(TreeHit {
-                form: Some(node.id),
-                control: control.id,
-                cursor,
-                answer,
-            });
-        }
+        *form_state |= state::CARET_LIT;
     }
-    Some(TreeHit {
-        form: Some(node.id),
-        control: 0,
-        cursor: node.cursor,
-        answer: 0,
-    })
+    Some(change)
 }
 
-/// The magnetic snap slots around the visible sibling forms: sorted unique
-/// edge coordinates (the forms' frames widened by `grip`) and the free
-/// rectangles between them, up to 2000. Each slot is `(x1, y1, x2, y2)`.
-pub struct SnapForm {
-    pub rect: FormRect,
-    pub visible: bool,
-    pub style: u32,
-    /// The form's title-bar length (the original's `+0x38`).
-    pub grip: i32,
+/// The caret blink: while the focused record's style (or the form's own,
+/// when no record has the focus) has the caret bit, the shared counter
+/// counts frames and every fifth flips the form's caret bit. Returns
+/// whether the form redraws.
+pub fn caret_blink(caret_style: u32, counter: &mut u32, form_state: &mut u32) -> bool {
+    if caret_style & style::CARET == 0 {
+        return false;
+    }
+    *counter += 1;
+    if *counter > 4 {
+        *counter = 0;
+        *form_state ^= state::CARET_LIT;
+        return true;
+    }
+    false
 }
 
-pub fn snap_slots(forms: &[SnapForm]) -> Vec<(i32, i32, i32, i32)> {
-    let mut xs: Vec<i32> = Vec::new();
-    let mut ys: Vec<i32> = Vec::new();
-    let push = |list: &mut Vec<i32>, value: i32| {
-        if let Err(at) = list.binary_search(&value) {
-            list.insert(at, value);
+/// A record's Tab bits: its style's tab stop and its state's disabled bit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlTab {
+    pub tab_stop: bool,
+    pub disabled: bool,
+}
+
+/// The record Tab moves the focus to from the focused one: forward, the
+/// next enabled tab stop, else (wrapping) the first tab stop before it;
+/// backward (Shift, the key flags' 0x10), the previous enabled tab stop,
+/// else the last tab stop after it. The wrap does not look at the
+/// disabled bit. A form with no focused record passes the key on.
+pub fn tab_target(controls: &[ControlTab], current: usize, backward: bool) -> Option<usize> {
+    if current >= controls.len() {
+        return None;
+    }
+    let ok = |i: usize| controls[i].tab_stop && !controls[i].disabled;
+    if !backward {
+        ((current + 1)..controls.len())
+            .find(|&i| ok(i))
+            .or_else(|| (0..current).find(|&i| controls[i].tab_stop))
+    } else {
+        (0..current).rev().find(|&i| ok(i)).or_else(|| {
+            ((current + 1)..controls.len())
+                .rev()
+                .find(|&i| controls[i].tab_stop)
+        })
+    }
+}
+
+/// Where a key, press or drag goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The record at this index, with the message.
+    Control(usize, u32),
+    /// The form's parent (the form's flag word has 0x80).
+    Parent,
+    /// The payload's own form (a drop's payload code).
+    Payload,
+    Nothing,
+}
+
+/// A key sent to a control code: a valid record gets message 0x2000 unless
+/// it ignores keys; an invalid code goes to the parent when the form
+/// passes codes up.
+pub fn route_key(
+    code: u32,
+    last: i32,
+    passes_up: bool,
+    record_style: impl Fn(usize) -> u32,
+) -> Route {
+    match control_index((code & 0xffff) as i32, last) {
+        Some(i) if record_style(i) & self::record_style::NO_KEYS == 0 => Route::Control(i, 0x2000),
+        Some(_) => Route::Nothing,
+        None if passes_up => Route::Parent,
+        None => Route::Nothing,
+    }
+}
+
+/// A press sent to a control code: the drop payload code 0x80000000 goes
+/// to the payload's form; a valid record gets message 0x3000; an invalid
+/// code goes to the parent when the form passes codes up.
+pub fn route_press(code: u32, last: i32, passes_up: bool) -> Route {
+    if code == 0x8000_0000 {
+        return Route::Payload;
+    }
+    match control_index((code & 0xffff) as i32, last) {
+        Some(i) => Route::Control(i, 0x3000),
+        None if passes_up => Route::Parent,
+        None => Route::Nothing,
+    }
+}
+
+/// A drag sent to the held record: message 0x4000 when the held code names
+/// a record and the drag word is not `i32::MIN`.
+pub fn route_drag(held: u32, last: i32, word: i32) -> Route {
+    if word == i32::MIN {
+        return Route::Nothing;
+    }
+    let index = (held & 0xffff) as i32 - 1;
+    if index >= 0 && index <= last {
+        Route::Control(index as usize, 0x4000)
+    } else {
+        Route::Nothing
+    }
+}
+
+/// The scroll a wheel turn sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WheelScroll {
+    Vertical(f32),
+    Horizontal(f32),
+    None,
+}
+
+/// The wheel: a form with a vertical scrollbar moves its vertical fraction
+/// by `round(delta / 120)` vertical steps, else one with a horizontal
+/// scrollbar its horizontal fraction by `round(−delta / 120)` horizontal
+/// steps (both turn the same way); the conversion is in double, ties to
+/// even. The setters then clamp and snap.
+pub fn wheel_scroll(
+    attributes: u32,
+    delta: i32,
+    scroll: (f32, f32),
+    steps: (f32, f32),
+) -> WheelScroll {
+    if attributes & attribute::VSCROLL != 0 {
+        let notches = cvtsd2si64(f64::from(delta) * 0.008_333_333_333_333_333) as f32;
+        WheelScroll::Vertical(scroll.1 - notches * steps.1)
+    } else if attributes & attribute::HSCROLL != 0 {
+        let notches = cvtsd2si64(f64::from(delta) * -0.008_333_333_333_333_333) as f32;
+        WheelScroll::Horizontal(notches * steps.0 + scroll.0)
+    } else {
+        WheelScroll::None
+    }
+}
+
+fn cvtsd2si64(v: f64) -> i64 {
+    let r = v.round_ties_even();
+    if r.is_nan() || !(-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&r) {
+        i64::MIN
+    } else {
+        r as i64
+    }
+}
+
+/// What a held scroll arrow repeats each tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Repeat {
+    Vertical(f32),
+    Horizontal(f32),
+    /// A held record (1-based code) is sent message 0x100.
+    Control(usize),
+    None,
+}
+
+/// The repeat of a held frame code while the pointer is over it: -10 and
+/// -9 the vertical arrows (down and up a vertical step), -13 and -14 the
+/// horizontal ones (left and right a horizontal step); a held record gets
+/// its tick.
+pub fn repeat_scroll(held: i32, over: bool, scroll: (f32, f32), steps: (f32, f32)) -> Repeat {
+    if held >= 1 {
+        return Repeat::Control(held as usize - 1);
+    }
+    if !over {
+        return Repeat::None;
+    }
+    match held {
+        -10 => Repeat::Vertical(scroll.1 + steps.1),
+        -9 => Repeat::Vertical(scroll.1 - steps.1),
+        -13 => Repeat::Horizontal(scroll.0 - steps.0),
+        -14 => Repeat::Horizontal(scroll.0 + steps.0),
+        _ => Repeat::None,
+    }
+}
+
+/// The vertical scrollbar's track and thumb.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalScroll {
+    /// The track's top and bottom.
+    pub start: i32,
+    pub end: i32,
+    pub thumb: i32,
+    pub thumb_y: i32,
+    /// The stored fraction (snapped when the attribute word asks).
+    pub fraction: f32,
+}
+
+/// The vertical scrollbar's layout: the track runs from the client's top
+/// plus the rail to the form's height less its border and the rail; the
+/// thumb is `round(track · client / content)` (ties to even), `2·unit + 1`
+/// when not above `2·unit`, at most the track; a snapping form snaps the
+/// stored fraction (to 0 for a non-positive step); the thumb sits at
+/// `start + round((track − thumb) · f)`.
+#[allow(clippy::too_many_arguments)]
+pub fn vertical_scroll_metrics(
+    height: i32,
+    border: i32,
+    client: ClientRect,
+    content_h: i32,
+    rail: i32,
+    unit: i32,
+    attributes: u32,
+    fraction: f32,
+    step: f32,
+) -> VerticalScroll {
+    let start = client.top + rail;
+    let end = (height - border) - rail;
+    let track = end - start;
+    let mut thumb =
+        cvtsd2si(f64::from(track) * (f64::from(client.bottom - client.top) / f64::from(content_h)));
+    if unit * 2 < thumb {
+        if track < thumb {
+            thumb = track;
         }
+    } else {
+        thumb = unit * 2 + 1;
+    }
+    let mut f = fraction;
+    if attributes & attribute::SNAP_SCROLL != 0 {
+        f = if step <= 0.0 {
+            0.0
+        } else {
+            cvtss2si64(f / step) as f32 * step
+        };
+    }
+    let thumb_y = start + cvtss2si((i64::from(track) - i64::from(thumb)) as f32 * f);
+    VerticalScroll {
+        start,
+        end,
+        thumb,
+        thumb_y,
+        fraction: f,
+    }
+}
+
+/// Sets the vertical scroll fraction: nothing happens when the clamped
+/// value equals the stored one (`None`); otherwise it is snapped when the
+/// attribute word asks, stored as 0 when the content fits the client, and
+/// the thumb is placed from the stored fraction. Returns the fraction and
+/// the thumb's y.
+#[allow(clippy::too_many_arguments)]
+pub fn set_scroll_y(
+    f: f32,
+    current: f32,
+    step: f32,
+    attributes: u32,
+    client: ClientRect,
+    content_h: i32,
+    track: (i32, i32),
+    thumb: i32,
+) -> Option<(f32, i32)> {
+    let f = ordered_clamp(f);
+    if f == current {
+        return None;
+    }
+    let mut stored = if attributes & attribute::SNAP_SCROLL != 0 {
+        cvtss2si64(f / step) as f32 * step
+    } else {
+        f
     };
-    let mut boxes = Vec::new();
-    for form in forms {
-        if !form.visible || form.style & 0x30 == 0 {
-            continue;
+    if i64::from(content_h) <= i64::from(client.bottom) - i64::from(client.top) {
+        stored = 0.0;
+    }
+    let y =
+        cvtss2si(((i64::from(track.1) - i64::from(track.0)) - i64::from(thumb)) as f32 * stored)
+            + track.0;
+    Some((stored, y))
+}
+
+/// The fraction a dragged horizontal thumb asks for: the pointer's form x
+/// less the rail and border and the grab offset, over the track left for
+/// the thumb (in double).
+pub fn drag_thumb_x(
+    x: i32,
+    grab: i32,
+    border: i32,
+    client_right: i32,
+    rail: i32,
+    thumb: i32,
+) -> f32 {
+    let x = x - (rail + border);
+    let span = f64::from((client_right - border) + rail * -2) - f64::from(thumb);
+    ((f64::from(x) - f64::from(grab)) / span) as f32
+}
+
+/// The fraction a dragged vertical thumb asks for: the pointer's form y
+/// less the track's start and the grab offset, over the track left for the
+/// thumb; 0 when the thumb fills the track.
+pub fn drag_thumb_y(y: i32, grab: i32, track: (i32, i32), thumb: i32) -> f32 {
+    let span = track.1 - track.0;
+    if thumb < span {
+        ((f64::from(y - track.0) - f64::from(grab)) / f64::from(span - thumb)) as f32
+    } else {
+        0.0
+    }
+}
+
+/// A form's place and size during a grip drag, and the minimum page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GripDrag {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    /// The grab saved by the press: the form's x (left grip) or width
+    /// (right grip), and its y (top grip) or height (bottom grip).
+    pub grab: (i32, i32),
+    /// The pointer's move since the press.
+    pub moved: (i32, i32),
+    /// The smallest width and height.
+    pub min: (i32, i32),
+}
+
+/// The new place and size a grip drag asks for. The frame codes'
+/// 0x80000011 bits drag the left edge (the x stays at 0 or more and the
+/// width at least the minimum, moving the x back), 0x80000012 the right
+/// edge, 0x80000014 the top and 0x80000018 the bottom, each tested as a
+/// bit set so a corner moves two. Returns the place and the size the form
+/// is resized to.
+pub fn grip_drag(code: u32, d: GripDrag) -> (i32, i32, i32, i32) {
+    let (mut x, mut y) = (d.x, d.y);
+    let width = if code & 0x8000_0011 == 0x8000_0011 {
+        let old = d.x;
+        x = (d.moved.0 + d.grab.0).max(0);
+        let mut w = (old + d.width) - x;
+        if w < d.min.0 {
+            x = (x - d.min.0) + w;
+            w = d.min.0;
         }
-        let x1 = form.rect.left - form.grip;
-        let x2 = form.rect.right + form.grip;
-        let y1 = form.rect.top - form.grip;
-        let y2 = form.rect.bottom + form.grip;
-        push(&mut xs, x1);
-        push(&mut xs, x2);
-        push(&mut ys, y1);
-        push(&mut ys, y2);
-        boxes.push((x1, x2, y1, y2));
+        w
+    } else if code & 0x8000_0012 == 0x8000_0012 {
+        (d.moved.0 + d.grab.0).max(d.min.0)
+    } else {
+        d.width
+    };
+    let height = if code & 0x8000_0014 == 0x8000_0014 {
+        let old = d.y;
+        y = (d.moved.1 + d.grab.1).max(0);
+        let mut h = (d.height + old) - y;
+        if h < d.min.1 {
+            y = (y - d.min.1) + h;
+            h = d.min.1;
+        }
+        h
+    } else if code & 0x8000_0018 == 0x8000_0018 {
+        (d.moved.1 + d.grab.1).max(d.min.1)
+    } else {
+        d.height
+    };
+    (x, y, width, height)
+}
+
+/// What a press on a form's hovered code does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PressPlan {
+    /// The record or frame code now held (0 none).
+    pub held: i32,
+    /// The grab the drag will read (see [`GripDrag`]).
+    pub grab: Option<(i32, i32)>,
+    /// The thumb jumps under the pointer, grabbed at its middle.
+    pub thumb_jump: bool,
+    /// A scroll arrow starts its repeat.
+    pub start_repeat: bool,
+    /// The press is sent to the hovered record (message 0x40).
+    pub to_record: bool,
+    pub result: u32,
+}
+
+/// The press's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PressInput {
+    /// The hovered code and the press word (buttons and flags).
+    pub hover: i32,
+    pub word: u16,
+    pub last: i32,
+    pub place: (i32, i32),
+    pub size: (i32, i32),
+    /// The form's flag word forbids moving it (0x20).
+    pub fixed: bool,
+    /// The pointer's offset into the horizontal and vertical thumbs, and
+    /// their lengths.
+    pub thumb_offset: (i32, i32),
+    pub thumb: (i32, i32),
+    pub style: u32,
+}
+
+/// The press rule on the form's own codes. A hovered record takes the
+/// press unless the word has 0x8000 (the record's answer then decides the
+/// held code). Otherwise only a left press acts: a grip saves its grab, a
+/// title press (-3) the place unless the form is fixed, a thumb (-12, -8)
+/// its offset (or jumps when the pointer is off it), an arrow or page
+/// (-14…-13, -10…-9) starts the repeat; other codes hold nothing. A
+/// form whose style has 8 adds 0x10 to a client press (-1).
+pub fn press_plan(input: PressInput) -> PressPlan {
+    let mut plan = PressPlan::default();
+    if control_index(input.hover, input.last).is_some() {
+        if input.word & 0x8000 != 0 {
+            return plan;
+        }
+        plan.to_record = true;
+        return plan;
     }
-    let (nx, ny) = (xs.len(), ys.len());
+    if input.word & 0xefff != 1 {
+        return client_press(plan, input);
+    }
+    plan.result = 5;
+    plan.held = input.hover;
+    let code = input.hover;
+    let hover = code as u32;
+    if (0x8000_0011..=0x8000_001a).contains(&hover) {
+        let gx = if hover & 0x8000_0011 == 0x8000_0011 {
+            input.place.0
+        } else if hover & 0x8000_0012 == 0x8000_0012 {
+            input.size.0
+        } else {
+            0
+        };
+        let gy = if hover & 0x8000_0014 == 0x8000_0014 {
+            input.place.1
+        } else if hover & 0x8000_0018 == 0x8000_0018 {
+            input.size.1
+        } else {
+            0
+        };
+        plan.grab = Some((gx, gy));
+    } else if code == -20 {
+    } else if (-14..=-13).contains(&code) || (-10..=-9).contains(&code) {
+        plan.start_repeat = true;
+        plan.result = 0xd;
+    } else if code == -12 || code == -8 {
+        let (offset, thumb) = if code == -12 {
+            (input.thumb_offset.0, input.thumb.0)
+        } else {
+            (input.thumb_offset.1, input.thumb.1)
+        };
+        if offset < 0 || thumb < offset {
+            plan.grab = Some(((thumb as u32 >> 1) as i32, 0));
+            plan.thumb_jump = true;
+        } else {
+            plan.grab = Some((offset, 0));
+        }
+    } else if code == -3 {
+        if input.fixed {
+            plan.held = 0;
+            plan.result = 0;
+            return plan;
+        }
+        plan.grab = Some(input.place);
+    } else if !(-6..=-4).contains(&code) {
+        plan.held = 0;
+        plan.result = 0;
+    }
+    client_press(plan, input)
+}
+
+fn client_press(mut plan: PressPlan, input: PressInput) -> PressPlan {
+    if plan.result & 0x10 == 0 && input.style & style::PRESS_THROUGH != 0 && input.hover == -1 {
+        plan.result |= 0x10;
+    }
+    plan
+}
+
+/// What a release does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseAction {
+    /// The held record is sent message 0x50 with the landing flag.
+    Record(usize),
+    /// The maximise mark (-6): a maximised form restores, another
+    /// maximises.
+    Restore,
+    Maximise,
+    /// The hide mark (-5).
+    Hide,
+    /// The close mark (-4).
+    Close,
+    /// A snapping form snaps its fraction when a thumb (-12, -8) lets go.
+    SnapHorizontal,
+    SnapVertical,
+}
+
+/// The release rule: a held record gets the release; a held frame mark
+/// acts only while the pointer is still over it; a snapping form snaps the
+/// released thumb's fraction. The held code then clears (result 0x80).
+pub fn release_actions(
+    held: i32,
+    over: bool,
+    last: i32,
+    attributes: u32,
+    maximised: bool,
+) -> Vec<ReleaseAction> {
+    if held >= 1 && held <= last + 1 {
+        return vec![ReleaseAction::Record(held as usize - 1)];
+    }
+    let mut actions = Vec::new();
+    if over {
+        match held {
+            -6 if maximised => actions.push(ReleaseAction::Restore),
+            -6 => actions.push(ReleaseAction::Maximise),
+            -5 => actions.push(ReleaseAction::Hide),
+            -4 => actions.push(ReleaseAction::Close),
+            _ => {}
+        }
+    }
+    if attributes & attribute::SNAP_SCROLL != 0 {
+        match held {
+            -12 => actions.push(ReleaseAction::SnapHorizontal),
+            -8 => actions.push(ReleaseAction::SnapVertical),
+            _ => {}
+        }
+    }
+    actions
+}
+
+/// A form's 256-tick show/hide fade. Mode 0 sets the GUI's alpha while the
+/// form draws; mode 1 computes the eased value and discards it, so the
+/// form draws at full alpha (the instructions keep the value in a
+/// register no call reads).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FormFade {
+    /// 0 none, 1 showing, 2 hiding.
+    pub state: u8,
+    /// The GUI clock at which the fade ends.
+    pub end: u32,
+    pub mode: u32,
+}
+
+/// The fade's length in GUI clock ticks.
+pub const FADE_TICKS: u32 = 256;
+
+/// One fade step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FadeStep {
+    /// Draw, with this alpha set (`None`: the alpha is left alone).
+    Draw(Option<f32>),
+    /// The hide ended: the form is not drawn and closes.
+    Close,
+}
+
+impl FormFade {
+    /// Starts showing a hidden form at `now` unless it is already showing.
+    /// Returns whether the form is to be made visible. The form is raised
+    /// among the root's children either way.
+    pub fn start_show(&mut self, now: u32, visible: bool) -> bool {
+        if self.state != 1 && !visible {
+            self.end = FADE_TICKS.wrapping_add(now);
+            self.state = 1;
+            return true;
+        }
+        false
+    }
+
+    /// Starts hiding at `now` (the clock the hide reads) unless already
+    /// hiding. Returns whether it started.
+    pub fn start_hide(&mut self, now: u32) -> bool {
+        if self.state != 2 {
+            self.state = 2;
+            self.end = now.wrapping_add(FADE_TICKS);
+            return true;
+        }
+        false
+    }
+
+    /// The step at `now`. An idle form draws as it is; a fade whose end is
+    /// not after `now` stops (a hide closes the form).
+    pub fn step(&mut self, now: u32) -> FadeStep {
+        if self.state == 0 {
+            return FadeStep::Draw(None);
+        }
+        if self.end <= now {
+            let hiding = self.state == 2;
+            self.state = 0;
+            return if hiding {
+                FadeStep::Close
+            } else {
+                FadeStep::Draw(None)
+            };
+        }
+        let left = f64::from(self.end - now) / f64::from(FADE_TICKS);
+        let alpha = match (self.state, self.mode) {
+            (1, 0) => Some((1.0 - left) as f32),
+            (2, 0) => Some(left as f32),
+            _ => None,
+        };
+        FadeStep::Draw(alpha)
+    }
+}
+
+/// The records the control draw visits: every record whose state does not
+/// have both 0x100 and 0x10. The back pass draws them all, then the front
+/// pass again in order.
+pub fn drawn_records(states: &[u32]) -> Vec<usize> {
+    (0..states.len())
+        .filter(|&i| states[i] & record_state::NOT_DRAWN != record_state::NOT_DRAWN)
+        .collect()
+}
+
+/// A record for the controls' rescale from an old unit to the current one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RescaleRecord {
+    pub x: i16,
+    pub y: i16,
+    pub width: i16,
+    pub height: i16,
+    pub style: u32,
+    /// The owner's width less its spacing reserve, and its client right
+    /// and bottom.
+    pub owner_span: i32,
+    pub owner_right: i32,
+    pub owner_bottom: i32,
+}
+
+/// Rescales a record from unit `old` to `unit`, as the form does when its
+/// controls are set on a placed form: the width is `width / old · unit`
+/// (16-bit, made even by adding one); a stretched record then takes the
+/// owner's span, a right-anchored one keeps its distance from the owner's
+/// right edge in units, any other scales its x. The y is moved to the
+/// centre of the old row (`old` when the height is above eight old units,
+/// else half of `height − 4·old`), scaled (bottom-anchored ones from the
+/// owner's bottom), the height scaled and made even when above `old`, and
+/// moved back out of the new row. A zero `old` leaves the record (the
+/// original would divide by it).
+pub fn rescale_record(r: &mut RescaleRecord, old: i32, unit: i32) {
+    if old == 0 {
+        return;
+    }
+    let u = unit as i16;
+    let scale = |v: i16| ((i32::from(v) / old) as i16).wrapping_mul(u);
+    let even = |v: i16| if v & 1 == 1 { v.wrapping_add(1) } else { v };
+    r.width = even(scale(r.width));
+    if r.style & style::X_MASK == style::X_MASK {
+        r.width = r.width.wrapping_add(r.owner_span as i16);
+    } else if r.style & style::X_MASK == style::RIGHT {
+        let right = r.owner_right;
+        r.x = (right as i16).wrapping_sub(
+            (((i64::from(right) - i64::from(r.x)) / i64::from(old)) as i16).wrapping_mul(u),
+        );
+    } else {
+        r.x = scale(r.x);
+    }
+    let half = |h: i16, n: i32| ((i64::from(h) - i64::from(n << 2)) as u64 >> 1) as i16;
+    r.y = if old * 8 < i32::from(r.height) {
+        r.y.wrapping_add(old as i16)
+    } else {
+        r.y.wrapping_add(half(r.height, old))
+    };
+    if r.style & style::Y_MASK == style::BOTTOM {
+        let bottom = r.owner_bottom;
+        r.y = (bottom as i16).wrapping_sub(
+            (((i64::from(bottom) - i64::from(r.y)) / i64::from(old)) as i16).wrapping_mul(u),
+        );
+    } else {
+        r.y = scale(r.y);
+    }
+    if old < i32::from(r.height) {
+        r.height = even(scale(r.height));
+    }
+    r.y = if unit * 8 < i32::from(r.height) {
+        r.y.wrapping_sub(u)
+    } else {
+        r.y.wrapping_sub(half(r.height, unit))
+    };
+}
+
+/// A child for the snap slots: its place, client rectangle, frame spacing,
+/// attribute word and visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapChild {
+    pub x: i32,
+    pub y: i32,
+    pub client: ClientRect,
+    pub spacing: i32,
+    pub attributes: u32,
+    pub visible: bool,
+}
+
+/// Inserts `value` into a sorted edge list unless present.
+fn insert_edge(edges: &mut Vec<i32>, value: i32) {
+    if let Err(at) = edges.binary_search(&value) {
+        edges.insert(at, value);
+    }
+}
+
+/// The magnetic snap slots of a container: `None` when the container is
+/// not one (attribute 0x20 clear: its slots are left as they were). The
+/// edges are the container client's 0 and spans and each visible snapping
+/// child's client rectangle widened by its spacing; the cells between them
+/// that no child covers are cut into slots, scanning rows top down: from a
+/// free cell the run right and the run down are measured, and the longer
+/// one (the row on a tie) becomes a slot one cell thick. Each slot is
+/// `[left, top, right, bottom]` in the container's client coordinates.
+pub fn snap_slots(
+    attributes: u32,
+    client: ClientRect,
+    children: &[SnapChild],
+) -> Option<Vec<[i32; 4]>> {
+    if attributes & attribute::CLIENT_FILL == 0 {
+        return None;
+    }
+    let mut xs = vec![0, client.right - client.left];
+    let mut ys = vec![0, client.bottom - client.top];
+    let boxes: Vec<[i32; 4]> = children
+        .iter()
+        .filter(|c| c.attributes & attribute::SNAPS != 0 && c.visible)
+        .map(|c| {
+            [
+                (c.x + c.client.left) - c.spacing,
+                c.client.right + c.x + c.spacing,
+                (c.client.top + c.y) - c.spacing,
+                c.y + c.client.bottom + c.spacing,
+            ]
+        })
+        .collect();
+    for b in &boxes {
+        insert_edge(&mut xs, b[0]);
+        insert_edge(&mut xs, b[1]);
+        insert_edge(&mut ys, b[2]);
+        insert_edge(&mut ys, b[3]);
+    }
+    let (nx, ny) = (xs.len() - 1, ys.len() - 1);
     if nx * ny < 2 {
-        return Vec::new();
+        return Some(Vec::new());
     }
-    let mut grid = vec![false; nx * ny];
-    for (x1, x2, y1, y2) in boxes {
-        let Some(i1) = xs.iter().position(|&x| x == x1) else {
-            continue;
-        };
-        let Some(i2) = xs.iter().position(|&x| x == x2) else {
-            continue;
-        };
-        let Some(j1) = ys.iter().position(|&y| y == y1) else {
-            continue;
-        };
-        let Some(j2) = ys.iter().position(|&y| y == y2) else {
-            continue;
-        };
+    let mut grid = vec![0u8; nx * ny];
+    let at = |list: &[i32], v: i32| list.iter().position(|&e| e == v).unwrap_or(0);
+    for b in &boxes {
+        let (i1, i2) = (at(&xs, b[0]), at(&xs, b[1]));
+        let (j1, j2) = (at(&ys, b[2]), at(&ys, b[3]));
         for j in j1..j2 {
             for i in i1..i2 {
-                grid[j * nx + i] = true;
+                grid[i + j * nx] = 1;
             }
         }
     }
     let mut slots = Vec::new();
-    for j in 0..ny.saturating_sub(1) {
-        for i in 0..nx.saturating_sub(1) {
-            if grid[j * nx + i] {
+    for j in 0..ny {
+        for i in 0..nx {
+            if grid[i + j * nx] != 0 {
                 continue;
             }
-            let mut xe = i;
-            while xe + 1 < nx - 1 && !grid[j * nx + xe + 1] {
-                xe += 1;
+            let mut e = i;
+            while e + 1 < nx && grid[e + 1 + j * nx] == 0 {
+                e += 1;
             }
-            let mut ye = j;
-            while ye + 1 < ny - 1 && !grid[(ye + 1) * nx + i] {
-                ye += 1;
+            let mut f = j;
+            while f + 1 < ny && grid[i + (f + 1) * nx] == 0 {
+                f += 1;
             }
-            if xe - i < ye - j {
-                for y in j..ye {
-                    grid[y * nx + i] = true;
+            if e - i < f - j {
+                for row in j..=f {
+                    grid[i + row * nx] = 2;
                 }
+                slots.push([xs[i], ys[j], xs[i + 1], ys[f + 1]]);
             } else {
-                for x in i..xe {
-                    grid[j * nx + x] = true;
+                for col in i..=e {
+                    grid[col + j * nx] = 2;
                 }
-            }
-            slots.push((xs[i], ys[j], xs[xe + 1], ys[ye + 1]));
-            if slots.len() >= 2000 {
-                return slots;
+                slots.push([xs[i], ys[j], xs[e + 1], ys[j + 1]]);
             }
         }
     }
-    slots
+    Some(slots)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_skin_measures() {
-        let m = FormMetrics { unit: 5, border: 2 };
-        assert_eq!((m.base(), m.close(), m.rail(), m.tab()), (28, 21, 19, 23));
-        assert_eq!(
-            FormMetrics {
-                unit: 12,
-                border: 2
-            }
-            .base(),
-            70
-        );
-        assert_eq!(border_for_dpi(96), 2);
-        assert_eq!(border_for_dpi(405), 3);
-    }
-
-    #[test]
-    fn the_form_defaults() {
-        assert_eq!(
-            (
-                DEFAULT_WIDTH,
-                DEFAULT_HEIGHT,
-                DEFAULT_BORDER,
-                DEFAULT_CONTENT,
-                DEFAULT_SCROLL_STEP,
-                PAGE_MIN
-            ),
-            (302, 402, 2, (300, 800), 0.025, (76, 90))
-        );
-    }
-
-    #[test]
-    fn the_client_rectangle() {
-        let r = client_rect(302, 402, 2, 0, 0, 0, 0, 0, 15, 2);
-        assert_eq!(
-            r,
-            ClientRect {
-                left: 2,
-                top: 2,
-                right: 300,
-                bottom: 400
-            }
-        );
-        assert_eq!((r.width(), r.height()), (298, 398));
-        let r = client_rect(302, 402, 2, 0, 0x200, 0, 7, 0, 15, 2);
-        assert_eq!(r.right, 293);
-        let r = client_rect(302, 402, 2, 0, 0x100, 0, 0, 0, 15, 2);
-        assert_eq!(r.bottom, 400 - 15 - 1 - 4);
-        let r = client_rect(302, 402, 2, 0, 1, 6, 0, 18, 15, 2);
-        assert_eq!(r.top, 24);
-        let r = client_rect(302, 402, 2, 0, 0x21, 6, 0, 18, 15, 2);
-        assert_eq!(r.top, 8);
-    }
-
-    #[test]
-    fn the_anchors() {
-        assert_eq!(anchor(None, 0, 100, false, Anchor::Default), 4);
-        assert_eq!(anchor(None, 0, 100, true, Anchor::Default), 36);
-        assert_eq!(anchor(None, 800, 100, false, Anchor::Center), 350);
-        assert_eq!(anchor(None, 800, 100, false, Anchor::Far), 696);
-        assert_eq!(anchor(Some(12), 800, 100, false, Anchor::Far), 12);
-    }
-
-    #[test]
-    fn the_scrollbar_metrics() {
-        let s = scroll_metrics(404, 1200, 2, 19, 0.0);
-        assert!((s.step - 10.0 / 796.0).abs() < 1e-7);
-        assert_eq!(s.thumb, 121);
-        assert_eq!(s.thumb_x, 21);
-        let s = scroll_metrics(404, 1200, 2, 19, 1.0);
-        assert_eq!(s.thumb_x, 262);
-    }
-
-    #[test]
-    fn the_scroll_fraction_and_snap() {
-        let (f, x) = set_scroll_x(0.5, 0.1, false, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 0.5);
-        assert_eq!(x, 21 + 120);
-        // 0.55 / 0.1 is exactly 5.5 in single precision; ties go to even.
-        let (f, _) = set_scroll_x(0.55, 0.1, true, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 0.6);
-        let (f, _) = set_scroll_x(0.45, 0.1, true, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 0.4);
-        // Ties go to even: 1.5 steps round to 2, 0.5 to 0.
-        let (f, _) = set_scroll_x(0.75, 0.5, true, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 1.0);
-        let (f, _) = set_scroll_x(0.25, 0.5, true, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 0.0);
-        let (f, x) = set_scroll_x(0.5, 0.1, false, 404, 400, 2, 19, 121);
-        assert_eq!(f, 0.0);
-        assert_eq!(x, 21);
-    }
-
-    #[test]
-    fn the_vertical_scrollbar() {
-        let s = vertical_scroll_metrics(404, 1200, 2, 19, 0.0);
-        assert_eq!((s.thumb, s.thumb_y), (121, 21));
-        assert!((s.step - 10.0 / 796.0).abs() < 1e-7);
-        let (f, y) = set_scroll_y(1.0, s.step, false, 404, 1200, 2, 19, s.thumb);
-        assert_eq!((f, y), (1.0, 262));
-        let (f, _) = set_scroll_y(0.25, 0.5, true, 404, 1200, 2, 19, 121);
-        assert_eq!(f, 0.0);
-        let (f, _) = set_scroll_y(f32::NAN, 0.0, false, 404, 1200, 2, 19, 121);
-        assert!(f.is_nan());
-    }
-
-    #[test]
-    fn the_wheel_and_repeat() {
-        // 120 wheel units is one step.
-        assert!((wheel_scroll(120, 0.1, 0.5, false) - 0.4).abs() < 1e-6);
-        assert!((wheel_scroll(-120, 0.1, 0.5, false) - 0.6).abs() < 1e-6);
-        assert!((wheel_scroll(120, 0.1, 0.5, true) - 0.6).abs() < 1e-6);
-        // Half a step rounds to even, so 60 units move nothing.
-        assert!((wheel_scroll(60, 0.1, 0.5, false) - 0.5).abs() < 1e-6);
-        assert!((wheel_scroll(180, 0.1, 0.5, false) - 0.3).abs() < 1e-6);
-        let (x, y) = repeat_scroll(-10, 0.0, 0.2, 0.3, 0.05, 0.1);
-        assert_eq!((x, y), (0.2, 0.4));
-        let (x, y) = repeat_scroll(-13, 0.7, 0.2, 0.3, 0.05, 0.1);
-        assert_eq!((x, y), (0.65, 0.3));
-        assert_eq!(repeat_scroll(-3, 0.7, 0.2, 0.3, 0.05, 0.1), (0.2, 0.3));
-    }
-
-    #[test]
-    fn the_tab_order() {
-        let none = ControlTab::default();
-        let can = ControlTab {
-            focusable: true,
-            skip: false,
-        };
-        let skipped = ControlTab {
-            focusable: true,
-            skip: true,
-        };
-        let controls = [can, skipped, can, can];
-        assert_eq!(tab_target(&controls, Some(0), false), Some(2));
-        assert_eq!(tab_target(&controls, Some(3), false), Some(0));
-        assert_eq!(tab_target(&controls, Some(0), true), Some(3));
-        assert_eq!(tab_target(&controls, Some(2), true), Some(0));
-        assert_eq!(tab_target(&[none, none], None, false), None);
-        assert_eq!(tab_target(&[skipped], None, false), None);
-        assert_eq!(tab_target(&[], Some(0), false), None);
-    }
-
-    #[test]
-    fn the_wheel_control_and_caret() {
-        assert_eq!(wheel_control(3, 5), Some(2));
-        assert_eq!(wheel_control(0x7f0003, 5), Some(2));
-        assert_eq!(wheel_control(0, 5), None);
-        assert_eq!(wheel_control(6, 5), Some(5));
-        assert_eq!(wheel_control(7, 5), None);
-        let mut counter = 0;
-        let mut lit = true;
-        for _ in 0..4 {
-            assert!(!caret_blink(true, &mut counter, &mut lit));
-        }
-        assert!(caret_blink(true, &mut counter, &mut lit));
-        assert!(!lit);
-        assert!(!caret_blink(false, &mut counter, &mut lit));
-        assert_eq!(counter, 0);
-    }
-
-    #[test]
-    fn the_close_edges_and_cursors() {
-        assert!(is_close_edge(-20, false));
-        assert!(is_close_edge(-14, false));
-        assert!(is_close_edge(-9, false));
-        assert!(is_close_edge(-5, false));
-        assert!(!is_close_edge(-8, false));
-        assert!(is_close_edge(-8, true));
-        assert!(!is_close_edge(-7, true));
-        assert!(!is_close_edge(-3, true));
-        assert_eq!(resize_cursor(0x8000_0011), Some(2));
-        assert_eq!(resize_cursor(0x8000_0012), Some(2));
-        assert_eq!(resize_cursor(0x8000_0014), Some(1));
-        assert_eq!(resize_cursor(0x8000_0018), Some(1));
-        assert_eq!(resize_cursor(0x8000_0015), Some(3));
-        assert_eq!(resize_cursor(0x8000_0016), Some(4));
-        assert_eq!(resize_cursor(0x8000_0019), Some(4));
-        assert_eq!(resize_cursor(0x8000_001a), Some(3));
-        assert_eq!(resize_cursor(0x8000_0017), None);
-    }
-
-    #[test]
-    fn the_labels_and_nudge() {
-        assert_eq!(styled_label(0, "EXIT"), "EXIT");
-        assert_eq!(styled_label(1, "EXIT"), "[EXIT]");
-        assert_eq!(styled_label(2, "EXIT"), "[[EXIT]]");
-        assert_eq!(selected_nudge(5), 1);
-        assert_eq!(selected_nudge(8), 2);
-        assert_eq!(selected_nudge(12), 4);
-    }
-
-    #[test]
-    fn the_unset_place() {
-        let parent = FormRect::new(10, 20, 800, 600);
-        assert_eq!(
-            place_unset(UNPLACED, UNPLACED, 200, 100, 0, Some(parent)),
-            (4, 36)
-        );
-        assert_eq!(
-            place_unset(
-                UNPLACED,
-                UNPLACED,
-                200,
-                100,
-                style::CENTRE_X | style::CENTRE_Y,
-                Some(parent)
-            ),
-            (300, 250)
-        );
-        assert_eq!(
-            place_unset(UNPLACED, UNPLACED, 200, 100, style::RIGHT, Some(parent)),
-            (596, 36)
-        );
-        assert_eq!(
-            place_unset(UNPLACED, UNPLACED, 200, 100, style::BOTTOM, Some(parent)),
-            (4, 496)
-        );
-        // The x centring truncates and the y centring floors.
-        let odd = FormRect::new(0, 0, 801, 501);
-        assert_eq!(
-            place_unset(
-                UNPLACED,
-                UNPLACED,
-                200,
-                100,
-                style::CENTRE_X | style::CENTRE_Y,
-                Some(odd)
-            ),
-            (300, 200)
-        );
-        assert_eq!(place_unset(7, 8, 200, 100, 0, Some(parent)), (7, 8));
-        assert_eq!(
-            place_unset(UNPLACED, UNPLACED, 200, 100, 0, None),
-            (UNPLACED, UNPLACED)
-        );
-    }
-
-    #[test]
-    fn showing_recentres() {
-        let parent = FormRect::new(0, 0, 800, 600);
-        assert_eq!(
-            show_place(13, 17, 200, 100, style::CENTRE_X | style::CENTRE_Y, parent),
-            (300, 250)
-        );
-        assert_eq!(show_place(13, 17, 200, 100, 0, parent), (13, 17));
-    }
-
-    #[test]
-    fn the_sibling_order() {
-        let s = |a: &[u32], i: usize| raise_index(a, i);
-        assert_eq!(s(&[0, 0, 0], 0), 2);
-        assert_eq!(s(&[0, 0, 0], 2), 2);
-        assert_eq!(s(&[0, style::UPPER_LAYER, 0], 0), 2);
-        assert_eq!(s(&[0, style::UPPER_LAYER, 0], 1), 2);
-        assert_eq!(s(&[style::LOWER_LAYER, 0, 0], 1), 2);
-        assert_eq!(s(&[0, style::LOWER_LAYER, 0], 1), 0);
-        assert_eq!(s(&[0, style::LOWER_LAYER, style::LOWER_LAYER], 1), 0);
-        assert_eq!(s(&[0, style::LOWER_LAYER, style::LOWER_LAYER], 2), 0);
-        let mut ids = vec![10, 11, 12];
-        assert_eq!(raise_child(&mut ids, &[0, 0, 0], 0), 2);
-        assert_eq!(ids, vec![11, 12, 10]);
-        let mut ids = vec![10, 11, 12];
-        assert_eq!(raise_child(&mut ids, &[0, 0, 0], 1), 2);
-        assert_eq!(ids, vec![10, 12, 11]);
-        assert_eq!(topmost_child(&[0, 0, 0], &[true, true, true]), Some(2));
-        assert_eq!(
-            topmost_child(&[0, attribute::NOT_ACTIVE, 0], &[true, true, true]),
-            Some(2)
-        );
-        assert_eq!(topmost_child(&[attribute::NOT_ACTIVE], &[true]), None);
-        assert!(is_active(2, &[0, 0, 0], &[true, true, true]));
-    }
-
-    #[test]
-    fn the_form_fade() {
-        let mut fade = FormFade::default();
-        assert_eq!(fade.step(10), Some(1.0));
-        fade.start_show(1000);
-        assert_eq!(fade.step(1000), Some(0.0));
-        assert!((fade.step(1128).unwrap() - 0.5).abs() < 1e-6);
-        assert_eq!(fade.step(1256), Some(1.0));
-        assert_eq!(fade.state, 0);
-        let mut fade = FormFade {
-            mode: 1,
-            ..FormFade::default()
-        };
-        fade.start_show(0);
-        // 1 - (3 - 2·0.25)·0.25² = 1 - 0.15625.
-        assert!((fade.step(192).unwrap() - 0.84375).abs() < 1e-6);
-        fade.start_hide(1000);
-        assert!((fade.step(1128).unwrap() - 0.5).abs() < 1e-6);
-        assert_eq!(fade.step(1256), None);
-        assert_eq!(fade.state, 0);
-    }
-
-    fn leaf(id: u32, rect: FormRect, controls: Vec<HitControl>) -> HitNode {
-        HitNode {
-            id,
-            rect,
-            visible: true,
-            style: 0,
-            unit: 5,
-            content: (rect.width(), rect.height()),
-            client: ClientRect {
-                left: 0,
-                top: 0,
-                right: rect.width(),
-                bottom: rect.height(),
-            },
-            scroll_x: 0.0,
-            scroll_y: 0.0,
-            children: Vec::new(),
-            controls,
-            cursor: 3,
-        }
-    }
-
-    #[test]
-    fn the_hit_test() {
-        let control = HitControl {
-            id: 1,
-            rect: FormRect::new(10, 10, 100, 20),
-            state: 0,
-            answer: 0,
-        };
-        let root = leaf(7, FormRect::new(0, 0, 800, 600), vec![control]);
-        let hit = hit_test_tree(&root, 50, 20).unwrap();
-        assert_eq!((hit.form, hit.control, hit.cursor), (Some(7), 1, 3));
-        assert_eq!(hit.answer, 0x1_0000);
-        // Two units of slop around the control.
-        assert_eq!(hit_test_tree(&root, 111, 20).unwrap().control, 1);
-        assert_eq!(hit_test_tree(&root, 121, 20).unwrap().control, 0);
-        assert_eq!(hit_test_tree(&root, -1, 20), None);
-        let passing = HitNode {
-            controls: vec![HitControl {
-                answer: 0x80_0000,
-                ..control
-            }],
-            ..root.clone()
-        };
-        assert_eq!(hit_test_tree(&passing, 50, 20).unwrap().control, 0);
-        let shaped = HitNode {
-            controls: vec![HitControl {
-                answer: 7 << 24,
-                ..control
-            }],
-            ..root
-        };
-        assert_eq!(hit_test_tree(&shaped, 50, 20).unwrap().cursor, 7);
-    }
-
-    #[test]
-    fn the_hit_test_descends_into_children() {
-        let child = leaf(
-            2,
-            FormRect::new(100, 100, 200, 100),
-            vec![HitControl {
-                id: 4,
-                rect: FormRect::new(5, 5, 50, 10),
-                state: 0,
-                answer: 0,
-            }],
-        );
-        let root = HitNode {
-            children: vec![child],
-            ..leaf(1, FormRect::new(0, 0, 800, 600), Vec::new())
-        };
-        let hit = hit_test_tree(&root, 110, 110).unwrap();
-        assert_eq!((hit.form, hit.control), (Some(2), 4));
-        // A child's edge is outside it, so the root answers there.
-        let hit = hit_test_tree(&root, 100, 150).unwrap();
-        assert_eq!((hit.form, hit.control), (Some(1), 0));
-    }
-
-    #[test]
-    fn the_ease_and_identity_helpers() {
-        assert_eq!(ease(0.0), 0.0);
-        assert_eq!(ease(0.5), 0.5);
-        assert_eq!(ease(1.0), 1.0);
-        assert!((ease(0.25) - 0.15625).abs() < 1e-6);
-        let tags = [10, 20, 30];
-        assert_eq!(form_index_by_tag(&tags, 20), Some(1));
-        assert_eq!(form_index_by_tag(&tags, 40), None);
-        let child = leaf(7, FormRect::new(0, 0, 10, 10), Vec::new());
-        let root = HitNode {
-            children: vec![child],
-            ..leaf(1, FormRect::new(0, 0, 100, 100), Vec::new())
-        };
-        assert_eq!(find_form_by_tag(&root, 7).map(|n| n.id), Some(7));
-        assert_eq!(find_form_by_tag(&root, 1).map(|n| n.id), Some(1));
-        assert!(find_form_by_tag(&root, 9).is_none());
-    }
-
-    #[test]
-    fn the_style_and_destroy_plans() {
-        assert_eq!(set_style(0, 0, true), (0, 0, 0x1000));
-        assert_eq!(set_style(0, 0, false), (0, 0, 0x1004));
-        assert_eq!(set_style(0, 0x1_0000, true), (0x10, 0x1_0041, 0x1000));
-        assert_eq!(set_style(0, 0x1_0000, false), (0, 0x1_0000, 0x1004));
-        let plan = destroy_plan(2, 5, true, true, true);
-        assert_eq!(
-            plan,
-            DestroyPlan {
-                children_freed: 2,
-                controls_freed: 5,
-                name_freed: true,
-                clears_active: true,
-                final_free: true
-            }
-        );
-        assert_eq!(destroy_plan(0, 5, false, false, false).controls_freed, 0);
-    }
-
-    #[test]
-    fn the_runtime_resize() {
-        let mut form = ResizeNode {
-            x: 100,
-            y: 50,
-            width: 300,
-            height: 200,
-            style: style::RIGHT | style::BOTTOM,
-            children: vec![ResizeNode {
-                x: 10,
-                y: 20,
-                width: 100,
-                height: 40,
-                style: style::X_MASK | style::Y_MASK,
-                children: Vec::new(),
-                controls: Vec::new(),
-            }],
-            controls: vec![
-                ResizeControl {
-                    x: 10,
-                    y: 10,
-                    width: 80,
-                    height: 20,
-                    style: style::RIGHT,
-                    client: (298, 398),
-                },
-                ResizeControl {
-                    x: 100,
-                    y: 100,
-                    width: 80,
-                    height: 20,
-                    style: style::CENTRE_X,
-                    client: (398, 398),
-                },
-            ],
-        };
-        resize_form(&mut form, 400, 250);
-        assert_eq!((form.width, form.height), (400, 250));
-        assert_eq!(form.x, 100 + 300 - 400);
-        assert_eq!(form.y, 50 + 200 - 250);
-        let child = &form.children[0];
-        assert_eq!((child.width, child.height), (200, 90));
-        assert_eq!((child.x, child.y), (10, 20));
-        assert_eq!((form.controls[0].x, form.controls[0].width), (110, 80));
-        assert_eq!((form.controls[1].x, form.controls[1].y), (159, 100));
-    }
-
-    #[test]
-    fn the_control_and_screen_helpers() {
-        assert_eq!(control_index(3, 5), Some(2));
-        assert_eq!(control_index(0x7f0003, 5), Some(2));
-        assert_eq!(control_index(0, 5), None);
-        assert_eq!(control_index(-3, 5), None);
-        assert_eq!(control_index(7, 5), None);
-        let own = [4, 9];
-        let children = vec![vec![12, 15]];
-        assert_eq!(find_control(&own, &children, 9), Some(9));
-        assert_eq!(find_control(&own, &children, 12), Some(12));
-        assert_eq!(find_control(&own, &children, 13), None);
-        assert_eq!(content_centre(302, 402), (151, 201));
-        assert_eq!(content_centre(301, 401), (150, 200));
-        let root = ScreenOffset {
-            x: 10,
-            y: 20,
-            border: 2,
-            top: 24,
-            content: (300, 500),
-            client: (298, 400),
-            scroll_x: 0.0,
-            scroll_y: 0.5,
-            locked: false,
-        };
-        // y: 5 + 24 − round(100 × 0.5) + 20 = −1.
-        assert_eq!(local_to_screen((5, 5), &[root]), (17, -1));
-        let locked = ScreenOffset {
-            locked: true,
-            ..root
-        };
-        assert_eq!(local_to_screen((5, 5), &[locked]), (17, 49));
-        assert_eq!(local_to_screen((7, 8), &[]), (7, 8));
-    }
-
-    #[test]
-    fn the_hover_and_focus_changes() {
-        assert_eq!(
-            hover_change(3, 5),
-            HoverChange {
-                index: Some(2),
-                redraw: true
-            }
-        );
-        assert_eq!(hover_change(0, 5), HoverChange::default());
-        let change = focus_change(3, 1, 5);
-        assert_eq!(change.index, Some(2));
-        assert!(change.changed && change.redraw && change.lit);
-        assert_eq!(
-            focus_change(3, 3, 5),
-            FocusChange {
-                index: Some(2),
-                ..Default::default()
-            }
-        );
-        let none = focus_change(0, 3, 5);
-        assert!(none.changed && !none.lit && none.index.is_none());
-    }
-
-    #[test]
-    fn the_constructor_defaults() {
-        let d = form_defaults();
-        assert_eq!(
-            (
-                d.width,
-                d.height,
-                d.border,
-                d.content,
-                d.min_page,
-                d.attributes,
-                d.state
-            ),
-            (302, 402, 2, (300, 800), (76, 90), 0x30022, 0x3000)
-        );
-        assert_eq!((d.x, d.y), (UNPLACED, UNPLACED));
-        assert_eq!((d.step, d.wheel), (0.025, 0.25));
-        assert!(d.visible);
-    }
-
-    #[test]
-    fn the_show_plan() {
-        let base = ShowInput {
-            attached: false,
-            attach: false,
-            y_unset: true,
-            style: 0,
-            adopt_title: false,
-            parent_not_root: false,
-            child_count: 0,
-            unit_differs: false,
-        };
-        let plan = show_plan(base);
-        assert!(plan.attach_to_root && plan.default_y && plan.layout);
-        assert!(!plan.attach_to_parent && !plan.snap_parent);
-        let plan = show_plan(ShowInput {
-            attached: true,
-            attach: true,
-            y_unset: false,
-            style: style::CENTRE_X | style::CENTRE_Y,
-            adopt_title: true,
-            parent_not_root: true,
-            child_count: 2,
-            unit_differs: true,
-        });
-        assert!(plan.attach_to_parent && !plan.default_y);
-        assert!(plan.adopt_title && plan.recentre_x && plan.recentre_y);
-        assert!(plan.snap_parent && plan.snap_self && plan.snap_children);
-        assert!(plan.rescale_controls && plan.redraw);
-        assert!(
-            !show_plan(ShowInput {
-                style: style::BOTTOM,
-                ..base
-            })
-            .default_y
-        );
-        assert!(
-            !show_plan(ShowInput {
-                style: style::CENTRE_Y,
-                ..base
-            })
-            .default_y
-        );
-    }
-
-    #[test]
-    fn the_close_and_visibility_plans() {
-        let base = CloseInput {
-            already_closing: false,
-            mark_session: true,
-            is_main_menu: false,
-            is_tooltip: false,
-            is_active_child: false,
-            has_callback: true,
-            owner_children: 2,
-            children: 1,
-        };
-        let plan = close_plan(base);
-        assert!(plan.mark_closing && plan.run_callback && plan.hide);
-        assert!(plan.close_owner_children && plan.close_children);
-        assert!(!plan.unlink_active && plan.result == 1);
-        let plan = close_plan(CloseInput {
-            is_active_child: true,
-            ..base
-        });
-        assert!(plan.unlink_active && !plan.hide);
-        let plan = close_plan(CloseInput {
-            already_closing: true,
-            ..base
-        });
-        assert!(!plan.mark_closing && plan.result == 1);
-        let plan = close_plan(CloseInput {
-            is_main_menu: true,
-            is_tooltip: true,
-            ..base
-        });
-        assert!(plan.task_message && plan.hide_tooltip);
-        let plan = visibility_plan(false, false, 3);
-        assert!(!plan.visible && plan.hide_children && plan.detach && plan.redraw);
-        let plan = visibility_plan(false, true, 0);
-        assert!(plan.hide_parent && !plan.detach);
-        let plan = visibility_plan(true, false, 0);
-        assert!(plan.visible && plan.focus);
-        let plan = visibility_plan(true, true, 0);
-        assert!(!plan.focus && plan.hide_parent);
-    }
-
-    #[test]
-    fn maximising_and_restoring() {
-        let record = FormRecord {
-            x: 10,
-            y: 20,
-            width: 302,
-            height: 402,
-            border: 2,
-            tail: 0,
-            right: 300,
-            top: 2,
-            bottom: 400,
-            style: 0,
-            attributes: 0x30022,
-            unit: 4,
-        };
-        let (saved, max) = maximise(record, (1600, 900), false);
-        assert_eq!(saved, record);
-        assert_eq!((max.x, max.y, max.width, max.height), (0, 0, 1600, 900));
-        assert_eq!(max.style & 0xf0000, 0xf0000);
-        assert_eq!(max.attributes & 0xc000, 0);
-        let (_, free) = maximise(record, (1600, 900), true);
-        assert_eq!(free.attributes & 0x4f, 0);
-        assert_eq!(free.style & 0xf0, 0);
-        // The original divides by the record's unit before multiplying: a
-        // coordinate is a multiple of the unit.
-        let restored = restore(saved, 4);
-        assert_eq!((restored.x, restored.y, restored.width), (8, 20, 302));
-        let doubled = restore(saved, 8);
-        assert_eq!((doubled.x, doubled.y, doubled.width), (16, 40, 604));
-    }
-
-    #[test]
-    fn the_snap_slots() {
-        let form = |left, top| SnapForm {
-            rect: FormRect::new(left, top, 100, 100),
-            visible: true,
-            style: 0x30,
-            grip: 4,
-        };
-        assert_eq!(snap_slots(&[]), Vec::new());
-        assert_eq!(
-            snap_slots(&[form(0, 0), form(200, 0)]),
-            vec![(104, -4, 196, 104)]
-        );
-        // A hidden or non-moving form contributes no edges.
-        let hidden = SnapForm {
-            visible: false,
-            ..form(0, 0)
-        };
-        assert_eq!(snap_slots(&[hidden]), Vec::new());
-        let fixed = SnapForm {
-            style: 0,
-            ..form(0, 0)
-        };
-        assert_eq!(snap_slots(&[fixed]), Vec::new());
-    }
-}
+#[path = "form_test.rs"]
+mod tests;

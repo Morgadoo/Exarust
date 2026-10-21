@@ -18,10 +18,11 @@
 //!
 //! Wired in Exarust: Tab (with the hand's cancel and the request bits it
 //! clears), R (with the player's condition word and the lift counting as a
-//! drag) and F (the record's light flag); I, J and K are read again by
-//! [`crate::gui_screens`], which opens the inventory, journal and skill
-//! selector on the window manager. The power tree and power bar need
-//! powers, which the game has none of yet, and there is no dialogue.
+//! drag) and F (the record's light flag); I and J send a
+//! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
+//! journal on the window manager. The skills screen's opening is not in
+//! Exarust, the power tree and power bar need powers, which the game has
+//! none of yet, and there is no dialogue.
 //!
 //! Evidence: the controls' key handler, the combat toggle and the swap and
 //! light requests, read in the instructions
@@ -34,7 +35,10 @@ use exa_items::possession::{LIT, Possessions, SwapRequest};
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::{Locomotion, flags};
 
+use exa_ui::game_gui::GameScreen;
+
 use crate::bindings::{Action, Bindings, virtual_key};
+use crate::gui_screens::ScreenRequest;
 use crate::hand::{Hand, Holding};
 use crate::player::PlayerBody;
 
@@ -192,14 +196,19 @@ pub struct HotkeyPlugin;
 
 impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_message::<ScreenRequest>().add_systems(
             Update,
             press_hotkeys
+                .in_set(HotkeySet)
                 .after(crate::player::cursor_ground)
                 .before(crate::player::player_combat),
         );
     }
 }
+
+/// The system that reads the player's hotkeys.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HotkeySet;
 
 /// The frame's hotkeys for the player.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -219,6 +228,7 @@ fn press_hotkeys(
         Option<&mut Possessions>,
     )>,
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
+    mut screens: MessageWriter<ScreenRequest>,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -295,7 +305,18 @@ fn press_hotkeys(
                         );
                     }
                 }
-                // No window, dialogue or power bar to open yet.
+                Hotkey::Inventory | Hotkey::Journal => {
+                    screens.write(ScreenRequest {
+                        screen: if action == Hotkey::Inventory {
+                            GameScreen::Inventory
+                        } else {
+                            GameScreen::Journal
+                        },
+                        player_ready: !word.dying(),
+                        player_alive: !word.is_dead(),
+                    });
+                }
+                // No skills screen, dialogue or power bar to open yet.
                 _ => {}
             }
         }
@@ -421,6 +442,7 @@ mod tests {
             app.init_resource::<ButtonInput<KeyCode>>()
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
+                .add_message::<ScreenRequest>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -431,6 +453,43 @@ mod tests {
         };
         assert!(run(Condition::NORMAL));
         assert!(!run(Condition::DEAD));
+    }
+
+    /// I and J ask for the inventory and the journal; a dead player asks
+    /// for nothing.
+    #[test]
+    fn the_screen_keys_send_requests() {
+        let run = |word: Condition, key: KeyCode| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .init_resource::<Hand>()
+                .add_message::<ScreenRequest>()
+                .add_systems(Update, press_hotkeys);
+            app.world_mut().spawn((PlayerBody::new(0.0), word));
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            let messages = app.world().resource::<Messages<ScreenRequest>>();
+            messages
+                .iter_current_update_messages()
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            run(Condition::NORMAL, KeyCode::KeyI),
+            vec![ScreenRequest {
+                screen: GameScreen::Inventory,
+                player_ready: true,
+                player_alive: true,
+            }]
+        );
+        assert_eq!(
+            run(Condition::NORMAL, KeyCode::KeyJ)[0].screen,
+            GameScreen::Journal
+        );
+        assert!(run(Condition::DEAD, KeyCode::KeyI).is_empty());
     }
 
     /// Entering combat clears the backpedal, keys' heading and turn-about
