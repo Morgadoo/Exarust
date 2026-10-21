@@ -200,24 +200,35 @@ pub fn factory_stats(factory: &Factory, generated: &Generated, template: StatByt
 }
 
 /// Condition factor of a made item from its quality and damage bytes, as
-/// applied to factory weapons and apparel.
+/// applied to factory weapons and apparel: `(1 − d·0.4/255)·(q·0.5/255 +
+/// 0.8)` in the original's mix of precisions (the damage term and the
+/// product in double, the quality term's product in float, the result
+/// stored as float).
 pub fn condition_factor(quality: u8, damage: u8) -> f32 {
-    (1.0 - 0.4 * damage as f32 / 255.0) * (0.8 + 0.5 * quality as f32 / 255.0)
+    let d = 1.0 - f64::from(damage) * f64::from_bits(0x3F59_B34C_E680_19B4);
+    let q = f64::from(f32::from(quality) * f32::from_bits(0x3B00_8081)) + 0.8;
+    (d * q) as f32
 }
 
-/// Scales a factory weapon's stat bytes by its condition.
+/// Scales a factory weapon's stat bytes by its condition, as the original
+/// does: slash, pierce and thrust by the factor in float, crush by
+/// `0.7c + 0.3` in double, each rounded to the nearest (ties to even) and
+/// stored as a byte (so a product past 255 wraps), then capped at 160.
 pub fn condition(mut s: StatBytes, quality: u8, damage: u8) -> StatBytes {
     use at::*;
     let c = condition_factor(quality, damage);
+    let by_factor = |b: u8| (f32::from(b) * c).round_ties_even() as i64 as u8;
     for side in [0, FLIP] {
-        s.scale(SLASH + side, c);
-        s.scale(CRUSH + side, 0.7 * c + 0.3);
-        s.scale(PIERCE + side, c);
+        let crush = ((f64::from(c) * 0.7 + 0.3) * f64::from(s.get(CRUSH + side))).round_ties_even()
+            as i64 as u8;
+        s.set(SLASH + side, by_factor(s.get(SLASH + side)));
+        s.set(CRUSH + side, crush);
+        s.set(PIERCE + side, by_factor(s.get(PIERCE + side)));
         for off in [SLASH, CRUSH, PIERCE] {
             s.cap(off + side, 160);
         }
     }
-    s.scale(THRUST, c);
+    s.set(THRUST, by_factor(s.get(THRUST)));
     s.cap(THRUST, 160);
     s.cap(IMPACT, 160);
     s
@@ -330,5 +341,9 @@ mod tests {
         assert_eq!(s.get(at::SLASH), 160);
         assert_eq!(s.get(at::CRUSH), 121);
         assert!((condition_factor(0, 255) - 0.48).abs() < 1e-6);
+        // A product past 255 wraps before the cap: 200 × 1.3 = 260 → 4.
+        let mut s = StatBytes::default();
+        s.set(at::PIERCE, 200);
+        assert_eq!(condition(s, 255, 0).get(at::PIERCE), 4);
     }
 }

@@ -28,8 +28,6 @@ pub const UNSKILLED_WEAPON: f32 = -10.0;
 /// Stats a condition never raises above.
 pub const STAT_CAP: u8 = 0xA0;
 
-const DAMAGE_SCALE: f64 = 0.0015686274509803921;
-const QUALITY_SCALE: f32 = 0.001_960_784_4;
 const COVER_QUALITY: f64 = 0.0011764705882352942;
 const COVER_DAMAGE: f64 = 0.0005882352941176471;
 
@@ -49,12 +47,9 @@ fn nearest_f64(x: f64) -> i64 {
     x.round_ties_even() as i64
 }
 
-/// The condition factor of a made item.
-pub fn condition_factor(quality: u8, damage: u8) -> f32 {
-    let d = 1.0 - f64::from(damage) * DAMAGE_SCALE;
-    let q = f64::from(f32::from(quality) * QUALITY_SCALE) + 0.8;
-    (d * q) as f32
-}
+/// The condition factor of a made item, shared with the factory weapons'
+/// stat pass.
+pub use exa_formats::weapon_stats::condition_factor;
 
 /// The stat bytes a weapon's condition scales, at their weapon-section
 /// offsets: slash, crush and pierce for each of the two striking sides at
@@ -67,7 +62,7 @@ pub struct WeaponStats {
 }
 
 /// A weapon's stats from its template's at the copy's condition. The
-/// template's impact is kept but capped.
+/// copy's own impact byte (`impact`) is only capped.
 pub fn weapon_condition(
     template: &WeaponStats,
     impact: u8,

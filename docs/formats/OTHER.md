@@ -710,10 +710,12 @@ two clawed ones).
 - Every step rounds. Weight and balance are capped at 100. Variant flag
   `0x800` removes the flipped side.
 - Factory items then scale by condition c = (1 − 0.4d)(0.8 + 0.5q), with q
-  and d the quality and damage bytes /255:
-  - slash, pierce and thrust ×c;
-  - crush ×(0.7c + 0.3);
-  - each capped at 160.
+  and d the quality and damage bytes /255 (the damage term and the product
+  in double, the quality term's product in float, c stored as float):
+  - slash, pierce and thrust ×c, in float;
+  - crush ×(0.7c + 0.3), in double;
+  - each rounded to the nearest (half to even) and stored as a byte, so a
+    product past 255 wraps, then capped at 160.
 - The head's striking extent (`0x35`/`0x36`) comes from assembled
   geometry; Exarust keeps the template's values for now.
 - Materials and dirt do not enter the stats. There is no physical
