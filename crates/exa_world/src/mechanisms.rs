@@ -137,6 +137,8 @@ mod tests {
             time: 50,
             target: 0x8000_00D0,
             second: 0x8000_00D1,
+            atlas: [0; 16],
+            destinations: [0; objdb::DESTINATIONS],
         }
     }
 
