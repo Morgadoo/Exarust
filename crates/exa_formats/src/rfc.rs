@@ -347,6 +347,70 @@ impl Mesh {
         }
     }
 
+    /// Reorders the triangle list by material group and rebuilds the group
+    /// ranges, as the original's regroup does after a merge. `group_of_triangle`
+    /// gives each triangle's group, indexing `self.groups`; groups are emitted
+    /// in that index order and empty ones are dropped. Per-triangle flags and
+    /// edges follow their triangle. Vertices are left in place; the render
+    /// form does not need the editable form's vertex rebasing.
+    pub fn regroup_by_material(&mut self, group_of_triangle: &[u32]) -> crate::Result<()> {
+        let triangles = self.indices.len() / 3;
+        let malformed = |message: &str| crate::Error::Malformed(message.to_string());
+        if !self.indices.len().is_multiple_of(3) {
+            return Err(malformed("index count is not a multiple of 3"));
+        }
+        if group_of_triangle.len() != triangles {
+            return Err(malformed("material list does not match the triangles"));
+        }
+        if let Some(flags) = &self.triangle_flags
+            && flags.len() != triangles
+        {
+            return Err(malformed("triangle flags do not match the triangles"));
+        }
+        if let Some(edges) = &self.triangle_edges
+            && edges.len() != triangles
+        {
+            return Err(malformed("triangle edges do not match the triangles"));
+        }
+        let mut order: Vec<usize> = (0..triangles).collect();
+        order.sort_by_key(|&triangle| group_of_triangle[triangle]);
+        let mut indices = Vec::with_capacity(self.indices.len());
+        for &triangle in &order {
+            indices.extend_from_slice(&self.indices[triangle * 3..triangle * 3 + 3]);
+        }
+        if let Some(flags) = &mut self.triangle_flags {
+            let old = flags.clone();
+            *flags = order.iter().map(|&t| old[t]).collect();
+        }
+        if let Some(edges) = &mut self.triangle_edges {
+            let old = edges.clone();
+            *edges = order.iter().map(|&t| old[t]).collect();
+        }
+        let mut groups = Vec::new();
+        let mut start = 0usize;
+        for (group, template) in self.groups.iter().enumerate() {
+            let count = group_of_triangle
+                .iter()
+                .filter(|&&g| g as usize == group)
+                .count();
+            if count == 0 {
+                continue;
+            }
+            groups.push(MeshGroup {
+                material: template.material.clone(),
+                first_index: (start * 3) as u32,
+                index_count: (count * 3) as u32,
+            });
+            start += count;
+        }
+        if start != triangles {
+            return Err(malformed("a triangle names a missing material group"));
+        }
+        self.indices = indices;
+        self.groups = groups;
+        Ok(())
+    }
+
     /// Works the normals out again from the positions, as at load: the
     /// area-weighted face normals summed over the vertices sharing a
     /// smoothing key. A morphed mesh takes its normals from its new shape.
@@ -1557,6 +1621,45 @@ mod tests {
         let empty = Mesh::default().bounds();
         assert_eq!(empty.half_extents, [BOUNDS_HALF_FLOOR; 3]);
         assert_eq!(empty.radius, BOUNDS_HALF_FLOOR);
+    }
+
+    #[test]
+    fn regrouping_orders_triangles_by_material() {
+        let mut mesh = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            indices: vec![0, 1, 2, 1, 3, 2],
+            groups: vec![
+                MeshGroup {
+                    material: "a".into(),
+                    first_index: 0,
+                    index_count: 3,
+                },
+                MeshGroup {
+                    material: "b".into(),
+                    first_index: 3,
+                    index_count: 3,
+                },
+            ],
+            triangle_flags: Some(vec![1, 2]),
+            ..Default::default()
+        };
+        mesh.regroup_by_material(&[1, 0]).unwrap();
+        assert_eq!(mesh.indices, [1, 3, 2, 0, 1, 2]);
+        assert_eq!(mesh.triangle_flags, Some(vec![2, 1]));
+        assert_eq!(mesh.groups.len(), 2);
+        assert_eq!(mesh.groups[0].first_index, 0);
+        assert_eq!(mesh.groups[0].index_count, 3);
+        assert_eq!(mesh.groups[1].first_index, 3);
+        // A group with no triangles disappears.
+        mesh.regroup_by_material(&[0, 0]).unwrap();
+        assert_eq!(mesh.groups.len(), 1);
+        assert_eq!(mesh.groups[0].index_count, 6);
+        assert!(mesh.regroup_by_material(&[0]).is_err());
     }
 
     #[test]

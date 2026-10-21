@@ -257,6 +257,77 @@ pub fn bytes_per_pixel(format_word: u32) -> usize {
     bits_per_pixel(format_word).div_ceil(8) as usize
 }
 
+/// Copies whole rows of `dst_width` texels from `src`, the first source row
+/// at `first_row` and the first source byte at `byte_column` (the
+/// original's sub-image copy). Returns whether the rectangles fit.
+#[allow(clippy::too_many_arguments)]
+pub fn blit_rows(
+    dst: &mut [u8],
+    dst_width: usize,
+    dst_height: usize,
+    src: &[u8],
+    src_width: usize,
+    format_word: u32,
+    byte_column: usize,
+    first_row: usize,
+) -> bool {
+    let bpp = bytes_per_pixel(format_word);
+    let stride = dst_width.saturating_mul(bpp);
+    let Some(bytes) = stride.checked_mul(dst_height) else {
+        return false;
+    };
+    if dst.len() < bytes {
+        return false;
+    }
+    for row in 0..dst_height {
+        let source = byte_column + src_width.saturating_mul(row + first_row) * bpp;
+        let target = row * stride;
+        let (Some(input), Some(output)) = (
+            src.get(source..source.saturating_add(stride)),
+            dst.get_mut(target..target.saturating_add(stride)),
+        ) else {
+            return false;
+        };
+        output.copy_from_slice(input);
+    }
+    true
+}
+
+/// Copies `src_width` texels of every source row into `dst` at
+/// `byte_column` and `first_row` (the original's paste into a canvas).
+/// Returns whether the rectangles fit.
+#[allow(clippy::too_many_arguments)]
+pub fn blit_into(
+    dst: &mut [u8],
+    dst_width: usize,
+    dst_height: usize,
+    src: &[u8],
+    src_width: usize,
+    src_height: usize,
+    format_word: u32,
+    byte_column: usize,
+    first_row: usize,
+) -> bool {
+    let bpp = bytes_per_pixel(format_word);
+    let stride = src_width.saturating_mul(bpp);
+    if dst.len() < dst_width.saturating_mul(dst_height).saturating_mul(bpp)
+        || src.len() < stride.saturating_mul(src_height)
+    {
+        return false;
+    }
+    for row in 0..src_height {
+        let target = byte_column + dst_width.saturating_mul(row + first_row) * bpp;
+        let (Some(input), Some(output)) = (
+            src.get(row * stride..(row + 1) * stride),
+            dst.get_mut(target..target.saturating_add(stride)),
+        ) else {
+            return false;
+        };
+        output.copy_from_slice(input);
+    }
+    true
+}
+
 /// The bits of one texel: the colour bits at 6..12 plus the alpha bits.
 pub fn bits_per_pixel(format_word: u32) -> u32 {
     ((format_word & 0x1FC0) >> 6) + (format_word & 0x3F)
@@ -338,6 +409,29 @@ mod tests {
         assert_eq!(bytes_per_pixel(id::XY8), 2);
         assert_eq!(bytes_per_pixel(id::LUM1), 1);
         assert_eq!(bytes_per_pixel(id::RGBAF), 16);
+    }
+
+    #[test]
+    fn sub_image_copies_move_whole_rows() {
+        use exa_formats::pixel::id;
+        // A 2x2 RGB source (3 bytes a texel): rows 10 11 / 20 21.
+        let src: Vec<u8> = [10, 10, 10, 11, 11, 11, 20, 20, 20, 21, 21, 21].to_vec();
+        let mut dst = [0u8; 2 * 2 * 3];
+        assert!(blit_rows(&mut dst, 2, 2, &src, 2, id::RGB8, 0, 0));
+        assert_eq!(dst, src[..]);
+        // Pasting a 1x2 block at byte column 3, row 1.
+        let strip: Vec<u8> = [10, 10, 10, 20, 20, 20].to_vec();
+        let mut canvas = [0u8; 3 * 3 * 3];
+        assert!(blit_into(&mut canvas, 3, 3, &strip, 1, 2, id::RGB8, 3, 1));
+        assert_eq!(
+            canvas,
+            [
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 10, 10, 0, 0, 0, 0, 0, 0, 20, 20, 20, 0, 0,
+                0
+            ]
+        );
+        // A rectangle past the end is refused, not written out of bounds.
+        assert!(!blit_rows(&mut dst, 2, 2, &src, 2, id::RGB8, 1, 0));
     }
 
     #[test]
