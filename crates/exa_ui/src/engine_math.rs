@@ -26,6 +26,22 @@ pub fn round_i32(value: f32) -> i32 {
     }
 }
 
+/// The processor's approximate reciprocal square root (`RSQRTSS`).
+pub fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
+    }
+}
+
 /// The engine's sine and cosine of `x`: the angle reduced by the nearest
 /// even multiple of π/4 (one Cody–Waite step), then the single-precision
 /// polynomials of the reduced angle, each octant picking and signing them.
