@@ -1510,7 +1510,9 @@ Exarust applies:
 - **Window mode, size and vertical sync**: the window's mode (full screen
   borderless, or exclusive for another listed `ScreenWidth`/`ScreenHeight`),
   its size (when windowed and a size was asked for) and its present mode
-  (plain Fifo with vertical sync, the original's swap interval 1).
+  (with vertical sync the adaptive `AutoVsync` rather than the original's
+  swap interval 1, plain Fifo, which held each late frame to the next blank
+  and cost about 4 ms a frame in play; `exa_game::window::ADAPTIVE_VSYNC`).
 - **Audio**: the master bus gain is the volume and the music switch mutes
   the music. The original's volume goes to OpenAL rather than to its own
   master gain, which its code never writes.

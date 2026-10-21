@@ -27,6 +27,15 @@ pub const MIN_DISPLAY_WIDTH: u32 = 640;
 /// rate query.
 pub const MIN_KNOWN_REFRESH_HZ: u32 = 30;
 
+/// Whether Exarust asks [`present_mode`] for the adaptive interval with
+/// vertical sync on. The original uses swap interval 1 (plain `Fifo`), but
+/// Exarust's frames still run slower than the display, and plain `Fifo`
+/// holds every late frame to the next blank: in `play exanima01` it cost
+/// about 4 ms a frame (36.7 against 33.0 ms over three interleaved runs
+/// each). `AutoVsync` waits for the display when a frame is on time and
+/// presents a late one at once (`FifoRelaxed` where the driver has it).
+pub const ADAPTIVE_VSYNC: bool = true;
+
 /// How a window is framed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowStyle {

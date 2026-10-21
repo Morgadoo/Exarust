@@ -75,7 +75,7 @@ The system SHALL show full screen as a borderless window over the primary displa
 - **THEN** the window is exclusive full screen at 1920 × 1080
 
 ### Requirement: Window limits and toggle
-The window SHALL not be resized below 640 × 480, its present mode SHALL wait for the display with vertical sync on (swap interval 1) and present at once with it off, and Alt+Enter SHALL toggle between the framed window and full screen, restoring the framed window's size and position.
+The window SHALL not be resized below 640 × 480, its present mode SHALL wait for the display with vertical sync on (the original's swap interval 1; Exarust takes the adaptive interval, which presents a late frame at once, while its frames are slower than the display) and present at once with it off, and Alt+Enter SHALL toggle between the framed window and full screen, restoring the framed window's size and position.
 
 #### Scenario: Back to the frame
 - **WHEN** Alt+Enter is pressed twice on a 1600 × 900 window

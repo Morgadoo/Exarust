@@ -798,10 +798,11 @@ fn main() -> AppExit {
                         ..default()
                     },
                     mode: frame_loop::launch_window_mode(options.fullscreen),
-                    // Swap interval 1 or 0; adaptive is not a launch option.
+                    // Swap interval 1 (adaptive while Exarust's frames are
+                    // slower than the display) or 0.
                     present_mode: exa_game::window::present_mode(
                         !options.no_vsync,
-                        false,
+                        exa_game::window::ADAPTIVE_VSYNC,
                     ),
                     ..default()
                 }),

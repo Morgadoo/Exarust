@@ -22,7 +22,9 @@ the original's exchange sort by area), the refresh rate (unknown below
 30 Hz), work-area fitting, the 640 × 480 minimum track size, the full-screen
 rule (`fullscreen_mode`: borderless over the desktop, exclusive only for a
 listed `ScreenWidth`/`ScreenHeight` other than the desktop's), the swap
-interval's present mode (immediate or plain Fifo) and the Alt+Enter toggle.
+interval's present mode (immediate, or with vertical sync the adaptive
+`AutoVsync` while Exarust's frames are slower than the display, where the
+original uses plain Fifo: `ADAPTIVE_VSYNC`) and the Alt+Enter toggle.
 Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
 rule and the present mode, `exarust::frame_loop` the pacing, the focus key
 release and Alt+Enter; the other models document the original's loop, which

@@ -613,7 +613,8 @@ fn apply_window(
             window.resolution.set(width as f32, height as f32);
         }
     }
-    let present = crate::window::present_mode(config.live.vertical_sync, false);
+    let present =
+        crate::window::present_mode(config.live.vertical_sync, crate::window::ADAPTIVE_VSYNC);
     if window.present_mode != present {
         window.present_mode = present;
     }
