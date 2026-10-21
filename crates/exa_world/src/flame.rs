@@ -122,6 +122,21 @@ fn load_flame_assets(
     });
 }
 
+/// A particle mesh with no quads but the attributes every frame writes, so
+/// its pipeline is specialised with the UVs and colours the shader reads
+/// even while a hidden flame skips its rebuild.
+pub(crate) fn empty_particle_mesh() -> Mesh {
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, Vec::<[f32; 2]>::new());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, Vec::<[f32; 4]>::new());
+    mesh.insert_indices(Indices::U32(Vec::new()));
+    mesh
+}
+
 /// Gives each flame its mesh and material once the assets are loaded.
 fn attach_flames(
     mut commands: Commands,
@@ -131,10 +146,7 @@ fn attach_flames(
 ) {
     let Some(assets) = assets else { return };
     for (e, flame) in &flames {
-        let mesh = meshes.add(Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
-        ));
+        let mesh = meshes.add(empty_particle_mesh());
         let material = if flame.texture == SMALL_TEXTURE {
             assets.small.clone()
         } else {

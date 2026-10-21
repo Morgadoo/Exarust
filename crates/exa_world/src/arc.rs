@@ -7,11 +7,12 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::Indices;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use exa_render::electricity::{Arc, ArcMaterial, ArcSpec};
 
+use crate::flame::empty_particle_mesh;
 use crate::particles::TICK_HZ;
 
 pub struct ArcPlugin;
@@ -131,10 +132,7 @@ fn attach_arcs(
 ) {
     let Some(assets) = assets else { return };
     for e in &arcs {
-        let mesh = meshes.add(Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
-        ));
+        let mesh = meshes.add(empty_particle_mesh());
         commands.entity(e).insert((
             Mesh3d(mesh),
             MeshMaterial3d(assets.material.clone()),
