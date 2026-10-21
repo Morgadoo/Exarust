@@ -771,7 +771,7 @@ impl Link {
 }
 
 /// The per-tick retention of `r` kept per second: r^(1/83), none for r ≤ 0.
-fn per_tick(r: f32) -> f32 {
+pub(crate) fn per_tick(r: f32) -> f32 {
     if r <= 0.0 { 0.0 } else { r.powf(1.0 / BODY_HZ) }
 }
 

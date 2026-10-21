@@ -1,39 +1,50 @@
-//! The dynamics world: the original's `RF_Dynamics` unit — the simulation's
-//! fixed-step clock, its gravity and the environments' velocity bands, the
-//! grid the sectors keep their bodies in, the per-node and per-body state
-//! helpers, the removal of nodes that left a scene, and the overlap query a
-//! placement asks before it puts a body down.
+//! The dynamics world: the original's `RF_Dynamics` unit — the simulations'
+//! fixed-step driver and clock, the environments' gravity and velocity
+//! bands, the two shared grids a simulation keeps its static nodes and its
+//! bodies in, the per-node and per-body state helpers, the sectors' purges
+//! of what left a scene, and the overlap query a placement asks before it
+//! puts a body down.
 //!
 //! The original runs one [`Simulation`] per scene: a clock in milliseconds
-//! and ticks, a list of sectors, and one shared 600 cm grid the sectors
-//! register their bodies in. Each fixed step takes the simulation that is
-//! due, drops its backlog past four steps, and updates its sectors: the
-//! grid shifts when the scene moved it, the bodies that left the scene are
-//! purged, and the pending flags are served ([`Simulation::update`]).
+//! and ticks, a list of sectors, and two 600 cm grids of the same size (one
+//! for the static nodes a sector registers, one for its bodies). The
+//! driver steps the first simulation that is due ([`pick_due`]); a step
+//! first updates the simulation ([`Simulation::update`]: the pending grid
+//! shift, each sector's flags, the pending grid rebuild) and then advances
+//! its clock.
 //!
 //! This module holds that unit's rules as data and algorithms over plain
 //! records ([`World`], [`Sector`], [`Grid`]), so they can be reasoned about
 //! and tested on their own; the ECS body solver in [`crate::body`] runs the
 //! physical step itself and keeps its own sleeping and grouping state.
+//! Nothing in the running game drives these records yet.
 //!
 //! Lengths are the original's centimetres and times its milliseconds.
 
-use bevy::math::{Affine3A, Mat3, Vec3};
+use bevy::math::{Affine3A, Mat3, Mat4, Vec3, Vec4};
 
-use crate::body::{RETENTION, RETENTION_SPEEDS};
+use crate::body::pairs::layers_apart;
+use crate::body::{RETENTION, RETENTION_SPEEDS, per_tick};
+use crate::mechanism::MECHANISM_RETENTION;
 
 /// One fixed step: 12 ms, 83 Hz.
 pub const STEP_MS: u32 = 12;
 /// Steps a late simulation may fall behind before it drops the rest.
 pub const MAX_STEPS_BEHIND: u32 = 4;
-/// The world's grid cell (cm): a body's cell is its node's position over
-/// this, rounded to even, plus the grid's half.
+/// The longest the driver waits when no simulation is due (ms).
+pub const IDLE_WAIT_MS: u32 = 100;
+/// The grids' cell (cm).
 pub const CELL_CM: f32 = 600.0;
+/// One over the cell as the original multiplies by it (a float, so a
+/// position on a cell boundary falls as the product does, not as a
+/// division would).
+pub const CELL_RECIPROCAL: f32 = 0.001_666_666_7;
 /// The original's default gravity (m/s²), as the body solver's.
 pub use crate::body::GRAVITY;
 
 /// A simulation's clock: the tick counter, the game time and step in
-/// milliseconds, the last run time and whether it is paused.
+/// milliseconds, the wall-clock base the game time counts from, and
+/// whether it is paused (a paused simulation keeps its backlog).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Clock {
     pub tick: u32,
@@ -60,32 +71,44 @@ impl Default for Clock {
 pub enum Due {
     /// This simulation's next step is due.
     Now,
-    /// The soonest a simulation will be due, in milliseconds.
+    /// How long to wait for the soonest step (ms, at most
+    /// [`IDLE_WAIT_MS`]).
     Wait(u32),
 }
 
 impl Clock {
-    /// Whether the step at `time + step` is due at `now` (the time since
-    /// the simulation last ran is at least the step's end).
+    /// The next step's end in game time.
+    fn end(&self) -> u32 {
+        self.time.wrapping_add(self.step)
+    }
+
+    /// The wall-clock time `now` as game time.
+    fn late(&self, now: u32) -> u32 {
+        now.wrapping_sub(self.last)
+    }
+
+    /// Whether the step at `time + step` is due at `now`.
     pub fn due(&self, now: u32) -> bool {
-        let late = now.wrapping_sub(self.last);
-        self.time.wrapping_add(self.step) <= late
+        self.end() <= self.late(now)
     }
 
-    /// How many steps behind `now` is: the time since the last run less
-    /// the next step's end (0 when due).
+    /// How far past the next step's end `now` is (0 when not due).
     pub fn behind(&self, now: u32) -> u32 {
-        let late = now.wrapping_sub(self.last);
-        late.saturating_sub(self.time.wrapping_add(self.step))
+        self.late(now).saturating_sub(self.end())
     }
 
-    /// Drops the backlog of a simulation more than four steps late and not
-    /// paused, moving its last run time forward to now less its step.
+    /// A due simulation more than four steps behind and not paused drops
+    /// its backlog: its base moves so that the step it takes now ends
+    /// exactly at `now`.
     pub fn drop_backlog(&mut self, now: u32) {
-        if self.paused || self.behind(now) <= self.step.saturating_mul(MAX_STEPS_BEHIND) {
+        if self.paused || !self.due(now) {
             return;
         }
-        self.last = now.wrapping_sub(self.step);
+        // The original compares the four steps (a 32-bit shift) with the
+        // lateness, both widened to 64 bits.
+        if i64::from(self.behind(now)) > i64::from(self.step << 2) {
+            self.last = now.wrapping_sub(self.end());
+        }
     }
 
     /// One step: the tick and the game time advance by the step.
@@ -94,46 +117,52 @@ impl Clock {
         self.time = self.time.wrapping_add(self.step);
     }
 
-    /// The scaled time since the last `mark`, as the original's time-scale
-    /// helper returns it: the unsigned game time less the mark, as a
-    /// 64-bit signed difference, converted to a float, scaled, and
-    /// converted back with the processor's nearest-even rounding.
-    pub fn scale_since(&self, mark: i32, scale: f32) -> i32 {
+    /// The scaled time since `mark`, as the original's time-scale helper
+    /// returns it: the unsigned game time less the signed mark as a 64-bit
+    /// difference, converted to a float, scaled, and converted back with
+    /// the processor's nearest-even rounding into 64 bits (a NaN or an
+    /// answer out of range gives the conversion's `i64::MIN`).
+    pub fn scale_since(&self, mark: i32, scale: f32) -> i64 {
         let delta = i64::from(self.time) - i64::from(mark);
-        let scaled = (delta as f32) * scale;
-        let rounded = scaled.round_ties_even();
-        if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
-            0
+        let rounded = ((delta as f32) * scale).round_ties_even();
+        if rounded.is_nan() || rounded >= 9.223_372e18 || rounded < -9.223_372e18 {
+            i64::MIN
         } else {
-            rounded as i32
+            rounded as i64
         }
     }
 }
 
-/// The step driver's choice over a list of simulations: the first whose
-/// step is due runs, the others' lateness updating the wait; the soonest
-/// end wins. A simulation with no sectors is still stepped.
-pub fn pick_due(sims: &mut [Clock], now: u32) -> Due {
-    let mut wait = u32::MAX;
-    for sim in sims.iter_mut() {
-        let late = now.wrapping_sub(sim.last);
-        let end = sim.time.wrapping_add(sim.step);
-        if end <= late {
+/// The step driver's choice over the simulations: the first whose step is
+/// due runs (dropping its backlog first); otherwise the wait is the
+/// soonest step's distance, at most [`IDLE_WAIT_MS`].
+pub fn pick_due(sims: &mut [Clock], now: u32) -> (Due, Option<usize>) {
+    let mut wait = IDLE_WAIT_MS;
+    for (i, sim) in sims.iter_mut().enumerate() {
+        if sim.due(now) {
             sim.drop_backlog(now);
-            return Due::Now;
+            return (Due::Now, Some(i));
         }
-        wait = wait.min(end - late);
+        wait = wait.min(sim.end() - sim.late(now));
     }
-    if wait == u32::MAX {
-        Due::Wait(0)
-    } else {
-        Due::Wait(wait)
+    (Due::Wait(wait), None)
+}
+
+/// Drops the simulations whose scene closed, swapping the last one into
+/// each place (the original's sweep before and after every step).
+pub fn drop_closed<T>(sims: &mut Vec<T>, mut closed: impl FnMut(&T) -> bool) {
+    let mut i = 0;
+    while i < sims.len() {
+        if closed(&sims[i]) {
+            sims.swap_remove(i);
+        } else {
+            i += 1;
+        }
     }
 }
 
 /// A body environment's gravity (m/s²) and velocity bands: the retention
-/// per second above each threshold (cm/s), and the retention below the
-/// lower one.
+/// per second above each threshold (cm/s), and below the lower one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Environment {
     pub gravity: f32,
@@ -145,9 +174,9 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// The default environment every body uses: gravity and the three
-    /// per-second retentions 0.426, 0.25 and 0.05 above 40, above 20 and
-    /// at rest (cm/s).
+    /// The default environment bodies take: gravity and the per-second
+    /// retentions 0.426, 0.25 and 0.05 above 40, above 20 and at rest
+    /// (cm/s).
     pub const DEFAULT: Self = Self {
         gravity: GRAVITY,
         fast: RETENTION[0],
@@ -156,26 +185,26 @@ impl Environment {
         fast_speed: RETENTION_SPEEDS[0],
         slow_speed: RETENTION_SPEEDS[1],
     };
+    /// The simulation's second environment: no gravity and no retention.
+    pub const INERT: Self = Self {
+        gravity: 0.0,
+        fast: 0.0,
+        slow: 0.0,
+        resting: 0.0,
+        ..Self::DEFAULT
+    };
     /// The environment the mechanisms share: retention 0.001 a second in
     /// every band and no gravity.
     pub const MECHANISM: Self = Self {
         gravity: 0.0,
-        fast: 0.001,
-        slow: 0.001,
-        resting: 0.001,
-        fast_speed: RETENTION_SPEEDS[0],
-        slow_speed: RETENTION_SPEEDS[1],
-    };
-    /// The same bands without gravity (an item held on the cursor carries
-    /// this environment in the original; only its zero gravity is
-    /// established here).
-    pub const ZERO_GRAVITY: Self = Self {
-        gravity: 0.0,
+        fast: MECHANISM_RETENTION,
+        slow: MECHANISM_RETENTION,
+        resting: MECHANISM_RETENTION,
         ..Self::DEFAULT
     };
 
-    /// The gravity a particle takes in one tick (cm): g·dt², the solver's
-    /// per-tick unit, with dt the fixed step.
+    /// The gravity a particle takes in one tick (m): g·dt², with dt the
+    /// fixed step.
     pub fn gravity_per_tick(&self) -> Vec3 {
         let dt = 1.0 / crate::STEP_HZ as f32;
         Vec3::Y * self.gravity * dt * dt
@@ -183,7 +212,8 @@ impl Environment {
 
     /// The retention per tick for a body whose farthest particle moved
     /// `moved` cm in the last tick: fast above 40 cm/s, slow above 20,
-    /// else resting, each its per-second value raised to a tick.
+    /// else resting, each its per-second value raised to a tick (none for
+    /// a retention at or under zero).
     pub fn retention(&self, moved: f32) -> f32 {
         let per_second = if moved > self.fast_speed / 83.0 {
             self.fast
@@ -192,284 +222,390 @@ impl Environment {
         } else {
             self.resting
         };
-        per_second.powf(1.0 / 83.0)
+        per_tick(per_second)
     }
 }
 
-/// The per-axis grid dimensions: cells inside the grid, an odd number the
-/// solver makes from the scene's extent.
+/// The per-axis grid dimensions the scene gives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridSize {
     pub width: i32,
     pub height: i32,
 }
 
-/// The sector's shared body grid: one list of bodies per cell, Z-fastest
-/// rows like the original's flat pointer table, with the nine neighbour
-/// offsets the overlap query walks.
+/// The processor's rounding conversion (nearest, ties to even) into 64
+/// bits, kept as its low 32 bits: a NaN or out-of-range value gives 0.
+fn round_word(v: f32) -> i32 {
+    let r = v.round_ties_even();
+    if r.is_nan() || r >= 9.223_372e18 || r < -9.223_372e18 {
+        0
+    } else {
+        r as i64 as i32
+    }
+}
+
+/// The original's floor helper (it sets the rounding mode down for one
+/// 32-bit conversion): a NaN or out-of-range value gives `i32::MIN`.
+fn floor_word(v: f32) -> i32 {
+    let r = v.floor();
+    if r.is_nan() || r >= 2_147_483_648.0 || r < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        r as i32
+    }
+}
+
+/// One of a simulation's two grids: a list per cell, x across and z down
+/// in one flat table, the bias that puts the scene's origin at the grid's
+/// middle, and the nine neighbour offsets the overlap query walks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grid {
     pub width: i32,
     pub height: i32,
-    /// The cell a node at the grid centre falls in: half the width and
-    /// height, rounded down.
+    /// Half the width and height, rounded down.
     pub bias: [i32; 2],
+    /// The flat offsets of a cell and its eight neighbours, the cell
+    /// itself first: 0, −w−1, −w, −w+1, −1, 1, w−1, w, w+1.
+    pub offsets: [i32; 9],
     cells: Vec<Vec<usize>>,
 }
 
 impl Grid {
-    /// An empty grid of `size` cells, the cell lists all empty.
+    /// An empty grid of `size` cells.
     pub fn new(size: GridSize) -> Self {
         let width = size.width.max(0);
         let height = size.height.max(0);
         let len = (width as usize).saturating_mul(height as usize);
+        let w = width;
         Self {
             width,
             height,
             bias: [width >> 1, height >> 1],
+            offsets: [0, -1 - w, -w, 1 - w, -1, 1, w - 1, w, w + 1],
             cells: vec![Vec::new(); len],
         }
     }
 
-    /// The cell a node at `position` (cm, the node's translation) sits in:
-    /// each axis over 600 cm rounded to even and moved by the bias. None
-    /// when the cell falls outside the grid.
-    pub fn locate(&self, position: Vec3) -> Option<(i32, i32)> {
-        if self.width <= 0 || self.height <= 0 {
-            return None;
-        }
-        let x = (position.x / CELL_CM).round_ties_even() as i32 + self.bias[0];
-        let y = (position.z / CELL_CM).round_ties_even() as i32 + self.bias[1];
-        ((0..self.width).contains(&x) && (0..self.height).contains(&y)).then_some((x, y))
+    /// The cell a sector's node at `position` (cm, its translation) caches:
+    /// x and z times the cell's reciprocal, rounded to even, plus the bias.
+    pub fn sector_cell(&self, position: Vec3) -> [i32; 2] {
+        [
+            round_word(position.x * CELL_RECIPROCAL).wrapping_add(self.bias[0]),
+            round_word(position.z * CELL_RECIPROCAL).wrapping_add(self.bias[1]),
+        ]
     }
 
-    /// The flat index of a cell, x across and y down; None outside.
-    pub fn index(&self, cell: (i32, i32)) -> Option<usize> {
-        let (x, y) = cell;
-        ((0..self.width).contains(&x) && (0..self.height).contains(&y))
-            .then(|| (y * self.width + x) as usize)
+    /// The flat cell a body at `local` (cm, in its sector's space) falls
+    /// in from its sector's cell: x and z times the reciprocal, rounded
+    /// down, plus the sector's cell. None outside the table (the original
+    /// reads whatever is there).
+    pub fn body_cell(&self, local: Vec3, sector: [i32; 2]) -> Option<usize> {
+        let x = floor_word(local.x * CELL_RECIPROCAL).wrapping_add(sector[0]);
+        let y = floor_word(local.z * CELL_RECIPROCAL).wrapping_add(sector[1]);
+        self.flat(i64::from(y.wrapping_mul(self.width).wrapping_add(x)))
     }
 
-    /// The bodies in a cell, in the order they were linked.
-    pub fn cell(&self, cell: (i32, i32)) -> &[usize] {
-        self.index(cell)
-            .and_then(|i| self.cells.get(i))
-            .map_or(&[], |c| c)
+    /// A flat index if it is inside the table.
+    pub fn flat(&self, index: i64) -> Option<usize> {
+        (0..self.cells.len() as i64)
+            .contains(&index)
+            .then_some(index as usize)
     }
 
-    /// The cell lists, x across and y down.
+    /// The bodies in a cell, the latest linked first.
+    pub fn cell(&self, index: usize) -> &[usize] {
+        self.cells.get(index).map_or(&[], |c| c)
+    }
+
+    /// The cell lists.
     pub fn cells(&self) -> &[Vec<usize>] {
         &self.cells
     }
 
-    /// Adds a body to a cell (no duplicate check: the original's cell links
-    /// come from the body's own step).
-    pub fn insert(&mut self, cell: (i32, i32), body: usize) {
-        if let Some(i) = self.index(cell)
-            && let Some(list) = self.cells.get_mut(i)
-        {
-            list.push(body);
+    /// Links an entry at the head of a cell's list (the original's cells
+    /// are linked lists; the bodies link themselves as they step).
+    pub fn insert(&mut self, index: usize, entry: usize) {
+        if let Some(list) = self.cells.get_mut(index) {
+            list.insert(0, entry);
         }
     }
 
-    /// Removes a body from a cell's list, if it is there.
-    pub fn remove(&mut self, cell: (i32, i32), body: usize) {
-        if let Some(i) = self.index(cell)
-            && let Some(list) = self.cells.get_mut(i)
-            && let Some(at) = list.iter().position(|&b| b == body)
+    /// Unlinks an entry from a cell's list, if it is there.
+    pub fn remove(&mut self, index: usize, entry: usize) {
+        if let Some(list) = self.cells.get_mut(index)
+            && let Some(at) = list.iter().position(|&e| e == entry)
         {
             list.remove(at);
         }
     }
 
-    /// Empties every cell, as the original's grid build does before it
-    /// re-locates the bodies.
+    /// Empties every cell.
     pub fn clear(&mut self) {
         for cell in &mut self.cells {
             cell.clear();
         }
     }
 
-    /// The nine cells around `cell`: dy from −1 to 1, dx from −1 to 1 (the
-    /// original's row-major offsets), those inside the grid only.
-    pub fn neighbours(&self, cell: (i32, i32)) -> impl Iterator<Item = usize> {
-        let mut out = Vec::with_capacity(9);
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                if let Some(i) = self.index((cell.0 + dx, cell.1 + dy)) {
-                    out.push(i);
-                }
-            }
-        }
-        out.into_iter()
-    }
-
-    /// Shifts the grid by `(dx, dy)` cells: every cell's list moves by the
-    /// flat offset `dy·width + dx` (a cell at index i takes what was at
-    /// i + offset), what falls outside is dropped, and the strip the
-    /// horizontal shift leaves is cleared (the first `dx` cells of every
-    /// row from `dy` down, or the last `−dx` when `dx` is negative). This
-    /// is the original's flat-row move and its row fix-up.
+    /// Shifts the grid by `(dx, dy)` cells as the original moves its flat
+    /// table: with the offset `o = dy·w + dx`, cell `j` takes what cell
+    /// `j − o` held, and the cells left behind at the start (o > 0) or the
+    /// end (o < 0) are emptied. Then, for a horizontal shift, a strip of
+    /// `|dx|` cells is emptied in as many rows as the original walks: rows
+    /// `dy` to `h − 1` when o > 0, and `h − dy` rows from row 0 when o < 0
+    /// (beyond the table for dy < 0; those rows are skipped here). The
+    /// strip starts at each row's first cell for dx > 0, and at column
+    /// `w + dx − 1` for dx < 0 (the original's own start, one cell short of
+    /// the column that wrapped in), counting rows from row 0 even when o >
+    /// 0. A zero offset moves nothing.
     pub fn shift(&mut self, dx: i32, dy: i32) {
-        let (w, h) = (self.width, self.height);
-        if w <= 0 || h <= 0 {
+        let (w, h) = (i64::from(self.width), i64::from(self.height));
+        let n = self.cells.len() as i64;
+        let offset = i64::from(dy) * w + i64::from(dx);
+        if n == 0 || offset == 0 {
             return;
         }
-        let n = (w as usize) * (h as usize);
-        let offset = dy * w + dx;
         let mut old = std::mem::take(&mut self.cells);
-        let mut new = vec![Vec::new(); n];
-        for (i, cell) in new.iter_mut().enumerate() {
-            let source = i as i64 + i64::from(offset);
-            if (0..n as i64).contains(&source) {
+        let mut new = vec![Vec::new(); n as usize];
+        for (j, cell) in new.iter_mut().enumerate() {
+            let source = j as i64 - offset;
+            if (0..n).contains(&source) {
                 *cell = std::mem::take(&mut old[source as usize]);
             }
         }
-        for y in dy.max(0)..h {
-            for x in 0..w {
-                if dx > 0 && x < dx || dx < 0 && x >= w + dx {
-                    new[(y * w + x) as usize].clear();
-                }
+        // Both branches walk h − dy rows.
+        let rows = (h - i64::from(dy)).max(0);
+        let first_row = if offset > 0 { i64::from(dy) } else { 0 };
+        let mut clear = |start: i64, count: i64| {
+            for k in (start..start + count).filter(|k| (0..n).contains(k)) {
+                new[k as usize].clear();
+            }
+        };
+        if dx > 0 {
+            for r in 0..rows {
+                clear((first_row + r) * w, i64::from(dx));
+            }
+        } else if dx < 0 {
+            let mut start = i64::from(dx) + w - 1;
+            for _ in 0..rows {
+                clear(start, -i64::from(dx));
+                start += w;
             }
         }
         self.cells = new;
     }
 }
 
-/// Body state word bits, as the unit's helpers set and clear them.
+/// Body state word bits, as the unit's helpers set and clear them. The
+/// names are Exarust's, from what each helper does with them.
 pub mod state {
-    /// Asleep.
+    /// Asleep (a freeze clears it).
     pub const ASLEEP: u32 = 0x1;
-    /// Awake (a wake clears it).
-    pub const AWAKE: u32 = 0x2;
-    /// In the hand: its pairs are dropped.
-    pub const HELD: u32 = 0x4;
-    /// Deep sleep.
+    /// Cleared by a wake (its meaning is not established).
+    pub const RESTING: u32 = 0x2;
+    /// Cleared through a node tree by its own helper (its meaning is not
+    /// established).
+    pub const MARKED: u32 = 0x4;
+    /// Deep sleep (a freeze clears it).
     pub const DEEP: u32 = 0x8;
     /// Frozen.
     pub const FROZEN: u32 = 0x40;
     /// Kinematic.
     pub const KINEMATIC: u32 = 0x100;
-    /// Not in the world.
+    /// Held (in the hand or by a power): its pairs are dropped.
+    pub const HELD: u32 = 0x400;
+    /// Out of the world.
     pub const DISABLED: u32 = 0x800;
-    /// Gravity without inertia for a countdown (a placed body).
+    /// Gravity without inertia for its own countdown (a placed body).
     pub const SETTLE: u32 = 0x1000;
-    /// The node is registered in a sector.
+    /// A node's bit: registered in a sector.
     pub const REGISTERED: u32 = 0x200_0000;
+    /// A static node's bit: a removal calls the sector's node callback.
+    pub const NOTIFY: u32 = 0x100;
 }
 
-/// A body's class bit for a living character body (the setup's settle
-/// filter and the grip's parent check).
+/// A body's class bit for a living character body.
 pub const CLASS_LIVING: u32 = 0x1000_0000;
 /// The pair layer a grabbed parent's neighbours take, and a break clears.
 pub const LAYER_GRAB: u32 = 0x40;
 
-/// One body as the unit's own helpers see it: its state word, sleep
-/// countdown, class and pair layer, its place in the tree, its links and
-/// the cell it was last located in.
+/// A sphere: centre and radius.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Bound {
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
+impl Bound {
+    /// Whether two spheres are apart, as the original tests it: the sign
+    /// of `(r₁ + r₂)² − ((dx² + dy²) + dz²)`, so a NaN with its sign bit
+    /// set counts as apart and touching spheres are not.
+    pub fn apart(&self, other: &Bound) -> bool {
+        let reach = self.radius + other.radius;
+        let d = self.centre - other.centre;
+        let gap = reach * reach - ((d.x * d.x + d.y * d.y) + d.z * d.z);
+        gap.is_sign_negative()
+    }
+}
+
+/// One body as the unit's own helpers see it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub node: Option<usize>,
-    pub scene: u32,
     pub state: u32,
+    /// The sleep countdown a wake sets.
     pub countdown: i32,
+    /// The settling countdown (gravity without inertia).
+    pub settle_ticks: i32,
     pub class: u32,
     pub layer: u32,
-    /// Larger bodies move first in a placement's overlap query.
-    pub order: u32,
+    /// Its index in its sector's body list (a purge renumbers them): of a
+    /// placement's two bodies, the lower index is tested first.
+    pub index: u16,
     pub parent: Option<usize>,
+    /// Its tree's root body: bodies of one root never test each other.
     pub root: Option<usize>,
     pub children: Vec<usize>,
-    pub cell: Option<(i32, i32)>,
+    /// Its cell word in the body grid: the query skips a body whose word
+    /// is 0 (never linked, or in the first cell).
+    pub cell: u32,
+    /// Whether it is linked into its cell's list.
+    pub linked: bool,
     pub links: Vec<LinkRef>,
-    /// The held counter at the body's `+0x348`; a hold resets it.
-    pub held: i32,
+    /// The held counter a hold resets.
+    pub held_ticks: i32,
     pub rest: [Vec3; 4],
+    /// The particles now, at the tick's start and as the solver last
+    /// placed them.
     pub positions: [Vec3; 4],
     pub previous: [Vec3; 4],
+    pub start: [Vec3; 4],
+    /// The particles' two per-tick motion buffers a freeze empties.
+    pub motion: [[Vec3; 4]; 2],
     pub matrix: Affine3A,
+    pub previous_matrix: Affine3A,
+    /// The bound sphere's centre in the body's own space, and its weights
+    /// on the particles.
+    pub bound_offset: Vec3,
+    pub bound_weights: [f32; 4],
+    /// The bound sphere now (its centre the matrix times the offset): the
+    /// grid places the body by it.
+    pub bound: Bound,
+    /// The bound sphere at the tick's start (its centre the weights on the
+    /// start particles): a placement tests it against the others' bound.
+    pub start_bound: Bound,
 }
 
 impl Body {
     /// A body with four particles at `rest`, at rest, out of the world.
     pub fn new(rest: [Vec3; 4]) -> Self {
-        let positions = rest;
         Self {
             node: None,
-            scene: 0,
             state: 0,
             countdown: 0,
-            class: CLASS_LIVING,
+            settle_ticks: 0,
+            class: 0,
             layer: 0,
-            order: 0,
+            index: 0,
             parent: None,
             root: None,
             children: Vec::new(),
-            cell: None,
+            cell: 0,
+            linked: false,
             links: Vec::new(),
-            held: 0,
+            held_ticks: 0,
             rest,
-            positions,
-            previous: positions,
+            positions: rest,
+            previous: rest,
+            start: rest,
+            motion: [[Vec3::ZERO; 4]; 2],
             matrix: Affine3A::IDENTITY,
+            previous_matrix: Affine3A::IDENTITY,
+            bound_offset: Vec3::ZERO,
+            bound_weights: [0.25; 4],
+            bound: Bound::default(),
+            start_bound: Bound::default(),
         }
     }
 
-    /// Its rigid transform from its particles, as the solver works it out
-    /// (the nearest rotation to the particle edges over the rest edges).
+    /// Its matrix from its particles ([`particle_matrix`]).
     pub fn transform(&self) -> Affine3A {
-        transform_of(&self.rest, &self.positions)
+        particle_matrix(&self.rest, &self.positions)
+    }
+
+    /// Its root body, itself for a root.
+    fn root_or(&self, me: usize) -> usize {
+        self.root.unwrap_or(me)
     }
 }
 
-/// A rigid transform from four rest points and their current positions.
-fn transform_of(rest: &[Vec3; 4], positions: &[Vec3; 4]) -> Affine3A {
-    let rest_edges = Mat3::from_cols(rest[1] - rest[0], rest[2] - rest[0], rest[3] - rest[0]);
-    let edges = Mat3::from_cols(
-        positions[1] - positions[0],
-        positions[2] - positions[0],
-        positions[3] - positions[0],
+/// The matrix from four particles, as the original's helper makes it: the
+/// particles times the inverse of the rest points' homogeneous basis, each
+/// entry summed `((p₀b₀ + p₁b₁) + p₂b₂) + p₃b₃`. It is the affine map that
+/// takes the rest points to the particles, not orthonormalised (a stretched
+/// body gives a stretched matrix). The basis's inverse is Exarust's (the
+/// original stores it with the body).
+pub fn particle_matrix(rest: &[Vec3; 4], positions: &[Vec3; 4]) -> Affine3A {
+    let basis = Mat4::from_cols(
+        rest[0].extend(1.0),
+        rest[1].extend(1.0),
+        rest[2].extend(1.0),
+        rest[3].extend(1.0),
     );
-    let m = match rest_edges.try_inverse() {
-        Some(inverse) => edges * inverse,
-        None => Mat3::IDENTITY,
+    let det = basis.determinant();
+    if !det.is_finite() || det == 0.0 {
+        // Exarust's guard: a flat rest tetrahedron has no basis.
+        return Affine3A::IDENTITY;
+    }
+    // inverse.row(k)[i]: particle k's weight in the matrix's row i (rows 0
+    // to 2 the axes, row 3 the translation).
+    let inverse = basis.inverse();
+    let row = |i: usize| -> Vec3 {
+        let b = Vec4::new(
+            inverse.row(0)[i],
+            inverse.row(1)[i],
+            inverse.row(2)[i],
+            inverse.row(3)[i],
+        );
+        ((positions[0] * b.x + positions[1] * b.y) + positions[2] * b.z) + positions[3] * b.w
     };
-    let x = m.x_axis.normalize_or(Vec3::X);
-    let y = (m.y_axis - x * x.dot(m.y_axis)).normalize_or(Vec3::Y);
-    let r = Mat3::from_cols(x, y, x.cross(y));
-    let rest_centre: Vec3 = rest.iter().copied().sum::<Vec3>() * 0.25;
-    let centre: Vec3 = positions.iter().copied().sum::<Vec3>() * 0.25;
-    Affine3A::from_mat3_translation(r, centre - r * rest_centre)
+    Affine3A::from_mat3_translation(Mat3::from_cols(row(0), row(1), row(2)), row(3))
 }
 
-/// A body link as the unit's grab helpers keep it.
+/// The weighted point `((w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃))`, as the original's
+/// helper sums it.
+fn weighted(weights: [f32; 4], points: &[Vec3; 4]) -> Vec3 {
+    (points[0] * weights[0] + points[1] * weights[1])
+        + (points[2] * weights[2] + points[3] * weights[3])
+}
+
+/// A body link as the unit's grab helper keeps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkRef {
     /// The parent body; none for a link to the world.
     pub parent: Option<usize>,
-    /// The link flags: a breakable grab is [`link::GRAB`].
     pub flags: u32,
 }
 
-/// Link flags the unit's own helpers read.
+/// Link flags the grab helper reads.
 pub mod link {
-    /// A breakable grab (a blade in flesh, a hand's grip): its parent's
-    /// neighbours are in the grab layer.
+    /// A breakable grab (a blade in flesh, a hand's grip).
     pub const GRAB: u32 = 0x1000;
-    /// A grab that was already re-anchored (not one the removal takes).
-    pub const REANCHORED: u32 = 0x100_000;
+    /// A grab the helper passes over (its meaning is not established).
+    pub const KEPT: u32 = 0x10_0000;
 }
 
-/// A scene node as the unit's tree helpers see it: its scene, state word,
-/// body and children.
+/// A scene node as the unit's helpers see it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub scene: u32,
     pub state: u32,
     pub body: Option<usize>,
     pub children: Vec<usize>,
-    /// The node's translation: the grid places its body by it (cm).
+    /// The node's translation (cm): a sector's node places the sector.
     pub position: Vec3,
+    /// The flat cells of the node grid a static node is linked in (one,
+    /// or several for a node spanning cells).
+    pub cells: Vec<usize>,
 }
 
 impl Node {
@@ -481,6 +617,7 @@ impl Node {
             body: None,
             children: Vec::new(),
             position: Vec3::ZERO,
+            cells: Vec::new(),
         }
     }
 }
@@ -492,20 +629,11 @@ pub struct BodyPair {
     pub b: usize,
 }
 
-/// A simulated object (cloth, an effect) and the node it belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SimObject {
-    pub node: usize,
-}
-
-/// The bodies, nodes, pairs and simulated objects of a scene, the records
-/// the unit's helpers act on.
+/// The bodies and nodes of a scene, the records the helpers act on.
 #[derive(Debug, Default, Clone)]
 pub struct World {
     pub bodies: Vec<Body>,
     pub nodes: Vec<Node>,
-    pub pairs: Vec<BodyPair>,
-    pub sim_objects: Vec<SimObject>,
 }
 
 impl World {
@@ -514,146 +642,145 @@ impl World {
         self.nodes.get(node).and_then(|n| n.body)
     }
 
-    /// The node tree under `node`, children first, including `node`.
-    fn nodes_under(&self, node: usize) -> Vec<usize> {
-        let mut out = Vec::new();
-        let mut stack = vec![node];
-        let mut seen = vec![false; self.nodes.len()];
-        while let Some(n) = stack.pop() {
-            if n >= self.nodes.len() || seen[n] {
-                continue;
-            }
-            seen[n] = true;
-            out.push(n);
-            stack.extend(self.nodes[n].children.iter().copied());
-        }
-        out
+    fn node_children(&self, node: usize) -> Vec<usize> {
+        self.nodes
+            .get(node)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
     }
 
-    /// Wakes a node's body tree to `ticks`: every body from this node down
-    /// through child nodes that have bodies (the recursion stops at a node
-    /// without one) clears the awake bit and takes the countdown.
+    fn body_children(&self, body: usize) -> Vec<usize> {
+        self.bodies
+            .get(body)
+            .map(|b| b.children.clone())
+            .unwrap_or_default()
+    }
+
+    /// A body's node's scene.
+    fn scene_of_body(&self, body: usize) -> Option<u32> {
+        let node = self.bodies.get(body)?.node?;
+        Some(self.nodes.get(node)?.scene)
+    }
+
+    /// Wakes a node's body tree to `ticks`: the node's body clears its
+    /// resting bit and takes the countdown, and every child node is woken
+    /// in turn; a node without a body stops its branch.
     pub fn wake(&mut self, node: usize, ticks: i32) {
         let Some(body) = self.body_of(node) else {
             return;
         };
-        self.bodies[body].state &= !state::AWAKE;
+        self.bodies[body].state &= !state::RESTING;
         self.bodies[body].countdown = ticks;
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
-            if self.body_of(child).is_some() {
-                self.wake(child, ticks);
-            }
+        for child in self.node_children(node) {
+            self.wake(child, ticks);
         }
     }
 
-    /// Wakes a body's whole tree to `ticks` when it is not already that
-    /// awake: the tree from the body's root node.
+    /// Wakes a body's whole tree (from its root body's node) to `ticks`
+    /// when its countdown is under that.
     pub fn wake_at_least(&mut self, body: usize, ticks: i32) {
-        let (countdown, node) = match self.bodies.get(body) {
-            Some(b) => {
-                let root_node = b.root.and_then(|r| self.bodies.get(r)).and_then(|r| r.node);
-                (b.countdown, root_node.or(b.node))
-            }
-            None => return,
+        let Some(b) = self.bodies.get(body) else {
+            return;
         };
-        if ticks <= countdown {
+        if b.countdown >= ticks {
             return;
         }
-        if let Some(node) = node {
+        let root = b.root_or(body);
+        if let Some(node) = self.bodies.get(root).and_then(|r| r.node) {
             self.wake(node, ticks);
         }
     }
 
     /// Gives every living body from `node` down the settling state for
-    /// `ticks` (gravity without inertia): only bodies whose class has
-    /// [`CLASS_LIVING`], and the recursion visits every child node,
-    /// whether it has a body or not.
+    /// `ticks` (gravity without inertia, its own countdown): only bodies
+    /// whose class has [`CLASS_LIVING`], through every child node.
     pub fn settle(&mut self, node: usize, ticks: i32) {
         if let Some(body) = self.body_of(node)
             && self.bodies[body].class & CLASS_LIVING != 0
         {
             self.bodies[body].state |= state::SETTLE;
-            self.bodies[body].countdown = ticks;
+            self.bodies[body].settle_ticks = ticks;
         }
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
+        for child in self.node_children(node) {
             self.settle(child, ticks);
         }
     }
 
-    /// Freezes a node's body where `at` puts its rest points (or where it
-    /// is now): clears the asleep and deep bits, sets frozen and kinematic,
-    /// puts the previous particles at the matrix, zeroes the tick's
-    /// displacements, copies the matrix and sets the countdown to two.
-    pub fn freeze(&mut self, node: usize, at: Option<Affine3A>) {
-        let Some(body) = self.body_of(node) else {
+    /// Freezes a body where `at` puts its rest points, or where its
+    /// particles are: clears asleep and deep, sets frozen and kinematic,
+    /// puts its particles now, at the tick's start and as last placed at
+    /// the same points, empties its two motion buffers, takes the matrix
+    /// as both the current and the previous one, moves its bound spheres
+    /// with it, and sets its countdown to two.
+    pub fn freeze(&mut self, body: usize, at: Option<Affine3A>) {
+        let Some(b) = self.bodies.get_mut(body) else {
             return;
         };
-        let b = &mut self.bodies[body];
         b.state = (b.state & !(state::ASLEEP | state::DEEP)) | state::FROZEN | state::KINEMATIC;
         match at {
             Some(matrix) => {
+                b.start = b.rest.map(|r| matrix.transform_point3(r));
                 b.matrix = matrix;
-                for i in 0..4 {
-                    b.positions[i] = matrix.transform_point3(b.rest[i]);
-                    b.previous[i] = b.positions[i];
-                }
             }
             None => {
-                b.matrix = b.transform();
-                b.previous = b.positions;
+                b.start = b.positions;
+                b.matrix = particle_matrix(&b.rest, &b.positions);
             }
         }
+        b.previous = b.start;
+        b.positions = b.start;
+        b.motion = [[Vec3::ZERO; 4]; 2];
+        b.previous_matrix = b.matrix;
+        b.bound.centre = b.matrix.transform_point3(b.bound_offset);
+        b.start_bound.centre = weighted(b.bound_weights, &b.start);
         b.countdown = 2;
     }
 
-    /// Clears a node body's frozen and kinematic bits.
-    pub fn unfreeze(&mut self, node: usize) {
-        if let Some(body) = self.body_of(node) {
-            self.bodies[body].state &= !(state::FROZEN | state::KINEMATIC);
+    /// Clears a body's frozen and kinematic bits.
+    pub fn unfreeze(&mut self, body: usize) {
+        if let Some(b) = self.bodies.get_mut(body) {
+            b.state &= !(state::FROZEN | state::KINEMATIC);
         }
     }
 
-    /// Disables every node from `node` down (no body needed).
-    pub fn disable_tree(&mut self, node: usize) {
-        for n in self.nodes_under(node) {
-            self.nodes[n].state |= state::DISABLED;
+    /// Disables a body and its child bodies, down the body tree.
+    pub fn disable_tree(&mut self, body: usize) {
+        if let Some(b) = self.bodies.get_mut(body) {
+            b.state |= state::DISABLED;
+        }
+        for child in self.body_children(body) {
+            self.disable_tree(child);
         }
     }
 
-    /// Enables every node from `node` down.
-    pub fn enable_tree(&mut self, node: usize) {
-        for n in self.nodes_under(node) {
-            self.nodes[n].state &= !state::DISABLED;
+    /// Enables a body and its child bodies, down the body tree.
+    pub fn enable_tree(&mut self, body: usize) {
+        if let Some(b) = self.bodies.get_mut(body) {
+            b.state &= !state::DISABLED;
+        }
+        for child in self.body_children(body) {
+            self.enable_tree(child);
         }
     }
 
-    /// Disables the bodies from `node` down: a living body (class
-    /// [`CLASS_LIVING`]) is also made kinematic, any other only disabled.
+    /// Disables the bodies from `node` down through every child node: a
+    /// living body (class [`CLASS_LIVING`]) is also made kinematic.
     pub fn disable_bodies(&mut self, node: usize) {
-        for n in self.nodes_under(node) {
-            if let Some(body) = self.nodes[n].body {
-                let b = &mut self.bodies[body];
-                if b.class & CLASS_LIVING != 0 {
-                    b.state |= state::DISABLED | state::KINEMATIC;
-                } else {
-                    b.state |= state::DISABLED;
-                }
-            }
+        if let Some(body) = self.body_of(node) {
+            let b = &mut self.bodies[body];
+            b.state |= if b.class & CLASS_LIVING != 0 {
+                state::DISABLED | state::KINEMATIC
+            } else {
+                state::DISABLED
+            };
+        }
+        for child in self.node_children(node) {
+            self.disable_bodies(child);
         }
     }
 
-    /// Clears the grab layer of a body and of its parent's and its own
-    /// children's: the break of a grab.
+    /// Clears the grab layer of a body's parent, of the body and of its
+    /// children: the break of a grab.
     pub fn clear_pair_layer(&mut self, body: usize) {
         if let Some(parent) = self.bodies.get(body).and_then(|b| b.parent)
             && let Some(p) = self.bodies.get_mut(parent)
@@ -663,17 +790,17 @@ impl World {
         if let Some(b) = self.bodies.get_mut(body) {
             b.layer &= !LAYER_GRAB;
         }
-        let children = self.bodies.get(body).map(|b| b.children.clone());
-        for child in children.unwrap_or_default() {
+        for child in self.body_children(body) {
             if let Some(c) = self.bodies.get_mut(child) {
                 c.layer &= !LAYER_GRAB;
             }
         }
     }
 
-    /// Disables the node's body and drops its first breakable grab link:
-    /// the grab's parent and children leave the grab layer. The held bit is
-    /// not touched; every child node is visited afterwards.
+    /// Disables the node's body and, for a living one, drops its first
+    /// breakable grab link that is not passed over: the grab's parent body
+    /// leaves the grab layer with its own parent and children, and the body
+    /// leaves it too. Every child node is visited afterwards.
     pub fn drop_grab_link(&mut self, node: usize) {
         if let Some(body) = self.body_of(node) {
             self.bodies[body].state |= state::DISABLED;
@@ -681,178 +808,185 @@ impl World {
                 && let Some(at) = self.bodies[body]
                     .links
                     .iter()
-                    .position(|l| l.flags & link::REANCHORED == 0 && l.flags & link::GRAB != 0)
+                    .position(|l| l.flags & link::KEPT == 0 && l.flags & link::GRAB != 0)
             {
-                let parent = self.bodies[body].links[at].parent;
-                if let Some(parent) = parent {
+                if let Some(parent) = self.bodies[body].links[at].parent {
                     self.clear_pair_layer(parent);
                 }
                 self.bodies[body].layer &= !LAYER_GRAB;
                 self.bodies[body].links.remove(at);
             }
         }
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
+        for child in self.node_children(node) {
             self.drop_grab_link(child);
         }
     }
 
-    /// Clears the held bit of every body from `node` down.
-    pub fn clear_held(&mut self, node: usize) {
+    /// Clears the [`state::MARKED`] bit of every body from `node` down
+    /// through every child node.
+    pub fn clear_marks(&mut self, node: usize) {
         if let Some(body) = self.body_of(node) {
-            self.bodies[body].state &= !state::HELD;
+            self.bodies[body].state &= !state::MARKED;
         }
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
-            self.clear_held(child);
+        for child in self.node_children(node) {
+            self.clear_marks(child);
         }
     }
 
-    /// Holds every body from `node` down and resets its held counter.
-    pub fn hold_tree(&mut self, node: usize) {
-        if let Some(body) = self.body_of(node) {
-            self.bodies[body].state |= state::HELD;
-            self.bodies[body].held = 0;
+    /// Holds a body and its child bodies, down the body tree, each with
+    /// its held counter reset.
+    pub fn hold_tree(&mut self, body: usize) {
+        if let Some(b) = self.bodies.get_mut(body) {
+            b.state |= state::HELD;
+            b.held_ticks = 0;
         }
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
+        for child in self.body_children(body) {
             self.hold_tree(child);
         }
     }
 
-    /// Releases every body from `node` down.
-    pub fn release_tree(&mut self, node: usize) {
-        if let Some(body) = self.body_of(node) {
-            self.bodies[body].state &= !state::HELD;
+    /// Releases a body and its child bodies, down the body tree.
+    pub fn release_tree(&mut self, body: usize) {
+        if let Some(b) = self.bodies.get_mut(body) {
+            b.state &= !state::HELD;
         }
-        for child in self
-            .nodes
-            .get(node)
-            .map(|n| n.children.clone())
-            .unwrap_or_default()
-        {
+        for child in self.body_children(body) {
             self.release_tree(child);
         }
     }
 
-    /// Removes every pair that touches a body in the held state (the
-    /// original's pair sweep).
-    pub fn remove_held_pairs(&mut self) {
+    /// Removes from `pairs` every pair with a held body, swapping the last
+    /// pair into each place.
+    pub fn remove_held_pairs(&self, pairs: &mut Vec<BodyPair>) {
         let held = |i: usize| {
             self.bodies
                 .get(i)
                 .is_some_and(|b| b.state & state::HELD != 0)
         };
-        self.pairs.retain(|p| !held(p.a) && !held(p.b));
+        let mut i = 0;
+        while i < pairs.len() {
+            if held(pairs[i].a) || held(pairs[i].b) {
+                pairs.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
-    /// Whether a placement of `body` overlaps another body: the nine cells
-    /// around it, each body in them, skipping its own tree, bodies whose
-    /// pair masks cannot meet, and disabled ones; the more important body
-    /// (the higher order) is the one that moves, and `overlaps` answers
-    /// whether the two bodies' shapes touch. This is the structure of the
-    /// original's placement query; its two shape tests are the solver's
-    /// ([`crate::body::pairs`] uses the same masks).
-    pub fn space_free(
+    /// Whether placing `body` (and then each of its child bodies) would
+    /// overlap another body of the sector, as the original's placement
+    /// query walks it: a body whose cell word is 0 is not tested; else the
+    /// nine cells around the cell its bound sphere's centre falls in (the
+    /// cell itself first), and in each every body that is not apart from
+    /// its start bound by the bound-sphere test, not of its own root, whose
+    /// pair layers do not keep them apart, and not disabled. Of the two,
+    /// the one with the lower sector index goes first to `overlaps` (the
+    /// original's swept shape test and its insertion test, which are the
+    /// sector's).
+    pub fn space_occupied(
         &self,
         grid: &Grid,
+        sector_cell: [i32; 2],
         body: usize,
-        mut overlaps: impl FnMut(&Body, &Body) -> bool,
+        overlaps: &mut impl FnMut(&Body, &Body) -> bool,
     ) -> bool {
-        if self.bodies.get(body).is_none() {
-            return true;
+        let Some(b) = self.bodies.get(body) else {
+            return false;
+        };
+        if b.cell == 0 {
+            return false;
         }
-        // The query runs over every body of the tree.
-        let mut tree = vec![body];
-        let mut k = 0;
-        while k < tree.len() {
-            if let Some(b) = self.bodies.get(tree[k]) {
-                tree.extend(b.children.iter().copied());
-            }
-            k += 1;
-        }
-        for &tested in &tree {
-            let Some(candidate) = self.bodies.get(tested) else {
+        let root = b.root_or(body);
+        // The cell the body's bound falls in; the nine offsets around it.
+        let x = floor_word(b.bound.centre.x * CELL_RECIPROCAL);
+        let z = floor_word(b.bound.centre.z * CELL_RECIPROCAL);
+        let base = z
+            .wrapping_add(sector_cell[1])
+            .wrapping_mul(grid.width)
+            .wrapping_add(x)
+            .wrapping_add(sector_cell[0]);
+        for offset in grid.offsets {
+            let Some(index) = grid.flat(i64::from(base) + i64::from(offset)) else {
                 continue;
             };
-            let Some(cell) = candidate.cell else {
-                continue;
-            };
-            for index in grid.neighbours(cell) {
-                for &other in grid.cells().get(index).map_or(&[][..], |c| c) {
-                    if other == tested || tree.contains(&other) {
-                        continue;
-                    }
-                    let Some(o) = self.bodies.get(other) else {
-                        continue;
-                    };
-                    if tree.contains(&o.root.unwrap_or(other))
-                        || !masks_meet(candidate.layer, o.layer)
-                        || o.state & state::DISABLED != 0
-                    {
-                        continue;
-                    }
-                    let (first, second) = if o.order < candidate.order {
-                        (o, candidate)
-                    } else {
-                        (candidate, o)
-                    };
-                    if overlaps(first, second) {
-                        return false;
-                    }
+            for &other in grid.cell(index) {
+                let Some(o) = self.bodies.get(other) else {
+                    continue;
+                };
+                let shared = o.layer & b.layer;
+                if b.start_bound.apart(&o.bound)
+                    || o.root_or(other) == root
+                    || (shared & !1 != 0 && layers_apart(o.layer, b.layer))
+                    || o.state & state::DISABLED != 0
+                {
+                    continue;
+                }
+                let (first, second) = if o.index < b.index { (o, b) } else { (b, o) };
+                if overlaps(first, second) {
+                    return true;
                 }
             }
         }
-        true
+        b.children
+            .iter()
+            .any(|&child| self.space_occupied(grid, sector_cell, child, overlaps))
     }
 }
 
-/// Whether two pair masks meet: they share a layer bit other than the
-/// lowest, and their shared group-mask bits (0x55555550) shifted up one do
-/// not miss both bodies.
-pub fn masks_meet(a: u32, b: u32) -> bool {
-    a & b & 0xffff_fffe != 0 && ((a & b & 0x5555_5550) << 1) & (a | b) != 0
-}
-
-/// Sector flags: what the simulation's update must serve.
+/// Sector flag bits: what the simulation's update serves.
 pub mod sector {
-    /// The sector left its scene: clear it and forget it.
-    pub const DEAD: u32 = 0x8_0000;
-    /// Purge the nodes and bodies that left the scene.
+    /// Purge the nodes and bodies that left the sector's scene.
     pub const SCENE_LEFT: u32 = 0x1_0000;
-    /// Remove the world links.
-    pub const WORLD_LINKS: u32 = 0x20_0000;
-    /// Remove the links to another scene.
-    pub const SCENE_LINKS: u32 = 0x40_0000;
-    /// Remove a sub-scene.
-    pub const SUB_SCENE: u32 = 0x10_0000;
+    /// Reset the sector (its lists emptied, kept in the simulation).
+    pub const RESET: u32 = 0x2_0000;
+    /// Set by a reset.
+    pub const WAS_RESET: u32 = 0x4_0000;
+    /// The sector is gone: reset it and drop it from the simulation.
+    pub const DEAD: u32 = 0x8_0000;
+    /// Register the sector's pending nodes.
+    pub const PENDING: u32 = 0x10_0000;
+    /// Purge what belongs to the shared scene.
+    pub const SHARED_SCENE: u32 = 0x20_0000;
+    /// Purge what belongs to the simulation's scene's sub-scene.
+    pub const SUB_SCENE: u32 = 0x40_0000;
+    /// The bits a reset clears before it sets [`WAS_RESET`].
+    pub const RESET_CLEARS: u32 = 0x37_0000;
 }
 
-/// One sector of a simulation: its flag word, the scene it belongs to, and
-/// the nodes, bodies, pairs, simulated objects and other nodes it keeps.
+/// What a purge took out, for the caller's callbacks: the static nodes
+/// that asked for a notice, and the bodies (the original calls each one's
+/// removal).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Purged {
+    pub nodes: Vec<usize>,
+    pub bodies: Vec<usize>,
+}
+
+/// One sector of a simulation: its flag word, its scene and node, its
+/// three lists (static nodes, bodies, and simulated objects by their
+/// node), its body pairs, its pending nodes and, when it uses the grids,
+/// the cell its node falls in.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Sector {
     pub flags: u32,
     pub scene: u32,
+    /// The sector's own node (it places the sector in the grids).
+    pub node: Option<usize>,
+    /// Static nodes, linked in the node grid.
     pub nodes: Vec<usize>,
+    /// Bodies, linked in the body grid; each knows its index here.
     pub bodies: Vec<usize>,
-    pub pairs: Vec<usize>,
-    pub sim_objects: Vec<usize>,
-    pub others: Vec<usize>,
-    /// The grid the sector put its bodies in, if it built one.
-    pub grid: Option<Grid>,
+    /// Simulated objects (cloths, effects), by their nodes.
+    pub objects: Vec<usize>,
+    pub pairs: Vec<BodyPair>,
+    /// Nodes waiting to be registered.
+    pub pending: Vec<usize>,
+    /// Whether the sector uses the simulation's grids.
+    pub uses_grid: bool,
+    /// The cell the sector's node falls in.
+    pub cell: [i32; 2],
+    /// The simulation tick of the sector's last step.
+    pub tick: u32,
 }
 
 impl Sector {
@@ -864,241 +998,248 @@ impl Sector {
         }
     }
 
-    /// Places every body in the grid's cells by its node's translation,
-    /// clearing the grid first, as the original's grid build does.
-    pub fn build_grid(&mut self, world: &World, size: GridSize) {
-        let grid = self.grid.get_or_insert_with(|| Grid::new(size));
-        if grid.width != size.width || grid.height != size.height {
-            *grid = Grid::new(size);
-        }
-        grid.clear();
-        for &body in &self.bodies {
-            let at = world
-                .bodies
-                .get(body)
-                .and_then(|b| b.node)
-                .and_then(|n| world.nodes.get(n))
-                .map(|n| n.position);
-            if let Some(cell) = at.and_then(|p| grid.locate(p)) {
-                grid.insert(cell, body);
-            }
-        }
+    /// Caches the sector's cell from the grid and its node's translation.
+    pub fn cache_grid(&mut self, world: &World, grid: &Grid) {
+        let at = self
+            .node
+            .and_then(|n| world.nodes.get(n))
+            .map_or(Vec3::ZERO, |n| n.position);
+        self.cell = grid.sector_cell(at);
     }
 
-    /// Shifts the grid by `(dx, dy)` cells and places every body again
-    /// from its node's translation (the original moves the flat rows, then
-    /// walks its sectors and recomputes each cell).
-    pub fn shift_grid(&mut self, world: &mut World, dx: i32, dy: i32) {
-        let located: Vec<(usize, Option<(i32, i32)>)> = self
-            .bodies
-            .iter()
-            .map(|&body| {
-                let at = world
-                    .bodies
-                    .get(body)
-                    .and_then(|b| b.node)
-                    .and_then(|n| world.nodes.get(n))
-                    .map(|n| n.position);
-                let cell = at.and_then(|p| self.grid.as_ref().and_then(|g| g.locate(p)));
-                (body, cell)
-            })
-            .collect();
-        if let Some(grid) = self.grid.as_mut() {
-            grid.shift(dx, dy);
-        }
-        for (body, cell) in located {
-            if let Some(b) = world.bodies.get_mut(body) {
-                b.cell = cell;
-            }
-        }
-    }
-
-    /// Clears the sector's lists, as the original's sector reset does
-    /// (bodies, pairs, nodes and other nodes, and its simulation objects).
-    pub fn clear(&mut self) {
-        self.nodes.clear();
+    /// Resets the sector: its three lists and its pairs are emptied, its
+    /// cell is cached again when it uses the grids, and its flags lose the
+    /// purge, reset and registration bits and gain [`sector::WAS_RESET`].
+    pub fn reset(&mut self, world: &World, grid: &Grid) {
         self.bodies.clear();
+        self.objects.clear();
+        self.nodes.clear();
         self.pairs.clear();
-        self.sim_objects.clear();
-        self.others.clear();
+        if self.uses_grid {
+            self.cache_grid(world, grid);
+        }
+        self.flags = (self.flags & !sector::RESET_CLEARS) | sector::WAS_RESET;
     }
 
-    /// Purges the nodes and bodies that are not in the sector's scene: the
-    /// nodes and other nodes whose scene differs, the bodies whose node's
-    /// scene differs (unlinking them from the grid), the pairs with such a
-    /// body, and the simulated objects of such a node. Swap-removal, except
-    /// the other nodes keep their order (the original shifts them down).
-    pub fn purge_left(&mut self, world: &mut World) {
-        let scene = self.scene;
-        let scene_of_body = |world: &World, body: usize| {
-            world
-                .bodies
-                .get(body)
-                .map(|b| b.node.map(|n| world.nodes[n].scene).unwrap_or(b.scene))
-        };
-        self.nodes.retain(|&n| {
-            let keep = world.nodes.get(n).is_some_and(|node| node.scene == scene);
-            if !keep && let Some(node) = world.nodes.get_mut(n) {
-                node.state &= !state::REGISTERED;
+    /// Unlinks a static node from every node-grid cell it is in.
+    fn unlink_node(world: &mut World, grids: &mut Grids, node: usize) {
+        if let Some(n) = world.nodes.get_mut(node) {
+            for cell in n.cells.drain(..) {
+                grids.nodes.remove(cell, node);
             }
-            keep
-        });
+        }
+    }
+
+    /// Unlinks a body from its body-grid cell.
+    fn unlink_body(world: &mut World, grids: &mut Grids, body: usize) {
+        if let Some(b) = world.bodies.get_mut(body)
+            && b.linked
+        {
+            grids.bodies.remove(b.cell as usize, body);
+            b.linked = false;
+        }
+    }
+
+    fn unregister(world: &mut World, node: Option<usize>) {
+        if let Some(n) = node.and_then(|n| world.nodes.get_mut(n)) {
+            n.state &= !state::REGISTERED;
+        }
+    }
+
+    /// Removes from the sector what `gone` marks, in the original's four
+    /// sweeps: static nodes (swap-removed, unlinked from the node grid,
+    /// unregistered, and noticed when `notify` and the node asks), bodies
+    /// (compacted in order and renumbered, unlinked from the body grid,
+    /// unregistered), pairs with a body for which `pair_gone` holds
+    /// (swap-removed), and objects (shifted down, unregistered).
+    fn sweep(
+        &mut self,
+        world: &mut World,
+        grids: &mut Grids,
+        gone: impl Fn(&World, u32) -> bool,
+        pair_gone: impl Fn(&World, u32) -> bool,
+        notify: bool,
+    ) -> Purged {
+        let mut purged = Purged::default();
         let mut i = 0;
-        while i < self.bodies.len() {
-            let body = self.bodies[i];
-            if scene_of_body(world, body) == Some(scene) {
+        while i < self.nodes.len() {
+            let node = self.nodes[i];
+            let scene = world.nodes.get(node).map_or(u32::MAX, |n| n.scene);
+            if !gone(world, scene) {
                 i += 1;
                 continue;
             }
-            if let (Some(b), Some(grid)) = (world.bodies.get(body), self.grid.as_mut())
-                && let Some(cell) = b.cell
-            {
-                grid.remove(cell, body);
+            if self.uses_grid {
+                Self::unlink_node(world, grids, node);
             }
-            if let Some(node) = world.bodies.get(body).and_then(|b| b.node)
-                && let Some(node) = world.nodes.get_mut(node)
+            if notify
+                && world
+                    .nodes
+                    .get(node)
+                    .is_some_and(|n| n.state & state::NOTIFY != 0)
             {
-                node.state &= !state::REGISTERED;
+                purged.nodes.push(node);
             }
-            self.bodies.swap_remove(i);
+            Self::unregister(world, Some(node));
+            self.nodes.swap_remove(i);
         }
-        let in_scene = |world: &World, body: usize| scene_of_body(world, body) == Some(scene);
-        self.pairs.retain(|&p| {
-            world
-                .pairs
-                .get(p)
-                .is_some_and(|pair| in_scene(world, pair.a) && in_scene(world, pair.b))
-        });
-        self.sim_objects.retain(|&s| {
-            world
-                .sim_objects
-                .get(s)
-                .is_some_and(|o| world.nodes.get(o.node).is_some_and(|n| n.scene == scene))
-        });
-        self.others
-            .retain(|&n| world.nodes.get(n).is_some_and(|node| node.scene == scene));
-    }
-
-    /// Purges everything of `scene` itself (a sub-scene removed): nodes of
-    /// that scene, the bodies on them, their pairs and simulated objects.
-    pub fn purge_scene(&mut self, world: &mut World, scene: u32) {
-        for &n in &self.nodes {
-            if world.nodes.get(n).is_some_and(|node| node.scene == scene)
-                && let Some(node) = world.nodes.get_mut(n)
-            {
-                node.state &= !state::REGISTERED;
-            }
-        }
-        self.nodes
-            .retain(|&n| !world.nodes.get(n).is_some_and(|node| node.scene == scene));
-        let mut i = 0;
-        while i < self.bodies.len() {
+        let mut kept = 0;
+        for i in 0..self.bodies.len() {
             let body = self.bodies[i];
-            let belongs = world
-                .bodies
-                .get(body)
-                .and_then(|b| b.node)
-                .and_then(|n| world.nodes.get(n))
-                .is_some_and(|node| node.scene == scene);
-            if belongs {
-                if let (Some(b), Some(grid)) = (world.bodies.get(body), self.grid.as_mut())
-                    && let Some(cell) = b.cell
-                {
-                    grid.remove(cell, body);
+            let scene = world.scene_of_body(body).unwrap_or(u32::MAX);
+            if gone(world, scene) {
+                if self.uses_grid {
+                    Self::unlink_body(world, grids, body);
                 }
-                self.bodies.swap_remove(i);
+                purged.bodies.push(body);
+                let node = world.bodies.get(body).and_then(|b| b.node);
+                Self::unregister(world, node);
+            } else {
+                self.bodies[kept] = body;
+                if let Some(b) = world.bodies.get_mut(body) {
+                    b.index = kept as u16;
+                }
+                kept += 1;
+            }
+        }
+        self.bodies.truncate(kept);
+        let mut i = 0;
+        while i < self.pairs.len() {
+            let p = self.pairs[i];
+            let a = world.scene_of_body(p.a).unwrap_or(u32::MAX);
+            let b = world.scene_of_body(p.b).unwrap_or(u32::MAX);
+            if pair_gone(world, a) || pair_gone(world, b) {
+                self.pairs.swap_remove(i);
             } else {
                 i += 1;
             }
         }
-        self.pairs.retain(|&p| {
-            world.pairs.get(p).is_some_and(|pair| {
-                let of = |b: usize| {
-                    world
-                        .bodies
-                        .get(b)
-                        .and_then(|b| b.node)
-                        .and_then(|n| world.nodes.get(n))
-                        .is_some_and(|node| node.scene == scene)
-                };
-                !of(pair.a) && !of(pair.b)
-            })
-        });
-        self.sim_objects.retain(|&s| {
-            !world
-                .sim_objects
-                .get(s)
-                .is_some_and(|o| world.nodes.get(o.node).is_some_and(|n| n.scene == scene))
-        });
-        self.others
-            .retain(|&n| !world.nodes.get(n).is_some_and(|node| node.scene == scene));
-    }
-
-    /// The sector's turn in the simulation's update: serve the flags in the
-    /// original's order (a dead sector is cleared and reported, a scene-left
-    /// purge, the world-link and scene-link removals, the sub-scene purge),
-    /// then build the grid when asked. Returns whether the sector died.
-    pub fn update(&mut self, world: &mut World) -> bool {
-        if self.flags & sector::DEAD != 0 {
-            self.clear();
-            return true;
-        }
-        if self.flags & sector::SCENE_LEFT != 0 {
-            self.flags &= !sector::SCENE_LEFT;
-            self.purge_left(world);
-        }
-        if self.flags & sector::WORLD_LINKS != 0 {
-            self.flags &= !sector::WORLD_LINKS;
-            for &body in &self.bodies {
-                if let Some(b) = world.bodies.get_mut(body) {
-                    b.links.retain(|l| l.parent.is_some());
-                }
+        let mut i = 0;
+        while i < self.objects.len() {
+            let node = self.objects[i];
+            let scene = world.nodes.get(node).map_or(u32::MAX, |n| n.scene);
+            if gone(world, scene) {
+                Self::unregister(world, Some(node));
+                self.objects.remove(i);
+            } else {
+                i += 1;
             }
         }
-        if self.flags & sector::SCENE_LINKS != 0 {
-            self.flags &= !sector::SCENE_LINKS;
-        }
-        if self.flags & sector::SUB_SCENE != 0 {
-            self.flags &= !sector::SUB_SCENE;
-        }
-        false
+        purged
+    }
+
+    /// Purges what is no longer in the sector's scene (the
+    /// [`sector::SCENE_LEFT`] flag, which it clears). The pair sweep
+    /// removes every pair with a body still in the scene, as the original
+    /// compares it (the pairs are found again on the next step).
+    pub fn purge_left(&mut self, world: &mut World, grids: &mut Grids) -> Purged {
+        self.flags &= !sector::SCENE_LEFT;
+        let scene = self.scene;
+        self.sweep(world, grids, |_, s| s != scene, |_, s| s == scene, true)
+    }
+
+    /// Purges everything of `scene` (a shared or sub-scene removed): its
+    /// static nodes, bodies, pairs and objects. No node is noticed.
+    pub fn purge_scene(&mut self, world: &mut World, grids: &mut Grids, scene: u32) -> Purged {
+        self.sweep(world, grids, |_, s| s == scene, |_, s| s == scene, false)
+    }
+
+    /// Takes the sector's pending nodes for registration (the
+    /// [`sector::PENDING`] flag, which it clears).
+    pub fn take_pending(&mut self) -> Vec<usize> {
+        self.flags &= !sector::PENDING;
+        std::mem::take(&mut self.pending)
     }
 }
 
-/// A simulation: one scene's clock and its sectors. The original shares
-/// one grid across a simulation's sectors.
+/// A simulation's two grids: one for the sectors' static nodes, one for
+/// their bodies (the one a placement queries).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grids {
+    pub nodes: Grid,
+    pub bodies: Grid,
+}
+
+impl Grids {
+    pub fn new(size: GridSize) -> Self {
+        Self {
+            nodes: Grid::new(size),
+            bodies: Grid::new(size),
+        }
+    }
+}
+
+/// What a sector's turn in the update did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SectorTurn {
+    pub purged: Purged,
+    /// Nodes to register.
+    pub pending: Vec<usize>,
+}
+
+/// The simulation flag bit that asks for the grids to be rebuilt.
+pub const REBUILD_GRID: u32 = 0x2_0000;
+
+/// A simulation: one scene's clock, its sectors and its grids.
 #[derive(Debug, Clone)]
 pub struct Simulation {
     pub clock: Clock,
+    pub flags: u32,
     pub sectors: Vec<Sector>,
-    /// Bodies a listener is watching (the original's watch list).
+    pub grids: Grids,
+    /// A grid shift waiting for the next update (cells).
+    pub shift: [i32; 2],
+    /// Bodies a listener is watching.
     pub watch: Vec<usize>,
-    /// The listeners' bodies, called with a removed watch entry.
+    /// The listeners, called with a removed watch entry.
     pub listeners: Vec<usize>,
 }
 
 impl Simulation {
-    /// A simulation of one scene at the given step.
-    pub fn new(step: u32) -> Self {
+    /// A simulation of one scene at the given step, with grids of `size`.
+    pub fn new(step: u32, size: GridSize) -> Self {
         Self {
             clock: Clock {
                 step,
                 ..Clock::default()
             },
+            flags: 0,
             sectors: Vec::new(),
+            grids: Grids::new(size),
+            shift: [0, 0],
             watch: Vec::new(),
             listeners: Vec::new(),
         }
     }
 
-    /// Adds a body to the watch list: appended last.
+    /// Rebuilds the grids for `size`: new tables when the size changed,
+    /// every cell emptied, and every sector's cell cached again (the
+    /// bodies link themselves back as they step).
+    pub fn build_grid(&mut self, world: &mut World, size: GridSize) {
+        if size.width != self.grids.nodes.width || size.height != self.grids.nodes.height {
+            self.grids = Grids::new(size);
+        }
+        self.grids.nodes.clear();
+        self.grids.bodies.clear();
+        for b in &mut world.bodies {
+            b.linked = false;
+        }
+        for n in &mut world.nodes {
+            n.cells.clear();
+        }
+        for s in &mut self.sectors {
+            s.cache_grid(world, &self.grids.bodies);
+        }
+    }
+
+    /// Adds a body to the watch list, last.
     pub fn watch_add(&mut self, body: usize) {
         self.watch.push(body);
     }
 
-    /// Removes a body from the watch list (swap with the last) and reports
-    /// whether it was there; the original then calls every listener's
-    /// add-to-world with the body (the listeners are returned here).
+    /// Removes a body from the watch list (the last one takes its place)
+    /// and reports whether it was there; the original then calls every
+    /// listener with the body (the listeners are returned here).
     pub fn watch_remove(&mut self, body: usize) -> (bool, Vec<usize>) {
         let Some(at) = self.watch.iter().position(|&b| b == body) else {
             return (false, Vec::new());
@@ -1107,18 +1248,88 @@ impl Simulation {
         (true, self.listeners.clone())
     }
 
-    /// One fixed step's non-physical work: the clock advances and every
-    /// sector is updated; dead sectors are dropped.
-    pub fn turn(&mut self, world: &mut World) {
-        self.clock.advance();
+    /// The simulation's update: the pending grid shift (both grids moved,
+    /// every sector's cell placed again), then each sector's flags in the
+    /// original's order (a dead sector is reset and removed, the others
+    /// keeping their order; a reset one is reset; otherwise the scene-left
+    /// purge, the shared-scene purge, the sub-scene purge and the pending
+    /// registration), then the asked-for grid rebuild. `shared` and `sub`
+    /// are the shared scene and the simulation's sub-scene.
+    pub fn update(
+        &mut self,
+        world: &mut World,
+        shared: u32,
+        sub: u32,
+        size: GridSize,
+    ) -> Vec<SectorTurn> {
+        if self.shift != [0, 0] {
+            let [dx, dy] = self.shift;
+            self.grids.nodes.shift(dx, dy);
+            self.grids.bodies.shift(dx, dy);
+            for s in &mut self.sectors {
+                s.cache_grid(world, &self.grids.bodies);
+            }
+            self.shift = [0, 0];
+        }
+        let mut turns = Vec::new();
         let mut i = 0;
         while i < self.sectors.len() {
-            if self.sectors[i].update(world) {
-                self.sectors.swap_remove(i);
-            } else {
-                i += 1;
+            let grids = &mut self.grids;
+            let s = &mut self.sectors[i];
+            if s.flags & sector::DEAD != 0 {
+                s.reset(world, &grids.bodies);
+                self.sectors.remove(i);
+                continue;
             }
+            let mut turn = SectorTurn::default();
+            if s.flags & sector::RESET != 0 {
+                s.reset(world, &grids.bodies);
+            } else {
+                if s.flags & sector::SCENE_LEFT != 0 {
+                    let p = s.purge_left(world, grids);
+                    turn.purged.nodes.extend(p.nodes);
+                    turn.purged.bodies.extend(p.bodies);
+                }
+                if s.flags & sector::SHARED_SCENE != 0 {
+                    s.flags &= !sector::SHARED_SCENE;
+                    turn.purged
+                        .bodies
+                        .extend(s.purge_scene(world, grids, shared).bodies);
+                }
+                if s.flags & sector::SUB_SCENE != 0 {
+                    s.flags &= !sector::SUB_SCENE;
+                    turn.purged
+                        .bodies
+                        .extend(s.purge_scene(world, grids, sub).bodies);
+                }
+                if s.flags & sector::PENDING != 0 {
+                    turn.pending = s.take_pending();
+                }
+            }
+            turns.push(turn);
+            i += 1;
         }
+        if self.flags & REBUILD_GRID != 0 {
+            self.build_grid(world, size);
+            self.flags &= !REBUILD_GRID;
+        }
+        turns
+    }
+
+    /// One fixed step's bookkeeping, in the original's order: the update,
+    /// then the tick and the game time advance, and every sector takes the
+    /// new tick.
+    pub fn turn(&mut self, world: &mut World, shared: u32, sub: u32) -> Vec<SectorTurn> {
+        let size = GridSize {
+            width: self.grids.nodes.width,
+            height: self.grids.nodes.height,
+        };
+        let turns = self.update(world, shared, sub, size);
+        self.clock.advance();
+        for s in &mut self.sectors {
+            s.tick = self.clock.tick;
+        }
+        turns
     }
 }
 
