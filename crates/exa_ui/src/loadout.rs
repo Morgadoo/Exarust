@@ -272,6 +272,17 @@ pub fn drag_flags(mode: LoadoutMode) -> u32 {
     }
 }
 
+/// Clears the form's pointed item when the arena drops the one it points
+/// at.
+pub fn clear_pointed(editor: &mut LoadoutEditor, item: u32) -> bool {
+    if editor.mode == LoadoutMode::Arena && editor.pointed == Some(item) {
+        editor.pointed = None;
+        true
+    } else {
+        false
+    }
+}
+
 /// Whether a drop from the preview is allowed: an item whose flags share
 /// the form's mask is refused in the arena, and every item is refused in
 /// champion mode.
@@ -706,6 +717,18 @@ mod tests {
         assert!(drop_allowed(&editor, &item(2, 2, 0)));
         editor.mode = LoadoutMode::Champion;
         assert!(!drop_allowed(&editor, &item(2, 2, 0)));
+    }
+
+    #[test]
+    fn the_pointed_item_is_cleared_only_in_the_arena() {
+        let mut editor = editor();
+        editor.pointed = Some(5);
+        assert!(!clear_pointed(&mut editor, 4));
+        assert!(clear_pointed(&mut editor, 5));
+        assert_eq!(editor.pointed, None);
+        editor.pointed = Some(5);
+        editor.mode = LoadoutMode::Match;
+        assert!(!clear_pointed(&mut editor, 5));
     }
 
     #[test]
