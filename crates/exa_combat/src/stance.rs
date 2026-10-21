@@ -23,6 +23,7 @@ use exa_anim::{Animator, Ease};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
 use crate::fighter::failing;
+use crate::swing::{SwingState, flags};
 use crate::{Attacking, Condition, Fighter, attack};
 
 /// The looping clip a fighter returns to.
@@ -246,13 +247,16 @@ pub fn switches_posture(anim: &Animator, stance: Stance, balance: f32, tone: f32
         && tone >= POSTURE_TONE
 }
 
-/// One tick of combat readiness: it rises by 0.004 up to 1 while the
-/// stance and the clip are both the combat idle, and drops to 0 at once
-/// otherwise. (The original also raises it while parrying and while an
-/// attack is ready to chain; neither exists yet.)
-pub fn readiness_step(readiness: f32, stance: Stance, action: &str) -> f32 {
-    if stance == Stance::CombatIdle && action == Stance::CombatIdle.action() {
-        (readiness + READINESS_RATE).min(1.0)
+/// One tick of combat readiness. While the stance is the combat idle it
+/// rises by the double 0.004, capped at 1 in single precision, when the
+/// clip is the combat idle or an attack is released. Anything else is 0.
+/// The clinch byte also keeps it rising; that byte is not a named field.
+pub fn readiness_step(readiness: f32, stance: Stance, action: &str, released: bool) -> f32 {
+    let rising =
+        stance == Stance::CombatIdle && (action == Stance::CombatIdle.action() || released);
+    if rising {
+        let next = (f64::from(readiness) + 0.004) as f32;
+        if next > 1.0 { 1.0 } else { next }
     } else {
         0.0
     }
@@ -278,10 +282,13 @@ fn take_stance(
         Option<&Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
+        Option<&SwingState>,
         Has<Fallen>,
     )>,
 ) {
-    for (mut stance, mut anim, mut fighter, condition, body, attacking, fallen) in &mut bodies {
+    for (mut stance, mut anim, mut fighter, condition, body, attacking, swing, fallen) in
+        &mut bodies
+    {
         let condition = condition.copied().unwrap_or_default();
         // A collapsing or dead fighter keeps nothing of its stance.
         if condition.dying() {
@@ -289,7 +296,12 @@ fn take_stance(
         }
         let parrying = fighter.as_ref().is_some_and(|f| f.parry.active);
         if let Some(f) = fighter.as_mut() {
-            let g = readiness_step(f.readiness, *stance, &anim.action);
+            // The body tick reads the attack state from the tick before,
+            // which is this swing: a released attack in the combat idle
+            // keeps the readiness rising.
+            let released =
+                condition == Condition::ATTACKING && swing.is_some_and(|s| s.has(flags::RELEASED));
+            let g = readiness_step(f.readiness, *stance, &anim.action, released);
             if f.readiness != g {
                 f.readiness = g;
             }
@@ -593,21 +605,39 @@ mod tests {
     }
 
     /// Readiness: 0.004 a tick in the combat idle (0 to 1 in 250 ticks, 3 s
-    /// at 83 Hz), 0 at once in any other stance or clip.
+    /// at 83 Hz), and through a released attack in that stance. 0 at once
+    /// in any other stance or clip, and through an attack that is held.
     #[test]
     fn readiness_rises_in_the_combat_idle_only() {
         let mut g = 0.0;
         for _ in 0..125 {
-            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle");
+            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle", false);
         }
         assert!((g - 0.5).abs() < 1e-4, "{g}");
         for _ in 0..200 {
-            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle");
+            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle", false);
         }
         assert_eq!(g, 1.0);
-        assert_eq!(readiness_step(g, Stance::Defence, "Cmbt - Idle"), 0.0);
-        assert_eq!(readiness_step(g, Stance::CombatIdle, "Attack Mid"), 0.0);
-        assert_eq!(readiness_step(g, Stance::CombatIdle, "Combat Walk"), 0.0);
+        assert_eq!(
+            readiness_step(g, Stance::Defence, "Cmbt - Idle", false),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(g, Stance::CombatIdle, "Attack Mid", false),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::CombatIdle, "Attack Mid", true),
+            (0.5f64 + 0.004) as f32
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::Defence, "Attack Mid", true),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(g, Stance::CombatIdle, "Combat Walk", false),
+            0.0
+        );
     }
 
     fn ticked() -> App {
@@ -711,8 +741,35 @@ mod tests {
         }
         let g = app.world().get::<Fighter>(id).unwrap().readiness;
         assert!((g - 0.04).abs() < 1e-5, "{g}");
-        *app.world_mut().get_mut::<Condition>(id).unwrap() = Condition::DEAD;
+        // A released attack in the combat idle keeps it rising. Holding
+        // the attack, or releasing one from the guard, resets it.
+        app.world_mut().entity_mut(id).insert((
+            Condition::ATTACKING,
+            SwingState {
+                flags: flags::RELEASED,
+                ..SwingState::default()
+            },
+        ));
+        // Played once, so the posture switch does not replace it with the
+        // stance's looping clip before the next tick reads it.
+        app.world_mut()
+            .get_mut::<Animator>(id)
+            .unwrap()
+            .play_once("Attack Mid", "Cmbt - Idle");
+        app.update();
+        let g = app.world().get::<Fighter>(id).unwrap().readiness;
+        assert!((g - 0.044).abs() < 1e-5, "{g}");
+        app.world_mut().get_mut::<SwingState>(id).unwrap().flags = 0;
+        app.update();
+        assert_eq!(app.world().get::<Fighter>(id).unwrap().readiness, 0.0);
         *app.world_mut().get_mut::<Stance>(id).unwrap() = Stance::Defence;
+        app.world_mut().get_mut::<SwingState>(id).unwrap().flags = flags::RELEASED;
+        app.world_mut().get_mut::<Fighter>(id).unwrap().readiness = 0.5;
+        app.update();
+        assert_eq!(app.world().get::<Fighter>(id).unwrap().readiness, 0.0);
+        app.world_mut().get_mut::<Animator>(id).unwrap().action = "Cmbt - Idle".into();
+        *app.world_mut().get_mut::<Condition>(id).unwrap() = Condition::DEAD;
+        app.world_mut().get_mut::<Fighter>(id).unwrap().readiness = 0.04;
         app.update();
         let f = app.world().get::<Fighter>(id).unwrap();
         assert!((f.readiness - 0.04).abs() < 1e-5);

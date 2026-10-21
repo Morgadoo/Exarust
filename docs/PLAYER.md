@@ -883,7 +883,9 @@ also leaves its interim backpedal and combat walk alone).
   blend after an attack, none after a get-up), smooth
   ([formats/RSQ.md](formats/RSQ.md), Motion playback).
 - **Readiness.** Standing in Cmbt - Idle, with that stance, a fighter's
-  readiness rises 0.004 a tick (0 to 1 in 3 s); anything else resets it.
+  readiness rises 0.004 a tick (the add in double, 0 to 1 in 3 s). A
+  released attack in that stance keeps it rising. Anything else resets
+  it.
   A blow's wound (penetration, impact, stab energy) is scaled by 1 − 0.5 ×
   readiness, so a fighter ready for 3 s takes half the wound; the shove is
   not lessened ([formats/OTHER.md](formats/OTHER.md), Damage).
@@ -901,7 +903,7 @@ Not yet, with the change that brings each:
 - the Defence stance and Rebalance a fighter takes from its balance
   (below 0.8) or its tone (below 0.85), C11;
 - parries, whose clips are stances while they last, and readiness while
-  parrying or with an attack ready to chain (L10, C21);
+  the clinch holds (L10, C21);
 - the original's line-of-sight test on the player's target; the AI's own
   footwork in its stance instead of the combat walk, and its parries (C16,
   L11). The live retail opponent took its guard for 0.4 s at the fight
