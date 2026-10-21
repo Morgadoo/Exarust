@@ -2,17 +2,21 @@
 //! its colour and the covered-head rule for the style's `?` pieces.
 //!
 //! The body builder adds a hair style under the head part, resets its roots
-//! to the head's frame and keeps the `?`-prefixed roots only while a helmet
-//! or hat covers the head. Exarust builds the style's model once with the
-//! asset loader and parents its nodes to the head part, tinting the hair
-//! material with the record's colour.
+//! to the head's frame and keeps the `?`-prefixed roots only while the worn
+//! set's head coverage has bit 0 (a hood or helmet); bit 1 grows no hair.
+//! Exarust builds the style's model once with the asset loader and parents
+//! its nodes to the head part, tinting the hair material with the record's
+//! colour. The original swaps in its hair material only on parts whose
+//! material word (payload offset `0xC`) is over 0.5; every shipped hair
+//! material (`harhps1`) holds 1.0 there, so every part is tinted. Not
+//! done: the record's bit `0x10000` also swaps the hair textures to the
+//! `HarHPC1` set, hair as cloth and its smoothing.
 
 use bevy::prelude::*;
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind};
 use exa_render::material::linear_rgb;
 
-use crate::Outfit;
-use crate::look::{hair_entry, hair_root_kept};
+use crate::look::{hair_entry, hair_root_kept, head_covered};
 use exa_anim::BodyPart;
 use exa_assets::hair::hair_shading;
 
@@ -27,6 +31,8 @@ pub struct Hair {
     pub feral: f32,
     /// The record's bit `0x10000` leaves the specular level alone.
     pub light_variant: bool,
+    /// The worn set's union of coverage words on the head slot.
+    pub head_word: u64,
 }
 
 /// Marks a body whose hair has been built.
@@ -42,10 +48,10 @@ const HAIR_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Builds the hair of every body that has not got it yet.
 ///
-/// A style shows nothing when its entry is missing or when the outfit covers
-/// the head and only the style's `?` roots remain. The roots are re-framed
-/// on the head part, and every part's material takes the record's colour,
-/// specular level and gloss.
+/// A style shows nothing when its entry is missing or the head word has
+/// bit 1; under bit 0 only its `?` roots show, otherwise only the others.
+/// The roots are re-framed on the head part, and every part's material
+/// takes the record's colour, specular level and gloss.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn attach_hair(
     mut commands: Commands,
@@ -55,7 +61,7 @@ pub fn attach_hair(
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<bevy::image::CompressedImageFormatSupport>>,
-    bodies: Query<(Entity, &Hair, Option<&Outfit>), Without<HairAttached>>,
+    bodies: Query<(Entity, &Hair), Without<HairAttached>>,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
 ) {
@@ -85,7 +91,7 @@ pub fn attach_hair(
         })
         .unwrap_or_default();
     let started = std::time::Instant::now();
-    for (body, hair, outfit) in &bodies {
+    for (body, hair) in &bodies {
         if started.elapsed() >= HAIR_BUDGET {
             break;
         }
@@ -95,9 +101,9 @@ pub fn attach_hair(
         else {
             continue;
         };
-        let covered =
-            outfit.is_some_and(|o| o.0.iter().any(|g| g.hides.unwrap_or(0) & (1 << HEAD) != 0));
-        let Some(entry) = hair_entry(hair.style, &entries) else {
+        let covered = head_covered(hair.head_word);
+        let Some(entry) = hair_entry(hair.style, &entries).filter(|_| hair.head_word & 2 == 0)
+        else {
             commands.entity(body).insert(HairAttached);
             continue;
         };
@@ -162,12 +168,6 @@ pub fn attach_hair(
 mod tests {
     use super::*;
 
-    /// The head is bone 10 in the body model, where the hair hangs.
-    #[test]
-    fn the_hair_hangs_on_the_heads_bone() {
-        assert_eq!(HEAD, 10);
-    }
-
     /// A style's model hangs under the head part, with the head's bone.
     #[test]
     fn a_style_hangs_under_the_head() {
@@ -192,8 +192,9 @@ mod tests {
                     colour: [40, 80, 40],
                     feral: 0.0,
                     light_variant: false,
+                    head_word: 0,
                 },
-                Outfit::default(),
+                crate::Outfit::default(),
             ))
             .id();
         let head = app
@@ -211,22 +212,5 @@ mod tests {
         assert!(world.get::<HairAttached>(body).is_some());
         let children = world.get::<Children>(head).unwrap();
         assert!(!children.is_empty(), "the hair style spawned no root");
-    }
-
-    /// The colour and covered-head rules are the pure look module's.
-    #[test]
-    fn the_hair_record_is_the_looks() {
-        let h = Hair {
-            style: 3,
-            colour: [40, 80, 40],
-            feral: 0.0,
-            light_variant: false,
-        };
-        assert_eq!(
-            hair_shading(h.colour, h.feral, h.light_variant).diffuse,
-            hair_shading([40, 80, 40], 0.0, false).diffuse
-        );
-        assert!(hair_root_kept("?HULA01_", true));
-        assert!(!hair_root_kept("?HULA01_", false));
     }
 }

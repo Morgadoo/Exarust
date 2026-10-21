@@ -156,6 +156,8 @@ pub struct HandItem {
     pub weapon: Option<exa_formats::objdb::Weapon>,
     /// It blocks as a shield.
     pub shield: bool,
+    /// It has the torch section.
+    pub torch: bool,
 }
 
 /// An item a placed character wears.
@@ -166,6 +168,9 @@ pub struct Worn {
     pub appearance: Option<Appearance>,
     /// Body slots it hides, as a bit mask.
     pub hides: u32,
+    /// Its coverage word on the head slot (layer L is byte L): the hair
+    /// reads the worn set's union of these.
+    pub head_word: u64,
     pub armour: Option<exa_formats::objdb::Armour>,
 }
 
@@ -201,6 +206,7 @@ fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec
                     model: item.model.clone(),
                     weapon: item.weapon,
                     shield: item.shield.is_some(),
+                    torch: item.torch,
                 })
             };
             let hands = record.hands.map(hand);
@@ -218,6 +224,7 @@ fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec
                         model: item.worn_model.clone(),
                         appearance: item.appearance,
                         hides: item.hidden_slots(),
+                        head_word: item.slot_word(10),
                         armour: item.armour,
                     })
                 })
@@ -1695,6 +1702,7 @@ mod tests {
             operative: None,
             burden: None,
             equip_lock: 0,
+            torch: false,
         }
     }
 

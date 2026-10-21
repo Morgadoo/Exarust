@@ -122,6 +122,9 @@ pub struct Item {
     /// armour 100, so it reads as a weight class (a guess); 121 shipped
     /// items are over the limit, 7 of them apparel.
     pub equip_lock: u8,
+    /// The item has the torch section ([`TORCH`]): the equip pass holds it
+    /// in the off hand on its own path.
+    pub torch: bool,
 }
 
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
@@ -633,6 +636,7 @@ impl Item {
             operative: None,
             burden: None,
             equip_lock: 0,
+            torch: false,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -683,6 +687,7 @@ impl Item {
                 SHIELD => item.shield = ShieldRecord::from_section(body),
                 DOOR => item.door = Door::parse(body),
                 OPERATIVE => item.operative = Operative::parse(body),
+                TORCH => item.torch = true,
                 _ => {}
             }
             pos += size;

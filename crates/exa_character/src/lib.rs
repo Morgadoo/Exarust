@@ -27,8 +27,6 @@ pub mod look;
 
 pub mod rebuild;
 
-pub mod pose;
-
 pub mod record;
 
 pub mod runtime;
@@ -72,7 +70,6 @@ impl Plugin for CharacterPlugin {
                 (
                 apply_skin_looks.run_if(resource_exists::<Game>),
                 hair::attach_hair.run_if(resource_exists::<Game>),
-                pose::apply_saved_pose,
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
@@ -926,6 +923,7 @@ mod tests {
             operative: None,
             burden: None,
             equip_lock: 0,
+            torch: false,
         }
     }
 

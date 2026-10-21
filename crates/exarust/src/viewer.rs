@@ -1488,12 +1488,6 @@ fn spawn_placed_characters(
         }
         let root = root.id();
         let model = exa_world::spawn_model(commands, &body, None);
-        if !c.pose.is_empty() {
-            // The placement’s saved bone matrices, written onto the body parts.
-            commands
-                .entity(model)
-                .insert(exa_character::pose::Pose(c.pose.clone()));
-        }
         let anim = exa_anim::Animator::new(&moveset, "Idle");
         if c.dead {
             // The dead fall where they lie: their condition is dead, as
@@ -1513,14 +1507,13 @@ fn spawn_placed_characters(
         // What the record holds picks its moveset: the equip pass's plan
         // gives the main hand, the off hand's second weapon and its shield.
         // Only the main hand's item is drawn so far.
-        let plan = exa_character::spawn::equip_hands(&c.record, |r| {
-            let idx = c.record.hands.iter().position(|h| h.id == r.id)?;
-            let item = c.hands.get(idx)?.as_ref()?;
+        let plan = exa_character::spawn::equip_hands(&c.record, |hand, _| {
+            let item = c.hands.get(hand)?.as_ref()?;
             Some(exa_character::spawn::HandEntry {
                 model: item.model.clone(),
                 weapon: item.weapon,
                 shield: item.shield,
-                light: false,
+                torch: item.torch,
             })
         });
         let mut hands = exa_character::held::Hands::default();
@@ -1571,7 +1564,9 @@ fn spawn_placed_characters(
             exa_assets::SkinLook::of_entry(
                 &model_name,
                 c.record.skin,
-                race.is_some_and(|r| {
+                // The women's set when the race ships it; a record of an
+                // unknown race keeps its own sex, as before.
+                race.map_or(c.record.female, |r| {
                     exa_character::look::skin_set(r.look, c.record.female)
                         == exa_character::look::SkinSet::Female
                 }),
@@ -1590,6 +1585,7 @@ fn spawn_placed_characters(
                 ],
                 feral: c.record.feral,
                 light_variant: c.record.profession_rest & 0x1_0000 != 0,
+                head_word: c.worn.iter().fold(0, |w, g| w | g.head_word),
             },
             ChildOf(root),
         ));
