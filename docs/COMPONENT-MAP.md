@@ -5,9 +5,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **35.3% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 30.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
-- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **37.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 32.4% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **32.3%** reproduced.
 
 ## By section
 
@@ -15,15 +15,15 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
 | Core, math & threading | 282 | 37 | 11 | 59% | 1% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 39% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
-| Rendering & GPU | 823 | 334 | 63 | 50% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
-| World, levels & terrain | 454 | 174 | 31 | 45% | 7% | SG_Teleporters, TSector, Scene node despawn and viewport step (TSceneTaskInt by address) |
+| Data, assets & I/O | 440 | 91 | 26 | 43% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
+| Rendering & GPU | 823 | 334 | 63 | 51% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
+| World, levels & terrain | 454 | 174 | 31 | 52% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 39% | 0% | RFE_Dynamics_Cloth, TSimObject |
-| Characters, motion & animation | 506 | 198 | 23 | 34% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
+| Characters, motion & animation | 506 | 198 | 23 | 41% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 43% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
-| AI & behaviour | 437 | 206 | 17 | 35% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
-| Thaumaturgy & effects | 697 | 296 | 83 | 29% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
+| AI & behaviour | 437 | 206 | 17 | 40% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
+| Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 61% | 0% | TDialogueChoices, TScriptRole, TGameTips |
 | Game modes, arena & session | 646 | 193 | 23 | 19% | 0% | TMatchBoard, TLoadoutForm, TDivCardForm |
@@ -59,7 +59,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
 | SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
-| SG_Character_Data | Characters, motion & animation | 76 | 20 | 9% |
 | SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 11% |
 | TMatchBoard | Game modes, arena & session | 30 | 17 | 3% |
 | SG_Character_Create | Game modes, arena & session | 90 | 17 | 15% |
@@ -67,17 +66,18 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Navigation | Rendering & GPU | 37 | 16 | 6% |
 | RF_HW_Config | UI | 89 | 15 | 7% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 5% |
-| FLX_Content_Stream | Data, assets & I/O | 71 | 12 | 6% |
 | Steam Input action bindings | Runtime & platform | 29 | 11 | 0% |
 | TCharacterView | UI | 21 | 8 | 1% |
 | Rigid-body shape builders (RF_GUI_Controls_Ex by address) | Physics, bodies & cloth | 9 | 8 | 15% |
 | TLoadoutForm | Game modes, arena & session | 13 | 7 | 0% |
 | GUI support routines (unit before RF_GUI_Main) | UI | 21 | 7 | 6% |
 | T3DViewport | UI | 25 | 6 | 10% |
-| RFE_Effects_Electricity | Thaumaturgy & effects | 19 | 6 | 10% |
 | TCompactSkillUI | UI | 11 | 6 | 0% |
 | TDivCardForm | Game modes, arena & session | 9 | 5 | 0% |
 | RF_GUI_Text_Edit | UI | 17 | 5 | 1% |
+| TForceBarrierEffect | Thaumaturgy & effects | 7 | 5 | 9% |
+| TSelectionUI | UI | 18 | 5 | 0% |
+| TEmblemForm | UI | 18 | 4 | 0% |
 
 ## Best covered components
 
@@ -85,10 +85,14 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---|
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_world/src/cloth_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 75% | exa_world/src/nav/walkable.rs; exa_world/src/nav/query.rs |
+| RF_SceneNodes | World, levels & terrain | 24 | 75% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
+| SG_Character_Data | Characters, motion & animation | 20 | 83% | exa_formats/src/characters.rs; exa_character/src/record.rs |
 | TVXGIManager | Rendering & GPU | 29 | 55% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
+| TParticleSystem | Thaumaturgy & effects | 19 | 82% | exa_world/src/particles.rs; exa_world/src/flame.rs |
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 88% | exa_assets/src/mesh_smooth.rs; exa_assets/src/model.rs |
 | TMesh | Rendering & GPU | 25 | 60% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | TGSLines | UI | 24 | 60% | exa_ui/src/skin.rs |
+| TCombatant | AI & behaviour | 17 | 85% | exa_ai/src/combatant.rs; exa_ai/src/place.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 70% | exa_assets/src/mesh_edit.rs; exa_assets/src/vertex_cache.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
@@ -96,13 +100,9 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFG_Dialogue | Script, dialogue & story | 18 | 65% | exa_script/src/dialogue.rs; exa_script/src/bubbles.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
 | RF_Intersection | Physics, bodies & cloth | 14 | 85% | exa_physics/src/intersect.rs; exa_render/src/cube_shadows.rs |
+| TStaticTerrain | World, levels & terrain | 20 | 57% | exa_world/src/terrain/mod.rs; exa_world/src/terrain/patch.rs |
 | TTendrilEmitter | Thaumaturgy & effects | 15 | 72% | exa_game/src/thaum/arcs.rs; exa_game/src/thaum/engine.rs |
 | TTextBox | UI | 12 | 88% | exa_ui/src/text_box.rs; exa_ui/src/text_layout.rs |
-| TAISearchActivity | AI & behaviour | 16 | 65% | exa_ai/src/search.rs; exa_ai/src/search_test.rs |
-| Item description phrases | Items, materials & crafting | 16 | 62% | exa_items/src/instance.rs; exa_items/src/palette.rs |
-| Character roles & relations (script functions) | AI & behaviour | 11 | 85% | exa_formats/src/roles.rs; exa_formats/src/roles_test.rs |
-| TGUIItemView | UI | 13 | 72% | exa_ui/src/item_view.rs |
-| TForceBarricadeEffect | Thaumaturgy & effects | 12 | 75% | exa_game/src/thaum/barricade.rs; exa_game/src/thaum/live.rs |
 
 ## Combat rules
 
@@ -113,7 +113,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | per-part weapon stat bytes of factory weapons | FLX_ItemFactory | 3,692 | 90% |
 | armour layers from equipped apparel | SG_CharacterGen | 3,680 | 40% |
 | weapon mesh assembly (feeds striking-part extent) | FLX_ItemFactory | 3,282 | 40% |
-| combat positioning score (spacing/reach) | TCombatant | 3,152 | 0% |
+| combat positioning score (spacing/reach) | TCombatant | 3,152 | 85% |
 | factory weapon spawn, striking-part extent | FLX_ItemFactory | 1,349 | 30% |
 | builds the weapon stat record from the item weapon section | TMotilePart | 1,284 | 55% |
 | grip/owner pass over the weapon stat record | TMotilePart | 1,244 | 0% |
