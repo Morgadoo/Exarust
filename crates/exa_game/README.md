@@ -464,11 +464,12 @@ gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 a name and a handler (`cshd` from the shader programs, `msm` from the mesh
 subdivider), a line splits at its first space into the command and its
 argument, the command is matched with ASCII case ignored, and the first
-registered match runs. The settings file's `KeyDef` hotkeys
-(`settings_ini::Hotkey`) become `KeyCommands`; the first six the original
-binds run their lines from `CommandQueue`, one line per frame, as the
-settings unit does. `exarust` registers `cshd` (reload every embedded
-render shader) and `msm`.
+registered match runs. The settings file's bound `KeyDef` hotkeys
+(`settings_ini::Hotkey`) become `KeyCommands` and run their lines from
+`CommandQueue`; running one line per frame is a guess (the code that
+advances a binding's list was not traced). `exarust` registers `cshd`
+(reload the 12 embedded render shaders) and `msm`, whose handler only logs
+(the model view's `--msm` does the subdivision).
 
 ## In-game screens
 

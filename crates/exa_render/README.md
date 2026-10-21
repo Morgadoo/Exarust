@@ -23,7 +23,7 @@ and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 
 - `shader_template`, `shader_program`, `shader_uniforms`: the original's
   template expansion, program choice and uniform blocks (above).
-- `shader_reload`: the `cshd` debug command's reload of every embedded render shader (the original re-reads its GLSL sources).
+- `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `glow`: `GlowMaterial`, the thaumaturgy effects' additive stand-in (vertex colour times a tint, both faces, no shadows) until their own programs are ported ([`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md), Drawing).
 - `sun_fit`: the fitted orthographic region of the sun's one shadow map in a terrain level: the clipping planes the camera's view direction picks at the scene's edges and the level's floor and ceiling (cut with `exa_physics::intersect::ConvexVolume`), the corner merge, the 200 cm radius quantisation with its 0.3/0.1 step hysteresis, the texel-grid centre snap, the fixed ±8000 cm depth, the light's frame and the cascade matrices Bevy's shadow pass uses; `SunFit` keeps the half extent between frames ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).

@@ -35,10 +35,11 @@ use std::collections::VecDeque;
 use crate::stream::RingQueue;
 use exa_formats::data_stream::DataStream;
 
-/// The stream thread's own buffers: the chunk stream and the record parser
-/// it reads level objects, database objects and characters with. The
-/// original creates both in its constructor; the scheduler above runs on
-/// whichever executor drives it (Bevy's task pool here).
+/// The stream thread's two data streams, which the original's constructor
+/// creates (two different stream classes). Which one reads what is a guess:
+/// the names follow how the thread's loaders use them. Nothing uses the
+/// type yet; the scheduler above runs on whichever executor drives it
+/// (Bevy's task pool here).
 #[derive(Debug, Default)]
 pub struct StreamThread {
     chunk_stream: DataStream,

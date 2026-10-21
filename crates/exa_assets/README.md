@@ -52,8 +52,10 @@ libraries in their order and `object_model` loads the first match, as the
 original's `TObjLibManager` does; the master model is cached and every
 placement shares its meshes and materials. A node flagged `0x8000` is a
 placeholder: the master keeps its data, but a spawned clone draws nothing
-at its transform (`ModelNode::placeholder`), as the original's clone does.
-The worker unit's weighted three-plane sum is `noise::weighted_planes`.
+and registers no body at its transform (`ModelNode::placeholder`), as the
+original's clone replaces it with a plain node. No shipped model carries
+the flag. The worker unit's weighted three-plane sum is
+`noise::weighted_planes` (not called yet).
 
 ## Materials
 
@@ -207,9 +209,8 @@ one requested character in the same pass, and only when none of those was
 queued the pending streamed character nearest the focus point (squared
 distance, strict `<`, so the first of equal distances wins), else idle. A
 request that builds nothing is dropped. `StreamThread::new` holds the
-thread's own two empty buffers (its chunk stream and record parser), as
-the original's constructor creates them; the loop above runs on the
-executor that drives it. A placed actor of the operative kind
+thread's two empty data streams, as the original's constructor creates
+them (unused so far); the loop above runs on the executor that drives it. A placed actor of the operative kind
 the session's arrival word names (15 after a journey, 18 after a start or a
 load), or an object whose marker record's first word is the arrival word,
 becomes the player and its position the point the stream orders by; an object that cannot

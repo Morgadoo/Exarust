@@ -672,15 +672,6 @@ impl Exporter {
         Self::default()
     }
 
-    /// Clears what an export leaves behind: the texture renames. The four
-    /// collections the original frees here (materials, nodes, props,
-    /// characters) are per-export lists in [`Exporter::export`], so they
-    /// are already gone; the rename list lives over a session, as the
-    /// original's does.
-    pub fn clear(&mut self) {
-        self.texture_renames.clear();
-    }
-
     /// Writes a whole chunk tree. `extra`, when given, writes after the
     /// environment (the original's hook for the caller's own chunks).
     pub fn export(

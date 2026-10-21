@@ -124,18 +124,21 @@ lists, relations, the attitude, encounters) are in
 [`crates/exa_ai/README.md`](../../crates/exa_ai/README.md).
 
 **Locales** (`locales.rdb`, magic `0xDBAE0D01`): 17 records of 44 bytes,
-a 16-byte lower-cased name (`Exanima`, `Exanima01` … `Exanima67_C1`,
+a name field of 20 bytes (`Exanima`, `Exanima01` … `Exanima67_C1`,
 `Arak_Ar`), then a word that is 1 for every level but `Exanima`, the rest
-zero. A level's locale is the id of the record whose name is the level's
-without its extension (`exanima01.rfc` → 2), compared over the 16-byte
-field with ASCII case ignored; entries for one character compare their
+zero. The original's lookup compares and copies only the first 16 bytes of
+the field. A level's locale is the id of the record whose name is the
+level's without its extension (`exanima01.rfc` → 2); the lookup compares
+the 16 bytes raw against the stored name lower-cased (Exarust lower-cases
+the query too, so case is ignored); entries for one character compare their
 locale with it [guess: the global those entries read is the current
 locale's id]. `exa_formats::locales::LocaleDb` loads it and copies the
 16-byte name; `exa_formats::uid` is the mutable id-keyed database whose
 loader checks the expected magic and runs an upgrade hook before clearing
 the table ("Invalid or obsolete database format."), with find-by-id,
 record views, in-place payload replacement, and the separate sorted
-id→offset index (insert, find, delete, payload pointer, set data, free).
+id→offset index (insert, find, delete and block store; a block's first
+word is its length, itself included; the game does not read it yet).
 
 ## Object database
 

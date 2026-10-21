@@ -1,24 +1,23 @@
-//! The worker unit's weighted three-plane sum, used by the image-noise
-//! generator: one float plane per RGB channel (or per sample set), combined
-//! into an output plane with three weights.
+//! The worker unit's weighted three-plane sum, which the original's
+//! image-noise generator calls: three float planes combined into an output
+//! plane with three weights.
 //!
 //! The original walks `width × height` samples and computes
-//! `plane0·w0 + plane1·w1 + plane2·w2` in single precision, in that order.
+//! `plane0·w0 + plane1·w1 + plane2·w2` in single precision, adding the first
+//! two products before the third.
 //! It fills the last sample too (the loop counter starts at −1 and is
 //! pre-incremented), which is what the slice loop here does.
 
-/// Sums three equally long float planes into `out` with weights `weights`.
-///
-/// # Panics
-///
-/// Panics when the planes or `out` have different lengths. The caller sizes
-/// them from the same width and height, as the original does.
+/// Sums three float planes into `out` with weights `weights`, over the
+/// shortest of the four lengths (the original's callers size all four from
+/// the same width and height). Nothing calls it yet: the image-noise
+/// generator that uses it in the original is not ported.
 pub fn weighted_planes(planes: [&[f32]; 3], out: &mut [f32], weights: [f32; 3]) {
-    assert_eq!(out.len(), planes[0].len(), "plane 0 length");
-    assert_eq!(out.len(), planes[1].len(), "plane 1 length");
-    assert_eq!(out.len(), planes[2].len(), "plane 2 length");
-    for i in 0..out.len() {
-        out[i] = planes[0][i] * weights[0] + planes[1][i] * weights[1] + planes[2][i] * weights[2];
+    let samples = out
+        .iter_mut()
+        .zip(planes[0].iter().zip(planes[1]).zip(planes[2]));
+    for (out, ((&a, &b), &c)) in samples {
+        *out = a * weights[0] + b * weights[1] + c * weights[2];
     }
 }
 
@@ -37,14 +36,16 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_plane_writes_nothing_and_mismatches_are_caught() {
+    fn an_empty_plane_writes_nothing_and_a_short_plane_stops_the_sum() {
         let mut out: [f32; 0] = [];
         weighted_planes([&[], &[], &[]], &mut out, [1.0, 0.0, 0.0]);
         assert_eq!(out, []);
-        let mut one = [0.0f32];
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            weighted_planes([&[1.0], &[], &[]], &mut one, [1.0, 1.0, 1.0]);
-        }));
-        assert!(result.is_err());
+        let mut two = [9.0f32; 2];
+        weighted_planes(
+            [&[1.0, 1.0], &[2.0], &[3.0, 3.0]],
+            &mut two,
+            [1.0, 1.0, 1.0],
+        );
+        assert_eq!(two, [6.0, 9.0]);
     }
 }

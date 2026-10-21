@@ -482,17 +482,6 @@ fn the_rfi_extension_keeps_the_layer_kind() {
 }
 
 #[test]
-fn clearing_an_exporter_drops_the_session_renames() {
-    let mut ex = Exporter::new();
-    ex.texture_renames.push(TextureRename {
-        source: name("A.rfi"),
-        renamed: name("B.rfi"),
-    });
-    ex.clear();
-    assert!(ex.texture_renames.is_empty());
-}
-
-#[test]
 fn extensions_are_replaced_from_the_last_dot_or_the_end() {
     assert_eq!(replace_extension(&name("abc"), b"_rfi"), name("abc_rfi"));
     assert_eq!(replace_extension(&name("a.b.c"), b"_rfi"), name("a.b_rfi"));

@@ -81,7 +81,7 @@ pub struct ModelNode {
     pub is_skin: bool,
     /// Whether the node is an object-library placeholder
     /// ([`exa_formats::rfc::Node::PLACEHOLDER`]): a clone keeps its
-    /// transform but draws nothing.
+    /// transform but draws nothing and has no body.
     pub placeholder: bool,
 }
 

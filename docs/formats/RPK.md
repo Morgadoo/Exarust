@@ -33,14 +33,15 @@ record shape (16-byte records); it is the object string library
 
 ## In-memory packs
 
-The same table layout is edited in memory by the original's material and
-shader libraries (`TMemBlockLibrary`): the table is sorted by the 16-byte
-lower-cased name; adding a name inserts a zeroed entry, replacing a
-payload overwrites it in place at the same length, else closes the old
-bytes' hole, moves later payloads and offsets, and appends the new bytes,
-and deleting replaces with an empty payload and closes the table up.
-`exa_rpk::MemArchive` reproduces those edits and writes the pack back
-(byte for byte when nothing was edited).
+The original's in-memory block library (`TMemBlockLibrary`) edits the same
+table layout: adding a name inserts a zeroed entry at its sorted place (by
+the 16-byte lower-cased name), replacing a payload overwrites it in place
+at the same length, else closes the old bytes' hole, moves later payloads
+and offsets, and appends the new bytes, and deleting replaces with an empty
+payload and closes the table up. `exa_rpk::MemArchive` reproduces those
+edits; it keeps the entries in the file's order when it parses. Its
+`write` is Exarust's addition (the original never writes the library back);
+an unedited archive writes back byte for byte.
 
 ## Project file (`.rfp`)
 
@@ -58,10 +59,13 @@ str = u32 length + bytes (no terminator)
 ```
 
 The interpretation of the three counts is inferred (it consumes the file
-exactly). The resource pack path is resolved against the project's folder
-and gets `.rpk` appended; a path containing a drive (`:`) is taken as it
-is. The listed object and texture libraries are opened at start-up and a
-missing one is fatal ("Unable to locate data files."). The user folder is
+exactly). A project path is joined to the project's folder; a path
+containing a drive (`:`) is taken as it is (`Project::resolve_path`). The
+resource pack is mounted by the literal name `Resource` (the shipped file
+names the same), and the packs under the listed object and texture
+libraries are opened at start-up; the original reports "Unable to locate
+data files." when one is missing, and Exarust errors on a missing pack it
+knows by name and skips a listed name it does not know. The user folder is
 `<project folder>/Userdata` when it exists, else `%APPDATA%/<name>`
 (roaming appdata; `Project::user_folder`). The other packs (`Apparel`,
 `Characters`, `CharExt`, `Components`, `ComponentTex`, `Emblems`,
