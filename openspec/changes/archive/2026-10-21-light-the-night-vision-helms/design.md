@@ -15,7 +15,7 @@ for the original's sweep of the scene's static meshes.
 ## Open questions and how they were answered
 
 - Where the switch's byte lies in Exarust's item body: the original reads
-  its section pointer at `+0x21c`; the installed database has no non-zero
+  the byte 0x21C past its section pointer; the installed database has no non-zero
   byte at data offset 0x21C and exactly the three night-vision helms at
   0x214, so the pointer includes the 8-byte header (corpus scan).
 - The head the light hangs over: the part whose bone is 10, by the writer

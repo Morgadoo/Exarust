@@ -20,6 +20,6 @@ of the frame (after the cursor ground, before the combat mode's frame).
   (REA, the handler's calls), so the slots are named that way.
 - The handler's flag bits 1 and 2 (likely a repeat and a modifier): Bevy's
   just-pressed keys never repeat; the second bit is not read [?].
-- The flag that forces combat mode off (`+0x1301`) was not traced [?].
+- The player's flag that forces combat mode off was not traced [?].
 
 No format page changes; the page extended is `docs/PLAYER.md`.

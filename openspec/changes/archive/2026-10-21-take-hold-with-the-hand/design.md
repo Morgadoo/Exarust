@@ -56,7 +56,8 @@ stands in for the original's walk from the hit node up to its rigid body.
 - The pass limit: `JG` on `pass > limit` with passes from 0 (the loop's
   start at −1 + 1), so limit 1 runs two passes (REA, assembly), correcting
   the notes' "only the first".
-- The hip `+0xb34`: no direct writer found; taken as the pelvis part's
+- The hip (the body's reference point the swing whoosh plays at): no
+  direct writer found; taken as the pelvis part's
   position, labelled as inferred.
 - The Ctrl drag's release not clearing the object hold: only two writers
   exist (the press sets, the lift's release clears), so the quirk is kept.
