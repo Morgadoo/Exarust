@@ -1090,7 +1090,9 @@ factory weapons of a real save, part for part and material for material.
   q = byte/255): a twist per part from B; per part and deform
   value = (2B−1)·blend + (1−blend)·(2A−1); per part a presence roll and a
   weighted pick among variants whose tags agree with earlier choices. The
-  first part offering a tag owns it. Then per area a weighted material
+  first part offering a tag owns it; the original initialises only the first
+  tag_count−1 owners, so the last tag never constrains a later part (a
+  defined stand-in for its uninitialised stack slot). Then per area a weighted material
   roll (weights 100/50/20/10 by class, scaled by distance from q to the
   candidate's level) with a finish (nibbles 3/7/11/15) and a colour by the
   material's colour class on the lifted palette ramp. A patterned candidate

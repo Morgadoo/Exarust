@@ -1484,6 +1484,31 @@ mod tests {
     }
 
     #[test]
+    fn a_full_roll_stores_its_choices_when_seed_a_is_set() {
+        let f = tiny_factory();
+        let built = f.build(&WeaponSpec {
+            seeds: [5, 6],
+            quality: 128,
+            ..Default::default()
+        });
+        assert_eq!(built.flags, 0);
+        let choices = built.choices.expect("stored choices");
+        assert_eq!(choices.selection, built.generated.selection);
+        assert_eq!(
+            choices.areas[0].material,
+            built.generated.materials[0].material
+        );
+        assert_eq!(choices.areas[0].mode, 5);
+        // No seed A, no storage.
+        let built = f.build(&WeaponSpec {
+            seeds: [0, 6],
+            quality: 128,
+            ..Default::default()
+        });
+        assert!(built.choices.is_none());
+    }
+
+    #[test]
     fn a_parsed_v0_recipe_uses_the_parser_defaults() {
         let mut b = Vec::new();
         b.extend_from_slice(&0xAFCE_0F00u32.to_le_bytes());
@@ -1612,6 +1637,44 @@ mod tests {
         assert!((p[1][0] - (-cos * 0.0)).abs() < 1e-5);
         assert!((p[1][1] - ((1.0 - 0.5) + 0.0 * sin)).abs() < 1e-5);
         assert!((p[0][0]).abs() < 1e-6 && (p[0][1]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shipped_stored_choices_match_a_fresh_roll() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let factories = game.pack(exa_rpk::PackKind::Factories).unwrap();
+        let db = crate::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let (mut checked, mut matched) = (0, 0);
+        for item in crate::objdb::items(&db) {
+            let Some(w) = item.weapon else { continue };
+            let Some(name) = item.model.strip_prefix('@') else {
+                continue;
+            };
+            if !w.has_stored_choices() || w.seeds[0] == 0 || w.seeds[1] == 0 {
+                continue;
+            }
+            let f = Factory::parse(factories.get(name).unwrap()).unwrap();
+            let n = f.parts.len();
+            let rolled = f.roll(w.seeds[0], w.seeds[1], w.quality, 0);
+            let initial = f.initial_choices(w.seeds[0], w.quality, 0);
+            checked += 1;
+            if rolled.selection[..n] == w.selection[..n]
+                || initial.selection[..n] == w.selection[..n]
+            {
+                matched += 1;
+            } else {
+                eprintln!(
+                    "{name}: rolled {:?} init {:?} stored {:?}",
+                    rolled.selection, initial.selection, w.selection
+                );
+            }
+        }
+        assert_eq!(matched, checked);
+        assert!(checked > 0);
     }
 
     #[test]
