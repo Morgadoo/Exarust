@@ -26,6 +26,7 @@ pub mod shader_program;
 pub mod shader_reload;
 pub mod shader_template;
 pub mod shader_uniforms;
+pub mod shadow_map;
 pub mod shell;
 pub mod smoke;
 pub mod splines;
