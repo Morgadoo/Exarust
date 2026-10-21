@@ -4,6 +4,8 @@
 //! shadows like any other torch; the hand holding it keeps its own handle
 //! out of the light's shadow map, as the original does. Nothing keeps the
 //! light off the body holding it: the original has no such rule either.
+//! The torch's fire rides the hand (`exa_world::flame::CarriedFire`), as
+//! the original's emitter on the item's body does.
 //!
 //! A free main hand (the right) takes the torch, with the "Torch" overlay
 //! on the one-handed moveset raising it; beside a weapon it goes in the off

@@ -146,13 +146,13 @@ pub struct ArcSpec {
     /// default).
     pub jitter: f32,
     /// A second tendril value a device sets to 0.5 and a record may set
-    /// (`+0x1c`); read by the tendril tick, outside this evidence.
+    /// (its bytes 0x1C); read by the tendril tick, outside this evidence.
     pub sway: Option<f32>,
     /// The tendrils' reach (cm): the weapon's 24, the spark's 8, half a
     /// device's size. The extra tendrils of a burst start this far apart.
     pub reach: f32,
     /// A scale a device sets to its size × 0.005 and a record carries
-    /// (`+0x50`); read by the tendril tick, outside this evidence.
+    /// (its bytes 0x50); read by the tendril tick, outside this evidence.
     pub drift: f32,
     /// The light the arc adds.
     pub glow: Option<Glow>,

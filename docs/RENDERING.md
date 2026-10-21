@@ -1064,10 +1064,12 @@ the emitters and their rules in `exa_world::fire`, `exa_world::flame` and
   object record's percent).
 - `0.35 < s < 0.5`: the medium-small flame (`_FirePrt01`, 8/1500) and a
   `_FireBas` bed 15s cm below it; the light sits 40 cm up.
-- `0.5 ≤ s ≤ 1`: the medium flame (12/1600) with a bed 20s cm below; the
-  light 50 cm up.
+- `0.5 ≤ s ≤ 1`: the medium flame (12/1600) with a bed 20s cm below,
+  scaled by the whole size (the 0.35–0.5 bed by half of it); the light
+  50 cm up.
 - `s > 1`: the large flame at half the size (12/1500) with a bed 40·(s/2)
-  cm below; the light 40 cm up.
+  cm below; the light 40 cm up. Both emitters are one-shot: they stop when
+  their ring wraps and, once it empties, the fire is removed.
 - The flame gets `round(√s · 4)` (or 5) sources on a ring at 20–40 s cm,
   each at least π/n apart in angle; the beds have one source at the node.
 
@@ -1081,38 +1083,58 @@ cm), buoyancy (−1.25/−0.5/−0.05/−1.5/−0.33/−1.5/−0.33 × gravity),
 scales half-size by 0.5 + 0.5s, speed by s², volume by s, rate by s
 (rounded to even), ring by 0.5s + s², buoyancy by s, the light by √s, and
 the density normaliser by 0.9s² + 0.1s. The keys' RGB are scaled by 0.7 at
-load (K1…Kn, alpha untouched); the beds' keys carry no alpha, so they add
-their colour without dimming.
+load (K1…Kn: byte·(1/255)·0.7·255, rounded half to even, so 160 becomes
+112; alpha untouched; the 0.35–0.5 bed's table is not scaled). The beds'
+keys carry no alpha, so they add their colour without dimming; they peak
+two thirds (0.35–0.5) and half way (the others) through a particle's life.
 
 **Emitter state and order** (all at the 83 Hz tick, one ring of
 `capacity + 1` slots):
-- Derived: interval = (83/rate)·⅔; lifetime = trunc(83·life); per-tick
-  retention = v^(1/83) (1 when v ≤ 0); growth = template · half-size;
-  pool = sources·trunc(rate·life·1.5 + 1.501) + 2 (a torch: 97); density
+- Derived: interval = (83/rate)·⅔ (in double); lifetime = trunc(83·life);
+  per-tick speed = speed/83; per-tick retention = exp(ln v / 83) in double
+  (1 when v ≤ 0); growth = template · half-size; pool =
+  sources·trunc(rate·life·1.5 + 1.501) + 2 (a torch: 97); density
   normaliser = trunc(rate·life) · sources.
+- Random draws: integers from the engine's linear congruential sequence
+  (`seed·0x08088405 + 1`, `(seed·n) >> 32`), units from the run-time
+  library's Mersenne twister (×2⁻³², double). Both are process-wide and
+  clock-seeded in the original; Exarust keeps one pair per emitter.
+- The emitter enters the world at its node: its sources' last positions
+  and its measured motion start there, so the first particle is not flung
+  from the origin.
 - Each tick, in order: the light's flicker walk and density; ageing (dead
   at the head popped, extra losses, the distance cap); the burst refund;
   Verlet integration; the one-shot/finite checks; the accumulator's
   two-thirds loss; spawning while the accumulator is below one; the
-  bounding box.
+  bounding box (centre = min + (max − min)/2, extent + 5 cm). The head pops
+  count one more when they empty the ring onto a dead slot, which the burst
+  refund (−(min(k, 4) − 1)·interval for k > 1) sees.
 - Ageing: with the fire flag every particle loses one life a tick, half
   again at random, and its life is capped to round((R − D)·L/R) when
-  shorter, where R = 140·(the emitter's size) and D = |(x, 0.7y, z)| from
-  the node. A torch dies after roughly 30–60 ticks, 40–55 cm up.
+  shorter, where R = 140·(the emitter's size), D = |(x, 0.7y, z)| from
+  the node (0.7 in double) and the round is half to even. A torch dies
+  after roughly 30–60 ticks, 40–55 cm up.
 - Integration: d = p − q; q = p; d.y += gravity·buoyancy (gravity
-  −980.665/83² cm/tick²); p += d·retention; then p.x/z move a fraction
+  −980.665·(1/83²) cm/tick²); p += d·retention; then p.x/z move a fraction
   `centring` toward the node's x/z. There is no other drag or noise.
 - Spawning: at the source frame, plus a ring offset in world XZ,
-  r = R_ring·(1 − u⁴) (u uniform); mode 1 adds a random velocity
-  x/z = spread·(rand(2001) − 1000)/1000 and y = rand(1001)/1000, rotated
-  by the source frame, so a torch starts at rest with a 0–1 cm/tick
-  upward kick (2× retention in the initial Verlet pair); other modes use
-  +Y. The previous position then loses 0.3 of the source's own motion.
-  Draws: lifetime (when randomised), UV variant, ring angle and u⁴, then
-  the velocity's three integers, in that order.
-- The light: x walks softly in ±1 with v ±= u past the bounds and else
-  v += 2(u − ½), x += 0.3·v·u (three draws); jitter += (u − ½)·0.125 in
-  [0.87, 1.15]; density = 0.8·density + 0.2·live/normaliser.
+  r = R_ring·(1 − u⁴) (u uniform, u⁴ in double); mode 1 draws a random
+  direction x/z = spread·(rand(2001) − 1000)/1000 and y = rand(1001)/1000
+  (in double), x·axis₀ + y·axis₁ + z·axis₂ of the source frame (a ring
+  source's second axis points out of the ring); other modes use +Y. The
+  pair is q = p − c·dir, p += c·dir with c = the per-tick speed, which is
+  zero for every small fire: a torch's particles start at rest. The
+  previous position then loses 0.3 of the source's own motion. Draws:
+  lifetime (when randomised), UV variant, ring angle and u, then the
+  velocity's three integers, in that order.
+- A carried torch's fire rides the item's body [inf]: each tick its live
+  particles move by half the body's velocity at the emitter (here the
+  node's displacement over the tick) and new ones inherit 0.3 of it, so
+  the flame trails a little behind the hand.
+- The light (all in double): x walks softly in ±1 with v ±= u past the
+  bounds and else v += 2(u − ½), x += 0.3·v·u (three draws); jitter +=
+  (u − ½)·0.125 in [0.87, 1.15]; density = 0.8·density +
+  0.2·live/normaliser. A new peak needs a strictly brighter frame.
   Intensity = density·(1 + 0.05x)·base; softness = 2·jitter; an emissive
   parent's scale is 0.8·density·(0.9 + 0.2x). Sound: with the motion flag
   the volume follows the smoothed emitter motion; otherwise it walks
@@ -1120,30 +1142,36 @@ their colour without dimming.
   [0.85, 1.15] (or [0.6, 1.4]). Exarust keeps the walks but plays no loop.
 
 **Drawing** (per frame, oldest first, no depth sort):
-- Position p = q + (p − q)·α; age = 1 − (life − α)/L.
+- Position p = q + (p − q)·α; age = 1 − (life − α)·(1/L).
 - Mode 4 (flames): w = (p − q) − (0, buoyancy, 0); d = −w/|w|; A is the
-  unit vector from the camera to the emitter's centre; ℓ = |d × A|;
-  half-width = S + ℓ·age²·growth; stretch =
-  (2 − 2/(|w| + 1))·stretch·acos(|d·A|); the four corners are the
-  diamond's tips, the long axis along A-projected motion, scaled by
-  1 + stretch.
-- Mode 1 (beds): a screen-facing quad whose half-width is
-  S + age²·growth, stretched by 1 + the template's stretch along the
-  screen's up axis. Mode 0 is a flat billboard of half-size S.
+  unit vector from the camera to the emitter's centre (both in cm);
+  c = d × A, ℓ = |c|; k = S/ℓ + age²·growth; X = c·k (half-width
+  S + ℓ·age²·growth); Y = c × A; stretch = (2 − 2/(|w| + 1))·stretch·
+  acos(|d·A|) with the original's fast arc cosine
+  (π/2 − 0.2075x + 0.0535x²)·√(1 − x); corners P − Y·(1 + stretch)·k,
+  P + X, P − X, P + Y·(1 + stretch)·k (tail, sides, head). Lengths add
+  x² + z² first, then y².
+- Mode 1 (beds): a quad facing the line to the emitter's centre about the
+  camera's up axis, half-width S + age²·growth and half-length
+  (1 + Y.y)·that, Y the quad's unit up axis. Mode 0 is a flat billboard of
+  half-size S.
 - UVs: one of the four atlas cells × one of the eight square symmetries
   (variant 0..31), or a direct 8-symmetry variant.
-- Colour: the keys at f = n·age, K[k+1]→K[k+2], truncated; odd ring slots
-  start one key later; flat mode uses a = round((1 − f²)·255) and the
-  material's opacity.
+- Colour: the keys at f = n·age, K[k+1]→K[k+2], each channel rounded half
+  to even and saturated; odd ring slots start one key later; flat mode
+  uses a = round((1 − f²)·255) and the material's opacity.
+- A hidden flame keeps ticking but builds no quads (the original builds
+  them only for a visible node).
 - Output: texture × vertex colour, premultiplied (ONE,
   ONE_MINUS_SRC_ALPHA), no depth writes. The beds are additive in effect
   because their key alpha is zero.
 
-Still missing for fires: the per-tick tendril of a carried fire's body
-attachment (the emitter translates by half the body velocity, and the
-particles' source frame follows the body), body contacts being driven from
-the physics step, the emissive scale on the fire's parent mesh, and the
-looping sound.
+Still missing for fires: fires on other physics bodies (only the carried
+torch rides its item), the source frame following the body, body contacts
+being driven from the physics step, the emissive scale on the fire's
+parent mesh, the per-node detail value (size·1000/distance), the
+quality-scaled pool override, and the looping sound (its walks run at the
+tick, not per frame).
 
 ## Electricity
 
@@ -1151,39 +1179,50 @@ The original's electric arcs (`RFE_Effects_Electricity`) are reproduced as
 rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
 
 - **Presets.** An electrified weapon: 20 tendrils of 5 segments, size 2 cm
-  (three-quarters after the preset), 10–19 ticks, the `electricity03` hum
-  and the voxel light (0.6, 0.6, 1) of 16 at 180 cm. A spark burst: 20 + 6
-  tendrils of 5 segments at 3 cm, 10–19 ticks, the light (0.5, 0.5, 1) of
-  8 at 100 cm. A level device from its object record: size =
-  duration/1000, segments = round(length/(4·size)) (10 when below 2),
-  tendrils = branches (10 when 0), the `electricity01` hum, and a point
-  light (0.6, 0.65, 1), multiplier 2, softness 5, radius 80·size cm, with
-  the 16-at-180 cm voxel light.
+  (width 4 cm; segments of 0.75·8 = 6 cm), sustained, its tendrils renewed
+  every 10–19 ticks (the run-time library's Random(10) + 10), jitter 0.075,
+  reach 24 cm, the `electricity03` hum and the voxel light (0.6, 0.6, 1)
+  of 16 at 180 cm, 53 cm up its item. A spark burst: 20 + 6 tendrils of 5
+  segments at size 3 (width 6 cm, segments of 2·12 = 24 cm), one-shot over
+  10–19 ticks, jitter 0.05, reach 8 cm, the voxel light (0.5, 0.5, 1) of 8
+  at 100 cm. A level device from its object record: size = duration/1000,
+  segments = round(length/(4·size)) (10 when below 2), tendrils = branches
+  (10 when 0), jitter 0.1, a second tendril value of 0.5, reach size/2,
+  the `electricity01` hum, and a point light (0.6, 0.65, 1) of size/2,
+  multiplier 2, softness 5, radius 80·size cm; no voxel light.
 - **Record.** The 84-byte arc record holds flags, tendril count, segments,
-  lifetime (ms), size, scale, a reserved word, the direction jitter, the
-  burst radius, a 15-byte sound name, an offset, a direction and a length.
-  A short record is an error; nothing panics.
-- **Charge.** An electrified item adds 0x10 a hit (0x80 for a heavy part);
-  the step that would cross 255 fills the charge and releases the effect.
-  With a live part the arc is created unless a finished one exists; a dead
-  part releases it. Releasing hides the first 0x21-kind node, sets its
-  state to 1 and clears the callbacks.
+  the tendrils' lifetime in ticks, size, the segment length's scale, a
+  reserved word, a second tendril value (0x1C), the reach (0x20), a
+  15-byte sound name (none when empty), the jitter (0x34, 0.1 when not
+  positive), an offset, a direction and a drift scale (0x50). Flag 1 makes
+  the arc sustained, renewing every n + Random(n) ticks; without it the arc
+  is one-shot over n ticks, its first segment along the direction. Flag
+  0x200 adds the weapon's voxel light; 0x300 registers an electric flow
+  with the voxel GI instead. A short record is an error; nothing panics.
+- **Charge.** An electrified item adds 10 a hit (0x80 when the part kind
+  has bit 0x10); the step that would reach 255 fills the charge and
+  releases the effect. With a live part the arc is created unless a live
+  one exists; a dead part releases it. Releasing stops the first arc child
+  renewing, sets its state to 1, and clears the owner's callbacks.
 - **Geometry.** Each tendril is a polyline of `segments` points between the
-  arc's ends, jittered inside them; each segment becomes a camera-facing
-  quad of width 2·size·scale. The segment count, width and timing are the
-  original's; the tendril's own per-tick motion is a model (the original's
-  tendril emitter is a separate component), so the zig-zag's exact shape is
-  [guess].
-- **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25`; a = the texture's
-  red mixed a third into the ribbon's V; a = 1 − |2a − 1|; b = a²⁴;
-  a = a⁶; colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
+  arc's ends (along +X, the segments end to end, unless a record or a
+  device sets the direction and length), jittered inside them; each
+  segment becomes a camera-facing quad of width 2·size, U along it and V
+  across it. The segment count, width and timing are the original's; the
+  tendril's own per-tick motion is a model (the original's tendril emitter
+  is a separate component), so the zig-zag's exact shape is [guess].
+- **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25` with TexOfs =
+  (0, the tendril emitter's scroll); a = the texture's red mixed a third
+  into the ribbon's V (across it); a = 1 − |2a − 1|; b = a²⁴; a = a⁶;
+  colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
   EdgCol (0.15, 0.2, 0.4)·a·2; then squared. Additive, two-sided, unlit.
   The material's emissive texture is a white stand-in until its library
   texture is available.
 
 Still missing: the exact per-tick tendril integration (jitter, segment
-lifetimes and the texture-scroll phase), the `_ElecMat01` emissive map, the
-per-branch scissor/uniform loop and the electric device's hum.
+lifetimes and the texture-scroll rate), the `_ElecMat01` emissive map, the
+per-branch scissor/uniform loop, the GI flow, the device's hum, and the
+callers (nothing spawns an arc yet).
 
 ## Rooms and black fill
 
