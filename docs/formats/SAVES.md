@@ -278,7 +278,9 @@ zero: the slot is neither listed nor loaded.
   hireables and shop-stock chunks, regenerates the hireables when the
   mask keeps them, repairs the player record's item ids and compacts the
   hub stash. Exarust's load does the section drop, the position and the
-  chunk removal, and carries the pure compaction passes
+  chunk removal, and writes the converted player data back so a later save
+  does not revive the skipped chunks (the original keeps the empty lists in
+  memory only). It carries the pure compaction passes
   (`arena_save::retain_plain_items`, `retain_plain_records`,
   `remove_duplicate_item_ids`); regeneration, the record repair and the
   object-database id passes are not modelled.

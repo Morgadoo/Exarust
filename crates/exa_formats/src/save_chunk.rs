@@ -2,8 +2,9 @@
 //!
 //! The chunk is the header `0xECADCA01`, a twelve-byte tag and two dwords;
 //! the old flag is set when the tag's version float is below one million.
-//! The curve is two quadratics joined at 0.5.
-//! Evidence: the three retail routines behind it (`docs/formats/OTHER.md`,
+//! The curve is two quadratics joined at 0.5. The slot file number is the
+//! original's padded decimal (zero is `000`, a negative is `00`).
+//! Evidence: the retail routines behind it (`docs/formats/OTHER.md`,
 //! Saves).
 
 /// The settings chunk's header.

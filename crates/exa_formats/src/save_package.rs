@@ -8,11 +8,17 @@
 //! there rewrites it at its place when the room up to the next section
 //! suffices; otherwise the section is moved to the last gap it fits in, or
 //! appended, and the old bytes are left alone. Deleting a section only
-//! removes its directory entry.
+//! removes its directory entry. A write overlays the header, directory and
+//! payloads on the bytes read, so gaps, deleted payloads and an old tail
+//! survive and the file never shrinks.
 //!
 //! The `#playerdata` section is a fixed 52-byte header followed by the
 //! player's character placement chunk and then tagged chunks. The story and
-//! arena headers share their first 36 bytes and differ in the last 16.
+//! arena headers share their first 36 bytes and differ in the last 16. The
+//! writer emits the chunks it knows in the mode's order; the reader resets
+//! the journal, the global experience worth, the memory flags and the
+//! transition state before reading, and takes the first chunk after the
+//! header as the character whatever its id.
 //!
 //! Evidence and the guesses are in `docs/formats/SAVES.md`; the container
 //! rules come from the package create, open, write and delete routines and
@@ -1260,7 +1266,14 @@ pub fn world_character_db(characters: &[u8]) -> Vec<u8> {
 /// UTF-8 is replaced rather than refused, as the original stores raw text.
 pub fn parse_journal(bytes: &[u8]) -> Result<Vec<JournalRecord>, PlayerDataError> {
     let mut at = 0;
-    let count = take_u32(bytes, &mut at)? as usize;
+    // The count is a signed word; the original hands a negative one to a
+    // dynamic-array resize, which makes the array empty, so no entry is
+    // read.
+    let count = take_u32(bytes, &mut at)? as i32;
+    if count <= 0 {
+        return Ok(Vec::new());
+    }
+    let count = count as usize;
     let mut records = Vec::with_capacity(count.min(bytes.len() / 8));
     for _ in 0..count {
         let id = take_u32(bytes, &mut at)? as i32;
@@ -2359,5 +2372,8 @@ mod tests {
         // A count larger than the data is an error, not a panic.
         let short = 2u32.to_le_bytes();
         assert_eq!(parse_journal(&short), Err(PlayerDataError::Truncated));
+        // A negative count resizes the array to nothing and reads no entry.
+        assert_eq!(parse_journal(&(-1i32).to_le_bytes()).unwrap(), vec![]);
+        assert_eq!(parse_journal(&0u32.to_le_bytes()).unwrap(), vec![]);
     }
 }

@@ -149,10 +149,15 @@ impl Slots {
     }
 
     /// Whether a checkpoint file for the slot exists. The original's test
-    /// only opens the file for reading, so a directory or an unreadable
-    /// file is not a checkpoint.
+    /// only opens the file for reading, so an unreadable file is not a
+    /// checkpoint; a directory is not one either (Windows' create call
+    /// without the backup flag fails on it).
     pub fn has_checkpoint(&self, number: u32) -> bool {
-        fs::File::open(self.file(number, SlotKind::Checkpoint)).is_ok()
+        let path = self.file(number, SlotKind::Checkpoint);
+        fs::metadata(&path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+            && fs::File::open(path).is_ok()
     }
 
     /// Every slot file found by name, in directory order.
@@ -337,7 +342,8 @@ impl Slots {
         number: u32,
         prefer_checkpoint: bool,
     ) -> Result<LoadedSave, SaveError> {
-        let save = fs::File::open(self.file(number, SlotKind::Save)).is_ok();
+        let save = self.file(number, SlotKind::Save).is_file()
+            && fs::File::open(self.file(number, SlotKind::Save)).is_ok();
         let checkpoint = self.has_checkpoint(number);
         // The original's branch: with a checkpoint and either an explicit
         // checkpoint request or no save, open the checkpoint; otherwise a
@@ -1194,6 +1200,10 @@ mod tests {
         );
         assert_eq!(story.order_key(), exa_formats::save_chunk::STORY_ORDER_KEY);
         assert_eq!(arena.order_key(), exa_formats::save_chunk::ARENA_ORDER_KEY);
+        // A directory with the checkpoint's name is not a checkpoint; the
+        // original's create call fails on it.
+        fs::create_dir(story.file(9, SlotKind::Checkpoint)).unwrap();
+        assert!(!story.has_checkpoint(9));
         let _ = fs::remove_dir_all(&dir);
     }
 

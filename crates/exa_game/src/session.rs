@@ -318,13 +318,43 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
     let section = package.section(PLAYER_DATA).ok_or(SaveError::Malformed)?;
     let data = PlayerData::parse(section, flavour_of(section)).map_err(|_| SaveError::Malformed)?;
     let body = data.chunk(EXARUST_CHUNK).ok_or(SaveError::Malformed)?;
-    let session = read_body(body)?;
+    let mut session = read_body(body)?;
     let matches = matches!(
         (session.mode, data.header.flavour()),
         (Mode::Story, Flavour::Story) | (Mode::Arena, Flavour::Arena)
     );
     if !matches {
         return Err(SaveError::Malformed);
+    }
+    // The header is what the original restores; the Exarust payload's copy
+    // is only a fallback for a file whose header a tool changed.
+    match &data.header {
+        PlayerHeader::Story(header) => {
+            session.clock = header.clock;
+            session.seed = header.seed;
+            session.start_background = header.flags & 0xFF;
+        }
+        PlayerHeader::Arena(header) => {
+            session.clock = header.clock;
+            session.company.copper = header.money;
+            session.company.day = header.day;
+        }
+    }
+    // The story chunks carry the experience state; when present they are
+    // what the original restores.
+    if data.header.flavour() == Flavour::Story {
+        if let Some(discovery) = data.chunk(save_package::DISCOVERY_CHUNK) {
+            session.discovery = Some(discovery.to_vec());
+        }
+        if data.chunk(save_package::GLOBAL_XP_CHUNK).is_some() {
+            session.global_experience = Some(data.global_experience());
+        }
+        if data.chunk(save_package::MEMORY_FLAGS_CHUNK).is_some() {
+            session.memory_flags = data.memory_flags();
+        }
+        if data.chunk(save_package::TRANSITION_CHUNK).is_some() {
+            session.transition = data.transition_state();
+        }
     }
     Ok(session)
 }
@@ -763,9 +793,12 @@ mod tests {
         // The defaults: an empty discovery list and a worth of zero.
         assert_eq!(data.chunk(save_package::DISCOVERY_CHUNK), Some(&[0; 8][..]));
         assert_eq!(data.global_experience(), 0);
-        // The session restores its absence.
-        assert_eq!(read(&package(&session)).unwrap().discovery, None);
-        assert_eq!(read(&package(&session)).unwrap().global_experience, None);
+        // The session restores the chunk's default state.
+        assert_eq!(
+            read(&package(&session)).unwrap().discovery,
+            Some(vec![0; 8])
+        );
+        assert_eq!(read(&package(&session)).unwrap().global_experience, Some(0));
         // A session with state writes it, and the non-zero memory and
         // transition chunks follow the experience.
         let mut with = session;
@@ -788,6 +821,48 @@ mod tests {
         assert_eq!(data.global_experience(), 9);
         assert_eq!(data.memory_flags(), 2);
         assert_eq!(data.transition_state()[0], 2);
+    }
+
+    #[test]
+    fn the_player_header_is_what_a_load_restores() {
+        let mut session = Session::story();
+        session.clock = 1;
+        session.seed = 2;
+        session.start_background = 3;
+        let bytes = write(&session);
+        let mut package = PackageImage::read(&bytes).unwrap();
+        let mut data =
+            PlayerData::parse(package.section(PLAYER_DATA).unwrap(), Flavour::Story).unwrap();
+        let PlayerHeader::Story(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.clock = 50;
+        header.seed = 60;
+        header.flags = 2 | save_package::STORY_STARTED_FLAG;
+        package.put_section(PLAYER_DATA, &data.write_ordered());
+        let loaded = read(&package.to_bytes()).unwrap();
+        assert_eq!(loaded.clock, 50);
+        assert_eq!(loaded.seed, 60);
+        assert_eq!(loaded.start_background, 2);
+
+        let mut session = Session::career("Ash");
+        session.company.copper = 4;
+        session.company.day = 5;
+        let bytes = write(&session);
+        let mut package = PackageImage::read(&bytes).unwrap();
+        let mut data =
+            PlayerData::parse(package.section(PLAYER_DATA).unwrap(), Flavour::Arena).unwrap();
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.clock = 70;
+        header.money = 80;
+        header.day = 90;
+        package.put_section(PLAYER_DATA, &data.write_ordered());
+        let loaded = read(&package.to_bytes()).unwrap();
+        assert_eq!(loaded.clock, 70);
+        assert_eq!(loaded.company.copper, 80);
+        assert_eq!(loaded.company.day, 90);
     }
 
     #[test]
