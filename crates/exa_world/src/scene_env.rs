@@ -811,7 +811,7 @@ impl SceneEnvironment {
         let daylight = daylight_factor(sun[1]);
         let day = daylight as f64;
         // Below the threshold the moon; at it, above it or NaN the sun.
-        let is_sun = !(day < DAY_THRESHOLD);
+        let is_sun = day >= DAY_THRESHOLD || day.is_nan();
         let mut towards = if is_sun { sun } else { moon };
         self.daylight = daylight;
         self.daylight_scale = ((day - DAY_SCALE_CENTRE) * DAY_SCALE_SLOPE) as f32;
