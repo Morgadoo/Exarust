@@ -1,0 +1,518 @@
+//! Template migration: refreshing an instance's sections from the template
+//! its header names, as the original does after loading a level or a save.
+//! Layout and evidence: `docs/formats/OTHER.md` (Object database,
+//! Instancing, promotion and migration).
+
+use super::packed::{amount_compact, amount_expand, round_f32, round_f64};
+use super::record::{copy_bytes, section_range, set_u16, set_u32, u16_at, u32_at};
+use super::{
+    BODY, CONTAINER, DOOR, ID_MASK, INHERIT, LOCAL, MODEL, NAME, ObjectDb, TAG_MASK, Tier, WORLD,
+};
+
+/// The materials of each procedural material set (`Layer::random_set`),
+/// from the original's set table: a layer that names a set keeps its
+/// material only when the set lists it. Sets 0 and above 15 list none.
+pub fn material_set(set: u8) -> &'static [u8] {
+    match set {
+        1 | 5 => &[1, 2, 3, 4, 7, 8, 9],
+        2 => &[5, 6, 10],
+        3 | 6 => &[1, 2, 3, 4],
+        4 => &[7, 8, 9],
+        7 => &[13, 20],
+        8 => &[1, 2, 3, 4, 17, 13, 20],
+        9 => &[5, 6],
+        10 => &[7],
+        11 => &[11],
+        12 => &[13, 14],
+        13 => &[13, 14, 15],
+        14 => &[20],
+        15 => &[23],
+        _ => &[],
+    }
+}
+
+/// The byte a body without appearance gives each layer's `+7` byte, by its
+/// material: `0x88` for materials 1 to 25, 0 for 0 and 26 to 51 (the
+/// original's table; higher materials index past it into unrelated data,
+/// and give 0 here).
+fn plain_layer_byte(material: u8) -> u8 {
+    if (1..=25).contains(&material) {
+        0x88
+    } else {
+        0
+    }
+}
+
+impl ObjectDb {
+    /// Migrates one local or world object (tag exactly bit 31 or bit 30,
+    /// non-zero id) from its template. Returns whether the record was
+    /// found and visited.
+    pub fn migrate(&mut self, id: u32) -> bool {
+        if id & ID_MASK == 0 {
+            return false;
+        }
+        let tier = match id & TAG_MASK {
+            WORLD => Tier::World,
+            LOCAL => Tier::Local,
+            _ => return false,
+        };
+        let Some(at) = self.store(tier).find_index(id & ID_MASK) else {
+            return false;
+        };
+        self.migrate_at(tier, at)
+    }
+
+    /// Migrates every record of a tier that has a view, as the original's
+    /// save loader does for a database. Returns how many were visited.
+    pub fn migrate_tier(&mut self, tier: Tier) -> usize {
+        (0..self.store(tier).len())
+            .filter(|&at| self.migrate_at(tier, at))
+            .count()
+    }
+
+    /// The original's migration of one record. Nothing happens unless the
+    /// header names a template that resolves. The material class (header
+    /// word bits 16–23) of the template (read at its payload `0x18`) and
+    /// the instance are compared; then each section of the instance with a
+    /// tag of `0x1000` or more that the template also has is refreshed by
+    /// its kind.
+    fn migrate_at(&mut self, tier: Tier, at: usize) -> bool {
+        let Some(src) = self.store(tier).view(at) else {
+            return false;
+        };
+        let mut payload = src.payload().to_vec();
+        let Some(header) = section_range(&payload, NAME) else {
+            return true;
+        };
+        let template_id = u32_at(&payload[header.clone()], 0x14);
+        if template_id == 0 {
+            return true;
+        }
+        let Some(template) = self.find(template_id) else {
+            return true;
+        };
+        let template = template.payload().to_vec();
+        let class_changed =
+            u32_at(&template, 0x18) & 0xFF_0000 != u32_at(&payload[header], 0x10) & 0xFF_0000;
+        let mut model: Option<std::ops::Range<usize>> = None;
+        let mut pos = 0;
+        while let Some(head) = payload.get(pos..pos + 8) {
+            let tag = u32_at(head, 0);
+            let size = u32_at(head, 4) as usize;
+            if size < 8 || pos + size > payload.len() {
+                break;
+            }
+            let body = pos + 8..pos + size;
+            pos += size;
+            if tag < 0x1000 {
+                continue;
+            }
+            let Some(t) = section_range(&template, tag) else {
+                continue;
+            };
+            let t = &template[t];
+            match tag {
+                BODY => {
+                    let b = &mut payload[body.clone()];
+                    if class_changed {
+                        migrate_appearance(b, t);
+                    }
+                    if u32_at(t, 0x1AC) == 0xFFFF_FFFF {
+                        set_u32(b, 0x1AC, 0xFFFF_FFFF);
+                        copy_bytes(t, b, 0x1B0, 2);
+                        for i in 0..8 {
+                            if let Some(&material) = b.get(0x1B8 + i * 12) {
+                                b[0x1BB + i * 12] = plain_layer_byte(material);
+                            }
+                        }
+                        for i in 0..4 {
+                            let at = 0x218 + i * 2;
+                            if let (Some(&tb), Some(byte)) = (t.get(at), b.get_mut(at)) {
+                                *byte = if tb & 0x80 != 0 { *byte | 0x80 } else { 0 };
+                            }
+                        }
+                    } else if u32_at(b, 0x1AC) == 0xFFFF_FFFF {
+                        copy_bytes(t, b, 0, 0x224);
+                    }
+                    for (at, len) in [
+                        (0x00, 0x10),
+                        (0x10, 0xA0),
+                        (0xB0, 0xA0),
+                        (0x150, 0x50),
+                        (0x1A6, 3),
+                        (0x220, 4),
+                    ] {
+                        copy_bytes(t, b, at, len);
+                    }
+                    refresh_condition(&mut payload, body, t, model.clone());
+                }
+                super::WEAPON => {
+                    let b = &mut payload[body];
+                    if u32_at(t, 4) == 0xFFFF_FFFF {
+                        set_u32(b, 4, 0xFFFF_FFFF);
+                        set_u32(b, 8, 0xFFFF_FFFF);
+                        copy_bytes(t, b, 0xC, 4);
+                    }
+                    set_u32(
+                        b,
+                        0,
+                        u32_at(b, 0) & 0xF000_0000 | u32_at(t, 0) & 0x0FFF_FFFF,
+                    );
+                    if weapon_follows_template(b) {
+                        for (at, len) in [(0x30, 0x10), (0x40, 1), (0x42, 1)] {
+                            copy_bytes(t, b, at, len);
+                        }
+                        // A factory weapon (its model named `@…`) is then
+                        // regenerated by the item factory, which is not
+                        // reproduced here.
+                    }
+                }
+                CONTAINER => {
+                    let b = &mut payload[body];
+                    set_u32(b, 0, u32_at(t, 0));
+                    set_u16(b, 8, u16_at(t, 8));
+                    set_u16(b, 0xA, u16_at(t, 0xA));
+                }
+                DOOR => {
+                    let b = &mut payload[body];
+                    set_u32(b, 0, u32_at(b, 0) | u32_at(t, 0) & 0x200);
+                }
+                MODEL => {
+                    let b = &mut payload[body.clone()];
+                    if class_changed {
+                        copy_bytes(t, b, 0, 0x28);
+                        set_u32(b, 0x14, INHERIT);
+                        set_u32(b, 0x18, INHERIT);
+                    } else {
+                        for (at, len) in [(0, 0x10), (0x10, 4), (0x1C, 4)] {
+                            copy_bytes(t, b, at, len);
+                        }
+                    }
+                    model = Some(body);
+                }
+                _ => {}
+            }
+        }
+        self.store_mut(tier).store(at, &payload);
+        true
+    }
+}
+
+/// The original's weapon test: the words at `+4` and `+8` (the factory
+/// seeds) are non-zero and byte `+0xF` is zero. A weapon that passes takes
+/// the template's stat bytes during migration.
+fn weapon_follows_template(body: &[u8]) -> bool {
+    u32_at(body, 4) != 0 && u32_at(body, 8) != 0 && body.get(0xF) == Some(&0)
+}
+
+/// Refreshes an instance's appearance layers from its template's, as the
+/// original does when the material class changed: mask byte and set; when
+/// the template's mask byte is not zero, the set and, if the instance's
+/// material is not in that set, the set's first material; byte 3; the
+/// template's material when it is not zero; byte `0xB`, and with it the
+/// colour when the template's is 5, unless the instance's byte `0xB` is
+/// already 5. An instance material under a set that lists none is kept
+/// (the original substitutes an uninitialised byte there).
+fn migrate_appearance(body: &mut [u8], template: &[u8]) {
+    for i in 0..8 {
+        let at = 0x1B4 + i * 12;
+        let (Some(t), Some(l)) = (template.get(at..at + 12), body.get_mut(at..at + 12)) else {
+            break;
+        };
+        l[0] = t[0];
+        l[1] = t[1];
+        if t[1] != 0 {
+            l[2] = t[2];
+            let set = material_set(l[2]);
+            if !set.contains(&l[4])
+                && let Some(&first) = set.first()
+            {
+                l[4] = first;
+            }
+        }
+        l[3] = t[3];
+        if t[4] != 0 {
+            l[4] = t[4];
+        }
+        if l[0xB] != 5 {
+            l[0xB] = t[0xB];
+            if t[0xB] == 5 {
+                l[8] = t[8];
+            }
+        }
+    }
+}
+
+/// Recomputes an instance body's protection bytes from its template's by
+/// its condition, and scales the model's value, as the original's
+/// condition refresh does. With quality q and damage d the body's bytes at
+/// `0x1B0`/`0x1B1`:
+///
+/// - k = (1 − d·(0.4/255)) · (q/510 + 0.8);
+/// - `0x1A0`–`0x1A3` = round(template · k), capped at 160;
+/// - `0x1A4` = round((0.3·k + 0.7) · template);
+/// - `0x1A5` = round(template / ((1 − d·(0.15/255)) · (q·(0.3/255) + 0.85)));
+/// - the model's value word `0x1E` (compact amount) becomes
+///   value / (2·tq² + 0.5) · (2·q'² + 0.5) · (2·(1 − d')² + 0.5) · 0.5,
+///   with tq the template's quality and q', d' the instance's, all /255.
+///
+/// The precision of each step follows the original (single or double).
+/// The special handlers it runs for body byte `0x1AA` in 1..=8 are not
+/// reproduced; every shipped body has 0 or 255 there.
+fn refresh_condition(
+    payload: &mut [u8],
+    body: std::ops::Range<usize>,
+    template: &[u8],
+    model: Option<std::ops::Range<usize>>,
+) {
+    let b = &mut payload[body];
+    if b.len() < 0x1B2 || template.len() < 0x1B1 {
+        return;
+    }
+    let q = b[0x1B0];
+    let d = b[0x1B1];
+    let damage_step = f64::from_bits(0x3F59_B34C_E680_19B4); // 0.4 / 255
+    let quality_step = f32::from_bits(0x3B00_8081); // 1 / 510
+    let k = ((1.0 - f64::from(d) * damage_step) * (f64::from(f32::from(q) * quality_step) + 0.8))
+        as f32;
+    b[0x1A4] = round_f64((f64::from(k) * 0.3 + 0.7) * f64::from(template[0x1A4])) as u8;
+    for at in 0x1A0..0x1A4 {
+        b[at] = round_f32(f32::from(template[at]) * k) as u8;
+    }
+    for byte in &mut b[0x1A0..0x1A4] {
+        *byte = (*byte).min(0xA0);
+    }
+    let quality_step = f64::from_bits(0x3F53_4679_ACE0_1346); // 0.3 / 255
+    let damage_step = f64::from_bits(0x3F43_4679_ACE0_1346); // 0.15 / 255
+    let k2 = ((f64::from(q) * quality_step + 0.85) * (1.0 - f64::from(d) * damage_step)) as f32;
+    let inverse = 1.0f32 / k2;
+    b[0x1A5] = round_f32(f32::from(template[0x1A5]) * inverse) as u8;
+    let Some(model) = model else {
+        return;
+    };
+    let curve = |x: f32| x * x * 2.0 + 0.5;
+    let template_quality = curve((f64::from(template[0x1B0]) / 255.0) as f32);
+    let quality = curve((f64::from(q) / 255.0) as f32);
+    let wear = curve((1.0 - f64::from(d) / 255.0) as f32);
+    let scale = quality * wear * 0.5;
+    let m = &mut payload[model];
+    let value = amount_expand(u16_at(m, 0x1E));
+    let scaled = round_f32(value as f32 / template_quality * scale);
+    set_u16(m, 0x1E, amount_compact(scaled as u32));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::record::test_util::*;
+    use super::*;
+    use crate::objdb::{Record, Store, WEAPON};
+
+    fn store(records: &[(u32, u32, Vec<u8>)]) -> Store {
+        Store::from_records(records.iter().map(|(i, f, p)| (*i, *f, &p[..])))
+    }
+
+    fn body() -> Vec<u8> {
+        vec![0u8; 0x224]
+    }
+
+    #[test]
+    fn material_sets() {
+        assert_eq!(material_set(2), &[5, 6, 10]);
+        assert_eq!(material_set(8), &[1, 2, 3, 4, 17, 13, 20]);
+        assert_eq!(material_set(15), &[23]);
+        assert!(material_set(0).is_empty() && material_set(16).is_empty());
+        assert_eq!(plain_layer_byte(25), 0x88);
+        assert_eq!(plain_layer_byte(26), 0);
+    }
+
+    #[test]
+    fn appearance_follows_a_class_change() {
+        let mut t = body();
+        let mut b = body();
+        // Layer 0: the template's mask 2, set 2 (materials 5, 6, 10), no
+        // material of its own; the instance has material 7, not in the
+        // set, so it becomes 5.
+        t[0x1B4..0x1B4 + 12].copy_from_slice(&[9, 2, 2, 3, 0, 0, 0, 0, 0x40, 0, 0, 1]);
+        b[0x1B4..0x1B4 + 12].copy_from_slice(&[0, 0, 0, 0, 7, 0, 0, 0, 0x11, 0, 0, 0]);
+        // Layer 1: the template's material 13 wins; its byte 0xB is 5, so
+        // the colour comes too.
+        t[0x1C0..0x1C0 + 12].copy_from_slice(&[0, 1, 7, 0, 13, 0, 0, 0, 0x22, 0, 0, 5]);
+        b[0x1C0..0x1C0 + 12].copy_from_slice(&[0, 1, 7, 0, 20, 0, 0, 0, 0x33, 0, 0, 0]);
+        // Layer 2: the instance's byte 0xB is 5 already: kept, colour too.
+        t[0x1CC..0x1CC + 12].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0x44, 0, 0, 1]);
+        b[0x1CC..0x1CC + 12].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 5]);
+        migrate_appearance(&mut b, &t);
+        assert_eq!(&b[0x1B4..0x1C0], &[9, 2, 2, 3, 5, 0, 0, 0, 0x11, 0, 0, 1]);
+        assert_eq!(&b[0x1C0..0x1CC], &[0, 1, 7, 0, 13, 0, 0, 0, 0x22, 0, 0, 5]);
+        assert_eq!(&b[0x1CC..0x1D8], &[0, 0, 0, 0, 0, 0, 0, 0, 0x55, 0, 0, 5]);
+    }
+
+    #[test]
+    fn condition_scales_protection_and_value() {
+        let mut t = body();
+        t[0x1A0..0x1A6].copy_from_slice(&[100, 200, 50, 0, 80, 10]);
+        t[0x1B0] = 255;
+        let mut b = body();
+        b[0x1B0] = 255; // best quality
+        b[0x1B1] = 0; // undamaged
+        let mut m = vec![0u8; 0x28];
+        m[0x1E..0x20].copy_from_slice(&1000u16.to_le_bytes());
+        let mut payload = b.clone();
+        payload.extend(&m);
+        refresh_condition(&mut payload, 0..0x224, &t, Some(0x224..0x224 + 0x28));
+        // k = 1 · (255/510 + 0.8) = 1.3 (in single precision after the
+        // double product): 100 → 130, 200 → 260 → its low byte 4, which
+        // the cap leaves alone; 50 → 65.
+        let k = (f64::from(255.0 * f32::from_bits(0x3B00_8081)) + 0.8) as f32;
+        assert_eq!(payload[0x1A0], (100.0 * k).round() as u8);
+        assert_eq!(payload[0x1A0], 130);
+        assert_eq!(payload[0x1A1], 4);
+        assert_eq!(payload[0x1A2], 65);
+        assert_eq!(payload[0x1A3], 0);
+        // (0.3·1.3 + 0.7)·80 = 87.2 → 87.
+        assert_eq!(payload[0x1A4], 87);
+        // 10 / (1 · 1.15) = 8.7 → 9.
+        assert_eq!(payload[0x1A5], 9);
+        // Value: 1000 / 2.5 · 2.5 · 2.5 · 0.5 = 1250.
+        assert_eq!(u16_at(&payload[0x224..], 0x1E), 1250);
+        // A damaged, poor copy: q = 0, d = 255.
+        let mut payload = body();
+        payload[0x1B1] = 255;
+        payload.extend(&m);
+        refresh_condition(&mut payload, 0..0x224, &t, Some(0x224..0x224 + 0x28));
+        // k = (1 − 0.4) · 0.8 = 0.48: 100 → 48, 200 → 96, 50 → 24.
+        assert_eq!(&payload[0x1A0..0x1A3], &[48, 96, 24]);
+        // Value: 1000 / 2.5 · 0.5 · 0.5 · 0.5 = 50.
+        assert_eq!(u16_at(&payload[0x224..], 0x1E), 50);
+    }
+
+    fn template_and_instance(t_header: u32, i_header: u32) -> ObjectDb {
+        let mut t_body = body();
+        t_body[0..8].copy_from_slice(b"Worn_A\0\0");
+        for bone in 0..20 {
+            t_body[0x150 + bone * 4] = 50;
+        }
+        t_body[0x1A6..0x1A9].copy_from_slice(&[1, 2, 3]);
+        t_body[0x220..0x224].copy_from_slice(&[7, 7, 7, 7]);
+        t_body[0x1B0] = 255;
+        let mut t_model = model("Worn", 0x10, 5, 6);
+        t_model[0x1C..0x20].copy_from_slice(&[3, 40, 0xE8, 0x03]);
+        let mut t_weapon = vec![0u8; 0x60];
+        t_weapon[0..4].copy_from_slice(&0x0123_4567u32.to_le_bytes());
+        t_weapon[0x30..0x43].copy_from_slice(&[9; 0x13]);
+        let mut i_body = body();
+        i_body[0x1B0] = 255;
+        let mut i_weapon = vec![0u8; 0x60];
+        i_weapon[0..4].copy_from_slice(&0xA000_0000u32.to_le_bytes());
+        i_weapon[4] = 1;
+        i_weapon[8] = 2;
+        let mut db = ObjectDb::default();
+        db.base = store(&[(
+            10,
+            NAME | MODEL | BODY | WEAPON,
+            payload(&[
+                (NAME, header("Template", t_header, 0)),
+                (MODEL, t_model),
+                (BODY, t_body),
+                (WEAPON, t_weapon),
+            ]),
+        )]);
+        db.local = store(&[(
+            1,
+            NAME | MODEL | BODY | WEAPON,
+            payload(&[
+                (NAME, header("Instance", i_header, 10)),
+                (MODEL, model("Other", 0, 9, 9)),
+                (BODY, i_body),
+                (WEAPON, i_weapon),
+            ]),
+        )]);
+        db
+    }
+
+    #[test]
+    fn migration_refreshes_an_instance() {
+        let mut db = template_and_instance(0, 0);
+        assert!(db.migrate(LOCAL | 1));
+        let r: Record<'_> = db.find(LOCAL | 1).unwrap();
+        let m = r.model().unwrap();
+        // Same class: name, flags and the words at 0x1C copy; the string
+        // ids stay; the value is then rescaled by the condition: with the
+        // template's and the copy's quality 255 and no damage, 1000 / 2.5
+        // · 2.5 · 2.5 · 0.5 = 1250.
+        assert_eq!((m.name.as_str(), m.flags), ("Worn", 0x10));
+        assert_eq!((m.name_id, m.description_id), (9, 9));
+        assert_eq!((m.class, m.rarity, m.value), (3, 40, 1250));
+        let b = r.section(BODY).unwrap();
+        assert_eq!(&b[0..6], b"Worn_A");
+        assert_eq!(b[0x150], 50);
+        assert_eq!(&b[0x1A6..0x1A9], &[1, 2, 3]);
+        assert_eq!(&b[0x220..0x224], &[7, 7, 7, 7]);
+        // The weapon has seeds and byte 0xF zero: the stats follow; its
+        // top flag nibble stays.
+        let w = r.section(WEAPON).unwrap();
+        assert_eq!(&w[0x30..0x41], &[9; 0x11]);
+        assert_eq!(w[0x41], 0);
+        assert_eq!(w[0x42], 9);
+        assert_eq!(u32_at(w, 0), 0xA123_4567);
+        // A base id, a both-tag id and an id of 0 are not migrated.
+        assert!(!db.migrate(10));
+        assert!(!db.migrate(LOCAL | WORLD | 1));
+        assert!(!db.migrate(LOCAL));
+        assert_eq!(db.migrate_tier(Tier::Local), 1);
+    }
+
+    #[test]
+    fn migration_after_a_class_change() {
+        let mut db = template_and_instance(0x12_0000, 0x11_0000);
+        assert!(db.migrate(LOCAL | 1));
+        let m = db.find(LOCAL | 1).unwrap().model().unwrap();
+        assert_eq!((m.name_id, m.description_id), (INHERIT, INHERIT));
+        assert_eq!(m.name, "Worn");
+    }
+
+    #[test]
+    fn a_weapon_without_seeds_keeps_its_stats() {
+        let mut db = template_and_instance(0, 0);
+        // Clear the instance's seeds: the stats no longer follow.
+        let r = db.find(LOCAL | 1).unwrap();
+        let mut p = r.payload().to_vec();
+        let w = section_range(&p, WEAPON).unwrap();
+        set_u32(&mut p[w], 4, 0);
+        db.local.store(0, &p);
+        db.migrate(LOCAL | 1);
+        let w = db.section(LOCAL | 1, WEAPON).unwrap();
+        assert_eq!(&w[0x30..0x43], &[0; 0x13]);
+    }
+
+    #[test]
+    fn a_template_without_appearance() {
+        let mut db = template_and_instance(0, 0);
+        let t = db.base.find(10).unwrap();
+        let mut p = t.payload().to_vec();
+        let b = section_range(&p, BODY).unwrap();
+        let tb = &mut p[b];
+        set_u32(tb, 0x1AC, 0xFFFF_FFFF);
+        tb[0x1B0] = 0x11;
+        tb[0x1B1] = 0x22;
+        tb[0x218] = 0x80;
+        db.base.store(0, &p);
+        let r = db.find(LOCAL | 1).unwrap();
+        let mut p = r.payload().to_vec();
+        let b = section_range(&p, BODY).unwrap();
+        let ib = &mut p[b];
+        ib[0x1B8] = 12; // layer 0 material: plain byte 0x88
+        ib[0x1C4] = 30; // layer 1 material: 0
+        ib[0x1C7] = 0x55;
+        ib[0x218] = 0x01;
+        ib[0x21A] = 0x81;
+        db.local.store(0, &p);
+        db.migrate(LOCAL | 1);
+        let b = db.section(LOCAL | 1, BODY).unwrap();
+        assert_eq!(u32_at(b, 0x1AC), 0xFFFF_FFFF);
+        assert_eq!(&b[0x1B0..0x1B2], &[0x11, 0x22]);
+        assert_eq!((b[0x1BB], b[0x1C7]), (0x88, 0));
+        // Power bytes: kept with 0x80 where the template has it, else 0.
+        assert_eq!((b[0x218], b[0x21A]), (0x81, 0));
+    }
+}
