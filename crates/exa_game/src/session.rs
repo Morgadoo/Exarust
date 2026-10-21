@@ -289,10 +289,9 @@ pub fn player_name(package: &PackageImage, data: &PlayerData) -> Option<String> 
     }
     let id = data.character_record_id()?;
     let section = package.section(save_package::WORLD_CHARACTER_DB)?;
-    let chunks = save_package::parse_chunks(section).ok()?;
     // The original's import takes the section's first chunk whatever its
     // id.
-    let payload = chunks.first()?.payload;
+    let payload = save_package::first_chunk_payload(section)?;
     let records = exa_formats::characters::read_character_database(payload).ok()?;
     let (_, record) = records
         .iter()

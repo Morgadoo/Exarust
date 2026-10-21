@@ -1266,6 +1266,22 @@ pub fn world_character_db(characters: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The payload of the first chunk of a world database section, whatever
+/// its id: the original's importers read the first chunk they find. None
+/// when the section is empty or its first header does not fit.
+pub fn first_chunk_payload(bytes: &[u8]) -> Option<&[u8]> {
+    parse_chunks(bytes).ok()?.first().map(|chunk| chunk.payload)
+}
+
+/// The two payloads of a `#worldobjdb` section, whatever their ids: the
+/// object database export and, when present, the data manager's table the
+/// original imports second.
+pub fn world_object_payloads(bytes: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+    let chunks = parse_chunks(bytes).ok()?;
+    let first = chunks.first()?.payload;
+    Some((first, chunks.get(1).map(|chunk| chunk.payload)))
+}
+
 /// Reads a journal chunk. Strings are length-prefixed byte runs; invalid
 /// UTF-8 is replaced rather than refused, as the original stores raw text.
 pub fn parse_journal(bytes: &[u8]) -> Result<Vec<JournalRecord>, PlayerDataError> {
@@ -1989,6 +2005,17 @@ mod tests {
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].id, WORLD_CHARACTERS_CHUNK);
         assert_eq!(chunks[0].payload, &[1, 2, 3]);
+        // The importers take the first/second chunk whatever their ids.
+        assert_eq!(first_chunk_payload(&characters), Some(&[1, 2, 3][..]));
+        assert_eq!(
+            world_object_payloads(&objects),
+            Some((&WORLD_OBJECT_DB_MAGIC.to_le_bytes()[..], Some(&[4, 5][..])))
+        );
+        assert_eq!(world_object_payloads(&[]), None);
+        let mut one = Vec::new();
+        write_chunk(&mut one, 0x1234, b"only");
+        assert_eq!(world_object_payloads(&one), Some((&b"only"[..], None)));
+        assert_eq!(first_chunk_payload(&[]), None);
     }
 
     #[test]
