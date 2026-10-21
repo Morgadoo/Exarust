@@ -10,14 +10,77 @@
 use bevy::prelude::*;
 use exa_formats::characters::{
     Carried, CharacterRecord, ID_MASK, ItemRef, Loadout, MAX_TOTAL_LEVELS, POINTS_PER_TECHNIQUE,
-    Role, SKILLS, Skill, UNDERWEAR_ITEM, WORLD_DB, WRITTEN_TECHNIQUES,
+    Pools, Role, SAVED_HEAL_POOL, SAVED_POTION, SKILLS, SavedState, Skill, UNDERWEAR_ITEM,
+    WORLD_DB, WRITTEN_TECHNIQUES,
 };
 
 /// A record id's database bits, as an item id's: `0x40000000` is the world
 /// database and `0x80000000` the level's own.
 const RECORD_WORLD: u32 = 0x4000_0000;
 const RECORD_LOCAL: u32 = 0x8000_0000;
-use exa_formats::objdb::Item;
+use exa_formats::objdb::{EQUIP_LOCK_LIMIT, Item};
+
+/// The techniques a technique depends on, by skill slot and technique id
+/// (1-based): unlearning either one also unlearns it. Close Combat's Dual
+/// Wield needs Remise or Riposte; each Manoeuvring in Armour tier, Shields'
+/// Synchrony and Ward and Concentration's Continuity II and III need the
+/// one before. The game's table is laid out flat (eight entries a skill);
+/// an empty slot (id 0) reads the entry before its skill's first, which is
+/// the previous skill's eighth.
+const PREREQUISITES: [[[u8; 2]; 8]; SKILLS] = [
+    [
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [1, 4],
+    ],
+    [[0, 0]; 8],
+    [
+        [0, 0],
+        [1, 0],
+        [2, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    [
+        [0, 0],
+        [1, 0],
+        [2, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+    [[0, 0]; 8],
+    [
+        [0, 0],
+        [0, 0],
+        [2, 0],
+        [3, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ],
+];
+
+/// The prerequisites a technique id of a skill slot looks up. An id past
+/// the table (none is) reads as having none; the game would read the data
+/// after it.
+fn prerequisites(slot: usize, technique: u8) -> [u8; 2] {
+    let flat = (slot * 8 + usize::from(technique)).checked_sub(1);
+    flat.and_then(|at| PREREQUISITES.as_flattened().get(at))
+        .copied()
+        .unwrap_or([0, 0])
+}
 
 /// A record field the original flags as in use: an inventory entry with it
 /// is one of the character's equipped items. The hands and loadouts keep
@@ -69,7 +132,8 @@ impl std::ops::DerefMut for CharacterData {
 }
 
 impl CharacterData {
-    /// A blank record with full pools (the original's constructor).
+    /// A blank record with full yellow and red pools (the original's
+    /// constructor).
     pub fn new() -> Self {
         Self {
             record: CharacterRecord::new(),
@@ -98,6 +162,13 @@ impl CharacterData {
             staged: None,
             body_value: 0.0,
         }
+    }
+
+    /// A preset the character creator loads from its database by name: the
+    /// record as read, its name cleared for the player to choose.
+    pub fn from_preset(mut record: CharacterRecord) -> Self {
+        record.name.clear();
+        Self::of_record(record)
     }
 
     /// The record's saved form.
@@ -147,16 +218,24 @@ impl CharacterData {
         true
     }
 
-    /// The equip conflict pass: every worn item whose occupancy overlaps
-    /// `new` on any bone comes off, and its reference is returned so the
-    /// caller can drop it or hand it back. Worn items whose record cannot be
-    /// read are left on (the original's second pass finds no conflicts among
-    /// them).
+    /// The equip conflict pass. First the refusal: if a worn item whose
+    /// occupancy overlaps `new` on any bone has an
+    /// [`Item::equip_lock`] over 50, nothing changes and `None` comes back.
+    /// Otherwise every overlapping worn item comes off, in order, and their
+    /// references are returned so the caller can drop them or hand them
+    /// back. Worn items whose record cannot be read are left on.
     pub fn equip_conflicts<'a>(
         &mut self,
         new: &Item,
         find: impl Fn(u32) -> Option<&'a Item>,
-    ) -> Vec<ItemRef> {
+    ) -> Option<Vec<ItemRef>> {
+        let locked = self.record.worn.iter().any(|worn| {
+            find(worn.id)
+                .is_some_and(|item| overlaps(item, new) && item.equip_lock > EQUIP_LOCK_LIMIT)
+        });
+        if locked {
+            return None;
+        }
         let mut removed = Vec::new();
         let mut i = 0;
         while i < self.record.worn.len() {
@@ -166,7 +245,7 @@ impl CharacterData {
                 _ => i += 1,
             }
         }
-        removed
+        Some(removed)
     }
 
     // ---- inventory and hand references -------------------------------
@@ -228,26 +307,26 @@ impl CharacterData {
         }
     }
 
-    /// Removes an item from a loadout, or (when it is not worn there) one
-    /// hand reference past `keep`. Returns whether anything changed.
+    /// Removes an item from a loadout: its first worn copy when it wears
+    /// one, else in each hand pair holding it more than `keep` times one
+    /// reference (the second hand first). Returns whether anything changed.
     pub fn loadout_remove_item(loadout: &mut Loadout, id: u32, keep: usize) -> bool {
         if let Some(at) = loadout.worn.iter().position(|worn| worn.id == id) {
             loadout.worn.remove(at);
             return true;
         }
+        let mut changed = false;
         for pair in 0..2 {
             let hands = &mut loadout.hands[pair * 2..pair * 2 + 2];
             let held = usize::from(hands[0].id == id) + usize::from(hands[1].id == id);
-            if held > keep {
-                for hand in hands.iter_mut().rev() {
-                    if hand.id == id {
-                        hand.id = 0;
-                        return true;
-                    }
-                }
+            if held > keep
+                && let Some(hand) = hands.iter_mut().rev().find(|hand| hand.id == id)
+            {
+                hand.id = 0;
+                changed = true;
             }
         }
-        false
+        changed
     }
 
     /// The character holds `id` in `keep` places more than its inventory
@@ -268,10 +347,14 @@ impl CharacterData {
         }
     }
 
-    /// Takes one copy of `id` off the character: the equipped inventory copy
-    /// if it has one, else the first worn one; then the hand slots past the
-    /// copies left, the staged list and the loadouts lose their references.
-    /// Returns whether a copy was found in the inventory or on the body.
+    /// Takes one copy of `id` off the character, as a trade does. The copy
+    /// is the last inventory entry of `id` that is not marked equipped, or
+    /// the last one when all are; with none in the inventory, the worn list
+    /// loses its copies the way the game's loop removes them (a copy right
+    /// after a removed one moves into its place and is skipped). Then the
+    /// hand slots past the copies left, the staged list and the loadouts
+    /// lose their references. Returns whether a copy was found in the
+    /// inventory or on the body.
     pub fn remove_item(&mut self, id: u32) -> bool {
         let mut found = 0usize;
         let mut chosen: Option<usize> = None;
@@ -280,26 +363,24 @@ impl CharacterData {
             if entry.item != id {
                 continue;
             }
-            let prefer_previous = chosen.is_some_and(|prev| {
+            // Scanning from the end, a later choice is kept unless it is
+            // equipped and this copy is not.
+            let take_this = chosen.is_none_or(|prev| {
                 self.record.inventory[prev].flags & EQUIPPED != 0 && entry.flags & EQUIPPED == 0
             });
-            if !prefer_previous {
+            if take_this {
                 chosen = Some(at);
             }
             found += 1;
         }
-        let mut removed = false;
-        if let Some(at) = chosen {
-            self.record.inventory.remove(at);
-            found -= 1;
-            removed = true;
-        }
-        if chosen.is_none()
-            && let Some(at) = self.record.worn.iter().position(|worn| worn.id == id)
-        {
-            self.record.worn.remove(at);
-            removed = true;
-        }
+        let removed = match chosen {
+            Some(at) => {
+                self.record.inventory.remove(at);
+                found -= 1;
+                true
+            }
+            None => remove_skipping(&mut self.record.worn, |worn| worn.id == id),
+        };
         self.trim_hands(id, found);
         found += self
             .staged
@@ -412,16 +493,24 @@ impl CharacterData {
         self.record.inventory.clear();
     }
 
-    /// Takes the hands and (when `hands_too`) the worn items off, as the
-    /// arena strips a loadout. The local-database references it releases are
-    /// the database's business.
-    pub fn strip(&mut self, hands_too: bool) {
+    /// Takes the worn items and (when `hands_too`) the hand ids off, as the
+    /// arena strips a loadout. Returns the worn references that name either
+    /// object database, which the game releases there.
+    pub fn strip(&mut self, hands_too: bool) -> Vec<ItemRef> {
         if hands_too {
             for hand in &mut self.record.hands {
                 hand.id = 0;
             }
         }
+        let released = self
+            .record
+            .worn
+            .iter()
+            .copied()
+            .filter(|worn| worn.is_shared())
+            .collect();
         self.record.worn.clear();
+        released
     }
 
     /// The item references that name either object database, which a
@@ -444,37 +533,28 @@ impl CharacterData {
 
     // ---- references into another database ---------------------------
 
-    /// Replaces every item reference the record holds (the four hands, the
-    /// worn items, each loadout's hands and worn items, the inventory) by
-    /// what `remap` returns, as the game does when it promotes a record's
-    /// items to the world database.
+    /// Passes every item reference the record holds (the four hands, the
+    /// worn items, each loadout's hands and worn items, the inventory)
+    /// through `remap`, as the game does when it promotes a record's items
+    /// to the world database; the game's remap changes only the ids it
+    /// knows and returns the others as they are.
     pub fn remap_items(&mut self, mut remap: impl FnMut(u32) -> u32) {
         for hand in &mut self.record.hands {
-            if hand.is_shared() {
-                hand.id = remap(hand.id);
-            }
+            hand.id = remap(hand.id);
         }
         for worn in &mut self.record.worn {
-            if worn.is_shared() {
-                worn.id = remap(worn.id);
-            }
+            worn.id = remap(worn.id);
         }
         for loadout in &mut self.record.loadouts {
             for hand in &mut loadout.hands {
-                if hand.is_shared() {
-                    hand.id = remap(hand.id);
-                }
+                hand.id = remap(hand.id);
             }
             for worn in &mut loadout.worn {
-                if worn.is_shared() {
-                    worn.id = remap(worn.id);
-                }
+                worn.id = remap(worn.id);
             }
         }
         for entry in &mut self.record.inventory {
-            if entry.item & (WORLD_DB | 0x8000_0000) != 0 {
-                entry.item = remap(entry.item);
-            }
+            entry.item = remap(entry.item);
         }
     }
 
@@ -554,60 +634,59 @@ impl CharacterData {
 
     // ---- saved health -----------------------------------------------
 
-    /// Writes the body's health back into the record as the game saves it:
-    /// yellow and red as shares of the maximum (red 0 when it is not
-    /// positive), focus as its own share, the seed as 0xFFFF, and the saved
-    /// entries for a heal pool still owed and a potion's expiry.
+    /// Writes the body's health back into the record as the game saves it,
+    /// in single precision: yellow and red as `value / max × 65535` (red 0
+    /// unless it is positive), focus as `focus × 65535`, each converted to
+    /// the nearest even integer and cut to 16 bits ([`Pools::save`]); the
+    /// seed as 0xFFFF; the saved entries anew, a heal pool still owed (when
+    /// positive) and then a potion's expiry; and the body's untraced value.
     pub fn save_health(&mut self, health: Health) {
-        let unit = 65535.0f32;
-        self.record.pools.yellow = shares(health.yellow / health.max * unit);
-        self.record.pools.red = if health.red <= 0.0 {
-            0
+        const UNIT: f32 = 65535.0;
+        self.record.pools.yellow = Pools::save(health.yellow / health.max * UNIT);
+        self.record.pools.red = if health.red > 0.0 {
+            Pools::save(health.red / health.max * UNIT)
         } else {
-            shares(health.red / health.max * unit)
+            0
         };
-        self.record.pools.focus = shares(health.focus * unit);
+        self.record.pools.focus = Pools::save(health.focus * UNIT);
         self.record.seed = 0xFFFF;
         self.record.saved.clear();
         if health.heal_pool > 0.0 {
-            self.record.saved.push(exa_formats::characters::SavedState {
-                tag: exa_formats::characters::SAVED_HEAL_POOL,
+            self.record.saved.push(SavedState {
+                tag: SAVED_HEAL_POOL,
                 value: health.heal_pool.to_bits(),
             });
         }
         if let Some(expiry) = health.potion {
-            self.record.saved.push(exa_formats::characters::SavedState {
-                tag: exa_formats::characters::SAVED_POTION,
+            self.record.saved.push(SavedState {
+                tag: SAVED_POTION,
                 value: expiry,
             });
         }
         self.body_value = health.body_value;
     }
 
-    /// The health a load gives the body: the saved shares times `max`, the
-    /// focus share on its own, and the saved entries. The game's loop reads
-    /// the *last* entry's value for both tags (harmless with one entry);
-    /// with both present the heal pool takes the potion's expiry too.
-    pub fn restore_health(&self, max: f32) -> Health {
-        let unit = 1.525_902_2e-05;
-        let last = self.record.saved.last().map(|saved| saved.value);
-        let has = |tag: u32| self.record.saved.iter().any(|saved| saved.tag == tag);
-        let heal_pool = match (has(exa_formats::characters::SAVED_HEAL_POOL), last) {
-            (true, Some(value)) => f32::from_bits(value),
-            _ => 0.0,
+    /// Loads the record's health onto a body of maximum `body.max`, as the
+    /// game does: red, then yellow, as their shares of the maximum and
+    /// focus as its share ([`Pools::restore`]), then for each saved entry of
+    /// a known tag the heal pool or the potion. The game's loop reads the
+    /// *last* entry's value for every tag (harmless with one entry; with
+    /// both the heal pool takes the potion's expiry). What no entry names
+    /// keeps its value, as does the body's untraced value.
+    pub fn restore_health(&self, body: &mut Health) {
+        let pools = self.record.pools;
+        body.red = Pools::restore(pools.red, body.max);
+        body.yellow = Pools::restore(pools.yellow, body.max);
+        body.focus = Pools::restore_focus(pools.focus);
+        let Some(last) = self.record.saved.last().map(|saved| saved.value) else {
+            return;
         };
-        Health {
-            yellow: max * f32::from(self.record.pools.yellow) * unit,
-            red: max * f32::from(self.record.pools.red) * unit,
-            max,
-            focus: f32::from(self.record.pools.focus) * unit,
-            heal_pool,
-            potion: if has(exa_formats::characters::SAVED_POTION) {
-                last
-            } else {
-                None
-            },
-            body_value: self.body_value,
+        for saved in &self.record.saved {
+            match saved.tag {
+                SAVED_HEAL_POOL => body.heal_pool = f32::from_bits(last),
+                SAVED_POTION => body.potion = Some(last),
+                _ => {}
+            }
         }
     }
 
@@ -645,51 +724,40 @@ impl CharacterData {
         None
     }
 
-    /// Unlearns the technique at `level` (1-based) of a skill (1-based):
-    /// the levels after it move down, the points lose one level, and the
-    /// technique it held is returned so the caller can unlearn it from the
-    /// other skills. A level past the chosen ones only clears the slot and
-    /// re-bases the points, as the original does.
+    /// Unlearns the technique at `level` (1-based) of a skill (1-based), as
+    /// the skill screen does. When the level holds one of the chosen
+    /// techniques (the run of them from the first of the five written
+    /// slots), it is removed and the later ones move down; so is, in turn,
+    /// every technique of the same skill that depends on a removed one (the
+    /// game's prerequisite table); the points lose 5000 per technique removed, in
+    /// 16-bit arithmetic. The first technique removed is returned. A level
+    /// past the chosen ones only clears its slot and re-bases the points on
+    /// the chosen count less one (a level past the six slots clears
+    /// nothing). A skill or level of 0, or a skill past the six, does
+    /// nothing (the game would write outside the skill).
     pub fn unlearn_level(&mut self, skill: usize, level: u32) -> Option<u8> {
         let slot = skill.checked_sub(1)?;
+        let level = usize::try_from(level).ok()?;
         if slot >= SKILLS || level == 0 {
             return None;
         }
-        let skill = &mut self.record.skills[slot];
-        let chosen = skill.chosen();
-        if (level as usize) < chosen {
-            let removed = skill.techniques[level as usize - 1];
-            let from = level as usize - 1;
-            for at in from..WRITTEN_TECHNIQUES - 1 {
-                skill.techniques[at] = skill.techniques[at + 1];
-            }
-            skill.techniques[WRITTEN_TECHNIQUES - 1] = 0;
-            skill.points = skill.points.saturating_sub(POINTS_PER_TECHNIQUE);
+        let entry = &mut self.record.skills[slot];
+        let chosen = entry.chosen();
+        if level < chosen {
+            let removed = entry.techniques[level - 1];
+            remove_technique_at(entry, level - 1);
+            let count = 1 + unlearn_dependents(entry, slot, removed, 0);
+            let lost = (count as u16).wrapping_mul(POINTS_PER_TECHNIQUE);
+            entry.points = entry.points.wrapping_sub(lost);
             Some(removed)
         } else {
-            let at = level as usize - 1;
-            if at < skill.techniques.len() {
-                skill.techniques[at] = 0;
+            if let Some(technique) = entry.techniques.get_mut(level - 1) {
+                *technique = 0;
             }
-            skill.points = (chosen.saturating_sub(1) as u16) * POINTS_PER_TECHNIQUE;
+            entry.points = (chosen as u16)
+                .wrapping_sub(1)
+                .wrapping_mul(POINTS_PER_TECHNIQUE);
             None
-        }
-    }
-
-    /// Unlearns a technique id from every skill, one level at a time. The
-    /// game also removes the techniques the game's own dependency table ties
-    /// to it; that table lives in the executable and is not reproduced.
-    pub fn unlearn_technique(&mut self, technique: u8) {
-        for slot in 0..SKILLS {
-            let mut at = 0;
-            while at < self.record.skills[slot].chosen() {
-                if self.record.skills[slot].techniques[at] == technique {
-                    self.unlearn_level(slot + 1, at as u32 + 1);
-                    at = 0;
-                } else {
-                    at += 1;
-                }
-            }
         }
     }
 
@@ -711,6 +779,66 @@ impl CharacterData {
     pub fn roles(&self) -> &[Role] {
         &self.record.roles
     }
+}
+
+/// Removes slot `at` of a skill's five written techniques: the later ones
+/// (the sixth slot's included) move down and the fifth becomes empty.
+fn remove_technique_at(skill: &mut Skill, at: usize) {
+    for i in at..WRITTEN_TECHNIQUES {
+        skill.techniques[i] = skill.techniques[i + 1];
+    }
+    skill.techniques[WRITTEN_TECHNIQUES - 1] = 0;
+}
+
+/// The game's cascade after `removed` leaves a skill: each of the first
+/// four slots whose technique depends on it is removed and its own
+/// dependents follow. After a removal the scan resumes at the second slot,
+/// as the game's does, and it stops at the first empty slot it does not
+/// remove. Returns how many techniques went. `depth` bounds the
+/// recursion, which the shipped table keeps shallow (a chain of three).
+fn unlearn_dependents(skill: &mut Skill, slot: usize, removed: u8, depth: usize) -> usize {
+    /// The slots the game's scan looks at.
+    const SCANNED: usize = 4;
+    /// Deeper than any chain of the table (the game has no bound).
+    const MAX_DEPTH: usize = 16;
+    if depth > MAX_DEPTH {
+        return 0;
+    }
+    let mut count = 0;
+    let mut at = 0;
+    while at < SCANNED {
+        let technique = skill.techniques[at];
+        if prerequisites(slot, technique).contains(&removed) {
+            remove_technique_at(skill, at);
+            count += 1 + unlearn_dependents(skill, slot, technique, depth + 1);
+            at = 0;
+        }
+        if skill.techniques[at] == 0 {
+            break;
+        }
+        at += 1;
+    }
+    count
+}
+
+/// Removes the entries `matches` picks as the game's forward loop over a
+/// list does: it shifts the rest down after a removal but moves on to the
+/// next index, and it runs to the list's first length, reading the stale
+/// tail. Returns whether anything went.
+fn remove_skipping<T: Copy>(list: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
+    let first = list.len();
+    let mut count = first;
+    for at in 0..first {
+        if matches(&list[at]) {
+            count -= 1;
+            for j in at..count {
+                list[j] = list[j + 1];
+            }
+        }
+    }
+    let removed = count < first;
+    list.truncate(count);
+    removed
 }
 
 /// Whether two items occupy the same sub-part of any bone (bones 1..20).
@@ -754,10 +882,4 @@ impl Default for Health {
             body_value: 0.0,
         }
     }
-}
-
-/// A share written as the game writes it: rounded to the nearest even
-/// integer (the Free Pascal runtime's rounding), then cut to 16 bits.
-fn shares(value: f32) -> u16 {
-    f64::from(value).round_ties_even() as i64 as u16
 }

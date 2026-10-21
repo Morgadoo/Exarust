@@ -2,6 +2,9 @@
 
 use super::*;
 use exa_formats::objdb::{Burden, OCCUPANCY_BONES};
+
+/// The Armour skill's slot.
+const ARMOUR_SLOT: usize = exa_formats::characters::ARMOUR;
 use exa_formats::rdb::Database;
 
 /// An item of `id` occupying the pelvis with `occupancy`, optionally
@@ -24,6 +27,7 @@ fn item(id: u32, occupancy: u64) -> Item {
         door: None,
         operative: None,
         burden: Some(Burden::default()),
+        equip_lock: 0,
     }
 }
 
@@ -39,7 +43,7 @@ fn a_live_record_starts_from_the_creator_defaults() {
     assert_eq!(data.record.worn, refs(&[UNDERWEAR_ITEM]));
     let blank = CharacterData::new();
     assert!(blank.record.worn.is_empty());
-    assert_eq!(blank.record.pools, exa_formats::characters::Pools::FULL);
+    assert_eq!(blank.record.pools, exa_formats::characters::Pools::NEW);
 }
 
 #[test]
@@ -95,14 +99,40 @@ fn overlapping_items_come_off_on_an_equip() {
     data.record.worn = refs(&[8, 144, 700, 701]);
     // Trousers overlap the braies and the hose on the pelvis's innermost
     // layer, not the shirt (torso) nor the mail legs (layer 1).
-    assert_eq!(data.equip_conflicts(&trousers, find), refs(&[8, 700]));
+    assert_eq!(data.equip_conflicts(&trousers, find), Some(refs(&[8, 700])));
     assert_eq!(data.record.worn, refs(&[144, 701]));
     // Nothing left to take off.
-    assert!(data.equip_conflicts(&trousers, find).is_empty());
+    assert_eq!(data.equip_conflicts(&trousers, find), Some(Vec::new()));
     // A worn item whose record cannot be read stays on.
     data.record.worn = refs(&[999]);
-    assert!(data.equip_conflicts(&trousers, find).is_empty());
+    assert_eq!(data.equip_conflicts(&trousers, find), Some(Vec::new()));
     assert_eq!(data.record.worn, refs(&[999]));
+}
+
+/// An overlapping worn item whose lock byte is over 50 refuses the equip:
+/// nothing comes off, not even the other overlapping items. At 50, or on
+/// an item that does not overlap, the lock does nothing.
+#[test]
+fn a_locked_overlapping_item_refuses_the_equip() {
+    let trousers = item(35, 0x03);
+    let braies = item(UNDERWEAR_ITEM, 0x03);
+    let mut locked = item(700, 0x03);
+    locked.equip_lock = 51;
+    let mut shirt = item(144, 0x03_0000);
+    shirt.equip_lock = 200;
+    let items = [&trousers, &braies, &locked, &shirt];
+    let find = |id: u32| items.into_iter().find(|i| i.id == id);
+    let mut data = CharacterData::new();
+    data.record.worn = refs(&[8, 700, 144]);
+    assert_eq!(data.equip_conflicts(&trousers, find), None);
+    assert_eq!(data.record.worn, refs(&[8, 700, 144]));
+
+    let mut at_limit = item(700, 0x03);
+    at_limit.equip_lock = 50;
+    let items = [&trousers, &braies, &at_limit, &shirt];
+    let find = |id: u32| items.into_iter().find(|i| i.id == id);
+    assert_eq!(data.equip_conflicts(&trousers, find), Some(refs(&[8, 700])));
+    assert_eq!(data.record.worn, refs(&[144]));
 }
 
 #[test]
@@ -217,7 +247,7 @@ fn removing_an_item_takes_one_copy_and_its_spare_references() {
     data.record.inventory = vec![entry(7, 0), entry(7, EQUIPPED), entry(8, 0)];
     data.record.hands[0] = ItemRef::new(7, 0);
     data.record.hands[1] = ItemRef::new(7, 0);
-    // The equipped copy is the one taken.
+    // The copy that is not equipped is the one taken.
     assert!(data.remove_item(7));
     assert_eq!(
         data.record
@@ -225,7 +255,7 @@ fn removing_an_item_takes_one_copy_and_its_spare_references() {
             .iter()
             .map(|e| (e.item, e.flags))
             .collect::<Vec<_>>(),
-        [(7, 0), (8, 0)]
+        [(7, EQUIPPED), (8, 0)]
     );
     // One copy is left, so one hand reference stays.
     assert_eq!(data.record.hands[0].id, 7);
@@ -237,6 +267,39 @@ fn removing_an_item_takes_one_copy_and_its_spare_references() {
     assert!(worn.remove_item(8));
     assert_eq!(worn.record.worn, refs(&[9]));
     assert!(!worn.remove_item(8));
+
+    // Among unequipped (or among equipped) copies the last one goes.
+    let mut last = CharacterData::new();
+    last.record.inventory = vec![
+        entry(7, EQUIPPED),
+        entry(7, EQUIPPED | 1),
+        entry(7, 2),
+        entry(7, 3),
+    ];
+    assert!(last.remove_item(7));
+    let flags = |d: &CharacterData| {
+        d.record
+            .inventory
+            .iter()
+            .map(|e| e.flags)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(flags(&last), [EQUIPPED, EQUIPPED | 1, 2]);
+    last.record.inventory.truncate(2);
+    assert!(last.remove_item(7));
+    assert_eq!(flags(&last), [EQUIPPED]);
+
+    // The worn loop moves on after a removal, so a copy right after a
+    // removed one survives; it also reads the list's old tail, so a copy at
+    // the end can take the last kept item with it.
+    let mut pair = CharacterData::new();
+    pair.record.worn = refs(&[8, 8, 9]);
+    assert!(pair.remove_item(8));
+    assert_eq!(pair.record.worn, refs(&[8, 9]));
+    let mut around = CharacterData::new();
+    around.record.worn = refs(&[8, 9, 8]);
+    assert!(around.remove_item(8));
+    assert!(around.record.worn.is_empty());
 
     // Everywhere: nothing of the id is left.
     let mut all = CharacterData::new();
@@ -284,7 +347,7 @@ fn a_stripped_record_keeps_its_flags_and_its_inventory() {
     ];
     data.record.worn = refs(&[8]);
     data.record.inventory.push(Carried::default());
-    data.strip(true);
+    assert!(data.strip(true).is_empty());
     assert!(data.record.hands.iter().all(|h| h.id == 0));
     assert_eq!(data.record.hands[0].flags, 7);
     assert!(data.record.worn.is_empty());
@@ -293,7 +356,8 @@ fn a_stripped_record_keeps_its_flags_and_its_inventory() {
     let mut only_worn = CharacterData::new();
     only_worn.record.hands[0] = ItemRef::new(1, 0);
     only_worn.record.worn = refs(&[8]);
-    only_worn.strip(false);
+    only_worn.record.worn.push(ItemRef::new(0x8000_0005, 2));
+    assert_eq!(only_worn.strip(false), [ItemRef::new(0x8000_0005, 2)]);
     assert_eq!(only_worn.record.hands[0].id, 1);
     assert!(only_worn.record.worn.is_empty());
 }
@@ -357,24 +421,29 @@ fn items_remap_as_a_record_moves_between_databases() {
         hands: [ItemRef::new(0x8000_0009, 0); 4],
         worn: refs(&[0x8000_0008]),
     });
+    // Every id goes through the remap (the game's leaves the ids it does
+    // not know as they are), in the game's order.
+    let mut seen = Vec::new();
     let mut next = 0x4000_0100;
     data.remap_items(|id| {
+        seen.push(id);
         next += 1;
-        let _ = id;
         next
     });
+    assert_eq!(seen.len(), 4 + 1 + 4 + 1 + 2);
+    assert_eq!(seen[3], 9);
     assert_eq!(
         data.record.hands.map(|h| h.id),
-        [0x4000_0101, 0x4000_0102, 0x4000_0103, 9]
+        [0x4000_0101, 0x4000_0102, 0x4000_0103, 0x4000_0104]
     );
-    assert_eq!(data.record.worn[0].id, 0x4000_0104);
+    assert_eq!(data.record.worn[0].id, 0x4000_0105);
     // The loadouts come before the inventory; each loadout hand is
     // remapped on its own, even the four copies of one item.
-    assert_eq!(data.record.loadouts[0].hands[0].id, 0x4000_0105);
-    assert_eq!(data.record.loadouts[0].hands[3].id, 0x4000_0108);
-    assert_eq!(data.record.loadouts[0].worn[0].id, 0x4000_0109);
-    assert_eq!(data.record.inventory[0].item, 0x4000_010A);
-    assert_eq!(data.record.inventory[1].item, 0x4000_010B);
+    assert_eq!(data.record.loadouts[0].hands[0].id, 0x4000_0106);
+    assert_eq!(data.record.loadouts[0].hands[3].id, 0x4000_0109);
+    assert_eq!(data.record.loadouts[0].worn[0].id, 0x4000_010A);
+    assert_eq!(data.record.inventory[0].item, 0x4000_010B);
+    assert_eq!(data.record.inventory[1].item, 0x4000_010C);
 
     // The transfer variant keeps one copy of a hand item.
     let mut moved = CharacterData::new();
@@ -474,21 +543,59 @@ fn unlearning_a_level_rebases_the_skill() {
     assert_eq!(data.unlearn_level(0, 1), None);
     assert_eq!(data.unlearn_level(7, 1), None);
 
-    // Unlearning a technique id removes it from every skill.
-    let mut both = CharacterData::new();
-    both.record.skills[0] = Skill {
-        points: 10000,
-        techniques: [4, 1, 0, 0, 0, 0],
+    // A skill with no technique chosen re-bases to −1 level, in 16 bits.
+    let mut empty = CharacterData::new();
+    assert_eq!(empty.unlearn_level(2, 1), None);
+    assert_eq!(empty.record.skills[1].points, 0u16.wrapping_sub(5000));
+}
+
+/// Unlearning a technique also unlearns the techniques of the skill that
+/// need it: Manoeuvring in Armour I takes II and III with it (15000 points
+/// off), Remise takes Dual Wield, and Synchrony takes Ward but not Counter.
+#[test]
+fn unlearning_a_technique_takes_its_dependents() {
+    let mut data = CharacterData::new();
+    data.record.skills[ARMOUR_SLOT] = Skill {
+        points: 25000,
+        techniques: [1, 4, 2, 3, 5, 0],
     };
-    both.record.skills[2] = Skill {
-        points: 5000,
-        techniques: [4, 0, 0, 0, 0, 0],
+    assert_eq!(data.unlearn_level(3, 1), Some(1));
+    assert_eq!(
+        data.record.skills[ARMOUR_SLOT].techniques,
+        [4, 5, 0, 0, 0, 0]
+    );
+    assert_eq!(data.record.skills[ARMOUR_SLOT].points, 10000);
+
+    data.record.skills[0] = Skill {
+        points: 15000,
+        techniques: [1, 8, 2, 0, 0, 0],
     };
-    both.unlearn_technique(4);
-    assert_eq!(both.record.skills[0].techniques, [1, 0, 0, 0, 0, 0]);
-    assert_eq!(both.record.skills[0].points, 5000);
-    assert_eq!(both.record.skills[2].techniques, [0; 6]);
-    assert_eq!(both.record.skills[2].points, 0);
+    assert_eq!(data.unlearn_level(1, 1), Some(1));
+    assert_eq!(data.record.skills[0].techniques, [2, 0, 0, 0, 0, 0]);
+    assert_eq!(data.record.skills[0].points, 5000);
+
+    data.record.skills[3] = Skill {
+        points: 20000,
+        techniques: [1, 2, 3, 6, 0, 0],
+    };
+    assert_eq!(data.unlearn_level(4, 2), Some(2));
+    assert_eq!(data.record.skills[3].techniques, [1, 6, 0, 0, 0, 0]);
+    assert_eq!(data.record.skills[3].points, 10000);
+
+    // The scan resumes at the second slot after a removal: removing II
+    // (the third slot) takes the first III with it, the second III moves
+    // into the first slot, and the resumed scan skips it, so it stays.
+    let mut skipped = CharacterData::new();
+    skipped.record.skills[ARMOUR_SLOT] = Skill {
+        points: 25000,
+        techniques: [3, 3, 2, 4, 5, 0],
+    };
+    assert_eq!(skipped.unlearn_level(3, 3), Some(2));
+    assert_eq!(
+        skipped.record.skills[ARMOUR_SLOT].techniques,
+        [3, 4, 5, 0, 0, 0]
+    );
+    assert_eq!(skipped.record.skills[ARMOUR_SLOT].points, 15000);
 }
 
 #[test]
@@ -596,16 +703,23 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
             },
         ]
     );
-    // The load: shares times the maximum, the focus share on its own; both
-    // saved entries report the last entry's value, as the original's loop
-    // does.
-    let health = data.restore_health(2.0);
-    assert!((health.yellow - 1.0).abs() < 1e-4);
-    assert!((health.red - 0.5).abs() < 1e-4);
-    assert!((health.focus - 0.749_98).abs() < 1e-4);
+    // The load: shares times the maximum in double precision, the focus
+    // share on its own; both saved entries report the last entry's value,
+    // as the original's loop does. 32768 × 2 / 65535 = 1.0000153; 16384 × 2
+    // / 65535 = 0.50000763; 49151 / 65535 = 0.74999619.
+    let mut health = Health {
+        max: 2.0,
+        body_value: 7.0,
+        ..Health::default()
+    };
+    data.restore_health(&mut health);
+    assert_eq!(health.yellow, 1.000_015_3);
+    assert_eq!(health.red, 0.500_007_6);
+    assert_eq!(health.focus, 0.749_996_2);
     assert_eq!(health.potion, Some(1800));
     assert_eq!(health.heal_pool, f32::from_bits(1800));
-    assert_eq!(health.body_value, 2.5);
+    // The body's own value is not the record's to load.
+    assert_eq!(health.body_value, 7.0);
 
     // Red that is not positive saves as 0; an empty heal pool writes no
     // entry.
@@ -619,7 +733,23 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
     });
     assert_eq!(dead.record.pools.red, 0);
     assert!(dead.record.saved.is_empty());
-    assert_eq!(dead.restore_health(1.0).heal_pool, 0.0);
+    // Without an entry the body keeps its heal pool and potion.
+    let mut body = Health {
+        heal_pool: 0.5,
+        potion: Some(3),
+        ..Health::default()
+    };
+    dead.restore_health(&mut body);
+    assert_eq!((body.heal_pool, body.potion), (0.5, Some(3)));
+    // NaN red and a zero maximum save as 0: the conversion's indefinite
+    // value is cut to 16 bits.
+    dead.save_health(Health {
+        yellow: 1.0,
+        red: f32::NAN,
+        max: 0.0,
+        ..Health::default()
+    });
+    assert_eq!((dead.record.pools.yellow, dead.record.pools.red), (0, 0));
 }
 
 /// The shipped object database's apparel, through the two rules
@@ -651,6 +781,31 @@ fn shipped_apparel_follows_the_underwear_and_conflict_rules() {
     for item in &apparel {
         assert!(overlaps(item, item), "{} ({})", item.name, item.id);
     }
+    // The refusal's lock byte: 121 shipped items carry one over 50
+    // (chests, drawers and tables 200 or 255, the ogre's club 100), and of
+    // the apparel the golem suit and the ogre armour and greaves, at 100.
+    let over_limit = |item: &&Item| item.equip_lock > EQUIP_LOCK_LIMIT;
+    assert_eq!(items.iter().filter(over_limit).count(), 121);
+    let locked_apparel: Vec<(u32, u8)> = apparel
+        .iter()
+        .copied()
+        .filter(over_limit)
+        .map(|item| (item.id, item.equip_lock))
+        .collect();
+    assert_eq!(
+        locked_apparel,
+        [498, 503, 505, 508, 526, 528, 532].map(|id| (id, 100))
+    );
+    // Whatever overlaps a worn golem suit cannot go on over it.
+    let golem = find(498).expect("the golem suit");
+    let over = apparel
+        .iter()
+        .find(|item| item.id != golem.id && overlaps(item, golem))
+        .expect("an item overlapping the golem suit");
+    let mut suited = CharacterData::new();
+    suited.record.worn = refs(&[golem.id]);
+    assert_eq!(suited.equip_conflicts(over, find), None);
+    assert_eq!(suited.record.worn, refs(&[golem.id]));
 
     // A human in the braies and a shirt: the braies stay; the trousers take
     // them off (and not the shirt).
@@ -682,7 +837,7 @@ fn shipped_apparel_follows_the_underwear_and_conflict_rules() {
     assert!(!data.ensure_underwear(find));
     assert_eq!(data.record.worn.len(), 2);
     let removed = data.equip_conflicts(trousers, find);
-    assert_eq!(removed, refs(&[UNDERWEAR_ITEM]));
+    assert_eq!(removed, Some(refs(&[UNDERWEAR_ITEM])));
     assert_eq!(data.record.worn, refs(&[shirt.id]));
     assert_eq!(data.record.worn[0].id, shirt.id);
 }
