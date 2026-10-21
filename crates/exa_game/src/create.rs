@@ -16,7 +16,7 @@ use exa_formats::characters::{
     ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, Pools, SHIELDS, SKILLS, Skill, TECHNIQUE_SLOTS,
 };
 
-use crate::experience::{LEVEL_STEP, training_skill};
+use crate::experience::{LEVEL_STEP, global_xp_for_worth, global_xp_worth, training_skill};
 
 /// The item id of the braies, the one worn item the story screen keeps.
 pub const BRAIES: u32 = 8;
@@ -179,7 +179,8 @@ pub fn creation_label(word: i32) -> CreationLabel {
     }
 }
 
-/// Clears the first used creation slot and the slots after it.
+/// Clears the first used creation slot and every slot after it, the last
+/// included. The first used slot keeps its first technique byte.
 pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     let first = slots
         .iter()
@@ -190,10 +191,8 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     for byte in &mut slot[3..] {
         *byte = 0;
     }
-    if first < 5 {
-        for later in &mut slots[first + 1..5] {
-            *later = [0; 8];
-        }
+    for later in &mut slots[first + 1..] {
+        *later = [0; 8];
     }
     Some(first)
 }
@@ -1422,10 +1421,13 @@ pub fn starting_skills() -> [Skill; SKILLS] {
 }
 
 /// The byte after a skill's points at `level`, read across the six slots
-/// as the original's unchecked index reads them.
+/// as the original's unchecked index reads it.
 ///
-/// Guess: a read past the six slots is taken as zero, where the original
-/// would read whatever follows the record.
+/// A level past the slot's six techniques reads the next slot's points and
+/// techniques. Past the last slot the original reads the record's carried
+/// count and alignment; that read cannot change the result (a level above
+/// five clears nothing and no slot follows the last), so it is taken as
+/// zero here.
 fn technique_byte(skills: &[Skill; SKILLS], slot: usize, level: usize) -> u8 {
     let byte = slot * 8 + 2 + level;
     if byte >= SKILLS * 8 {
@@ -1475,8 +1477,8 @@ pub struct SkillBudget {
 /// A slot over the remaining budget is cut to it; when its technique at
 /// the new level is chosen, the first such slot keeps that technique and
 /// clears only the later ones. Whatever is left goes to the skill in
-/// training up to its next level. A knight or proctor's budget is at least
-/// 10000.
+/// training (the first below level 5 with its next technique chosen) up
+/// to its next level. A knight or proctor's budget is at least 10000.
 pub fn set_skill_budget(skills: &[Skill; SKILLS], global: u32, background: i32) -> SkillBudget {
     let mut budget = if matches!(background, 1 | 2) {
         global.max(10_000)
@@ -1507,9 +1509,8 @@ pub fn set_skill_budget(skills: &[Skill; SKILLS], global: u32, background: i32) 
         out[index] = skill;
     }
     let leftover = budget;
-    // The original asks the character unit for the skill in training and
-    // its next level; the experience unit's training rule is the same one
-    // (guess: the two agree, as the arena lesson's rule does).
+    // The character unit's training-skill routine returns the same skill
+    // and next level as the experience unit's rule (one-based there).
     let training = if leftover == 0 {
         None
     } else {
@@ -1536,100 +1537,133 @@ pub fn set_skill_budget(skills: &[Skill; SKILLS], global: u32, background: i32) 
 ///
 /// Each 5000 points is worth more than the last (the first at 4, then 5,
 /// 6, …), the first skill's partial level is worth its remainder at the
-/// current weight, and the total is quartered and rounded down. The
-/// original visits the slots in order, so only the first partial level
-/// counts.
+/// current weight, and the total is quartered toward zero. The original
+/// visits the slots in order, so only the first partial level counts, and
+/// sums in 32 bits (six 16-bit skills cannot reach the wrap).
 pub fn effective_global_experience(skills: &[Skill; SKILLS]) -> i32 {
-    let mut total = 0i64;
-    let mut weight = 4i64;
+    let step = i32::from(LEVEL_STEP);
+    let mut total = 0i32;
+    let mut weight = 4i32;
     for skill in skills {
-        let levels = i64::from(skill.points) / i64::from(LEVEL_STEP);
-        for _ in 0..levels {
-            total += weight * i64::from(LEVEL_STEP);
+        for _ in 0..i32::from(skill.points) / step {
+            total = total.wrapping_add(weight.wrapping_mul(step));
             weight += 1;
         }
     }
     for skill in skills {
-        let points = i64::from(skill.points);
-        let rem = points % i64::from(LEVEL_STEP);
+        let points = i32::from(skill.points);
+        let rem = points - points / step * step;
         if rem != 0 {
-            total += rem * weight;
+            total = total.wrapping_add(rem.wrapping_mul(weight));
             break;
         }
     }
-    // The original's sign correction makes this a truncating division; the
-    // total is never negative, so it equals a plain signed divide.
-    let quarter = total / 4;
-    i32::try_from(quarter).unwrap_or(i32::MAX)
+    total / 4
 }
 
-/// The new global experience shown on the skills page.
-///
-/// It is the converted worth less the account's experience, or zero when
-/// the account already covers it.
-///
-/// Guess: the original passes both values through the experience system's
-/// two converters; this unit does not contain them, and their effect on
-/// the difference is not established.
-pub fn new_global_experience(converted: u32, account: u32) -> u32 {
-    converted.saturating_sub(account)
+/// The new global experience a continued character's skills page shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewGlobal {
+    /// The account's worth less the committed character's worth, or zero;
+    /// the form keeps it for the arena commit.
+    pub worth_left: u32,
+    /// That worth converted back to experience, as shown.
+    pub experience: i32,
+}
+
+/// The new global experience: the account's experience converted to worth
+/// ([`global_xp_worth`]), less the worth of the last committed character
+/// (zero when that covers it), converted back ([`global_xp_for_worth`]).
+pub fn new_global_experience(account: u32, committed_worth: u32) -> NewGlobal {
+    let worth_left = global_xp_worth(account).saturating_sub(committed_worth);
+    NewGlobal {
+        worth_left,
+        experience: global_xp_for_worth(worth_left as i32),
+    }
 }
 
 /// Which skills page the creator shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillPageMode {
-    /// The arena's current skill progress.
+    /// The arena's skills, read-only.
     Arena,
-    /// The account's experience, editable.
+    /// The account's experience, spent on the skills.
     Global,
-    /// A continued character's new experience.
+    /// A continued character's new experience, read-only.
     NewGlobal,
 }
 
-/// The skills page's heading and state.
+/// The skills page's captions and state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkillPage {
     pub mode: SkillPageMode,
-    pub heading: &'static str,
-    pub value: u32,
+    /// The equipment page's second tab caption; a continued character
+    /// keeps the one it had.
+    pub tab: Option<&'static str>,
+    /// The skills panel's heading; the arena's new character keeps the
+    /// panel's own.
+    pub heading: Option<&'static str>,
+    /// The experience the panel shows (none on the arena's page).
+    pub value: Option<u32>,
+    /// What the form keeps for the arena commit (see [`NewGlobal`]).
+    pub worth_left: u32,
+    /// The arena's new character clears its skills from the first used.
     pub clear_skills: bool,
-    pub show_current: bool,
+    /// The skills are capped to the account's experience first
+    /// ([`set_skill_budget`]).
+    pub apply_budget: bool,
+    /// The player may spend experience on the skills.
+    pub editable: bool,
     /// The page selector's value (4 for the arena, else 6).
     pub page: i32,
 }
 
-/// Picks the skills page for the game and screen modes.
-pub fn skill_page(game_mode: i32, screen_mode: i32, account: u32, converted: u32) -> SkillPage {
+/// Picks the skills page for the game and screen modes. `account` is the
+/// account's global experience and `committed_worth` the worth of the last
+/// committed character.
+pub fn skill_page(
+    game_mode: i32,
+    screen_mode: i32,
+    account: u32,
+    committed_worth: u32,
+) -> SkillPage {
     let continuing = screen_mode == 12;
+    let new_global = new_global_experience(account, committed_worth);
+    let tab = (!continuing).then_some(exa_ui::creation::SKILLS);
     if game_mode == 8 {
         SkillPage {
             mode: SkillPageMode::Arena,
-            heading: if continuing {
-                "Current skill progress"
-            } else {
-                "SKILLS"
-            },
-            value: 0,
+            tab,
+            heading: continuing.then_some(exa_ui::creation::CURRENT_SKILL_PROGRESS),
+            value: None,
+            worth_left: new_global.worth_left,
             clear_skills: !continuing,
-            show_current: true,
+            apply_budget: false,
+            editable: false,
             page: 4,
         }
     } else if continuing {
         SkillPage {
             mode: SkillPageMode::NewGlobal,
-            heading: "New global experience",
-            value: new_global_experience(converted, account),
+            tab,
+            heading: Some(exa_ui::creation::NEW_GLOBAL_EXPERIENCE),
+            value: Some(new_global.experience as u32),
+            worth_left: new_global.worth_left,
             clear_skills: false,
-            show_current: false,
+            apply_budget: false,
+            editable: false,
             page: 6,
         }
     } else {
         SkillPage {
             mode: SkillPageMode::Global,
-            heading: "Global experience",
-            value: account,
+            tab,
+            heading: Some(exa_ui::creation::GLOBAL_EXPERIENCE),
+            value: Some(account),
+            worth_left: new_global.worth_left,
             clear_skills: false,
-            show_current: true,
+            apply_budget: true,
+            editable: true,
             page: 6,
         }
     }
@@ -2135,10 +2169,13 @@ pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageS
 
 /// The account experience after an arena character is committed.
 ///
-/// The new global experience, less what was spent before, plus what the
-/// character's skills are worth.
-pub fn arena_global_experience(new_global: i32, spent_before: i32, worth: i32) -> i32 {
-    new_global.wrapping_sub(spent_before).wrapping_add(worth)
+/// The worth left on the skills page, less `spent_before` (a word this
+/// unit only reads), plus the worth of the last committed character, in
+/// wrapping 32-bit arithmetic.
+pub fn arena_global_experience(worth_left: i32, spent_before: i32, committed_worth: i32) -> i32 {
+    worth_left
+        .wrapping_sub(spent_before)
+        .wrapping_add(committed_worth)
 }
 
 /// What the arena commit carries over.
@@ -2146,24 +2183,23 @@ pub fn arena_global_experience(new_global: i32, spent_before: i32, worth: i32) -
 pub struct ArenaCommit {
     pub skills: [Skill; SKILLS],
     pub global: i32,
-    pub loadout: i32,
+    /// The form's continue kind, carried as it was.
+    pub kind: i32,
 }
 
-/// Prepares an arena character's commit.
+/// Prepares an arena character's commit: its six skills are copied, the
+/// account experience is worked out and the arena's start runs.
 pub fn commit_arena(
     skills: [Skill; SKILLS],
-    new_global: i32,
+    worth_left: i32,
     spent_before: i32,
-    loadout: i32,
+    committed_worth: i32,
+    kind: i32,
 ) -> ArenaCommit {
     ArenaCommit {
         skills,
-        global: arena_global_experience(
-            new_global,
-            spent_before,
-            effective_global_experience(&skills),
-        ),
-        loadout,
+        global: arena_global_experience(worth_left, spent_before, committed_worth),
+        kind,
     }
 }
 
@@ -3119,7 +3155,8 @@ mod tests {
         assert_eq!(slots[2], [0; 8]);
         assert_eq!(slots[3], [0; 8]);
         assert_eq!(slots[4], [0; 8]);
-        assert_eq!(slots[5], [7; 8]);
+        // The clear runs through the sixth slot too.
+        assert_eq!(slots[5], [0; 8]);
 
         let mut empty = [[0u8; 8]; 6];
         assert_eq!(clear_creation_slots(&mut empty), None);
@@ -4033,6 +4070,25 @@ mod tests {
         assert_eq!(budget.skills[1], Skill::default());
         assert_eq!(budget.leftover, 0);
         assert_eq!(budget.training, None);
+
+        // A slot capped at level 6 reads past its techniques into the next
+        // slot: the next slot's point byte is set, so this slot keeps its
+        // techniques and the next one, capped later, loses its chosen one.
+        let mut wide = [Skill::default(); SKILLS];
+        wide[0] = skill(40000, [1, 2, 3, 4, 5, 6]);
+        wide[1] = skill(5000, [7, 8, 0, 0, 0, 0]);
+        let read = set_skill_budget(&wide, 30000, 0);
+        assert_eq!(read.skills[0], skill(30000, [1, 2, 3, 4, 5, 6]));
+        assert_eq!(read.skills[1], Skill::default());
+        let mut last = [Skill::default(); SKILLS];
+        last[5] = skill(40000, [1, 2, 3, 4, 5, 6]);
+        // At level 5 the slot's own sixth technique decides.
+        let five = set_skill_budget(&last, 25000, 0);
+        assert_eq!(five.skills[5], skill(25000, [1, 2, 3, 4, 5, 6]));
+        // At level 4 the chosen fifth technique is kept and only the sixth
+        // is cleared.
+        let four = set_skill_budget(&last, 20000, 0);
+        assert_eq!(four.skills[5], skill(20000, [1, 2, 3, 4, 5, 0]));
     }
 
     #[test]
@@ -4071,39 +4127,62 @@ mod tests {
         assert_eq!(effective_global_experience(&partial), 15000);
 
         assert_eq!(effective_global_experience(&[Skill::default(); SKILLS]), 0);
+
+        // Six full words: 78 levels at weights 4 to 81, then no remainder
+        // past the first slot's 535.
+        let full = [skill(u16::MAX, [0; 6]); SKILLS];
+        assert_eq!(
+            effective_global_experience(&full),
+            (5000 * (4..82).sum::<i32>() + 535 * 82) / 4
+        );
     }
 
     #[test]
     fn the_skills_page_follows_the_mode() {
         let arena = skill_page(8, 0, 20000, 0);
         assert_eq!(arena.mode, SkillPageMode::Arena);
-        assert_eq!(arena.heading, exa_ui::creation::SKILLS);
+        assert_eq!(arena.tab, Some("SKILLS"));
+        assert_eq!(arena.heading, None);
+        assert_eq!(arena.value, None);
         assert!(arena.clear_skills);
+        assert!(!arena.editable);
         assert_eq!(arena.page, 4);
 
         let arena_continue = skill_page(8, 12, 20000, 0);
-        assert_eq!(arena_continue.heading, "Current skill progress");
+        assert_eq!(arena_continue.tab, None);
+        assert_eq!(arena_continue.heading, Some("Current skill progress"));
         assert!(!arena_continue.clear_skills);
 
         let global = skill_page(4, 0, 12000, 0);
         assert_eq!(global.mode, SkillPageMode::Global);
-        assert_eq!(global.heading, "Global experience");
-        assert_eq!(global.value, 12000);
-        assert!(global.show_current);
+        assert_eq!(global.heading, Some("Global experience"));
+        assert_eq!(global.value, Some(12000));
+        assert!(global.apply_budget);
+        assert!(global.editable);
         assert_eq!(global.page, 6);
 
-        let continued = skill_page(4, 12, 12000, 30000);
+        // 30000 experience is worth 48750; less a committed 37500 leaves
+        // 11250, which buys back 10000 experience.
+        let continued = skill_page(4, 12, 30000, 37500);
         assert_eq!(continued.mode, SkillPageMode::NewGlobal);
-        assert_eq!(continued.heading, "New global experience");
-        assert_eq!(continued.value, 18000);
-        assert!(!continued.show_current);
+        assert_eq!(continued.heading, Some("New global experience"));
+        assert_eq!(continued.value, Some(10000));
+        assert_eq!(continued.worth_left, 11250);
+        assert!(!continued.editable);
+        assert!(!continued.apply_budget);
     }
 
     #[test]
     fn the_new_global_experience_never_goes_negative() {
-        assert_eq!(new_global_experience(30000, 12000), 18000);
-        assert_eq!(new_global_experience(12000, 12000), 0);
-        assert_eq!(new_global_experience(100, 12000), 0);
+        assert_eq!(
+            new_global_experience(30000, 14250),
+            NewGlobal {
+                worth_left: 34500,
+                experience: 23500
+            }
+        );
+        assert_eq!(new_global_experience(12000, 14250).worth_left, 0);
+        assert_eq!(new_global_experience(100, 14250).experience, 0);
     }
 
     #[test]
@@ -4351,10 +4430,11 @@ mod tests {
     fn the_arena_commit_returns_the_new_global_experience() {
         let mut skills = [Skill::default(); SKILLS];
         skills[0] = skill(25000, [0; 6]);
-        let commit = commit_arena(skills, 50000, 10000, 3);
-        assert_eq!(commit.global, 77500);
+        // The committed worth is the stored one, not the skills' own.
+        let commit = commit_arena(skills, 50000, 10000, 2000, 2);
+        assert_eq!(commit.global, 42000);
         assert_eq!(commit.skills[0].points, 25000);
-        assert_eq!(commit.loadout, 3);
+        assert_eq!(commit.kind, 2);
     }
 
     #[test]
