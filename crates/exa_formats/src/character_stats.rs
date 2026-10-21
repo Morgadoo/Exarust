@@ -219,18 +219,8 @@ impl CharacterStats {
         let byte = record.race;
         // The builder keeps the record's height and feral level in range
         // before anything reads them.
-        // The builder's own keeps: a NaN height is −1 and a NaN feral level
-        // 0, as its unordered compares do.
-        let h = if record.height >= -1.0 {
-            record.height.min(1.0)
-        } else {
-            -1.0
-        };
-        let f = if record.feral >= 0.0 {
-            record.feral.min(1.0)
-        } else {
-            0.0
-        };
+        let h = record.height.clamp(-1.0, 1.0);
+        let f = record.feral.clamp(0.0, 1.0);
         let feral = f > 0.0;
 
         let shrink = (1.0 - HEIGHT_SCALE * f64::from(h)) as f32;

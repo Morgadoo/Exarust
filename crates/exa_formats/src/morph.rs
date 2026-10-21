@@ -201,19 +201,9 @@ impl Physique {
     pub fn of_record(r: &CharacterRecord) -> Self {
         Self {
             build: r.physique,
-            // The builder's compares: a NaN height is −1, a NaN age or
-            // feral level 0.
-            height: if r.height >= -1.0 {
-                r.height.min(1.0)
-            } else {
-                -1.0
-            },
-            age: if r.age >= 0.0 { r.age.min(1.0) } else { 0.0 },
-            feral: if r.feral >= 0.0 {
-                r.feral.min(1.0)
-            } else {
-                0.0
-            },
+            height: r.height.clamp(-1.0, 1.0),
+            age: r.age.clamp(0.0, 1.0),
+            feral: r.feral.clamp(0.0, 1.0),
             female: r.female,
         }
     }

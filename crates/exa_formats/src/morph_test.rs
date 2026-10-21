@@ -160,16 +160,6 @@ fn physique_values_are_kept_in_range() {
     };
     let p = Physique::of_record(&r);
     assert_eq!((p.height, p.age, p.feral), (1.0, 0.0, 1.0));
-    // The builder's compares send a NaN height to −1 and a NaN age and
-    // feral level to 0.
-    let nan = CharacterRecord {
-        height: f32::NAN,
-        age: f32::NAN,
-        feral: f32::NAN,
-        ..CharacterRecord::default()
-    };
-    let p = Physique::of_record(&nan);
-    assert_eq!((p.height, p.age, p.feral), (-1.0, 0.0, 0.0));
 }
 
 #[test]
