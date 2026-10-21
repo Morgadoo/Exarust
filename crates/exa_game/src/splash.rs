@@ -511,7 +511,12 @@ fn start(
                 position_type: PositionType::Absolute,
                 ..default()
             },
-            ImageNode::default(),
+            // The original maps the texture's first row to the quad's
+            // bottom edge (v = 0 at y + h): the stored image is bottom-up.
+            ImageNode {
+                flip_y: true,
+                ..default()
+            },
             Visibility::Hidden,
         ));
     screen.begin(clock_ms(&time), logos);
