@@ -81,8 +81,9 @@ impl UserSettings {
     }
 
     /// The hardware configuration the settings file gives, with the launch
-    /// options' overrides: a command-line full screen, size or no-vsync and
-    /// no-super-sampling win.
+    /// options' overrides: the launcher's full screen, size, vertical sync,
+    /// super-sampling and frame-rate choices (already merged with the file by
+    /// [`UserSettings::apply_to`]) win.
     pub fn hardware(
         &self,
         fullscreen: bool,
@@ -99,11 +100,8 @@ impl UserSettings {
         }
         live.show_fps = !no_fps;
         exa_game::hw_config::HardwareConfig {
-            live,
-            settings_file: Some(self.ini_path.clone()),
             window_size: size,
-            session_music: live.music,
-            ..default()
+            ..exa_game::hw_config::HardwareConfig::new(live).with_file(self.ini_path.clone())
         }
     }
 
@@ -256,7 +254,7 @@ mod tests {
     #[test]
     fn the_hardware_options_take_the_file_and_the_launch_overrides() {
         let u = user(
-            b"Volume = 0.5\r\nMusic = 0\r\nSupersample = 3\r\nShadowQuality = 2\r\n\
+            b"Volume = 50\r\nMusic = 0\r\nSupersample = 3\r\nShadowQuality = 2\r\n\
               Fullscreen = 0\r\nVerticalSync = 1\r\nShowFPS = 0\r\n\
               InputMode = 51\r\nAimSpeed = 30\r\n",
         );
@@ -269,7 +267,7 @@ mod tests {
         assert!(hardware.live.vertical_sync);
         assert!(hardware.live.show_fps);
         assert!(hardware.live.controller);
-        assert!((hardware.live.aim_speed - 29.0 / 99.0).abs() < 1e-7);
+        assert_eq!(hardware.live.aim_speed, (29.0f64 / 99.0) as f32);
         assert_eq!(hardware.window_size, Some((1280, 720)));
         // The test's folder is empty, so the file path is empty too.
         assert_eq!(hardware.settings_file, Some(PathBuf::new()));

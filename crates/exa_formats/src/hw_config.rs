@@ -10,10 +10,10 @@
 //!
 //! Rules: `docs/UI.md` (Settings options, Controls) and
 //! `docs/formats/SETTINGS.md` (the settings file). Everything here is the
-//! original's behaviour, quirks included: the volume slider opens at 2/3
-//! whatever the volume is, the Music checkbox writes the startup music value,
-//! and the settings screen shows the auto-detected quality whenever its page
-//! is opened.
+//! original's behaviour, quirks included: the Music checkbox only mutes the
+//! session, so the file keeps the startup music value; the page's draft is
+//! the settings file read again; the auto-detection keeps the window mode the
+//! page last opened with; and its shadow detail reaches only the page.
 
 use crate::settings_ini::{
     self, Assignment, Settings, Value, format_bool, format_float, format_int,
@@ -118,43 +118,54 @@ impl Default for Options {
     }
 }
 
-/// How the settings screen lays its own draft out from the live options.
+/// The settings screen's three sets of options and how they move.
 ///
-/// The screen keeps the live render qualities, the volume, the music, the
-/// frame-rate readout, the window mode, the aim speed and the controller
-/// flag. It resets hardware anti-aliasing to 0, vertical sync to on, the tips
-/// to on and the checkpoints to on, and every other field is a copy of the
-/// live one for the controls that edit them immediately.
+/// The original keeps three copies: the live options the game runs with, the
+/// page's working copy its controls edit (the draft), and a saved copy (the
+/// baseline) that Cancel and the auto-detection push back into both. The
+/// saved copy is taken when the page opens; the auto-detection and the Deck
+/// preset replace its quality levels.
 impl Options {
-    /// The draft the settings screen opens with.
-    pub fn opened_from(live: &Self) -> Self {
-        Self {
-            volume: live.volume,
-            music: live.music,
-            supersample: live.supersample,
-            shading_quality: live.shading_quality,
-            texture_detail: live.texture_detail,
-            texture_quality: live.texture_quality,
-            shadow_detail: live.shadow_detail,
-            shadow_quality: live.shadow_quality,
-            multisample: Self::default().multisample,
-            vertical_sync: Self::default().vertical_sync,
-            show_fps: live.show_fps,
-            window_mode: live.window_mode,
-            show_tips: live.show_tips,
-            checkpoints: live.checkpoints,
-            aim_speed: live.aim_speed,
-            controller: live.controller,
-            perf_index: live.perf_index,
+    /// The options after the settings file is read again over `self`, as the
+    /// page does when it opens: each setting the file names goes through its
+    /// startup rule (the quality clamps, `Volume` in percent, the aim speed's
+    /// 1-based step, a positive `InputMode` for the controller).
+    pub fn reread(&self, assignments: &[Assignment]) -> Self {
+        let mut settings = Settings {
+            volume: self.volume,
+            music: self.music,
+            supersample: self.supersample,
+            shading_quality: self.shading_quality,
+            texture_detail: self.texture_detail,
+            texture_quality: self.texture_quality,
+            shadow_detail: self.shadow_detail,
+            shadow_quality: self.shadow_quality,
+            hw_multisample: self.multisample,
+            vertical_sync: self.vertical_sync,
+            show_fps: self.show_fps,
+            fullscreen: !self.window_mode,
+            show_game_tips: self.show_tips,
+            checkpoints: self.checkpoints,
+            aim_speed: self.aim_speed,
+            input_mode: i32::from(self.controller),
+            perf_index: self.perf_index,
+            ..Settings::default()
+        };
+        for assignment in assignments {
+            // The display height only matters to the GUI size, which is not
+            // an option here.
+            settings.apply(assignment, 0);
         }
+        options_from_settings(&settings)
     }
 
-    /// The values the auto-detection leaves: everything the live options had,
-    /// its quality levels from [`Quality::auto`], and the defaults for the
-    /// options that are not quality levels (hardware anti-aliasing 0,
-    /// vertical sync on, tips on, checkpoints on).
-    pub fn auto_detected(live: &Self, perf_index: f32, width: i64, height: i64) -> Self {
-        let quality = Quality::auto(perf_index, width, height);
+    /// The saved set the auto-detection leaves (`self` is the live options,
+    /// already holding the benchmark's `perf_index`): its quality levels from
+    /// [`Quality::auto`], every other option copied from the live ones,
+    /// except the window mode, which keeps the saved set's (the original does
+    /// not refresh it here, so it is the one the page last opened with).
+    pub fn auto_detected(&self, saved: &Self, width: i64, height: i64) -> Self {
+        let quality = Quality::auto(self.perf_index, width, height);
         Self {
             supersample: quality.supersample,
             shading_quality: quality.shading_quality,
@@ -162,18 +173,15 @@ impl Options {
             texture_quality: quality.texture_quality,
             shadow_detail: quality.shadow_detail,
             shadow_quality: quality.shadow_quality,
-            multisample: Self::default().multisample,
-            vertical_sync: Self::default().vertical_sync,
-            perf_index,
-            ..*live
+            window_mode: saved.window_mode,
+            ..*self
         }
     }
 
-    /// The Deck's fixed quality preset: super-sampling 3, shading 5, texture
-    /// detail 2, texture quality 5, shadow detail 5 and shadow quality 3,
-    /// with the other options kept and the non-quality ones at their
-    /// defaults.
-    pub fn deck_preset(live: &Self) -> Self {
+    /// The Deck's fixed saved set: super-sampling 3, shading 5, texture
+    /// detail 2, texture quality 5, shadow detail 5 and shadow quality 3, the
+    /// rest as [`Options::auto_detected`] takes it.
+    pub fn deck_preset(&self, saved: &Self) -> Self {
         Self {
             supersample: 3,
             shading_quality: 5,
@@ -181,9 +189,33 @@ impl Options {
             texture_quality: 5,
             shadow_detail: 5,
             shadow_quality: 3,
-            multisample: Self::default().multisample,
-            vertical_sync: Self::default().vertical_sync,
-            ..*live
+            window_mode: saved.window_mode,
+            ..*self
+        }
+    }
+
+    /// The live options after the saved set `self` is pushed into them (by
+    /// Cancel, the auto-detection or the Deck preset). Every option takes the
+    /// saved value except the shadow detail, whose setter only writes the
+    /// page's copy, and the performance index, which only the benchmark
+    /// writes.
+    pub fn pushed_live(&self, live: &Self) -> Self {
+        Self {
+            shadow_detail: live.shadow_detail,
+            perf_index: live.perf_index,
+            ..*self
+        }
+    }
+
+    /// The page's draft after the same push: every option takes the saved
+    /// value except hardware anti-aliasing and the window mode, which the
+    /// push leaves alone.
+    pub fn pushed_draft(&self, draft: &Self) -> Self {
+        Self {
+            multisample: draft.multisample,
+            window_mode: draft.window_mode,
+            perf_index: draft.perf_index,
+            ..*self
         }
     }
 }
@@ -270,8 +302,8 @@ pub fn perf_index(best_per_half_second: i32) -> f32 {
 /// The quality labels a slider shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scale {
-    /// Off, Low, Medium, High, Very high, Ultra (texture quality and the
-    /// shadow detail's wider scale).
+    /// Off, Low, Medium, High, Very high, Ultra (texture quality, and the
+    /// older texture-detail, shadow-detail and shadow-quality callbacks).
     Ultra,
     /// Coarse, Low, Medium, High, Very high (shading quality).
     Coarse,
@@ -279,7 +311,7 @@ pub enum Scale {
     CoarseOff,
     /// Off, Low, —, Medium, High, Very high (super-sampling; 2 has no text).
     Supersample,
-    /// Low, High (texture detail, shadow detail and aim speed's coarse form).
+    /// Low, High (texture detail and shadow detail).
     LowHigh,
     /// Off, 2x, 4x, 8x (hardware anti-aliasing samples).
     Samples,
@@ -288,11 +320,12 @@ pub enum Scale {
 impl Scale {
     /// The text the original shows for `value`, with its leading space. A
     /// value without a branch leaves the label as it was, which is `None`
-    /// here.
+    /// here. The first branches of [`Scale::Ultra`] and [`Scale::Coarse`]
+    /// compare unsigned, so a negative value has no text.
     pub fn text(self, value: i32) -> Option<&'static str> {
         match self {
             Scale::Ultra => match value {
-                i32::MIN..=1 => Some(" Off"),
+                0 | 1 => Some(" Off"),
                 2 => Some(" Low"),
                 3 => Some(" Medium"),
                 4 => Some(" High"),
@@ -301,7 +334,7 @@ impl Scale {
                 _ => None,
             },
             Scale::Coarse => match value {
-                i32::MIN..=2 => Some(" Coarse"),
+                0..=2 => Some(" Coarse"),
                 3 => Some(" Low"),
                 4 => Some(" Medium"),
                 5 => Some(" High"),
@@ -343,10 +376,10 @@ impl Scale {
 
 /// The slider fraction of each option, as the screen opens with it.
 impl Options {
-    /// The volume slider's fraction: the default volume over the maximum, not
-    /// the current volume (the original's opening quirk).
+    /// The volume slider's fraction: the volume over the maximum, in single
+    /// precision.
     pub fn volume_fraction(&self) -> f32 {
-        VOLUME_DEFAULT / VOLUME_MAX
+        self.volume / VOLUME_MAX
     }
 
     /// The super-sampling slider's fraction from its level: 0, 1, 3 and 4 sit
@@ -367,7 +400,7 @@ impl Options {
 
     /// The texture-detail slider's fraction.
     pub fn texture_detail_fraction(&self) -> f32 {
-        (f64::from(self.texture_detail - 2) * 1.0) as f32
+        ((i64::from(self.texture_detail) - 2) as f64 * 1.0) as f32
     }
 
     /// The texture-quality slider's fraction.
@@ -377,7 +410,7 @@ impl Options {
 
     /// The shadow-detail slider's fraction.
     pub fn shadow_detail_fraction(&self) -> f32 {
-        (f64::from(self.shadow_detail - 4) * 1.0) as f32
+        ((i64::from(self.shadow_detail) - 4) as f64 * 1.0) as f32
     }
 
     /// The shadow-quality slider's fraction.
@@ -401,9 +434,9 @@ impl Options {
         Scale::Supersample.text(self.supersample)
     }
 
-    /// The shading-quality label.
+    /// The shading-quality label, from the slider position it opens at.
     pub fn shading_text(&self) -> Option<&'static str> {
-        Scale::Coarse.text(self.shading_quality)
+        Scale::Coarse.text(round_even(self.shading_fraction() * 3.0) + SHADING_BASE)
     }
 
     /// The texture-detail label.
@@ -498,33 +531,63 @@ pub fn floor_log2(value: i32) -> i32 {
     result
 }
 
-/// Singular-precision rounding to the nearest integer, ties to even (the
-/// processor's default mode; the sliders never pass NaN).
+/// The processor's single-precision conversion to an integer: to nearest,
+/// ties to even, into 64 bits, of which the original keeps the low 32. A NaN
+/// or a value outside the 64-bit range gives the "integer indefinite", whose
+/// low half is 0.
 fn round_even(value: f32) -> i32 {
-    value.round_ties_even() as i32
+    let rounded = value.round_ties_even();
+    let limit = 2f32.powi(63);
+    if rounded.is_nan() || rounded >= limit || rounded < -limit {
+        return 0;
+    }
+    rounded as i64 as i32
 }
 
-/// The screen's edited options and the live options they opened from.
+/// The page's two copies: the draft its controls edit and the saved set
+/// (the baseline) Cancel pushes back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Screen {
     /// The values the controls edit.
     pub draft: Options,
-    /// The live options when the screen opened; Cancel pushes them back.
+    /// The saved set: the live options when the page opened, with the
+    /// quality levels a later auto-detection or Deck preset gave.
     pub baseline: Options,
 }
 
 impl Screen {
-    /// Opens the screen over the live options.
-    pub fn open(live: &Options) -> Self {
-        Self {
-            draft: Options::opened_from(live),
+    /// Opens the page over the live options. `reread` is the live options
+    /// with the settings file read again over them ([`Options::reread`]; the
+    /// live options themselves when there is no file).
+    ///
+    /// The saved set is the live options before the file is read; the draft
+    /// is the reread options. The new live options keep the reread values,
+    /// except the quality levels, the two sampling options, vertical sync and
+    /// the window mode, which go back to the saved ones. Returns the page and
+    /// the new live options.
+    pub fn open(live: &Options, reread: &Options) -> (Self, Options) {
+        let restored = Options {
+            supersample: live.supersample,
+            shading_quality: live.shading_quality,
+            texture_detail: live.texture_detail,
+            texture_quality: live.texture_quality,
+            shadow_detail: live.shadow_detail,
+            shadow_quality: live.shadow_quality,
+            multisample: live.multisample,
+            vertical_sync: live.vertical_sync,
+            window_mode: live.window_mode,
+            ..*reread
+        };
+        let screen = Self {
+            draft: *reread,
             baseline: *live,
-        }
+        };
+        (screen, restored)
     }
 
-    /// Cancel: the options to push back to the renderer and the audio.
-    pub fn cancel(&self) -> Options {
-        self.baseline
+    /// Cancel: the live options after the saved set is pushed back.
+    pub fn cancel(&self, live: &Options) -> Options {
+        self.baseline.pushed_live(live)
     }
 
     /// The quality levels Apply changed since the screen opened. Any of them
@@ -540,13 +603,13 @@ impl Screen {
 
     /// The `Name = value` lines Apply writes, in the original's order.
     ///
-    /// The quality levels, super-sampling, multi-sampling, vertical sync and
-    /// full screen come from the draft. Volume, aim speed, the frame-rate
-    /// readout, the tips and checkpoints come from the live options, because
-    /// their controls change the running game at once. `Music` is the live
-    /// music value, which the Music checkbox does not change (the original
-    /// writes the startup value). `ShowFPS` is written twice, as the original
-    /// does.
+    /// The quality levels, super-sampling, multi-sampling, vertical sync, full
+    /// screen and the second `ShowFPS` come from the draft. The performance
+    /// index, volume, input mode, aim speed, music, the first `ShowFPS`, the
+    /// tips and checkpoints come from the live options: their controls change
+    /// the running game at once. `Music` is the live music value, which the
+    /// Music checkbox does not change (it only mutes the session), so the
+    /// line keeps the startup value.
     pub fn settings_lines(&self, live: &Options) -> Vec<(&'static str, String)> {
         let draft = &self.draft;
         vec![
@@ -561,7 +624,7 @@ impl Screen {
             ("HWMultisample", format_int(draft.multisample)),
             (
                 "InputMode",
-                if draft.controller { "51" } else { "0" }.to_string(),
+                if live.controller { "51" } else { "0" }.to_string(),
             ),
             (
                 "AimSpeed",
@@ -573,7 +636,7 @@ impl Screen {
             ("ShowGameTips", format_bool(live.show_tips).to_string()),
             ("Checkpoints", format_bool(live.checkpoints).to_string()),
             ("VerticalSync", format_bool(draft.vertical_sync).to_string()),
-            ("ShowFPS", format_bool(live.show_fps).to_string()),
+            ("ShowFPS", format_bool(draft.show_fps).to_string()),
         ]
     }
 
@@ -692,18 +755,21 @@ impl Benchmark {
     }
 }
 
-/// The Windows virtual-key name of a key code, as the Controls page shows it.
+/// The name the Controls page shows for a key code.
 ///
 /// Codes with bit `0x8000` are mouse buttons: the fourth, fifth and sixth are
 /// "Mouse 3", "Mouse 4" and "Mouse 5", any other is empty. Codes with bit
-/// `0x4000` are extended keys and show as `<code without the bit>`. Other
-/// codes get their Windows name in title case, or `<code>` when the name is
-/// unknown.
+/// `0x4000` show as `<code without the bit>`. Other codes get the system's
+/// key name in title case, or `<code>` when it has none.
 ///
-/// The names are read from a table by virtual-key code rather than through
-/// the system's key-name call; the shipped table's names match what that call
-/// shows on the retail game (a guess for names outside the shipped table; the
-/// `0x4000` and `0x8000` shapes and the title-case rule are observed).
+/// The original's codes are keyboard scan codes (bit `0x100` for the
+/// extended keys), which it passes to the system's key-name call in the
+/// call's scan-code field; its extended-key fix-up compares the already
+/// shifted value with small codes and so never fires. Exarust's binding table
+/// holds virtual-key codes (`exa_game::bindings`), so the names here come from
+/// a table by virtual-key code, written to give the names that call gives for
+/// the same keys on a US layout (a guess outside the shipped keys; the mouse
+/// and `0x4000` shapes and the title-case rule are observed).
 pub fn key_name(code: u32) -> String {
     if code & 0x8000 != 0 {
         return match code & 0x3fff {
@@ -722,7 +788,7 @@ pub fn key_name(code: u32) -> String {
     }
 }
 
-/// The Windows name of a virtual-key code, before title-casing.
+/// The system's name for a virtual-key code's key, before title-casing.
 fn virtual_key_name(code: u32) -> Option<&'static str> {
     Some(match code {
         0x08 => "BACKSPACE",
@@ -868,11 +934,13 @@ pub fn memory_text(megabytes: u32) -> String {
 /// Applies one hardware setting read from the file to `settings`.
 ///
 /// The settings are the ones the hardware configuration registers as startup
-/// keys; their handlers' effects on the renderer were not traced, so this
-/// keeps the values (the launcher applies the ones it can). The aim speed's
-/// file value is its 1-based step: 0 leaves it alone, otherwise it becomes
-/// `(step − 1) / 99` limited to 0–1 (a guess: the save writes
-/// `round(fraction × 99) + 1`).
+/// keys, plus the audio's `Volume` and the game's `ShowGameTips` and
+/// `CheckPoints`. Their handlers store the value: `Volume` is in percent (the
+/// handler multiplies it by 0.01 in single precision), `AimSpeed` is the
+/// 1-based step (`(step − 1) / 99` in double precision, unclamped) and
+/// `InputMode` is kept as read (the controller when positive). The renderer
+/// switches' effects beyond storing were not traced; the launcher applies the
+/// ones it can.
 pub fn apply_setting(settings: &mut Settings, name: &str, value: &Value) {
     let int = if let Value::Int(v) = value { *v } else { 0 };
     let flag = matches!(value, Value::Bool(true));
@@ -895,28 +963,25 @@ pub fn apply_setting(settings: &mut Settings, name: &str, value: &Value) {
         "GILowPrecision" => settings.gi_low_precision = flag,
         "InputMode" => settings.input_mode = int,
         "AimSpeed" => settings.aim_speed = aim_speed_from_step(int),
-        "Volume" => settings.volume = float,
+        "Volume" => settings.volume = float * 0.01,
         "ShowGameTips" => settings.show_game_tips = flag,
         "CheckPoints" => settings.checkpoints = flag,
         _ => {}
     }
 }
 
-/// The aim speed a saved step gives: 0 for a step of 0 or less, else
-/// `(step − 1) / 99`, limited to 0–1.
+/// The aim speed a saved step gives: `(step − 1) / 99`, in double precision
+/// and then single, with no limit (the handler's arithmetic).
 pub fn aim_speed_from_step(step: i32) -> f32 {
-    if step <= 0 {
-        return 0.0;
-    }
-    let fraction = f64::from(step - 1) / f64::from(AIM_SPEED_STEPS);
-    fraction.clamp(0.0, 1.0) as f32
+    ((i64::from(step) - 1) as f64 / f64::from(AIM_SPEED_STEPS)) as f32
 }
 
 /// The live options a settings file gives.
 ///
-/// The quality levels are the ones the file names; the game's own
+/// The quality levels are the ones the file names; the game's own first-run
 /// auto-detection would replace them (not reproduced at launch, see
-/// `docs/UI.md`). A non-zero input mode is the controller.
+/// `docs/UI.md`). A positive input mode is the controller (its handler sets
+/// the flag when the value is greater than 0).
 pub fn options_from_settings(settings: &Settings) -> Options {
     Options {
         volume: settings.volume,
@@ -934,7 +999,7 @@ pub fn options_from_settings(settings: &Settings) -> Options {
         show_tips: settings.show_game_tips,
         checkpoints: settings.checkpoints,
         aim_speed: settings.aim_speed,
-        controller: settings.input_mode != 0,
+        controller: settings.input_mode > 0,
         perf_index: settings.perf_index,
     }
 }

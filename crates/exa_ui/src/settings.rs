@@ -227,15 +227,18 @@ pub const SETTINGS: [Record; 27] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Binding {
     pub label: &'static str,
-    /// The original's action code for the row.
+    /// The original's action code for the row: the key cell's control id,
+    /// one more than the row's slot in the saved key table.
     pub action: u16,
-    /// The row's slot in the 23-entry binding table, when it has one.
+    /// The row's slot in the player's 23-entry binding table
+    /// (`exa_game::bindings`), through the original's conversion from the
+    /// saved table.
     pub slot: Option<usize>,
     /// The template's key text (the shipped table's key may differ).
     pub key: &'static str,
     /// The row's y in design pixels.
     pub y: i32,
-    /// Whether the row has a key cell (Power Tree does not).
+    /// Whether the row has a key cell.
     pub keyed: bool,
 }
 
@@ -250,11 +253,13 @@ const fn bind(label: &'static str, action: u16, slot: usize, key: &'static str, 
     }
 }
 
-/// The Controls bindings (22 label rows, 21 key cells).
+/// The Controls bindings: 22 label rows, each with a key cell (the record
+/// table's 44 records are label and key-cell pairs; every key cell opens the
+/// key-read screen). The primary mouse button's slot 0 has no row.
 pub const BINDINGS: [Binding; 22] = [
     bind("Forward", 1, 1, "W", 8),
-    bind("Back", 2, 2, "S", 36),
-    bind("Left", 3, 3, "A", 64),
+    bind("Back", 2, 3, "S", 36),
+    bind("Left", 3, 2, "A", 64),
     bind("Right", 4, 4, "D", 92),
     bind("Run/Sprint", 5, 6, "Shift", 120),
     bind("Crouch", 6, 5, "X", 148),
@@ -269,18 +274,11 @@ pub const BINDINGS: [Binding; 22] = [
     bind("Skills", 0xC, 13, "K", 412),
     bind("Journal", 0xD, 16, "J", 440),
     bind("Talk", 0x10, 17, "T", 468),
-    bind("Use Power", 0x15, 18, "", 504),
-    bind("Power Bar", 0x11, 19, "", 532),
+    bind("Use Power", 0x15, 20, "", 504),
+    bind("Power Bar", 0x11, 18, "", 532),
     bind("Previous Power", 0x13, 22, "", 560),
     bind("Next Power", 0x14, 21, "", 588),
-    Binding {
-        label: "Power Tree",
-        action: 0,
-        slot: None,
-        key: "",
-        y: 616,
-        keyed: false,
-    },
+    bind("Power Tree", 0x12, 19, "", 616),
 ];
 
 /// The complete form layout at a GUI unit (4, 5, 6, 8 or 12).
@@ -740,16 +738,16 @@ impl RowState {
 
 /// The rows as the page opens, in row order.
 ///
-/// Volume always shows the default's 2/3 position, not the live volume: the
-/// original's opening handler divides the default by the maximum. Hardware
-/// anti-aliasing is enabled only while super-sampling is on; when it is off,
-/// the slider shows its level-0 position.
-pub fn populate(options: &Options) -> [(Setting, RowState); 14] {
+/// The volume, music, super-sampling and window-mode rows show the live
+/// options; the others show the page's draft. Hardware anti-aliasing is
+/// enabled only while the live super-sampling is off, showing the draft's
+/// samples; while it is on the row is disabled and keeps its position.
+pub fn populate(live: &Options, options: &Options) -> [(Setting, RowState); 14] {
     let row = |setting: Setting| match setting {
-        Setting::Volume => RowState::slider(Options::default().volume_fraction(), None),
-        Setting::Music => RowState::check(options.music),
+        Setting::Volume => RowState::slider(live.volume_fraction(), None),
+        Setting::Music => RowState::check(live.music),
         Setting::Supersample => {
-            RowState::slider(options.supersample_fraction(), options.supersample_text())
+            RowState::slider(live.supersample_fraction(), live.supersample_text())
         }
         Setting::ShadingQuality => {
             RowState::slider(options.shading_fraction(), options.shading_text())
@@ -770,21 +768,21 @@ pub fn populate(options: &Options) -> [(Setting, RowState); 14] {
             options.shadow_quality_fraction(),
             options.shadow_quality_text(),
         ),
-        Setting::Multisample if options.supersample > 0 => RowState {
+        Setting::Multisample if live.supersample > 0 => RowState {
             fraction: None,
             checked: false,
-            enabled: true,
+            enabled: false,
             text: None,
         },
         Setting::Multisample => RowState {
             fraction: Some(options.multisample_fraction()),
             checked: false,
-            enabled: false,
+            enabled: true,
             text: options.multisample_text(),
         },
         Setting::VerticalSync => RowState::check(options.vertical_sync),
         Setting::ShowFps => RowState::check(options.show_fps),
-        Setting::WindowMode => RowState::check(options.window_mode),
+        Setting::WindowMode => RowState::check(live.window_mode),
         Setting::ShowTips => RowState::check(options.show_tips),
         Setting::Checkpoints => RowState::check(options.checkpoints),
     };
@@ -810,8 +808,9 @@ pub fn populate(options: &Options) -> [(Setting, RowState); 14] {
 /// Where a control's change goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
-    /// The running game changes at once (volume, aim speed, music, vertical
-    /// sync, the frame rate, the tips, checkpoints).
+    /// The running game changes at once as well as the draft (volume,
+    /// texture detail and quality, vertical sync, the frame rate, the tips,
+    /// checkpoints).
     Live,
     /// Only the screen's draft changes; Apply pushes it.
     Draft,
@@ -831,10 +830,10 @@ pub enum Effect {
 /// quality `round(3·f) + 1`; hardware anti-aliasing `1 << round(3·f)`.
 /// Rounding is to even, as the processor's conversion does.
 ///
-/// The super-sampling slider also enables or disables the hardware
-/// anti-aliasing row; it does not change that row's value. The volume and
-/// aim-speed sliders change the live options; the renderer's quality sliders
-/// change the draft.
+/// The super-sampling slider also disables the hardware anti-aliasing row
+/// when its level is above 0 (and enables it at 0); it does not change that
+/// row's value. The volume, texture-detail and texture-quality sliders change
+/// the live options too; the other quality sliders change the draft only.
 pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effect {
     match setting {
         Setting::Volume => {
@@ -851,11 +850,11 @@ pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effe
         }
         Setting::TextureDetail => {
             options.texture_detail = hw_config::texture_detail_from_fraction(fraction);
-            Effect::Draft
+            Effect::Live
         }
         Setting::TextureQuality => {
             options.texture_quality = hw_config::texture_quality_from_fraction(fraction);
-            Effect::Draft
+            Effect::Live
         }
         Setting::ShadowDetail => {
             options.shadow_detail = hw_config::shadow_detail_from_fraction(fraction);
@@ -866,7 +865,7 @@ pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effe
             Effect::Draft
         }
         Setting::Multisample => {
-            if options.supersample <= 0 {
+            if options.supersample > 0 {
                 return Effect::Ignored;
             }
             options.multisample = hw_config::multisample_from_fraction(fraction);
@@ -884,7 +883,7 @@ pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effe
 /// A checkbox click: writes it into `options` and says where it goes.
 ///
 /// The Music checkbox only mutes the running session; the original's setting
-/// writes the startup music value and reopens unchecked from it.
+/// writes the startup music value and the page reopens from it.
 pub fn on_toggle(options: &mut Options, setting: Setting, checked: bool) -> Effect {
     match setting {
         Setting::Music => Effect::SessionOnly,
@@ -932,11 +931,14 @@ pub enum FormAction {
     SettingsTab,
     /// The CONTROLS tab (page 1).
     ControlsTab,
-    /// The Defaults button: run the benchmark and take its quality.
+    /// The Defaults button. On the Settings page: run the benchmark (or take
+    /// the Deck preset), push its quality and refill the rows. On the
+    /// Controls page: the shipped keys back into the page's copy, or, in
+    /// controller mode, the saved aim speed back into the live one.
     Defaults,
     /// Apply: store the settings and close.
     Apply,
-    /// Cancel: push the options the screen opened with and close.
+    /// Cancel: push the saved options back and close.
     Cancel,
 }
 
@@ -992,14 +994,13 @@ mod screen_tests {
             window_mode: false,
             show_tips: false,
             checkpoints: false,
+            volume: 0.75,
             ..Options::default()
         };
-        let draft = Options::opened_from(&live);
-        let rows = populate(&draft);
-        assert_eq!(
-            rows[0],
-            (Setting::Volume, RowState::slider(2.0 / 3.0, None))
-        );
+        let draft = live;
+        let rows = populate(&live, &draft);
+        // The live volume over the 1.5 maximum.
+        assert_eq!(rows[0], (Setting::Volume, RowState::slider(0.5, None)));
         assert_eq!(rows[1], (Setting::Music, RowState::check(true)));
         assert_eq!(rows[2].1.text, Some(" Medium"));
         assert_eq!(rows[3].1.text, Some(" High"));
@@ -1007,7 +1008,7 @@ mod screen_tests {
         assert_eq!(rows[5].1.text, Some(" Very high"));
         assert_eq!(rows[6].1.text, Some(" High"));
         assert_eq!(rows[7].1.text, Some(" Low"));
-        // Super-sampling is on, so the anti-aliasing row is enabled and keeps
+        // Super-sampling is on, so the anti-aliasing row is disabled and keeps
         // its record's position: it has no opening value.
         assert_eq!(
             rows[8],
@@ -1016,12 +1017,13 @@ mod screen_tests {
                 RowState {
                     fraction: None,
                     checked: false,
-                    enabled: true,
+                    enabled: false,
                     text: None
                 }
             )
         );
-        assert_eq!(rows[9], (Setting::VerticalSync, RowState::check(true)));
+        // Vertical sync is not reset when the page opens.
+        assert_eq!(rows[9], (Setting::VerticalSync, RowState::check(false)));
         assert_eq!(rows[10], (Setting::ShowFps, RowState::check(true)));
         assert_eq!(rows[11], (Setting::WindowMode, RowState::check(false)));
         assert_eq!(rows[12], (Setting::ShowTips, RowState::check(false)));
@@ -1029,12 +1031,31 @@ mod screen_tests {
     }
 
     #[test]
-    fn the_anti_aliasing_row_is_disabled_without_super_sampling() {
-        let options = Options::default();
-        let rows = populate(&options);
-        assert!(!rows[8].1.enabled);
-        assert_eq!(rows[8].1.fraction, Some(0.0));
-        assert_eq!(rows[8].1.text, Some(" Off"));
+    fn the_anti_aliasing_row_is_enabled_without_super_sampling() {
+        let live = Options::default();
+        let draft = Options {
+            multisample: 4,
+            ..live
+        };
+        let rows = populate(&live, &draft);
+        assert!(rows[8].1.enabled);
+        assert_eq!(rows[8].1.fraction, Some(2.0 / 3.0));
+        assert_eq!(rows[8].1.text, Some(" 4x"));
+        // The live options, not the draft, decide it and fill the super-
+        // sampling, volume, music and window rows.
+        let draft = Options {
+            supersample: 4,
+            volume: 0.3,
+            music: false,
+            window_mode: false,
+            ..live
+        };
+        let rows = populate(&live, &draft);
+        assert!(rows[8].1.enabled);
+        assert_eq!(rows[2].1.text, Some(" Off"));
+        assert_eq!(rows[0].1.fraction, Some(2.0 / 3.0));
+        assert!(rows[1].1.checked);
+        assert!(rows[11].1.checked);
     }
 
     #[test]
@@ -1053,14 +1074,12 @@ mod screen_tests {
             Effect::Draft
         );
         assert_eq!(o.shading_quality, 4);
-        assert_eq!(
-            on_slider(&mut o, Setting::TextureDetail, 1.0),
-            Effect::Draft
-        );
+        // The texture sliders also set the live options at once.
+        assert_eq!(on_slider(&mut o, Setting::TextureDetail, 1.0), Effect::Live);
         assert_eq!(o.texture_detail, 3);
         assert_eq!(
             on_slider(&mut o, Setting::TextureQuality, 2.0 / 3.0),
-            Effect::Draft
+            Effect::Live
         );
         assert_eq!(o.texture_quality, 4);
         assert_eq!(on_slider(&mut o, Setting::ShadowDetail, 1.0), Effect::Draft);
@@ -1071,17 +1090,17 @@ mod screen_tests {
         );
         assert_eq!(o.shadow_quality, 3);
 
-        // The anti-aliasing row ignores input while super-sampling is off.
+        // The anti-aliasing row takes input only while super-sampling is off.
         let mut off = Options::default();
         assert_eq!(
             on_slider(&mut off, Setting::Multisample, 1.0),
-            Effect::Ignored
+            Effect::Draft
         );
-        assert_eq!(off.multisample, 0);
+        assert_eq!(off.multisample, 8);
         on_slider(&mut off, Setting::Supersample, 1.0 / 3.0);
         assert_eq!(
-            on_slider(&mut off, Setting::Multisample, 1.0),
-            Effect::Draft
+            on_slider(&mut off, Setting::Multisample, 1.0 / 3.0),
+            Effect::Ignored
         );
         assert_eq!(off.multisample, 8);
     }
@@ -1125,12 +1144,21 @@ mod screen_tests {
         let mut slots: Vec<usize> = BINDINGS.iter().filter_map(|b| b.slot).collect();
         slots.sort_unstable();
         slots.dedup();
-        // The page has no row for the primary mouse button (slot 0) nor for
-        // the quick-power slot; every other slot appears once.
-        assert_eq!(slots, (1..20).chain(21..23).collect::<Vec<usize>>());
+        // The page has no row for the primary mouse button (slot 0); every
+        // other slot appears once.
+        assert_eq!(slots, (1..23).collect::<Vec<usize>>());
         assert_eq!(BINDINGS[0].slot, Some(1)); // Forward
+        assert_eq!(BINDINGS[1].slot, Some(3)); // Back
         assert_eq!(BINDINGS[6].slot, Some(8)); // Orbit Camera
-        assert_eq!(BINDINGS[21].slot, None); // Power Tree
+        assert_eq!(BINDINGS[17].slot, Some(20)); // Use Power (Q)
+        assert_eq!(BINDINGS[18].slot, Some(18)); // Power Bar (C)
+        assert_eq!(BINDINGS[21].slot, Some(19)); // Power Tree (P)
+        assert!(BINDINGS.iter().all(|b| b.keyed));
+        // The key cells' ids are one more than their saved-table slots, so
+        // they are 1 to 23 without 22 (the saved table's unused slot).
+        let mut ids: Vec<u16> = BINDINGS.iter().map(|b| b.action).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (1..22).chain(23..24).collect::<Vec<u16>>());
     }
 
     #[test]

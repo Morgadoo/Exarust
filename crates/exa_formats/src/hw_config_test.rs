@@ -24,12 +24,18 @@ fn the_defaults_are_the_original_variables() {
 
 #[test]
 fn the_label_scales_take_exactly_their_values() {
-    assert_eq!(Scale::Ultra.text(-5), Some(" Off"));
+    // The first branch is an unsigned compare: 0 and 1 are Off, a negative
+    // value has no text.
+    assert_eq!(Scale::Ultra.text(0), Some(" Off"));
+    assert_eq!(Scale::Ultra.text(1), Some(" Off"));
+    assert_eq!(Scale::Ultra.text(-5), None);
     assert_eq!(Scale::Ultra.text(2), Some(" Low"));
     assert_eq!(Scale::Ultra.text(6), Some(" Ultra"));
     assert_eq!(Scale::Ultra.text(7), None);
 
+    assert_eq!(Scale::Coarse.text(0), Some(" Coarse"));
     assert_eq!(Scale::Coarse.text(2), Some(" Coarse"));
+    assert_eq!(Scale::Coarse.text(-1), None);
     assert_eq!(Scale::Coarse.text(3), Some(" Low"));
     assert_eq!(Scale::Coarse.text(6), Some(" Very high"));
     assert_eq!(Scale::Coarse.text(7), None);
@@ -158,7 +164,13 @@ fn the_floor_logarithm_counts_halvings() {
 #[test]
 fn the_slider_labels_follow_the_values() {
     let mut o = Options::default();
+    // 1 / 1.5 in single precision.
     assert_eq!(o.volume_fraction(), 2.0 / 3.0);
+    let quieter = Options {
+        volume: 0.75,
+        ..Options::default()
+    };
+    assert_eq!(quieter.volume_fraction(), 0.5);
     assert_eq!(o.supersample_text(), Some(" Off"));
     assert_eq!(o.shading_text(), Some(" Medium"));
     assert_eq!(o.texture_detail_text(), Some(" High"));
@@ -241,9 +253,8 @@ fn the_auto_quality_takes_nan_as_not_below() {
     assert_eq!(Quality::auto(2.0, -1600, 900).supersample, 4);
 }
 
-#[test]
-fn opening_the_screen_keeps_some_values_and_resets_others() {
-    let live = Options {
+fn varied() -> Options {
+    Options {
         volume: 0.5,
         music: false,
         supersample: 3,
@@ -261,76 +272,122 @@ fn opening_the_screen_keeps_some_values_and_resets_others() {
         aim_speed: 0.4,
         controller: true,
         perf_index: 1.2,
-    };
-    let draft = Options::opened_from(&live);
-    assert_eq!(draft.volume, 0.5);
-    assert!(!draft.music);
-    assert_eq!(draft.supersample, 3);
-    assert_eq!(draft.shading_quality, 3);
-    assert_eq!(draft.texture_detail, 2);
-    assert_eq!(draft.texture_quality, 5);
-    assert_eq!(draft.shadow_detail, 5);
-    assert_eq!(draft.shadow_quality, 2);
-    assert_eq!(draft.multisample, 0);
-    assert!(draft.vertical_sync);
-    assert!(draft.show_fps);
-    assert!(!draft.window_mode);
-    // The tips and checkpoints are live values, not reset.
-    assert!(!draft.show_tips);
-    assert!(!draft.checkpoints);
-    assert_eq!(draft.aim_speed, 0.4);
-    assert!(draft.controller);
-    assert_eq!(draft.perf_index, 1.2);
+    }
 }
 
 #[test]
-fn the_auto_detection_fills_the_quality_and_resets_the_rest() {
+fn opening_the_page_copies_the_live_options_without_a_file() {
+    let live = varied();
+    let (screen, after) = Screen::open(&live, &live);
+    // Nothing is reset: the draft and the saved set are the live options.
+    assert_eq!(screen.draft, live);
+    assert_eq!(screen.baseline, live);
+    assert_eq!(after, live);
+}
+
+#[test]
+fn opening_the_page_reads_the_file_into_the_draft() {
+    let live = varied();
+    let (_, assignments) = Settings::read(
+        b"Volume = 80\r\nSupersample = 1\r\nShadingQuality = 1\r\nVerticalSync = 1\r\n\
+          Fullscreen = 0\r\nShowFPS = 0\r\nAimSpeed = 51\r\nInputMode = 0\r\n",
+        0,
+    );
+    let reread = live.reread(&assignments);
+    // The handler's single-precision 80 × 0.01.
+    assert_eq!(reread.volume, 80.0f32 * 0.01);
+    assert_eq!(reread.supersample, 1);
+    // The shading handler keeps at least 3.
+    assert_eq!(reread.shading_quality, 3);
+    assert!(reread.vertical_sync);
+    assert!(reread.window_mode);
+    assert!(!reread.show_fps);
+    assert_eq!(reread.aim_speed, (50.0f64 / 99.0) as f32);
+    assert!(!reread.controller);
+    // What the file does not name keeps the live value.
+    assert_eq!(reread.texture_quality, 5);
+    assert_eq!(reread.multisample, 8);
+
+    let (screen, after) = Screen::open(&live, &reread);
+    assert_eq!(screen.draft, reread);
+    assert_eq!(screen.baseline, live);
+    // The quality levels, the sampling options, vertical sync and the window
+    // mode go back to the live ones; the rest keeps the file's.
+    assert_eq!(after.supersample, 3);
+    assert!(!after.vertical_sync);
+    assert!(!after.window_mode);
+    assert_eq!(after.volume, reread.volume);
+    assert!(!after.show_fps);
+    assert_eq!(after.aim_speed, reread.aim_speed);
+    assert!(!after.controller);
+}
+
+#[test]
+fn the_auto_detection_fills_the_saved_quality_and_keeps_the_rest() {
     let live = Options {
-        volume: 0.8,
-        music: false,
-        multisample: 8,
-        vertical_sync: false,
-        window_mode: false,
-        show_fps: true,
-        show_tips: false,
-        checkpoints: false,
-        aim_speed: 0.5,
-        controller: true,
-        ..Options::default()
+        perf_index: 4.0,
+        ..varied()
     };
-    let auto = Options::auto_detected(&live, 4.0, 1600, 900);
+    // The page last opened windowed.
+    let saved = Options {
+        window_mode: true,
+        ..live
+    };
+    let auto = live.auto_detected(&saved, 1600, 900);
     assert_eq!(auto.supersample, 3);
     assert_eq!(auto.shading_quality, 5);
     assert_eq!(auto.texture_detail, 3);
     assert_eq!(auto.texture_quality, 5);
     assert_eq!(auto.shadow_detail, 5);
     assert_eq!(auto.shadow_quality, 4);
-    assert_eq!(auto.multisample, 0);
-    assert!(auto.vertical_sync);
-    // The tips and checkpoints stay live across the auto-detection.
+    // Hardware anti-aliasing and vertical sync are copied, not reset.
+    assert_eq!(auto.multisample, 8);
+    assert!(!auto.vertical_sync);
     assert!(!auto.show_tips);
     assert!(!auto.checkpoints);
-    assert_eq!(auto.volume, 0.8);
+    assert_eq!(auto.volume, 0.5);
     assert!(!auto.music);
-    assert!(!auto.window_mode);
     assert!(auto.show_fps);
-    assert_eq!(auto.aim_speed, 0.5);
+    assert_eq!(auto.aim_speed, 0.4);
     assert!(auto.controller);
     assert_eq!(auto.perf_index, 4.0);
+    // The window mode is the saved set's, not the live one.
+    assert!(auto.window_mode);
+
+    // The push: the live options take it all but the shadow detail.
+    let pushed = auto.pushed_live(&live);
+    assert_eq!(pushed.shadow_detail, live.shadow_detail);
+    assert_eq!(pushed.supersample, 3);
+    assert!(pushed.window_mode);
+    // The draft takes it all but the anti-aliasing and the window mode.
+    let draft = Options {
+        multisample: 2,
+        window_mode: false,
+        ..live
+    };
+    let pushed = auto.pushed_draft(&draft);
+    assert_eq!(pushed.shadow_detail, 5);
+    assert_eq!(pushed.multisample, 2);
+    assert!(!pushed.window_mode);
 }
 
 #[test]
 fn the_deck_preset() {
     let live = Options::default();
-    let deck = Options::deck_preset(&live);
+    let saved = Options {
+        window_mode: false,
+        ..live
+    };
+    let deck = live.deck_preset(&saved);
     assert_eq!(deck.supersample, 3);
     assert_eq!(deck.shading_quality, 5);
     assert_eq!(deck.texture_detail, 2);
     assert_eq!(deck.texture_quality, 5);
     assert_eq!(deck.shadow_detail, 5);
     assert_eq!(deck.shadow_quality, 3);
-    assert_eq!(deck.multisample, 0);
+    assert_eq!(deck.multisample, live.multisample);
     assert!(deck.vertical_sync);
+    assert!(!deck.window_mode);
     assert_eq!(deck.perf_index, live.perf_index);
 }
 
@@ -344,9 +401,10 @@ fn apply_writes_its_lines_in_the_original_order() {
         show_fps: true,
         show_tips: false,
         checkpoints: true,
+        controller: true,
         ..Options::default()
     };
-    let mut screen = Screen::open(&live);
+    let mut screen = Screen::open(&live, &live).0;
     screen.draft.supersample = 3;
     screen.draft.shading_quality = 5;
     screen.draft.texture_detail = 3;
@@ -354,7 +412,8 @@ fn apply_writes_its_lines_in_the_original_order() {
     screen.draft.shadow_detail = 5;
     screen.draft.shadow_quality = 4;
     screen.draft.multisample = 4;
-    screen.draft.controller = true;
+    // The input mode is the live one, which the controller switch writes.
+    screen.draft.controller = false;
     screen.draft.window_mode = false;
     screen.draft.vertical_sync = false;
 
@@ -403,7 +462,7 @@ fn apply_writes_its_lines_in_the_original_order() {
 #[test]
 fn apply_reports_the_quality_changes_alone() {
     let live = Options::default();
-    let mut screen = Screen::open(&live);
+    let mut screen = Screen::open(&live, &live).0;
     assert_eq!(screen.quality_change(), QualityChange::default());
     assert!(!screen.quality_change().rebuilds_shaders());
 
@@ -424,16 +483,21 @@ fn apply_reports_the_quality_changes_alone() {
 }
 
 #[test]
-fn the_screen_cancel_restores_the_live_options() {
+fn the_screen_cancel_restores_the_saved_options() {
     let live = Options {
         volume: 1.2,
         supersample: 1,
         ..Options::default()
     };
-    let mut screen = Screen::open(&live);
+    let mut screen = Screen::open(&live, &live).0;
     screen.draft.supersample = 4;
     screen.draft.volume = 0.1;
-    assert_eq!(screen.cancel(), live);
+    let changed = Options {
+        volume: 0.1,
+        texture_quality: 2,
+        ..live
+    };
+    assert_eq!(screen.cancel(&changed), live);
 }
 
 #[test]
@@ -532,18 +596,32 @@ fn the_device_and_memory_lines() {
 }
 
 #[test]
-fn the_aim_speed_file_step_is_one_based() {
-    assert_eq!(aim_speed_from_step(0), 0.0);
+fn the_aim_speed_file_step_is_one_based_and_unclamped() {
     assert_eq!(aim_speed_from_step(1), 0.0);
-    assert!((aim_speed_from_step(30) - 29.0 / 99.0).abs() < 1e-7);
+    // 29 / 99 in double precision, then single.
+    assert_eq!(aim_speed_from_step(30), (29.0f64 / 99.0) as f32);
     assert_eq!(aim_speed_from_step(100), 1.0);
-    assert_eq!(aim_speed_from_step(1000), 1.0);
-    assert_eq!(aim_speed_from_step(-5), 0.0);
+    // No limit either way.
+    assert_eq!(aim_speed_from_step(0), (-1.0f64 / 99.0) as f32);
+    assert_eq!(aim_speed_from_step(199), 2.0);
+    assert_eq!(
+        aim_speed_from_step(i32::MIN),
+        ((i64::from(i32::MIN) - 1) as f64 / 99.0) as f32
+    );
+}
+
+#[test]
+fn the_volume_is_read_in_percent_and_the_input_mode_when_positive() {
+    let (settings, _) = Settings::read(b"Volume = 150\r\nInputMode = -51\r\n", 0);
+    assert_eq!(settings.volume, 1.5);
+    assert!(!options_from_settings(&settings).controller);
+    let (settings, _) = Settings::read(b"InputMode = 1\r\n", 0);
+    assert!(options_from_settings(&settings).controller);
 }
 
 #[test]
 fn the_live_options_come_from_the_file() {
-    let bytes = b"Volume = 0.5\r\nMusic = 0\r\nSupersample = 3\r\nShadingQuality = 5\r\n\
+    let bytes = b"Volume = 50\r\nMusic = 0\r\nSupersample = 3\r\nShadingQuality = 5\r\n\
                   TextureDetail = 2\r\nTextureQuality = 5\r\nShadowDetail = 5\r\n\
                   ShadowQuality = 2\r\nHWMultisample = 4\r\nVerticalSync = 0\r\n\
                   Fullscreen = 1\r\nShowFPS = 1\r\nShowGameTips = 0\r\n\
@@ -565,7 +643,7 @@ fn the_live_options_come_from_the_file() {
     assert!(options.show_fps);
     assert!(!options.show_tips);
     assert!(!options.checkpoints);
-    assert!((options.aim_speed - 29.0 / 99.0).abs() < 1e-7);
+    assert_eq!(options.aim_speed, (29.0f64 / 99.0) as f32);
     assert!(options.controller);
     assert_eq!(options.perf_index, 2.5);
 }
@@ -575,7 +653,7 @@ fn the_hardware_settings_are_read_from_the_file() {
     let bytes = b"AimSpeed = 30\r\nPerfIndex = 1.5\r\nShowFPS = 1\r\nMusic = 0\r\n\
                   ScreenWidth = 1280\r\nGILowPrecision = 1\r\nShadowFmt = 2\r\n";
     let (settings, _) = Settings::read(bytes, 0);
-    assert!((settings.aim_speed - 29.0 / 99.0).abs() < 1e-7);
+    assert_eq!(settings.aim_speed, (29.0f64 / 99.0) as f32);
     assert_eq!(settings.perf_index, 1.5);
     assert!(settings.show_fps);
     assert!(!settings.music);

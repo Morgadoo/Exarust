@@ -35,12 +35,12 @@ pub enum Action {
     FlipWeapon,
     Journal,
     Talk,
-    /// Slots 18–20 hold the power actions; which of use, bar and tree each
-    /// one is has not been tied to the settings labels yet.
-    UsePower,
+    /// Power bar (C).
     PowerBar,
-    /// Use or previous power (Q).
-    PowerQuick,
+    /// Power tree (P).
+    PowerTree,
+    /// Use power (Q).
+    UsePower,
     /// Next power (right arrow).
     PowerNext,
     /// Previous power (left arrow).
@@ -48,9 +48,41 @@ pub enum Action {
 }
 
 impl Action {
+    /// Every action, in slot order.
+    pub const ALL: [Action; 23] = [
+        Action::Primary,
+        Action::Forward,
+        Action::Left,
+        Action::Back,
+        Action::Right,
+        Action::Crouch,
+        Action::Run,
+        Action::Alternate,
+        Action::Orbit,
+        Action::CursorLook,
+        Action::Interact,
+        Action::Inventory,
+        Action::ToggleCombat,
+        Action::Skills,
+        Action::SwitchEquipped,
+        Action::FlipWeapon,
+        Action::Journal,
+        Action::Talk,
+        Action::PowerBar,
+        Action::PowerTree,
+        Action::UsePower,
+        Action::PowerNext,
+        Action::PowerPrevious,
+    ];
+
     /// The slot in the original's 23-entry table.
     pub const fn slot(self) -> usize {
         self as usize
+    }
+
+    /// The action in `slot`.
+    pub fn from_slot(slot: usize) -> Option<Self> {
+        Self::ALL.get(slot).copied()
     }
 }
 
@@ -257,10 +289,17 @@ mod tests {
         assert_eq!(DEFAULT_KEYS[Action::CursorLook.slot()], 0x56);
         assert_eq!(DEFAULT_KEYS[Action::Interact.slot()], 0x11);
         assert_eq!(DEFAULT_KEYS[Action::ToggleCombat.slot()], 0x09);
-        assert_eq!(DEFAULT_KEYS[Action::PowerQuick.slot()], 0x51);
+        assert_eq!(DEFAULT_KEYS[Action::PowerBar.slot()], 0x43);
+        assert_eq!(DEFAULT_KEYS[Action::PowerTree.slot()], 0x50);
+        assert_eq!(DEFAULT_KEYS[Action::UsePower.slot()], 0x51);
         assert_eq!(DEFAULT_KEYS[Action::PowerNext.slot()], 0x27);
         assert_eq!(DEFAULT_KEYS[Action::PowerPrevious.slot()], 0x25);
         assert_eq!(DEFAULT_KEYS.len(), COUNT);
+        for (slot, action) in Action::ALL.iter().enumerate() {
+            assert_eq!(action.slot(), slot);
+            assert_eq!(Action::from_slot(slot), Some(*action));
+        }
+        assert_eq!(Action::from_slot(COUNT), None);
     }
 
     #[test]

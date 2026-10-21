@@ -9,21 +9,21 @@
 //! present mode. Rules: `docs/UI.md` (Settings options, Controls) and
 //! `docs/formats/SETTINGS.md`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 use exa_audio::{AudioEnvironment, MusicSetting};
-use exa_formats::file_ref::write_whole_file;
+use exa_formats::file_ref::{read_whole_file, write_whole_file};
 use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
 use exa_formats::settings_ini;
 use exa_render::quality::{MultisampleSetting, ShadowQuality};
 use exa_render::supersample::SuperSampling;
 use exa_ui::settings::{self, Effect, Setting};
 
-use crate::bindings::{self, Action, Bindings};
+use crate::bindings::{self, Action, Bindings, DEFAULT_KEYS};
 
 /// The performance counter's ticks per second the benchmark's clock uses.
 pub const BENCHMARK_FREQUENCY: u64 = 1_000_000;
@@ -33,21 +33,32 @@ const BENCHMARK_SOURCE: u32 = 512;
 /// The render layer of the benchmark's off-screen camera.
 const BENCHMARK_LAYER: usize = 30;
 
-/// The hardware configuration: the live options and the open settings
-/// screen, if any.
+/// The hardware configuration: the live options, the saved set and the open
+/// settings page, if any.
 #[derive(Resource, Debug, Clone)]
 pub struct HardwareConfig {
     /// The options the game runs with.
     pub live: Options,
-    /// The open screen's draft and the values it opened with.
+    /// The saved set while no page is open (the open page's is its
+    /// baseline). Cancel and the auto-detection push it into the live
+    /// options. The original's starts from its variables' initial values;
+    /// Exarust's from the launch options.
+    pub saved: Options,
+    /// The open page's draft and saved set.
     pub screen: Option<Screen>,
-    /// The settings file Apply rewrites, when the launcher gave one.
+    /// Whether the open form shows its Controls page rather than Settings.
+    pub controls_page: bool,
+    /// The Controls page's copy of the bindings, while the form is open:
+    /// rebinding edits it and Apply commits it.
+    pub bindings: Option<Bindings>,
+    /// The settings file the page reads when it opens and Apply rewrites,
+    /// when the launcher gave one.
     pub settings_file: Option<PathBuf>,
     /// The benchmark in progress.
     pub benchmark: Option<Benchmark>,
-    /// Whether the benchmark was started by opening the page: its result
-    /// then fills the page's draft, as the original's show handler does.
-    pub refresh_after_benchmark: bool,
+    /// Whether this is the Deck, whose fixed preset replaces the benchmark
+    /// (Exarust does not detect it).
+    pub steam_deck: bool,
     /// The Music checkbox's session state. The option itself keeps the
     /// startup value, as the original's does.
     pub session_music: bool,
@@ -62,17 +73,7 @@ pub struct HardwareConfig {
 
 impl Default for HardwareConfig {
     fn default() -> Self {
-        let live = Options::default();
-        Self {
-            live,
-            screen: None,
-            settings_file: None,
-            benchmark: None,
-            refresh_after_benchmark: false,
-            session_music: live.music,
-            window_size: None,
-            rumble: true,
-        }
+        Self::new(Options::default())
     }
 }
 
@@ -87,70 +88,140 @@ pub struct Applied {
     pub fullscreen_changed: bool,
     /// The file was written.
     pub stored: bool,
+    /// The bindings to take and save: the Controls page's copy, when its
+    /// Forward key is set (the original commits its copy only when the copy's
+    /// first slot, Forward's, is not zero).
+    pub bindings: Option<Bindings>,
 }
 
 impl HardwareConfig {
+    /// The configuration over `live`, which is also the saved set.
+    pub fn new(live: Options) -> Self {
+        Self {
+            live,
+            saved: live,
+            screen: None,
+            controls_page: false,
+            bindings: None,
+            settings_file: None,
+            benchmark: None,
+            steam_deck: false,
+            session_music: live.music,
+            window_size: None,
+            rumble: true,
+        }
+    }
+
     /// The configuration over the live options a settings file gave.
     pub fn with_file(mut self, file: impl Into<PathBuf>) -> Self {
         self.settings_file = Some(file.into());
         self
     }
 
-    /// Opens the settings screen over the live options, or keeps it open, and
-    /// runs the GPU benchmark its show handler runs: the result fills the
-    /// page's draft when it arrives.
-    pub fn open(&mut self) {
-        if self.screen.is_none() {
-            self.screen = Some(Screen::open(&self.live));
-        }
-        if self.benchmark.is_none() {
-            self.benchmark = Some(Benchmark::new(BENCHMARK_FREQUENCY));
-        }
-        self.refresh_after_benchmark = true;
+    /// The saved set: the open page's, else the one kept between pages.
+    pub fn saved(&self) -> Options {
+        self.screen.map_or(self.saved, |screen| screen.baseline)
     }
 
-    /// Closes the screen without applying (the original's page switch).
+    /// Opens the settings form on its Settings page, as the original's form
+    /// creation does: the saved set is the live options, the settings file is
+    /// read again over them for the draft, and the live quality levels,
+    /// sampling, vertical sync and window mode go back to the saved ones
+    /// ([`Screen::open`]). The Controls page takes a copy of `bindings`.
+    /// Nothing is measured: the benchmark runs only from Defaults.
+    pub fn open(&mut self, bindings: Option<&Bindings>) {
+        if self.screen.is_some() {
+            return;
+        }
+        let reread = self
+            .settings_file
+            .as_deref()
+            .and_then(read_whole_file)
+            .map(|bytes| {
+                self.live.reread(&settings_ini::read_assignments(
+                    &bytes,
+                    &settings_ini::REGISTRY,
+                ))
+            })
+            .unwrap_or(self.live);
+        let (screen, live) = Screen::open(&self.live, &reread);
+        self.screen = Some(screen);
+        self.live = live;
+        self.controls_page = false;
+        self.bindings = bindings.cloned();
+    }
+
+    /// Closes the form without applying: the saved set stays for a later
+    /// auto-detection, the Controls copy is dropped.
     pub fn close(&mut self) {
-        self.screen = None;
-        self.benchmark = None;
-        self.refresh_after_benchmark = false;
+        if let Some(screen) = self.screen.take() {
+            self.saved = screen.baseline;
+        }
+        self.bindings = None;
     }
 
-    /// Cancel: pushes the options the screen opened with back into the live
-    /// options and closes the screen.
+    /// Shows the Settings (`false`) or Controls (`true`) page.
+    pub fn switch_page(&mut self, controls: bool) {
+        if self.screen.is_some() {
+            self.controls_page = controls;
+        }
+    }
+
+    /// Cancel: pushes the saved set back into the live options and closes
+    /// the form; the Controls page's edits are dropped.
     pub fn cancel(&mut self) -> Option<Options> {
-        let screen = self.screen.take()?;
-        self.live = screen.cancel();
-        self.session_music = self.live.music;
-        self.benchmark = None;
-        self.refresh_after_benchmark = false;
+        let screen = self.screen?;
+        self.live = screen.cancel(&self.live);
+        self.session_music = screen.baseline.music;
+        self.close();
         Some(self.live)
     }
 
-    /// Apply: writes the settings file, takes the draft's renderer options
-    /// live and closes the screen.
+    /// Apply: reads the settings file, writes the page's lines into it, takes
+    /// the draft's window mode and its changed renderer options live, and
+    /// closes the form. When the settings file cannot be read nothing at all
+    /// happens and the form stays open, as in the original; without a file
+    /// (an Exarust test or launch without settings) nothing is stored.
     pub fn apply(&mut self) -> Option<Applied> {
-        let screen = self.screen.take()?;
-        self.benchmark = None;
-        self.refresh_after_benchmark = false;
-        let draft = screen.draft;
-        let quality = screen.quality_change();
-        let fullscreen_changed = draft.window_mode != screen.baseline.window_mode;
-        self.live.supersample = draft.supersample;
-        self.live.shading_quality = draft.shading_quality;
-        self.live.shadow_detail = draft.shadow_detail;
-        self.live.shadow_quality = draft.shadow_quality;
-        self.live.window_mode = draft.window_mode;
-        // Hardware anti-aliasing, texture quality and shading reach the
-        // renderer at its next start in the original too: their controls are
-        // not pushed by Apply.
+        let screen = self.screen?;
+        let file = match &self.settings_file {
+            Some(path) => Some((path.clone(), read_whole_file(path)?)),
+            None => None,
+        };
+        let bindings = self
+            .bindings
+            .take()
+            .filter(|bindings| bindings.key(Action::Forward) != 0);
         let lines = screen.settings_lines(&self.live);
-        let stored = self.write_lines(&screen);
+        let stored = file.is_some_and(|(path, mut bytes)| {
+            screen.write_settings(&mut bytes, &self.live);
+            write_whole_file(&path, &bytes)
+        });
+        let draft = screen.draft;
+        let fullscreen_changed = draft.window_mode != self.live.window_mode;
+        self.live.window_mode = draft.window_mode;
+        let quality = screen.quality_change();
+        if quality.supersample {
+            self.live.supersample = draft.supersample;
+        }
+        if quality.shading {
+            self.live.shading_quality = draft.shading_quality;
+        }
+        if quality.shadow_quality {
+            self.live.shadow_quality = draft.shadow_quality;
+        }
+        if quality.shadow_detail {
+            self.live.shadow_detail = draft.shadow_detail;
+        }
+        // Hardware anti-aliasing is only stored: it takes effect when the
+        // file is read at the next start.
+        self.close();
         Some(Applied {
             lines,
             quality,
             fullscreen_changed,
             stored,
+            bindings,
         })
     }
 
@@ -162,11 +233,27 @@ impl HardwareConfig {
             .map(|screen| screen.settings_lines(&self.live))
     }
 
-    fn write_lines(&self, screen: &Screen) -> bool {
-        let Some(path) = &self.settings_file else {
-            return false;
-        };
-        write_settings_file(path, screen, &self.live)
+    /// The Defaults button. On the Settings page it runs the GPU benchmark
+    /// (the Deck takes its preset at once); on the Controls page it puts the
+    /// shipped keys into the page's copy, or in controller mode the saved
+    /// aim speed back into the live one.
+    pub fn defaults(&mut self) {
+        if self.screen.is_none() {
+            return;
+        }
+        if !self.controls_page {
+            if self.steam_deck {
+                self.deck_preset();
+            } else {
+                self.start_benchmark();
+            }
+        } else if self.live.controller {
+            self.live.aim_speed = self.saved().aim_speed;
+        } else if let Some(bindings) = &mut self.bindings {
+            for action in Action::ALL {
+                bindings.set_key(action, DEFAULT_KEYS[action.slot()]);
+            }
+        }
     }
 
     /// Starts the GPU benchmark. The plugin's driver runs it and takes the
@@ -175,69 +262,84 @@ impl HardwareConfig {
         self.benchmark = Some(Benchmark::new(BENCHMARK_FREQUENCY));
     }
 
-    /// Ends the benchmark with its performance index: the auto-detected
-    /// quality becomes live and the screen's draft, as the original's
-    /// Defaults button does.
+    /// Ends the benchmark with its performance index for a `width` × `height`
+    /// display: the auto-detected levels become the saved set, which is
+    /// pushed into the live options and the page's draft
+    /// ([`Options::auto_detected`]).
     pub fn finish_benchmark(&mut self, perf_index: f32, width: i64, height: i64) {
         self.benchmark = None;
-        self.live = Options::auto_detected(&self.live, perf_index, width, height);
-        self.session_music = self.live.music;
-        let refresh = std::mem::take(&mut self.refresh_after_benchmark);
-        if let Some(screen) = &mut self.screen {
-            // The saved baseline moves with the detected quality; only the
-            // page's show handler also fills the draft.
-            screen.baseline = self.live;
-            if refresh {
-                screen.draft = Options::opened_from(&self.live);
-            }
-        }
+        self.live.perf_index = perf_index;
+        let saved = self.live.auto_detected(&self.saved(), width, height);
+        self.push_saved(saved);
     }
 
     /// The Deck's fixed preset, instead of a benchmark.
     pub fn deck_preset(&mut self) {
-        self.live = Options::deck_preset(&self.live);
-        if let Some(screen) = &mut self.screen {
-            screen.baseline = self.live;
+        let saved = self.live.deck_preset(&self.saved());
+        self.push_saved(saved);
+    }
+
+    /// Makes `saved` the saved set and pushes it into the live options and
+    /// the open page's draft.
+    fn push_saved(&mut self, saved: Options) {
+        self.live = saved.pushed_live(&self.live);
+        self.session_music = saved.music;
+        match &mut self.screen {
+            Some(screen) => {
+                screen.draft = saved.pushed_draft(&screen.draft);
+                screen.baseline = saved;
+            }
+            None => self.saved = saved,
         }
     }
 
-    /// A slider step on the open screen. Aim speed is the extra row the
-    /// screen exposes separately.
+    /// A slider step on the open page. The volume and the texture sliders
+    /// change the live options too.
     pub fn set_slider(&mut self, setting: Setting, fraction: f32) -> Effect {
         let Some(screen) = &mut self.screen else {
             return Effect::Ignored;
         };
         let effect = settings::on_slider(&mut screen.draft, setting, fraction);
-        if effect == Effect::Live && setting == Setting::Volume {
-            self.live.volume = screen.draft.volume;
+        if effect == Effect::Live {
+            match setting {
+                Setting::Volume => self.live.volume = screen.draft.volume,
+                Setting::TextureDetail => self.live.texture_detail = screen.draft.texture_detail,
+                Setting::TextureQuality => {
+                    self.live.texture_quality = screen.draft.texture_quality;
+                }
+                _ => {}
+            }
         }
         effect
     }
 
-    /// A checkbox click on the open screen.
+    /// A checkbox click on the open page. A live checkbox changes only its
+    /// own live option.
     pub fn set_toggle(&mut self, setting: Setting, checked: bool) -> Effect {
         let Some(screen) = &mut self.screen else {
             return Effect::Ignored;
         };
         let effect = settings::on_toggle(&mut screen.draft, setting, checked);
-        if effect == Effect::Live {
-            self.live.vertical_sync = screen.draft.vertical_sync;
-            self.live.show_fps = screen.draft.show_fps;
-            self.live.show_tips = screen.draft.show_tips;
-            self.live.checkpoints = screen.draft.checkpoints;
-        } else if effect == Effect::SessionOnly {
-            self.session_music = checked;
+        match effect {
+            Effect::Live => match setting {
+                Setting::VerticalSync => self.live.vertical_sync = checked,
+                Setting::ShowFps => self.live.show_fps = checked,
+                Setting::ShowTips => self.live.show_tips = checked,
+                Setting::Checkpoints => self.live.checkpoints = checked,
+                _ => {}
+            },
+            Effect::SessionOnly => self.session_music = checked,
+            Effect::Draft | Effect::Ignored => {}
         }
         effect
     }
 
-    /// The Controls page's controller-mode switch. Turning it on or off
-    /// changes the input mode Apply writes; Exarust has no gamepad to drive.
+    /// The Controls page's Keyboard / Controller switch: it sets the live
+    /// input mode Apply writes (Exarust has no gamepad to drive).
     pub fn set_controller(&mut self, enabled: bool) -> bool {
-        let Some(screen) = &mut self.screen else {
+        if self.screen.is_none() {
             return false;
-        };
-        screen.draft.controller = enabled;
+        }
         self.live.controller = enabled;
         true
     }
@@ -249,26 +351,16 @@ impl HardwareConfig {
 
     /// An aim-speed slider step: the live aim speed and the number shown.
     pub fn set_aim_speed(&mut self, fraction: f32) -> Option<i32> {
-        let screen = self.screen.as_mut()?;
-        let text = settings::set_aim_speed(&mut screen.draft, fraction);
-        self.live.aim_speed = screen.draft.aim_speed;
-        Some(text)
+        self.screen?;
+        Some(settings::set_aim_speed(&mut self.live, fraction))
     }
 
-    /// The open screen's rows.
+    /// The open page's rows.
     pub fn rows(&self) -> Option<[(Setting, settings::RowState); 14]> {
         self.screen
             .as_ref()
-            .map(|screen| settings::populate(&screen.draft))
+            .map(|screen| settings::populate(&self.live, &screen.draft))
     }
-}
-
-/// Writes the settings screen's lines into `path`, creating the file when it
-/// is missing, as the original does.
-pub fn write_settings_file(path: &Path, screen: &Screen, live: &Options) -> bool {
-    let mut file = settings_ini::open_settings_file(path);
-    screen.write_settings(&mut file, live);
-    write_whole_file(path, &file)
 }
 
 /// A rebinding in progress: the row whose key cell was clicked.
@@ -308,10 +400,12 @@ impl BindingEditor {
         self.row.take().is_some()
     }
 
-    /// Takes a key code for the open row, writing it into `bindings`.
+    /// Takes a key code for the open row, writing it into `bindings` (the
+    /// Controls page's copy).
     ///
     /// Escape cancels. A code of 0 is ignored. The row's slot is the binding
-    /// table's slot; `Power Tree` has none and is never opened.
+    /// table's slot (Exarust's guess at the key-read screen, which is outside
+    /// this unit).
     pub fn key(&mut self, code: u32, bindings: &mut Bindings) -> Rebind {
         let Some(row) = self.row else {
             return Rebind::None;
@@ -343,32 +437,7 @@ impl BindingEditor {
 
 /// The binding-table action of a slot.
 pub fn action_at(slot: usize) -> Option<Action> {
-    Some(match slot {
-        0 => Action::Primary,
-        1 => Action::Forward,
-        2 => Action::Back,
-        3 => Action::Left,
-        4 => Action::Right,
-        5 => Action::Crouch,
-        6 => Action::Run,
-        7 => Action::Alternate,
-        8 => Action::Orbit,
-        9 => Action::CursorLook,
-        10 => Action::Interact,
-        11 => Action::Inventory,
-        12 => Action::ToggleCombat,
-        13 => Action::Skills,
-        14 => Action::SwitchEquipped,
-        15 => Action::FlipWeapon,
-        16 => Action::Journal,
-        17 => Action::Talk,
-        18 => Action::UsePower,
-        19 => Action::PowerBar,
-        20 => Action::PowerQuick,
-        21 => Action::PowerNext,
-        22 => Action::PowerPrevious,
-        _ => return None,
-    })
+    Action::from_slot(slot)
 }
 
 /// The Controls page's rows: each label and its key's name from `bindings`.
@@ -406,19 +475,25 @@ impl Plugin for HardwareConfigPlugin {
     }
 }
 
-/// Reads a key or mouse button for the open binding row.
+/// Reads a key or mouse button for the open binding row into the Controls
+/// page's copy of the bindings.
 pub fn rebind_keys(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut editor: ResMut<BindingEditor>,
-    bindings: Option<ResMut<Bindings>>,
+    config: Option<ResMut<HardwareConfig>>,
 ) {
-    let Some(mut bindings) = bindings else {
+    let Some(mut config) = config else {
         return;
     };
     if editor.row.is_none() {
         return;
     }
+    let Some(bindings) = config.bindings.as_mut() else {
+        // No form is open: nothing to edit.
+        editor.row = None;
+        return;
+    };
     // Mouse first: a click on the key cell is also a press, and the original
     // names extra buttons.
     for button in [
@@ -429,13 +504,13 @@ pub fn rebind_keys(
         MouseButton::Forward,
     ] {
         if buttons.just_pressed(button) {
-            editor.key(bindings::mouse_code(button), &mut bindings);
+            editor.key(bindings::mouse_code(button), bindings);
             return;
         }
     }
     for key in keys.get_just_pressed() {
         if let Some(code) = bindings::virtual_key(*key) {
-            editor.key(code, &mut bindings);
+            editor.key(code, bindings);
             return;
         }
     }
@@ -717,15 +792,58 @@ fn cleanup_benchmark(
 mod tests {
     use super::*;
 
+    fn temp_file(name: &str, text: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join("exarust-hw-config-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        if !text.is_empty() {
+            std::fs::write(&path, text).unwrap();
+        }
+        path
+    }
+
     #[test]
-    fn apply_takes_the_renderer_options_and_writes_the_lines() {
+    fn opening_runs_no_benchmark_and_copies_the_live_options() {
         let mut config = HardwareConfig::default();
-        config.open();
+        config.open(None);
+        assert!(config.benchmark.is_none());
+        let screen = config.screen.unwrap();
+        assert_eq!(screen.draft, config.live);
+        assert_eq!(screen.baseline, config.live);
+    }
+
+    #[test]
+    fn opening_reads_the_settings_file_into_the_draft() {
+        let path = temp_file(
+            "open.ini",
+            b"Supersample = 4\r\nShowFPS = 1\r\nVolume = 50\r\n",
+        );
+        let mut config = HardwareConfig::default().with_file(&path);
+        config.open(None);
+        let screen = config.screen.unwrap();
+        assert_eq!(screen.draft.supersample, 4);
+        // The live super-sampling goes back to the saved value; the frame
+        // rate and volume keep the file's.
+        assert_eq!(config.live.supersample, 0);
+        assert!(config.live.show_fps);
+        assert_eq!(config.live.volume, 0.5);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_takes_the_changed_renderer_options_and_writes_the_lines() {
+        let mut config = HardwareConfig::default();
+        config.open(None);
         config.set_slider(Setting::Supersample, 1.0);
         config.set_slider(Setting::ShadowQuality, 2.0 / 3.0);
+        config.set_slider(Setting::Multisample, 1.0);
         let applied = config.apply().expect("a screen was open");
         assert_eq!(config.live.supersample, 4);
         assert_eq!(config.live.shadow_quality, 3);
+        // Hardware anti-aliasing is stored, not pushed; super-sampling was
+        // raised first, so the row ignored the slider anyway.
+        assert_eq!(config.live.multisample, 0);
         assert!(applied.quality.supersample);
         assert!(applied.quality.shadow_quality);
         assert!(applied.quality.rebuilds_shaders());
@@ -737,23 +855,41 @@ mod tests {
     }
 
     #[test]
-    fn cancel_restores_the_opened_options() {
-        let config = HardwareConfig::default();
-        let live = config.live;
-        let mut config = config;
-        config.open();
+    fn apply_does_nothing_when_the_file_cannot_be_read() {
+        let path = temp_file("missing.ini", b"");
+        let mut config = HardwareConfig::default().with_file(&path);
+        config.open(None);
         config.set_slider(Setting::Supersample, 1.0);
-        assert_eq!(config.live.supersample, live.supersample);
-        assert_eq!(config.cancel(), Some(live));
-        assert!(config.screen.is_none());
+        assert_eq!(config.apply(), None);
+        assert!(config.screen.is_some());
+        assert_eq!(config.live.supersample, 0);
+        assert!(!path.exists());
     }
 
     #[test]
-    fn the_volume_is_live_and_the_music_only_mutes_the_session() {
+    fn cancel_pushes_the_saved_options_back() {
         let mut config = HardwareConfig::default();
-        config.open();
+        let live = config.live;
+        config.open(None);
+        config.set_slider(Setting::Supersample, 1.0);
+        config.set_slider(Setting::TextureQuality, 0.0);
+        config.set_slider(Setting::Volume, 0.2);
+        // The texture and volume sliders are live, super-sampling is not.
+        assert_eq!(config.live.texture_quality, 2);
+        assert_eq!(config.live.supersample, live.supersample);
+        assert_eq!(config.cancel(), Some(live));
+        assert!(config.screen.is_none());
+        assert_eq!(config.saved, live);
+    }
+
+    #[test]
+    fn the_volume_and_textures_are_live_and_the_music_only_mutes_the_session() {
+        let mut config = HardwareConfig::default();
+        config.open(None);
         assert_eq!(config.set_slider(Setting::Volume, 0.5), Effect::Live);
         assert_eq!(config.live.volume, 0.75);
+        assert_eq!(config.set_slider(Setting::TextureDetail, 0.0), Effect::Live);
+        assert_eq!(config.live.texture_detail, 2);
         assert_eq!(
             config.set_toggle(Setting::Music, false),
             Effect::SessionOnly
@@ -763,29 +899,77 @@ mod tests {
         assert_eq!(config.set_toggle(Setting::WindowMode, false), Effect::Draft);
         assert!(config.live.window_mode);
         assert!(!config.screen.as_ref().unwrap().draft.window_mode);
+        // A live checkbox changes only its own option.
+        config.screen.as_mut().unwrap().draft.vertical_sync = false;
+        assert_eq!(config.set_toggle(Setting::ShowTips, false), Effect::Live);
+        assert!(!config.live.show_tips);
+        assert!(config.live.vertical_sync);
     }
 
     #[test]
-    fn the_quality_of_a_benchmark_becomes_live() {
+    fn defaults_benchmark_fills_the_saved_set_the_live_options_and_the_page() {
         let mut config = HardwareConfig::default();
-        config.open();
+        config.live.multisample = 4;
+        config.open(None);
+        config.defaults();
+        assert!(config.benchmark.is_some());
+        config.screen.as_mut().unwrap().draft.multisample = 8;
         config.finish_benchmark(4.0, 1600, 900);
         assert_eq!(config.live.perf_index, 4.0);
         assert_eq!(config.live.supersample, 3);
         assert_eq!(config.live.shading_quality, 5);
         assert_eq!(config.live.shadow_quality, 4);
-        // The benchmark came from opening the page, so its result fills the
-        // draft, as the original's show handler does.
-        let screen = config.screen.as_ref().unwrap();
+        // The shadow detail reaches the page, not the live options.
+        assert_eq!(config.live.shadow_detail, 4);
+        // Hardware anti-aliasing is kept everywhere.
+        assert_eq!(config.live.multisample, 4);
+        let screen = config.screen.unwrap();
         assert_eq!(screen.draft.supersample, 3);
+        assert_eq!(screen.draft.shadow_detail, 5);
+        assert_eq!(screen.draft.multisample, 8);
         assert_eq!(screen.baseline.supersample, 3);
+        // Apply then finds no quality change but the shadow detail's.
+        let applied = config.apply().unwrap();
+        assert!(!applied.quality.supersample);
+        assert!(!applied.quality.shadow_detail);
+        assert_eq!(applied.lines[6], ("ShadowDetail", "5".to_string()));
+    }
+
+    #[test]
+    fn the_auto_detection_reuses_the_saved_window_mode() {
+        let mut config = HardwareConfig::default();
+        config.open(None);
+        config.close();
+        // Full screen since the page last opened.
+        config.live.window_mode = false;
+        config.start_benchmark();
+        config.finish_benchmark(1.0, 1600, 900);
+        assert!(config.live.window_mode);
+        assert_eq!(config.saved.texture_quality, 3);
+    }
+
+    #[test]
+    fn defaults_on_the_controls_page() {
+        let mut bindings = Bindings::default();
+        bindings.set_key(Action::Forward, 0x4C);
+        let mut config = HardwareConfig::default();
+        config.open(Some(&bindings));
+        config.switch_page(true);
+        config.defaults();
+        assert!(config.benchmark.is_none());
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x57);
+        // In controller mode it is the saved aim speed instead.
+        config.set_controller(true);
+        config.set_aim_speed(0.9);
+        config.defaults();
+        assert_eq!(config.live.aim_speed, 0.29);
     }
 
     #[test]
     fn the_controller_and_rumble_switches() {
         let mut config = HardwareConfig::default();
         assert!(!config.set_controller(true)); // no page open
-        config.open();
+        config.open(None);
         assert!(config.set_controller(true));
         assert!(config.live.controller);
         assert_eq!(config.lines().unwrap()[9], ("InputMode", "51".to_string()));
@@ -794,47 +978,54 @@ mod tests {
     }
 
     #[test]
-    fn defaults_move_the_baseline_but_not_the_page() {
-        let mut config = HardwareConfig::default();
-        config.open();
-        // A benchmark started by the Defaults action, not by the page's show.
-        config.refresh_after_benchmark = false;
-        config.finish_benchmark(4.0, 1600, 900);
-        let screen = config.screen.as_ref().unwrap();
-        assert_eq!(screen.baseline.supersample, 3);
-        assert_eq!(screen.draft.supersample, 0);
-        // Apply then compares the old draft with the new baseline and pushes
-        // the old values again, as the original does.
-        let applied = config.apply().unwrap();
-        assert!(applied.quality.supersample);
-        assert_eq!(config.live.supersample, 0);
-    }
-
-    #[test]
     fn the_deck_preset_is_fixed() {
-        let mut config = HardwareConfig::default();
-        config.deck_preset();
+        let mut config = HardwareConfig {
+            steam_deck: true,
+            ..HardwareConfig::default()
+        };
+        config.open(None);
+        config.defaults();
+        assert!(config.benchmark.is_none());
         assert_eq!(config.live.supersample, 3);
         assert_eq!(config.live.shading_quality, 5);
         assert_eq!(config.live.shadow_quality, 3);
     }
 
     #[test]
-    fn a_rebinding_writes_the_table_slot() {
-        let mut bindings = Bindings::default();
+    fn a_rebinding_writes_the_page_copy_and_apply_commits_it() {
+        let mut config = HardwareConfig::default();
+        config.open(Some(&Bindings::default()));
         let mut editor = BindingEditor::default();
+        let copy = config.bindings.as_mut().unwrap();
         assert!(editor.begin(0));
-        assert_eq!(editor.key(0x4C, &mut bindings), Rebind::Assigned(0x4C));
-        assert_eq!(bindings.key(Action::Forward), 0x4C);
-        assert_eq!(editor.key(0x4D, &mut bindings), Rebind::None);
+        assert_eq!(editor.key(0x4C, copy), Rebind::Assigned(0x4C));
+        assert_eq!(copy.key(Action::Forward), 0x4C);
+        assert_eq!(editor.key(0x4D, copy), Rebind::None);
 
         assert!(editor.begin(0));
-        assert_eq!(editor.key(0x1B, &mut bindings), Rebind::Cancelled);
-        assert_eq!(bindings.key(Action::Forward), 0x4C);
+        assert_eq!(editor.key(0x1B, copy), Rebind::Cancelled);
+        assert_eq!(copy.key(Action::Forward), 0x4C);
 
-        // The Power Tree row has no key cell.
-        assert!(!editor.begin(21));
-        assert_eq!(editor.key(0x4E, &mut bindings), Rebind::None);
+        // The Power Tree row has a key cell too.
+        assert!(editor.begin(21));
+        assert_eq!(editor.key(0x4E, copy), Rebind::Assigned(0x4E));
+        assert_eq!(copy.key(Action::PowerTree), 0x4E);
+
+        let applied = config.apply().unwrap();
+        let committed = applied.bindings.unwrap();
+        assert_eq!(committed.key(Action::Forward), 0x4C);
+
+        // A copy without a Forward key is not committed; Cancel drops it.
+        config.open(Some(&Bindings::default()));
+        config
+            .bindings
+            .as_mut()
+            .unwrap()
+            .set_key(Action::Forward, 0);
+        assert_eq!(config.apply().unwrap().bindings, None);
+        config.open(Some(&Bindings::default()));
+        config.cancel();
+        assert!(config.bindings.is_none());
     }
 
     #[test]
@@ -843,24 +1034,27 @@ mod tests {
         let rows = binding_rows(&bindings);
         assert_eq!(rows.len(), 22);
         assert_eq!(rows[0], ("Forward", "W".into()));
+        assert_eq!(rows[1], ("Back", "S".into()));
+        assert_eq!(rows[2], ("Left", "A".into()));
         assert_eq!(rows[6], ("Orbit Camera", "Middle mouse".into()));
         assert_eq!(rows[8], ("Toggle Combat", "Tab".into()));
-        assert_eq!(rows[21], ("Power Tree", String::new()));
+        assert_eq!(rows[17], ("Use Power", "Q".into()));
+        assert_eq!(rows[18], ("Power Bar", "C".into()));
+        assert_eq!(rows[19], ("Previous Power", "Left".into()));
+        assert_eq!(rows[20], ("Next Power", "Right".into()));
+        assert_eq!(rows[21], ("Power Tree", "P".into()));
     }
 
     #[test]
-    fn the_settings_file_gets_the_lines_appended() {
-        let dir = std::env::temp_dir().join("exarust-hw-config-test");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("Exanima.ini");
-        let _ = std::fs::remove_file(&path);
+    fn the_settings_file_gets_the_lines() {
+        let path = temp_file("apply.ini", b"Supersample = 0\r\n");
         let mut config = HardwareConfig::default().with_file(&path);
-        config.open();
+        config.open(None);
         config.set_slider(Setting::Supersample, 1.0);
         let applied = config.apply().expect("open");
         assert!(applied.stored);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("Supersample = 4"));
+        assert!(text.starts_with("Supersample = 4"));
         assert!(text.contains("PerfIndex = 0.00"));
         let _ = std::fs::remove_file(&path);
     }
