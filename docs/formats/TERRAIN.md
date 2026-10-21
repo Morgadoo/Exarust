@@ -129,7 +129,8 @@ not count as painted, so their weight falls to node 0 (see below).
 Version 2 material records store 25 parameters; the loader inserts four
 defaults (0.5, 0.3, 0.5, 1.0) at index 20, so the file's parameters 20–24
 become the runtime's 24–28. A missing palette falls back to `default.ftb`,
-with the "Could not find … (Terrain Palette)" message.
+with the "Could not find … (Terrain Palette)" message; a palette file that
+is there but does not parse is not replaced (the loader fails).
 
 A version 1 palette has no 144-byte header: after the name come width,
 height and the material count, then 152-byte materials (name, four old

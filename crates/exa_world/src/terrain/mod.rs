@@ -660,38 +660,35 @@ type MaterialTextures = (
     Option<Handle<Image>>,
 );
 
-/// The palette a terrain loads: its own name, else the file's `default`
-/// palette (the original logs "Could not find <name>.ftb" and falls back).
-/// Returns the palette, whether the fallback was used, and the message for a
-/// failed lookup.
+/// The palette a terrain loads: its own `<name>.ftb`, else, only when that
+/// file is missing, `default.ftb` (the original logs "Could not find
+/// <name>.ftb" under "Terrain Palette" and falls back). A palette that is
+/// there but does not parse is not replaced: the original's loader fails
+/// and the terrain has no palette. Returns the palette, whether the fallback
+/// was used, and the messages.
 fn choose_palette<'a>(
     name: &str,
     mut lookup: impl FnMut(&str) -> Option<&'a [u8]>,
 ) -> (Option<Palette>, bool, Vec<String>) {
     let mut warnings = Vec::new();
-    let mut attempt = |name: &str, warnings: &mut Vec<String>| {
-        let entry = format!("{name}.ftb");
-        match lookup(entry.as_str()) {
-            Some(bytes) => match Palette::parse(bytes) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    warnings.push(format!("terrain palette {entry}: {e}"));
-                    None
-                }
-            },
-            None => {
-                warnings.push(format!("Could not find {entry} (Terrain Palette)"));
-                None
-            }
+    let entry = format!("{name}.ftb");
+    let (entry, bytes, fallback) = match lookup(entry.as_str()) {
+        Some(bytes) => (entry, Some(bytes), false),
+        None => {
+            warnings.push(format!("Could not find {entry} (Terrain Palette)"));
+            let default = "default.ftb".to_string();
+            let bytes = lookup(default.as_str());
+            (default, bytes, true)
         }
     };
-    match attempt(name, &mut warnings) {
-        Some(p) => (Some(p), false, warnings),
-        None => match attempt("default", &mut warnings) {
-            Some(p) => (Some(p), true, warnings),
-            None => (None, true, warnings),
-        },
-    }
+    let palette = bytes.and_then(|bytes| match Palette::parse(bytes) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            warnings.push(format!("terrain palette {entry}: {e}"));
+            None
+        }
+    });
+    (palette, fallback, warnings)
 }
 
 impl TerrainBuild {
@@ -1727,15 +1724,17 @@ mod tests {
             (name == "missing.ftb").then_some(bytes.as_slice())
         });
         assert!(p.is_some() && !used);
+        // Without a default either, only the missing file is reported.
         let (p, used, warnings) = choose_palette("missing", |_| None);
         assert!(p.is_none() && used);
-        assert_eq!(warnings.len(), 2);
-        // A palette that does not parse falls back too.
+        assert_eq!(warnings.len(), 1);
+        // A palette that is there but does not parse is not replaced: the
+        // original falls back only when the file is missing.
         let (p, used, warnings) = choose_palette("bad", |name| match name {
             "bad.ftb" => Some(&[0u8; 4][..]),
             _ => Some(bytes.as_slice()),
         });
-        assert!(p.is_some() && used);
+        assert!(p.is_none() && !used);
         assert!(
             warnings[0].contains("terrain palette bad.ftb"),
             "{warnings:?}"
