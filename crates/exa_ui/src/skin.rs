@@ -2717,9 +2717,9 @@ pub struct LineScale {
     pub scale_calls: u32,
     pub heights: [u8; 3],
 }
-/// Scales the three heights. Each product rounds to nearest even and keeps
-/// the low byte; an out-of-range product stores 0.
-/// Rounds to nearest even and keeps the low byte; an out-of-range product is 0.
+/// Rounds to nearest even and keeps the low byte, as a 64-bit conversion
+/// stored as a byte does; a NaN or out-of-range value is 0 (every float
+/// that large is a multiple of 256 anyway).
 fn low_byte(value: f32) -> u8 {
     let value = value.round_ties_even();
     if value >= 2_147_483_648.0 || value < -2_147_483_648.0 || value.is_nan() {
@@ -2729,6 +2729,8 @@ fn low_byte(value: f32) -> u8 {
     }
 }
 
+/// Scales the three heights. Each product rounds to nearest even and keeps
+/// the low byte; an out-of-range product stores 0.
 pub fn scale_line(scale_y: f32) -> LineScale {
     let mut heights = [0u8; 3];
     for (slot, base) in heights.iter_mut().zip(LINE_HEIGHTS) {
@@ -5202,7 +5204,7 @@ fn arrow_inks(look: i32, palette: &SkinPalette) -> Option<(SkinInk, SkinInk)> {
         _ => return None,
     };
     let base = group[index];
-    let faded = with_alpha(base, ((base[3] / 3) * 2) & 0xff);
+    let faded = with_alpha(base, (base[3] / 3) * 2);
     Some((group[index + 1], faded))
 }
 
