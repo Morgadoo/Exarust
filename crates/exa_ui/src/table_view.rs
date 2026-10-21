@@ -10,6 +10,14 @@
 
 use crate::form::ClientRect;
 use crate::gui_font::{GuiFont, round_i32};
+use crate::text_edit::{self, EditAction, EditView};
+
+/// The style bits the table's constructor sets (the original's `0x88`): the
+/// table draws its own frame and takes the focus on a press.
+pub const STYLE: u32 = 0x88;
+/// The control flags the constructor adds (`0xc10`): visible, enabled and
+/// the table's own keyboard handling.
+pub const CONTROL_FLAGS: u32 = 0xc10;
 
 /// Column flags.
 pub mod column {
@@ -110,6 +118,47 @@ pub enum TableReply {
     },
 }
 
+/// A column's modal choice list: the original opens a drop-down list under
+/// the cell, fills it from the column's entries and stores the picked entry
+/// back into the cell. `selected` is 1-based, like the choice itself (0
+/// before a pick).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChoiceList {
+    pub column: i32,
+    pub entries: Vec<Vec<u8>>,
+    pub selected: i32,
+    /// The list's top-left corner, client coordinates.
+    pub at: (i32, i32),
+    /// The list's width and total height.
+    pub width: i32,
+    pub height: i32,
+    pub open: bool,
+}
+
+impl ChoiceList {
+    /// The list a press opens for `column`: its entries and width from the
+    /// column, its top-left corner under the column's cell. The original
+    /// places it one row down from the cell's left edge, `row_height + unit`
+    /// tall.
+    pub fn for_column(table: &TableView, column: i32, at: (i32, i32), width: i32) -> Self {
+        let entries = table
+            .columns
+            .get(column.max(0) as usize)
+            .map(|c| c.choices.clone())
+            .unwrap_or_default();
+        let height = entries.len() as i32 * table.row_height + table.unit - 1;
+        Self {
+            column,
+            entries,
+            selected: 0,
+            at,
+            width,
+            height,
+            open: true,
+        }
+    }
+}
+
 /// A table view's state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableView {
@@ -143,6 +192,14 @@ pub struct TableView {
     pub scroll: f32,
     pub scroll_step: f32,
     pub unit: i32,
+    /// The style word the constructor sets ([`STYLE`]).
+    pub style: u32,
+    /// The control flags the constructor sets ([`CONTROL_FLAGS`]).
+    pub control_flags: u32,
+    /// The open edit's four state bytes, shared with the text-edit field.
+    pub edit_view: EditView,
+    /// The open choice list, if a press opened one.
+    pub choice_list: Option<ChoiceList>,
 }
 
 impl TableView {
@@ -168,6 +225,10 @@ impl TableView {
             scroll: 0.0,
             scroll_step: 0.0,
             unit,
+            style: STYLE,
+            control_flags: CONTROL_FLAGS,
+            edit_view: EditView::default(),
+            choice_list: None,
         }
     }
 
@@ -248,9 +309,12 @@ impl TableView {
         row
     }
 
-    /// The pointer moves over row `row` (from `row_at`).
-    pub fn hover_row(&mut self, row: i32) {
+    /// The pointer moves over row `row` (from `row_at`): the result word the
+    /// original returns (3 for a row, 0 otherwise). A row also becomes the
+    /// table's press row, which the drag payload copies.
+    pub fn hover_row(&mut self, row: i32) -> u32 {
         self.hover = row;
+        if row > 0 { 3 } else { 0 }
     }
 
     /// The column under `x` (client coordinates): the first whose right
@@ -302,12 +366,20 @@ impl TableView {
             .unwrap_or_default();
         self.edit_anchor = 0;
         self.edit_caret = self.edit.len() as i32;
+        let len = self.edit.len().min(u8::MAX as usize) as u8;
+        self.edit_view = EditView {
+            anchor: 0,
+            caret: len,
+            length: len,
+            first: 0,
+        };
     }
 
     /// Closes the edit: an emptied first cell of the last row deletes the
     /// row, else a changed text is stored and reported.
     pub fn commit_edit(&mut self) -> Vec<TableEvent> {
         self.editing = false;
+        self.edit_view = EditView::default();
         let rows = self.row_count();
         if self.edit_column == 0 && self.edit.is_empty() && self.selected == rows {
             self.remove_row(rows - 1);
@@ -331,17 +403,9 @@ impl TableView {
     /// The edit's caret under `x` (client coordinates): bytes from the
     /// column's left edge, before the first byte whose middle is past it.
     pub fn edit_caret_at(&self, x: i32, font: &GuiFont) -> i32 {
-        let mut x = x - self.column_x(self.edit_column);
-        let mut caret = self.edit.len() as i32;
-        for (k, &b) in self.edit.iter().enumerate() {
-            let advance = font.advance(b);
-            if x < (advance as u32 >> 1) as i32 {
-                caret = k as i32;
-                break;
-            }
-            x -= advance;
-        }
-        caret.clamp(0, self.edit.len() as i32)
+        let mut view = self.edit_view;
+        let x = x - self.column_x(self.edit_column);
+        i32::from(text_edit::caret_from_x(font, &self.edit, &mut view, x))
     }
 
     /// A press on the hovered row at `x` (client coordinates) with
@@ -391,11 +455,11 @@ impl TableView {
                             events.push(TableEvent::Context(self.selected));
                         } else if c.flags & column::EDITABLE == 0 {
                             if c.flags & column::CHOICE != 0 {
-                                return TableReply::Choices {
-                                    column,
-                                    at: (self.column_x(column), self.unit),
-                                    width: c.width,
-                                };
+                                let at = (self.column_x(column), self.unit);
+                                let width = c.width;
+                                self.choice_list =
+                                    Some(ChoiceList::for_column(self, column, at, width));
+                                return TableReply::Choices { column, at, width };
                             }
                         } else {
                             self.begin_edit();
@@ -434,12 +498,24 @@ impl TableView {
     }
 
     /// The pointer moves to `x` with a press held: an open edit moves its
-    /// caret there (3); otherwise the form handles it.
+    /// caret there and scrolls its visible window (3); otherwise the form
+    /// handles it.
     pub fn pointer_move(&mut self, x: i32, font: &GuiFont) -> TableReply {
         if !self.editing {
             return TableReply::Form;
         }
-        self.edit_caret = self.edit_caret_at(x, font);
+        let width = self
+            .columns
+            .get(self.edit_column.max(0) as usize)
+            .map_or(0, |c| c.width);
+        let mut view = self.edit_view;
+        let x = x - self.column_x(self.edit_column);
+        view.caret = text_edit::caret_from_x(font, &self.edit, &mut view, x);
+        view.anchor = view.caret;
+        text_edit::scroll_view(font, &self.edit, &mut view, width);
+        self.edit_view = view;
+        self.edit_caret = i32::from(view.caret);
+        self.edit_anchor = i32::from(view.anchor);
         TableReply::Code(3)
     }
 
@@ -458,15 +534,29 @@ impl TableView {
         kind == self.drag_kind && !drops_off && !owner_refuses
     }
 
-    /// A picked choice (1-based) for the edit column's cell.
+    /// A picked choice (1-based) for the open choice list's cell, closing
+    /// the list. Out-of-range picks change nothing.
     pub fn choose(&mut self, choice: i32) -> Vec<TableEvent> {
-        let col = self.edit_column;
-        let text = self
-            .columns
-            .get(col as usize)
-            .and_then(|c| c.choices.get((choice - 1).max(0) as usize))
-            .cloned()
+        let col = self
+            .choice_list
+            .as_ref()
+            .map_or(self.edit_column, |list| list.column);
+        let entries = self.choice_list.as_ref().map_or_else(
+            || self.columns.get(col as usize).map(|c| c.choices.clone()),
+            |l| Some(l.entries.clone()),
+        );
+        if choice < 1 || entries.as_ref().is_none_or(|e| choice as usize > e.len()) {
+            return Vec::new();
+        }
+        let text = entries
+            .and_then(|e| e.get((choice - 1) as usize).cloned())
             .unwrap_or_default();
+        if let Some(list) = &mut self.choice_list {
+            list.selected = choice;
+            list.open = false;
+        }
+        self.choice_list = None;
+        self.edit_column = col;
         if let Some(cell) = self
             .rows
             .get_mut(self.selected.max(1) as usize - 1)
@@ -475,6 +565,11 @@ impl TableView {
             *cell = text;
         }
         vec![TableEvent::Chosen(col, choice - 1)]
+    }
+
+    /// The open choice list, if a press opened one.
+    pub fn open_choices(&self) -> Option<&ChoiceList> {
+        self.choice_list.as_ref().filter(|list| list.open)
     }
 
     /// A key while editing: Enter commits, Escape abandons, Delete on an
@@ -489,17 +584,77 @@ impl TableView {
                 0x0d => return Some(self.commit_edit()),
                 0x1b => {
                     self.editing = false;
+                    self.edit_view = EditView::default();
                     return Some(Vec::new());
                 }
                 0x2e if self.edit.is_empty() => {
                     self.remove_row(self.selected - 1);
                     self.editing = false;
+                    self.edit_view = EditView::default();
                     return Some(Vec::new());
                 }
                 _ => {}
             }
         }
         Some(Vec::new())
+    }
+
+    /// A key while editing with the field's full state: Enter commits,
+    /// Escape abandons, Delete on an empty edit deletes the row, and every
+    /// other key goes to the text-edit field (typing, Backspace, Delete,
+    /// arrows, Home/End, Ctrl+C/X/V), which scrolls the visible window.
+    /// Returns the table events and what the field asked of the clipboard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_key_full(
+        &mut self,
+        key: u32,
+        typed: bool,
+        ctrl: bool,
+        shift: bool,
+        font: &GuiFont,
+        clipboard: Option<&[u8]>,
+    ) -> (Vec<TableEvent>, EditAction) {
+        if !self.editing {
+            return (Vec::new(), EditAction::None);
+        }
+        if !typed && key > 0x0c {
+            match key {
+                0x0d => return (self.commit_edit(), EditAction::None),
+                0x1b => {
+                    self.editing = false;
+                    self.edit_view = EditView::default();
+                    return (Vec::new(), EditAction::None);
+                }
+                0x2e if self.edit.is_empty() => {
+                    self.remove_row(self.selected - 1);
+                    self.editing = false;
+                    self.edit_view = EditView::default();
+                    return (Vec::new(), EditAction::None);
+                }
+                _ => {}
+            }
+        }
+        let width = self
+            .columns
+            .get(self.edit_column.max(0) as usize)
+            .map_or(0, |c| c.width);
+        let mut view = self.edit_view;
+        let action = text_edit::apply_key(
+            font,
+            &mut self.edit,
+            &mut view,
+            key as u8,
+            typed,
+            ctrl,
+            shift,
+            0xff,
+            width,
+            clipboard,
+        );
+        self.edit_view = view;
+        self.edit_caret = i32::from(view.caret);
+        self.edit_anchor = i32::from(view.anchor);
+        (Vec::new(), action)
     }
 
     /// A command word: the activation key's press and release, the
@@ -554,12 +709,27 @@ impl TableView {
     }
 }
 
+/// The open edit field's draw: its pen and the text-edit state, so the
+/// caller can draw the text, selection and caret with `text_edit`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditFieldDraw {
+    /// The text's left and bottom edge (the glyph pen).
+    pub pen: (i32, i32),
+    /// The field's width in pixels.
+    pub width: i32,
+    pub text: Vec<u8>,
+    pub view: EditView,
+}
+
 /// Where a table's parts are drawn.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TableDraw {
     /// Header boxes (x0, x1) from the top to 6 units down; the last runs
     /// to the client's width.
     pub headers: Vec<(i32, i32)>,
+    /// The vertical separator inside each header cell: from two pixels in
+    /// at the top to two pixels short of six units down.
+    pub header_lines: Vec<[i32; 4]>,
     /// The selected row's highlight (x, y, w, h) and whether it is filled
     /// (the pointer is on it and no edit is open).
     pub selection: Option<([i32; 4], bool)>,
@@ -568,6 +738,8 @@ pub struct TableDraw {
     /// Cell texts: row, column, pen (x, y: the glyphs' left and bottom
     /// edge) and whether greyed.
     pub cells: Vec<(i32, i32, (i32, i32), bool)>,
+    /// The open edit field.
+    pub edit_field: Option<EditFieldDraw>,
     /// The cell the edit field draws in place of its text.
     pub edit_at: Option<(i32, i32)>,
     /// Owner-drawn cells: row, column, x, y and width.
@@ -576,6 +748,8 @@ pub struct TableDraw {
     pub titles: Vec<(i32, (i32, i32))>,
     /// Header icons: handle and position.
     pub icons: Vec<(i32, (i32, i32))>,
+    /// The drop shadow under the table's last row: x, y, width, height.
+    pub shadow: Option<[i32; 4]>,
 }
 
 impl TableView {
@@ -592,6 +766,7 @@ impl TableView {
         for (i, c) in self.columns.iter().enumerate() {
             let x1 = if i + 1 == n { width } else { c.width + x0 };
             out.headers.push((x0, x1));
+            out.header_lines.push([x0 + 2, 2, x0 + 2, 6 * u - 2]);
             x0 = x1;
         }
         out.scroll_offset = -round_i32(f64::from(
@@ -607,7 +782,7 @@ impl TableView {
         for (i, c) in self.columns.iter().enumerate() {
             let right = if i + 1 == n { width } else { c.width + left };
             if c.custom {
-                for r in 0..self.row_count() {
+                for r in first..self.row_count() {
                     out.custom
                         .push((r + 1, i as i32, left, 11 * u + 6 * u * r, right - left));
                 }
@@ -623,6 +798,12 @@ impl TableView {
                         self.editing && self.selected == r + 1 && i as i32 == self.edit_column;
                     if is_edit {
                         out.edit_at = Some((x + u, y));
+                        out.edit_field = Some(EditFieldDraw {
+                            pen: (x + u, y),
+                            width: c.width,
+                            text: self.edit.clone(),
+                            view: self.edit_view,
+                        });
                     } else {
                         let grey = self.rows[r as usize].flags & ROW_DISABLED != 0;
                         out.cells.push((r + 1, i as i32, (x + u, y), grey));
@@ -645,6 +826,10 @@ impl TableView {
             }
             x += c.width;
         }
+        // The original's drop shadow under the last drawn row, six units
+        // less the client's height tall (its arguments' exact roles are a
+        // guess: x, y, width, height here).
+        out.shadow = Some([0, 6 * u, width, (self.client.height() - 6 * u).max(0)]);
         out
     }
 
@@ -915,6 +1100,77 @@ mod tests {
         assert_eq!(rect[3], 28);
         // Centred by the font's text height (17 in Rayform10R).
         assert_eq!(pen, (65, 85 + (30 + 17 + 1) / 2));
+    }
+
+    #[test]
+    fn a_press_opens_a_modal_choice_list() {
+        let mut t = table(3);
+        t.selected = 2;
+        t.hover = 2;
+        let mut ev = Vec::new();
+        let r = t.press(150, pointer::PRESS, &RAYFORM_10, &mut ev);
+        assert_eq!(
+            r,
+            TableReply::Choices {
+                column: 1,
+                at: (105, 5),
+                width: 80
+            }
+        );
+        let list = t.open_choices().unwrap();
+        assert_eq!((list.column, list.width, list.entries.len()), (1, 80, 2));
+        // The list is two rows tall: each 30 plus the unit less one.
+        assert_eq!((list.at, list.height), ((105, 5), 2 * 30 + 5 - 1));
+        assert_eq!(t.choose(2), vec![TableEvent::Chosen(1, 1)]);
+        assert_eq!(t.rows[1].cells[1], b"Axe");
+        assert!(t.open_choices().is_none());
+        // An out-of-range pick changes no cell and reports nothing.
+        assert!(t.choose(9).is_empty());
+    }
+
+    #[test]
+    fn the_full_edit_key_goes_through_the_text_field() {
+        use crate::text_edit::key;
+        let mut t = table(3);
+        t.selected = 2;
+        t.begin_edit();
+        // Typing replaces the selected text at the caret.
+        t.edit.clear();
+        t.edit_view = EditView::default();
+        let (events, action) =
+            t.edit_key_full(u32::from(b'a'), true, false, false, &RAYFORM_10, None);
+        assert!(events.is_empty());
+        assert_eq!(action, EditAction::None);
+        assert_eq!((t.edit.as_slice(), t.edit_caret), (b"a".as_slice(), 1));
+        t.edit_key_full(u32::from(b'b'), true, false, false, &RAYFORM_10, None);
+        assert_eq!(t.edit, b"ab");
+        // Backspace deletes before the caret.
+        t.edit_key_full(
+            u32::from(key::BACKSPACE),
+            false,
+            false,
+            false,
+            &RAYFORM_10,
+            None,
+        );
+        assert_eq!(t.edit, b"a");
+        // Escape closes without storing.
+        let (events, _) = t.edit_key_full(0x1b, false, false, false, &RAYFORM_10, None);
+        assert!(events.is_empty() && !t.editing);
+        assert_eq!(t.rows[1].cells[0], b"r1");
+    }
+
+    #[test]
+    fn custom_columns_start_at_the_first_visible_row() {
+        let mut t = table(5);
+        t.columns[2].custom = true;
+        t.scroll = 0.5;
+        assert_eq!(t.first_visible(), 2);
+        let d = t.draw(&RAYFORM_10, 28);
+        assert_eq!(d.custom[0], (3, 2, 185, 11 * 5 + 6 * 5 * 2, 300 - 185));
+        assert_eq!(d.custom.len(), 3);
+        assert!(d.header_lines.contains(&[2, 2, 2, 28]));
+        assert_eq!(d.shadow, Some([0, 30, 300, 200 - 30]));
     }
 
     #[test]

@@ -1205,11 +1205,16 @@ units (centred ones by their width), a header icon centred in its column.
 It scrolls over all its rows but one; rows behind the header are not hit.
 A press selects a row unless it is greyed; a second press edits an
 editable cell (all of its text selected) or opens the column's choice
-list under the cell; a double press activates. A press past the last row
+list under the cell (a modal drop-down whose entries are the column's,
+two units lower than the cell's row band); a double press activates. A
+press past the last row
 of a table that grows adds a row and edits it, and committing an emptied
 first cell of the last row deletes it. Enter commits, Escape abandons,
-Delete on an empty edit deletes the row. Down passes greyed rows, Up does
-not. The table never sorts.
+Delete on an empty edit deletes the row; every other key goes to the
+single-line edit field (typing, Backspace/Delete, arrows, Home/End,
+Ctrl+C/X/V), which scrolls its visible window inside the column. Down
+passes greyed rows, Up does not. Owner-drawn columns start at the first
+visible row. The table never sorts.
 
 ## Item views
 
