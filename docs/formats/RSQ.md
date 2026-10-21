@@ -1323,9 +1323,19 @@ and down. h is the heading.
   quarters the leg limit's standing target; a stepping foot that is
   anchored blends its limit s ← 0.8s + 0.04 instead of following the leg
   mode.
-- Not reproduced: the start callback itself (no callback is registered),
-  the held items' grips and their collision consumers (items are not bodies
-  yet), the femur posture, the IK and foot pitch (C13), and the
+- The foot pitch (`0x100168f50`) is `exa_physics::body::foot_pitch_turn`:
+  five degrees alternating by leg about (−0.2, 0, 0.8), or
+  (1 − record height)·−1.5°, applied to the foot parts by the sampler. The
+  swing routine's body side is reproduced piece by piece: the weapon-in-hand
+  gate, the attack arms' stiffness, the swing sound, the fatigue ramp, the
+  aim nudges (fist, edge, overhead, homing), the two-hand group bit, Break
+  Tangle and the clinch clear (`exa_combat::swing`, `strike_body`); the
+  parry trigger and its counter (`parry`); the held weapon's handling pushes
+  (`weapon`); a blow's stagger and recoil (`exa_physics::stagger`); and
+  burning (`exa_combat::burn`). Not reproduced: the start callback itself (no
+  callback is registered), the grip link bodies and their collision
+  consumers (another lane's `exa_physics::grip`; the drop/clinch logic is
+  here), the femur posture, the full three-bone IK, and the
   reciprocal-square-root approximations (Exarust normalises exactly).
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body

@@ -55,7 +55,7 @@ pub use bend::foot_pitch_turn;
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
-pub use feet::{FootState, StepEnd, WalkedStep, step_end};
+pub use feet::{FootState, FullTone, StepEnd, WalkedStep, full_tone, step_end};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]

@@ -795,3 +795,37 @@ mod step_end_tests {
         assert!(!step_end(true, Vec3::NEG_Z, Vec3::Z, Vec3::ZERO, Vec3::ZERO).tell_ai);
     }
 }
+
+impl Ragdoll {
+    /// Clears bits `mask` from every foot contact's state, as the original
+    /// clears part state bits when a motion starts or a get-up begins.
+    pub fn clear_foot_state(&mut self, mask: u32) {
+        for leg in &mut self.legs {
+            leg.state = FootState(leg.state.0 & !mask);
+        }
+    }
+}
+
+/// The tone and stance fields a full reset writes: the stance factor and
+/// tone 1, the stagger speed 1 and decay 0, and the getting-up condition
+/// for the two get-up motions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FullTone {
+    pub stance: f32,
+    pub tone: f32,
+    pub stagger_speed: f32,
+    pub stagger_decay: f32,
+    pub getting_up: bool,
+}
+
+/// The reset values (the original's routine): all 1, the stagger's decay 0,
+/// and `true` for motions 0x0E and 0x0F (which sets condition 0x300).
+pub fn full_tone(motion: i32) -> FullTone {
+    FullTone {
+        stance: 1.0,
+        tone: 1.0,
+        stagger_speed: 1.0,
+        stagger_decay: 0.0,
+        getting_up: motion == 0x0E || motion == 0x0F,
+    }
+}

@@ -309,3 +309,35 @@ or 200 once R exceeds 1.67 (`spray_strength`, `jet_droplets`): 36·R
 droplets, 60 at most, even when the wound is dropped from a full queue.
 `exa_character::spray` flies them
 ([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood sprays).
+
+## Swing body rules, grips and burn
+
+`swing` also reproduces the swing routine's body-side rules: the
+weapon-in-hand gate (unarmed, or within 50·scale cm and 60° of the hand),
+the attack arms' stiffness by stance class and swing progress, the swing's
+sound pitch and volume (W25/W26), the fatigue ramp, and the start curves
+(smoothstep `(3 − 2x)x²` and the fall ease `0.11x + 1 − 1/(8x + 1)`).
+`strike_body` has the aim nudges the routine applies at a striker's point
+(the fist's cursor push, the edge alignment, the overhead's plane pull and
+the side swing's vertical homing), the two-hand group's class bit
+0x40000000, Break Tangle's counter and the clinch clear (grip links disabled
+with 0x100000, arm bit 8 cleared, countered motion reset, parry ended into
+the 0x28 stance blend). Grip link bodies are another lane's
+(`exa_physics::grip`); only the drop/clinch logic is here.
+
+`parry` adds the trigger (`parry_trigger`): a helpless body, the
+break-tangle motion or yellow under 0.01 end a parry; otherwise the attacker
+must be attacking (or 1.3 size against no shield), in its 0.3–0.9 window,
+not cleaving, in front and within its reach + 150 cm. Its counter rises and
+falls by the chosen clip, a start blends round(recovery · 20) with ease 2,
+and a changed attack motion repicks the clip.
+
+`weapon` is the held weapon's handling: the blade lift and bend curves and
+their two guide pushes (the weapon's and the forearm's), with the weapon's
+balance W7 term, using `exa_physics::body::push_fraction`'s point weighting.
+
+`burn` is fire's damage over time: the timer gains 0.03 of the strength
+(cap 20) or loses 0.1; yellow loses timer × 0.00004 and red (timer × 0.002)²,
+yellow scaled by red's new share; a timer over 1 crackles every 800 ms at
+most; yellow under 0 collapses. `effects` holds a body's power list (ramp
+and limit pulses) and the cast start (motion, clinch end, condition 0x20).

@@ -828,3 +828,20 @@ fn the_trailing_foot_is_planted_on_leaving_the_walk() {
     assert!(close(body.legs[rear].anchor.z, posed.z, 1e-5));
     assert_ne!(body.legs[rear].anchor, Vec3::new(9.0, 9.0, 9.0));
 }
+
+/// Clearing a state mask leaves the other bits; the full tone reset is 1
+/// and the get-up motions set the getting-up condition.
+#[test]
+fn state_masks_and_the_full_tone_are_the_originals() {
+    let (mut body, _pose) = footed(Vec3::ZERO);
+    for leg in &mut body.legs {
+        leg.state = FootState(0xffff);
+    }
+    body.clear_foot_state(0xffff);
+    assert!(body.legs.iter().all(|l| l.state.0 == 0));
+    assert!(full_tone(0x0E).getting_up);
+    assert!(full_tone(0x0F).getting_up);
+    assert!(!full_tone(0x0D).getting_up);
+    assert_eq!(full_tone(0).stance, 1.0);
+    assert_eq!(full_tone(0).stagger_decay, 0.0);
+}

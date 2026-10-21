@@ -513,3 +513,18 @@ sets the instability counter (the barricade sets it to 100).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).
 - Decision recorded in docs/plan: rapier3d for level colliders and the character controller; the
   body solver and its level contacts are in-house, as the original's (`docs/formats/RSQ.md`).
+
+The body kernel also keeps the original's class and state words
+(`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the
+class word to every part and `word | 0x30` to each first child,
+`raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
+children, and `raise_state_flag` walks the whole tree. `push_at` applies a
+push at a world point with the original's weighting (`push_fraction`, the
+`4·dot` test against the push's squared length). The stagger helper
+(`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
+countdown; `step_phase` advances the footstep phase from the pelvis travel;
+`scene_ground_below` is the placement query's box-level ground probe;
+`foot_pitch_turn` is the alternating 5° or (1 − height)·−1.5° foot pitch,
+applied by the sampler; and `MOTILE_ENVIRONMENT` is the class init's unused
+0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
+original's resets.
