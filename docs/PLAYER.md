@@ -834,8 +834,10 @@ Not yet, with the change that brings each:
   traced).
 
 A combatant's head tracking (`exa_combat::aim`) is the original's per-tick
-routine at `0x1000c0790`; the far variant, with a 150 cm look-ahead and no
-pitch floor, is `0x1000c0cd0`.
+head-tracking routine, with a far variant (a 150 cm look-ahead and no pitch
+floor). Its yaw is the engine's planar angle (the arc cosine of z over the
+horizontal length, the routine the free camera's yaw uses) and its pitch
+the negated two-branch arc sine of the height.
 
 ## Moveset from held items
 

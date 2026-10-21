@@ -360,7 +360,7 @@ resolve in their level's library.
   rewrite (after an arena save loads) turns its table off, then, when it
   holds pairs, rewrites the linked-object word (door body `+4`) of every
   local record flagged as a door and empties the table. The entity rewrite
-  maps a scene entity's object id (`+0x180`) that is tagged exactly local
+  maps a scene entity's object id that is tagged exactly local
   through the id remap table.
 - **Removal** ("Remove DB reference"): only for local and world ids; an
   object with a random table section is kept; otherwise each model string id whose
@@ -975,7 +975,7 @@ the original's GL calls. Exarust:
 `exa_formats::power_tree`.
 
 The Mind power's spirit form (`exa_game::mind`) follows `TPwrSpiritForm`'s
-tick at `0x1001e1690`.
+tick.
 
 - **Header**: first word `0xAFCE01CE`. The node count is the signed word at
   byte 52. A negative count is an error. The bytes between the magic and
@@ -1878,22 +1878,21 @@ spawned.
 ## Arena tables
 
 `exa_game::arena` holds the arena's tables as read from `Exanima.exe`
-0.9.5:
+0.9.5's data:
 
-| table | address |
-|---|---|
-| 6 standard matches | `0x1002bc6d0` |
-| 7 daily ranked matches | `0x1002bc3c0` |
-| 5 tournament formats | `0x1002bc970` |
-| 18 weekly tournament prize ids | `0x1002bcba0` |
-| the season's 4 armour sets | `0x1002bcc40` |
-| 19 rival companies: names and three profile bytes | `0x1002bbf30` |
-| 6 loadout tiers, 0x158-byte rows | `0x1002bb6a0` |
-| the tiers' point limits | `0x1002bcd30` |
+- 6 standard matches;
+- 7 daily ranked matches;
+- 5 tournament formats;
+- 18 weekly tournament prize ids;
+- the season's 4 armour sets;
+- 19 rival companies: names and three profile bytes;
+- 6 loadout tiers, 0x158-byte rows;
+- the tiers' point limits.
 
 The record log (`exa_game::arena_log`) grows a list of twenty-byte
 records, one id and a value or one id and four words; its two appenders
-are the 113-byte `0x100184080` and the 127-byte `0x100184100`.
+are a 113-byte routine (an id and a value) and a 127-byte one (an id and
+sixteen bytes).
 
 ### Arena matches
 

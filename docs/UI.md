@@ -543,18 +543,17 @@ tables.
 The original's own forms and controls that Exarust rebuilds, with the
 `Exanima.exe` 0.9.5 code and data they were read from:
 
-- **Main menu** (`exa_game::menu_pages`): `TMainMenu`'s page table at
-  `0x100122c40`.
+- **Main menu** (`exa_game::menu_pages`): `TMainMenu`'s page table.
 - **Settings and Controls** (`exa_ui::settings`): `TSGSettingDlg`'s
-  0x68-byte control records, the 9 tabs and buttons at `0x1002b2af0`, the
-  27 Settings rows at `0x1002b2ea0` and the 22 Controls rows at
-  `0x1002b1700`; the page switch at `0x1000a7e20`.
-- **Control geometry** (`exa_ui::controls`): a list's extent at
-  `0x1000fab10`, a control label's alignment at `0x1000fa110`.
+  0x68-byte control records, the template tables of its 9 tabs and
+  buttons, its 27 Settings rows and its 22 Controls rows, and its page
+  switch.
+- **Control geometry** (`exa_ui::controls`): the list-extent and
+  control-label alignment routines.
 - **Match board** (`exa_ui::match_board`): the board's constructor, tab
   switch, list refreshes and fighter assignment.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
-  at `0x100224570`; the requirements, states, ring icons, tooltips and
+  routine; the requirements, states, ring icons, tooltips and
   forget dialog below.
 - **Character creation** (`exa_game::create`, `exa_ui::creation`): the
   appearance page's NAME/HAIR/NEXT, the equipment page's APPAREL/WEAPONS

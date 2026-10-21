@@ -658,12 +658,12 @@ Selected names, useful for mapping subsystems. The source is https://github.com/
 - **From Structs.txt and mods:** `TRFCReader` (`ReadRFC`, `ReadMaterial`, `ReadMesh`, `ReadLight`, `ReadVoxLight`, `ReadTetraRBD`, `ReadDungeonData`, `ReadDBaseObjs`, `ReadDBaseNodes`, `ReadLibNodes`, `ReadCharacters3`, `ReadCharacter3`), `TMaterialManager3`, `TStringLibrary`, `TObjectDB.LoadMem`, `TCharacterDB.LoadMem`, `TLargeDataManager` (saves), `TThaumTree.ReadTreeData`, `TMotileDynamics` (character physics body), `TWeaponBlood`.
 
 ### 5.5 Runtime memory facts (64-bit, 0.9.5.x; useful for behaviour reference, not for the reimplementation)
-- **Player body:** the player's `TMotileDynamics` global sits at `0x1004F0830` in one 0.9.5 build. From there:
+- **Player body:** the player's `TMotileDynamics` global sits at a fixed address in one 0.9.5 build (given in the source below). From there:
   - `+0x10A0` points to `TSGCharacter`.
   - Physique x/y (the char-creator marker, 0..1) sits at `TSGCharacter+0x2C/+0x30`.
   - The current motion sequence index is at `+0x9B8` (attacks = 5..12).
   - The sequence clock is at `+0xA20` and advances by a per-creature step at `+0xDC8` each physics tick.
-  - The hit routine is at `0x100159A60`.
+  - The source also gives the hit routine's address.
   - Source: https://github.com/Justin52361/Exanima-Physique-matters
 - **Character state enum (older build):** 0 moving, 3 combat stance, 4 attack stance, 5–7 right attacks 1–3, 8–10 left attacks 1–3, 0xB alternative attack (thrust), 0xC heavy attack (overhead), 0xE/0xF getting up from stomach/back, 0x13 resting, 0x15–0x18 blocks, 0x1F swapping weapons, plus magic states. (https://github.com/jereremy/ExanimaHack `gd_player.h`)
 - **Health floats:** yellow (stamina-type) and red (health) are each in **0.0–0.25**; blue (focus) is in 0–1 with a cap. They live at `+0xE80/+0xE6C/+0xE84` in 0.9.5.2c. (https://github.com/englishpancake/exanimaHeal `trainer.c`)

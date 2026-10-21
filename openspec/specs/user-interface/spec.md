@@ -1088,15 +1088,15 @@ The selector SHALL run its base handler when the selection is above zero and the
 - **THEN** the form closes and the result is 0x40
 
 ### Requirement: End-session dispatch
-Page 2 SHALL call 0x10018bf80 for action 1 and show form 0x1001243c0 for action 2. Page 4 SHALL call 0x100124650 for action 1 on form page 4, otherwise 0x100124820, and call 0x100124820 for action 2. Page 8 SHALL, for action 1 on form page 2, call 0x100132250, 0x10017b480 and 0x10012c2c0 and show 0x100124800; otherwise it SHALL show 0x100123d30 with the last-round flag. Any other page SHALL call its registered handler when present. Every path SHALL clear the action and field 0x204 and return 0.
+Page 2 SHALL run the end page's continue (the next arena match when one is due) for action 1 and show the main menu for action 2. Page 4 SHALL reload the stored level for action 1 on form page 4, otherwise end the session to the main menu, and end the session to the main menu for action 2. Page 8 SHALL, for action 1 on form page 2, hide the kept form, make its second call and prepare the character record, then show its form; otherwise it SHALL show the next practice fight with the last-round flag. Any other page SHALL call its registered handler when present. Every path SHALL clear the action and the menu's hovered selection and return 0.
 
 #### Scenario: The built-in pages
 - **WHEN** the page is 2 and the action is 1
-- **THEN** 0x10018bf80 is called
+- **THEN** the continue runs
 - **WHEN** the page is 4 and the action is 1 on form page 4
-- **THEN** 0x100124650 is called
+- **THEN** the stored level is reloaded
 - **WHEN** the page is 8, the action is 1 and the form page is 2
-- **THEN** the three calls and form 0x100124800 are dispatched
+- **THEN** the three calls and page 8's form are dispatched
 
 #### Scenario: The fallback
 - **WHEN** the page is 3 and a handler exists
@@ -1275,7 +1275,7 @@ The show SHALL clear bits 0x60 on the object when one exists, apply a positive s
 - **THEN** nothing is applied and the base still runs
 
 ### Requirement: Class confirm
-A positive selection SHALL store itself and one less, return 7, play a sound when the sound global is positive, copy the page global and show form 0x10012a870 with flag 0. A selection of zero or less SHALL return 0x40 and do nothing else.
+A positive selection SHALL store itself and one less, return 7, play a sound when the sound global is positive, copy the page global and show the class form with flag 0. A selection of zero or less SHALL return 0x40 and do nothing else.
 
 #### Scenario: A positive selection
 - **WHEN** the selection is 3 and the sound global is positive
@@ -1286,11 +1286,11 @@ A positive selection SHALL store itself and one less, return 7, play a sound whe
 - **THEN** the result is 0x40 and no form shows
 
 ### Requirement: Class navigation
-Mask 0x100 SHALL confirm a positive selection with result 7 and form 0x10012a870, and return 0 for no selection. Masks 0x200 and 0x400 SHALL call 0x10012ac60. Direction 0x8000 SHALL move down to the first available class at or after the selection up to 3; direction 0x4000 SHALL move up from selection − 2, or to 1 when at most 2. The move SHALL run only when the target differs.
+Mask 0x100 SHALL confirm a positive selection with result 7 and the class form, and return 0 for no selection. Masks 0x200 and 0x400 SHALL call the forward helper. Direction 0x8000 SHALL move down to the first available class at or after the selection up to 3; direction 0x4000 SHALL move up from selection − 2, or to 1 when at most 2. The move SHALL run only when the target differs.
 
 #### Scenario: The confirm
 - **WHEN** the mask is 0x100 and the selection is 3
-- **THEN** the result is 7 and form 0x10012a870 shows
+- **THEN** the result is 7 and the class form shows
 - **WHEN** the selection is 0
 - **THEN** the result is 0
 

@@ -232,21 +232,43 @@ pub fn skill_selector_key(
     }
 }
 
-const END_RESUME: u64 = 0x1_0018_bf80;
-const END_QUIT_FORM: u64 = 0x1_0012_43c0;
-const END_PAGE4_SPECIAL: u64 = 0x1_0012_4650;
-const END_PAGE4_NORMAL: u64 = 0x1_0012_4820;
-const END_PAGE8_FINAL: u64 = 0x1_0012_3d30;
-const END_PAGE8_FORM: u64 = 0x1_0012_4800;
-const END_PAGE8_A: u64 = 0x1_0013_2250;
-const END_PAGE8_B: u64 = 0x1_0017_b480;
-const END_PAGE8_C: u64 = 0x1_0012_c2c0;
+/// A routine or form a menu hands over to, by what it does where that is
+/// established, else by its place in the menu that calls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuStep {
+    /// The end page's continue: the next arena match when one is due,
+    /// otherwise the session's end.
+    Continue,
+    /// Back to the main menu.
+    MainMenu,
+    /// Reload the level the session stored (page 4's first action on form
+    /// page 4).
+    ReloadLevel,
+    /// End the session and go back to the main menu (page 4's other
+    /// actions).
+    EndToMainMenu,
+    /// The next practice fight, with the last-round flag (page 8 off form
+    /// page 2).
+    NextPracticeFight,
+    /// Hides the form the game keeps aside, when one is up (page 8's first
+    /// call on form page 2).
+    HideKeptForm,
+    /// Page 8's second call on form page 2 (not traced).
+    PageEightSecond,
+    /// The character screen's record preparation (page 8's third call; the
+    /// class confirmation's too).
+    PrepareCharacterRecord,
+    /// The form page 8 shows after its three calls (not traced).
+    PageEightForm,
+    /// The form a confirmed class opens.
+    ClassForm,
+}
 
 /// One dispatched end-session action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndSessionAction {
-    Call(u64),
-    Show { form: u64, flag: bool },
+    Call(MenuStep),
+    Show { form: MenuStep, flag: bool },
     Registered(u64),
 }
 
@@ -274,9 +296,9 @@ pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
     let mut actions = Vec::new();
     match input.page {
         2 => match input.action {
-            1 => actions.push(EndSessionAction::Call(END_RESUME)),
+            1 => actions.push(EndSessionAction::Call(MenuStep::Continue)),
             2 => actions.push(EndSessionAction::Show {
-                form: END_QUIT_FORM,
+                form: MenuStep::MainMenu,
                 flag: true,
             }),
             _ => {}
@@ -284,33 +306,33 @@ pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
         4 => match input.action {
             1 => {
                 actions.push(EndSessionAction::Call(if input.form_page == 4 {
-                    END_PAGE4_SPECIAL
+                    MenuStep::ReloadLevel
                 } else {
-                    END_PAGE4_NORMAL
+                    MenuStep::EndToMainMenu
                 }));
             }
-            2 => actions.push(EndSessionAction::Call(END_PAGE4_NORMAL)),
+            2 => actions.push(EndSessionAction::Call(MenuStep::EndToMainMenu)),
             _ => {}
         },
         8 => match input.action {
             1 => {
                 if input.form_page == 2 {
-                    actions.push(EndSessionAction::Call(END_PAGE8_A));
-                    actions.push(EndSessionAction::Call(END_PAGE8_B));
-                    actions.push(EndSessionAction::Call(END_PAGE8_C));
+                    actions.push(EndSessionAction::Call(MenuStep::HideKeptForm));
+                    actions.push(EndSessionAction::Call(MenuStep::PageEightSecond));
+                    actions.push(EndSessionAction::Call(MenuStep::PrepareCharacterRecord));
                     actions.push(EndSessionAction::Show {
-                        form: END_PAGE8_FORM,
+                        form: MenuStep::PageEightForm,
                         flag: true,
                     });
                 } else {
                     actions.push(EndSessionAction::Show {
-                        form: END_PAGE8_FINAL,
+                        form: MenuStep::NextPracticeFight,
                         flag: input.final_round,
                     });
                 }
             }
             2 => actions.push(EndSessionAction::Show {
-                form: END_QUIT_FORM,
+                form: MenuStep::MainMenu,
                 flag: true,
             }),
             _ => {}
@@ -973,7 +995,7 @@ pub struct ClassConfirm {
     pub global_index: Option<i32>,
     pub sound: bool,
     pub page_copied: bool,
-    pub form: Option<u64>,
+    pub form: Option<MenuStep>,
     pub form_flag: bool,
     pub result: i32,
 }
@@ -996,7 +1018,7 @@ pub fn confirm_class(selection: i32, sound_ready: bool) -> ClassConfirm {
         global_index: Some(selection - 1),
         sound: sound_ready,
         page_copied: true,
-        form: Some(0x1_0012_a870),
+        form: Some(MenuStep::ClassForm),
         form_flag: false,
         result: 7,
     }
@@ -1025,7 +1047,7 @@ pub struct ClassNavInput {
 pub struct ClassNav {
     pub action: ClassNavAction,
     pub sound: bool,
-    pub form: Option<u64>,
+    pub form: Option<MenuStep>,
     pub result: i32,
 }
 
@@ -1044,7 +1066,7 @@ pub fn navigate_class(input: ClassNavInput) -> ClassNav {
         return ClassNav {
             action: ClassNavAction::Confirm,
             sound: input.sound_ready,
-            form: Some(0x1_0012_a870),
+            form: Some(MenuStep::ClassForm),
             result: 7,
         };
     }
@@ -1594,37 +1616,40 @@ mod tests {
         };
 
         let resume = dispatch_end_session(input(2, 1, 0, false, None));
-        assert_eq!(resume.actions, vec![EndSessionAction::Call(END_RESUME)]);
+        assert_eq!(
+            resume.actions,
+            vec![EndSessionAction::Call(MenuStep::Continue)]
+        );
         let quit = dispatch_end_session(input(2, 2, 0, false, None));
         assert_eq!(
             quit.actions,
             vec![EndSessionAction::Show {
-                form: END_QUIT_FORM,
+                form: MenuStep::MainMenu,
                 flag: true
             }]
         );
 
         assert_eq!(
             dispatch_end_session(input(4, 1, 4, false, None)).actions,
-            vec![EndSessionAction::Call(END_PAGE4_SPECIAL)]
+            vec![EndSessionAction::Call(MenuStep::ReloadLevel)]
         );
         assert_eq!(
             dispatch_end_session(input(4, 1, 3, false, None)).actions,
-            vec![EndSessionAction::Call(END_PAGE4_NORMAL)]
+            vec![EndSessionAction::Call(MenuStep::EndToMainMenu)]
         );
         assert_eq!(
             dispatch_end_session(input(4, 2, 0, false, None)).actions,
-            vec![EndSessionAction::Call(END_PAGE4_NORMAL)]
+            vec![EndSessionAction::Call(MenuStep::EndToMainMenu)]
         );
 
         assert_eq!(
             dispatch_end_session(input(8, 1, 2, false, None)).actions,
             vec![
-                EndSessionAction::Call(END_PAGE8_A),
-                EndSessionAction::Call(END_PAGE8_B),
-                EndSessionAction::Call(END_PAGE8_C),
+                EndSessionAction::Call(MenuStep::HideKeptForm),
+                EndSessionAction::Call(MenuStep::PageEightSecond),
+                EndSessionAction::Call(MenuStep::PrepareCharacterRecord),
                 EndSessionAction::Show {
-                    form: END_PAGE8_FORM,
+                    form: MenuStep::PageEightForm,
                     flag: true
                 }
             ]
@@ -1632,14 +1657,14 @@ mod tests {
         assert_eq!(
             dispatch_end_session(input(8, 1, 3, true, None)).actions,
             vec![EndSessionAction::Show {
-                form: END_PAGE8_FINAL,
+                form: MenuStep::NextPracticeFight,
                 flag: true
             }]
         );
         assert_eq!(
             dispatch_end_session(input(8, 1, 3, false, None)).actions,
             vec![EndSessionAction::Show {
-                form: END_PAGE8_FINAL,
+                form: MenuStep::NextPracticeFight,
                 flag: false
             }]
         );
@@ -2033,7 +2058,7 @@ mod tests {
         assert_eq!(picked.global_index, Some(2));
         assert!(picked.sound);
         assert!(picked.page_copied);
-        assert_eq!(picked.form, Some(0x1_0012_a870));
+        assert_eq!(picked.form, Some(MenuStep::ClassForm));
         assert!(!picked.form_flag);
         assert_eq!(picked.result, 7);
 
@@ -2059,7 +2084,7 @@ mod tests {
         let confirm = navigate_class(input(0x100, 3));
         assert_eq!(confirm.action, ClassNavAction::Confirm);
         assert_eq!(confirm.result, 7);
-        assert_eq!(confirm.form, Some(0x1_0012_a870));
+        assert_eq!(confirm.form, Some(MenuStep::ClassForm));
         assert!(confirm.sound);
         assert_eq!(navigate_class(input(0x100, 0)).result, 0);
 

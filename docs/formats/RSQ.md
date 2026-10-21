@@ -103,7 +103,7 @@ How the original simulates a body (`exa_physics::body`):
     30°–180°, the head look within ±72°·0.8, the foot's ground pitch),
     never an arm's.
 - A correction is shared by the parts' mobilities, m/(m + m_parent), with
-  m = 0.175 × the bone's value (the segment table at `0x1002bb460`,
+  m = 0.175 × the bone's value (the original's segment table,
   `exa_physics::motile::SEGMENT_INV_MASS`: pelvis 0.45, thighs 0.7, shins
   1, feet 2.8, lumbar 0.45, thorax 0.5, head 1, shoulders 1, upper arms
   1.2, forearms 1.5, hands 2.5; larger moves more). It is spread over
