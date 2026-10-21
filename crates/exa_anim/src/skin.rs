@@ -7,10 +7,10 @@
 //! pointers, the bind-inverse matrices relative to the mesh's own part and
 //! the current skin matrices (`joint world × inverse bind`), and its
 //! per-frame deform applies them to every vertex with up to four weights.
-//! Exarust lets Bevy's GPU skinning do the per-frame deform; these are the
-//! same numbers on the CPU for the features that read a vertex's world
-//! place (the wound painter, `exa_character::blood`) and for the bind the
-//! controller registers.
+//! Exarust lets Bevy's GPU skinning do the per-frame deform (it blends all
+//! four joints, in GPU arithmetic);
+//! [`skin_vertex`] is the original's CPU order for code that needs it, not
+//! yet called. The bind uses [`bindings`].
 //!
 //! Bone numbering follows the original: bone `n` is joint `n`, bone 0 is
 //! the mesh's own part and every gap bone takes the own part with an
@@ -27,22 +27,58 @@ pub fn skin_matrix(joint_world: Mat4, inverse_bind: Mat4) -> Mat4 {
     joint_world * inverse_bind
 }
 
-/// One vertex skinned by its joints: the weighted sum of each joint's skin
-/// matrix applied to `position`, in the same order and with the same
-/// four weights the GPU uses. Zero weights are skipped; a joint past the
-/// matrices is skipped.
-pub fn skin_vertex(position: Vec3, joints: [u16; 4], weights: [f32; 4], matrices: &[Mat4]) -> Vec3 {
-    let mut out = Vec3::ZERO;
-    for k in 0..4 {
-        if weights[k] == 0.0 {
-            continue;
+/// A skin matrix as the original keeps it: three axis rows and the
+/// translation, each three floats (`[x, y, z, t]`).
+pub type SkinRows = [[f32; 3]; 4];
+
+/// A [`Mat4`] (affine) as [`SkinRows`].
+pub fn skin_rows(m: Mat4) -> SkinRows {
+    [
+        m.x_axis.truncate().to_array(),
+        m.y_axis.truncate().to_array(),
+        m.z_axis.truncate().to_array(),
+        m.w_axis.truncate().to_array(),
+    ]
+}
+
+/// One vertex skinned as the original's per-frame deform does it: the
+/// skin matrices of its joints are blended first (the first joint's
+/// matrix times its weight, then each further joint's matrix times its
+/// weight added element by element, stopping at the first joint number
+/// below 1), and the point is transformed once by the blend, each
+/// component summed as `(x·a + y·b) + (z·c + t)`. Joint numbers are the
+/// record's, one-based (`matrices[n − 1]`); the first joint is used
+/// whatever its weight. A number past the matrices ends the blend (and a
+/// first one gives the origin), where the original would read past its
+/// list.
+pub fn skin_vertex(
+    position: Vec3,
+    joints: [i32; 4],
+    weights: [f32; 4],
+    matrices: &[SkinRows],
+) -> Vec3 {
+    let at = |j: i32| usize::try_from(j - 1).ok().and_then(|i| matrices.get(i));
+    let Some(first) = at(joints[0]) else {
+        return Vec3::ZERO;
+    };
+    let mut m = first.map(|row| row.map(|v| v * weights[0]));
+    for k in 1..4 {
+        if joints[k] < 1 {
+            break;
         }
-        let Some(m) = matrices.get(usize::from(joints[k])) else {
-            continue;
+        let Some(next) = at(joints[k]) else {
+            break;
         };
-        out += m.transform_point3(position) * weights[k];
+        for (row, other) in m.iter_mut().zip(next) {
+            for (v, o) in row.iter_mut().zip(other) {
+                *v += o * weights[k];
+            }
+        }
     }
-    out
+    let p = position.to_array();
+    Vec3::from_array(std::array::from_fn(|c| {
+        (p[0] * m[0][c] + p[1] * m[1][c]) + (p[2] * m[2][c] + m[3][c])
+    }))
 }
 
 /// The joint numbering and inverse binds of a mesh on bone `own_bone`
@@ -101,22 +137,33 @@ mod tests {
         assert!((rest_skin.transform_point3(p) - p).length() < 1e-6);
     }
 
-    /// Two joints blend by their weights; zero weights and missing joints
-    /// contribute nothing.
+    /// Two joints blend by their weights (one-based numbers); the blend
+    /// stops at the first number below 1, whatever the weights after it.
     #[test]
-    fn a_vertex_takes_its_weighted_joints() {
-        let a = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
-        let b = Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0));
-        let p = Vec3::ZERO;
-        let at = skin_vertex(p, [0, 1, 2, 3], [0.75, 0.25, 0.0, 0.0], &[a, b]);
-        assert_eq!(at, Vec3::new(0.75, 0.5, 0.0));
-        let one = skin_vertex(p, [0, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], &[a]);
-        assert_eq!(one, Vec3::new(1.0, 0.0, 0.0));
-        // A missing matrix is left out.
-        assert_eq!(
-            skin_vertex(p, [9, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], &[a]),
-            Vec3::ZERO
+    fn a_vertex_takes_its_blended_joints() {
+        let a = skin_rows(Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)));
+        let b = skin_rows(Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0)));
+        let p = Vec3::new(1.0, 1.0, 1.0);
+        let at = skin_vertex(p, [1, 2, 0, 1], [0.75, 0.25, 0.5, 0.5], &[a, b]);
+        assert_eq!(at, Vec3::new(1.75, 1.5, 1.0));
+        let one = skin_vertex(p, [1, 0, 2, 2], [1.0, 0.0, 1.0, 1.0], &[a, b]);
+        assert_eq!(one, Vec3::new(2.0, 1.0, 1.0));
+        // No first matrix: nothing.
+        assert_eq!(skin_vertex(p, [9, 0, 0, 0], [1.0; 4], &[a]), Vec3::ZERO);
+        // The per-component sum is (x·a + y·b) + (z·c + t).
+        let big = [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [-1.0e8, 0.0, 0.0],
+        ];
+        let q = skin_vertex(
+            Vec3::new(1.0e8, 0.5, 0.5),
+            [1, 0, 0, 0],
+            [1.0, 0.0, 0.0, 0.0],
+            &[big],
         );
+        assert_eq!(q.x, (1.0e8f32 + 0.5) + (0.5 + -1.0e8));
     }
 
     /// The binding list numbers every bone from 0, a gap taking the own

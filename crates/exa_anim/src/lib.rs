@@ -116,10 +116,11 @@ impl Motions {
     }
 
     /// The motion library: `humanoid.rsq` parsed with the human body's leg
-    /// length and each bone's physical body. Without the file (or when it
-    /// does not parse) the original falls back on one `Default` moveset
-    /// with one bone and one unnamed action and no clips: every character
-    /// then plays nothing rather than the game failing to load.
+    /// length and each bone's physical body. Without the file the original
+    /// falls back on one unnamed action and one `Default` moveset with no
+    /// parent and no clips ([`Motions::fallback`]): every character then
+    /// plays nothing. The original parses whatever file it finds; Exarust
+    /// also falls back when the file does not parse, rather than fail.
     pub fn load(game: &Game) -> Self {
         let Some(bytes) = game
             .0
@@ -148,11 +149,12 @@ impl Motions {
         }
     }
 
-    /// The original's fallback motion library: one bone, one unnamed action
-    /// and one empty `Default` moveset.
+    /// The original's fallback motion library: no bones (the count is
+    /// left as the fresh object's zero), one unnamed action and one
+    /// `Default` moveset without a parent or clips.
     pub fn fallback() -> Self {
         let set = MotionSet {
-            bone_count: 1,
+            bone_count: 0,
             actions: vec![exa_formats::rsq::Action {
                 name: String::new(),
                 params: [0, 0],
@@ -525,11 +527,11 @@ mod tests {
     use exa_formats::rsq::{Key, MovesetConfig};
 
     /// Without `humanoid.rsq` the library is one empty `Default` moveset
-    /// with one bone and one unnamed action: no character has a clip.
+    /// and one unnamed action: no character has a clip.
     #[test]
     fn the_fallback_library_is_one_empty_default_moveset() {
         let motions = Motions::fallback();
-        assert_eq!(motions.0.bone_count, 1);
+        assert_eq!(motions.0.bone_count, 0);
         assert_eq!(motions.0.actions.len(), 1);
         assert_eq!(motions.0.movesets.len(), 1);
         assert_eq!(motions.0.movesets[0].name, DEFAULT_MOVESET);

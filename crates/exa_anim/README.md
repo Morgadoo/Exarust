@@ -25,10 +25,10 @@ owed to the next frame), 0.6 × the race's base a tick
 ## Scope
 
 - Parse `humanoid.rsq`: bone hierarchy (18 bones for humans) and motion sequences.
-  Without the file (or when it does not parse) the library is the
-  original's fallback: one bone, one unnamed action and one empty
-  `Default` moveset, so characters play nothing instead of failing to
-  load (`Motions::fallback`).
+  Without the file the library is the original's fallback: one unnamed
+  action and one empty `Default` moveset, so characters play nothing
+  (`Motions::fallback`); Exarust takes the same fallback when the file
+  does not parse.
 - Clip tables: an `Animator` names its base moveset (the race's own,
   `Default` for a human) and the held items' `MovesetConfig`;
   `Motions::clip` looks every clip up in the table the original assembles
@@ -36,11 +36,13 @@ owed to the next frame), 0.6 × the race's base a tick
   and config and shared ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md),
   A character's clip table).
 - CPU skin data (`skin`): the skin matrix (joint world × inverse bind),
-  one vertex's four-weight deformation, the joint numbering and inverse
-  binds a mesh registers (bone `n` = joint `n`, a gap taking the mesh's own
-  part with an identity inverse, each inverse relative to the mesh's part
-  in rest), and a mesh's vertex translation. Bevy's GPU skinning performs
-  the per-frame deform; the wound painter and the bind use these numbers.
+  one vertex deformed in the original's order (the joints' matrices
+  blended by weight up to the first joint number below 1, then one
+  transform summed `(x·a + y·b) + (z·c + t)`), the joint numbering and
+  inverse binds a mesh registers (bone `n` = joint `n`, a gap taking the
+  mesh's own part with an identity inverse, each inverse relative to the
+  mesh's part in rest), and a mesh's vertex translation. Bevy's GPU
+  skinning performs the per-frame deform; the bind uses these numbers.
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every
