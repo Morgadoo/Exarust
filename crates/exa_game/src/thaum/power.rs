@@ -34,8 +34,9 @@
 //!   20 m).
 //! - **Spirit body** ([`spirit_body`]): the record the original builds for
 //!   the spirit the player controls in Spirit Form — race 0xE00, status
-//!   bits 0x220000, the copied record fields and power list rebound to the
-//!   new body, 60 cm in front of the caster — and the control handover.
+//!   bits 0x220000, the copied record fields, focus pool and power list
+//!   rebound to the new body, 60 cm along the caster's facing — and the
+//!   control handover.
 
 pub mod displacement;
 pub mod energy;
@@ -377,43 +378,52 @@ pub fn glean(
     }
 }
 
-/// The fields the spirit body copies from the caster's record.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The fields the spirit body copies from the caster's record and body.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpiritRecord {
-    /// The record's look word.
-    pub look: u32,
-    /// The five trait words.
-    pub traits: [u32; 5],
+    /// The record's id word.
+    pub record_id: u32,
+    /// The 40-byte block the record copies whole (five 8-byte words whose
+    /// meaning is not established).
+    pub block: [u64; 5],
     /// The caster's learnt technique bits.
     pub techniques: u32,
-    /// Whether the caster's hands hold anything.
-    pub visible: bool,
+    /// The caster's focus pool, its reserve and the word between them.
+    pub focus: f32,
+    pub reserved: f32,
+    pub pool_word: u32,
 }
 
-/// The spirit body the Spirit Form power creates: race 0xE00, 60 cm in
-/// front of the caster, the caster's powers rebound to it and the control
-/// handed over.
+/// The spirit body the Spirit Form power creates: a new record of race
+/// 0xE00 sharing the caster's known powers, placed 60 cm along the
+/// caster's facing, given the caster's focus, reserve and techniques and
+/// its running powers (rebound to the spirit), with status bits
+/// `0x22_0000` and a player behaviour in mode 4, and the control handed
+/// over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpiritBody {
     pub race: u32,
     pub status: u32,
-    pub visible: bool,
-    pub scene_word: u32,
+    /// The mode the spirit's player behaviour is put in.
+    pub behaviour_mode: u32,
     pub distance: f32,
-    /// The caster's known powers, whose owner pointers are rebound.
+    /// The caster's known powers, shared with the new record.
     pub powers: Vec<KnownPower>,
-    pub look: u32,
-    pub traits: [u32; 5],
+    pub record_id: u32,
+    pub block: [u64; 5],
     pub techniques: u32,
+    pub focus: f32,
+    pub reserved: f32,
+    pub pool_word: u32,
 }
 
 /// The spirit's race word.
 pub const SPIRIT_RACE: u32 = 0xE00;
 /// The status bits the spirit body carries.
 pub const SPIRIT_STATUS: u32 = 0x0022_0000;
-/// The scene word the spirit body is given.
-pub const SPIRIT_SCENE_WORD: u32 = 4;
-/// How far in front of the caster the spirit body appears, in cm.
+/// The mode the spirit's player behaviour is put in.
+pub const SPIRIT_BEHAVIOUR_MODE: u32 = 4;
+/// How far along the caster's facing the spirit body appears, in cm.
 pub const SPIRIT_DISTANCE: f32 = 60.0;
 
 /// Builds the spirit body's record from the caster's.
@@ -421,13 +431,15 @@ pub fn spirit_body(record: &SpiritRecord, powers: &[KnownPower]) -> SpiritBody {
     SpiritBody {
         race: SPIRIT_RACE,
         status: SPIRIT_STATUS,
-        visible: record.visible,
-        scene_word: SPIRIT_SCENE_WORD,
+        behaviour_mode: SPIRIT_BEHAVIOUR_MODE,
         distance: SPIRIT_DISTANCE,
         powers: powers.to_vec(),
-        look: record.look,
-        traits: record.traits,
+        record_id: record.record_id,
+        block: record.block,
         techniques: record.techniques,
+        focus: record.focus,
+        reserved: record.reserved,
+        pool_word: record.pool_word,
     }
 }
 
@@ -670,10 +682,12 @@ mod tests {
     #[test]
     fn the_spirit_body_carries_the_caster_powers() {
         let record = SpiritRecord {
-            look: 7,
-            traits: [1, 2, 3, 4, 5],
+            record_id: 7,
+            block: [1, 2, 3, 4, 5],
             techniques: 0x10,
-            visible: true,
+            focus: 0.8,
+            reserved: 0.25,
+            pool_word: 3,
         };
         let powers = [KnownPower {
             id: 0x201,
@@ -683,10 +697,11 @@ mod tests {
         assert_eq!(spirit.race, 0xE00);
         assert_eq!(spirit.status, 0x22_0000);
         assert_eq!(spirit.distance, 60.0);
-        assert_eq!(spirit.scene_word, 4);
-        assert!(spirit.visible);
+        assert_eq!(spirit.behaviour_mode, 4);
         assert_eq!(spirit.powers, powers);
-        assert_eq!(spirit.traits, [1, 2, 3, 4, 5]);
+        assert_eq!(spirit.block, [1, 2, 3, 4, 5]);
+        assert_eq!((spirit.focus, spirit.reserved), (0.8, 0.25));
+        assert_eq!(spirit.record_id, 7);
     }
 
     #[test]

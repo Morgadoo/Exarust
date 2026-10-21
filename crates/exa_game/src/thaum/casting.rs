@@ -155,15 +155,15 @@ pub struct CastBody {
     /// The simulation tick in milliseconds.
     pub tick_ms: u32,
     /// The share of a blow's energy a force shell keeps off the body: the
-    /// hit formula multiplies by `1 - hit_damping` (the shell's 0.5).
+    /// hit formula multiplies by `1 - hit_damping` (the shell's 0.5;
+    /// `context/re/combat-damage.md`, not yet read by `exa_combat`).
     pub hit_damping: f32,
     /// The attacker's strike factor, which the hit formula adds half of
     /// (Force Strikes' 1.0).
     pub strike_factor: f32,
-    /// The swing's factor: sound and reach (Force Strikes' 3.0, else 1).
+    /// The swing factor Force Strikes sets beside its swing sound (3.0,
+    /// else 1); what reads it is outside the power classes.
     pub swing_factor: f32,
-    /// How visible a displacement power leaves the body: 1 shown, 0 hidden.
-    pub shown: f32,
 }
 
 impl Default for CastBody {
@@ -193,7 +193,6 @@ impl Default for CastBody {
             hit_damping: 0.0,
             strike_factor: 0.0,
             swing_factor: 1.0,
-            shown: 1.0,
         }
     }
 }
