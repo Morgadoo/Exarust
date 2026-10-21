@@ -946,8 +946,8 @@ fn taper_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
         return;
     }
     let a = a as usize;
-    // The original adds the deform's range in double precision, multiplies
-    // by −0.05 and narrows.
+    // The original adds the deform's range in float, multiplies by −0.05 in
+    // double and narrows.
     let x = ((value + d.range) as f64 * -0.05) as f32;
     let f = deform_factor(x, d.amount);
     for v in p.iter_mut() {
