@@ -253,6 +253,21 @@ fn a_combatant_contact_is_classified() {
     );
 }
 
+/// The perception's words reach the classifier's record: closeness is this
+/// tick's sighting, the attitude is the soothing term and the threat
+/// estimate is the alarm.
+#[test]
+fn a_perceived_contact_carries_its_words() {
+    let mut c = crate::combatant::Contact::new(bevy::prelude::Entity::PLACEHOLDER);
+    c.closeness = 0.75;
+    c.attitude = -40.0;
+    c.threat = 1.25;
+    c.concern_target = 0.5;
+    let r = ContactRecord::of(&c, 9);
+    assert_eq!((r.seen, r.soothe, r.alarm), (0.75, -40.0, 1.25));
+    assert_eq!((r.threat, r.concern_target), (1.25, 0.5));
+}
+
 /// A contact seen this tick, with a hostile soothe term (the perceived
 /// attitude), a rising concern and a sighting of 2 its noticed level rises
 /// toward.

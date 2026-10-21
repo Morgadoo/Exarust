@@ -1692,6 +1692,7 @@ fn spawn_placed_characters(
                 exa_ai::roles::Relations::default(),
                 exa_ai::brain::Npc::of_record(&c.record, &mut roll),
                 exa_ai::brain::CharacterId(c.record.id),
+                exa_ai::combatant::Combatant::default(),
             ));
             if physical {
                 commands.entity(model).insert((

@@ -94,9 +94,12 @@ pub const UNREACHABLE: u32 = 0x10;
 
 impl ContactRecord {
     /// The classifier's view of a combatant's contact with `id`: its
-    /// noticeability is the admission's sighting, and the attention the
-    /// original keeps beside the noticed level is not in the combatant
-    /// (0 here).
+    /// noticeability is the admission's sighting, its closeness is this
+    /// tick's sighting, its attitude is the soothing term and the
+    /// perception's threat estimate is the alarm the classifier reads (the
+    /// original keeps that one field; the combatant splits it in two).
+    /// The attention the original keeps beside the noticed level is not in
+    /// the combatant (0 here).
     pub fn of(c: &crate::combatant::Contact, id: u64) -> Self {
         Self {
             id,
@@ -107,7 +110,7 @@ impl ContactRecord {
             concern: c.concern,
             hostility: c.hostility,
             tolerance: c.tolerance,
-            alarm: c.alarm,
+            alarm: c.threat,
             threat: c.threat,
             marks: 0,
             level: 0,
@@ -115,8 +118,8 @@ impl ContactRecord {
             ticks_seen: 0,
             decay: 0.0,
             unreachable_until_ms: c.unreachable_until_ms,
-            soothe: 0.0,
-            seen: 0.0,
+            soothe: c.attitude,
+            seen: c.closeness,
             stamp: 0.0,
             object: false,
             dead: false,

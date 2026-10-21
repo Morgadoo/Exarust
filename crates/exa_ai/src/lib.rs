@@ -74,6 +74,7 @@ impl Plugin for AiPlugin {
                 Update,
                 (
                     (brain::apply_new_roles, brain::rate_the_player).chain(),
+                    brain::perceive_all,
                     duellist.in_set(DuelSystems),
                 )
                     .chain(),
@@ -1038,6 +1039,22 @@ fn yaw_of(rotation: Quat) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The plugin runs on a bare app with no characters, with and without
+    /// the optional role database, and does not panic over three frames.
+    #[test]
+    fn the_ai_plugin_runs_without_resources_or_characters() {
+        for with_db in [false, true] {
+            let mut app = App::new();
+            app.add_plugins((bevy::MinimalPlugins, AiPlugin));
+            if with_db {
+                app.insert_resource(brain::RoleDatabase::default());
+            }
+            for _ in 0..3 {
+                app.update();
+            }
+        }
+    }
 
     /// An unarmed duellist on a root at the origin, its target `distance` m
     /// away along +Z.

@@ -27,8 +27,11 @@ A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
 activity; every frame they rate the player from both sides' roles, which
 feeds the contact rating (`sense`), and a human-framed character whose
-rating engages duels the player. A sleeper that rates the player above a
-notice drops the sleep role and wakes.
+rating engages duels the player. Every frame the brain's perception pass
+looks at every character it can sense, with that character's own contacts,
+the role database's attitude and the relations' trust in its threat
+estimate, and writes the contact words the integration reads. A sleeper
+that rates the player above a notice drops the sleep role and wakes.
 
 | module | what it holds |
 |---|---|

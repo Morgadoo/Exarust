@@ -18,12 +18,16 @@
 //! the group blend of the perception are not applied.
 
 use bevy::prelude::*;
+use exa_anim::{Animator, Motions};
+use exa_combat::{Condition, Fighter};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::RoleDb;
+use exa_physics::CharacterBody;
 use exa_physics::body::BodyTicks;
 
 use crate::activity::{self, Applied, Before, IdleKind, IdleRegistry, IdleState};
 use crate::combat;
+use crate::combatant::{self, Attitude, Combatant, Contact, Observed, Observer};
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
 use crate::idle::Routine;
 use crate::personality::{self, Personality};
@@ -53,6 +57,12 @@ pub const PLAYER_ID: u32 = 1;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct RatedPlayer;
 
+/// The original's body flag that makes another character's perception skip
+/// this one [guess: the body's second flag word is not modelled, so this
+/// marker stands in; nothing sets it in the running game yet].
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Unseen;
+
 /// A level character's brain.
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
@@ -76,6 +86,10 @@ pub struct Npc {
     pub cursor: usize,
     /// The morale the AI tick drifts.
     pub morale: combat::MoraleDrift,
+    /// The generator the AI tick draws from (the next draw's seed)
+    /// [guess: the original reads a generator on the behaviour; Exarust
+    /// keeps its state here].
+    pub roll: u32,
 }
 
 impl Npc {
@@ -91,11 +105,13 @@ impl Npc {
             pass: PassReport::default(),
             cursor: 0,
             morale: combat::MoraleDrift::default(),
+            roll: 0,
         }
     }
 
     /// The brain of `record`: its traits and the personality they give,
-    /// drawing the jitter from `roll`.
+    /// drawing the jitter from `roll` and keeping the generator's next
+    /// state.
     pub fn of_record(record: &CharacterRecord, roll: &mut u32) -> Self {
         let personality = personality::personality(
             record.combat_skill,
@@ -104,7 +120,7 @@ impl Npc {
             false,
             roll,
         );
-        Self {
+        let mut brain = Self {
             personality: Some(personality),
             morale: combat::MoraleDrift {
                 courage: personality.courage,
@@ -112,7 +128,9 @@ impl Npc {
                 ..combat::MoraleDrift::default()
             },
             ..Self::new(record.traits)
-        }
+        };
+        brain.roll = *roll;
+        brain
     }
 
     /// Applies the roles and installs the routine they choose.
@@ -215,6 +233,271 @@ impl Npc {
         let level = report.level;
         self.pass = report;
         level
+    }
+
+    /// Keeps the words a perception pass wrote for contact `record` without
+    /// disturbing the target pass's own level, marks and counters.
+    fn absorb(&mut self, record: ContactRecord) {
+        if let Some(c) = self.contacts.iter_mut().find(|c| c.id == record.id) {
+            c.flags = record.flags;
+            c.noticed = record.noticed;
+            c.sighting = record.sighting;
+            c.concern = record.concern;
+            c.hostility = record.hostility;
+            c.tolerance = record.tolerance;
+            c.alarm = record.alarm;
+            c.threat = record.threat;
+            c.concern_target = record.concern_target;
+            c.unreachable_until_ms = record.unreachable_until_ms;
+            c.soothe = record.soothe;
+            c.seen = record.seen;
+            c.dead = record.dead;
+            return;
+        }
+        if self.contacts.len() < contacts::MOST_CONTACTS {
+            self.contacts.push(record);
+        } else if let Some(i) = contacts::admit(&self.contacts, &record) {
+            self.contacts[i] = record;
+        }
+    }
+
+    /// Clears this tick's sighting of `id`: the perception did not see it,
+    /// so the integration must not treat it as seen.
+    fn unseen(&mut self, id: u64) {
+        if let Some(c) = self.contacts.iter_mut().find(|c| c.id == id) {
+            c.seen = 0.0;
+            c.sighting = 0.0;
+            c.concern_target = 0.0;
+            c.stamp = 0.0;
+        }
+    }
+}
+
+/// A character as one perception pass sees it this tick.
+#[derive(Debug, Clone)]
+struct Sensed {
+    entity: Entity,
+    id: u64,
+    character_id: u32,
+    position_cm: Vec3,
+    forward: Vec3,
+    condition: u32,
+    asleep: bool,
+    invisible: bool,
+    phase: f32,
+    in_combat: bool,
+    stepping: bool,
+    speed: f32,
+    contacts: Vec<Contact>,
+    roles: Option<Roles>,
+}
+
+/// Runs one perception pass for every brain over every character it can
+/// sense ([`combatant::perceive`]), with the observed character's own
+/// contacts, the role-derived attitude, the relations' trust in the threat
+/// estimate and the observer's active mind effects (none in the running
+/// game). It then writes the words the contact integration reads
+/// ([`ContactRecord::of`]) and clears this tick's sighting of a character
+/// the brain did not see.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn perceive_all(
+    db: Option<Res<RoleDatabase>>,
+    ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<Motions>>,
+    players: Query<Entity, With<RatedPlayer>>,
+    bodies: Query<&CharacterBody>,
+    mut chars: ParamSet<(
+        Query<(
+            Entity,
+            &GlobalTransform,
+            &Fighter,
+            &Condition,
+            Option<&Combatant>,
+            Option<&Mind>,
+            Option<&crate::Duellist>,
+            Option<&Animator>,
+            Option<&Unseen>,
+            Option<&CharacterId>,
+            Option<&Roles>,
+            Option<&ChildOf>,
+        )>,
+        Query<(
+            Entity,
+            &mut Npc,
+            &mut Combatant,
+            Option<&crate::Duellist>,
+            Option<&Mind>,
+            Option<&GlobalTransform>,
+            Option<&Fighter>,
+            Option<&Roles>,
+            Option<&mut Relations>,
+        )>,
+    )>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let candidates: Vec<Sensed> = chars
+        .p0()
+        .iter()
+        .map(
+            |(
+                entity,
+                gt,
+                _fighter,
+                condition,
+                combatant,
+                mind,
+                duellist,
+                anim,
+                unseen,
+                id,
+                roles,
+                child,
+            )| {
+                let phase = anim
+                    .zip(motions.as_deref())
+                    .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
+                    .unwrap_or(0.0);
+                let speed = child
+                    .and_then(|c| bodies.get(c.parent()).ok())
+                    .map_or(0.0, |b| {
+                        b.walked().length() / (exa_physics::body::GAME_MS_PER_TICK as f32 * 0.001)
+                    });
+                Sensed {
+                    entity,
+                    id: entity.to_bits(),
+                    character_id: id.map_or(0, |i| i.0),
+                    position_cm: gt.translation() * 100.0,
+                    forward: gt.rotation() * Vec3::Z,
+                    condition: condition.0,
+                    asleep: mind.is_some_and(|m| m.asleep),
+                    invisible: unseen.is_some(),
+                    phase,
+                    in_combat: combatant.is_some_and(|c| c.in_combat)
+                        || duellist.is_some_and(|d| d.fighting()),
+                    stepping: combatant.is_some_and(|c| c.movement.queued_step != 0),
+                    speed,
+                    contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
+                    roles: roles.cloned(),
+                }
+            },
+        )
+        .collect();
+    let player = players.iter().next();
+    let effects: &[combatant::Effect] = &[];
+    for (entity, mut npc, mut combatant, duellist, mind, gt, fighter, roles, mut relations) in
+        &mut chars.p1()
+    {
+        let target = duellist.map(|d| d.target).or(player);
+        let position_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
+        let forward = gt.map_or(Vec3::Z, |g| g.rotation() * Vec3::Z);
+        let observer = Observer {
+            entity,
+            position_cm,
+            look: forward,
+            forward,
+            asleep: mind.is_some_and(|m| m.asleep),
+            perception: fighter.map_or(1.0, |f| f.stats.perception),
+            calm: npc.integration.decay,
+            aggression: npc.personality.map_or(0.0, |p| p.restraint),
+            mind_aggression: -npc.traits[2],
+            resist_mind: false,
+            target,
+        };
+        for sensed in &candidates {
+            if sensed.entity == entity {
+                continue;
+            }
+            let index = combatant.contact_index(sensed.entity);
+            let observed = Observed {
+                entity: sensed.entity,
+                position_cm: sensed.position_cm,
+                look: sensed.forward,
+                forward: sensed.forward,
+                condition: sensed.condition,
+                invisible: sensed.invisible,
+                hidden: false,
+                mask: None,
+                asleep: sensed.asleep,
+                removed: false,
+                phase: sensed.phase,
+                in_combat: sensed.in_combat,
+                stepping: sensed.stepping,
+                poised: false,
+                speed: sensed.speed,
+            };
+            // The role database's attitude toward the observed character.
+            let raw = match (
+                db.as_deref(),
+                roles,
+                relations.as_deref_mut(),
+                sensed.roles.as_ref(),
+            ) {
+                (Some(db), Some(roles), Some(relations), Some(theirs)) => {
+                    let partner = Partner {
+                        id: sensed.character_id,
+                        roles: theirs,
+                        former: None,
+                    };
+                    let rating = roles::attitude(&db.book, roles, relations, &partner, db.locale);
+                    Attitude {
+                        value: rating.attitude,
+                        tolerance: rating.tolerance,
+                    }
+                }
+                _ => Attitude::default(),
+            };
+            // The observer's trust in each third party the observed knows,
+            // as the relations keep it (the raw Trust the mind powers then
+            // override).
+            let trusts: Vec<(Entity, f32)> = match (db.as_deref(), relations.as_deref_mut()) {
+                (Some(db), Some(relations)) => sensed
+                    .contacts
+                    .iter()
+                    .filter(|c| c.kind == 1 && c.character != entity)
+                    .filter_map(|c| {
+                        let third = candidates.iter().find(|s| s.entity == c.character)?;
+                        let their_roles = third.roles.as_ref()?;
+                        let partner = Partner {
+                            id: third.character_id,
+                            roles: their_roles,
+                            former: None,
+                        };
+                        Some((
+                            third.entity,
+                            relations.last_attitude(&partner, now, db.locale),
+                        ))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let trust_of = |third: Entity| {
+                let raw = trusts
+                    .iter()
+                    .find(|(e, _)| *e == third)
+                    .map_or(0.0, |(_, v)| *v);
+                combatant::trust(third, raw, false, effects)
+            };
+            let sight = combatant::perceive(
+                &observer,
+                &observed,
+                &sensed.contacts,
+                &mut combatant.contacts,
+                index,
+                raw,
+                &trust_of,
+                effects,
+                u64::from(now),
+            );
+            let seen = sight.seen;
+            let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
+            record.dead = observed.condition & combatant::CONDITION_DEAD != 0;
+            if seen {
+                npc.absorb(record);
+            } else {
+                npc.unseen(sensed.id);
+            }
+        }
+        combatant.target = target;
     }
 }
 
@@ -500,5 +783,111 @@ mod tests {
         assert!(npc.search.is_some());
         npc.apply(&d, &held(&[9]), 0);
         assert!(npc.search.is_none());
+    }
+
+    /// An NPC brain and a player two metres apart, the brain's duellist
+    /// targeting the player.
+    fn perception() -> (App, Entity, Entity) {
+        let mut app = App::new();
+        app.add_systems(Update, perceive_all);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+                RatedPlayer,
+                Roles::default(),
+                CharacterId(PLAYER_ID),
+            ))
+            .id();
+        let npc = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                Roles::default(),
+                Relations::default(),
+                CharacterId(2),
+            ))
+            .id();
+        (app, player, npc)
+    }
+
+    /// A visible player fills the brain's contact with the perception's
+    /// words (the sighting and this tick's closeness); an unseen one
+    /// leaves them clear.
+    #[test]
+    fn perception_fills_the_contact_words_of_a_visible_player() {
+        let (mut app, player, npc) = perception();
+        app.update();
+        {
+            let w = app.world();
+            let brain = w.get::<Npc>(npc).unwrap();
+            let c = brain
+                .contacts
+                .iter()
+                .find(|c| c.id == player.to_bits())
+                .expect("the player is a contact");
+            assert!(c.sighting > 0.0, "{}", c.sighting);
+            assert!(c.seen > 0.0, "{}", c.seen);
+            assert!((c.seen - (1.0 - 200.0 / 1200.0)).abs() < 1e-5);
+        }
+        app.world_mut().entity_mut(player).insert(Unseen);
+        app.update();
+        let brain = app.world().get::<Npc>(npc).unwrap();
+        let c = brain
+            .contacts
+            .iter()
+            .find(|c| c.id == player.to_bits())
+            .unwrap();
+        assert_eq!((c.sighting, c.seen), (0.0, 0.0));
+    }
+
+    /// The attitude the perception writes is the role database's rating:
+    /// the skeleton's −100 toward the human player, blended over its half
+    /// share to −50.
+    #[test]
+    fn perception_takes_the_role_attitude_and_relations_trust() {
+        let mut app = App::new();
+        app.insert_resource(db()).add_systems(Update, perceive_all);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+                Roles::new_character(&db().book, 0),
+                CharacterId(PLAYER_ID),
+            ))
+            .id();
+        let npc = app
+            .world_mut()
+            .spawn((
+                held(&[9, 2]),
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Relations::default(),
+                CharacterId(2),
+            ))
+            .id();
+        app.update();
+        let brain = app.world().get::<Npc>(npc).unwrap();
+        let c = brain
+            .contacts
+            .iter()
+            .find(|c| c.id == player.to_bits())
+            .unwrap();
+        assert!((c.soothe - -50.0).abs() < 1e-6, "{}", c.soothe);
+        assert_eq!(c.tolerance, 0.0);
     }
 }
