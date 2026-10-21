@@ -132,8 +132,7 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 /// Moves a colour toward its luma by `t` (0 keeps it, 1 makes it grey).
 pub fn desaturate(c: [f32; 3], t: f32) -> [f32; 3] {
-    let luma = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
-    c.map(|x| x + (luma - x) * t)
+    exa_formats::colour::desaturate(c, t)
 }
 
 #[cfg(test)]
