@@ -1,52 +1,95 @@
-//! The manual window and the one-time tips (`XA_HelpSystem`): the manual's
-//! topic list and page from `manualkm.fds` or `manualcn.fds` by input mode,
-//! and tip popups whose shown bits live in the settings store.
+//! The manual window and the one-time tips (`XA_HelpSystem`).
 //!
-//! The original's tip call tests the tip's bit against a mask read once
-//! from the settings store; a tip already in the mask is not shown again,
-//! otherwise a 504-unit-wide form is made with the tip's title and text, the
-//! text box laid out at the form's width less 0x18, and the form's height is
-//! the text's height plus 0x60. The manual opens a 0x2fc × 0x1e6 form titled
-//! "MANUAL" with a topic list 0x90 wide and a text box below it, selects
-//! topic 1 and scrolls by the stick words −step and +step.
+//! The manual opens `manualkm.fds`, or `manualcn.fds` in controller mode:
+//! a pack whose table of contents (32-byte records: a 16-byte name, the
+//! entry's place and size, and a word at 0x1c) lists the pages. A record's
+//! name, title-cased, is shown at the list position its 0x1c word gives;
+//! picking a list entry shows its record's text without the final byte.
+//! The window is a 0x2fc × 0x1e6 form titled "MANUAL" with the topic list
+//! on the left and a text box on the right.
 //!
-//! The tip texts and the manual's records are game data, so the tables are
-//! supplied by the caller; the parsing of the topic directory's 0x20-byte
-//! records (a 16-byte title and an index word at +0x1c) is total and tested
-//! on synthetic bytes. Evidence: the tip call, the manual constructor, its
-//! topic selection, its close, the tip's close hook and its destructor.
+//! A tip is a bit of a mask the settings store keeps. A tip whose bit is in
+//! the mask is not shown; otherwise a 504-pixel-wide form is made with the
+//! tip's title, a "Continue" button and a "Don't show again" box (already
+//! ticked for some tips), and a text box with the tip's text; the form is
+//! as tall as the text measures plus 0x60. The tip texts are game prose and
+//! are supplied by the caller; their titles and the ticked flags are here.
+//! Writing the mask back is the tip form's close, which is not part of this
+//! unit.
 
+use crate::form::{ClientRect, DEFAULT_BORDER, attribute, style};
+use crate::gui_controls::state as control_state;
 use crate::gui_font::GuiFont;
-use crate::gui_text::count_lines;
-use crate::item_view::ItemView;
+use crate::item_view::{ItemView, ViewEntry, style as view_style};
+use crate::text_box::fit_height;
 
 /// The manual window's title.
 pub const MANUAL_TITLE: &str = "MANUAL";
 /// The two manual files by input mode.
 pub const MANUAL_KEYBOARD: &str = "manualkm.fds";
 pub const MANUAL_CONTROLLER: &str = "manualcn.fds";
-/// The manual form's size in units.
+/// The manual form's width and height in pixels.
 pub const MANUAL_SIZE: (i32, i32) = (0x2fc, 0x1e6);
-/// The manual's topic-list width in units.
+/// The topic list: at x 0 and y 0x14, 0x90 wide, the form's height less
+/// 0x24 tall.
+pub const MANUAL_LIST_TOP: i32 = 0x14;
 pub const MANUAL_LIST_WIDTH: i32 = 0x90;
-/// The list's inset from the form's edges.
-pub const MANUAL_LIST_INSET: i32 = 0x14;
-/// The text box's inset and line spacing.
-pub const MANUAL_TEXT_INSET: i32 = 0x14;
-pub const MANUAL_LINE_STEP: i32 = 8;
-/// The tip form's width in units and its extra height under the text.
+pub const MANUAL_LIST_HEIGHT_LESS: i32 = 0x24;
+/// The topic list's view style: one full-row entry per line, no icon
+/// space.
+pub const MANUAL_LIST_STYLE: u32 =
+    view_style::LIST | view_style::FULL_ROW | view_style::NO_ICON_SPACE;
+/// The page's text box: at x 0x94 and y 0x14, as wide as the form less
+/// its two borders and 0x94, the form's height less 0x28 tall.
+pub const MANUAL_TEXT_LEFT: i32 = 0x94;
+pub const MANUAL_TEXT_TOP: i32 = 0x14;
+pub const MANUAL_TEXT_HEIGHT_LESS: i32 = 0x28;
+/// The style bits the manual and the tip add to their forms: centred in x
+/// and y, and the 0x3000 bits.
+pub const POPUP_STYLE: u32 = style::CENTRE_X | style::CENTRE_Y | 0x3000;
+/// The attribute bits the manual adds: the kept-on-top layer.
+pub const MANUAL_ATTRIBUTES: u32 = attribute::UPPER_LAYER;
+/// The bits the manual adds to the form's option word (the word after
+/// the attributes; its bits are the form class's).
+pub const MANUAL_OPTIONS: u32 = 0x120;
+/// The attribute bits a tip adds: the kept-on-top layer and 0x8000.
+pub const TIP_ATTRIBUTES: u32 = attribute::UPPER_LAYER | 0x8000;
+/// The option word a tip's form is given.
+pub const TIP_OPTIONS: u32 = 0x100;
+/// The tip form's width in pixels.
 pub const TIP_WIDTH: i32 = 0x1f8;
-pub const TIP_EXTRA_HEIGHT: i32 = 0x60;
-/// The tip text box's inset from the form's width.
+/// The tip's text is measured at the form's width less this.
 pub const TIP_TEXT_INSET: i32 = 0x18;
-/// The tip's state and style words.
-pub const TIP_STATE: u32 = 0x9000;
-pub const TIP_STYLE: u32 = 0x100;
-/// The manual's state and style words.
-pub const MANUAL_STATE: u32 = 0x1000;
-pub const MANUAL_STYLE: u32 = 0x120;
-/// The manual text box's line spacing word.
-pub const MANUAL_TEXT_STEP: i32 = 8;
+/// The tip form's height is the measured text's plus this.
+pub const TIP_EXTRA_HEIGHT: i32 = 0x60;
+/// The tip's text box is the form's height less this tall.
+pub const TIP_TEXT_HEIGHT_LESS: i32 = 0x48;
+/// The tip form's two controls: a button and a check box.
+pub const TIP_CONTROLS: [&str; 2] = ["Continue", "Don't show again"];
+/// The state the check box is given when the tip's entry asks for it:
+/// on and lit.
+pub const TIP_PRESET_STATE: u32 = control_state::ON | control_state::LIT;
+/// The tips' titles, by bit.
+pub const TIP_TITLES: [&str; 9] = [
+    "Getting Started",
+    "Inventory",
+    "Matches",
+    "Trading",
+    "Manage Company",
+    "Manage",
+    "WARNING",
+    "Purchased Items",
+    "Tournaments",
+];
+/// Which tips start with "Don't show again" ticked, by bit.
+pub const TIP_PRESET: [bool; 9] = [true, true, false, false, false, false, false, true, false];
+
+/// The directory's record size.
+pub const TOPIC_RECORD: usize = 0x20;
+/// How many bytes of a record the title takes.
+pub const TOPIC_TITLE: usize = 0x10;
+/// Where a record's list-position word sits.
+pub const TOPIC_INDEX: usize = 0x1c;
 
 /// The file a manual opens for an input mode: the controller's file when
 /// the controller mode is set, else the keyboard and mouse file.
@@ -58,170 +101,191 @@ pub fn manual_file(controller: bool) -> &'static str {
     }
 }
 
-/// A tip's text, supplied by the caller from the game's table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tip {
-    pub title: Vec<u8>,
-    pub text: Vec<u8>,
-    /// The entry's own flag word (1 for the getting-started tip).
-    pub flag: u32,
+/// The topic list's rectangle (x, y, width, height) in a form `height`
+/// tall.
+pub fn manual_list_rect(height: i32) -> (i32, i32, i32, i32) {
+    (
+        0,
+        MANUAL_LIST_TOP,
+        MANUAL_LIST_WIDTH,
+        height - MANUAL_LIST_HEIGHT_LESS,
+    )
 }
 
-/// One 0x20-byte entry of the manual's topic directory: a title of up to
-/// 16 bytes, NUL-terminated, then padding and an index word at +0x1c.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The page text box's rectangle (x, y, width, height) in a form of the
+/// given size with the form base class's border.
+pub fn manual_text_rect(size: (i32, i32)) -> (i32, i32, i32, i32) {
+    (
+        MANUAL_TEXT_LEFT,
+        MANUAL_TEXT_TOP,
+        size.0 - (DEFAULT_BORDER << 1) - MANUAL_TEXT_LEFT,
+        size.1 - MANUAL_TEXT_HEIGHT_LESS,
+    )
+}
+
+/// A list entry's title from a record's first 16 bytes: cut at the first
+/// NUL, and a lower-case letter that starts a word (the first byte, or one
+/// after a space or an underscore) made upper case; nothing else changes.
+pub fn topic_title(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(TOPIC_TITLE);
+    let mut word = true;
+    for &byte in raw.iter().take(TOPIC_TITLE) {
+        if word && byte.is_ascii_lowercase() {
+            out.push(byte - 0x20);
+            word = false;
+            continue;
+        }
+        if byte == 0 {
+            break;
+        }
+        out.push(byte);
+        word = byte == b' ' || byte == b'_';
+    }
+    out
+}
+
+/// One entry of the manual's topic list: the title and the 1-based
+/// record it shows (0 for a list position no record named).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TopicRef {
     pub title: Vec<u8>,
-    pub index: u16,
+    pub record: u32,
 }
 
-/// The directory's record size.
-pub const TOPIC_RECORD: usize = 0x20;
-/// How many bytes of a record the title takes.
-pub const TOPIC_TITLE: usize = 0x10;
-/// Where a record's index word sits.
-pub const TOPIC_INDEX: usize = 0x1c;
-
-/// Parses the manual's topic directory: consecutive 0x20-byte records,
-/// each title cut at the first NUL and at sixteen bytes, and the
-/// little-endian word at +0x1c. A trailing partial record is ignored, so
-/// any byte slice parses.
-pub fn parse_topics(records: &[u8]) -> Vec<TopicRef> {
-    let mut topics = Vec::new();
-    for record in records.as_chunks::<TOPIC_RECORD>().0 {
-        let title_bytes = &record[..TOPIC_TITLE];
-        let end = title_bytes
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(TOPIC_TITLE);
-        let index = u16::from_le_bytes([record[TOPIC_INDEX], record[TOPIC_INDEX + 1]]);
-        topics.push(TopicRef {
-            title: title_bytes[..end].to_vec(),
-            index,
-        });
+/// Builds the topic list from the pack's table of contents (the records
+/// after the 8-byte header): as many entries as records, record `i` (from
+/// 0) filling the entry its low 16-bit word at 0x1c names with its title
+/// and the record number `i + 1`. A position past the list (which the
+/// original writes past its array) and a trailing partial record are
+/// skipped, so any byte slice parses.
+pub fn parse_topics(table: &[u8]) -> Vec<TopicRef> {
+    let records = table.as_chunks::<TOPIC_RECORD>().0;
+    let mut topics = vec![TopicRef::default(); records.len()];
+    for (number, record) in records.iter().enumerate() {
+        let position = usize::from(u16::from_le_bytes([
+            record[TOPIC_INDEX],
+            record[TOPIC_INDEX + 1],
+        ]));
+        if let Some(topic) = topics.get_mut(position) {
+            *topic = TopicRef {
+                title: topic_title(&record[..TOPIC_TITLE]),
+                record: number as u32 + 1,
+            };
+        }
     }
     topics
 }
 
-/// A source of the manual's page texts, keyed by the directory's index
-/// word. The original asks the loaded memory block library for the record;
-/// the text is its bytes.
+/// The pack's records, as the original's memory-block library holds them.
 pub trait ManualSource {
-    fn topic_text(&self, index: u16) -> Option<Vec<u8>>;
+    /// The bytes of the record at `index` (from 0), if it loads.
+    fn record(&self, index: usize) -> Option<Vec<u8>>;
 }
 
-/// The manual window's state: the topic list, the selected topic and the
+/// The manual window's state: the topic list, the record shown and the
 /// page's text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manual {
     pub topics: Vec<TopicRef>,
-    pub selected: i32,
-    /// The page's text; empty when nothing is selected or the record is
-    /// shorter than two bytes.
+    /// The 1-based record the page shows (0 before the first pick).
+    pub record: u32,
+    /// The page's text: the record without its final byte, empty when the
+    /// record does not load or has fewer than two bytes.
     pub text: Vec<u8>,
-    /// The text box's height in units (line spacing times the lines).
-    pub text_height: i32,
-    /// The flow's width in units, 8 by default.
-    pub line_step: i32,
-    pub shown: bool,
-    pub list_style: u32,
+    /// The page's text was found, so the text box lays itself out again
+    /// with it (the set-text call's flag).
+    pub realign: bool,
+    /// The word the manual was opened with, kept on the form.
+    pub argument: i32,
 }
 
 impl Manual {
-    /// The manual form: topics loaded from the directory and no page yet.
-    pub fn new(topics: Vec<TopicRef>) -> Self {
+    /// The manual form over a topic list, with no page yet.
+    pub fn new(topics: Vec<TopicRef>, argument: i32) -> Self {
         Self {
             topics,
-            selected: 0,
+            record: 0,
             text: Vec::new(),
-            text_height: 0,
-            line_step: MANUAL_TEXT_STEP,
-            shown: false,
-            list_style: 0x9100_0000,
+            realign: false,
+            argument,
         }
     }
 
-    /// The topic list's item view: the topics' titles as entries, the
-    /// original's style (a list, icons off).
-    pub fn list(&self, unit: i32, client: crate::form::ClientRect) -> ItemView {
-        let mut view = ItemView::new(unit, crate::item_view::style::LIST, client);
+    /// The manual opens: it is built and topic 1 is picked. (A file that
+    /// does not open makes no window; the caller does not build one.)
+    pub fn open(topics: Vec<TopicRef>, argument: i32, source: &impl ManualSource) -> Self {
+        let mut manual = Self::new(topics, argument);
+        manual.select(1, source);
+        manual
+    }
+
+    /// The topic list's item view: [`MANUAL_LIST_STYLE`], one entry per
+    /// topic standing for its record, measured, then entry 1 selected.
+    pub fn list(&self, unit: i32, client: ClientRect, font: &GuiFont) -> ItemView {
+        let mut view = ItemView::new(unit, MANUAL_LIST_STYLE, client);
         for topic in &self.topics {
-            view.entries.push(crate::item_view::ViewEntry {
+            view.entries.push(ViewEntry {
                 name: topic.title.clone(),
                 icon: 0,
                 flags: 0,
-                item: u32::from(topic.index),
+                item: topic.record,
             });
         }
-        view.measure(&crate::gui_font::RAYFORM_10);
+        view.measure(font);
+        view.selected = 1;
         view
     }
 
-    /// The manual opens: topic 1 is selected once the form shows.
-    pub fn open(&mut self, source: &impl ManualSource, font: &GuiFont, width: i32) -> i32 {
-        self.shown = true;
-        self.select(1, source, font, width)
-    }
-
-    /// Selects a topic: a topic between 1 and the count keeps its index,
-    /// asks the source for its text and lays the text box out. A missing
-    /// record or a record shorter than two bytes clears the page. Returns
-    /// the selected index, or 0 when the topic is out of range.
-    pub fn select(
-        &mut self,
-        topic: i32,
-        source: &impl ManualSource,
-        font: &GuiFont,
-        width: i32,
-    ) -> i32 {
-        if topic < 1 || topic > self.topics.len() as i32 {
-            return 0;
+    /// Picks a list entry: one from 1 to the record count shows its
+    /// record's text; any other does nothing. Returns whether it picked.
+    pub fn select(&mut self, topic: i32, source: &impl ManualSource) -> bool {
+        if topic < 1 || topic as usize > self.topics.len() {
+            return false;
         }
-        self.selected = topic;
-        let index = self.topics[topic as usize - 1].index;
-        match source.topic_text(index) {
-            Some(text) if text.len() >= 2 => {
-                self.text = text;
-                let lines = count_lines(font, &self.text, width);
-                self.text_height = lines * self.line_step;
+        self.record = self.topics[topic as usize - 1].record;
+        let bytes = (self.record as usize)
+            .checked_sub(1)
+            .and_then(|index| source.record(index));
+        match bytes {
+            Some(bytes) if bytes.len() > 1 => {
+                self.text = bytes[..bytes.len() - 1].to_vec();
+                self.realign = true;
             }
             _ => {
                 self.text.clear();
-                self.text_height = 0;
+                self.realign = false;
             }
         }
-        self.selected
+        true
     }
 
-    /// The manual closes: the window is dropped and the topic list with it.
-    pub fn close(&mut self) {
-        self.shown = false;
-        self.text.clear();
-        self.selected = 0;
-    }
-
-    /// A stick word scrolls the text box: the original forwards 0x4002 as
-    /// −step and 0x8002 as +step.
-    pub fn scroll_word(word: u32) -> Option<i32> {
-        match word {
-            0x4002 => Some(-MANUAL_LINE_STEP),
-            0x8002 => Some(MANUAL_LINE_STEP),
-            _ => None,
-        }
+    /// The topic list's pick callback: the list's selected entry is shown,
+    /// then the text box takes the focus with the control −1.
+    pub fn list_picked(&mut self, selected: i32, source: &impl ManualSource) -> i32 {
+        self.select(selected, source);
+        -1
     }
 }
 
-/// The settings-store mask of the tips already shown.
+/// The manual's close call: an open manual closes and the slot empties.
+/// The close runs the manual's close hook, which also empties the slot and
+/// clears a flag of the game's main object. Returns whether a manual was
+/// open.
+pub fn close_manual(slot: &mut Option<Manual>) -> bool {
+    slot.take().is_some()
+}
+
+/// The settings-store mask of the tips not to show again.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TipStore {
     pub shown: u32,
-    /// Whether the mask was read from the settings file (the original's
-    /// once-only load).
+    /// The mask has been read from the settings store (once only).
     pub loaded: bool,
 }
 
 impl TipStore {
-    /// Reads the stored mask once; later calls keep what the store has.
+    /// Reads the stored mask the first time; a missing value keeps the
+    /// mask as it is. Later calls do nothing.
     pub fn load(&mut self, stored: Option<u32>) {
         if self.loaded {
             return;
@@ -232,70 +296,114 @@ impl TipStore {
         }
     }
 
-    /// Whether a tip has still to be shown.
+    /// Whether a tip may show: none of its bits is in the mask.
     pub fn should_show(&self, tip: u32) -> bool {
         tip & self.shown == 0
     }
 
-    /// Marks a tip shown.
+    /// Adds a tip's bits to the mask (what the tip form's close does when
+    /// "Don't show again" is ticked; that close is outside this unit).
     pub fn mark(&mut self, tip: u32) {
         self.shown |= tip;
     }
 }
 
-/// The index the tip's title and text take: the bit's position for a
-/// single-bit tip, else the last entry (31), as the original's scan does.
-pub fn tip_index(tip: u32) -> usize {
-    for bit in 0..32 {
-        if 1u32 << bit == tip {
-            return bit;
-        }
-    }
-    31
+/// A tip's entry: its title and text and whether its check box starts
+/// ticked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tip {
+    pub title: Vec<u8>,
+    pub text: Vec<u8>,
+    pub preset: bool,
 }
 
-/// The popup a tip makes: its title and text, the form's width and height
-/// (the text box at the width less 0x18, the form's height the text's
-/// height plus 0x60) and the entry's flag.
+impl Tip {
+    /// The entry for `bit` with the caller's text and the original's title
+    /// and preset; `None` past the nine tips.
+    pub fn for_bit(bit: usize, text: Vec<u8>) -> Option<Self> {
+        Some(Self {
+            title: TIP_TITLES.get(bit)?.as_bytes().to_vec(),
+            text,
+            preset: TIP_PRESET[bit],
+        })
+    }
+}
+
+/// The entry a tip takes: the bit's position when the tip is a single bit
+/// from 0 to 30. Bit 31 never matches (its shifted value is compared sign
+/// extended) and neither does any other word; the original then reads an
+/// index it never set, which Exarust refuses.
+pub fn tip_index(tip: u32) -> Option<usize> {
+    (0..31).find(|&bit| 1u32 << bit == tip)
+}
+
+/// The popup a tip makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TipPlan {
+    /// The tip's bit word, kept on the form.
+    pub tip: u32,
+    pub index: usize,
     pub title: Vec<u8>,
     pub text: Vec<u8>,
     pub width: i32,
+    /// The measured text's height plus [`TIP_EXTRA_HEIGHT`].
     pub height: i32,
-    pub flag: u32,
-    /// The atlas index the tip would take.
-    pub index: usize,
+    /// The text box: at the origin, the form's width less its two borders
+    /// wide and its height less [`TIP_TEXT_HEIGHT_LESS`] tall.
+    pub text_rect: (i32, i32, i32, i32),
+    /// The check box's state, when the entry presets it.
+    pub check_state: Option<u32>,
 }
 
-/// Plans a tip popup: the table's entry at [`tip_index`], its text wrapped
-/// at `width − 0x18` in `font`; a table too short has no popup. The last
-/// entry (index 31) is used when the bit is not single.
-pub fn tip_plan(tip: u32, table: &[Tip], font: &GuiFont) -> Option<TipPlan> {
-    let index = tip_index(tip);
+fn no_pictures(_: &[u8]) -> Option<(u16, u16)> {
+    None
+}
+
+/// Plans a tip popup: the entry at [`tip_index`], its text measured with
+/// markup at `TIP_WIDTH − 0x18` in `font`. No popup for a tip that is not a
+/// single low bit or has no entry in `table`.
+pub fn tip_plan(tip: u32, table: &[Tip], font: &GuiFont, unit: i32) -> Option<TipPlan> {
+    let index = tip_index(tip)?;
     let entry = table.get(index)?;
-    let text_width = TIP_WIDTH - TIP_TEXT_INSET;
-    let lines = count_lines(font, &entry.text, text_width);
-    let height = lines * font.line_height + TIP_EXTRA_HEIGHT;
+    let measured = fit_height(
+        &entry.text,
+        TIP_WIDTH - TIP_TEXT_INSET,
+        0,
+        font,
+        unit,
+        &no_pictures,
+    );
+    let height = measured + TIP_EXTRA_HEIGHT;
     Some(TipPlan {
+        tip,
+        index,
         title: entry.title.clone(),
         text: entry.text.clone(),
         width: TIP_WIDTH,
         height,
-        flag: entry.flag,
-        index,
+        text_rect: (
+            0,
+            0,
+            TIP_WIDTH - (DEFAULT_BORDER << 1),
+            height - TIP_TEXT_HEIGHT_LESS,
+        ),
+        check_state: entry.preset.then_some(TIP_PRESET_STATE),
     })
 }
 
-/// The tip call: a tip already in the store's mask shows nothing; otherwise
-/// the store marks it and the plan is returned.
-pub fn show_tip(store: &mut TipStore, tip: u32, table: &[Tip], font: &GuiFont) -> Option<TipPlan> {
+/// The tip call: a tip with a bit in the store's mask shows nothing;
+/// otherwise its popup is planned. The call does not change the mask.
+pub fn show_tip(
+    store: &TipStore,
+    tip: u32,
+    table: &[Tip],
+    font: &GuiFont,
+    unit: i32,
+) -> Option<TipPlan> {
     if !store.should_show(tip) {
         return None;
     }
-    let plan = tip_plan(tip, table, font)?;
-    store.mark(tip);
-    Some(plan)
+    tip_plan(tip, table, font, unit)
 }
 
 #[cfg(test)]
@@ -303,136 +411,171 @@ mod tests {
     use super::*;
     use crate::gui_font::RAYFORM_10;
 
+    /// Records 0, 1 and 2: a page, a one-byte record, and none.
     struct Source;
 
     impl ManualSource for Source {
-        fn topic_text(&self, index: u16) -> Option<Vec<u8>> {
+        fn record(&self, index: usize) -> Option<Vec<u8>> {
             match index {
-                3 => Some(b"First paragraph.\rSecond line.".to_vec()),
-                4 => Some(vec![0]),
+                0 => Some(b"First paragraph.\r\nSecond line.\0".to_vec()),
+                1 => Some(vec![0]),
                 _ => None,
             }
         }
     }
 
-    fn records() -> Vec<u8> {
+    /// Three records: "welcome" listed second, "short_one" first, and
+    /// "missing topic!" third.
+    fn table() -> Vec<u8> {
         let mut bytes = vec![0u8; TOPIC_RECORD * 3];
-        bytes[..7].copy_from_slice(b"Welcome");
-        bytes[TOPIC_INDEX] = 3;
-        bytes[TOPIC_INDEX + 1] = 0;
-        bytes[TOPIC_RECORD..TOPIC_RECORD + 5].copy_from_slice(b"Short");
-        bytes[TOPIC_RECORD + TOPIC_INDEX] = 4;
-        bytes[TOPIC_RECORD + TOPIC_INDEX + 1] = 0;
-        bytes[TOPIC_RECORD * 2..TOPIC_RECORD * 2 + 14].copy_from_slice(b"Missing topic!");
-        bytes[TOPIC_RECORD * 2 + TOPIC_INDEX] = 9;
-        // A hostile record: no NUL and a cut title, and a partial record.
+        bytes[..7].copy_from_slice(b"welcome");
+        bytes[TOPIC_INDEX] = 1;
+        bytes[TOPIC_RECORD..TOPIC_RECORD + 9].copy_from_slice(b"short_one");
+        bytes[TOPIC_RECORD + TOPIC_INDEX] = 0;
+        bytes[TOPIC_RECORD * 2..TOPIC_RECORD * 2 + 14].copy_from_slice(b"missing topic!");
+        bytes[TOPIC_RECORD * 2 + TOPIC_INDEX] = 2;
+        // The high half of the dword is not part of the position.
+        bytes[TOPIC_RECORD * 2 + TOPIC_INDEX + 2] = 0x7f;
+        // A trailing partial record.
         bytes.extend_from_slice(&[0x41; 7]);
         bytes
     }
 
     #[test]
-    fn the_manual_file_follows_the_input_mode() {
+    fn the_manual_file_and_layout_follow_the_original() {
         assert_eq!(manual_file(false), "manualkm.fds");
         assert_eq!(manual_file(true), "manualcn.fds");
-        assert_eq!((MANUAL_SIZE, MANUAL_LIST_WIDTH), ((0x2fc, 0x1e6), 0x90));
         assert_eq!(MANUAL_TITLE, "MANUAL");
+        assert_eq!(MANUAL_SIZE, (764, 486));
+        assert_eq!(manual_list_rect(486), (0, 0x14, 0x90, 486 - 0x24));
+        // 764 − 2 · 2 − 0x94 = 612.
+        assert_eq!(manual_text_rect(MANUAL_SIZE), (0x94, 0x14, 612, 446));
+        assert_eq!(MANUAL_LIST_STYLE, 0x0910_0000);
+        assert_eq!(POPUP_STYLE, 0xb800);
+        assert_eq!(MANUAL_ATTRIBUTES, 0x1000);
+        assert_eq!(TIP_ATTRIBUTES, 0x9000);
     }
 
     #[test]
-    fn the_topic_directory_parses_and_cuts_titles() {
-        let topics = parse_topics(&records());
+    fn titles_capitalise_word_starts_only() {
+        assert_eq!(topic_title(b"short_one\0junk"), b"Short_One");
+        assert_eq!(topic_title(b"missing topic!"), b"Missing Topic!");
+        assert_eq!(topic_title(b"mIXED case"), b"MIXED Case");
+        assert_eq!(topic_title(b"2nd go"), b"2nd Go");
+        // Sixteen bytes at most, even without a NUL.
+        assert_eq!(topic_title(&[b'a'; 20]).len(), TOPIC_TITLE);
+    }
+
+    #[test]
+    fn the_directory_places_each_record_at_its_position() {
+        let topics = parse_topics(&table());
         assert_eq!(topics.len(), 3);
         assert_eq!(
             topics[0],
             TopicRef {
-                title: b"Welcome".to_vec(),
-                index: 3
+                title: b"Short_One".to_vec(),
+                record: 2
             }
         );
-        assert_eq!(topics[1].title, b"Short");
-        assert_eq!(topics[1].index, 4);
-        assert_eq!(topics[2].title, b"Missing topic!");
-        assert_eq!(topics[2].index, 9);
-        // The seven trailing bytes are a partial record and are ignored.
-        assert_eq!(parse_topics(&[0xff; 7]).len(), 0);
-        assert!(parse_topics(&[]).is_empty());
-        // A title is cut at sixteen bytes even without a NUL.
-        let mut record = vec![0x41u8; TOPIC_RECORD];
-        record[TOPIC_INDEX] = 1;
-        assert_eq!(parse_topics(&record)[0].title.len(), TOPIC_TITLE);
+        assert_eq!(topics[1].title, b"Welcome");
+        assert_eq!(topics[1].record, 1);
+        assert_eq!(topics[2].record, 3);
+        // A position past the list is skipped; its slot stays empty.
+        let mut lone = vec![0u8; TOPIC_RECORD];
+        lone[TOPIC_INDEX] = 5;
+        assert_eq!(parse_topics(&lone), vec![TopicRef::default()]);
+        assert!(parse_topics(&[0xff; 7]).is_empty());
     }
 
     #[test]
-    fn the_manual_selects_a_topic_and_clears_a_short_record() {
-        let topics = parse_topics(&records());
-        let mut manual = Manual::new(topics);
-        assert_eq!(manual.open(&Source, &RAYFORM_10, 200), 1);
-        assert!(manual.shown);
-        // Topic 1's directory index is 3, whose record holds the page.
-        assert_eq!(manual.text, b"First paragraph.\rSecond line.");
-        assert!(manual.text_height > 0);
-        // Topic 2's index 4 has a one-byte record: the page is cleared.
-        assert_eq!(manual.select(2, &Source, &RAYFORM_10, 200), 2);
+    fn the_manual_shows_a_records_text_without_its_last_byte() {
+        let mut manual = Manual::open(parse_topics(&table()), 0, &Source);
+        // Entry 1 is "short_one", record 2: a one-byte record, no page.
+        assert_eq!(manual.record, 2);
+        assert!(manual.text.is_empty() && !manual.realign);
+        // Entry 2 is "welcome", record 1: its text without the NUL.
+        assert!(manual.select(2, &Source));
+        assert_eq!(manual.text, b"First paragraph.\r\nSecond line.");
+        assert!(manual.realign);
+        // Entry 3, record 3, does not load: the page clears.
+        assert_eq!(manual.list_picked(3, &Source), -1);
+        assert_eq!(manual.record, 3);
         assert!(manual.text.is_empty());
-        assert_eq!(manual.text_height, 0);
-        // Topic 1 again.
-        assert_eq!(manual.select(1, &Source, &RAYFORM_10, 200), 1);
-        assert_eq!(manual.text, b"First paragraph.\rSecond line.");
-        let lines = count_lines(&RAYFORM_10, &manual.text, 200);
-        assert_eq!(manual.text_height, lines * MANUAL_TEXT_STEP);
-        assert!(lines >= 2);
-        // Out of range selects nothing.
-        assert_eq!(manual.select(0, &Source, &RAYFORM_10, 200), 0);
-        assert_eq!(manual.select(4, &Source, &RAYFORM_10, 200), 0);
-        assert_eq!(Manual::scroll_word(0x4002), Some(-8));
-        assert_eq!(Manual::scroll_word(0x8002), Some(8));
-        assert_eq!(Manual::scroll_word(0x2002), None);
-        manual.close();
-        assert!(!manual.shown);
-        assert_eq!(manual.selected, 0);
+        // Out of range picks nothing.
+        assert!(!manual.select(0, &Source));
+        assert!(!manual.select(4, &Source));
+        assert_eq!(manual.record, 3);
+        let mut slot = Some(manual);
+        assert!(close_manual(&mut slot));
+        assert!(!close_manual(&mut slot));
     }
 
     #[test]
-    fn a_tip_is_shown_once_and_then_marked() {
-        let mut table = vec![
-            Tip {
-                title: b"Tip zero".to_vec(),
-                text: b"First tip.".to_vec(),
-                flag: 1,
-            };
-            32
-        ];
-        table[3].title = b"Third".to_vec();
-        table[3].text = b"A longer third tip that wraps at the tip width.".to_vec();
-        table[3].flag = 0;
+    fn the_topic_list_is_a_full_row_list_starting_at_entry_one() {
+        let manual = Manual::new(parse_topics(&table()), 0);
+        let client = ClientRect {
+            left: 0,
+            top: 0,
+            right: 0x90,
+            bottom: 400,
+        };
+        let view = manual.list(4, client, &RAYFORM_10);
+        assert_eq!(view.style, MANUAL_LIST_STYLE);
+        assert_eq!(view.entries.len(), 3);
+        assert_eq!(view.entries[0].name, b"Short_One");
+        assert_eq!(view.entries[0].item, 2);
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn a_tip_shows_while_its_bit_is_not_in_the_mask() {
+        let table: Vec<Tip> = (0..TIP_TITLES.len())
+            .map(|bit| Tip::for_bit(bit, b"A tip's text.".to_vec()).unwrap())
+            .collect();
+        assert!(Tip::for_bit(9, Vec::new()).is_none());
         let mut store = TipStore::default();
         store.load(None);
-        assert!(store.should_show(1 << 3));
-        let plan = show_tip(&mut store, 1 << 3, &table, &RAYFORM_10).unwrap();
-        assert_eq!(plan.index, 3);
-        assert_eq!(plan.title, b"Third");
-        assert_eq!(plan.flag, 0);
+        let plan = show_tip(&store, 1 << 3, &table, &RAYFORM_10, 4).unwrap();
+        assert_eq!((plan.index, plan.tip), (3, 8));
+        assert_eq!(plan.title, b"Trading");
         assert_eq!(plan.width, 0x1f8);
-        let lines = count_lines(&RAYFORM_10, &plan.text, TIP_WIDTH - TIP_TEXT_INSET);
-        assert_eq!(plan.height, lines * RAYFORM_10.line_height + 0x60);
-        // The second call sees the bit in the store.
-        assert_eq!(show_tip(&mut store, 1 << 3, &table, &RAYFORM_10), None);
-        assert!(!store.should_show(1 << 3));
-        // A mask read from the settings file is kept; reading it again does
-        // not replace it.
+        let measured = fit_height(
+            b"A tip's text.",
+            0x1f8 - 0x18,
+            0,
+            &RAYFORM_10,
+            4,
+            &no_pictures,
+        );
+        assert_eq!(plan.height, measured + 0x60);
+        assert_eq!(plan.text_rect, (0, 0, 0x1f8 - 4, plan.height - 0x48));
+        assert_eq!(plan.check_state, None);
+        // The call does not mark the tip; the form's close does.
+        assert!(show_tip(&store, 1 << 3, &table, &RAYFORM_10, 4).is_some());
+        store.mark(1 << 3);
+        assert!(show_tip(&store, 1 << 3, &table, &RAYFORM_10, 4).is_none());
+        // "Getting Started" and "Purchased Items" start ticked.
+        let first = show_tip(&store, 1, &table, &RAYFORM_10, 4).unwrap();
+        assert_eq!(first.title, b"Getting Started");
+        assert_eq!(first.check_state, Some(0x60));
+        assert_eq!(
+            show_tip(&store, 1 << 7, &table, &RAYFORM_10, 4).map(|plan| plan.check_state),
+            Some(Some(0x60))
+        );
+        // A mask read from the settings store is kept; a second read does
+        // nothing.
         let mut store = TipStore::default();
         store.load(Some(0b100));
         assert!(!store.should_show(0b100));
         store.load(Some(0));
         assert!(!store.should_show(0b100));
-        // A multi-bit tip takes the last entry; a table too short has none.
-        assert_eq!(tip_index(0b11), 31);
-        assert!(tip_plan(0b11, &[], &RAYFORM_10).is_none());
-        assert_eq!(tip_index(1), 0);
-        assert_eq!(tip_index(1 << 31), 31);
-        // The tip words.
-        assert_eq!((TIP_STATE, TIP_STYLE), (0x9000, 0x100));
-        assert_eq!((MANUAL_STATE, MANUAL_STYLE), (0x1000, 0x120));
-        assert_eq!(TIP_WIDTH - TIP_TEXT_INSET, TIP_WIDTH - 0x18);
+        // Only single bits 0…30 have an entry; a tip past the table has none.
+        assert_eq!(tip_index(1), Some(0));
+        assert_eq!(tip_index(1 << 30), Some(30));
+        assert_eq!(tip_index(1 << 31), None);
+        assert_eq!(tip_index(0b11), None);
+        assert_eq!(tip_index(0), None);
+        assert!(tip_plan(1 << 12, &table, &RAYFORM_10, 4).is_none());
+        assert_eq!(TIP_CONTROLS, ["Continue", "Don't show again"]);
     }
 }
