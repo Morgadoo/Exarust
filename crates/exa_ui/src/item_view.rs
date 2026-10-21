@@ -1275,6 +1275,9 @@ mod tests {
         assert!(view.drag_start_allowed() && view.drag_out_allowed());
         view.allow_drag_out = false;
         assert!(!view.drag_out_allowed());
+        view.destroy();
+        assert!(view.entries.is_empty());
+        assert_eq!((view.selected, view.hover, view.drag_kind), (0, 0, 0));
     }
 
     #[test]

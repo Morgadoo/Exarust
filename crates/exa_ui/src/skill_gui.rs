@@ -314,6 +314,9 @@ mod tests {
         assert!(resources.built && resources.hook_installed);
         resources.rebuild();
         assert_eq!(resources.builds, 2);
+        resources.finalize();
+        assert!(!resources.built);
+        assert!(resources.ensure());
         assert_eq!((ICON_UNITS, SINGLE_ICON_UNITS), (8, 24));
         assert_eq!(SKILL_GUI_UNITS, (44, 20));
         assert_eq!(SKILL_GUI_FLAGS, 0x133);

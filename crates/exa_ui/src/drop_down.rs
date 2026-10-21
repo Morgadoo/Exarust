@@ -471,6 +471,9 @@ mod tests {
         assert_eq!(list.select(3), Some(3));
         assert_eq!((list.selected, list.hover), (3, 3));
         assert_eq!(list.select(0), None);
+        list.close(&mut owner);
+        assert!(list.items.is_empty() && !list.shown);
+        assert_eq!(owner.closed, 3);
     }
 
     #[test]

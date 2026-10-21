@@ -608,12 +608,21 @@ mod tests {
 
     #[test]
     fn the_layer_constructor_matches_the_original() {
-        let task = layer();
+        let mut task = layer();
         assert_eq!(task.bounds, GuiRect::new(0, 0, 800, 600));
         assert_eq!(LAYER_STYLE, 0x000f_0000);
         assert_eq!(LAYER_DRAW_MODE, 0x10);
         assert_eq!(task.shortcuts.len(), 0);
         assert_eq!(task.notices, 0);
         assert!(!task.active && !task.root);
+        assert!(!task.closed);
+        task.close();
+        assert!(task.closed);
+        task.add_form(OwnedForm::new(1, GuiRect::new(0, 0, 1, 1)));
+        task.add_shortcut(b'a', 0x20, 1);
+        task.callbacks.add(|| {});
+        task.destroy();
+        assert!(task.forms.is_empty() && task.shortcuts.is_empty());
+        assert!(task.callbacks.is_empty());
     }
 }
