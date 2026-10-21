@@ -377,10 +377,14 @@ fn run_bar_commands(
                 };
                 let aim = DisplacementAim {
                     player: true,
+                    // [inf: the running game has the cursor's point on the
+                    // aim plane, not a surface hit with a normal, so the
+                    // point is taken as it stands (exact) and the original's
+                    // 15 cm back-off along a hit normal does not apply.]
                     cursor: ground.as_deref().and_then(|g| g.0).map(|point| CursorHit {
                         point: point * CM,
                         normal: Vec3::Y,
-                        exact: false,
+                        exact: true,
                     }),
                     possessing,
                 };

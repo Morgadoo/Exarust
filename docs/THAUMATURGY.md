@@ -125,7 +125,7 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
 `thaum::cast` (the cast plugin) creates the classes from the player's
 power bar: `C` opens and stores the bar, a digit picks a slot, the arrows
 step the choice and `Q` hands the picked slot to the bar's cast entry,
-which finds the power among the caster's known powers, runs its domain's
+which takes the slot's word as it stands, runs its domain's
 front end by the word's domain byte (Force, Energy or Displacement; a Mind
 id is refused until the Mind target pick is wired) and makes the class the
 cast's creator makes. Each body tick walks the active list in the
@@ -133,7 +133,9 @@ original's order, passes control event 0 (event 2 once a power is told to
 end), releases the focus a finished power held and takes it out with the
 last entry in its place. The live arcs, barricades and wisps are spawned
 with their powers and removed as they end; the other effects have no
-entity yet, so their classes keep running. A cast motion is played through
+entity yet, so their classes keep running, and the blast, bolt, wave,
+torrent and barrier casts, whose creators only make an effect, make nothing
+yet (no class and no entity). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,
@@ -526,14 +528,15 @@ instability, each part it strikes in front lowers the character's energy
 again while it is above 0.25, and its line is stamped on the navigation
 grid's penalty until the wall falls;
 wisps ride their parts. The running game opens the tree with `P` and the bar with `C` (`hotkeys`),
-routes the pointer through the tree's hover/click/drag/zoom rules, draws
+routes the pointer through the tree's hover/click/drag/zoom rules and draws
 the tree, bar, tooltip and preview with the six fragment programs in
-`exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`), and runs the
-chosen slot's learning and cost gates with the use key through the Force,
-Displacement and Energy front ends, against a stand-in body and the
-domains' default worlds, and spawns only a marker entity from the creator
-(`thaum::visuals`: no mesh, sound or shader is issued). The constant
-displacement's veil, the grant routine and the tree's key handler are not wired. The
+`exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`). The bar's keys
+(`hotkeys`) go to `thaum::cast`, described with the classes above, which
+runs the chosen slot through the Force, Energy and Displacement front ends
+against the player's body. The tree screen and the caster share one record:
+the screen owns it while the tree is open and the caster takes it back when
+the tree closes. The constant displacement's veil, the grant routine and the
+tree's key handler are not wired. The
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` flags still put
 those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
 

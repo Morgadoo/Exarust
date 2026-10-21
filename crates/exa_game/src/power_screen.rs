@@ -13,11 +13,10 @@
 //! Not modelled: the link programs' ribbon texture (the draw treats it as
 //! white, so links lack the spline's texture), the bar's form flags and
 //! open/close animation, the show and hide fades, the tooltip and prompt
-//! layout of the original, and the base form's key handlers. The key that
-//! uses the bar's chosen power runs the real learning and cost gates but
-//! against a stand-in body ([`PowerBody`]) and the domains' default worlds,
-//! and spawns a marker entity at the player from [`crate::thaum::visuals`]
-//! rather than a working effect.
+//! layout of the original, and the base form's key handlers. The bar's own
+//! keys (pick, step, use) belong to the hotkey handler and the cast plugin
+//! ([`crate::thaum::cast`]), which keeps the caster's record and this
+//! screen's in step.
 
 use std::sync::{Arc, Mutex};
 
@@ -102,7 +101,6 @@ pub struct PowerScreenPlugin;
 impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PowerScreen>()
-            .init_resource::<PowerBody>()
             .add_systems(Startup, (load_screen, setup_router))
             .add_systems(Update, (hotkeys, pointer, draw).chain());
     }
@@ -161,18 +159,7 @@ fn setup_router(mut commands: Commands) {
     commands.insert_resource(PowerRouter { task, form, state });
 }
 
-/// The body a bar cast is priced and gated on.
-#[derive(Resource, Debug, Clone, Default)]
-pub struct PowerBody {
-    pub body: crate::thaum::casting::CastBody,
-}
-
-fn load_screen(
-    mut commands: Commands,
-    game: Option<Res<Game>>,
-    mut screen: ResMut<PowerScreen>,
-    mut body: ResMut<PowerBody>,
-) {
+fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResMut<PowerScreen>) {
     if let Some(game) = game.as_deref() {
         const FILES: [&str; 7] = [
             "",
@@ -205,7 +192,6 @@ fn load_screen(
         );
         screen.texts = Vec::new();
     }
-    body.body.focus = 1.0;
     commands.insert_resource(AssetsLoaded);
 }
 
