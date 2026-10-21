@@ -78,20 +78,24 @@ text, for comparison, in `exa_render::shader_template` and
 `exa_render::shader_program`, and prints a material's program with
 `exa-tool shader <library> <material>`.
 
-**Programs.** A material's record becomes a shader word whose low nibble
-picks `shading_f` (0 legacy, 2 unlit), `shadeopt_f` (1 PBR), `shadehar_f`
-(3 hair), `shadesss_f` (5/6 skin) or `shadetrl_f` (7 translucent); every set
-shares the vertex program `shading_v`. A non-zero subsurface colour (the
-record's secondary colour, RGB) lifts it to skin at shading quality 3 and
-above, and the translucent mode overrides to 7.
+**Programs.** The material factory turns a record into a material word and
+a shader word whose low nibble picks `shading_f` (0 legacy, 2 unlit),
+`shadeopt_f` (1 PBR), `shadehar_f` (3 hair), `shadesss_f` (5/6 skin) or
+`shadetrl_f` (7 translucent); every set shares the vertex program
+`shading_v`. A non-zero subsurface colour (the record's secondary colour,
+RGB) lifts it to skin at shading quality 3 and above, and the translucent
+mode (flag bits `0x300` = `0x100`, type 1) overrides to 7. Every map bit
+needs both the record's flag (passed by its type's plug-in) and the layer;
+the rules are in `docs/formats/FLB.md`.
 
 **Flags and numbers.** The templates test the `Mat.`, `Shd.`, `Obj.` and
 `Env.` words, and the integers `Lights` (0–6), `SdwSmps`, `ShadeQual` and
 `DspSdws`. `SdwSmps` is the shadow quality's `2^(quality − 1)` taps split
 over the supersampling passes: at shadow quality 4 and 4× supersampling each
 sub-frame takes 2 of the 8 taps (so an output pixel averages 8); without
-supersampling it takes all 8. `ShadeQual` is `quality − 3` held to 0…3, and
-`DspSdws` 4 or 0.
+supersampling it takes all 8. `ShadeQual` is `quality − 3` from quality 4,
+in shader-word bits 20–21, and `DspSdws` is 0 without displacement shadows,
+else 4 over the super-sampling factor, at least 1 (1 at the 4× setting).
 
 **Permutations.** For a material the builder compiles one key per light
 count 0–6 for lit surfaces (none for unlit), keyed by the object and
@@ -119,18 +123,32 @@ a guess):
   unflipped geometric normal.
 - The skin program's final alpha is the material opacity, not the diffuse
   map's alpha.
-- Parallax's ambient darkening applies with displacement shadows too.
+- Parallax's ambient darkening applies with displacement shadows too, and
+  only in the PBR (and translucent) program: the legacy `shading_f` adds
+  its ambient undarkened.
 - The GI lookup's disc frame is the original's
   `(1 − n.x²a, −n.x n.y a, −n.x)` / `(−n.x n.y a, 1 − n.y²a, −n.y)` with
   `a = 1/max(1 + n.z, 0.1)`, not an arbitrary frame.
-- Only a record with a reflection layer (`Mat.TexRef`) reflects the cube;
-  the rest use a quarter of the ambient (above).
+- Inside the GI volume only a record whose reflection layer the factory
+  keeps (`Mat.TexRef`) reflects the cube; the rest use a quarter of the
+  ambient (above). Outside the volume every surface reflects the cube,
+  layer or not (the non-GI branch has no `TexRef` test). Before, the
+  loader flagged every material with the cube bound, so indoor stone and
+  wood reflected the cube; now only metals, glass, eyes and skin (the 30
+  records with a reflection layer in the shipped libraries) do. The cube
+  stays bound for the ambient outside the volume.
 - A legacy record's diffuse colour is multiplied by 1.5 before the sRGB
   decode, so 0.5 becomes linear(0.75) = 0.522, not 1.5 × linear(0.5) =
   0.321.
-- The glossiness raised to 0.01 only for type-0 records (the material
-  uniform's rule), as is the specular ×3 for PBR records with a specular
-  map.
+- The glossiness is raised to 0.01 only for type-0 records (the loader's
+  rule, with no upper clamp). The specular ×3 with a specular map is the
+  material writer's: programs whose class has bit 0 set (PBR, hair, a skin
+  lifted by a scattering colour, translucent), not legacy (0) or type-4
+  skin (6).
+- The parallax texel scale rounds to nearest, ties to even (the
+  conversion instructions' default mode), in the writer's order:
+  `P = round(50·amount)`, `Y = round(P·(2048/height))`,
+  `X = round((height/width)·Y)`.
 - The PBR `Lighting` clamps `N·H` to [0, 1].
 
 Not reproduced from these programs: the legacy unlit program's vertex-colour
@@ -188,13 +206,14 @@ program.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread.
-- Reflections only use the cube for a record with a reflection layer
-  (`Mat.TexRef`, slot `0x100000`: metals, marble, eyes, skin); every other
-  surface's specular GI is **a quarter of the ambient** (the shader's
-  `{?Mat.TexRef?}` alternate). With the layer the cube is sampled along the
-  mirror direction at mip (rough − 0.1)·8, as (e + e²) × level ambient × 8 ×
-  the geometry term; in the GI path at mip (rough − 0.05)·8 and × ambient ×
-  8 × 2.
+- Reflections sample the cube along the mirror direction at mip
+  (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term,
+  for every surface outside the GI volume. Inside it only a record with a
+  reflection layer kept by the factory (`Mat.TexRef`, slot `0x100000`:
+  metals, glass, eyes, skin) samples it, at mip (rough − 0.05)·8, × the GI
+  ambient × 8 × 2; every other surface's specular GI there is **a quarter
+  of the ambient** (the shader's `{?Mat.TexRef?}` alternate). The original
+  loads the layer's own cube; Exarust binds the level's.
 - Roughness ("Gloss" in the shaders) depends on the maps present:
   - 1 − glossiness × specular map green;
   - otherwise 1 − glossiness × gloss map red;
@@ -275,9 +294,10 @@ program.
     `0x60`·0.05 + ½.
   - The taps are averaged: four per pass, sixteen in all over the original's
     four supersampling passes.
-- Parallax darkens the ambient by min(h − ½ + 1.2, 1) whenever a height map
-  exists, with or without displacement shadows (the template's `Mat.TexDsp`
-  branch is separate from `Shd.DispSdw`).
+- In the PBR program parallax darkens the ambient by min(h − ½ + 1.2, 1)
+  whenever a height map exists, with or without displacement shadows (the
+  template's `Mat.TexDsp` branch is separate from `Shd.DispSdw`); the
+  legacy program does not.
 
 **Textures** are sampled with the original's settings at its top texture
 quality (`TextureQuality = 5`) and 4× supersampling:
@@ -1650,8 +1670,7 @@ bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 The emissive scale of a fire's parent mesh by the fire, the per-tick
 tendril motion of an electric arc and its emissive texture, the looping
 fire and electricity sounds, body contacts being driven from the physics
-step, the
-jittered supersampling pattern, the sun and terrain in the GI volume,
+step, the jittered supersampling pattern, the sun and terrain in the GI volume,
 several resident GI blocks (and their margin copies), the GI injection's
 cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes
 1–3), glass
