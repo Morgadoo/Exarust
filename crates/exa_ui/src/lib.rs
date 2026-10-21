@@ -123,7 +123,7 @@ pub use line_skin::{
     LineShadow, LineSolid, LineSpans, LineTitle, LineWidget, draw_line_bar, draw_line_border,
     draw_line_detail, draw_line_label, draw_line_marker, draw_line_progress, draw_line_rect,
     draw_line_rule, draw_line_scroll, draw_line_widget, refresh_line_scroll, register_line_skin,
-    set_line_metrics,
+    release_line_text, set_line_metrics,
 };
 pub use loading::LoadingStatus;
 pub use loadout::{

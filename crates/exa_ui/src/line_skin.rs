@@ -1703,6 +1703,12 @@ fn draw_line_maximized(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInks
     }
 }
 
+/// Releases the draw's temporary text slot. An empty slot is not freed, but
+/// the release is still attempted once.
+pub fn release_line_text(draw: &mut LineDraw) {
+    draw.release_calls += 1;
+}
+
 /// Draws one line widget into `draw`: the clip, the shadow and backdrop, the
 /// caption, the window or bar chrome, the children and the close square.
 ///
@@ -1822,7 +1828,7 @@ pub fn draw_line_widget(draw: &mut LineDraw, widget: &LineWidget, inks: &LineInk
         draw.end_calls += 1;
     }
     draw.select(0);
-    draw.release_calls += 1;
+    release_line_text(draw);
 }
 
 #[cfg(test)]
