@@ -1,38 +1,51 @@
 //! The character's active item effects (the original's equipment-effect
 //! helpers, split out of `RFE_Effects_Electricity` by address).
 //!
-//! A character keeps a list of effects keyed by item id. Each tick the list
-//! calls every effect; an effect that no longer finds its item drops out and
-//! the last entry takes its place. Two impact counters on the character
-//! decay by one a tick while they are above one.
+//! A body keeps a list of effects keyed by item id ([`EffectList`]). Each
+//! tick the body's tick counter advances and the list calls every effect in
+//! order; an effect that answers false (its item is gone) drops out and the
+//! last entry takes its slot, which runs in the same tick. Two impact
+//! counters on the body then lose one each while they are above one.
 //!
-//! Four registrations feed the list:
-//! - **Held items** ([`register_held`]): a held item whose record effect kind
-//!   is 1, 2 or 3 attaches its kind's tick. Kind 2 also installs the level
-//!   updater, and [charge] ticks the held item's accumulator toward its
-//!   source, flashing the HUD for the player once it gets there.
-//! - **Worn items** ([`register_worn`]): an odd item kind with a sub-byte
-//!   below 0xff lights the item (0.75) and sets its skin material's fade to
-//!   `1 − sub/255`; otherwise the character's impact counter gains two and
-//!   the material fades out. Its tick [steps the worn item](step_worn):
-//!   one level a tick (ten with the fast bit) per impact counter above one,
-//!   the material fade following the sub-byte, and the light turning on
-//!   while the byte is still under 0xff and off once it is not.
-//! - **Apparel** ([`register_apparel`]): the same odd-kind test gives the
-//!   apparel flag 1 or 0; its tick [steps the apparel](step_apparel) and
-//!   turns the garment's own effect on while the byte is rising and off once
-//!   it has stopped, at the 0.9/0.1 hysteresis.
-//! - **The focus item** ([`focus_slot`]): an item of effect kind 4 in either
-//!   hand grants the body's power slot bit; when the last one goes the power
-//!   tree is refreshed.
+//! The registrations that feed the list:
+//! - **The charge** ([`register_charge`], [`charge_tick`]): a held item is
+//!   given the charge tick when the body's flag word has
+//!   [`HELD_EFFECTS_BIT`]. While the item record's kind (low five bits) is
+//!   2 and its counter byte is below 0xff, the body's accumulator gains
+//!   `source·0.004`; while that stays at or under the source the player's
+//!   HUD is shown for 1000 ms and the counter byte advances, and once it
+//!   passes the source it is held there.
+//! - **The hand effects** ([`hand_effect`]): an item in either hand whose
+//!   power record names effect 1, 2 or 3 attaches the electric, glow or
+//!   flame tick; the glow also installs the level callback on the item
+//!   ([`step_glow`]). The glow tick ([`step_charged_glow`]) raises the
+//!   record's level by two every eighth body tick until 0x8c and sets the
+//!   item's light from it.
+//! - **Worn items** ([`register_worn`], [`step_worn`]): an odd item kind with
+//!   a counter byte below 0xff lights the item (0.75) and fades its skin
+//!   material to `1 − byte/255`; otherwise a body word gains two and the
+//!   material fades to zero. The tick steps an odd kind's byte by one (ten
+//!   with the fast bit) per impact counter above one, fades the material by
+//!   it, and turns the light on while the byte is still rising and off once
+//!   it is not.
+//! - **Apparel** ([`part_glow`], [`step_apparel`]): the same odd-kind test
+//!   gives the apparel value 1 or 0; the tick steps an odd kind's byte by the
+//!   second impact counter alone and turns the garment's effect on while the
+//!   byte rises and the value is under 0.9, off once it stops and the value
+//!   is over 0.1.
+//! - **The focus item** ([`focus_slot`]): an item whose power record names
+//!   effect 4 in either hand sets the body's slot word to 0x100 (and any
+//!   other word to 0); when the bit goes the power tree is refreshed.
 //!
-//! The material fades are written into the skin controller's materials
-//! ([`fade_material`]): the shader field named by the parameter word takes
-//! the square of the requested value and is marked visible.
+//! The material fades ([`fade_material`]) write the first skin material
+//! whose parameter word matches: the square of the value, and the material
+//! marked visible.
 //!
-//! Evidence: the item-effect list, its registration per kind, the charge
-//! accumulator, the power-curve glow, the worn and apparel steps, the
-//! material fade and the focus-item check of `Exanima.exe`.
+//! Evidence: the item-effect list, its attach, the charge tick and its
+//! registration, the worn and apparel ticks and registrations, the light
+//! switches, the material fade, the glow level callback and tick, the hand
+//! effect dispatch and the focus-item check of `Exanima.exe`, checked
+//! against their instructions.
 
 /// The charge gained per tick as a share of the source value (0.004).
 pub const CHARGE_RATE: f64 = 0.004;
@@ -40,45 +53,44 @@ pub const CHARGE_RATE: f64 = 0.004;
 /// The glow level used when a stored level is at most 0x40 (0x3c).
 pub const FLICKER_FLOOR: u8 = 0x3c;
 
-/// The shader parameter of the held and worn glow material (13354).
-pub const GLOW_MATERIAL: u16 = 13_354;
-/// The shader parameter of the golem's glow material (28519).
-pub const GOLEM_MATERIAL: u16 = 28_519;
-/// The skin material's parameter word is a mesh id; above this the fade
-/// routine never matches.
-pub const FADE_PARAMETER: u16 = 0;
+/// The parameter word of the worn item's skin material: the two characters
+/// `*4`.
+pub const GLOW_MATERIAL: u16 = 0x342a;
+/// The parameter word of the golem's glow material: the two characters `go`.
+pub const GOLEM_MATERIAL: u16 = 0x6f67;
 
-/// The item record's effect kind that grants the focus-item power slot.
+/// The power record's effect that grants the focus-item power slot.
 pub const FOCUS_ITEM_KIND: i32 = 4;
-/// The character word's focus-item slot bit.
+/// The body's focus-item slot word.
 pub const FOCUS_SLOT_BIT: u32 = 0x100;
-/// The character word's bit that enables held item effects.
+/// The body flag-word bit that gives a held item the charge tick.
 pub const HELD_EFFECTS_BIT: u32 = 2;
 
-/// The held item's accumulator field, the level field and the sub-byte.
-pub const ITEM_LEVEL_MAX: u8 = 0xff;
-/// The level past which a kind-2 item stops rising (0x8c).
+/// The level past which a glow item stops rising (0x8c).
 pub const ITEM_LEVEL_CAP: u8 = 0x8c;
 /// The worn item's light while it is on (0.75).
 pub const WORN_LIGHT: f32 = 0.75;
-/// The impact a newly worn unlit item adds to its character (2).
+/// What a newly worn unlit item adds to the body's word (2).
 pub const WORN_IMPACT: f32 = 2.0;
+/// The HUD time the charge shows the player (1000 ms).
+pub const CHARGE_HUD_MS: u32 = 1000;
 
 /// The fast bit of a record's kind word: ten levels a tick instead of one.
 pub const FAST_KIND_BIT: u16 = 0x10;
-/// The record kind word's low five bits holding the effect kind.
+/// The record kind word's low five bits the charge tests.
 pub const KIND_MASK: u16 = 0x1f;
 
-/// One tick of charge accumulation: `min(current + source·0.004, source)`.
-/// A non-number current is returned unchanged, and a current above its
-/// source is held at the source.
+/// One tick of charge accumulation: `source·0.004 + current` in double,
+/// held at the source once it passes it. A current that is not a number is
+/// returned unchanged.
 pub fn accumulate_charge(current: f32, source: f32) -> f32 {
     charge_step(current, source).0
 }
 
-/// The same step, and whether the accumulator was capped at its source.
+/// The same step, and whether the accumulator passed its source (an
+/// ordered compare: a NaN sum does not).
 pub fn charge_step(current: f32, source: f32) -> (f32, bool) {
-    let next = (current as f64 + source as f64 * CHARGE_RATE) as f32;
+    let next = (source as f64 * CHARGE_RATE + current as f64) as f32;
     if next > source {
         (source, true)
     } else {
@@ -96,21 +108,22 @@ pub fn flicker_level(level: u8) -> u8 {
     }
 }
 
-/// The glow intensity from a stored level: `0.5·exp(0.7·ln(0.01·level))`.
+/// The glow intensity from a stored level: `0.5·exp(0.7·ln(0.01·level))`
+/// in double.
 pub fn flicker_intensity(level: u8) -> f32 {
     let log = (f64::from(level) * 0.01).ln();
     (0.5 * (log * 0.7).exp()) as f32
 }
 
-/// The next glow level and its intensity. The item's stored level is
-/// stepped before the light is computed.
+/// The level callback a glow item carries: the stored level is stepped
+/// ([`flicker_level`]) and the light takes its intensity.
 pub fn step_glow(level: &mut u8) -> f32 {
     *level = flicker_level(*level);
     flicker_intensity(*level)
 }
 
-/// A worn part's glow weight: 1 when its low bit is set and its byte is
-/// below 0xff, otherwise 0.
+/// The apparel registration's value: 1 for an odd kind whose counter byte
+/// is below 0xff, otherwise 0.
 pub fn part_glow(kind: u16, sub: u8) -> f32 {
     if kind & 1 != 0 && sub < 0xff {
         1.0
@@ -127,7 +140,7 @@ pub fn material_fade(value: f32) -> f32 {
 /// A skin material the fade writes into.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkinMaterial {
-    /// The shader parameter the routine matches.
+    /// The parameter word the routine matches.
     pub shader: u16,
     /// The written fade value.
     pub fade: f32,
@@ -135,19 +148,16 @@ pub struct SkinMaterial {
     pub visible: bool,
 }
 
-/// Fades every material whose shader parameter is `shader`: the fade takes
-/// the square of `value` and the material is marked visible. Returns whether
-/// any material matched.
+/// Fades the first material whose parameter word is `shader`: the fade
+/// takes the square of `value` and the material is marked visible. Returns
+/// whether one matched.
 pub fn fade_material(materials: &mut [SkinMaterial], shader: u16, value: f32) -> bool {
-    let mut found = false;
-    for material in materials {
-        if material.shader == shader {
-            material.fade = material_fade(value);
-            material.visible = true;
-            found = true;
-        }
-    }
-    found
+    let Some(material) = materials.iter_mut().find(|m| m.shader == shader) else {
+        return false;
+    };
+    material.fade = material_fade(value);
+    material.visible = true;
+    true
 }
 
 /// Adds an entry keyed by `id` unless one is already present.
@@ -157,16 +167,17 @@ pub fn attach_entry<T: Copy>(entries: &mut Vec<(i32, T)>, id: i32, value: T) {
     }
 }
 
-/// The focus-item check: an item of effect kind 4 in either hand sets the
-/// body's slot bit. `lost` is true when the old word had the bit and the
-/// new one does not, which refreshes the power tree.
+/// The focus-item check's result: the body's new slot word, and whether the
+/// bit went (which refreshes the power tree).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FocusSlot {
     pub word: u32,
     pub lost: bool,
 }
 
-/// The focus-item scan over the two hands' record effect kinds.
+/// The focus-item check over the two hands' power-record effects (`None`
+/// for an empty hand or an item without a record): the word becomes 0x100
+/// when either is 4, else 0.
 pub fn focus_slot(old: u32, hands: impl IntoIterator<Item = Option<i32>>) -> FocusSlot {
     let mut word = 0;
     for kind in hands {
@@ -180,94 +191,57 @@ pub fn focus_slot(old: u32, hands: impl IntoIterator<Item = Option<i32>>) -> Foc
     }
 }
 
-/// Whether held item effects are enabled for a character word.
-pub fn held_effects(word: u32) -> bool {
-    word & HELD_EFFECTS_BIT != 0
+/// The charge registration: a held item with a record is given the charge
+/// tick when the body's flag word has [`HELD_EFFECTS_BIT`].
+pub fn register_charge(body_flags: u32) -> bool {
+    body_flags & HELD_EFFECTS_BIT != 0
 }
 
-/// The record's effect kind, from the low five bits of its kind word.
-pub fn effect_kind(kind: u16) -> Option<ItemEffectKind> {
-    match kind & KIND_MASK {
-        1 => Some(ItemEffectKind::Flame),
+/// The effect tick a hand item's power record names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemEffectKind {
+    /// Effect 1: the electrified item's arcs (its tick is outside this
+    /// component).
+    Electric,
+    /// Effect 2: the glow level rises while the item is held.
+    Glow,
+    /// Effect 3: the item's flame row (its tick is outside this component).
+    Flame,
+}
+
+/// The hand-effect dispatch: effect 1, 2 or 3 of the power record (the whole
+/// word, not a masked part) attaches its tick; any other value attaches
+/// nothing. The glow also installs [`step_glow`] as the item's level
+/// callback.
+pub fn hand_effect(effect: i32) -> Option<ItemEffectKind> {
+    match effect {
+        1 => Some(ItemEffectKind::Electric),
         2 => Some(ItemEffectKind::Glow),
-        3 => Some(ItemEffectKind::Spark),
+        3 => Some(ItemEffectKind::Flame),
         _ => None,
     }
 }
 
-/// The three item effect ticks the record's kind picks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemEffectKind {
-    /// Kind 1: the item's own flame effect (the torch row's tick).
-    Flame,
-    /// Kind 2: the item's glow level rises while the character holds it.
-    Glow,
-    /// Kind 3: the item's third effect.
-    Spark,
-}
-
-/// What registering a held item attaches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HeldRegistration {
-    /// The effect tick the record's kind picks.
-    pub effect: Option<ItemEffectKind>,
-    /// A kind-2 item installs the level updater as well.
-    pub level_updater: bool,
-}
-
-/// Registers a held item: held effects must be enabled for the character
-/// and the record must name a kind 1, 2 or 3 effect. Kind 2 also installs
-/// the item's level updater (the callback the record's kind-2 changes run).
-pub fn register_held(kind: u16, enabled: bool) -> HeldRegistration {
-    let effect = enabled.then(|| effect_kind(kind)).flatten();
-    HeldRegistration {
-        effect,
-        level_updater: effect == Some(ItemEffectKind::Glow),
-    }
-}
-
-/// A visual refresh a worn or apparel effect asks the character to run: the
-/// character's parts are rebuilt from the item's materials and the view is
-/// told.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VisualRefresh {
-    /// The item effect produced it.
-    pub effect: bool,
-    /// Every part of the body is re-set from its node.
-    pub parts: usize,
-    /// The character's view is refreshed.
-    pub view: bool,
-}
-
-impl VisualRefresh {
-    /// The refresh the garment routines run: every part re-set, the
-    /// character regenerated and its view updated.
-    pub fn garment(parts: usize) -> Self {
-        Self {
-            effect: true,
-            parts,
-            view: true,
-        }
-    }
-}
-
-/// A held item's charge outcome.
+/// A held item's charge step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChargeOutcome {
     /// The accumulator after the step.
     pub value: f32,
-    /// The accumulator reached its source.
+    /// The accumulator passed its source and is held there.
     pub capped: bool,
-    /// The HUD flashed (the accumulator reached the source on the player).
+    /// The HUD is shown for [`CHARGE_HUD_MS`] (the body is the player's and
+    /// the accumulator did not pass the source).
     pub flash: bool,
-    /// The sub-byte advanced.
+    /// The counter byte advanced.
     pub stepped: bool,
 }
 
-/// One held-item charge tick, when the record's kind is 2 and its sub-byte
-/// is below 0xff. The accumulator gains `source·0.004`; reaching or passing
-/// the source holds it there, flashes the player's HUD and advances the
-/// sub-byte; otherwise nothing else happens.
+/// One charge tick, when the record's kind (low five bits) is 2 and its
+/// counter byte is below 0xff (`None` otherwise; the effect stays while its
+/// item has a record). The accumulator gains `source·0.004`. While the sum
+/// is at or under the source (or not a number) the player's HUD is shown
+/// and the counter byte advances; once it passes the source it is held
+/// there and nothing else happens.
 pub fn charge_tick(
     value: f32,
     source: f32,
@@ -279,20 +253,14 @@ pub fn charge_tick(
         return None;
     }
     let (next, capped) = charge_step(value, source);
-    let mut stepped = false;
-    let mut flash = false;
-    if capped {
-        // The source was reached: the HUD flashes for the player and the
-        // sub-byte advances. A current that is already at the source does
-        // the same, as the original's ordered compare does.
-        flash = is_player;
+    let stepped = !capped;
+    if stepped {
         *sub = sub.wrapping_add(1);
-        stepped = true;
     }
     Some(ChargeOutcome {
         value: next,
         capped,
-        flash,
+        flash: stepped && is_player,
         stepped,
     })
 }
@@ -302,18 +270,18 @@ pub fn charge_tick(
 pub struct WornState {
     /// The item glows.
     pub lit: bool,
-    /// The character's light value (its own when the item stays dark).
+    /// The body's light value (its own when the item stays dark).
     pub light: f32,
-    /// The character's worn counter (2 more when the item stays dark).
+    /// The body word an unlit item adds two to (its role is not traced).
     pub counter: f32,
 }
 
-/// Registers a worn item: the character is marked worn, an odd kind with a
-/// sub-byte below 0xff lights the item at 0.75 and fades its material to
-/// `1 − sub/255`; otherwise the impact counter gains two and the material
-/// fades to zero.
+/// Registers a worn item: an odd kind with a counter byte below 0xff lights
+/// the item at 0.75 and fades its material to `1 − byte/255` (in double);
+/// otherwise the body's word gains two and the material fades to zero.
+/// Returns the state and the fade.
 pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState, f32) {
-    let lit = kind & 1 != 0 && sub < 0xff;
+    let lit = kind & 1 != 0 && sub != 0xff;
     if lit {
         (
             WornState {
@@ -321,7 +289,7 @@ pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState
                 light: WORN_LIGHT,
                 counter,
             },
-            (1.0 - f64::from(sub) / 255.0) as f32,
+            byte_fade(sub),
         )
     } else {
         (
@@ -335,13 +303,18 @@ pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState
     }
 }
 
-/// What a worn item's tick asks the character to do.
+/// The fade a counter byte gives: `1 − byte/255` in double, narrowed.
+fn byte_fade(sub: u8) -> f32 {
+    (1.0 - f64::from(sub) / 255.0) as f32
+}
+
+/// What a worn item's tick asks the body to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GlowAction {
     None,
-    /// Turn the glow on (the character's light becomes 0.75).
+    /// Turn the glow on (the body's light becomes 0.75).
     On,
-    /// Turn the glow off (the character's light is its own value).
+    /// Turn the glow off (the body's light takes the item's own value).
     Off,
 }
 
@@ -349,77 +322,55 @@ pub enum GlowAction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WornStep {
     pub sub: u8,
-    /// The material's fade.
-    pub fade: f32,
+    /// The material's fade, written for an odd kind only.
+    pub fade: Option<f32>,
     /// Whether the item's light is on after the tick.
     pub lit: bool,
-    /// The light value the character takes.
+    /// The light value the body takes.
     pub light: f32,
     pub action: GlowAction,
 }
 
-/// Steps a worn item: the level rises by one, or by ten with the fast bit,
-/// for each impact counter above one. The material fade follows the
-/// sub-byte; the light comes on while the byte is still below 0xff and goes
-/// out once it is not.
-pub fn step_worn(kind: u16, sub: &mut u8, lit: bool, light: f32, counters: [f32; 2]) -> WornStep {
-    let mut count = 0;
-    if counters[0] > 1.0 {
-        count += 1;
+/// The rising step both garment ticks share, for an odd kind only: the byte
+/// gains `step` when that keeps it under 0xff (or else becomes 0xff), and
+/// it is still rising when one more base step would keep it under 0xff.
+/// An even kind is left alone and is not rising.
+fn rise(kind: u16, sub: &mut u8, counters_above_one: i32) -> bool {
+    if kind & 1 == 0 {
+        return false;
     }
-    if counters[1] > 1.0 {
-        count += 1;
-    }
-    let step = (if kind & FAST_KIND_BIT != 0 { 10 } else { 1 }) * count;
-    let mut rising = false;
-    if i32::from(*sub) + step <= 0xfe {
-        if step > 0 {
+    let base = if kind & FAST_KIND_BIT != 0 { 10 } else { 1 };
+    let step = base * counters_above_one;
+    if i32::from(*sub) + step < 0xff {
+        if step != 0 {
             *sub = sub.wrapping_add(step as u8);
         }
-        rising = i32::from(*sub) + if kind & FAST_KIND_BIT != 0 { 10 } else { 1 } < 0xff;
+        i32::from(*sub) + base < 0xff
     } else {
         *sub = 0xff;
+        false
     }
-    let fade = if kind & 1 != 0 {
-        (1.0 - f64::from(*sub) / 255.0) as f32
-    } else {
-        0.0
+}
+
+/// Steps a worn item: an odd kind's byte rises one level (ten with the fast
+/// bit) per impact counter above one and its material fades to
+/// `1 − byte/255`. The light turns on while the byte is still rising and
+/// off once it is not (an even kind is never rising).
+pub fn step_worn(kind: u16, sub: &mut u8, lit: bool, light: f32, counters: [f32; 2]) -> WornStep {
+    let count = i32::from(1.0 < counters[0]) + i32::from(1.0 < counters[1]);
+    let rising = rise(kind, sub, count);
+    let fade = (kind & 1 != 0).then(|| byte_fade(*sub));
+    let (lit, light, action) = match (rising, lit) {
+        (true, false) => (true, WORN_LIGHT, GlowAction::On),
+        (false, true) => (false, light, GlowAction::Off),
+        _ => (lit, light, GlowAction::None),
     };
-    if rising {
-        if !lit {
-            return WornStep {
-                sub: *sub,
-                fade,
-                lit: true,
-                light: WORN_LIGHT,
-                action: GlowAction::On,
-            };
-        }
-    } else if lit {
-        return WornStep {
-            sub: *sub,
-            fade,
-            lit: false,
-            light,
-            action: GlowAction::Off,
-        };
-    }
     WornStep {
         sub: *sub,
         fade,
         lit,
         light,
-        action: GlowAction::None,
-    }
-}
-
-/// Registers an apparel effect: the apparel flag is 1 for an odd kind with a
-/// sub-byte below 0xff, otherwise 0.
-pub fn register_apparel(kind: u16, sub: u8) -> f32 {
-    if kind & 1 != 0 && sub < 0xff {
-        1.0
-    } else {
-        0.0
+        action,
     }
 }
 
@@ -427,67 +378,94 @@ pub fn register_apparel(kind: u16, sub: u8) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ApparelStep {
     pub sub: u8,
-    /// The character's apparel flag (unchanged by the step).
-    pub flag: f32,
-    /// Whether the garment's effect should be turned on this tick.
+    /// Whether the garment's effect is turned on this tick.
     pub on: bool,
-    /// Whether it should be turned off this tick.
+    /// Whether it is turned off this tick.
     pub off: bool,
 }
 
-/// Steps an apparel effect: the sub-byte rises by one, or ten with the fast
-/// bit, when the character's apparel counter is above one. The garment's
-/// effect turns on while the byte is still below 0xff and the flag is below
-/// 0.9; once the byte stops rising, it turns off when the flag is above 0.1.
-pub fn step_apparel(kind: u16, sub: &mut u8, flag: f32, counter: f32) -> ApparelStep {
-    let step = (if kind & FAST_KIND_BIT != 0 { 10 } else { 1 }) * i32::from(counter > 1.0);
-    let mut rising = false;
-    if i32::from(*sub) + step <= 0xfe {
-        if step > 0 {
-            *sub = sub.wrapping_add(step as u8);
-        }
-        rising = i32::from(*sub) + if kind & FAST_KIND_BIT != 0 { 10 } else { 1 } < 0xff;
-    } else {
-        *sub = 0xff;
-    }
-    let on = rising && f64::from(flag) < 0.9;
-    let off = !rising && f64::from(flag) > 0.1;
+/// Steps an apparel effect: an odd kind's byte rises one level (ten with
+/// the fast bit) when the second impact counter is above one. While the
+/// byte is rising the garment's effect turns on when the apparel value is
+/// under 0.9; once it is not, it turns off when the value is over 0.1 (both
+/// in double).
+pub fn step_apparel(kind: u16, sub: &mut u8, value: f32, counter: f32) -> ApparelStep {
+    let rising = rise(kind, sub, i32::from(1.0 < counter));
     ApparelStep {
         sub: *sub,
-        flag,
-        on,
-        off,
+        on: rising && f64::from(value) < 0.9,
+        off: !rising && 0.1 < f64::from(value),
     }
 }
 
-/// The glow of a kind-2 item one tick after its level could rise: the item
-/// must be the one in a hand, the character's tick count must be at 7 in
-/// its low three bits, the level must be below 0x8c, and the record kind 2
-/// with a sub-byte below 0xff. The sub-byte and level advance and the light
-/// node takes the new intensity.
-pub fn step_charged_glow(kind: u16, sub: &mut u8, level: &mut u8, tick: i32) -> Option<f32> {
-    if tick & 7 != 7 {
-        return None;
+/// One glow tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlowTick {
+    /// The effect stays (its item is in a hand and has a record).
+    pub keep: bool,
+    /// The light the item takes, on the eighth tick.
+    pub light: Option<f32>,
+}
+
+/// The glow tick: the item must be in a hand and have a record, or the
+/// effect drops out. On a body tick whose low three bits are all set, a
+/// record of kind 2 (low five bits) with a counter byte below 0xff and a
+/// level below 0x8c gains one in the byte and two in the level, and the
+/// item's light takes the level's intensity.
+pub fn step_charged_glow(
+    held: bool,
+    kind: u16,
+    sub: &mut u8,
+    level: &mut u8,
+    tick: i32,
+) -> GlowTick {
+    if !held {
+        return GlowTick {
+            keep: false,
+            light: None,
+        };
     }
-    if *level < ITEM_LEVEL_CAP && kind & KIND_MASK == 2 && *sub < 0xff {
+    if tick & 7 != 7 {
+        return GlowTick {
+            keep: true,
+            light: None,
+        };
+    }
+    if *level < ITEM_LEVEL_CAP && kind & KIND_MASK == 2 && *sub != 0xff {
         *sub = sub.wrapping_add(1);
         *level = level.wrapping_add(2);
     }
-    Some(flicker_intensity(*level))
+    GlowTick {
+        keep: true,
+        light: Some(flicker_intensity(*level)),
+    }
 }
 
-/// One effect in a character's list.
+/// One effect in a body's list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectEntry {
     pub id: i32,
-    pub kind: ItemEffectKind,
+    pub kind: EffectTick,
 }
 
-/// A character's item-effect list and its two impact counters.
+/// The ticks a body's list runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectTick {
+    /// A held item's charge.
+    Charge,
+    /// A hand item's power-record effect.
+    Hand(ItemEffectKind),
+    /// A worn item's light.
+    Worn,
+    /// An apparel item's effect.
+    Apparel,
+}
+
+/// A body's item-effect list, its tick counter and its two impact counters.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EffectList {
     pub entries: Vec<EffectEntry>,
-    /// The character's tick counter.
+    /// The body's tick counter.
     pub ticks: i32,
     /// The two impact counters; each loses one a tick above one.
     pub impacts: [f32; 2],
@@ -495,7 +473,7 @@ pub struct EffectList {
 
 impl EffectList {
     /// Adds an effect unless its item already has one.
-    pub fn attach(&mut self, id: i32, kind: ItemEffectKind) {
+    pub fn attach(&mut self, id: i32, kind: EffectTick) {
         if !self.entries.iter().any(|entry| entry.id == id) {
             self.entries.push(EffectEntry { id, kind });
         }
@@ -504,7 +482,7 @@ impl EffectList {
     /// One tick: the counter advances, every effect runs in list order, and
     /// an effect that returns false leaves while the last entry takes its
     /// place (that slot is run again in the same tick). The impact counters
-    /// then decay by one each while they are above one.
+    /// then lose one each while they are above one.
     pub fn tick(&mut self, mut run: impl FnMut(EffectEntry) -> bool) {
         self.ticks = self.ticks.wrapping_add(1);
         let mut at = 0;
@@ -512,17 +490,11 @@ impl EffectList {
             if run(self.entries[at]) {
                 at += 1;
             } else {
-                let last = self.entries.pop().unwrap_or(EffectEntry {
-                    id: 0,
-                    kind: ItemEffectKind::Flame,
-                });
-                if at < self.entries.len() {
-                    self.entries[at] = last;
-                }
+                self.entries.swap_remove(at);
             }
         }
         for impact in &mut self.impacts {
-            if *impact > 1.0 {
+            if 1.0 < *impact {
                 *impact -= 1.0;
             }
         }
@@ -548,17 +520,16 @@ mod tests {
         let floor = 0.5 * (0.6f64.ln() * 0.7).exp() as f32;
         assert!((flicker_intensity(0x3c) - floor).abs() < 1e-6);
         assert!((flicker_intensity(0x40) - 0.5 * (0.64f64.ln() * 0.7).exp() as f32).abs() < 1e-6);
-        assert!((flicker_intensity(0x44) - 0.5 * (0.68f64.ln() * 0.7).exp() as f32).abs() < 1e-6);
         assert_eq!(flicker_level(0x40), 0x3c);
         assert_eq!(flicker_level(0x41), 0x3d);
         assert_eq!(flicker_level(0x44), 0x40);
         let mut level = 0x44;
-        assert!((step_glow(&mut level) - flicker_intensity(0x40)).abs() < 1e-6);
+        assert_eq!(step_glow(&mut level), flicker_intensity(0x40));
         assert_eq!(level, 0x40);
     }
 
     #[test]
-    fn the_part_glow_needs_an_odd_live_kind() {
+    fn the_apparel_value_needs_an_odd_live_kind() {
         assert_eq!(part_glow(1, 0), 1.0);
         assert_eq!(part_glow(2, 0), 0.0);
         assert_eq!(part_glow(1, 0xff), 0.0);
@@ -574,77 +545,67 @@ mod tests {
     }
 
     #[test]
-    fn the_material_fade_is_squared() {
+    fn the_material_fade_writes_the_first_match_squared() {
         assert_eq!(material_fade(0.5), 0.25);
-        assert_eq!(material_fade(-2.0), 4.0);
+        let material = |shader, fade| SkinMaterial {
+            shader,
+            fade,
+            visible: false,
+        };
         let mut materials = [
-            SkinMaterial {
-                shader: GLOW_MATERIAL,
-                fade: 0.0,
-                visible: false,
-            },
-            SkinMaterial {
-                shader: 7,
-                fade: 0.5,
-                visible: false,
-            },
+            material(7, 0.5),
+            material(GLOW_MATERIAL, 0.0),
+            material(GLOW_MATERIAL, 0.0),
         ];
         assert!(fade_material(&mut materials, GLOW_MATERIAL, 0.5));
-        assert_eq!(materials[0].fade, 0.25);
-        assert!(materials[0].visible);
-        assert_eq!(materials[1].fade, 0.5);
-        assert!(!fade_material(&mut materials, FADE_PARAMETER, 1.0));
+        assert_eq!(materials[1].fade, 0.25);
+        assert!(materials[1].visible);
+        assert_eq!(materials[2], material(GLOW_MATERIAL, 0.0), "first only");
+        assert_eq!(materials[0].fade, 0.5);
+        assert!(!fade_material(&mut materials, GOLEM_MATERIAL, 1.0));
+        assert_eq!(GLOW_MATERIAL.to_le_bytes(), *b"*4");
+        assert_eq!(GOLEM_MATERIAL.to_le_bytes(), *b"go");
     }
 
     #[test]
-    fn the_focus_item_grants_one_slot() {
+    fn the_focus_item_sets_the_slot_word() {
         let slot = focus_slot(0, [Some(FOCUS_ITEM_KIND), None]);
         assert_eq!(slot.word, FOCUS_SLOT_BIT);
         assert!(!slot.lost);
-        assert_eq!(focus_slot(FOCUS_SLOT_BIT, [Some(3), None]).word, 0);
-        assert!(!focus_slot(FOCUS_SLOT_BIT, [Some(4), None]).lost);
+        assert_eq!(focus_slot(FOCUS_SLOT_BIT | 1, [Some(3), None]).word, 0);
+        assert!(!focus_slot(FOCUS_SLOT_BIT, [None, Some(4)]).lost);
         assert!(focus_slot(FOCUS_SLOT_BIT, [None, None]).lost);
         assert!(!focus_slot(0, [None, None]).lost);
-        assert!(held_effects(HELD_EFFECTS_BIT));
-        assert!(!held_effects(0));
     }
 
     #[test]
-    fn the_effect_kind_is_dispatched() {
-        assert_eq!(effect_kind(1), Some(ItemEffectKind::Flame));
-        assert_eq!(effect_kind(0x102), Some(ItemEffectKind::Glow));
-        assert_eq!(effect_kind(3), Some(ItemEffectKind::Spark));
-        assert_eq!(effect_kind(0), None);
-        assert_eq!(effect_kind(4), None);
+    fn the_hand_effects_are_dispatched_by_the_whole_word() {
+        assert_eq!(hand_effect(1), Some(ItemEffectKind::Electric));
+        assert_eq!(hand_effect(2), Some(ItemEffectKind::Glow));
+        assert_eq!(hand_effect(3), Some(ItemEffectKind::Flame));
+        assert_eq!(hand_effect(0x22), None, "not masked");
+        assert_eq!(hand_effect(4), None);
+        assert!(register_charge(HELD_EFFECTS_BIT));
+        assert!(!register_charge(0x100));
     }
 
     #[test]
-    fn a_held_item_attaches_its_kind_and_the_level_updater() {
-        let held = register_held(2, true);
-        assert_eq!(held.effect, Some(ItemEffectKind::Glow));
-        assert!(held.level_updater);
-        assert_eq!(register_held(1, true).effect, Some(ItemEffectKind::Flame));
-        assert!(!register_held(1, true).level_updater);
-        assert_eq!(register_held(3, false).effect, None);
-        assert_eq!(register_held(4, true).effect, None);
-        let refresh = VisualRefresh::garment(20);
-        assert!(refresh.effect && refresh.view);
-        assert_eq!(refresh.parts, 20);
-    }
-
-    #[test]
-    fn a_held_charge_flashes_the_player_once_it_reaches_its_source() {
+    fn a_charge_shows_the_hud_while_it_is_under_its_source() {
         let mut sub = 0x10;
         let out = charge_tick(0.0, 100.0, 2, &mut sub, true).unwrap();
         assert!((out.value - 0.4).abs() < 1e-5);
-        assert!(!out.flash && !out.capped);
-        assert_eq!(sub, 0x10);
+        assert!(out.flash && out.stepped && !out.capped);
+        assert_eq!(sub, 0x11);
+        // Passing the source holds the value there and does nothing else.
         let out = charge_tick(99.9, 100.0, 2, &mut sub, true).unwrap();
         assert_eq!(out.value, 100.0);
-        assert!(out.capped && out.flash && out.stepped);
+        assert!(out.capped && !out.flash && !out.stepped);
         assert_eq!(sub, 0x11);
-        let mut npc = 0x10;
-        assert!(!charge_tick(99.9, 100.0, 2, &mut npc, false).unwrap().flash);
+        // Landing on the source exactly still counts as under it.
+        let out = charge_tick(96.0, 1000.0, 0x22, &mut sub, false).unwrap();
+        assert_eq!(out.value, 100.0);
+        assert!(out.stepped && !out.flash, "only the player's HUD flashes");
+        assert_eq!(sub, 0x12);
         assert!(charge_tick(0.0, 1.0, 3, &mut sub, true).is_none());
         let mut full = 0xff;
         assert!(charge_tick(0.0, 1.0, 2, &mut full, true).is_none());
@@ -655,38 +616,43 @@ mod tests {
         let (state, fade) = register_worn(1, 0, 0.0, 0.3);
         assert!(state.lit);
         assert_eq!(state.light, 0.75);
-        assert!((fade - (1.0 - 0.0f64 / 255.0) as f32).abs() < 1e-7);
-        let (state, _) = register_worn(2, 0, 0.0, 0.3);
+        assert_eq!(fade, 1.0);
+        let (state, fade) = register_worn(2, 0, 0.5, 0.3);
         assert!(!state.lit);
-        assert_eq!(state.light, 0.3);
-        assert_eq!(state.counter, 2.0);
-        let (_state, fade) = register_worn(1, 0x7f, 0.0, 0.0);
-        assert!((fade - (1.0 - 127.0f64 / 255.0) as f32).abs() < 1e-7);
+        assert_eq!((state.light, state.counter, fade), (0.3, 2.5, 0.0));
+        let (_, fade) = register_worn(1, 0x7f, 0.0, 0.0);
+        assert_eq!(fade, (1.0 - 127.0f64 / 255.0) as f32);
         let mut sub = 0xfe;
         let step = step_worn(1, &mut sub, true, 0.5, [1.5, 1.5]);
         assert_eq!(sub, 0xff);
         assert_eq!(step.action, GlowAction::Off);
+        assert_eq!(step.fade, Some(0.0));
         let mut sub = 0x10;
         let step = step_worn(1, &mut sub, false, 0.0, [1.5, 0.5]);
         assert_eq!(sub, 0x11);
         assert_eq!(step.action, GlowAction::On);
         assert_eq!(step.light, 0.75);
-        assert!((step.fade - (1.0 - 17.0f64 / 255.0) as f32).abs() < 1e-7);
+        assert_eq!(step.fade, Some((1.0 - 17.0f64 / 255.0) as f32));
         let mut sub = 0x10;
         assert_eq!(
             step_worn(1, &mut sub, true, 0.5, [0.5, 0.5]).action,
-            GlowAction::None
+            GlowAction::None,
+            "no counter: still rising by one more"
         );
         let mut sub = 0x10;
-        let step = step_worn(0x12, &mut sub, true, 0.5, [1.5, 0.5]);
-        assert_eq!(sub, 0x1a);
-        assert!(step.fade == 0.0, "even kinds take no material fade");
+        let step = step_worn(0x11, &mut sub, true, 0.5, [1.5, 0.5]);
+        assert_eq!(sub, 0x1a, "the fast bit steps ten");
+        // An even kind is left alone, takes no fade and is not rising.
+        let mut sub = 0x10;
+        let step2 = step_worn(0x12, &mut sub, true, 0.5, [1.5, 1.5]);
+        assert_eq!(sub, 0x10);
+        assert_eq!(step2.fade, None);
+        assert_eq!(step2.action, GlowAction::Off);
+        assert_eq!(step.action, GlowAction::None);
     }
 
     #[test]
     fn an_apparel_effect_turns_on_and_off_at_the_hysteresis() {
-        assert_eq!(register_apparel(1, 0), 1.0);
-        assert_eq!(register_apparel(0, 0), 0.0);
         let mut sub = 0x10;
         let step = step_apparel(1, &mut sub, 0.0, 1.5);
         assert_eq!(sub, 0x11);
@@ -696,51 +662,54 @@ mod tests {
         assert_eq!(sub, 0xff);
         assert!(!step.on && step.off);
         let mut sub = 0x10;
-        let step = step_apparel(0x11, &mut sub, 0.0, 1.5);
+        let step = step_apparel(0x11, &mut sub, 0.95, 1.5);
         assert_eq!(sub, 0x1a);
-        assert!(step.on);
+        assert!(!step.on && !step.off, "rising, but already over 0.9");
+        let mut sub = 0x10;
+        let step = step_apparel(0x10, &mut sub, 0.5, 1.5);
+        assert_eq!(sub, 0x10, "an even kind does not step");
+        assert!(step.off);
     }
 
     #[test]
     fn a_charged_glow_rises_one_tick_in_eight() {
         let mut sub = 1;
         let mut level = 0x3c;
-        assert!(step_charged_glow(2, &mut sub, &mut level, 5).is_none());
-        let value = step_charged_glow(2, &mut sub, &mut level, 7).unwrap();
-        assert_eq!(sub, 2);
-        assert_eq!(level, 0x3e);
-        assert!((value - flicker_intensity(0x3e)).abs() < 1e-6);
+        let tick = step_charged_glow(true, 2, &mut sub, &mut level, 5);
+        assert_eq!(
+            tick,
+            GlowTick {
+                keep: true,
+                light: None
+            }
+        );
+        let tick = step_charged_glow(true, 2, &mut sub, &mut level, 7);
+        assert_eq!((sub, level), (2, 0x3e));
+        assert_eq!(tick.light, Some(flicker_intensity(0x3e)));
         let mut sub = 0xff;
         let mut level = 0x3c;
-        assert!(step_charged_glow(2, &mut sub, &mut level, 7).is_some());
-        assert_eq!(sub, 0xff);
-        assert_eq!(level, 0x3c);
+        assert!(
+            step_charged_glow(true, 2, &mut sub, &mut level, 15)
+                .light
+                .is_some()
+        );
+        assert_eq!((sub, level), (0xff, 0x3c));
         let mut sub = 0;
         let mut level = 0x8c;
-        assert!(step_charged_glow(2, &mut sub, &mut level, 7).is_some());
+        step_charged_glow(true, 2, &mut sub, &mut level, 7);
         assert_eq!(level, 0x8c);
+        assert!(!step_charged_glow(false, 2, &mut sub, &mut level, 7).keep);
     }
 
     #[test]
     fn the_list_drops_dead_effects_and_decays_its_impacts() {
+        let entry = |id, kind| EffectEntry { id, kind };
         let mut list = EffectList {
             entries: vec![
-                EffectEntry {
-                    id: 1,
-                    kind: ItemEffectKind::Flame,
-                },
-                EffectEntry {
-                    id: 2,
-                    kind: ItemEffectKind::Glow,
-                },
-                EffectEntry {
-                    id: 3,
-                    kind: ItemEffectKind::Spark,
-                },
-                EffectEntry {
-                    id: 4,
-                    kind: ItemEffectKind::Flame,
-                },
+                entry(1, EffectTick::Charge),
+                entry(2, EffectTick::Hand(ItemEffectKind::Glow)),
+                entry(3, EffectTick::Worn),
+                entry(4, EffectTick::Apparel),
             ],
             ticks: 0,
             impacts: [1.5, 0.5],
@@ -753,12 +722,11 @@ mod tests {
         // The last entry takes the dropped one's slot and runs in the same
         // tick.
         assert_eq!(seen, [1, 2, 4, 3]);
-        assert_eq!(list.entries.len(), 3);
-        assert_eq!(list.entries[1].id, 4);
-        assert_eq!(list.entries[2].id, 3);
+        let ids: Vec<i32> = list.entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids, [1, 4, 3]);
         assert_eq!(list.ticks, 1);
         assert_eq!(list.impacts, [0.5, 0.5]);
-        list.attach(1, ItemEffectKind::Glow);
+        list.attach(1, EffectTick::Worn);
         assert_eq!(list.entries.len(), 3);
     }
 }

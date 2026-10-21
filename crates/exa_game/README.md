@@ -212,16 +212,14 @@ flags, programs, uniforms, pass rows and fades) and `effects::vanish`
 dome, a wave or a vanish yet and none is drawn: their callers are the
 powers, the scene's weather and the AI's sight, which are not in.
 
-The per-character item effects (`item_effects`) are the character's
-effect list and its two impact counters, the held charge accumulator and
-its HUD flash, the power-curve glow with its level step, the worn item's
-light and apparel effect with their 0.9/0.1 hysteresis, the skin
-material fade (the square of the value) and the focus-item power slot with
-the power tree refresh. The golem guardians (`exa_ai::golem`) have the
-wake and sleep transitions with their limb and glow scales, the homeward
-return, the `Alarm_` node lookup, the 6 m sector radius query, the alarm
-post at 200 cm plus the node's radius and the pose reset. Nothing spawns a
-golem or dresses a character from these yet.
+The per-character item effects (`item_effects`) are the body's effect
+list and its two impact counters, the held charge (the HUD shown while it
+is under its source), the hand-effect dispatch (electric, glow, flame), the
+power-curve glow with its level step, the worn item's light and the apparel
+effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
+the value, first match) and the focus-item power slot. The golem guardians
+are in `exa_ai::golem`. Nothing spawns a golem or dresses a character from
+these yet.
 
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages
