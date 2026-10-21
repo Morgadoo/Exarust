@@ -987,9 +987,11 @@ mod corpus_tests {
     use exa_rpk::GameData;
 
     /// Every shipped image converts with the material word at the retail
-    /// settings (skipped without the game). Prints the detail classes, how
-    /// many images the detail setting starts at a later level, and the
-    /// time the GPU (BC) path takes for the whole corpus.
+    /// settings (skipped without the game), and its stored-chain flag
+    /// agrees with the levels its data size holds. Prints the detail
+    /// classes, how many images the detail setting starts at a later level,
+    /// how many compressed images have no stored chain (and so no mips),
+    /// and the time the GPU (BC) path takes for the whole corpus.
     #[test]
     fn every_shipped_image_converts() {
         let Some(dir) = crate::locate_install(None) else {
@@ -1001,6 +1003,7 @@ mod corpus_tests {
         let mut classes = [0usize; 4];
         let mut later = 0usize;
         let mut stored_chain = 0usize;
+        let mut unchained_compressed = 0usize;
         let mut images = 0usize;
         let start = std::time::Instant::now();
         for (_, pack) in game.packs() {
@@ -1013,12 +1016,19 @@ mod corpus_tests {
                     continue;
                 };
                 images += 1;
+                assert_eq!(
+                    rfi.header.has_mip_chain(),
+                    rfi.mip_count > 1,
+                    "{}",
+                    entry.name
+                );
                 classes[rfi.header.detail_class() as usize] += 1;
                 stored_chain += usize::from(rfi.header.has_mip_chain());
                 let first = rfi
                     .header
                     .first_mip_level(settings.texture_detail, settings.max_texture_size);
                 let compressed = rfi.header.format_word & 0x8000_0000 != 0;
+                unchained_compressed += usize::from(compressed && !rfi.header.has_mip_chain());
                 if first > 0 && !(compressed && !rfi.header.has_mip_chain()) {
                     later += 1;
                 }
@@ -1036,6 +1046,7 @@ mod corpus_tests {
         }
         eprintln!(
             "{images} images, classes {classes:?}, {stored_chain} with a stored chain, \
+             {unchained_compressed} compressed without one, \
              {later} start at a later level at detail {}; {:?}",
             settings.texture_detail,
             start.elapsed()
