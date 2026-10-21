@@ -129,17 +129,18 @@ fn linear(srgb: [f32; 3]) -> Vec3 {
 /// The lighting of `level`, given its environment record and the number of
 /// lights its own nodes and props bring.
 pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) -> Lighting {
-    level_lighting_with(level, record, lights, false)
+    level_lighting_with(level, record, lights, None)
 }
 
-/// The lighting of `level`; `legacy_grid` is a tile-grid level built the
-/// original's older way, which forces its environment indoors unless the
-/// level has terrain.
+/// The lighting of `level`; `legacy_grid` is `Some(terrain)` for a
+/// tile-grid level built the original's older way, which forces a black
+/// background and grey fog and, without terrain, a grey ambient. Nothing in
+/// Exarust builds levels that way yet, so the game passes `None`.
 pub fn level_lighting_with(
     level: &str,
     record: Option<&Environment>,
     lights: usize,
-    legacy_grid: bool,
+    legacy_grid: Option<bool>,
 ) -> Lighting {
     let mut env = SceneEnvironment::new(SKY_QUALITY);
     if let Some(record) = record {
@@ -150,8 +151,8 @@ pub fn level_lighting_with(
         Preset::Indoor => false,
         Preset::FromRecord => false,
     };
-    if legacy_grid {
-        env.force_indoor();
+    if let Some(terrain) = legacy_grid {
+        env.force_indoor(terrain);
     }
     if sky {
         // Turning the sky on places the sun or moon and dims the record.
@@ -177,11 +178,14 @@ pub fn level_lighting_with(
             (Preset::FromRecord, SunMode::Auto) => lights == 0,
             _ => false,
         };
+    env.sun_light = lit;
     let placed = env.set_sun_position(env.azimuth, env.time_of_day);
     let frame = env.apply_frame([0.0, 0.0, 1.0]);
     let sun = lit.then(|| Sun {
         towards: Vec3::from_array(placed.towards).normalize(),
-        colour: linear(if sky {
+        // Under a sky the original takes the day record's sun colour; until
+        // Exarust has the record track, the level's own colour stands in.
+        colour: linear(if sky && env.track.is_some() {
             env.sky_sun_colour
         } else {
             env.sun_colour
@@ -345,8 +349,9 @@ mod tests {
         let outdoor = level_lighting("arenao3", None, 0);
         let fog = outdoor.fog.unwrap();
         assert_eq!(fog.near, 0.0);
-        // 1 km, narrowed by the low sun the default time puts up: 0.8309.
-        assert!((fog.far - 830.949).abs() < 1e-2, "{}", fog.far);
+        // 1 km, narrowed by the low sun the default time puts up (a
+        // daylight factor of 0.4978): 0.8310.
+        assert!((fog.far - 831.011).abs() < 2e-2, "{}", fog.far);
         // 0.47 sRGB.
         assert!((fog.colour.x - 0.1873).abs() < 1e-3, "{}", fog.colour.x);
     }
@@ -371,15 +376,45 @@ mod tests {
             ambient: [0.5, 0.4, 0.3],
             ..Default::default()
         };
-        let lit = level_lighting_with("menuscene", Some(&env), 0, true);
+        let lit = level_lighting_with("menuscene", Some(&env), 0, Some(false));
         // 0.6275 grey, laid over the record.
         assert!((lit.ambient.x - 0.3516).abs() < 1e-3);
         assert!((lit.ambient.y - 0.3516).abs() < 1e-3);
         assert_eq!(lit.ambient.z, lit.ambient.y);
-        // Without the legacy flag the record's own ambient stands.
-        let lit = level_lighting_with("menuscene", Some(&env), 0, false);
+        // With terrain, or without the legacy build, the record's own
+        // ambient stands.
+        let lit = level_lighting_with("menuscene", Some(&env), 0, Some(true));
+        assert!((lit.ambient.x - 0.2140).abs() < 1e-3);
+        let lit = level_lighting_with("menuscene", Some(&env), 0, None);
         assert!((lit.ambient.x - 0.2140).abs() < 1e-3);
         assert!((lit.ambient.z - 0.0732).abs() < 1e-3);
+    }
+
+    #[test]
+    fn indoor_and_record_levels_keep_their_earlier_lighting() {
+        // The story levels' lighting before the environment model: the
+        // record's ambient through the sRGB curve, no sun, fog or sky, and a
+        // black background. The model must not move it.
+        let record = Environment {
+            ambient: [0.62, 0.55, 0.48],
+            sun_colour: [0.9, 0.8, 0.7],
+            sun_mode: SunMode::On,
+            ..Default::default()
+        };
+        for level in ["exanima01", "exanima02"] {
+            let lit = level_lighting(level, Some(&record), 7);
+            let want = linear(record.ambient);
+            assert!((lit.ambient - want).abs().max_element() < 1e-6, "{level}");
+            assert!(lit.sun.is_none() && lit.fog.is_none() && !lit.sky);
+            assert_eq!(lit.background, Vec3::ZERO);
+        }
+        // A level that follows its record keeps the record's sun.
+        let lit = level_lighting("menuscene", Some(&record), 7);
+        let sun = lit.sun.unwrap();
+        let want = Vec3::from_array(record.sun_direction()).normalize();
+        assert!((sun.towards - want).abs().max_element() < 1e-6);
+        assert!((sun.colour - linear(record.sun_colour)).abs().max_element() < 1e-6);
+        assert_eq!(sun.illuminance, SUN_LUX);
     }
 
     #[test]

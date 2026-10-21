@@ -548,12 +548,14 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_963, 320_140, 897, 0],
-                floors: [219_327, 793],
-                passable: [219_260, 793],
-                sky: [101_710, 104],
+                columns_by_spans: [190_998, 320_113, 889, 0],
+                floors: [219_413, 790],
+                passable: [219_346, 790],
+                sky: [101_589, 99],
             },
-            190_989,
+            // The grid's special tiles now mask their edges in every
+            // rotation, as the original's start-up table does.
+            191_010,
             682,
         ),
     ];
@@ -585,7 +587,7 @@ fn shipped_levels() {
                 assert!(reaches(Vec3::new(8.9, -1.0, 64.0)));
                 // Over its 477 closed rooms only the walls' edges have floors
                 // (1120 cells); filling whole tiles, the ground between the
-                // rooms made 186 721 and the walk reached 338 336 cells.
+                // rooms made 186 721 and the walk reached 338 428 cells.
                 let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
                 let scene = exa_formats::rfc::Scene::parse(pack.get("exanima01.rfc").unwrap());
                 let grid = scene.unwrap().grid.unwrap();
@@ -598,7 +600,7 @@ fn shipped_levels() {
                 }
                 let g = whole.build();
                 assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
-                assert_eq!(reach(&g, start).len(), 338_336);
+                assert_eq!(reach(&g, start).len(), 338_428);
             }
             _ => {}
         }
