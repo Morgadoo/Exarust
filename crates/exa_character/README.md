@@ -31,10 +31,11 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   from a record; applying one also ensures the underwear. Moving a record
   between databases remaps its item references, or keeps one copy of an
   item that is both held and carried.
-- Skills: the total levels (5000 points each), whether another can be
-  spent (no technique past the funded levels, fewer than 15 levels in
-  all), the level a technique choice belongs to, and unlearning a level or
-  a technique id across the skills.
+- Skills: the total levels (5000 points each), whether the record may
+  spend another level (no skill holds a technique past the levels its
+  points fund, and the six add up to fewer than 15), the first slot that
+  breaks that rule, and unlearning a level or a technique id across the
+  skills.
 - Health: `save_health` writes yellow and red as rounded shares of the
   maximum (red 0 when not positive), focus as its share, the seed
   `0xFFFF` and the heal-pool and potion entries; `restore_health` reads
