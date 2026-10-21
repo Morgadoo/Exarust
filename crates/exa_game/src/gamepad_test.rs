@@ -875,3 +875,32 @@ fn a_pad_sample_carries_each_actions_data() {
     assert_eq!(sample.analog(Id::Camera), Vec2::new(-1.0, 0.5));
     assert!(!sample.digital(Id::MenuNav));
 }
+
+#[test]
+fn the_aim_stick_steers_past_a_tenth() {
+    assert!(!aim_engaged(Vec3::new(0.099, 0.0, 0.0)));
+    assert!(aim_engaged(Vec3::new(0.08, 0.0, 0.08)));
+    assert!(!aim_engaged(Vec3::new(0.0, 1.0, 0.0)));
+}
+
+#[test]
+fn the_pad_stick_stands_for_the_steering_keys() {
+    use crate::steering::Keys;
+    let frame = |v: Vec3, sprint: bool| PlayFrame {
+        move_world: v,
+        sprint,
+        ..PlayFrame::default()
+    };
+    // Straight ahead of a heading of 0 (+Z): forward only.
+    let keys = pad_keys(Keys::default(), &frame(Vec3::Z, false), 0.0, None);
+    assert!(keys.w && !keys.a && !keys.d && !keys.s);
+    // Behind: backpedal; a sprint holds the run key.
+    let keys = pad_keys(Keys::default(), &frame(-Vec3::Z, true), 0.0, None);
+    assert!(keys.s && !keys.w && keys.shift);
+    // Under 0.2 the stick asks nothing.
+    let keys = pad_keys(Keys::default(), &frame(Vec3::Z * 0.1, false), 0.0, None);
+    assert_eq!(keys, Keys::default());
+    // In combat mode it steps along the aim.
+    let keys = pad_keys(Keys::default(), &frame(Vec3::Z, false), 0.0, Some(0.0));
+    assert!(keys.w && !keys.a && !keys.d);
+}

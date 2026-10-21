@@ -1622,6 +1622,59 @@ pub fn rumble_hit(pad: &mut PlayPad, amount: f32) {
     pad.rumble.add(amount);
 }
 
+/// The keys a frame of pad input stands for in Exarust's key-driven
+/// steering, added to the keys held (Exarust's own: the original feeds the
+/// stick's world vector to its player behaviour as the wanted direction,
+/// and Exarust's exploration steering reads keys). `Sprint` holds the run
+/// key. Out of combat (`combat_aim` none) a stick past 0.2 turns with A or
+/// D while the heading is more than 0.06 rad off it, and walks forward, or
+/// backpedals when it points more than 135° behind. In combat mode it steps
+/// along and across the aim, each part past 0.4.
+pub(crate) fn pad_keys(
+    mut keys: crate::steering::Keys,
+    frame: &PlayFrame,
+    heading: f32,
+    combat_aim: Option<f32>,
+) -> crate::steering::Keys {
+    use exa_physics::body::locomotion::{forward, turn_between, yaw_of};
+    keys.shift |= frame.sprint;
+    let ground = frame.move_world.with_y(0.0);
+    if let Some(aim) = combat_aim {
+        let look = forward(aim);
+        let side = Vec3::new(look.z, 0.0, -look.x);
+        let along = ground.dot(look);
+        let across = ground.dot(side);
+        keys.w |= along > 0.4;
+        keys.s |= along < -0.4;
+        keys.a |= across > 0.4;
+        keys.d |= across < -0.4;
+    } else if ground.length() > 0.2 {
+        let error = turn_between(heading, yaw_of(ground));
+        if error > 0.06 {
+            keys.a = true;
+        } else if error < -0.06 {
+            keys.d = true;
+        }
+        if error.abs() > 3.0 * std::f32::consts::FRAC_PI_4 {
+            keys.s = true;
+        } else {
+            keys.w = true;
+        }
+    }
+    keys
+}
+
+/// Whether the aim stick's world vector steers the aim: the player
+/// behaviour's cursor read takes it once `z·z + x·x` (single precision,
+/// compared in double) is over 0.01, about a tenth of a full stick, and
+/// otherwise leaves the cursor to the mouse. (It then places the cursor
+/// `250·|aim| + 50` cm out and eases the screen cursor there by
+/// `(0.4·AimSpeed + 0.1)²` a tick, the one use of AimSpeed; Exarust turns
+/// its combat aim to the stick's yaw directly.)
+pub fn aim_engaged(aim: Vec3) -> bool {
+    f64::from(aim.z * aim.z + aim.x * aim.x) > 0.01
+}
+
 // ---- Bevy wiring ----------------------------------------------------------
 
 /// Whether a gamepad is connected and drives the player.

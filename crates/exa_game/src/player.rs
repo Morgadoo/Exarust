@@ -561,41 +561,13 @@ pub(crate) fn steer_player(
                     at.translation = standing;
                 }
             }
-            // The pad's stick drives the same request the keys do: beside
-            // the heading its off-axis part turns with A or D, straight
-            // behind it backpedals; in combat mode it steps along and
-            // across the aim. (The original feeds an analog move vector to
-            // its player controls; Exarust's exploration steering is
-            // key-driven, so the stick is read as the keys a player would
-            // hold. Its aim stick is the combat aim.)
+            // The pad drives the same request the keys do
+            // (`gamepad::pad_keys`).
             let mut input = input;
             let pad_crouch = gamepad.is_some_and(|g| g.crouch);
             if let Some(g) = gamepad {
-                input.shift |= g.sprint;
-                let ground = g.move_world.with_y(0.0);
-                if pb.combat {
-                    let look = forward(pb.aim);
-                    let side = Vec3::new(look.z, 0.0, -look.x);
-                    let along = ground.dot(look);
-                    let across = ground.dot(side);
-                    input.w |= along > 0.4;
-                    input.s |= along < -0.4;
-                    input.a |= across > 0.4;
-                    input.d |= across < -0.4;
-                } else if ground.length() > 0.2 {
-                    let want = yaw_of(ground);
-                    let error = turn_between(req.heading, want);
-                    if error > 0.06 {
-                        input.a = true;
-                    } else if error < -0.06 {
-                        input.d = true;
-                    }
-                    if error.abs() > 3.0 * std::f32::consts::FRAC_PI_4 {
-                        input.s = true;
-                    } else {
-                        input.w = true;
-                    }
-                }
+                input =
+                    crate::gamepad::pad_keys(input, &g, req.heading, pb.combat.then_some(pb.aim));
             }
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
@@ -939,7 +911,7 @@ pub(crate) fn player_combat(
         let pad_aim = pad_active
             .then(|| pad.as_deref().map(|p| p.frame().aim_world))
             .flatten()
-            .filter(|aim| aim.xz().length() > 0.2)
+            .filter(|aim| crate::gamepad::aim_engaged(*aim))
             .map(yaw_of);
         let aim = pad_aim.or_else(|| {
             cursor
