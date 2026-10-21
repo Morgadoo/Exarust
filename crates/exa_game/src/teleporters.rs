@@ -434,6 +434,21 @@ mod tests {
         assert_eq!(clock.now_ms, 12);
     }
 
+    /// The two device sounds and their levels: `devicescna01` at 0.3 and
+    /// `devicepwra01` at 0.1, both at pitch 1.
+    #[test]
+    fn the_device_sounds_are_pinned() {
+        let scan = DeviceSound::scan(Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(scan.kind, SoundKind::Scan);
+        assert_eq!((scan.volume, scan.pitch), (0.3, 1.0));
+        assert_eq!(scan.at, Vec3::new(1.0, 2.0, 3.0));
+        let power = DeviceSound::power(Vec3::ZERO);
+        assert_eq!(power.kind, SoundKind::Power);
+        assert_eq!((power.volume, power.pitch), (0.1, 1.0));
+        assert_eq!(teleporters::SCAN_SOUND, "devicescna01");
+        assert_eq!(teleporters::POWER_SOUND, "devicepwra01");
+    }
+
     fn app() -> App {
         let mut app = App::new();
         app.add_message::<ArriveAtLevel>()

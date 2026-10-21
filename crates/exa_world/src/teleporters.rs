@@ -725,6 +725,18 @@ mod tests {
         assert_eq!(screen.rows(), 1);
         assert_eq!(screen.row_destination(0), Some(7));
         assert_eq!(screen.row_destination(1), None);
+
+        // A zero entry stops the fill: row 0 takes that empty entry and the
+        // rows already filled keep the earlier entries.
+        let mut zero = record();
+        zero.destinations[2] = 0;
+        let screen = ScreenData::of(&zero);
+        assert_eq!(screen.row_index(0), Some(2));
+        assert_eq!(screen.row_destination(0), Some(0));
+        assert_eq!(screen.row_destination(1), Some(7));
+        assert_eq!(screen.row_destination(2), Some(10));
+        // A row the fill never reached keeps entry 0.
+        assert_eq!(screen.row_destination(3), Some(7));
     }
 
     #[test]
