@@ -1563,57 +1563,75 @@ The original computes skin weights for the body and apparel at load time;
 none are stored. Body parts (`humanbase.rfc`) are meshes in their bone's
 space. Each carries invisible seam triangles (material `_null`) whose
 per-triangle flags (sub-chunk `0x3DC3` after the triangle ranges: a `u32` per
-triangle) hold a seam class in the high byte and boundary-edge markers in
-byte 2. The classes, as the builder tests them:
+triangle) hold a seam class in the high byte and boundary markers in byte 2.
+The seam class sets a seam position's share and which triangles grow a
+group; the byte-2 marker class sets an edge's falloff (REA on the builder,
+read instruction by instruction):
 
-| bits | falloff radius | multiplier on distance² (cm²) | seam share |
-|---|---|---|---|
-| `0x80000000`/`0x40000000` | 20 cm | 0.0025 | 0.5 |
-| `0x20000000`/`0x10000000` | 15 cm | 0.00444 | 0.25 |
-| `0x08000000`/`0x04000000` | 10 cm | 0.01 | 0.125 |
-| any other seam bit | 5 cm | 0.04 | none |
+| high byte (seam class) | seam share | byte 2 (marker class) | falloff radius | multiplier on distance² (cm²) |
+|---|---|---|---|---|
+| `0xC0` | 0.5 | `0xC0` | 20 cm | 0.0025 |
+| `0x30` | 0.25 | `0x30` | 15 cm | 0.00444 |
+| `0x0C` | 0.125 | `0x0C` | 10 cm | 0.01 |
+| other | none | other | 5 cm | 0.04 |
 
-Shipped body seams use `0x80000000` and `0x20000000`, together with one or
-more byte-2 markers (`0x10000`, `0x20000`, `0x80000`, `0x200000`, …); a seam
-without a marker gets no loop edges. The per-triangle byte sub-chunk
-`0x3DC2` marks corners (bits 3–5) whose apparel edge is left out.
+Shipped seams mostly pair a wide seam class with a narrow marker: 98 % of
+the 363 281 marked triangles of the shipped bodies and garments have a
+marker class other than their seam class, so most blends reach 5 cm. The
+per-triangle byte sub-chunk `0x3DC2` marks corners (bits 3–5) whose apparel
+edge is left out.
 
 Rules (`exa_assets::skin`):
 
-1. Seams of class `0xC0` seed groups, grown over every triangle of that class
-   sharing a position id. A group's boundary edges are its edges shared with
-   a triangle of another class, when one of the two flags has a byte-2
-   marker. The group's box is the box of those edge endpoints, or the first
-   corner when it has none; the centre is the middle of that box. The group
-   then grows over the coarse classes (`0xF0000000`) and again over every
-   seam class (`0xFC000000`), adding position ids.
-2. Leftover seams of class `0x30` seed a second set of groups, grown over
-   every seam class. Their box is the box of the group's positions, except
-   that the first vertex with more than ten adjacent triangles stops it at
-   that vertex. After the centre, the group grows once more over every class
-   without revisiting its own vertices.
-3. Joints: the parent at the part's origin and every bone-named mesh child at
-   its translation. On a body, each joint in order takes its nearest group;
-   a group already taken is given up only when the summed distances of the
-   two joints and their new groups improve (the original's spare-group helper
-   returns the first free group, not the nearest). On apparel every group
-   takes its nearest joint, the parent on a tie.
-4. Apparel seams: triangles with a byte-2 marker seed groups, grown over the
-   same markers. An edge is a boundary one when no other triangle around its
-   first corner shares it; the corner byte's bits 3–5 leave that corner's
-   edge out.
-5. A position in a matched group's grown set is split between its own bone
-   and the group's — 0.5, 0.25 or 0.125 by the widest seam class around it —
-   and later groups overwrite earlier ones.
-6. Other positions blend towards up to three matched groups: for each, m is
-   the least distance²·falloff over the group's edges; keep m < 0.999, take
-   w = 1 − √m, damp with s = Σw, q = Σw², k = s/q (s ≤ 1) or 1/q, and
-   w = min(w, w²k). Each neighbour receives 0.5·w; the own bone keeps the
-   rest. Weights are per position id.
+1. The builder's position marks (in a group, widened a box) and triangle
+   claims are shared by every group of a mesh: a position belongs to the
+   first group that reaches it.
+2. Seams of class `0xC0` seed groups, traced over every triangle of that
+   class around their corners. For a corner and the corner two along, a
+   triangle of another class around the corner, whose combined flags carry a
+   byte-2 marker, gives a boundary edge when the corner after the shared one
+   in it is the edge's end. The box: while the group has exactly one edge,
+   each such visit resets it to the visited corner; otherwise a corner not
+   yet boxed widens it; the edge's end widens it when not yet boxed, edge or
+   not. A group with no edge takes the box of all its positions. The centre
+   is low + (high − low)·0.5. The group then grows from the start of its
+   queue over the classes `0xF0000000` and then `0xFC000000`.
+3. Leftover seams of class `0x30` seed a second set, grown over every class
+   without walking past positions some group holds. Their box is the box of
+   their positions, stopped at the first position with more than ten
+   triangles; after the centre they grow once more over every class.
+4. Apparel runs the body's two sets and then seeds groups from the triangles
+   with a byte-2 marker, grown over the same markers. An edge is a boundary
+   one when no triangle around its start runs along it the other way; the
+   corner byte's bits 3–5 leave a corner's edge out; the falloff is the
+   seeding triangle's marker class. Their box follows the busy-position rule.
+5. Joints: the parent at the part's origin and every bone-named mesh child at
+   its translation. On a body, each joint in order finds its nearest group
+   (squared distance, from 3.4·10³⁸). A free group is taken. A taken group
+   compares keep = d(holder, group) + d(joint, its spare) with swap =
+   d(holder, its spare) + d(joint, group), distances summed (x² + z²) + y²;
+   swap ≤ keep (or NaN) moves the joint in and the holder to its spare,
+   otherwise the joint takes its spare. The spare search takes the first
+   free group and after it any later one closer than a stale threshold: the
+   last squared distance of the nearest search for the joint's spare, the
+   keep score for the holder's. On apparel every group takes its nearest
+   joint, the parent on a tie.
+6. A position in a matched group is split between its own bone and the
+   group's by the widest seam class of the triangles around it; later groups
+   overwrite earlier ones.
+7. Other positions blend towards up to three matched groups: m is the least
+   distance²·falloff over the group's edges, from 1 (a zero-length edge's NaN
+   never lowers it); keep m < 0.999 in double precision; w = 1 − √m (1 at
+   m ≤ 10⁻⁶), damp with s = Σw, q = Σw², k = 1/q when s > 1 else s/q, and w =
+   w²k where that is smaller. Each neighbour receives 0.5·w; the own bone
+   keeps the rest. Weights are per position id.
 
-Checked against the shipped body: in `12RUArm`, the elbow and shoulder loops
-get 0.5/0.5, and at x = −20.3 cm a vertex has 0.658 own, 0.294 forearm and
-0.048 shoulder.
+Checked against the shipped bodies: every pair of vertices of different
+parts at one rest position weighs its bones alike, on the human body (3 818
+pairs) and the ogre's (1 668); the builder before this reading tore 533 and
+517 of them. Across the 358 shipped bodies and garments 62 051 of 116 657
+coincident pairs still differ (74 616 before), on garments whose sub-part
+nodes stay rigid on different bones (such as `trouser_a`'s).
 
 Exarust skins each part as a Bevy `SkinnedMesh` whose joint j is the part of
 bone j. The inverse bind pose is relative to the part's rest pose. A skinned

@@ -7,19 +7,22 @@ installation discovery (`--game`, `EXANIMA_DIR`, `.env`).
 **Phase:** 0 (started), 2 (asset source `exanima://`, loaders, direct BC upload, streaming).
 
 Skinning (`skin`): the original's seam builder, run on body parts and
-garments while a model is built. Body parts find their seam groups from the
-wide classes, take boundary edges shared with visible triangles, grow over
-the finer classes, and match the parent and child joints to groups; garments
-seed groups from the boundary-marked triangles and their corner bytes. The
-weights are per position id: fixed 0.5/0.25/0.125 splits on the grown seam
-sets, and up to three damped distance blends elsewhere
-([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The weights
-run in the model build on the compute pool; a mesh that ships weights keeps
-them.
+garments while a model is built, read instruction by instruction. Body parts
+trace wide seam groups whose boundary edges come from neighbours of another
+class with a byte-2 marker (the marker class sets the falloff), grow over the
+finer classes, and give each joint a group by the original's keep-or-swap
+scores; garments run the same groups and then groups of their marked
+triangles, each taking its nearest joint. A position belongs to the first
+group that reaches it. The weights are per position id: fixed 0.5/0.25/0.125
+splits on the groups, and up to three damped distance blends elsewhere
+([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
+human and ogre bodies are checked watertight. The weights run in the model
+build on the compute pool; a mesh that ships weights keeps them.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),
-cached per race, tone and sex.
+cached per race, tone and sex. The tone multiplier is the original's, bit
+for bit: its HSV tone table, grid halves and fast power.
 
 Model nodes carry their rigid body with the physical divisor of their first
 mesh part's material (`ModelNode::rigid`, `NodeRigidBody::mobility`), what
