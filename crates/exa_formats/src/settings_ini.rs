@@ -650,8 +650,12 @@ pub fn parse_key_def(text: &[u8], hotkeys: &mut Vec<Hotkey>) {
     });
 }
 
-/// The settings whose rules are the graphics and key settings' and the
-/// launcher's, with the original's values before the file is read.
+/// The settings a fresh installation starts with, with the original's values
+/// before the file is read.
+///
+/// The graphics-and-keys, launcher and hardware-configuration settings that
+/// Exarust reads are here. The hardware ones are kept as read; the launcher
+/// applies the ones it can and documents the rest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     /// The GUI size offset (see [`Settings::apply`] for its rule).
@@ -687,6 +691,33 @@ pub struct Settings {
     pub window_height: i32,
     pub touchscreen: bool,
     pub stereo_mode: i32,
+    /// The last GPU benchmark's rate over 60.
+    pub perf_index: f32,
+    pub show_fps: bool,
+    pub music: bool,
+    /// Whether the camera follows the player (read only; not traced).
+    pub cam_follow: bool,
+    /// Whether the renderer works in linear colour (read only; not traced).
+    pub linear_rgb: bool,
+    pub software_audio: bool,
+    pub no_proc_mips: bool,
+    pub no_dynamic_mips: bool,
+    /// The shadow-map format word (read only; not traced).
+    pub shadow_format: i32,
+    pub dynamic_vbo: bool,
+    /// The full-screen display mode's width and height (kept; Bevy's
+    /// borderless full screen uses the monitor's).
+    pub screen_width: i32,
+    pub screen_height: i32,
+    pub swap_copy: bool,
+    pub force_vbo: bool,
+    /// Whether the voxel GI uses its low-precision format. Exarust's GI is
+    /// already 8-bit.
+    pub gi_low_precision: bool,
+    /// The input mode word: 0 for the keyboard, 51 for a controller.
+    pub input_mode: i32,
+    /// The aim speed as a fraction, from the file's 1-based step.
+    pub aim_speed: f32,
 }
 
 impl Default for Settings {
@@ -712,6 +743,25 @@ impl Default for Settings {
             window_height: 1080,
             touchscreen: false,
             stereo_mode: 0,
+            perf_index: 0.0,
+            show_fps: false,
+            music: true,
+            // The three defaults below are guesses: the handlers were not
+            // traced, and only their variables' kinds are known.
+            cam_follow: true,
+            linear_rgb: false,
+            software_audio: false,
+            no_proc_mips: false,
+            no_dynamic_mips: false,
+            shadow_format: 0,
+            dynamic_vbo: false,
+            screen_width: 0,
+            screen_height: 0,
+            swap_copy: false,
+            force_vbo: false,
+            gi_low_precision: false,
+            input_mode: 0,
+            aim_speed: 0.29,
         }
     }
 }
@@ -772,7 +822,9 @@ impl Settings {
             // Only a true value does anything.
             "Touchscreen" => self.touchscreen |= flag,
             "StereoMode" => self.stereo_mode = int,
-            _ => {}
+            // The hardware configuration's settings (the settings screen's
+            // benchmark and startup keys).
+            _ => crate::hw_config::apply_setting(self, reg.name, &assignment.value),
         }
     }
 
