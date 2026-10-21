@@ -295,6 +295,20 @@ fn the_weight_normalisations_are_the_originals() {
     assert_eq!(normalise_to_max([-1.0, -1.0, -1.0, -1.0]), None);
 }
 
+/// The span uses the processor's round-half-to-even, not the floor used
+/// for a point: half a cell rounds to the even cell (0), a hair past it to
+/// the next; the grid's origin is added afterwards.
+#[test]
+fn the_span_rounds_half_to_even_and_keeps_the_origin() {
+    let half = grid_span(Vec3::ZERO, Vec3::splat(300.0), 32, 32, (10, 20));
+    assert_eq!(half.centre, (10, 20));
+    assert_eq!((half.min_x, half.max_x), (10, 10));
+    assert!(!half.wide);
+    let past = grid_span(Vec3::ZERO, Vec3::splat(301.0), 32, 32, (10, 20));
+    assert_eq!((past.min_x, past.max_x), (9, 11));
+    assert!(past.wide);
+}
+
 /// The step runs in the original's order, and its budgets are the
 /// original's 20 iterations, 8 friction passes and 4 pair points.
 #[test]
