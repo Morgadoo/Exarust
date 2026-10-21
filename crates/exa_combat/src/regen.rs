@@ -24,8 +24,9 @@ use exa_physics::body::{
 };
 
 use crate::Fighter;
-use crate::condition::{Condition, PostureTick, action, ticked_lives};
+use crate::condition::{Condition, PostureTick, StateFlags, action, ticked_lives};
 use crate::fighter::{Health, SecondWind, heal_second_wind};
+use crate::remedy::expire_potion;
 
 /// The regeneration rate's cap, yellow health per unit of √red a tick: 0.01
 /// a second over the original's 83 ticks.
@@ -203,6 +204,7 @@ pub fn regenerate_health(
     mut fighters: Query<(
         Entity,
         &mut Fighter,
+        &mut StateFlags,
         &Condition,
         Option<&Animator>,
         Option<&Ragdoll>,
@@ -211,9 +213,13 @@ pub fn regenerate_health(
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let set = motions.as_deref().map(|m| &*m.0);
-    for (entity, mut fighter, condition, anim, body, clips) in &mut fighters {
+    for (entity, mut fighter, mut flags, condition, anim, body, clips) in &mut fighters {
         if ticked_by_its_character(set.is_some(), body, clips && anim.is_some()) {
             continue;
+        }
+        let cleared = expire_potion(flags.0, fighter.potion_until, now);
+        if cleared != flags.0 {
+            flags.0 = cleared;
         }
         let mut health = fighter.health;
         let mut wind = fighter.second_wind;
@@ -233,10 +239,19 @@ pub fn regenerate_health(
 
 /// The ticked body's red regeneration, in its upkeep stage (before the
 /// original's body tick leaves a dead body), by its rule bits.
-pub fn regenerate_red(ticked: Res<TickedCharacter>, mut fighters: Query<&mut Fighter>) {
-    let Ok(mut fighter) = fighters.get_mut(ticked.body) else {
+pub fn regenerate_red(
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    mut fighters: Query<(&mut Fighter, &mut StateFlags)>,
+) {
+    let Ok((mut fighter, mut flags)) = fighters.get_mut(ticked.body) else {
         return;
     };
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    let cleared = expire_potion(flags.0, fighter.potion_until, now);
+    if cleared != flags.0 {
+        flags.0 = cleared;
+    }
     let mut health = fighter.health;
     health.regenerate_red(fighter.stats.rules);
     if health != fighter.health {

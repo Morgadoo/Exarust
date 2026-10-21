@@ -523,10 +523,14 @@ is higher than 280 cm or lower than 1000 cm.
 
 ### Using an item
 
-An item used on the world acts by its usable section's subtype: 8 pours a
-liquid that warms the character it is poured on by 0.2 (0.1 for a liquid of
-type 50, added in double precision), 14 pours one that marks the character
-and stamps an 1800 ms timer, 9 is a cleaning kit that takes an item's dirt
+An item used on a character acts by its operative section's kind byte.
+Kind 8 is a salve: when the body's rule bits take remedies it adds 0.2 to
+the heal pool, or 0.1 when the section's value word is 50, in double
+precision. Kind 14 is an elixir: when the body takes remedies it sets the
+potion flag, stamps the game clock plus 1800 ms, and plays `LqdA_Pour_01`
+at volume 0.25 with pitch 0.9 + 0.2 times one unit draw. Both kinds OR
+`0xC80000` into the item's flags whether or not the body takes remedies
+(`exa_combat::remedy`). Kind 9 is a cleaning kit that takes an item's dirt
 byte down to 0x20, and 10 a repair kit that lowers its wear byte by 255
 over the material's rating step `(r + 5) / 10` (at least 1), never under
 zero. A kit's change runs over two seconds: the byte moves 0.0005 of its

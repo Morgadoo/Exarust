@@ -61,6 +61,9 @@ pub struct Fighter {
     pub bleeding: WoundTally,
     /// The armour that grants a second wind, and when it may fire again.
     pub second_wind: SecondWind,
+    /// The game clock at which a drunk elixir's potion flag ends
+    /// ([`crate::remedy`]).
+    pub potion_until: u32,
 }
 
 impl Default for Fighter {
@@ -95,7 +98,36 @@ impl Fighter {
             parry: ParryState::default(),
             bleeding: WoundTally::default(),
             second_wind: SecondWind::default(),
+            potion_until: 0,
         }
+    }
+
+    /// Use a salve or an elixir on this fighter. A salve fills
+    /// [`Health::heal_pool`] and an elixir sets the potion flag and
+    /// [`Self::potion_until`], when [`CharacterStats::rules`] take
+    /// remedies. The item's spent flags come back on the result.
+    pub fn take_remedy(
+        &mut self,
+        flags: &mut StateFlags,
+        item: crate::remedy::ItemUse,
+        now: u32,
+        unit: impl FnOnce() -> f64,
+    ) -> crate::remedy::Applied {
+        let applied = crate::remedy::apply_remedy(
+            item,
+            crate::remedy::RemedyTarget {
+                heal_pool: self.health.heal_pool,
+                flags: flags.0,
+                potion_until: self.potion_until,
+                takes_remedies: self.stats.rules.has(BodyRules::TAKES_REMEDIES),
+            },
+            now,
+            unit,
+        );
+        self.health.heal_pool = applied.heal_pool;
+        self.potion_until = applied.potion_until;
+        flags.0 = applied.flags;
+        applied
     }
 
     /// The same fighter with its record's `perks`.
@@ -128,8 +160,8 @@ pub struct Health {
     /// Yellow health regained a tick per unit of √red: it ramps up from 0
     /// to [`crate::regen::RATE_CAP`] and every blow sets it back to 0.
     pub rate: f32,
-    /// Red health still to heal (bandages), moved to red a little a tick.
-    /// Nothing fills it yet.
+    /// Red health still to heal (a salve fills it), moved to red a little
+    /// a tick.
     pub heal_pool: f32,
 }
 

@@ -37,6 +37,7 @@ pub mod fighter;
 pub mod grip;
 pub mod parry;
 pub mod regen;
+pub mod remedy;
 pub mod sounds;
 pub mod stance;
 pub mod strike_body;

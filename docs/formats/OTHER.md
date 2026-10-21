@@ -1841,8 +1841,13 @@ executable; a retail trace; `exa_combat::regen`)
   still adds, then the wind ends. Yellow bits 0x3d000000 become
   0x3d013a93. A quiet wind adds nothing. A dead fighter does not take
   this tick.
-- Red heals only from the heal pool (bandages fill it; nothing does in
-  Exarust yet): 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
+- Red heals only from the heal pool. A salve (operative kind 8) fills it
+  when the body takes remedies: 0.2, or 0.1 when the section's value word
+  is 50, added in double precision (`exa_combat::remedy`). An elixir
+  (kind 14) sets the potion flag and stamps the game clock plus 1800 ms;
+  the body tick clears the flag once the clock is past that stamp. Either
+  kind ORs `0xC80000` into the item's flags whether or not the body takes
+  remedies. 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
   (a pool of 0.2 drains in 15,999 ticks, 193 s), and, dead or alive (the
   test comes before the dead test), for bodies whose rule bits hold 0x20
   without 0x100 ([RFC.md](RFC.md), Stats derived at spawn): 1.25e-5 a

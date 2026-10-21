@@ -224,8 +224,10 @@ pub fn clear_death_strikes(first_children: &mut [Option<u32>]) {
     }
 }
 
-/// The original's state flags beside the condition word. Knock-outs,
-/// shocks and potions still have no writer on the running body.
+/// The original's state flags beside the condition word. Knock-outs and
+/// shocks still have no writer on the running body. An elixir sets the
+/// potion ([`crate::remedy`]), and the health tick clears it once the
+/// game clock passes its stamp.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StateFlags(pub u32);
 
