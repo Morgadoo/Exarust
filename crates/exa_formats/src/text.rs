@@ -151,29 +151,41 @@ pub fn format_int_two(value: i32) -> String {
     out
 }
 
-/// An integer as upper-case hexadecimal with at least `width` digits lower
-/// bound (the original's hex formatter). Zero is `"0"` without padding; a
-/// negative value is its two's-complement magnitude behind a minus.
+/// An integer as upper-case hexadecimal, zero-padded to `width` digits
+/// (the original's hex formatter). Zero is `"0"` without padding. A
+/// negative value is its magnitude's digits, padded, behind a minus; the
+/// most negative value has no magnitude, so it is `width` zeros behind the
+/// minus. A `width` of one or less pads nothing; `i32::MIN`, which the
+/// original turns into a count of 2^31 zeros, pads nothing here either.
 pub fn format_hex(value: i64, width: i32) -> String {
     if value == 0 {
         return "0".to_string();
     }
     let negative = value < 0;
-    let mut magnitude = value.unsigned_abs();
+    // `i64::MIN` negates to itself and writes no digits.
+    let mut magnitude = if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    };
     let mut digits = Vec::new();
     while magnitude > 0 {
         digits.push(HEX_DIGITS[(magnitude % 16) as usize]);
         magnitude >>= 4;
     }
-    digits.reverse();
-    let mut out = String::from_utf8_lossy(&digits).into_owned();
-    // The original pads the digits before prepending the sign.
-    while out.len() < width as usize {
-        out.insert(0, '0');
-    }
+    // The length is compared as a 32-bit word with `width - 1`.
+    let len = digits.len() as i32;
+    let pad = if width != i32::MIN && len <= width - 1 {
+        (width - len) as usize
+    } else {
+        0
+    };
+    let mut out = String::with_capacity(pad + digits.len() + 1);
     if negative {
-        out.insert(0, '-');
+        out.push('-');
     }
+    out.extend(std::iter::repeat_n('0', pad));
+    out.extend(digits.iter().rev().map(|&digit| char::from(digit)));
     out
 }
 
@@ -290,9 +302,13 @@ pub fn int_from_bytes(text: &[u8], len: usize) -> i64 {
     int_from_text(text.get(..len).unwrap_or(text))
 }
 
-/// A float from decimal text: digits, an optional point and digits; no
-/// exponent and nothing after the fractional run. The fraction is summed in
-/// double precision, then the sign bit is applied.
+/// A float from decimal text: an optional leading minus, digits, an
+/// optional point and digits; no exponent and nothing after the fractional
+/// run. The integer digits accumulate in single precision as
+/// `(byte + value·10) − 48`; each fractional digit is divided by its power
+/// of ten (a 32-bit integer, wrapping) and added to the value in double
+/// precision, then rounded back to single. A minus flips the sign bit at
+/// the end, so `"-0"` is −0.0.
 pub fn float_from_text(text: &[u8]) -> f32 {
     let mut value = 0.0f32;
     let mut at = usize::from(text.first() == Some(&b'-'));
@@ -304,7 +320,7 @@ pub fn float_from_text(text: &[u8]) -> f32 {
         at += 1;
         let mut divisor = 10i32;
         while at < text.len() && text[at].is_ascii_digit() {
-            value += (f64::from(text[at] - 0x30) / f64::from(divisor)) as f32;
+            value = (f64::from(text[at] - 0x30) / f64::from(divisor) + f64::from(value)) as f32;
             divisor = divisor.wrapping_mul(10);
             at += 1;
         }
@@ -577,6 +593,12 @@ mod tests {
         assert_eq!(format_hex(0x12345, 4), "12345");
         assert_eq!(format_hex(-0x2A, 2), "-2A");
         assert_eq!(format_hex(-0x2A, 4), "-002A");
+        assert_eq!(format_hex(0x2A, 0), "2A");
+        assert_eq!(format_hex(0x2A, -5), "2A");
+        assert_eq!(format_hex(0x2A, i32::MIN), "2A");
+        assert_eq!(format_hex(i64::MIN, 4), "-0000");
+        assert_eq!(format_hex(i64::MIN, 0), "-");
+        assert_eq!(format_hex(-1, 1), "-1");
     }
 
     #[test]
@@ -626,6 +648,11 @@ mod tests {
         assert_eq!(float_from_text(b".5"), 0.5);
         assert_eq!(float_from_text(b"1.5x"), 1.5);
         assert_eq!(float_from_text(b"x"), 0.0);
+        assert_eq!(float_from_text(b"-0").to_bits(), 0x8000_0000);
+        // The fractional sum is double precision: a single-precision sum
+        // would give 0x3E94_7AE2 and 0x3EC2_8F5C.
+        assert_eq!(float_from_text(b"0.29").to_bits(), 0x3E94_7AE1);
+        assert_eq!(float_from_text(b"0.38").to_bits(), 0x3EC2_8F5D);
         assert_eq!(hex_from_text(b"FF"), 255);
         assert_eq!(hex_from_text(b"ff"), 255);
         assert_eq!(hex_from_text(b"10zz"), 16);
