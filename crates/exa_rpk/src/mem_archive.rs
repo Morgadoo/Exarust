@@ -389,7 +389,9 @@ mod tests {
             assert_eq!(archive.write(), bytes, "{name}");
             for entry in archive.entries() {
                 assert_eq!(
-                    archive.find(&entry.name_text()).map(|i| &archive.entries()[i]),
+                    archive
+                        .find(&entry.name_text())
+                        .map(|i| &archive.entries()[i]),
                     Some(entry),
                     "{name}: {}",
                     entry.name_text()

@@ -1347,12 +1347,12 @@ impl LevelLoad {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exa_formats::objdb;
     use bevy::ecs::world::CommandQueue;
     use exa_assets::{GameData, ModelCache};
     use exa_formats::characters::{
         CharacterRecord, ItemRef, LOCAL_ITEM, LevelCharacters, Placement,
     };
+    use exa_formats::objdb;
 
     /// The skinned shadow maps that Bevy still renders for characters keep
     /// the original's 3 cm near plane, not Bevy's 10 cm default. At 10 cm the

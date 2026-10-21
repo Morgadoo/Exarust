@@ -252,6 +252,16 @@ impl ModelLoader<'_> {
         self.model(pack, entry)
     }
 
+    /// Forgets a cached model, as the original's object-lib release drops
+    /// the master when its last user lets go. The materials and textures
+    /// it loaded stay cached (other models may share them, and the original
+    /// keeps its libraries too); a later request loads the model again.
+    pub fn release_model(&mut self, pack: PackKind, entry: &str) {
+        self.cache.models.remove(&model_key(pack, entry));
+        let smooth = format!("{}#smooth", model_key(pack, entry));
+        self.cache.models.remove(&smooth);
+    }
+
     /// The model of `entry` with every mesh smoothed as the original's
     /// mesh-smoothing pass does it ([`crate::mesh_smooth::smooth_mesh`]):
     /// what its character-creation scene does to the hair it shows, and
