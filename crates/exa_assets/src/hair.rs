@@ -33,18 +33,26 @@ pub struct HairShading {
     pub opacity: f32,
 }
 
+/// A record colour byte as the material pass reads it: `byte × 1/255` in
+/// double, narrowed.
+fn unit(b: u8) -> f32 {
+    (f64::from(b) * (1.0 / 255.0)) as f32
+}
+
 /// The hair a record's three colour bytes make at `feral`, with the
-/// material's specular level doubled unless `light_variant` (the record's
-/// bit the generator's pass).
+/// material's specular level boosted by 1.3 unless `light_variant` (the
+/// record's profession bit `0x10000`).
 ///
 /// The colour bytes are the record's hue, saturation and value; the feral
-/// level lifts the saturation toward 0.6 and the value toward 0.4 of where
-/// they were, and its share thins the hair.
+/// level lifts the saturation and value toward 1 (by `0.6·f` of the way)
+/// and then scales the saturation by `1 − 0.4·f`, all in double as the
+/// original. The gloss is `0.9 − 0.4·f` and the opacity `(1 − 0.65·f)²`.
 pub fn hair_shading(colour: [u8; 3], feral: f32, light_variant: bool) -> HairShading {
-    let h = (f64::from(colour[0]) * 0.003_921_568_627_450_98) as f32;
-    let s = (1.0 - feral * 0.4)
-        * (1.0 - (1.0 - feral * 0.6) * (1.0 - f32::from(colour[1]) * 0.003_921_569));
-    let v = 1.0 - (1.0 - feral * 0.6) * (1.0 - f32::from(colour[2]) * 0.003_921_569);
+    let f = f64::from(feral);
+    let lift = |b: u8| (1.0 - (1.0 - f * 0.6) * f64::from(1.0 - unit(b))) as f32;
+    let h = unit(colour[0]);
+    let s = ((1.0 - f * 0.4) * f64::from(lift(colour[1]))) as f32;
+    let v = lift(colour[2]);
     let (diffuse, specular) = pick(h, s, v);
     let specular = if light_variant {
         specular
@@ -54,29 +62,22 @@ pub fn hair_shading(colour: [u8; 3], feral: f32, light_variant: bool) -> HairSha
     HairShading {
         diffuse,
         specular,
-        gloss: 0.9 - feral * 0.4,
+        gloss: (0.9 - f * 0.4) as f32,
         opacity: {
-            let f = 1.0 - feral * 0.65;
-            f * f
+            let o = 1.0 - f * 0.65;
+            (o * o) as f32
         },
     }
 }
 
-/// The creation preview's hair colour: the record's three
-/// colour bytes taken as hue, saturation and value without the feral
-/// modulation, the specular level boosted by 1.3, gloss 0.9 and full
-/// opacity. The preview's material is the same `_HumanHair` payload.
-pub fn preview_shading(colour: [u8; 3]) -> HairShading {
-    let h = f32::from(colour[0]) / 255.0;
-    let s = f32::from(colour[1]) / 255.0;
-    let v = f32::from(colour[2]) / 255.0;
-    let (diffuse, specular) = pick(h, s, v);
-    HairShading {
-        diffuse,
-        specular: specular.map(|c| c * 1.3),
-        gloss: 0.9,
-        opacity: 1.0,
-    }
+/// The creation preview's hair colour: the record's three colour bytes
+/// taken as hue, saturation and value without the feral level, and the
+/// specular boosted by 1.3. The preview writes only these two colours (and
+/// always uses the `HarHPC1` texture set); the material's gloss and opacity
+/// keep whatever the last in-game hair build left in the shared material.
+pub fn preview_shading(colour: [u8; 3]) -> ([f32; 3], [f32; 3]) {
+    let (diffuse, specular) = pick(unit(colour[0]), unit(colour[1]), unit(colour[2]));
+    (diffuse, specular.map(|c| c * 1.3))
 }
 
 /// Whether a hair part takes the hair material: its
@@ -85,29 +86,38 @@ pub fn hair_material_part(opacity: f32) -> bool {
     opacity > 0.5
 }
 
+/// The engine's byte-to-colour decode: each byte times the single-precision
+/// reciprocal of 255.
+fn decode_bytes(c: [u8; 3]) -> [f32; 3] {
+    c.map(|b| f32::from(b) * f32::from_bits(0x3b80_8081))
+}
+
 /// The picker: hue, saturation and value in 0…1 to diffuse and specular
-/// colours in encoded sRGB.
+/// colours in encoded sRGB. The mixed-precision steps (a single value
+/// widened, worked in double and narrowed) follow the instructions.
 pub fn pick(h: f32, s: f32, v: f32) -> ([f32; 3], [f32; 3]) {
     let hue = h * 3.0;
     let i = (hue.trunc() as usize).min(HAIR_HUES.len() - 2);
     let frac = hue - i as f32;
-    let a = HAIR_HUES[i].map(|b| srgb_decode(f32::from(b) / 255.0));
-    let b = HAIR_HUES[i + 1].map(|b| srgb_decode(f32::from(b) / 255.0));
+    let a = decode_bytes(HAIR_HUES[i]).map(srgb_decode);
+    let b = decode_bytes(HAIR_HUES[i + 1]).map(srgb_decode);
     let anchor = mix(a, b, frac);
-    let s1 = s + 0.1;
-    let anchor = desaturate(anchor, ((s1 * s1) as f64 * 0.1) as f32);
-    let grey = 0.75 * (s1 * 0.3);
-    let mut spec = anchor.map(|c| c * (0.75 * ((s1 + 0.1) * 0.6)));
-    spec = mix(spec, [grey; 3], v * 0.8 + 0.2);
-    let diffuse = spec.map(|c| srgb_encode(c * (s1 * 0.4 + 0.3) * 2.0));
+    let s1 = (f64::from(s) + 0.1) as f32;
+    let anchor = desaturate(anchor, (f64::from(s1 * s1) * 0.1) as f32);
+    let grey = (f64::from(0.75f32) * (f64::from(s1) * 0.3)) as f32;
+    let scale = (f64::from(0.75f32) * ((f64::from(s1) + 0.1) * 0.6)) as f32;
+    let mut spec = anchor.map(|c| c * scale);
+    spec = mix(spec, [grey; 3], (f64::from(v) * 0.8 + 0.2) as f32);
+    let lift = (f64::from(s1) * 0.4 + 0.3) as f32;
+    let diffuse = spec.map(|c| srgb_encode(c * lift * 2.0));
     let specular = srgb_encode_set(spec);
     // The shader's highlight: the specular's hue at a fixed value, then
     // moved by the record's value and brightness.
     let mut hsv = rgb_to_hsv(specular);
-    hsv[2] = s1 * 0.9 + 0.3;
-    hsv[2] -= v * 0.1;
+    hsv[2] = (f64::from(s1) * 0.9 + 0.3) as f32;
+    hsv[2] = (f64::from(hsv[2]) - f64::from(v) * 0.1) as f32;
     hsv[1] *= 1.5;
-    hsv[2] *= 0.8;
+    hsv[2] = (f64::from(hsv[2]) * 0.8) as f32;
     (diffuse, srgb_encode_set(hsv_to_rgb(hsv)))
 }
 
@@ -145,16 +155,17 @@ pub fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
     if s < floor {
         return [0.0, s, v];
     }
+    // Each channel's distance above the least, over the spread, in single
+    // precision; the green and blue sextants add their third in double.
+    let inv = 1.0 / (c[imax] - c[imin]);
+    let t = c.map(|x| (x - c[imin]) * inv);
     let h = match imax {
         0 => {
-            let h = (c[1] - c[2]) / (v - c[imin]) / 6.0;
-            if h < 0.0 { h + 1.0 } else { h }
+            let h = (t[1] - t[2]) / 6.0;
+            if h < 0.0 { 1.0 + h } else { h }
         }
-        // The engine works the green sextant in double precision.
-        1 => {
-            ((f64::from(c[2]) - f64::from(c[0])) / f64::from(v - c[imin]) / 6.0 + 1.0 / 3.0) as f32
-        }
-        _ => (c[0] - c[1]) / (v - c[imin]) / 6.0 + 2.0 / 3.0,
+        1 => (f64::from((t[2] - t[0]) / 6.0) + 1.0 / 3.0) as f32,
+        _ => (f64::from((t[0] - t[1]) / 6.0) + 2.0 / 3.0) as f32,
     };
     [h, s, v]
 }
@@ -175,15 +186,28 @@ mod tests {
         assert_eq!(s.map(f32::to_bits), [0x3f18_282c, 0x3ecc_570f, 0x3e35_6bc5]);
     }
 
+    /// A colour (record bytes 0, 13, 110 at feral 0) whose green channel
+    /// single-precision steps would round differently: the original's bits,
+    /// from an instruction-level emulation of the material pass and picker.
     #[test]
-    fn the_preview_keeps_the_specular_light_and_shows_opaque_parts() {
-        let shown = preview_shading([40, 80, 40]);
-        assert_eq!(shown.gloss, 0.9);
-        assert_eq!(shown.opacity, 1.0);
-        let (_, spec) = pick(40.0 / 255.0, 80.0 / 255.0, 40.0 / 255.0);
-        for (shown, base) in shown.specular.iter().zip(spec) {
-            assert!((shown - base * 1.3).abs() < 1e-6);
-        }
+    fn the_picker_keeps_the_mixed_precision_steps() {
+        let shading = hair_shading([0, 13, 110], 0.0, false);
+        assert_eq!(
+            shading.diffuse.map(f32::to_bits),
+            [0x3e37_d4fe, 0x3e11_aa7d, 0x3e00_8f99]
+        );
+        assert_eq!(
+            shading.specular.map(f32::to_bits),
+            [0x3f46_6f8e, 0x3f28_8958, 0x3f18_abb4]
+        );
+    }
+
+    #[test]
+    fn the_preview_boosts_the_specular_and_shows_opaque_parts() {
+        let (diffuse, specular) = preview_shading([40, 80, 40]);
+        let (d, spec) = pick(unit(40), unit(80), unit(40));
+        assert_eq!(diffuse, d);
+        assert_eq!(specular, spec.map(|c| c * 1.3));
         assert!(hair_material_part(0.51));
         assert!(!hair_material_part(0.5));
     }
@@ -230,6 +254,11 @@ mod tests {
         assert!(feral.specular[0] > calm.specular[0]);
         assert!((calm.gloss - 0.9).abs() < 1e-6);
         assert!((feral.gloss - 0.5).abs() < 1e-6);
+        // Worked in double: 0.9 − 0.25·0.4 narrows to 0x3f4ccccd.
+        assert_eq!(
+            hair_shading([0; 3], 0.25, false).gloss.to_bits(),
+            0x3f4c_cccd
+        );
         assert!((calm.opacity - 1.0).abs() < 1e-6);
         assert!((feral.opacity - 0.1225).abs() < 1e-6);
         let light = hair_shading([40, 80, 40], 0.0, true);
