@@ -1887,13 +1887,18 @@ plain draw and input records.
   43 by 21 at four pixels to the unit) and is hit-tested through its
   texture's alpha (0xF0) at six texture pixels to the unit.
 - **Dialogs and colour** (`exa_ui::dialogs`): the colour window is 402 by
-  282 with sixteen controls and the strips black, red, green, blue, red
-  and white. The four confirmations are 392 by 112 and close with `0x40`
-  when nothing is selected.
+  282 with sixteen layout elements, centred in x and on the upper layer;
+  its constructor installs five gradients from black (to red, green, blue,
+  red and white) and a six-stop hue table for its sliders. The four
+  confirmations are 392 by 112 and close with `0x40` when nothing is
+  selected. The arena status panel's emblem is 48 pixels, centred on the
+  client and 16 down.
 - **Help and task stack** (`exa_ui::help_screen`, `exa_ui::task_stack`):
-  a help window is 23 units plus its text tall, keeps the "don't show"
-  bit only from a control in state `0x60`, and its two-pane variant
-  pages the second box between one and its last page. A GUI task's menu
+  a help window is 23 units plus its text tall; its "don't show" answer
+  goes into the tip popups' settings mask, and only from a control with
+  state bits `0x60`. A release carrying `0x2000` closes it. The two-pane
+  variant pages the second box between one and its last page and scrolls
+  its text one step with the other two page keys. A GUI task's menu
   items become `0x68`-byte records (the first loses its `0x8009` id);
   focusing a task moves it to the top, and removing the active layer
   clears the published task.

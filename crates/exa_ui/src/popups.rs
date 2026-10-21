@@ -448,6 +448,7 @@ mod tests {
     fn the_card_fades_on_a_squared_curve() {
         let mut f = PopupFade::default();
         f.show(1000);
+        f.shown_at = 1256;
         assert_eq!(f.fade_at, 1256);
         // A quarter of the way in the card is one sixteenth opaque.
         assert_eq!(f.step(1064).alpha, 0.0625);

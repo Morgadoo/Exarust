@@ -43,9 +43,10 @@ impl GameTips {
     }
 
     /// The draw, in window units: the box and the text's origin. The box's
-    /// left edge is the difference of the window's width and the box's
-    /// shifted as an unsigned 64-bit value, so a box wider than the window
-    /// lands far to the right.
+    /// left edge is half the difference of the window's width and the
+    /// box's (a logical shift of the 64-bit difference; its low 32 bits
+    /// are those of a signed halving, so a box wider than the window
+    /// starts left of it).
     pub fn draw(&self, window_width: i32, unit: i32, text_width: i32) -> TipBanner {
         let width = text_width.wrapping_add(unit.wrapping_mul(BOX_PAD_UNITS));
         let x = ((i64::from(window_width) - i64::from(width)) as u64 >> 1) as i32;
@@ -95,10 +96,8 @@ mod tests {
     }
 
     #[test]
-    fn a_box_wider_than_the_window_shifts_as_unsigned() {
+    fn a_box_wider_than_the_window_starts_left_of_it() {
         let b = GameTips::new().draw(100, 4, 200);
-        // (100 − 208) as an unsigned 64-bit value, halved, keeping 32 bits.
-        assert_eq!(b.box_at[0], (((100i64 - 208) as u64) >> 1) as i32);
-        assert!(b.box_at[0] > 1_000_000);
+        assert_eq!(b.box_at[0], -54);
     }
 }

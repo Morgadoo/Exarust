@@ -16,9 +16,9 @@
 /// The id and type of a task menu record.
 pub const MENU_RECORD_TYPE: u16 = 0xab02;
 pub const MENU_RECORD_ID: u16 = 0x8009;
-/// The record's x word.
+/// The two small words the append sets to 2 (their roles are not
+/// established).
 pub const MENU_RECORD_X: u16 = 2;
-/// The record's height word.
 pub const MENU_RECORD_HEIGHT: u16 = 2;
 
 /// One task menu item: its label and callback.
@@ -112,43 +112,52 @@ impl TaskStack {
         form
     }
 
-    /// The activation hook: a focused layer moves to the top and its task
-    /// is published.
-    pub fn activate(&mut self, form: u64, view: u64) -> bool {
+    /// The activation hook. The root layer is ignored. Any other layer is
+    /// looked up: a known one moves to the top and its interface is
+    /// published, an unknown one publishes no interface. The view is
+    /// published either way, and the published form becomes the layer when
+    /// the layer's link word differs from the published form (for an
+    /// unknown layer the original reads an unset local there; Exarust
+    /// leaves the published form alone). Returns whether the layer was
+    /// known.
+    pub fn activate(&mut self, form: u64, root: u64, link: u64, view: u64) -> bool {
+        if form == root {
+            return false;
+        }
         let entry = self
             .entries
             .iter()
             .position(|e| e.form == form)
             .map(|at| self.entries.remove(at));
-        if let Some(entry) = entry {
-            let interface = entry.interface;
-            self.entries.push(entry);
-            self.active.interface = interface;
-            self.active.view = view;
-            if self.active.form != form {
-                self.active.form = form;
-            }
-            return true;
-        }
+        let known = entry.is_some();
+        self.active.interface = entry.as_ref().map_or(0, |e| e.interface);
         self.active.view = view;
-        false
+        if let Some(entry) = entry {
+            if link != self.active.form {
+                self.active.form = entry.form;
+            }
+            self.entries.push(entry);
+        }
+        known
     }
 
-    /// The remove-on-close: takes the layer out and, when it was active,
-    /// clears the published task back to the root.
+    /// The remove-on-close: takes the layer out of the stack if it is
+    /// there and, whether it was or not, when it is the published form
+    /// clears the published task back to the root. Returns whether the
+    /// layer was in the stack.
     pub fn remove(&mut self, form: u64, root: u64) -> bool {
-        let Some(at) = self.entries.iter().position(|e| e.form == form) else {
-            return false;
-        };
-        self.entries.remove(at);
-        if self.active.form == form {
+        let at = self.entries.iter().position(|e| e.form == form);
+        if let Some(at) = at {
+            self.entries.remove(at);
+        }
+        if self.active.form != 0 && self.active.form == form {
             self.active = ActiveTask {
                 interface: 0,
                 view: 0,
                 form: root,
             };
         }
-        true
+        at.is_some()
     }
 
     /// Refreshes the active view from the active form.
@@ -161,9 +170,6 @@ impl TaskStack {
         self.entries.clear();
     }
 }
-
-/// The form field the task's view comes from.
-pub const TASK_VIEW_FIELD: u64 = 0x170;
 
 #[cfg(test)]
 mod tests {
@@ -212,12 +218,18 @@ mod tests {
         stack.push(1, 11);
         stack.push(2, 22);
         stack.push(3, 33);
-        assert!(stack.activate(1, 100));
+        assert!(stack.activate(1, 0, 5, 100));
         assert_eq!(stack.entries.last().unwrap().form, 1);
+        assert_eq!(stack.entries[0].form, 2);
         assert_eq!(stack.active.interface, 11);
         assert_eq!(stack.active.view, 100);
         assert_eq!(stack.active.form, 1);
-        assert!(!stack.activate(9, 5));
+        // An unknown layer publishes its view and no interface.
+        assert!(!stack.activate(9, 0, 0, 5));
+        assert_eq!(stack.active.view, 5);
+        assert_eq!(stack.active.interface, 0);
+        // The root layer is left alone.
+        assert!(!stack.activate(7, 7, 0, 6));
         assert_eq!(stack.active.view, 5);
     }
 
@@ -226,7 +238,7 @@ mod tests {
         let mut stack = TaskStack::default();
         stack.push(1, 11);
         stack.push(2, 22);
-        stack.activate(2, 50);
+        stack.activate(2, 0, 5, 50);
         assert!(stack.remove(2, 77));
         assert_eq!(
             stack.active,
@@ -238,6 +250,10 @@ mod tests {
         );
         assert!(!stack.remove(2, 77));
         assert_eq!(stack.entries.len(), 1);
+        // Removing an unknown layer that is published still clears it.
+        stack.active.form = 9;
+        assert!(!stack.remove(9, 77));
+        assert_eq!(stack.active.form, 77);
         stack.finish();
         assert!(stack.entries.is_empty());
     }

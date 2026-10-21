@@ -1,93 +1,111 @@
 //! The colour window and the game's small skinned dialogs.
 //!
-//! The colour window is 402 by 282 with sixteen controls and six colour
-//! strips: black, red, green, blue, red and white, plus the sixth slider's
-//! own six-entry colour table. The confirmation dialogs are all 392 by 112
-//! with a skin, a title and two buttons; their click handler closes with
-//! result `0x40` when nothing is selected and otherwise runs the base
-//! handler. The arena's status panel draws the company emblem across its
-//! middle, four units down.
+//! The colour window is 402 by 282 with sixteen layout elements, a centred
+//! x, the upper layer and the title "Colour". Its constructor installs five
+//! gradient records (live, black to a colour: red, green, blue, red and
+//! white) and hands them, with the hue table, to the six slider controls.
+//! The confirmation dialogs are all 392 by 112 with a skin, a title and two
+//! layout elements; their click handler closes with result `0x40` when
+//! nothing is selected and otherwise runs the base handler. The arena's
+//! status panel draws the company emblem across its middle, 16 pixels
+//! down.
 //!
 //! Evidence: the colour picker's constructor and the four dialogs'
-//! constructors and click handlers (`docs/UI.md`).
+//! constructors and click handlers, with the constructor's data read from
+//! the retail image (`docs/UI.md`). The layout-element records themselves
+//! are not ported.
 
-/// A colour strip: whether it is live and its RGBA.
+/// A gradient record the colour window's constructor installs: whether it
+/// is live and the RGBA of the two ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColourRow {
+pub struct Gradient {
     pub live: i32,
-    pub rgba: [u8; 4],
+    pub from: [u8; 4],
+    pub to: [u8; 4],
 }
 
-/// The colour window's size, title and number of layout controls.
+/// The colour window's size, title and number of layout elements.
 pub const COLOUR_WIDTH: i32 = 402;
 pub const COLOUR_HEIGHT: i32 = 282;
 pub const COLOUR_TITLE: &str = "Colour";
-pub const COLOUR_CONTROLS: usize = 16;
-/// The colour window's form flags.
-pub const COLOUR_FLAGS: u32 = 0x1000;
-pub const COLOUR_EXTRA_FLAGS: u32 = 0x800;
+pub const COLOUR_ELEMENTS: usize = 16;
+/// The colour window's style bits: centred in x.
+pub const COLOUR_STYLE: u32 = 0x800;
+/// The colour window's attribute bits: the upper layer.
+pub const COLOUR_ATTRIBUTES: u32 = 0x1000;
+/// The colour window's update word after construction.
+pub const COLOUR_UPDATE: u32 = 0x2000;
 
-/// The six colour strips the constructor installs.
-pub const COLOUR_ROWS: [ColourRow; 6] = [
-    ColourRow {
+const BLACK: [u8; 4] = [0, 0, 0, 255];
+
+/// The five gradients the constructor installs, in the order of the
+/// controls that take them (the first, second, third, fifth and sixth
+/// slider; the fourth takes [`HUE_TABLE`]).
+pub const GRADIENTS: [Gradient; 5] = [
+    Gradient {
         live: 1,
-        rgba: [0, 0, 0, 255],
+        from: BLACK,
+        to: [255, 0, 0, 255],
     },
-    ColourRow {
+    Gradient {
         live: 1,
-        rgba: [255, 0, 0, 255],
+        from: BLACK,
+        to: [0, 255, 0, 255],
     },
-    ColourRow {
+    Gradient {
         live: 1,
-        rgba: [0, 255, 0, 255],
+        from: BLACK,
+        to: [0, 0, 255, 255],
     },
-    ColourRow {
+    Gradient {
         live: 1,
-        rgba: [0, 0, 255, 255],
+        from: BLACK,
+        to: [255, 0, 0, 255],
     },
-    ColourRow {
+    Gradient {
         live: 1,
-        rgba: [255, 0, 0, 255],
-    },
-    ColourRow {
-        live: 1,
-        rgba: [255, 255, 255, 255],
+        from: BLACK,
+        to: [255, 255, 255, 255],
     },
 ];
 
-/// The sixth slider's shared colour table (the bytes of the original's
-/// table; the first six entries are the ones the dump covers completely).
-pub const COLOUR_TABLE: [[u8; 4]; 6] = [
+/// The fourth slider's colour table: a count of 6 and the stops red,
+/// yellow, green, cyan, blue, magenta and red again (the seven entries
+/// before the next record).
+pub const HUE_COUNT: u32 = 6;
+pub const HUE_TABLE: [[u8; 4]; 7] = [
     [255, 0, 0, 255],
-    [255, 255, 255, 0],
-    [255, 0, 255, 0],
+    [255, 255, 0, 255],
+    [0, 255, 0, 255],
+    [0, 255, 255, 255],
+    [0, 0, 255, 255],
     [255, 0, 255, 255],
     [255, 0, 0, 255],
-    [255, 255, 255, 0],
 ];
 
 /// The colour window's constructor data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColourPicker {
+pub struct ColourWindow {
     pub width: i32,
     pub height: i32,
-    pub digit: i32,
-    pub flags: u32,
-    pub form_flags: u32,
-    /// The control the fourth strip's shared table feeds.
-    pub shared_slot: usize,
+    /// The border word (the client's left edge): 1.
+    pub border: i32,
+    pub style: u32,
+    pub attributes: u32,
+    /// The slider that reads the hue table.
+    pub hue_slider: usize,
 }
 
-/// The window's values: 402 by 282, digits 1, flags `0x1000` and `0x800`,
-/// and the sixth control reads the shared table.
-pub fn colour_picker() -> ColourPicker {
-    ColourPicker {
+/// The window's values: 402 by 282, border 1, centred in x, the upper
+/// layer, and the fourth slider reading the hue table.
+pub fn colour_window() -> ColourWindow {
+    ColourWindow {
         width: COLOUR_WIDTH,
         height: COLOUR_HEIGHT,
-        digit: 1,
-        flags: COLOUR_FLAGS,
-        form_flags: COLOUR_EXTRA_FLAGS,
-        shared_slot: 3,
+        border: 1,
+        style: COLOUR_STYLE,
+        attributes: COLOUR_ATTRIBUTES,
+        hue_slider: 3,
     }
 }
 
@@ -103,9 +121,10 @@ pub struct Dialog {
 /// The dialog size every confirmation uses.
 pub const DIALOG_WIDTH: i32 = 0x188;
 pub const DIALOG_HEIGHT: i32 = 0x70;
-/// The dialogs' form flags.
-pub const DIALOG_FLAGS: u32 = 0xb800;
-pub const DIALOG_FORM_FLAGS: u32 = 0x1000;
+/// The dialogs' style bits: centred in both axes, plus the 0x3000 pair.
+pub const DIALOG_STYLE: u32 = 0xb800;
+/// The dialogs' attribute bits: the upper layer.
+pub const DIALOG_ATTRIBUTES: u32 = 0x1000;
 
 /// The "Reset to portal" dialog.
 pub const RESET_TO_PORTAL: Dialog = Dialog {
@@ -158,8 +177,8 @@ pub fn dialog_click(selection: i32, base: impl FnOnce() -> i32) -> DialogClick {
     }
 }
 
-/// The status panel's emblem place: the panel's width across, four units
-/// down, and 48 pixels tall.
+/// The status panel's emblem place: the middle of its client width, 16
+/// pixels (four units of four) down, and 48 pixels tall.
 pub fn status_emblem_place(client_width: i32, unit: i32) -> (i32, i32, i32) {
     (client_width / 2, unit * 4, 0x30)
 }
@@ -169,16 +188,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_colour_window_has_its_six_strips() {
-        let c = colour_picker();
-        assert_eq!((c.width, c.height), (402, 282));
-        assert_eq!((c.digit, c.flags, c.form_flags), (1, 0x1000, 0x800));
-        assert_eq!(COLOUR_ROWS[0].rgba, [0, 0, 0, 255]);
-        assert_eq!(COLOUR_ROWS[1].rgba, [255, 0, 0, 255]);
-        assert_eq!(COLOUR_ROWS[2].rgba, [0, 255, 0, 255]);
-        assert_eq!(COLOUR_ROWS[3].rgba, [0, 0, 255, 255]);
-        assert_eq!(COLOUR_ROWS[5].rgba, [255, 255, 255, 255]);
-        assert_eq!(COLOUR_TABLE[3], [255, 0, 255, 255]);
+    fn the_colour_window_has_its_gradients() {
+        let c = colour_window();
+        assert_eq!((c.width, c.height, c.border), (402, 282, 1));
+        assert_eq!((c.style, c.attributes), (0x800, 0x1000));
+        assert_eq!(GRADIENTS[0].from, [0, 0, 0, 255]);
+        assert_eq!(GRADIENTS[1].to, [0, 255, 0, 255]);
+        assert_eq!(GRADIENTS[2].to, [0, 0, 255, 255]);
+        assert_eq!(GRADIENTS[4].to, [255, 255, 255, 255]);
+        assert_eq!(HUE_TABLE[1], [255, 255, 0, 255]);
+        assert_eq!(HUE_TABLE[0], HUE_TABLE[6]);
+        assert_eq!(c.hue_slider, 3);
     }
 
     #[test]

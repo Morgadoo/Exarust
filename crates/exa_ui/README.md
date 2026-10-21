@@ -519,8 +519,8 @@ and binding table. `transition` is the state machine between game states
 and has the picker's hit test and key steps. `dialogue_choices` is the reply list's hit test, pick, fading colours,
 rows and height animation. `picker_fields` has the creator's marker fields and the
 physique point's body-shape weights. `popups` has the item card, the
-container popup and the parchment. `dialogs` has the colour window's six
-strips and the confirmation dialogs. `help_screen`, `task_stack`,
+container popup and the parchment. `dialogs` has the colour window's
+gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
 `game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample
 and cursor-action list) and the journal close in `game_gui` complete the
 unit. The draw records are plain data; no new form is painted by the
