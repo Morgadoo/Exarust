@@ -27,6 +27,11 @@
 //!
 //! A level's locale, which entries for one character are compared with, is
 //! found by name in `locales.rdb` ([`locale_id`]).
+//!
+//! The module also holds the shared character role list ([`HeldRole`] and
+//! [`add_held_role`]/[`remove_held_role`]) so the AI and the script layer
+//! use one implementation; [`held_role_word`] reads the original's stored
+//! 12-byte-per-entry layout.
 
 use crate::rdb::Database;
 use crate::{Error, Result};
