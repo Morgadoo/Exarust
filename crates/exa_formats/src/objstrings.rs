@@ -1,17 +1,25 @@
-//! The object string library (`objstrings.rdb`): the pool of display names
-//! and description phrases the object database refers to by id.
+//! The object string library (`objstrings.rdb`, and a level's own library
+//! in its local-database chunk): the pool of display names and description
+//! phrases the object database refers to by id.
 //!
 //! Layout and evidence: `docs/formats/OTHER.md` (Object database, String
 //! library). Header: `magic: u32` (`0xAFBF0C02`), `table_len: u32`, then
-//! `table_len / 16` entries of `u32` unused, `u32` references, `u32` offset
-//! and `u32` length; the text follows the table and offsets count from there.
-//! Ids are one-based: id 0 means "none" and an entry whose length is 0 is
-//! empty. The last entry is garbage, as in the record databases, and is
-//! skipped.
+//! `table_len / 16 − 1` entries of `u32` (unused), `u32` references, `u32`
+//! offset and `u32` length, one more table slot the original writes back
+//! as it holds it, and the text, whose offsets count from the end of the
+//! table. Ids are one-based: id 0 means "none" and an entry whose length is
+//! 0 reads as nothing.
+//!
+//! The routines are the original's: [`Library::alloc`] takes the first slot
+//! without references at or after the free hint, else appends one;
+//! [`Library::set`] closes the hole the old text leaves and appends the new
+//! text (or overwrites it in place when the length is the same);
+//! [`Library::release`] drops a reference and zeroes the slot at none,
+//! leaving its text as a hole; [`Library::write`] saves the table and the
+//! text as they are held, so a loaded library writes back byte for byte.
 //!
 //! Text is Latin-1, as everywhere else in the engine's data; [`Library::get`]
-//! returns it as UTF-8. A freed entry keeps its slot and is reused by
-//! [`Library::add`], which is what the original's library does.
+//! returns it as UTF-8.
 
 use crate::data_stream::latin1_to_utf8;
 use crate::{Error, Result};
@@ -22,13 +30,41 @@ pub const MAGIC: u32 = 0xAFBF_0C02;
 const ENTRY_LEN: usize = 16;
 const HEADER_LEN: usize = 8;
 
-/// One text slot. `refs` is how many records use it: an entry with no
-/// references is free, and its text may be reused.
+/// One text slot as the table holds it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Entry {
-    refs: u32,
-    offset: u32,
-    len: u32,
+pub struct Entry {
+    /// The first word: never read; zero in every shipped entry and zeroed
+    /// when a slot is freed.
+    pub unused: u32,
+    /// How many records use the slot: a slot with none is free.
+    pub refs: u32,
+    /// Where the text starts in the text area.
+    pub offset: u32,
+    /// The text's length; 0 for no text.
+    pub len: u32,
+}
+
+impl Entry {
+    fn read(b: &[u8]) -> Self {
+        let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"));
+        Self {
+            unused: word(0),
+            refs: word(4),
+            offset: word(8),
+            len: word(12),
+        }
+    }
+
+    fn bytes(self) -> [u8; ENTRY_LEN] {
+        let mut out = [0; ENTRY_LEN];
+        for (i, w) in [self.unused, self.refs, self.offset, self.len]
+            .into_iter()
+            .enumerate()
+        {
+            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        out
+    }
 }
 
 /// A string library: the text slots of one database, plus the text they
@@ -36,14 +72,27 @@ struct Entry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Library {
     entries: Vec<Entry>,
+    /// The table slot after the last entry. The original's writer saves one
+    /// slot more than it has entries; this is what that slot held when the
+    /// library was read (zero once the table has grown, where the original
+    /// writes whatever lies past its allocation).
+    tail: [u8; ENTRY_LEN],
+    /// A file whose table is shorter than one slot: the original counts −1
+    /// entries and writes a table length of 0 back.
+    negative: bool,
     text: Vec<u8>,
-    /// The slot a freed entry left behind: [`Library::add`] starts looking
-    /// for a free slot here, as the original keeps its high-water mark.
+    /// Where [`Library::alloc`] starts looking for a free slot: the highest
+    /// slot a release freed (0 after loading).
     free_hint: usize,
 }
 
 impl Library {
-    /// Parses a library; the last table entry is skipped as garbage.
+    /// Reads a library as the original's loader does: the entry count is
+    /// `table_len / 16 − 1`; with fewer than one entry nothing past the
+    /// header is read (the shipped empty libraries are the 8-byte header
+    /// alone); otherwise the text is everything after the table. Entries
+    /// are not checked against the text: one that points outside it reads
+    /// as nothing, where the original reads past its buffer.
     pub fn parse(b: &[u8]) -> Result<Self> {
         let magic = crate::read_u32(b, 0)?;
         if magic != MAGIC {
@@ -53,55 +102,57 @@ impl Library {
             });
         }
         let table_len = crate::read_u32(b, 4)? as usize;
-        if !table_len.is_multiple_of(ENTRY_LEN) {
-            return Err(Error::Malformed(format!(
-                "string table length {table_len} is not a multiple of {ENTRY_LEN}"
-            )));
+        let count = (table_len >> 4) as i64 - 1;
+        if count < 1 {
+            return Ok(Self {
+                negative: count < 0,
+                ..Self::default()
+            });
         }
-        let text_start = HEADER_LEN
-            .checked_add(table_len)
-            .filter(|&s| s <= b.len())
-            .ok_or(Error::Truncated {
+        let count = count as usize;
+        let text_start = HEADER_LEN + table_len;
+        if text_start > b.len() {
+            return Err(Error::Truncated {
                 offset: HEADER_LEN,
                 needed: table_len,
                 len: b.len().saturating_sub(HEADER_LEN),
-            })?;
-        let count = table_len / ENTRY_LEN;
-        let count = count.saturating_sub(1);
-        let text = &b[text_start..];
-        let mut entries = Vec::with_capacity(count);
-        for i in 0..count {
-            let at = HEADER_LEN + i * ENTRY_LEN;
-            let entry = b.get(at..at + ENTRY_LEN).ok_or(Error::Truncated {
-                offset: at,
-                needed: ENTRY_LEN,
-                len: b.len(),
-            })?;
-            let word = |o: usize| u32::from_le_bytes(entry[o..o + 4].try_into().expect("4 bytes"));
-            let e = Entry {
-                refs: word(4),
-                offset: word(8),
-                len: word(12),
-            };
-            if (e.offset as usize)
-                .checked_add(e.len as usize)
-                .is_none_or(|end| end > text.len())
-            {
-                return Err(Error::Malformed(format!(
-                    "string {} runs past the text ({} + {} of {})",
-                    i + 1,
-                    e.offset,
-                    e.len,
-                    text.len()
-                )));
-            }
-            entries.push(e);
+            });
         }
+        let table = &b[HEADER_LEN..text_start];
+        let entries = (0..count)
+            .map(|i| Entry::read(&table[i * ENTRY_LEN..(i + 1) * ENTRY_LEN]))
+            .collect();
+        let tail = table[count * ENTRY_LEN..(count + 1) * ENTRY_LEN]
+            .try_into()
+            .expect("16 bytes");
         Ok(Self {
             entries,
-            text: text.to_vec(),
+            tail,
+            negative: false,
+            text: b[text_start..].to_vec(),
             free_hint: 0,
         })
+    }
+
+    /// Writes the library as the original saves it: the magic, a table
+    /// length of `(entries + 1) × 16`, and, when there is an entry, the
+    /// entries, the slot after them and the text area as held.
+    pub fn write(&self) -> Vec<u8> {
+        let count = if self.negative && self.entries.is_empty() {
+            -1
+        } else {
+            self.entries.len() as i64
+        };
+        let mut out = MAGIC.to_le_bytes().to_vec();
+        out.extend((((count + 1) * ENTRY_LEN as i64) as u32).to_le_bytes());
+        if count > 0 {
+            for e in &self.entries {
+                out.extend(e.bytes());
+            }
+            out.extend(self.tail);
+            out.extend_from_slice(&self.text);
+        }
+        out
     }
 
     /// The number of text slots; ids run from 1 to this.
@@ -113,19 +164,30 @@ impl Library {
         self.entries.is_empty()
     }
 
+    /// The slots as the table holds them.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// The text area, holes included.
+    pub fn text(&self) -> &[u8] {
+        &self.text
+    }
+
     /// The text of `id` in the file's Latin-1 bytes, or `None` for id 0, an
-    /// id past the table or an empty entry.
+    /// id past the table, an entry without text or one whose text lies
+    /// outside the text area.
     pub fn bytes(&self, id: u32) -> Option<&[u8]> {
         let e = self.entry(id)?;
         if e.len == 0 {
             return None;
         }
         let start = e.offset as usize;
-        self.text.get(start..start + e.len as usize)
+        self.text.get(start..start.checked_add(e.len as usize)?)
     }
 
-    /// The text of `id` as UTF-8, or `None` for id 0, an id past the table
-    /// or an empty entry.
+    /// The text of `id` as UTF-8, by the rules of [`Library::bytes`]: the
+    /// original's getter fails for id 0 and for an entry without text.
     pub fn get(&self, id: u32) -> Option<String> {
         let raw = self.bytes(id)?;
         Some(String::from_utf8_lossy(&latin1_to_utf8(raw)).into_owned())
@@ -136,99 +198,106 @@ impl Library {
         self.entry(id).map_or(0, |e| e.refs)
     }
 
-    fn entry(&self, id: u32) -> Option<&Entry> {
-        if id == 0 {
-            return None;
-        }
-        self.entries.get(id as usize - 1)
+    fn slot(&self, id: u32) -> Option<usize> {
+        let slot = (id as usize).checked_sub(1)?;
+        (slot < self.entries.len()).then_some(slot)
     }
 
-    /// Adds `text` to the first free slot at or after the free hint, else
-    /// to a new one, and returns its id. The entry starts with one
-    /// reference.
-    pub fn add(&mut self, text: &[u8]) -> u32 {
-        let slot = (self.free_hint..self.entries.len())
-            .find(|&i| self.entries[i].refs == 0)
-            .unwrap_or_else(|| {
-                self.entries.push(Entry::default());
-                self.entries.len() - 1
-            });
-        self.entries[slot] = Entry {
+    fn entry(&self, id: u32) -> Option<&Entry> {
+        self.slot(id).map(|s| &self.entries[s])
+    }
+
+    /// Takes a slot for a new string, as the original's allocator does:
+    /// the first slot without references from the free hint on gets one
+    /// reference (its offset and length stay as they are, zero for a
+    /// released slot); with none, a zeroed slot with one reference is
+    /// appended. Returns the slot's id.
+    pub fn alloc(&mut self) -> u32 {
+        if let Some(slot) =
+            (self.free_hint..self.entries.len()).find(|&i| self.entries[i].refs == 0)
+        {
+            self.entries[slot].refs = 1;
+            return slot as u32 + 1;
+        }
+        self.entries.push(Entry {
             refs: 1,
             ..Entry::default()
-        };
-        self.write(slot, text);
-        slot as u32 + 1
+        });
+        self.tail = [0; ENTRY_LEN];
+        self.negative = false;
+        self.entries.len() as u32
     }
 
-    /// Replaces the text of `id`. Empty text frees the entry, as the
-    /// original's setter does.
+    /// Allocates a slot and sets its text: what the original's callers do
+    /// to give a record an own string. Returns the id.
+    pub fn add(&mut self, text: &[u8]) -> u32 {
+        let id = self.alloc();
+        self.set(id, text);
+        id
+    }
+
+    /// Replaces the text of `id`, as the original's setter does. Empty text
+    /// releases the slot and gives `false`. Text of another length closes
+    /// the old text's hole (every entry whose text starts after it moves
+    /// down) and goes to the end of the text area; text of the same length
+    /// overwrites the old in place.
     pub fn set(&mut self, id: u32, text: &[u8]) -> bool {
-        let Some(slot) = (id != 0)
-            .then(|| id as usize - 1)
-            .filter(|&s| s < self.entries.len())
-        else {
-            return false;
-        };
         if text.is_empty() {
             self.release(id);
+            return false;
+        }
+        let Some(slot) = self.slot(id) else {
+            return false;
+        };
+        let old = self.entries[slot];
+        let new_len = text.len() as u32;
+        if new_len != old.len {
+            if old.len != 0 {
+                let start = (old.offset as usize).min(self.text.len());
+                let end = (old.offset as usize + old.len as usize).min(self.text.len());
+                self.text.drain(start..end);
+                for e in &mut self.entries {
+                    if old.offset < e.offset {
+                        e.offset = e.offset.wrapping_sub(old.len);
+                    }
+                }
+            }
+            let at = self.text.len() as u32;
+            self.text.extend_from_slice(text);
+            let e = &mut self.entries[slot];
+            e.offset = at;
+            e.len = new_len;
             return true;
         }
-        self.write(slot, text);
+        let start = old.offset as usize;
+        if let Some(dst) = self.text.get_mut(start..start + text.len()) {
+            dst.copy_from_slice(text);
+        }
         true
     }
 
     /// Records one more use of `id`.
     pub fn add_ref(&mut self, id: u32) {
-        if let Some(slot) = (id != 0)
-            .then(|| id as usize - 1)
-            .filter(|&s| s < self.entries.len())
-        {
-            self.entries[slot].refs = self.entries[slot].refs.saturating_add(1);
+        if let Some(slot) = self.slot(id) {
+            self.entries[slot].refs = self.entries[slot].refs.wrapping_add(1);
         }
     }
 
-    /// Drops one use of `id`; the slot's text becomes free at zero.
+    /// Drops one use of `id`, as the original's release does: at no uses
+    /// left the slot is zeroed (its text stays behind as a hole) and the
+    /// free hint moves up to it if it is higher.
     pub fn release(&mut self, id: u32) {
-        let Some(slot) = (id != 0)
-            .then(|| id as usize - 1)
-            .filter(|&s| s < self.entries.len())
-        else {
+        let Some(slot) = self.slot(id) else {
             return;
         };
-        let refs = &mut self.entries[slot].refs;
-        *refs = refs.saturating_sub(1);
-        if *refs == 0 {
-            self.entries[slot] = Entry::default();
+        let e = &mut self.entries[slot];
+        e.refs = e.refs.wrapping_sub(1);
+        if e.refs == 0 {
+            *e = Entry::default();
             if self.free_hint < slot {
                 self.free_hint = slot;
             }
         }
-    }
-
-    /// Appends `text` to the text area and points the entry at it.
-    fn write(&mut self, slot: usize, text: &[u8]) {
-        let old = self.entries[slot];
-        let old_end = old.offset as usize + old.len as usize;
-        let new_len = text.len() as u32;
-        if old.len as usize != text.len()
-            && let Some(tail) = self.text.get(old_end..).map(<[u8]>::to_vec)
-        {
-            // Close the hole the old text leaves and shift the entries after
-            // it, as the original compacts its text area.
-            self.text.truncate(old.offset as usize);
-            self.text.extend_from_slice(&tail);
-            for entry in &mut self.entries {
-                if entry.len != 0 && entry.offset as usize >= old_end && entry.offset > old.offset {
-                    entry.offset -= old.len;
-                }
-            }
-        }
-        let at = self.text.len() as u32;
-        self.text.extend_from_slice(text);
-        let entry = &mut self.entries[slot];
-        entry.offset = at;
-        entry.len = new_len;
     }
 }
 
@@ -236,8 +305,8 @@ impl Library {
 mod tests {
     use super::*;
 
-    /// A library file with the given `(refs, text)` entries and the
-    /// trailing garbage entry every shipped file has.
+    /// A library file with the given `(refs, text)` entries and a trailing
+    /// slot, as every shipped file has.
     fn library(entries: &[(u32, &str)]) -> Vec<u8> {
         let mut text = Vec::new();
         let mut table = Vec::new();
@@ -249,7 +318,7 @@ mod tests {
             table.extend(offset.to_le_bytes());
             table.extend((s.len() as u32).to_le_bytes());
         }
-        table.extend([0u8; ENTRY_LEN]);
+        table.extend([0xAB; ENTRY_LEN]);
         let mut b = MAGIC.to_le_bytes().to_vec();
         b.extend((table.len() as u32).to_le_bytes());
         b.extend_from_slice(&table);
@@ -270,13 +339,14 @@ mod tests {
         assert_eq!(lib.refs(1), 3);
         assert_eq!(lib.refs(2), 1);
         assert_eq!(lib.refs(4), 0);
+        // The file writes back as it was read, trailing slot included.
+        assert_eq!(lib.write(), b);
     }
 
     #[test]
     fn text_is_latin_1() {
         let mut t = MAGIC.to_le_bytes().to_vec();
-        let table_len = 32u32;
-        t.extend(table_len.to_le_bytes());
+        t.extend(32u32.to_le_bytes());
         t.extend(0u32.to_le_bytes());
         t.extend(1u32.to_le_bytes());
         t.extend(0u32.to_le_bytes());
@@ -289,22 +359,25 @@ mod tests {
     }
 
     #[test]
-    fn adding_reuses_a_freed_slot_from_the_hint() {
-        let mut lib = Library::parse(&library(&[(1, "Sword"), (1, "Maul")])).unwrap();
-        assert_eq!(lib.add(b"Sword"), 3);
-        assert_eq!(lib.get(3).as_deref(), Some("Sword"));
+    fn the_allocator_scans_from_the_free_hint() {
+        let mut lib = Library::parse(&library(&[(1, "Sword"), (1, "Maul"), (1, "Axe")])).unwrap();
+        // Freeing slot 3 (index 2) raises the hint to 2; freeing slot 1
+        // (index 0) leaves it there, so slot 1 is skipped.
         lib.release(3);
-        assert_eq!(lib.refs(3), 0);
+        lib.release(1);
+        assert_eq!(lib.refs(1), 0);
+        assert_eq!(lib.alloc(), 3);
+        assert_eq!(lib.refs(3), 1);
         assert_eq!(lib.get(3), None);
-        // The freed third slot is the hint, so the next add reuses it.
-        assert_eq!(lib.add(b"Helm"), 3);
-        assert_eq!(lib.get(3).as_deref(), Some("Helm"));
-        assert_eq!(lib.add(b"Shield"), 4);
+        // Nothing free from the hint on: a new slot is appended.
+        assert_eq!(lib.alloc(), 4);
         assert_eq!(lib.len(), 4);
+        assert_eq!(lib.refs(1), 0);
     }
 
     #[test]
-    fn replacing_text_keeps_the_ids_of_the_other_entries() {
+    fn setting_text_closes_the_hole_or_overwrites_in_place() {
+        // Text area: "Sword" 0..5, "Two-handed Sword" 5..21, "Maul" 21..25.
         let mut lib = Library::parse(&library(&[
             (1, "Sword"),
             (1, "Two-handed Sword"),
@@ -312,16 +385,22 @@ mod tests {
         ]))
         .unwrap();
         assert!(lib.set(2, b"Axe"));
+        // The 16 bytes go, "Maul" moves to 5, "Axe" is appended at 9.
+        assert_eq!(lib.text(), b"SwordMaulAxe");
+        assert_eq!(lib.entries()[2].offset, 5);
+        assert_eq!(lib.entries()[1].offset, 9);
         assert_eq!(lib.get(1).as_deref(), Some("Sword"));
         assert_eq!(lib.get(2).as_deref(), Some("Axe"));
         assert_eq!(lib.get(3).as_deref(), Some("Maul"));
-        // Growing again shifts the later text.
-        assert!(lib.set(2, b"Two-handed Sword"));
-        assert_eq!(lib.get(3).as_deref(), Some("Maul"));
-        // Empty text frees the slot.
-        assert!(lib.set(2, b""));
+        // Same length: in place.
+        assert!(lib.set(1, b"Spear"));
+        assert_eq!(lib.text(), b"SpearMaulAxe");
+        // Empty text releases the slot and reports false.
+        assert!(!lib.set(2, b""));
         assert_eq!(lib.get(2), None);
         assert_eq!(lib.refs(2), 0);
+        // The released text stays as a hole.
+        assert_eq!(lib.text(), b"SpearMaulAxe");
         assert!(!lib.set(9, b"x"));
     }
 
@@ -334,7 +413,12 @@ mod tests {
         assert_eq!(lib.get(1).as_deref(), Some("Sword"));
         lib.release(1);
         assert_eq!(lib.get(1), None);
-        // Releasing a missing id changes nothing.
+        assert_eq!(lib.entries()[0], Entry::default());
+        // A slot without references wraps below zero instead of freeing, as
+        // the original's 32-bit count does.
+        lib.release(1);
+        assert_eq!(lib.refs(1), u32::MAX);
+        // Missing ids change nothing.
         lib.release(0);
         lib.release(9);
         lib.add_ref(0);
@@ -342,49 +426,94 @@ mod tests {
     }
 
     #[test]
-    fn malformed_files_are_errors() {
-        let good = library(&[(1, "Sword")]);
+    fn short_tables_and_errors() {
+        // The shipped empty library: magic and a one-slot table length, no
+        // table bytes.
+        let mut empty = MAGIC.to_le_bytes().to_vec();
+        empty.extend(16u32.to_le_bytes());
+        let lib = Library::parse(&empty).unwrap();
+        assert!(lib.is_empty());
+        assert_eq!(lib.write(), empty);
+        // A table length below one slot counts −1 entries and writes 0.
+        let mut none = MAGIC.to_le_bytes().to_vec();
+        none.extend(0u32.to_le_bytes());
+        assert_eq!(Library::parse(&none).unwrap().write(), none);
         assert!(matches!(Library::parse(&[]), Err(Error::Truncated { .. })));
+        let good = library(&[(1, "Sword")]);
         let mut bad_magic = good.clone();
         bad_magic[0] ^= 0xFF;
         assert!(matches!(
             Library::parse(&bad_magic),
             Err(Error::BadMagic { .. })
         ));
-        let mut short = good.clone();
-        short[4] = 8; // table length 8, not a multiple of 16
-        assert!(matches!(Library::parse(&short), Err(Error::Malformed(_))));
-        let mut past = good.clone();
-        // The first entry's length runs past the text area.
-        past[8 + 12..8 + 16].copy_from_slice(&1000u32.to_le_bytes());
-        assert!(matches!(Library::parse(&past), Err(Error::Malformed(_))));
+        // A table that runs past the file.
         let mut truncated = good.clone();
         truncated.truncate(20);
-        assert!(Library::parse(&truncated).is_err());
-        // An empty but well-formed library.
-        assert!(Library::parse(&library(&[])).unwrap().is_empty());
+        assert!(matches!(
+            Library::parse(&truncated),
+            Err(Error::Truncated { .. })
+        ));
+        // An entry past the text reads as nothing.
+        let mut past = good.clone();
+        past[8 + 12..8 + 16].copy_from_slice(&1000u32.to_le_bytes());
+        let lib = Library::parse(&past).unwrap();
+        assert_eq!(lib.get(1), None);
+        // Growing the table forgets the trailing slot's bytes.
+        let mut lib = Library::parse(&good).unwrap();
+        assert_eq!(lib.add(b"Maul"), 2);
+        let out = lib.write();
+        assert_eq!(&out[8 + 32..8 + 48], &[0; 16]);
+        assert_eq!(
+            Library::parse(&out).unwrap().get(2).as_deref(),
+            Some("Maul")
+        );
     }
 
-    /// The shipped library: every entry lies in the text area (the parse
-    /// checks it), the ids are dense and the known strings are where the
-    /// records point.
+    /// The shipped libraries: `objstrings.rdb` and every level's own one
+    /// parse and write back byte for byte.
     #[test]
-    fn shipped_string_library() {
+    fn shipped_string_libraries() {
         let Some(dir) = exa_rpk::locate_install(None) else {
             return;
         };
         let game = exa_rpk::GameData::open(&dir).unwrap();
         let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
-        let lib = Library::parse(resource.get("objstrings.rdb").unwrap()).unwrap();
+        let file = resource.get("objstrings.rdb").unwrap();
+        let lib = Library::parse(file).unwrap();
         assert_eq!(lib.len(), 1124);
+        assert_eq!(lib.write(), file);
         assert_eq!(lib.get(1).as_deref(), Some("Sword"));
         assert_eq!(lib.get(2).as_deref(), Some("Two-handed Sword"));
         assert_eq!(lib.get(88).as_deref(), Some("Breastplate"));
         assert_eq!(lib.get(89).as_deref(), Some("Plate Helm"));
         assert_eq!(lib.get(285).as_deref(), Some("Falchion"));
-        assert_eq!(lib.get(0xaa).as_deref(), Some("Torch"));
-        assert_eq!(lib.get(0xb6).as_deref(), Some("A simple torch."));
-        assert!(lib.refs(0) == 0 && lib.refs(1) > 0);
-        assert!(lib.refs(1125) == 0);
+        assert_eq!(lib.get(170).as_deref(), Some("Torch"));
+        assert_eq!(lib.get(182).as_deref(), Some("A simple torch."));
+        assert!(lib.entries().iter().all(|e| e.unused == 0 && e.refs > 0));
+        let mut levels = 0;
+        for e in resource.entries() {
+            let Ok(chunks) = crate::chunk::rfc_chunks(resource.bytes(e)) else {
+                continue;
+            };
+            for c in chunks.flatten() {
+                if c.tag != crate::rfc::LOCAL_DATABASE {
+                    continue;
+                }
+                let mut pos = 0;
+                while pos + 8 <= c.data.len() {
+                    let tag = crate::read_u32(c.data, pos).unwrap();
+                    let size = crate::read_u32(c.data, pos + 4).unwrap() as usize;
+                    let body = &c.data[pos + 8..pos + 8 + size];
+                    if tag == 0xDBCD {
+                        let lib =
+                            Library::parse(body).unwrap_or_else(|err| panic!("{}: {err}", e.name));
+                        assert_eq!(lib.write(), body, "{}", e.name);
+                        levels += 1;
+                    }
+                    pos += 8 + size;
+                }
+            }
+        }
+        assert_eq!(levels, 22);
     }
 }
