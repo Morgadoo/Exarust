@@ -383,6 +383,28 @@ fn the_aim_stick_turns_into_the_camera_frame_or_stays_raw() {
 }
 
 #[test]
+fn every_digital_gameplay_action_sets_its_command_bit() {
+    let cases = [
+        (Id::Combat, command::ATTACK),
+        (Id::SwapWeapon, command::SWAP_WEAPON),
+        (Id::Inventory, command::INVENTORY),
+        (Id::Skills, command::SKILLS),
+        (Id::UsePower, command::USE_POWER),
+        (Id::Powers, command::POWER_BAR),
+        (Id::Select, command::USE),
+        (Id::Talk, command::TALK),
+        (Id::PauseMenu, command::PAUSE),
+    ];
+    for (id, bit) in cases {
+        let mut play = primed_play();
+        let sample = pad().with_digital(id, true);
+        let frame = *play.update(4, &sample, play_ctx());
+        assert_eq!(frame.pressed & bit, bit, "{id:?}");
+        assert_eq!(play.commands() & bit, bit, "{id:?}");
+    }
+}
+
+#[test]
 fn the_attack_is_a_latched_edge_and_the_command_word_keeps_it() {
     let combat = pad().with_digital(Id::Combat, true);
     let mut play = primed_play();
