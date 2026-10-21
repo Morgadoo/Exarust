@@ -378,8 +378,9 @@ pub struct ItemSentence {
 /// bracket keeps the name plus "It is" and only a condition phrase. A leading
 /// dash is dropped and uses the high and great tables. Any other name uses
 /// the made table, then flawless, and perfect when flawless adds nothing.
-/// Quality and condition are that byte divided by the stored 2.55, dropping
-/// the fraction. A bracketed name is the name, "It is ", the quality phrase,
+/// Quality and condition are that byte divided by the stored 2.55, rounded
+/// to the nearest (ties to even), as the original's conversion does. A
+/// bracketed name is the name, "It is ", the quality phrase,
 /// then ", but" when both marks are at most 50 or both are above, and " and"
 /// otherwise. An unbracketed name is the quality phrase, a space, and the
 /// name, then "An " when it starts with a, e, i, o, or u, and "A " otherwise.
@@ -480,7 +481,7 @@ fn raw_phrase(state: u32, value: u8, phrases: &[Phrase<'_>]) -> (u32, Option<Str
 
 fn scale_mark(value: u8) -> u8 {
     let divisor = f64::from_bits(0x4004_6666_6666_6666);
-    (f64::from(value) / divisor) as u8
+    (f64::from(value) / divisor).round_ties_even() as u8
 }
 
 fn takes_an(text: &str) -> bool {
@@ -1083,6 +1084,14 @@ mod tests {
             item_sentence(0, "Sword [x]", false, 131, 0, &rows).text,
             "SwordIt is well and sharp."
         );
+        // 129 / 2.55 is 50.6, which the original rounds to 51: past the
+        // half, so the condition of 0 joins with " and".
+        assert_eq!(
+            item_sentence(0, "Sword [x]", false, 129, 0, &rows).text,
+            "SwordIt is well and sharp."
+        );
+        assert_eq!(scale_mark(128), 50);
+        assert_eq!(scale_mark(129), 51);
         assert_eq!(
             item_sentence(0, "Blade [c]", false, 0, 0, &rows),
             ItemSentence {
