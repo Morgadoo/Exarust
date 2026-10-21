@@ -6,6 +6,14 @@ installation discovery (`--game`, `EXANIMA_DIR`, `.env`).
 
 **Phase:** 0 (started), 2 (asset source `exanima://`, loaders, direct BC upload, streaming).
 
+Material bookkeeping (`material_manager`): the built-in `_Default`
+material (opaque grey, unlit, reference count `0x3FFFFFFF` that never
+reaches zero), the global cache's reference counts (acquire and release, a
+negative count an error), and a per-scene manager holding the scene's
+default material and its own copy of the global plug-in list. The loader's
+`get_material` is the get-or-load entry point; an unknown name logs once
+and returns `_Default`.
+
 Skinning (`skin`): the original's seam builder, run on body parts and
 garments while a model is built, read instruction by instruction. Body parts
 trace wide seam groups whose boundary edges come from neighbours of another

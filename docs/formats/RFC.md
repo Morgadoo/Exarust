@@ -49,7 +49,12 @@ Payload: a 184-byte block of shading parameters, then 56-byte texture
 layer records. Of the block, the colours, opacity, gloss, specular level,
 render class, flags, kind, extra flags, displacement and opacity fall-off
 are read for shading (`docs/RENDERING.md`), and two fields for physics
-(REA on the original's material constructor and loader; corpus below):
+(REA on the original's material constructor and loader; corpus below). A
+newly constructed material object, before any payload is loaded, has an
+identity 3 × 4 texture transform, the texture load word `0x700F0` (0xF0 and
+the `0x70000` repeat-wrapping sampler bits) and a physical divisor of 1;
+the manager's built-in `_Default` record is opaque grey (0.5, 0.5, 0.5, 1)
+with no shading flags and a reference count that never reaches zero.
 
 | off | field |
 |---|---|

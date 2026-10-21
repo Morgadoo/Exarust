@@ -513,6 +513,11 @@ skills key's screen and the power tree are not opened.
 
 ## Game flow
 
+The Energy domain's Shock creator builds its charge object with the cast
+flag 1, the base cost, the clip's charge, the hand arcs (20 tendrils of 5
+segments at −15, −5 cm), and the `thmnrg_chrga` and `thmnrg_shock` sounds
+(`exa_game::thaum::energy::shock_power`).
+
 `flow` is the original's game-main flow: boot into the title, the mode
 switch (practice, story, arena, scripted modes), the session starters
 (story from a background with its role, pose, light and Derrin, practice

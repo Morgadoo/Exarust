@@ -324,6 +324,16 @@ of a record with extra flag `0x40` in the loader's order (the engine's sine
 and cosine of the negated angle, scale about the centre, then the
 translation); nothing draws with it yet.
 
+A newly constructed material object starts with the texture load word
+`0x700F0` (0xF0 and repeat wrapping in the `0x70000` sampler bits) and a
+physical divisor of 1. The manager's built-in
+`_Default` material is opaque grey (0.5, 0.5, 0.5, 1) with no texture and no
+shading flags, and a reference count of `0x3FFFFFFF` that never reaches
+zero; an unknown material name logs once and returns it. The material
+object's seven texture slots are released by its destructor helper, and the
+global cache's counts rise on a get-or-load and fall on a release, a
+negative count being an error.
+
 **Texture slots**:
 - `0x20000` diffuse
 - `0x40000` specular
@@ -867,6 +877,14 @@ tick). Droplets fly and fall but touch nothing: blood never reaches the
 floor (the original has no floor blood from combat; its floor blood is
 placed by the level designers).
 
+**Scene node**: the original builds once a geometry node named
+`_BloodSpray` with one sub-object using the built-in `_BloodPrt02` material
+(`BldPrt02`, emissive white, blend word 0x0004, unlit, no shadow, node flag
+0x1000, added to the scene's effect list) and the one spray emitter. Exarust
+draws its droplets through one mesh and the resource (`exa_character::spray`)
+and keeps the node's description for the scene set-up. At session end and
+respawn the jets and flying droplets are cleared while the ring's sizes stay.
+
 **Jets**: one per bleeding blow (R over 0.05 on a race that bleeds,
 [Blood](#blood)), started at the blow even when the wound is dropped from
 a full queue (`exa_combat::wounds::Spray`):
@@ -1127,7 +1145,12 @@ For each updated voxel, with occ normalised:
 add straight into the volume, after the propagation, every step and in
 the warm-up:
 - colour C = lin(rgb)·√intensity·3 (the original's linear workflow; 0.6
-  on its legacy path), × 0.1 per step. An item whose model section sets
+  in double precision on its legacy path), × 0.1 per step. The node keeps
+  its base colour, current intensity (`+0x1D4`), base intensity (`+0x234`),
+  base radius (`+0x230`) and active radius (`+0x214`, copied from the base
+  by activation), plus a flag word whose bit 2 marks a colour update and
+  bit 1 an active light. A clone copies the master's colour, intensities,
+  radii and derived linear colour. An item whose model section sets
   bit 0 scales the intensity of the voxel lights under its root by
   k = (1 − c/255)², c its placement's condition byte, and the emissive
   colour (not its alpha) of the meshes under its root by the same k, so a
@@ -1325,7 +1348,18 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   Bevy's 10 cm default: at 10 cm a torch's close-range character shadow
   smeared over the floor instead of following the body.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
-  at the top shadow detail).
+  at the top shadow detail). The allocator picks the class by the light's
+  kind (2 directional, else cube) and the size by the shadow detail plus the
+  light's quality offset (clamped to index 6): directional 256/512/1024/
+  2048/4096/8192 at indices 1–6, cube half of 64/128/256/512/1024/2048/4096;
+  cubes then shift right by the light's reduction level and both by the
+  hardware maximum. A cube light's fade distance is 0.005·quality (0.025
+  above index 5). The caster programs are the plain depth pass, the
+  distance writer, and each with an alpha test and a dithered fade; the
+  dither compares a screen-space hash against a fade value the original
+  leaves at 0. The cube textures are pooled per face size and
+  reference-counted, freed at zero and all released when the shadow detail
+  changes.
 - Surfaces with opacity ≤ 0.8 in double precision (glass, decals) and those
   whose record has extra flag `0x4` cast no shadows; the compare widens the
   stored f32 to f64, so `0.8` stored as f32 is above the bound. A record in
@@ -1854,6 +1888,12 @@ undrawn whatever the player should not see (`exa_world::rooms`,
 
 ## Cameras
 
+- The camera node is built with a vertical field of view of 70° and, scaled
+  by the original's 25 000-unit base, near 100 and far 12 500 engine units
+  (1 and 125 m). A view overrides the field of view (the play zoom, the
+  viewer's `--fov`) but keeps the planes. The 3D view carries exposure 1
+  (unused by Exarust's shaders), bloom strength 1, post on and its
+  supersample level.
 - Vertical field of view in degrees.
 - Main menu: 60°, eye (0, 5, 7) m looking at (0, 0, −2) m.
 - Character creation: 50°, looking at (0, 0.6, 0) m from 4 m along the
@@ -1966,6 +2006,28 @@ its target, +0.05 per second up and −0.1 down, and snaps within
 16 ms do nothing. Exarust takes the sine from the standard library, so it
 may differ from the original's by an ulp. The field is modelled; the
 powers do not draw it yet.
+
+## Skill-tree splines
+
+The thaumaturgy skill tree draws its connections with the original's
+anti-aliased line program (`exa_render::splines`). A render object holds a
+pre-built index list for up to 2 048 quads (two triangles each: `2i, 2i+1,
+2i+3` and `2i, 2i+3, 2i+2`) and per-segment strip coordinates (`u` the
+segment index, `v` 0/1 across the line). Tessellating a spline appends two
+vertices per point, offset either side of it by the chord normal scaled to
+the width (the 2D normal `(−dy, dx)` of the chord from the previous point);
+the texture coordinate is the segment pair, the strip coordinate's `x` is
+the join's curvature (the chord normal dotted with the incoming segment less
+the outgoing one, × −0.09 over the width squared; 0 for a hard join), and
+each vertex stores four colour bytes. Closing without an explicit point
+takes the midpoint of the previous and current points, and the final pair is
+dropped from the index run. The draw's width values are `w/2 + √(4w)`,
+`−(0.3w + 0.15)` in double precision and `√(6w)`, with `1/(right − left)`
+and `1/(bottom − top)` from the viewport; the fragment rule computes the
+soft edge from the strip coordinate, scales the coverage by the width and
+multiplies the vertex colour. `splines.rs` holds the CPU geometry and the
+fragment rule as WGSL; no caller exists yet (Exarust has no thaumaturgy
+tree).
 
 ## Effect shells
 
