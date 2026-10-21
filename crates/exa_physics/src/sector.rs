@@ -3,44 +3,51 @@
 //! which cells and which pairs a body can reach, the meet tests the broad
 //! phase runs before a pair is generated, and the order of the step's
 //! stages. Evidence: `context/re/body-tick-order.md` §1, `body-pairs.md`
-//! §3–§5 and §9, `body-contacts.md`.
+//! §2.2, §3–§5 and §9, `body-contacts.md`, and the sector routines'
+//! assembly (`context/re/packs/simsector`).
 //!
 //! The original keeps two grids in a sector: the rigid bodies' (one cell per
-//! body, from the cell its bounds centre falls in) and the static colliders'
-//! (every cell a mesh's bounds, one cell of margin around them, reach). This
-//! module holds the cell arithmetic, the bounds, and the meet tests; the
-//! pair records themselves stay in [`crate::body::pairs`].
+//! body, from the cell its mesh box's world centre falls in) and the static
+//! colliders' (one cell, or every cell a mesh's bounds reach with one cell
+//! of margin all round). This module holds the cell arithmetic, the bounds,
+//! and the meet tests; the pair records themselves stay in
+//! [`crate::body::pairs`].
 //!
-//! Units follow the original here: bounds and distances are in centimetres
-//! in the arithmetic (the solver stores metres and converts at the boundary),
-//! and a cell is 600 cm across in x and z. Heights do not enter the grid.
+//! Units: the grid arithmetic and the placement and static overlap tests
+//! take centimetres, as the original does; [`Bounds::of_spheres`] and the
+//! meet test take the solver's metres (the slab test is scale-free). A cell
+//! is 600 cm across in x and z; heights do not enter the grid.
 //!
-//! The original's engine rounds in two different ways and both matter:
-//! its own round helper is a floor, used for a point's cell, while the
-//! processor's float-to-integer conversion (`CVTSS2SI`, round half to even)
-//! is used for the lower and upper cell a bound reaches. Rust's `floor` and
-//! `round_ties_even` give the same answers.
+//! The original rounds to cells in two ways and both matter: its own round
+//! helper sets the processor to round down, used for a point's cell, while
+//! the static span's edges use the processor's default float-to-integer
+//! conversion (round half to even). Both multiply by the single-precision
+//! 1/600 rather than divide by 600, and an unrepresentable value converts
+//! to the processor's "integer indefinite" (the most negative integer).
+
+// `!(a <= b)` is deliberate here: it is the original's branch with a NaN.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::math::{Affine3A, Vec3};
 use bevy::platform::collections::HashMap;
 
-use crate::intersect::{self, Sweep};
+use crate::intersect::{self, max_first, min_first};
 
 /// The processor's per-component minimum ([`intersect::min_first`]).
 fn min_each(a: Vec3, b: Vec3) -> Vec3 {
     Vec3::new(
-        intersect::min_first(a.x, b.x),
-        intersect::min_first(a.y, b.y),
-        intersect::min_first(a.z, b.z),
+        min_first(a.x, b.x),
+        min_first(a.y, b.y),
+        min_first(a.z, b.z),
     )
 }
 
 /// The processor's per-component maximum ([`intersect::max_first`]).
 fn max_each(a: Vec3, b: Vec3) -> Vec3 {
     Vec3::new(
-        intersect::max_first(a.x, b.x),
-        intersect::max_first(a.y, b.y),
-        intersect::max_first(a.z, b.z),
+        max_first(a.x, b.x),
+        max_first(a.y, b.y),
+        max_first(a.z, b.z),
     )
 }
 
@@ -53,78 +60,109 @@ pub const FRICTION_PASSES: usize = crate::body::FRICTION_PASSES;
 pub const CELL_SIZE_CM: f32 = 600.0;
 /// The same cell in the solver's metres.
 pub const CELL_SIZE: f32 = 6.0;
-/// The squared travel (cm²) of a sphere over a tick above which the meet
-/// test sweeps it from where the last tick left it.
-pub const SWEEP_TRAVEL2: f32 = 0.1;
-/// Padding (cm) the placement overlap query adds to the touching bound.
+/// The single-precision reciprocal of the cell side the original multiplies
+/// by (0.0016666667).
+pub const INVERSE_CELL_SIZE_CM: f32 = 1.0 / 600.0;
+/// Padding (cm) the placement overlap query adds to each sphere.
 pub const PLACEMENT_PADDING_CM: f32 = 2.0;
 /// Contact points a pair keeps: the original's four.
 pub const PAIR_POINTS: usize = 4;
+/// The squared distance (cm²) from the sphere set's centre past which a
+/// sphere's distance counts toward the enclosing radius: the original's
+/// constant, just under the single-precision epsilon (1.1920899e-7).
+pub const BOUNDS_EPSILON2_CM: f32 = f32::from_bits(0x33ff_ffd7);
 
-/// A point's cell coordinate as the original's floor helper gives it:
-/// `floor(value / 600)`. An out-of-range value saturates instead of
-/// wrapping (a malformed level must not panic; the original's conversion
-/// is undefined there).
+/// The processor's single-to-32-bit conversion: `value` already rounded,
+/// or the "integer indefinite" (`i32::MIN`) when it is NaN or out of range.
+fn to_i32(rounded: f32) -> i32 {
+    if !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// The processor's single-to-64-bit conversion, as [`to_i32`] with
+/// `i64::MIN` for the indefinite.
+fn to_i64(rounded: f32) -> i64 {
+    if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&rounded) {
+        i64::MIN
+    } else {
+        rounded as i64
+    }
+}
+
+/// A point's cell coordinate as the original's round-down helper gives it:
+/// `floor(value × 1/600)` in single precision. NaN or an out-of-range value
+/// gives `i32::MIN`, as the processor's conversion does.
 pub fn cell_coordinate(value_cm: f32) -> i32 {
-    (value_cm / CELL_SIZE_CM).floor() as i32
+    to_i32((value_cm * INVERSE_CELL_SIZE_CM).floor())
 }
 
 /// A point's cell (x, z), offset by the grid's origin cell the way the
-/// original adds its sector origin.
+/// original adds its sector origin (wrapping, as 32-bit adds do).
 pub fn cell_of(centre_cm: Vec3, origin: (i32, i32)) -> (i32, i32) {
     (
-        cell_coordinate(centre_cm.x) + origin.0,
-        cell_coordinate(centre_cm.z) + origin.1,
+        cell_coordinate(centre_cm.x).wrapping_add(origin.0),
+        cell_coordinate(centre_cm.z).wrapping_add(origin.1),
     )
 }
 
-/// The cells a bound reaches, as the original's static-grid insertion
-/// computes them: the lower edge rounds half to even, is floored at cell 1;
-/// the upper edge rounds half to even, is capped at the last cell but one;
-/// and the span is "wide" when either edge leaves the centre's own cell.
-/// The insertion then covers one more cell below/left of the span and
-/// exactly the upper edge, the original's margin.
+/// A span edge's cell: `value × 1/600` rounded half to even to a 64-bit
+/// integer, the origin added, kept to its low 32 bits.
+fn edge_cell(value_cm: f32, origin: i32) -> i32 {
+    to_i64((value_cm * INVERSE_CELL_SIZE_CM).round_ties_even()).wrapping_add(i64::from(origin))
+        as i32
+}
+
+/// The cells a static collider's bound reaches, as the original's
+/// static-grid insertion computes them: the lower edge rounds half to even
+/// and is floored at cell 1; the upper edge rounds half to even and is
+/// capped at the last cell but one; and the span is "wide" when either edge
+/// leaves the centre's own cell. A wide span is inserted with one cell of
+/// margin on every side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GridSpan {
     /// The bound's own cell, from its centre.
     pub centre: (i32, i32),
     /// The lower edge after the floor at cell 1.
     pub min_x: i32,
+    /// The upper edge after the cap at the last cell but one.
     pub max_x: i32,
     pub min_z: i32,
     pub max_z: i32,
-    /// The original's overflow/wide flag: the bound reaches past the
-    /// centre's cell, so it is inserted into several cells rather than one.
+    /// The original's wide flag: the bound reaches past the centre's cell,
+    /// so it is inserted into several cells rather than one.
     pub wide: bool,
 }
 
 impl GridSpan {
-    /// The cells the original's insertion writes. A span that reaches only
-    /// past its centre goes into the centre cell alone; a wide one goes
-    /// into `min − 1 … max` on both axes, in z then x order (the extra cell
-    /// below/left is the original's margin).
+    /// The cells the original's insertion writes. A span that stays in its
+    /// centre's cell goes there alone; a wide one goes into
+    /// `min − 1 … max + 1` on both axes, z outer and x inner.
     pub fn insertion_cells(&self) -> Vec<(i32, i32)> {
         if !self.wide {
             return vec![self.centre];
         }
-        (self.min_z - 1..=self.max_z)
-            .flat_map(|z| (self.min_x - 1..=self.max_x).map(move |x| (x, z)))
+        (self.min_z - 1..=self.max_z + 1)
+            .flat_map(|z| (self.min_x - 1..=self.max_x + 1).map(move |x| (x, z)))
             .collect()
     }
 
-    /// How many records the original sizes its temporary cell array for:
-    /// `(max − min + 3)` on each axis.
+    /// How many records the original sizes a wide span's cell array for:
+    /// `(max − min + 3)` on each axis, exactly the cells it inserts.
     pub fn capacity(&self) -> usize {
-        ((self.max_z - self.min_z + 3) * (self.max_x - self.min_x + 3)).max(0) as usize
+        let z = self.max_z.wrapping_sub(self.min_z).wrapping_add(3);
+        let x = self.max_x.wrapping_sub(self.min_x).wrapping_add(3);
+        z.wrapping_mul(x).max(0) as usize
     }
 }
 
-/// The cells a body's bound covers in a `columns` × `rows` grid whose
-/// origin cell is `origin`, as the original's static insertion computes
-/// them (`FUN_10007f020`): the centre's cell, the lower and upper edges
-/// from the world half extent, the floor at cell 1, the cap at the last
-/// cell but one, and the wide flag. Deprecated/odd inputs (a grid under two
-/// cells across) give an empty span rather than a panic.
+/// The cells a static collider's bound covers in a `columns` × `rows` grid
+/// whose origin cell is `origin`, as the original's static insertion
+/// computes them: the centre's cell, the lower and upper edges from the
+/// world half extent ([`Bounds::world_half`]), the floor at cell 1, the cap
+/// at the last cell but one, and the wide flag.
 pub fn grid_span(
     centre_cm: Vec3,
     half_cm: Vec3,
@@ -132,46 +170,25 @@ pub fn grid_span(
     rows: i32,
     origin: (i32, i32),
 ) -> GridSpan {
-    if columns < 2 || rows < 2 {
-        return GridSpan {
-            centre: (1, 1),
-            min_x: 1,
-            max_x: 1,
-            min_z: 1,
-            max_z: 1,
-            wide: false,
-        };
-    }
-    let centre_cell = cell_of(centre_cm, origin);
-    let centre_cell_x = centre_cell.0;
-    let centre_cell_z = centre_cell.1;
-    // `CVTSS2SI` rounds half to even, unlike the engine's floor helper.
-    let mut min_x = ((centre_cm.x - half_cm.x) / CELL_SIZE_CM).round_ties_even() as i32 + origin.0;
-    if min_x < 1 {
-        min_x = 1;
-    }
-    let mut wide = min_x < centre_cell_x;
-    let mut max_x = ((centre_cm.x + half_cm.x) / CELL_SIZE_CM).round_ties_even() as i32 + origin.0;
-    if columns - 1 <= max_x {
-        max_x = columns - 2;
-    }
-    if centre_cell_x + 1 < max_x {
-        wide = true;
-    }
-    let mut min_z = ((centre_cm.z - half_cm.z) / CELL_SIZE_CM).round_ties_even() as i32 + origin.1;
-    if min_z < 1 {
-        min_z = 1;
-    }
-    wide |= min_z < centre_cell_z;
-    let mut max_z = ((centre_cm.z + half_cm.z) / CELL_SIZE_CM).round_ties_even() as i32 + origin.1;
-    if rows - 1 <= max_z {
-        max_z = rows - 2;
-    }
-    if centre_cell_z + 1 < max_z {
-        wide = true;
-    }
+    let centre = cell_of(centre_cm, origin);
+    let mut wide = false;
+    let mut axis = |middle: f32, half: f32, own: i32, count: i32, origin: i32| {
+        let mut low = edge_cell(middle - half, origin);
+        if low < 1 {
+            low = 1;
+        }
+        wide |= low < own;
+        let mut high = edge_cell(middle + half, origin);
+        if i64::from(count) - 1 <= i64::from(high) {
+            high = count.wrapping_sub(2);
+        }
+        wide |= i64::from(own) + 1 < i64::from(high);
+        (low, high)
+    };
+    let (min_x, max_x) = axis(centre_cm.x, half_cm.x, centre.0, columns, origin.0);
+    let (min_z, max_z) = axis(centre_cm.z, half_cm.z, centre.1, rows, origin.1);
     GridSpan {
-        centre: centre_cell,
+        centre,
         min_x,
         max_x,
         min_z,
@@ -180,26 +197,33 @@ pub fn grid_span(
     }
 }
 
-/// The cell index the original stores for a cell: `z * columns + x`.
+/// The cell index the original stores for a cell: `z * columns + x`
+/// (32-bit, wrapping).
 pub fn cell_index(cell: (i32, i32), columns: i32) -> i32 {
-    cell.1 * columns + cell.0
+    cell.1.wrapping_mul(columns).wrapping_add(cell.0)
 }
 
-/// Whether a cell index lies in the first or last grid row, the original's
-/// position-overflow guard. Only rows are guarded; an x outside the grid
-/// wraps into a neighbouring row and is left alone.
-pub fn row_overflow(index: i32, columns: i32, rows: i32) -> bool {
-    if columns < 1 || rows < 2 {
-        return true;
-    }
-    let last = (rows - 1) * columns;
-    index <= columns || index == last || last < index
+/// The original's position-overflow guard for a rigid body's cell index:
+/// it lies in the first grid row (below `columns`) or at or past the last
+/// row. Only rows are guarded; an x outside the grid wraps into a
+/// neighbouring row and is left alone. A body caught here is put back
+/// where the tick before last left it.
+pub fn body_cell_overflow(index: i32, columns: i32, rows: i32) -> bool {
+    index < columns || (i64::from(rows) - 1) * i64::from(columns) <= i64::from(index)
+}
+
+/// The same guard for a sim object's cell index, which the original also
+/// counts as overflowing on the first cell of the second row (`index ≤
+/// columns`); such an object is parked in cell `columns + 1`.
+pub fn object_cell_overflow(index: i32, columns: i32, rows: i32) -> bool {
+    index <= columns || (i64::from(rows) - 1) * i64::from(columns) <= i64::from(index)
 }
 
 /// A sparse cell grid: each cell lists the ids inserted into it. The
-/// original stores singly linked lists in dense arrays; a map of short
-/// vectors is Exarust's allocation-free-enough equivalent with the same
-/// iteration meaning (a cell's contents are unordered).
+/// original stores linked lists in dense arrays; a map of short vectors
+/// serves Exarust's unbounded levels with the same meaning (the pair stage
+/// sorts what it reads, so a cell's order does not matter). Clearing keeps
+/// each cell's storage, so a grid refilled every tick does not allocate.
 #[derive(Debug, Clone, Default)]
 pub struct CellGrid {
     cells: HashMap<(i32, i32), Vec<usize>>,
@@ -236,14 +260,10 @@ impl CellGrid {
 
     /// Removes one `id` from `cell`, keeping the others' order.
     pub fn remove(&mut self, cell: (i32, i32), id: usize) {
-        let Some(list) = self.cells.get_mut(&cell) else {
-            return;
-        };
-        if let Some(at) = list.iter().position(|&x| x == id) {
+        if let Some(list) = self.cells.get_mut(&cell)
+            && let Some(at) = list.iter().position(|&x| x == id)
+        {
             list.remove(at);
-        }
-        if list.is_empty() {
-            self.cells.remove(&cell);
         }
     }
 
@@ -260,11 +280,12 @@ impl CellGrid {
         self.cells.get(&cell).map_or(&[], Vec::as_slice)
     }
 
-    /// The cells around `cell` (its 3 × 3 block), each with its ids.
+    /// The occupied cells of the 3 × 3 block around `cell`, each with its
+    /// ids, z outer and x inner.
     pub fn near(&self, cell: (i32, i32)) -> impl Iterator<Item = ((i32, i32), &[usize])> {
         (-1..=1).flat_map(move |dz| {
             (-1..=1).filter_map(move |dx| {
-                let at = (cell.0 + dx, cell.1 + dz);
+                let at = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dz));
                 self.cells
                     .get(&at)
                     .map(|list| (at, list.as_slice()))
@@ -275,17 +296,19 @@ impl CellGrid {
 
     /// Whether the grid holds no id at all.
     pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+        self.cells.values().all(Vec::is_empty)
     }
 
     /// The number of occupied cells.
     pub fn occupied(&self) -> usize {
-        self.cells.len()
+        self.cells.values().filter(|list| !list.is_empty()).count()
     }
 
-    /// Removes every id.
+    /// Removes every id, keeping the cells' storage for the next fill.
     pub fn clear(&mut self) {
-        self.cells.clear();
+        for list in self.cells.values_mut() {
+            list.clear();
+        }
     }
 }
 
@@ -311,37 +334,53 @@ impl Bounds {
         }
     }
 
-    /// The bounds of a sphere set: the box around the spheres with at least
-    /// the original's 1e-4 minimum half extent, and the radius of the
-    /// sphere enclosing all of them. No spheres give a point bound at the
-    /// origin (radius 0).
+    /// The bounds of a sphere set (metres), as the original's body bounds
+    /// routine computes them: the box starts at the first centre and grows
+    /// to each sphere's extremes (an edge moves only when strictly past it,
+    /// so a NaN leaves it), its centre is `low + (high − low)/2` and its
+    /// half extent `high − centre`; the radius is the largest of
+    /// `distance + r` over the spheres, the bare `r` for a sphere within
+    /// the single-precision epsilon (cm²) of the centre. No spheres give an
+    /// empty bound (all zero), which takes part in no pair.
     pub fn of_spheres(spheres: &[(Vec3, f32)]) -> Self {
-        let Some(&(first, first_radius)) = spheres.first() else {
+        let Some(&(first, _)) = spheres.first() else {
             return Self {
                 centre: Vec3::ZERO,
-                half: Vec3::splat(intersect::MIN_BOUNDS_EXTENT),
+                half: Vec3::ZERO,
                 radius: 0.0,
             };
         };
-        let (mut low, mut high) = (
-            first - Vec3::splat(first_radius),
-            first + Vec3::splat(first_radius),
-        );
-        for &(centre, radius) in &spheres[1..] {
-            let r = Vec3::splat(radius);
-            low = min_each(low, centre - r);
-            high = max_each(high, centre + r);
+        let (mut low, mut high) = (first, first);
+        for &(centre, radius) in spheres {
+            for k in 0..3 {
+                let below = centre[k] - radius;
+                if below < low[k] {
+                    low[k] = below;
+                }
+                let above = centre[k] + radius;
+                if above > high[k] {
+                    high[k] = above;
+                }
+            }
         }
-        let centre = (low + high) * 0.5;
-        let half = max_each(high - centre, Vec3::splat(intersect::MIN_BOUNDS_EXTENT));
-        let radius = spheres
-            .iter()
-            .map(|&(c, r)| c.distance(centre) + r)
-            .fold(0.0, f32::max);
+        let centre = low + (high - low) * 0.5;
+        let half = high - centre;
+        let mut enclosing = 0.0;
+        for &(c, r) in spheres {
+            let d2 = c.distance_squared(centre);
+            let reach = if d2 * 10_000.0 > BOUNDS_EPSILON2_CM {
+                d2.sqrt() + r
+            } else {
+                r
+            };
+            if reach > enclosing {
+                enclosing = reach;
+            }
+        }
         Self {
             centre,
             half,
-            radius,
+            radius: enclosing,
         }
     }
 
@@ -351,7 +390,8 @@ impl Bounds {
     }
 
     /// The half extents of the world-aligned box around the bound under
-    /// `transform`: the absolute rotation times the local extents.
+    /// `transform`: the absolute rotation times the local extents, summed
+    /// x, then y, then z as the static insertion does.
     pub fn world_half(&self, transform: &Affine3A) -> Vec3 {
         let m = transform.matrix3.abs();
         Vec3::new(
@@ -362,20 +402,20 @@ impl Bounds {
     }
 }
 
-/// The largest absolute component of four weights, as the original's
-/// sign-masked maximum gives it (a NaN compares as the second operand, as
+/// The largest absolute value of four weights, as the original folds it
+/// with the processor's maximum: the second weight against the first, then
+/// the third, then the fourth (a NaN gives way to the other operand, as
 /// [`intersect::max_first`] does).
 pub fn largest_abs(weights: [f32; 4]) -> f32 {
     let abs = weights.map(f32::abs);
-    intersect::max_first(
-        intersect::max_first(intersect::max_first(abs[0], abs[1]), abs[2]),
-        abs[3],
-    )
+    max_first(max_first(max_first(abs[1], abs[0]), abs[2]), abs[3])
 }
 
-/// Weights with negatives dropped and the rest divided by their sum, so
-/// they add to 1. None when the sum is zero or NaN. This is the original's
-/// sum normalisation (`FUN_10007def0`).
+/// Weights with negatives (and NaN) dropped and the rest divided by their
+/// sum, so they add to 1; the original's sum normalisation. The original
+/// multiplies by the processor's approximate reciprocal of the sum and has
+/// no guard; Exarust divides exactly and gives None when the sum is zero
+/// or NaN, for its callers to skip the hit.
 pub fn normalise_sum(weights: [f32; 4]) -> Option<[f32; 4]> {
     let clamped = weights.map(|w| w.max(0.0));
     let sum: f32 = clamped.iter().sum();
@@ -385,13 +425,14 @@ pub fn normalise_sum(weights: [f32; 4]) -> Option<[f32; 4]> {
     Some(clamped.map(|w| w / sum))
 }
 
-/// The normalised weights of [`normalise_sum`], divided by their largest
-/// so that the largest is 1, and that largest's reciprocal (φ): 4 at the
-/// centroid, 1 on one particle. None when no weight is positive. This is
-/// the original's max normalisation (`FUN_10007de80`).
+/// [`normalise_sum`] followed by the original's max normalisation: the
+/// weights divided by their largest so that the largest is 1, and that
+/// largest's reciprocal (φ): 4 at the centroid, 1 on one particle. None
+/// when no weight is positive. The original's reciprocals are the
+/// processor's approximate ones; Exarust's are exact.
 pub fn normalise_to_max(weights: [f32; 4]) -> Option<([f32; 4], f32)> {
     let share = normalise_sum(weights)?;
-    let top = share.iter().copied().fold(0.0, f32::max);
+    let top = largest_abs(share);
     Some((share.map(|w| w / top), 1.0 / top))
 }
 
@@ -409,42 +450,40 @@ pub struct Meeting {
     pub current: Affine3A,
 }
 
-/// Whether a sphere at `previous` moving to `current` meets an
-/// axis-aligned box: statically at its end when the travel's squared
-/// length is at most 0.1 cm², otherwise swept. Both the static and the
-/// swept answer count touching as meeting. This is the original's
-/// `FUN_10007de00` and its sweep builder.
-pub fn sphere_box_meet(
-    previous: Vec3,
-    current: Vec3,
-    radius: f32,
-    box_centre: Vec3,
-    box_half: Vec3,
-) -> bool {
-    let travel2 = (current - previous).length_squared() * 10_000.0;
-    if travel2 > SWEEP_TRAVEL2 {
-        intersect::swept_sphere_aabb_hit(
-            &Sweep::new(previous, current),
-            radius,
-            box_centre,
-            box_half,
-        )
-    } else {
-        !intersect::sphere_aabb_separated(current, radius, box_centre, box_half)
+/// Whether a sphere of `radius` moving from `start` to `end` meets an
+/// axis-aligned box: the original's slab test of the segment against the
+/// box inflated by the radius on every axis, in units of the travel. The
+/// entry must come before 1 (a NaN entry goes on) and, clamped at 0, before
+/// the exit: the sign bit of their difference, so touching does not count.
+/// No threshold separates a resting sphere: a zero travel gives infinite
+/// reciprocals, which make the test "inside the inflated box" (its corners
+/// included). The original's reciprocal is the processor's approximate one.
+pub fn swept_box_hit(start: Vec3, end: Vec3, radius: f32, box_centre: Vec3, half: Vec3) -> bool {
+    let inverse = (end - start).recip();
+    let offset = box_centre - start;
+    let extent = half + Vec3::splat(radius);
+    let high = (extent + offset) * inverse;
+    let low = (offset - extent) * inverse;
+    let far = max_each(low, high);
+    let near = min_each(high, low);
+    let entry = max_first(max_first(near.x, near.y), near.z);
+    if entry >= 1.0 {
+        return false;
     }
+    let exit = min_first(min_first(far.x, far.y), far.z);
+    (max_first(entry, 0.0) - exit).is_sign_negative()
 }
 
-/// The original's box meet test (`FUN_100080a10`) between two parts: (1) the
-/// first part's sphere bound, swept from where the last tick left it in
-/// the second's previous/current frame, against the second's mesh box,
-/// then (2) the second's mesh bound, swept in the first's frames, against
-/// the first's sphere box. Both must pass.
+/// The original's box meet test between two parts: (1) the first part's
+/// sphere bound, from where the last tick left it to where it is now, in
+/// the second's previous and current frames, against the second's mesh
+/// box, then (2) the second's mesh bound, likewise in the first's frames,
+/// against the first's sphere box. Both must pass ([`swept_box_hit`]).
 pub fn meet(first: &Meeting, second: &Meeting) -> bool {
-    let relative_previous = second.previous.inverse() * first.previous;
-    let relative_current = second.current.inverse() * first.current;
-    let previous = relative_previous.transform_point3(first.sphere.centre);
-    let current = relative_current.transform_point3(first.sphere.centre);
-    if !sphere_box_meet(
+    let previous =
+        (second.previous.inverse() * first.previous).transform_point3(first.sphere.centre);
+    let current = (second.current.inverse() * first.current).transform_point3(first.sphere.centre);
+    if !swept_box_hit(
         previous,
         current,
         first.sphere.radius,
@@ -453,11 +492,10 @@ pub fn meet(first: &Meeting, second: &Meeting) -> bool {
     ) {
         return false;
     }
-    let relative_previous = first.previous.inverse() * second.previous;
-    let relative_current = first.current.inverse() * second.current;
-    let previous = relative_previous.transform_point3(second.mesh.centre);
-    let current = relative_current.transform_point3(second.mesh.centre);
-    sphere_box_meet(
+    let previous =
+        (first.previous.inverse() * second.previous).transform_point3(second.mesh.centre);
+    let current = (first.current.inverse() * second.current).transform_point3(second.mesh.centre);
+    swept_box_hit(
         previous,
         current,
         second.mesh.radius,
@@ -466,32 +504,43 @@ pub fn meet(first: &Meeting, second: &Meeting) -> bool {
     )
 }
 
-/// The static version of [`meet`], without the sweep: both bounds at their
-/// current places. The overlap-only queries use this.
+/// How far a point sticks out of a box, as the original's overlap-only
+/// body test measures it: the squared overhang of the *last* axis (z, then
+/// y, then x) the point sticks out on, not their sum, and 0 inside. An
+/// axis counts when its half extent is below the offset (a NaN never
+/// does). `offset` is the point's absolute offset in the box's frame.
+fn last_overhang2(offset: Vec3, half: Vec3) -> f32 {
+    let mut over = 0.0;
+    for k in 0..3 {
+        if half[k] < offset[k] {
+            over = (offset[k] - half[k]) * (offset[k] - half[k]);
+        }
+    }
+    over
+}
+
+/// The original's overlap-only body test, the static form of [`meet`]
+/// used by its "is the space free" queries: the first part's sphere centre
+/// against the second's mesh box and the second's mesh centre against the
+/// first's sphere box, both at their current places, each measured by
+/// [`last_overhang2`] against the moving sphere's radius². The first
+/// comparison lets a NaN through; the second does not.
 pub fn static_meet(first: &Meeting, second: &Meeting) -> bool {
-    let in_second = second.current.inverse() * first.current;
-    if intersect::sphere_aabb_separated(
-        in_second.transform_point3(first.sphere.centre),
-        first.sphere.radius,
-        second.mesh.centre,
-        second.mesh.half,
-    ) {
+    let world = first.current.transform_point3(first.sphere.centre);
+    let offset = (second.current.inverse().transform_point3(world) - second.mesh.centre).abs();
+    let over = last_overhang2(offset, second.mesh.half);
+    if over > first.sphere.radius * first.sphere.radius {
         return false;
     }
-    let in_first = first.current.inverse() * second.current;
-    !intersect::sphere_aabb_separated(
-        in_first.transform_point3(second.mesh.centre),
-        second.mesh.radius,
-        first.sphere.centre,
-        first.sphere.half,
-    )
+    let world = second.current.transform_point3(second.mesh.centre);
+    let offset = (first.current.inverse().transform_point3(world) - first.sphere.centre).abs();
+    last_overhang2(offset, first.sphere.half) <= second.mesh.radius * second.mesh.radius
 }
 
-/// The original's placement overlap pre-test (`FUN_100085b60`): a sphere of
-/// the moved body against the other's mesh box, inflated by 2 cm and by
-/// the other's bounding radius, then by 2 cm alone. The scene's actual mesh
-/// query follows in the original; Exarust's bodies carry only the box, so a
-/// passing box is the answer.
+/// The original's placement overlap pre-test for one sphere (cm, in the
+/// other body's frame): the sphere, grown by 2 cm, must be within the
+/// other's bounding radius of its mesh centre and touch its mesh box. The
+/// scene's mesh query follows in the original, with the grown radius.
 pub fn placement_meet(
     sphere_centre: Vec3,
     sphere_radius: f32,
@@ -499,36 +548,50 @@ pub fn placement_meet(
     mesh_half: Vec3,
     mesh_radius: f32,
 ) -> bool {
-    let padding = PLACEMENT_PADDING_CM;
-    let reach = sphere_radius + padding + mesh_radius;
-    if sphere_centre.distance_squared(mesh_centre) > reach * reach {
+    let reach = sphere_radius + PLACEMENT_PADDING_CM + mesh_radius;
+    if !(sphere_centre.distance_squared(mesh_centre) <= reach * reach) {
         return false;
     }
-    intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half)
-        <= (sphere_radius + padding) * (sphere_radius + padding)
+    let grown = sphere_radius + PLACEMENT_PADDING_CM;
+    intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half) <= grown * grown
 }
 
-/// The original's static-collider overlap pre-test (`FUN_100085d80`): a
-/// sphere against the collider's mesh box (no padding), and the collider's
-/// mesh sphere against the body's sphere box. Used before the scene's mesh
-/// query; Exarust's colliders are exact triangle meshes in rapier, so it is
-/// exposed here for the callers that only have boxes.
+/// The original's static-collider overlap pre-test for one sphere (cm, in
+/// the collider's frame): the sphere must touch the collider's mesh box,
+/// then lie within its own radius plus the collider's bounding radius of
+/// the mesh centre. The scene's mesh query follows in the original.
 pub fn static_overlap_meet(
     sphere_centre: Vec3,
     sphere_radius: f32,
-    sphere_box_centre: Vec3,
-    sphere_box_half: Vec3,
     mesh_centre: Vec3,
     mesh_half: Vec3,
     mesh_radius: f32,
 ) -> bool {
-    if intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half)
-        > sphere_radius * sphere_radius
+    if !(intersect::point_aabb_distance_squared(sphere_centre, mesh_centre, mesh_half)
+        <= sphere_radius * sphere_radius)
     {
         return false;
     }
-    intersect::point_aabb_distance_squared(mesh_centre, sphere_box_centre, sphere_box_half)
-        <= mesh_radius * mesh_radius
+    let reach = sphere_radius + mesh_radius;
+    sphere_centre.distance_squared(mesh_centre) <= reach * reach
+}
+
+/// The squared distance a world point lies outside a part's mesh box, as
+/// the original's point-to-oriented-box routine gives it: the point in the
+/// part's frame, each axis's overhang squared and summed x, y, z from 0;
+/// an axis counts when the offset's bits exceed the half extent's (an
+/// integer compare: a NaN offset counts). The all-pairs step tests each
+/// part's sphere centre this way against the other's mesh box.
+pub fn mesh_box_distance2(point: Vec3, mesh: &Bounds, transform: &Affine3A) -> f32 {
+    let offset = (transform.inverse().transform_point3(point) - mesh.centre).abs();
+    let mut sum = 0.0;
+    for k in 0..3 {
+        if (mesh.half[k].to_bits() as i32) < (offset[k].to_bits() as i32) {
+            let over = offset[k] - mesh.half[k];
+            sum += over * over;
+        }
+    }
+    sum
 }
 
 /// The stages of one sector's 83 Hz step, in the original's order. The

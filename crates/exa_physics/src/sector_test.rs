@@ -1,8 +1,9 @@
 //! The sector's bookkeeping, pinned to the original's numbers
-//! (`context/re/body-tick-order.md` §1, `body-pairs.md` §3): the 600 cm
-//! cells and their floor/round-to-even arithmetic, the wide span and its
-//! one-cell margin, the row overflow guard, the static and swept sphere–box
-//! meet tests, and the step's stage order.
+//! (`context/re/body-tick-order.md` §1, `body-pairs.md` §2.2 and §3, the
+//! sector routines' assembly): the 600 cm cells and their round-down and
+//! round-to-even arithmetic, the wide span and its one-cell margin, the
+//! row overflow guards, the slab meet test and the overlap tests, and the
+//! step's stage order.
 use bevy::math::{Affine3A, Vec3};
 
 use super::*;
@@ -15,12 +16,30 @@ fn sphere_bounds_include_their_radii() {
     assert_eq!(b.centre, Vec3::new(55.0, 0.0, 0.0));
     assert_eq!(b.half, Vec3::new(65.0, 20.0, 20.0));
     assert_eq!(b.radius, 65.0);
-    assert_eq!(Bounds::of_spheres(&[]).radius, 0.0);
+    let empty = Bounds::of_spheres(&[]);
+    assert_eq!((empty.half, empty.radius), (Vec3::ZERO, 0.0));
 }
 
-/// A point's cell floors at 600 cm and keeps its sign.
+/// The enclosing radius ignores a sphere's offset within the original's
+/// epsilon (cm²) of the centre, and a single sphere's box is its own,
+/// with no minimum extent.
+#[test]
+fn sphere_bounds_follow_the_originals_epsilon() {
+    // Both centres are 1e-6 m (1e-8 cm²) from the box centre.
+    let b = Bounds::of_spheres(&[(Vec3::ZERO, 1.0), (Vec3::new(2e-6, 0.0, 0.0), 1.0)]);
+    assert_eq!(b.radius, 1.0);
+    let point = Bounds::of_spheres(&[(Vec3::new(1.0, 2.0, 3.0), 0.0)]);
+    assert_eq!(point.centre, Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(point.half, Vec3::ZERO);
+}
+
+/// A point's cell floors at 600 cm (multiplied by the single-precision
+/// 1/600) and keeps its sign; NaN is the processor's indefinite.
 #[test]
 fn cells_are_600_cm_and_floor() {
+    assert_eq!(INVERSE_CELL_SIZE_CM.to_bits(), 0x3ada_740e);
+    assert_eq!(cell_coordinate(f32::NAN), i32::MIN);
+    assert_eq!(cell_coordinate(1e30), i32::MIN);
     assert_eq!(cell_coordinate(0.0), 0);
     assert_eq!(cell_coordinate(599.9), 0);
     assert_eq!(cell_coordinate(600.0), 1);
@@ -33,8 +52,8 @@ fn cells_are_600_cm_and_floor() {
 
 /// The static insertion's span: a bound inside one cell goes into the
 /// centre cell alone; one reaching past it is wide and covers the cells
-/// from one below the lower edge to the upper edge, both axes, with the
-/// original's capacity.
+/// from one below the lower edge to one above the upper edge, both axes,
+/// exactly the original's capacity.
 #[test]
 fn a_wide_bound_covers_its_cells_and_margin() {
     let single = grid_span(
@@ -62,10 +81,10 @@ fn a_wide_bound_covers_its_cells_and_margin() {
         (1, 4, 1, 4)
     );
     let cells = wide.insertion_cells();
-    assert_eq!(cells.len(), 25);
-    assert_eq!(cells[0], (0, 0));
-    assert_eq!(*cells.last().unwrap(), (4, 4));
-    assert_eq!(wide.capacity(), 36);
+    assert_eq!(cells.len(), 36);
+    assert_eq!(cells.len(), wide.capacity());
+    assert_eq!(cells[..2], [(0, 0), (1, 0)]);
+    assert_eq!(*cells.last().unwrap(), (5, 5));
 
     // The upper edge is capped at the last cell but one; the lower floor is
     // cell 1.
@@ -89,16 +108,21 @@ fn a_wide_bound_covers_its_cells_and_margin() {
 }
 
 /// Only the first and last grid rows are the original's position-overflow
-/// guard; an x outside the row wraps and is kept.
+/// guard; an x outside the row wraps and is kept. A sim object's guard
+/// also takes the first cell of the second row.
 #[test]
 fn the_overflow_guard_is_on_rows_only() {
     let (columns, rows) = (8, 6);
-    for index in [0, 1, 8, 40, 41, -1] {
-        assert!(row_overflow(index, columns, rows), "{index}");
+    for index in [0, 1, 7, 40, 41, -1] {
+        assert!(body_cell_overflow(index, columns, rows), "{index}");
+        assert!(object_cell_overflow(index, columns, rows), "{index}");
     }
     for index in [9, 20, 39] {
-        assert!(!row_overflow(index, columns, rows), "{index}");
+        assert!(!body_cell_overflow(index, columns, rows), "{index}");
+        assert!(!object_cell_overflow(index, columns, rows), "{index}");
     }
+    assert!(!body_cell_overflow(8, columns, rows));
+    assert!(object_cell_overflow(8, columns, rows));
 }
 
 /// A sparse cell grid inserts, migrates and removes ids, and reaches the
@@ -140,48 +164,34 @@ fn the_cell_grid_buckets_and_migrates() {
     assert!(grid.is_empty());
 }
 
-/// A sphere meets a box at its end when it barely moved (at most 0.1 cm² of
-/// travel), and is swept when it moved more: a fast pass through a box
-/// hits even with both ends outside it.
+/// The slab test: the segment against the box grown by the radius on each
+/// axis, in units of the travel. A pass through the box hits with both ends
+/// outside it; an entry at the end of the travel misses; a resting sphere
+/// meets the grown box, corners included.
 #[test]
-fn a_moving_sphere_meets_a_box_swept() {
+fn a_moving_sphere_meets_a_box_by_slabs() {
     let (box_centre, box_half) = (Vec3::new(100.0, 0.0, 0.0), Vec3::splat(10.0));
-    assert!(sphere_box_meet(
-        Vec3::new(79.5, 0.0, 0.0),
-        Vec3::new(81.0, 0.0, 0.0),
-        10.0,
-        box_centre,
-        box_half
+    let hit = |start: Vec3, end: Vec3| swept_box_hit(start, end, 10.0, box_centre, box_half);
+    // Entry at a third of the travel.
+    assert!(hit(Vec3::new(79.5, 0.0, 0.0), Vec3::new(81.0, 0.0, 0.0)));
+    assert!(!hit(Vec3::new(79.0, 0.0, 0.0), Vec3::new(79.0, 0.0, 0.0)));
+    assert!(hit(Vec3::new(-100.0, 0.0, 0.0), Vec3::new(83.0, 0.0, 0.0)));
+    // Entry at 180/179 of the travel: past its end.
+    assert!(!hit(Vec3::new(-100.0, 0.0, 0.0), Vec3::new(79.0, 0.0, 0.0)));
+    // Entry exactly at the end misses.
+    assert!(!hit(Vec3::new(70.0, 0.0, 0.0), Vec3::new(80.0, 0.0, 0.0)));
+    // A resting sphere 11.3 cm from the box's corner is inside the grown
+    // box: the corners count, unlike a true sphere–box distance.
+    let corner = Vec3::new(118.0, 18.0, 0.0);
+    assert!(hit(corner, corner));
+    assert!(intersect::sphere_aabb_separated(
+        corner, 10.0, box_centre, box_half
     ));
-    assert!(!sphere_box_meet(
-        Vec3::new(79.0, 0.0, 0.0),
-        Vec3::new(79.0, 0.0, 0.0),
-        10.0,
-        box_centre,
-        box_half
-    ));
-    assert!(sphere_box_meet(
-        Vec3::new(-100.0, 0.0, 0.0),
-        Vec3::new(83.0, 0.0, 0.0),
-        10.0,
-        box_centre,
-        box_half
-    ));
-    assert!(!sphere_box_meet(
-        Vec3::new(-100.0, 0.0, 0.0),
-        Vec3::new(79.0, 0.0, 0.0),
-        10.0,
-        box_centre,
-        box_half
-    ));
-    // A NaN travel falls to the static answer, as the unordered compare
-    // does.
-    assert!(sphere_box_meet(
+    // A NaN start drops its axis from the entry, as the processor's
+    // maximum does, and the rest decides.
+    assert!(hit(
         Vec3::new(f32::NAN, 0.0, 0.0),
-        Vec3::new(81.0, 0.0, 0.0),
-        10.0,
-        box_centre,
-        box_half
+        Vec3::new(81.0, 0.0, 0.0)
     ));
 }
 
@@ -234,6 +244,30 @@ fn the_meet_test_checks_both_ways() {
     assert!(!static_meet(&swept, &far));
 }
 
+/// The overlap-only test measures a point's overhang by its last axis
+/// outside the box, not their sum: 5 cm over on x and y is 25 cm², within
+/// a 6 cm sphere (36 cm²) although the summed 50 cm² is not.
+#[test]
+fn the_static_meet_takes_the_last_overhang() {
+    let a = meeting(
+        Bounds::of_spheres(&[(Vec3::ZERO, 6.0)]),
+        Bounds::of_box(Vec3::ZERO, Vec3::splat(6.0)),
+        Vec3::ZERO,
+    );
+    let b = meeting(
+        Bounds::of_spheres(&[(Vec3::ZERO, 1.0)]),
+        Bounds::of_box(Vec3::ZERO, Vec3::splat(10.0)),
+        Vec3::new(15.0, 15.0, 0.0),
+    );
+    assert!(static_meet(&a, &b));
+    let c = meeting(
+        Bounds::of_spheres(&[(Vec3::ZERO, 1.0)]),
+        Bounds::of_box(Vec3::ZERO, Vec3::splat(10.0)),
+        Vec3::new(15.0, 17.0, 0.0),
+    );
+    assert!(!static_meet(&a, &c));
+}
+
 /// The placement overlap inflates the other box by 2 cm and its bounding
 /// radius; the static overlap uses the bare radii.
 #[test]
@@ -267,8 +301,6 @@ fn placement_and_static_overlaps_use_their_padding() {
         10.0,
         centre,
         half,
-        centre,
-        half,
         radius
     ));
     assert!(!static_overlap_meet(
@@ -276,10 +308,36 @@ fn placement_and_static_overlaps_use_their_padding() {
         10.0,
         centre,
         half,
-        centre,
-        half,
         radius
     ));
+    // The box touches, but the centres are further apart than the two
+    // radii.
+    assert!(!static_overlap_meet(
+        Vec3::new(60.0, 0.0, 0.0),
+        10.0,
+        centre,
+        half,
+        40.0
+    ));
+}
+
+/// The all-pairs step's point-to-mesh-box distance: the point in the
+/// part's frame, the overhangs squared and summed.
+#[test]
+fn the_mesh_box_distance_sums_the_overhangs() {
+    let mesh = Bounds::of_box(Vec3::ZERO, Vec3::splat(10.0));
+    let at = Affine3A::from_translation(Vec3::new(100.0, 0.0, 0.0));
+    assert_eq!(
+        mesh_box_distance2(Vec3::new(113.0, 14.0, 0.0), &mesh, &at),
+        25.0
+    );
+    assert_eq!(
+        mesh_box_distance2(Vec3::new(105.0, 0.0, 0.0), &mesh, &at),
+        0.0
+    );
+    let turned = Affine3A::from_rotation_z(std::f32::consts::FRAC_PI_2);
+    let far = mesh_box_distance2(Vec3::new(0.0, 13.0, 0.0), &mesh, &turned);
+    assert!((far - 9.0).abs() < 1e-4, "{far}");
 }
 
 /// The weight helpers: negatives dropped, the sum normalised, then the
@@ -288,6 +346,11 @@ fn placement_and_static_overlaps_use_their_padding() {
 #[test]
 fn the_weight_normalisations_are_the_originals() {
     assert_eq!(largest_abs([-1.0, 2.0, -3.0, 0.5]), 3.0);
+    // The second weight is compared with the first, and the processor's
+    // maximum gives its second operand on a NaN: a NaN first weight carries
+    // into the next compare and gives way there, a NaN second one at once.
+    assert_eq!(largest_abs([f32::NAN, 2.0, 0.0, 0.0]), 0.0);
+    assert_eq!(largest_abs([2.0, f32::NAN, 0.0, 0.0]), 2.0);
     assert_eq!(
         normalise_sum([1.0, 0.0, 0.0, 0.0]),
         Some([1.0, 0.0, 0.0, 0.0])
