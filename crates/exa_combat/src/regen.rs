@@ -100,37 +100,73 @@ pub fn holds_regeneration(condition: Condition, motion: Option<usize>) -> bool {
 /// A shield arm's stamina and its regeneration rate: the stamina
 /// (0..=1) and the rate, ticked with the body.
 ///
-/// While the stamina is under 1 the rate rises by [`RISE`] a tick to
-/// [`RATE_CAP`] and the stamina rises by the rate; at 1 the rate stops. A
-/// block restarts the rate at 0, so a tired arm takes about 6 s to reach
-/// full rate and about 15 s from empty to full.
+/// While the stamina is below 1 minus the data epsilon, the rate rises by
+/// the double [`RISE`], narrowed, and is capped once that double exceeds
+/// [`RATE_CAP_F64`]. The stamina then rises by the rate in single
+/// precision. At 1 the stamina snaps to 1 and the block stamp becomes
+/// [`STAMP_FULL`]; the rate stays. A block zeros the rate and stamps the
+/// game clock ([`Self::blocked`]), so an empty arm reaches full rate in
+/// 500 ticks (6.0 s) and full stamina in 1,250 ticks (15.1 s).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ShieldStamina {
     pub stamina: f32,
     pub rate: f32,
+    /// The game clock of the last block, or [`Self::STAMP_FULL`] once the
+    /// arm is full.
+    pub blocked_at: u32,
 }
 
 impl ShieldStamina {
-    /// The rate's rise a tick.
-    pub const RISE: f32 = 2e-6;
-    /// The rate's cap: stamina a tick.
-    pub const RATE_CAP: f32 = 0.001;
+    /// The data epsilon subtracted from 1 before the refill compare.
+    pub const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+    /// The rate's rise a tick, added in double precision.
+    pub const RISE: f64 = 2e-6;
+    /// The rate's cap, stored as this float.
+    pub const RATE_CAP: f32 = f32::from_bits(0x3a83_126f);
+    /// The double the raised rate is compared with.
+    pub const RATE_CAP_F64: f64 = f64::from_bits(0x3f50_624d_d2f1_a9fc);
+    /// The block stamp once the arm is full.
+    pub const STAMP_FULL: u32 = 0xffff_ffff;
 
     /// One body tick of the regeneration.
     pub fn tick(&mut self) {
-        if self.stamina < 1.0 {
-            self.rate = (self.rate + Self::RISE).min(Self::RATE_CAP);
-            self.stamina = (self.stamina + self.rate).min(1.0);
-            if self.stamina >= 1.0 {
-                self.rate = 0.0;
-            }
+        let gate = 1.0 - Self::EPSILON;
+        if self.stamina.partial_cmp(&gate) != Some(std::cmp::Ordering::Less) {
+            return;
+        }
+        self.rate = (f64::from(self.rate) + Self::RISE) as f32;
+        if f64::from(self.rate) > Self::RATE_CAP_F64 {
+            self.rate = Self::RATE_CAP;
+        }
+        self.stamina += self.rate;
+        if self.stamina >= 1.0 {
+            self.stamina = 1.0;
+            self.blocked_at = Self::STAMP_FULL;
         }
     }
 
-    /// A block on the shield restarts the rate at zero.
-    pub fn blocked(&mut self) {
+    /// A block on the shield zeros the rate and stamps the game clock.
+    pub fn blocked(&mut self, now: u32) {
         self.rate = 0.0;
+        self.blocked_at = now;
     }
+}
+
+/// One tick of a held shield's arm, after the living body's health
+/// bookkeeping.
+pub fn refill_shield(guard: &mut crate::damage::Guard) {
+    let crate::damage::Guard::Shield(shield) = guard else {
+        return;
+    };
+    let mut arm = ShieldStamina {
+        stamina: shield.stamina,
+        rate: shield.rate,
+        blocked_at: shield.blocked_at,
+    };
+    arm.tick();
+    shield.stamina = arm.stamina;
+    shield.rate = arm.rate;
+    shield.blocked_at = arm.blocked_at;
 }
 
 /// The health bookkeeping of the fighters the character tick does not
@@ -227,6 +263,7 @@ pub fn regenerate_health(
         if !condition.is_dead() {
             let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
             keep(entity, &mut health, *condition, motion, now, &mut wind);
+            refill_shield(&mut fighter.guard);
         }
         if health != fighter.health {
             fighter.health = health;
@@ -281,6 +318,7 @@ pub fn keep_health(
     let mut wind = fighter.second_wind;
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     keep(entity, &mut health, *condition, motion, now, &mut wind);
+    refill_shield(&mut fighter.guard);
     if health != fighter.health {
         fighter.health = health;
     }

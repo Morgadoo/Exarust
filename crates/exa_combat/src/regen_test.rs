@@ -315,10 +315,11 @@ fn an_active_second_wind_heals_yellow() {
     assert_eq!(tick(1, true, true), (0x3d00_0000, true));
 }
 
-/// A shield arm refills from empty: the rate rises 2e-6 a tick to 0.001,
-/// the stamina rises by the rate. After 500 ticks the rate is full and the
-/// stamina 0.2505; 1250 ticks fill it (about 15 s), and a block restarts the
-/// rate.
+/// A shield arm refills from empty: the rate rises by the double 2e-6 a
+/// tick to 0.001, the stamina rises by the rate. After 500 ticks the rate
+/// is full and the stamina 0.2505; 1250 ticks fill it (about 15 s) and
+/// disable the block stamp, leaving the rate. A block zeros the rate and
+/// stamps the clock.
 #[test]
 fn a_shield_arm_refills() {
     let mut arm = ShieldStamina::default();
@@ -335,16 +336,87 @@ fn a_shield_arm_refills() {
     }
     assert!(arm.stamina < 1.0);
     arm.tick();
-    assert_eq!((arm.stamina, arm.rate), (1.0, 0.0));
+    assert_eq!(
+        (arm.stamina, arm.rate, arm.blocked_at),
+        (1.0, ShieldStamina::RATE_CAP, ShieldStamina::STAMP_FULL)
+    );
     arm.tick();
-    assert_eq!((arm.stamina, arm.rate), (1.0, 0.0));
+    assert_eq!(arm.blocked_at, ShieldStamina::STAMP_FULL);
     // A block empties the rate; a full arm ignores it until it is spent.
     let mut arm = ShieldStamina {
         stamina: 0.5,
         rate: 0.001,
+        blocked_at: 0,
     };
-    arm.blocked();
+    arm.blocked(40);
+    assert_eq!((arm.rate, arm.blocked_at), (0.0, 40));
     arm.tick();
     assert_eq!(arm.rate.to_bits(), 2e-6f32.to_bits());
     assert!((arm.stamina - 0.500002).abs() < 1e-6);
+    // At the gate, and a NaN, the tick leaves the arm.
+    let held = ShieldStamina {
+        stamina: 1.0 - ShieldStamina::EPSILON,
+        rate: 0.001,
+        blocked_at: 7,
+    };
+    let mut same = held;
+    same.tick();
+    assert_eq!(same, held);
+    let mut nan = ShieldStamina {
+        stamina: f32::NAN,
+        rate: 0.001,
+        ..held
+    };
+    nan.tick();
+    assert!(nan.stamina.is_nan());
+    assert_eq!(nan.rate, 0.001);
+}
+
+/// The living body's health tick refills a held shield. A dead body keeps
+/// the arm where the blow left it.
+#[test]
+fn the_health_tick_refills_a_living_shield() {
+    use crate::damage::{Guard, ShieldGuard};
+
+    let shield = |stamina| {
+        Guard::Shield(ShieldGuard {
+            stamina,
+            leak: 1.0,
+            cost: 1.0,
+            ..ShieldGuard::default()
+        })
+    };
+    let mut app = App::new();
+    app.add_systems(Update, regenerate_health);
+    let live_id = app
+        .world_mut()
+        .spawn((
+            Fighter {
+                guard: shield(0.0),
+                ..Fighter::default()
+            },
+            Condition::NORMAL,
+        ))
+        .id();
+    let dead_id = app
+        .world_mut()
+        .spawn((
+            Fighter {
+                guard: shield(0.0),
+                ..Fighter::default()
+            },
+            Condition::DEAD,
+        ))
+        .id();
+    app.update();
+    let live = match app.world().get::<Fighter>(live_id).unwrap().guard {
+        Guard::Shield(arm) => arm,
+        Guard::Open | Guard::Parry => panic!("living shield"),
+    };
+    assert_eq!(live.stamina.to_bits(), 2e-6f32.to_bits());
+    let dead = match app.world().get::<Fighter>(dead_id).unwrap().guard {
+        Guard::Shield(arm) => arm,
+        Guard::Open | Guard::Parry => panic!("dead shield"),
+    };
+    assert_eq!(dead.stamina, 0.0);
 }

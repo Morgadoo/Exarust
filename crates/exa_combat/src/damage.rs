@@ -227,6 +227,11 @@ pub struct ShieldGuard {
     pub cost: f32,
     /// The shield arm's stamina, 0..=1.
     pub stamina: f32,
+    /// The stamina's regeneration rate. A block zeros it.
+    pub rate: f32,
+    /// The game clock of the last block, or [`crate::regen::ShieldStamina::STAMP_FULL`]
+    /// once the arm has filled.
+    pub blocked_at: u32,
     /// The holder parries with the shield.
     pub parrying: bool,
 }
@@ -1603,6 +1608,8 @@ mod tests {
             leak,
             cost: leak,
             stamina,
+            rate: 0.0,
+            blocked_at: 0,
             parrying,
         };
         let bits = |b: &Blocked| [b.stamina, b.yellow, b.daze, b.daze_factor].map(f32::to_bits);

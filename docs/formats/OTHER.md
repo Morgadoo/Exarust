@@ -1859,13 +1859,15 @@ executable; a retail trace; `exa_combat::regen`)
   (so yellow follows a red cut to the maximum a tick later); at the end
   of the tick yellow is at least 0. Death sets yellow to 0 (the collapse
   regenerates about 0.0006 of it over its 250 ticks).
-- A shield arm's stamina (0..=1) and its rate refill
-  with the body tick: while the stamina is under 1 the rate rises 2e-6 a
-  tick to 0.001 and the stamina rises by the rate; at 1 the rate stops. A
-  block sets the rate to 0 (and the block's stamp to now), so an
-  empty arm reaches full rate in 500 ticks (6.0 s) and full stamina in
-  about 1,250 ticks (15.1 s). The rule is `exa_combat::regen::ShieldStamina`;
-  the body tick that calls it is the kernel lane's.
+- A shield arm's stamina (0..=1) and its rate refill with the living
+  body's health tick: while the stamina is below 1 minus the data epsilon
+  the rate rises by the double 2e-6, narrowed, and is capped once that
+  double exceeds 0.001; the stamina then rises by the rate. At 1 the
+  stamina snaps to 1 and the block stamp becomes 0xffffffff; the rate
+  stays at the cap. A block floors the stamina at 0, zeros the rate and
+  stamps the game clock, so an empty arm reaches full rate in 500 ticks
+  (6.0 s) and full stamina in about 1,250 ticks (15.1 s). The rule is
+  `exa_combat::regen::ShieldStamina`, run from the health bookkeeping.
 - The retail trace of the player after a fight: yellow 0.085, held for
   7.5 s in Cmbt - Idle, then in Idle 0.086, 0.090, 0.100, 0.110 and 0.121
   at 5.0, 9.6, 16.2, 21.1 and 25.3 s, 0.202 at 45.8 s; the rule with red
@@ -1944,8 +1946,8 @@ damage call), at least 0; yellow under 0.05 runs the low-health check.
 The daze is (0.3 − 0.2·S)·Q (·I when x is 0) with the stall factor half
 the holder's clock with Persist, its clock under Synchrony before 0.3,
 else 1. No lasting wound, no shove; either guard makes a striker smaller
-than 1.4 recoil. Exarust has no counters and no shield stamina
-regeneration yet: a held shield's stamina only falls. An armed bite above 0.1 sticks the weapon
+than 1.4 recoil. A held shield's stamina refills on the living body's
+health tick. An armed bite above 0.1 sticks the weapon
 (`bite::stick`): the depth is capped at 1, flags are 0x11000 or 0x211000
 around the widened 0.4, strength is 12 times the depth, smoothing adds
 0.5, and the count is 3 times the truncated 83·unit·depth. The weapon

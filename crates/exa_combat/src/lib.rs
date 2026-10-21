@@ -651,6 +651,8 @@ fn react_to_hits(
                     f.health.yellow = b.yellow;
                     f.guard = damage::Guard::Shield(damage::ShieldGuard {
                         stamina: b.stamina,
+                        rate: 0.0,
+                        blocked_at: now as u32,
                         ..shield
                     });
                     let mut state = state;
@@ -1288,6 +1290,8 @@ mod tests {
                 leak: 1.0,
                 cost: 1.0,
                 stamina: 1.0,
+                rate: 0.0,
+                blocked_at: 0,
                 parrying: true,
             });
             fighter.second_wind.granted = true;
@@ -1449,6 +1453,8 @@ mod tests {
                 leak,
                 cost: leak,
                 stamina: 0.0,
+                rate: 0.0,
+                blocked_at: 0,
                 parrying: false,
             }),
             ..Fighter::default()
