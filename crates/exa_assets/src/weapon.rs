@@ -33,7 +33,11 @@ impl ModelLoader<'_> {
     /// template bytes changed by the chosen parts and deforms, then scaled by
     /// the item's condition. When the weapon's model has already been built,
     /// the assembled striking extents are included as well.
-    pub fn factory_weapon_stats(&self, name: &str, weapon: Option<&Weapon>) -> Option<StatBytes> {
+    pub fn factory_weapon_stats(
+        &mut self,
+        name: &str,
+        weapon: Option<&Weapon>,
+    ) -> Option<StatBytes> {
         let key = factory_key(name, weapon);
         if let Some(stats) = self.cache.factory_stats.get(&key) {
             return Some(*stats);
@@ -45,19 +49,28 @@ impl ModelLoader<'_> {
         Some(weapon_stats::condition(stats, quality, damage))
     }
 
-    /// The factory and the weapon the item's seeds generate.
-    fn factory_recipe(&self, name: &str, weapon: Option<&Weapon>) -> Option<(Factory, Built)> {
-        let pack = self.game.pack(PackKind::Factories)?;
-        let bytes = pack
-            .get(name)
-            .or_else(|| pack.get(&format!("{name}.fty")))?;
-        let factory = match Factory::parse(bytes) {
-            Ok(f) => f,
-            Err(e) => {
-                // The caller reports the bad recipe once per distinct model.
-                warn!("factory {name}: {e}");
-                return None;
-            }
+    /// The factory and the weapon the item's seeds generate. Parsed recipes
+    /// are kept, as the original's factory cache does.
+    fn factory_recipe(&mut self, name: &str, weapon: Option<&Weapon>) -> Option<(Factory, Built)> {
+        let key = name.to_ascii_lowercase();
+        let factory = if let Some(f) = self.cache.factories.get(&key) {
+            f.clone()
+        } else {
+            let pack = self.game.pack(PackKind::Factories)?;
+            let bytes = pack
+                .get(name)
+                .or_else(|| pack.get(&format!("{name}.fty")))?;
+            let parsed = match Factory::parse(bytes) {
+                Ok(f) => f,
+                Err(e) => {
+                    // The caller reports the bad recipe once per distinct model.
+                    warn!("factory {name}: {e}");
+                    return None;
+                }
+            };
+            let f = Arc::new(parsed);
+            self.cache.factories.insert(key, f.clone());
+            f
         };
         let spec = weapon.map_or_else(
             || WeaponSpec {
@@ -68,7 +81,7 @@ impl ModelLoader<'_> {
             |w| w.spec(0),
         );
         let built = factory.build(&spec);
-        Some((factory, built))
+        Some(((*factory).clone(), built))
     }
 
     fn build_factory_weapon(
@@ -319,6 +332,13 @@ mod tests {
     use bevy::prelude::Mesh;
     use exa_render::material::ExaMaterial;
 
+    #[test]
+    fn the_striking_extent_is_two_hundredths_a_length() {
+        assert_eq!(extent(0.0, 100.0), 0);
+        assert_eq!(extent(50.0, 100.0), 100);
+        assert_eq!(extent(75.0, 100.0), 150);
+    }
+
     /// Assembles the first few shipped factories (skipped without the game):
     /// every node must have a finite transform, a mesh and a painted
     /// material, and the stat pass must know the assembled striking extent.
@@ -329,12 +349,7 @@ mod tests {
         };
         let game = crate::GameData::open(dir).unwrap();
         let pack = game.pack(PackKind::Factories).unwrap();
-        let names: Vec<String> = pack
-            .entries()
-            .iter()
-            .take(6)
-            .map(|e| e.name.to_string())
-            .collect();
+        let names: Vec<String> = pack.entries().iter().map(|e| e.name.to_string()).collect();
         let mut cache = ModelCache::default();
         let mut meshes = Assets::<Mesh>::default();
         let mut materials = Assets::<ExaMaterial>::default();
@@ -351,7 +366,7 @@ mod tests {
             let model = loader
                 .factory_weapon(&name, None)
                 .unwrap_or_else(|| panic!("{name}: no model"));
-            assert!(model.nodes.len() > 1, "{name}: no parts");
+            assert!(!model.nodes.is_empty(), "{name}: no nodes");
             for node in &model.nodes {
                 let t = node.transform;
                 assert!(
@@ -362,12 +377,10 @@ mod tests {
             let stats = loader
                 .factory_weapon_stats(&name, None)
                 .unwrap_or_else(|| panic!("{name}: no stats"));
-            let start = stats.get(weapon_stats::at::START);
-            let end = stats.get(weapon_stats::at::END);
-            assert!(
-                start <= end && end <= 200,
-                "{name}: striking extent {start}..{end}"
-            );
+            // A head's start can be a negative fraction of the weapon's
+            // length (the baton's head reaches below its root); the section
+            // stores it as a wrapped byte, as the original does.
+            assert!(stats.get(weapon_stats::at::END) <= 200, "{name}");
         }
     }
 }

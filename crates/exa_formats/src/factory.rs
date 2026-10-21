@@ -1077,11 +1077,9 @@ pub fn deform_attach_point(p: &mut [f32; 3], d: &Deform, value: f32) {
             }
         }
         2 => {
-            let a = d.axis as i32 - 1;
-            if (0..3).contains(&a) {
-                let a = a as usize;
-                p[a] = band_stretch(p[a], d, deform_factor(value, d.amount));
-            }
+            // An attach point's band stretch always runs along Y, whatever
+            // the deform's axis says.
+            p[1] = band_stretch(p[1], d, deform_factor(value, d.amount));
         }
         _ => {}
     }
@@ -1526,6 +1524,94 @@ mod tests {
         assert_eq!(f.parts[0].deforms[0].stat_weight, 1.0);
         assert_eq!(f.parts[0].variants[0].weight, 100);
         assert_eq!(f.atlas, [512, 512]);
+    }
+
+    fn two_part_factory(mode: u8, parent_deform: Deform) -> Factory {
+        let mut f = tiny_factory();
+        f.parts[0].position = [0.0; 3];
+        f.parts[0].deforms = [
+            parent_deform,
+            deform(0, 0, 0, 0.0, 0.0, 0.0),
+            deform(0, 0, 0, 0.0, 0.0, 0.0),
+        ];
+        let mut child = f.parts[0].clone();
+        child.name = "guard".into();
+        child.position = [1.0, 2.0, 3.0];
+        child.scale = [2.0, 2.0, 2.0];
+        child.attach_to = 1;
+        child.attach_mode = mode;
+        child.flags = 0;
+        child.deforms = [deform(0, 0, 0, 0.0, 0.0, 0.0); 3];
+        f.parts.push(child);
+        f
+    }
+
+    fn boxes() -> Vec<ComponentBox> {
+        vec![
+            ComponentBox {
+                centre: [0.0, 10.0, 0.0],
+                half: [1.0, 2.0, 3.0],
+            },
+            ComponentBox {
+                centre: [0.0, 0.0, 0.0],
+                half: [0.5, 0.5, 0.5],
+            },
+        ]
+    }
+
+    #[test]
+    fn a_child_attaches_to_the_parent_box_corner() {
+        let g = Generated {
+            selection: vec![1, 1],
+            twist: vec![0.0, 0.0],
+            deform: vec![[0.0; 3], [0.0; 3]],
+            materials: Vec::new(),
+        };
+        // Mode 1: the parent's box minimum X; mode 4: its maximum X.
+        for (mode, x) in [(1u8, 0.0 - 1.0), (4, 0.0 + 1.0)] {
+            let f = two_part_factory(mode, deform(0, 0, 0, 0.0, 0.0, 0.0));
+            let placed = f.place(&g, &boxes());
+            let child = placed.iter().find(|p| p.part == 1).unwrap();
+            // (position + box coordinate) × own scale + parent position.
+            assert!(
+                (child.position[0] - (1.0 + x) * 2.0).abs() < 1e-5,
+                "mode {mode}"
+            );
+            assert!((child.position[1] - 2.0 * 2.0).abs() < 1e-5);
+            assert_eq!(child.scale, [2.0, 2.0, 2.0]);
+        }
+    }
+
+    #[test]
+    fn a_parent_scale_deform_moves_the_child_attach_point() {
+        let d = deform(1, 2, 0, 1.0, 0.0, 0.0); // F = 2 about Y = 5
+        let mut d = d;
+        d.pivot = 5.0;
+        let f = two_part_factory(0, d);
+        let g = Generated {
+            selection: vec![1, 1],
+            twist: vec![0.0, 0.0],
+            // The parent's Y deform value is 1: F = 1 + 1·1 = 2.
+            deform: vec![[1.0, 0.0, 0.0], [0.0; 3]],
+            materials: Vec::new(),
+        };
+        let placed = f.place(&g, &boxes());
+        let child = placed.iter().find(|p| p.part == 1).unwrap();
+        // y = (2 - 5)·2 + 5 = -1, then ×2 + parent 0.
+        assert!((child.position[1] + 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_bend_rotates_the_shaft_around_the_pivot() {
+        let d = deform(4, 1, 0, 1.0, 0.0, 0.5);
+        let mut p = vec![[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        deform_positions(&mut p, &d, 0.5);
+        // value = 0.5·1 = 0.5, k = 1.0/0.0 → 1 (zero pivot), angle = y·value.
+        let angle: f32 = 1.0 * 0.5;
+        let (sin, cos) = angle.sin_cos();
+        assert!((p[1][0] - (-cos * 0.0)).abs() < 1e-5);
+        assert!((p[1][1] - ((1.0 - 0.5) + 0.0 * sin)).abs() < 1e-5);
+        assert!((p[0][0]).abs() < 1e-6 && (p[0][1]).abs() < 1e-6);
     }
 
     #[test]

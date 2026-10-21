@@ -175,7 +175,14 @@ fn sample_uv(family: Finish, list: List, i: usize) -> Option<Uv> {
             Some(Damage),
             Some(Damage),
         ],
-        (F::Steel | F::SteelPlate | F::SteelPainted | F::SteelBlade | F::Chain, L::Normal) => &[
+        (F::Steel | F::SteelPlate | F::SteelPainted | F::SteelBlade, L::Normal) => &[
+            Some(Material),
+            Some(Damage),
+            Some(Damage),
+            Some(Damage),
+            Some(Material),
+        ],
+        (F::Chain, L::Normal) => &[
             Some(Material),
             Some(Damage),
             Some(Damage),
@@ -1302,6 +1309,26 @@ fn cloth_n(t: &Texel, s: &Samples, item: Vec2, padded: bool) -> Vec2 {
     }
 }
 
+fn velvet_n(t: &Texel, s: &Samples, item: Vec2) -> Vec2 {
+    let (shd, damage) = (t.shade, t.damage);
+    let mat = unit_xy(s.normal(0, Family::Velvet));
+    let dmg = s.normal(1, Family::Velvet);
+    let dn = unit_xy(s.normal(2, Family::Velvet));
+    let mut a = shd * 0.85;
+    let mut b = damage * 2.0 - 3.0;
+    b = a * b + 3.0;
+    a = a * a * b;
+    let mut d = dmg.y * (0.75 + damage * 0.75) + 0.25;
+    b = 1.0 - a;
+    b /= d;
+    d = (1.0 - b) * (1.0 + damage * 0.5);
+    d = d.max(0.0);
+    let a = shd * shd * d * 4.0;
+    let a = 1.0 + damage * 0.5 + a;
+    let mat = mat * a * t.weight;
+    item + mat + dn * d * 1.5
+}
+
 fn hide_n(t: &Texel, s: &Samples, item: Vec2, suede: bool) -> Vec2 {
     let (shd, damage) = (t.shade, t.damage);
     let family = if suede {
@@ -1321,7 +1348,10 @@ fn hide_n(t: &Texel, s: &Samples, item: Vec2, suede: bool) -> Vec2 {
     let mut d = (1.0 - b) / a;
     d = (1.0 - d) * (1.0 + damage * 0.5);
     let d = (d.max(0.0) * 3.0).clamp(0.0, 1.0);
-    let mat = if suede { mat } else { mat * (2.0 - t.quality) };
+    if suede {
+        return item + mat + dn * d * 0.5;
+    }
+    let mat = mat * (2.0 - t.quality);
     let a = shd * shd * d * 4.0;
     let a = 1.0 + damage * 0.5 + a;
     let mat = mat * a * 0.5;
@@ -1838,7 +1868,7 @@ fn planks_s(t: &Texel, s: &Samples) -> Vec3 {
 fn normal_of(family: Finish, material: u8, t: &Texel, s: &Samples, item: Vec2) -> Vec2 {
     match family {
         Family::Cloth => cloth_n(t, s, item, matches!(material, 5 | 6)),
-        Family::Velvet => cloth_n(t, s, item, true),
+        Family::Velvet => velvet_n(t, s, item),
         Family::Leather => hide_n(t, s, item, false),
         Family::Suede => hide_n(t, s, item, true),
         Family::Wood => wood_n(t, s, item),
@@ -1933,6 +1963,43 @@ mod tests {
         .colour;
         assert!(out[0] > 3 * out[1] && out[1] == out[2], "{:?}", &out[..4]);
         assert_eq!(out[3], 255);
+    }
+
+    #[test]
+    fn condition_keeps_the_factory_bytes_raw() {
+        let appearance = Appearance {
+            quality: 160,
+            damage: 64,
+            dirt: 32,
+            layers: Default::default(),
+        };
+        let raw = Condition::raw(&appearance);
+        assert!((raw.quality - 160.0 / 255.0).abs() < 1e-6);
+        assert!((raw.damage - 64.0 / 255.0).abs() < 1e-6);
+        assert!((raw.dirt - 32.0 / 255.0).abs() < 1e-6);
+        let apparel = Condition::from(&appearance);
+        assert!(apparel.damage < raw.damage && apparel.dirt < raw.dirt);
+    }
+
+    #[test]
+    fn the_passes_sample_their_textures_at_their_own_scales() {
+        use Family as F;
+        assert_eq!(sample_uv(F::Cloth, List::Colour, 0), Some(Uv::Material));
+        assert_eq!(sample_uv(F::Cloth, List::Colour, 1), Some(Uv::Damage));
+        assert_eq!(sample_uv(F::Cloth, List::Colour, 2), Some(Uv::Material));
+        assert_eq!(sample_uv(F::Steel, List::Colour, 1), Some(Uv::Material));
+        assert_eq!(sample_uv(F::Steel, List::Colour, 2), Some(Uv::Damage));
+        assert_eq!(
+            sample_uv(F::SteelBlade, List::Colour, 1),
+            Some(Uv::Material2)
+        );
+        assert_eq!(sample_uv(F::Steel, List::Normal, 4), Some(Uv::Material));
+        assert_eq!(
+            sample_uv(F::CopperAlloy, List::Specular, 0),
+            Some(Uv::Damage)
+        );
+        assert_eq!(sample_uv(F::Wood, List::Colour, 3), Some(Uv::Damage));
+        assert_eq!(sample_uv(F::Cloth, List::Colour, 6), None);
     }
 
     #[test]

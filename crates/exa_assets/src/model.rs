@@ -147,6 +147,8 @@ pub struct ModelCache {
     skin_materials: HashMap<(String, [u16; 2], bool), Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
     pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
+    /// Parsed factory recipes, by lower-case name.
+    pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
