@@ -266,11 +266,7 @@ pub fn apply_creation_change(input: CreationChangeInput) -> CreationChange {
             finalized: true,
         };
     }
-    let word = if input.female {
-        input.word | 1
-    } else {
-        input.word & !1
-    };
+    let word = change_sex(input.word, if input.female { 2 } else { 1 }).word;
     CreationChange {
         word,
         label: creation_label(word),
@@ -1366,18 +1362,13 @@ pub fn resume_creation() -> CreationResume {
 /// with the two default option entries (see [`creation_defaults`]).
 pub fn starting_skills() -> [Skill; SKILLS] {
     let mut skills = [Skill::default(); SKILLS];
-    skills[CLOSE_COMBAT] = Skill {
-        points: 5 * LEVEL_STEP,
-        techniques: [1, 2, 3, 4, 8, 0],
-    };
-    skills[ARMOUR] = Skill {
-        points: 5 * LEVEL_STEP,
-        techniques: [1, 2, 3, 4, 5, 0],
-    };
-    skills[SHIELDS] = Skill {
-        points: 5 * LEVEL_STEP,
-        techniques: [1, 2, 3, 4, 6, 0],
-    };
+    for (slot, skill) in [(CLOSE_COMBAT, 0), (ARMOUR, 1), (SHIELDS, 2)] {
+        let bytes = creation_slot_defaults()[skill];
+        let points = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let mut techniques = [0; TECHNIQUE_SLOTS];
+        techniques.copy_from_slice(&bytes[2..8]);
+        skills[slot] = Skill { points, techniques };
+    }
     skills
 }
 
@@ -2182,6 +2173,13 @@ pub fn next_save(index: i32, count: i32) -> Option<i32> {
     (i64::from(index) < i64::from(count) - 1).then_some(index + 1)
 }
 
+/// Selects the save at one-based list position `selected` unless it is
+/// already the current one.
+pub fn select_save_from_list(selected: i32, current: i32) -> Option<i32> {
+    let index = selected.checked_sub(1)?;
+    (index >= 0 && index != current).then_some(index)
+}
+
 /// Toggles the save kind against the availability mask.
 pub fn toggle_save_kind(kind: SaveKind, availability: SaveAvailability) -> Option<SaveKind> {
     match kind {
@@ -2830,6 +2828,11 @@ pub fn continue_name_row(selected: i32) -> Option<usize> {
 /// The delete confirmation's text: the question and the character's name.
 pub fn delete_confirm_text(question: &str, name: &str) -> String {
     format!("{question}{name}?")
+}
+
+/// Copies a character's name into the screen's string.
+pub fn copy_creation_name(name: &str) -> String {
+    name.to_string()
 }
 
 /// Creates the creator's icon sheet once.
@@ -4608,6 +4611,11 @@ mod tests {
         assert_eq!(continue_name_row(-1), None);
 
         assert_eq!(delete_confirm_text("Delete ", "Mira"), "Delete Mira?");
+        assert_eq!(copy_creation_name("Mira"), "Mira");
+
+        assert_eq!(select_save_from_list(4, 2), Some(3));
+        assert_eq!(select_save_from_list(3, 2), None);
+        assert_eq!(select_save_from_list(0, 2), None);
     }
 
     #[test]
