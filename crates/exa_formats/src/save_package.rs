@@ -2505,17 +2505,19 @@ mod tests {
         let package = PackageImage::open(&[]);
         assert!(package.entries().is_empty());
         assert_eq!(package.to_bytes(), PackageImage::new().to_bytes());
-        // Eight bytes is still short. The bytes read are kept: a section
-        // written later goes over them and the tail stays.
-        let short = [9u8; 40];
-        let mut package = PackageImage::open(&short);
+        // Eight bytes are still short.
+        assert!(PackageImage::open(&[9u8; 8]).entries().is_empty());
+        // A wrong magic: the bytes read are kept, a section written later
+        // puts the header and directory over them and the tail stays.
+        let bad = [9u8; 100];
+        let mut package = PackageImage::open(&bad);
         assert!(package.entries().is_empty());
         let out = package.to_bytes();
         assert_eq!(&out[..4], &PACKAGE_MAGIC.to_le_bytes());
-        assert_eq!(&out[32..], &[9u8; 8]);
+        assert_eq!(&out[32..], &[9u8; 68]);
         package.put_section(&name("a"), &[1; 4]);
         let out = package.to_bytes();
-        assert_eq!(&out[32..40], &[9u8; 8], "the old bytes stay");
+        assert_eq!(&out[8 + 2 * 24..100], &[9u8; 52], "the old bytes stay");
         assert_eq!(&out[0x2000..0x2004], &[1; 4]);
         // A wrong magic is reset too; the right one reads the directory.
         let mut wrong = bytes_of_magic(0x1234_5678);
