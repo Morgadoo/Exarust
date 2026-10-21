@@ -423,3 +423,73 @@ fn deep_sleepers_are_not_redrawn() {
     app.update();
     assert_eq!(*app.world().get::<Transform>(node).unwrap(), elsewhere);
 }
+
+/// The settling state: for its ticks the body takes a tick's gravity with
+/// no inertia (the same 0.142352 cm each tick), then falls with its
+/// velocity again.
+#[test]
+fn a_settling_body_falls_without_inertia() {
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.wake();
+    body.settle_for(3);
+    assert_eq!(body.settling(), 3);
+    let mut last = body.parts[0].positions[0];
+    for tick in 0..3 {
+        body.tick(NONE);
+        let drop = last.y - body.parts[0].positions[0].y;
+        assert!(
+            (drop - 0.001_423_5).abs() < 2e-7,
+            "tick {tick} dropped {:.8} m",
+            drop
+        );
+        assert_eq!(body.settling(), 2 - tick);
+        last = body.parts[0].positions[0];
+    }
+    // With the settling over, the velocity the last gravity step left is
+    // kept (the fast retention at this speed) and grows.
+    body.tick(NONE);
+    let drop = last.y - body.parts[0].positions[0].y;
+    assert!(drop > 0.0015, "dropped {drop:.8} m");
+}
+
+/// A translate moves every particle and, past 0.1 cm of moves since the
+/// edges were last restored, restores the six edge lengths.
+#[test]
+fn a_translate_restores_the_edges_past_a_tenth_of_a_centimetre() {
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.wake();
+    let x = body.parts[0].positions[0].x;
+    body.translate(Vec3::new(0.01, 0.0, 0.0), true);
+    assert_eq!(body.parts[0].positions[0].x, x + 0.01);
+    // 1 cm is past the 0.1 cm budget: the edges were restored and the
+    // strain reset.
+    assert_eq!(body.parts[0].strain, 0.0);
+    body.translate(Vec3::new(0.0005, 0.0, 0.0), true);
+    assert!((body.parts[0].strain - 0.0005).abs() < 1e-9);
+    body.translate(Vec3::new(0.0005, 0.0, 0.0), true);
+    // Exactly the 0.1 cm budget is not past it.
+    assert!((body.parts[0].strain - 0.001).abs() < 1e-9);
+    body.translate(Vec3::new(0.0001, 0.0, 0.0), true);
+    assert_eq!(body.parts[0].strain, 0.0);
+}
+
+/// Placing a body at a matrix puts its particles at the matrix times its
+/// rest points, at rest, and drops its level contacts.
+#[test]
+fn placing_a_body_sets_it_at_rest() {
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.wake();
+    body.shove(0, Vec3::new(1.0, 0.0, 0.0), 0.0);
+    let at = Affine3A::from_translation(Vec3::new(2.0, 3.0, 4.0));
+    body.place_at(&[at]);
+    let p = &body.parts[0];
+    assert_eq!(p.positions, p.rest.map(|r| at.transform_point3(r)));
+    assert_eq!(p.previous, p.positions);
+    assert_eq!(p.start, p.positions);
+    assert!(p.contacts.is_empty());
+    let placed = p.positions;
+    body.tick(NONE);
+    // No velocity is left over: the next tick only adds gravity.
+    assert!(body.parts[0].positions[0].y < placed[0].y + 1e-9);
+    assert!((placed[0].y - body.parts[0].positions[0].y - 0.001_423_5).abs() < 2e-6);
+}

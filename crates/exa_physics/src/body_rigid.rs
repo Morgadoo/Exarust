@@ -215,6 +215,7 @@ impl Ragdoll {
             drive: None,
             ticks: 0,
             countdown: 0,
+            settle: 0,
             sleep: Sleep::Deep,
             simulated: false,
             fell_out: false,

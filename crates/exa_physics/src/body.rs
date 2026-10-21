@@ -94,7 +94,6 @@ const HUMAN_LIMB_DAMPING: f32 = 1.0;
 const LINK_ITERATIONS: usize = 20;
 const FRICTION_PASSES: usize = 8;
 /// The fastest a particle may move (m/s): well above any blow or fall.
-const MAX_SPEED: f32 = 25.0;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -185,6 +184,9 @@ const MIN_DEPTH: f32 = 1e-7;
 /// Push length (m) at detection, and depth (m) in the plane pass, summed
 /// before a part's edges are restored.
 const PUSH_STRAIN: f32 = 0.001;
+/// A move (a translate) adds up to this (0.1 cm) before the edges are
+/// restored.
+const TRANSLATE_STRAIN: f32 = 0.001;
 const DEPTH_STRAIN: f32 = 0.01;
 /// A level push longer than this (m) is reported, not clamped.
 const EXCESSIVE_PUSH: f32 = 1.6;
@@ -865,6 +867,9 @@ pub struct Ragdoll {
     /// counted down by its speed once limp ([`count_down`]); the post-step
     /// puts it to sleep at 1.
     countdown: i32,
+    /// Ticks still to run with gravity but no inertia, as the original
+    /// settles a re-placed character (its temporary state's countdown).
+    settle: i32,
     /// A sleeping body is not simulated until something wakes it.
     pub sleep: Sleep,
     /// Whether the body has been simulated since it was built: a body
@@ -1330,6 +1335,7 @@ impl Ragdoll {
             // its first tick, and wakes a living one to 256 at once; placed
             // corpses still collapse from standing in Exarust.
             countdown: WAKE_COUNT,
+            settle: 0,
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
@@ -1416,6 +1422,55 @@ impl Ragdoll {
     /// The body's sleep countdown, in ticks: 256 woken or alive, 0 asleep.
     pub fn countdown(&self) -> i32 {
         self.countdown
+    }
+
+    /// Lets the body settle for `ticks` ticks with gravity but no inertia:
+    /// the original's temporary state after a character is placed (a
+    /// respawn or a level change), where each particle takes a tick's
+    /// gravity and keeps none of its velocity for that long.
+    pub fn settle_for(&mut self, ticks: i32) {
+        self.settle = ticks.max(0);
+    }
+
+    /// Ticks still to run with gravity but no inertia.
+    pub fn settling(&self) -> i32 {
+        self.settle
+    }
+
+    /// Moves every particle by `offset` (the original's translate): the
+    /// world contact gives way, and once the moves since the last edge
+    /// restore add up to over 0.1 cm the six edge lengths are restored
+    /// (when `restore` is set, as the original's caller asks).
+    pub fn translate(&mut self, offset: Vec3, restore: bool) {
+        let length = offset.length();
+        for p in &mut self.parts {
+            for x in &mut p.positions {
+                *x += offset;
+            }
+            p.strain += length;
+            if restore && p.strain > TRANSLATE_STRAIN {
+                keep_rigid(p);
+            }
+        }
+    }
+
+    /// Places every part at a node's world transform, as the original's
+    /// place-at-matrix does: its particles at the matrix times its rest
+    /// points, at rest (current, previous and the last tick's start all
+    /// there), its level contacts dropped. The sleep countdown is left as
+    /// it is, as the original leaves it; a caller that re-places a body
+    /// wakes it.
+    pub fn place_at(&mut self, worlds: &[Affine3A]) {
+        for (p, world) in self.parts.iter_mut().zip(worlds) {
+            p.positions = p.rest.map(|r| world.transform_point3(r));
+            p.previous = p.positions;
+            p.start = p.positions;
+            p.moved = [Vec3::ZERO; 4];
+            p.contacts.clear();
+            p.strain = 0.0;
+            p.settled = p.transform();
+            p.shown = (p.settled, p.settled);
+        }
     }
 
     /// Wakes the body to 256 (see [`Ragdoll::wake_to`]).
@@ -1833,6 +1888,12 @@ impl Ragdoll {
 
     fn integrate(&mut self) {
         let gravity = lift::gravity_per_tick();
+        // While the settling countdown runs, particles take gravity with no
+        // inertia and no retention (the original's temporary state).
+        let settling = self.settle > 0;
+        if settling {
+            self.settle -= 1;
+        }
         // A living part over half its tone falls by g(1 − a) + carry·a, a
         // its share of the carry; any other by gravity.
         let carried = self.drive.as_ref().map(|d| (d.tone, d.energy, d.carry));
@@ -1843,12 +1904,6 @@ impl Ragdoll {
             .is_some()
             .then(|| living_retention(HUMAN_LIMB_DAMPING));
         for p in &mut self.parts {
-            let keep = living.unwrap_or_else(|| {
-                let moved = (0..4)
-                    .map(|i| (p.positions[i] - p.previous[i]).length())
-                    .fold(0.0, f32::max);
-                limp_retention(moved * CM)
-            });
             p.start = p.positions;
             p.strain = 0.0;
             let pull = carried
@@ -1857,10 +1912,21 @@ impl Ragdoll {
                     Some(gravity * (1.0 - a) + carry * a)
                 })
                 .unwrap_or(gravity);
+            if settling {
+                p.moved = [Vec3::ZERO; 4];
+                for i in 0..4 {
+                    p.positions[i] += pull * p.gravity[i];
+                }
+                continue;
+            }
+            let keep = living.unwrap_or_else(|| {
+                let moved = (0..4)
+                    .map(|i| (p.positions[i] - p.previous[i]).length())
+                    .fold(0.0, f32::max);
+                limp_retention(moved * CM)
+            });
             for i in 0..4 {
-                // A particle never carries more than MAX_SPEED (Exarust's
-                // guard; the original has none).
-                let v = (p.positions[i] - p.previous[i]).clamp_length_max(MAX_SPEED / BODY_HZ);
+                let v = p.positions[i] - p.previous[i];
                 p.moved[i] = v;
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + pull * p.gravity[i];
