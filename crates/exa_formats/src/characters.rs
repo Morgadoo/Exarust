@@ -925,6 +925,13 @@ impl LevelCharacters {
     }
 }
 
+/// Reads a character database's records by id (an RDB such as the payload
+/// of a save's `#worldchrdb` chunk): a deleted entry or a stub that is not a
+/// record comes back as an error.
+pub fn read_character_database(b: &[u8]) -> Result<Vec<(u32, Result<CharacterRecord>)>> {
+    read_database(b)
+}
+
 /// A tagged sub-chunk of a character section.
 type Section<'a> = (u32, &'a [u8]);
 

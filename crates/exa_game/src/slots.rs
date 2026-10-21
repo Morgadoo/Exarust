@@ -21,7 +21,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use exa_formats::save_chunk;
-use exa_formats::save_package::{self, PLAYER_DATA, PackageImage, PlayerData, SlotKind};
+use exa_formats::save_package::{
+    self, Flavour, NAME_LEN, PLAYER_DATA, PackageImage, PlayerData, SlotKind,
+};
 use exa_formats::settings_store::SettingsStore;
 
 use crate::session::{self, Mode, SaveError, Session, SlotInfo};
@@ -55,6 +57,51 @@ pub struct Slot {
     pub kind: SlotKind,
     /// What the save's player data says.
     pub info: SlotInfo,
+}
+
+/// The sections a save writes besides `#playerdata`, in the original's
+/// save order: the world character database, the player data, the world
+/// object database and the current level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SaveWorld<'a> {
+    /// The character database export; written only when it has records.
+    pub world_characters: Option<&'a [u8]>,
+    /// The object database export and the data manager's table; written
+    /// only when the database has records.
+    pub world_objects: Option<(&'a [u8], &'a [u8])>,
+    /// The current level's locale and its exported bytes.
+    pub level: Option<(&'a str, &'a [u8])>,
+    /// The original's "saving disabled" flag: a set flag skips the whole
+    /// save.
+    pub disabled: bool,
+}
+
+/// A save package opened and decoded as a load does, before the session
+/// layer restores its own payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoadedSave {
+    /// The package with any version conversion already applied.
+    pub package: PackageImage,
+    /// The mode's player data, with the full mask applied.
+    pub data: PlayerData,
+    /// Which of the slot's two files was opened.
+    pub kind: SlotKind,
+    /// The story loader's forced locale after a mid-transition save
+    /// (`exanima05`), if any.
+    pub forced_locale: Option<[u8; NAME_LEN]>,
+    /// The locale the load uses: the forced one, else the header's.
+    pub level_locale: [u8; NAME_LEN],
+    /// Whether the package holds the level's section; when it does not, the
+    /// original loads `<locale>.rfc` from the game archive.
+    pub has_level_section: bool,
+    /// Whether the package holds a `#worldobjdb` section (else the object
+    /// database is cleared).
+    pub has_world_objects: bool,
+    /// Whether the package holds a `#worldchrdb` section (else the
+    /// character database is cleared).
+    pub has_world_characters: bool,
+    /// Whether an old arena save was converted and written back.
+    pub converted: bool,
 }
 
 impl Slots {
@@ -102,11 +149,10 @@ impl Slots {
     }
 
     /// Whether a checkpoint file for the slot exists. The original's test
-    /// only opens the file; its magic read has no effect on the result.
+    /// only opens the file for reading, so a directory or an unreadable
+    /// file is not a checkpoint.
     pub fn has_checkpoint(&self, number: u32) -> bool {
-        fs::metadata(self.file(number, SlotKind::Checkpoint))
-            .map(|meta| meta.is_file())
-            .unwrap_or(false)
+        fs::File::open(self.file(number, SlotKind::Checkpoint)).is_ok()
     }
 
     /// Every slot file found by name, in directory order.
@@ -172,7 +218,11 @@ impl Slots {
             Mode::Arena => save_package::Flavour::Arena,
         };
         match PlayerData::parse(section, flavour) {
-            Ok(data) => Verdict::Keep(session::slot_info_of(&data)),
+            Ok(data) => {
+                let mut info = session::slot_info_of(&data);
+                info.player_name = session::player_name(package, &data);
+                Verdict::Keep(info)
+            }
             Err(_) => Verdict::Skip,
         }
     }
@@ -211,23 +261,31 @@ impl Slots {
     }
 
     /// The valid slots, in the most-recently-used order. Files are taken in
-    /// directory order; a number already listed is skipped. A slot the
-    /// story refuses for its old signature is deleted, both files; one that
-    /// does not read is left out and left on disk.
+    /// directory order; the **first** file for a number decides that
+    /// number's fate, even when it leaves the slot out (the original
+    /// appends the number before asking the mode's reader, so a skipped
+    /// number's checkpoint is not tried afterwards). A slot the story
+    /// refuses for its old signature is deleted, both files; one that does
+    /// not read is left out and left on disk.
     ///
     /// The original also requires the player's record to be found in the
     /// character databases; Exarust's own saves carry no placement, so a
     /// readable header is enough here.
     pub fn list(&self) -> io::Result<Vec<Slot>> {
+        self.scan(self.candidates()?)
+    }
+
+    /// Applies the scan to slot files already listed in the order the
+    /// folder returned them. Split out so tests can pin the order.
+    fn scan(&self, candidates: Vec<(u32, SlotKind)>) -> io::Result<Vec<Slot>> {
         let mut valid: Vec<Slot> = Vec::new();
-        for (number, kind) in self.candidates()? {
-            if valid.iter().any(|slot| slot.number == number) {
+        let mut seen: Vec<u32> = Vec::new();
+        for (number, kind) in candidates {
+            if seen.contains(&number) {
                 continue;
             }
+            seen.push(number);
             let path = self.file(number, kind);
-            if !path.is_file() {
-                continue;
-            }
             match self.verdict(&Self::open(&path)?) {
                 Verdict::Keep(info) => valid.push(Slot { number, kind, info }),
                 Verdict::Delete => self.delete(number)?,
@@ -248,6 +306,128 @@ impl Slots {
         Ok(self.list()?.into_iter().map(|slot| slot.number).collect())
     }
 
+    /// Opens and decodes the first existing file of a slot, as the original's
+    /// full load does: the `.rsg` first (the `.rcp` first when
+    /// `prefer_checkpoint`), a file that exists but does not read is an
+    /// error and the other file is not tried. The mode's player data is
+    /// read with the full mask; an old arena save is converted (its
+    /// `arenahub` section dropped, its placement moved to the start, the
+    /// skipped chunks removed) and the package is written back. A story
+    /// save written mid-transition reports `exanima05` as its forced
+    /// locale.
+    ///
+    /// The original also imports the world databases and the level here;
+    /// those payloads belong to other units and stay in the package.
+    pub fn load_package(
+        &self,
+        number: u32,
+        prefer_checkpoint: bool,
+    ) -> Result<LoadedSave, SaveError> {
+        self.load_package_masked(number, prefer_checkpoint, !0)
+    }
+
+    /// The character screen's load, as the original's continue and recruit
+    /// flows do it: the save is preferred, the checkpoint is taken only when
+    /// asked for or when the save is missing, and the player data is read
+    /// with mask `0x100010` (the journal and the global experience only).
+    /// The character record the original then loads into the creator is not
+    /// restored here; [`SlotInfo::player_name`] exposes its name.
+    pub fn load_character_screen(
+        &self,
+        number: u32,
+        prefer_checkpoint: bool,
+    ) -> Result<LoadedSave, SaveError> {
+        let save = fs::File::open(self.file(number, SlotKind::Save)).is_ok();
+        let checkpoint = self.has_checkpoint(number);
+        // The original's branch: with a checkpoint and either an explicit
+        // checkpoint request or no save, open the checkpoint; otherwise a
+        // save is required.
+        let kind = if checkpoint && (prefer_checkpoint || !save) {
+            SlotKind::Checkpoint
+        } else if save {
+            SlotKind::Save
+        } else {
+            return Err(SaveError::Malformed);
+        };
+        // The character-screen path does not move the slot to the front;
+        // only the full load does.
+        self.load_file(number, kind, PlayerData::CHARACTER_SCREEN_MASK)
+    }
+
+    fn load_package_masked(
+        &self,
+        number: u32,
+        prefer_checkpoint: bool,
+        mask: u32,
+    ) -> Result<LoadedSave, SaveError> {
+        self.touch(number);
+        let order = if prefer_checkpoint {
+            [SlotKind::Checkpoint, SlotKind::Save]
+        } else {
+            [SlotKind::Save, SlotKind::Checkpoint]
+        };
+        let kind = order
+            .into_iter()
+            .find(|kind| self.file(number, *kind).is_file())
+            .ok_or(SaveError::Malformed)?;
+        self.load_file(number, kind, mask)
+    }
+
+    /// Opens and decodes a slot file: the mode's signature check, the player
+    /// data with `mask`, an arena version conversion written back, and the
+    /// level's availability.
+    fn load_file(&self, number: u32, kind: SlotKind, mask: u32) -> Result<LoadedSave, SaveError> {
+        let path = self.file(number, kind);
+        // Opening may reset a damaged header, so read the package from
+        // memory and not from the bytes read before the open.
+        let mut package = Self::open(&path).map_err(|_| SaveError::Malformed)?;
+        let section = package.section(PLAYER_DATA).ok_or(SaveError::Malformed)?;
+        let signature = section
+            .get(0..4)
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .ok_or(SaveError::Malformed)?;
+        let flavour = match self.mode {
+            Mode::Story if signature < save_package::STORY_SIGNATURE => {
+                return Err(SaveError::Malformed);
+            }
+            Mode::Story => Flavour::Story,
+            Mode::Arena if signature != save_package::ARENA_SIGNATURE => {
+                return Err(SaveError::Malformed);
+            }
+            Mode::Arena => Flavour::Arena,
+        };
+        let mut data = PlayerData::parse(section, flavour).map_err(|_| SaveError::Malformed)?;
+        data.apply_mask(mask);
+        let mut converted = false;
+        if flavour == Flavour::Arena && data.arena_data_is_old() {
+            data.convert_arena();
+            package.remove_section(&save_package::name("arenahub"));
+            package.put_section(PLAYER_DATA, &data.write_ordered());
+            fs::write(&path, package.to_bytes()).map_err(|_| SaveError::Malformed)?;
+            converted = true;
+        }
+        let forced_locale = if flavour == Flavour::Story {
+            data.story_transition_locale()
+        } else {
+            None
+        };
+        let level_locale = forced_locale.unwrap_or_else(|| data.header.locale());
+        let has_level_section = package.has_section(&level_locale);
+        let has_world_objects = package.has_section(save_package::WORLD_OBJECT_DB);
+        let has_world_characters = package.has_section(save_package::WORLD_CHARACTER_DB);
+        Ok(LoadedSave {
+            package,
+            data,
+            kind,
+            forced_locale,
+            level_locale,
+            has_level_section,
+            has_world_objects,
+            has_world_characters,
+            converted,
+        })
+    }
+
     /// Reads a slot. The slot first moves to the front of the order; then
     /// the first of its two files that exists, the checkpoint first when
     /// asked, is opened and read; a file that exists but does not read is
@@ -259,24 +439,15 @@ impl Slots {
         number: u32,
         prefer_checkpoint: bool,
     ) -> Result<(Session, SlotKind), SaveError> {
-        self.touch(number);
-        let order = if prefer_checkpoint {
-            [SlotKind::Checkpoint, SlotKind::Save]
-        } else {
-            [SlotKind::Save, SlotKind::Checkpoint]
-        };
-        let kind = order
-            .into_iter()
-            .find(|kind| self.file(number, *kind).is_file())
-            .ok_or(SaveError::Malformed)?;
-        let path = self.file(number, kind);
-        Self::open(&path).map_err(|_| SaveError::Malformed)?;
-        let bytes = fs::read(&path).map_err(|_| SaveError::Malformed)?;
-        let session = session::read(&bytes)?;
-        if kind == SlotKind::Checkpoint {
-            let _ = fs::copy(&path, self.file(number, SlotKind::Save));
+        let loaded = self.load_package(number, prefer_checkpoint)?;
+        let session = session::read_package(&loaded.package)?;
+        if loaded.kind == SlotKind::Checkpoint {
+            let _ = fs::copy(
+                self.file(number, SlotKind::Checkpoint),
+                self.file(number, SlotKind::Save),
+            );
         }
-        Ok((session, kind))
+        Ok((session, loaded.kind))
     }
 
     /// Moves a listed slot to the front of the stored order; a number that
@@ -295,30 +466,87 @@ impl Slots {
 
     /// Writes a session to a slot's save file, keeping the sections that are
     /// already there (the original updates the package in place) and the
-    /// character placement when the session has none.
+    /// character placement when the session has none. Writes only
+    /// `#playerdata`; [`Slots::save_full`] writes the other sections too.
     pub fn save(&self, number: u32, session: &Session) -> io::Result<()> {
+        self.save_full(number, session, &SaveWorld::default())?;
+        Ok(())
+    }
+
+    /// Writes every section of a save in the original's order: the world
+    /// character database when it has records, `#playerdata`, the world
+    /// object database when it has records, then the current level under
+    /// its locale name. Sections already in the file that are not written
+    /// this time stay where they are. Returns whether the save ran; the
+    /// original's "saving disabled" flag skips it entirely.
+    pub fn save_full(
+        &self,
+        number: u32,
+        session: &Session,
+        world: &SaveWorld<'_>,
+    ) -> io::Result<bool> {
+        if world.disabled {
+            return Ok(false);
+        }
         let path = self.file(number, SlotKind::Save);
         let mut package = match fs::read(&path) {
             Ok(bytes) => PackageImage::read(&bytes).unwrap_or_default(),
             Err(_) => PackageImage::new(),
         };
+        if let Some(characters) = world.world_characters {
+            package.put_section(
+                save_package::WORLD_CHARACTER_DB,
+                &save_package::world_character_db(characters),
+            );
+        }
         let previous = package.section(PLAYER_DATA).map(<[u8]>::to_vec);
         package.put_section(
             PLAYER_DATA,
             &session::player_section_after(session, previous.as_deref()),
         );
-        fs::write(path, package.to_bytes())
+        if let Some((objects, data_manager)) = world.world_objects {
+            package.put_section(
+                save_package::WORLD_OBJECT_DB,
+                &save_package::world_object_db(objects, data_manager),
+            );
+        }
+        if let Some((locale, level)) = world.level {
+            package.put_section(&save_package::name(locale), level);
+        }
+        fs::write(path, package.to_bytes())?;
+        Ok(true)
     }
 
-    /// Creates a slot: the lowest free number, at the front of the list,
-    /// written to `<prefix>NNN.rsg`.
-    pub fn create(&self, session: &Session) -> io::Result<u32> {
+    /// Creates a slot the way the original does: the lowest free number,
+    /// at the front of the list, with an empty package file (the save
+    /// follows when the game saves). Returns the number.
+    pub fn create_empty(&self) -> io::Result<u32> {
         let mut numbers = self.numbers()?;
         let number = save_chunk::free_slot_number(&numbers);
         save_chunk::insert_slot(&mut numbers, number);
-        self.save(number, session)?;
         self.store_order(&numbers)?;
+        Self::open(&self.file(number, SlotKind::Save))?;
         Ok(number)
+    }
+
+    /// Creates a slot and writes a session into it. The original's new-slot
+    /// path only creates the empty package ([`Slots::create_empty`]) and
+    /// saves later; this convenience does both.
+    pub fn create(&self, session: &Session) -> io::Result<u32> {
+        let number = self.create_empty()?;
+        self.save(number, session)?;
+        Ok(number)
+    }
+
+    /// Deletes the slot at `index` in the list, as the menu's delete does.
+    /// Returns the number deleted.
+    pub fn delete_index(&self, index: usize) -> io::Result<Option<u32>> {
+        let numbers = self.numbers()?;
+        let Some(number) = numbers.get(index).copied() else {
+            return Ok(None);
+        };
+        self.delete(number)?;
+        Ok(Some(number))
     }
 
     /// Deletes both of a slot's files.
@@ -378,14 +606,29 @@ impl Slots {
 
     /// A save that checks the player's health first, as the save the arena
     /// and the death screens ask for: a dead player is not saved and the
-    /// permadeath rule runs instead. Returns whether it saved.
+    /// permadeath rule runs instead. Returns whether it saved. The
+    /// "saving disabled" flag is checked before the health, so a disabled
+    /// save neither writes nor drops the slot.
     pub fn save_checked(&self, number: u32, session: &Session, health: f32) -> io::Result<bool> {
+        self.save_checked_full(number, session, &SaveWorld::default(), health)
+    }
+
+    /// A checked save with the world sections of [`Slots::save_full`].
+    pub fn save_checked_full(
+        &self,
+        number: u32,
+        session: &Session,
+        world: &SaveWorld<'_>,
+        health: f32,
+    ) -> io::Result<bool> {
+        if world.disabled {
+            return Ok(false);
+        }
         if !save_chunk::save_allowed(health, false) {
             self.drops_after_death(number, health)?;
             return Ok(false);
         }
-        self.save(number, session)?;
-        Ok(true)
+        self.save_full(number, session, world)
     }
 
     /// The player-data signature the mode writes now.
@@ -484,6 +727,7 @@ impl Slots {
 mod tests {
     use super::*;
     use crate::career::Profession;
+    use exa_formats::save_package::PlayerHeader;
 
     fn folder(name: &str) -> PathBuf {
         let path =
@@ -679,6 +923,18 @@ mod tests {
         // An unchecked save writes whatever the health.
         slots.save(number, &later).unwrap();
         assert_eq!(slots.load(number, false).unwrap().0.clock, 6);
+        // A disabled save is skipped before the health check: the dead
+        // player's save is neither written nor dropped.
+        let disabled = SaveWorld {
+            disabled: true,
+            ..SaveWorld::default()
+        };
+        assert!(
+            !slots
+                .save_checked_full(number, &later, &disabled, 0.0)
+                .unwrap()
+        );
+        assert!(slots.file(number, SlotKind::Save).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -869,15 +1125,16 @@ mod tests {
         slots.save(1, &session).unwrap();
         let bytes = fs::read(&path).unwrap();
         let (reference, ids) = original_story_reader(&bytes).unwrap();
-        // The placement is still first, the retail chunks are kept, and the
+        // The placement is still first, the retail chunks are kept in the
+        // writer's order (the journal before the experience), and the
         // Exarust chunk is one more id the original skips.
         assert_eq!(reference, 0x4000_0001);
         assert_eq!(
             ids,
             [
                 save_package::DISCOVERY_CHUNK,
-                save_package::GLOBAL_XP_CHUNK,
                 save_package::JOURNAL_CHUNK,
+                save_package::GLOBAL_XP_CHUNK,
                 save_package::EXARUST_CHUNK
             ]
         );
@@ -890,12 +1147,15 @@ mod tests {
         assert_eq!(slots.load(1, false).unwrap().0.clock, 9);
 
         // A save Exarust writes from nothing has no placement: the
-        // original would take its first chunk as the character and fail to
-        // find the record. That is the documented gap until Exarust exports
-        // a character.
+        // original would take its first chunk (the empty discovery chunk)
+        // as the character and fail to find the record. That is the
+        // documented gap until Exarust exports a character.
         let fresh = session::write(&session);
         let (reference, _) = original_story_reader(&fresh).unwrap();
-        assert_eq!(reference, 1, "the journal count read as a reference");
+        assert_eq!(
+            reference, 0,
+            "the empty discovery payload read as a reference"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -934,6 +1194,276 @@ mod tests {
         );
         assert_eq!(story.order_key(), exa_formats::save_chunk::STORY_ORDER_KEY);
         assert_eq!(arena.order_key(), exa_formats::save_chunk::ARENA_ORDER_KEY);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_first_file_for_a_number_decides_even_when_it_is_skipped() {
+        let dir = folder("scan");
+        let slots = Slots::story(&dir);
+        // An empty package (no player data) at number 5, and a readable
+        // checkpoint for the same number.
+        fs::write(
+            slots.file(5, SlotKind::Save),
+            PackageImage::new().to_bytes(),
+        )
+        .unwrap();
+        fs::write(
+            slots.file(5, SlotKind::Checkpoint),
+            session::write(&Session::story()),
+        )
+        .unwrap();
+        // The save comes first: the number is skipped and its checkpoint is
+        // not looked at.
+        assert!(
+            slots
+                .scan(vec![
+                    (5, SlotKind::Save),
+                    (5, SlotKind::Checkpoint),
+                    (6, SlotKind::Checkpoint)
+                ])
+                .unwrap()
+                .iter()
+                .all(|slot| slot.number == 6)
+        );
+        // The checkpoint comes first: the slot is listed from it.
+        let listed = slots
+            .scan(vec![(5, SlotKind::Checkpoint), (5, SlotKind::Save)])
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].number, listed[0].kind),
+            (5, SlotKind::Checkpoint)
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_slot_is_an_empty_package_until_it_is_saved() {
+        let dir = folder("empty");
+        let slots = Slots::arena(&dir);
+        let number = slots.create_empty().unwrap();
+        assert_eq!(number, 1);
+        let bytes = fs::read(slots.file(number, SlotKind::Save)).unwrap();
+        assert_eq!(bytes, PackageImage::new().to_bytes());
+        // The empty package has no player data, so the scan leaves it out
+        // (the original saves into it in the same flow).
+        assert!(slots.numbers().unwrap().is_empty());
+        // A convenience create writes the session straight away.
+        let number = slots.create(&arena("Ash")).unwrap();
+        assert_eq!(number, 1);
+        assert_eq!(slots.numbers().unwrap(), vec![1]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_full_save_writes_every_section_in_the_writers_order() {
+        let dir = folder("full");
+        let slots = Slots::story(&dir);
+        let mut session = Session::story();
+        session.clock = 8;
+        let world = SaveWorld {
+            world_characters: Some(b"characters"),
+            world_objects: Some((b"objects", b"manager")),
+            level: Some(("exanima01", b"level")),
+            disabled: false,
+        };
+        assert!(slots.save_full(1, &session, &world).unwrap());
+        let bytes = fs::read(slots.file(1, SlotKind::Save)).unwrap();
+        let package = PackageImage::read(&bytes).unwrap();
+        let names: Vec<String> = package
+            .entries()
+            .iter()
+            .map(|entry| save_package::name_text(&entry.name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "#worldchrdb".to_string(),
+                "#playerdata".to_string(),
+                "#worldobjdb".to_string(),
+                "exanima01".to_string()
+            ]
+        );
+        assert_eq!(
+            package
+                .entries()
+                .iter()
+                .map(|entry| entry.offset)
+                .collect::<Vec<_>>(),
+            [0x2000, 0x4000, 0x6000, 0x8000]
+        );
+        // The chunks are framed, and the player data reads back.
+        assert_eq!(
+            package.section(save_package::WORLD_OBJECT_DB),
+            Some(&save_package::world_object_db(b"objects", b"manager")[..])
+        );
+        assert_eq!(session::slot_info(&bytes).unwrap().clock, 8);
+        let loaded = slots.load_package(1, false).unwrap();
+        assert!(loaded.has_level_section);
+        assert!(loaded.has_world_characters);
+        assert!(loaded.has_world_objects);
+        assert_eq!(loaded.level_locale, save_package::name("exanima01"));
+        // The "saving disabled" flag skips the whole save.
+        fs::remove_file(slots.file(1, SlotKind::Save)).unwrap();
+        let disabled = SaveWorld {
+            disabled: true,
+            ..world
+        };
+        assert!(!slots.save_full(1, &session, &disabled).unwrap());
+        assert!(!slots.file(1, SlotKind::Save).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_arena_save_is_converted_and_written_back() {
+        let dir = folder("oldarena");
+        let slots = Slots::arena(&dir);
+        let number = slots.create(&arena("Ash")).unwrap();
+        let path = slots.file(number, SlotKind::Save);
+        let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let mut data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Arena,
+        )
+        .unwrap();
+        data.set_chunk(save_package::HIREABLES_CHUNK, vec![1]);
+        data.set_chunk(save_package::SHOP_STOCK_CHUNK, vec![2]);
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: save_package::CHARACTER_IN_WORLD_DB | 1,
+                position: [10.0, 5.0, -20.0],
+                heading: 1.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 4;
+        package.put_section(PLAYER_DATA, &data.write());
+        package.put_section(&save_package::name("arenahub"), b"hub");
+        fs::write(&path, package.to_bytes()).unwrap();
+
+        let loaded = slots.load_package(number, false).unwrap();
+        assert!(loaded.converted);
+        assert!(!loaded.package.has_section(&save_package::name("arenahub")));
+        assert!(loaded.data.chunk(save_package::HIREABLES_CHUNK).is_none());
+        assert!(loaded.data.chunk(save_package::SHOP_STOCK_CHUNK).is_none());
+        assert_eq!(
+            loaded.data.placement().unwrap().unwrap().position,
+            save_package::OLD_ARENA_POSITION
+        );
+        assert_eq!(loaded.data.header.clock(), 12);
+        // The converted player data was written back, and the session still
+        // reads through the ordinary load.
+        let saved = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        assert!(!saved.has_section(&save_package::name("arenahub")));
+        assert_eq!(slots.load(number, false).unwrap().0.company.name, "Ash");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_mid_transition_story_save_loads_as_exanima05() {
+        let dir = folder("transition-load");
+        let slots = Slots::story(&dir);
+        let number = slots.create(&Session::story()).unwrap();
+        let path = slots.file(number, SlotKind::Save);
+        let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let mut data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        data.set_chunk(
+            save_package::TRANSITION_CHUNK,
+            [2u32, 1, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        package.put_section(PLAYER_DATA, &data.write());
+        fs::write(&path, package.to_bytes()).unwrap();
+        let loaded = slots.load_package(number, false).unwrap();
+        assert_eq!(loaded.forced_locale, Some(save_package::name("exanima05")));
+        assert_eq!(loaded.level_locale, save_package::name("exanima05"));
+        assert!(!loaded.has_level_section);
+        assert!(!loaded.has_world_characters);
+        assert!(!loaded.has_world_objects);
+        assert!(!loaded.converted);
+        // State 1 does not force a level.
+        data.set_chunk(
+            save_package::TRANSITION_CHUNK,
+            [1u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        package.put_section(PLAYER_DATA, &data.write());
+        fs::write(&path, package.to_bytes()).unwrap();
+        assert_eq!(
+            slots.load_package(number, false).unwrap().forced_locale,
+            None
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_character_screen_prefers_the_save_and_keeps_only_journal_and_xp() {
+        let dir = folder("screen");
+        let slots = Slots::story(&dir);
+        let session = Session::story();
+        let number = slots.create(&session).unwrap();
+        // Give the save a discovery chunk and a global experience chunk.
+        let path = slots.file(number, SlotKind::Save);
+        let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let mut data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        data.set_chunk(save_package::DISCOVERY_CHUNK, vec![0; 8]);
+        data.set_chunk(save_package::GLOBAL_XP_CHUNK, 44u32.to_le_bytes().to_vec());
+        package.put_section(PLAYER_DATA, &data.write_ordered());
+        fs::write(&path, package.to_bytes()).unwrap();
+        // A checkpoint with a different clock (written directly so the save
+        // keeps its own clock).
+        let mut checkpoint = session.clone();
+        checkpoint.clock = 99;
+        fs::write(
+            slots.file(number, SlotKind::Checkpoint),
+            session::write(&checkpoint),
+        )
+        .unwrap();
+        // The save is preferred though the checkpoint is fresher.
+        let loaded = slots.load_character_screen(number, false).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Save);
+        assert_eq!(loaded.data.header.clock(), 0);
+        let ids: Vec<u32> = loaded.data.chunks.iter().map(|chunk| chunk.id).collect();
+        assert_eq!(
+            ids,
+            [save_package::JOURNAL_CHUNK, save_package::GLOBAL_XP_CHUNK]
+        );
+        // Asked for, the checkpoint is read instead.
+        let loaded = slots.load_character_screen(number, true).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Checkpoint);
+        assert_eq!(loaded.data.header.clock(), 99);
+        // Without a save only the checkpoint is left.
+        fs::remove_file(slots.file(number, SlotKind::Save)).unwrap();
+        let loaded = slots.load_character_screen(number, false).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Checkpoint);
+        assert_eq!(loaded.data.header.clock(), 99);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_by_index_removes_both_files_and_leaves_the_order() {
+        let dir = folder("delete-index");
+        let slots = Slots::arena(&dir);
+        let first = slots.create(&arena("Ash")).unwrap();
+        let second = slots.create(&arena("Bram")).unwrap();
+        assert_eq!(slots.numbers().unwrap(), vec![second, first]);
+        assert_eq!(slots.delete_index(0).unwrap(), Some(second));
+        assert!(!slots.file(second, SlotKind::Save).exists());
+        assert!(!slots.file(second, SlotKind::Checkpoint).exists());
+        assert_eq!(slots.numbers().unwrap(), vec![first]);
+        assert_eq!(slots.delete_index(5).unwrap(), None);
         let _ = fs::remove_dir_all(&dir);
     }
 }

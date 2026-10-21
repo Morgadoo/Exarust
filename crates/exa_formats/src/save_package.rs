@@ -39,6 +39,26 @@ pub const ARENA_SIGNATURE: u32 = 0xE8AA_EA10;
 /// The arena's current data version (the low byte of the saved word).
 pub const ARENA_DATA_VERSION: u32 = 9;
 
+/// The money word a new arena's save carries: the value the original's
+/// writable global starts at. The arena loader copies a save's word back
+/// into that global, so every later save writes the loaded value.
+pub const NEW_ARENA_MONEY: u32 = 515;
+
+/// The story writer always sets this bit in the flags word: the "started"
+/// byte at bits 16 through 23 becomes 1.
+pub const STORY_STARTED_FLAG: u32 = 0x1_0000;
+
+/// A placed character's record word the story reader patches when the save
+/// carries a start background of zero.
+pub const CHARACTER_START_WORD_OFFSET: usize = 0x180;
+
+/// The value the story reader writes at [`CHARACTER_START_WORD_OFFSET`] when
+/// it is zero and the start background is zero.
+pub const CHARACTER_START_WORD: u32 = 0x51_0000;
+
+/// The title the story reader gives the journal's single default page.
+pub const DEFAULT_JOURNAL_TITLE: &str = "New Entry";
+
 /// The section holding the mode's player data.
 pub const PLAYER_DATA: &[u8; NAME_LEN] = b"#playerdata\0\0\0\0\0";
 
@@ -67,6 +87,10 @@ pub const PREFIX_STORY: &str = "Exanima";
 /// The arena slot file prefix.
 pub const PREFIX_ARENA: &str = "Arena";
 
+/// The longest prefix the name builder copies: the original copies the
+/// prefix into a 16-byte buffer at most fifteen bytes long.
+pub const PREFIX_MAX: usize = 15;
+
 /// A save's extension.
 pub const EXT_SAVE: &str = ".rsg";
 
@@ -93,9 +117,12 @@ impl SlotKind {
 }
 
 /// Builds `<prefix><NNN><extension>` with the save number padded to three
-/// digits. Numbers above 999 are left whole, which the scanner never takes
-/// as a slot.
+/// digits. The prefix is cut to its first fifteen bytes, as the original's
+/// name builder copies it into a fifteen-byte buffer. Numbers above 999 are
+/// left whole, which the scanner never takes as a slot.
 pub fn slot_file_name(prefix: &str, number: u32, kind: SlotKind) -> String {
+    let bytes = prefix.as_bytes();
+    let prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(PREFIX_MAX)]);
     format!(
         "{prefix}{}{}",
         crate::save_chunk::format_save_number(number.clamp(0, i32::MAX as u32) as i32),
@@ -182,7 +209,9 @@ impl Package<'_> {
     }
 }
 
-/// Parses a package. Entry 0 is the sentinel and is not exposed.
+/// Parses a package. Entry 0 is the sentinel and is not exposed. A count of
+/// zero (no sentinel at all) is legal to the original, which reads no
+/// entries then; the parser accepts it and yields an empty package.
 pub fn parse(bytes: &[u8]) -> Result<Package<'_>, PackageError> {
     if bytes.len() < 8 {
         return Err(PackageError::Short);
@@ -192,9 +221,6 @@ pub fn parse(bytes: &[u8]) -> Result<Package<'_>, PackageError> {
         return Err(PackageError::BadMagic(magic));
     }
     let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    if count == 0 {
-        return Err(PackageError::BadDirectory);
-    }
     let directory_end = 8usize
         .checked_add(count.checked_mul(24).ok_or(PackageError::BadDirectory)?)
         .ok_or(PackageError::BadDirectory)?;
@@ -258,13 +284,16 @@ impl PackageImage {
         let package = parse(bytes)?;
         // Rebuild from the directory so the offsets survive a round trip.
         let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-        let mut sentinel_name = [0u8; NAME_LEN];
-        sentinel_name.copy_from_slice(&bytes[16..32]);
-        let sentinel = (
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-            u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-            sentinel_name,
-        );
+        let mut sentinel = (0, SENTINEL_SIZE, [0u8; NAME_LEN]);
+        if count >= 1 {
+            let mut sentinel_name = [0u8; NAME_LEN];
+            sentinel_name.copy_from_slice(&bytes[16..32]);
+            sentinel = (
+                u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                sentinel_name,
+            );
+        }
         let mut entries = Vec::with_capacity(count.saturating_sub(1));
         for index in 1..count {
             let at = 8 + index * 24;
@@ -702,6 +731,36 @@ pub const ARENA_EXTRA_CHUNK: u32 = 0xA0D1_0000;
 /// The company record.
 pub const COMPANY_CHUNK: u32 = 0xA0DC_0000;
 
+/// The order the story's writer emits the chunks it knows: the placement
+/// first, then discovery, the journal when it has pages, the global
+/// experience, the memory flags and the transition state.
+pub const STORY_CHUNK_ORDER: [u32; 5] = [
+    DISCOVERY_CHUNK,
+    JOURNAL_CHUNK,
+    GLOBAL_XP_CHUNK,
+    MEMORY_FLAGS_CHUNK,
+    TRANSITION_CHUNK,
+];
+
+/// The order the arena's writer emits the chunks it knows: the placement
+/// first, then the journal, the arsenal, the stash, the shop stock and the
+/// arena tables. The observed retail arena save holds the arsenal, the shop
+/// stock, the company record, the day record, the merchant, the hireables
+/// and the tournament in that order; the employees' place among the tables
+/// is not observed and follows their id here.
+pub const ARENA_CHUNK_ORDER: [u32; 10] = [
+    JOURNAL_CHUNK,
+    ARSENAL_CHUNK,
+    HUB_STASH_CHUNK,
+    SHOP_STOCK_CHUNK,
+    EMPLOYEES_CHUNK,
+    COMPANY_CHUNK,
+    ARENA_EXTRA_CHUNK,
+    MERCHANT_CHUNK,
+    HIREABLES_CHUNK,
+    TOURNAMENT_CHUNK,
+];
+
 /// Exarust's own session payload inside `#playerdata`. A guess: no retail
 /// chunk carries it, and the original ignores ids it does not know.
 pub const EXARUST_CHUNK: u32 = 0xD0E8_0001;
@@ -750,6 +809,20 @@ pub struct PlayerData {
     pub chunks: Vec<OwnedChunk>,
 }
 
+/// How a reader chooses the character placement chunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CharacterRule {
+    /// The original's reader: the first chunk after the header is the
+    /// character, whatever its id.
+    FirstChunk,
+    /// Only a chunk tagged [`CHARACTER_TAG`] is the character. Exarust's
+    /// own saves leave the placement out, so their first chunk is the
+    /// journal; this rule keeps those saves readable. It is a deliberate
+    /// deviation from the original, which has no such case because it
+    /// always writes a placement.
+    Tagged,
+}
+
 impl PlayerData {
     /// An empty story player data for `locale`.
     pub fn story(locale: [u8; NAME_LEN]) -> Self {
@@ -759,7 +832,7 @@ impl PlayerData {
                 camera: [0.0; 3],
                 zoom: 1.0,
                 seed: 0,
-                flags: 0x1_0000,
+                flags: STORY_STARTED_FLAG,
                 clock: 0,
                 reserved: 0,
             }),
@@ -775,7 +848,7 @@ impl PlayerData {
                 locale,
                 camera: [0.0; 3],
                 zoom: 1.0,
-                money: 0,
+                money: NEW_ARENA_MONEY,
                 data_version: ARENA_DATA_VERSION,
                 clock: 0,
                 day: 0,
@@ -785,7 +858,9 @@ impl PlayerData {
         }
     }
 
-    /// Reads a `#playerdata` section with the given mode's signature rule.
+    /// Reads a `#playerdata` section with the given mode's signature rule
+    /// and Exarust's tagged-character rule (see [`PlayerData::parse_retail`]
+    /// for the original's).
     ///
     /// The story reader accepts any signature at or above its own, so a
     /// newer save still loads; the arena reader takes its signature exactly.
@@ -797,6 +872,23 @@ impl PlayerData {
     /// loop does, so a tail of up to eight bytes (an empty chunk at the very
     /// end included) is ignored.
     pub fn parse(bytes: &[u8], flavour: Flavour) -> Result<Self, PlayerDataError> {
+        Self::parse_with(bytes, flavour, CharacterRule::Tagged)
+    }
+
+    /// Reads a `#playerdata` section exactly as the original does: the first
+    /// chunk after the 52-byte header is the character placement whatever
+    /// its id. A section with no chunk at all has no character and is what
+    /// the original's loader refuses.
+    pub fn parse_retail(bytes: &[u8], flavour: Flavour) -> Result<Self, PlayerDataError> {
+        Self::parse_with(bytes, flavour, CharacterRule::FirstChunk)
+    }
+
+    /// Reads a `#playerdata` section with an explicit character rule.
+    pub fn parse_with(
+        bytes: &[u8],
+        flavour: Flavour,
+        rule: CharacterRule,
+    ) -> Result<Self, PlayerDataError> {
         let mut at = 0;
         let signature = take_u32(bytes, &mut at)?;
         let header = match flavour {
@@ -840,7 +932,7 @@ impl PlayerData {
         let mut character = None;
         if bytes.len() >= at + 8 {
             let id = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-            if id == CHARACTER_TAG {
+            if rule == CharacterRule::FirstChunk || id == CHARACTER_TAG {
                 at += 4;
                 let size = take_u32(bytes, &mut at)? as usize;
                 character = Some(take(bytes, &mut at, size)?.to_vec());
@@ -898,6 +990,96 @@ impl PlayerData {
             write_chunk(&mut out, chunk.id, &chunk.data);
         }
         out
+    }
+
+    /// The section's bytes with the chunks in the mode's writer order: the
+    /// placement first, then the ids the writer knows in
+    /// [`STORY_CHUNK_ORDER`] or [`ARENA_CHUNK_ORDER`], each in its existing
+    /// order (a repeated id keeps its repeats), then every other chunk in
+    /// the order it was read. A chunk the writer would not emit is still
+    /// written: this only sorts, it does not invent or drop ids.
+    pub fn write_ordered(&self) -> Vec<u8> {
+        let order: &[u32] = match self.header.flavour() {
+            Flavour::Story => &STORY_CHUNK_ORDER,
+            Flavour::Arena => &ARENA_CHUNK_ORDER,
+        };
+        let mut sorted = self.clone();
+        let mut rest = Vec::with_capacity(self.chunks.len());
+        sorted.chunks.clear();
+        for &id in order {
+            for chunk in self.chunks.iter().filter(|chunk| chunk.id == id) {
+                sorted.chunks.push(chunk.clone());
+            }
+        }
+        for chunk in &self.chunks {
+            if !order.contains(&chunk.id) {
+                rest.push(chunk.clone());
+            }
+        }
+        sorted.chunks.extend(rest);
+        sorted.write()
+    }
+
+    /// The journal the reader ends up with: the stored chunk when there is
+    /// one, otherwise the single default page the reader resets it to (id
+    /// zero, title [`DEFAULT_JOURNAL_TITLE`], empty text). A malformed
+    /// journal chunk reads as the default, as the original's reader leaves
+    /// the reset journal in place.
+    pub fn journal_or_default(&self) -> Result<Vec<JournalRecord>, PlayerDataError> {
+        match self.journal() {
+            Ok(Some(records)) => Ok(records),
+            _ => Ok(vec![JournalRecord {
+                id: 0,
+                title: DEFAULT_JOURNAL_TITLE.to_string(),
+                text: String::new(),
+            }]),
+        }
+    }
+
+    /// The global experience the reader ends up with: the chunk's first
+    /// word, or zero when the chunk is absent (the write of the default
+    /// worth, zero, at load). A short chunk reads as zero as well.
+    pub fn global_experience(&self) -> u32 {
+        self.chunk(GLOBAL_XP_CHUNK)
+            .and_then(|bytes| bytes.get(0..4))
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .unwrap_or(0)
+    }
+
+    /// The memory-fragment flags the reader ends up with: the chunk's first
+    /// word, or zero when absent.
+    pub fn memory_flags(&self) -> u32 {
+        self.chunk(MEMORY_FLAGS_CHUNK)
+            .and_then(|bytes| bytes.get(0..4))
+            .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
+            .unwrap_or(0)
+    }
+
+    /// The portal/respawn state the reader ends up with: the chunk's first
+    /// sixteen bytes, or all zeroes when absent.
+    pub fn transition_state(&self) -> [u8; 16] {
+        let mut state = [0u8; 16];
+        if let Some(bytes) = self.chunk(TRANSITION_CHUNK) {
+            let len = bytes.len().min(16);
+            state[..len].copy_from_slice(&bytes[..len]);
+        }
+        state
+    }
+
+    /// The word the story reader writes into the player record when the
+    /// save's start background is zero and the record's word at
+    /// [`CHARACTER_START_WORD_OFFSET`] is zero. Returns the word the reader
+    /// leaves at that offset.
+    pub fn story_start_word(&self, record_word: u32) -> u32 {
+        let background = match &self.header {
+            PlayerHeader::Story(header) => header.flags & 0xFF,
+            PlayerHeader::Arena(_) => return record_word,
+        };
+        if background == 0 && record_word == 0 {
+            CHARACTER_START_WORD
+        } else {
+            record_word
+        }
     }
 
     /// A chunk's payload.
@@ -1357,6 +1539,208 @@ mod tests {
         assert_eq!(chunks[0].id, 0x0010_0000);
         assert_eq!(chunks[0].payload, &[0x2A, 0, 0, 0]);
         assert_eq!(parse_chunks(&[1, 2, 3]), Err(PackageError::Short));
+    }
+
+    #[test]
+    fn a_count_of_zero_is_an_empty_package() {
+        let mut bytes = PACKAGE_MAGIC.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let package = parse(&bytes).unwrap();
+        assert!(package.sections.is_empty());
+        let image = PackageImage::read(&bytes).unwrap();
+        assert!(image.entries().is_empty());
+        // Writing it back adds the sentinel the original's reset writes.
+        let out = image.to_bytes();
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0x10);
+    }
+
+    #[test]
+    fn a_slot_name_cuts_the_prefix_at_fifteen_bytes() {
+        assert_eq!(
+            slot_file_name("Exanima", 1, SlotKind::Save),
+            "Exanima001.rsg"
+        );
+        assert_eq!(
+            slot_file_name("ABCDEFGHIJKLMNOPQRSTUV", 7, SlotKind::Checkpoint),
+            "ABCDEFGHIJKLMNO007.rcp"
+        );
+        // Both extensions and the number rules are unchanged.
+        assert_eq!(slot_file_name("Arena", 999, SlotKind::Save), "Arena999.rsg");
+        assert_eq!(slot_file_name("Arena", 0, SlotKind::Save), "Arena000.rsg");
+    }
+
+    #[test]
+    fn the_arena_header_starts_with_the_writers_money_word() {
+        let data = PlayerData::arena(name("arenahub"));
+        let PlayerHeader::Arena(header) = data.header else {
+            unreachable!()
+        };
+        assert_eq!(header.money, NEW_ARENA_MONEY);
+        assert_eq!(header.money, 515);
+        assert_eq!(header.data_version, 9);
+        let story = PlayerData::story(name("exanima01"));
+        let PlayerHeader::Story(header) = story.header else {
+            unreachable!()
+        };
+        assert_eq!(header.flags, STORY_STARTED_FLAG);
+        assert_eq!(header.flags >> 16, 1);
+    }
+
+    #[test]
+    fn the_story_writer_order_is_discovery_journal_xp_flags_transition() {
+        let mut data = PlayerData::story(name("exanima01"));
+        // Deliberately out of the writer's order, with an unknown id too.
+        data.set_chunk(
+            TRANSITION_CHUNK,
+            [2u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        data.set_chunk(EXARUST_CHUNK, vec![9]);
+        data.set_chunk(GLOBAL_XP_CHUNK, 44u32.to_le_bytes().to_vec());
+        data.set_chunk(JOURNAL_CHUNK, write_journal(&[]));
+        data.set_chunk(MEMORY_FLAGS_CHUNK, 7u32.to_le_bytes().to_vec());
+        data.set_chunk(DISCOVERY_CHUNK, vec![0; 8]);
+        let ordered = data.write_ordered();
+        let read = PlayerData::parse(&ordered, Flavour::Story).unwrap();
+        assert_eq!(
+            read.chunks.iter().map(|chunk| chunk.id).collect::<Vec<_>>(),
+            [
+                DISCOVERY_CHUNK,
+                JOURNAL_CHUNK,
+                GLOBAL_XP_CHUNK,
+                MEMORY_FLAGS_CHUNK,
+                TRANSITION_CHUNK,
+                EXARUST_CHUNK
+            ]
+        );
+        // The plain writer keeps the insertion order.
+        assert_eq!(
+            data.write()[52..56],
+            TRANSITION_CHUNK.to_le_bytes(),
+            "the first chunk is the one set first"
+        );
+    }
+
+    #[test]
+    fn the_arena_writer_order_puts_the_tables_after_shop_and_stash() {
+        let mut data = PlayerData::arena(name("arenahub"));
+        data.set_chunk(TOURNAMENT_CHUNK, vec![1]);
+        data.set_chunk(HIREABLES_CHUNK, vec![2]);
+        data.set_chunk(COMPANY_CHUNK, vec![3]);
+        data.set_chunk(SHOP_STOCK_CHUNK, vec![4]);
+        data.set_chunk(ARSENAL_CHUNK, vec![5]);
+        data.set_chunk(JOURNAL_CHUNK, write_journal(&[]));
+        data.set_chunk(EMPLOYEES_CHUNK, vec![6]);
+        data.set_chunk(ARENA_EXTRA_CHUNK, vec![7]);
+        data.set_chunk(MERCHANT_CHUNK, vec![8]);
+        data.set_chunk(HUB_STASH_CHUNK, vec![9]);
+        let ordered = data.write_ordered();
+        let read = PlayerData::parse(&ordered, Flavour::Arena).unwrap();
+        assert_eq!(
+            read.chunks.iter().map(|chunk| chunk.id).collect::<Vec<_>>(),
+            [
+                JOURNAL_CHUNK,
+                ARSENAL_CHUNK,
+                HUB_STASH_CHUNK,
+                SHOP_STOCK_CHUNK,
+                EMPLOYEES_CHUNK,
+                COMPANY_CHUNK,
+                ARENA_EXTRA_CHUNK,
+                MERCHANT_CHUNK,
+                HIREABLES_CHUNK,
+                TOURNAMENT_CHUNK
+            ]
+        );
+    }
+
+    #[test]
+    fn an_absent_journal_reads_as_the_default_page() {
+        let data = PlayerData::story(name("exanima01"));
+        assert_eq!(
+            data.journal_or_default().unwrap(),
+            vec![JournalRecord {
+                id: 0,
+                title: "New Entry".to_string(),
+                text: String::new(),
+            }]
+        );
+        let mut with = data.clone();
+        with.set_journal(&[JournalRecord {
+            id: 3,
+            title: "A".to_string(),
+            text: "B".to_string(),
+        }]);
+        assert_eq!(with.journal_or_default().unwrap()[0].id, 3);
+        // A journal chunk that does not parse leaves the default.
+        let mut broken = data.clone();
+        broken.set_chunk(JOURNAL_CHUNK, vec![1, 0, 0, 0]);
+        assert_eq!(broken.journal_or_default().unwrap()[0].id, 0);
+        // The other chunks' absent defaults: global worth 0, memory flags
+        // 0, the transition state all zeroes.
+        assert_eq!(data.global_experience(), 0);
+        assert_eq!(data.memory_flags(), 0);
+        assert_eq!(data.transition_state(), [0u8; 16]);
+        let mut with = data.clone();
+        with.set_chunk(GLOBAL_XP_CHUNK, 44u32.to_le_bytes().to_vec());
+        with.set_chunk(MEMORY_FLAGS_CHUNK, 3u32.to_le_bytes().to_vec());
+        with.set_chunk(
+            TRANSITION_CHUNK,
+            [2u32, 1, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        assert_eq!(with.global_experience(), 44);
+        assert_eq!(with.memory_flags(), 3);
+        assert_eq!(
+            with.transition_state(),
+            [2u32, 1, 0, 0].map(u32::to_le_bytes).concat()[..]
+        );
+        // A chunk shorter than its word reads as zero.
+        let mut short = data.clone();
+        short.set_chunk(GLOBAL_XP_CHUNK, vec![1]);
+        short.set_chunk(MEMORY_FLAGS_CHUNK, vec![1]);
+        short.set_chunk(TRANSITION_CHUNK, vec![2]);
+        assert_eq!(short.global_experience(), 0);
+        assert_eq!(short.memory_flags(), 0);
+        assert_eq!(&short.transition_state()[..2], &[2, 0]);
+    }
+
+    #[test]
+    fn the_story_reader_patches_the_record_word_for_a_zero_background() {
+        let mut data = PlayerData::story(name("exanima01"));
+        assert_eq!(data.story_start_word(0), CHARACTER_START_WORD);
+        assert_eq!(data.story_start_word(5), 5);
+        let PlayerHeader::Story(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.flags = 2;
+        assert_eq!(data.story_start_word(0), 0);
+        let arena = PlayerData::arena(name("arenahub"));
+        assert_eq!(arena.story_start_word(0), 0);
+    }
+
+    #[test]
+    fn the_retail_reader_takes_the_first_chunk_whatever_its_id() {
+        // A section whose first chunk is the journal: the original reads it
+        // as the character, Exarust's tagged rule does not.
+        let mut data = PlayerData::story(name("exanima01"));
+        data.set_chunk(JOURNAL_CHUNK, write_journal(&[]));
+        let bytes = data.write();
+        let tagged = PlayerData::parse(&bytes, Flavour::Story).unwrap();
+        assert_eq!(tagged.character, None);
+        assert_eq!(tagged.chunks.len(), 1);
+        let retail = PlayerData::parse_retail(&bytes, Flavour::Story).unwrap();
+        assert!(retail.character.is_some());
+        assert!(retail.chunks.is_empty());
+        // A placement with the writer's tag reads the same either way.
+        let mut placed = PlayerData::story(name("exanima01"));
+        placed.character = Some(vec![1, 0, 0, 0]);
+        placed.set_chunk(JOURNAL_CHUNK, write_journal(&[]));
+        let bytes = placed.write();
+        assert_eq!(
+            PlayerData::parse(&bytes, Flavour::Story).unwrap().character,
+            PlayerData::parse_retail(&bytes, Flavour::Story)
+                .unwrap()
+                .character
+        );
     }
 
     #[test]

@@ -116,17 +116,29 @@ pub fn write_save_records(records: &[SaveRecord]) -> SaveRecordTable {
     }
 }
 
-/// Formats a save number as a zero-padded three-character decimal.
+/// Formats a save number as a zero-padded three-character decimal, exactly
+/// as the original's formatter does: zero is the constant `"000"`; otherwise
+/// the decimal digits are produced from the least significant up and the
+/// string is prefixed with `"00"` when shorter than two characters, or `"0"`
+/// when shorter than three. A negative value produces no digits, so it comes
+/// out as `"00"`; the scanner never produces one.
 pub fn format_save_number(value: i32) -> String {
-    if value <= 0 {
+    if value == 0 {
         return "000".to_string();
     }
-    let text = value.to_string();
-    if text.len() >= 3 {
-        text
-    } else {
-        format!("{text:0>3}")
+    let mut text = String::new();
+    let mut value = value;
+    while value > 0 {
+        let digit = (value % 10) as u8;
+        text.insert(0, char::from(b'0' + digit));
+        value /= 10;
     }
+    match text.len() {
+        0 | 1 => text.insert_str(0, "00"),
+        2 => text.insert(0, '0'),
+        _ => {}
+    }
+    text
 }
 
 /// The story mode's value in the engine's mode word.
@@ -355,7 +367,9 @@ mod tests {
         assert_eq!(format_save_number(12), "012");
         assert_eq!(format_save_number(123), "123");
         assert_eq!(format_save_number(1234), "1234");
-        assert_eq!(format_save_number(-7), "000");
+        // The original's digit loop does not run for a negative value, so
+        // only the two-character pad is added.
+        assert_eq!(format_save_number(-7), "00");
     }
 
     #[test]

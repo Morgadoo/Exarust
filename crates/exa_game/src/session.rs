@@ -21,7 +21,7 @@ use exa_script::story::{Entry, Journal, Story};
 use crate::career::{Company, Member, Profession};
 
 const MAGIC: &[u8; 4] = b"EXRS";
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 /// The arena's single locale.
 pub const ARENA_LOCALE: &str = "arenahub";
@@ -46,6 +46,17 @@ pub struct Session {
     pub seed: u32,
     /// The character creation background the story save was started from.
     pub start_background: u32,
+    /// The story's discovery chunk (the experience system's own format).
+    /// None when the session has no experience state; a fresh story save
+    /// then writes the empty chunk the original always writes.
+    pub discovery: Option<Vec<u8>>,
+    /// The account's experience worth saved in the global-experience chunk.
+    /// None keeps the chunk a save already has, else the default (zero).
+    pub global_experience: Option<u32>,
+    /// The memory-fragment flags; zero is not written.
+    pub memory_flags: u32,
+    /// The sixteen-byte portal/respawn state; all zeroes are not written.
+    pub transition: [u8; 16],
 }
 
 impl Session {
@@ -58,6 +69,10 @@ impl Session {
             clock: 0,
             seed: 0,
             start_background: 0,
+            discovery: None,
+            global_experience: None,
+            memory_flags: 0,
+            transition: [0; 16],
         }
     }
 
@@ -70,6 +85,10 @@ impl Session {
             clock: 0,
             seed: 0,
             start_background: 0,
+            discovery: None,
+            global_experience: None,
+            memory_flags: 0,
+            transition: [0; 16],
         }
     }
 }
@@ -90,6 +109,10 @@ pub struct SlotInfo {
     pub journal: usize,
     /// The player's character record id, when a placement chunk is stored.
     pub player_record: Option<u32>,
+    /// The player's name from the save's world character database, when
+    /// the placement's reference names a record there. The original shows
+    /// this name in the slot list.
+    pub player_name: Option<String>,
 }
 
 /// Why a file is not a session.
@@ -122,8 +145,23 @@ pub fn player_data(session: &Session) -> PlayerData {
             let mut data = PlayerData::story(save_package::name(session.story.level()));
             if let PlayerHeader::Story(header) = &mut data.header {
                 header.seed = session.seed;
-                header.flags = (session.start_background & 0xFF) | 0x1_0000;
+                header.flags = (session.start_background & 0xFF) | save_package::STORY_STARTED_FLAG;
                 header.clock = session.clock;
+            }
+            if let Some(discovery) = &session.discovery {
+                data.set_chunk(save_package::DISCOVERY_CHUNK, discovery.clone());
+            }
+            if let Some(worth) = session.global_experience {
+                data.set_chunk(save_package::GLOBAL_XP_CHUNK, worth.to_le_bytes().to_vec());
+            }
+            if session.memory_flags != 0 {
+                data.set_chunk(
+                    save_package::MEMORY_FLAGS_CHUNK,
+                    session.memory_flags.to_le_bytes().to_vec(),
+                );
+            }
+            if session.transition.iter().any(|&byte| byte != 0) {
+                data.set_chunk(save_package::TRANSITION_CHUNK, session.transition.to_vec());
             }
             data
         }
@@ -170,8 +208,18 @@ pub fn player_section_after(session: &Session, previous: Option<&[u8]>) -> Vec<u
             data.set_chunk(chunk.id, chunk.data);
         }
     }
+    // The story writer always emits the discovery chunk and the global
+    // experience word; a session with neither writes the defaults.
+    if flavour == Flavour::Story {
+        if data.chunk(save_package::DISCOVERY_CHUNK).is_none() {
+            data.set_chunk(save_package::DISCOVERY_CHUNK, vec![0; 8]);
+        }
+        if data.chunk(save_package::GLOBAL_XP_CHUNK).is_none() {
+            data.set_chunk(save_package::GLOBAL_XP_CHUNK, 0u32.to_le_bytes().to_vec());
+        }
+    }
     data.set_chunk(EXARUST_CHUNK, write_body(session));
-    data.write()
+    data.write_ordered()
 }
 
 /// The `#playerdata` section a session writes into an empty save.
@@ -226,7 +274,31 @@ pub fn slot_info_of(data: &PlayerData) -> SlotInfo {
             .map(|records| records.len())
             .unwrap_or(0),
         player_record: data.character_record_id(),
+        player_name: None,
     }
+}
+
+/// The player's name from a package's `#worldchrdb` section: the record the
+/// placement's reference finds in the world database. The original's slot
+/// scan imports that database and reads the name through the same lookup.
+/// None when the section is missing, the record is not there, or the
+/// reference points at the other character database.
+pub fn player_name(package: &PackageImage, data: &PlayerData) -> Option<String> {
+    if !data.character_in_world_db()? {
+        return None;
+    }
+    let id = data.character_record_id()?;
+    let section = package.section(save_package::WORLD_CHARACTER_DB)?;
+    let chunks = save_package::parse_chunks(section).ok()?;
+    let payload = chunks
+        .iter()
+        .find(|chunk| chunk.id == save_package::WORLD_CHARACTERS_CHUNK)?
+        .payload;
+    let records = exa_formats::characters::read_character_database(payload).ok()?;
+    let (_, record) = records
+        .iter()
+        .find(|(record_id, _)| record_id & exa_formats::characters::ID_MASK == id)?;
+    Some(record.as_ref().ok()?.name.clone())
 }
 
 /// Write the session: a package with its `#playerdata` section.
@@ -237,6 +309,12 @@ pub fn write(session: &Session) -> Vec<u8> {
 /// Read a session. Malformed input is an error.
 pub fn read(bytes: &[u8]) -> Result<Session, SaveError> {
     let package = PackageImage::read(bytes).map_err(|_| SaveError::Malformed)?;
+    read_package(&package)
+}
+
+/// Read a session from an already parsed package, as the slot load has it
+/// after its version conversion.
+pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
     let section = package.section(PLAYER_DATA).ok_or(SaveError::Malformed)?;
     let data = PlayerData::parse(section, flavour_of(section)).map_err(|_| SaveError::Malformed)?;
     let body = data.chunk(EXARUST_CHUNK).ok_or(SaveError::Malformed)?;
@@ -300,6 +378,22 @@ fn write_body(session: &Session) -> Vec<u8> {
         put_str(&mut out, topic);
     }
     out.extend_from_slice(&session.focus.to_le_bytes());
+    match &session.discovery {
+        Some(bytes) => {
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+        None => out.extend_from_slice(&u32::MAX.to_le_bytes()),
+    }
+    match session.global_experience {
+        Some(worth) => {
+            out.push(1);
+            out.extend_from_slice(&worth.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    out.extend_from_slice(&session.memory_flags.to_le_bytes());
+    out.extend_from_slice(&session.transition);
     out
 }
 
@@ -378,6 +472,19 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         used.push(take_str(&mut rest)?.to_string());
     }
     let focus = f32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let discovery_len = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let discovery = if discovery_len == u32::MAX {
+        None
+    } else {
+        Some(take(&mut rest, discovery_len as usize)?.to_vec())
+    };
+    let global_experience = match take(&mut rest, 1)?[0] {
+        0 => None,
+        1 => Some(u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap())),
+        _ => return Err(SaveError::Malformed),
+    };
+    let memory_flags = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
+    let transition: [u8; 16] = take(&mut rest, 16)?.try_into().unwrap();
     if !focus.is_finite() || !rest.is_empty() {
         return Err(SaveError::Malformed);
     }
@@ -407,6 +514,10 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         clock,
         seed,
         start_background,
+        discovery,
+        global_experience,
+        memory_flags,
+        transition,
     })
 }
 
@@ -489,9 +600,20 @@ mod tests {
         session.company.finish(ongoing, true, 1.0);
         session.focus = 0.5;
         session.clock = 4321;
+        session.discovery = Some(vec![1, 0, 0, 0, 0, 0, 0, 0]);
+        session.global_experience = Some(250);
+        session.memory_flags = 3;
+        session.transition = [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0];
         let bytes = write(&session);
         let mut loaded = read(&bytes).unwrap();
         assert_eq!(loaded, session);
+        assert_eq!(
+            loaded.discovery.as_deref(),
+            Some(&[1, 0, 0, 0, 0, 0, 0, 0][..])
+        );
+        assert_eq!(loaded.global_experience, Some(250));
+        assert_eq!(loaded.memory_flags, 3);
+        assert_eq!(loaded.transition, session.transition);
         assert_eq!(loaded.story.level(), "exanima02");
         assert_eq!(loaded.story.journal().entries()[0].text, "The pit is open.");
         assert_eq!(
@@ -562,6 +684,110 @@ mod tests {
         assert_eq!(info.money, 45);
         assert_eq!(info.day, 5);
         assert_eq!(info.journal, 1);
+    }
+
+    #[test]
+    fn a_slots_name_comes_from_the_world_character_database() {
+        use exa_formats::characters::{CharacterRecord, ID_MASK, WORLD_DB};
+        let mut record = CharacterRecord::new();
+        record.id = 5;
+        record.name = "Ash".to_string();
+        let record = record.to_bytes().unwrap();
+        let mut db = Vec::new();
+        db.extend_from_slice(&0xDBAC_CD00u32.to_le_bytes());
+        db.extend_from_slice(&16u32.to_le_bytes());
+        db.extend_from_slice(&5u32.to_le_bytes());
+        db.extend_from_slice(&0u32.to_le_bytes());
+        db.extend_from_slice(&0u32.to_le_bytes());
+        db.extend_from_slice(&(record.len() as u32).to_le_bytes());
+        db.extend_from_slice(&record);
+
+        let mut data = PlayerData::story(save_package::name("exanima01"));
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: WORLD_DB | 5,
+                position: [1.0, 2.0, 3.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        let mut package = PackageImage::new();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(&db),
+        );
+        package.put_section(PLAYER_DATA, &data.write());
+        assert_eq!(player_name(&package, &data).as_deref(), Some("Ash"));
+        // A reference without the world bit does not look in this database.
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: 5,
+                position: [1.0, 2.0, 3.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        assert_eq!(player_name(&package, &data), None);
+        // A record id that is not in the database gives no name.
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: WORLD_DB | (ID_MASK & 6),
+                position: [1.0, 2.0, 3.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        assert_eq!(player_name(&package, &data), None);
+    }
+
+    #[test]
+    fn a_fresh_story_save_writes_the_always_chunks_in_the_writers_order() {
+        let session = Session::story();
+        let data = PlayerData::parse(&player_section(&session), Flavour::Story).unwrap();
+        let ids: Vec<u32> = data.chunks.iter().map(|chunk| chunk.id).collect();
+        assert_eq!(
+            ids,
+            [
+                save_package::DISCOVERY_CHUNK,
+                save_package::JOURNAL_CHUNK,
+                save_package::GLOBAL_XP_CHUNK,
+                save_package::EXARUST_CHUNK
+            ]
+        );
+        // The defaults: an empty discovery list and a worth of zero.
+        assert_eq!(data.chunk(save_package::DISCOVERY_CHUNK), Some(&[0; 8][..]));
+        assert_eq!(data.global_experience(), 0);
+        // The session restores its absence.
+        assert_eq!(read(&package(&session)).unwrap().discovery, None);
+        assert_eq!(read(&package(&session)).unwrap().global_experience, None);
+        // A session with state writes it, and the non-zero memory and
+        // transition chunks follow the experience.
+        let mut with = session;
+        with.discovery = Some(vec![4, 0, 0, 0, 0, 0, 0, 0]);
+        with.global_experience = Some(9);
+        with.memory_flags = 2;
+        with.transition = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let data = PlayerData::parse(&player_section(&with), Flavour::Story).unwrap();
+        assert_eq!(
+            data.chunks.iter().map(|chunk| chunk.id).collect::<Vec<_>>(),
+            [
+                save_package::DISCOVERY_CHUNK,
+                save_package::JOURNAL_CHUNK,
+                save_package::GLOBAL_XP_CHUNK,
+                save_package::MEMORY_FLAGS_CHUNK,
+                save_package::TRANSITION_CHUNK,
+                save_package::EXARUST_CHUNK
+            ]
+        );
+        assert_eq!(data.global_experience(), 9);
+        assert_eq!(data.memory_flags(), 2);
+        assert_eq!(data.transition_state()[0], 2);
     }
 
     #[test]

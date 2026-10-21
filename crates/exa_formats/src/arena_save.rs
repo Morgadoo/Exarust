@@ -329,6 +329,53 @@ pub fn write_tournament(chunk: &TournamentChunk) -> Vec<u8> {
     out
 }
 
+/// An item-list entry's top bit: such an entry is a marker, not an item.
+pub const ITEM_MARKER: u32 = 0x8000_0000;
+
+/// The high-bit pair the arena's dedupe pass treats as special.
+pub const ENTRY_SPECIAL: u32 = 0xC000_0000;
+
+/// Keeps only plain entries of an eight-byte item list: the arena's load
+/// compaction drops every entry whose first word has the top bit set and
+/// closes the gaps in place.
+pub fn retain_plain_items(items: &mut Vec<[u8; 8]>) {
+    items.retain(|entry| {
+        u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) & ITEM_MARKER == 0
+    });
+}
+
+/// Keeps only plain entries of a twelve-byte record list: the arena's load
+/// compaction drops every entry whose first word has the top bit set.
+pub fn retain_plain_records(records: &mut Vec<[u8; 12]>) {
+    records.retain(|entry| {
+        u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]) & ITEM_MARKER == 0
+    });
+}
+
+/// The arena's duplicate pass over a twelve-byte record list. A plain entry
+/// (both top bits clear) is only stepped over. A special entry (either top
+/// bit set) is compared with the **later** entries: each later entry with
+/// the same first word is removed, lowest position first, and the list
+/// closes the gap after each removal. The special entry itself stays.
+pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
+    let word = |entry: &[u8; 12]| u32::from_le_bytes([entry[0], entry[1], entry[2], entry[3]]);
+    let mut index = 0;
+    while index < records.len() {
+        if word(&records[index]) & ENTRY_SPECIAL == 0 {
+            index += 1;
+            continue;
+        }
+        let mut later = records.len();
+        while later > index + 1 {
+            later -= 1;
+            if word(&records[later]) == word(&records[index]) {
+                records.remove(later);
+            }
+        }
+        index += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +472,53 @@ mod tests {
             parse_tournament(&payload[..100]),
             Err(ArenaSaveError::Short)
         );
+    }
+
+    fn item(id: u32) -> [u8; 8] {
+        let mut entry = [0u8; 8];
+        entry[..4].copy_from_slice(&id.to_le_bytes());
+        entry
+    }
+
+    fn record(id: u32) -> [u8; 12] {
+        let mut entry = [0u8; 12];
+        entry[..4].copy_from_slice(&id.to_le_bytes());
+        entry
+    }
+
+    #[test]
+    fn the_load_compaction_drops_top_bit_entries() {
+        let mut items = vec![item(1), item(0x8000_0002), item(3)];
+        retain_plain_items(&mut items);
+        assert_eq!(items, vec![item(1), item(3)]);
+        let mut records = vec![record(1), record(0x8000_0002), record(3)];
+        retain_plain_records(&mut records);
+        assert_eq!(records, vec![record(1), record(3)]);
+    }
+
+    #[test]
+    fn the_duplicate_pass_removes_later_matches_of_a_special_entry() {
+        // A plain entry is never deduplicated, even when it repeats.
+        let mut records = vec![record(1), record(1), record(2)];
+        remove_duplicate_item_ids(&mut records);
+        assert_eq!(records, vec![record(1), record(1), record(2)]);
+        // A special entry removes later entries with the same first word,
+        // keeping the ones before it.
+        let mut records = vec![
+            record(1),
+            record(0x8000_0005),
+            record(1),
+            record(0x8000_0005),
+            record(5),
+        ];
+        remove_duplicate_item_ids(&mut records);
+        assert_eq!(
+            records,
+            vec![record(1), record(0x8000_0005), record(1), record(5)]
+        );
+        // A special entry does not compare with positions before it.
+        let mut records = vec![record(7), record(0xC000_0007)];
+        remove_duplicate_item_ids(&mut records);
+        assert_eq!(records, vec![record(7), record(0xC000_0007)]);
     }
 }
