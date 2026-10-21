@@ -230,7 +230,8 @@ effect_geometry}`.
   shown amounts; showing sets them to 1. The phase hook shows the body
   (phase 4) until the phase table ends, then hides it for good; a lent
   body (from a running constant displacement) is flagged 0x20 and hidden
-  again with 0x30 cleared at the finish.
+  again with 0x30 cleared at the finish. The power classes' vanish phases
+  hide and show through it (`VanishStep::apply`).
 - **What the AI sees** (`danger`): within 12 m the record gains flag 4, the
   urge `min(1 − d/1200, 0.99)`, and from `s = (2 − u)·u` the near score
   `36·s` (blast), `12·s` (wave) or `6·u` (barricade, from the nearest wall

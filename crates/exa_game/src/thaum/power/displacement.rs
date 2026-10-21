@@ -7,7 +7,9 @@
 //!   phases are: 1 hide the body and set its vanished bit; 2 fade out over
 //!   300 ms; 3 hold while the power is sustained (or, released, move the
 //!   body and start the fade-in); 4 fade in over 400 ms and clear the
-//!   vanished bit; 5 wait 300 ms and clean up.
+//!   vanished bit; 5 wait 300 ms and clean up. The hide and the show are
+//!   the vanish effect node's ([`crate::effects::vanish`]), which
+//!   [`VanishStep::apply`] calls.
 //! - **Vanish** ([`Vanish`]): phase 3 spends half the power's tick cost
 //!   while the caster stays away; a release moves nothing (the body never
 //!   left its place) and fades it back in.
@@ -26,6 +28,7 @@
 //! power's control handler, read from `Exanima.exe`.
 
 use super::PowerBase;
+use crate::effects::vanish::Vanish as VanishEffect;
 use crate::thaum::casting::{CastBody, start_cast};
 
 /// The Displacement power ids the classes run.
@@ -107,35 +110,6 @@ impl VanishBase {
     }
 }
 
-/// One body image the vanish effect shows and hides: the shell's shown
-/// value and its flags (bit 2 is the distortion's).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct VanishPart {
-    pub shown: f32,
-    pub flags: u32,
-    /// The after-image's shown value.
-    pub trail: f32,
-}
-
-/// The flag a hidden distortion keeps off.
-pub const PART_DISTORTION: u32 = 4;
-
-impl VanishPart {
-    /// Shows the part at full strength. The original also asks its draw
-    /// routine for a 0x30-long fade (a guess at that argument's meaning).
-    pub fn show(&mut self) {
-        self.shown = 1.0;
-    }
-
-    /// Hides the part: its shown value and trail fall to 0 and its
-    /// distortion flag clears.
-    pub fn hide(&mut self) {
-        self.flags &= !PART_DISTORTION;
-        self.shown = 0.0;
-        self.trail = 0.0;
-    }
-}
-
 /// The demon the summon brings in.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DemonSummon {
@@ -201,6 +175,18 @@ pub enum HoldEnd {
 }
 
 impl VanishStep {
+    /// Carries the step's hide or show out on the vanish effect node
+    /// ([`crate::effects::vanish`]), the one implementation of the
+    /// original's show and hide.
+    pub fn apply(&self, effect: &mut VanishEffect) {
+        if self.hide {
+            effect.hide();
+        }
+        if self.show {
+            effect.show();
+        }
+    }
+
     fn quiet(shown: f32) -> Self {
         Self {
             result: 0,
@@ -739,18 +725,45 @@ mod tests {
     }
 
     #[test]
-    fn vanish_parts_show_and_hide() {
-        let mut part = VanishPart {
-            shown: 0.0,
-            flags: PART_DISTORTION,
-            trail: 0.0,
+    fn the_vanish_phases_hide_and_show_through_the_effect_node() {
+        use crate::effects::vanish::{SHOW_CALL, SHOWN_BIT, VanishBody};
+        let body = VanishBody {
+            flags: SHOWN_BIT | 0x1,
+            shown: 1.0,
+            call: SHOW_CALL,
         };
-        part.show();
-        assert_eq!(part.shown, 1.0);
-        assert_eq!(part.flags, PART_DISTORTION);
-        part.hide();
-        assert_eq!(part.shown, 0.0);
-        assert_eq!(part.flags, 0);
+        let mut effect = VanishEffect::start(None, false, 0, vec![body], vec![1.0]);
+        let mut vanish = Vanish::new(0, false, false, 0.1);
+        // The 400 ms wait spends and leaves the body shown.
+        let wait = vanish.control(0, 100);
+        wait.apply(&mut effect);
+        assert_eq!(effect.bodies[0].shown, 1.0);
+        // At the deadline the body hides: bit 4 off, shown 0, items 0.
+        let hide = vanish.control(0, CHARGE_MS);
+        assert!(hide.hide);
+        hide.apply(&mut effect);
+        assert_eq!(effect.bodies[0].flags, 0x1);
+        assert_eq!(effect.bodies[0].shown, 0.0);
+        assert_eq!(effect.items, vec![0.0]);
+        // Fade out, hold until released, fade in; the end of the fade-in
+        // shows it again and leaves the flags alone.
+        let mut now = CHARGE_MS;
+        let mut shown = false;
+        vanish.release();
+        for _ in 0..40 {
+            now += 50;
+            let step = vanish.control(0, now);
+            step.apply(&mut effect);
+            if step.show {
+                shown = true;
+                break;
+            }
+        }
+        assert!(shown);
+        assert_eq!(effect.bodies[0].shown, 1.0);
+        assert_eq!(effect.bodies[0].call, SHOW_CALL);
+        assert_eq!(effect.bodies[0].flags, 0x1);
+        assert_eq!(effect.items, vec![1.0]);
     }
 
     #[test]
