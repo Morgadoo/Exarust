@@ -642,6 +642,17 @@ fn main() -> AppExit {
     if let Some(user) = &user {
         user.apply_to(&mut options);
     }
+    // The settings screen's options as the launcher starts with them; its
+    // plugin applies the renderer, audio and window parts.
+    let hardware = user.as_ref().map(|user| {
+        user.hardware(
+            options.fullscreen,
+            options.size,
+            options.no_vsync,
+            options.no_supersample,
+            options.no_fps,
+        )
+    });
     let trace = match options
         .trace
         .as_deref()
@@ -773,6 +784,21 @@ fn main() -> AppExit {
         map_panel::MapPanelPlugin,
         profiler::ProfilerPlugin,
     ));
+    if let Some(hardware) = &hardware {
+        app.insert_resource(exa_render::quality::ShadowQuality(
+            hardware.live.shadow_quality,
+        ))
+        .insert_resource(exa_render::quality::MultisampleSetting(
+            hardware.live.multisample,
+        ))
+        .insert_resource(exa_render::supersample::SuperSampling(
+            hardware.live.supersample > 0,
+        ))
+        .insert_resource(exa_audio::MusicSetting {
+            enabled: hardware.live.music,
+        })
+        .insert_resource(hardware.clone());
+    }
     if let Some(user) = &user {
         if let Some(bindings) = user.bindings() {
             app.insert_resource(bindings);

@@ -19,6 +19,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 use bevy::window::PrimaryWindow;
+use bevy::window::WindowRef;
 
 use crate::post::ExaPost;
 
@@ -32,15 +33,30 @@ impl Plugin for SupersamplePlugin {
             ExtractComponentPlugin::<DisplayCamera>::default(),
         ))
         .init_resource::<SplitTaps>()
+        .init_resource::<SuperSampling>()
         .add_systems(
             PostUpdate,
             (
+                sync_supersampling,
                 start_supersampling,
                 follow_window,
                 sync_split_taps::<crate::material::ExaMaterial>,
             )
                 .chain(),
         );
+    }
+}
+
+/// The settings screen's super-sampling switch: whether the scene is drawn
+/// at twice the window's resolution on each axis. Turning it off tears the
+/// scene's target down and gives the camera the window back; turning it on
+/// adds [`Supersample`] to the scene cameras, which builds the target.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuperSampling(pub bool);
+
+impl Default for SuperSampling {
+    fn default() -> Self {
+        Self(true)
     }
 }
 
@@ -120,6 +136,10 @@ struct SupersampleTarget {
     image: Handle<Image>,
     material: Handle<ResolveMaterial>,
     size: UVec2,
+    /// The camera drawing the resolve quad over the window.
+    display: Entity,
+    /// The mesh entity of the resolve quad.
+    resolve: Entity,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
@@ -189,39 +209,89 @@ fn start_supersampling(
             scene: image.clone(),
         });
         let layer = RenderLayers::layer(RESOLVE_LAYER);
-        commands.spawn((
-            Name::new("_SupersampleResolve"),
-            Mesh3d(meshes.add(Rectangle::new(2.0, 2.0))),
-            MeshMaterial3d(material.clone()),
-            Transform::default(),
-            layer.clone(),
-            bevy::light::NotShadowCaster,
-            bevy::light::NotShadowReceiver,
-        ));
-        commands.spawn((
-            Name::new("_SupersampleDisplay"),
-            Camera3d::default(),
-            Camera {
-                order: camera.order + 1,
-                clear_color: ClearColorConfig::Custom(Color::BLACK),
-                ..default()
-            },
-            Projection::Orthographic(OrthographicProjection {
-                scaling_mode: ScalingMode::Fixed {
-                    width: 2.0,
-                    height: 2.0,
+        let resolve = commands
+            .spawn((
+                Name::new("_SupersampleResolve"),
+                Mesh3d(meshes.add(Rectangle::new(2.0, 2.0))),
+                MeshMaterial3d(material.clone()),
+                Transform::default(),
+                layer.clone(),
+                bevy::light::NotShadowCaster,
+                bevy::light::NotShadowReceiver,
+            ))
+            .id();
+        let display = commands
+            .spawn((
+                Name::new("_SupersampleDisplay"),
+                Camera3d::default(),
+                Camera {
+                    order: camera.order + 1,
+                    clear_color: ClearColorConfig::Custom(Color::BLACK),
+                    ..default()
                 },
-                ..OrthographicProjection::default_3d()
-            }),
-            Transform::from_xyz(0.0, 0.0, 1.0),
-            layer,
-            DisplayCamera,
-        ));
+                Projection::Orthographic(OrthographicProjection {
+                    scaling_mode: ScalingMode::Fixed {
+                        width: 2.0,
+                        height: 2.0,
+                    },
+                    ..OrthographicProjection::default_3d()
+                }),
+                Transform::from_xyz(0.0, 0.0, 1.0),
+                layer,
+                DisplayCamera,
+            ))
+            .id();
         commands.entity(entity).insert(SupersampleTarget {
             image,
             material,
             size,
+            display,
+            resolve,
         });
+    }
+}
+
+/// Follows [`SuperSampling`]: turning it on gives every scene camera a
+/// [`Supersample`] (the start system builds its target); turning it off
+/// removes it, despawns the resolve quad and its display camera and gives the
+/// camera the window back with its post-processing.
+fn sync_supersampling(
+    mut commands: Commands,
+    sampling: Res<SuperSampling>,
+    mut split: ResMut<SplitTaps>,
+    cameras: Query<(Entity, Option<&SupersampleTarget>), SceneCamera>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<ResolveMaterial>>,
+) {
+    if !sampling.is_changed() {
+        return;
+    }
+    if sampling.0 {
+        split.0 = true;
+        for (entity, target) in &cameras {
+            if target.is_none() {
+                commands.entity(entity).insert(Supersample);
+            }
+        }
+        return;
+    }
+    split.0 = false;
+    for (entity, target) in &cameras {
+        commands.entity(entity).remove::<Supersample>();
+        let Some(target) = target else { continue };
+        commands.entity(target.display).despawn();
+        commands.entity(target.resolve).despawn();
+        images.remove(&target.image);
+        materials.remove(&target.material);
+        commands
+            .entity(entity)
+            .insert((
+                RenderTarget::Window(WindowRef::Primary),
+                Hdr,
+                Tonemapping::None,
+                crate::post::ExaPost::default(),
+            ))
+            .remove::<SupersampleTarget>();
     }
 }
 

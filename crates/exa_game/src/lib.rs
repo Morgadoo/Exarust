@@ -18,6 +18,7 @@ pub mod experience;
 pub mod fall;
 pub mod footprints;
 pub mod hud;
+pub mod hw_config;
 pub mod item_container;
 pub mod item_effects;
 pub mod joint_trace;
@@ -75,6 +76,8 @@ impl Plugin for GamePlugin {
             effects::EffectsPlugin,
             thaum::live::ThaumEffectsPlugin,
             teleporters::TeleportPlugin,
+
+            hw_config::HardwareConfigPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

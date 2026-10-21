@@ -227,7 +227,11 @@ pub const SETTINGS: [Record; 27] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Binding {
     pub label: &'static str,
+    /// The original's action code for the row.
     pub action: u16,
+    /// The row's slot in the 23-entry binding table, when it has one.
+    pub slot: Option<usize>,
+    /// The template's key text (the shipped table's key may differ).
     pub key: &'static str,
     /// The row's y in design pixels.
     pub y: i32,
@@ -235,10 +239,11 @@ pub struct Binding {
     pub keyed: bool,
 }
 
-const fn bind(label: &'static str, action: u16, key: &'static str, y: i32) -> Binding {
+const fn bind(label: &'static str, action: u16, slot: usize, key: &'static str, y: i32) -> Binding {
     Binding {
         label,
         action,
+        slot: Some(slot),
         key,
         y,
         keyed: true,
@@ -247,30 +252,31 @@ const fn bind(label: &'static str, action: u16, key: &'static str, y: i32) -> Bi
 
 /// The Controls bindings (22 label rows, 21 key cells).
 pub const BINDINGS: [Binding; 22] = [
-    bind("Forward", 1, "W", 8),
-    bind("Back", 2, "S", 36),
-    bind("Left", 3, "A", 64),
-    bind("Right", 4, "D", 92),
-    bind("Run/Sprint", 5, "Shift", 120),
-    bind("Crouch", 6, "X", 148),
-    bind("Orbit Camera", 7, "", 180),
-    bind("Cursor Look", 8, "SPACE", 208),
-    bind("Toggle Combat", 0xA, "TAB", 240),
-    bind("Alternate Attack", 0xE, "Alt", 268),
-    bind("Switch Equipped", 0xF, "R", 296),
-    bind("Flip weapon", 0x17, "F", 324),
-    bind("Interact", 9, "Ctrl", 352),
-    bind("Inventory", 0xB, "I", 384),
-    bind("Skills", 0xC, "K", 412),
-    bind("Journal", 0xD, "J", 440),
-    bind("Talk", 0x10, "T", 468),
-    bind("Use Power", 0x15, "", 504),
-    bind("Power Bar", 0x11, "", 532),
-    bind("Previous Power", 0x13, "", 560),
-    bind("Next Power", 0x14, "", 588),
+    bind("Forward", 1, 1, "W", 8),
+    bind("Back", 2, 2, "S", 36),
+    bind("Left", 3, 3, "A", 64),
+    bind("Right", 4, 4, "D", 92),
+    bind("Run/Sprint", 5, 6, "Shift", 120),
+    bind("Crouch", 6, 5, "X", 148),
+    bind("Orbit Camera", 7, 8, "", 180),
+    bind("Cursor Look", 8, 9, "SPACE", 208),
+    bind("Toggle Combat", 0xA, 12, "TAB", 240),
+    bind("Alternate Attack", 0xE, 7, "Alt", 268),
+    bind("Switch Equipped", 0xF, 14, "R", 296),
+    bind("Flip weapon", 0x17, 15, "F", 324),
+    bind("Interact", 9, 10, "Ctrl", 352),
+    bind("Inventory", 0xB, 11, "I", 384),
+    bind("Skills", 0xC, 13, "K", 412),
+    bind("Journal", 0xD, 16, "J", 440),
+    bind("Talk", 0x10, 17, "T", 468),
+    bind("Use Power", 0x15, 18, "", 504),
+    bind("Power Bar", 0x11, 19, "", 532),
+    bind("Previous Power", 0x13, 22, "", 560),
+    bind("Next Power", 0x14, 21, "", 588),
     Binding {
         label: "Power Tree",
         action: 0,
+        slot: None,
         key: "",
         y: 616,
         keyed: false,

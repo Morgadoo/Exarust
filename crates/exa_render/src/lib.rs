@@ -13,6 +13,7 @@ pub mod lights;
 pub mod material;
 pub mod mipmap;
 pub mod post;
+pub mod quality;
 pub mod shell;
 pub mod spray;
 pub mod stain;
@@ -44,6 +45,7 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             post::PostPlugin,
+            quality::QualityPlugin,
             material::MaterialsPlugin,
             gi::GiPlugin,
             flame::FlamePlugin,

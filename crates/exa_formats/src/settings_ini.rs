@@ -718,6 +718,12 @@ pub struct Settings {
     pub input_mode: i32,
     /// The aim speed as a fraction, from the file's 1-based step.
     pub aim_speed: f32,
+    /// The master volume, 0 to 1.5.
+    pub volume: f32,
+    /// Whether gameplay tips are shown.
+    pub show_game_tips: bool,
+    /// Whether the game makes checkpoints.
+    pub checkpoints: bool,
 }
 
 impl Default for Settings {
@@ -762,6 +768,9 @@ impl Default for Settings {
             gi_low_precision: false,
             input_mode: 0,
             aim_speed: 0.29,
+            volume: 1.0,
+            show_game_tips: true,
+            checkpoints: true,
         }
     }
 }

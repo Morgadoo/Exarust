@@ -539,6 +539,35 @@ fn the_aim_speed_file_step_is_one_based() {
 }
 
 #[test]
+fn the_live_options_come_from_the_file() {
+    let bytes = b"Volume = 0.5\r\nMusic = 0\r\nSupersample = 3\r\nShadingQuality = 5\r\n\
+                  TextureDetail = 2\r\nTextureQuality = 5\r\nShadowDetail = 5\r\n\
+                  ShadowQuality = 2\r\nHWMultisample = 4\r\nVerticalSync = 0\r\n\
+                  Fullscreen = 1\r\nShowFPS = 1\r\nShowGameTips = 0\r\n\
+                  CheckPoints = 0\r\nAimSpeed = 30\r\nInputMode = 51\r\n\
+                  PerfIndex = 2.5\r\n";
+    let (settings, _) = Settings::read(bytes, 0);
+    let options = options_from_settings(&settings);
+    assert_eq!(options.volume, 0.5);
+    assert!(!options.music);
+    assert_eq!(options.supersample, 3);
+    assert_eq!(options.shading_quality, 5);
+    assert_eq!(options.texture_detail, 2);
+    assert_eq!(options.texture_quality, 5);
+    assert_eq!(options.shadow_detail, 5);
+    assert_eq!(options.shadow_quality, 2);
+    assert_eq!(options.multisample, 4);
+    assert!(!options.vertical_sync);
+    assert!(!options.window_mode);
+    assert!(options.show_fps);
+    assert!(!options.show_tips);
+    assert!(!options.checkpoints);
+    assert!((options.aim_speed - 29.0 / 99.0).abs() < 1e-7);
+    assert!(options.controller);
+    assert_eq!(options.perf_index, 2.5);
+}
+
+#[test]
 fn the_hardware_settings_are_read_from_the_file() {
     let bytes = b"AimSpeed = 30\r\nPerfIndex = 1.5\r\nShowFPS = 1\r\nMusic = 0\r\n\
                   ScreenWidth = 1280\r\nGILowPrecision = 1\r\nShadowFmt = 2\r\n";

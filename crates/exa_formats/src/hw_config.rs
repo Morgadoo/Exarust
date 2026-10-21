@@ -891,6 +891,9 @@ pub fn apply_setting(settings: &mut Settings, name: &str, value: &Value) {
         "GILowPrecision" => settings.gi_low_precision = flag,
         "InputMode" => settings.input_mode = int,
         "AimSpeed" => settings.aim_speed = aim_speed_from_step(int),
+        "Volume" => settings.volume = float,
+        "ShowGameTips" => settings.show_game_tips = flag,
+        "CheckPoints" => settings.checkpoints = flag,
         _ => {}
     }
 }
@@ -903,6 +906,33 @@ pub fn aim_speed_from_step(step: i32) -> f32 {
     }
     let fraction = f64::from(step - 1) / f64::from(AIM_SPEED_STEPS);
     fraction.clamp(0.0, 1.0) as f32
+}
+
+/// The live options a settings file gives.
+///
+/// The quality levels are the ones the file names; the game's own
+/// auto-detection would replace them (not reproduced at launch, see
+/// `docs/UI.md`). A non-zero input mode is the controller.
+pub fn options_from_settings(settings: &Settings) -> Options {
+    Options {
+        volume: settings.volume,
+        music: settings.music,
+        supersample: settings.supersample,
+        shading_quality: settings.shading_quality,
+        texture_detail: settings.texture_detail,
+        texture_quality: settings.texture_quality,
+        shadow_detail: settings.shadow_detail,
+        shadow_quality: settings.shadow_quality,
+        multisample: settings.hw_multisample,
+        vertical_sync: settings.vertical_sync,
+        show_fps: settings.show_fps,
+        window_mode: !settings.fullscreen,
+        show_tips: settings.show_game_tips,
+        checkpoints: settings.checkpoints,
+        aim_speed: settings.aim_speed,
+        controller: settings.input_mode != 0,
+        perf_index: settings.perf_index,
+    }
 }
 
 /// The hardware settings a file's assignments set, over the defaults.

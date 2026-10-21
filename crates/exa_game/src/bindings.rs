@@ -110,6 +110,18 @@ impl Bindings {
         mouse_button(self.key(action))
     }
 
+    /// The name the Controls page shows for `action`'s key. The shipped
+    /// table's mouse codes are its own (1, 2 and 4); every other code is
+    /// named by the original's rule.
+    pub fn key_name(&self, action: Action) -> String {
+        match self.key(action) {
+            0x01 => "Left mouse".into(),
+            0x02 => "Right mouse".into(),
+            0x04 => "Middle mouse".into(),
+            code => exa_formats::hw_config::key_name(code),
+        }
+    }
+
     /// Whether `action`'s key is held. Shift, alt and control accept either
     /// side, as the original's virtual-key codes do.
     pub fn pressed(&self, keys: &ButtonInput<KeyCode>, action: Action) -> bool {
@@ -297,5 +309,163 @@ mod tests {
             bindings.mouse_button(Action::Orbit),
             Some(MouseButton::Middle)
         );
+    }
+}
+
+/// The Windows virtual-key code for a Bevy key, for the rebinding screen.
+/// Keys without a code here are ignored: `None`.
+pub fn virtual_key(code: KeyCode) -> Option<u32> {
+    Some(match code {
+        KeyCode::Backspace => 0x08,
+        KeyCode::Tab => 0x09,
+        KeyCode::Enter => 0x0D,
+        KeyCode::ShiftLeft => 0x10,
+        KeyCode::ShiftRight => 0x10,
+        KeyCode::ControlLeft => 0x11,
+        KeyCode::ControlRight => 0x11,
+        KeyCode::AltLeft => 0x12,
+        KeyCode::AltRight => 0x12,
+        KeyCode::CapsLock => 0x14,
+        KeyCode::Escape => 0x1B,
+        KeyCode::Space => 0x20,
+        KeyCode::PageUp => 0x21,
+        KeyCode::PageDown => 0x22,
+        KeyCode::End => 0x23,
+        KeyCode::Home => 0x24,
+        KeyCode::ArrowLeft => 0x25,
+        KeyCode::ArrowUp => 0x26,
+        KeyCode::ArrowRight => 0x27,
+        KeyCode::ArrowDown => 0x28,
+        KeyCode::Insert => 0x2D,
+        KeyCode::Delete => 0x2E,
+        KeyCode::Digit0 => 0x30,
+        KeyCode::Digit1 => 0x31,
+        KeyCode::Digit2 => 0x32,
+        KeyCode::Digit3 => 0x33,
+        KeyCode::Digit4 => 0x34,
+        KeyCode::Digit5 => 0x35,
+        KeyCode::Digit6 => 0x36,
+        KeyCode::Digit7 => 0x37,
+        KeyCode::Digit8 => 0x38,
+        KeyCode::Digit9 => 0x39,
+        KeyCode::KeyA => 0x41,
+        KeyCode::KeyB => 0x42,
+        KeyCode::KeyC => 0x43,
+        KeyCode::KeyD => 0x44,
+        KeyCode::KeyE => 0x45,
+        KeyCode::KeyF => 0x46,
+        KeyCode::KeyG => 0x47,
+        KeyCode::KeyH => 0x48,
+        KeyCode::KeyI => 0x49,
+        KeyCode::KeyJ => 0x4A,
+        KeyCode::KeyK => 0x4B,
+        KeyCode::KeyL => 0x4C,
+        KeyCode::KeyM => 0x4D,
+        KeyCode::KeyN => 0x4E,
+        KeyCode::KeyO => 0x4F,
+        KeyCode::KeyP => 0x50,
+        KeyCode::KeyQ => 0x51,
+        KeyCode::KeyR => 0x52,
+        KeyCode::KeyS => 0x53,
+        KeyCode::KeyT => 0x54,
+        KeyCode::KeyU => 0x55,
+        KeyCode::KeyV => 0x56,
+        KeyCode::KeyW => 0x57,
+        KeyCode::KeyX => 0x58,
+        KeyCode::KeyY => 0x59,
+        KeyCode::KeyZ => 0x5A,
+        KeyCode::Numpad0 => 0x60,
+        KeyCode::Numpad1 => 0x61,
+        KeyCode::Numpad2 => 0x62,
+        KeyCode::Numpad3 => 0x63,
+        KeyCode::Numpad4 => 0x64,
+        KeyCode::Numpad5 => 0x65,
+        KeyCode::Numpad6 => 0x66,
+        KeyCode::Numpad7 => 0x67,
+        KeyCode::Numpad8 => 0x68,
+        KeyCode::Numpad9 => 0x69,
+        KeyCode::NumpadMultiply => 0x6A,
+        KeyCode::NumpadAdd => 0x6B,
+        KeyCode::NumpadSubtract => 0x6D,
+        KeyCode::NumpadDecimal => 0x6E,
+        KeyCode::NumpadDivide => 0x6F,
+        KeyCode::F1 => 0x70,
+        KeyCode::F2 => 0x71,
+        KeyCode::F3 => 0x72,
+        KeyCode::F4 => 0x73,
+        KeyCode::F5 => 0x74,
+        KeyCode::F6 => 0x75,
+        KeyCode::F7 => 0x76,
+        KeyCode::F8 => 0x77,
+        KeyCode::F9 => 0x78,
+        KeyCode::F10 => 0x79,
+        KeyCode::F11 => 0x7A,
+        KeyCode::F12 => 0x7B,
+        KeyCode::NumLock => 0x90,
+        KeyCode::ScrollLock => 0x91,
+        KeyCode::Semicolon => 0xBA,
+        KeyCode::Equal => 0xBB,
+        KeyCode::Comma => 0xBC,
+        KeyCode::Minus => 0xBD,
+        KeyCode::Period => 0xBE,
+        KeyCode::Slash => 0xBF,
+        KeyCode::Backquote => 0xC0,
+        KeyCode::BracketLeft => 0xDB,
+        KeyCode::Backslash => 0xDC,
+        KeyCode::BracketRight => 0xDD,
+        KeyCode::Quote => 0xDE,
+        _ => return None,
+    })
+}
+
+/// The settings-table code for a mouse button: the primary, secondary and
+/// middle buttons are 1, 2 and 4; the back and forward buttons are the
+/// fourth and fifth (the mouse flag `0x8000` with 4 or 5); other buttons are
+/// the sixth (with 6).
+pub fn mouse_code(button: MouseButton) -> u32 {
+    match button {
+        MouseButton::Left => 0x01,
+        MouseButton::Right => 0x02,
+        MouseButton::Middle => 0x04,
+        MouseButton::Back => 0x8004,
+        MouseButton::Forward => 0x8005,
+        MouseButton::Other(_) => 0x8006,
+    }
+}
+
+#[cfg(test)]
+mod rebind_tests {
+    use super::*;
+
+    #[test]
+    fn the_keyboard_codes() {
+        assert_eq!(virtual_key(KeyCode::KeyW), Some(0x57));
+        assert_eq!(virtual_key(KeyCode::Tab), Some(0x09));
+        assert_eq!(virtual_key(KeyCode::ShiftRight), Some(0x10));
+        assert_eq!(virtual_key(KeyCode::ArrowLeft), Some(0x25));
+        assert_eq!(virtual_key(KeyCode::F12), Some(0x7B));
+        assert_eq!(virtual_key(KeyCode::F24), None);
+        assert_eq!(virtual_key(KeyCode::MediaPlayPause), None);
+    }
+
+    #[test]
+    fn the_mouse_codes() {
+        assert_eq!(mouse_code(MouseButton::Left), 0x01);
+        assert_eq!(mouse_code(MouseButton::Right), 0x02);
+        assert_eq!(mouse_code(MouseButton::Middle), 0x04);
+        assert_eq!(mouse_code(MouseButton::Back), 0x8004);
+        assert_eq!(mouse_code(MouseButton::Forward), 0x8005);
+        assert_eq!(mouse_code(MouseButton::Other(9)), 0x8006);
+    }
+
+    #[test]
+    fn a_binding_shows_its_key_name() {
+        let mut bindings = Bindings::default();
+        assert_eq!(bindings.key_name(Action::Forward), "W");
+        assert_eq!(bindings.key_name(Action::Primary), "Left mouse");
+        bindings.set_key(Action::Primary, 0x8004);
+        assert_eq!(bindings.key_name(Action::Primary), "Mouse 3");
+        bindings.set_key(Action::Forward, 0x4000 | 0x41);
+        assert_eq!(bindings.key_name(Action::Forward), "<65>");
     }
 }
