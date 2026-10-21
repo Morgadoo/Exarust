@@ -513,10 +513,31 @@ those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
 ### Drawing
 
 The power tree's drawing is `exa_ui::tree_draw`: the six immediate
-programs with their exact sources, uniform sets and textures, the empty
-slot, icon, frame, glow, flame, marked-ring and link-ribbon geometry, and
-the tree, bar, prompt, tooltip and drag-preview draw orders. The running
-screen rasterises those batches in software (`power_screen::render`) with
+programs with their exact sources, uniform sets and textures, and the
+empty-slot, icon, frame, glow, flame and ring geometry. The helpers set
+only their own geometry and `par0` (and `tscl` for icons); the caller sets
+the colour, so the byte colours are the original's (a float times 255
+rounded half to even, saturated, while the alpha byte keeps only its low
+eight bits). The tree pass runs in the original's order: the black
+background (alpha 255 on the creation screen, else half the window), the
+links (a marked source draws bright, a marked destination soft, neither
+not at all), the icons, the technique and frame marks, the rings of the new
+nodes (the newest fading in over the learning time while the one it
+replaced fades out), the picked rings in the domain's colour (a flash
+swells the ring, a refusal dips it), and the glows (dimmed to a third
+unless picked, swollen by the flash, their alpha by what the node is);
+the bar follows unless this is the creation screen. The bar's icons take
+the opening and closing fades, group by domain and start each group at its
+first slot; the glow of each slot, the flame of the chosen one and the
+empty slots' rings finish it. A slot's flash is a signed time difference
+over 200 ms and its fade a double-precision ratio over its duration.
+Not modelled: the link ribbon's spline and texture (a plain quad strip
+stands in), the layout and text of the tooltip, the prompt and the drag
+preview, the screen's show and hide fades, the bar's opening and closing
+animation in the running game (the pose is implemented but the view always
+asks for a steady bar), the persistent-pick bit of a slot (derived from
+the picked nodes) and the icon radius output. The running screen
+rasterises those batches in software (`power_screen::render`) with
 each fragment program's arithmetic and the loaded sheets; the shader
 bindings of the Force and Displacement effects are data in
 `thaum::visuals` (materials, blocks, `gi_multipoint`, the noise picture and
