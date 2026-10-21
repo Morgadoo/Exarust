@@ -91,9 +91,12 @@ pub struct NodeInstances {
     pub master: Option<Entity>,
     /// The original's "deleting" flag (`+8` bit 31).
     pub deleting: bool,
-    /// The node is owned by another system (`+0xC` bit 0): a delete does
+    /// The node is owned by another system (`+0xC` bit 2): a delete does
     /// not unregister it from its parent list.
     pub owned: bool,
+    /// The node's "in scene/active" bit (`+0xC` bit 0), which activation
+    /// sets.
+    pub active: bool,
 }
 
 impl NodeInstances {
@@ -133,6 +136,23 @@ impl NodeInstances {
             list.retain(|&e| e != heir);
         }
         list
+    }
+
+    /// Clears the "owned" bit (`+0xC` bit 0) and the moved marker: the
+    /// original's flag-clearing at the end of a deactivation.
+    pub fn clear_owned(&mut self) {
+        self.owned = false;
+        self.active = false;
+    }
+
+    /// Marks the node "owned" (`+0xC` bit 2; the original's OR).
+    pub fn mark_owned(&mut self) {
+        self.owned = true;
+    }
+
+    /// Marks the node active (`+0xC` bit 0; the original's OR).
+    pub fn mark_active(&mut self) {
+        self.active = true;
     }
 
     /// The instance a delete hands the master role to: the last live one,
@@ -450,6 +470,19 @@ mod tests {
         assert_eq!(node.solid(), 0.0);
         node.fade_scale = 2.0;
         assert_eq!(node.solid(), 1.0);
+    }
+
+    #[test]
+    fn the_node_flags_set_and_clear() {
+        let mut link = NodeInstances::default();
+        assert!(!link.active && !link.owned && !link.deleting);
+        link.mark_active();
+        link.mark_owned();
+        link.deleting = true;
+        assert!(link.active && link.owned && link.deleting);
+        link.clear_owned();
+        assert!(!link.active && !link.owned);
+        assert!(link.deleting);
     }
 
     #[test]

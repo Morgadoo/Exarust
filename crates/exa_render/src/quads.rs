@@ -179,6 +179,19 @@ impl QuadBatcher {
         self.colour = colour;
     }
 
+    /// Sets the current colour from the original's packed first half (two
+    /// bytes) and its blue and alpha bytes.
+    pub fn set_colour_packed(&mut self, packed: u16, blue: u8, alpha: u8) {
+        let bytes = packed.to_le_bytes();
+        self.colour = [bytes[0], bytes[1], blue, alpha];
+    }
+
+    /// Resets the next quad's texture coordinates to the built-in pair list
+    /// (`(0,0), (0,0), (1,0), (0,1)`), as the original's reset does.
+    pub fn quad_texcoords_default(&mut self) {
+        self.quad_texcoords([[0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+    }
+
     /// The next vertex's texture coordinate. It belongs to the vertex
     /// [`QuadBatcher::vertex`] adds next, as the immediate-mode call order
     /// has it.
