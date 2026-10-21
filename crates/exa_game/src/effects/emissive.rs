@@ -44,6 +44,9 @@
 //! Evidence: the seven emissive classes' program setup, bounds and draw,
 //! read from `Exanima.exe`.
 
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::prelude::*;
 
 use super::force_dome::Phase;

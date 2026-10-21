@@ -207,7 +207,7 @@ impl Rain {
         for drop in &mut self.drops[..count] {
             drop.head += step_move;
             if drop.head.y.is_sign_negative() {
-                drop.head.y = self.half.y * 2.0 + drop.head.y;
+                drop.head.y += self.half.y * 2.0;
                 drop.head.x = (word_unit(self.seed) - 0.5) * self.half.x * 2.0;
                 self.seed = self.seed.wrapping_mul(0x0808_8405).wrapping_add(1);
                 drop.head.z = (word_unit(self.seed) - 0.5) * self.half.z * 2.0;

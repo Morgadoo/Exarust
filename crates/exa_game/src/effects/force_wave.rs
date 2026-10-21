@@ -42,6 +42,9 @@
 //! Evidence: the wave's cast, its chunk setup and its tick, read from
 //! `Exanima.exe`.
 
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::prelude::*;
 
 use crate::arena::Mt19937;

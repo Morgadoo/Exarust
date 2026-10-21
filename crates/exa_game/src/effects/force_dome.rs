@@ -65,6 +65,9 @@
 //! `Exanima.exe`. The rate, the hit value and the radius are set by the
 //! powers, outside this group.
 
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::prelude::*;
 
 use exa_assets::polyhedra::Polyhedron;
