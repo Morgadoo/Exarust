@@ -351,10 +351,12 @@ impl Rule<'_> {
                         } else {
                             continue;
                         };
+                        // The first earlier face across the edge ends the
+                        // search, whether or not it made a point there.
                         if edges[g][shared] != pos[g][shared] {
                             edges[f][i] = edges[g][shared];
-                            break;
                         }
+                        break;
                     }
                 }
             }
