@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **58.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 51.9% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **58.7% reimplemented** by Exarust's own code and **5.5% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 53.0% and 12.1%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
@@ -15,8 +15,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 13% | 72% | Win32 clipboard image/icon glue |
 | Core, math & threading | 282 | 37 | 11 | 77% | 1% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 64% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
-| Rendering & GPU | 823 | 334 | 63 | 62% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
+| Data, assets & I/O | 440 | 91 | 26 | 65% | 0% | TStringLibrary, RF_DataManager, TRFCExporter |
+| Rendering & GPU | 823 | 334 | 63 | 67% | 1% | FLX_IconRender, Screen-quad GLSL snippets, RF_Splines |
 | World, levels & terrain | 454 | 174 | 31 | 55% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 57% | 0% | RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 54% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
@@ -27,8 +27,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 64% | 0% | TDialogueChoices, TScriptRole, TGameTips |
 | Game modes, arena & session | 646 | 193 | 23 | 59% | 0% | TCompanyCreate, Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
-| UI | 959 | 312 | 63 | 71% | 0% | TTransitionScreen, TGUIDrawSkinTex, TReadKeyScreen |
-| Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
+| UI | 959 | 312 | 63 | 71% | 0% | TTransitionScreen, TReadKeyScreen, THairEditForm |
+| Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
 - **Core, math & threading.** The engine's foundation: vector and matrix maths with fast trig, colour conversions, 16-byte asset names, a seeded random generator, callback lists, text formatting, a smallest-enclosing-sphere solver for the sun shadow, and the engine's own threads and parallel-for pool. Exarust covers most of the maths, random generator and colour helpers; the sphere solver and worker threads are missing.
@@ -55,7 +55,7 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---:|
 | TCharCreation | Game modes, arena & session | 12 | 3 | 14% |
 | FLX_IconRender | Rendering & GPU | 13 | 3 | 0% |
-| Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 0% |
+| Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 10% |
 | Scene content helpers (unit before RF_Dynamics) | World, levels & terrain | 11 | 2 | 10% |
 | Win32 clipboard image/icon glue | Runtime & platform | 8 | 2 | 0% |
 | TTransitionScreen | UI | 5 | 2 | 3% |
@@ -67,7 +67,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | Steam API glue | Runtime & platform | 16 | 1 | 7% |
 | TScriptRole | Script, dialogue & story | 6 | 1 | 0% |
 | TCharLoot | Items, materials & crafting | 7 | 1 | 0% |
-| TGUIDrawSkinTex | UI | 4 | 1 | 0% |
 | TReadKeyScreen | UI | 10 | 1 | 0% |
 | TItemRenderer | Items, materials & crafting | 3 | 1 | 0% |
 | TPopUpDesc | Items, materials & crafting | 9 | 1 | 0% |
@@ -76,8 +75,9 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFE_Effects_Blood | Combat, weapons & damage | 7 | 1 | 0% |
 | TCharEditForm | UI | 3 | 1 | 0% |
 | TSector | World, levels & terrain | 3 | 1 | 0% |
-| Texture pixel-format names | Rendering & GPU | 4 | 1 | 0% |
 | TPickerForm | UI | 4 | 1 | 0% |
+| TPhysiquePicker | UI | 6 | 1 | 0% |
+| TCacheShaderScreen | UI | 6 | 1 | 0% |
 
 ## Best covered components
 
