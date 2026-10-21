@@ -135,6 +135,7 @@ mod tests {
             id: 3,
             name: "Test".into(),
             flags: 0,
+            look: 0,
             stem: "test".into(),
             movesets: ["Default".into(), "Default".into()],
             health: 1.0,

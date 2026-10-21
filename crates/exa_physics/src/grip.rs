@@ -756,6 +756,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         }])
     }
 
