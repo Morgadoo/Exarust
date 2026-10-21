@@ -1019,13 +1019,13 @@ impl Grid {
             .collect();
         candidates = sorted;
         let mut coverage = vec![0i32; self.cells.len()];
-        let cover = |cands: &[([i32; 3], f32)], coverage: &mut [i32], grow: bool| {
+        let cover = |cands: &[([i32; 3], f32)], coverage: &mut [i32], extra: f32, sign: i32| {
             for &(at, r) in cands {
                 if r <= 0.0 || r.is_nan() {
                     continue;
                 }
                 let lim = round_half_even(r + 0.5);
-                let limit = if grow { r + 0.5 } else { r - 0.25 };
+                let limit = r + extra;
                 if limit < 0.0 {
                     continue;
                 }
@@ -1037,14 +1037,15 @@ impl Grid {
                             if dx * dx + dy * dy + dz * dz <= limit2
                                 && let Some(n) = self.index([at[0] + x, at[1] + y, at[2] + z])
                             {
-                                coverage[n] += if grow { 1 } else { -1 };
+                                coverage[n] += sign;
                             }
                         }
                     }
                 }
             }
         };
-        cover(&candidates, &mut coverage, true);
+        // The counting pass covers each candidate's cells within r − 0.25.
+        cover(&candidates, &mut coverage, -0.25, 1);
         // Redundancy pruning: a candidate every one of whose cells another
         // covers is dropped and its counts taken back.
         let mut alive = vec![true; candidates.len()];
@@ -1072,7 +1073,7 @@ impl Grid {
             }
             if all_covered {
                 alive[index] = false;
-                cover(&[(at, r)], &mut coverage, false);
+                cover(&[(at, r)], &mut coverage, -0.25, -1);
             }
         }
         // The final pass counts the spheres' coverage again with r + 0.5;
@@ -1083,7 +1084,9 @@ impl Grid {
             .filter(|&(_, &a)| a)
             .map(|(&c, _)| c)
             .collect();
-        cover(&survivors, &mut coverage, true);
+        // The final pass counts again with r + 0.5, which the corner pass
+        // reads.
+        cover(&survivors, &mut coverage, 0.5, 1);
         let cell = Vec3::from(self.step);
         let longest = self.longest_axis();
         let radius_cell = self.half[longest] / self.counts[longest].max(1) as f32 * 2.0;

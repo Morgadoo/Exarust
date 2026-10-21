@@ -434,3 +434,118 @@ mod tests {
         assert_eq!(child_link(&l).slack, 0.07);
     }
 }
+
+#[cfg(test)]
+mod volume_fit {
+    use bevy::math::Vec3;
+    use exa_assets::PackKind;
+    use exa_formats::rfc::{NodeBody, Scene};
+    use exa_physics::volume::{Mesh, VolumeOptions, fit};
+
+    /// The installed game's prop bodies (with `EXANIMA_DIR`): the voxeliser
+    /// fit of each body node's mesh gives the same radii its stored sphere
+    /// list (the original's own fit) has, at least at the small end, a
+    /// plausible volume and a sphere count of the same order. Checked on
+    /// the first four models of `Objlib` with a body.
+    #[test]
+    fn shipped_prop_meshes_fit_their_stored_bodies() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Objlib).unwrap();
+        let mut checked = 0;
+        for entry in pack.entries() {
+            if checked >= 4 {
+                break;
+            }
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let Ok(scene) = Scene::parse(bytes) else {
+                continue;
+            };
+            for node in &scene.nodes {
+                let Some(Ok(body)) = &node.rigid_body else {
+                    continue;
+                };
+                let NodeBody::Mesh(mesh) = &node.body else {
+                    continue;
+                };
+                if body.spheres.len() < 4 || mesh.indices.len() < 12 {
+                    continue;
+                }
+                let triangles: Vec<[Vec3; 3]> = mesh
+                    .indices
+                    .chunks(3)
+                    .filter_map(|i| {
+                        let a = mesh.positions.get(i[0] as usize)?;
+                        let b = mesh.positions.get(i[1] as usize)?;
+                        let c = mesh.positions.get(i[2] as usize)?;
+                        Some([
+                            Vec3::from(*a) * 100.0,
+                            Vec3::from(*b) * 100.0,
+                            Vec3::from(*c) * 100.0,
+                        ])
+                    })
+                    .collect();
+                if triangles.is_empty() {
+                    continue;
+                }
+                let m = Mesh::new(&triangles);
+                let options = VolumeOptions::for_bounds(&m.bounds(), false);
+                let fitted = fit(&m, &options);
+                let stored_min = body
+                    .spheres
+                    .iter()
+                    .map(|s| s.radius * 100.0)
+                    .fold(f32::MAX, f32::min);
+                let stored_max = body
+                    .spheres
+                    .iter()
+                    .map(|s| s.radius * 100.0)
+                    .fold(0.0, f32::max);
+                let fit_min = fitted
+                    .spheres
+                    .iter()
+                    .map(|s| s.radius)
+                    .fold(f32::MAX, f32::min);
+                let fit_max = fitted.spheres.iter().map(|s| s.radius).fold(0.0, f32::max);
+                assert!(
+                    (fit_min - stored_min).abs() / stored_min < 0.02,
+                    "{} {:?}: smallest sphere {fit_min} vs stored {stored_min}",
+                    entry.name,
+                    node.name
+                );
+                assert!(
+                    fit_max <= stored_max * 1.2 && fit_max >= stored_min * 0.95,
+                    "{} {:?}: largest sphere {fit_max} vs stored {stored_min}..{stored_max}",
+                    entry.name,
+                    node.name
+                );
+                assert!(
+                    fitted.spheres.len() >= body.spheres.len() / 2
+                        && fitted.spheres.len() <= body.spheres.len() * 3,
+                    "{} {:?}: {} spheres vs stored {}",
+                    entry.name,
+                    node.name,
+                    fitted.spheres.len(),
+                    body.spheres.len()
+                );
+                let h = m.bounds().half_extents;
+                let box_volume = 8.0 * f64::from(h.x) * f64::from(h.y) * f64::from(h.z);
+                assert!(
+                    fitted.summary.mass as f64 > box_volume * 0.01
+                        && (fitted.summary.mass as f64) < box_volume * 1.2,
+                    "{} {:?}: mass {} of a {box_volume} box",
+                    entry.name,
+                    node.name,
+                    fitted.summary.mass
+                );
+                checked += 1;
+                break;
+            }
+        }
+        assert_eq!(checked, 4, "too few shipped bodies found");
+    }
+}
