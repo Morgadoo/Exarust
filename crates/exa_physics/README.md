@@ -28,10 +28,12 @@ rows scaled to the 83 Hz tick (the thrust and clock by 1/83, the push by
 1/83², the loader's brake distances and the backpedal's signs) and its two
 gendered voice templates, with the built-in human for a missing id. The
 character body takes a race's gait rows from the same scaling. `shock`
-models the electric shock a body takes: its 150 ms cooldown, the ring-only
-race family, the energy and fall state of a burn, the pain reaction's part
-and random draws, the force release and the sound's random volume and
-pitch.
+models the electric shock a body takes: the 150 ms window, the `elechit`
+sound's draws (pitch first, then gain), the races that are released into
+the shocked state instead (and that release), race index 1 that only
+rings, and the burn of the others (yellow health, the shock-stagger bit,
+the stagger step along the shock and the pain reaction's part and
+values). Nothing in the running game calls it yet.
 
 A subtree marked `StaticGeometry` has its meshes copied into static
 triangle-mesh colliders. `NoStaticCollider` on a mesh (or subtree) under it

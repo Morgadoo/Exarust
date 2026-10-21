@@ -1,246 +1,239 @@
-//! The electric shock a character's body takes, as the character physics
-//! reacts to it: the cooldown that keeps one hit from ringing twice, the
-//! race word that only lets it ring, the energy it burns and the stagger
-//! and fall state it leaves, and the sound's random volume and pitch.
+//! The electric shock a character's body takes (an energy arc, a shock
+//! weapon or a tendril), as the character physics reacts to it.
 //!
-//! - **The cooldown**: a shock within 150 ms of the body's next allowed time
-//!   does nothing. A ringing shock sets the next time 500 ms on; a burning
-//!   one adds up to 199 ms more (`(random × 200) >> 32` on the 32-bit
-//!   generator).
-//! - **The race word**: with `0x1000` set the body does not burn: it only
-//!   rings, and a body that is not already down (`0x800` of the second
-//!   flags) releases its holder with the force-release reaction.
-//! - **Without `0x1000`**: a word whose family (`0xFF00`) is `0x100` only
-//!   rings. Otherwise the body burns: its energy loses the shock's amount,
-//!   floored at zero; its condition word clears; the `0x100` bit is set;
-//!   its grab is dropped; it falls into state 2 at 1.5 times its fall
-//!   pace; and it starts a pain reaction on the head (part 2) when it holds
-//!   nothing, on the torso (part 1) when it does, with two random draws
-//!   (`0.2u + 0.4`, `0.2v + 0.8`).
-//! - **The force-release** (`0x17B050`): drops a grab, zeroes the stagger
-//!   and shock grab marks, restores readiness when the condition was 2
-//!   (`0xEA0 = 1`, `0xE9C = 0`, flags `|= 6`), and sets the stagger
-//!   condition `0xC0` with the next shock 600 ms on.
+//! - **The window**: a shock does nothing while the body's next allowed
+//!   shock is more than 150 ms away. Every shock that acts plays `elechit`
+//!   at the chest: two uniform draws, the first giving the pitch
+//!   0.4·u + 0.8, the second the gain 0.1·v + 0.3 (worked in double
+//!   precision, stored as single).
+//! - **Races with bit `0x1000`** of the race word: unless the body is
+//!   collapsing (condition bit `0x800`), the shock rings, the body's owner
+//!   is put into the shocked state ([`force_release`]) and the next shock
+//!   is allowed 500 ms on.
+//! - **Race index 1** (race word `& 0xFF00 == 0x100`): it rings, next shock
+//!   500 ms on.
+//! - **Every other race**: it rings and the next shock is allowed
+//!   500 ms plus `(seed × 200) >> 32` ms on, the seed being the game's
+//!   32-bit generator advanced once. Unless the body is collapsing it then
+//!   burns: yellow health loses the shock's amount (below zero it is set
+//!   to zero; a NaN stays), the flag word gets the shock-stagger bit
+//!   `0x100`, the condition goes to 0 (normal), motion 3 starts with no
+//!   blend, locomotion and its thrust stop, and a stagger step starts:
+//!   kind 2, its length 1.5 × the body's step reach, its target the
+//!   standing point plus the shock's direction × 200, started now, with no
+//!   landings yet and not a balance step. Last, a pain reaction starts on
+//!   part 2, or part 1 when the body's grip list holds a second entry,
+//!   with two more draws: (0.2·v + 0.4, 0.2·u + 0.8), u the first.
 //!
-//! Evidence: the character physics' shock reaction, force-release helper
-//! and sound helper. Sound playback itself is the audio crate's; this
-//! module returns the parameters.
+//! Evidence: the character physics' shock reaction, its force-release
+//! helper and its sound helper (assembly read for the draw order, the
+//! double-precision sums and the unordered compare on the health floor).
+//! The motion start, the step, the pain reaction and the sound playback
+//! belong to the body, the locomotion and the audio; this module returns
+//! what they are asked to do. Not yet called by the running game.
 
-/// A shock this soon before the body's next allowed time does nothing, ms.
-pub const SHOCK_WINDOW_MS: u32 = 150;
-/// A ringing shock sets the next allowed time this far on, ms.
+use bevy::math::Vec3;
+
+/// A shock is refused while the next allowed shock is further than this
+/// ahead, ms.
+pub const SHOCK_WINDOW_MS: u64 = 150;
+/// A shock that acts allows the next one this far on, ms.
 pub const SHOCK_DELAY_MS: u32 = 500;
-/// A burning shock adds up to this many ms more, by a 32-bit draw.
+/// A burning shock adds `(seed × this) >> 32` ms more.
 pub const SHOCK_RANDOM_MS: u64 = 200;
-/// The force-release's next shock delay, ms.
-pub const RELEASE_DELAY_MS: u32 = 600;
-/// The condition word's down bit of the second flags: a body already down
-/// takes no fall or burn.
-pub const DOWN: u32 = 0x800;
-/// The race word's "only ring" bit.
-pub const ONLY_RING: u32 = 0x1000;
-/// The race word's family that only rings (a golem's).
-pub const FAMILY_RING: u32 = 0x100;
-/// The body flags bit a burn leaves.
-pub const SHOCK_FLAG: u32 = 0x100;
-/// The condition word a force-release leaves.
-pub const STAGGER_CONDITION: u32 = 0xC0;
-/// The condition word the burn clears.
-pub const CALM_CONDITION: u32 = 0;
-/// The fall state a burn enters.
-pub const FALL_STATE: i32 = 2;
-/// Its fall pace is this times the body's pace.
-pub const FALL_PACE: f32 = 1.5;
-/// The readiness the force-release restores when it was at condition 2.
-pub const READY_AFTER_RELEASE: f32 = 1.0;
-/// The flags a force-release adds.
-pub const RELEASE_FLAGS: u32 = 6;
-/// The parts a pain reaction starts on: the head when the hands are empty,
-/// the torso when they hold something.
-pub const PAIN_HEAD: usize = 2;
-pub const PAIN_TORSO: usize = 1;
-/// The sound's cache name.
+/// The busy time a force release leaves, ms.
+pub const RELEASE_BUSY_MS: u32 = 600;
+/// The condition bit of a collapsing body: no burn, no release.
+pub const COLLAPSING: u32 = 0x800;
+/// The race word's bit whose races are released instead of burnt.
+pub const RELEASED_RACES: u32 = 0x1000;
+/// The race word's race-index byte and the index that only rings.
+pub const RACE_INDEX: u32 = 0xFF00;
+pub const RINGING_RACE: u32 = 0x100;
+/// The flag-word bit a burn sets (the shock stagger).
+pub const SHOCK_STAGGER: u32 = 0x100;
+/// The condition a burn leaves (normal) and the one a release leaves
+/// (shocked).
+pub const NORMAL: u32 = 0;
+pub const SHOCKED: u32 = 0xC0;
+/// The combat condition a release resets.
+pub const COMBAT: u32 = 2;
+/// The swing flags a release out of combat sets (stalling and staggered).
+pub const RELEASE_SWING_FLAGS: u32 = 0x6;
+/// The motion a burn starts, with no blend.
+pub const BURN_MOTION: u32 = 3;
+/// The step kind and length factor of the burn's stagger step, and the
+/// shock direction's reach for its target (cm).
+pub const STEP_KIND: u32 = 2;
+pub const STEP_LENGTH: f32 = 1.5;
+pub const STEP_PUSH: f32 = 200.0;
+/// The sound's set name.
 pub const SHOCK_SOUND: &str = "elechit";
 
-/// The random volume and pitch of a shock's sound.
+/// The shock sound's gain and pitch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sound {
-    pub volume: f32,
+    pub gain: f32,
     pub pitch: f32,
 }
 
-/// The body state the reaction reads and writes.
+/// What the reaction reads of the shocked body.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shock {
+pub struct ShockedBody {
+    /// The game clock (ms).
     pub now_ms: u32,
-    /// The next allowed shock (`0x11B4`).
-    pub next_ms: u32,
-    /// The race/status word (`0x10A0 + 0x54`).
-    pub word: u32,
-    /// The condition word (`0xDF4`).
-    pub condition: i32,
-    /// The energy (`0xD58`).
-    pub energy: f32,
-    /// The flags (`0xDF8`).
-    pub flags: u32,
-    /// The second flags (`0xDF4`), whose `0x800` marks a down body.
-    pub second_flags: u32,
-    /// It holds the shock pain reaction (`0x12EE`).
-    pub grabbing: bool,
-    /// Its hands hold something (`0xF30 + 8`).
-    pub holds: bool,
-    /// The pace the fall multiplies (`0xFD0`).
-    pub pace: f32,
-    /// The fall pace it writes (`0xFD4`).
-    pub fall_pace: f32,
-    /// The readiness restored by a force-release (`0xEA0`).
-    pub ready: f32,
-    /// The readiness value it clears (`0xE9C`).
-    pub readiness: f32,
+    /// The next shock the body allows (game clock, ms).
+    pub next_shock_ms: u32,
+    /// Its character record's race word.
+    pub race_word: u32,
+    /// Its condition word.
+    pub condition: u32,
+    /// Its yellow health.
+    pub yellow: f32,
+    /// Its step reach (cm).
+    pub reach: f32,
+    /// Its standing point (cm), the stagger step's origin.
+    pub standing: Vec3,
+    /// Its grip list holds a second entry: the pain goes to part 1.
+    pub second_grip: bool,
 }
 
-impl Shock {
-    /// A body at rest, never shocked, at full energy.
-    pub const fn new(now_ms: u32) -> Self {
-        Self {
-            now_ms,
-            next_ms: 0,
-            word: 0,
-            condition: CALM_CONDITION as i32,
-            energy: 1.0,
-            flags: 0,
-            second_flags: 0,
-            grabbing: false,
-            holds: false,
-            pace: 1.0,
-            fall_pace: 1.0,
-            ready: 0.0,
-            readiness: 0.0,
-        }
-    }
+/// The burn's stagger step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Step {
+    pub kind: u32,
+    pub length: f32,
+    pub target: Vec3,
+    pub started_ms: u32,
+}
+
+/// The burn's pain reaction: the part and the two values passed to it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pain {
+    pub part: u32,
+    pub first: f32,
+    pub second: f32,
 }
 
 /// What a shock did.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Outcome {
-    /// Within the cooldown, or a down body the word spares: nothing.
+pub enum Shock {
+    /// Refused (the window) or a collapsing body of a released race.
     None,
-    /// It only rang.
-    Ring { sound: Sound, next_ms: u32 },
-    /// It burned: the body fell and starts its pain reaction.
-    Burn {
+    /// It rang only (race index 1, or a collapsing body of another race,
+    /// whose next shock still takes the random delay).
+    Rang { sound: Sound, next_shock_ms: u32 },
+    /// It rang and released the body's owner ([`force_release`]).
+    Released { sound: Sound, next_shock_ms: u32 },
+    /// It rang and burnt the body.
+    Burnt {
         sound: Sound,
-        next_ms: u32,
-        /// The reaction's part and its two random values.
-        part: usize,
-        amount: f32,
-        again: f32,
+        next_shock_ms: u32,
+        /// The yellow health left.
+        yellow: f32,
+        step: Step,
+        pain: Pain,
     },
-    /// The word marks a body that does not burn: it releases its holder
-    /// with the force-release reaction.
-    Release { sound: Sound, next_ms: u32 },
 }
 
-/// The force-release's result, written to the shocked body.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Released {
-    /// The grab it had is dropped.
-    pub dropped_grab: bool,
-    pub fall_pace: f32,
-    pub ready: f32,
-    pub readiness: f32,
-    pub flags: u32,
-    pub next_ms: u32,
-    pub condition: i32,
-}
-
-/// Takes one shock of `amount` (1.0 is a full blow) at `point`: the sound's
-/// two draws come from `sound_random` in [0, 1), and a burning shock takes
-/// one 32-bit draw from `roll` for its extra delay. `sound_random` is
-/// called only when a sound rings.
-pub fn shock(
-    body: &mut Shock,
-    amount: f32,
-    sound_random: &mut impl FnMut() -> f32,
-    roll: &mut impl FnMut() -> u32,
-) -> Outcome {
-    let now = body.now_ms;
-    if body.next_ms > now.wrapping_add(SHOCK_WINDOW_MS) {
-        return Outcome::None;
+/// The sound of a shock from its two draws.
+pub fn sound(first: f32, second: f32) -> Sound {
+    Sound {
+        pitch: (f64::from(first) * 0.4 + 0.8) as f32,
+        gain: (f64::from(second) * 0.1 + 0.3) as f32,
     }
-    if body.word & ONLY_RING == 0 {
-        if body.word & 0xFF00 == FAMILY_RING {
-            let sound = ring(sound_random);
-            body.next_ms = now.wrapping_add(SHOCK_DELAY_MS);
-            return Outcome::Ring {
-                sound,
-                next_ms: body.next_ms,
-            };
+}
+
+/// One shock of `amount` along `direction` (a unit vector) on `body`.
+/// `unit` gives the uniform draws (two for the sound, two more for a
+/// burn's pain); `seed` advances the game's 32-bit generator once, only
+/// for the races that burn, and returns its new value.
+pub fn shock(
+    body: &ShockedBody,
+    amount: f32,
+    direction: Vec3,
+    unit: &mut impl FnMut() -> f32,
+    seed: &mut impl FnMut() -> u32,
+) -> Shock {
+    let now = u64::from(body.now_ms);
+    if u64::from(body.next_shock_ms) > now + SHOCK_WINDOW_MS {
+        return Shock::None;
+    }
+    let collapsing = body.condition & COLLAPSING != 0;
+    let later = body.now_ms.wrapping_add(SHOCK_DELAY_MS);
+    if body.race_word & RELEASED_RACES != 0 {
+        if collapsing {
+            return Shock::None;
         }
-        let sound = ring(sound_random);
-        body.next_ms = now
-            .wrapping_add(SHOCK_DELAY_MS)
-            .wrapping_add(((u64::from(roll()) * SHOCK_RANDOM_MS) >> 32) as u32);
-        if body.second_flags & DOWN != 0 {
-            return Outcome::Ring {
-                sound,
-                next_ms: body.next_ms,
-            };
-        }
-        body.energy = (body.energy - amount).max(0.0);
-        body.flags |= SHOCK_FLAG;
-        body.condition = CALM_CONDITION as i32;
-        body.grabbing = true;
-        body.fall_pace = body.pace * FALL_PACE;
-        let part = if body.holds { PAIN_TORSO } else { PAIN_HEAD };
-        let amount = sound_random() * 0.2 + 0.4;
-        let again = sound_random() * 0.2 + 0.8;
-        return Outcome::Burn {
+        let sound = sound(unit(), unit());
+        return Shock::Released {
             sound,
-            next_ms: body.next_ms,
-            part,
-            amount,
-            again,
+            next_shock_ms: later,
         };
     }
-    if body.second_flags & DOWN != 0 {
-        return Outcome::None;
+    let sound = sound(unit(), unit());
+    if body.race_word & RACE_INDEX == RINGING_RACE {
+        return Shock::Rang {
+            sound,
+            next_shock_ms: later,
+        };
     }
-    let sound = ring(sound_random);
-    body.next_ms = now.wrapping_add(SHOCK_DELAY_MS);
-    Outcome::Release {
+    let extra = ((u64::from(seed()) * SHOCK_RANDOM_MS) >> 32) as u32;
+    let next_shock_ms = extra.wrapping_add(later);
+    if collapsing {
+        return Shock::Rang {
+            sound,
+            next_shock_ms,
+        };
+    }
+    let mut yellow = body.yellow - amount;
+    if yellow < 0.0 {
+        yellow = 0.0;
+    }
+    let step = Step {
+        kind: STEP_KIND,
+        length: body.reach * STEP_LENGTH,
+        target: body.standing + direction * STEP_PUSH,
+        started_ms: body.now_ms,
+    };
+    let first = unit();
+    let second = unit();
+    let pain = Pain {
+        part: if body.second_grip { 1 } else { 2 },
+        first: (f64::from(second) * 0.2 + 0.4) as f32,
+        second: (f64::from(first) * 0.2 + 0.8) as f32,
+    };
+    Shock::Burnt {
         sound,
-        next_ms: body.next_ms,
+        next_shock_ms,
+        yellow,
+        step,
+        pain,
     }
 }
 
-/// A shock's sound: volume `0.4u + 0.8`, pitch `0.1v + 0.3`.
-fn ring(random: &mut impl FnMut() -> f32) -> Sound {
-    let volume = random() * 0.4 + 0.8;
-    let pitch = random() * 0.1 + 0.3;
-    Sound { volume, pitch }
+/// What the force release does to a body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Release {
+    /// Its stagger step was on: the step is ended (feet placed).
+    pub end_step: bool,
+    /// It was in combat: the swing's readiness values are reset and the
+    /// swing flags get [`RELEASE_SWING_FLAGS`].
+    pub reset_swing: bool,
+    /// Busy until this game clock (ms); locomotion, its thrust and the
+    /// clip rate stop.
+    pub busy_until_ms: u32,
+    /// The condition it is left in: [`SHOCKED`].
+    pub condition: u32,
 }
 
-/// The force-release reaction on the shocked body (or the holder it
-/// releases): drops the grab, clears the stagger marks, restores
-/// readiness after condition 2 and sets the stagger condition.
-pub fn force_release(body: &mut Shock) -> Released {
-    let dropped = std::mem::replace(&mut body.grabbing, false);
-    if body.condition == FALL_STATE {
-        body.ready = READY_AFTER_RELEASE;
-        body.readiness = 0.0;
-        body.flags |= RELEASE_FLAGS;
-    }
-    body.next_ms = body.now_ms.wrapping_add(RELEASE_DELAY_MS);
-    body.condition = STAGGER_CONDITION as i32;
-    Released {
-        dropped_grab: dropped,
-        fall_pace: body.fall_pace,
-        ready: body.ready,
-        readiness: body.readiness,
-        flags: body.flags,
-        next_ms: body.next_ms,
-        condition: body.condition,
+/// The force release on a body that is `stepping` in `condition`.
+pub fn force_release(now_ms: u32, stepping: bool, condition: u32) -> Release {
+    Release {
+        end_step: stepping,
+        reset_swing: condition == COMBAT,
+        busy_until_ms: now_ms.wrapping_add(RELEASE_BUSY_MS),
+        condition: SHOCKED,
     }
 }
 
@@ -248,143 +241,174 @@ pub fn force_release(body: &mut Shock) -> Released {
 mod tests {
     use super::*;
 
-    /// A body whose word burns with the race family, at 1 s, with its next
-    /// shock passed.
-    fn body() -> Shock {
-        Shock {
+    fn body() -> ShockedBody {
+        ShockedBody {
             now_ms: 1_000,
-            word: 0x0,
-            ..Shock::new(1_000)
+            next_shock_ms: 0,
+            race_word: 0,
+            condition: 1,
+            yellow: 1.0,
+            reach: 80.0,
+            standing: Vec3::new(10.0, 0.0, 20.0),
+            second_grip: false,
         }
     }
 
+    fn draws(values: &'static [f32]) -> impl FnMut() -> f32 {
+        let mut i = 0;
+        move || {
+            i += 1;
+            values[i - 1]
+        }
+    }
+
+    /// The window: refused while the next shock is more than 150 ms away.
     #[test]
-    fn a_shock_within_the_window_does_nothing() {
-        let mut b = Shock {
-            next_ms: 1_151,
+    fn a_shock_inside_the_window_does_nothing() {
+        let mut no_draw = || -> f32 { unreachable!() };
+        let mut no_seed = || -> u32 { unreachable!() };
+        let b = ShockedBody {
+            next_shock_ms: 1_151,
             ..body()
         };
-        let mut rnd = || 0.0;
-        let mut roll = || 0;
-        assert_eq!(shock(&mut b, 0.5, &mut rnd, &mut roll), Outcome::None);
-        b.next_ms = 1_150;
+        assert_eq!(
+            shock(&b, 0.5, Vec3::X, &mut no_draw, &mut no_seed),
+            Shock::None
+        );
+        let b = ShockedBody {
+            next_shock_ms: 1_150,
+            race_word: RINGING_RACE,
+            ..body()
+        };
         assert!(matches!(
-            shock(&mut b, 0.5, &mut rnd, &mut roll),
-            Outcome::Burn { .. }
+            shock(&b, 0.5, Vec3::X, &mut draws(&[0.0, 0.0]), &mut no_seed),
+            Shock::Rang {
+                next_shock_ms: 1_500,
+                ..
+            }
         ));
     }
 
+    /// The sound: the first draw is the pitch, the second the gain.
     #[test]
-    fn the_ring_family_only_rings() {
-        let mut b = Shock {
-            word: 0x100,
-            ..body()
-        };
-        let mut rnd = || 0.5;
-        let mut roll = || 100;
-        let Outcome::Ring { sound, next_ms } = shock(&mut b, 0.5, &mut rnd, &mut roll) else {
-            panic!("a ring");
-        };
-        assert_eq!(next_ms, 1_500);
-        assert!((sound.volume - 1.0).abs() < 1e-6);
-        assert!((sound.pitch - 0.35).abs() < 1e-6);
-        assert_eq!(b.next_ms, 1_500);
-        assert_eq!(b.energy, 1.0);
+    fn the_sound_takes_pitch_then_gain() {
+        let s = sound(0.5, 0.25);
+        assert_eq!(s.pitch, (0.5f64 * 0.4 + 0.8) as f32);
+        assert_eq!(s.gain, (0.25f64 * 0.1 + 0.3) as f32);
     }
 
+    /// A burn: yellow floored at zero, the random delay from the upper
+    /// product, the stagger step and the pain with its draws swapped.
     #[test]
-    fn a_burn_spends_energy_and_falls() {
-        let mut b = Shock {
-            word: 0x1,
-            energy: 0.4,
-            pace: 2.0,
-            holds: false,
+    fn a_burn_steps_and_hurts() {
+        let b = ShockedBody {
+            yellow: 0.3,
             ..body()
         };
-        let mut rnd = || 0.5;
-        let mut roll = || 0;
-        let Outcome::Burn {
-            sound,
-            next_ms,
-            part,
-            ..
-        } = shock(&mut b, 0.9, &mut rnd, &mut roll)
+        let mut seed = || u32::MAX;
+        let Shock::Burnt {
+            sound: s,
+            next_shock_ms,
+            yellow,
+            step,
+            pain,
+        } = shock(
+            &b,
+            0.5,
+            Vec3::Z,
+            &mut draws(&[0.5, 0.0, 1.0, 0.5]),
+            &mut seed,
+        )
         else {
             panic!("a burn");
         };
-        assert_eq!(next_ms, 1_500);
-        assert_eq!(b.next_ms, 1_500);
-        assert_eq!(b.energy, 0.0);
-        assert_eq!(b.flags, SHOCK_FLAG);
-        assert_eq!(b.condition, 0);
-        assert!(b.grabbing);
-        assert_eq!(b.fall_pace, 3.0);
-        assert_eq!(part, PAIN_HEAD);
-        assert!((sound.pitch - 0.35).abs() < 1e-6);
-        // A torso reaction when the hands hold something.
-        let mut holding = Shock {
-            holds: true,
-            next_ms: 0,
+        assert_eq!(s, sound(0.5, 0.0));
+        // (0xFFFFFFFF × 200) >> 32 = 199.
+        assert_eq!(next_shock_ms, 1_000 + 500 + 199);
+        assert_eq!(yellow, 0.0);
+        assert_eq!(step.kind, 2);
+        assert_eq!(step.length, 120.0);
+        assert_eq!(step.target, Vec3::new(10.0, 0.0, 220.0));
+        assert_eq!(step.started_ms, 1_000);
+        assert_eq!(pain.part, 2);
+        assert_eq!(pain.first, (0.5f64 * 0.2 + 0.4) as f32);
+        assert_eq!(pain.second, (1.0f64 * 0.2 + 0.8) as f32);
+        let held = ShockedBody {
+            second_grip: true,
             ..b
         };
-        let Outcome::Burn { part, .. } = shock(&mut holding, 0.0, &mut rnd, &mut roll) else {
+        let Shock::Burnt { pain, .. } =
+            shock(&held, 0.1, Vec3::Z, &mut draws(&[0.0; 4]), &mut || 0)
+        else {
             panic!("a burn");
         };
-        assert_eq!(part, PAIN_TORSO);
+        assert_eq!(pain.part, 1);
     }
 
+    /// A NaN health is not floored (the compare is unordered).
     #[test]
-    fn the_extra_delay_comes_from_the_upper_product() {
-        let mut b = body();
-        let mut rnd = || 0.0;
-        let mut roll = || u32::MAX;
-        let Outcome::Burn { next_ms, .. } = shock(&mut b, 0.1, &mut rnd, &mut roll) else {
-            panic!("a burn");
-        };
-        // (0xFFFFFFFF × 200) >> 32 = 199.
-        assert_eq!(next_ms, 1_699);
-    }
-
-    #[test]
-    fn a_down_body_does_not_burn_or_release() {
-        let mut b = Shock {
-            second_flags: DOWN,
-            word: 0,
+    fn a_nan_health_stays() {
+        let b = ShockedBody {
+            yellow: f32::NAN,
             ..body()
         };
-        let mut rnd = || 0.0;
-        let mut roll = || 0;
-        assert!(matches!(
-            shock(&mut b, 0.5, &mut rnd, &mut roll),
-            Outcome::Ring { .. }
-        ));
-        b.word = ONLY_RING;
-        b.next_ms = 0;
-        assert_eq!(shock(&mut b, 0.5, &mut rnd, &mut roll), Outcome::None);
+        let Shock::Burnt { yellow, .. } = shock(&b, 0.1, Vec3::Z, &mut draws(&[0.0; 4]), &mut || 0)
+        else {
+            panic!("a burn");
+        };
+        assert!(yellow.is_nan());
     }
 
+    /// A collapsing body: a burning race only rings (with the random
+    /// delay); a released race does nothing.
     #[test]
-    fn the_force_release_drops_the_grab_and_staggers() {
-        let mut b = Shock {
-            now_ms: 2_000,
-            condition: FALL_STATE,
-            grabbing: true,
-            fall_pace: 1.5,
-            ..Shock::new(2_000)
+    fn a_collapsing_body_neither_burns_nor_releases() {
+        let b = ShockedBody {
+            condition: COLLAPSING,
+            ..body()
         };
-        let released = force_release(&mut b);
-        assert!(released.dropped_grab);
-        assert!(!b.grabbing);
-        assert_eq!(released.next_ms, 2_600);
-        assert_eq!(released.condition, 0xC0);
-        assert_eq!(released.flags, RELEASE_FLAGS);
-        assert_eq!(released.ready, 1.0);
-        assert_eq!(released.readiness, 0.0);
-        // A condition other than 2 does not restore readiness.
-        let mut calm = Shock { condition: 0, ..b };
-        let released = force_release(&mut calm);
-        assert_eq!(released.flags, RELEASE_FLAGS);
-        assert_eq!(released.ready, 1.0);
-        assert_eq!(calm.ready, 1.0);
+        assert_eq!(
+            shock(&b, 0.5, Vec3::Z, &mut draws(&[0.0, 0.0]), &mut || 0),
+            Shock::Rang {
+                sound: sound(0.0, 0.0),
+                next_shock_ms: 1_500
+            }
+        );
+        let released = ShockedBody {
+            race_word: RELEASED_RACES,
+            ..b
+        };
+        assert_eq!(
+            shock(&released, 0.5, Vec3::Z, &mut || unreachable!(), &mut || 0),
+            Shock::None
+        );
+        let standing = ShockedBody {
+            condition: 1,
+            ..released
+        };
+        assert!(matches!(
+            shock(&standing, 0.5, Vec3::Z, &mut draws(&[0.0, 0.0]), &mut || 0),
+            Shock::Released {
+                next_shock_ms: 1_500,
+                ..
+            }
+        ));
+    }
+
+    /// The force release: busy 600 ms, shocked, the step ended when on,
+    /// the swing reset only out of combat condition 2.
+    #[test]
+    fn the_force_release_leaves_the_body_shocked() {
+        assert_eq!(
+            force_release(2_000, true, COMBAT),
+            Release {
+                end_step: true,
+                reset_swing: true,
+                busy_until_ms: 2_600,
+                condition: SHOCKED
+            }
+        );
+        let calm = force_release(2_000, false, 1);
+        assert!(!calm.end_step && !calm.reset_swing);
     }
 }
