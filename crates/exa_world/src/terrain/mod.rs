@@ -548,8 +548,10 @@ pub struct TerrainBuild {
     texture_bytes: Arc<HashMap<String, Vec<u8>>>,
     /// Height and mask planes decoded by the worker, by texture name.
     plane_cache: Arc<Mutex<HashMap<String, Option<Arc<Plane>>>>>,
-    /// The next tile's geometry and masks, being built on the async pool.
-    building: Option<Task<BuiltTile>>,
+    /// A tile's geometry and masks being built on the async pool, with the
+    /// tile's index: the next tile, or the one after it while the next
+    /// spawns.
+    building: Option<(usize, Task<BuiltTile>)>,
     plants: Option<Plants>,
     /// Each palette material's diffuse, surface and normal textures.
     textures: HashMap<usize, MaterialTextures>,
@@ -752,55 +754,78 @@ impl TerrainBuild {
         done
     }
 
+    /// The first tile from `index` on that is built (in a grid level, one
+    /// with a block).
+    fn next_buildable(&self, index: usize) -> Option<usize> {
+        (index..self.terrain.tiles.len()).find(|&i| self.blocks.as_ref().is_none_or(|b| b[i].any()))
+    }
+
+    /// Starts building tile `index`'s geometry and masks on the async pool,
+    /// or, without the pool, builds it here.
+    fn start_build(&self, index: usize) -> Result<Task<BuiltTile>, Box<BuiltTile>> {
+        let terrain = self.terrain.clone();
+        let palette = self.palette.clone();
+        let tree = self.tree.clone();
+        let noise = self.noise.clone();
+        let blocks = self.blocks.as_ref().map(|b| b[index].clone());
+        let bytes = self.texture_bytes.clone();
+        let cache = self.plane_cache.clone();
+        let build = move || {
+            let tile = &terrain.tiles[index];
+            let mut planes = cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut height_layers =
+                |used: &[usize]| height_layers(&palette, &mut planes, &bytes, used);
+            build_tile(
+                &terrain,
+                tile,
+                &palette,
+                &tree,
+                &noise,
+                &mut height_layers,
+                blocks.as_ref(),
+            )
+        };
+        match AsyncComputeTaskPool::try_get() {
+            Some(pool) => Ok(pool.spawn(async move { build() })),
+            None => Err(Box::new(build())),
+        }
+    }
+
     /// One part of the next tile: its heightfield, a material's textures,
-    /// or the tile itself; `false` when it waits for a surface map.
+    /// or the tile itself; `false` when it waits for the tile worker or a
+    /// surface map.
     fn part(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> bool {
         if self.built.is_none() {
             // The original's terrain worker builds a tile's geometry and
             // masks off the main thread; the loading screen keeps drawing
-            // while it does.
-            if let Some(task) = self.building.as_mut() {
-                let Some(built) = block_on(poll_once(task)) else {
-                    return false;
-                };
-                self.building = None;
-                self.built = Some(built);
-            } else {
-                // A tile without a block in a grid level is not built.
-                if self.blocks.as_ref().is_some_and(|b| !b[self.next].any()) {
-                    self.next += 1;
-                    return true;
-                }
-                let index = self.next;
-                let terrain = self.terrain.clone();
-                let palette = self.palette.clone();
-                let tree = self.tree.clone();
-                let noise = self.noise.clone();
-                let blocks = self.blocks.as_ref().map(|b| b[index].clone());
-                let bytes = self.texture_bytes.clone();
-                let cache = self.plane_cache.clone();
-                let build = move || {
-                    let tile = &terrain.tiles[index];
-                    let mut planes = cache.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut height_layers =
-                        |used: &[usize]| height_layers(&palette, &mut planes, &bytes, used);
-                    build_tile(
-                        &terrain,
-                        tile,
-                        &palette,
-                        &tree,
-                        &noise,
-                        &mut height_layers,
-                        blocks.as_ref(),
-                    )
-                };
-                match AsyncComputeTaskPool::try_get() {
-                    Some(pool) => {
-                        self.building = Some(pool.spawn(async move { build() }));
+            // while it does. A tile without a block in a grid level is not
+            // built.
+            if self.blocks.as_ref().is_some_and(|b| !b[self.next].any()) {
+                self.next += 1;
+                return true;
+            }
+            let started = match self.building.take() {
+                Some((index, task)) if index == self.next => Ok(task),
+                _ => self.start_build(self.next),
+            };
+            let built = match started {
+                Err(built) => *built,
+                Ok(mut task) => {
+                    let Some(built) = block_on(poll_once(&mut task)) else {
+                        self.building = Some((self.next, task));
                         return false;
-                    }
-                    None => self.built = Some(build()),
+                    };
+                    built
                 }
+            };
+            self.built = Some(built);
+            // The worker goes straight on to the next tile while this one's
+            // textures load and it spawns.
+            if AsyncComputeTaskPool::try_get().is_some()
+                && let Some(next) = self.next_buildable(self.next + 1)
+                && let Ok(task) = self.start_build(next)
+            {
+                self.building = Some((next, task));
             }
             let (unresolved, truncated, materials) = {
                 let built = self.built.as_ref().expect("tile just built");
@@ -1926,6 +1951,7 @@ mod build_tests {
         };
         let stats = {
             let mut commands = Commands::new(&mut queue, &world);
+            let started = std::time::Instant::now();
             let mut build = TerrainBuild::begin(&mut loader, "exanima01", root, None).unwrap();
             let mut steps = 0;
             while !build.step(&mut commands, &mut loader, std::time::Duration::ZERO) {
@@ -1933,6 +1959,11 @@ mod build_tests {
                 assert!(steps < 10_000, "terrain never finished");
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
+            eprintln!(
+                "exanima01 terrain: {} steps, {:.2} s",
+                steps,
+                started.elapsed().as_secs_f32()
+            );
             build.stats().clone()
         };
         queue.apply(&mut world);
