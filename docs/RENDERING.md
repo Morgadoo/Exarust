@@ -84,6 +84,16 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
      1 − (1 − c′)(1 − (1.75·s·max(B − 0.03, 0))²), with strength s = 1.
 4. Output through the sRGB encoding.
 
+The two fade controls (`post::FadeControl`) start at the GUI clock. The
+screen fade runs 5000 ticks: its alpha is `1 − (start + 5000 − now)/5000`
+(0 at the start, 1 at the end) in double precision, its desaturation is
+the base times that alpha, and its sharpen squares the alpha and raises it
+to the tenth. The desaturation fade runs 3000 ticks: its ramp is
+`1 − (start + 3000 − now)/3000`; below a quarter the mask is `1 − 4·ramp`,
+else `(ramp − 0.25)·1.333`, inverted at the end, and a non-zero kind adds
+`(1 − mask)²·0.4` to the bloom. Exarust exposes the values; nothing
+animates them yet.
+
 The ACES curve found among the shader programs is unused.
 
 ## Shader builder
