@@ -904,12 +904,12 @@ pub enum Step {
     Forfeit,
     /// A story hook another unit installed runs.
     CustomHook,
-    /// The menu's hover sound: this gain at the menu's volume.
+    /// The end menu's click sound: at this volume and pitch.
     Hover {
         volume: f32,
-        gain: f32,
+        pitch: f32,
     },
-    /// The menu confirms its selected row.
+    /// The end menu confirms its selected row.
     MenuConfirm,
     /// Give or take the player's controls.
     Controls(bool),
@@ -2083,18 +2083,19 @@ impl Flow {
         vec![Step::MenuHelp(false)]
     }
 
-    /// The menu's confirm key with a hovered row: the hover sound (a random
-    /// gain of 0.4 to 0.8 at volume 0.06) and the row's confirmation. A menu
-    /// that is not showing does nothing.
-    pub fn menu_confirm(&mut self, menu_visible: bool, hovered: bool, roll: u32) -> Vec<Step> {
+    /// The end-of-session menu's confirm key: when the menu shows, its click
+    /// sound (when it has one) plays at volume 0.06 and a random pitch of 0.8
+    /// to 1.2, and the selected row is confirmed. `draw` is the process
+    /// generator's number in [0, 1). A menu that is not showing does nothing.
+    pub fn menu_confirm(&mut self, menu_visible: bool, has_sound: bool, draw: f64) -> Vec<Step> {
         if !menu_visible {
             return Vec::new();
         }
         let mut steps = Vec::new();
-        if let Some(gain) = hover_sound(hovered, roll) {
+        if let Some(pitch) = hover_sound(has_sound, draw) {
             steps.push(Step::Hover {
                 volume: HOVER_VOLUME,
-                gain,
+                pitch,
             });
         }
         steps.push(Step::MenuConfirm);
@@ -2147,18 +2148,14 @@ pub fn gui_scale(height: i32) -> f32 {
     exa_ui::menu::menu_row_scale(height) * 0.5
 }
 
-/// The hover sound the menu plays when its hover id is set: a random gain of
-/// 0.4 to 0.8 at volume 0.06. The sound's name is chosen by the caller (the
-/// original plays the sound ID stored on the menu form).
-pub fn hover_sound(row: bool, roll: u32) -> Option<f32> {
-    if !row {
-        return None;
-    }
-    let draw = (f64::from(roll) / 4_294_967_296.0) as f32;
-    Some(draw * 0.4 + 0.4)
+/// The end menu's click sound's pitch when the menu has a sound: the draw
+/// times 0.4 plus 0.8 in double precision, kept in single (0.8 to 1.2). The
+/// sound is the one stored on the menu form.
+pub fn hover_sound(has_sound: bool, draw: f64) -> Option<f32> {
+    has_sound.then(|| (draw * 0.4 + 0.8) as f32)
 }
 
-/// The volume every menu hover is played at.
+/// The volume the end menu's click sound plays at.
 pub const HOVER_VOLUME: f32 = 0.06;
 
 /// The practice scene filter: a level's node stays unless its class is the
@@ -3389,24 +3386,25 @@ mod tests {
         assert_eq!(SAVE_MANAGERS[1].signature, save_package::ARENA_SIGNATURE);
         assert_eq!(SAVE_MANAGERS[1].data_version, Some(9));
         assert_eq!(SAVE_MANAGERS[0].package_magic, 0xDA7A_EA02);
-        assert_eq!(hover_sound(false, 0), None);
-        // The roll 0x80000000 is a half: 0.4·0.5 + 0.4.
-        assert_eq!(hover_sound(true, 0x8000_0000), Some(0.6));
-        assert_eq!(HOVER_VOLUME, 0.06);
+        assert_eq!(hover_sound(false, 0.5), None);
+        // A half draw: 0.5·0.4 + 0.8 = 1.0; the ends are 0.8 and 1.2.
+        assert_eq!(hover_sound(true, 0.5), Some(1.0));
+        assert_eq!(hover_sound(true, 0.0), Some(0.8));
+        assert_eq!(HOVER_VOLUME.to_bits(), 0x3d75_c28f);
         assert_eq!(Flow::default().practice_health(), 0.0);
         let mut flow = Flow::default();
         assert_eq!(flow.help_closed(), vec![Step::MenuHelp(false)]);
-        assert!(flow.menu_confirm(false, true, 0).is_empty());
+        assert!(flow.menu_confirm(false, true, 0.5).is_empty());
         assert_eq!(
-            flow.menu_confirm(true, true, 0x8000_0000),
+            flow.menu_confirm(true, true, 0.5),
             vec![
                 Step::Hover {
                     volume: 0.06,
-                    gain: 0.6
+                    pitch: 1.0
                 },
                 Step::MenuConfirm
             ]
         );
-        assert_eq!(flow.menu_confirm(true, false, 0), vec![Step::MenuConfirm]);
+        assert_eq!(flow.menu_confirm(true, false, 0.5), vec![Step::MenuConfirm]);
     }
 }
