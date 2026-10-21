@@ -706,10 +706,12 @@ fn relax_legs(parts: &mut [Part]) {
 #[path = "body_muscle_test.rs"]
 mod tests;
 
-/// The two arms' stiffness targets through an attack tick, before
-/// `0x1001688c0`'s floor: in a tangle both are 0.5; stepping they ease by
-/// 0.8·x + 0.08; otherwise by 0.8·x + (0.5·relaxation + 0.5)·0.08, all in
-/// double precision. The floor is 0.4·|turn| capped at 0.4.
+/// The two arms' stiffness targets through an attack tick, with the
+/// floor the arms are set with: in a tangle both are 0.5; stepping they
+/// ease by 0.8·x + 0.08; otherwise by 0.8·x + (0.5·relaxation + 0.5)·0.08
+/// (the sum in single precision), the rest in double precision. The floor
+/// is 0.4·|turn| capped at 0.4; a target is raised to it only when the
+/// floor is above it (a NaN on either side leaves the target).
 pub fn attack_arms(
     next: (f32, f32),
     stepping: bool,
@@ -717,22 +719,29 @@ pub fn attack_arms(
     relaxation: f32,
     turn: f32,
 ) -> (f32, f32) {
+    const EASE: f64 = 0.8;
+    // The original's constant, one unit in the last place above 0.08.
+    const STEP: f64 = 0.080_000_000_000_000_02;
     let (right, left) = if tangle {
         (0.5, 0.5)
     } else if stepping {
         (
-            (f64::from(next.0) * 0.8 + 0.08) as f32,
-            (f64::from(next.1) * 0.8 + 0.08) as f32,
+            (f64::from(next.0) * EASE + STEP) as f32,
+            (f64::from(next.1) * EASE + STEP) as f32,
         )
     } else {
-        let add = ((f64::from(relaxation) * 0.5 + 0.5) * 0.08) as f32;
+        let add = (f64::from(relaxation * 0.5 + 0.5) * STEP) as f32;
         (
-            (f64::from(next.0) * 0.8 + f64::from(add)) as f32,
-            (f64::from(next.1) * 0.8 + f64::from(add)) as f32,
+            (f64::from(add) + f64::from(next.0) * EASE) as f32,
+            (f64::from(add) + f64::from(next.1) * EASE) as f32,
         )
     };
-    let floor = ((f64::from(turn.abs()) * 0.4) as f32).min(0.4);
-    (right.max(floor), left.max(floor))
+    let mut floor = (f64::from(turn.abs()) * 0.4) as f32;
+    if f64::from(floor) > 0.4 {
+        floor = 0.4;
+    }
+    let raised = |x: f32| if floor > x { floor } else { x };
+    (raised(right), raised(left))
 }
 
 #[cfg(test)]

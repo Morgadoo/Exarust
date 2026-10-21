@@ -8,10 +8,10 @@
 //! stagger's flags (0x2 and 0x4) and its countdown, round(strength·400)
 //! ticks from now.
 //!
-//! The body fields the original writes (`+0xe9c` the stagger speed,
-//! `+0xea0` its decay, `+0xea4` the countdown, `+0x1018` the flags) are
-//! [`Stagger`] here. Evidence: the helper's assembly and its call sites in
-//! the damage routine. Lengths and speeds are the original's.
+//! The body fields the original writes (the stagger speed, its decay, the
+//! countdown and the flags) are [`Stagger`] here. Evidence: the helper's
+//! assembly and its call sites in the damage routine. Lengths and speeds
+//! are the original's.
 
 /// The part-speed factor of the strength, and the countdown's ticks per
 /// unit of strength.
@@ -27,13 +27,13 @@ const EPSILON: f32 = 1.192_09e-7;
 /// A stagger in progress, as the original keeps it on the body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stagger {
-    /// Its speed, 0 to 1 (`+0xe9c`).
+    /// Its speed, 0 to 1.
     pub speed: f32,
-    /// The amount its speed falls by a tick (`+0xea0`).
+    /// The amount its speed falls by a tick.
     pub decay: f32,
-    /// The game clock (ms) the stagger ends (`+0xea4`).
+    /// The game clock (ms) the stagger ends.
     pub until_ms: u64,
-    /// Its flags (`+0x1018`): [`STAGGER_FLAGS`] here.
+    /// The flags it sets: [`STAGGER_FLAGS`] here.
     pub flags: u32,
 }
 
@@ -41,19 +41,24 @@ pub struct Stagger {
 /// strength is speed × the struck part's `part_factor` × the attack's
 /// `attack_speed` × 0.15, floored at 0; `share` (0..1) is the guard's
 /// share of the blow, `blocked` its fully-blocked blend, `now_ms` the game
-/// clock. None while the blow is parried away by the original's test:
-/// weapon class 0x90 with an active strike (flag 0x10000) or with a clip
-/// past 0.4 that can still parry.
+/// clock. None while the blow is parried away (`parried`, the caller's
+/// [`parries_stagger`]).
 pub fn stagger_strength(
     speed: f32,
     part_factor: f32,
     attack_speed: f32,
     share: f32,
     blocked: bool,
+    parried: bool,
     now_ms: u64,
 ) -> Option<Stagger> {
-    let strength =
-        (f64::from(speed) * (f64::from(part_factor) * f64::from(attack_speed) * PART_SHARE)) as f32;
+    if parried {
+        return None;
+    }
+    // The factors multiply as speed × (part × (attack × 0.15)) in double.
+    let strength = (f64::from(speed)
+        * (f64::from(part_factor) * (f64::from(attack_speed) * PART_SHARE)))
+        as f32;
     let strength = if strength < 0.0 { 0.0 } else { strength };
     let mut value = if blocked {
         (1.0 - share) * strength + share
@@ -65,7 +70,8 @@ pub fn stagger_strength(
     if value > 1.0 {
         value = 1.0;
     }
-    let decay = ((1.0 - f64::from(value)) * DECAY) as f32;
+    // The difference is taken in single precision, the product in double.
+    let decay = (f64::from(1.0 - value) * DECAY) as f32;
     let until = (strength * TICKS_PER_STRENGTH).round_ties_even() as i64;
     Some(Stagger {
         speed: value,
@@ -93,15 +99,15 @@ mod tests {
     /// 1 × 1 × 1 × 0.15: sqrt(1) of it, decay 0.0425, 60 ticks.
     #[test]
     fn a_full_stagger_is_the_originals() {
-        let s = stagger_strength(1.0, 1.0, 1.0, 1.0, false, 100).unwrap();
+        let s = stagger_strength(1.0, 1.0, 1.0, 1.0, false, false, 100).unwrap();
         assert!(close(s.speed, 0.15));
         assert!(close(s.decay, 0.0425));
         assert_eq!(s.until_ms, 160);
         assert_eq!(s.flags, STAGGER_FLAGS);
-        let s = stagger_strength(1.0, 1.0, 1.0, 0.25, false, 0).unwrap();
+        let s = stagger_strength(1.0, 1.0, 1.0, 0.25, false, false, 0).unwrap();
         assert!(close(s.speed, 0.075));
         assert!(close(s.decay, 0.04625));
-        let s = stagger_strength(1.0, 1.0, 1.0, 0.25, true, 0).unwrap();
+        let s = stagger_strength(1.0, 1.0, 1.0, 0.25, true, false, 0).unwrap();
         assert!(close(s.speed, 0.3625));
         assert!(close(s.decay, 0.031875));
     }
@@ -109,10 +115,11 @@ mod tests {
     /// A huge blow clamps to 1 (no decay); a negative strength is none.
     #[test]
     fn the_stagger_clamps() {
-        let s = stagger_strength(100.0, 1.0, 1.0, 1.0, false, 0).unwrap();
+        let s = stagger_strength(100.0, 1.0, 1.0, 1.0, false, false, 0).unwrap();
         assert_eq!((s.speed, s.decay), (1.0, 0.0));
-        let s = stagger_strength(-1.0, 1.0, 1.0, 1.0, false, 0).unwrap();
+        let s = stagger_strength(-1.0, 1.0, 1.0, 1.0, false, false, 0).unwrap();
         assert_eq!((s.speed, s.decay), (0.0, 0.05));
+        assert!(stagger_strength(1.0, 1.0, 1.0, 1.0, false, true, 0).is_none());
     }
 
     /// The guard test: weapon class 0x90 and an active strike or a parry
@@ -129,21 +136,38 @@ mod tests {
 }
 
 /// A recoil: the smaller stagger a body takes when its blow is parried or
-/// its guard fails. It starts at 0.5 with a 0.5 decay, sets flags 0x26,
-/// clears the parry bit 0x10, and ends after round(speed·0.1·400) + 200 ms.
+/// its guard fails. Whatever the guard, its stagger speed and decay are set
+/// to 0.5 and its parry bit (0x10) is cleared; unless the guard parries it
+/// away, it then sets flags 0x26 and ends after round(speed·0.1·400) + 200
+/// ms.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Recoil {
-    pub stagger: Stagger,
+    /// The stagger speed and decay the recoil sets.
+    pub speed: f32,
+    pub decay: f32,
+    /// The flags it clears.
+    pub cleared: u32,
+    /// What the recoil goes on to start; none when the guard parries it.
+    pub started: Option<RecoilStart>,
+}
+
+/// What an unparried recoil starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecoilStart {
+    /// The flags it sets and the game clock (ms) it ends.
+    pub flags: u32,
+    pub until_ms: u64,
     /// The stance start's blend (0x28).
     pub stance_blend: u32,
-    /// The two arm stiffness targets and the strength it starts with.
+    /// The two arm stiffness targets, before the arms' floor
+    /// ([`attack_arms`]'s), and the strength they are set with.
     pub arms: (f32, f32),
     pub strength: f32,
 }
 
-/// The recoil a blow of `speed` starts at `now_ms`, unless the original's
-/// guard parries it away (weapon class 0x90 with an active strike or a clip
-/// past 0.4 that can parry).
+/// The recoil a blow of `speed` starts at `now_ms`; the original's guard
+/// (weapon class 0x90 with an active strike or a clip past 0.4 that can
+/// parry) leaves it only the speed, decay and cleared bit.
 pub fn recoil(
     speed: f32,
     weapon_class: i32,
@@ -151,22 +175,25 @@ pub fn recoil(
     progress: f32,
     can_parry: bool,
     now_ms: u64,
-) -> Option<Recoil> {
-    if parries_stagger(weapon_class, flags, progress, can_parry) {
-        return None;
-    }
-    let ticks = (speed * 0.1 * 400.0).round_ties_even() as i64;
-    Some(Recoil {
-        stagger: Stagger {
-            speed: 0.5,
-            decay: 0.5,
-            until_ms: now_ms.saturating_add_signed(ticks + 200),
+) -> Recoil {
+    let started = (!parries_stagger(weapon_class, flags, progress, can_parry)).then(|| {
+        // The speed scales by 0.1 in double, the ticks by 400 in single.
+        let ticks =
+            (((f64::from(speed) * 0.1) as f32) * TICKS_PER_STRENGTH).round_ties_even() as i64;
+        RecoilStart {
             flags: 0x26,
-        },
-        stance_blend: 0x28,
-        arms: (0.1, 0.1),
-        strength: 1.0,
-    })
+            until_ms: now_ms.saturating_add_signed(ticks + 200),
+            stance_blend: 0x28,
+            arms: (0.2, 0.2),
+            strength: 1.0,
+        }
+    });
+    Recoil {
+        speed: 0.5,
+        decay: 0.5,
+        cleared: 0x10,
+        started,
+    }
 }
 
 #[cfg(test)]
@@ -175,13 +202,17 @@ mod recoil_tests {
 
     #[test]
     fn the_recoil_is_the_originals() {
-        let r = recoil(0.5, 0, 0, 0.0, false, 1000).unwrap();
-        assert_eq!(r.stagger.speed, 0.5);
-        assert_eq!(r.stagger.decay, 0.5);
-        assert_eq!(r.stagger.flags, 0x26);
-        assert_eq!(r.stagger.until_ms, 1000 + 20 + 200);
-        assert_eq!(r.stance_blend, 0x28);
-        assert_eq!(r.arms, (0.1, 0.1));
-        assert!(recoil(0.5, 0x90, 0x10000, 0.0, false, 0).is_none());
+        let r = recoil(0.5, 0, 0, 0.0, false, 1000);
+        assert_eq!((r.speed, r.decay, r.cleared), (0.5, 0.5, 0x10));
+        let start = r.started.unwrap();
+        assert_eq!(start.flags, 0x26);
+        assert_eq!(start.until_ms, 1000 + 20 + 200);
+        assert_eq!(start.stance_blend, 0x28);
+        assert_eq!(start.arms, (0.2, 0.2));
+        // A parried recoil still sets the speed and decay and clears the
+        // bit, but starts nothing.
+        let r = recoil(0.5, 0x90, 0x10000, 0.0, false, 0);
+        assert_eq!((r.speed, r.decay, r.cleared), (0.5, 0.5, 0x10));
+        assert!(r.started.is_none());
     }
 }
