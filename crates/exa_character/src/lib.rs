@@ -856,6 +856,7 @@ mod tests {
             door: None,
             operative: None,
             burden: None,
+            equip_lock: 0,
         }
     }
 

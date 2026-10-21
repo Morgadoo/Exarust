@@ -327,8 +327,9 @@ impl Default for CharacterRecord {
 }
 
 impl CharacterRecord {
-    /// The original's constructor: a blank record whose pools are full and
-    /// whose voice pitch is 1. Everything else is empty.
+    /// The original's constructor: a blank record whose yellow and red
+    /// pools are full and whose voice pitch is 1. Everything else is zero,
+    /// focus included.
     pub fn new() -> Self {
         Self {
             id: 0,
@@ -352,7 +353,7 @@ impl CharacterRecord {
             hands: [ItemRef::NONE; HANDS],
             worn: Vec::new(),
             feral: 0.0,
-            pools: Pools::FULL,
+            pools: Pools::NEW,
             seed: 0,
             combat_skill: 0.0,
             undead_voice: 0,
@@ -372,23 +373,41 @@ impl CharacterRecord {
         }
     }
 
-    /// The defaults the character creator starts from: a male human of
-    /// average physique, the default skin and hair, no voice number, pitch
-    /// 1, full yellow and red health, wearing the underwear.
+    /// The defaults the character creator starts from: a new record
+    /// ([`CharacterRecord::new`]) with [`CharacterRecord::apply_creator_defaults`].
     pub fn reset() -> Self {
         let mut record = Self::new();
-        record.race = 0;
-        record.female = false;
-        record.physique = [DEFAULT_PHYSIQUE; 2];
-        record.skin = DEFAULT_SKIN;
-        record.hair_style = 0;
-        record.hair_colour = DEFAULT_HAIR_COLOUR;
-        record.voice_number = 0;
-        record.voice = voice_name(0);
-        record.voice_pitch = 1.0;
-        record.pools = Pools::FULL;
-        record.worn.push(ItemRef::new(UNDERWEAR_ITEM, 0));
+        record.apply_creator_defaults();
         record
+    }
+
+    /// The creator's reset of an existing record: a male human (the whole
+    /// profession word cleared) of average physique, the default skin and
+    /// hair, voice number 0 and pitch 1, full yellow and red health, and
+    /// the underwear appended to what it wears. Every other field, focus
+    /// included, keeps its value.
+    pub fn apply_creator_defaults(&mut self) {
+        self.set_profession(0);
+        self.physique = [DEFAULT_PHYSIQUE; 2];
+        self.skin = DEFAULT_SKIN;
+        self.hair_style = 0;
+        self.hair_colour = DEFAULT_HAIR_COLOUR;
+        self.voice_number = 0;
+        self.voice = voice_name(0);
+        self.voice_pitch = 1.0;
+        self.pools.yellow = FULL_POOL;
+        self.pools.red = FULL_POOL;
+        self.worn.push(ItemRef::new(UNDERWEAR_ITEM, 0));
+    }
+
+    /// A copy made as the game copies a record: written, read back, and
+    /// given no database id. The copy has the writer's canonical voice name
+    /// and loses what the writer drops (a skill without a technique, a
+    /// sixth technique, powers without an entry, a reserved pair whose first
+    /// word is 0).
+    pub fn duplicate(&self) -> Result<Self> {
+        let bytes = self.to_bytes()?;
+        Self::parse(0, &bytes)
     }
 
     /// The profession word: bit 0 female, byte 1 the race, the other bits
@@ -468,10 +487,18 @@ impl CharacterRecord {
     }
 }
 
-/// The voice name a number makes: `vi` and the number plus one, at least
-/// two digits (`vi01`…`vi99`). Longer numbers are written as they are.
+/// The voice name a number makes: `vi` and the number plus one in
+/// decimal, padded to two digits (`vi01`…`vi99`, then `vi100`…), as the
+/// game's own number formatter writes it. The sum is a 32-bit signed
+/// integer: 0 gives `00` and a negative sum the single digit `0`.
 pub fn voice_name(number: u32) -> String {
-    format!("{VOICE_PREFIX}{:02}", number + 1)
+    let next = (number as i32).wrapping_add(1);
+    let digits = match next {
+        0 => "00".to_string(),
+        n if n > 0 => format!("{n:02}"),
+        _ => "0".to_string(),
+    };
+    format!("{VOICE_PREFIX}{digits}")
 }
 
 /// The voice number a stored name gives (`vi0N` → N − 1, at least 0), else
@@ -480,6 +507,25 @@ pub fn voice_number_of(name: &[u8]) -> u32 {
     match (name.get(2), name.get(3)) {
         (Some(b'0'), Some(n)) => n.saturating_sub(b'1') as u32,
         _ => 0,
+    }
+}
+
+/// The double-precision unit the load multiplies a stored share by
+/// (1/65535).
+const POOL_UNIT: f64 = 1.0 / 65535.0;
+
+/// A float rounded to an integer as the game's SSE conversion does it: to
+/// the nearest integer, ties to even. A value the conversion cannot hold
+/// (NaN, infinite, outside the `i64` range) gives `i64::MIN`, the
+/// instruction's "integer indefinite".
+pub fn round_even_i64(value: f32) -> i64 {
+    let rounded = f64::from(value).round_ties_even();
+    // 2^63: the first value past the range.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    if rounded.is_nan() || !(-LIMIT..LIMIT).contains(&rounded) {
+        i64::MIN
+    } else {
+        rounded as i64
     }
 }
 
@@ -498,6 +544,35 @@ impl Pools {
         red: FULL_POOL,
         focus: FULL_POOL,
     };
+
+    /// The pools of a new record: the constructor fills yellow and red and
+    /// leaves focus at 0.
+    pub const NEW: Self = Self {
+        yellow: FULL_POOL,
+        red: FULL_POOL,
+        focus: 0,
+    };
+
+    /// A stored yellow or red share loaded onto a body of maximum health
+    /// `max`, as the load and the spawn compute it: in double precision,
+    /// `max × (stored × 1/65535)`, rounded once to `f32`.
+    pub fn restore(stored: u16, max: f32) -> f32 {
+        (f64::from(max) * (f64::from(stored) * POOL_UNIT)) as f32
+    }
+
+    /// The stored focus share as the load sets it: `stored × 1/65535` in
+    /// double precision, rounded once to `f32`.
+    pub fn restore_focus(stored: u16) -> f32 {
+        (f64::from(stored) * POOL_UNIT) as f32
+    }
+
+    /// A share saved as the game saves it: `value` (already scaled to
+    /// 0…65535) rounded to the nearest even integer and cut to 16 bits;
+    /// a value the conversion cannot hold (NaN, infinite, out of range)
+    /// stores 0.
+    pub fn save(value: f32) -> u16 {
+        round_even_i64(value) as u16
+    }
 
     /// Yellow, red and focus as shares (stored / 65535), as the load reads
     /// them; yellow and red are then multiplied by the maximum health.
@@ -526,8 +601,22 @@ impl Skill {
         &self.techniques[..levels]
     }
 
+    /// Whether a technique is among the learnt ones (what the perks read).
     pub fn knows(&self, technique: u8) -> bool {
         technique != 0 && self.learnt().contains(&technique)
+    }
+
+    /// The record's own technique check, as the arena and the powers tree
+    /// ask it: the first of the five written slots that holds `technique`
+    /// counts when the points fund its level (level i needs i × 5000). A
+    /// sixth slot is never looked at, and 0 matches an empty slot.
+    pub fn has_technique(&self, technique: u8) -> bool {
+        self.techniques[..WRITTEN_TECHNIQUES]
+            .iter()
+            .position(|&t| t == technique)
+            .is_some_and(|at| {
+                u32::from(self.points) >= (at as u32 + 1) * u32::from(POINTS_PER_TECHNIQUE)
+            })
     }
 
     /// The levels the skill's points fund.
@@ -725,13 +814,27 @@ pub struct RelationTable {
 }
 
 impl Loadout {
-    /// The record's hands and worn items, as the game saves them.
+    /// The record's hands and worn items in a new loadout (word 0).
     pub fn of_record(record: &CharacterRecord) -> Self {
         Self {
             word: 0,
             hands: record.hands,
             worn: record.worn.clone(),
         }
+    }
+
+    /// Stores the record's hands and worn items in this loadout, as the
+    /// game saves them into a loadout it keeps: its word stays.
+    pub fn store(&mut self, record: &CharacterRecord) {
+        self.hands = record.hands;
+        self.worn = record.worn.clone();
+    }
+
+    /// Copies another loadout's hands and worn items into this one; its
+    /// word stays.
+    pub fn copy_from(&mut self, from: &Loadout) {
+        self.hands = from.hands;
+        self.worn = from.worn.clone();
     }
 
     /// Puts the loadout's hands and worn items on a record, as the arena
@@ -763,8 +866,9 @@ pub struct Power {
     pub id: u32,
     pub flags: u32,
     /// The bytes after a power flagged [`POWER_BLOB`], without the size
-    /// word the file stores.
-    pub blob: Vec<u8>,
+    /// word the file stores (`Some` of nothing for a blob of size 4).
+    /// Writing sets the flag exactly when there is a blob.
+    pub blob: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1104,9 +1208,10 @@ impl CharacterRecord {
         put_f32(out, self.combat_skill);
         out.extend_from_slice(&self.undead_voice.to_le_bytes());
         for t in self.traits {
-            // The game rounds to the nearest even integer (the runtime's
-            // rounding) before the byte bias.
-            let biased = (f64::from(t).round_ties_even() as i64 + i64::from(TRAIT_BIAS)) & 0xFF;
+            // The game converts to an integer (nearest, ties to even; NaN or
+            // out of range gives the conversion's indefinite value, whose
+            // low byte is 0) and adds the bias in a byte.
+            let biased = round_even_i64(t).wrapping_add(i64::from(TRAIT_BIAS)) & 0xFF;
             out.push(biased as u8);
         }
         out.extend_from_slice(&self.search_seed.to_le_bytes());
@@ -1135,7 +1240,8 @@ impl CharacterRecord {
             out.extend_from_slice(&saved.tag.to_le_bytes());
             out.extend_from_slice(&saved.value.to_le_bytes());
         }
-        if let Some(powers) = &self.powers {
+        // The writer emits the powers only when they have an entry.
+        if let Some(powers) = self.powers.as_ref().filter(|p| !p.known.is_empty()) {
             put_chunk(out, POWERS_OUT, |c| {
                 c.extend_from_slice(&powers.word.to_le_bytes());
                 for slot in powers.slots {
@@ -1144,20 +1250,22 @@ impl CharacterRecord {
                 put_count(c, powers.known.len())?;
                 for power in &powers.known {
                     c.extend_from_slice(&power.id.to_le_bytes());
-                    if power.blob.is_empty() {
-                        c.extend_from_slice(&(power.flags & !POWER_BLOB).to_le_bytes());
-                    } else {
-                        c.extend_from_slice(&(power.flags | POWER_BLOB).to_le_bytes());
-                        let size = u32::try_from(power.blob.len() + 4)
-                            .map_err(|_| Error::Malformed("power blob too large".into()))?;
-                        c.extend_from_slice(&size.to_le_bytes());
-                        c.extend_from_slice(&power.blob);
+                    match &power.blob {
+                        None => c.extend_from_slice(&(power.flags & !POWER_BLOB).to_le_bytes()),
+                        Some(blob) => {
+                            c.extend_from_slice(&(power.flags | POWER_BLOB).to_le_bytes());
+                            let size = u32::try_from(blob.len() + 4)
+                                .map_err(|_| Error::Malformed("power blob too large".into()))?;
+                            c.extend_from_slice(&size.to_le_bytes());
+                            c.extend_from_slice(blob);
+                        }
                     }
                 }
                 Ok(())
             })?;
         }
-        if let Some([a, b]) = self.reserved {
+        // The reserved pair is written only when its first word is set.
+        if let Some([a, b]) = self.reserved.filter(|[a, _]| *a != 0) {
             put_chunk(out, RESERVED, |c| {
                 c.extend_from_slice(&a.to_le_bytes());
                 c.extend_from_slice(&b.to_le_bytes());
@@ -1224,12 +1332,17 @@ fn put_count(out: &mut Vec<u8>, n: usize) -> Result<()> {
     Ok(())
 }
 
-/// A name field: 16 bytes, cut at the first byte that does not fit.
+/// A name field: 16 bytes, one per character as the reader maps them
+/// (a character past U+00FF, which no stored byte gives, becomes `?`),
+/// cut at 16 and padded with zeros.
 fn put_name(out: &mut Vec<u8>, name: &str) -> Result<()> {
-    let bytes = name.as_bytes();
-    let n = bytes.len().min(16);
-    out.extend_from_slice(&bytes[..n]);
-    out.resize(out.len() + (16 - n), 0);
+    let bytes: Vec<u8> = name
+        .chars()
+        .take(16)
+        .map(|c| u8::try_from(c).unwrap_or(b'?'))
+        .collect();
+    out.extend_from_slice(&bytes);
+    out.resize(out.len() + (16 - bytes.len()), 0);
     Ok(())
 }
 
@@ -1349,31 +1462,45 @@ fn read_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
     Ok(roles)
 }
 
-/// Legacy roles: `i32 n`, n × {u32 id, u32 ignored}, each added in turn
-/// (newest first). Three old first roles are replaced by their successors.
+/// Legacy roles: `i32 n`, n × {u32 id, u32 ignored}, each added in turn.
+/// Three old first roles are replaced by their successors. The reader
+/// looks at the first entry's id even when `n` is 0, so then the word after
+/// the count (the first relation word) is what it compares.
 fn read_legacy_roles(r: &mut Reader<'_>) -> Result<Vec<Role>> {
     /// Old first role → the two roles added instead.
     const REPLACED: [(u32, [u32; 2]); 3] = [(13, [8, 33]), (27, [26, 33]), (22, [9, 33])];
     let n = r.count("roles")?;
+    let first = r.peek_u32();
     let ids: Vec<u32> = r.entries::<8>(n)?.iter().map(|e| word(e)).collect();
-    let added = match ids.first() {
-        Some(first) => match REPLACED.iter().find(|(old, _)| old == first) {
-            Some((_, new)) => new.to_vec(),
-            None => ids,
-        },
+    let added = match first.and_then(|first| REPLACED.iter().find(|(old, _)| *old == first)) {
+        Some((_, new)) => new.to_vec(),
         None => ids,
     };
-    Ok(added
-        .into_iter()
-        .rev()
-        .map(|id| Role {
-            id,
-            weight: 0.0,
-            explicit: true,
-            inherited: 0,
-            variables: Vec::new(),
-        })
-        .collect())
+    let mut roles = Vec::new();
+    for id in added {
+        add_legacy_role(&mut roles, id);
+    }
+    Ok(roles)
+}
+
+/// Adds a role as the legacy reader does, without the role database's
+/// parents (`charroles.rdb` is not read here): a role already held
+/// explicitly is left as it is, one held only as a parent becomes
+/// explicit, and a new one goes first (newest first).
+fn add_legacy_role(roles: &mut Vec<Role>, id: u32) {
+    match roles.iter_mut().find(|role| role.id == id) {
+        Some(role) => role.explicit = true,
+        None => roles.insert(
+            0,
+            Role {
+                id,
+                weight: 0.0,
+                explicit: true,
+                inherited: 0,
+                variables: Vec::new(),
+            },
+        ),
+    }
 }
 
 /// A relation table: `i32 n`; if n ≥ 1, n × {u32 character, u32 offset},
@@ -1433,7 +1560,7 @@ fn read_powers(r: &mut Reader<'_>, v7: bool) -> Result<Powers> {
     for _ in 0..n {
         let id = r.u32()?;
         let flags = r.u32()?;
-        let mut blob = Vec::new();
+        let mut blob = None;
         if !v7 {
             r.bytes(8)?;
         } else if flags & POWER_BLOB != 0 {
@@ -1441,7 +1568,7 @@ fn read_powers(r: &mut Reader<'_>, v7: bool) -> Result<Powers> {
             let payload = size
                 .checked_sub(4)
                 .ok_or_else(|| Error::Malformed(format!("power blob of {size} bytes")))?;
-            blob = r.bytes(payload)?.to_vec();
+            blob = Some(r.bytes(payload)?.to_vec());
         }
         known.push(Power { id, flags, blob });
     }
@@ -1513,6 +1640,11 @@ impl<'a> Reader<'a> {
 
     fn u8(&mut self) -> Result<u8> {
         Ok(self.bytes(1)?[0])
+    }
+
+    /// The next word, without reading it.
+    fn peek_u32(&self) -> Option<u32> {
+        self.b.get(self.pos..self.pos + 4).map(word)
     }
 
     fn u16(&mut self) -> Result<u16> {

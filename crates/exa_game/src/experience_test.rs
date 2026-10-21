@@ -137,12 +137,12 @@ fn the_player_converts_into_skill_and_power() {
         Power {
             id: 3,
             flags: 0x5,
-            blob: Vec::new(),
+            blob: None,
         },
         Power {
             id: 4,
             flags: POWER_IN_TRAINING | 5,
-            blob: Vec::new(),
+            blob: None,
         },
     ];
     let out = xp.convert_player(400, &mut player);
@@ -156,7 +156,7 @@ fn the_player_converts_into_skill_and_power() {
     full.powers = vec![Power {
         id: 4,
         flags: POWER_IN_TRAINING | 0xfff,
-        blob: Vec::new(),
+        blob: None,
     }];
     Experience::default().convert_player(400, &mut full);
     assert_eq!(full.powers[0].flags, POWER_FULL);

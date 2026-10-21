@@ -202,12 +202,12 @@ fn whole_version_7_record() {
             Power {
                 id: 3,
                 flags: 0x0001_5FFF,
-                blob: Vec::new()
+                blob: None
             },
             Power {
                 id: 4,
                 flags: POWER_BLOB,
-                blob: vec![0xAA, 0, 0, 0, 0xBB, 0, 0, 0]
+                blob: Some(vec![0xAA, 0, 0, 0, 0xBB, 0, 0, 0])
             }
         ]
     );
@@ -315,7 +315,7 @@ fn legacy_version_6_record() {
         [Power {
             id: 5,
             flags: POWER_BLOB,
-            blob: Vec::new()
+            blob: None
         }]
     );
 }
@@ -660,7 +660,12 @@ fn shipped_actors() {
 #[test]
 fn a_new_record_starts_blank_and_a_reset_one_takes_the_creators_defaults() {
     let new = CharacterRecord::new();
-    assert_eq!(new.pools, Pools::FULL);
+    // The constructor fills yellow and red only: focus stays 0.
+    assert_eq!(new.pools, Pools::NEW);
+    assert_eq!(
+        (new.pools.yellow, new.pools.red, new.pools.focus),
+        (FULL_POOL, FULL_POOL, 0)
+    );
     assert_eq!(new.voice_pitch, 1.0);
     assert_eq!(new.physique, [0.0, 0.0]);
     assert!(new.worn.is_empty());
@@ -674,7 +679,7 @@ fn a_new_record_starts_blank_and_a_reset_one_takes_the_creators_defaults() {
     assert_eq!((fresh.race, fresh.female), (0, false));
     assert_eq!(fresh.voice_number, 0);
     assert_eq!(fresh.voice, "vi01");
-    assert_eq!(fresh.pools, Pools::FULL);
+    assert_eq!(fresh.pools, Pools::NEW);
     assert_eq!(fresh.worn, [ItemRef::new(UNDERWEAR_ITEM, 0)]);
     // The reset keeps the name: the creator sets it, not the defaults.
     assert!(fresh.name.is_empty());
@@ -783,12 +788,12 @@ fn written_records_read_back_the_same() {
             Power {
                 id: 3,
                 flags: 0x15FFF,
-                blob: Vec::new(),
+                blob: None,
             },
             Power {
                 id: 4,
                 flags: POWER_BLOB,
-                blob: vec![0xAA, 0xBB],
+                blob: Some(vec![0xAA, 0xBB]),
             },
         ],
     });
@@ -878,4 +883,195 @@ fn shipped_records_write_back_byte_for_byte() {
     assert_eq!(checked, 485, "{checked} records");
     assert_eq!(reworded, 2, "records with a non-canonical voice name");
     assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// The legacy reader compares the first role id before it skips the list,
+/// so with no roles it reads the first relation word: a relation table of
+/// 13 entries turns into the replacement roles of 13 (Disposition). A role
+/// stored twice is added once.
+#[test]
+fn legacy_roles_peek_past_an_empty_list_and_add_each_role_once() {
+    let mut body = front("vi01", 0, &[]);
+    body.extend(middle(&[], &[]));
+    body.extend(u32s(&[0])); // no roles
+    body.extend(u32s(&[13])); // a relation table of 13 entries
+    body.extend([0u8; 13 * 8]);
+    body.extend(u32s(&[0, 0, 0])); // its empty blob, no level tables, nothing saved
+    let r = CharacterRecord::parse(1, &frame(6, &body)).unwrap();
+    assert_eq!(r.roles.iter().map(|x| x.id).collect::<Vec<_>>(), [33, 8]);
+
+    let mut twice = front("vi01", 0, &[]);
+    twice.extend(middle(&[], &[]));
+    twice.extend(u32s(&[3, 9, 0, 2, 0, 9, 0]));
+    twice.extend(u32s(&[0, 0, 0]));
+    let r = CharacterRecord::parse(1, &frame(6, &twice)).unwrap();
+    assert_eq!(r.roles.iter().map(|x| x.id).collect::<Vec<_>>(), [2, 9]);
+}
+
+/// The trait bytes as the game's conversion makes them: nearest integer,
+/// ties to even, then + 100 in a byte; NaN, infinities and values past
+/// the 64-bit range convert to the indefinite integer, whose low byte is
+/// 0, so they store 100.
+#[test]
+fn traits_convert_as_the_game_does() {
+    assert_eq!(round_even_i64(2.5), 2);
+    assert_eq!(round_even_i64(3.5), 4);
+    assert_eq!(round_even_i64(-2.5), -2);
+    assert_eq!(round_even_i64(-0.4), 0);
+    assert_eq!(round_even_i64(f32::NAN), i64::MIN);
+    assert_eq!(round_even_i64(f32::INFINITY), i64::MIN);
+    assert_eq!(round_even_i64(1e20), i64::MIN);
+    assert_eq!(round_even_i64(-9.223_372e18), i64::MIN);
+    let mut r = CharacterRecord::new();
+    let at = |r: &CharacterRecord| {
+        let bytes = r.to_bytes().unwrap();
+        // tag, size, the fixed fields up to the traits (no worn items).
+        let start = 8 + 16 + 16 + 8 + 4 + 4 + 4 + 4 + 4 + 4 + 16 + 4 + 4 + 4 + 32 + 4;
+        let traits = start + 4 + 8 + 4 + 4;
+        bytes[traits..traits + 4].to_vec()
+    };
+    r.traits = [2.5, -100.5, 300.0, f32::NAN];
+    // 102, 0 (−100 rounds to even), 400 & 0xFF, and 100.
+    assert_eq!(at(&r), [102, 0, 144, 100]);
+    r.traits = [f32::INFINITY, 1e20, -3.5, 0.5];
+    assert_eq!(at(&r), [100, 100, 96, 100]);
+}
+
+/// The voice name the writer builds from the number: the game's formatter
+/// pads to two digits, writes 0 as `00` and a negative sum as `0`.
+#[test]
+fn voice_names_from_their_number() {
+    assert_eq!(voice_name(0), "vi01");
+    assert_eq!(voice_name(8), "vi09");
+    assert_eq!(voice_name(98), "vi99");
+    assert_eq!(voice_name(99), "vi100");
+    // −1 + 1 = 0, and i32::MAX + 1 wraps negative.
+    assert_eq!(voice_name(u32::MAX), "vi00");
+    assert_eq!(voice_name(0x7FFF_FFFF), "vi0");
+    // The reader only takes a name whose third character is `0`: `vi10`
+    // reads back as voice 0.
+    assert_eq!(voice_number_of(voice_name(9).as_bytes()), 0);
+}
+
+/// Names hold one character per byte: a Latin-1 character writes back as
+/// its byte, not as UTF-8.
+#[test]
+fn names_write_one_byte_per_character() {
+    let mut r = CharacterRecord::new();
+    r.name = "\u{d6}laf".into();
+    r.surname = "abcdefghijklmnopqrs".into();
+    let bytes = r.to_bytes().unwrap();
+    assert_eq!(&bytes[8..13], &[0xD6, b'l', b'a', b'f', 0]);
+    let read = CharacterRecord::parse(0, &bytes).unwrap();
+    assert_eq!(read.name, "\u{d6}laf");
+    assert_eq!(read.surname, "abcdefghijklmnop");
+}
+
+/// The writer's conditions for the sub-chunks: powers only with an entry,
+/// the reserved pair only when its first word is set, a power's blob
+/// flag exactly when it has a blob (one of no bytes keeps it).
+#[test]
+fn sub_chunks_are_written_as_the_game_decides() {
+    let fixed = CharacterRecord::new().to_bytes().unwrap().len();
+    let mut r = CharacterRecord::new();
+    r.powers = Some(Powers {
+        word: 1,
+        slots: [0; POWER_SLOTS],
+        known: Vec::new(),
+    });
+    r.reserved = Some([0, 5]);
+    assert_eq!(r.to_bytes().unwrap().len(), fixed);
+    r.reserved = Some([5, 0]);
+    r.powers.as_mut().unwrap().known = vec![
+        Power {
+            id: 2,
+            flags: POWER_BLOB,
+            blob: None,
+        },
+        Power {
+            id: 3,
+            flags: 0,
+            blob: Some(Vec::new()),
+        },
+    ];
+    let read = CharacterRecord::parse(0, &r.to_bytes().unwrap()).unwrap();
+    assert_eq!(read.reserved, Some([5, 0]));
+    let known = read.powers.unwrap().known;
+    assert_eq!((known[0].flags, known[0].blob.as_ref()), (0, None));
+    assert_eq!(
+        (known[1].flags, known[1].blob.as_deref()),
+        (POWER_BLOB, Some(&[][..]))
+    );
+}
+
+/// The load and the spawn compute the pools in double precision:
+/// 0.25 × 257/65535 is 0.000980392156…, nearest f32 0.00098039221; the
+/// single-precision product (0.25 × 257 × 1.5259022e-5) gives the f32 below
+/// it. The unit is the double nearest 1/65535 (`0x3EF0001000100010`).
+#[test]
+fn pools_load_in_double_precision() {
+    assert_eq!(POOL_UNIT.to_bits(), 0x3EF0_0010_0010_0010);
+    let loaded = Pools::restore(257, 0.25);
+    assert_eq!(loaded, 0.000_980_392_2);
+    assert_ne!(loaded, 0.25 * 257.0 * 1.525_902_2e-5_f32);
+    assert_eq!(Pools::restore(FULL_POOL, 0.375), 0.375);
+    assert_eq!(Pools::restore_focus(0x8000), 0.500_007_6);
+    // The save: nearest even, cut to 16 bits; NaN stores 0.
+    assert_eq!(Pools::save(32767.5), 32768);
+    assert_eq!(Pools::save(65535.0), FULL_POOL);
+    assert_eq!(Pools::save(f32::NAN), 0);
+    assert_eq!(Pools::save(65536.0), 0);
+}
+
+/// The arena's technique check looks at the five written slots only and
+/// needs the points of the slot's level.
+#[test]
+fn the_records_technique_check() {
+    let skill = Skill {
+        points: 10000,
+        techniques: [4, 1, 2, 0, 0, 3],
+    };
+    assert!(skill.has_technique(4) && skill.has_technique(1));
+    assert!(!skill.has_technique(2)); // the third level needs 15000
+    assert!(!skill.has_technique(3)); // the sixth slot is not read
+    let rich = Skill {
+        points: 30000,
+        ..skill
+    };
+    assert!(rich.has_technique(2) && !rich.has_technique(3));
+    // 0 matches the first empty slot, the fourth level: 20000 points.
+    assert!(rich.has_technique(0) && !skill.has_technique(0));
+}
+
+/// A copy goes through the writer: the voice name is rebuilt and the id
+/// cleared.
+#[test]
+fn a_duplicate_is_written_and_read_back() {
+    let mut r = CharacterRecord::reset();
+    r.id = 0x8000_0007;
+    r.voice = "HM04".into();
+    r.voice_number = 3;
+    r.skills[ARMOUR].points = 5000; // no technique: not written
+    let copy = r.duplicate().unwrap();
+    assert_eq!((copy.id, copy.voice.as_str()), (0, "vi04"));
+    assert_eq!(copy.skills[ARMOUR], Skill::default());
+    assert_eq!(copy.worn, r.worn);
+}
+
+/// The creator's reset of a record in use keeps what it does not set and
+/// appends another underwear.
+#[test]
+fn the_creators_reset_keeps_the_other_fields() {
+    let mut r = CharacterRecord::new();
+    r.name = "Kept".into();
+    r.pools.focus = 0x1234;
+    r.set_profession(0x0001_0301);
+    r.worn.push(ItemRef::new(9, 0));
+    r.apply_creator_defaults();
+    assert_eq!((r.name.as_str(), r.pools.focus), ("Kept", 0x1234));
+    assert_eq!((r.profession(), r.female, r.race), (0, false, 0));
+    assert_eq!(
+        r.worn,
+        [ItemRef::new(9, 0), ItemRef::new(UNDERWEAR_ITEM, 0)]
+    );
 }

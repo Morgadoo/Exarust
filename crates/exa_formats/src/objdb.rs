@@ -98,7 +98,21 @@ pub struct Item {
     pub operative: Option<Operative>,
     /// What the item weighs on its wearer: every item with a body.
     pub burden: Option<Burden>,
+    /// The byte `0x24` bytes on from the start of the model section (its
+    /// header included; body offset `0x1C`), 0 without a model section or
+    /// past the record. The equip conflict pass will not take off an
+    /// overlapping worn item for which it is over [`EQUIP_LOCK_LIMIT`].
+    /// Heavy furniture stores 200 or 255 and the golem suit and the ogre's
+    /// armour 100, so it reads as a weight class (a guess); 121 shipped
+    /// items are over the limit, 7 of them apparel.
+    pub equip_lock: u8,
 }
+
+/// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
+/// be displaced by a new one.
+pub const EQUIP_LOCK_LIMIT: u8 = 50;
+/// Where [`Item::equip_lock`] lies from the model section's start.
+const EQUIP_LOCK_OFFSET: usize = 0x24;
 
 /// What a worn item weighs on its wearer, as the original's armour pass
 /// reads the item body: its encumbrance, the bones it covers and the
@@ -537,6 +551,7 @@ impl Item {
             door: None,
             operative: None,
             burden: None,
+            equip_lock: 0,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -553,6 +568,11 @@ impl Item {
             match tag {
                 NAME => item.name = name(body),
                 MODEL => {
+                    item.equip_lock = pos
+                        .checked_add(EQUIP_LOCK_OFFSET)
+                        .and_then(|at| payload.get(at))
+                        .copied()
+                        .unwrap_or(0);
                     item.model = name(body);
                     item.model_flags = body
                         .get(16..20)

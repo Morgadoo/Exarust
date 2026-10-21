@@ -50,8 +50,6 @@ const FERAL_ATTACK_VOICE: i32 = 1;
 /// Maximum health is this times the race's health factor (a human 0.25)
 /// before the race-byte rules.
 const HEALTH_PER_FACTOR: f32 = 0.25;
-/// The load reads a saved pool as its 16-bit share times this.
-const POOL_UNIT: f32 = 1.525_902_2e-5;
 
 /// Race bytes the init tests (the record's race byte, which also picks the
 /// race: its id is the byte plus one).
@@ -280,8 +278,8 @@ impl CharacterStats {
                 stats.attack_voices - 1
             },
             max_health,
-            yellow: max_health * f32::from(pools.yellow) * POOL_UNIT,
-            red: max_health * f32::from(pools.red) * POOL_UNIT,
+            yellow: Pools::restore(pools.yellow, max_health),
+            red: Pools::restore(pools.red, max_health),
             rules: rules(byte, f, flags, stats.flags2, spawn.story, &record.worn),
             deflection: record.deflection(),
             encumbrance: 0.0,
