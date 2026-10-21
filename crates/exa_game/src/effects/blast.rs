@@ -500,17 +500,21 @@ impl Blast {
                 blocks: Vec::new(),
             };
         }
-        let mut sum = Vec3::ZERO;
+        let mut min = self.chunks[0].at;
+        let mut max = self.chunks[0].at;
         let mut radius = LIGHT_CHARGE_STRENGTH;
         let mut blocks = Vec::with_capacity(self.chunks.len());
         for (slot, chunk) in self.chunks.iter().enumerate() {
             let light = self.light(chunk, slot);
-            sum += chunk.at;
+            min = min.min(chunk.at);
+            max = max.max(chunk.at);
             radius = light.radius;
             blocks.push(light.colour);
         }
+        // The light sits at the middle of the chunks' bounds, 120 cm on
+        // each axis.
         BlastLightSet {
-            position: sum / self.chunks.len() as f32 + Vec3::splat(LIGHT_RADIUS),
+            position: (min + max) * 0.5 + Vec3::splat(LIGHT_RADIUS),
             radius,
             blocks,
         }
@@ -529,10 +533,8 @@ impl Blast {
             .collect()
     }
 
-    /// The light's strength between two ticks: the charge's curve, or the
-    /// released fall.
-    pub fn drawn_light(&self, alpha: f32, chunk: &Chunk) -> f32 {
-        let _ = alpha;
+    /// The light's strength: the charge's curve, or the released fall.
+    pub fn drawn_light(&self, chunk: &Chunk) -> f32 {
         if self.phase < RELEASED {
             let charge = self.charge;
             if charge >= 0.3 {
@@ -894,8 +896,13 @@ mod tests {
         let set = blast.light_set();
         assert_eq!(set.blocks.len(), CHUNKS);
         assert_eq!(set.radius, 5000.0);
-        let mean = blast.chunks.iter().map(|c| c.at).sum::<Vec3>() / blast.chunks.len() as f32;
-        assert!((set.position - (mean + Vec3::splat(120.0))).length() < 1e-5);
+        let mut min = blast.chunks[0].at;
+        let mut max = min;
+        for chunk in &blast.chunks {
+            min = min.min(chunk.at);
+            max = max.max(chunk.at);
+        }
+        assert!((set.position - ((min + max) * 0.5 + Vec3::splat(120.0))).length() < 1e-5);
         assert_eq!(blast.texture_offset(), [0.0, 0.0, 1.0]);
     }
 
@@ -908,9 +915,9 @@ mod tests {
         let half = blast.drawn_positions(0.5);
         assert_eq!(half[0], Vec3::new(5.0, 0.0, 0.0));
         assert_eq!(blast.drawn_positions(1.0)[0], Vec3::new(10.0, 0.0, 0.0));
-        assert_eq!(blast.drawn_light(0.0, &blast.chunks[0]), 1.0);
+        assert_eq!(blast.drawn_light(&blast.chunks[0]), 1.0);
         blast.phase = RELEASED;
-        assert!((blast.drawn_light(0.0, &blast.chunks[0]) - 0.25).abs() < 1e-6);
+        assert!((blast.drawn_light(&blast.chunks[0]) - 0.25).abs() < 1e-6);
     }
 
     #[test]

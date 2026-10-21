@@ -386,11 +386,16 @@ impl Torrent {
         if self.streams.is_empty() {
             return self.hand;
         }
-        let mut sum = Vec3::ZERO;
+        let first = Vec3::from_array(self.streams[0].newest().at);
+        let mut min = first;
+        let mut max = first;
         for stream in &self.streams {
-            sum += Vec3::from_array(stream.newest().at);
+            let at = Vec3::from_array(stream.newest().at);
+            min = min.min(at);
+            max = max.max(at);
         }
-        sum / self.streams.len() as f32 + Vec3::splat(LIGHT_RADIUS)
+        // The middle of the streams' bounds, 120 cm on each axis.
+        (min + max) * 0.5 + Vec3::splat(LIGHT_RADIUS)
     }
 
     /// The stream points as a frame between two ticks draws them.
@@ -544,7 +549,14 @@ mod tests {
         let strength = torrent.light_strength(&stream);
         assert!((strength - 1.0 * 0.3 * 0.25 * 1.5 * 0.5 * 1.2).abs() < 1e-6);
         let at = torrent.light_position();
-        assert!((at - Vec3::new(121.0, 120.0, 90.0)).length() < 1e-4);
+        let mut min = Vec3::from_array(torrent.streams[0].newest().at);
+        let mut max = min;
+        for stream in &torrent.streams {
+            let p = Vec3::from_array(stream.newest().at);
+            min = min.min(p);
+            max = max.max(p);
+        }
+        assert!((at - ((min + max) * 0.5 + Vec3::splat(120.0))).length() < 1e-4);
     }
 
     #[test]
