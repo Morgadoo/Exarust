@@ -198,6 +198,27 @@ impl ObjectDb {
     }
 }
 
+impl ObjectDb {
+    /// Copies a weapon's stat bytes from its template, as the original's
+    /// helper does for a weapon section being built: `record`'s header
+    /// names the template (none for 0); when that resolves and has a weapon
+    /// section, its bytes `0x30`–`0x40` and `0x42` go into `body`. Returns
+    /// whether they were copied.
+    pub fn take_template_weapon_stats(&self, record: &super::Record<'_>, body: &mut [u8]) -> bool {
+        let template = record.template();
+        if template == 0 {
+            return false;
+        }
+        let Some(t) = self.section(template, super::WEAPON) else {
+            return false;
+        };
+        for (at, len) in [(0x30, 0x10), (0x40, 1), (0x42, 1)] {
+            copy_bytes(t, body, at, len);
+        }
+        true
+    }
+}
+
 /// The original's weapon test: the words at `+4` and `+8` (the factory
 /// seeds) are non-zero and byte `+0xF` is zero. A weapon that passes takes
 /// the template's stat bytes during migration.
@@ -499,6 +520,18 @@ mod tests {
         let m = db.find(LOCAL | 1).unwrap().model().unwrap();
         assert_eq!((m.name_id, m.description_id), (INHERIT, INHERIT));
         assert_eq!(m.name, "Worn");
+    }
+
+    #[test]
+    fn a_weapon_built_from_its_template() {
+        let db = template_and_instance(0, 0);
+        let r = db.find(LOCAL | 1).unwrap();
+        let mut body = vec![0u8; 0x60];
+        assert!(db.take_template_weapon_stats(&r, &mut body));
+        assert_eq!(&body[0x30..0x41], &[9; 0x11]);
+        assert_eq!((body[0x41], body[0x42]), (0, 9));
+        let t = db.find(10).unwrap();
+        assert!(!db.take_template_weapon_stats(&t, &mut body));
     }
 
     #[test]

@@ -311,7 +311,7 @@ pub fn resize_section(payload: &mut Vec<u8>, tag: u32, body_len: u32) -> Option<
 pub fn append_section(payload: &mut Vec<u8>, tag: u32, body_len: u32) -> usize {
     let at = payload.len();
     payload.extend(tag.to_le_bytes());
-    payload.extend((body_len + 8).to_le_bytes());
+    payload.extend(body_len.wrapping_add(8).to_le_bytes());
     payload.resize(at + 8 + body_len as usize, 0);
     at + 8
 }

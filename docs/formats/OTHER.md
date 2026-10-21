@@ -371,6 +371,8 @@ resolve in their level's library.
 - **Template helpers**: an object's template is its parent word (or the id
   when it does not resolve); the bulk byte (model `0x1C`) is read from the
   template a tagged id's header names, and from an untagged id's own model.
+  A weapon section being built takes the stat bytes `0x30`–`0x40` and `0x42`
+  of the weapon section of the template its record's header names.
 - **Item-use test**: by the operative section, 0 without one and for classes
   2, 4, 8 and 0 (class 0 kind `0x11` gives 2 when bits 16–23 of the caller's
   word are clear; for another kind the original first runs a use action:
