@@ -373,6 +373,13 @@ mod tests {
                     t.translation.is_finite() && t.rotation.is_finite() && t.scale.is_finite(),
                     "{name}: non-finite transform"
                 );
+                for (mesh, material) in &node.parts {
+                    assert!(loader.meshes.get(mesh).is_some(), "{name}: missing mesh");
+                    assert!(
+                        loader.materials.get(material).is_some(),
+                        "{name}: missing painted material"
+                    );
+                }
             }
             let stats = loader
                 .factory_weapon_stats(&name, None)
