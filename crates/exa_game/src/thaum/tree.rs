@@ -1731,6 +1731,44 @@ impl TreeScreen {
     }
 }
 
+/// What showing the screen sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowState {
+    /// The form flags' new value.
+    pub flags: u8,
+    /// The bar's hide stamp.
+    pub hide_at: u32,
+    /// The remembered domain.
+    pub remembered: u8,
+}
+
+impl TreeScreen {
+    /// Showing the tree flags it shown and stamps the bar's 256 ms hide.
+    pub fn show(&self, now: u32) -> ShowState {
+        ShowState {
+            flags: 2,
+            hide_at: now.wrapping_add(0x100),
+            remembered: self.domain,
+        }
+    }
+
+    /// Changes the domain: the current one is stored back into the record
+    /// and the new tree is loaded. Returns the old domain.
+    pub fn switch_domain(
+        &mut self,
+        domain: u8,
+        record: &mut PowerRecord,
+        bytes: Option<&[u8]>,
+        width: f32,
+        height: f32,
+    ) -> u8 {
+        let old = self.domain;
+        self.store_domain(record);
+        *self = TreeScreen::load(domain, self.mode, Some(record), bytes, width, height);
+        old
+    }
+}
+
 /// A focus id is one of the tree's own buttons.
 fn special(id: i32) -> bool {
     id == focus::BEGIN || id == focus::BACK
@@ -3036,6 +3074,24 @@ mod tests {
         let mut known = PowerRecord::starter();
         assert!(!seed_defaults(&mut known));
         assert_eq!(known.pairs.len(), 2);
+    }
+
+    #[test]
+    fn showing_stamps_the_bar_and_the_domain_switches() {
+        let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
+        assert_eq!(
+            tree.show(1000),
+            ShowState {
+                flags: 2,
+                hide_at: 1256,
+                remembered: DOMAIN_FORCE
+            }
+        );
+        let mut record = PowerRecord::starter();
+        let old = tree.switch_domain(DOMAIN_MIND, &mut record, None, 1000.0, 700.0);
+        assert_eq!(old, DOMAIN_FORCE);
+        assert_eq!(tree.domain, DOMAIN_MIND);
+        assert_eq!(tree.nodes[0].power, 0x101);
     }
 
     #[test]
