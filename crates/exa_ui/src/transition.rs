@@ -3,7 +3,7 @@
 //!
 //! The fade takes 600 ms, or 800/300/2000 by the mode's flags, while the
 //! music fades with it. Once black the screen runs the switch callback,
-//! holds three frames and then the mode's 300, 500 or 1000 ms, and fades
+//! passes two frames, holds the mode's 300, 500 or 1000 ms, and fades
 //! back in over 600 ms before it closes. State 2 is the "TO BE CONTINUED"
 //! hold, whose overlay rises to 0.6 over six seconds and whose string is
 //! drawn centred.
@@ -81,11 +81,12 @@ pub enum Phase {
     Holding,
     Continued,
     SwitchNow,
-    /// Two frames after the switch.
+    /// The first frame after the switch.
     HoldFrame,
-    /// One frame after that.
+    /// The second frame after it, which also counts the frame counter down;
+    /// the timed hold follows.
     HoldFrame2,
-    InHold,
+    /// The fade back in, over 600 clock units whatever the flags.
     FadingIn,
     Done,
 }
@@ -128,6 +129,35 @@ pub struct TransitionStep {
     pub continued: bool,
 }
 
+/// The clock difference as a signed value: the original subtracts the two
+/// times as unsigned 64-bit numbers and converts the result as signed, so a
+/// clock behind the start gives a negative elapsed time.
+fn elapsed_since(now: u32, start: u32) -> i64 {
+    i64::from(now) - i64::from(start)
+}
+
+/// A level in 0..=1 as the byte the screen stores: scaled by 255, rounded half
+/// to even and wrapped to a byte the way the original's cast does.
+fn to_byte(level: f32) -> u8 {
+    (level * OVERLAY_ALPHA).round_ties_even() as i64 as u8
+}
+
+/// Where the "TO BE CONTINUED" string starts on a form of `width` by `height`:
+/// centred, with the 64-bit difference shifted right once (a floor for
+/// negative gaps). `advance` is the font's glyph advance, `line_height` its line
+/// height.
+pub fn continued_text_origin(
+    width: i32,
+    height: i32,
+    advance: i32,
+    line_height: i32,
+) -> (i32, i32) {
+    let len = TRANSITION_TEXT.len() as i64;
+    let x = (i64::from(width) - i64::from(advance) * len) as u64 >> 1;
+    let y = (i64::from(height) - i64::from(line_height)) as u64 >> 1;
+    (x as i32, y as i32)
+}
+
 impl TransitionScreen {
     pub fn new(now: u32, flags: TransitionFlags, music: f32) -> Self {
         Self {
@@ -167,7 +197,7 @@ impl TransitionScreen {
 
     /// One frame of the state machine.
     pub fn step(&mut self, now: u32) -> TransitionStep {
-        let elapsed = u64::from(now.wrapping_sub(self.start));
+        let elapsed = elapsed_since(now, self.start);
         match self.phase {
             Phase::FadingOut => {
                 let rate = self.rate();
@@ -191,7 +221,7 @@ impl TransitionScreen {
                             self.phase = Phase::Holding;
                             self.callback = true;
                             self.start = now;
-                        } else if elapsed > u64::from(LONG_WAIT_MS) {
+                        } else if elapsed > i64::from(LONG_WAIT_MS) {
                             self.phase = Phase::Holding;
                             self.start = now;
                         }
@@ -202,7 +232,7 @@ impl TransitionScreen {
                     }
                 }
                 self.level = t;
-                self.alpha = (t * OVERLAY_ALPHA).round_ties_even() as u8;
+                self.alpha = to_byte(t);
             }
             Phase::Holding => {
                 self.phase = Phase::SwitchNow;
@@ -210,7 +240,7 @@ impl TransitionScreen {
                 self.level = 1.0;
             }
             Phase::Continued => {
-                if elapsed > u64::from(CONTINUED_HOLD_MS) {
+                if elapsed > i64::from(CONTINUED_HOLD_MS) {
                     self.flags.skip_callback = false;
                     self.phase = Phase::SwitchNow;
                     self.callback = true;
@@ -221,7 +251,7 @@ impl TransitionScreen {
                     } else {
                         t
                     };
-                    self.overlay = (t * OVERLAY_ALPHA).round_ties_even() as u8;
+                    self.overlay = to_byte(t);
                 }
                 self.level = 1.0;
             }
@@ -247,18 +277,16 @@ impl TransitionScreen {
                     500
                 };
                 self.level = 1.0;
-                if elapsed > u64::from(hold) {
+                if elapsed > i64::from(hold) {
                     self.flags.hold_1000 = false;
                     self.flags.hold_300 = false;
                     self.start = now;
-                    self.phase = Phase::InHold;
+                    self.phase = Phase::FadingIn;
                 }
             }
-            Phase::InHold => {
-                self.level = 1.0;
-            }
             Phase::FadingIn | Phase::Done => {
-                let t = 1.0 - (elapsed as f64 * 0.0016666666666666668) as f32;
+                // The sum is formed in double and narrowed once.
+                let t = (1.0 - elapsed as f64 * 0.0016666666666666668) as f32;
                 if self.dim < 1.0 {
                     self.dim = 1.0 - t;
                 }
@@ -270,7 +298,7 @@ impl TransitionScreen {
                     self.alpha = 0;
                 } else {
                     self.level = t;
-                    self.alpha = (t * OVERLAY_ALPHA).round_ties_even() as u8;
+                    self.alpha = to_byte(t);
                 }
             }
         }
@@ -377,18 +405,32 @@ mod tests {
         t.step(1000);
         assert_eq!(t.phase, Phase::HoldFrame2);
         t.step(1102);
-        assert_eq!(t.phase, Phase::InHold);
-        // The state machine has no branch for InHold: it stays until the
-        // caller moves it to FadingIn.
-        t.phase = Phase::FadingIn;
-        t.start = 1100;
-        let s = t.step(1400);
+        // The hold ends and the fade back in starts from this frame.
+        assert_eq!(t.phase, Phase::FadingIn);
+        let s = t.step(1102 + 300);
         assert_eq!(s.alpha, 128);
         assert!(!s.close);
-        let s = t.step(1700);
+        let s = t.step(1102 + 601);
         assert!(s.close);
         assert_eq!(s.alpha, 0);
         assert_eq!(t.phase, Phase::Done);
+    }
+
+    #[test]
+    fn a_clock_behind_the_start_wraps_the_byte() {
+        let mut t = TransitionScreen::new(1000, flags(), 1.0);
+        // 100 behind: t = -100 / 600, -42.5 rounds to -42, wrapped to 214.
+        let s = t.step(900);
+        assert_eq!(s.alpha, 214);
+        assert_eq!(t.phase, Phase::FadingOut);
+    }
+
+    #[test]
+    fn the_string_is_centred_with_a_floor_shift() {
+        // 15 glyphs of 8: 120 of 400 leaves 280, half is 140; 20 of 100: 40.
+        assert_eq!(continued_text_origin(400, 100, 8, 20), (140, 40));
+        // A string wider than the form starts left of zero: -5 floors to -3.
+        assert_eq!(continued_text_origin(100, 20, 7, 20).0, -3);
     }
 
     #[test]

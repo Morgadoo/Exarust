@@ -1836,7 +1836,7 @@ plain draw and input records.
   two pixels in near the right edge, and above the pointer when 32 pixels
   plus the box would leave the screen. Its background alpha is 153; the
   text sits two units in and one up from the bottom. The skill tooltip is
-  50 units wide (plus a pixel at an odd unit), 18 units tall (24 compact),
+  50 units wide (plus a pixel at an odd unit), 18 units tall (24 for the tall form),
   nine units below its anchor, with its title at 2, 5 units and its body
   box at 2, 6.
 - **Modal screens** (`exa_ui::modal_screens`): the message box confirms
