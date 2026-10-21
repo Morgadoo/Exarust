@@ -80,14 +80,15 @@ pub struct Spot {
     /// The observer's approach band is 150 cm instead of 100, and the
     /// inside fraction is eased.
     pub wide: bool,
-    /// Cosine of the candidate off the observer's facing. 1 is straight ahead.
-    pub observer_ahead: f32,
     /// Cosine of the candidate off the opponent's facing.
     pub other_ahead: f32,
-    /// The observer's body is in the attack state, which skips the ahead scale.
-    pub in_attack: bool,
+    /// The opponent's condition is the attacking one, which skips the
+    /// facing scale of the approach.
+    pub other_attacking: bool,
     /// Flag bit 4. Scales the strike and the approach by the opponent's facing.
     pub presses: bool,
+    /// The opponent's combat skill, used by a thrust's approach scale.
+    pub other_skill: f32,
 }
 
 /// The opponent's attack arc, as the position score reads it.
@@ -112,6 +113,9 @@ pub struct Blow {
     pub sweeping: bool,
     /// A held weapon forces a side swing's range check on.
     pub forced_range: bool,
+    /// The observer's measured point lies inside the thrust's arc. A thrust
+    /// inside it and inside reach raises the approach by `(2·skill + 1)·2`.
+    pub origin_in_arc: bool,
 }
 
 impl Default for Blow {
@@ -126,6 +130,7 @@ impl Default for Blow {
             committed: false,
             sweeping: false,
             forced_range: false,
+            origin_in_arc: false,
         }
     }
 }
@@ -400,6 +405,17 @@ pub fn publish_arc(swing: Swing) -> Arc {
 }
 
 /// Score a candidate `distance_cm` from the other fighter.
+///
+/// The close term is the one that survives all the original's additions:
+/// `(2 − t)·t·4` with `t = (reach + 150 − distance)/(reach + 150)` inside
+/// the reach band, doubled outside a fight. The strike term peaks at the
+/// observer's reach plus a size correction and a large opponent's 50 cm,
+/// is 1 for one step past that and falls to 0 at 600 cm. A live side swing
+/// scores danger by its time to impact; a live thrust scores 1 inside its
+/// arc and 8 outside it. The approach term is the banded cubic. The
+/// opponent's feral level halves the close term and scales the danger; the
+/// observer's "dull" rule bit clears the danger. Skill scales the danger
+/// by `skill·0.5 + 0.5`.
 pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let limit = spot.other_reach_cm + CLOSE_PAST;
     let mut close = if distance_cm <= limit {
@@ -428,23 +444,55 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     } else {
         0.0
     };
-    if spot.blow.kind == 4 {
-        close = (close - 1.0).max(0.0);
-        approach *= (spot.blow.skill * 2.0 + 2.0) * 2.0;
+    let mut danger = if spot.fight {
+        attack_danger(distance_cm, spot.other_reach_cm, spot.blow)
+    } else {
+        0.0
+    };
+    if spot.fight {
+        let live = blow_is_live(spot.blow.phase, spot.blow.skill, spot.blow.committed);
+        let gate = (spot.blow.skill + 3.0) * 20.0 + spot.other_reach_cm;
+        match spot.blow.kind {
+            // Recovering: subtract one from the close term, not below 0,
+            // and pull the approach in at twice the skill plus two.
+            4 => {
+                close = (close - 1.0).max(0.0);
+                approach *= (spot.blow.skill * 2.0 + 2.0) * 2.0;
+            }
+            // A side swing whose sweep never arrives still asks for a
+            // cautious approach.
+            1 | 2 if live && (distance_cm < gate || spot.blow.forced_range) => {
+                if arrival_ms(spot.blow) >= GONE_MS {
+                    danger = 0.0;
+                    approach *= spot.blow.skill + 2.0;
+                }
+            }
+            // A thrust or guard.
+            3 if live && distance_cm < gate => {
+                if in_arc(spot.blow.arc_end, spot.blow.arc_start, spot.blow.angle) {
+                    danger = 1.0;
+                    if spot.blow.origin_in_arc {
+                        approach *= (spot.other_skill * 2.0 + 1.0) * 2.0;
+                    }
+                } else {
+                    danger = 8.0;
+                }
+            }
+            _ => {}
+        }
     }
     if spot.presses {
         let scale = (1.0 - spot.other_ahead) * 10.0 + 1.0;
         strike *= scale;
         approach *= scale;
-    } else if !spot.in_attack {
-        approach *= (1.0 - spot.observer_ahead) + 1.0;
+    } else if !spot.other_attacking {
+        approach *= (1.0 - spot.other_ahead) + 1.0;
     }
     if !spot.fight {
         close *= 2.0;
         strike = 0.0;
         approach = 0.0;
     }
-    let mut danger = attack_danger(distance_cm, spot.other_reach_cm, spot.blow);
     if spot.dull {
         danger = 0.0;
     } else {
@@ -458,6 +506,70 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         danger,
         approach,
     }
+}
+
+/// The bearing of the observer's measured point as seen from the candidate
+/// (radians), mapped to `[−π, 0)` for a positive bearing and `[0, π]` for a
+/// negative one.
+pub fn bearing_of(origin_cm: (f32, f32), candidate_cm: (f32, f32)) -> f32 {
+    let delta = (origin_cm.0 - candidate_cm.0, origin_cm.1 - candidate_cm.1);
+    let angle = atan2(delta.0, delta.1);
+    if angle >= 0.0 { angle - PI } else { angle + PI }
+}
+
+fn atan2(x: f32, z: f32) -> f32 {
+    if x == 0.0 && z == 0.0 {
+        0.0
+    } else {
+        x.atan2(z)
+    }
+}
+
+/// The footwork the combat state picks around its target: hold, close,
+/// back off, or circle out of the opponent's swing.
+///
+/// Guess: the original's combat state scores eight candidate steps with
+/// the position terms; this reduces the same terms to the four decisions
+/// the interim duellist can carry out. A live swing that reaches it backs
+/// off, a candidate past the strike plateau closes, one well inside the
+/// ideal backs off, and one inside a side swing's arc circles to the nearer
+/// edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Footwork {
+    Hold,
+    Approach,
+    Retreat,
+    CircleLeft,
+    CircleRight,
+}
+
+/// Choose the footwork from the score at the current spot.
+pub fn choose_footwork(distance_cm: f32, spot: Spot) -> Footwork {
+    let score = score_place(distance_cm, spot);
+    let ideal = ideal(spot);
+    if score.danger > 0.0 {
+        return Footwork::Retreat;
+    }
+    if distance_cm < ideal * 0.5 {
+        return Footwork::Retreat;
+    }
+    if still_closing(distance_cm, spot) {
+        return Footwork::Approach;
+    }
+    if (1..=2).contains(&spot.blow.kind)
+        && blow_is_live(spot.blow.phase, spot.blow.skill, spot.blow.committed)
+        && arrival_ms(spot.blow) < GONE_MS
+    {
+        // The nearer edge of the arc decides the way round.
+        let to_start = (spot.blow.arc_start - spot.blow.angle).rem_euclid(FULL_TURN);
+        let to_end = (spot.blow.angle - spot.blow.arc_end).rem_euclid(FULL_TURN);
+        return if to_start < to_end {
+            Footwork::CircleRight
+        } else {
+            Footwork::CircleLeft
+        };
+    }
+    Footwork::Hold
 }
 
 /// The candidate is past the strike plateau, so the fighter keeps closing.
@@ -483,10 +595,10 @@ mod tests {
             dull: false,
             blow: Blow::default(),
             wide: false,
-            observer_ahead: 1.0,
             other_ahead: 0.0,
-            in_attack: true,
+            other_attacking: true,
             presses: false,
+            other_skill: 0.0,
         }
     }
 
@@ -576,7 +688,8 @@ mod tests {
         spot.fight = false;
         let outside = score_place(0.0, spot);
         assert_eq!(outside.strike, 0.0);
-        assert_eq!(outside.danger.to_bits(), 0x4000_0000);
+        // Without the fight flag the strike and the danger are cleared.
+        assert_eq!(outside.danger, 0.0);
 
         spot.fight = true;
         spot.feral = 1.0;
@@ -675,12 +788,12 @@ mod tests {
     #[test]
     fn a_facing_scales_the_place_and_an_idle_stamp_recovers() {
         let mut spot = fight(false, false);
-        spot.in_attack = false;
-        spot.observer_ahead = 0.0;
+        spot.other_attacking = false;
+        spot.other_ahead = 0.0;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3f40_0000);
-        spot.observer_ahead = 1.0;
+        spot.other_ahead = 1.0;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
-        spot.in_attack = true;
+        spot.other_attacking = true;
         spot.presses = true;
         spot.other_ahead = 0.0;
         let pressed = score_place(25.0, spot);
@@ -710,5 +823,77 @@ mod tests {
             ..swing(0, 0.0)
         });
         assert_eq!(wrapped.kind, 0);
+    }
+    #[test]
+    fn a_thrust_scales_the_approach_only_inside_its_arc() {
+        let mut spot = fight(false, false);
+        spot.blow = Blow {
+            kind: 3,
+            arc_start: -1.0,
+            arc_end: 1.0,
+            phase: 0.5,
+            angle: 0.5,
+            skill: 0.0,
+            sweeping: true,
+            origin_in_arc: true,
+            ..Blow::default()
+        };
+        let inside = score_place(25.0, spot);
+        assert_eq!(inside.danger.to_bits(), 0x3f00_0000);
+        assert_eq!(inside.approach.to_bits(), 0x3f40_0000);
+        spot.blow.origin_in_arc = false;
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
+        spot.blow.angle = 2.0;
+        assert_eq!(score_place(25.0, spot).danger.to_bits(), 0x4080_0000);
+        spot.other_skill = 1.0;
+        spot.blow.angle = 0.5;
+        spot.blow.origin_in_arc = true;
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x4010_0000);
+    }
+
+    #[test]
+    fn a_swing_that_never_arrives_pulls_the_approach_in() {
+        let mut spot = fight(false, false);
+        spot.blow = Blow {
+            kind: 1,
+            arc_start: 0.2,
+            arc_end: 0.1,
+            phase: 0.5,
+            angle: 0.5,
+            skill: 0.0,
+            sweeping: true,
+            ..Blow::default()
+        };
+        let score = score_place(25.0, spot);
+        assert_eq!(score.danger, 0.0);
+        assert_eq!(score.approach.to_bits(), 0x3f40_0000);
+        spot.blow.skill = 1.0;
+        let score = score_place(25.0, spot);
+        assert_eq!(score.approach.to_bits(), 0x3f90_0000);
+    }
+
+    #[test]
+    fn the_footwork_follows_the_terms() {
+        let spot = fight(false, false);
+        assert_eq!(choose_footwork(600.0, spot), Footwork::Approach);
+        assert_eq!(choose_footwork(120.0, spot), Footwork::Hold);
+        assert_eq!(choose_footwork(20.0, spot), Footwork::Retreat);
+        let mut swinging = spot;
+        swinging.blow = side(0.5, 0.0);
+        assert_eq!(choose_footwork(0.0, swinging), Footwork::Retreat);
+        swinging.blow.angle = -1.0;
+        assert_eq!(choose_footwork(120.0, swinging), Footwork::CircleLeft);
+        swinging.blow.arc_start = 0.2;
+        swinging.blow.arc_end = -0.2;
+        swinging.blow.angle = 0.1;
+        assert_eq!(choose_footwork(120.0, swinging), Footwork::CircleRight);
+    }
+
+    #[test]
+    fn the_bearing_is_measured_from_the_candidate() {
+        assert!((bearing_of((0.0, 0.0), (0.0, -100.0)) + PI).abs() < 1e-6);
+        assert!(bearing_of((0.0, 0.0), (0.0, 100.0)).abs() < 1e-6);
+        let side = bearing_of((0.0, 0.0), (-100.0, 0.0));
+        assert!((side + std::f32::consts::FRAC_PI_2).abs() < 1e-5, "{side}");
     }
 }
