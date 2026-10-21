@@ -32,9 +32,8 @@ pub struct Race {
     pub flags: u32,
     /// The look word (`0x14`): which skin, hair and beard features the
     /// race has ([`LOOK_FEMALE_TEXTURES`], [`LOOK_MALE_TEXTURES`],
-    /// [`LOOK_NORMALS`], [`LOOK_HAIR`], [`LOOK_BEARD`], [`LOOK_SKIN`],
-    /// [`LOOK_AGE_DARKENS`]). Human 0x1BF, Ancient 0x86, Skeleton, Ogre and
-    /// Manipulator 4, Wraith 0x1000.
+    /// [`LOOK_MORPH_PASS`], [`LOOK_HAIR`], [`LOOK_BEARD`], [`LOOK_SKIN`],
+    /// [`LOOK_AGE_DARKENS`]). Human 0x1BF, Ancient 0x86, Skeleton 4.
     pub look: u32,
     /// Body model stem.
     pub stem: String,
@@ -280,15 +279,17 @@ pub struct RaceStats {
 /// First flag word: its characters bleed (wounds paint blood, and its body
 /// model's skin materials show it).
 pub const BLEEDS: u32 = 0x1;
-/// Look word: the race ships women's skin textures (`diff`, `nrmf0…5`,
+/// Look word: the race ships women's skin textures (`diff`, `nrmf0…4`,
 /// `spcf`) beside the men's.
 pub const LOOK_FEMALE_TEXTURES: u32 = 0x1;
 /// Look word: the race ships the men's skin textures (`difm`, `nrmm0…5`,
 /// `spcm`).
 pub const LOOK_MALE_TEXTURES: u32 = 0x2;
-/// Look word: the race ships six normal maps for each sex, blended by the
-/// physique.
-pub const LOOK_NORMALS: u32 = 0x4;
+/// Look word: the race model loader runs one more morph-controller pass
+/// after loading the race's morph set (what that pass does is not traced).
+/// The normal maps load under [`LOOK_FEMALE_TEXTURES`] and
+/// [`LOOK_MALE_TEXTURES`], not under this bit.
+pub const LOOK_MORPH_PASS: u32 = 0x4;
 /// Look word: the race has hair (the body builder adds a `CharExt` style
 /// under the head).
 pub const LOOK_HAIR: u32 = 0x10;
@@ -296,8 +297,8 @@ pub const LOOK_HAIR: u32 = 0x10;
 pub const LOOK_BEARD: u32 = 0x20;
 /// Look word: the race's body wears the built-in skin material.
 pub const LOOK_SKIN: u32 = 0x80;
-/// Look word: the age darkens the skin (and the feral level darkens it
-/// further).
+/// Look word: the skin job stores a darkening for a feral or aged
+/// character of the race (the value stored is the feral level).
 pub const LOOK_AGE_DARKENS: u32 = 0x100;
 /// First flag word: in the story, a dead character of the race may be
 /// raised again later (humans and the golem suit; inferred from the rule

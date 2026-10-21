@@ -21,8 +21,8 @@ pub const LIMB_STRETCH: [f32; 18] = [
 ];
 
 /// The scale a body part of `slot` gets when the character's scale is
-/// `scale` and the part's stored length is `length_cm` (the builder's stored
-/// per-part length, half a 55 cm thigh in the shipped body).
+/// `scale` and `length_cm` is the second component of the part's stored
+/// vector (what that vector holds is not traced; nothing calls this yet).
 ///
 /// A part with a stretch limit takes the character's scale; when that would
 /// stretch the part more than its limit allows (the scale below twice the
@@ -106,14 +106,23 @@ pub fn skin_textures(stem: &str, set: SkinSet) -> Option<SkinTextures> {
         SkinSet::Male => ("difm", "spcm", "nrmm"),
         SkinSet::Female => ("diff", "spcf", "nrmf"),
     };
+    // The race loader gives both sexes the men's extra map (`nrmm5`).
     Some(SkinTextures {
         colour: format!("{stem}{colour}"),
         gloss: format!("{stem}{gloss}"),
-        normals: std::array::from_fn(|i| format!("{stem}{normal}{i}")),
+        normals: std::array::from_fn(|i| {
+            if i == 5 {
+                format!("{stem}nrmm5")
+            } else {
+                format!("{stem}{normal}{i}")
+            }
+        }),
     })
 }
 
-/// A race's skin textures: its colour map, gloss map and six normal maps.
+/// A race's skin textures: its colour map, gloss map and six normal maps:
+/// the base map (0), the four blended physique maps (1 to 4) and the extra
+/// map (5), which is the men's for both sexes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkinTextures {
     pub colour: String,
@@ -135,7 +144,9 @@ pub fn beard_textures(index: usize) -> Option<[String; 2]> {
 
 /// The beard a record wears: a man of a race with beards (look bit 5)
 /// whose record names one in bits 20–23 of its profession word. The stored
-/// number is one more than the texture index; six beards are shipped.
+/// number is one more than the texture index; six beards are shipped. The
+/// original has no upper bound and would read past its six-entry tables
+/// for a stored 7 to 15; those give no beard here.
 pub fn beard_index(record: &CharacterRecord, look: u32) -> Option<usize> {
     let stored = (record.profession_rest & 0x00F0_0000) >> 20;
     (look & LOOK_BEARD != 0 && !record.female && stored != 0 && stored <= 6)
@@ -153,12 +164,14 @@ pub struct NormalLayer {
 /// The skin job's normal-map layers, from the morph controller's weights.
 ///
 /// The controller's weights are laid out with six entries per sex at
-/// `weights[sex * 6…]` (the builder reads them with a stride of six and
-/// picks the first four); the special layer takes `weights[4]` for either
-/// sex. A layer shows only when its weight is over 0.01 in double
-/// precision **and** the race has that map. A feral character adds its
-/// feral level to the first layer and can show the extra `nrm?5` map on its
-/// own. At most five layers are kept (four plus the extra).
+/// `weights[sex * 6…]`; weight `i` of the first four drives the race's
+/// physique map `i + 1` (map 0 is the base normal map, never a layer), and
+/// the extra layer takes `weights[4]` for either sex. A layer shows only
+/// when its weight is over 0.01 in double precision **and** the race has
+/// that map. A feral character adds its feral level to the first layer and
+/// can show the extra map (5) on its own. At most five layers are kept
+/// (four plus the extra). An empty `weights` is a body without a morph
+/// controller: the original then builds no layer at all.
 pub fn normal_layers(
     weights: &[f32],
     sex: usize,
@@ -167,9 +180,12 @@ pub fn normal_layers(
     has_extra: bool,
 ) -> Vec<NormalLayer> {
     let mut out = Vec::new();
+    if weights.is_empty() {
+        return out;
+    }
     let at = |i: usize| weights.get(i).copied().unwrap_or(0.0);
     let base = sex * 6;
-    for (i, texture) in normals.iter().take(4).enumerate() {
+    for (i, texture) in normals[1..5].iter().enumerate() {
         let w = at(base + i);
         if f64::from(w) > 0.01 && !texture.is_empty() {
             let amount = if i == 0 && feral > 0.0 { w + feral } else { w };
@@ -187,22 +203,6 @@ pub fn normal_layers(
         });
     }
     out.truncate(5);
-    out
-}
-
-/// The morph controller's normal weights the original's skin job reads,
-/// derived from a physique's eleven target weights. The men's first four
-/// corners sit at 0–3, the age at 4; the women's four corners at 6–9.
-/// **Guess:** the controller's six-per-sex layout is not in the pack; the
-/// values are copied from the physique targets, which the shipped morph
-/// sets use for the same features.
-pub fn controller_weights(weights: &[f32]) -> [f32; 12] {
-    let w = |i: usize| weights.get(i).copied().unwrap_or(0.0);
-    let mut out = [0.0; 12];
-    out[..4].copy_from_slice(&[w(0), w(1), w(2), w(3)]);
-    out[4] = w(4);
-    out[5] = w(5);
-    out[6..10].copy_from_slice(&[w(0), w(1), w(2), w(3)]);
     out
 }
 
@@ -224,37 +224,67 @@ pub fn hair_entry(style: u32, entries: &[String]) -> Option<&String> {
 }
 
 /// Whether a hair root shows: the `?`-prefixed pieces show only while the
-/// head is covered (the helmet's coverage sets the head's hide bit), and
-/// every other piece shows otherwise.
+/// head is covered (bit 0 of the worn set's coverage union on the head
+/// slot), and every other piece shows otherwise.
 pub fn hair_root_kept(name: &str, head_covered: bool) -> bool {
     name.starts_with('?') == head_covered
 }
 
-/// What a hair refresh must do, as the builder's rebuild cut: keep the hair
-/// (0), show only its `?` pieces (1) or replace it whole (2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HairCut {
-    Keep,
-    Cover,
-    Replace,
+/// Whether the head is covered for the hair: bit 0 of the worn set's
+/// coverage union on the head slot (its innermost byte's lowest sub-part).
+pub fn head_covered(head_word: u64) -> bool {
+    head_word & 1 != 0
 }
 
-/// The refresh a new look needs: unchanged when the style and coverage match
-/// the built hair, covered when only the coverage changed, replaced when the
-/// style changed.
-pub fn hair_refresh(
-    built_style: u32,
-    built_covered: bool,
-    style: u32,
-    covered: bool,
-    has_hair: bool,
-) -> HairCut {
-    if !has_hair || built_style != style {
-        HairCut::Replace
-    } else if built_covered != covered {
-        HairCut::Cover
+/// Whether a body grows hair at all: its race has hair (look bit 4) and
+/// the worn set's head union lacks bit 1 (a garment that leaves no room).
+pub fn grows_hair(look: u32, head_word: u64) -> bool {
+    look & exa_formats::races::LOOK_HAIR != 0 && head_word & 2 == 0
+}
+
+/// The hair code of a built body: 0 without a hair root, 1 when the first
+/// hair root met depth first is a `?` piece, 2 otherwise.
+pub fn built_hair_code(first_root: Option<&str>) -> u8 {
+    match first_root {
+        None => 0,
+        Some(name) if name.starts_with('?') => 1,
+        Some(_) => 2,
+    }
+}
+
+/// The hair code a look wants: 0 when the body grows no hair
+/// ([`grows_hair`]), 1 when the head is covered (the `?` pieces), else 2.
+pub fn wanted_hair_code(look: u32, head_word: u64) -> u8 {
+    if !grows_hair(look, head_word) {
+        0
+    } else if head_covered(head_word) {
+        1
     } else {
+        2
+    }
+}
+
+/// What the look rebuild does with a body's hair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HairCut {
+    /// The built hair already shows the wanted pieces.
+    Keep,
+    /// The body should have no hair: the built hair goes.
+    Remove,
+    /// The hair is built again for the wanted pieces.
+    Rebuild,
+}
+
+/// The look rebuild's hair decision from the built and wanted codes: keep
+/// when they agree, remove when no hair is wanted, rebuild otherwise. The
+/// style number plays no part.
+pub fn hair_cut(built: u8, wanted: u8) -> HairCut {
+    if built == wanted {
         HairCut::Keep
+    } else if wanted == 0 {
+        HairCut::Remove
+    } else {
+        HairCut::Rebuild
     }
 }
 
@@ -279,9 +309,9 @@ mod tests {
         assert_eq!(offset[1], random_unit(random_step(0x0808_8406)) - 0.5);
     }
 
-    /// A 27.5 cm stored thigh over the 55 cm limit needs scale 1.0 (the
+    /// A stored 27.5 over the thigh's 55 limit needs scale 1.0 (the
     /// builder's two-times rule); a 0.5 character's part keeps the mean,
-    /// 0.75, rather than collapsing to half length.
+    /// 0.75.
     #[test]
     fn a_short_characters_legs_keep_half_the_required_scale() {
         assert_eq!(limb_scale(1.0, 2, 27.5), 1.0);
@@ -319,7 +349,9 @@ mod tests {
             (woman.colour.as_str(), woman.gloss.as_str()),
             ("humandiff", "humanspcf")
         );
-        assert_eq!(woman.normals[5], "humannrmf5");
+        // The extra map is the men's for both sexes.
+        assert_eq!(woman.normals[4], "humannrmf4");
+        assert_eq!(woman.normals[5], "humannrmm5");
         assert_eq!(skin_textures("human", SkinSet::None), None);
     }
 
@@ -362,20 +394,21 @@ mod tests {
         weights[3] = 1.0;
         weights[4] = 0.03;
         let layers = normal_layers(&weights, 0, 0.0, &names, true);
+        // Weight i drives physique map i + 1; map 0 is the base map.
         assert_eq!(
             layers,
             vec![
                 NormalLayer {
                     amount: 0.5,
-                    texture: "humannrmm0".into()
-                },
-                NormalLayer {
-                    amount: 0.02,
                     texture: "humannrmm1".into()
                 },
                 NormalLayer {
+                    amount: 0.02,
+                    texture: "humannrmm2".into()
+                },
+                NormalLayer {
                     amount: 1.0,
-                    texture: "humannrmm3".into()
+                    texture: "humannrmm4".into()
                 },
                 NormalLayer {
                     amount: 0.03,
@@ -399,13 +432,15 @@ mod tests {
         );
         // A missing texture is skipped.
         let missing: [String; 6] = std::array::from_fn(|i| {
-            if i == 1 {
+            if i == 2 {
                 String::new()
             } else {
                 format!("humannrmm{i}")
             }
         });
         assert_eq!(normal_layers(&weights, 0, 0.0, &missing, true).len(), 3);
+        // No morph controller: no layer, not even the feral extra.
+        assert!(normal_layers(&[], 0, 0.5, &names, true).is_empty());
     }
 
     /// The women's four layers come from indices 6–9.
@@ -419,11 +454,11 @@ mod tests {
         let layers = normal_layers(&weights, 1, 0.0, &names, false);
         assert_eq!(
             (layers[0].amount, layers[0].texture.as_str()),
-            (0.25, "humannrmf0")
+            (0.25, "humannrmf1")
         );
         assert_eq!(
             (layers[1].amount, layers[1].texture.as_str()),
-            (0.5, "humannrmf1")
+            (0.5, "humannrmf2")
         );
         assert_eq!(layers.len(), 2);
     }
@@ -460,21 +495,24 @@ mod tests {
         assert!(!hair_root_kept("hairmain", true));
     }
 
+    /// The look rebuild compares hair codes: a bare head over full hair
+    /// keeps it, a hood (head bit 0) over full hair rebuilds it for the `?`
+    /// pieces, a race without hair or a head with bit 1 removes it.
     #[test]
-    fn a_look_refresh_keeps_covers_or_replaces_the_hair() {
-        assert_eq!(hair_refresh(0, false, 0, false, false), HairCut::Replace);
-        assert_eq!(hair_refresh(3, false, 3, false, true), HairCut::Keep);
-        assert_eq!(hair_refresh(3, false, 3, true, true), HairCut::Cover);
-        assert_eq!(hair_refresh(3, false, 4, false, true), HairCut::Replace);
-    }
-
-    #[test]
-    fn the_controllers_weights_take_the_physiques() {
-        let w: Vec<f32> = (0..11).map(|i| i as f32).collect();
-        let c = controller_weights(&w);
-        assert_eq!(&c[..6], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-        assert_eq!(&c[6..10], &[0.0, 1.0, 2.0, 3.0]);
-        assert_eq!(c[10], 0.0);
+    fn a_look_rebuild_keeps_removes_or_rebuilds_the_hair() {
+        let human = 0x1BF;
+        assert_eq!(built_hair_code(None), 0);
+        assert_eq!(built_hair_code(Some("?HULA01_")), 1);
+        assert_eq!(built_hair_code(Some("HULA01 o")), 2);
+        assert_eq!(wanted_hair_code(human, 0), 2);
+        assert_eq!(wanted_hair_code(human, 0x0101), 1);
+        assert_eq!(wanted_hair_code(human, 0x03), 0);
+        assert_eq!(wanted_hair_code(human & !0x10, 0), 0);
+        assert_eq!(hair_cut(2, wanted_hair_code(human, 0)), HairCut::Keep);
+        assert_eq!(hair_cut(2, wanted_hair_code(human, 1)), HairCut::Rebuild);
+        assert_eq!(hair_cut(1, wanted_hair_code(human, 2)), HairCut::Remove);
+        assert_eq!(hair_cut(0, 0), HairCut::Keep);
+        assert!(grows_hair(human, 1) && !grows_hair(human, 2));
     }
 
     /// The installed races' look words: Human 0x1BF, Ancient 0x86,
@@ -493,16 +531,20 @@ mod tests {
         assert_eq!(look("Skeleton"), 4);
     }
 
-    /// The look bits name the shipped races' features.
+    /// Human's look word holds every look bit this module reads.
     #[test]
-    fn the_shipped_races_look_words() {
-        let human = exa_formats::races::LOOK_HAIR
-            | exa_formats::races::LOOK_BEARD
-            | exa_formats::races::LOOK_SKIN
-            | exa_formats::races::LOOK_AGE_DARKENS
-            | LOOK_FEMALE_TEXTURES
-            | LOOK_MALE_TEXTURES;
-        // Human 0x1BF carries all of them.
-        assert_eq!(human, 0x1B3);
+    fn the_human_look_word_holds_the_look_bits() {
+        use exa_formats::races::{LOOK_HAIR, LOOK_SKIN};
+        let human = 0x1BF;
+        for bit in [
+            LOOK_FEMALE_TEXTURES,
+            LOOK_MALE_TEXTURES,
+            LOOK_HAIR,
+            LOOK_BEARD,
+            LOOK_SKIN,
+            LOOK_AGE_DARKENS,
+        ] {
+            assert_ne!(human & bit, 0, "{bit:#x}");
+        }
     }
 }

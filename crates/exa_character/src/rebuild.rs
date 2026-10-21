@@ -10,7 +10,6 @@
 
 use exa_formats::morph::Frame;
 
-use crate::look::{HairCut, hair_refresh};
 use crate::runtime::{Body, IDENTITY};
 use crate::texture_job::SkinJob;
 
@@ -146,6 +145,7 @@ pub fn retexture(
     look_word: u32,
     controller_weights: &[f32],
     apparel: &[Option<String>],
+    fresh: &mut dyn FnMut() -> u32,
     exists: &dyn Fn(&str) -> bool,
 ) -> SkinJob {
     let mut job = SkinJob::of_record(
@@ -154,38 +154,28 @@ pub fn retexture(
         record,
         look_word,
         controller_weights,
+        fresh,
         exists,
     );
     job.take_first_apparel(apparel);
     job
 }
 
-/// The hair cut a look rebuild needs: keep the hair, show
-/// only its `?` roots, or replace it whole.
-pub fn hair_cut(
-    built_style: u32,
-    built_covered: bool,
-    style: u32,
-    covered: bool,
-    has_hair: bool,
-) -> HairCut {
-    hair_refresh(built_style, built_covered, style, covered, has_hair)
-}
-
-/// Rebuilds the hair of an existing body: the style's roots
-/// are kept when the cut is [`HairCut::Keep`], the `?` roots alone when it
-/// is [`HairCut::Cover`], and nothing when it is [`HairCut::Replace`].
+/// The creation scene's hair rebuild: every hair root is removed, then,
+/// when the body grows hair ([`crate::look::grows_hair`]), the style's
+/// roots are grown again under the head's cover rule. Returns the roots
+/// grown.
 pub fn hair_roots<'a>(
     roots: impl Iterator<Item = &'a str>,
-    cut: HairCut,
-    head_covered: bool,
+    look: u32,
+    head_word: u64,
 ) -> Vec<&'a str> {
+    if !crate::look::grows_hair(look, head_word) {
+        return Vec::new();
+    }
+    let covered = crate::look::head_covered(head_word);
     roots
-        .filter(|name| match cut {
-            HairCut::Keep => true,
-            HairCut::Cover => crate::look::hair_root_kept(name, head_covered),
-            HairCut::Replace => false,
-        })
+        .filter(|name| crate::look::hair_root_kept(name, covered))
         .collect()
 }
 
@@ -198,27 +188,6 @@ pub fn preview(
     weights: Vec<f32>,
 ) -> Rebuild {
     Rebuild::prepare(body, pixel_format, slot_frames, weights, None, true)
-}
-
-/// The re-texture wrapper: only the skin job is rebuilt.
-pub fn retexture_only(
-    pixel_format: u32,
-    stem: &str,
-    record: &exa_formats::characters::CharacterRecord,
-    look_word: u32,
-    controller_weights: &[f32],
-    apparel: &[Option<String>],
-    exists: &dyn Fn(&str) -> bool,
-) -> SkinJob {
-    retexture(
-        pixel_format,
-        stem,
-        record,
-        look_word,
-        controller_weights,
-        apparel,
-        exists,
-    )
 }
 
 /// Waits while the render thread still owns the old texture
@@ -318,6 +287,7 @@ mod tests {
             0x1BF,
             &[0.0; 12],
             &[None, Some("&doublet_ba1".into())],
+            &mut || 1,
             &exists,
         );
         assert_eq!(job.colour.as_deref(), Some("humandifm"));
@@ -325,25 +295,16 @@ mod tests {
         assert_eq!(job.format.side, 0x200);
     }
 
+    /// The creation scene grows the `?` roots under a covered head, the
+    /// others under a bare one, and none for a race without hair or a head
+    /// word with bit 1.
     #[test]
-    fn the_hair_cut_and_roots_follow_the_look() {
-        assert_eq!(hair_cut(0, false, 3, false, false), HairCut::Replace);
-        assert_eq!(hair_cut(3, false, 3, false, true), HairCut::Keep);
-        assert_eq!(hair_cut(3, false, 3, true, true), HairCut::Cover);
+    fn the_hair_roots_follow_the_head() {
         let roots = ["HULA01 o", "?HULA01_"];
-        assert_eq!(
-            hair_roots(roots.iter().copied(), HairCut::Keep, false),
-            roots
-        );
-        assert_eq!(
-            hair_roots(roots.iter().copied(), HairCut::Cover, true),
-            ["?HULA01_"]
-        );
-        assert_eq!(
-            hair_roots(roots.iter().copied(), HairCut::Cover, false),
-            ["HULA01 o"]
-        );
-        assert!(hair_roots(roots.iter().copied(), HairCut::Replace, false).is_empty());
+        assert_eq!(hair_roots(roots.iter().copied(), 0x1BF, 0), ["HULA01 o"]);
+        assert_eq!(hair_roots(roots.iter().copied(), 0x1BF, 1), ["?HULA01_"]);
+        assert!(hair_roots(roots.iter().copied(), 0x1BF, 2).is_empty());
+        assert!(hair_roots(roots.iter().copied(), 0x1AF, 0).is_empty());
     }
 
     #[test]
