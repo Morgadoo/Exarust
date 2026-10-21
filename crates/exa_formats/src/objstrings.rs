@@ -164,6 +164,12 @@ impl Library {
         self.entries.is_empty()
     }
 
+    /// Empties the library as the original's clear does: no slots, no free
+    /// hint and no text. The table's trailing slot is forgotten with them.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
     /// The slots as the table holds them.
     pub fn entries(&self) -> &[Entry] {
         &self.entries
@@ -423,6 +429,21 @@ mod tests {
         lib.release(9);
         lib.add_ref(0);
         assert_eq!(lib.len(), 1);
+    }
+
+    #[test]
+    fn clearing_empties_the_slots_the_hint_and_the_text() {
+        let mut lib = Library::parse(&library(&[(1, "Sword")])).unwrap();
+        lib.set(1, b"Spear");
+        lib.clear();
+        assert!(lib.is_empty());
+        assert_eq!(lib.text(), b"");
+        assert_eq!(lib.get(1), None);
+        assert_eq!(lib.write(), {
+            let mut b = MAGIC.to_le_bytes().to_vec();
+            b.extend(16u32.to_le_bytes());
+            b
+        });
     }
 
     #[test]
