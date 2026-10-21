@@ -882,12 +882,7 @@ where
         }
         row.rank = u32::from((facts.rank_word as u8) >> 5);
         row.points = i32::from(facts.rank_word & BULK_MASK);
-        for ((float, units), _) in row
-            .bonus_floats
-            .iter_mut()
-            .zip(facts.bonus_units.iter())
-            .zip(0..)
-        {
+        for (float, units) in row.bonus_floats.iter_mut().zip(facts.bonus_units.iter()) {
             if *units == 0 {
                 continue;
             }
@@ -962,6 +957,10 @@ where
 
 /// One row of profession progress: total experience and the column gained at
 /// each rank.
+///
+/// The original writes one byte per rank into a row whose exact stride is
+/// unclear from the decompilation; the twelve rank slots here are a
+/// reconstruction that keeps the same order of writes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProfessionRow {
     /// Total experience in this row, capped by the original's twelve ranks.
@@ -982,16 +981,19 @@ pub struct ProfessionProgress {
 /// The original keeps two grids and drifts between them as characters are
 /// generated. A nonzero prerequisite link names a one-based column in the
 /// same row that must already be marked. The default is a neutral grid with
-/// every weight at one; it is not retail data.
+/// every weight at one; it is not retail data. Which grid the original treats
+/// as the rarer side is a guess: the caller can swap `weights_a` and
+/// `weights_b` without changing any other rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProfessionCatalog {
     /// The grid used when the drift roll picks the rare side.
     pub weights_a: [[i32; PROFESSION_COLUMNS]; PROFESSION_ROWS],
     /// The grid used otherwise.
     pub weights_b: [[i32; PROFESSION_COLUMNS]; PROFESSION_ROWS],
-    /// First prerequisite chain for `weights_a`.
+    /// First prerequisite chain. The grid selects columns in the same row;
+    /// it is shared by both weight grids.
     pub prereq_a: [[u8; PROFESSION_COLUMNS]; PROFESSION_ROWS],
-    /// Second prerequisite chain for `weights_a`.
+    /// Second prerequisite chain, shared by both weight grids.
     pub prereq_b: [[u8; PROFESSION_COLUMNS]; PROFESSION_ROWS],
     /// The drift counter. It steps up by three on the rare side and down by
     /// one otherwise, within the original's bounds.
@@ -1127,8 +1129,8 @@ pub struct NpcRequest<'a> {
     /// The character level. It sets experience and the level-derived skill.
     pub level: i32,
     /// Flags the caller forces on. Bit zero is female, the next bit enables
-    /// max-rank outfit picks, and the top two input bits force the sex roll
-    /// and the strength bias respectively.
+    /// max-rank outfit picks, bit sixteen skips the sex roll and bit
+    /// seventeen biases the strength curve upwards.
     pub forced_flags: u32,
     /// The character's warmth, used to blend skin and hair tone.
     pub warmth: f32,
@@ -1149,6 +1151,11 @@ pub struct NameTable<'a> {
 }
 
 /// The generated look of an NPC.
+///
+/// The field names are Exarust's reading of how the values are used: the
+/// original keeps them as unnamed record fields. The two seed words are named
+/// for the look features they feed; the wide roll is called the damage seed
+/// and the small one the build seed, which is a guess about their consumers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NpcLook {
     /// The final flags word: bit zero is female, bits twenty to twenty-seven
@@ -1776,7 +1783,11 @@ mod tests {
     fn random_npc_pins_curves_and_seeds() {
         let unit_values = [0.0, 0.75, 0.6, 0.2, 0.9, 0.4, 0.3, 0.8, 0.55, 0.65];
         let mut next = 0;
-        let male = [("Aldric", "Vane"), ("Borin", "Kell"), ("Cedric", "Moor")];
+        let male = [
+            ("Given0", "Family0"),
+            ("Given1", "Family1"),
+            ("Given2", "Family2"),
+        ];
         let names = NameTable {
             male: &male,
             female: &[],
@@ -1801,7 +1812,7 @@ mod tests {
         assert_eq!(profile.variant, 3);
         assert_eq!(profile.appearance, 3);
         assert_eq!(profile.profession, 5);
-        assert_eq!(profile.name, ("Aldric", "Vane"));
+        assert_eq!(profile.name, ("Given0", "Family0"));
         assert_eq!(profile.professions.rows[0].experience, 15_000);
         assert_eq!(profile.professions.rows[1].experience, 5_000);
         assert_eq!(profile.professions.rows[2].experience, 10_000);
