@@ -576,8 +576,14 @@ impl Mesh {
             (None, None) => {}
         }
         if self.uvs.is_some() {
-            self.uv_ids
-                .extend(other.uv_ids.iter().map(|&i| i + base_uv));
+            self.uv_ids.resize(base_vertex as usize, 0);
+            if other.uvs.is_some() {
+                self.uv_ids
+                    .extend(other.uv_ids.iter().map(|&i| i + base_uv));
+            } else {
+                self.uv_ids
+                    .extend(std::iter::repeat_n(base_uv, other.positions.len()));
+            }
             self.uv_count = base_uv as usize + other.uv_count.max(other.uv_ids.len());
         }
 
@@ -2722,6 +2728,7 @@ mod tests {
         );
         // The missing texture coordinates join as zero.
         assert_eq!(left.uvs.as_deref().unwrap()[3], [0.0, 0.0]);
+        assert_eq!(left.uv_ids, [0, 1, 2, 3, 3, 3]);
         assert_eq!(left.uv_count, 6);
         // The missing vertex colours join white.
         assert_eq!(left.colors.as_deref().unwrap()[3], [255; 4]);
