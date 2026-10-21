@@ -195,6 +195,8 @@ pub(crate) fn decide_movement(
     // A body without muscles stands on level ground.
     let level = drive.map_or(1.0, |d| d.balance().level());
     let was_locomoting = body.locomoted;
+    // The head tilt steps every tick, before the body moves or stands.
+    locomotion::lean(&mut body, drive.is_none_or(|d| d.balance().has_support()));
     if body.moving() {
         // The root's displacement: the body's own while it walks by its
         // carry; otherwise across the ground the capsule's step, up and

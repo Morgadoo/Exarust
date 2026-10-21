@@ -59,8 +59,8 @@ pub struct TwistBy {
     /// Its condition is casting a power.
     pub casting: bool,
     pub crouch: f32,
-    /// The direction's height before the crouch (the original's run lean,
-    /// from an exertion Exarust does not keep: 0).
+    /// The direction's height before the crouch (the original's run lean:
+    /// the body's persistent head tilt).
     pub tilt: f32,
 }
 

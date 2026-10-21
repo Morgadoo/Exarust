@@ -23,7 +23,8 @@ use super::{Drive, Ragdoll};
 #[path = "body_gait.rs"]
 mod gait;
 pub use gait::{
-    GaitRow, GaitTable, PHASE_UNSET, STOPS, Start, Stride, advance_clock, fraction, locomote, stand,
+    GaitRow, GaitTable, PHASE_UNSET, STOPS, Start, Stride, advance_clock, fraction, lean, locomote,
+    stand,
 };
 #[path = "body_twist.rs"]
 mod twist;
@@ -343,9 +344,13 @@ pub struct Locomotor {
     /// mode, otherwise the walk's (or the general one in combat).
     pub grip_mode: i32,
     /// The original's exertion value, which the run blend's cap lowers and
-    /// whose square and sign make the head tilt.
+    /// standing bleeds, and whose square and sign make the head tilt. The
+    /// original's feet routine also writes it from the feet's pull; that
+    /// writer is not ported, so it stays 0 and the tilt stays inert.
     pub exertion: f32,
-    /// The head tilt the torso twist reads (the original's run lean).
+    /// The head tilt the torso twist reads (the original's run lean). It
+    /// persists between ticks: `lean` steps it
+    /// each tick and the airborne locomotion ramps it.
     pub head_tilt: f32,
     /// The jump flag and its timer: neither is written anywhere in the
     /// original, so the jump branch is dead; kept for the rule.

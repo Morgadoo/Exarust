@@ -62,6 +62,12 @@ const EXERTION_KEEP: f64 = 0.99;
 /// The head tilt the torso twist reads: the sign of the exertion × its
 /// square × 2.
 const TILT_SHARE: f32 = 2.0;
+/// What the exertion value keeps a tick of standing (double precision).
+const STAND_EXERTION_KEEP: f64 = 0.95;
+/// What the head tilt keeps each tick (double precision).
+const TILT_KEEP: f64 = 0.95;
+/// What the head tilt gains a tick airborne (double precision).
+const TILT_RAMP: f64 = 0.05;
 /// A jump (a flag and a timer the original never writes) decelerates the
 /// clock by this much a tick (double) once its timer passes a half.
 const JUMP_DECAY: f64 = 0.013;
@@ -338,13 +344,6 @@ pub fn locomote(
     if body.run < 0.0 {
         body.run = 0.0;
     }
-    // The head tilt the twist reads, while it has support: the sign of the
-    // exertion times its square times two.
-    body.head_tilt = if at.supported {
-        tilt_of(body.exertion)
-    } else {
-        0.0
-    };
     // The gait columns.
     let rest = 1.0 - body.run;
     let root = if body.run > EPSILON {
@@ -502,7 +501,23 @@ fn clock_step(req: &Locomotion, body: &mut Locomotor, at: &Stride) {
         let base = ((f64::from(speed) * CLOCK_PACE + AIRBORNE_PACE) * f64::from(rate)) as f32;
         let u = fraction((1.0 + body.phase) - at.progress);
         body.clock_step = (2.0 - u) * (base * u);
+        // Airborne, the head tilt ramps up 0.05 a tick (double) to at most 1.
+        body.head_tilt = (f64::from(body.head_tilt) + TILT_RAMP) as f32;
+        if body.head_tilt > 1.0 {
+            body.head_tilt = 1.0;
+        }
     }
+}
+
+/// The head tilt the twist reads, stepped once a tick before the body moves
+/// or stands: while it has support the tilt is the sign of the exertion
+/// times its square times two, then it always falls by 5% (double
+/// precision). Airborne, the locomotion routine ramps it up instead.
+pub fn lean(body: &mut Locomotor, supported: bool) {
+    if supported {
+        body.head_tilt = tilt_of(body.exertion);
+    }
+    body.head_tilt = (f64::from(body.head_tilt) * TILT_KEEP) as f32;
 }
 
 /// The head tilt an exertion value makes: the original's copysign(1, x)
@@ -539,10 +554,12 @@ pub fn advance_clock(body: &mut Locomotor, clock: f32, length: f32) -> f32 {
 }
 
 /// One tick of a standing body's run blend (the body tick's branch for a
-/// body that does not locomote): getting up it is 0; otherwise it falls
-/// 0.02 a tick (double), never under 0.
+/// body that does not locomote): the exertion value keeps 95% (double
+/// precision); getting up the run blend is 0, otherwise it falls 0.02 a
+/// tick (double), never under 0.
 pub fn stand(body: &mut Locomotor, getting_up: bool) {
     body.locomoted = false;
+    body.exertion = (f64::from(body.exertion) * STAND_EXERTION_KEEP) as f32;
     if getting_up {
         body.run = 0.0;
         return;

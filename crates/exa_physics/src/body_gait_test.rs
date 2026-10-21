@@ -137,6 +137,19 @@ fn a_standing_body_lets_its_run_blend_fall() {
     assert_eq!(body.run, 0.0);
 }
 
+/// Standing or getting up, the exertion value keeps 95% a tick.
+#[test]
+fn a_standing_body_lets_its_exertion_fall() {
+    let mut body = Locomotor {
+        exertion: 0.5,
+        ..default()
+    };
+    stand(&mut body, false);
+    assert_eq!(body.exertion, (0.5f64 * 0.95) as f32);
+    stand(&mut body, true);
+    assert_eq!(body.exertion, ((0.5f64 * 0.95) as f32 as f64 * 0.95) as f32);
+}
+
 /// The columns at a half run blend: walking the clock by √run (0.23670),
 /// running by the blend (0.26265); the stop 125 cm on the jog row, 150 cm
 /// on the sprint row (the latch, a level of 1 and 3.6 cm a tick), 125 cm
@@ -402,23 +415,45 @@ fn the_clock_wraps_once_and_is_kept() {
 }
 
 /// The exertion value falls ×0.98 while the run blend is capped and ×0.99
-/// otherwise (double precision); the head tilt is its sign × its square ×
-/// 2 while the body has support, and 0 without.
+/// otherwise (double precision).
 #[test]
-fn exertion_bleeds_and_tilts_the_head() {
-    let (req, mut body, mut at) = walker();
+fn exertion_bleeds() {
+    let (req, mut body, at) = walker();
     body.leg = LegMode::Run;
     body.exertion = 0.5;
     body.run = 1.0;
     locomote(&req, &mut body, &GaitTable::default(), &at);
     assert_eq!(body.exertion, 0.49);
-    assert_eq!(body.head_tilt, 0.49 * 0.49 * 2.0);
     body.leg = LegMode::Walk;
     locomote(&req, &mut body, &GaitTable::default(), &at);
     assert_eq!(body.exertion, 0.49 * 0.99);
+}
+
+/// With support the head tilt is the exertion's sign × square × 2, and it
+/// keeps 95% of that each tick; airborne it is not set and the locomotion
+/// routine ramps it by 0.05 a tick to at most 1.
+#[test]
+fn head_tilt_persists_and_ramps_in_the_air() {
+    let (req, mut body, mut at) = walker();
+    body.exertion = 0.5;
+    lean(&mut body, true);
+    assert_eq!(body.head_tilt, ((0.5f32 * 0.5 * 2.0) as f64 * 0.95) as f32);
+    // Standing still without support, the tilt keeps falling.
+    let before = body.head_tilt;
+    lean(&mut body, false);
+    assert_eq!(body.head_tilt, (f64::from(before) * 0.95) as f32);
+    // Airborne locomotion ramps it, capped at 1.
     at.supported = false;
+    body.head_tilt = 0.5;
     locomote(&req, &mut body, &GaitTable::default(), &at);
-    assert_eq!(body.head_tilt, 0.0);
+    assert_eq!(body.head_tilt, (0.5f64 + 0.05) as f32);
+    body.head_tilt = 0.99;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.head_tilt, 1.0);
+    // A negative exertion tilts the other way.
+    body.exertion = -0.5;
+    lean(&mut body, true);
+    assert!(body.head_tilt < 0.0);
 }
 
 /// The grip mode the routine sets: the general mode running (and walking
