@@ -105,6 +105,46 @@ pub fn continue_label(kind: i32) -> &'static str {
     }
 }
 
+/// The preview background the form paints before the 3D view: opaque
+/// black.
+pub const PREVIEW_COLOUR: [u8; 4] = [0, 0, 0, 255];
+/// The texture unit the preview view's image is bound to.
+pub const PREVIEW_TEXTURE_UNIT: u32 = 0x10;
+
+/// One corner of the preview quad: window position and texture
+/// coordinates (0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewVertex {
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
+}
+
+/// The quad the creation form draws under its preview: a black rectangle
+/// over the form's frame (0, 0) to (width, height), textured from the
+/// viewport, its corners in the original's order: top left, bottom left,
+/// bottom right, top right. The colour and the texture unit are
+/// [`PREVIEW_COLOUR`] and [`PREVIEW_TEXTURE_UNIT`].
+pub fn preview_quad(width: f32, height: f32) -> [PreviewVertex; 4] {
+    [
+        PreviewVertex {
+            position: [0.0, 0.0],
+            uv: [0.0, 0.0],
+        },
+        PreviewVertex {
+            position: [0.0, height],
+            uv: [0.0, 1.0],
+        },
+        PreviewVertex {
+            position: [width, height],
+            uv: [1.0, 1.0],
+        },
+        PreviewVertex {
+            position: [width, 0.0],
+            uv: [1.0, 0.0],
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +195,22 @@ mod tests {
         assert_eq!(continue_label(2), "Continue from save");
         assert_eq!(continue_label(1), "Continue from checkpoint");
         assert_eq!(continue_label(0), "Continue from checkpoint");
+    }
+
+    /// The preview quad covers the frame from the top left, textured from
+    /// the viewport in the original's order, opaque black behind it.
+    #[test]
+    fn the_preview_quad_covers_the_form() {
+        assert_eq!(PREVIEW_COLOUR, [0, 0, 0, 255]);
+        assert_eq!(PREVIEW_TEXTURE_UNIT, 0x10);
+        let q = preview_quad(180.0, 24.0);
+        assert_eq!(q[0].position, [0.0, 0.0]);
+        assert_eq!(q[1].position, [0.0, 24.0]);
+        assert_eq!(q[2].position, [180.0, 24.0]);
+        assert_eq!(q[3].position, [180.0, 0.0]);
+        assert_eq!(q[0].uv, [0.0, 0.0]);
+        assert_eq!(q[1].uv, [0.0, 1.0]);
+        assert_eq!(q[2].uv, [1.0, 1.0]);
+        assert_eq!(q[3].uv, [1.0, 0.0]);
     }
 }

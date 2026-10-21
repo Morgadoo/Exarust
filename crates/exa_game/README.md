@@ -116,11 +116,20 @@ normal-map layers, the look seed's skin-map offsets and the per-limb leg
 scale) is `exa_character::look`; the spawned body builds its `CharExt` hair
 with `exa_character::hair`. The creator icon sheet is four
 96-pixel cells at a scale of eight units. The form's labels and page
-captions live in `exa_ui::creation`. Drawing the form, loading the model
-preview and sounds, the object database behind the kit, record
-serialization, the power tree and the running mode transitions are not
-in, and nothing here is wired into the running game yet. Rules are plain
-functions with tests pinned to concrete numbers.
+captions live in `exa_ui::creation`. The form itself is modelled too: the
+preview frame (12 units in, 24 down, the parent less 360 wide and 24 high,
+at least 180 × 24) and its camera (eye (−200, 210, 360) cm, target
+(0, 60, 0) cm, 50°, 4 m, the fog from 400 at density 0.34), the two
+layouts (mode 12's full editor with its ten elements, every other mode's
+seven-element preview), the item-class routing of a drop onto the preview
+(apparel 0x1000, weapons 0x4000, the rest 0x8000, a full list losing its
+last slot), the editor-change callback (counter, skin and material
+regeneration, texture-cache invalidation, the body link) and the close
+(released held objects, detached view, subdivision off). Drawing the
+form, loading the model preview and sounds, the object database behind
+the kit, record serialization, the power tree and the running mode
+transitions are not in, and nothing here is wired into the running game
+yet. Rules are plain functions with tests pinned to concrete numbers.
 
 Story experience (`experience`): new item kinds, kills and explored map
 cells (the 5 × 5 cells around the player on a 600-unit grid, the position
