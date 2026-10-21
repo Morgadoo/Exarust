@@ -1359,17 +1359,32 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   smeared over the floor instead of following the body.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail). The allocator picks the class by the light's
-  kind (2 directional, else cube) and the size by the shadow detail plus the
-  light's quality offset (clamped to index 6): directional 256/512/1024/
-  2048/4096/8192 at indices 1–6, cube 64/128/256/512/1024/2048 halved to
-  32/64/128/256/512/1024; cubes then shift right by the light's reduction level and both by the
-  hardware maximum. A cube light's fade distance is 0.005·quality (0.025
-  above index 5). The caster programs are the plain depth pass, the
-  distance writer, and each with an alpha test and a dithered fade; the
-  dither compares a screen-space hash against a fade value the original
-  leaves at 0. The cube textures are pooled per face size and
-  reference-counted, freed at zero and all released when the shadow detail
-  changes.
+  kind (2 directional, else cube) and the size from the shadow detail (a
+  zero detail takes the user's setting, counted as 5 above 4) plus the
+  light's quality offset. Nothing clamps the sum: an index of 0 gives no
+  map, one outside 1–6 still gets one at the fallback size. Directional
+  sizes are 256/512/1024/2048/4096/8192 at indices 1–6 (2048 for an index
+  outside the table); cube sizes are 64/128/256/512/1024/2048 (512 outside),
+  halved, shifted right by the light's reduction level and, for both, capped
+  by the hardware maximum as signed numbers. A cube map's own draw routine
+  sizes it again when it first renders: the user's detail plus the light's
+  offset clamped to index 6 (or, when the renderer has its own detail, the
+  light's offset plus that detail with no clamp), the cube size halved, with
+  no shift and no cap. It also stores `0.005·index` (in double precision;
+  0.025 above index 5) on the light for the lighting pass, a flag for a user
+  detail above 4, and takes its map from a pool of equally sized maps: the
+  first of its size without an owner or whose owner is not in use, else a new
+  one; a shadow-detail change drops every map. The caster programs are the
+  plain depth pass, the distance writer, each of those two with an alpha
+  test, and a distance writer with a dithered fade (`fract(x·3.555713358 +
+  y·0.309269245)` against the caster's fade value, only without an alpha
+  test); the cube pass picks the fade program for any caster whose fade
+  flag is set. Casters with the front-cull flag draw with front faces
+  culled and the others with back faces culled. The reference-counted
+  shared cube texture pool exists in the original but its map constructor
+  sets the flag that bypasses it. The directional view matrix normalises
+  with the processor's reciprocal square root estimate and sums its
+  translation as `z + (y + x)`.
 - Surfaces with opacity ≤ 0.8 in double precision (glass, decals) and those
   whose record has extra flag `0x4` cast no shadows; the compare widens the
   stored f32 to f64, so `0.8` stored as f32 is above the bound. A record in

@@ -1,43 +1,72 @@
 //! Shadow-map plumbing: the size each light's map gets from the shadow
 //! detail setting and the light's own offsets, the two map classes
-//! (directional depth map or cube), the caster programs, the pooled cube
-//! depth textures and the matrices the directional map builds.
+//! (directional depth map or cube), the caster programs, the cube map pool
+//! the renderer hands out at draw time, the cull-face state of the caster
+//! pass and the matrices the directional map builds.
 //!
-//! The original picks the class by the light's kind: kind 2 allocates the
-//! directional (`TShadowMapDirect`) class, anything else the cube class.
-//! Sizes come from a table indexed by the shadow detail plus the light's
-//! quality offset, then halved and shifted for cubes, and capped by the
-//! hardware's maximum. The caster programs write distance to the light as
-//! depth, optionally discarding alpha-tested texels and optionally a
-//! dithered fade pattern.
+//! The original has two places that size a cube map. The allocator picks
+//! the class by the light's kind (kind 2 the directional `TShadowMapDirect`,
+//! anything else the cube class) and sizes it from a table indexed by the
+//! shadow detail plus the light's quality offset; the cube class then
+//! halves the table value, shifts it by the light's reduction level and
+//! caps it by the hardware's maximum. The cube map's own draw routine sizes
+//! the map again when it first renders, from a table of its own with
+//! different clamping, and takes its map out of a pool of equally sized
+//! maps. The caster programs write distance to the light as depth, with an
+//! optional alpha test or an optional dithered fade.
 //!
 //! Exarust renders the cube maps through Bevy (`cube_shadows`) at its fixed
-//! top size and the sun through Bevy's shadow map; the rules here are the
-//! sizes, classes, programs and pool arithmetic the original uses, pinned
-//! by tests, for the settings changes and the map sizes to follow.
+//! top size and the sun through Bevy's shadow map; nothing here drives them
+//! yet. The rules are the sizes, classes, programs and pool arithmetic the
+//! original uses, pinned by tests, for the settings changes and the map
+//! sizes to follow.
 //!
-//! Rules: `docs/RENDERING.md` (Shadows).
+//! Rules: `docs/RENDERING.md` (Lights, shadows).
 
 use bevy::prelude::*;
+use exa_formats::rfc::reciprocal_sqrt;
 
 /// The user's default shadow detail (the original's stored setting).
 pub const DEFAULT_SHADOW_DETAIL: i32 = 4;
-/// The detail the original treats as its top for the settings (larger
-/// stored values clamp to this).
+/// The value the allocator substitutes for a user detail above
+/// [`DEFAULT_SHADOW_DETAIL`].
 pub const TOP_SHADOW_DETAIL: i32 = 5;
-/// The highest table index (the original clamps the combined index to 6).
+/// The highest table index; the draw-time sizing clamps the user's detail
+/// plus the light's offset to it.
 pub const MAX_SHADOW_QUALITY: i32 = 6;
 /// The hardware's maximum face size in the shipped data. The game
-/// overwrites this from its hardware configuration; Exarust's pool is its
-/// own constant.
-pub const MAX_SHADOW_FACE: u32 = 256;
+/// overwrites this from its hardware configuration.
+pub const SHIPPED_FACE_CAP: i32 = 256;
+/// The mask of all six cube faces, the state of a map that needs a redraw.
+pub const ALL_FACES: u32 = 0x3F;
 
-/// The directional map's sizes for quality index 0..6 (the original's
-/// table; index 0 is the unset default).
-const DIRECT_SIZES: [u32; 7] = [0x800, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000];
-/// The cube map's sizes for quality index 0..6, before the halving and the
-/// light's shift.
-const CUBE_SIZES: [u32; 7] = [0x200, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800];
+/// The directional table size for quality index `q`; an index outside 1..=6
+/// takes the first entry's value.
+fn direct_table_size(q: i32) -> i32 {
+    match q {
+        1 => 0x100,
+        2 => 0x200,
+        3 => 0x400,
+        4 => 0x800,
+        5 => 0x1000,
+        6 => 0x2000,
+        _ => 0x800,
+    }
+}
+
+/// The cube table size for quality index `q`, before the halving; an index
+/// outside 1..=6 takes the middle entry's value.
+fn cube_table_size(q: i32) -> i32 {
+    match q {
+        1 => 0x40,
+        2 => 0x80,
+        3 => 0x100,
+        4 => 0x200,
+        5 => 0x400,
+        6 => 0x800,
+        _ => 0x200,
+    }
+}
 
 /// What kind of shadow map a light gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,59 +86,99 @@ pub struct ShadowAllocation {
     pub size: u32,
 }
 
-/// The combined quality index: a detail of 0 takes the user's setting
-/// (clamped to the top), then the light's quality offset is added and the
-/// sum clamped to [`MAX_SHADOW_QUALITY`].
-pub fn shadow_quality(detail: i32, light_offset: i32, user_detail: i32) -> i32 {
-    let mut q = if detail == 0 {
-        user_detail.clamp(0, TOP_SHADOW_DETAIL)
-    } else {
+/// The allocator's quality index: a detail of 0 takes the user's setting
+/// (a setting above 4 counts as 5), then the light's quality offset is
+/// added. A non-zero detail is used as given. Nothing clamps the sum.
+pub fn allocation_quality(detail: i32, light_offset: i32, user_detail: i32) -> i32 {
+    let base = if detail != 0 {
         detail
+    } else if user_detail > DEFAULT_SHADOW_DETAIL {
+        TOP_SHADOW_DETAIL
+    } else {
+        user_detail
     };
-    q += light_offset;
-    q.min(MAX_SHADOW_QUALITY)
+    base.wrapping_add(light_offset)
 }
 
 /// The allocation a light of `kind` gets for quality index `q`, or `None`
-/// at index 0 (the original returns no map). Directional maps take the
-/// table value directly; cube maps halve it and shift it right by the
-/// light's reduction level `shift`. Both are capped at `max_face`.
+/// at index 0 (the original returns no map). An index outside the table,
+/// negative or above 6, still allocates a map of the table's fallback
+/// size. Directional maps take the table value directly; cube maps halve
+/// it and shift it right by the light's reduction level `shift` (taken
+/// modulo 32). Both are then capped at the signed `hardware_cap`.
 pub fn shadow_allocation(
     kind: ShadowKind,
     q: i32,
     shift: u32,
-    max_face: u32,
+    hardware_cap: i32,
 ) -> Option<ShadowAllocation> {
-    if q <= 0 {
+    if q == 0 {
         return None;
     }
-    let index = (q as usize).min(MAX_SHADOW_QUALITY as usize);
     let size = match kind {
-        ShadowKind::Directional => DIRECT_SIZES[index],
-        ShadowKind::Cube => (CUBE_SIZES[index] >> 1) >> (shift & 0x1F),
-    }
-    .min(max_face);
-    Some(ShadowAllocation { kind, size })
+        ShadowKind::Directional => direct_table_size(q),
+        ShadowKind::Cube => (cube_table_size(q) >> 1) >> (shift & 0x1F),
+    };
+    Some(ShadowAllocation {
+        kind,
+        size: size.min(hardware_cap).max(0) as u32,
+    })
 }
 
-/// The original's allocator: the quality index from a light's kind, detail
-/// and offsets, then the map of the matching class.
+/// The original's allocator: the quality index from a light's detail and
+/// offsets, then the map of the matching class.
 pub fn allocate_shadow(
     kind: ShadowKind,
     detail: i32,
     light_offset: i32,
     shift: u32,
     user_detail: i32,
-    max_face: u32,
+    hardware_cap: i32,
 ) -> Option<ShadowAllocation> {
-    let q = shadow_quality(detail, light_offset, user_detail);
-    shadow_allocation(kind, q, shift, max_face)
+    let q = allocation_quality(detail, light_offset, user_detail);
+    shadow_allocation(kind, q, shift, hardware_cap)
 }
 
-/// The cube light's fade distance for quality index `q`: `0.005·q` in
-/// double precision for indices up to 5, else 0.025 (also the value for a
-/// quality above the table).
-pub fn cube_fade_distance(q: i32) -> f32 {
+/// What a cube map's draw routine sets up when it first renders and has no
+/// pooled map yet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CubeDrawSettings {
+    /// The quality index: the light's offset plus the renderer's own detail
+    /// when it has one, else the user's setting, clamped to 6 in that case.
+    pub quality: i32,
+    /// The value the light keeps for its lighting pass: `0.005·quality` for
+    /// indices up to 5 (double precision, stored as single), else 0.025.
+    pub light_offset: f32,
+    /// Set when the user's detail is above 4.
+    pub high_detail: bool,
+    /// The face size: the cube table value halved, with no shift and no
+    /// hardware cap.
+    pub face_size: u32,
+}
+
+/// The draw-time sizing of a cube map. `renderer_detail` is the renderer's
+/// own shadow detail (0 when it has none, which takes the user's setting).
+pub fn cube_draw_settings(
+    light_offset: i32,
+    renderer_detail: i32,
+    user_detail: i32,
+) -> CubeDrawSettings {
+    let quality = if renderer_detail == 0 {
+        (i64::from(light_offset) + i64::from(user_detail)).min(i64::from(MAX_SHADOW_QUALITY)) as i32
+    } else {
+        light_offset.wrapping_add(renderer_detail)
+    };
+    CubeDrawSettings {
+        quality,
+        light_offset: cube_light_offset(quality),
+        high_detail: user_detail > DEFAULT_SHADOW_DETAIL,
+        face_size: (cube_table_size(quality) >> 1) as u32,
+    }
+}
+
+/// The offset a cube light keeps for quality index `q`: `0.005·q` in double
+/// precision for indices up to 5 (negative ones included), else 0.025.
+pub fn cube_light_offset(q: i32) -> f32 {
     if q < 6 {
         (f64::from(q) * 0.005) as f32
     } else {
@@ -151,33 +220,57 @@ impl DirectShadowSettings {
             size: ShadowMapSize { width, height },
             near: 10.0,
             far: 2_750.0,
-            faces: 0x3F,
+            faces: ALL_FACES,
         }
     }
 }
 
-/// A dither-discard state: the original switches the fragment program
-/// between its fade variant (0x404) and the plain one (0x405), remembering
-/// the last choice so an unchanged flag costs nothing.
+/// Which face the caster pass culls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CullFace {
+    Back,
+    Front,
+}
+
+/// The caster pass's remembered cull face. A caster with the front-cull flag
+/// draws with front faces culled, every other caster with back faces culled;
+/// the state remembers the last choice so an unchanged flag costs nothing.
+/// The cube pass resets it to back culling when it starts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DitherState {
-    enabled: bool,
+pub struct CasterCull {
+    front: bool,
 }
 
-impl DitherState {
-    /// Sets the fade variant and reports whether a program switch is due
-    /// (the flag changed).
-    pub fn set(&mut self, enabled: bool) -> bool {
-        if enabled == self.enabled {
-            return false;
-        }
-        self.enabled = enabled;
-        true
+impl CasterCull {
+    /// A cube pass begins: back faces are culled and the flag cleared.
+    pub fn begin_pass(&mut self) -> CullFace {
+        self.front = false;
+        CullFace::Back
     }
 
-    /// Whether the fade variant is current.
-    pub fn enabled(&self) -> bool {
-        self.enabled
+    /// A caster is about to draw. Returns the face to switch to when the
+    /// flag changed, `None` when the current setting already fits.
+    pub fn set(&mut self, front: bool) -> Option<CullFace> {
+        if front == self.front {
+            return None;
+        }
+        self.front = front;
+        Some(if front {
+            CullFace::Front
+        } else {
+            CullFace::Back
+        })
+    }
+
+    /// A cube pass ends: back faces are culled again. The remembered flag is
+    /// left as it was; the next pass clears it.
+    pub fn end_pass(&self) -> CullFace {
+        CullFace::Back
+    }
+
+    /// Whether front faces are culled now.
+    pub fn front(&self) -> bool {
+        self.front
     }
 }
 
@@ -188,12 +281,11 @@ pub struct CasterProgram {
     pub alpha_test: bool,
     /// The fragment writes radial distance to the light as depth.
     pub writes_distance: bool,
-    /// A dithered fade pattern discards fragments by the light's fade.
+    /// A dithered fade pattern discards fragments by the caster's fade.
     pub dithered: bool,
 }
 
-/// The caster programs the original compiles: a plain depth pass, a
-/// distance writer, and each with an alpha test and a dithered fade.
+/// The six caster programs the original's builder makes.
 pub mod caster {
     use super::CasterProgram;
 
@@ -203,16 +295,16 @@ pub mod caster {
         writes_distance: false,
         dithered: false,
     };
-    /// Distance to the light written as depth.
-    pub const DISTANCE: CasterProgram = CasterProgram {
-        alpha_test: false,
-        writes_distance: true,
-        dithered: false,
-    };
     /// Position and texture coordinates, alpha discarded below ½.
     pub const DEPTH_CUT: CasterProgram = CasterProgram {
         alpha_test: true,
         writes_distance: false,
+        dithered: false,
+    };
+    /// Distance to the light written as depth.
+    pub const DISTANCE: CasterProgram = CasterProgram {
+        alpha_test: false,
+        writes_distance: true,
         dithered: false,
     };
     /// Distance and texture coordinates, alpha discarded below ½.
@@ -221,60 +313,71 @@ pub mod caster {
         writes_distance: true,
         dithered: false,
     };
-    /// Distance plus a dither discard by the light's fade.
+    /// Distance plus a dither discard by the caster's fade.
     pub const DISTANCE_FADE: CasterProgram = CasterProgram {
         alpha_test: false,
-        writes_distance: true,
-        dithered: true,
-    };
-    /// Distance, texture coordinates, alpha and dither discards.
-    pub const DISTANCE_CUT_FADE: CasterProgram = CasterProgram {
-        alpha_test: true,
         writes_distance: true,
         dithered: true,
     };
 }
 
 /// Selects the caster program, as the original's program builder does:
-/// texture coordinates only for an alpha-tested draw, distance only for a
-/// cube face, and the dithered fragment stage when asked.
-pub fn caster_program(alpha_test: bool, cube_face: bool, dithered: bool) -> CasterProgram {
+/// texture coordinates and the alpha test only for an alpha-tested draw,
+/// distance only for a cube face, and the dithered stage only for a cube
+/// face without an alpha test. An alpha-tested draw ignores the fade flag.
+pub fn caster_program(alpha_test: bool, cube_face: bool, faded: bool) -> CasterProgram {
     CasterProgram {
         alpha_test,
         writes_distance: cube_face,
-        dithered: cube_face && dithered,
+        dithered: cube_face && !alpha_test && faded,
     }
 }
 
-/// The dither pattern of the fade fragment stage, in WGSL: a screen-space
-/// hash from the fragment's coordinates, discarding below the fade value.
+/// The dithered fade caster's fragment stage, in WGSL: a screen-space hash
+/// of the fragment's coordinates, discarding below the caster's fade value,
+/// then the distance to the light scaled by the light's depth factor. The
+/// original reads the window coordinates from the bottom left; WGSL's start
+/// at the top left, so the pattern comes out mirrored vertically.
 pub const DITHER_FADE_WGSL: &str = r#"
-// fragment of the dithered fade caster
+struct CasterLight {
+    // xyz: the light's position, w: the factor that turns distance to depth.
+    position: vec4<f32>,
+    fade: f32,
+}
+@group(0) @binding(0) var<uniform> light: CasterLight;
+
 @fragment
-fn dithered_fade(@builtin(position) at: vec4<f32>, fade: f32, depth: f32) -> @location(0) f32 {
-    let a = fract(at.x * 3.555713358 + at.y * 0.309269245);
-    if a < fade {
+fn fade_distance(
+    @builtin(position) frag: vec4<f32>,
+    @location(0) world: vec4<f32>,
+) -> @builtin(frag_depth) f32 {
+    let a = fract(frag.x * 3.555713358 + frag.y * 0.309269245);
+    if a < light.fade {
         discard;
     }
-    return depth;
+    return distance(light.position.xyz, world.xyz) * light.position.w;
 }
 "#;
 
-/// A cube depth texture pool entry: the texture size and how many lights
-/// hold it.
+/// A shared cube depth texture: the texture handle, its size and how many
+/// maps hold it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PooledCubeTex {
+    pub handle: u32,
     pub size: u32,
     pub references: u32,
 }
 
-/// The shared cube depth textures, by face size, reference-counted as the
+/// The shared cube depth textures, reference-counted by size as the
 /// original's pool keeps them: a request for a size already present takes
 /// the existing entry and raises its count; a last release frees the entry
-/// by swapping the last one into its place.
+/// by moving the last one into its place. The original reaches this pool
+/// only for a map whose own-texture flag is clear, and its constructor sets
+/// that flag, so the shipped game never uses it.
 #[derive(Clone, Debug, Default)]
 pub struct CubeTexPool {
     entries: Vec<PooledCubeTex>,
+    next_handle: u32,
 }
 
 impl CubeTexPool {
@@ -289,35 +392,33 @@ impl CubeTexPool {
     }
 
     /// A cube texture of `size` texels: the first entry of that size (its
-    /// count raised, the original's returned index), or a new entry (count
-    /// 1).
-    pub fn acquire(&mut self, size: u32) -> usize {
-        if let Some(index) = self.entries.iter().position(|e| e.size == size) {
-            self.entries[index].references += 1;
-            return index;
+    /// count raised) or a new entry (count 1, a fresh handle). Returns the
+    /// handle.
+    pub fn acquire(&mut self, size: u32) -> u32 {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.size == size) {
+            entry.references += 1;
+            return entry.handle;
         }
+        self.next_handle += 1;
+        let handle = self.next_handle;
         self.entries.push(PooledCubeTex {
+            handle,
             size,
             references: 1,
         });
-        self.entries.len() - 1
+        handle
     }
 
-    /// Drops a reference to entry `index`; at zero the texture is freed and
-    /// the last entry moved into its slot.
-    pub fn release(&mut self, index: usize) {
-        let Some(entry) = self.entries.get_mut(index) else {
+    /// Drops a reference to the texture `handle`; at zero the texture is
+    /// freed and the last entry moved into its slot.
+    pub fn release(&mut self, handle: u32) {
+        let Some(index) = self.entries.iter().position(|e| e.handle == handle) else {
             return;
         };
-        entry.references = entry.references.saturating_sub(1);
-        if entry.references < 1 {
+        self.entries[index].references = self.entries[index].references.saturating_sub(1);
+        if self.entries[index].references < 1 {
             self.entries.swap_remove(index);
         }
-    }
-
-    /// Drops every texture, as a shadow-detail change does.
-    pub fn clear(&mut self) {
-        self.entries.clear();
     }
 
     /// The entry of a size, if the pool holds one.
@@ -326,25 +427,138 @@ impl CubeTexPool {
     }
 }
 
+/// One pooled cube map: its face size and the light that holds it now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PooledCubeMap {
+    pub size: u32,
+    pub owner: Option<usize>,
+}
+
+/// What handing out a pooled map did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CubeMapGrant {
+    /// The pool slot the light now holds.
+    pub slot: usize,
+    /// The light that lost the slot, whose faces are all due a redraw and
+    /// which must forget the slot.
+    pub evicted: Option<usize>,
+}
+
+/// The cube maps the renderer hands to lights at draw time, grouped by face
+/// size. A light that first draws takes the first map of its size that has
+/// no owner or whose owner is not in use; that owner loses it. With none
+/// free a new map is made. A change of the shadow detail drops every map.
+#[derive(Clone, Debug, Default)]
+pub struct CubeMapPool {
+    maps: Vec<PooledCubeMap>,
+    user_detail: i32,
+}
+
+impl CubeMapPool {
+    /// An empty pool for the user's shadow detail.
+    pub fn new(user_detail: i32) -> Self {
+        Self {
+            maps: Vec::new(),
+            user_detail,
+        }
+    }
+
+    /// The user's shadow detail the draw-time sizing reads.
+    pub fn user_detail(&self) -> i32 {
+        self.user_detail
+    }
+
+    /// The maps in the pool.
+    pub fn maps(&self) -> &[PooledCubeMap] {
+        &self.maps
+    }
+
+    /// Gives `light` a map of `size` texels. `in_use` tells whether an
+    /// owner still has faces to show (its second face mask is non-empty).
+    pub fn assign(
+        &mut self,
+        light: usize,
+        size: u32,
+        in_use: impl Fn(usize) -> bool,
+    ) -> CubeMapGrant {
+        let mut found = None;
+        for (index, map) in self.maps.iter().enumerate() {
+            if map.size != size {
+                continue;
+            }
+            match map.owner {
+                Some(owner) if in_use(owner) => continue,
+                owner => {
+                    found = Some((index, owner));
+                    break;
+                }
+            }
+        }
+        let (slot, evicted) = found.unwrap_or_else(|| {
+            self.maps.push(PooledCubeMap { size, owner: None });
+            (self.maps.len() - 1, None)
+        });
+        self.maps[slot].owner = Some(light);
+        CubeMapGrant { slot, evicted }
+    }
+
+    /// A light is gone: its map keeps its size and loses its owner.
+    pub fn release_owner(&mut self, slot: usize) {
+        if let Some(map) = self.maps.get_mut(slot) {
+            map.owner = None;
+        }
+    }
+
+    /// The shadow detail changed: every owner is told to redraw all faces
+    /// and forget its map, and the pool empties. Returns the owners.
+    pub fn set_detail(&mut self, user_detail: i32) -> Vec<usize> {
+        self.user_detail = user_detail;
+        let owners = self.maps.iter().filter_map(|m| m.owner).collect();
+        self.maps.clear();
+        owners
+    }
+}
+
+/// An engine vector normalised as the original does: the squared length
+/// summed as `y² + (x² + z²)`, its reciprocal square root taken from the
+/// processor's estimate (about 12 bits), a zero length leaving a zero
+/// vector.
+fn engine_normalize(v: Vec3) -> Vec3 {
+    let sum = v.y * v.y + (v.x * v.x + v.z * v.z);
+    let scale = if sum == 0.0 {
+        0.0
+    } else {
+        reciprocal_sqrt(sum)
+    };
+    v * scale
+}
+
+/// `a × b` in the original's component order.
+fn engine_cross(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(
+        a.y * b.z - a.z * b.y,
+        b.x * a.z - a.x * b.z,
+        b.y * a.x - a.y * b.x,
+    )
+}
+
 /// The view matrix of a directional shadow map, as the original builds it
-/// from the light's position, its forward axis and an up vector: the
-/// columns are `normalize(cross(forward, up))`, `normalize(cross(first,
-/// forward))` and the forward axis, with the translation that takes the
-/// light's position to the origin.
+/// from the light's position, its forward axis and an up vector. The rows
+/// of the rotation are `normalize(cross(forward, up))`, `normalize(cross(
+/// first, forward))` and the forward axis; the translation takes the light's
+/// position to the origin, each component summed as `z + (y + x)`. The
+/// normalisations use the processor's reciprocal square root estimate, so
+/// the axes are unit length to about 1.5 parts in 4 096.
 pub fn shadow_view(position: Vec3, forward: Vec3, up: Vec3) -> Mat4 {
-    let first = forward.cross(up).normalize_or_zero();
-    let second = first.cross(forward).normalize_or_zero();
+    let first = engine_normalize(engine_cross(forward, up));
+    let second = engine_normalize(engine_cross(first, forward));
     let third = forward;
-    let translation = Vec3::new(
-        -first.dot(position),
-        -second.dot(position),
-        -third.dot(position),
-    );
+    let along = |axis: Vec3| -(axis.z * position.z + (axis.y * position.y + axis.x * position.x));
     Mat4::from_cols(
-        first.extend(0.0),
-        second.extend(0.0),
-        third.extend(0.0),
-        translation.extend(1.0),
+        Vec4::new(first.x, second.x, third.x, 0.0),
+        Vec4::new(first.y, second.y, third.y, 0.0),
+        Vec4::new(first.z, second.z, third.z, 0.0),
+        Vec4::new(along(first), along(second), along(third), 1.0),
     )
 }
 
@@ -377,9 +591,7 @@ pub fn shadow_ortho(min: Vec3, max: Vec3) -> Mat4 {
 
 /// The cube face's projection, as the original builds it: 90° vertical, an
 /// aspect of 1, the near plane (10 when the map is created, 3 when it
-/// renders) and the far plane at the light's radius. Exarust's caster shader
-/// writes the distance directly, so its Bevy projection keeps the same near
-/// and far while the depth test is reversed.
+/// renders) and the far plane at the light's radius.
 pub fn cube_projection(radius: f32, near: f32) -> PerspectiveProjection {
     PerspectiveProjection {
         fov: 90f32.to_radians(),
@@ -394,10 +606,14 @@ pub fn cube_projection(radius: f32, near: f32) -> PerspectiveProjection {
 mod tests {
     use super::*;
 
+    fn size(kind: ShadowKind, q: i32, shift: u32, cap: i32) -> Option<u32> {
+        shadow_allocation(kind, q, shift, cap).map(|a| a.size)
+    }
+
     #[test]
     fn the_shadow_detail_and_offsets_pick_the_size() {
-        // The user's detail 4 with no offset, cube: 0x200/2 = 256.
-        let q = shadow_quality(0, 0, DEFAULT_SHADOW_DETAIL);
+        // The user's detail 4 with no offset, cube: 0x200 halved is 256.
+        let q = allocation_quality(0, 0, DEFAULT_SHADOW_DETAIL);
         assert_eq!(q, 4);
         assert_eq!(
             shadow_allocation(ShadowKind::Cube, q, 0, 8192),
@@ -406,49 +622,90 @@ mod tests {
                 size: 256
             })
         );
-        // Directional, index 4: 0x800, capped at the shipped maximum 256.
+        // Directional at index 4 is 0x800, unless the hardware caps it.
+        assert_eq!(size(ShadowKind::Directional, 4, 0, 8192), Some(2048));
         assert_eq!(
-            shadow_allocation(ShadowKind::Directional, 4, 0, 8192),
-            Some(ShadowAllocation {
-                kind: ShadowKind::Directional,
-                size: 2048
-            })
+            size(ShadowKind::Directional, 4, 0, SHIPPED_FACE_CAP),
+            Some(256)
         );
-        // Capped by the hardware's shipped maximum of 256.
-        assert_eq!(
-            shadow_allocation(ShadowKind::Directional, 4, 0, MAX_SHADOW_FACE).map(|a| a.size),
-            Some(MAX_SHADOW_FACE)
-        );
-        // Detail 5 with a +1 light offset clamps to index 6: cube 0x800/2
-        // = 1024, then the light's shift of 1 halves it to 512.
-        let q = shadow_quality(0, 1, TOP_SHADOW_DETAIL);
+        // The cap is a signed minimum, so a cap that is no power of two
+        // applies as given.
+        assert_eq!(size(ShadowKind::Cube, 6, 0, 100), Some(100));
+        // A user detail above 4 counts as 5; a +1 light offset reaches 6.
+        // Cube 0x800 halved is 1024, the light's shift of 1 makes it 512.
+        let q = allocation_quality(0, 1, 9);
         assert_eq!(q, 6);
-        assert_eq!(
-            shadow_allocation(ShadowKind::Cube, q, 1, 8192).map(|a| a.size),
-            Some(512)
-        );
-        // The largest size never exceeds the hardware maximum.
-        assert_eq!(
-            shadow_allocation(ShadowKind::Cube, 6, 0, MAX_SHADOW_FACE).map(|a| a.size),
-            Some(MAX_SHADOW_FACE)
-        );
+        assert_eq!(size(ShadowKind::Cube, q, 1, 8192), Some(512));
+        // The shift is taken modulo 32.
+        assert_eq!(size(ShadowKind::Cube, 6, 33, 8192), Some(512));
         // Index 0 means no map.
         assert_eq!(shadow_allocation(ShadowKind::Cube, 0, 0, 8192), None);
         assert_eq!(
             allocate_shadow(ShadowKind::Directional, 0, 0, 0, 0, 8192),
             None
         );
-        // An oversized user detail clamps to the top.
-        assert_eq!(shadow_quality(0, 0, 99), TOP_SHADOW_DETAIL);
+        // A light offset that cancels the detail also gives no map.
+        assert_eq!(allocate_shadow(ShadowKind::Cube, 2, -2, 0, 4, 8192), None);
     }
 
     #[test]
-    fn cube_fade_distances_are_five_thousandths_per_step() {
-        assert_eq!(cube_fade_distance(0), 0.0);
-        assert!((cube_fade_distance(4) - 0.02).abs() < 1e-7);
-        assert!((cube_fade_distance(5) - 0.025).abs() < 1e-7);
-        assert_eq!(cube_fade_distance(6), 0.025);
-        assert_eq!(cube_fade_distance(99), 0.025);
+    fn nothing_clamps_the_allocation_index() {
+        // A non-zero detail is used as given, whatever its size.
+        assert_eq!(allocation_quality(8, 0, 4), 8);
+        // Indices outside 1..=6 still allocate, at the fallback sizes:
+        // 0x800 directional and 0x200 halved for a cube.
+        assert_eq!(size(ShadowKind::Directional, 8, 0, 8192), Some(0x800));
+        assert_eq!(size(ShadowKind::Cube, 8, 0, 8192), Some(0x100));
+        assert_eq!(size(ShadowKind::Directional, -2, 0, 8192), Some(0x800));
+        assert_eq!(size(ShadowKind::Cube, -2, 0, 8192), Some(0x100));
+        // A negative user detail is used as it stands.
+        assert_eq!(allocation_quality(0, 0, -2), -2);
+        // The user detail 4 stays 4; only larger values become 5.
+        assert_eq!(allocation_quality(0, 0, 4), 4);
+        assert_eq!(allocation_quality(0, 0, 5), 5);
+        assert_eq!(allocation_quality(0, 0, 99), 5);
+    }
+
+    #[test]
+    fn the_cube_draw_sizes_its_own_map() {
+        // The shipped setting 4: index 4, offset 0.02, 0x200 halved.
+        let d = cube_draw_settings(0, 0, 4);
+        assert_eq!(d.quality, 4);
+        assert!((d.light_offset - 0.02).abs() < 1e-7);
+        assert!(!d.high_detail);
+        assert_eq!(d.face_size, 256);
+        // A user detail of 5 raises the flag and makes 512 faces; a light
+        // offset past the top clamps to index 6 with the 0.025 offset.
+        let d = cube_draw_settings(0, 0, 5);
+        assert_eq!((d.quality, d.face_size), (5, 512));
+        assert!(d.high_detail);
+        let d = cube_draw_settings(3, 0, 5);
+        assert_eq!((d.quality, d.face_size), (6, 1024));
+        assert_eq!(d.light_offset, 0.025);
+        // The renderer's own detail replaces the user's and is not clamped;
+        // an index past the table falls back to 0x200 halved, the offset
+        // stays at 0.025.
+        let d = cube_draw_settings(4, 3, 4);
+        assert_eq!((d.quality, d.face_size), (7, 256));
+        assert_eq!(d.light_offset, 0.025);
+        // A negative index multiplies through (a negative offset); a zero
+        // index falls back to the same size as the default.
+        let d = cube_draw_settings(-4, 3, 4);
+        assert_eq!((d.quality, d.face_size), (-1, 256));
+        assert!((d.light_offset + 0.005).abs() < 1e-8);
+        let d = cube_draw_settings(0, 0, 0);
+        assert_eq!((d.quality, d.face_size, d.light_offset), (0, 256, 0.0));
+        // The draw sizing has no shift and no hardware cap.
+        assert_eq!(cube_draw_settings(1, 0, 5).face_size, 1024);
+    }
+
+    #[test]
+    fn cube_light_offsets_are_five_thousandths_per_step() {
+        assert_eq!(cube_light_offset(0), 0.0);
+        assert!((cube_light_offset(4) - 0.02).abs() < 1e-7);
+        assert!((cube_light_offset(5) - 0.025).abs() < 1e-7);
+        assert_eq!(cube_light_offset(6), 0.025);
+        assert_eq!(cube_light_offset(99), 0.025);
     }
 
     #[test]
@@ -476,37 +733,43 @@ mod tests {
         let direct = DirectShadowSettings::new(4096, 4096);
         assert_eq!(direct.near, 10.0);
         assert_eq!(direct.far, 2_750.0);
-        assert_eq!(direct.faces, 0x3F);
+        assert_eq!(direct.faces, ALL_FACES);
     }
 
     #[test]
-    fn the_dither_state_switches_only_on_a_change() {
-        let mut dither = DitherState::default();
-        assert!(!dither.enabled());
-        assert!(dither.set(true));
-        assert!(!dither.set(true));
-        assert!(dither.set(false));
-        assert!(!dither.set(false));
-        assert!(!dither.enabled());
+    fn the_caster_cull_switches_only_on_a_change() {
+        let mut cull = CasterCull::default();
+        assert_eq!(cull.begin_pass(), CullFace::Back);
+        // The first back-cull caster changes nothing.
+        assert_eq!(cull.set(false), None);
+        assert_eq!(cull.set(true), Some(CullFace::Front));
+        assert_eq!(cull.set(true), None);
+        assert!(cull.front());
+        assert_eq!(cull.set(false), Some(CullFace::Back));
+        // The pass end culls back faces but leaves the flag; the next pass
+        // clears it.
+        assert_eq!(cull.set(true), Some(CullFace::Front));
+        assert_eq!(cull.end_pass(), CullFace::Back);
+        assert!(cull.front());
+        assert_eq!(cull.begin_pass(), CullFace::Back);
+        assert!(!cull.front());
     }
 
     #[test]
-    fn caster_programs_take_the_alpha_and_distance_stages() {
-        assert_eq!(
-            caster_program(false, false, false),
-            CasterProgram {
-                alpha_test: false,
-                writes_distance: false,
-                dithered: false
-            }
-        );
-        assert_eq!(caster_program(true, true, true), caster::DISTANCE_CUT_FADE);
-        assert_eq!(caster_program(true, false, true), caster::DEPTH_CUT);
+    fn caster_programs_follow_the_builders_flags() {
+        assert_eq!(caster_program(false, false, false), caster::DEPTH);
+        assert_eq!(caster_program(true, false, false), caster::DEPTH_CUT);
+        assert_eq!(caster_program(false, true, false), caster::DISTANCE);
+        assert_eq!(caster_program(true, true, false), caster::DISTANCE_CUT);
         assert_eq!(caster_program(false, true, true), caster::DISTANCE_FADE);
-        // A depth pass never dithers (the fade stage is only in the cube
-        // program).
-        assert!(!caster_program(false, false, true).dithered);
+        // The fade stage exists only for a distance writer without an alpha
+        // test; the other draws ignore the flag.
+        assert_eq!(caster_program(true, true, true), caster::DISTANCE_CUT);
+        assert_eq!(caster_program(false, false, true), caster::DEPTH);
+        assert_eq!(caster_program(true, false, true), caster::DEPTH_CUT);
         assert!(DITHER_FADE_WGSL.contains("discard"));
+        assert!(DITHER_FADE_WGSL.contains("3.555713358"));
+        assert!(DITHER_FADE_WGSL.contains("0.309269245"));
     }
 
     #[test]
@@ -514,38 +777,107 @@ mod tests {
         let mut pool = CubeTexPool::new();
         let a = pool.acquire(256);
         assert_eq!(pool.entries().len(), 1);
-        assert_eq!(pool.entries()[a].references, 1);
+        assert_eq!(pool.get(256).unwrap().references, 1);
         let b = pool.acquire(256);
         assert_eq!(a, b);
         assert_eq!(pool.get(256).unwrap().references, 2);
         let c = pool.acquire(512);
-        assert_eq!(c, 1);
+        assert_ne!(a, c);
         assert_eq!(pool.entries().len(), 2);
         pool.release(a);
         assert_eq!(pool.get(256).unwrap().references, 1);
         pool.release(a);
         assert!(pool.get(256).is_none());
-        assert_eq!(pool.entries().len(), 1);
         // The 512 entry moved into the freed slot.
+        assert_eq!(pool.entries().len(), 1);
         assert_eq!(pool.entries()[0].size, 512);
-        pool.clear();
-        assert!(pool.entries().is_empty());
+        // An unknown handle changes nothing.
+        pool.release(999);
+        assert_eq!(pool.entries().len(), 1);
     }
 
     #[test]
-    fn the_shadow_view_takes_the_light_to_the_origin() {
-        let view = shadow_view(Vec3::new(1.0, 2.0, 3.0), -Vec3::Z, Vec3::Y);
-        // Looking down −Z with +Y up is the identity basis; the translation
-        // is the negated position in that basis.
-        assert_eq!(view.x_axis, Vec4::new(1.0, 0.0, 0.0, 0.0));
-        assert_eq!(view.y_axis, Vec4::new(0.0, 1.0, 0.0, 0.0));
-        assert_eq!(view.z_axis, Vec4::new(0.0, 0.0, -1.0, 0.0));
-        assert_eq!(view.w_axis, Vec4::new(-1.0, -2.0, 3.0, 1.0));
-        assert_eq!(view.transform_point3(Vec3::new(1.0, 2.0, 3.0)), Vec3::ZERO);
-        // A side axis crosses the forward and up vectors.
+    fn the_cube_map_pool_hands_maps_of_equal_size_to_idle_owners() {
+        let mut pool = CubeMapPool::new(4);
+        assert_eq!(pool.user_detail(), 4);
+        // Nothing of the size exists: a new map.
+        let first = pool.assign(10, 256, |_| false);
+        assert_eq!(
+            first,
+            CubeMapGrant {
+                slot: 0,
+                evicted: None
+            }
+        );
+        // An owner still in use keeps its map; the next light gets another.
+        let second = pool.assign(11, 256, |light| light == 10);
+        assert_eq!((second.slot, second.evicted), (1, None));
+        // A different size never matches.
+        let other = pool.assign(12, 512, |_| false);
+        assert_eq!((other.slot, other.evicted), (2, None));
+        // With every owner idle the first map of the size is taken over and
+        // its owner told.
+        let stolen = pool.assign(13, 256, |_| false);
+        assert_eq!((stolen.slot, stolen.evicted), (0, Some(10)));
+        assert_eq!(pool.maps()[0].owner, Some(13));
+        // A destroyed light leaves its map without an owner, which is then
+        // taken without eviction.
+        pool.release_owner(1);
+        let reused = pool.assign(14, 256, |_| true);
+        assert_eq!((reused.slot, reused.evicted), (1, None));
+        // A detail change drops everything and names the owners.
+        let mut owners = pool.set_detail(5);
+        owners.sort_unstable();
+        assert_eq!(owners, vec![12, 13, 14]);
+        assert!(pool.maps().is_empty());
+        assert_eq!(pool.user_detail(), 5);
+    }
+
+    fn assert_close(a: Vec3, b: Vec3, tolerance: f32) {
+        assert!((a - b).abs().max_element() <= tolerance, "{a} vs {b}");
+    }
+
+    #[test]
+    fn the_shadow_view_rows_are_the_axes_and_takes_the_light_to_the_origin() {
+        let tolerance = 1e-3;
+        let position = Vec3::new(1.0, 2.0, 3.0);
+        let view = shadow_view(position, -Vec3::Z, Vec3::Y);
+        // Looking down −Z with +Y up is a diagonal basis (the estimate of
+        // the reciprocal root leaves the axes within 1.5/4096 of unit).
+        assert_close(view.x_axis.truncate(), Vec3::new(1.0, 0.0, 0.0), tolerance);
+        assert_close(view.y_axis.truncate(), Vec3::new(0.0, 1.0, 0.0), tolerance);
+        assert_close(view.z_axis.truncate(), Vec3::new(0.0, 0.0, -1.0), tolerance);
+        assert_close(view.transform_point3(position), Vec3::ZERO, 2e-3);
+        // A side view: forward +X, up +Z gives the rows (0, −1, 0), (0, 0, 1)
+        // and (1, 0, 0), so the point one unit ahead lands at z = 1.
         let side = shadow_view(Vec3::ZERO, Vec3::X, Vec3::Z);
-        assert_eq!(side.x_axis, Vec4::new(0.0, -1.0, 0.0, 0.0));
-        assert_eq!(side.y_axis, Vec4::new(0.0, 0.0, 1.0, 0.0));
+        assert_close(
+            side.transform_point3(Vec3::X),
+            Vec3::new(0.0, 0.0, 1.0),
+            tolerance,
+        );
+        assert_close(
+            side.transform_point3(Vec3::Y),
+            Vec3::new(-1.0, 0.0, 0.0),
+            tolerance,
+        );
+        assert_close(
+            side.transform_point3(Vec3::Z),
+            Vec3::new(0.0, 1.0, 0.0),
+            tolerance,
+        );
+        // The matrix columns are the rows' components, not the axes.
+        assert!((side.x_axis.z - 1.0).abs() < tolerance);
+        assert!((side.y_axis.x + 1.0).abs() < tolerance);
+        assert!((side.z_axis.y - 1.0).abs() < tolerance);
+    }
+
+    #[test]
+    fn a_zero_axis_stays_zero_instead_of_becoming_not_a_number() {
+        // Forward parallel to up gives a zero first axis.
+        let view = shadow_view(Vec3::ONE, Vec3::Y, Vec3::Y);
+        assert!(view.to_cols_array().iter().all(|v| v.is_finite()));
+        assert_eq!(view.x_axis, Vec4::ZERO);
     }
 
     #[test]
