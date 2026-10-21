@@ -1029,6 +1029,20 @@ mod tests {
             } else {
                 assert!(skinned > 0, "{entry}");
             }
+            if entry == "humanbase.rfc" {
+                let mut blended = 0;
+                for node in &model.nodes {
+                    for (handle, _) in &node.parts {
+                        if let Some(weights) = weights(&loader, handle) {
+                            blended += weights
+                                .iter()
+                                .filter(|w| w.iter().filter(|w| **w > 0.0).count() > 1)
+                                .count();
+                        }
+                    }
+                }
+                assert!(blended > 1000, "humanbase blends {blended} vertices");
+            }
             if entry == "trouser_a" {
                 let node = model
                     .nodes
