@@ -1021,8 +1021,13 @@ impl PlayerData {
         if let Some(character) = &mut self.character
             && let Some(position) = character.get_mut(4..16)
         {
-            for (slot, value) in position.chunks_exact_mut(4).zip(OLD_ARENA_POSITION) {
-                slot.copy_from_slice(&value.to_le_bytes());
+            for (slot, value) in position
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(OLD_ARENA_POSITION)
+            {
+                *slot = value.to_le_bytes();
             }
         }
         true
