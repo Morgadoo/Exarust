@@ -14,8 +14,10 @@
 
 use std::f32::consts::{PI, TAU};
 
-use bevy::math::Vec3;
+use bevy::math::{Mat3, Vec3};
 use bevy::platform::collections::HashMap;
+
+use crate::scene_nodes::{SPILL_HIGH, SPILL_LOW, cell_spill};
 
 /// A window holding every direction (the light's own cell).
 const WHOLE: f32 = 200.0;
@@ -238,6 +240,19 @@ impl CellLights {
         }
     }
 
+    /// Puts a directional light in every cell, as the original does for the
+    /// lights that are not flooded ([`crate::scene_nodes`]'s cell update
+    /// gives it a zero window): a cell keeps at most
+    /// [`MAX_CELL_LIGHTS`] lights, and a repeated fill widens the window.
+    /// The original walks `width²` cells; a grid with more rows than columns
+    /// is walked to its end here instead of past it.
+    pub fn fill_directional(&mut self, key: u32) {
+        let cells = self.cells.len();
+        for cell in 0..cells {
+            self.insert(cell, key, 0.0, 0.0);
+        }
+    }
+
     fn insert(&mut self, cell: usize, key: u32, a0: f32, a1: f32) {
         let list = &mut self.cells[cell];
         if let Some(e) = list.iter_mut().find(|e| e.0 == key) {
@@ -370,19 +385,21 @@ impl CellLights {
         if n1 > PI {
             n1 -= TAU;
         }
-        // The node's cell, and which neighbours its box spills into, per
-        // axis: (cell, spills towards −, spills towards +).
-        let axis = |c: f32, e: f32, half_count: usize, count: usize| {
-            let (c, e) = (c * 100.0, e * 100.0);
-            let k = (c / 600.0).floor();
-            let local = c - 600.0 * k;
-            let neg = local - e < -1.0;
-            let pos = !neg && local + e > 601.0;
-            let cell = (half_count as i64 + k as i64).clamp(1, count as i64 - 2);
-            (cell, neg, pos)
+        // The node's cell and which neighbours its box spills into, exactly
+        // as the scene's cell update works them out.
+        let spill = cell_spill(
+            node.centre,
+            Vec3::new(node.extent_x, 0.0, node.extent_z),
+            Mat3::IDENTITY,
+            (grid.w, grid.h),
+        );
+        let Some((ci, cj)) = spill.cell else {
+            return false;
         };
-        let (ci, xn, xp) = axis(node.centre.x, node.extent_x, grid.w >> 1, grid.w);
-        let (cj, zn, zp) = axis(node.centre.z, node.extent_z, grid.h >> 1, grid.h);
+        let xn = spill.mask & SPILL_LOW != 0;
+        let xp = spill.mask & SPILL_HIGH != 0;
+        let zn = spill.mask & (SPILL_LOW << 1) != 0;
+        let zp = spill.mask & (SPILL_HIGH << 1) != 0;
         let Some(own) = grid.index(ci, cj) else {
             return false;
         };
@@ -560,6 +577,25 @@ mod tests {
         // Moving a light out frees its place.
         cells.remove(0);
         assert_eq!(cells.lights(cell(&g, 1, 1)).count(), MAX_CELL_LIGHTS - 1);
+    }
+
+    #[test]
+    fn a_directional_light_sits_in_every_cell() {
+        let g = rooms(false);
+        let mut cells = CellLights::new(&g);
+        cells.fill_directional(7);
+        for cell in 0..g.w * g.h {
+            assert_eq!(cells.window(cell, 7), Some((0.0, 0.0)), "cell {cell}");
+        }
+        // The twelve-light cap holds for the fill too.
+        for key in 0..13 {
+            cells.fill_directional(key);
+        }
+        assert_eq!(cells.lights(0).count(), MAX_CELL_LIGHTS);
+        // Removing a filled light takes it out of every cell.
+        cells.remove(7);
+        assert_eq!(cells.lights(0).count(), MAX_CELL_LIGHTS - 1);
+        assert!(cells.window(0, 7).is_none());
     }
 
     #[test]

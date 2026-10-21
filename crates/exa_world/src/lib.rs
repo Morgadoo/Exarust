@@ -16,6 +16,7 @@ pub mod nav;
 pub mod room_view;
 pub mod rooms;
 pub mod scene_env;
+pub mod scene_nodes;
 pub mod shadow_links;
 pub mod start;
 pub mod terrain;
