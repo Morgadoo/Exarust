@@ -1020,6 +1020,10 @@ fn tick_casters(
             if entry.state == ENDING {
                 event = 2;
             }
+            // Exarust's reading: the body's release flag is the original's
+            // release event to the running cast. The body tick's exact event
+            // for it is not in the packs, so control's end event (2) stands
+            // in.
             if release && cast_id_now == entry.cast_id {
                 event = 2;
                 released = true;

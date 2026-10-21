@@ -465,6 +465,25 @@ mod tests {
         assert_eq!(hotkey(0x49, &b, falling), Some(Hotkey::Inventory));
     }
 
+    /// The plugin's systems run three updates with and without a caster.
+    #[test]
+    fn the_hotkey_plugin_runs_with_and_without_a_caster() {
+        for with_caster in [false, true] {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .add_plugins(HotkeyPlugin);
+            let mut entity = app.world_mut().spawn(PlayerBody::new(0.0));
+            if with_caster {
+                entity.insert(PowerCaster::new(&[0x201]));
+            }
+            for _ in 0..3 {
+                app.update();
+            }
+        }
+    }
+
     /// C, a digit, Q and the arrows send the bar's commands for the caster.
     #[test]
     fn the_power_bar_keys_send_commands() {

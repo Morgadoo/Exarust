@@ -986,6 +986,22 @@ mod tests {
     use super::*;
     use exa_ui::tree_draw::Uniforms;
 
+    /// The plugin's systems run three updates without a window or a level.
+    #[test]
+    fn the_power_screen_plugin_runs_without_a_window() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_message::<bevy::input::mouse::MouseWheel>()
+            .add_plugins(PowerScreenPlugin);
+        for _ in 0..3 {
+            app.update();
+        }
+    }
+
     #[test]
     fn the_ring_shader_draws_a_dot() {
         let mut batch = Batch::new(Program::Ring, Texture::None);
