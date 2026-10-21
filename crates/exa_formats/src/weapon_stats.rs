@@ -9,6 +9,7 @@
 //! bytes by role. Factory items are then scaled by their condition.
 
 use crate::factory::{Factory, Generated, deform_factor};
+use crate::pixel::{round_f32, round_f64};
 
 /// Offset of the stat bytes in the weapon section body.
 pub const OFFSET: usize = 0x30;
@@ -75,20 +76,25 @@ impl StatBytes {
     /// low eight bits, as the original stores a rounded integer into a byte.
     fn mul(&mut self, off: usize, f: f32) {
         let v = self.get(off) as f32 * f;
-        self.set(off, (v.round_ties_even() as i64) as u8);
+        self.set(off, round_f32(v) as u8);
     }
 
     /// Divides a byte with the same rounding and truncation.
     fn div(&mut self, off: usize, f: f32) {
         let v = self.get(off) as f32 / f;
-        self.set(off, (v.round_ties_even() as i64) as u8);
+        self.set(off, round_f32(v) as u8);
     }
 
-    /// Multiplies a byte, rounding to the nearest (ties to even), clamped
-    /// to a byte (the condition step's rule).
-    fn scale(&mut self, off: usize, f: f32) {
-        let v = (self.get(off) as f32 * f).round_ties_even();
-        self.set(off, v.clamp(0.0, 255.0) as u8);
+    /// [`StatBytes::mul`] in double precision.
+    fn mul_f64(&mut self, off: usize, f: f64) {
+        let v = f64::from(self.get(off)) * f;
+        self.set(off, round_f64(v) as u8);
+    }
+
+    /// [`StatBytes::div`] in double precision.
+    fn div_f64(&mut self, off: usize, f: f64) {
+        let v = f64::from(self.get(off)) / f;
+        self.set(off, round_f64(v) as u8);
     }
 
     fn cap(&mut self, off: usize, max: u8) {
@@ -146,16 +152,30 @@ pub fn factory_stats(factory: &Factory, generated: &Generated, template: StatByt
         }
         let values = generated.deform.get(i).copied().unwrap_or([0.0; 3]);
         for (d, v) in part.deforms.iter().zip(values) {
+            if d.kind == 0 {
+                continue;
+            }
             let x = v * d.stat_weight;
-            let f = deform_factor(x, d.amount);
+            // F scales by the deform's amount, G does not.
+            let f = |x: f32| deform_factor(x, d.amount);
+            let g = |x: f32| deform_factor(x, 1.0);
+            // A head's or haft's shape scales weight and balance together.
+            let heavier = |s: &mut StatBytes, h: f32| {
+                s.mul(WEIGHT, h * 0.5 + 0.5);
+                s.div(BALANCE, h);
+            };
+            // `0.4·G + 0.6` in double, stored as a float.
+            let shaft = |g: f32| (f64::from(g) * 0.4 + 0.6) as f32;
             match (part.role, d.kind, d.axis) {
                 // Blade: longer about Y is heavier and less balanced.
                 (role::BLADE, 1, 2) => {
+                    let f = f(x);
                     s.mul(WEIGHT, f);
                     s.div(BALANCE, f);
                 }
-                // Blade: longer about X, or all axes.
+                // Blade: longer about X.
                 (role::BLADE, 1, 1) => {
+                    let f = f(x);
                     s.mul(WEIGHT, f);
                     s.div(BALANCE, f);
                     s.mul(SLASH, f);
@@ -164,6 +184,7 @@ pub fn factory_stats(factory: &Factory, generated: &Generated, template: StatByt
                 // Blade taper: balance follows half the taper, slash and
                 // thrust move against it.
                 (role::BLADE, 3, 2) => {
+                    let f = f(x);
                     let h = f * 0.5 + 0.5;
                     s.mul(BALANCE, h);
                     s.div(SLASH, h);
@@ -172,66 +193,32 @@ pub fn factory_stats(factory: &Factory, generated: &Generated, template: StatByt
                 // Blade bend: the point's thrust depends on the taper flags.
                 (role::BLADE, 4, 1) => {
                     if d.flags & ONE_SIDED != 0 {
-                        s.div(THRUST, f * 0.25 + 0.75);
+                        s.div(THRUST, g(x) * 0.25 + 0.75);
                     } else if variant.flags & TAPER_THICKENS != 0 {
-                        s.mul(THRUST, f * 0.5 + 0.5);
+                        s.mul(THRUST, g(x) * 0.5 + 0.5);
                     } else if variant.flags & TAPER_THINS != 0 {
-                        let g = deform_factor(-x, d.amount);
-                        s.mul(THRUST, g * 0.5 + 0.5);
+                        s.mul(THRUST, g(-v * d.stat_weight) * 0.5 + 0.5);
                     }
                 }
                 // Haft: a band stretch or scale about Y changes both weight
-                // and balance; an XZ scale only the weight.
-                (role::HAFT, 1 | 2, 2) => {
-                    let h = 0.4 * f + 0.6;
-                    s.mul(WEIGHT, h * 0.5 + 0.5);
-                    s.div(BALANCE, h);
-                }
-                (role::HAFT, 1, 5) => s.mul(WEIGHT, f * 0.1 + 0.9),
-                (role::GUARD, 1, 2) => s.mul(THRUST, f),
-                // Head: any Y scale (halfway for a named axis).
+                // and balance; an XZ scale only the weight (in double).
+                (role::HAFT, 1 | 2, 2) => heavier(&mut s, shaft(g(x))),
+                (role::HAFT, 1, 5) => s.mul_f64(WEIGHT, f64::from(g(x)) * 0.1 + 0.9),
+                (role::GUARD, 1, 2) => s.mul(THRUST, f(x)),
+                // Head: any scale, halfway for a named axis.
                 (role::HEAD, 1, axis) => {
-                    let f = if axis >= 1 { f * 0.5 + 0.5 } else { f };
-                    s.mul(WEIGHT, f * 0.5 + 0.5);
-                    s.div(BALANCE, f);
+                    let f = f(x);
+                    heavier(&mut s, if axis >= 1 { f * 0.5 + 0.5 } else { f });
                 }
-                (role::HEAD, 3, 2) => {
-                    let f = deform_factor(-x * 0.5, d.amount);
-                    let f = f * 0.5 + 0.5;
-                    s.mul(WEIGHT, f * 0.5 + 0.5);
-                    s.div(BALANCE, f);
-                }
+                (role::HEAD, 3, 2) => heavier(&mut s, g(v * -0.5 * d.stat_weight) * 0.5 + 0.5),
+                // Head radial: pierce against crush, in double.
                 (role::HEAD, 5, 0 | 5) => {
-                    let h = deform_factor(x * 0.5, d.amount) * 0.6 + 0.4;
-                    s.mul(PIERCE, h);
-                    s.div(CRUSH, h);
+                    let h = f64::from(g(v * 0.5 * d.stat_weight)) * 0.6 + 0.4;
+                    s.mul_f64(PIERCE, h);
+                    s.div_f64(CRUSH, h);
                 }
-                (role::HEAD, 5, 2) => {
-                    let f = deform_factor(x * 0.5, d.amount) * 0.4 + 0.6;
-                    s.mul(WEIGHT, f * 0.5 + 0.5);
-                    s.div(BALANCE, f);
-                }
-                // The flipped side follows the same rules as the head.
-                (role::FLIP_SIDE, 1, axis) => {
-                    let f = if axis >= 1 { f * 0.5 + 0.5 } else { f };
-                    s.mul(WEIGHT, f * 0.5 + 0.5);
-                    s.div(BALANCE, f);
-                }
-                (role::FLIP_SIDE, 3, 2) => {
-                    let h = deform_factor(-x * 0.5, d.amount) * 0.5 + 0.5;
-                    s.mul(WEIGHT, h * 0.5 + 0.5);
-                    s.div(BALANCE, h);
-                }
-                (role::FLIP_SIDE, 5, 0 | 5) => {
-                    let h = deform_factor(x * 0.5, d.amount) * 0.6 + 0.4;
-                    s.mul(PIERCE, h);
-                    s.div(CRUSH, h);
-                }
-                (role::FLIP_SIDE, 5, 2) => {
-                    let f = deform_factor(x * 0.5, d.amount) * 0.4 + 0.6;
-                    s.mul(WEIGHT, f * 0.5 + 0.5);
-                    s.div(BALANCE, f);
-                }
+                (role::HEAD, 5, 2) => heavier(&mut s, shaft(g(v * 0.5 * d.stat_weight))),
+                // The flipped side's deforms change nothing.
                 _ => {}
             }
         }
@@ -418,6 +405,42 @@ mod tests {
         // f = 1.5, h = 1.2: weight 40·(1.1) = 44, balance 80/1.2 = 67.
         assert_eq!(s.get(at::WEIGHT), 44);
         assert_eq!(s.get(at::BALANCE), 67);
+    }
+
+    #[test]
+    fn haft_and_head_curves_ignore_the_deform_amount() {
+        // G is 1 + x without the amount: an amount of 0.5 changes nothing
+        // (F would give 1.25 and weight 42, balance 73).
+        let factory = Factory {
+            version: 2,
+            atlas: [0; 2],
+            parts: vec![part(role::HAFT, [0; 4], 0, deform(1, 2, 0.5, 1.0))],
+            areas: Vec::new(),
+            tags: Vec::new(),
+        };
+        let mut template = StatBytes::default();
+        template.set(at::WEIGHT, 40);
+        template.set(at::BALANCE, 80);
+        let s = factory_stats(&factory, &generated(1, 0.5), template);
+        assert_eq!(s.get(at::WEIGHT), 44);
+        assert_eq!(s.get(at::BALANCE), 67);
+    }
+
+    #[test]
+    fn flip_side_deforms_change_no_bytes() {
+        let factory = Factory {
+            version: 2,
+            atlas: [0; 2],
+            parts: vec![part(role::FLIP_SIDE, [0; 4], 0, deform(1, 0, 1.0, 1.0))],
+            areas: Vec::new(),
+            tags: Vec::new(),
+        };
+        let mut template = StatBytes::default();
+        template.set(at::WEIGHT, 40);
+        template.set(at::BALANCE, 80);
+        let s = factory_stats(&factory, &generated(1, 1.0), template);
+        assert_eq!(s.get(at::WEIGHT), 40);
+        assert_eq!(s.get(at::BALANCE), 80);
     }
 
     #[test]
