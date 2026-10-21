@@ -1597,17 +1597,17 @@ pub fn generate_by_level(
 /// cluster near zero and one.
 ///
 /// Above the middle the deviation is squared and added to a half; below it
-/// the deviation is squared and taken away from a half. A NaN compares false
-/// and takes the lower branch, staying NaN. All arithmetic is single
+/// the deviation is squared and taken away from a half. A NaN fails the
+/// "below the middle" test and takes the upper branch, staying NaN. All arithmetic is single
 /// precision in the original's order.
 #[must_use]
 pub fn smooth_unit(unit: f32) -> f32 {
-    if unit >= 0.5 {
-        let deviation = (unit - 0.5) * 2.0;
-        deviation * deviation * 0.5 + 0.5
-    } else {
+    if unit < 0.5 {
         let deviation = (0.5 - unit) * 2.0;
         0.5 - deviation * deviation * 0.5
+    } else {
+        let deviation = (unit - 0.5) * 2.0;
+        deviation * deviation * 0.5 + 0.5
     }
 }
 
@@ -1667,9 +1667,33 @@ pub fn weighted_pick(lcg: &mut Lcg, weights: &[i32]) -> Option<usize> {
     None
 }
 
+/// The stepped draw the two table picks take: it steps even when nothing has
+/// weight, and when no row passes the threshold the threshold itself is the
+/// row (row zero when the total is zero), as in the original, which never
+/// checks the total. `None` only when that row is outside the table.
+fn table_pick(lcg: &mut Lcg, weights: &[i32]) -> Option<usize> {
+    let mut total = 0i32;
+    for weight in weights {
+        total = total.wrapping_add(*weight);
+    }
+    lcg.step();
+    let threshold = draw_threshold(total, lcg.state());
+    let mut cumulative = 0i32;
+    for (index, weight) in weights.iter().enumerate() {
+        cumulative = cumulative.wrapping_add(*weight);
+        if threshold < cumulative {
+            return Some(index);
+        }
+    }
+    usize::try_from(threshold)
+        .ok()
+        .filter(|index| *index < weights.len())
+}
+
 /// Pick from a table inside the rank window ending at the limit.
 ///
-/// The window weights are summed, one stepped draw is taken, and the first
+/// The window weights are summed, one stepped draw is taken (even when the
+/// window is empty, which then falls back to the first row), and the first
 /// cumulative weight past the threshold wins. The result names the id and
 /// the cost the caller subtracts from the character's points.
 pub fn pick_in_rank_window(lcg: &mut Lcg, entries: &[PoolEntry], limit: i32) -> Option<RankPick> {
@@ -1677,7 +1701,7 @@ pub fn pick_in_rank_window(lcg: &mut Lcg, entries: &[PoolEntry], limit: i32) -> 
         .iter()
         .map(|entry| rank_window_weight(entry.weight, entry.rank, limit).unwrap_or(0))
         .collect();
-    let index = weighted_pick(lcg, &weights)?;
+    let index = table_pick(lcg, &weights)?;
     Some(RankPick {
         id: entries[index].id,
         cost: entries[index].cost,
@@ -1687,10 +1711,12 @@ pub fn pick_in_rank_window(lcg: &mut Lcg, entries: &[PoolEntry], limit: i32) -> 
 /// Pick from a masked table and equip the winner.
 ///
 /// Entries are refused when the character's bonus mask shares a forbidden
-/// bit, when the wanted mask shares no bit, or when the rank exceeds the
-/// limit. In max-rank mode the highest eligible rank is found first and only
-/// entries at it receive weight. The winner is passed to the equip callback
-/// unless its id is zero.
+/// bit or when the wanted mask shares no bit. An entry that names an item is
+/// also refused above the rank limit; in max-rank mode it must instead sit at
+/// the highest rank the masks and limit allow (at least zero), and only those
+/// entries receive weight. An entry naming no item (the "nothing" row) skips
+/// the rank checks. One stepped draw is always taken. The winner is passed to
+/// the equip callback unless its id is zero.
 pub fn pick_masked<E>(
     lcg: &mut Lcg,
     entries: &[PoolEntry],
@@ -1704,23 +1730,26 @@ where
         entries
             .iter()
             .filter(|entry| mask_accepts(query, entry))
-            .map(|entry| entry.rank)
-            .max()
-            .unwrap_or(0)
+            .fold(0, |highest, entry| highest.max(entry.rank))
     } else {
         i32::MIN
     };
     let weights: Vec<i32> = entries
         .iter()
         .map(|entry| {
-            if mask_accepts(query, entry) && (!query.max_rank || entry.rank == highest) {
+            let ranked = if query.max_rank {
+                entry.rank == highest
+            } else {
+                entry.rank <= query.rank_limit
+            };
+            if masks_accept(query, entry) && (entry.id.0 == 0 || ranked) {
                 entry.weight
             } else {
                 0
             }
         })
         .collect();
-    let index = weighted_pick(lcg, &weights)?;
+    let index = table_pick(lcg, &weights)?;
     let entry = &entries[index];
     if entry.id.0 != 0 {
         equip(entry.id, &entry.bonus);
@@ -1730,12 +1759,14 @@ where
 
 /// Pick an entry that does not overlap anything already worn.
 ///
-/// The first pass marks entries that name an item, pass the mask and rank
-/// checks, exist in the item database and share no bonus word with the worn
-/// set, and sums their weights. The candidate's cost is not checked here;
-/// the pool picks that pay for an item check it when they add it. One stepped draw is taken, then a second pass walks only the
-/// marked entries to the pick. When nothing is eligible or no row passes,
-/// nothing is equipped.
+/// The first pass marks entries that pass the masks and the rank limit and
+/// share no bonus word with the worn set, and sums their weights. An entry
+/// whose item is not in the item database (an entry naming no item included)
+/// has no words to overlap and is marked. The candidate's cost is not checked
+/// here; the pool picks that pay for an item check it when they add it. When
+/// the total is not positive nothing is drawn and the roll does not step.
+/// Otherwise one stepped draw is taken, then a second pass walks only the
+/// marked entries to the pick; a threshold past the table equips nothing.
 pub fn pick_without_overlap<F, E>(
     lcg: &mut Lcg,
     entries: &[PoolEntry],
@@ -1751,13 +1782,15 @@ where
     let mut marked = vec![false; entries.len()];
     let mut total = 0i32;
     for (index, entry) in entries.iter().enumerate() {
-        if entry.id.0 == 0 || !mask_accepts(query, entry) {
+        if !mask_accepts(query, entry) {
             continue;
         }
-        let Some(facts) = lookup(entry.id) else {
-            continue;
+        let facts = if entry.id.0 == 0 {
+            None
+        } else {
+            lookup(entry.id)
         };
-        if worn.overlaps(&facts.bonus_words) {
+        if facts.is_some_and(|facts| worn.overlaps(&facts.bonus_words)) {
             continue;
         }
         marked[index] = true;
@@ -1789,9 +1822,12 @@ where
 
 /// Whether a masked query accepts an entry.
 fn mask_accepts(query: MaskQuery, entry: &PoolEntry) -> bool {
-    query.character_bonus & entry.forbidden == 0
-        && query.wanted & entry.wanted != 0
-        && entry.rank <= query.rank_limit
+    masks_accept(query, entry) && entry.rank <= query.rank_limit
+}
+
+/// Whether a masked query's two masks accept an entry, rank aside.
+fn masks_accept(query: MaskQuery, entry: &PoolEntry) -> bool {
+    query.character_bonus & entry.forbidden == 0 && query.wanted & entry.wanted != 0
 }
 
 /// Draw an index in `0..range` that differs from the previous value.
@@ -1820,7 +1856,20 @@ pub fn score_candidate(worn: &WornBonus, bonus: &Bonus) -> i32 {
         let slot = (worn + candidate) / worn;
         sum = (slot + sum) - 1.0;
     }
-    (sum * 100.0).round_ties_even() as i32
+    cvtss2si_low(sum * 100.0)
+}
+
+/// The original's single-precision to 64-bit integer conversion, rounding to
+/// nearest even, whose low half is stored: NaN and out-of-range values give
+/// the "integer indefinite" pattern, whose low half is zero.
+fn cvtss2si_low(value: f32) -> i32 {
+    let rounded = value.round_ties_even();
+    let wide = if rounded.is_nan() || rounded >= 9.223_372e18 || rounded < -9.223_372e18 {
+        i64::MIN
+    } else {
+        rounded as i64
+    };
+    wide as i32
 }
 
 /// Merge one apparel piece into the outfit.
@@ -2584,6 +2633,134 @@ mod tests {
     }
 
     #[test]
+    fn the_table_picks_step_the_roll_even_with_nothing_weighted() {
+        // Nothing passes the masks: the draw is taken anyway and the pick
+        // falls back to the first row, which is equipped.
+        let mut row = entry(7, 100, 1, 0);
+        row.wanted = 2;
+        let table = [row];
+        let query = MaskQuery {
+            character_bonus: 0,
+            wanted: 1,
+            rank_limit: 5,
+            max_rank: false,
+        };
+        let mut lcg = Lcg::new(0);
+        let mut equipped = Vec::new();
+        let picked = pick_masked(&mut lcg, &table, query, |id, _| equipped.push(id));
+        assert_eq!(picked, Some(ItemId(7)));
+        assert_eq!(equipped, vec![ItemId(7)]);
+        let mut stepped = Lcg::new(0);
+        stepped.step();
+        assert_eq!(lcg.state(), stepped.state());
+
+        // The rank window does the same, and an empty table has no row.
+        let mut lcg = Lcg::new(0);
+        let pick = pick_in_rank_window(&mut lcg, &[entry(8, 100, 1, 3)], 5);
+        assert_eq!(pick.map(|pick| pick.id), Some(ItemId(8)));
+        assert_eq!(lcg.state(), stepped.state());
+        let mut lcg = Lcg::new(0);
+        assert_eq!(pick_in_rank_window(&mut lcg, &[], 5), None);
+        assert_eq!(lcg.state(), stepped.state());
+    }
+
+    #[test]
+    fn the_nothing_row_skips_the_rank_checks_in_the_masked_pick() {
+        let mut high = entry(5, 100, 5, 0);
+        high.wanted = 1;
+        let mut nothing = entry(0, 100, 9, 0);
+        nothing.wanted = 1;
+        let table = [high, nothing];
+        // Rank limit two: the item row is out, the nothing row still counts
+        // and, being the only weight, wins without equipping anything.
+        let query = MaskQuery {
+            character_bonus: 0,
+            wanted: 1,
+            rank_limit: 2,
+            max_rank: false,
+        };
+        let picked = pick_masked(&mut Lcg::new(0), &table, query, |_, _| {
+            panic!("the nothing row equips nothing");
+        });
+        assert_eq!(picked, Some(ItemId(0)));
+        // Max-rank mode finds the highest rank over the eligible rows (floor
+        // zero), so a row at that rank keeps its weight.
+        let query = MaskQuery {
+            rank_limit: 5,
+            max_rank: true,
+            ..query
+        };
+        let mut equipped = Vec::new();
+        let picked = pick_masked(&mut Lcg::new(0), &table, query, |id, _| equipped.push(id));
+        assert_eq!(picked, Some(ItemId(5)));
+        assert_eq!(equipped, vec![ItemId(5)]);
+    }
+
+    #[test]
+    fn the_overlap_pick_lets_unknown_items_and_the_nothing_row_through() {
+        let mut unknown = entry(40, 100, 1, 0);
+        unknown.wanted = 1;
+        let mut nothing = entry(0, 100, 1, 0);
+        nothing.wanted = 1;
+        let query = MaskQuery {
+            character_bonus: 0,
+            wanted: 1,
+            rank_limit: 2,
+            max_rank: false,
+        };
+        let mut equipped = Vec::new();
+        let picked = pick_without_overlap(
+            &mut Lcg::new(0),
+            &[unknown.clone()],
+            query,
+            &WornBonus::default(),
+            |_| None,
+            |id, _| equipped.push(id),
+        );
+        assert_eq!(picked, Some(ItemId(40)));
+        assert_eq!(equipped, vec![ItemId(40)]);
+        let picked = pick_without_overlap(
+            &mut Lcg::new(0),
+            &[nothing],
+            query,
+            &WornBonus::default(),
+            |_| panic!("the nothing row is not looked up"),
+            |_, _| panic!("the nothing row equips nothing"),
+        );
+        assert_eq!(picked, Some(ItemId(0)));
+        // With nothing marked the roll does not step.
+        let mut lcg = Lcg::new(3);
+        let before = lcg.state();
+        let wanted_elsewhere = MaskQuery { wanted: 2, ..query };
+        assert_eq!(
+            pick_without_overlap(
+                &mut lcg,
+                &[unknown.clone()],
+                wanted_elsewhere,
+                &WornBonus::default(),
+                |_| None,
+                |_, _| {},
+            ),
+            None
+        );
+        assert_eq!(lcg.state(), before);
+    }
+
+    #[test]
+    fn score_conversion_gives_zero_for_nan_and_out_of_range() {
+        assert_eq!(cvtss2si_low(2.5), 2);
+        assert_eq!(cvtss2si_low(3.5), 4);
+        assert_eq!(cvtss2si_low(-1.5), -2);
+        assert_eq!(cvtss2si_low(f32::NAN), 0);
+        assert_eq!(cvtss2si_low(f32::INFINITY), 0);
+        assert_eq!(cvtss2si_low(f32::NEG_INFINITY), 0);
+        assert_eq!(cvtss2si_low(1.0e20), 0);
+        // Beyond 32 bits but inside 64: the low half is kept.
+        assert_eq!(cvtss2si_low(4_294_967_296.0), 0);
+        assert_eq!(cvtss2si_low(4_294_967_296.0 * 2.0 + 4096.0), 4096);
+    }
+
+    #[test]
     fn add_masked_records_bonus_and_source() {
         let mut first = entry(1, 100, 2, 5);
         first.wanted = 1;
@@ -3130,9 +3307,9 @@ mod tests {
             &character,
             unit_half,
         );
-        assert!(ids(&outfit).is_empty());
+        assert_eq!(ids(&outfit), vec![249]);
         assert_eq!(outfit.hands, [None, None]);
-        assert_eq!(outfit.points, 10);
+        assert_eq!(outfit.points, 9);
         assert_eq!(outfit.mode, 0);
         assert_eq!(outfit.look.height, 0.5);
         assert_eq!(outfit.look.skin, 0.0);
@@ -3153,7 +3330,7 @@ mod tests {
         );
         assert_eq!(
             ids(&outfit),
-            vec![420, 402, 1359, 251, 510, 398, 511, 391, 512, 513]
+            vec![420, 402, 1359, 251, 510, 398, 511, 391, 512, 513, 244]
         );
         assert_eq!(
             outfit.hands,
@@ -3165,7 +3342,7 @@ mod tests {
                 None
             ]
         );
-        assert_eq!(outfit.points, 70);
+        assert_eq!(outfit.points, 69);
         assert_eq!(outfit.mode, 0);
         assert_eq!(outfit.look.height, 0.625);
         assert_eq!(outfit.look.skin, 0.0);
@@ -3178,7 +3355,7 @@ mod tests {
         let character = OutfitCharacter::default();
         let outfit =
             generate_by_level(3, 0.25, 0, &mut Lcg::new(0), &tables, &character, unit_half);
-        assert_eq!(ids(&outfit), vec![210, 280]);
+        assert_eq!(ids(&outfit), vec![210, 280, 249]);
         assert_eq!(
             outfit.hands,
             [
@@ -3189,7 +3366,7 @@ mod tests {
                 None
             ]
         );
-        assert_eq!(outfit.points, 38);
+        assert_eq!(outfit.points, 37);
         assert!(close(outfit.look.height, 0.825));
         assert!(close(outfit.look.skin, 0.205));
         assert!(close(outfit.look.condition_seed, 1.7));
@@ -3263,7 +3440,7 @@ mod tests {
                 })
             ]
         );
-        assert_eq!(ids(&with_skill), vec![210, 65, 149]);
+        assert_eq!(ids(&with_skill), vec![210, 65, 149, 249]);
         assert_eq!(
             without_skill.hands,
             [
@@ -3274,7 +3451,7 @@ mod tests {
                 None
             ]
         );
-        assert_eq!(ids(&without_skill), vec![210, 280]);
+        assert_eq!(ids(&without_skill), vec![210, 280, 249]);
     }
     #[test]
     fn rich_profile_branch_puts_the_shield_in_hand_one() {
