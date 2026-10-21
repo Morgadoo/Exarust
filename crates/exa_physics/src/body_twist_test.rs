@@ -110,6 +110,8 @@ fn the_twist_follows_the_look() {
 /// the direction dips to (0, −0.6, 0.8) (−1 normalised, × 0.75,
 /// normalised), casting to (0, −0.57735, 0.8165) (−y² instead);
 /// attacking crouched to (0, −0.21951, 0.97561) (0.3 of the crouch).
+/// The basis is normalised with the processor's approximate reciprocal
+/// square root, as the original's, so it holds to about 1e-3.
 #[test]
 fn the_twist_looks_along_its_direction() {
     let mut body = Locomotor::default();
@@ -117,8 +119,8 @@ fn the_twist_looks_along_its_direction() {
         twist(&mut body, &looking(1.0));
     }
     let level = body.twist * Vec3::Z;
-    assert!((level - Vec3::new(0.5f32.sin(), 0.0, 0.5f32.cos())).length() < 1e-5);
-    assert!((body.twist * Vec3::Y - Vec3::Y).length() < 1e-5);
+    assert!((level - Vec3::new(0.5f32.sin(), 0.0, 0.5f32.cos())).length() < 1e-3);
+    assert!((body.twist * Vec3::Y - Vec3::Y).length() < 1e-3);
     let dipped = |by: TwistBy| {
         let mut body = Locomotor::default();
         twist(&mut body, &by);
@@ -128,15 +130,15 @@ fn the_twist_looks_along_its_direction() {
         crouch: 1.0,
         ..looking(0.0)
     });
-    assert!((z - Vec3::new(0.0, -0.6, 0.8)).length() < 1e-5, "{z}");
-    assert!((y - Vec3::new(0.0, 0.8, 0.6)).length() < 1e-5, "{y}");
+    assert!((z - Vec3::new(0.0, -0.6, 0.8)).length() < 1e-3, "{z}");
+    assert!((y - Vec3::new(0.0, 0.8, 0.6)).length() < 1e-3, "{y}");
     let (z, _) = dipped(TwistBy {
         crouch: 1.0,
         casting: true,
         ..looking(0.0)
     });
     assert!(
-        (z - Vec3::new(0.0, -0.577_350_3, 0.816_496_6)).length() < 1e-5,
+        (z - Vec3::new(0.0, -0.577_350_3, 0.816_496_6)).length() < 1e-3,
         "{z}"
     );
     let (z, _) = dipped(TwistBy {
@@ -145,7 +147,7 @@ fn the_twist_looks_along_its_direction() {
         ..looking(0.0)
     });
     assert!(
-        (z - Vec3::new(0.0, -0.219_512_2, 0.975_609_8)).length() < 1e-5,
+        (z - Vec3::new(0.0, -0.219_512_2, 0.975_609_8)).length() < 1e-3,
         "{z}"
     );
 }

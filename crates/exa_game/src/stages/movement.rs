@@ -674,8 +674,10 @@ mod tests {
         app.update();
         let body = *app.world().get::<Locomotor>(model).unwrap();
         assert!((body.twist_yaw - 0.05).abs() < 1e-6, "{}", body.twist_yaw);
+        // The look basis is normalised with the approximate reciprocal
+        // square root, as the original's.
         let ahead = body.twist * Vec3::Z;
-        assert!((ahead - forward(0.05)).length() < 1e-5, "{ahead}");
+        assert!((ahead - forward(0.05)).length() < 1e-3, "{ahead}");
         app.world_mut().entity_mut(model).insert(Condition::DOWN);
         app.update();
         let body = *app.world().get::<Locomotor>(model).unwrap();
