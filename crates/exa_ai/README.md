@@ -83,9 +83,12 @@ suspect power takes 50, not below −100 (and trust ignores that one).
 `add_concern` is the script's `AddConcern`: the attention-weighted rise,
 capped at 15, with its event bits at 1.2 and 4. `look_direction` holds the
 look within 45° of the body; `candidate_cost` is the footwork step's
-pathfinder cost; `outside_radius` and `clamp_step` are the carry and move
-clamps; `foot_cell` and `stamp_footprint` are the 30 cm nav footprint with
-the fallback cell and its once-only overflow warning. `forget`, `replace`
+pathfinder cost; `outside_radius`, `move_limit`, `clamp_step` and
+`Combatant::clamp_move_point` are the carry and move clamps; the queued
+combat step is kept in `Movement`, whose two clear routines drop it and
+set the body's movement flag bits; `foot_cell` and `stamp_footprint` are
+the 30 cm nav footprint with the fallback cell and its once-only overflow
+warning. `forget`, `replace`
 and `reset` clear or remap every reference when a character dies or is
 swapped.
 

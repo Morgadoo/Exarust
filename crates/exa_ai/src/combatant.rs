@@ -905,6 +905,23 @@ pub fn foot_cell(position_cm: Vec3, grid_size: i32) -> Footprint {
     }
 }
 
+/// The queued combat step and the body bits the two clear routines touch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Movement {
+    /// The queued step's command or counter.
+    pub queued_step: u32,
+    /// A queued step is locked in.
+    pub locked: bool,
+    /// The step is paused.
+    pub paused: bool,
+    /// The step is stopped.
+    pub stopped: bool,
+    /// The body's moving byte.
+    pub moving: bool,
+    /// The body's movement flags word.
+    pub flags: u32,
+}
+
 /// Everything the original keeps on a character behaviour besides its
 /// behaviour-specific state: its references, its contacts, its public
 /// fighting values and its nav footprint.
@@ -930,6 +947,8 @@ pub struct Combatant {
     pub perception: Perception,
     /// The threat flag a blow sets once on the attacker.
     pub threat_raised: bool,
+    /// The queued combat step.
+    pub movement: Movement,
     /// The nav footprint.
     pub footprint: Option<Footprint>,
     /// The off-grid warning has been logged.
@@ -954,6 +973,7 @@ impl Default for Combatant {
             contacts: Vec::new(),
             perception: Perception::default(),
             threat_raised: false,
+            movement: Movement::default(),
             footprint: None,
             footprint_logged: false,
             in_combat: false,
@@ -1049,6 +1069,7 @@ impl Combatant {
         self.holder = None;
         self.perception = Perception::default();
         self.alert = 0.0;
+        self.movement = Movement::default();
         self.footprint = None;
         self.footprint_logged = false;
         self.in_combat = false;
@@ -1084,6 +1105,31 @@ impl Combatant {
     /// Leave the nav grid.
     pub fn leave_grid(&mut self) {
         self.footprint = None;
+    }
+
+    /// Clear the queued combat step and mark the body as not moving, its
+    /// movement flag word keeping bit 2 clear and gaining bit 5.
+    pub fn clear_combat_step(&mut self) {
+        let flags = (self.movement.flags & !0x4) | 0x20;
+        self.movement = Movement {
+            flags,
+            ..Movement::default()
+        };
+    }
+
+    /// Clear the queued step without touching any other movement flag.
+    pub fn clear_step(&mut self) {
+        let flags = self.movement.flags & !0x4;
+        self.movement = Movement {
+            flags,
+            ..Movement::default()
+        };
+    }
+
+    /// Clamp a queued move point to the body's speed limit
+    /// ([`move_limit`]).
+    pub fn clamp_move_point(&self, position_cm: Vec3, point_cm: Vec3, speed_cm: f32) -> Vec3 {
+        clamp_step(position_cm, point_cm, move_limit(speed_cm))
     }
 
     /// The point of interest the interaction code asks for: the body's
@@ -1576,6 +1622,35 @@ mod tests {
         let to = clamp_step(from, Vec3::new(30.0, 40.0, 0.0), 10.0);
         assert_eq!(to, Vec3::new(6.0, 8.0, 0.0));
         assert_eq!(clamp_step(from, from, 10.0), from);
+    }
+
+    #[test]
+    fn clearing_a_step_drops_it_and_sets_the_body_flags() {
+        let mut c = Combatant {
+            movement: Movement {
+                queued_step: 4,
+                locked: true,
+                paused: true,
+                stopped: true,
+                moving: true,
+                flags: 0x6,
+            },
+            ..Combatant::default()
+        };
+        c.clear_combat_step();
+        assert_eq!(c.movement.queued_step, 0);
+        assert!(!c.movement.moving && !c.movement.locked && !c.movement.stopped);
+        assert_eq!(c.movement.flags, 0x22);
+        c.movement = Movement {
+            queued_step: 2,
+            flags: 0x6,
+            ..Movement::default()
+        };
+        c.clear_step();
+        assert_eq!(c.movement.queued_step, 0);
+        assert_eq!(c.movement.flags, 0x2);
+        let point = c.clamp_move_point(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), 2.0);
+        assert_eq!(point, Vec3::new(36.0, 0.0, 0.0));
     }
 
     #[test]

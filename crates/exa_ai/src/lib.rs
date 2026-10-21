@@ -272,8 +272,13 @@ fn duellist(
             continue;
         };
         if !ai.in_combat {
-            // Entering combat: the guard, from the idle it stood in.
+            // Entering combat: the guard, from the idle it stood in, and
+            // the published reach. The combat rating comes from the
+            // experience system, which is not wired here.
             ai.in_combat = true;
+            combatant.in_combat = true;
+            combatant.clear_combat_step();
+            combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
             stance::set_stance(&mut stance, &mut anim, Stance::Defence);
             info!("duellist {entity:?} enters combat: {:?}", *stance);
             continue;
@@ -671,6 +676,9 @@ mod tests {
         engage(&mut app, foe);
         app.update();
         assert_eq!(state(&app, foe), (Stance::Defence, "Defence stance".into()));
+        let combatant = app.world().get::<Combatant>(foe).unwrap();
+        assert!(combatant.in_combat);
+        assert_eq!(combatant.reach_cm, 50.0);
         app.update();
         assert_eq!(state(&app, foe), (Stance::Defence, "Combat Walk".into()));
         let v = app
