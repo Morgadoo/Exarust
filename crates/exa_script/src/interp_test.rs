@@ -511,3 +511,16 @@ fn zone_markers_match_by_locale_radius_height_and_id() {
         }]
     ));
 }
+
+/// `WitnessRole` reaches 18 m: the original compares the squared distance
+/// with 3.24e6.
+#[test]
+fn witness_role_reaches_eighteen_metres() {
+    use crate::builtins::{WITNESS_RADIUS_CM, witness_range};
+    assert_eq!(WITNESS_RADIUS_CM, 1800.0);
+    assert!(witness_range(1800.0, 0.0, 0.0));
+    assert!(witness_range(0.0, 1799.0, 0.0));
+    assert!(!witness_range(1801.0, 0.0, 0.0));
+    assert!(!witness_range(1500.0, 0.0, 1500.0));
+    assert!(witness_range(1000.0, 1000.0, 1000.0));
+}

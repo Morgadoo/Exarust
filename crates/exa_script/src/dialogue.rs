@@ -799,7 +799,9 @@ pub fn activate_near(
                     mode,
                     now,
                 };
-                activate_word(scene, actor, at, hit, &mut words);
+                if activate_word(scene, actor, at, hit, &mut words) {
+                    report_invalid(scene, "Near Activation", actor);
+                }
             }
         }
         return;
@@ -816,13 +818,15 @@ pub fn activate_near(
         .get(target)
         .is_some_and(|r| r.is_relation_role_byte());
     for other in contacts {
+        // The actor must hold the aimed-at role (or, for a relation role,
+        // hold it toward the contact); the contact's roles do not matter.
         let ok = if relation {
             scene
                 .cast
                 .get(actor)
                 .is_some_and(|c| c.holds_toward(other, target))
         } else {
-            scene.cast.get(other).is_some_and(|c| c.holds(target))
+            scene.cast.get(actor).is_some_and(|c| c.holds(target))
         };
         if ok {
             let at = MemoryKey {
@@ -837,7 +841,9 @@ pub fn activate_near(
                 mode,
                 now,
             };
-            activate_word(scene, actor, at, hit, &mut words);
+            if activate_word(scene, actor, at, hit, &mut words) {
+                report_invalid(scene, "Near Activation", actor);
+            }
         }
     }
 }
@@ -880,14 +886,20 @@ pub fn activate_with(
         mode,
         now: scene.world_time,
     };
-    activate_word(scene, actor, at, hit, &mut None);
+    if activate_word(scene, actor, at, hit, &mut None) {
+        report_invalid(scene, "Activate with", actor);
+    }
 }
 
 /// A witnessed event (`GameEvent`'s memory flashes): for each contact of
-/// `actor` that holds `role` (and, when `target` is a relation role,
-/// holds it toward `actor`), activate `topic` of `role`'s dialogue aimed
-/// at `target` in that contact's memory of `actor`. When `target` is not
-/// a relation role, `actor` must hold it.
+/// A witnessed event (`GameEvent`'s memory flashes): for every contact of
+/// `actor` that holds `target` (and, when `role` is a relation role, holds
+/// it toward `actor`), activate `topic` of `role`'s dialogue aimed at
+/// `target` in that contact's memory of `actor`. When `role` is not a
+/// relation role, `actor` must hold it. The word is filed under entry
+/// `role`, key `target`, exactly as the original stores it (for a
+/// non-relation role that is not where the dialogue search looks, a quirk
+/// of the original worth keeping).
 pub fn witness_event(
     scene: &mut Scene<'_>,
     actor: u32,
@@ -897,21 +909,17 @@ pub fn witness_event(
     topic: Name,
 ) {
     let library = scene.library;
-    let relation = library
-        .roles
-        .get(target)
-        .is_some_and(|r| r.is_relation_role_byte());
+    let Some(rec) = library.roles.get(role) else {
+        return;
+    };
+    let relation = rec.is_relation_role_byte();
     let Some(me) = scene.cast.get(actor) else {
         return;
     };
-    if !relation && !me.holds(target) {
+    if !relation && !me.holds(role) {
         return;
     }
-    let Some(graph) = library
-        .roles
-        .get(role)
-        .and_then(|r| r.dialogue_for(target, 0))
-    else {
+    let Some(graph) = rec.dialogue_for(target, 0) else {
         return;
     };
     let Some(n) = graph.find(&topic) else {
@@ -921,17 +929,17 @@ pub fn witness_event(
     let contacts: Vec<u32> = me.contacts.iter().map(|c| c.other).collect();
     let mut words = None;
     for other in contacts {
-        let ok = scene
+        let witness = scene
             .cast
             .get(other)
-            .is_some_and(|c| c.holds(role) && (!relation || c.holds_toward(actor, target)));
-        if !ok {
+            .is_some_and(|c| c.holds(target) && (!relation || c.holds_toward(actor, role)));
+        if !witness {
             continue;
         }
         let at = MemoryKey {
             other: actor,
-            role: target,
-            key: role,
+            role,
+            key: target,
         };
         let hit = Hit {
             count: graph.nodes.len(),
@@ -940,7 +948,9 @@ pub fn witness_event(
             mode,
             now: scene.world_time,
         };
-        activate_word(scene, other, at, hit, &mut words);
+        if activate_word(scene, other, at, hit, &mut words) {
+            report_invalid(scene, "Witness Event", actor);
+        }
     }
 }
 
@@ -1018,6 +1028,7 @@ pub fn witness_activate(
             };
             topics::store(c, at, &words);
         }
+        report_invalid(scene, "Broadcast Event", witness);
         true
     };
     for (i, &r) in a_roles.iter().enumerate() {
@@ -1068,9 +1079,9 @@ fn activate_word(
     at: MemoryKey,
     hit: Hit,
     words: &mut Option<Vec<u32>>,
-) {
+) -> bool {
     let Some(c) = scene.cast.get_mut(owner) else {
-        return;
+        return false;
     };
     match topics::load(c, at, hit.count) {
         (Some(w), _) => *words = Some(w),
@@ -1080,11 +1091,27 @@ fn activate_word(
             }
         }
     }
-    let Some(buf) = words.as_mut() else { return };
+    let Some(buf) = words.as_mut() else {
+        return false;
+    };
     if let Some(w) = buf.get_mut(hit.index)
         && topics::activate(w, hit.flags, hit.mode, hit.now)
     {
         topics::store(c, at, buf);
+        return true;
+    }
+    false
+}
+
+/// Report the original's invalid-role-identifier message for `who` after an
+/// event store (a guess: the original's validator is not in the packet, so
+/// this checks every role against the database).
+fn report_invalid(scene: &mut Scene<'_>, title: &str, who: u32) {
+    if role_set_invalid(scene, who) {
+        scene.effects.push(Effect::Report(
+            title.to_string(),
+            "Invalid role identifier.".to_string(),
+        ));
     }
 }
 

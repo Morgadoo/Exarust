@@ -339,6 +339,16 @@ pub fn clamp_concern(c: f32) -> f32 {
     }
 }
 
+/// Reach of the `WitnessRole` grant, cm (18 m: the original compares the
+/// squared distance against 3.24e6).
+pub const WITNESS_RADIUS_CM: f32 = 1800.0;
+
+/// Whether a character at `(dx, dy, dz)` from the actor is close enough for
+/// `WitnessRole`; line of sight is still the caller's to test.
+pub fn witness_range(dx: f32, dy: f32, dz: f32) -> bool {
+    dx * dx + dy * dy + dz * dz <= 3.24e6
+}
+
 /// Type word of a zone marker object, as `InZone` looks it up in the object
 /// database.
 pub const ZONE_MARKER_TYPE: u32 = 0x8000_AC07;

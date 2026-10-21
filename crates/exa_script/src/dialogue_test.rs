@@ -604,8 +604,9 @@ fn ended_conversations_are_released() {
     assert_eq!(State::Ended, State::Ended);
 }
 
-/// `GameEvent`'s memory flash: a contact holding XA_Derrin (19) has
-/// "XAU_Memory" of its dialogue toward the Player role (7) activated.
+/// `GameEvent`'s memory flash: when XA_Derrin (19, which the event's actor
+/// holds) says "XAU_Memory" toward the Player role (7), every contact that
+/// holds that role remembers it, filed under entry 19 and key 7.
 #[test]
 fn a_witnessed_event_activates_the_contacts_topic() {
     let memory = node(0x100, "XAU_Memory", &[], vec![]);
@@ -615,15 +616,15 @@ fn a_witnessed_event_activates_the_contacts_topic() {
             role(7, 0, 0, vec![]),
         ],
     };
-    let mut player = person(PLAYER, &[7], &db);
+    let mut player = person(PLAYER, &[19, 7], &db);
     player.contacts.push(Contact::new(GUARD));
     let mut cast = Cast {
-        characters: vec![person(GUARD, &[19], &db), player],
+        characters: vec![person(GUARD, &[7], &db), player],
     };
     let mut s = scene(&db, None, &mut cast, 0);
     dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory"));
     let words =
-        topics::block(cast.get(GUARD).unwrap(), PLAYER, 7, 19).and_then(|m| m.words.clone());
+        topics::block(cast.get(GUARD).unwrap(), PLAYER, 19, 7).and_then(|m| m.words.clone());
     assert_eq!(words, Some(vec![ACTIVATED | 1000]));
 }
 
@@ -764,4 +765,53 @@ fn the_second_player_slot_is_a_player_too() {
         1500,
         "the second player's line is not halved"
     );
+}
+
+/// `ActivateTopicN` with a target role checks the actor holds the target
+/// (or, for a relation role, holds it toward the contact), not the
+/// contact; the word lands under entry target, key role.
+#[test]
+fn near_activation_checks_the_actor_and_files_the_word() {
+    let memory = node(0x100, "Rumour", &[], vec![]);
+    let db = RoleDb {
+        roles: vec![
+            role(5, 0, 0, vec![entry(0x2, 9, Some(graph(9, vec![memory])))]),
+            role(9, 0, 0, vec![]),
+        ],
+    };
+    let mut player = person(PLAYER, &[5], &db);
+    player.contacts.push(Contact::new(GUARD));
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[], &db), player],
+    };
+    {
+        let mut s = scene(&db, None, &mut cast, 0);
+        dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
+    }
+    assert!(topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).is_none());
+    cast.get_mut(PLAYER).unwrap().add_role(&db, 9);
+    {
+        let mut s = scene(&db, None, &mut cast, 0);
+        dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
+    }
+    let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).and_then(|m| m.words.clone());
+    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    // Without a target the contact's roles pick the dialogue and the word
+    // is filed under entry 0, key role.
+    let gossip = node(0x100, "Gossip", &[], vec![]);
+    let db = RoleDb {
+        roles: vec![
+            role(5, 0, 0, vec![entry(0x2, 9, Some(graph(9, vec![gossip])))]),
+            role(9, 0, 0, vec![]),
+        ],
+    };
+    let mut player = person(PLAYER, &[5], &db);
+    player.contacts.push(Contact::new(GUARD));
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[9], &db), player],
+    };
+    let mut s = scene(&db, None, &mut cast, 0);
+    dialogue::activate_near(&mut s, PLAYER, 5, 0, 1, name("Gossip"));
+    let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 0, 5).and_then(|m| m.words.clone());
+    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
 }
