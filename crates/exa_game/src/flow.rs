@@ -1301,8 +1301,10 @@ impl Flow {
                 self.hook = Hook::Practice;
                 if !was_practice {
                     self.practice.start_ms = now;
+                    // The original resets the save slot only when it enters
+                    // practice from outside the practice family.
+                    self.slot = None;
                 }
-                self.slot = None;
                 steps.push(Step::SessionTask(false));
                 steps.push(Step::Hook(Hook::Practice));
             }
