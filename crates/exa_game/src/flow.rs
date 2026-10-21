@@ -1267,12 +1267,17 @@ impl Flow {
         steps
     }
 
-    /// Switches the game mode. The outgoing mode's player is stored and the
-    /// incoming mode's restored, the per-mode flags are set and the incoming
-    /// mode's hook installed.
+    /// Switches the game mode. A switch to the running mode does nothing.
+    /// Otherwise the reconstruction state and its checkpoint record clear,
+    /// the outgoing mode's player is stored and the incoming mode's
+    /// restored, and the incoming mode's hook is set: the story's hook for
+    /// story, none for the arena, the title and a scripted mode (whose enter
+    /// hook runs), and practice keeps the hook it had (the practice start
+    /// installs its own). Entering practice from outside the practice family
+    /// also restarts the round clock and forgets the save slot.
     ///
-    /// The original's three flag words are kept as the mode properties they
-    /// describe: story mode uses checkpoints, arena mode overrides the
+    /// The original's per-mode flag words are kept as the mode properties
+    /// they describe: story mode uses checkpoints, arena mode overrides the
     /// inventory and writes its own tables. That reading is a guess from the
     /// notes; the mode words, the player slots and the order are exact.
     pub fn switch_mode(&mut self, mode: Mode, now: u32) -> Vec<Step> {
@@ -1280,6 +1285,8 @@ impl Flow {
             return Vec::new();
         }
         let mut steps = Vec::new();
+        self.story.reconstruction = 0;
+        self.story.checkpoint = 0;
         let was_practice = self.mode.practice_family();
         if let Some(slot) = player_slot(self.mode) {
             self.player[slot] = true;
@@ -1288,39 +1295,26 @@ impl Flow {
         self.end_menu = None;
         match mode {
             Mode::Practice => {
-                self.hook = Hook::Practice;
                 if !was_practice {
                     self.practice.start_ms = now;
-                    // The original resets the save slot only when it enters
-                    // practice from outside the practice family.
                     self.slot = None;
                 }
-                steps.push(Step::SessionTask(false));
-                steps.push(Step::Hook(Hook::Practice));
             }
             Mode::Story => {
                 self.hook = Hook::Story;
-                steps.push(Step::SessionTask(true));
                 steps.push(Step::Hook(Hook::Story));
             }
-            Mode::Arena => {
+            Mode::Arena | Mode::Menu => {
                 self.hook = Hook::None;
-                steps.push(Step::SessionTask(true));
-                steps.push(Step::Hook(Hook::None));
-            }
-            Mode::Menu => {
-                self.hook = Hook::None;
-                steps.push(Step::SessionTask(false));
                 steps.push(Step::Hook(Hook::None));
             }
             Mode::Other(word) => {
                 self.hook = Hook::None;
-                steps.push(Step::SessionTask(false));
+                steps.push(Step::Hook(Hook::None));
                 steps.push(Step::ScriptMode {
                     mode: word,
                     hook: ScriptHook::Enter,
                 });
-                steps.push(Step::Hook(Hook::None));
             }
         }
         steps
@@ -2998,13 +2992,20 @@ mod tests {
         assert_eq!(flow.menu_page(), Page::Title);
         assert!(flow.boot().is_empty());
         assert!(flow.booted());
+        // Practice keeps the hook it had: its start installs its own.
         let steps = flow.switch_mode(Mode::Practice, 1000);
         assert_eq!(flow.mode, Mode::Practice);
-        assert_eq!(flow.hook, Hook::Practice);
-        assert!(steps.contains(&Step::SessionTask(false)));
+        assert_eq!(flow.hook, Hook::None);
+        assert!(steps.is_empty());
+        assert_eq!(flow.practice.start_ms, 1000);
         assert_eq!(flow.menu_page(), Page::InGame);
+        // A switch clears the reconstruction state.
+        flow.story.reconstruction = REBUILDABLE;
+        flow.story.checkpoint = 7;
         let steps = flow.switch_mode(Mode::Story, 1000);
-        assert!(steps.contains(&Step::Hook(Hook::Story)));
+        assert_eq!(steps, vec![Step::Hook(Hook::Story)]);
+        assert_eq!(flow.story.reconstruction, 0);
+        assert_eq!(flow.story.checkpoint, 0);
         assert!(!flow.has_save[0]);
         assert!(flow.page_state().in_game);
         // The same mode does nothing.
