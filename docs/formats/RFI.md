@@ -113,7 +113,11 @@ The original does register blue-first words in a second table:
 `BGR8` (`0x0200C600`) and `BGRA8` (`0x0200E608`) convert to `RGB8` and
 `RGBA8` by swapping the first and third bytes, and the normal-map orders
 `ZYX8` (`0x1201C600`) and `ZYXV8` (`0x1201E608`) convert to
-`XYZ8`/`XYZV8` the same way. No shipped image uses any of the four; the
+`XYZ8`/`XYZV8` the same way. Their converters compare the target with the
+data-kind bits (24 to 27) kept, so they serve only first-data-kind targets
+(RGB8, RGBA8, ALPHA8, LUM8 and the signed ids that reduce to them); the
+three-channel ones also give grey as the plain RGB luma of the stored bytes
+(no swap), the four-channel ones give alpha but no grey. No shipped image uses any of the four; the
 upload table lists their GL formats as `GL_BGR`/`GL_BGRA`. Exarust
 classifies them and decodes them through the converters.
 

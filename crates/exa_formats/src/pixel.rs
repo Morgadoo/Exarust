@@ -64,6 +64,10 @@ pub mod id {
 /// Compares a target without its data-kind bits.
 pub const TARGET_MASK: u32 = 0x800C_FFFF;
 
+/// The comparison the channel-order converters make: the data-kind bits
+/// (24 to 27) are kept, so a target counts only with its exact data kind.
+pub const KIND_TARGET_MASK: u32 = 0x8F0C_FFFF;
+
 /// Which converter reads a source format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
@@ -730,23 +734,27 @@ pub fn convert(
         },
         // The channel-order converters read the stored order and write the
         // canonical one: the third stored byte becomes red (BGR to RGB,
-        // ZYX to XYZ), the first becomes blue.
+        // ZYX to XYZ), the first becomes blue. They compare the target with
+        // its data-kind bits kept, so only a target of the first data kind
+        // (the plain and signed colour ids, not the value ids) is served.
         Source::Bgr | Source::Zyx => {
             let px = src[..n * 3].as_chunks::<3>().0.iter();
-            match masked {
-                0x2008 | 0x4200 => {
+            match target & KIND_TARGET_MASK {
+                id::ALPHA8 | id::LUM8 => {
+                    // The grey conversion weighs the stored bytes in their
+                    // stored order, as for plain RGB.
                     need(dst, n)?;
                     for (out, p) in dst.iter_mut().zip(px) {
-                        *out = luma(p[2], p[1], p[0]);
+                        *out = luma(p[0], p[1], p[2]);
                     }
                 }
-                0xC600 => {
+                id::RGB8 => {
                     need(dst, n * 3)?;
                     for (out, p) in dst.as_chunks_mut::<3>().0.iter_mut().zip(px) {
                         out.copy_from_slice(&[p[2], p[1], p[0]]);
                     }
                 }
-                0xE608 => {
+                id::RGBA8 => {
                     need(dst, n * 4)?;
                     for (out, p) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px) {
                         out.copy_from_slice(&[p[2], p[1], p[0], 255]);
@@ -757,24 +765,20 @@ pub fn convert(
         }
         Source::Bgra | Source::Zyxv => {
             let px = src[..n * 4].as_chunks::<4>().0.iter();
-            match masked {
-                0x2008 | 0x4200 => {
+            match target & KIND_TARGET_MASK {
+                id::ALPHA8 => {
                     need(dst, n)?;
                     for (out, p) in dst.iter_mut().zip(px) {
-                        *out = if masked == 0x2008 {
-                            p[3]
-                        } else {
-                            luma(p[2], p[1], p[0])
-                        };
+                        *out = p[3];
                     }
                 }
-                0xC600 => {
+                id::RGB8 => {
                     need(dst, n * 3)?;
                     for (out, p) in dst.as_chunks_mut::<3>().0.iter_mut().zip(px) {
                         out.copy_from_slice(&[p[2], p[1], p[0]]);
                     }
                 }
-                0xE608 => {
+                id::RGBA8 => {
                     need(dst, n * 4)?;
                     for (out, p) in dst.as_chunks_mut::<4>().0.iter_mut().zip(px) {
                         out.copy_from_slice(&[p[2], p[1], p[0], p[3]]);
@@ -1030,12 +1034,21 @@ mod tests {
             run(id::ZYXV8, id::XYZV8, &[1, 2, 3, 4], 1, 4).unwrap(),
             [3, 2, 1, 4]
         );
-        // Blue first, so the luma weights see the stored order (30, 200, 10:
-        // 30·0.299 + 200·0.587 + 10·0.114 = 127.51).
+        // The grey conversion is the plain RGB one on the stored bytes:
+        // 10·0.299 + 200·0.587 + 30·0.114 = 123.81.
         assert_eq!(
             run(id::BGR8, id::LUM8, &[10, 200, 30], 1, 1).unwrap(),
-            [128]
+            [124]
         );
+        assert_eq!(
+            run(id::ZYX8, id::ALPHA8, &[10, 200, 30], 1, 1).unwrap(),
+            [124]
+        );
+        // The four-channel sources have no grey conversion.
+        assert_eq!(run(id::BGRA8, id::LUM8, &[10, 200, 30, 5], 1, 1), None);
+        // The data-kind bits are compared, so a target of another data kind
+        // is declined.
+        assert_eq!(run(id::BGR8, 0x0000_C600, &[1, 2, 3], 1, 3), None);
         // A target the converter does not write is declined.
         assert_eq!(run(id::BGR8, id::LUMA8, &[1, 2, 3], 1, 2), None);
     }
