@@ -322,11 +322,13 @@ pub fn player_name(package: &PackageImage, data: &PlayerData) -> Option<String> 
     // The original's import takes the section's first chunk whatever its
     // id.
     let payload = save_package::first_chunk_payload(section)?;
-    let records = exa_formats::characters::read_character_database(payload).ok()?;
-    let (_, record) = records
-        .iter()
-        .find(|(record_id, _)| record_id & exa_formats::characters::ID_MASK == id)?;
-    Some(record.as_ref().ok()?.name.clone())
+    let mut db = exa_formats::character_db::CharacterDb::from_rdb(
+        exa_formats::character_db::WORLD_TAG,
+        payload,
+    )
+    .ok()?;
+    let record = db.get(id)?;
+    Some(record.record().name.clone())
 }
 
 /// Write the session: a package with its `#playerdata` section.

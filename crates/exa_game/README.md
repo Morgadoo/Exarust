@@ -76,7 +76,10 @@ number at the front and is an empty package (`create_empty`; `create`
 writes the session too); deleting removes both files. A checkpoint (`.rcp`)
 is written once per slot by copying the save, and a manual or transition
 save refreshes it; a death deletes the save and drops the slot unless a
-checkpoint exists, which the next load copies back. The original's world
+checkpoint exists, which the next load copies back. A save's
+`#worldchrdb` is read through `exa_formats::character_db`'s world
+database (id-sorted lookup and lazy record), the same lookup the original
+uses. The original's world
 databases, character placement export and level sections are not exported
 yet, so a save made from nothing is not loadable by the original.
 
