@@ -10,9 +10,9 @@
 //! appended, and the old bytes are left alone. Deleting a section only
 //! removes its directory entry.
 //!
-//! The `#playerdata` section is a fixed 48-byte header followed by the
+//! The `#playerdata` section is a fixed 52-byte header followed by the
 //! player's character placement chunk and then tagged chunks. The story and
-//! arena headers share their first 32 bytes and differ in the last 16.
+//! arena headers share their first 36 bytes and differ in the last 16.
 //!
 //! Evidence and the guesses are in `docs/formats/SAVES.md`; the container
 //! rules come from the package create, open, write and delete routines and
@@ -509,7 +509,7 @@ pub enum Flavour {
     Arena,
 }
 
-/// The fixed 48-byte story header.
+/// The fixed 52-byte story header.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StoryHeader {
     /// The level the player was in (`exanima01` … `exanima08`).
@@ -528,7 +528,7 @@ pub struct StoryHeader {
     pub reserved: u32,
 }
 
-/// The fixed 48-byte arena header.
+/// The fixed 52-byte arena header.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ArenaHeader {
     /// The level the player was in (`arenahub`, `arena`, `arenae`).
@@ -584,7 +584,7 @@ impl PlayerHeader {
 /// A player-data error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerDataError {
-    /// Fewer than the 48 header bytes.
+    /// Fewer than the 52 header bytes.
     Short,
     /// The signature is not this mode's, or older than the story's.
     Signature(u32),
@@ -595,6 +595,80 @@ pub enum PlayerDataError {
 /// The player's saved character placement, as the mode writes it: one chunk
 /// whose payload the level exporter defines.
 pub const CHARACTER_TAG: u32 = 0xCAC0_CA00;
+
+/// The reference bit that sends the record lookup to the world character
+/// database.
+pub const CHARACTER_IN_WORLD_DB: u32 = 0x4000_0000;
+
+/// Where an old arena save puts the player back.
+pub const OLD_ARENA_POSITION: [f32; 3] = [0.0, 0.0, 300.0];
+
+/// The player's saved placement, the payload of the character chunk: the
+/// record reference, the position, a word the loader keeps beside it, a
+/// second word, then sub-chunks the scene import picks up by id (in both
+/// retail saves observed: `0xCAC0E100` and `0xCAC0EA00`; the loader also
+/// takes `0xCAC0EB00`, `0xCAC0EC00` and `0xCACE0F77`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharacterPlacement {
+    /// See [`PlayerData::character_reference`].
+    pub reference: u32,
+    /// The saved position (cm).
+    pub position: [f32; 3],
+    /// The word after the position. **Inference:** a heading in radians;
+    /// both observed values lie within ±π.
+    pub facing: f32,
+    /// The word after it (zero in both observed saves).
+    pub extra: u32,
+    /// The sub-chunks in order.
+    pub chunks: Vec<OwnedChunk>,
+}
+
+impl CharacterPlacement {
+    /// Reads a placement payload. The sub-chunks are read while their
+    /// header fits.
+    pub fn parse(bytes: &[u8]) -> Result<Self, PlayerDataError> {
+        let mut at = 0;
+        let reference = take_u32(bytes, &mut at)?;
+        let position = [
+            take_f32(bytes, &mut at)?,
+            take_f32(bytes, &mut at)?,
+            take_f32(bytes, &mut at)?,
+        ];
+        let facing = take_f32(bytes, &mut at)?;
+        let extra = take_u32(bytes, &mut at)?;
+        let mut chunks = Vec::new();
+        while at < bytes.len() {
+            let id = take_u32(bytes, &mut at)?;
+            let size = take_u32(bytes, &mut at)? as usize;
+            chunks.push(OwnedChunk {
+                id,
+                data: take(bytes, &mut at, size)?.to_vec(),
+            });
+        }
+        Ok(Self {
+            reference,
+            position,
+            facing,
+            extra,
+            chunks,
+        })
+    }
+
+    /// The payload's bytes.
+    pub fn write(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.reference.to_le_bytes());
+        for value in self.position {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&self.facing.to_le_bytes());
+        out.extend_from_slice(&self.extra.to_le_bytes());
+        for chunk in &self.chunks {
+            write_chunk(&mut out, chunk.id, &chunk.data);
+        }
+        out
+    }
+}
 
 /// The journal chunk: a count and, per entry, an id and two strings.
 pub const JOURNAL_CHUNK: u32 = 0x10;
@@ -712,9 +786,13 @@ impl PlayerData {
     ///
     /// The story reader accepts any signature at or above its own, so a
     /// newer save still loads; the arena reader takes its signature exactly.
-    /// The character is read first when the section starts with its chunk;
-    /// the rest are read while a whole header fits, and a tail of up to
-    /// seven bytes is ignored as the original's loop does.
+    /// The character is read first when the section starts with its chunk
+    /// (the original takes the first chunk after the header as the
+    /// character whatever its id; Exarust only does so for the character's
+    /// own id, because its own saves may leave the placement out). The rest
+    /// are read while **more** than eight bytes remain, as the original's
+    /// loop does, so a tail of up to eight bytes (an empty chunk at the very
+    /// end included) is ignored.
     pub fn parse(bytes: &[u8], flavour: Flavour) -> Result<Self, PlayerDataError> {
         let mut at = 0;
         let signature = take_u32(bytes, &mut at)?;
@@ -850,8 +928,11 @@ impl PlayerData {
         }
     }
 
-    /// The character reference the placement chunk starts with: bit 31 says
-    /// the record is not in the database yet, the low 28 bits are its id.
+    /// The character reference the placement chunk starts with: bit 30
+    /// picks the database the record is looked up in (set: the world
+    /// character database the save's `#worldchrdb` restores; clear: the
+    /// other character database), the low 28 bits are its id. A reference
+    /// the lookup does not find makes the original's loader refuse the save.
     pub fn character_reference(&self) -> Option<u32> {
         let word = self.character.as_ref()?.get(0..4)?;
         Some(u32::from_le_bytes(word.try_into().ok()?))
@@ -863,15 +944,32 @@ impl PlayerData {
         self.character_reference().map(|word| word & 0x0FFF_FFFF)
     }
 
+    /// Whether the player's record lives in the world character database
+    /// (bit 30 of the reference).
+    pub fn character_in_world_db(&self) -> Option<bool> {
+        self.character_reference()
+            .map(|word| word & CHARACTER_IN_WORLD_DB != 0)
+    }
+
+    /// The character placement, decoded.
+    pub fn placement(&self) -> Option<Result<CharacterPlacement, PlayerDataError>> {
+        self.character.as_deref().map(CharacterPlacement::parse)
+    }
+
     /// The mask the character screen loads a save with: the journal and the
     /// global experience snapshot only.
     pub const CHARACTER_SCREEN_MASK: u32 = 0x10_0010;
 
-    /// Applies a load mask: the original ands each chunk id with the mask
-    /// and ignores every result at or below `0xF`, so the chunks the mask
-    /// zeroes are not imported.
+    /// Applies a load mask: the original ands each chunk id with the mask,
+    /// ignores every result at or below `0xF` and dispatches the rest on the
+    /// **masked** id. The kept chunks therefore carry `id & mask` (with the
+    /// full mask nothing changes; with a narrow one an unrelated id can land
+    /// on a known one).
     pub fn apply_mask(&mut self, mask: u32) {
-        self.chunks.retain(|chunk| (chunk.id & mask) > 0xF);
+        self.chunks.retain_mut(|chunk| {
+            chunk.id &= mask;
+            chunk.id > 0xF
+        });
     }
 
     /// Replaces the journal chunk; an empty journal removes it, as the
@@ -908,14 +1006,22 @@ impl PlayerData {
     }
 
     /// The arena loader's version conversion: an old save drops the
-    /// hireables and shop-stock chunks, which the loader skips. The package
-    /// also drops its `arenahub` section; that is the caller's step.
+    /// hireables and shop-stock chunks, which the loader skips, and puts the
+    /// player's saved position back to `(0, 0, 300)`. The package also drops
+    /// its `arenahub` section; that is the caller's step.
     pub fn convert_arena(&mut self) -> bool {
         if !self.arena_data_is_old() {
             return false;
         }
         self.remove_chunk(HIREABLES_CHUNK);
         self.remove_chunk(SHOP_STOCK_CHUNK);
+        if let Some(character) = &mut self.character
+            && let Some(position) = character.get_mut(4..16)
+        {
+            for (slot, value) in position.chunks_exact_mut(4).zip(OLD_ARENA_POSITION) {
+                slot.copy_from_slice(&value.to_le_bytes());
+            }
+        }
         true
     }
 }
@@ -933,15 +1039,12 @@ pub fn write_journal(records: &[JournalRecord]) -> Vec<u8> {
 }
 
 /// Writes a `#worldobjdb` section: the object database export chunk, then
-/// the data manager's chunk. Each is written only when it has bytes.
+/// the data manager's chunk, both always (the save writes the section only
+/// when the object database has records).
 pub fn world_object_db(objects: &[u8], data_manager: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    if !objects.is_empty() {
-        write_chunk(&mut out, WORLD_OBJECTS_CHUNK, objects);
-    }
-    if !data_manager.is_empty() {
-        write_chunk(&mut out, DATA_MANAGER_CHUNK, data_manager);
-    }
+    write_chunk(&mut out, WORLD_OBJECTS_CHUNK, objects);
+    write_chunk(&mut out, DATA_MANAGER_CHUNK, data_manager);
     out
 }
 
@@ -990,8 +1093,10 @@ pub fn name(text: &str) -> [u8; NAME_LEN] {
 /// creator runs while the save's started flag is clear: a save with an
 /// `exanima06` section is from a newer campaign layout, and one with an
 /// `exanima04` section is only usable when its world object database has
-/// the current magic. A missing database or a section too short to hold
-/// the magic counts as a mismatch here; the original reads past the buffer.
+/// the current magic as its third word (the first word of the object
+/// export chunk's payload). A missing database passes; a section too short
+/// to hold the magic counts as a mismatch here, where the original reads
+/// past the buffer.
 pub fn story_start_incompatible(package: &PackageImage, started: bool) -> bool {
     if started {
         return false;
@@ -1003,7 +1108,7 @@ pub fn story_start_incompatible(package: &PackageImage, started: bool) -> bool {
         return false;
     }
     match package.section(WORLD_OBJECT_DB) {
-        Some(section) => match section.get(0..4) {
+        Some(section) => match section.get(8..12) {
             Some(word) => u32::from_le_bytes(word.try_into().unwrap()) != WORLD_OBJECT_DB_MAGIC,
             None => true,
         },
@@ -1293,10 +1398,16 @@ mod tests {
         // Exanima04 with a current object database is fine.
         let mut package = PackageImage::new();
         package.put_section(&name("exanima04"), &[]);
-        package.put_section(WORLD_OBJECT_DB, &WORLD_OBJECT_DB_MAGIC.to_le_bytes());
+        let current = world_object_db(&WORLD_OBJECT_DB_MAGIC.to_le_bytes(), &[]);
+        package.put_section(WORLD_OBJECT_DB, &current);
         assert!(!story_start_incompatible(&package, false));
+        // The magic is the section's third word, not its first: the bare
+        // magic at the start is a mismatch.
+        package.put_section(WORLD_OBJECT_DB, &WORLD_OBJECT_DB_MAGIC.to_le_bytes());
+        assert!(story_start_incompatible(&package, false));
         // A mismatched magic, a short section or a missing database differ.
-        package.put_section(WORLD_OBJECT_DB, &0xDBA_C0D05u32.to_le_bytes());
+        let older = world_object_db(&0xDBAC_0D05u32.to_le_bytes(), &[]);
+        package.put_section(WORLD_OBJECT_DB, &older);
         assert!(story_start_incompatible(&package, false));
         package.put_section(WORLD_OBJECT_DB, &[0, 1]);
         assert!(story_start_incompatible(&package, false));
@@ -1337,7 +1448,7 @@ mod tests {
         header.clock = 900;
         header.camera = [1.0, 2.0, 3.0];
         header.zoom = 1.5;
-        data.character = Some(vec![0x2A, 0, 0, 0x80]);
+        data.character = Some(vec![0x2A, 0, 0, 0x40]);
         data.set_journal(&[JournalRecord {
             id: 4,
             title: "Day one".to_string(),
@@ -1361,9 +1472,10 @@ mod tests {
         assert_eq!(header.flags & 0xFF, 3);
         assert_eq!((header.flags & 0xFF_0000) >> 16, 1);
         assert_eq!(header.clock, 900);
-        assert_eq!(read.character, Some(vec![0x2A, 0, 0, 0x80]));
-        assert_eq!(read.character_reference(), Some(0x8000_002A));
+        assert_eq!(read.character, Some(vec![0x2A, 0, 0, 0x40]));
+        assert_eq!(read.character_reference(), Some(0x4000_002A));
         assert_eq!(read.character_record_id(), Some(42));
+        assert_eq!(read.character_in_world_db(), Some(true));
         assert_eq!(
             read.journal().unwrap().unwrap(),
             vec![JournalRecord {
@@ -1389,6 +1501,17 @@ mod tests {
                 TRANSITION_CHUNK
             ]
         );
+    }
+
+    #[test]
+    fn both_headers_are_fifty_two_bytes() {
+        // Signature, locale, camera target, zoom, then four mode words; the
+        // retail saves' first chunk starts at byte 52.
+        assert_eq!(PlayerData::story(name("exanima01")).write().len(), 52);
+        assert_eq!(PlayerData::arena(name("arenahub")).write().len(), 52);
+        let mut data = PlayerData::story(name("exanima01"));
+        data.character = Some(vec![1, 0, 0, 0x40]);
+        assert_eq!(&data.write()[52..56], &CHARACTER_TAG.to_le_bytes());
     }
 
     #[test]
@@ -1434,7 +1557,11 @@ mod tests {
         assert_eq!(chunks[0].payload, &WORLD_OBJECT_DB_MAGIC.to_le_bytes());
         assert_eq!(chunks[1].id, DATA_MANAGER_CHUNK);
         assert_eq!(chunks[1].payload, &[4, 5]);
-        assert!(world_object_db(&[], &[]).is_empty());
+        // Both chunks are written even when empty.
+        let empty = world_object_db(&[], &[]);
+        assert_eq!(empty.len(), 16);
+        let ids: Vec<u32> = parse_chunks(&empty).unwrap().iter().map(|c| c.id).collect();
+        assert_eq!(ids, [WORLD_OBJECTS_CHUNK, DATA_MANAGER_CHUNK]);
         let characters = world_character_db(&[1, 2, 3]);
         let chunks = parse_chunks(&characters).unwrap();
         assert_eq!(chunks.len(), 1);
@@ -1464,6 +1591,15 @@ mod tests {
         all.set_chunk(0xF, vec![1]);
         all.apply_mask(!0);
         assert_eq!(all.chunks.len(), 1);
+        // The reader dispatches on the masked id: 0x110 under the character
+        // screen's mask reads as the journal, and the arena's arsenal as the
+        // global experience snapshot.
+        let mut odd = PlayerData::story(name("exanima02"));
+        odd.set_chunk(0x110, vec![9]);
+        odd.set_chunk(ARSENAL_CHUNK, vec![8]);
+        odd.apply_mask(PlayerData::CHARACTER_SCREEN_MASK);
+        let ids: Vec<u32> = odd.chunks.iter().map(|chunk| chunk.id).collect();
+        assert_eq!(ids, vec![JOURNAL_CHUNK, GLOBAL_XP_CHUNK]);
     }
 
     #[test]
@@ -1483,6 +1619,86 @@ mod tests {
         assert!(data.chunk(HIREABLES_CHUNK).is_none());
         assert!(data.chunk(SHOP_STOCK_CHUNK).is_none());
         assert_eq!(data.chunk(ARSENAL_CHUNK), Some(&[3u8][..]));
+    }
+
+    #[test]
+    fn an_old_arena_puts_the_player_back_at_the_start_position() {
+        let mut data = PlayerData::arena(name("arenahub"));
+        let placement = CharacterPlacement {
+            reference: CHARACTER_IN_WORLD_DB | 1,
+            position: [-168.5, 0.25, 137.0],
+            facing: -2.4,
+            extra: 0,
+            chunks: vec![OwnedChunk {
+                id: 0xCAC0_EA00,
+                data: vec![0; 12],
+            }],
+        };
+        data.character = Some(placement.write());
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 0x0108;
+        assert!(data.convert_arena());
+        let moved = data.placement().unwrap().unwrap();
+        assert_eq!(moved.position, OLD_ARENA_POSITION);
+        assert_eq!(moved.facing, -2.4);
+        assert_eq!(moved.chunks, placement.chunks);
+    }
+
+    #[test]
+    fn a_placement_reads_its_reference_position_and_sub_chunks() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x4000_0001u32.to_le_bytes());
+        for value in [8183.75f32, -6.0, 3961.0, -1.5] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        write_chunk(&mut bytes, 0xCAC0_E100, &[1, 2, 3]);
+        write_chunk(&mut bytes, 0xCAC0_EA00, &[0; 12]);
+        let placement = CharacterPlacement::parse(&bytes).unwrap();
+        assert_eq!(placement.reference, 0x4000_0001);
+        assert_eq!(placement.position, [8183.75, -6.0, 3961.0]);
+        assert_eq!(placement.facing, -1.5);
+        assert_eq!(placement.extra, 0);
+        assert_eq!(
+            placement.chunks.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [0xCAC0_E100, 0xCAC0_EA00]
+        );
+        assert_eq!(placement.write(), bytes);
+        // A reference without bit 30 looks in the other database.
+        let mut data = PlayerData::story(name("exanima01"));
+        data.character = Some(bytes.clone());
+        assert_eq!(data.character_in_world_db(), Some(true));
+        data.character.as_mut().unwrap()[3] = 0;
+        assert_eq!(data.character_in_world_db(), Some(false));
+        assert_eq!(data.character_record_id(), Some(1));
+        // A cut placement is an error, not a panic.
+        assert_eq!(
+            CharacterPlacement::parse(&bytes[..30]),
+            Err(PlayerDataError::Truncated)
+        );
+        assert_eq!(
+            CharacterPlacement::parse(&bytes[..10]),
+            Err(PlayerDataError::Truncated)
+        );
+    }
+
+    #[test]
+    fn a_tail_of_eight_bytes_is_not_read_as_a_chunk() {
+        let mut data = PlayerData::story(name("exanima01"));
+        data.set_chunk(GLOBAL_XP_CHUNK, 5u32.to_le_bytes().to_vec());
+        let mut bytes = data.write();
+        // An empty chunk at the very end: exactly eight bytes remain, which
+        // the original's "more than eight" loop does not enter.
+        write_chunk(&mut bytes, MEMORY_FLAGS_CHUNK, &[]);
+        let read = PlayerData::parse(&bytes, Flavour::Story).unwrap();
+        assert_eq!(read.chunks.len(), 1);
+        // Nine bytes do enter it, and the empty chunk is read.
+        bytes.push(0);
+        let read = PlayerData::parse(&bytes, Flavour::Story).unwrap();
+        assert_eq!(read.chunks.len(), 2);
+        assert_eq!(read.chunk(MEMORY_FLAGS_CHUNK), Some(&[][..]));
     }
 
     #[test]
