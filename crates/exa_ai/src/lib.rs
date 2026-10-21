@@ -18,11 +18,10 @@ use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
-pub mod activity;
-pub mod brain;
-use crate::combatant::{Combatant, Observed, Observer, Perception, atan2_xz, perceive};
 use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, perceive};
 
+pub mod activity;
+pub mod brain;
 pub mod combatant;
 pub mod fight;
 pub mod golem;
