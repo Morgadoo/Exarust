@@ -139,6 +139,7 @@ fn the_stance_factor_rises_with_the_gait() {
     let human = RaceMuscles::HUMAN;
     let walk = Bearing {
         moving: true,
+        legs: LegMode::Walk,
         ..Bearing::default()
     };
     let mut s = human.stance;
@@ -148,13 +149,42 @@ fn the_stance_factor_rises_with_the_gait() {
     assert!(s < 0.7 - 1e-3, "{s}");
     s = stance_factor(s, &walk, &human);
     assert!((s - 0.7).abs() < 1e-5, "{s}");
-    let run = Bearing { run: 1.0, ..walk };
+    let run = Bearing {
+        stance_run: 1.0,
+        legs: LegMode::Run,
+        ..walk
+    };
     for _ in 0..30 {
         s = stance_factor(s, &run, &human);
     }
     assert!((s - 1.0).abs() < 1e-5, "{s}");
     assert_eq!(stance_factor(s, &walk, &human), s);
     assert_eq!(stance_factor(s, &Bearing::default(), &human), 0.5);
+    // The rise is in double precision and stops on the target: 0.695 +
+    // 0.01 at a half run blend's target of 0.85 is 0.705; 0.845 is 0.85.
+    let half = Bearing {
+        stance_run: 0.5,
+        ..walk
+    };
+    assert_eq!(stance_factor(0.695, &half, &human), 0.705);
+    assert_eq!(stance_factor(0.845, &half, &human), 0.85);
+    // Standing dormant, or in the shock's stagger, it is 1.
+    let full = Bearing {
+        full_stance: true,
+        ..Bearing::default()
+    };
+    assert_eq!(stance_factor(0.7, &full, &human), 1.0);
+    assert_eq!(
+        stance_factor(
+            0.7,
+            &Bearing {
+                full_stance: true,
+                ..half
+            },
+            &human
+        ),
+        0.71
+    );
 }
 
 /// The arms' stiffness: easing 0.8x + 0.08 to 0.4 standing (a skeleton's
@@ -328,6 +358,7 @@ fn the_legs_strength_follows_the_gait_and_support() {
     assert!((body.links[limit].strength - 0.5).abs() < 1e-4);
     body.set_bearing(Bearing {
         moving: true,
+        legs: LegMode::Walk,
         ..Bearing::default()
     });
     for _ in 0..200 {
@@ -335,6 +366,35 @@ fn the_legs_strength_follows_the_gait_and_support() {
     }
     assert!((body.links[limit].strength - 0.4).abs() < 1e-4);
     assert!((body.parts[thigh].factor - 0.2).abs() < 1e-6);
+    // Running the thigh pulls at 0.6; backpedalling, and stepping (which
+    // the decision does not count as locomoting), as standing.
+    body.set_bearing(Bearing {
+        moving: true,
+        legs: LegMode::Run,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.parts[thigh].factor, 0.6);
+    assert!((body.links[limit].strength - 0.4).abs() < 1e-4);
+    for legs in [LegMode::Backpedal, LegMode::Standing] {
+        body.set_bearing(Bearing {
+            moving: true,
+            legs,
+            ..Bearing::default()
+        });
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        assert!((body.parts[thigh].factor - 0.25).abs() < 1e-6);
+    }
+    // A collapsing body's legs keep their gains.
+    body.set_bearing(Bearing {
+        legs: LegMode::Run,
+        collapsing: true,
+        ..Bearing::default()
+    });
+    let kept = body.links[limit].strength;
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert!((body.parts[thigh].factor - 0.25).abs() < 1e-6);
+    assert_eq!(body.links[limit].strength, kept);
     // Standing with no ground under its feet.
     body.set_bearing(Bearing {
         carried: false,
@@ -408,6 +468,7 @@ fn part_factors_and_arm_strengths() {
     assert!((sigma(&body) - 0.25).abs() < 1e-4, "{}", sigma(&body));
     body.set_bearing(Bearing {
         moving: true,
+        legs: LegMode::Walk,
         striding: true,
         ..Bearing::default()
     });

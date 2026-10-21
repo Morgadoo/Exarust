@@ -5,6 +5,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
+use super::super::locomotion::LegMode;
 use super::super::tests::floor_quad;
 use super::super::{BODY_HZ, Bearing, Ragdoll};
 
@@ -82,6 +83,7 @@ fn capsule_floor(z: f32) -> f32 {
 fn walking(carried: bool, gait_floor: f32) -> Bearing {
     Bearing {
         moving: true,
+        legs: LegMode::Walk,
         striding: true,
         walking: true,
         carried,

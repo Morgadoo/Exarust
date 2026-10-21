@@ -51,17 +51,19 @@ decides from it each tick (below). Outside combat:
   original's, REA). The run blend rises 0.05 per tick, at most to 1 − 0.3
   × the character's encumbrance (1 − 0.4 × with the latch; what it wears
   and the shield it holds, [formats/OTHER.md](formats/OTHER.md),
-  Encumbrance), and falls 0.015 (or follows the speed down while braking).
+  Encumbrance), bleeding while it runs by √alignment × the stance level
+  and always by 0.005 per cm a tick of vertical travel; walking it falls
+  0.015 (or follows the speed down while braking), standing 0.02.
   A new character in braies runs at the full blend; in a tourney plate
   harness, helm and leggings (encumbrance 0.625) the blend stops at 0.8125
   and the run at about 3.2 m/s instead of 3.6. With the latch kept the
   pose uses the run blend itself (the sampler reads the latch alone);
-  once the stance level is also above 0.9 and the step is faster than
-  3.5 cm a tick the stop distance takes the sprint row, the walk clip's
-  clock blends toward the feral sprint row (the sprint rate, toward the
-  jog rate by the feral level) and then slows by 1 − 0.1 × encumbrance,
-  and the capsule's run end is the jog speed times the feral sprint
-  thrust over the jog thrust.
+  with the latch the walk clip's clock slows by 1 − 0.1 × encumbrance on
+  any forward row; once the stance level is also above 0.9 and the step
+  is faster than 3.5 cm a tick the gait columns (stop distance, clock)
+  take the sprint row (the feral character's own, toward the jog by its
+  feral level), and the capsule's run end is the jog speed times the
+  feral sprint thrust over the jog thrust.
 - **Cursor Look (V)** captures the mouse while held: the pointer and world
   cursor are hidden, horizontal mouse motion turns the facing (the body's
   yaw and the request's heading) by 3.6 × Δx / window width radians per
@@ -94,12 +96,17 @@ decides from it each tick (below). Outside combat:
   ray from hip height stands in, its goal clamped a capsule radius and a
   30 cm grid cell short of what it meets (Exarust's own; edges lower than
   the hip are missed).
-- **The clips.** The steering starts the walk when the body tick has
-  decided the character moves, forwards or back, from whatever looping
-  clip plays (a braking body keeps its gait), and ends it in Idle when the
-  body tick stops it. Backing (the backpedal leg mode) runs that walk's
-  clock backwards at the backpedal rate, and the run is an overlay on the
-  walk. It starts no other clip: what a standing character plays is its
+- **The clips.** The body tick's locomotion starts the walk in the tick
+  it first moves the character, forwards or back, from whatever clip
+  plays: more than 600 ms after it last walked at its start key (2 ahead,
+  4 backwards, 5 or 8 turning hard one way, none the other), its clock at
+  the key before; within 600 ms where its clock was. The steering also
+  plays the walk while the body moves (a braking body keeps its gait) and
+  ends it in Idle when the body tick stops it. Its clock steps by the
+  locomotion's gait clock, × (0.8·speed + 1) and the alignment's phase
+  envelope ([formats/RSQ.md](formats/RSQ.md), Locomotion); backing (the
+  backpedal leg mode) runs it backwards at the backpedal rate, and the
+  run is an overlay on the walk. It starts no other clip: what a standing character plays is its
   stance's ([The combat stance](#the-combat-stance)), so a player that
   turned combat mode off in Cmbt - Idle keeps it, also while turning in
   place, until it walks. (REA: the original's exploration steering reaches
@@ -442,8 +449,7 @@ also leaves its interim backpedal and combat walk alone).
 
 Not yet, with the change that brings each:
 - the walk's end in the stance (Exarust's interim footwork and gaits
-  start their clips with no blend; the original's locomotion starts come
-  with C18);
+  start their clips with no blend; the original's walk start is in);
 - the Defence stance and Rebalance a fighter takes from its balance
   (below 0.8) or its tone (below 0.85), C11;
 - parries, whose clips are stances while they last, and readiness while

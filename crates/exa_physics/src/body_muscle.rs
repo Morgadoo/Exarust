@@ -15,6 +15,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+use super::locomotion::{GaitRow, GaitTable, LegMode};
 use super::{
     CM, Drive, LINK_EPSILON2, Link, MAX_CORRECTION, MAX_ENERGY, PIVOT_SLACK, Part, Ragdoll, weights,
 };
@@ -45,18 +46,24 @@ const LEG_DAMPING: f32 = 0.6;
 /// broken race data).
 pub(super) const MIN_STANCE: f32 = 0.01;
 /// A moving body's stance factor rises this much a tick toward
-/// 0.7 + 0.3·run.
-const WALK_STANCE: f32 = 0.7;
-const RUN_STANCE: f32 = 0.3;
-const STANCE_RISE: f32 = 0.01;
+/// 0.7 + 0.3·run (double precision); a dormant or shock-staggered body's
+/// is 1.
+const WALK_STANCE: f64 = 0.7;
+const RUN_STANCE: f64 = 0.3;
+const STANCE_RISE: f64 = 0.01;
+const FULL_STANCE: f32 = 1.0;
 /// Limbs' factors scale by 1.25 times the body's scale
 /// ([`BodyStats::scale`]).
 const LIMB_SCALE: f32 = 1.25;
-/// A thigh's factor: this moving, times [`LIMB_SCALE`] standing.
+/// A thigh's factor: this walking, [`THIGH_RUNNING`] running, times the
+/// limbs' 1.25·scale (double precision) standing or backpedalling.
 const THIGH_FACTOR: f32 = 0.2;
-/// A leg limit link's strength moves this share of the way to its target
-/// each tick: 0.5·S² standing, 0.4 moving.
-const LEG_LIMIT_BLEND: f32 = 0.1;
+const THIGH_RUNNING: f32 = 0.6;
+const THIGH_STANDING: f64 = 0.2;
+/// A leg limit link's strength s ← 0.9s + 0.1t (double precision) each
+/// tick: t = 0.5·S² standing or backpedalling, 0.4 walking or running.
+const LEG_LIMIT_KEEP: f64 = 0.9;
+const LEG_LIMIT_TAKE: f64 = 0.1;
 const LEG_LIMIT_STANDING: f32 = 0.5;
 const LEG_LIMIT_MOVING: f32 = 0.4;
 /// Arm stiffness: off balance, and dazed (tone under 0.85) or striding
@@ -109,9 +116,10 @@ pub struct RaceMuscles {
     /// The base rate of the clip clock: frames a tick before what the body
     /// does multiplies it (1 for a human).
     pub clip_rate: f32,
-    /// The walk's, jog's, sprint's and backpedal's clip rates, frames a
-    /// second: the locomotion clock's (a human's 27, 16.6, 13.5 and 28).
-    pub gait_rates: [f32; 4],
+    /// The walk, jog, sprint and backpedal rows of its gait table, per
+    /// tick (`GaitRow::scaled`; a human's clock rates 27, 16.6, 13.5 and
+    /// 28 frames a second).
+    pub gaits: [GaitRow; 4],
 }
 
 impl RaceMuscles {
@@ -120,7 +128,7 @@ impl RaceMuscles {
         arm_relaxation: 1.0,
         balance_bonus: 1.0,
         clip_rate: 1.0,
-        gait_rates: [27.0, 16.6, 13.5, 28.0],
+        gaits: GaitTable::HUMAN_ROWS,
     };
 }
 
@@ -178,6 +186,17 @@ pub struct Bearing {
     pub moving: bool,
     /// Run blend, 0 walking to 1 running.
     pub run: f32,
+    /// How its legs move this tick, its movement decision's leg mode
+    /// (standing unless it locomotes): the thighs' factors and the leg
+    /// limits follow it, and its stance factor rises only while it is not
+    /// standing.
+    pub legs: LegMode,
+    /// The run blend before this tick's locomotion, which the stance
+    /// factor's target reads.
+    pub stance_run: f32,
+    /// Its condition is dormant or its state is exactly the shock's
+    /// stagger: standing, its stance factor is 1.
+    pub full_stance: bool,
     /// It plays the walk or the run cycle: its arms hang loosely.
     pub striding: bool,
     /// It has lost its balance: falling, lying or getting up.
@@ -232,6 +251,9 @@ impl Default for Bearing {
         Self {
             moving: false,
             run: 0.0,
+            legs: LegMode::Standing,
+            stance_run: 0.0,
+            full_stance: false,
             striding: false,
             off_balance: false,
             getting_up: false,
@@ -290,18 +312,38 @@ pub(super) fn set_part_factors(parts: &mut [Part], head: f32) {
     }
 }
 
-/// The stance factor after one tick: a standing body's is its race's; a
-/// moving body's rises 0.01 a tick toward 0.7 + 0.3·run and keeps what it
-/// reached above that.
+/// The stance factor after one tick: a standing body's is its race's (1
+/// dormant or in the shock's stagger); a locomoting body's rises 0.01 a
+/// tick toward 0.7 + 0.3·run (double precision, the run blend before this
+/// tick's locomotion), never past it, and keeps what it reached above it.
 pub(super) fn stance_factor(s: f32, bearing: &Bearing, race: &RaceMuscles) -> f32 {
-    if !bearing.moving {
-        return race.stance;
+    if bearing.legs == LegMode::Standing {
+        return if bearing.full_stance {
+            FULL_STANCE
+        } else {
+            race.stance
+        };
     }
-    let target = WALK_STANCE + RUN_STANCE * bearing.run.clamp(0.0, 1.0);
+    let target = (f64::from(bearing.stance_run) * RUN_STANCE + WALK_STANCE) as f32;
     if s < target {
-        (s + STANCE_RISE).min(target)
+        let s = (f64::from(s) + STANCE_RISE) as f32;
+        if s > target { target } else { s }
     } else {
         s
+    }
+}
+
+/// The thighs' factor and the leg limits' target this tick by the leg
+/// mode: walking 0.2 and 0.4, running 0.6 and 0.4, otherwise 0.2 × the
+/// limbs' factor (double precision) and 0.5·S².
+fn leg_gains(legs: LegMode, limbs: f32, support: f32) -> (f32, f32) {
+    match legs {
+        LegMode::Walk => (THIGH_FACTOR, LEG_LIMIT_MOVING),
+        LegMode::Run => (THIGH_RUNNING, LEG_LIMIT_MOVING),
+        LegMode::Backpedal | LegMode::Standing => (
+            (f64::from(limbs) * THIGH_STANDING) as f32,
+            support * support * LEG_LIMIT_STANDING,
+        ),
     }
 }
 
@@ -470,20 +512,15 @@ impl Ragdoll {
         };
         drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
         let limbs = LIMB_SCALE * drive.stats.scale;
-        let (thigh, limit) = if bearing.moving {
-            (THIGH_FACTOR, LEG_LIMIT_MOVING)
-        } else {
-            (
-                THIGH_FACTOR * limbs,
-                LEG_LIMIT_STANDING * drive.support * drive.support,
-            )
-        };
+        let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support);
         for i in 0..parts.len() {
             match role(parts[i].bone) {
-                Role::Shin if parts[i].foot.is_some() => {
+                // A collapsing body's legs keep their gains.
+                Role::Shin if parts[i].foot.is_some() && !bearing.collapsing => {
                     if let Some(k) = parts[i].leg_limit.filter(|&k| k < links.len()) {
                         let s = &mut links[k].strength;
-                        *s += (limit - *s) * LEG_LIMIT_BLEND;
+                        *s = (f64::from(limit) * LEG_LIMIT_TAKE + f64::from(*s) * LEG_LIMIT_KEEP)
+                            as f32;
                     }
                     if let Some(j) = parts[i].parent.filter(|&j| j < parts.len()) {
                         parts[j].factor = thigh;

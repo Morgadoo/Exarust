@@ -13,7 +13,7 @@
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
 use exa_combat::Condition;
-use exa_combat::condition::PostureBranch;
+use exa_combat::condition::{PostureBranch, StateFlags};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{Bearing, Ragdoll, TickedCharacter};
@@ -35,10 +35,12 @@ pub(crate) fn take_bearing(
         Option<&PlayerBody>,
         Option<&PostureBranch>,
         Option<&Condition>,
+        Option<&StateFlags>,
     )>,
 ) {
     let Some(motions) = motions else { return };
-    let Ok((mut body, anim, locomotion, player, branch, condition)) = bodies.get_mut(ticked.body)
+    let Ok((mut body, anim, locomotion, player, branch, condition, flags)) =
+        bodies.get_mut(ticked.body)
     else {
         return;
     };
@@ -48,6 +50,9 @@ pub(crate) fn take_bearing(
     let crouch = player.map_or(0.0, PlayerBody::crouch);
     let mut bearing: Bearing = bearing(controller, locomotion, crouch, anim, branch, state);
     bearing.rising = rising(&motions, anim, state);
+    // Dormant, or in exactly the shock's stagger, its stance factor is 1.
+    bearing.full_stance =
+        state == Condition::DORMANT || flags.map_or(0, |f| f.0) == StateFlags::SHOCK_STAGGER;
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));

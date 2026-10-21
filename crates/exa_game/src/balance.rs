@@ -364,6 +364,7 @@ fn turn_to(body: &mut Ragdoll, root: &mut Transform, steered: Steered, d: Vec3) 
     root.rotation = Quat::from_rotation_y(yaw);
     if let Some((req, l)) = steered {
         l.yaw = yaw;
+        l.stance_facing = yaw;
         req.heading = yaw;
     }
     body.turned();

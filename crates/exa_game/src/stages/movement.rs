@@ -1,9 +1,12 @@
 //! The movement stage of a character's tick: the original's movement
 //! decision from the character's locomotion request (walk or stop, brake,
 //! the gates, the body's turn toward its heading at the original's rates,
-//! the alignment of its pelvis with its heading), which its capsule
-//! executes at Exarust's speeds until the body walks by its carry
-//! ([`decide_movement`]); then, while the body moves, how high the lowest
+//! the alignment of its pelvis with its heading), then the original's
+//! locomotion routine while it moves (its run blend, gait columns, walk
+//! start, drive and clock step) or the fall of its run blend while it
+//! stands; its capsule executes the decision at Exarust's speeds until the
+//! body walks by its carry ([`decide_movement`]); then, while the body
+//! moves, how high the lowest
 //! ankle of its walk's first pose sits (its gait floor); the step its
 //! controller made since the last aim, left out of the carry (the
 //! controller is Exarust's locomotion until the body walks by its carry);
@@ -16,12 +19,11 @@ use bevy::prelude::*;
 use exa_anim::{Animator, BodyPart, Motions, Stature};
 use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
-use exa_formats::encumbrance::run_cap;
-use exa_formats::races::BRAKE_DISTANCES;
 use exa_physics::body::locomotion::{
-    self, CapsuleGaits, Footing, Locomotion, Locomotor, StopDistances, TurnBy, flags, forward,
+    self, CapsuleGaits, Footing, GaitTable, Locomotion, Locomotor, Start, Stride, TurnBy, flags,
+    forward,
 };
-use exa_physics::body::{Fallen, Ragdoll, TickedCharacter};
+use exa_physics::body::{BodyTicks, Fallen, Ragdoll, TickedCharacter};
 use exa_physics::{CharacterBody, Physics};
 
 use crate::limp::{gait_floor, sprinting};
@@ -51,17 +53,20 @@ fn sprint_gaits(gaits: CapsuleGaits, feral: f32) -> CapsuleGaits {
 /// The ticked character's movement decision, when it has a locomotion
 /// request: its speed along its heading (its capsule's, in cm a tick), the
 /// decision with its gates (its energy from its body, its balance read
-/// steady), the turn toward its heading by the table (its swing's attack
+/// steady) on its gait table (its race's rows, its own sprint row and clock
+/// factor), the turn toward its heading by the table (its swing's attack
 /// law while it attacks; held while it falls or its condition is
-/// helpless), the alignment, its run blend and stop distance, the
-/// cooldown's count; then its capsule's velocity for the next step, its
-/// yaw on its body, and what the body tick's muscles read of it (moving —
-/// or stepping in Exarust's interim footwork —, the run blend, the turn
-/// left).
+/// helpless), the alignment; then, moving, the locomotion routine (which
+/// starts or resumes its walk and sets its clock's step), or standing, the
+/// fall of its run blend; the cooldown's count; then its capsule's velocity
+/// for the next step, its yaw on its body, and what the body tick's muscles
+/// read of it (moving — or stepping in Exarust's interim footwork —, the
+/// run blend, the leg mode, the turn left).
 #[allow(clippy::type_complexity)]
 pub(crate) fn decide_movement(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
+    ticks: Option<Res<BodyTicks>>,
     mut controllers: Query<(&mut CharacterBody, &Transform), Without<Locomotion>>,
     mut bodies: Query<
         (
@@ -71,7 +76,8 @@ pub(crate) fn decide_movement(
             Option<&Fighter>,
             Option<&Condition>,
             Has<Fallen>,
-            Option<(&Animator, &Swing, &SwingState)>,
+            Option<&mut Animator>,
+            Option<(&Swing, &SwingState)>,
             Option<&PlayerBody>,
         ),
         Without<CharacterBody>,
@@ -84,6 +90,7 @@ pub(crate) fn decide_movement(
         fighter,
         condition,
         fallen,
+        mut anim,
         swinging,
         player,
     )) = bodies.get_mut(ticked.body)
@@ -106,46 +113,46 @@ pub(crate) fn decide_movement(
     if held {
         req.moving = false;
     }
-    let (encumbrance, scale, sprint) =
-        fighter.map_or((0.0, 1.0, StopDistances::HUMAN.sprint), |f| {
-            (
-                f.stats.encumbrance,
-                f.stats.scale,
-                f.stats.sprint.brake_distance,
-            )
-        });
-    let stops = StopDistances {
-        walk: BRAKE_DISTANCES[0],
-        jog: BRAKE_DISTANCES[1],
-        sprint,
-        back: BRAKE_DISTANCES[3],
-    };
+    let (encumbrance, scale, feral, clock) = fighter.map_or((0.0, 1.0, 0.0, 1.0), |f| {
+        (
+            f.stats.encumbrance,
+            f.stats.scale,
+            f.stats.feral,
+            f.stats.gait_clock,
+        )
+    });
+    let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
+    let rows = drive.map_or(GaitTable::HUMAN_ROWS, |d| d.race.gaits);
+    let table = GaitTable::new(rows, feral, clock);
     // The balance gates read a steady body (Exarust's own): until the body
     // takes recovery steps, its standing balance can settle under 0.99
     // with nothing to restore it, which would hold it for good
     // (`Footing::balanced_by` reads the body's once it can).
     let mut at = Footing::of(ragdoll.as_deref(), standing, speed);
-    at.stops = stops;
+    at.gaits = table;
     let decided = locomotion::decide(&mut req, &mut body, &at);
     if decided.land
         && let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut())
     {
         d.land();
     }
+    let motions = motions.as_deref();
     if held {
         locomotion::hold_turn(&mut body);
     } else {
-        let attack = swinging.filter(|_| state == Condition::ATTACKING).and_then(
-            |(anim, swing, swinging)| {
-                let clip = motions.as_deref()?.clip(anim, &anim.action)?;
-                Some(swing.turn_rate(
-                    anim.clip_progress(clip),
-                    swinging.strength,
-                    encumbrance,
-                    scale,
-                ))
-            },
-        );
+        let attack =
+            swinging
+                .filter(|_| state == Condition::ATTACKING)
+                .and_then(|(swing, swinging)| {
+                    let anim = anim.as_deref()?;
+                    let clip = motions?.clip(anim, &anim.action)?;
+                    Some(swing.turn_rate(
+                        anim.clip_progress(clip),
+                        swinging.strength,
+                        encumbrance,
+                        scale,
+                    ))
+                });
         let by = TurnBy {
             free_walk: req.free_walk,
             slow: req.slow_turn,
@@ -172,17 +179,45 @@ pub(crate) fn decide_movement(
         encumbrance,
     );
     locomotion::align(&mut body, target);
-    let level = ragdoll
-        .as_deref()
-        .and_then(|r| r.drive.as_ref())
-        .map_or(0.0, |d| d.balance().level());
-    let cap = run_cap(encumbrance, req.has(flags::SPRINT));
-    locomotion::locomote(&req, &mut body, cap, &stops, level);
+    let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
+    // A body without muscles stands on level ground.
+    let level = drive.map_or(1.0, |d| d.balance().level());
+    if body.moving() {
+        // The root's displacement: across the ground the capsule's step,
+        // which carries the body until it walks by its carry; up and down
+        // the pelvis's own.
+        let rise = ragdoll.as_deref().map_or(0.0, |r| r.root_moved().y);
+        let moved =
+            Vec3::new(velocity.x, 0.0, velocity.z) * (CM / TICKS_A_SECOND) + Vec3::Y * (rise * CM);
+        let stride = Stride {
+            supported: drive.is_none_or(|d| d.balance().has_support()),
+            level,
+            encumbrance,
+            crouch: player.map_or(0.0, PlayerBody::crouch),
+            tone: drive.map_or(1.0, |d| d.tone),
+            progress: anim.as_deref().map_or(0.0, |a| a.progress),
+            moved,
+            heading: forward(req.heading),
+            walking: anim.as_deref().is_some_and(|a| a.action == WALK),
+            now: ticks.as_deref().map_or(0, BodyTicks::millis),
+        };
+        let start = locomotion::locomote(&req, &mut body, &table, &stride);
+        if let Some(anim) = anim.as_deref_mut() {
+            start_walk(motions, anim, start);
+            let length = motions
+                .and_then(|m| m.clip(anim, WALK))
+                .and_then(|c| c.keys.last())
+                .map_or(0.0, |k| k.time);
+            locomotion::advance_clock(&mut body, anim.time, length);
+        }
+    } else {
+        locomotion::stand(&mut body, state == Condition::GETTING_UP);
+    }
     locomotion::count_down(&mut body);
     // Sprinting (the latch, a stance level over 0.9 and over 3.5 cm a
     // tick), the capsule's run takes the feral sprint row.
     let gaits = if sprinting(req.has(flags::SPRINT), level, body.speed) {
-        sprint_gaits(*gaits, fighter.map_or(0.0, |f| f.stats.feral))
+        sprint_gaits(*gaits, feral)
     } else {
         *gaits
     };
@@ -197,7 +232,29 @@ pub(crate) fn decide_movement(
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
         d.bearing.moving = body.moving() || req.stepping.is_some();
         d.bearing.run = body.run;
+        d.bearing.legs = body.leg;
         d.bearing.turn = if held { 0.0 } else { req.turn_left(&body) };
+    }
+}
+
+/// The walk clip, which locomotion plays.
+const WALK: &str = "Walk";
+
+/// Starts the walk as the locomotion routine asks, when another clip
+/// plays: from where the body is, its clock at its start key's (the key
+/// before it's time), at its start without a key, or where it was when
+/// resumed.
+fn start_walk(motions: Option<&Motions>, anim: &mut Animator, start: Option<Start>) {
+    let Some(start) = start else { return };
+    anim.play_loop(WALK);
+    match start {
+        Start::Key(key) => {
+            if let Some(clip) = motions.and_then(|m| m.clip(anim, WALK)) {
+                anim.jump_in(clip, key);
+            }
+        }
+        Start::Unkeyed => {}
+        Start::Resume(clock) => anim.time = clock,
     }
 }
 
@@ -236,6 +293,7 @@ pub(crate) fn measure_ground(
 mod tests {
     use std::f32::consts::FRAC_PI_2;
 
+    use exa_formats::encumbrance::run_cap;
     use exa_physics::body::locomotion::Stop;
 
     use super::*;
@@ -435,5 +493,106 @@ mod tests {
         let yaw = app.world().get::<Locomotor>(model).unwrap().yaw;
         let step = (f64::from(locomotion::BASE_TURN * 1.25) * 0.6) as f32;
         assert!((yaw - step).abs() < 1e-6, "{yaw} {step}");
+    }
+
+    /// A one-bone motion set: "Walk" keyed every 10 frames to 80, and
+    /// "Idle".
+    fn walk_motions() -> Motions {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let clip = |last: f32| Clip {
+            mode: 1,
+            keys: (0..=8)
+                .map(|k| Key {
+                    time: k as f32 * last / 8.0,
+                    root: [0.0, 1.0, 0.0],
+                    rotations: vec![[0.0, 0.0, 0.0, 1.0]],
+                    flags: vec![0],
+                })
+                .collect(),
+        };
+        let action = |name: &str| Action {
+            name: name.into(),
+            params: [0, 0],
+        };
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![action("Walk"), action("Idle")],
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(clip(80.0)), Some(clip(40.0))],
+            }],
+        };
+        Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// The locomotion routine starts the walk in the tick the body first
+    /// moves, from Idle: ahead at key 2 (its clock at key 1's frame 10,
+    /// the capture meant for key 2), then its clock steps 27/83 × (0.8 ×
+    /// 0 + 1) = 0.3253 a tick on the walk's step the sampler takes. Stopped
+    /// and walking again within 600 ms of game time it resumes its clock;
+    /// later it starts at key 2 again. Standing, its run blend falls 0.02
+    /// a tick.
+    #[test]
+    fn locomotion_starts_and_resumes_the_walk() {
+        let (mut app, _, model) = setup();
+        app.insert_resource(walk_motions())
+            .insert_resource(BodyTicks(1000));
+        app.world_mut()
+            .entity_mut(model)
+            .insert(Animator::new("Default", "Idle"));
+        {
+            let mut req = request(&mut app, model);
+            req.moving = true;
+            req.free_walk = true;
+            req.flags = flags::MOVE;
+        }
+        app.update();
+        let anim = app.world().get::<Animator>(model).unwrap();
+        assert_eq!((anim.action.as_str(), anim.time), ("Walk", 10.0));
+        assert_eq!(anim.capture_key, 2);
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert!(body.locomoted);
+        assert!((body.clock_step - 27.0 / 83.0).abs() < 1e-6);
+        assert!((body.last_clock - (10.0 + body.clock_step)).abs() < 1e-6);
+        assert_eq!(body.last_ran, 12_000);
+        // Stopped, it plays Idle again (as its behaviour would).
+        request(&mut app, model).moving = false;
+        app.world_mut().get_mut::<Locomotor>(model).unwrap().run = 0.5;
+        app.update();
+        let body = *app.world().get::<Locomotor>(model).unwrap();
+        assert!(!body.locomoted && (body.run - 0.48).abs() < 1e-6);
+        app.world_mut()
+            .get_mut::<Animator>(model)
+            .unwrap()
+            .play_loop("Idle");
+        let walk_again = |app: &mut App, now: u64| {
+            app.world_mut().resource_mut::<BodyTicks>().0 = now;
+            {
+                let mut req = request(app, model);
+                req.moving = true;
+                req.free_walk = true;
+                req.flags = flags::MOVE;
+            }
+            app.update();
+            let anim = app.world().get::<Animator>(model).unwrap().clone();
+            request(app, model).moving = false;
+            app.update();
+            app.world_mut()
+                .get_mut::<Animator>(model)
+                .unwrap()
+                .play_loop("Idle");
+            anim
+        };
+        // 50 ticks (600 ms) after it last ran: resumed.
+        let resumed = walk_again(&mut app, 1050);
+        assert_eq!(resumed.action, "Walk");
+        assert!((resumed.time - (10.0 + 27.0 / 83.0)).abs() < 1e-5);
+        // 51 ticks after: from key 2 again.
+        let restarted = walk_again(&mut app, 1101);
+        assert_eq!((restarted.time, restarted.capture_key), (10.0, 2));
     }
 }

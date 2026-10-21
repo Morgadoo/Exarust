@@ -196,12 +196,12 @@ fn a_body_arrives_within_25_cm() {
 }
 
 /// The stop distance blends with the run: after a run (blend 0.6, the jog
-/// row) a walking body brakes within 0.5 + 1.5·0.6 = 1.4 m; standing again
-/// it is the walk's 0.5 m.
+/// row) a walking body brakes within 50 + 150·0.6 = 140 cm; standing again
+/// its gait is the walk row (50 cm).
 #[test]
 fn the_stop_distance_follows_the_run_blend() {
     let (mut req, mut body) = walker(false, Vec3::new(0.0, 0.0, 1.3));
-    body.stop_distance = 1.4;
+    body.gait.stop = 0.14;
     decide(&mut req, &mut body, &Footing::steady(Vec3::ZERO, 2.0));
     assert!(req.has(flags::BRAKE));
     req.moving = false;
@@ -209,7 +209,8 @@ fn the_stop_distance_follows_the_run_blend() {
     assert_eq!(body.stop, Stop::Standing);
     req.moving = true;
     decide(&mut req, &mut body, &Footing::steady(Vec3::ZERO, 0.0));
-    assert_eq!(body.stop_distance, 0.5);
+    assert_eq!(body.gait, GaitTable::HUMAN_ROWS[0]);
+    assert_eq!(body.gait.stop_cm(), 50.0);
 }
 
 /// Backwards a body backpedals and brakes within the backpedal's 50 cm
@@ -331,59 +332,6 @@ fn the_alignment_follows_the_pelvis() {
         "{}",
         body.align
     );
-}
-
-/// The run blend of a moving body: running it rises 0.05 a tick to 1 in 20
-/// ticks, to 0.85 at a cap of 0.85; walking it falls 0.015; braking at 3 cm
-/// a tick it is at most 0.36 (f = 0.2), at 2 none. The stop distance:
-/// 1.25 m at a half blend, 1.5 with the latch past 3.5 cm a tick (the
-/// sprint row), the jog's again on a stance level of 0.9, the backpedal's
-/// 0.5 backwards. A standing body keeps both.
-#[test]
-fn the_run_blend_and_the_stop_distance() {
-    let stops = StopDistances::HUMAN;
-    let (mut req, mut body) = walker(true, Vec3::ZERO);
-    body.stop = Stop::Moving;
-    body.leg = LegMode::Run;
-    for _ in 0..20 {
-        locomote(&req, &mut body, 1.0, &stops, 1.0);
-    }
-    assert!((body.run - 1.0).abs() < 1e-6, "{}", body.run);
-    locomote(&req, &mut body, 0.85, &stops, 1.0);
-    assert_eq!(body.run, 0.85);
-    body.leg = LegMode::Walk;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert!((body.run - 0.835).abs() < 1e-6);
-    req.flags |= flags::BRAKE;
-    body.speed = 3.0;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert!((body.run - 0.36).abs() < 1e-6, "{}", body.run);
-    body.speed = 2.0;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert_eq!(body.run, 0.0);
-    req.flags = flags::MOVE;
-    body.run = 0.515;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert!(
-        (body.stop_distance - 1.25).abs() < 1e-6,
-        "{}",
-        body.stop_distance
-    );
-    req.flags |= flags::SPRINT;
-    body.run = 0.515;
-    body.speed = 3.6;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert!((body.stop_distance - 1.5).abs() < 1e-6);
-    body.run = 0.515;
-    locomote(&req, &mut body, 1.0, &stops, 0.9);
-    assert!((body.stop_distance - 1.25).abs() < 1e-6);
-    req.flags |= flags::BACK;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert_eq!(body.stop_distance, 0.5);
-    body.stop = Stop::Standing;
-    body.run = 0.4;
-    locomote(&req, &mut body, 1.0, &stops, 1.0);
-    assert_eq!((body.run, body.stop_distance), (0.4, 0.5));
 }
 
 /// The capsule: along the heading at 1.4 m/s walking and 3.6 running,
@@ -516,4 +464,25 @@ fn yaws_wrap_within_half_a_turn() {
     assert!((wrap(-PI) - PI).abs() < 1e-6);
     assert!((turn_between(3.1, -3.1) - (2.0 * PI - 6.2)).abs() < 1e-5);
     assert!((yaw_of(forward(1.0)) - 1.0).abs() < 1e-6);
+}
+
+/// The stance facing: the heading within a quarter turn of the yaw (1 rad
+/// toward a heading of 1), else the yaw a quarter turn toward it (π/2
+/// toward 2 rad, −π/2 toward −2); held while the turn is held.
+#[test]
+fn the_stance_facing_stays_within_a_quarter_turn() {
+    let facing = |heading: f32| {
+        let mut body = Locomotor::default();
+        turn(&mut body, heading, BASE_TURN, 1.0, false);
+        body.stance_facing
+    };
+    assert_eq!(facing(1.0), 1.0);
+    assert_eq!(facing(2.0), FRAC_PI_2);
+    assert_eq!(facing(-2.0), -FRAC_PI_2);
+    let mut body = Locomotor {
+        stance_facing: 0.3,
+        ..default()
+    };
+    hold_turn(&mut body);
+    assert_eq!(body.stance_facing, 0.3);
 }

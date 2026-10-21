@@ -1744,14 +1744,14 @@ mod tests {
         let req = app.world().get::<Locomotion>(body).unwrap();
         assert!((req.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
-        // W walks once the body tick has decided it moves; released (no
-        // walk segment to finish) it stops softly, its capsule braking (its
-        // goal never nearing here, where no controller moves it: 49 ticks
-        // from 1.687 to 0.5 cm a tick), and the walk ends in Idle once the
-        // body tick has stopped it.
+        // W walks in the body tick that decides it moves: its locomotion
+        // starts the walk; released (no walk segment to finish) it stops
+        // softly, its capsule braking (its goal never nearing here, where
+        // no controller moves it: 49 ticks from 1.687 to 0.5 cm a tick),
+        // and the walk ends in Idle once the body tick has stopped it.
         set_key(&mut app, KeyCode::KeyW, true);
         behaviour_tick(&mut app);
-        assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
+        assert_eq!(clip_and_stance(&app, body).0, "Walk");
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         set_key(&mut app, KeyCode::KeyW, false);

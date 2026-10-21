@@ -266,13 +266,18 @@ How the original simulates a body (`exa_physics::body`):
     lags a fast clip: an elbow swung 40° in 10 ticks is 18° behind when
     the swing ends and within 3° twenty ticks later.
   - **Gains**, set every tick by the character tick:
-    - Stance factor s: the race's standing (human 0.5); while moving it
-      rises 0.01 a tick toward 0.7 + 0.3·run and keeps what it reached.
-      T = tone·s, so an idle human pulls at √E·0.5.
+    - Stance factor s: the race's standing (human 0.5; 1 while dormant or
+      in exactly the shock's stagger); while the movement decision walks,
+      runs or backpedals the body it rises 0.01 a tick (double precision)
+      toward 0.7 + 0.3·run, the run blend before this tick's locomotion,
+      stops on it and keeps what it reached above it. Stepping is not
+      moving here. T = tone·s, so an idle human pulls at √E·0.5.
     - Part factors: 0.5; a foot half its lower leg's (0.25); the head a
       quarter of the thorax's (0.125) times the character's head factor
-      (1 − 0.8 × its feral level: a zombie's 0.025); a thigh 0.2 × 1.25 ×
-      the body scale standing and 0.2 moving; the shoulders, arms and hands
+      (1 − 0.8 × its feral level: a zombie's 0.025); a thigh by the leg
+      mode: 0.2 walking, 0.6 running, 0.2 × 1.25 × the body scale (double
+      precision) standing or backpedalling, kept as it was while the body
+      collapses; the shoulders, arms and hands
       1.25 × the body scale × the arm stiffness (the scale is the
       character's, 0.95 to 1.05 by its height: RFC.md, Stats derived at
       spawn).
@@ -285,8 +290,12 @@ How the original simulates a body (`exa_physics::body`):
       σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
       parry, recoil and power states are not reproduced: attacks use the
       relaxed value.
-    - A leg limit link's strength moves a tenth of the way each tick to
-      0.5·S² standing or 0.4 moving (0.2 → 0.5 standing).
+    - A leg limit link's strength s ← 0.9s + 0.1t each tick (double
+      precision), t = 0.4 walking or running, 0.5·S² standing or
+      backpedalling (0.2 → 0.5 standing); kept while the body collapses.
+      Not yet: the original's halving for a powered golem suit and its
+      0.8s + 0.04 for a stepping foot that is anchored (Exarust has no
+      original steps).
     - Relaxation λ of a part with link muscles: toward 0.6 − 32|Δa|² (cm²,
       the most one of its anchors moved since the last tick) × the race's
       arm relaxation, capped (an arm part at 0.6 − (x − 0.1)·0.8, others at
@@ -1095,11 +1104,11 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 - **Leg mode and brake**, moving: backwards → backpedal, braking within
   the stop distance (the turn-about bit cleared); already braking → walk;
   running → run, never braking; else walk, braking within the stop
-  distance. Never in free walk. The stop distance is the gait rows' column
-  2 blended from the walk toward the jog (or the sprint, with the latch,
-  a stance level above 0.9 in double precision and past 3.5 cm a tick) by
-  the run blend: 50, 200, 250 and 50 cm
-  (backpedal); back to the walk's when the body stops.
+  distance. Never in free walk. The stop distance is the gait columns'
+  ([Locomotion](#locomotion)): the walk row's 50 cm standing, blended
+  toward the jog's 200 (the sprint's 250) by the run blend, the
+  backpedal's 50; every column back to the walk row's when the body
+  stops.
 - **Gates**, in order: a cooldown (40 ticks after a stumble); energy under
   its most (a dazed body cannot walk until its energy is full, +0.005 a
   tick); stepping (refuses, the next tests still run); moving with balance
@@ -1115,7 +1124,12 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 - **Move or stop**: moving with an amount over 625 cm² (25 cm) or a speed
   over 0.5 cm a tick → the body moves (amount 1); else it stands, the
   request no longer moving.
-- **Turn** (held while the condition is helpless): free walk (1 −
+- **Turn** (held while the condition is helpless): the error is the
+  heading less the yaw, brought once within ±π; the stance facing is the
+  heading while it is within a quarter turn of the yaw, else the yaw a
+  quarter turn toward it (kept for the footwork's stance frame, which has
+  no reader in Exarust yet; a turn toward a fall snaps it with the yaw).
+  The rate: free walk (1 −
   0.1·v)·B (v the speed in cm a tick, no floor); the slow turn 0.5·B
   (120°/s; the exploration behaviour asks for it, cleared by a far
   cursor's run); attacking, the swing's law ([Motion playback](#motion-playback));
@@ -1123,7 +1137,9 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   (240°/s; the original writes it at its unit init). Then ×0.6 crouched
   beyond 0.5, ×|err|/0.6 within 0.6 rad of the heading, ×0.9 moving by the
   keys, the step ÷ √scale; within 1e-4 rad or one step it ends on the
-  heading, the yaw kept within ±π.
+  heading, else the yaw is brought once within ±π. (The original also
+  takes 10·|err| off a per-tick factor whose only reader stores it where
+  nothing reads it: ported as nothing.)
 - **Alignment** of the pelvis with the heading: kept 0.97 a tick toward 1 − enc standing, 0.4 +
   0.6·(heading·pelvis forward)² moving by the keys, 0.4 + 0.6·max(0,
   wanted·facing) moving by the mouse; the amount is then × the alignment (the walk's
@@ -1131,9 +1147,8 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 - **The capsule** carries the decision out until the body walks by its
   carry (Exarust's own): along the heading at its walk (1.4 m/s)
   blended toward its run (3.6 m/s; sprinting × the feral sprint thrust over
-  the jog's, 472.2/350 at feral 0) by the run blend (+0.05 a
-  tick to the encumbrance's cap running, else −0.015, braking at most
-  f·(2 − f), f = 0.2·(v − 2), only while moving), backwards at 1.22 m/s,
+  the jog's, 472.2/350 at feral 0) by the run blend
+  ([Locomotion](#locomotion)), backwards at 1.22 m/s,
   the interim footwork's velocity while it steps; braking it keeps
   (1 − 0.2·550/83²)·0.98977 of its speed a tick (the original's brake drive
   and limb retention) and, toward a goal ahead, slows at least by v²/2d to
@@ -1142,6 +1157,75 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 
 The player's behaviour that writes the request is in
 [PLAYER.md](../PLAYER.md) (Movement).
+
+### Locomotion
+
+A body the decision moves then runs the original's locomotion routine,
+in its order (REA: the routine's decompile and `exe.asm`, constants read
+from `Exanima.exe`; `exa_physics::body::locomotion::locomote`). v is the
+root's displacement over the last tick (cm): Exarust takes the capsule's
+step across the ground, which carries the body, and the pelvis's own up
+and down. h is the heading.
+
+- **Run blend.** Running (leg mode run): with support first × √align ×
+  the stance level (misalignment and uneven feet bleed it), then + 0.05
+  (double precision), at most 1 − 0.3·enc (1 − 0.4·enc with the sprint
+  latch, double). Otherwise − 0.015 (double), or braking or stopping at
+  most f·(2 − f), f = max(0.2·(speed − 2), 0) (the processor's maximum);
+  never under 0. Then − 0.005·|v_y| (double), never under 0. A standing
+  body's falls 0.02 a tick (double), never under 0, and is 0 while it gets
+  up.
+- **Gait table.** The race's four rows per tick as the loader scales them:
+  thrust × 1/83, push gain × (1/83)², the clock rate × 1/83 (1/83 in
+  single precision), the boost as stored, the built-in stop distances
+  (0.05, 0.2, 0.25, 0.05 thousand cm); the backpedal's thrust and clock
+  negated. A human: thrust 1.0711, 4.2169, 5.6892, −0.9373; push 0.079837;
+  clock 0.3253, 0.2, 0.16265, −0.33735. A feral character's sprint row is
+  (1 − f)·sprint + f·jog.
+- **Columns.** Backwards the backpedal row as it is. Forwards the walk
+  row blended by the run blend toward the jog row, or the sprint row with
+  the latch, a stance level above 0.9 (double) and over 3.5 cm a tick
+  (the race's sprint, the character's own when it is feral): every column
+  by the run blend, but the clock by √run outside the run leg mode (0
+  under the single-precision epsilon); with the latch the clock × (1 −
+  0.1·enc) (double) on any forward row; thrust and push × the stance
+  level. Then the clock × the character's clock factor 1/(1 − 0.1·height)
+  and, crouched beyond 0.1 (double), × (1 − 0.1·crouch).
+- **Walk start.** With any clip but the walk playing, the boost ramp is
+  0 and the walk starts from where the body is. More than 600 ms of game
+  time after the last locomotion it starts at a key: 4 backwards; with
+  the heading more than 1 rad on the yaw's negative side 5 at a run blend
+  over 0.5, else 8; more than 1 rad on its positive side with no key (its
+  clock from the clip's start; inferred: the original reads it from before
+  the key list, a value of about 0); otherwise 2. Its clock is then the
+  key before it's time and its capture is meant for that key. Within
+  600 ms its clock resumes where the last locomotion left it. The walk
+  playing, the boost ramp rises 0.5/83 a tick to 1. Either way it is then
+  × the alignment.
+- **Drive.** Braking: −0.2·tone × v (double factor). Otherwise P = (1.1 −
+  0.6·|0.5 − frac(2p + 1)|) (double) × (2 − align²), p the clip's
+  progress (two pushes a cycle, 0.8 to 1.1); under the row's boost speed
+  (8·v·h, negated backwards) P gains (boost − 8·v·h) × the ramp; drive =
+  h × (amount·thrust·tone·P) − 0.4·tone × v (double factor). frac is the
+  processor's truncation: negative for a negative value. The drive is
+  kept on the body; until the body walks by its carry (C18) nothing adds
+  it to the carry (the original adds drive·S²·push·lag).
+- **Speed.** v projected on h: its length (cm a tick, the square root
+  above the epsilon) and direction.
+- **Clock step.** With support: K·(0.8·speed + 1)·rate (double), K = (1 −
+  k)·(1 − 1.8·|0.5 − frac(2·(p + 1.5))|)·4 + k, k = 1 − (1 − align)² (1
+  aligned); stopping at no more than 5 cm a tick (or NaN) rate·speed·K
+  (single). Without support a phase is kept from when the body lost it,
+  0.85 − 0.5·round(frac(p + 1)) (to nearest, ties even), and the step is
+  (2 − u)·u·(0.8·speed + 0.9)·rate, u = frac(1 + phase − p); back on its
+  feet the phase is unset. The clip clock takes the step (below 0 wrapped
+  once by the walk's last key) whatever the clip, and keeps the result for
+  a resume.
+- Not reproduced: the gait audio mode (the footsteps' component), the
+  exertion value and the head tilt it feeds (the head look's sampler slot
+  is the identity), the dead jump branch, the start's callback and part
+  flag, and the held items' static-only collision flag the move branch
+  sets while armed.
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
@@ -1340,7 +1424,7 @@ Then the clock block adds the frames:
 
 | state | frames a tick | a human, full tone |
 |---|---|---|
-| walking or running in the walk, run or backpedal clip | the gait's clip rate ÷ 83 (walk → jog by √run, or the backpedal's) × (1 − 0.1 × crouch above a crouch of 0.1) × (0.8 × speed + 1), speed in cm a tick; the rate plays no part. While sprinting, the jog rate is the feral sprint row (sprint blended to jog by the feral level) and the rate is then × (1 − 0.1 × encumbrance) | 0.76 walking (1.69 cm), 0.89 running, 0.74 backpedalling; a sprint at feral 0, run blend 1 and 4.337 cm is 0.73, 0.69 at encumbrance 0.5, and the jog's 0.89 at feral 1 |
+| locomoting (the decision moves the body), whatever the clip | the locomotion routine's clock step ([Locomotion](#locomotion)); the rate plays no part | 0.76 walking (1.69 cm), 0.89 running, −0.74 backpedalling (the walk backwards); a sprint at feral 0, run blend 1 and 4.337 cm is 0.73, 0.69 at encumbrance 0.5, and the jog's 0.89 at feral 1 |
 | getting up | tone × rate × 0.6, only above half tone | 0.9 (0.75 on its first tick) |
 | an attack (actions 5–12) | the rate, without the 0.6 | ≈ 1.0–1.3; 1.25 off balance (no swing routine runs) |
 | shocked (the condition's bit 0x80) | none | 0 |

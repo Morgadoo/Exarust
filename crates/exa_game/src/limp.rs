@@ -23,19 +23,18 @@ use std::collections::HashMap;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, LOCOMOTION, Motions, STANDING_PACE,
-    TickedClips, follow_up_blend,
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, STANDING_PACE, TickedClips,
+    follow_up_blend,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
 use exa_combat::condition::{Branch, WEAK_BELOW};
 use exa_combat::swing::{Swing, pace_swings};
-use exa_formats::encumbrance::sprint_clock;
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
-use exa_physics::body::locomotion::{Locomotion, Locomotor};
+use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor};
 use exa_physics::body::{
-    BODY_HZ, Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
+    Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
 };
 
 use crate::stages::CharacterTickPlugin;
@@ -215,14 +214,16 @@ fn go_limp(
 /// tick.
 pub(crate) const CM: f32 = 100.0;
 
-/// What a body's clip clock reads besides its drive: how far its character
-/// walked in the last step (cm), its run blend, its swing, the rate its
-/// swing routine set this tick for an attack's clip (a fighter's), its
+/// What a body's clip clock reads besides its drive: the step its
+/// locomotion routine made this tick, its run blend, its swing, the rate
+/// its swing routine set this tick for an attack's clip (a fighter's), its
 /// character's armour encumbrance, whether it was getting up already when
 /// its posture stage began, its fighter's stance and whether its condition
 /// holds the clock still.
 pub(crate) struct Pace {
-    pub(crate) walked: f32,
+    /// The locomotion clock's step, when its locomotion ran this tick: the
+    /// clip clock takes it whatever the clip.
+    pub(crate) stride: Option<f32>,
     pub(crate) run: f32,
     pub(crate) swing: Swing,
     pub(crate) attack: Option<f32>,
@@ -230,20 +231,11 @@ pub(crate) struct Pace {
     /// The sprint latch is kept: the overlay then uses the run blend
     /// itself.
     pub(crate) latch: bool,
-    /// The sprint latch is kept, the stance level is above 0.9 and the
-    /// last step was faster than 3.5 cm: the forward clock then uses the
-    /// feral sprint row.
-    pub(crate) sprinting: bool,
-    /// The character's feral level, 0..=1. While sprinting, the sprint
-    /// gait row is blended toward the jog row by this.
-    pub(crate) feral: f32,
     /// Its posture stage took the getting-up branch: the get-up's own rate.
     /// A get-up that stage started this tick (from the floor, or a
     /// stagger) runs at the off-balance rate for that tick, as the
     /// original's rate is set before the start.
     pub(crate) rose: bool,
-    /// It walks backwards. The walk clock uses the negated backpedal rate.
-    pub(crate) backing: bool,
     /// The action index of its fighter's stance, the clip it returns to:
     /// played, it runs at the race's base whatever the body's balance.
     pub(crate) stance: Option<usize>,
@@ -364,33 +356,6 @@ const RISING_TONE: f32 = 0.5;
 const KICK_RATE: f32 = 2.0;
 /// The kick's action index.
 const KICK: usize = 0x0D;
-/// Walking, the clock runs the gait's clip rate × (0.8·speed + 1), the
-/// speed in cm a tick.
-const STRIDE_PACE: f32 = 0.8;
-/// Crouched deeper than this, the locomotion clock slows by a tenth of
-/// the crouch.
-const CROUCH_SLOWS_FROM: f64 = 0.1;
-const CROUCH_SLOW: f64 = 0.1;
-
-/// The locomotion clock's factor at `crouch`: 1 − 0.1·crouch above 0.1,
-/// else 1.
-fn crouch_clock(crouch: f32) -> f32 {
-    let crouch = f64::from(crouch);
-    if crouch > CROUCH_SLOWS_FROM {
-        (1.0 - CROUCH_SLOW * crouch) as f32
-    } else {
-        1.0
-    }
-}
-
-/// The gait rows: walk, jog, sprint and backpedal.
-const WALK: usize = 0;
-const JOG: usize = 1;
-const SPRINT: usize = 2;
-const BACKPEDAL: usize = 3;
-/// The backpedal's action index.
-const BACKPEDAL_ACTION: usize = 2;
-
 /// The rate the original's posture block sets a living body's clip clock
 /// this tick, from its race's base: × 1.25 off balance (falling, lying,
 /// a get-up's first tick) and × (1.5 − 0.5 × encumbrance) getting up, × 2
@@ -424,10 +389,9 @@ fn clip_rate(playing: Option<usize>, drive: &Drive, pace: &Pace) -> f32 {
 /// clock block adds them, from the clip `playing` (its action index), its
 /// `progress` by last tick's clock, its drive and its pace, with the
 /// posture block's [`clip_rate`]; a human's at full tone in brackets:
-/// walking or running in its locomotion clip, the gait's clip rate (walk
-/// to jog by √run, or, while sprinting, to the feral sprint row, then ×
-/// (1 − 0.1·encumbrance); or the backpedal's), × (1 − 0.1·crouch) above a
-/// crouch of 0.1, × (0.8·speed + 1) (0.76 at 1.69 cm a tick); getting up,
+/// locomoting, the step its locomotion routine made (the original adds it
+/// in that routine, whatever the clip; 0.764 walking 1.687 cm a tick,
+/// `exa_physics::body::locomotion::locomote`); getting up,
 /// tone × the rate × 0.6 above half tone (0.9 unencumbered, 0.75 on the
 /// tick its posture stage starts the get-up); attacking, the rate its
 /// swing routine set (about 1.1; without one its swing's unstalled rate),
@@ -436,31 +400,13 @@ fn clip_rate(playing: Option<usize>, drive: &Drive, pace: &Pace) -> f32 {
 /// off balance, 1.2 kicking), and none while its condition holds the
 /// clock still.
 fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
+    if let Some(step) = pace.stride {
+        return step;
+    }
     let rate = clip_rate(playing, drive, pace);
     let race = &drive.race;
     let bearing = &drive.bearing;
     match playing {
-        Some(a) if bearing.moving && LOCOMOTION.contains(&a) => {
-            let per_tick = |row: usize| race.gait_rates[row] / BODY_HZ;
-            let gait = if pace.backing || a == BACKPEDAL_ACTION {
-                -per_tick(BACKPEDAL)
-            } else {
-                let run = pace.run.clamp(0.0, 1.0).sqrt();
-                let row = if pace.sprinting {
-                    let f = pace.feral.clamp(0.0, 1.0);
-                    per_tick(SPRINT) * (1.0 - f) + per_tick(JOG) * f
-                } else {
-                    per_tick(JOG)
-                };
-                let blended = per_tick(WALK) + (row - per_tick(WALK)) * run;
-                if pace.sprinting {
-                    blended * sprint_clock(pace.encumbrance)
-                } else {
-                    blended
-                }
-            };
-            gait * crouch_clock(bearing.crouch) * (STRIDE_PACE * pace.walked + 1.0)
-        }
         _ if bearing.getting_up => {
             if drive.tone > RISING_TONE {
                 drive.tone * rate * STANDING_PACE
@@ -574,12 +520,22 @@ pub(crate) fn bearing(
     condition: Condition,
 ) -> Bearing {
     let getting_up = condition == Condition::GETTING_UP;
+    let moving = match locomotion {
+        Some((req, body)) => body.moving() || req.stepping.is_some(),
+        None => controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
+    };
     Bearing {
-        moving: match locomotion {
-            Some((req, body)) => body.moving() || req.stepping.is_some(),
-            None => controller.is_some_and(|c| c.desired_velocity != Vec3::ZERO),
-        },
+        moving,
         run: locomotion.map_or(0.0, |(_, body)| body.run),
+        // A body without a locomotion request walks while its controller
+        // moves it; the movement stage sets a request's leg mode.
+        legs: match locomotion {
+            Some((_, body)) => body.leg,
+            None if moving => LegMode::Walk,
+            None => LegMode::Standing,
+        },
+        stance_run: locomotion.map_or(0.0, |(_, body)| body.run),
+        full_stance: false,
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
         off_balance: getting_up || matches!(branch, Branch::Falling | Branch::LyingStill),
         getting_up,
@@ -1085,17 +1041,9 @@ pub(crate) mod tests {
         assert!(rising(&motions, &anim, up));
     }
 
-    /// The locomotion clock slows by a tenth of the crouch above 0.1, and
-    /// the bearing carries the player's crouch (none without a player).
+    /// The bearing carries the player's crouch (none without a player).
     #[test]
-    fn a_crouch_slows_the_clock_and_reaches_the_bearing() {
-        assert_eq!(crouch_clock(0.0), 1.0);
-        assert_eq!(crouch_clock(0.09), 1.0);
-        // 0.1 as a float widens to just above the double 0.1, as the
-        // original compares it, so it already slows.
-        assert!(crouch_clock(0.1) < 1.0);
-        assert!((crouch_clock(1.0) - 0.9).abs() < 1e-6);
-        assert!((crouch_clock(0.5) - 0.95).abs() < 1e-6);
+    fn the_crouch_reaches_the_bearing() {
         let anim = Animator::new("Default", "Idle");
         let crouch = crate::player::PlayerBody::new(0.0).crouching(0.75).crouch();
         let b = bearing(
@@ -1198,17 +1146,17 @@ pub(crate) mod tests {
         let pose = |latch: bool, level: f32, speed: f32, blend: f32| {
             let mut anim = Animator::new("Default", "Walk");
             anim.time = 45.0;
+            // The overlay reads the latch alone, whatever the stance level
+            // and the speed.
+            let _ = (level, speed);
             let pace = Pace {
-                walked: speed,
+                stride: None,
                 run: blend,
                 swing: Swing::FISTS,
                 attack: None,
                 encumbrance: 0.0,
                 latch,
-                sprinting: sprinting(latch, level, speed),
-                feral: 0.0,
                 rose: false,
-                backing: false,
                 stance: None,
                 still: false,
             };
@@ -1241,10 +1189,9 @@ pub(crate) mod tests {
     /// tick, off balance 0.75, getting up 0.9 at full tone (0.72 at 0.8,
     /// none at half tone; in the 0.625 plate set (1.5 − 0.3125) × 0.6 =
     /// 0.7125), on the tick its posture stage starts the get-up 0.75 (0.6
-    /// at 0.8, none at half tone); walking 1.687 cm a tick 0.764 (27/83 × (0.8 ×
-    /// 1.687 + 1)), running 4.337 cm a tick on the jog row 0.894,
-    /// backpedalling 1.476 cm a tick 0.736; a walk clip held still runs
-    /// the standing clock; fists swing 1.62, a zombie (most energy 0.9)
+    /// at 0.8, none at half tone); locomoting, its locomotion's step,
+    /// whatever the clip (0.764 walking 1.687 cm a tick); a walk clip
+    /// without locomotion runs the standing clock; fists swing 1.62, a zombie (most energy 0.9)
     /// at full energy too, and at 0.81 by its share squared, 0.81; a
     /// ghoul's base of 1.5 stands at 0.9; collapsing 0.6; its stance
     /// (the Defence stance, 0x14) at the base, 0.6, though off balance,
@@ -1255,16 +1202,13 @@ pub(crate) mod tests {
     #[test]
     fn clocks_run_at_the_originals_rates() {
         let pace = Pace {
-            walked: 0.0,
+            stride: None,
             run: 0.0,
             swing: Swing::FISTS,
             attack: None,
             encumbrance: 0.0,
             latch: false,
-            sprinting: false,
-            feral: 0.0,
             rose: true,
-            backing: false,
             stance: None,
             still: false,
         };
@@ -1315,86 +1259,19 @@ pub(crate) mod tests {
         assert!(close(frames(0x0E, &doing(rising, 1.0), &starting), 0.75));
         assert!(close(frames(0x0F, &doing(rising, 0.8), &starting), 0.6));
         assert_eq!(frames(0x0F, &doing(rising, 0.5), &starting), 0.0);
+        // Locomoting, the clock takes its locomotion's step, whatever the
+        // clip; a walk clip without it the standing clock.
         let moving = Bearing {
             moving: true,
             ..still
         };
         let walk = Pace {
-            walked: 1.687,
+            stride: Some(0.7643),
             ..pace
         };
-        assert!(close(frames(0, &doing(moving, 1.0), &walk), 0.7643));
-        let run = Pace {
-            walked: 4.337,
-            run: 1.0,
-            ..pace
-        };
-        assert!(close(frames(1, &doing(moving, 1.0), &run), 0.8939));
-        // Running plays Walk. Its clock is the jog rate, same as the run clip's.
-        assert!(close(frames(0, &doing(moving, 1.0), &run), 0.8939));
-        let back = Pace {
-            walked: 1.476,
-            backing: true,
-            ..pace
-        };
-        assert!(close(frames(0, &doing(moving, 1.0), &back), -0.7357));
-        assert!(close(frames(2, &doing(moving, 1.0), &back), -0.7357));
-        // A sprint plays the feral sprint row. Feral 0 is the sprint
-        // rate; feral 1 is the jog rate, then 1 − 0.1·encumbrance. Below
-        // the gates it stays the jog. The backpedal is not the sprint row.
-        let sprint_at = |feral: f32, enc: f32, latch: bool, level: f32, speed: f32| Pace {
-            walked: speed,
-            run: 1.0,
-            encumbrance: enc,
-            latch,
-            sprinting: sprinting(latch, level, speed),
-            feral,
-            ..pace
-        };
-        assert!(close(
-            frames(
-                0,
-                &doing(moving, 1.0),
-                &sprint_at(0.0, 0.0, true, 1.0, 4.337)
-            ),
-            0.727
-        ));
-        assert!(close(
-            frames(
-                0,
-                &doing(moving, 1.0),
-                &sprint_at(1.0, 0.0, true, 1.0, 4.337)
-            ),
-            0.8939
-        ));
-        assert!(close(
-            frames(
-                0,
-                &doing(moving, 1.0),
-                &sprint_at(0.0, 0.5, true, 1.0, 4.337)
-            ),
-            0.691
-        ));
-        assert!(close(
-            frames(
-                0,
-                &doing(moving, 1.0),
-                &sprint_at(0.0, 0.5, true, 0.9, 4.337)
-            ),
-            0.8939
-        ));
-        assert!(close(
-            frames(0, &doing(moving, 1.0), &sprint_at(0.0, 0.0, true, 1.0, 3.5)),
-            0.76
-        ));
-        let back_sprint = Pace {
-            sprinting: true,
-            feral: 0.0,
-            ..back
-        };
-        assert!(close(frames(2, &doing(moving, 1.0), &back_sprint), -0.7357));
-        assert!(close(frames(0, &doing(moving, 1.0), &back_sprint), -0.7357));
-        assert!(close(frames(0, &doing(still, 1.0), &walk), 0.6));
+        assert_eq!(frames(0, &doing(moving, 1.0), &walk), 0.7643);
+        assert_eq!(frames(0x13, &doing(moving, 1.0), &walk), 0.7643);
+        assert!(close(frames(0, &doing(moving, 1.0), &pace), 0.6));
         assert!(close(frames(5, &doing(still, 1.0), &pace), 1.62));
         let mut zombie = doing(still, 1.0);
         zombie.stats.max_energy = 0.9;
@@ -1430,7 +1307,7 @@ pub(crate) mod tests {
     /// clip's pose is (the thigh here is turned 0.4 rad off first).
     #[test]
     fn a_whole_capture_starts_from_the_physical_pose() {
-        let (mut app, root) = app(1.0 / BODY_HZ);
+        let (mut app, root) = app(1.0 / exa_physics::body::BODY_HZ);
         let ticks = |app: &App| app.world().resource::<BodyTicks>().0;
         while ticks(&app) < 20 {
             app.update();

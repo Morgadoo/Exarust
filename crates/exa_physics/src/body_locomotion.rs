@@ -20,6 +20,12 @@ use bevy::prelude::*;
 use super::balance::cm;
 use super::{Drive, Ragdoll};
 
+#[path = "body_gait.rs"]
+mod gait;
+pub use gait::{
+    GaitRow, GaitTable, PHASE_UNSET, STOPS, Start, Stride, advance_clock, fraction, locomote, stand,
+};
+
 /// Bits of the request's flag word, the original's.
 pub mod flags {
     /// The behaviour asks to move.
@@ -84,18 +90,6 @@ const ALIGN_FLOOR: f64 = 0.4;
 const ALIGN_GAIN: f64 = 0.6;
 const ALIGN_KEEP: f64 = 0.97;
 const ALIGN_TAKE: f64 = 0.03;
-/// The run blend while running rises this much a tick (to its cap) and
-/// otherwise falls this much; braking or stopping it follows the speed
-/// down: at most f·(2 − f), f = 0.2·(speed − 2).
-const RUN_RISE: f64 = 0.05;
-const RUN_FALL: f64 = 0.015;
-const RUN_SPEED_FROM: f32 = 2.0;
-const RUN_SPEED_SHARE: f64 = 0.2;
-/// With the sprint latch the gait is the sprint row once the body is
-/// faster than this (cm a tick) and its stance level is above
-/// [`SPRINT_LEVEL`] (double precision).
-const SPRINT_FROM: f32 = 3.5;
-const SPRINT_LEVEL: f64 = 0.9;
 /// Until the body walks by its carry, a braking capsule keeps this share
 /// of its speed a tick: the original's brake drive, 0.2 of the human push
 /// gain (550/83² a tick²), and its living limbs' retention, 0.98977.
@@ -178,7 +172,11 @@ impl Locomotion {
                 desired: yaw,
                 ..default()
             },
-            Locomotor { yaw, ..default() },
+            Locomotor {
+                yaw,
+                stance_facing: yaw,
+                ..default()
+            },
         )
     }
 
@@ -254,8 +252,9 @@ impl Stop {
 /// What the body tick keeps of a character's locomotion (on the body
 /// model root): its yaw and how it turns, its speed along its heading, the
 /// alignment of its pelvis with its heading, its leg mode, the cooldown
-/// after a stumble, why it stands, its run blend and its gait's stop
-/// distance.
+/// after a stumble, why it stands, its run blend, its gait's columns and
+/// what its locomotion routine last made of them (the drive, the boost
+/// ramp, the clock's step, where its walk's clock was).
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Locomotor {
     /// The body's yaw (rad; the model faces +Z).
@@ -287,9 +286,32 @@ pub struct Locomotor {
     pub stop: Stop,
     /// The run blend, 0 walking to 1 running.
     pub run: f32,
-    /// The gait's stop distance (m): the walk's 0.5 standing, blended
-    /// toward the jog's (or the sprint's) by the run blend while moving.
-    pub stop_distance: f32,
+    /// The gait's columns: the walk row's standing, blended toward the
+    /// jog's (or the sprint's) by the run blend while moving.
+    pub gait: GaitRow,
+    /// The boost ramp, 0 to 1: it rises while the walk plays.
+    pub boost: f32,
+    /// The locomotion drive this tick (cm a tick²): the push along the
+    /// heading less the damping of the root's displacement. Until the body
+    /// walks by its carry nothing applies it.
+    pub drive: Vec3,
+    /// The direction of the root's displacement along the heading.
+    pub going: Vec3,
+    /// The locomotion clock's step (frames a tick).
+    pub clock_step: f32,
+    /// The locomotion routine ran this tick: its clock's step is the clip
+    /// clock's.
+    pub locomoted: bool,
+    /// The walk's phase kept while the body is without support
+    /// ([`PHASE_UNSET`] once it has support).
+    pub phase: f32,
+    /// The walk's clip clock after the last locomotion tick, and when that
+    /// was (ms of the game clock): a walk started within 600 ms resumes it.
+    pub last_clock: f32,
+    pub last_ran: u64,
+    /// The stance facing (a yaw): the heading, kept within a quarter turn
+    /// of the body's yaw.
+    pub stance_facing: f32,
 }
 
 impl Default for Locomotor {
@@ -307,7 +329,16 @@ impl Default for Locomotor {
             turn_rate: 0.0,
             stop: Stop::Standing,
             run: 0.0,
-            stop_distance: StopDistances::HUMAN.walk,
+            gait: GaitTable::HUMAN_ROWS[0],
+            boost: 0.0,
+            drive: Vec3::ZERO,
+            going: Vec3::ZERO,
+            clock_step: 0.0,
+            locomoted: false,
+            phase: PHASE_UNSET,
+            last_clock: 0.0,
+            last_ran: 0,
+            stance_facing: 0.0,
         }
     }
 }
@@ -322,27 +353,6 @@ impl Locomotor {
     pub fn facing(&self) -> Vec3 {
         forward(self.yaw)
     }
-}
-
-/// The stop distance of each gait row (m): walk, jog, sprint (a feral
-/// character's, moved toward its jog), backpedal.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StopDistances {
-    pub walk: f32,
-    pub jog: f32,
-    pub sprint: f32,
-    pub back: f32,
-}
-
-impl StopDistances {
-    /// The rows of every race but a feral character's sprint: 50, 200, 250
-    /// and 50 cm.
-    pub const HUMAN: StopDistances = StopDistances {
-        walk: 0.5,
-        jog: 2.0,
-        sprint: 2.5,
-        back: 0.5,
-    };
 }
 
 /// What the movement decision reads of the body this tick.
@@ -360,8 +370,8 @@ pub struct Footing {
     pub airborne: u32,
     /// Ticks of Rebalance left (none kept yet: 0).
     pub rebalance: i32,
-    /// Its gait rows' stop distances.
-    pub stops: StopDistances,
+    /// Its gait table.
+    pub gaits: GaitTable,
 }
 
 impl Footing {
@@ -376,7 +386,7 @@ impl Footing {
             balance: 1.0,
             airborne: 0,
             rebalance: 0,
-            stops: StopDistances::HUMAN,
+            gaits: GaitTable::default(),
         }
     }
 
@@ -435,7 +445,8 @@ pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decid
     };
     body.amount = to.with_y(0.0).length_squared();
     body.reach = body.amount.sqrt();
-    let stop = cm(body.stop_distance);
+    body.locomoted = false;
+    let stop = body.gait.stop_cm();
     let near = stop * stop > body.amount && !req.free_walk;
     if req.moving {
         if req.has(BACK) {
@@ -482,7 +493,7 @@ pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decid
         };
         if req.moving {
             req.moving = false;
-            body.stop_distance = at.stops.walk;
+            body.gait = *at.gaits.walk();
         }
         body.leg = LegMode::Standing;
     }
@@ -572,13 +583,28 @@ pub fn turn_rate(by: &TurnBy, speed: f32) -> f32 {
 
 /// One tick of the body's turn toward `heading` at `rate` (from
 /// [`turn_rate`]) for a body of `scale`, moving by the keys or not: the
-/// error is the signed shortest turn; within 0.6 rad the rate shrinks by
-/// |err|/0.6; moving by the keys ×0.9; the step is the rate ÷ √scale; a
-/// turn within 1e-4 rad, or within one step, ends on the heading.
+/// error is the heading less the yaw, brought once within ±π; the stance
+/// facing is the heading within a quarter turn of the yaw, else the yaw a
+/// quarter turn toward it; within 0.6 rad the rate shrinks by |err|/0.6;
+/// moving by the keys ×0.9; the step is the rate ÷ √scale; a turn within
+/// 1e-4 rad, or within one step, ends on the heading, else the yaw is
+/// brought once within ±π.
 pub fn turn(body: &mut Locomotor, heading: f32, rate: f32, scale: f32, keys_moving: bool) {
-    let error = turn_between(body.yaw, heading);
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    let heading = wrap(heading);
+    let mut error = heading - body.yaw;
+    if error < -PI {
+        error += TAU;
+    } else if PI < error {
+        error -= TAU;
+    }
     body.error = error;
     body.turning = true;
+    body.stance_facing = if error.abs() <= FRAC_PI_2 {
+        heading
+    } else {
+        wrap(sign(error) * FRAC_PI_2 + body.yaw)
+    };
     let size = f64::from(error.abs());
     let mut rate = rate;
     if size < TURN_EASE {
@@ -590,11 +616,23 @@ pub fn turn(body: &mut Locomotor, heading: f32, rate: f32, scale: f32, keys_movi
     let step = rate / scale.sqrt();
     body.turn_rate = step;
     if size < TURN_SNAP || step > error.abs() {
-        body.yaw = wrap(heading);
+        body.yaw = heading;
         body.turning = false;
     } else {
-        body.yaw = wrap(body.yaw + step.copysign(error));
+        let mut yaw = sign(error) * step + body.yaw;
+        if yaw > PI {
+            yaw -= TAU;
+        } else if yaw < -PI {
+            yaw += TAU;
+        }
+        body.yaw = yaw;
     }
+}
+
+/// The original's sign: 1 or −1 by the sign bit, 0 for zero (NaN keeps
+/// its sign bit's 1).
+fn sign(x: f32) -> f32 {
+    if x == 0.0 { 0.0 } else { 1.0_f32.copysign(x) }
 }
 
 /// The turn held this tick (its condition is helpless, or a lock holds
@@ -637,49 +675,6 @@ pub fn align_target(
 pub fn align(body: &mut Locomotor, target: f32) {
     body.align = (f64::from(body.align) * ALIGN_KEEP + f64::from(target) * ALIGN_TAKE) as f32;
     body.amount *= body.align;
-}
-
-/// The run blend and the gait's stop distance of a moving body this tick
-/// (the original's locomotion, in the part Exarust's capsule reads):
-/// running, the blend rises 0.05 to `cap` (the encumbrance's, lower with
-/// the sprint latch); else braking or stopping it is at most f·(2 − f),
-/// f = max(0.2·(speed − 2), 0), otherwise it falls 0.015, never under 0
-/// (the original's bleed by the alignment and by vertical travel comes
-/// with the walking drive). The stop distance is the backpedal's backwards, else the walk's blended
-/// toward the jog's (the sprint's with the latch once its stance `level`
-/// is above 0.9 and it is faster than 3.5 cm a tick) by the run blend. A
-/// standing body keeps both.
-pub fn locomote(
-    req: &Locomotion,
-    body: &mut Locomotor,
-    cap: f32,
-    stops: &StopDistances,
-    level: f32,
-) {
-    use flags::*;
-    if !body.moving() {
-        return;
-    }
-    body.run = if body.leg == LegMode::Run {
-        ((f64::from(body.run) + RUN_RISE) as f32).min(cap)
-    } else if req.flags & (BRAKE | STOPPING) != 0 {
-        let f = ((RUN_SPEED_SHARE * f64::from(body.speed - RUN_SPEED_FROM)) as f32).max(0.0);
-        body.run.min(f * (2.0 - f))
-    } else {
-        (f64::from(body.run) - RUN_FALL) as f32
-    }
-    .max(0.0);
-    body.stop_distance = if req.has(BACK) {
-        stops.back
-    } else {
-        let row = if req.has(SPRINT) && f64::from(level) > SPRINT_LEVEL && body.speed > SPRINT_FROM
-        {
-            stops.sprint
-        } else {
-            stops.jog
-        };
-        stops.walk + (row - stops.walk) * body.run
-    };
 }
 
 /// One tick of the cooldown after a stumble (it counts on below 0).
@@ -758,6 +753,19 @@ impl Drive {
 }
 
 impl Ragdoll {
+    /// The root part's displacement over the last tick (m): its origin on
+    /// its particles less its origin where they were a tick before (none
+    /// without a root).
+    pub fn root_moved(&self) -> Vec3 {
+        let Some(root) = self.parts.iter().find(|p| p.parent.is_none()) else {
+            return Vec3::ZERO;
+        };
+        let w = root.own_origin;
+        (0..4)
+            .map(|k| (root.positions[k] - root.previous[k]) * w[k])
+            .sum()
+    }
+
     /// The pelvis's forward across the ground for a character frame facing
     /// `facing`: the facing turned by how far the pelvis is turned from its
     /// target this tick (the facing itself without one).

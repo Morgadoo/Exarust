@@ -455,19 +455,38 @@ In a living body each slack link SHALL pull its point toward its anchor, where t
 - **THEN** the body's momentum is unchanged
 
 ### Requirement: Muscle gains
-Each tick the character tick SHALL set: the stance factor s, the race's standing (human 0.5), rising 0.01 a tick toward 0.7 + 0.3·run while moving; T = tone·s; part factors 0.5, a foot half its lower leg's, the head a quarter of the thorax's times its character's head factor, a thigh 0.25 × scale standing and 0.2 moving, shoulders, arms and hands 1.25 × scale × arm stiffness; each leg limit link's strength s ← 0.9s + 0.1t, t = 0.5·S² standing, 0.4 moving.
+Each tick the character tick SHALL set: the stance factor s, the race's standing (human 0.5; 1 dormant or in the shock's stagger), rising 0.01 a tick (double) toward 0.7 + 0.3·run (last tick's run blend) while the decision walks, runs or backpedals it, never past it, keeping what it reached above it; T = tone·s; part factors 0.5, a foot half its lower leg's, the head a quarter of the thorax's × its head factor, shoulders, arms and hands 1.25 × scale × arm stiffness, and the legs' gains.
 
 #### Scenario: Walking firms the body
 - **WHEN** a standing human starts walking
 - **THEN** its stance factor rises from 0.5 to 0.7 in 20 ticks, reaches 1 running, keeps it while it moves on, and is 0.5 again when it stops
 
+#### Scenario: The rise stops on its target
+- **WHEN** a walking body's stance factor is 0.695, then 0.845, at a run blend of 0.5
+- **THEN** it is 0.705, then 0.85, a tick later
+
+#### Scenario: Dormant
+- **WHEN** a standing body is dormant
+- **THEN** its stance factor is 1
+
 #### Scenario: Leg limit
 - **WHEN** a living human stands for one tick
-- **THEN** its leg limit links pull at 0.23, settling at 0.5, at 0.4 while it moves and toward 0 without support
+- **THEN** its leg limit links pull at 0.23, settling at 0.5, at 0.4 while it walks or runs and toward 0 without support
 
 #### Scenario: Feral heads and short limbs
 - **WHEN** a fully feral and a half-feral human are built, and a short human (scale 0.95) falls
 - **THEN** their head factors are 0.025 and 0.075, and the short human's arms pull with σ = 0.297 off balance
+
+### Requirement: Leg gains
+Each tick the character tick SHALL set the legs' gains by the movement decision's leg mode: a thigh's factor 0.2 walking, 0.6 running, 0.25 × scale standing or backpedalling (in double precision); each leg limit link's strength s ← 0.9s + 0.1t (double precision), t = 0.4 walking or running, 0.5·S² standing or backpedalling. A collapsing body's thighs and leg limits SHALL keep their gains.
+
+#### Scenario: Running thighs
+- **WHEN** a human runs, then backpedals
+- **THEN** its thighs pull at 0.6, then at 0.25
+
+#### Scenario: Collapsing
+- **WHEN** a collapsing body's leg mode is the run
+- **THEN** its thighs and leg limits keep the gains they had
 
 ### Requirement: Arm stiffness
 The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
