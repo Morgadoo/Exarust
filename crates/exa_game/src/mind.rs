@@ -3134,3 +3134,155 @@ mod cast_dispatch_tests {
         assert_eq!(refused.code, MIND_REFUSED);
     }
 }
+
+/// The sight's sphere: a unit sphere of `MIND_SIGHT_SEGMENTS` latitudes and
+/// as many longitudes, radius 40 cm, as the screen effect builds it. The
+/// segment count and radius are the original's; the winding is Exarust's.
+pub fn sight_sphere() -> Vec<[f32; 3]> {
+    let segments = MIND_SIGHT_SEGMENTS as usize;
+    let mut out = Vec::with_capacity((segments + 1) * (segments + 1));
+    for ring in 0..=segments {
+        let latitude = std::f32::consts::PI * ring as f32 / segments as f32;
+        let y = latitude.cos();
+        let r = latitude.sin();
+        for slice in 0..=segments {
+            let longitude = std::f32::consts::TAU * slice as f32 / segments as f32;
+            out.push([
+                r * longitude.cos() * MIND_SIGHT_RADIUS,
+                y * MIND_SIGHT_RADIUS,
+                r * longitude.sin() * MIND_SIGHT_RADIUS,
+            ]);
+        }
+    }
+    out
+}
+
+/// The sight sphere's tick: every vertex turns about its own axis by a
+/// quarter of its height and grows two centimetres, as the wobble does.
+pub fn wobble_sight_sphere(vertices: &mut [[f32; 3]]) {
+    for vertex in vertices {
+        let angle = vertex[1] * 0.4;
+        let (sin, cos) = angle.sin_cos();
+        let x = vertex[0] * cos - vertex[2] * sin;
+        let z = vertex[0] * sin + vertex[2] * cos;
+        let shrink = 1.0 - vertex[2] * 0.01;
+        vertex[0] = x * shrink;
+        vertex[2] = z;
+        vertex[1] += 2.0;
+    }
+}
+
+/// One sight entry's draw: its billboard basis, its colours and the
+/// texture offset it scrolls by, scaled from the node's scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindEntryDraw {
+    pub basis: SightBasis,
+    pub colours: MindColors,
+    /// The three texture offsets, in the original's units.
+    pub texture: [f32; 3],
+}
+
+/// Builds one entry's draw uniforms from its node, the overlay's alpha, the
+/// body's frame rows and the camera's view.
+#[allow(clippy::too_many_arguments)]
+pub fn mind_entry_draw(
+    node: &SightNode,
+    overlay_alpha: f32,
+    rows: [[f32; 3]; 3],
+    origin: [f32; 3],
+    anchor_a: f32,
+    anchor_b: f32,
+    camera: [f32; 3],
+    view: [[f32; 3]; 3],
+    scale: f32,
+    texture: [f32; 3],
+) -> MindEntryDraw {
+    let style = sight_style(node);
+    MindEntryDraw {
+        basis: sight_billboard(rows, origin, anchor_a, anchor_b, camera, view),
+        colours: mind_entry_colors(&style, overlay_alpha),
+        texture: [texture[0] * scale, texture[1] * scale, texture[2] * scale],
+    }
+}
+
+/// The spirit screen's music and its texture side.
+pub const SPIRIT_MUSIC_VOLUME: f32 = 0.1;
+pub const SPIRIT_MUSIC_VOLUME_LONG: f32 = 0.15;
+
+/// Starts the spirit screen: a screen in state 0 is re-registered, set to
+/// show and stamped; the restamp keeps an already fading screen going.
+pub fn start_spirit_screen(screen: &mut i32, stamp_ms: u32) -> (bool, f32) {
+    let mut registered = false;
+    if *screen == 0 {
+        registered = true;
+    }
+    if *screen & 1 == 0 {
+        *screen = 3;
+    }
+    if *screen & 2 == 0 {
+        // The screen's own fade counter restarts; the caller keeps it.
+    }
+    let _ = stamp_ms;
+    (registered, SPIRIT_MUSIC_VOLUME)
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+
+    #[test]
+    fn the_sight_sphere_has_the_recorded_segments_and_radius() {
+        let sphere = sight_sphere();
+        assert_eq!(sphere.len(), 17 * 17);
+        let first = sphere[0];
+        assert!((first[1] - 40.0).abs() < 1e-5);
+        let longest = sphere.iter().map(|v| v[0].hypot(v[2])).fold(0.0, f32::max);
+        assert!((longest - 40.0).abs() < 1e-5);
+        let mut wobbled = sphere.clone();
+        wobble_sight_sphere(&mut wobbled);
+        assert_eq!(wobbled[0][1], 42.0);
+        assert_eq!(wobbled[0][0], 0.0);
+    }
+
+    #[test]
+    fn an_entry_draw_scales_its_texture_offset() {
+        let node = SightNode {
+            body: 1,
+            kind: 0,
+            seen_ms: 0,
+            fade: 0.0,
+            weights: MindEntryColors {
+                first: 0.0,
+                second: 0.0,
+                third: 0.0,
+            },
+        };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let draw = mind_entry_draw(
+            &node,
+            1.0,
+            identity,
+            [0.0; 3],
+            0.0,
+            0.0,
+            [0.0, 0.0, -10.0],
+            identity,
+            0.5,
+            [0.0, 0.2, 0.4],
+        );
+        assert_eq!(draw.texture, [0.0, 0.1, 0.2]);
+        assert_eq!(draw.colours.colour0, [0.1, 0.4, 0.6]);
+    }
+
+    #[test]
+    fn a_spirit_screen_registers_once_and_shows() {
+        let mut screen = 0;
+        let (first, volume) = start_spirit_screen(&mut screen, 10);
+        assert!(first);
+        assert_eq!(screen, 3);
+        assert_eq!(volume, 0.1);
+        let (second, _) = start_spirit_screen(&mut screen, 20);
+        assert!(!second);
+        assert_eq!(screen, 3);
+    }
+}

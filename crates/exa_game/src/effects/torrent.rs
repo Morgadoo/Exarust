@@ -393,6 +393,22 @@ impl Torrent {
         sum / self.streams.len() as f32 + Vec3::splat(LIGHT_RADIUS)
     }
 
+    /// The stream points as a frame between two ticks draws them.
+    pub fn drawn_points(&self, alpha: f32) -> Vec<Vec3> {
+        let mut out = Vec::new();
+        for stream in &self.streams {
+            for step in 0..STREAM_POINTS {
+                let index = (stream.head + STREAM_POINTS - step) % STREAM_POINTS;
+                let point = stream.points[index];
+                let previous = stream.points[(index + 1) % STREAM_POINTS];
+                let a = Vec3::from_array(previous.at);
+                let b = Vec3::from_array(point.at);
+                out.push(a + (b - a) * alpha);
+            }
+        }
+        out
+    }
+
     /// A stream's ribbon: 12 quads through its history.
     pub fn ribbon(&self, stream: &Stream) -> Vec<[f32; 3]> {
         let mut out = Vec::with_capacity((STREAM_QUADS + 1) * 2);
@@ -544,6 +560,17 @@ mod tests {
         let expected = 0.12 * 1.0 * 0.5 * 0.25 * 1.5 * 0.5 * 1.2;
         assert!((set.blocks[0][0] - expected).abs() < 1e-6);
         assert_eq!(torrent.texture_offset(), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_frame_draws_between_the_history_points() {
+        let mut torrent = torrent();
+        let head = torrent.streams[0].head;
+        torrent.streams[0].points[head].at = [10.0, 0.0, 0.0];
+        torrent.streams[0].points[(head + 1) % STREAM_POINTS].at = [0.0, 0.0, 0.0];
+        let points = torrent.drawn_points(0.5);
+        assert_eq!(points.len(), STREAM_POINTS * STREAMS);
+        assert_eq!(points[0].x, 5.0);
     }
 
     #[test]

@@ -208,11 +208,12 @@ dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
 
 `exa_game::effects::blast` and `exa_game::effects::torrent`.
 
-- **Blast** (0x201, and the bolt and wave through their tuning): charge
-  rises by five sixths of the tick in seconds; past 1 it releases with an
-  alert 1800 cm around it, and the chunks fly at 0.96 of their motion a
-  tick. Each chunk's collision reach grows 0.4 cm and its drawn radius
-  `(speed·0.7 + 3)·0.0006` cm a tick. Two chunks closer than twice the reach
+- **Blast** (0x201, and the bolt and wave through their tuning): sixteen
+  chunks are kept; the 0.7 tuning spans the spawn ring over 58 ticks
+  (83·0.7). Charge rises by five sixths of the tick in seconds; past 1 it
+  releases with an alert 1800 cm around it, and the chunks fly at 0.96 of
+  their motion a tick. Each chunk's collision reach grows 0.4 cm and its
+  drawn radius `(speed·0.7 + 3)·0.0006` cm a tick. Two chunks closer than twice the reach
   push apart by half the overlap. A hit body takes `(1 − d²/r²)` of the
   push, a character's limb an impulse of at most 30 doubled, a stun of
   `0.08·(1 − share)` between 0.008 and 0.08 s, and 0.01 of anger toward the

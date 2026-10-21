@@ -9,8 +9,9 @@
 //! (`wheel`), the rain (`rain`), the force domes (`force_dome`), the Force
 //! Wave (`force_wave`), the vanish (`vanish`), the GI emissives the force
 //! effects carry (`emissive`), the force geometries' programs and pass rows
-//! (`effect_geometry`) and what the AI sees of a blast, a wave or a
-//! barricade (`danger`).
+//! (`effect_geometry`), what the AI sees of a blast, a wave or a
+//! barricade (`danger`), and the force blast and torrent with their ribbons
+//! and GI lights (`blast`, `torrent`).
 //!
 //! The rules are plain data and functions so they can be tested without a
 //! Bevy app. The Bevy systems step components that gameplay inserts, on

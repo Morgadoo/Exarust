@@ -33,6 +33,8 @@ use bevy::prelude::*;
 use crate::effects::{TICK_HZ, round_i32};
 use crate::thaum::force::BlastSetup;
 
+/// The chunk slots the draw keeps, and so the chunks a blast has.
+pub const CHUNKS: usize = 16;
 /// The chunk trail's length, in entries.
 pub const TRAIL: usize = 12;
 /// The strip samples across a chunk's ribbon.
@@ -208,7 +210,7 @@ impl Blast {
     /// A blast of the given setup, starting in the hand.
     pub fn new(setup: BlastSetup, tick_ms: u32, hand: Vec3) -> Self {
         let rate = f64::from(tick_ms) * 0.001 * CHARGE_RATE;
-        let count = chunk_count(setup.chunks);
+        let count = CHUNKS;
         let mut tints = Vec::with_capacity(count);
         for _ in 0..count {
             tints.push((0.0, 0.0));
@@ -229,9 +231,15 @@ impl Blast {
         self.tints = tints.take(self.chunk_count()).collect();
     }
 
-    /// How many chunks the tuning asks for.
+    /// How many chunks the blast has.
     pub fn chunk_count(&self) -> usize {
-        chunk_count(self.setup.chunks)
+        CHUNKS
+    }
+
+    /// How many ticks the spawn ring spans: the tuning's share of a
+    /// second at the tick rate, rounded to nearest even.
+    pub fn spawn_span(&self) -> i32 {
+        spawn_span(self.setup.chunks)
     }
 
     /// Creates the chunks at their first positions: a ring of 16
@@ -512,6 +520,36 @@ impl Blast {
     pub fn texture_offset(&self) -> [f32; 3] {
         TEXTURE_OFFSET
     }
+
+    /// The chunks as a frame between two ticks draws them.
+    pub fn drawn_positions(&self, alpha: f32) -> Vec<Vec3> {
+        self.chunks
+            .iter()
+            .map(|chunk| chunk.previous + (chunk.at - chunk.previous) * alpha)
+            .collect()
+    }
+
+    /// The light's strength between two ticks: the charge's curve, or the
+    /// released fall.
+    pub fn drawn_light(&self, alpha: f32, chunk: &Chunk) -> f32 {
+        let _ = alpha;
+        if self.phase < RELEASED {
+            let charge = self.charge;
+            if charge >= 0.3 {
+                1.0
+            } else {
+                (0.6 - charge) * charge * 11.11
+            }
+        } else {
+            let fade = 1.0 - self.age_share(chunk);
+            if fade <= 0.666 {
+                1.0
+            } else {
+                let curve = 4.0 - fade * 4.5;
+                curve * curve
+            }
+        }
+    }
 }
 
 /// Pushes every pair of chunks apart when they are closer than twice the
@@ -601,11 +639,10 @@ fn normalize3(v: [f32; 3]) -> [f32; 3] {
     [v[0] / length, v[1] / length, v[2] / length]
 }
 
-/// The chunk count a tuning's share asks for: the base 16 directions kept
-/// while the share climbs, less one direction a tenth.
-pub fn chunk_count(share: f32) -> usize {
-    let count = (16.0 * share).round_ties_even() as i32;
-    count.clamp(1, 16) as usize
+/// The spawn ring's span in ticks: the share of a second at 83 Hz, rounded
+/// to nearest even.
+pub fn spawn_span(share: f32) -> i32 {
+    (share * TICK_HZ as f32).round_ties_even() as i32
 }
 
 /// One struck body's push.
@@ -753,7 +790,8 @@ mod tests {
     #[test]
     fn a_blast_charges_releases_and_flies() {
         let mut blast = blast();
-        assert_eq!(blast.chunk_count(), 11);
+        assert_eq!(blast.chunk_count(), 16);
+        assert_eq!(blast.spawn_span(), 58);
         for _ in 0..101 {
             let step = blast.step(Vec3::new(10.0, 0.0, 0.0));
             if step.released {
@@ -780,11 +818,11 @@ mod tests {
     }
 
     #[test]
-    fn the_chunk_count_follows_the_share() {
-        assert_eq!(chunk_count(1.0), 16);
-        assert_eq!(chunk_count(0.7), 11);
-        assert_eq!(chunk_count(0.1), 2);
-        assert_eq!(chunk_count(0.0), 1);
+    fn the_spawn_span_follows_the_share() {
+        assert_eq!(spawn_span(1.0), 83);
+        assert_eq!(spawn_span(0.7), 58);
+        assert_eq!(spawn_span(0.1), 8);
+        assert_eq!(spawn_span(0.0), 0);
     }
 
     #[test]
@@ -854,11 +892,25 @@ mod tests {
         let mut blast = blast();
         blast.charge = 0.4;
         let set = blast.light_set();
-        assert_eq!(set.blocks.len(), blast.chunk_count());
+        assert_eq!(set.blocks.len(), CHUNKS);
         assert_eq!(set.radius, 5000.0);
         let mean = blast.chunks.iter().map(|c| c.at).sum::<Vec3>() / blast.chunks.len() as f32;
         assert!((set.position - (mean + Vec3::splat(120.0))).length() < 1e-5);
         assert_eq!(blast.texture_offset(), [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_frame_draws_between_the_last_two_ticks() {
+        let mut blast = blast();
+        blast.charge = 0.5;
+        blast.chunks[0].previous = Vec3::ZERO;
+        blast.chunks[0].at = Vec3::new(10.0, 0.0, 0.0);
+        let half = blast.drawn_positions(0.5);
+        assert_eq!(half[0], Vec3::new(5.0, 0.0, 0.0));
+        assert_eq!(blast.drawn_positions(1.0)[0], Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(blast.drawn_light(0.0, &blast.chunks[0]), 1.0);
+        blast.phase = RELEASED;
+        assert!((blast.drawn_light(0.0, &blast.chunks[0]) - 0.25).abs() < 1e-6);
     }
 
     #[test]

@@ -123,8 +123,8 @@ an apparel copy's description phrase and the weapon variant roll are not
 in.
 
 The force blast and torrent (`effects::{blast, torrent}`) are rule models, on
-the original's 83 Hz tick: the blast's charge (five sixths of the tick), its
-release alert, its chunks' 0.4 cm reach and `(speed·0.7 + 3)·0.0006` drawn
+the original's 83 Hz tick: the blast's sixteen chunks and 58-tick spawn ring,
+its charge (five sixths of the tick), its release alert, its chunks' 0.4 cm reach and `(speed·0.7 + 3)·0.0006` drawn
 growth a tick, their 0.96 retention and pairwise separation, the body push
 and character limb impulse (30 doubled, a stun up to 0.08 s, 0.01 anger),
 its 12-point trails and 8-sample ribbons, its tints and charge/release
