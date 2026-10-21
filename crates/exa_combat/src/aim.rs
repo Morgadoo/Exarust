@@ -10,7 +10,8 @@
 //! the vertical component is replaced by `(10000 − d²)·1e-4` before the
 //! direction is normalized.
 
-use std::f64::consts::FRAC_PI_2;
+use bevy::math::Vec3;
+use exa_physics::body::locomotion::{asin_approx, heading_of};
 
 /// The most the yaw and pitch move in one tick (1.8°).
 pub const HEAD_STEP: f32 = std::f32::consts::PI / 100.0;
@@ -41,28 +42,13 @@ pub struct HeadLook {
     pub flat: [f32; 3],
 }
 
-/// The engine's cheap odd `asin` approximation, saturating near ±1.0198.
-fn asin_poly(x: f64) -> f64 {
-    (FRAC_PI_2 + 0.2075 * x + 0.0535 * x * x) * (1.0 + x).sqrt() - FRAC_PI_2
-}
-
-/// The atan2 of a point's x and z: zero when the horizontal length is
-/// under 1e-8, otherwise π/2 minus the `asin` approximation, negated for a
-/// negative x.
+/// The engine's yaw of a point's x and z, its planar-angle routine: zero
+/// when the horizontal length squared is under 1e-8, otherwise the
+/// engine's arc cosine of z over that length (π at or below −1, zero above
+/// 1), negated for a negative x (`exa_physics`'s heading, which the free
+/// camera's planar yaw also matches).
 pub fn head_atan2_xz(x: f32, z: f32) -> f32 {
-    let length_squared = x * x + z * z;
-    if length_squared < 1e-8 {
-        return 0.0;
-    }
-    let cosine = (z / length_squared.sqrt()).clamp(-1.0, 1.0);
-    let angle = if cosine <= -1.0 {
-        std::f32::consts::PI
-    } else if cosine >= 1.0 {
-        0.0
-    } else {
-        (FRAC_PI_2 - asin_poly(f64::from(cosine))) as f32
-    };
-    if x < 0.0 { -angle } else { angle }
+    heading_of(Vec3::new(x, 0.0, z))
 }
 
 fn wrap(angle: f32) -> f32 {
@@ -153,9 +139,12 @@ fn track_head_inner(
         yaw = wrap(body_yaw - HEAD_YAW_LIMIT);
     }
 
+    // The target is the negated arc sine of the height, raised to the
+    // floor by an ordered compare (a NaN target stays NaN).
+    let target = -asin_approx(dir_in[1]);
     let want_pitch = match pitch_floor {
-        Some(floor) => (-asin_poly(f64::from(dir_in[1])) as f32).max(floor),
-        None => -asin_poly(f64::from(dir_in[1])) as f32,
+        Some(floor) if target < floor => floor,
+        _ => target,
     };
     let pitch = step(head.pitch, want_pitch);
 
@@ -192,7 +181,7 @@ mod tests {
             [0.0, 0.0, 1.0],
             [0.0; 3],
             [0.0, 0.0, 1.0],
-            [10.0, 0.0, 1000.0],
+            [100.0, 0.0, 1000.0],
         );
         assert!((head.yaw - HEAD_STEP).abs() < 1e-6);
         assert!(head.pitch.abs() < 1e-6);
@@ -203,11 +192,45 @@ mod tests {
     }
 
     #[test]
-    fn the_atan2_is_the_engines_cheap_approximation() {
+    fn the_atan2_is_the_engines_planar_angle() {
         assert_eq!(head_atan2_xz(0.0, 1.0), 0.0);
+        assert_eq!(head_atan2_xz(0.0, -1.0), std::f32::consts::PI);
+        // A small offset ahead is a small angle (within the arc cosine's
+        // 4e-4), mirrored for a negative x.
         let side = head_atan2_xz(10.0, 1000.0);
-        assert!((side - 0.551).abs() < 1e-3, "{side}");
-        assert!((head_atan2_xz(-10.0, 1000.0) + side).abs() < 1e-6);
+        assert!((side - 0.01).abs() < 5e-4, "{side}");
+        assert_eq!(head_atan2_xz(-10.0, 1000.0), -side);
+        // x = z = 1: the upper form of the arc cosine, in single precision.
+        let c = 1.0f32 / 2.0f32.sqrt();
+        let upper =
+            (c * c * 0.0535 + (std::f32::consts::FRAC_PI_2 - c * 0.2075)) * (1.0 - c).sqrt();
+        assert_eq!(head_atan2_xz(1.0, 1.0), upper);
+        // Behind: π less the same, in double precision.
+        let behind = (std::f64::consts::PI - f64::from(upper)) as f32;
+        assert_eq!(head_atan2_xz(1.0, -1.0), behind);
+        // Under 1e-8 of horizontal length squared: zero.
+        assert_eq!(head_atan2_xz(1e-5, 0.0), 0.0);
+    }
+
+    #[test]
+    fn looking_up_takes_the_engines_arc_sine() {
+        // Height 0.6 of a unit direction: asin 0.6435 (the polynomial is
+        // within 1e-3); starting there, the far variant (no floor) holds it
+        // exactly.
+        let want = -asin_approx(0.6);
+        assert!((want + 0.6435).abs() < 1e-3, "{want}");
+        let mut head = HeadTrack {
+            yaw: 0.0,
+            pitch: want,
+        };
+        track_head_far(
+            &mut head,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [0.0, 600.0, 800.0],
+        );
+        assert_eq!(head.pitch, want);
     }
 
     #[test]
