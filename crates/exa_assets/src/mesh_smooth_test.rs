@@ -165,6 +165,21 @@ fn a_texture_fold_becomes_a_seam() {
     assert_eq!(uv[0], [0.0, 0.0]);
 }
 
+/// Both ends of the diagonal share one coordinate: the fold test's
+/// direction is 0/0 and its product NaN, which the original's ordered
+/// compare sends to the plain branch, so the edge point is 3/8 of each end
+/// plus 1/8 of each opposite coordinate, not NaN.
+#[test]
+fn a_zero_length_texture_edge_is_not_a_fold() {
+    let mut m = square();
+    m.uvs.as_mut().unwrap()[2] = [0.0, 0.0];
+    let mut mesh = EditMesh::from_mesh(&m, &[SPLIT_UVS]).unwrap();
+    subdivide(&mut mesh, 0.0).unwrap();
+    let uv = uvs(&mesh);
+    assert_eq!(uv[4], [0.125, 0.125]);
+    assert!(uv.iter().flatten().all(|v| v.is_finite()));
+}
+
 /// Faces naming different coordinates at the diagonal get one edge point
 /// each, both midpoints.
 #[test]
