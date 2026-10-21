@@ -32,6 +32,7 @@ pub mod practice;
 pub mod session;
 pub mod shell_draw;
 pub mod sim_control;
+pub mod slots;
 pub mod stages;
 pub mod steering;
 pub mod teleporters;
