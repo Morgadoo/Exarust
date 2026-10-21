@@ -257,9 +257,7 @@ impl ColourSwatch {
                         }
                     }
                     0x8000 => {
-                        if index & 7 < 7 {
-                            index += 1;
-                        }
+                        index += i32::from(index & 7 < 7);
                     }
                     _ => {}
                 }
