@@ -628,7 +628,11 @@ impl MenuPad {
                         ..MenuFrame::default()
                     }
                 } else {
-                    MenuFrame::default()
+                    MenuFrame {
+                        key: 0,
+                        cursor: self.cursor,
+                        scroll_cursor: self.scroll_cursor,
+                    }
                 };
             }
         }
