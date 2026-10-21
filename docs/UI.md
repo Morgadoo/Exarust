@@ -711,16 +711,20 @@ primitives below are the base class's.
   bordered one-pixel box and an outline, in the pressed, hot (the form
   group's copy) or idle inks; its gradient form swaps the first two for a
   four-stop gradient and a bevelled line box. A panel either draws that
-  bevel and outline with an inner shadow or the frame slot. A mark is a
-  bevel box just outside its rectangle, with a second bevelled ring and a
-  faded face when selected; its icon starts at the rectangle's bottom-left,
-  a quarter unit in, at scale 1 when the mark is active. A slider draws a
-  faded track and a framed thumb moved by the value, or a striped fill and
-  the unit-wide bar at the value; a scroll bar draws a box with a thumb
-  `4·unit + 1` wide (the track points back at the same rectangle) or the
-  striped fill. The shell adds the frame, an optional drop shadow at
-  `-unit/2` and the sunken face; the fill is the control's own colour,
-  forced opaque.
+  bevel and outline with an inner shadow or the frame slot. The style
+  frames are double frames in the hot group's shades 0 and 7, or 6 and 0.
+  A form mark under the pressed mouse draws a bevel just outside its
+  rectangle, the outline and a faded face a pixel in; the mark under the
+  mouse draws that bevel, a second one a pixel inside and the outline. Its
+  icon sits half a unit in from the left and half a unit and one below the
+  top, at scale 1 when the mark is under the mouse or pressed with the
+  button up. A slider draws a faded track (the hot group's shades 4 and 0
+  at 0.6 alpha) and a framed thumb moved by the value, or a striped fill
+  and the unit-wide bar at the value; a scroll bar, drawn a pixel lower and
+  two shorter, draws a box with a thumb `4·unit + 1` wide (the track
+  points back at the same rectangle) or the striped fill. The shell adds
+  the frame, an optional drop shadow at `-unit/2` and the sunken face; the
+  fill is the control's own colour, forced opaque.
 - **Form chrome and background.** A form's chrome first draws the four
   scrollbar-gutter strips (between the margin and the client's left, top,
   right and bottom, each `bar` wide, when there is room), then the client
