@@ -872,10 +872,20 @@ float is below one million, and the easing curve is two quadratics joined
 at 0.5. Evidence: the three retail routines behind it (the save-settings
 writer, its reader and the curve).
 
-**Character creation** (`exa_game::create`): a new record takes the
-appearance (four words, a count and a parts list, then a tail and its
-list); the source keeps its words and loses both counts and lists.
-Evidence: the 228-byte creation routine.
+**Character creation** (`exa_game::create`): the creator edits the
+record's gear: its four hand items (id and flags), the worn list and the
+carried list. A new record takes all four hand items, the worn list and
+the carried list; the source keeps the hand items and loses both lists.
+The mode filter keeps story background 0 in braies only and clears its
+hands; the arena keeps the first two hands only when its preset kit offers
+them and keeps braies only; modes with the 2 bit clear the fist
+placeholder (31) from the first two hands. Every branch empties the
+carried list. The skills are six slots of a `u16` points word and six
+technique bytes; a freely created character starts with Close Combat,
+Armour and Shields at 25000 points and their first techniques. Each story
+background keeps its own preset in the settings, and the arena keeps its
+career character. Evidence: REA on the character screen's unit routines
+and the record layout above.
 
 ## Terrain (`.rft` and `.ftb`)
 

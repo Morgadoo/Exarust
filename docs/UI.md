@@ -382,6 +382,22 @@ The original's own forms and controls that Exarust rebuilds, with the
   the 121-byte `0x100195d80`.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement
   at `0x100224570`.
+- **Character creation** (`exa_game::create`, `exa_ui::creation`): the
+  appearance page's NAME/HAIR/NEXT, the equipment page's APPAREL/WEAPONS
+  tabs, or EQUIPMENT/LOBBY when the versus lobby script is installed, and
+  its RECRUIT/BEGIN/READY/CREATE button, the continue screen's save or
+  checkpoint button, the skills page's SKILLS, Current skill progress,
+  Global experience and New global experience captions, and the icon sheet
+  of four 96-pixel cells scaled to eight GUI units. The apparel panel sits
+  at 4, 24, 172 wide and 620 or 568 tall; the weapon panel against the
+  parent's right edge less 176; the skills panel 216 wide, 516 or 660
+  tall, 12 in from the right; the skill tab slides four units per index
+  and the panel narrows by the same; the continue list starts at 59 units
+  and the name at 4, 40, 228 wide to the form's bottom. The rules (gear
+  filter, starting skills, experience budget, kit tables, page flow, save
+  choice) are plain functions in the game crate with tests pinned to
+  concrete numbers. The form itself, its model preview, sound playback and
+  the advanced editor are not drawn yet.
 
 When the GUI unit changes, every form rescales from the old unit to the
 new (`exa_ui::gui_rescale`): lengths are divided by the old unit, then

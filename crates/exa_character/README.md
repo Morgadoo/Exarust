@@ -51,6 +51,16 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   defaults; a placed character carries its own record and gets its moveset
   from the first hand.
 
+## Creation records
+
+A creator record is this crate's `CharacterRecord`: its six `Skill`s
+(`points` and the technique chosen at each level) and its four hand slots,
+worn list and carried list are the fields the creator edits. `exa_game::create`
+owns the starting skills, the mode's gear filter, the experience budget and
+the page flow; this crate reads the stored record. The creator's two
+physique values and the body morphs they select remain the body's concern
+(see [`docs/formats/RFC.md`](../../docs/formats/RFC.md), Morph sets).
+
 ## Apparel
 
 - `Outfit` lists garments by `Characters.rpk` model; `equip_outfits` fits

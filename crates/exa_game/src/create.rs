@@ -2762,6 +2762,81 @@ pub fn select_voice(index: i32, sample_exists: bool) -> Option<i32> {
     sample_exists.then_some(index)
 }
 
+/// The record fields a loaded preset leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresetLoad {
+    /// The profession word keeps its sex bit and clears its race byte.
+    pub profession: i32,
+    /// The creation-object count is cleared.
+    pub object_count: i32,
+    /// The five option entries are cleared.
+    pub options_cleared: bool,
+}
+
+/// Finishes a successful preset load.
+///
+/// The record's race byte is cleared, its option entries and object count
+/// are zeroed; the rest of the record stays as the preset wrote it.
+pub fn apply_loaded_preset(profession: i32) -> PresetLoad {
+    PresetLoad {
+        profession: profession & !0x0000_ff00,
+        object_count: 0,
+        options_cleared: true,
+    }
+}
+
+/// What adopting a background's template did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TemplateUse {
+    /// The record the creator had before was freed.
+    pub replaced: bool,
+    pub object_count: i32,
+    pub options_cleared: bool,
+}
+
+/// Adopts the template record when a named background has no saved preset.
+pub fn use_template(has_record: bool) -> TemplateUse {
+    TemplateUse {
+        replaced: has_record,
+        object_count: 0,
+        options_cleared: true,
+    }
+}
+
+/// Adding an item preview to the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewPush {
+    pub count: i32,
+    /// The item selected after the push, if the previous last one was
+    /// hovered.
+    pub selected: Option<i32>,
+}
+
+/// Adds a preview icon; a hovered last item moves the selection to the new
+/// last one.
+pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
+    let count = count.saturating_add(1);
+    let selected = hovered
+        .filter(|hovered| hovered.saturating_add(1) == count - 1)
+        .map(|_| count - 1);
+    PreviewPush { count, selected }
+}
+
+/// The continue list's name row for a selected item, one-based.
+pub fn continue_name_row(selected: i32) -> Option<usize> {
+    usize::try_from(selected.checked_sub(1)?).ok()
+}
+
+/// The delete confirmation's text: the question and the character's name.
+pub fn delete_confirm_text(question: &str, name: &str) -> String {
+    format!("{question}{name}?")
+}
+
+/// Creates the creator's icon sheet once.
+pub fn ensure_creation_icons(existing: bool) -> bool {
+    !existing
+}
+
 /// The voice variants played last, so a preview does not repeat one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VoiceHistory {
@@ -4484,6 +4559,61 @@ mod tests {
         let mut history = VoiceHistory::default();
         assert_eq!(draw_voice_variant(&mut rng, 1, &mut history), 0);
         assert_eq!(rng.0, 0);
+    }
+
+    #[test]
+    fn a_loaded_preset_clears_the_race_and_options() {
+        let load = apply_loaded_preset(0x1234_0101);
+        assert_eq!(load.profession, 0x1234_0001);
+        assert_eq!(load.object_count, 0);
+        assert!(load.options_cleared);
+
+        let template = use_template(true);
+        assert!(template.replaced);
+        assert_eq!(template.object_count, 0);
+        assert!(template.options_cleared);
+        assert!(!use_template(false).replaced);
+    }
+
+    #[test]
+    fn adding_a_preview_selects_it_after_the_last_was_hovered() {
+        assert_eq!(
+            push_preview(4, None),
+            PreviewPush {
+                count: 5,
+                selected: None
+            }
+        );
+        assert_eq!(
+            push_preview(4, Some(3)),
+            PreviewPush {
+                count: 5,
+                selected: Some(4)
+            }
+        );
+        assert_eq!(
+            push_preview(4, Some(2)),
+            PreviewPush {
+                count: 5,
+                selected: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_continue_row_and_delete_text_follow_the_selection() {
+        assert_eq!(continue_name_row(1), Some(0));
+        assert_eq!(continue_name_row(3), Some(2));
+        assert_eq!(continue_name_row(0), None);
+        assert_eq!(continue_name_row(-1), None);
+
+        assert_eq!(delete_confirm_text("Delete ", "Mira"), "Delete Mira?");
+    }
+
+    #[test]
+    fn the_icon_sheet_is_created_once() {
+        assert!(ensure_creation_icons(false));
+        assert!(!ensure_creation_icons(true));
     }
 
     #[test]

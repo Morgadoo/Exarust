@@ -8,6 +8,8 @@ So far ([`docs/UI.md`](../../docs/UI.md)): the game's bitmap font
 (`font`), the interface scale from the window's height (`scale`), the
 frame-rate readout (`fps`), the loading screen (`loading`, whose camera
 draws the whole interface over the game's view, premultiplied), the
+character creator's labels and page captions (`creation`; the game crate
+owns the rules and places), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
 its shape), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`), the low-health heartbeat's border
