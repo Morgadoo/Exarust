@@ -98,7 +98,7 @@ pub use gui_text::{
     ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
     count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail,
     draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width,
-    font_uv, glyph_uv, measure, measure_in, menu_font_scale, needs_rescale,
+    font_uv, glyph_cell, measure, measure_in, menu_font_scale, needs_rescale,
 };
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
@@ -205,17 +205,6 @@ pub use technique_selector::{
     TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
     draw_order as technique_draw_order, enter_forget, layout as technique_layout, refresh_tree,
     selector_key, text_places,
-};
-pub use text_edit::{
-    CARET, EditAction, EditDraw, EditView, MarkupPicture, MarkupState, SPAN, TextureCache,
-    apply_key, apply_markup_state, apply_markup_tag, backspace, caret_from_x, caret_position,
-    delete_forward, delete_selection, draw_edit, key, navigate_key, paste, picture_rect,
-    scroll_view, selected_text, selection,
-};
-pub use viewport::{
-    BORDER, CursorAction, FPS_LINE, KeyOutcome, KeyRoute, LEVELS, NO_VIEW, SAMPLE_OFFSETS, STATE,
-    STYLE, Still, StillProgress, SupersampleLevel, TITLE, VERSION, ViewSize, camera_scale,
-    extra_hit, fps_place, fps_text, jitter, level, pick_action, project, unproject, version_place,
 };
 
 pub struct UiPlugin;

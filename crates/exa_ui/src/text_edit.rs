@@ -6,13 +6,13 @@
 //! (`[tcol]`, `[/tcol]`, `[scrp]`, `[algn]`, `[rimg]`).
 //!
 //! The edit state is four bytes, as the original's: the anchor and caret
-//! (byte counts, so the caret before the first byte is 0), the shown text
-//! length and the first visible byte. The text itself is a byte vector;
+//! (byte counts, so the caret before the first byte is 0), the visible
+//! window's end and its first byte. The text itself is a byte vector;
 //! limits are the original's 8-bit fields and the caller's maximum length.
 //! Rules: `docs/UI.md` (Text boxes).
 
-use crate::gui_font::{GuiFont, round_i32};
-use crate::gui_text::{TextQuad, glyph_uv};
+use crate::gui_font::GuiFont;
+use crate::gui_text::{TextQuad, glyph_cell};
 use crate::text_layout::parse_hex_colour;
 use crate::text_layout::{CARET_GLYPH, SPAN_INK};
 
@@ -24,7 +24,9 @@ pub struct EditView {
     pub anchor: u8,
     /// The caret: the number of bytes before it.
     pub caret: u8,
-    /// The text's shown length, in bytes.
+    /// The visible window's end: the last visible byte, 1-based. Only
+    /// [`scroll_view`] moves it; the whole-run draw reads it as a count
+    /// from the first visible byte instead.
     pub length: u8,
     /// The first visible byte (horizontal scroll).
     pub first: u8,
@@ -43,32 +45,37 @@ pub mod key {
     pub const CUT: u8 = 0x58;
 }
 
-/// The caret from a pointer's x, walking the visible bytes while the
-/// pointer is past half a glyph (the original's `x` counts from the first
-/// visible byte). The caret is clamped to the text's length.
+/// The caret from a pointer's x (counted from the first visible byte):
+/// walking the bytes after the first visible one up to the window's end,
+/// the caret stops before the first byte whose half advance the pointer
+/// has not reached, else lands on the window's end. The half advance is an
+/// unsigned shift, so a negative advance always stops the walk. The caret
+/// is then clamped to the text's length.
 pub fn caret_from_x(font: &GuiFont, text: &[u8], view: &mut EditView, x: i32) -> u8 {
     let len = text.len().min(u8::MAX as usize) as u8;
-    let mut first = view.first.min(len);
-    let mut caret = view.length;
+    let end = view.length;
+    let mut index = view.first;
+    let mut caret = end;
     let mut left = x;
-    if first < view.length {
+    if index < end {
         loop {
-            let next = first + 1;
-            let advance = font.advance(text[next as usize - 1]);
-            caret = first;
-            if left < advance >> 1 {
+            let next = index + 1;
+            let advance = text
+                .get(next as usize - 1)
+                .map_or(0, |&byte| font.advance(byte));
+            caret = index;
+            if left < ((advance as u32) >> 1) as i32 {
                 break;
             }
             left -= advance;
-            first = next;
-            caret = view.length;
-            if next + 1 >= view.length {
+            index = next;
+            caret = end;
+            if next >= end {
                 break;
             }
         }
     }
-    let caret = if caret < 1 { 0 } else { caret }.min(len);
-    view.caret = caret;
+    view.caret = caret.min(len);
     view.caret
 }
 
@@ -159,8 +166,9 @@ pub fn selection(view: &EditView) -> Option<(usize, usize)> {
     }
 }
 
-/// Removes the selected bytes in place and puts the caret at their start.
-/// Returns the number of bytes removed.
+/// Removes the selected bytes in place and puts both ends at the lower one.
+/// Returns the number of bytes removed. The window is left to
+/// [`scroll_view`].
 pub fn delete_selection(text: &mut Vec<u8>, view: &mut EditView) -> usize {
     let Some((low, high)) = selection(view) else {
         return 0;
@@ -170,34 +178,32 @@ pub fn delete_selection(text: &mut Vec<u8>, view: &mut EditView) -> usize {
     text.drain(low..high);
     view.anchor = low as u8;
     view.caret = low as u8;
-    view.length = text.len().min(u8::MAX as usize) as u8;
     high - low
 }
 
-/// The bytes the selection covers, for the clipboard; empty when nothing
-/// is selected.
+/// The bytes a copy takes: the selection, or the whole text when nothing
+/// is selected (the original's copy hands the whole text over then).
 pub fn selected_text(text: &[u8], view: &EditView) -> Vec<u8> {
     match selection(view) {
         Some((low, high)) => text[low.min(text.len())..high.min(text.len())].to_vec(),
-        None => Vec::new(),
+        None => text.to_vec(),
     }
 }
 
 /// Removes the byte before the caret (Backspace): the selection when there
 /// is one, else the byte at the caret's left; a caret at 0 removes
-/// nothing.
+/// nothing. The anchor follows the caret.
 pub fn backspace(text: &mut Vec<u8>, view: &mut EditView) {
     if selection(view).is_some() {
         delete_selection(text, view);
     } else if view.caret != 0 {
-        let at = (view.caret as usize - 1).min(text.len().saturating_sub(1));
+        let at = view.caret as usize - 1;
         if at < text.len() {
             text.remove(at);
         }
         view.caret -= 1;
-        view.anchor = view.caret;
     }
-    view.length = text.len().min(u8::MAX as usize) as u8;
+    view.anchor = view.caret;
 }
 
 /// Removes the byte at the caret (Delete): the selection when there is
@@ -212,28 +218,31 @@ pub fn delete_forward(text: &mut Vec<u8>, view: &mut EditView) {
             text.remove(at);
         }
     }
-    view.length = text.len().min(u8::MAX as usize) as u8;
 }
 
-/// Inserts one byte at the caret (replacing a selection), unless the text
-/// is at `max` long. Sets the caret after the byte.
-pub fn insert_byte(text: &mut Vec<u8>, view: &mut EditView, byte: u8, max: i32) {
+/// Inserts one byte at the caret, a selection deleted first. A text already
+/// `max` long takes nothing and `false` is returned: the original's key
+/// handler then returns before the anchor and the scroll.
+pub fn insert_byte(text: &mut Vec<u8>, view: &mut EditView, byte: u8, max: i32) -> bool {
     if selection(view).is_some() {
         delete_selection(text, view);
     }
     if max <= text.len() as i32 {
-        return;
+        return false;
     }
     let at = (view.caret as usize).min(text.len());
     text.insert(at, byte);
-    view.caret += 1;
+    view.caret = view.caret.wrapping_add(1);
     view.anchor = view.caret;
-    view.length = text.len().min(u8::MAX as usize) as u8;
+    true
 }
 
 /// One key's handler: a byte to type (`insert` set) or one of the edit
-/// keys; with Ctrl, C, X and V copy, cut and paste. `shift` keeps the
-/// anchor, `max` limits the text's length and `width` is the field's.
+/// keys; with Ctrl (and no byte to type), V pastes `clipboard` (`None` when
+/// the system clipboard has no text), C copies and X cuts. A key below
+/// Backspace, an unknown key and a byte refused at `max` change nothing
+/// and do not scroll. Unless `shift` is held the anchor follows the caret;
+/// `width` is the field's, for [`scroll_view`].
 #[allow(clippy::too_many_arguments)]
 pub fn apply_key(
     font: &GuiFont,
@@ -245,12 +254,13 @@ pub fn apply_key(
     shift: bool,
     max: i32,
     width: i32,
-    clipboard: &[u8],
+    clipboard: Option<&[u8]>,
 ) -> EditAction {
-    let mut action = EditAction::None;
     if !ctrl || insert {
         if insert {
-            insert_byte(text, view, byte, max);
+            if !insert_byte(text, view, byte, max) {
+                return EditAction::None;
+            }
         } else {
             match byte {
                 key::BACKSPACE => backspace(text, view),
@@ -262,7 +272,7 @@ pub fn apply_key(
                     }
                 }
                 key::RIGHT => {
-                    if (view.caret as usize) < text.len().min(u8::MAX as usize) {
+                    if (view.caret as usize) < text.len() {
                         view.caret += 1;
                     }
                 }
@@ -273,29 +283,29 @@ pub fn apply_key(
         if !shift {
             view.anchor = view.caret;
         }
-        view.length = text.len().min(u8::MAX as usize) as u8;
         scroll_view(font, text, view, width);
-    } else {
-        match byte {
-            key::PASTE => {
-                if paste(text, view, clipboard, max) {
-                    scroll_view(font, text, view, width);
-                    action = EditAction::Paste;
-                }
-            }
-            key::COPY => {
-                action = EditAction::Copy(selected_text(text, view));
-            }
-            key::CUT => {
-                action = EditAction::Cut(selected_text(text, view));
-                delete_selection(text, view);
-                view.length = text.len().min(u8::MAX as usize) as u8;
-                scroll_view(font, text, view, width);
-            }
-            _ => {}
-        }
+        return EditAction::None;
     }
-    action
+    match byte {
+        key::PASTE => {
+            let pasted = paste(text, view, clipboard, max);
+            scroll_view(font, text, view, width);
+            if pasted {
+                EditAction::Paste
+            } else {
+                EditAction::None
+            }
+        }
+        key::COPY => EditAction::Copy(selected_text(text, view)),
+        key::CUT => {
+            let cut = selected_text(text, view);
+            delete_selection(text, view);
+            view.anchor = view.caret;
+            scroll_view(font, text, view, width);
+            EditAction::Cut(cut)
+        }
+        _ => EditAction::None,
+    }
 }
 
 /// What a key asked the caller to do with the clipboard.
@@ -307,18 +317,21 @@ pub enum EditAction {
     Paste,
 }
 
-/// The navigation-only handler: Home, End, Left, Right and Ctrl+C, with no
-/// edit. `shift` keeps the anchor.
+/// The navigation-only handler: Home, End, Left, Right and, with Ctrl (and
+/// no byte to type), C to copy; nothing is edited. A key at or below 0x22
+/// does nothing. `shift` keeps the anchor.
+#[allow(clippy::too_many_arguments)]
 pub fn navigate_key(
     font: &GuiFont,
     text: &[u8],
     view: &mut EditView,
     byte: u8,
+    insert: bool,
     ctrl: bool,
     shift: bool,
     width: i32,
 ) -> Option<Vec<u8>> {
-    if !ctrl {
+    if !ctrl || insert {
         if byte <= 0x22 {
             return None;
         }
@@ -331,7 +344,7 @@ pub fn navigate_key(
                 }
             }
             key::RIGHT => {
-                if (view.caret as usize) < text.len().min(u8::MAX as usize) {
+                if (view.caret as usize) < text.len() {
                     view.caret += 1;
                 }
             }
@@ -349,26 +362,27 @@ pub fn navigate_key(
     }
 }
 
-/// Pastes the clipboard's text at the caret, replacing a selection, and
-/// clamps the result to `max`. Returns whether the clipboard was read (the
-/// caller knows whether it was available).
-pub fn paste(text: &mut Vec<u8>, view: &mut EditView, clipboard: &[u8], max: i32) -> bool {
-    let old_len = text.len();
+/// Pastes the clipboard's text at the caret, replacing a selection: the
+/// caret moves past it (an 8-bit field, so it wraps), the text is cut to
+/// `max` with the caret clamped there, and the anchor joins the caret.
+/// `None` (no text on the clipboard) changes nothing and returns `false`.
+pub fn paste(text: &mut Vec<u8>, view: &mut EditView, clipboard: Option<&[u8]>, max: i32) -> bool {
+    let Some(clipboard) = clipboard else {
+        return false;
+    };
     if view.anchor != view.caret {
         delete_selection(text, view);
     }
-    let at = (view.caret as usize).min(text.len().min(old_len));
-    let added = clipboard.len();
+    let at = (view.caret as usize).min(text.len());
     text.splice(at..at, clipboard.iter().copied());
-    view.caret = view.caret.saturating_add(added.min(u8::MAX as usize) as u8);
-    if text.len() as i32 > max {
+    view.caret = view.caret.wrapping_add(clipboard.len() as u8);
+    if max < text.len() as i32 {
         text.truncate(max.max(0) as usize);
         if max < i32::from(view.caret) {
             view.caret = max.max(0) as u8;
         }
     }
     view.anchor = view.caret;
-    view.length = text.len().min(u8::MAX as usize) as u8;
     true
 }
 
@@ -387,19 +401,87 @@ pub fn caret_position(font: &GuiFont, text: &[u8], view: &EditView, x: i32, y: i
     (pen - (font.gap >> 1), y)
 }
 
-/// A selection rectangle and the glyph runs of an edit field's draw.
+/// The ink a run of an edit field's draw is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditInk {
+    /// The colour already bound (the plain draw sets none).
+    Current,
+    /// The skin's text ink of the field's state (the caller's index).
+    Text(u32),
+    /// The skin's selected-text ink.
+    Selected,
+    /// The skin's ink of the whole-run draw.
+    Whole,
+}
+
+/// One run of glyphs in one ink.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditRun {
+    pub ink: EditInk,
+    pub quads: Vec<TextQuad>,
+}
+
+/// An edit field's draw: its runs in draw order, the selection rectangle
+/// drawn between them, and the pen after the last run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EditDraw {
-    pub quads: Vec<TextQuad>,
-    /// (left, top, width, height) and the ink.
+    pub runs: Vec<EditRun>,
+    /// (left, top, width, height) and the ink: the skin's selection colour
+    /// with its alpha halved.
     pub selection: Option<([i32; 4], [u8; 4])>,
     pub end: i32,
 }
 
-/// Draws an edit field's visible run from `x`, baseline `y`, with the
-/// selection behind it. Selection ink is the caller's (the skin's at half
-/// alpha). `plain` draws the whole visible run without a selection (the
-/// original's single-run path).
+impl EditDraw {
+    /// Every glyph, in draw order.
+    pub fn quads(&self) -> impl Iterator<Item = &TextQuad> {
+        self.runs.iter().flat_map(|run| run.quads.iter())
+    }
+}
+
+/// The 1-based inclusive span `[first, last]` from `x`, baseline `y`, into
+/// a run; returns the pen at its end.
+fn span_run(
+    font: &GuiFont,
+    text: &[u8],
+    first: usize,
+    last: usize,
+    x: i32,
+    y: i32,
+    ink: EditInk,
+    out: &mut Vec<EditRun>,
+) -> i32 {
+    let mut pen = x;
+    let mut quads = Vec::new();
+    for index in first..=last {
+        let Some(&byte) = text.get(index.wrapping_sub(1)) else {
+            break;
+        };
+        quads.push(TextQuad {
+            byte,
+            rect: [pen, y - font.glyph.1, font.glyph.0, font.glyph.1],
+            cell: glyph_cell(byte),
+            pen,
+            advance: font.advance(byte),
+        });
+        pen += font.advance(byte);
+    }
+    out.push(EditRun { ink, quads });
+    pen
+}
+
+/// Draws an edit field's visible bytes from `x`, baseline `y`.
+///
+/// `whole` draws the window as a count of bytes from the first visible one
+/// in the whole-run ink. Otherwise, without `show_selection` or without a
+/// selection, the bytes from the first visible one to the window's end are
+/// drawn in the colour already bound. With a selection, the bytes before
+/// it (when it starts after the first visible byte) are drawn in the
+/// state's text ink (`state`), then a rectangle one line tall, ending one
+/// pixel below the baseline, runs under the selected bytes up to the
+/// window's end in `selection_colour` at half its alpha, the selected bytes
+/// are drawn in the selected ink, and the bytes after the selection (when
+/// it ends before the text does) to the window's end in the text ink.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_edit(
     font: &GuiFont,
@@ -407,70 +489,84 @@ pub fn draw_edit(
     view: &EditView,
     x: i32,
     y: i32,
-    plain: bool,
-    selection_ink: [u8; 4],
+    show_selection: bool,
+    whole: bool,
+    state: u32,
+    selection_colour: [u8; 4],
 ) -> EditDraw {
     let mut out = EditDraw {
         end: x,
         ..Default::default()
     };
-    let len = text.len().min(u8::MAX as usize);
-    let first = (view.first as usize).min(len);
-    if plain {
-        let last = (view.length as usize + first).min(len);
-        let mut pen = x;
-        let mut index = first;
-        while index < last {
-            let byte = text[index];
-            out.quads.push(TextQuad {
-                byte,
-                rect: [pen, y - font.glyph.1, font.glyph.0, font.glyph.1],
-                uv: glyph_uv(byte),
-                pen,
-                advance: font.advance(byte),
-            });
-            pen += font.advance(byte);
-            index += 1;
-        }
-        out.end = pen;
+    let len = text.len();
+    let start = view.first as usize + 1;
+    let end = view.length as usize;
+    if whole {
+        let last = (end + start - 1).min(len);
+        out.end = span_run(font, text, start, last, x, y, EditInk::Whole, &mut out.runs);
         return out;
     }
-    let span = selection(view).map(|(lo, hi)| (lo.min(len), hi.min(len)));
+    let Some((low, high)) = selection(view).filter(|_| show_selection) else {
+        out.end = span_run(
+            font,
+            text,
+            start,
+            end.min(len),
+            x,
+            y,
+            EditInk::Current,
+            &mut out.runs,
+        );
+        return out;
+    };
     let mut pen = x;
-    let mut index = first;
-    let mut selection_left = x;
-    while index < len && index < (view.length as usize + first) {
-        if let Some((lo, _)) = span
-            && index == lo
-        {
-            selection_left = if lo < first { x } else { pen };
-        }
-        let byte = text[index];
-        out.quads.push(TextQuad {
-            byte,
-            rect: [pen, y - font.glyph.1, font.glyph.0, font.glyph.1],
-            uv: glyph_uv(byte),
+    let mut first = start;
+    if (view.first as usize) < low {
+        pen = span_run(
+            font,
+            text,
+            start,
+            low.min(len),
+            x,
+            y,
+            EditInk::Text(state),
+            &mut out.runs,
+        );
+        first = low + 1;
+    }
+    let last = high.min(end);
+    let right = pen
+        + (first..=last)
+            .filter_map(|index| text.get(index.wrapping_sub(1)))
+            .map(|&byte| font.advance(byte))
+            .sum::<i32>();
+    let mut ink = selection_colour;
+    ink[3] >>= 1;
+    out.selection = Some((
+        [pen, y - font.line_height + 1, right - pen, font.line_height],
+        ink,
+    ));
+    let mut pen = span_run(
+        font,
+        text,
+        first,
+        last,
+        pen,
+        y,
+        EditInk::Selected,
+        &mut out.runs,
+    );
+    if high < len {
+        pen = span_run(
+            font,
+            text,
+            high + 1,
+            end.min(len),
             pen,
-            advance: font.advance(byte),
-        });
-        pen += font.advance(byte);
-        index += 1;
-        if let Some((_, hi)) = span
-            && index == hi
-        {
-            out.selection = Some((
-                [
-                    selection_left,
-                    y - font.glyph.1 + 1,
-                    pen - selection_left,
-                    font.line_height,
-                ],
-                selection_ink,
-            ));
-        }
-        if index >= (view.length as usize + first) {
-            break;
-        }
+            y,
+            EditInk::Text(state),
+            &mut out.runs,
+        );
     }
     out.end = pen;
     out
@@ -521,7 +617,8 @@ pub fn apply_markup_state(state: &mut MarkupState, tag: &[u8], main_slant: i32) 
             0.0
         };
     } else if tag.starts_with(b"algn") {
-        state.align = i32::from(tag.get(5).copied().unwrap_or(b'0')) - 0x30;
+        // A tag without a digit reads the terminating zero.
+        state.align = i32::from(tag.get(5).copied().unwrap_or(0)) - 0x30;
     }
 }
 
@@ -541,18 +638,15 @@ pub fn apply_markup_tag(
     } else if tag.starts_with(b"tcol") {
         state.depth = (state.depth + 1).min(state.inks.len() - 1);
         let digits = tag.get(5..).unwrap_or(&[]);
-        let mut ink = if tag.len() == 11 {
+        let ink = if tag.len() == 11 {
             let mut ink = parse_hex_colour(digits, 3);
             ink[3] = tag_alpha;
             ink
         } else {
-            let mut ink = parse_hex_colour(digits, 4);
-            ink[3] = round_i32(f64::from(f32::from(ink[3]))) as u8;
-            ink
+            // The original scales the tag's own alpha by one and rounds,
+            // so the alpha is kept as written, a zero alpha included.
+            parse_hex_colour(digits, 4)
         };
-        if tag.len() != 11 && ink[3] == 0 {
-            ink[3] = tag_alpha;
-        }
         state.inks[state.depth] = ink;
     } else if tag.starts_with(b"rimg") {
         let name = tag.get(5..).unwrap_or(&[]).to_vec();
@@ -562,12 +656,19 @@ pub fn apply_markup_tag(
 }
 
 /// The draw place of an inline picture: its texture size over six in
-/// units, centred in the field's width, its baseline at the pen.
+/// units, centred in the field's width (`x` is the field's left), hanging
+/// down from the line's `y`.
 pub fn picture_rect(text_width: i32, x: i32, y: i32, texture: (u16, u16), unit: i32) -> [i32; 4] {
     let w = i32::from(texture.0 / 6) * unit;
     let h = i32::from(texture.1 / 6) * unit;
     let left = x + (text_width - w) / 2;
     [left, y, w, h]
+}
+
+/// The line `y` after an inline picture: moved down by the picture's
+/// height less the draw's line step, so the next line starts below it.
+pub fn after_picture(y: i32, height: i32, line_step: i32) -> i32 {
+    y + height - line_step
 }
 
 /// The pictures an edit's text refers to, in cache order.
@@ -577,9 +678,16 @@ pub struct TextureCache {
 }
 
 impl TextureCache {
+    /// The key buffer's size.
+    const KEY: usize = 16;
+
     /// The handle for a name: the cached one, else a new one. The file name
-    /// is the name followed by `.rfi`.
+    /// is the name followed by `.rfi`. The original keys its cache by a
+    /// 16-byte buffer, so only a name's first 16 bytes tell names apart; it
+    /// also passes the buffer through a system string routine first, which
+    /// is not reproduced here.
     pub fn load(&mut self, name: &[u8]) -> usize {
+        let name = &name[..name.len().min(Self::KEY)];
         if let Some((_, handle)) = self.entries.iter().find(|(n, _)| n == name) {
             return *handle;
         }
@@ -644,6 +752,10 @@ mod tests {
         assert_eq!(caret_from_x(&f, text, &mut v, 5), 1);
         assert_eq!(caret_from_x(&f, text, &mut v, 25), 3);
         assert_eq!(caret_from_x(&f, text, &mut v, 1000), 6);
+        // The walk reaches the window's last byte: with an end of 2, a
+        // pointer at 12 is past half of a (5) but not of b (2 < 5).
+        let mut v = view(0, 0, 2, 0);
+        assert_eq!(caret_from_x(&f, text, &mut v, 12), 1);
     }
 
     #[test]
@@ -662,7 +774,7 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         apply_key(
             &f,
@@ -674,10 +786,10 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!((text.as_slice(), v.caret), (b"abcd".as_slice(), 2));
-        apply_key(&f, &mut text, &mut v, b'X', true, false, false, 9, 80, b"");
+        apply_key(&f, &mut text, &mut v, b'X', true, false, false, 9, 80, None);
         assert_eq!(text, b"abXcd");
         assert_eq!((v.caret, v.anchor), (3, 3));
         // Backspace removes the byte before the caret.
@@ -691,7 +803,7 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!(text, b"abcd");
         // Home and End.
@@ -705,7 +817,7 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!(v.caret, 0);
         apply_key(
@@ -718,7 +830,7 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!(v.caret, 4);
     }
@@ -738,7 +850,7 @@ mod tests {
             true,
             9,
             80,
-            b"",
+            None,
         );
         apply_key(
             &f,
@@ -750,7 +862,7 @@ mod tests {
             true,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!((v.anchor, v.caret), (0, 2));
         assert_eq!(selected_text(&text, &v), b"ab");
@@ -764,7 +876,7 @@ mod tests {
             false,
             9,
             80,
-            b"",
+            None,
         );
         assert_eq!(text, b"cdef");
         assert_eq!((v.anchor, v.caret, v.length), (0, 0, 4));
@@ -795,7 +907,7 @@ mod tests {
             false,
             20,
             80,
-            b"",
+            None,
         );
         assert_eq!(action, EditAction::Copy(b"he".to_vec()));
         let action = apply_key(
@@ -808,7 +920,7 @@ mod tests {
             false,
             20,
             80,
-            b"",
+            None,
         );
         assert_eq!(action, EditAction::Cut(b"he".to_vec()));
         assert_eq!(text, b"llo");
@@ -822,11 +934,40 @@ mod tests {
             false,
             20,
             80,
-            b"he",
+            Some(b"he".as_slice()),
         );
         assert_eq!(action, EditAction::Paste);
         assert_eq!(text, b"hello");
         assert_eq!((v.anchor, v.caret), (2, 2));
+        // With nothing selected, a copy takes the whole text.
+        let action = apply_key(
+            &f,
+            &mut text,
+            &mut v,
+            key::COPY,
+            false,
+            true,
+            false,
+            20,
+            80,
+            None,
+        );
+        assert_eq!(action, EditAction::Copy(b"hello".to_vec()));
+        // An empty clipboard pastes nothing; a paste past the limit is cut
+        // to it, the caret clamped there.
+        assert!(!paste(&mut text, &mut v, None, 20));
+        assert!(paste(&mut text, &mut v, Some(b"xyz".as_slice()), 6));
+        assert_eq!(
+            (text.as_slice(), v.caret, v.anchor),
+            (b"hexyzl".as_slice(), 5, 5)
+        );
+        // A byte refused at the limit leaves the window unscrolled.
+        let mut v = view(6, 6, 1, 3);
+        assert_eq!(
+            apply_key(&f, &mut text, &mut v, b'q', true, false, false, 6, 80, None),
+            EditAction::None
+        );
+        assert_eq!((v.length, v.first), (1, 3));
     }
 
     #[test]
@@ -835,17 +976,17 @@ mod tests {
         let text = b"abc".to_vec();
         let mut v = view(0, 1, 3, 0);
         assert_eq!(
-            navigate_key(&f, &text, &mut v, key::RIGHT, false, false, 80),
+            navigate_key(&f, &text, &mut v, key::RIGHT, false, false, false, 80),
             None
         );
         assert_eq!(v.caret, 2);
         v.anchor = 0;
         assert_eq!(
-            navigate_key(&f, &text, &mut v, key::COPY, true, false, 80),
+            navigate_key(&f, &text, &mut v, key::COPY, false, true, false, 80),
             Some(vec![b'a', b'b'])
         );
         assert_eq!(
-            navigate_key(&f, &text, &mut v, 0x22, false, false, 80),
+            navigate_key(&f, &text, &mut v, 0x22, false, false, false, 80),
             None
         );
     }
@@ -886,14 +1027,33 @@ mod tests {
         let f = tens();
         let text = b"abcd";
         let v = view(3, 1, 4, 0);
-        let d = draw_edit(&f, text, &v, 0, 20, false, [1, 2, 3, 100]);
+        let d = draw_edit(&f, text, &v, 0, 20, true, false, 2, [1, 2, 3, 100]);
+        // One line tall, ending a pixel below the baseline, at half alpha.
         let sel = d.selection.unwrap();
         assert_eq!(sel.0, [10, 20 - 16 + 1, 20, 16]);
-        assert_eq!(sel.1, [1, 2, 3, 100]);
-        // The plain path draws the visible run without a selection.
-        let d = draw_edit(&f, text, &v, 0, 20, true, [1, 2, 3, 100]);
+        assert_eq!(sel.1, [1, 2, 3, 50]);
+        let inks: Vec<EditInk> = d.runs.iter().map(|run| run.ink).collect();
+        assert_eq!(
+            inks,
+            [EditInk::Text(2), EditInk::Selected, EditInk::Text(2)]
+        );
+        let bytes: Vec<u8> = d.quads().map(|q| q.byte).collect();
+        assert_eq!(bytes, b"abcd");
+        assert_eq!(d.end, 40);
+        // Without the selection shown, the window is one run in the bound
+        // colour.
+        let d = draw_edit(&f, text, &v, 0, 20, false, false, 2, [1, 2, 3, 100]);
         assert!(d.selection.is_none());
-        assert_eq!(d.quads.len(), 4);
+        assert_eq!(d.runs.len(), 1);
+        assert_eq!(d.runs[0].ink, EditInk::Current);
+        assert_eq!(d.quads().count(), 4);
+        // The whole-run draw reads the window's end as a count from the
+        // first visible byte: two bytes from b.
+        let v = view(0, 0, 2, 1);
+        let d = draw_edit(&f, text, &v, 0, 20, true, true, 2, [1, 2, 3, 100]);
+        let bytes: Vec<u8> = d.quads().map(|q| q.byte).collect();
+        assert_eq!(bytes, b"bc");
+        assert_eq!(d.runs[0].ink, EditInk::Whole);
     }
 
     #[test]
@@ -905,6 +1065,10 @@ mod tests {
         assert_eq!(state.ink(), [0, 255, 0, 128]);
         apply_markup_tag(&mut state, b"/tcol", 180);
         assert_eq!(state.ink(), [255, 0, 0, 180]);
+        // A written zero alpha is kept.
+        apply_markup_tag(&mut state, b"tcol=00ff0000", 180);
+        assert_eq!(state.ink(), [0, 255, 0, 0]);
+        apply_markup_tag(&mut state, b"/tcol", 180);
         apply_markup_state(&mut state, b"scrp=i", 3);
         assert_eq!(state.slant, 3.0);
         apply_markup_state(&mut state, b"scrp=x", 3);
@@ -914,6 +1078,7 @@ mod tests {
         let pic = apply_markup_tag(&mut state, b"rimg=MAP", 180).unwrap();
         assert_eq!(pic.name, b"MAP".to_vec());
         assert_eq!(picture_rect(100, 10, 20, (60, 120), 5), [35, 20, 50, 100]);
+        assert_eq!(after_picture(20, 100, 16), 104);
     }
 
     #[test]
@@ -924,5 +1089,8 @@ mod tests {
         assert_eq!(cache.load(b"ICON"), 2);
         assert_eq!(cache.len(), 2);
         assert_eq!(TextureCache::file_name(b"MAP"), b"MAP.rfi".to_vec());
+        // Only the first 16 bytes key the cache.
+        assert_eq!(cache.load(b"abcdefghijklmnopONE"), 3);
+        assert_eq!(cache.load(b"abcdefghijklmnopTWO"), 3);
     }
 }
