@@ -16,6 +16,11 @@ pub const STORED: u32 = 0x1000_0000;
 pub const REROLLED: u32 = 0x2000_0000;
 /// Both marks together: a complete stored choice record.
 pub const STORED_AND_REROLLED: u32 = STORED | REROLLED;
+/// The metal colour an item palette holds unless its roll picks one (the
+/// painted-steel colour class takes the palette's). A factory built without
+/// a known palette uses it; the original reads whatever palette the item
+/// randomiser rolled last ([guess] that it left this default).
+pub const DEFAULT_METAL: u8 = 3;
 
 /// A material area (`Assembly`, `Grip`, `Blade`, …) and its candidates.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,7 +71,8 @@ pub struct Part {
     pub position: [f32; 3],
     pub rotation: [f32; 3],
     pub scale: [f32; 3],
-    /// Scale and offset of the component's texture atlas rectangle.
+    /// The part's region in the factory's texture atlas: offset (x, y), then
+    /// scale (x, y), in atlas fractions.
     pub atlas: [f32; 4],
     pub texture_parameter: f32,
     pub deforms: [Deform; 3],
@@ -241,12 +247,9 @@ impl Factory {
 
     /// The tags each part may not take because an earlier part already
     /// chose them: for every tag, the first part offering it owns it, and
-    /// later parts are constrained by it.
-    ///
-    /// The original fills the owner table from 0xFF for all but the last
-    /// tag (an off-by-one in its fill loop), so the last tag's owner is
-    /// whatever the stack held. We leave every tag unowned until a variant
-    /// offers it, and the last tag therefore never constrains a later part.
+    /// later parts are constrained by it. Every tag starts unowned (the
+    /// original fills its whole owner table with 0xFF); a variant's tag byte
+    /// holds eight tags, so later ones never constrain.
     pub fn tag_constraints(&self) -> Vec<u8> {
         let tags = self.tags.len().min(8);
         let mut owner = vec![0xFFu8; tags];
@@ -283,6 +286,11 @@ impl Lcg {
         Self(seed)
     }
 
+    /// The current state, as the next draw continues from it.
+    pub fn state(&self) -> u32 {
+        self.0
+    }
+
     fn step(&mut self) -> u32 {
         self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
         self.0
@@ -302,70 +310,61 @@ fn round(x: f32) -> i32 {
     x.round_ties_even() as i32
 }
 
-/// A colour roll's palette index. `material` selects the family's rule,
-/// `grade` is the quality byte ×4 rounded (the shade band), and `dye` is the
-/// item randomiser's dye colour (the global the steel-painted class reads).
+/// The colour a material area rolls when its candidate does not fix one:
+/// the rule of the material's colour class, as the item randomiser's colour
+/// roll gives it in its first mode. `grade` is the quality ×4 rounded (the
+/// shade band) and `metal` the item palette's metal colour, which the
+/// painted-steel class takes (3 after a palette roll).
 ///
-/// Classes 16 and 17 (gemstone and resin) fall through the original's
-/// switch and return an uninitialised register; 0 is used here.
-pub fn random_colour(material: u8, kind: u8, grade: u8, dye: u8, rng: &mut Lcg) -> u8 {
+/// Classes 16 and 17 (gemstone and resin) have no rule and leave the
+/// colour unset (`None`; the original keeps whatever its register held).
+pub fn random_colour(material: u8, grade: u8, metal: u8, rng: &mut Lcg) -> Option<u8> {
     let class = COLOUR_CLASS.get(material as usize).copied().unwrap_or(0);
-    match class {
-        0 => match kind {
-            0 => {
-                let u = rng.step();
-                let r = rng.unit();
-                (((u >> 27) << 3) as u8)
-                    .wrapping_add(7)
-                    .wrapping_sub(round(r * r * 6.0) as u8)
+    let cloth = |rng: &mut Lcg| {
+        let u = rng.step();
+        let r = rng.unit();
+        (((u >> 27) << 3) as u8)
+            .wrapping_add(7)
+            .wrapping_sub(round(r * r * 6.0) as u8)
+    };
+    // A leather colour: one of seven families from 5, darkened by `scale·r²`.
+    let leather = |rng: &mut Lcg, scale: f32| {
+        let u = rng.step();
+        let r = rng.unit();
+        ((((u as u64 * 7) >> 32) as u8).wrapping_add(5) << 3)
+            .wrapping_add(7)
+            .wrapping_sub(round(r * r * scale) as u8)
+    };
+    Some(match class {
+        0 => cloth(rng),
+        1 => {
+            // The grade is a byte: grade 0 gives −0.25.
+            let threshold = (i64::from(grade) - 1) as f32 * 0.25;
+            if rng.unit() <= threshold {
+                cloth(rng)
+            } else {
+                leather(rng, 4.0)
             }
-            // The item randomiser's two dye colours; not reached from a
-            // factory roll.
-            _ => dye,
-        },
-        1 => match kind {
-            0 => {
-                let threshold = (grade as f32 - 1.0) * 0.25;
-                let r = rng.unit();
-                if threshold >= r {
-                    let u = rng.step();
-                    let r = rng.unit();
-                    (((u >> 27) << 3) as u8)
-                        .wrapping_add(7)
-                        .wrapping_sub(round(r * r * 6.0) as u8)
-                } else {
-                    let u = rng.step();
-                    let r = rng.unit();
-                    ((((u as u64 * 7) >> 32) as u8).wrapping_add(5) << 3)
-                        .wrapping_add(7)
-                        .wrapping_sub(round(r * r * 4.0) as u8)
-                }
-            }
-            // Two palette tables built by the item randomiser; not reached
-            // from a factory roll.
-            _ => 0,
-        },
+        }
         4 => 3,
-        5 => dye,
-        6 | 9 => {
-            const COLOURS: [u8; 6] = [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C];
-            COLOURS[rng.below(6) as usize]
-        }
-        7 => {
-            let u = rng.step();
-            let r = rng.unit();
-            ((((u as u64 * 7) >> 32) as u8).wrapping_add(5) << 3)
-                .wrapping_add(7)
-                .wrapping_sub(round(r * r * 7.0) as u8)
-        }
+        5 => metal,
+        6 => [0x4B, 0x53, 0x3B][rng.below(3) as usize],
+        7 => leather(rng, 7.0),
         8 => 4,
-        18 => {
-            let u1 = rng.step();
-            let u2 = rng.step();
-            (((u1 >> 27) << 3) as u8).wrapping_add((u2 >> 29) as u8)
+        9 => [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C][rng.below(6) as usize],
+        0x12 => {
+            let family = rng.below(32) as u8;
+            let shade = rng.below(8) as u8;
+            family.wrapping_shl(3).wrapping_add(shade)
         }
-        _ => 0,
-    }
+        _ => return None,
+    })
+}
+
+/// The quality byte as the factory holds it: `q × 1/255` in double, stored
+/// as a float.
+fn quality_fraction(quality: u8) -> f32 {
+    (f64::from(quality) * (1.0 / 255.0)) as f32
 }
 
 /// A material given to an area.
@@ -424,14 +423,27 @@ pub struct Generated {
 }
 
 /// What a factory needs from an item to build its weapon.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct WeaponSpec {
     pub flags: u32,
     pub seeds: [u32; 2],
     pub quality: u8,
-    /// The item randomiser's dye colour.
-    pub dye: u8,
+    /// The item palette's metal colour (the painted-steel colour class
+    /// reads it).
+    pub metal: u8,
     pub choices: Option<Choices>,
+}
+
+impl Default for WeaponSpec {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            seeds: [0; 2],
+            quality: 0,
+            metal: DEFAULT_METAL,
+            choices: None,
+        }
+    }
 }
 
 /// A built weapon and the choices the item should store afterwards.
@@ -448,10 +460,10 @@ pub struct Built {
 impl Factory {
     /// Generates a weapon from its seeds and quality byte in the original's
     /// full random path (both seed streams, choice roll, area materials).
-    pub fn roll(&self, seed_a: u32, seed_b: u32, quality: u8, dye: u8) -> Generated {
+    pub fn roll(&self, seed_a: u32, seed_b: u32, quality: u8, metal: u8) -> Generated {
         let mut a = Lcg::new(seed_a);
         let mut b = Lcg::new(seed_b);
-        let q = quality as f32 * 0.003_921_569;
+        let q = quality_fraction(quality);
         let n = self.parts.len();
         let twist: Vec<f32> = (0..n)
             .map(|_| (b.unit() * 2.0 - 1.0) * std::f32::consts::TAU)
@@ -481,7 +493,7 @@ impl Factory {
         }
         let mut materials = Vec::with_capacity(self.areas.len());
         for area in &self.areas {
-            materials.push(area_material(area, q, dye, &mut a));
+            materials.push(area_material(area, q, metal, &mut a));
         }
         Generated {
             selection,
@@ -500,7 +512,7 @@ impl Factory {
         seed_a: u32,
         seed_b: u32,
         _quality: u8,
-        _dye: u8,
+        _metal: u8,
     ) -> Generated {
         let mut a = Lcg::new(seed_a);
         let mut b = Lcg::new(seed_b);
@@ -550,7 +562,7 @@ impl Factory {
         choices: &Choices,
         seed_a: u32,
         _quality: u8,
-        _dye: u8,
+        _metal: u8,
     ) -> Generated {
         let mut a = Lcg::new(seed_a);
         let n = self.parts.len();
@@ -634,9 +646,9 @@ impl Factory {
     /// choice roll from seed A (with three spare draws per present part so
     /// the area colours land where a full roll would), then the first
     /// candidate of the first three areas with a random colour.
-    pub fn initial_choices(&self, seed_a: u32, quality: u8, dye: u8) -> Choices {
+    pub fn initial_choices(&self, seed_a: u32, quality: u8, metal: u8) -> Choices {
         let mut a = Lcg::new(seed_a);
-        let q = quality as f32 * 0.003_921_569;
+        let q = quality_fraction(quality);
         let grade = (round(q * 4.0) & 0xFF) as u8;
         let constraints = self.tag_constraints();
         let mut selection = vec![0u8; self.parts.len()];
@@ -659,7 +671,7 @@ impl Factory {
                 AreaChoice {
                     material,
                     finish: crate::procedural::default_finish(material),
-                    colour: random_colour(material, 0, grade, dye, &mut a),
+                    colour: random_colour(material, grade, metal, &mut a).unwrap_or(0),
                     mode: 5,
                 }
             })
@@ -677,17 +689,19 @@ impl Factory {
         if flags & STORED == 0 && seeds[0] != 0 && seeds[1] == 0 {
             seeds[1] = seeds[0];
             flags |= STORED_AND_REROLLED;
-            choices = Some(self.initial_choices(seeds[0], spec.quality, spec.dye));
+            choices = Some(self.initial_choices(seeds[0], spec.quality, spec.metal));
         }
         let empty = Choices::default();
         let stored = choices.as_ref().unwrap_or(&empty);
         let generated = if flags & REROLLED != 0 {
-            self.replay_rerolled(stored, seeds[0], spec.quality, spec.dye)
+            self.replay_rerolled(stored, seeds[0], spec.quality, spec.metal)
         } else if flags & STORED != 0 {
-            self.replay(stored, seeds[0], seeds[1], spec.quality, spec.dye)
+            self.replay(stored, seeds[0], seeds[1], spec.quality, spec.metal)
         } else {
-            let g = self.roll(seeds[0], seeds[1], spec.quality, spec.dye);
+            let g = self.roll(seeds[0], seeds[1], spec.quality, spec.metal);
             if seeds[0] != 0 {
+                // Storing marks the section's choices as stored.
+                flags |= STORED;
                 choices = Some(self.store(&g));
             }
             g
@@ -746,15 +760,16 @@ fn roll_pick(
 /// The presence roll of a part.
 fn roll_presence(part: &Part, i: usize, excluded: u32, rng: &mut Lcg) -> bool {
     let roll = rng.unit();
+    // The exclusion bit is the part index modulo 32 (a 32-bit shift).
     !part.variants.is_empty()
-        && (i >= 32 || excluded & (1 << i) == 0)
+        && excluded & (1 << (i & 31)) == 0
         && (part.chance > 99 || roll * 100.0 <= part.chance as f32)
 }
 
 /// The material an area rolls: candidate weights from the quality's
 /// distance to the candidate's level, a finish nibble pair, a colour by the
 /// candidate's material class, and an emblem layer for patterned candidates.
-fn area_material(area: &Area, q: f32, dye: u8, rng: &mut Lcg) -> AreaMaterial {
+fn area_material(area: &Area, q: f32, metal: u8, rng: &mut Lcg) -> AreaMaterial {
     let weights: Vec<i32> = area
         .candidates
         .iter()
@@ -788,7 +803,7 @@ fn area_material(area: &Area, q: f32, dye: u8, rng: &mut Lcg) -> AreaMaterial {
     let colour = if c.mode == 5 {
         c.colour
     } else {
-        random_colour(c.material, 0, grade, dye, rng)
+        random_colour(c.material, grade, metal, rng).unwrap_or(0)
     };
     let emblem = (c.mode & 0x40 != 0).then(|| {
         // Three draws: the emblem id, the new family, the new shade.
@@ -946,7 +961,7 @@ fn taper_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
     }
 }
 
-/// `sign(x)`: ±1, or 0 for zero (the engine's tiny guard helper).
+/// `sign(x)`: ±1 by the sign bit, or 0 for zero (either sign).
 fn sign_or_zero(x: f32) -> f32 {
     if x == 0.0 {
         0.0
@@ -955,6 +970,55 @@ fn sign_or_zero(x: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+/// The bend's smallest pivot and radius before it treats them as zero.
+const BEND_EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
+
+/// The engine's packed sine and cosine (a Cephes-style polynomial pair):
+/// `j = (round(|x|·4/π) + 1) & !1`, one reduction by `j·π/4`, the cosine
+/// polynomial where `j & 2` is set, else the sine one, and signs from `j`.
+/// Every step is single precision, as the original's packed instructions.
+pub fn sin_cos(x: f32) -> (f32, f32) {
+    const FOUR_OVER_PI: f32 = f32::from_bits(0x3FA2_F983);
+    const QUARTER_PI: f32 = f32::from_bits(0x3F49_0FDB);
+    const SIN: [f32; 3] = [
+        f32::from_bits(0xB94C_A1F9),
+        f32::from_bits(0x3C08_839E),
+        f32::from_bits(0xBE2A_AAA3),
+    ];
+    const COS: [f32; 3] = [
+        f32::from_bits(0x37CC_F5CE),
+        f32::from_bits(0xBAB6_061A),
+        f32::from_bits(0x3D2A_AAA5),
+    ];
+    let sign = x.to_bits() & 0x8000_0000;
+    let a = f32::from_bits(x.to_bits() & 0x7FFF_FFFF);
+    // The packed conversion rounds to nearest even; out of range gives
+    // the integer indefinite value.
+    let scaled = a * FOUR_OVER_PI;
+    let j = if scaled.is_nan() || scaled.abs() >= 2_147_483_648.0 {
+        i32::MIN
+    } else {
+        scaled.round_ties_even() as i32
+    };
+    let j = j.wrapping_add(1) & !1;
+    let y = a - j as f32 * QUARTER_PI;
+    let z = y * y;
+    let cos_poly = ((((COS[0] * z + COS[1]) * z + COS[2]) * z) * z - 0.5 * z) + 1.0;
+    let sin_poly = (((SIN[0] * z + SIN[1]) * z + SIN[2]) * z) * y + y;
+    let use_sin = j & 2 == 0;
+    let (s, c) = if use_sin {
+        (sin_poly, cos_poly)
+    } else {
+        (cos_poly, sin_poly)
+    };
+    let sin_sign = sign ^ (((j & 4) as u32) << 29);
+    let cos_sign = ((!(j.wrapping_sub(2)) & 4) as u32) << 29;
+    (
+        f32::from_bits(s.to_bits() ^ sin_sign),
+        f32::from_bits(c.to_bits() ^ cos_sign),
+    )
 }
 
 fn bend_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
@@ -971,38 +1035,42 @@ fn bend_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
         2 => (1, 2, 0),
         3 => (1, 0, 2),
         4 => (0, 1, 2),
-        5 => (0, 2, 1),
         _ => (0, 2, 1),
     };
     if d.axis <= 3 {
-        let k = if d.pivot.abs() >= 1.0 {
+        let k = if 1.0 <= d.pivot.abs() {
             d.pivot
         } else {
             sign_or_zero(d.pivot)
         };
-        let k = if k.abs() <= 1.192_092_9e-7 {
+        let k = if k.abs() <= BEND_EPSILON {
             1.0
         } else {
             1.2 / k
         };
         for v in p.iter_mut() {
-            if v[b].abs() < d.range {
+            // Points nearer the axis than the range keep their place (a NaN
+            // keeps it too).
+            let reaches = d.range <= v[b].abs();
+            if !reaches {
                 continue;
             }
             let delta = d.pivot - v[a];
-            let (sin, cos) = (v[b] * value * k).sin_cos();
+            let along = v[b] - 0.0;
+            let (sin, cos) = sin_cos(along * value * k);
             v[a] = -cos * delta + d.pivot;
-            v[b] = (1.0 - value) * v[b] + delta * sin;
+            v[b] = (1.0 - value) * along + delta * sin + 0.0;
         }
-    } else if value >= 0.01 {
+    } else if 0.01 <= value {
         let k = 40.0 / value;
         for v in p.iter_mut() {
-            let r2 = v[a] * v[a] + v[b] * v[b];
-            if r2 < 1.192_092_9e-7 {
+            let r2 = v[b] * v[b] + v[a] * v[a];
+            let off_axis = BEND_EPSILON <= r2;
+            if !off_axis {
                 continue;
             }
             let r = r2.sqrt();
-            let (sin, cos) = (r / k).sin_cos();
+            let (sin, cos) = sin_cos(r / k);
             let z = v[c] + k;
             let s = (z * sin) / r;
             v[a] *= s;
@@ -1039,25 +1107,28 @@ fn radial_positions(p: &mut [[f32; 3]], d: &Deform, value: f32) {
                 v[2] *= s;
             }
         }
-    } else if d.flags & 0x10000 == 0 {
+    } else {
+        // Axes 1–4 move one coordinate; the original indexes it as a fourth
+        // of the point's three, so axis 4 moves the next point's X (and the
+        // last point's would-be fourth coordinate is skipped).
         let a = axis as usize;
-        for v in p.iter_mut() {
-            let x = v[a];
-            if x <= d.range {
+        let one_sided = d.flags & 0x10000 != 0;
+        let flat = p.as_flattened_mut();
+        let mut i = a;
+        while i < flat.len() {
+            let x = flat[i];
+            if one_sided {
+                if d.range <= x && x != d.range {
+                    flat[i] = (x - d.range) * f + d.range;
+                }
+            } else if x <= d.range {
                 if x <= -d.range && -d.range != x {
-                    v[a] = (x + d.range) * f - d.range;
+                    flat[i] = (x + d.range) * f - d.range;
                 }
             } else {
-                v[a] = (x - d.range) * f + d.range;
+                flat[i] = (x - d.range) * f + d.range;
             }
-        }
-    } else {
-        let a = axis as usize;
-        for v in p.iter_mut() {
-            let x = v[a];
-            if d.range <= x && x != d.range {
-                v[a] = (x - d.range) * f + d.range;
-            }
+            i += 3;
         }
     }
 }
@@ -1128,10 +1199,12 @@ pub struct ComponentBox {
 
 impl Factory {
     /// Where each chosen component goes: attached to its nearest chosen
-    /// ancestor, moved by the ancestor's scale, band and radial deforms,
-    /// twisted with it, then scaled by its own scale and moved to the
-    /// ancestor's position. `boxes` gives each part's component box after
-    /// its own deforms, in the part's order.
+    /// ancestor at the attach mode's point, moved by the ancestor's scale
+    /// and band deforms, scaled by the ancestor's recipe scale and moved to
+    /// the ancestor's position; a part without one stays at its recipe
+    /// position. Twists add up the chain. `boxes` gives each part's
+    /// component box as loaded (the original reads the component node's
+    /// stored box, before any deform), in the part's order.
     pub fn place(&self, g: &Generated, boxes: &[ComponentBox]) -> Vec<Placed> {
         let n = self.parts.len();
         let mut positions: Vec<Option<[f32; 3]>> = vec![None; n];
@@ -1174,7 +1247,8 @@ impl Factory {
                                 .checked_sub(1)
                                 .and_then(|k| par.variants.get(k))
                         }) {
-                            p[1] += pv.child_y_offset as f32 * 0.1;
+                            // Millimetres to centimetres, in double.
+                            p[1] += (f64::from(pv.child_y_offset) * 0.1) as f32;
                         }
                     }
                     1..=3 => {
@@ -1199,12 +1273,10 @@ impl Factory {
                         scale_axis(&mut s, deform_factor(value, d.amount), d.axis);
                     }
                 }
-                p = std::array::from_fn(|k| p[k] * part.scale[k]);
+                p = std::array::from_fn(|k| p[k] * par.scale[k]);
                 if let Some(base) = positions[pi] {
                     p = std::array::from_fn(|k| p[k] + base[k]);
                 }
-            } else {
-                p = std::array::from_fn(|k| p[k] * part.scale[k]);
             }
             positions[i] = Some(p);
             out.push(Placed {
@@ -1303,28 +1375,52 @@ mod tests {
 
     #[test]
     fn colour_rolls_are_pinned() {
-        // Material 1 is class 1: the first draw decides the band, the next
-        // two make the palette index.
+        // Material 1 is class 0: a cloth colour, any family.
         let mut r = Lcg::new(7);
-        let c = random_colour(1, 0, 4, 0, &mut r);
-        assert!(c < 26 * 8, "{c}");
+        assert!(random_colour(1, 4, 3, &mut r).is_some());
         // Class 4 (materials 11–13) is always shade 3.
-        assert_eq!(random_colour(11, 0, 0, 0, &mut Lcg::new(1)), 3);
-        assert_eq!(random_colour(13, 0, 0, 0, &mut Lcg::new(1)), 3);
+        assert_eq!(random_colour(11, 0, 3, &mut Lcg::new(1)), Some(3));
+        assert_eq!(random_colour(13, 0, 3, &mut Lcg::new(1)), Some(3));
         // Class 8 (material 19) is always 4.
-        assert_eq!(random_colour(19, 0, 0, 0, &mut Lcg::new(1)), 4);
-        // Class 5 (material 14) is the item's dye.
-        assert_eq!(random_colour(14, 0, 0, 0x42, &mut Lcg::new(1)), 0x42);
-        // Class 6 (material 15) takes one of six dark shades.
-        assert!(
-            [0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C].contains(&random_colour(
-                15,
-                0,
-                0,
-                0,
-                &mut Lcg::new(1)
-            ))
-        );
+        assert_eq!(random_colour(19, 0, 3, &mut Lcg::new(1)), Some(4));
+        // Class 5 (material 14) is the palette's metal colour.
+        assert_eq!(random_colour(14, 0, 0x42, &mut Lcg::new(1)), Some(0x42));
+        // Class 6 (material 15) takes one of three colours by one draw:
+        // seed 1 steps to 0x0808_8406, whose ×3 high word is 0.
+        assert_eq!(random_colour(15, 0, 3, &mut Lcg::new(1)), Some(0x4B));
+        // Class 9 (materials 20, 21) one of six: 0x0808_8406 × 6 >> 32 = 0.
+        assert_eq!(random_colour(20, 0, 3, &mut Lcg::new(1)), Some(0x5D));
+        // Gemstone and resin (classes 16, 17) have no rule.
+        assert_eq!(random_colour(23, 0, 3, &mut Lcg::new(1)), None);
+        // Class 1 (leather): grade 0 gives the threshold −0.25, so the
+        // leather branch: a family 5–11 at shade 7 less round(4r²).
+        let c = random_colour(7, 0, 3, &mut Lcg::new(9)).unwrap();
+        assert!((40..96).contains(&c), "{c}");
+    }
+
+    #[test]
+    fn engine_sine_and_cosine_follow_the_polynomials() {
+        for x in [0.0f32, 0.3, -0.7, 1.0, 2.5, -3.0, 6.0] {
+            let (s, c) = sin_cos(x);
+            assert!((s - x.sin()).abs() < 5e-6, "{x}");
+            assert!((c - x.cos()).abs() < 5e-6, "{x}");
+        }
+        // 0.45·4/π = 0.57 rounds (not truncates) to 1, so j = 2 and the
+        // reduced angle 0.45 − π/2 lies outside ±π/4: the cosine is the
+        // negated sine polynomial there, a few ulps off the exact 0x3F6683B4.
+        let (s, c) = sin_cos(0.45);
+        assert_eq!(c.to_bits(), 0x3F66_838E);
+        assert_eq!(s.to_bits(), 0x3EDE_B3D0);
+    }
+
+    #[test]
+    fn a_radial_deform_on_axis_four_stays_in_bounds() {
+        let d = deform(5, 4, 0, 1.0, 0.0, 0.5);
+        let mut p = vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        deform_positions(&mut p, &d, 1.0);
+        // The fourth coordinate of point 0 is point 1's X: (2 − 0.5)·2 + 0.5.
+        assert_eq!(p[0], [1.0, 0.0, 0.0]);
+        assert!((p[1][0] - 3.5).abs() < 1e-6);
     }
 
     #[test]
@@ -1443,7 +1539,7 @@ mod tests {
                 mode: 5,
             }],
         };
-        let g = f.replay(&choices, 0x1234, 0x5678, 128, 0);
+        let g = f.replay(&choices, 0x1234, 0x5678, 128, 3);
         assert_eq!(g.selection, vec![2]);
         assert_eq!(g.materials[0].material, 3);
         assert_eq!(g.materials[0].finish, 0x77);
@@ -1468,7 +1564,7 @@ mod tests {
         assert_eq!(choices.areas.len(), 1);
         // The same choices replay to the same selection, and the rerolled
         // path uses seed A for the twists.
-        let again = f.replay_rerolled(&choices, 7, 128, 0);
+        let again = f.replay_rerolled(&choices, 7, 128, 3);
         assert_eq!(again.selection, built.generated.selection);
         let mut a = Lcg::new(7);
         for _ in 0..3 {
@@ -1493,7 +1589,7 @@ mod tests {
             quality: 128,
             ..Default::default()
         });
-        assert_eq!(built.flags, 0);
+        assert_eq!(built.flags, STORED);
         let choices = built.choices.expect("stored choices");
         assert_eq!(choices.selection, built.generated.selection);
         assert_eq!(
@@ -1561,6 +1657,7 @@ mod tests {
             deform(0, 0, 0, 0.0, 0.0, 0.0),
             deform(0, 0, 0, 0.0, 0.0, 0.0),
         ];
+        f.parts[0].scale = [3.0, 3.0, 3.0];
         let mut child = f.parts[0].clone();
         child.name = "guard".into();
         child.position = [1.0, 2.0, 3.0];
@@ -1599,13 +1696,16 @@ mod tests {
             let f = two_part_factory(mode, deform(0, 0, 0, 0.0, 0.0, 0.0));
             let placed = f.place(&g, &boxes());
             let child = placed.iter().find(|p| p.part == 1).unwrap();
-            // (position + box coordinate) × own scale + parent position.
+            // (position + box coordinate) × the parent's scale + the
+            // parent's position (its own, unattached: the recipe's).
             assert!(
-                (child.position[0] - (1.0 + x) * 2.0).abs() < 1e-5,
+                (child.position[0] - (1.0 + x) * 3.0).abs() < 1e-5,
                 "mode {mode}"
             );
-            assert!((child.position[1] - 2.0 * 2.0).abs() < 1e-5);
+            assert!((child.position[1] - 2.0 * 3.0).abs() < 1e-5);
             assert_eq!(child.scale, [2.0, 2.0, 2.0]);
+            let parent = placed.iter().find(|p| p.part == 0).unwrap();
+            assert_eq!(parent.position, [0.0; 3]);
         }
     }
 
@@ -1624,8 +1724,8 @@ mod tests {
         };
         let placed = f.place(&g, &boxes());
         let child = placed.iter().find(|p| p.part == 1).unwrap();
-        // y = (2 - 5)·2 + 5 = -1, then ×2 + parent 0.
-        assert!((child.position[1] + 2.0).abs() < 1e-5);
+        // y = (2 - 5)·2 + 5 = -1, then × the parent's 3 + parent 0.
+        assert!((child.position[1] + 3.0).abs() < 1e-5);
     }
 
     #[test]
@@ -1633,9 +1733,9 @@ mod tests {
         let d = deform(4, 1, 0, 1.0, 0.0, 0.5);
         let mut p = vec![[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         deform_positions(&mut p, &d, 0.5);
-        // value = 0.5·1 = 0.5, k = 1.0/0.0 → 1 (zero pivot), angle = y·value.
+        // value = 0.5·1 = 0.5, k = 1 (zero pivot), angle = y·value.
         let angle: f32 = 1.0 * 0.5;
-        let (sin, cos) = angle.sin_cos();
+        let (sin, cos) = sin_cos(angle);
         assert!((p[1][0] - (-cos * 0.0)).abs() < 1e-5);
         assert!((p[1][1] - ((1.0 - 0.5) + 0.0 * sin)).abs() < 1e-5);
         assert!((p[0][0]).abs() < 1e-6 && (p[0][1]).abs() < 1e-6);
@@ -1661,8 +1761,8 @@ mod tests {
             }
             let f = Factory::parse(factories.get(name).unwrap()).unwrap();
             let n = f.parts.len();
-            let rolled = f.roll(w.seeds[0], w.seeds[1], w.quality, 0);
-            let initial = f.initial_choices(w.seeds[0], w.quality, 0);
+            let rolled = f.roll(w.seeds[0], w.seeds[1], w.quality, 3);
+            let initial = f.initial_choices(w.seeds[0], w.quality, 3);
             checked += 1;
             if rolled.selection[..n] == w.selection[..n]
                 || initial.selection[..n] == w.selection[..n]
@@ -1691,7 +1791,7 @@ mod tests {
             let f =
                 Factory::parse(pack.bytes(entry)).unwrap_or_else(|e| panic!("{}: {e}", entry.name));
             versions[f.version as usize] += 1;
-            let _ = f.roll(0x1234_5678, 0x9ABC_DEF0, 128, 0);
+            let _ = f.roll(0x1234_5678, 0x9ABC_DEF0, 128, 3);
             let _ = f.build(&WeaponSpec {
                 seeds: [0x1234_5678, 0x9ABC_DEF0],
                 quality: 200,

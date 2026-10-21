@@ -448,15 +448,15 @@ impl Weapon {
         }
     }
 
-    /// What a factory needs from this item to build its weapon. `dye` is
-    /// the item randomiser's dye colour (the steel-painted area class reads
-    /// it; 0 stands in when the item was not randomised).
-    pub fn spec(&self, dye: u8) -> crate::factory::WeaponSpec {
+    /// What a factory needs from this item to build its weapon. `metal` is
+    /// the item palette's metal colour, which the painted-steel area class
+    /// takes ([`crate::factory::DEFAULT_METAL`] when no palette is known).
+    pub fn spec(&self, metal: u8) -> crate::factory::WeaponSpec {
         crate::factory::WeaponSpec {
             flags: self.flags,
             seeds: self.seeds,
             quality: self.quality,
-            dye,
+            metal,
             choices: self.has_stored_choices().then(|| self.choices()),
         }
     }

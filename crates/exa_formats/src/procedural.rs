@@ -60,7 +60,8 @@ pub struct Material {
     pub specular: Vec<&'static str>,
     /// Normal-pass textures in sampler order.
     pub normal: Vec<&'static str>,
-    /// How strongly ageing and gloss apply (`MatCol.w`).
+    /// How strongly ageing and gloss apply (`MatCol.w`) on apparel; a
+    /// factory layer takes its finish level instead.
     pub wear: f32,
 }
 
@@ -193,7 +194,7 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
         Family::Steel,
         "mtlrusta03d",
         "mtlrusta03n",
-        1.0,
+        0.75,
         Passes {
             alternate_normal: true,
             ..default_passes()
@@ -315,13 +316,16 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
     };
     m[20] = copper(Family::CopperAlloy, "mtlrustc01d", "mtlrustc01d");
     m[21] = copper(Family::CopperSatin, "mtlrustc01d", "mtlrustc01d");
+    // The wear table halves satin copper, the grip leather and the three
+    // last materials, and takes three quarters for SteelGen.
+    m[21].wear = 0.5;
     m[22] = Material {
         family: Family::Leather,
         passes: Passes::default(),
         colour: vec!["gripltra02d", "leatherdmga02d", "drtapr01"],
         specular: vec!["gripltra02g", "leatherdmga02d", "drtapr01"],
         normal: vec!["gripltra02n", "leatherdmga02d", "leatherdmga02n"],
-        wear: 1.0,
+        wear: 0.5,
     };
     let gem = |family, passes| Material {
         family,
@@ -460,7 +464,7 @@ pub const RANDOM_SETS: [&[u8]; 16] = [
     &[1, 2, 3, 4, 7, 8, 9],
     &[1, 2, 3, 4],
     &[13, 20],
-    &[1, 2, 3, 4, 11, 13, 14],
+    &[1, 2, 3, 4, 17, 13, 20],
     &[5, 6],
     &[7],
     &[11],
@@ -502,6 +506,18 @@ mod tests {
     }
 
     #[test]
+    fn wear_weights_follow_the_original_table() {
+        let wear: Vec<f32> = (1..=25u8).map(|id| material(id).wear).collect();
+        let mut expected = vec![1.0f32; 25];
+        expected[3] = 0.8;
+        expected[11] = 0.75;
+        for w in &mut expected[20..] {
+            *w = 0.5;
+        }
+        assert_eq!(wear, expected);
+    }
+
+    #[test]
     fn invalid_ids_fall_back_to_cloth_basic() {
         assert_eq!(material(0).family, Family::Cloth);
         assert_eq!(material(0).colour, material(1).colour);
@@ -525,7 +541,7 @@ mod tests {
         assert_eq!(random_set(1), &[1, 2, 3, 4, 7, 8, 9]);
         assert_eq!(random_set(2), &[5, 6, 10]);
         assert_eq!(random_set(7), &[13, 20]);
-        assert_eq!(random_set(8), &[1, 2, 3, 4, 11, 13, 14]);
+        assert_eq!(random_set(8), &[1, 2, 3, 4, 17, 13, 20]);
         assert_eq!(random_set(13), &[13, 14, 15]);
         assert_eq!(random_set(15), &[23]);
         assert!(random_set(0).is_empty());

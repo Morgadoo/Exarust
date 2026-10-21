@@ -1151,7 +1151,7 @@ mod tests {
             let mut stats = w.stats;
             let lengths = if let Some(name) = item.model.strip_prefix('@') {
                 let f = crate::factory::Factory::parse(factories.get(name).unwrap()).unwrap();
-                let built = f.build(&w.spec(0));
+                let built = f.build(&w.spec(crate::factory::DEFAULT_METAL));
                 stats = crate::weapon_stats::factory_stats(&f, &built.generated, w.stats);
                 stats = crate::weapon_stats::condition(stats, w.quality, w.damage);
                 factory += 1;

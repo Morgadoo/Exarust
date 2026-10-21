@@ -21,10 +21,8 @@ pub const PRIMARY_FAMILIES: [u8; 7] = [0, 4, 8, 14, 19, 25, 28];
 pub const METAL_COLOURS: [u8; 8] = [7, 36, 141, 204, 229, 252, 92, 6];
 /// The colour class of each material 0–25: 0 cloth, 1 leather, 4 steel, 5
 /// painted steel, 6 copper, 7 wood, 8 iron, 9 grips, `0x10`–`0x12` gems,
-/// resin and painted planks.
-pub const MATERIAL_CLASS: [u8; 26] = [
-    0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 4, 4, 4, 5, 6, 4, 7, 7, 8, 9, 9, 1, 0x10, 0x11, 0x12,
-];
+/// resin and painted planks (the procedural material table's).
+pub use exa_formats::procedural::COLOUR_CLASS as MATERIAL_CLASS;
 /// Each material's wealth level and reach: a layer at level `l` weighs it
 /// `reach − |l − level|`.
 pub const MATERIAL_LEVEL: [(f32, f32); 26] = [
@@ -68,24 +66,9 @@ pub const ARMOUR_VARIANTS: [&[u8]; 7] = [
 /// The leathers and suedes add variant 4.
 pub const LEATHER_VARIANT: u8 = 4;
 
-/// The materials of a random set 1–15.
+/// The materials of a random set 1–15 (the procedural material table's).
 pub fn material_set(set: u8) -> &'static [u8] {
-    match set {
-        1 | 5 => &[1, 2, 3, 4, 7, 8, 9],
-        2 => &[5, 6, 10],
-        3 | 6 => &[1, 2, 3, 4],
-        4 => &[7, 8, 9],
-        7 => &[13, 20],
-        8 => &[1, 2, 3, 4, 17, 13, 20],
-        9 => &[5, 6],
-        10 => &[7],
-        11 => &[11],
-        12 => &[13, 14],
-        13 => &[13, 14, 15],
-        14 => &[20],
-        15 => &[23],
-        _ => &[],
-    }
+    exa_formats::procedural::random_set(set)
 }
 
 /// The weights of the sets that weigh by wealth level.
@@ -308,36 +291,23 @@ impl Palette {
             .copied()
             .unwrap_or(0);
         match (class, mode) {
-            (0, 0) => Some(cloth_colour(state)),
             (0, 1) => Some(if below(state, 3) == 2 {
                 self.secondary
             } else {
                 self.primary
             }),
-            (1, 0) => {
-                if rand(state) <= (i32::from(level) - 1) as f32 * 0.25 {
-                    Some(cloth_colour(state))
-                } else {
-                    Some(leather_colour(state))
-                }
-            }
             (1, 1) => Some(self.shades[below(state, 2) as usize].at(level)),
             (1, 2) => Some(self.shades[2].at(level)),
             (1, 4) => Some(leather_colour(state)),
-            (4, _) => Some(3),
-            (5, _) => Some(self.metal),
-            (6, _) => Some([0x4B, 0x53, 0x3B][below(state, 3) as usize]),
-            (7, 0) => {
-                let family = below(state, 7) as i64;
-                let r = rand(state);
-                Some(((family + 5) * 8 + 7 - nearest(r * r * 7.0)) as u8)
-            }
-            (8, _) => Some(4),
-            (9, _) => Some([0x5D, 0x4C, 0x35, 0x0D, 0x65, 0x6C][below(state, 6) as usize]),
-            (0x12, 0 | 0x40) => {
-                let family = below(state, 32) as u8;
-                let shade = below(state, 8) as u8;
-                Some(family.wrapping_shl(3).wrapping_add(shade))
+            // The first mode's rules and the classes that ignore the mode
+            // are the factory's colour roll (the gem class's `0x40` mode
+            // rolls as its first).
+            (0 | 1 | 7 | 0x12, 0) | (0x12, 0x40) | (4 | 5 | 6 | 8 | 9, _) => {
+                let mut rng = exa_formats::factory::Lcg::new(*state);
+                let colour =
+                    exa_formats::factory::random_colour(material, level, self.metal, &mut rng);
+                *state = rng.state();
+                colour
             }
             _ => None,
         }

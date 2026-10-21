@@ -5,7 +5,8 @@
 //! step. The linear ramp ([`linear`]) is the one the apparel painter uses; the
 //! lifted ramp ([`lifted`]) is the one the factory's material rolls use: it
 //! raises the value by 0.1 before squaring it. Both end in the same HSV to RGB
-//! conversion.
+//! conversion. The precision of each step (float or double) is the
+//! original's.
 
 /// A palette family: hue, saturation, base value and value step.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,50 +213,64 @@ pub const FAMILIES: [Family; 32] = [
     },
 ];
 
-/// HSV to RGB, hue in turns.
+/// HSV to RGB, hue in turns: the sector is `⌊6h⌋` (the engine's floor),
+/// a grey when the saturation is 0, and any sector outside 1–5 takes the
+/// first one's order.
 pub fn hsv(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
-    let h6 = hue.rem_euclid(1.0) * 6.0;
+    if saturation == 0.0 {
+        return [value; 3];
+    }
+    let h6 = hue * 6.0;
     let sector = h6.floor();
     let f = h6 - sector;
-    let (p, q, t) = (
-        value * (1.0 - saturation),
-        value * (1.0 - saturation * f),
-        value * (1.0 - saturation * (1.0 - f)),
-    );
+    let p = (1.0 - saturation) * value;
+    let q = (1.0 - saturation * f) * value;
+    let t = (1.0 - (1.0 - f) * saturation) * value;
     match sector as i32 {
-        0 => [value, t, p],
         1 => [q, value, p],
         2 => [p, value, t],
         3 => [p, q, value],
         4 => [t, p, value],
-        _ => [value, p, q],
+        5 => [value, p, q],
+        _ => [value, t, p],
     }
+}
+
+/// The saturation both ramps share: `(1 − (0.09k)²)·s`, then, below a value
+/// of 0.4, `(v + 0.6)²` times that, each in double precision and stored as
+/// a float.
+fn ramp_saturation(family: &Family, k: f32, value: f32) -> f32 {
+    let d = f64::from(k) * 0.09;
+    let mut saturation = ((1.0 - d * d) * f64::from(family.saturation)) as f32;
+    if f64::from(value) < 0.4 {
+        let lift = f64::from(value) + 0.6;
+        saturation = (lift * lift * f64::from(saturation)) as f32;
+    }
+    saturation
+}
+
+/// The step a shade darkens by: the family step times 0.13 in double,
+/// stored as a float.
+fn ramp_step(family: &Family) -> f32 {
+    (f64::from(family.step) * 0.13) as f32
 }
 
 /// The colour's value and saturation before HSV conversion, on the linear
-/// ramp (the apparel painter's).
+/// ramp (the apparel painter's): `k·step + base` in float, at most 1.
 fn linear_ramp(family: &Family, shade: f32) -> (f32, f32) {
     let k = 7.0 - shade;
-    let value = (k * family.step * 0.13 + family.base).min(1.0);
-    let mut saturation = (1.0 - (0.09 * k).powi(2)) * family.saturation;
-    if value < 0.4 {
-        saturation *= (value + 0.6).powi(2);
-    }
-    (value, saturation)
+    let value = (k * ramp_step(family) + family.base).min(1.0);
+    (value, ramp_saturation(family, k, value))
 }
 
 /// The colour's value and saturation before HSV conversion, on the lifted
-/// ramp (the factory's material rolls): `(value + 0.1)²`, clamped to 1.
+/// ramp (the factory's area colours): `(k·step + (base + 0.1))²` in double,
+/// at most 1.
 fn lifted_ramp(family: &Family, shade: f32) -> (f32, f32) {
     let k = 7.0 - shade;
-    let mut value = k * family.step * 0.13 + family.base + 0.1;
-    value *= value;
-    let value = value.min(1.0);
-    let mut saturation = (1.0 - (0.09 * k) * (0.09 * k)) * family.saturation;
-    if value < 0.4 {
-        saturation *= (value + 0.6) * (value + 0.6);
-    }
-    (value, saturation)
+    let raised = f64::from(k * ramp_step(family)) + (f64::from(family.base) + 0.1);
+    let value = ((raised * raised) as f32).min(1.0);
+    (value, ramp_saturation(family, k, value))
 }
 
 /// Palette colour `index` (family × 8 + shade, shade 0 lightest) on the
@@ -271,6 +286,12 @@ pub fn lifted(index: u8) -> [f32; 3] {
     let family = FAMILIES[(index >> 3) as usize];
     let (value, saturation) = lifted_ramp(&family, (index & 7) as f32);
     hsv(family.hue, saturation, value)
+}
+
+/// [`lifted`] as the factory stores an area's colour: each channel times
+/// 255, rounded to even and saturated to a byte.
+pub fn lifted_bytes(index: u8) -> [u8; 3] {
+    lifted(index).map(|c| crate::pixel::round_f32(c * 255.0).clamp(0, 255) as u8)
 }
 
 #[cfg(test)]
@@ -300,5 +321,13 @@ mod tests {
         let linear_dark = linear(15);
         assert!(lifted_dark.iter().sum::<f32>() < linear_dark.iter().sum::<f32>());
         assert!(lifted_dark.iter().all(|v| (0.0..=1.0).contains(v)));
+    }
+
+    #[test]
+    fn lifted_bytes_round_each_channel() {
+        // Family 0 shade 0: v = (7 + 0.1)² clamped to 1, a grey of 255; the
+        // darkest shade: v = 0.1² = 0.01, 2.55 rounds to 3.
+        assert_eq!(lifted_bytes(0), [255, 255, 255]);
+        assert_eq!(lifted_bytes(7), [3, 3, 3]);
     }
 }
