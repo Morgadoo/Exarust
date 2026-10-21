@@ -8,14 +8,19 @@ The save game (`session`, `slots`) writes `ExanimaNNN.rsg` or
 `ArenaNNN.rsg` packages in the original's container: `#playerdata` with
 the story or arena header, the journal chunk and an Exarust chunk holding
 the session (mode, level, journal, used topics, company, roster, focus,
-clock, seed, start background). Listing a folder keeps the first file per
-number, deletes the slots the mode refuses, orders the rest by the
-`Exanima.set` key and moves a loaded slot to the front; a new slot takes
-the lowest free number at the front; deleting removes both files. A
-checkpoint (`.rcp`) is written once per slot by copying the save, loading
-one copies it back, and a dead player's slot is dropped from the list
-when it has no checkpoint. The original's world databases, character
-placement, discovery and level sections are not written yet.
+clock, seed, start background); saving over a save of the same mode keeps
+its character placement, its other sections and the chunks Exarust does
+not produce. Listing a folder opens each file as the original does
+(resetting a bad header), lists a number once, deletes only story slots
+with an older signature, orders the rest by the `Exanima.set` key and
+moves a loaded slot to the front; a load opens the first file that exists;
+a new slot takes the lowest free number at the front; deleting removes
+both files. A checkpoint (`.rcp`) is written once per slot by copying the
+save, and a manual or transition save refreshes it; a death deletes the
+save and drops the slot unless a checkpoint exists, which the next load
+copies back. The original's world databases, character placement export,
+discovery and level sections are not written yet, so a save made from
+nothing is not loadable by the original.
 
 Story experience (`experience`): new item kinds, kills and explored map
 cells (the 5 × 5 cells around the player on a 600-unit grid, the position
