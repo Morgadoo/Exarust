@@ -303,8 +303,11 @@ impl Fill {
     /// in a random empty slot it fits.
     fn counts(&mut self, d: usize, state: &mut u32) {
         let draw = &mut self.draws[d];
-        let span = (i32::from(draw.table.max) - i32::from(draw.table.min) + 1) as u32;
-        let mut n = (below(state, span) as i32).wrapping_add(i32::from(draw.table.min));
+        // The span multiplies sign-extended, so a table whose maximum is
+        // below its minimum wraps as the original's 64-bit product does.
+        let span = i64::from(draw.table.max) - i64::from(draw.table.min) + 1;
+        let product = u64::from(step(state)).wrapping_mul(span as u64);
+        let mut n = ((product >> 32) as u32 as i32).wrapping_add(i32::from(draw.table.min));
         if draw.remaining < n {
             n = draw.remaining;
         }
@@ -560,6 +563,31 @@ mod tests {
         let mut state = 0x1234;
         again.run(&db, &mut state);
         assert_eq!(again.given(0), given);
+    }
+
+    #[test]
+    fn an_inverted_count_span_wraps() {
+        // Minimum 3, maximum 1: the span of −1 multiplies sign-extended, so
+        // the draw's high word is all ones and the table makes 3 − 1 = 2
+        // count draws.
+        let mut count = row(21, 5, 0);
+        count.flags = entry::COUNT_ONLY;
+        let tables = HashMap::from([(
+            100,
+            RandomTable {
+                min: 3,
+                max: 1,
+                entries: vec![row(0, 0, 0), count],
+            },
+        )]);
+        let db = Db(tables, HashMap::new());
+        let mut fill = Fill::default();
+        for child in 0..5 {
+            fill.add_slot(100, child, 50, &db);
+        }
+        let mut state = 0x1234;
+        fill.run(&db, &mut state);
+        assert_eq!(fill.draws[0].picks[1], 2);
     }
 
     #[test]
