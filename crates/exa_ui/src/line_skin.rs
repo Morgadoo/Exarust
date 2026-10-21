@@ -303,7 +303,9 @@ pub struct LineWidget<'a> {
     pub scroll_y: i32,
     pub scroll_scale_x: f32,
     pub scroll_scale_y: f32,
-    /// The measured width and ascent of the caption, and its bytes.
+    /// The measured width and ascent of the caption, and its bytes. The
+    /// font unit that measures it is outside this skin; its answer is an
+    /// input here.
     pub title: &'a [u8],
     pub title_width: i32,
     pub title_ascent: i32,
@@ -417,7 +419,10 @@ pub struct LineShadow {
     pub alpha: u8,
 }
 
-/// The batch one line widget's draw gathers.
+/// The batch one line widget's draw gathers. The original sends this
+/// geometry through global immediate-mode helpers and calls the icon, font,
+/// clip and child units; the model records those calls and their arguments,
+/// which is a harness decision, not an original behaviour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LineDraw {
     pub mode_calls: u32,
