@@ -51,7 +51,8 @@ The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
 and `_n` programs evaluated per texel for a corpse's or undead's skin —
 the skin scaling and decay mixes, the green specular sheen and the decay
 normals with the height-map cavity normal — from shader texels, the skin
-colour and the amount (the file-to-unit map is only partly read).
+colour and the amount; `DIFFUSE_MAPS`, `SPECULAR_MAPS` and `NORMAL_MAPS`
+name the maps the passes bind (read from the unit's binding loops).
 
 The character-creation sliders (`morph_controller`): a centred slider reads
 its position as `0.5 − position`, a direct one as itself; `morph_slider`

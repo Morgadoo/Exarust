@@ -3,37 +3,40 @@
 //! original, evaluated per texel on Exarust's CPU compositor.
 //!
 //! A character's skin can rot. The creator's decomposition amount
-//! (`Decomp`, 0 for the living) blends three decay layers over the skin:
-//! the diffuse pass darkens and greys the skin and mixes in the
-//! decomposition maps, the specular pass turns the skin's gloss into a
-//! green-tinged wet sheen, and the normal pass adds the decay layers'
-//! normals and a cavity normal from the neighbouring height texels. The
-//! passes read `humanseams`, `humandcmpw`, `ancientdifm`, `skindecomp`,
-//! `humandcmpf`, `ancientnrmm0`, `humandcmpn` and `humandcmpg`; the
-//! original binds them at texture units 2 and up and takes the skin
-//! (`Tex0`) and the seam mask (`Tex1`) from the compositor.
+//! (`Decomp`, 0 for the living) blends decay layers over the skin: the
+//! diffuse pass darkens and greys the skin and mixes in the decay maps, the
+//! specular pass turns the skin's gloss into a green-tinged wet sheen, and
+//! the normal pass adds the decay layers' normals and a cavity normal from
+//! the neighbouring height texels.
 //!
-//! Which file lands in which unit is only partly read: the diffuse pass
-//! binds four textures from `humanseams` in its list's order, the specular
-//! three, and the normal pass follows the shader's own `Tex0` … `Tex7`
-//! numbering. The functions below therefore take shader texels, not file
-//! names [?].
+//! The compositor supplies the first texture units (the skin or gloss in
+//! `Tex0`, the seam mask's red channel in `Tex1`, and for the normal pass
+//! the base normal and its layers in `Tex0`..`Tex4` and the height in
+//! `Tex5`); the passes themselves bind the maps named by [`DIFFUSE_MAPS`]
+//! from unit 2, [`SPECULAR_MAPS`] from unit 2 and [`NORMAL_MAPS`] from
+//! unit 6. `humanseams` heads the diffuse and specular lists and the passes
+//! skip it (their binding loops start at the second entry). The functions
+//! below take shader texels, not file names.
 //!
-//! The UV offset (`UVOfs`) and the amount (`Decomp`) are the material's
-//! uniforms; the skin colour (`SknCol`) is the record's. The full-screen
-//! variant of the diffuse program, which builds the mask from two layers,
-//! is folded into the evaluated diffuse pass below because both `{?disable?}`
-//! blocks are compiled out in the shipped library: the mask is the seam
-//! map's red channel, square-rooted.
+//! The UV offset (`UVOfs`) shifts only the `skindecomp` fetch of the
+//! diffuse pass; the amount (`Decomp`) is the material's uniform and the
+//! skin colour (`SknCol`) the record's. Both `{?disable?}` blocks of the
+//! shipped programs (a mask built from two decay layers) are compiled out:
+//! the mask is the seam map's red channel, square-rooted.
 
 use bevy::math::Vec3;
 
-/// Layers the diffuse pass's texture loop binds after the two base maps.
-pub const DIFFUSE_LAYERS: usize = 5;
-/// Textures the specular pass binds.
-pub const SPECULAR_LAYERS: usize = 4;
-/// Decay-normal layers the normal program's loop takes.
-pub const NORMAL_LAYERS: usize = 2;
+/// The maps the diffuse pass binds at units 2 to 5 (`Tex2` to `Tex5`); `Tex2`
+/// is read only by the compiled-out mask block.
+pub const DIFFUSE_MAPS: [&str; 4] = ["humandcmpw", "ancientdifm", "skindecomp", "humandcmpf"];
+/// The maps the specular pass binds at units 2 to 4; `Tex2` is read only by
+/// the compiled-out mask block.
+pub const SPECULAR_MAPS: [&str; 3] = ["humandcmpw", "ancientdifm", "humandcmpg"];
+/// The maps the normal pass binds at units 6 and 7.
+pub const NORMAL_MAPS: [&str; 2] = ["ancientnrmm0", "humandcmpn"];
+/// Decay-normal layers the normal program can take: layer `i` is read from
+/// `Tex{i + 1}`, and `Tex5` is the height.
+pub const MAX_NORMAL_LAYERS: usize = 4;
 
 /// The decomposition material exists when its amount is above zero. A NaN
 /// amount creates none, as the original's ordered compare does.
@@ -53,7 +56,8 @@ fn mix(x: Vec3, y: Vec3, a: f32) -> Vec3 {
 }
 
 /// The diffuse pass (`chardecomp_d`) at one texel: the six shader textures'
-/// rgb and the skin colour, amount and UV offset.
+/// rgb (`Tex4`, the `skindecomp` map, already fetched at the offset
+/// coordinate), the skin colour and the amount.
 ///
 /// `Decomp` is the amount, `skin` the record's `SknCol`. The returned
 /// colour is opaque, as the shader writes alpha 1.
@@ -95,8 +99,9 @@ pub fn diffuse(tex: &[[f32; 3]; 6], skin: [f32; 3], amount: f32) -> [f32; 3] {
     c.to_array()
 }
 
-/// The specular pass (`chardecomp_s`) at one texel: five shader textures'
-/// rgb. The returned colour is `(1, g, 0)`, as the shader writes it.
+/// The specular pass (`chardecomp_s`) at one texel: the five shader
+/// textures' rgb and the amount. The returned colour is `(1, g, 0)`, as the
+/// shader writes it.
 pub fn specular(tex: &[[f32; 3]; 5], amount: f32) -> [f32; 3] {
     let g = tex[0][0] * tex[3][1] * 2.5;
     let w = tex[1][0];
@@ -113,7 +118,8 @@ pub fn specular(tex: &[[f32; 3]; 5], amount: f32) -> [f32; 3] {
 /// `tex` holds the eight rgb samples the shader names (`Tex0` … `Tex7`),
 /// `neighbours` the red channel of `Tex5` at the eight texel offsets in the
 /// shader's order (−1,−1), (0,−1), (1,−1), (−1,0), (1,0), (−1,1), (0,1),
-/// (1,1), and `weights` the `lamt` array, one per decay layer.
+/// (1,1), and `weights` the `lamt` array, one per decay layer (at most
+/// [`MAX_NORMAL_LAYERS`] are read).
 pub fn normal(
     tex: &[[f32; 3]; 8],
     neighbours: &[f32; 8],
@@ -123,12 +129,10 @@ pub fn normal(
     let decode = |i: usize| Vec3::from(tex[i]) * 2.0 - Vec3::ONE;
     let bn = decode(0);
     let mut rn = bn;
-    for (i, weight) in weights.iter().enumerate().take(NORMAL_LAYERS) {
+    for (i, weight) in weights.iter().enumerate().take(MAX_NORMAL_LAYERS) {
         let an = decode(i + 1);
         rn = (an - bn) * *weight + rn;
     }
-    // The next layer the shader names is Tex6 (Tex5 is skipped after the
-    // loop's samples).
     let an = decode(6);
     let a = amount / (1.0 + amount);
     rn.x += an.x * a;
@@ -140,14 +144,13 @@ pub fn normal(
     rn.x = rn.x * (1.0 - a) + an.x * a;
     rn.y = rn.y * (1.0 - a) + an.y * a;
 
-    let s: Vec<f32> = neighbours.iter().map(|v| v * v).collect();
-    let get = |i: usize| s.get(i).copied().unwrap_or(0.0);
-    let mut n = Vec3::new(
-        (get(7) + get(4) * 3.0 + get(2)) - (get(5) + get(3) * 3.0 + get(0)),
-        (get(0) + get(1) * 3.0 + get(2)) - (get(5) + get(6) * 3.0 + get(7)),
+    let s = neighbours.map(|v| v * v);
+    let n = Vec3::new(
+        (s[7] + s[4] * 3.0 + s[2]) - (s[5] + s[3] * 3.0 + s[0]),
+        (s[0] + s[1] * 3.0 + s[2]) - (s[5] + s[6] * 3.0 + s[7]),
         0.5,
-    );
-    n = n.normalize_or_zero();
+    )
+    .normalize_or_zero();
     let a = 1.0 - w;
     rn.x += n.x * a * a * 3.0;
     rn.y += n.y * a * a * 3.0;

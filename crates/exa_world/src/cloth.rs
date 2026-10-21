@@ -29,6 +29,11 @@ use exa_physics::cloth::{self, Cloth};
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct ClothNode;
 
+/// A cloth node whose mesh cannot be a cloth (no positions, no triangles),
+/// so the builder does not look at it again.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct ClothSkipped;
+
 /// The pin weight unskinned cloth takes on every vertex [guess: the
 /// original's loose pin weight].
 pub const LOOSE_PIN: f32 = 0.1;
@@ -68,10 +73,23 @@ pub fn cloth_of(vertices: &[Vec3], triangles: &[[usize; 3]], pins: &[(usize, f32
     cloth
 }
 
+/// Gives each cloth node its cloth, once its mesh is in place (a skinned
+/// part gets its mesh when it is bound to its skeleton, after it spawns).
+///
+/// The cloth moves its mesh's vertices, and one mesh asset is shared by
+/// every copy of a model, so each cloth takes a copy of the mesh for its
+/// node alone.
 fn build_cloth_nodes(
     mut commands: Commands,
-    nodes: Query<(Entity, &Mesh3d), Added<ClothNode>>,
-    meshes: Res<Assets<Mesh>>,
+    nodes: Query<
+        (Entity, &Mesh3d),
+        (
+            With<ClothNode>,
+            Without<ClothInstance>,
+            Without<ClothSkipped>,
+        ),
+    >,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     for (entity, mesh) in &nodes {
         let Some(mesh_data) = meshes.get(&mesh.0) else {
@@ -81,9 +99,11 @@ fn build_cloth_nodes(
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|a| a.as_float3())
         else {
+            commands.entity(entity).insert(ClothSkipped);
             continue;
         };
         let Some(indices) = mesh_data.indices() else {
+            commands.entity(entity).insert(ClothSkipped);
             continue;
         };
         let indices: Vec<usize> = indices.iter().collect();
@@ -96,14 +116,16 @@ fn build_cloth_nodes(
             .copied()
             .collect();
         if triangles.is_empty() {
+            commands.entity(entity).insert(ClothSkipped);
             continue;
         }
         let pins = pins_from_skin(vertices.len(), None);
         let cloth = cloth_of(&vertices, &triangles, &pins);
-        commands.entity(entity).insert(ClothInstance {
-            cloth,
-            mesh: mesh.0.clone(),
-        });
+        let copy = mesh_data.clone();
+        let own = meshes.add(copy);
+        commands
+            .entity(entity)
+            .insert((Mesh3d(own.clone()), ClothInstance { cloth, mesh: own }));
     }
 }
 

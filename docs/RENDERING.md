@@ -1891,32 +1891,37 @@ original's texture compositor adds when the decomposition amount is above
 0: three passes over the skin, run as `chardecomp_d`, `chardecomp_s` and
 `chardecomp_n` on the GPU there. Exarust evaluates the same arithmetic per
 texel in `exa_assets::decomp` (the compositor is on the CPU), taking the
-shader texels, the skin colour, the amount and the UV offset.
+shader texels, the skin colour and the amount. The programs' GLSL is in the
+shader library `textures.flb` (`exa-tool shader --shader-library
+textures.flb --dump <dir>`).
 
-* **Diffuse.** The skin times a colour mixed from the skin colour toward
-  grey by `0.4 + 0.1·amount`; the decomposition map's rgb multiplies it,
-  scaled by `2 + 0.4·amount`, with red at 0.85 and blue pulled toward its
-  square root (`0.75·b + 0.25·√b`). The `skindecomp` map, weighted
-  `0.25·amount`, mixes the green into a double-green term at
-  `0.3·amount`. The seam mask's red channel, square-rooted, is the weight
-  of the final decay layer (the full-screen mask variant is compiled out:
-  the shipped mask is the seam map's red). That layer is exposed and
-  tinted by its own red, its red and blue pulled down by `d·0.04`, and
-  mixed in by the weight.
-* **Specular.** Green only: the skin's grey times 2.5, times
-  `0.4 + (0.75 − 0.1·amount)²`, mixed toward the fourth map by
-  `w·(2 − w²)`, w the seam mask; the colour is `(1, g, 0)`.
-* **Normal.** The decay layers' normals are added by their weights
-  (`lamt`, two layers in the shipped material), a further map's xy by
-  `amount/(1 + amount)`, then an eighth map's xy by `√w`. A cavity normal
-  from the eight neighbouring height texels (squared, sobel-weighted,
-  normalised, z = 0.5) is added by `3·(1 − w)²`; z is rebuilt from the
-  xy length. The result is stored as `0.5·n + 0.5`.
+* **Diffuse.** The base skin (`Tex0`) times a colour mixed from the skin
+  colour toward grey by `0.4 + 0.1·amount`, times the `skindecomp` map
+  (`Tex4`, fetched at the shifted coordinate) and `2 + 0.4·amount`, with
+  red at 0.85 and blue pulled toward its square root (`0.75·b + 0.25·√b`).
+  The green is mixed into a double-green term by `0.3·amount`, and
+  `ancientdifm` (`Tex3`), weighted `0.25·amount`, tints the result. The
+  seam mask's red channel (`Tex1`), square-rooted, is the weight of the
+  final layer, `humandcmpf` (`Tex5`), which is exposed
+  (`1 − (1 − x)/a`, `a = 1 + (w − 1)/2`), has its red and blue pulled down by
+  `d·0.04` and is mixed in by the weight. A mask built from two decay
+  layers is in the program but compiled out.
+* **Specular.** Green only: the skin's gloss times `ancientdifm`'s green
+  times 2.5, times `0.4 + (0.75 − 0.1·amount)²`, mixed toward `humandcmpg`
+  by `w·(2 − w²)`, w the seam mask; the colour is `(1, g, 0)`.
+* **Normal.** The decay layers' normals (`Tex1` and up, the base normal
+  `Tex0`) are added as differences from the base by their weights (`lamt`,
+  one per layer, the layer count the caller names). `ancientnrmm0`
+  (`Tex6`)'s xy is added by `amount/(1 + amount)`, then `humandcmpn`
+  (`Tex7`)'s xy is mixed in by `√w`, w the height texel (`Tex5`). A cavity
+  normal from the eight neighbouring height texels (squared,
+  sobel-weighted, normalised, z = 0.5) is added by `3·(1 − w)²`; z is
+  rebuilt from the xy length. The result is stored as `0.5·n + 0.5`.
 
-Which file lands in which shader unit is only partly read: the passes bind
-`humanseams`, `humandcmpw`, `ancientdifm`, `skindecomp`, `humandcmpf`,
-`ancientnrmm0`, `humandcmpn` and `humandcmpg`, but the unit map is the
-original's material state. `decomp::created` is the amount's ordered test.
+The diffuse and specular passes bind their maps from unit 2 (`humanseams`,
+the head of both lists, is skipped by the binding loops) and the normal pass
+binds its two maps at units 6 and 7. `decomp::created` is the amount's
+ordered test. No corpse path calls the passes yet.
 
 ## Procedural noise
 
