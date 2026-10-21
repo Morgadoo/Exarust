@@ -662,6 +662,137 @@ pub fn start_pitch(roll: f32) -> f32 {
     roll * 0.4 + 0.6
 }
 
+/// The material every blast-family node wears.
+pub const FORCE_MATERIAL: &str = "_ForceMat01";
+/// The material the domes and the barricade wear.
+pub const FORCE_BARRIER_MATERIAL: &str = "_ForceBarrier01";
+/// The material the shell (and its decorative copy) wears.
+pub const FORCE_AURA_MATERIAL: &str = "_ForceAura01";
+/// The four parameters each material binds.
+pub const MATERIAL_PARAMS: [f32; 4] = [0.25, 0.25, 0.25, 1.0];
+/// The blast material's parameter block size.
+pub const FORCE_PARAM_SIZE: usize = 0xf0;
+/// The barrier material's parameter block size.
+pub const BARRIER_PARAM_SIZE: usize = 0xb8;
+/// The aura material's parameter block size.
+pub const AURA_PARAM_SIZE: usize = 0xf0;
+/// The animated noise texture the barrier and the aura bind.
+pub const NOISE_TEXTURE: &str = "_ForceNoise";
+/// The noise field's width, height and octaves (one 8-bit channel).
+pub const NOISE_SIZE: (u32, u32, u32) = (256, 256, 4);
+/// The noise texture's parameter word (mipmapped when bit 0x40 is set).
+pub const NOISE_WORD: u32 = 0x2f0;
+/// The same word when either of the two display switches is on.
+pub const NOISE_WORD_REDUCED: u32 = 0x33;
+/// The flags every created Force node starts with.
+pub const FORCE_NODE: u32 = 0x2100_0000;
+/// The shared emissive program (blast and torrent).
+pub const GI_PROGRAM: &str = "gi_multipoint";
+/// The emissive program's light binding.
+pub const GI_LIGHT: &str = "Light";
+/// The emissive program's attenuation binding.
+pub const GI_ATTEN: &str = "Atten";
+
+/// What one Force creator attaches, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatorSpec {
+    /// The material, if the power makes a node.
+    pub material: Option<&'static str>,
+    /// The material's parameter block size.
+    pub param_size: usize,
+    /// The shared emissive program.
+    pub gi: Option<&'static str>,
+    /// The sounds the creator loads, in its order.
+    pub sounds: &'static [&'static str],
+    /// The power whose active object the creator makes, if any.
+    pub active: Option<u32>,
+}
+
+const NONE: CreatorSpec = CreatorSpec {
+    material: None,
+    param_size: 0,
+    gi: None,
+    sounds: &[],
+    active: None,
+};
+
+/// The creator of one Force power.
+pub fn creator_spec(kind: ForceKind) -> CreatorSpec {
+    match kind {
+        ForceKind::Blast => CreatorSpec {
+            material: Some(FORCE_MATERIAL),
+            param_size: FORCE_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[BLAST_SETUP.charge_sound, BLAST_SETUP.release_sound],
+            active: None,
+        },
+        ForceKind::Bolt => CreatorSpec {
+            material: Some(FORCE_MATERIAL),
+            param_size: FORCE_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[BLAST_SETUP.charge_sound, BOLT_SETUP.release_sound],
+            active: None,
+        },
+        ForceKind::Wave => CreatorSpec {
+            material: Some(FORCE_MATERIAL),
+            param_size: FORCE_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[BLAST_SETUP.charge_sound, WAVE_SETUP.release_sound],
+            active: None,
+        },
+        ForceKind::Torrent => CreatorSpec {
+            material: Some(FORCE_MATERIAL),
+            param_size: FORCE_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[BLAST_SETUP.charge_sound, TORRENT_SOUND],
+            active: None,
+        },
+        ForceKind::Barrier => CreatorSpec {
+            material: Some(FORCE_BARRIER_MATERIAL),
+            param_size: BARRIER_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[DOME_SOUND, BARRIER_HUM, PLACE_SOUND],
+            active: None,
+        },
+        ForceKind::Bubble => CreatorSpec {
+            material: Some(FORCE_BARRIER_MATERIAL),
+            param_size: BARRIER_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[DOME_SOUND, BARRIER_HUM, PLACE_SOUND, BUBBLE_BREAK],
+            active: None,
+        },
+        ForceKind::Barricade => CreatorSpec {
+            material: Some(FORCE_BARRIER_MATERIAL),
+            param_size: BARRIER_PARAM_SIZE,
+            gi: Some(GI_PROGRAM),
+            sounds: &[DOME_SOUND, BARRICADE_HUM, PLACE_SOUND],
+            active: None,
+        },
+        ForceKind::Shell => CreatorSpec {
+            material: Some(FORCE_AURA_MATERIAL),
+            param_size: AURA_PARAM_SIZE,
+            gi: None,
+            sounds: &[PLACE_SOUND],
+            active: Some(0x20208),
+        },
+        ForceKind::Kinesis => CreatorSpec {
+            sounds: &[KINESIS_SOUND],
+            active: Some(0x10209),
+            ..NONE
+        },
+        ForceKind::Throw => CreatorSpec {
+            sounds: &[KINESIS_SOUND, THROW_SOUND],
+            active: Some(0x20A),
+            ..NONE
+        },
+        ForceKind::Strikes => CreatorSpec {
+            sounds: &[PLACE_SOUND],
+            active: Some(0x2020B),
+            ..NONE
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::casting::{ActivePower, CASTING};
@@ -709,7 +840,7 @@ mod tests {
         assert_eq!(creator_spec(ForceKind::Strikes).active, Some(0x2020B));
         assert_eq!(MATERIAL_PARAMS, [0.25, 0.25, 0.25, 1.0]);
         assert_eq!(NOISE_SIZE, (256, 256, 4));
-        assert_eq!(NOISE_LAYERS, 0x33);
+        assert_eq!((NOISE_WORD, NOISE_WORD_REDUCED), (0x2f0, 0x33));
         assert_eq!(FORCE_NODE, 0x2100_0000);
         assert_eq!((GI_LIGHT, GI_ATTEN), ("Light", "Atten"));
     }
@@ -1017,134 +1148,5 @@ mod tests {
         assert_eq!(place.centre, Vec3::new(0.0, 30.0, 50.0));
         assert_eq!(place.facing, Vec3::Z);
         assert_eq!(place.pitch, 0.8);
-    }
-}
-
-/// The material every blast-family node wears.
-pub const FORCE_MATERIAL: &str = "_ForceMat01";
-/// The material the domes and the barricade wear.
-pub const FORCE_BARRIER_MATERIAL: &str = "_ForceBarrier01";
-/// The material the shell (and its decorative copy) wears.
-pub const FORCE_AURA_MATERIAL: &str = "_ForceAura01";
-/// The four parameters each material binds.
-pub const MATERIAL_PARAMS: [f32; 4] = [0.25, 0.25, 0.25, 1.0];
-/// The blast material's parameter block size.
-pub const FORCE_PARAM_SIZE: usize = 0xf0;
-/// The barrier material's parameter block size.
-pub const BARRIER_PARAM_SIZE: usize = 0xb8;
-/// The aura material's parameter block size.
-pub const AURA_PARAM_SIZE: usize = 0xf0;
-/// The animated noise texture the barrier and the aura bind.
-pub const NOISE_TEXTURE: &str = "_ForceNoise";
-/// The noise picture's width, height and channels.
-pub const NOISE_SIZE: (u32, u32, u32) = (256, 256, 4);
-/// The noise picture's layers.
-pub const NOISE_LAYERS: u32 = 0x33;
-/// The flags every created Force node starts with.
-pub const FORCE_NODE: u32 = 0x2100_0000;
-/// The shared emissive program (blast and torrent).
-pub const GI_PROGRAM: &str = "gi_multipoint";
-/// The emissive program's light binding.
-pub const GI_LIGHT: &str = "Light";
-/// The emissive program's attenuation binding.
-pub const GI_ATTEN: &str = "Atten";
-
-/// What one Force creator attaches, in the original's order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CreatorSpec {
-    /// The material, if the power makes a node.
-    pub material: Option<&'static str>,
-    /// The material's parameter block size.
-    pub param_size: usize,
-    /// The shared emissive program.
-    pub gi: Option<&'static str>,
-    /// The sounds the creator loads, in its order.
-    pub sounds: &'static [&'static str],
-    /// The power whose active object the creator makes, if any.
-    pub active: Option<u32>,
-}
-
-const NONE: CreatorSpec = CreatorSpec {
-    material: None,
-    param_size: 0,
-    gi: None,
-    sounds: &[],
-    active: None,
-};
-
-/// The creator of one Force power.
-pub fn creator_spec(kind: ForceKind) -> CreatorSpec {
-    match kind {
-        ForceKind::Blast => CreatorSpec {
-            material: Some(FORCE_MATERIAL),
-            param_size: FORCE_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[BLAST_SETUP.charge_sound, BLAST_SETUP.release_sound],
-            active: None,
-        },
-        ForceKind::Bolt => CreatorSpec {
-            material: Some(FORCE_MATERIAL),
-            param_size: FORCE_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[BLAST_SETUP.charge_sound, BOLT_SETUP.release_sound],
-            active: None,
-        },
-        ForceKind::Wave => CreatorSpec {
-            material: Some(FORCE_MATERIAL),
-            param_size: FORCE_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[BLAST_SETUP.charge_sound, WAVE_SETUP.release_sound],
-            active: None,
-        },
-        ForceKind::Torrent => CreatorSpec {
-            material: Some(FORCE_MATERIAL),
-            param_size: FORCE_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[BLAST_SETUP.charge_sound, TORRENT_SOUND],
-            active: None,
-        },
-        ForceKind::Barrier => CreatorSpec {
-            material: Some(FORCE_BARRIER_MATERIAL),
-            param_size: BARRIER_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[DOME_SOUND, BARRIER_HUM, PLACE_SOUND],
-            active: None,
-        },
-        ForceKind::Bubble => CreatorSpec {
-            material: Some(FORCE_BARRIER_MATERIAL),
-            param_size: BARRIER_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[DOME_SOUND, BARRIER_HUM, PLACE_SOUND, BUBBLE_BREAK],
-            active: None,
-        },
-        ForceKind::Barricade => CreatorSpec {
-            material: Some(FORCE_BARRIER_MATERIAL),
-            param_size: BARRIER_PARAM_SIZE,
-            gi: Some(GI_PROGRAM),
-            sounds: &[DOME_SOUND, BARRICADE_HUM, PLACE_SOUND],
-            active: None,
-        },
-        ForceKind::Shell => CreatorSpec {
-            material: Some(FORCE_AURA_MATERIAL),
-            param_size: AURA_PARAM_SIZE,
-            gi: None,
-            sounds: &[PLACE_SOUND],
-            active: Some(0x20208),
-        },
-        ForceKind::Kinesis => CreatorSpec {
-            sounds: &[KINESIS_SOUND],
-            active: Some(0x10209),
-            ..NONE
-        },
-        ForceKind::Throw => CreatorSpec {
-            sounds: &[KINESIS_SOUND, THROW_SOUND],
-            active: Some(0x20A),
-            ..NONE
-        },
-        ForceKind::Strikes => CreatorSpec {
-            sounds: &[PLACE_SOUND],
-            active: Some(0x2020B),
-            ..NONE
-        },
     }
 }

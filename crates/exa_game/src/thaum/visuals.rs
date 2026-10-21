@@ -9,7 +9,11 @@
 //! the effect's point and the power's numbers; [`VisualPlugin`] turns a
 //! [`VisualSpawn`] message into a scene entity carrying [`EffectVisual`].
 //! The entity has no mesh yet (the effect geometries are their own classes),
-//! so it marks the node for the renderer rather than drawing it.
+//! so it marks the node for the renderer rather than drawing it. The
+//! materials, block sizes, GI programs, node flags, the barrier's raised
+//! centre and the pitches named on the barricade, shell, strikes and
+//! kinesis sounds follow the original; the other node positions, hand
+//! attachments and orientations are the scene code's choices, not decoded.
 //!
 //! Evidence: the Force and Displacement creators, their materials and the
 //! shared effect shader binding, the two per-pass texture-matrix callbacks,
@@ -17,61 +21,49 @@
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
+use exa_formats::pixel::round_f32;
 use exa_physics::body::Ragdoll;
+use exa_render::image_noise::NoiseField;
 
 use super::displacement::wisp_anchors;
 
-/// The blast family's material.
-pub const FORCE_MATERIAL: &str = "_ForceMat01";
-/// The domes' and the barricade's material.
-pub const BARRIER_MATERIAL: &str = "_ForceBarrier01";
-/// The shell's material.
-pub const AURA_MATERIAL: &str = "_ForceAura01";
+use super::force::{AURA_PARAM_SIZE, BARRIER_PARAM_SIZE, FORCE_PARAM_SIZE};
+pub use super::force::{
+    FORCE_AURA_MATERIAL as AURA_MATERIAL, FORCE_BARRIER_MATERIAL as BARRIER_MATERIAL,
+    FORCE_MATERIAL, FORCE_NODE as EFFECT_NODE, GI_ATTEN, GI_LIGHT, GI_PROGRAM, MATERIAL_PARAMS,
+    NOISE_SIZE, NOISE_TEXTURE, NOISE_WORD, NOISE_WORD_REDUCED,
+};
+
 /// The tendril's material.
 pub const TENDRIL_MATERIAL: &str = "_TDispMat01";
 /// The displacement shell's material.
 pub const SHELL_MATERIAL: &str = "_EffectShell01";
-/// The Force noise picture.
-pub const NOISE_TEXTURE: &str = "_ForceNoise";
-/// The shared emissive program.
-pub const GI_PROGRAM: &str = "gi_multipoint";
-/// Its light and attenuation bindings.
-pub const GI_LIGHT: &str = "Light";
-pub const GI_ATTEN: &str = "Atten";
 
-/// The material parameters each of the three Force materials binds.
-pub const MATERIAL_PARAMS: [f32; 4] = [0.25, 0.25, 0.25, 1.0];
 /// The blast material's parameter block.
-pub const FORCE_BLOCK: usize = 0xf0;
+pub const FORCE_BLOCK: usize = FORCE_PARAM_SIZE;
 /// The barrier material's parameter block.
-pub const BARRIER_BLOCK: usize = 0xb8;
+pub const BARRIER_BLOCK: usize = BARRIER_PARAM_SIZE;
 /// The aura material's parameter block.
-pub const AURA_BLOCK: usize = 0xf0;
+pub const AURA_BLOCK: usize = AURA_PARAM_SIZE;
 /// The tendril and shell materials' parameter block.
 pub const DISPLACEMENT_BLOCK: usize = 0xf0;
 
-/// The noise picture's size and channels.
-pub const NOISE_SIZE: (u32, u32, u32) = (256, 256, 4);
-/// The noise picture's layers.
-pub const NOISE_LAYERS: u32 = 0x33;
 /// The noise texture's sampler word.
 pub const NOISE_FLAGS: u32 = 0x0100_4200;
 /// The noise texture's usage word.
-pub const NOISE_USAGE: u32 = 0x0200_7000;
+pub const NOISE_USAGE: u32 = 0x2007_0000;
 
 /// The vertex attributes the effect shader binding declares.
 pub const EFFECT_SHADER_ATTRIBUTES: u32 = 4;
 /// A creator that returns no callback.
 pub const NO_EFFECT_CALLBACK: u32 = 0;
-/// The node flags every Force effect node starts with.
-pub const EFFECT_NODE: u32 = 0x2100_0000;
 /// The shell subobject's flag.
 pub const SHELL_FLAG: u32 = 0x20;
 /// The decorative shell's two extra fields.
 pub const DECORATIVE_FLAG: u8 = 1;
 pub const DECORATIVE_SCALE: f32 = 3.0;
 /// The spare strands a tendril image keeps.
-pub const TENDRIL_SPARE: usize = 8;
+pub const TENDRIL_SPARE: usize = super::displacement::SPARE_STRANDS;
 /// The tendril texture.
 pub const TENDRIL_TEXTURE: &str = "FlameletsA3.rfi";
 /// The tendril geometry's registered type word.
@@ -94,7 +86,10 @@ pub struct SceneNodeSpec {
     pub rotation: Quat,
     /// The node is attached to the caster's hand.
     pub hand: bool,
-    /// The sounds the creator starts, with their pitch.
+    /// The sounds the creator names, with their pitch. Most creators only
+    /// look a sound up and store its id on the effect (loop sound, blast
+    /// sound), which the pitch 1.0 stands for; the barricade's `thmfrc_ss` is
+    /// played at its placement at a pitch of `0.8 + 0.4 · roll` (volume 0.3).
     pub sounds: Vec<(&'static str, f32)>,
     /// One radio of the effect's own lifetime, when it has one.
     pub life_ms: u32,
@@ -186,11 +181,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             block: BARRIER_BLOCK,
             position: input.body + Vec3::Y * 100.0,
             rotation: Quat::from_rotation_arc(Vec3::Y, input.heading),
-            sounds: vec![
-                ("thmfrc_bi", 1.0),
-                ("thmfrc_bc02", 1.0),
-                ("thmfrc_ss", input.roll),
-            ],
+            sounds: vec![("thmfrc_bi", 1.0), ("thmfrc_bc02", 1.0)],
             ..SceneNodeSpec::default()
         },
         EffectKind::Bubble => SceneNodeSpec {
@@ -201,7 +192,6 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc02", 1.0),
-                ("thmfrc_ss", input.roll),
                 ("thmfrc_brf", 1.0),
             ],
             ..SceneNodeSpec::default()
@@ -215,7 +205,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc01", 1.0),
-                ("thmfrc_ss", input.roll),
+                ("thmfrc_ss", 0.8 + input.roll * 0.4),
             ],
             ..SceneNodeSpec::default()
         },
@@ -286,29 +276,52 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
     }
 }
 
-/// The noise picture's bytes: four ridged fields of `NOISE_SIZE`, each a
-/// channel. The original's noise object draws from its own generator; this
-/// uses the engine's ridged float noise with a seed per channel.
-pub fn noise_pixels(seed: u32) -> Vec<u8> {
-    let (width, height, channels) = NOISE_SIZE;
-    let mut out = Vec::with_capacity((width * height * channels) as usize);
-    let mut planes = Vec::new();
-    for channel in 0..channels {
-        let plane = exa_render::image_noise::ridged_noise_floats(
-            width as usize,
-            height as usize,
-            4,
-            seed.wrapping_add(channel.wrapping_mul(0x9E37_79B9)),
-        );
-        planes.push(plane);
-    }
-    for index in 0..(width * height) as usize {
-        for plane in &planes {
-            let value = plane.get(index).copied().unwrap_or(0.0);
-            out.push(((value + 0.5) * 255.0).clamp(0.0, 255.0) as u8);
-        }
-    }
-    out
+/// The animated noise field the Force effects share: 256 by 256 at four
+/// octaves and amplitude 1, both mixing weights 0.5, then set to four
+/// octaves, a 0.8 s phase and a target amplitude of 1. `seeds` supplies the
+/// engine's random words (four ridged planes, then the first white noise)
+/// and `now` is the clock in milliseconds.
+pub fn noise_field(now: u32, seeds: impl FnMut() -> u32) -> NoiseField {
+    let (width, height, octaves) = NOISE_SIZE;
+    let mut field = NoiseField::new(
+        width as usize,
+        height as usize,
+        octaves as i32,
+        1.0,
+        now,
+        false,
+        seeds,
+    );
+    field.keep = 0.5;
+    field.add = 0.5;
+    field.configure(4, 0.8, 1.0);
+    field
+}
+
+/// The picture the field uploads to its one-channel texture: each float
+/// from 0 to 1 scaled by 255 and rounded to even; at or below 0 is 0 and at
+/// or above 1 is 255 (a not-a-number scales to the indefinite integer, whose
+/// low byte is 0).
+pub fn noise_bytes(field: &NoiseField) -> Vec<u8> {
+    float_bytes(field.output())
+}
+
+/// The float-to-byte conversion of [`noise_bytes`].
+pub fn float_bytes(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .map(|&v| {
+            if v <= 0.0 {
+                0
+            } else if v >= 1.0 {
+                255
+            } else {
+                // A not-a-number lands here and scales to the indefinite
+                // integer, whose low byte is 0.
+                round_f32(v * 255.0) as u8
+            }
+        })
+        .collect()
 }
 
 /// One node of a displacement shell as its render pass sees it.
@@ -353,23 +366,30 @@ pub fn shell_draws(nodes: &[ShellNodeView], shown: f32) -> Vec<ShellDraw> {
 
 /// The effect shader's per-layer texture offsets: the original walks the
 /// effect's layers and sets a scrolling texture matrix before each draw.
-/// A centred pass (the effect shader's own) steps by `0.002` a layer and
-/// starts `0.001` back; the other starts `speed · 0.5` back and steps by
-/// `speed`.
+/// The shader's own pass is centred: in double precision it takes the layer
+/// plus the frame counter (summed as a single, half added), scales by `0.002`,
+/// divides by a global divisor that stays at 1 (not the layer count), adds
+/// the base and takes `0.001` back, then narrows once. The other pass
+/// works in single precision from the effect's own `speed` and starts half a
+/// `speed` back.
 pub fn scroll_offsets(layers: i32, frame: i32, base: f32, speed: f32, centred: bool) -> Vec<f32> {
     if layers <= 0 {
         return Vec::new();
     }
     (0..layers)
         .map(|layer| {
+            let slot = ((i64::from(layer) + i64::from(frame)) as f32) + 0.5;
             if centred {
-                ((layer + frame) as f32 + 0.5) * 0.002 / layers as f32 + base - 0.001
+                (f64::from(slot) * 0.002 / SCROLL_DIVISOR + f64::from(base) - 0.001) as f32
             } else {
-                ((layer + frame) as f32 + 0.5) * speed / layers as f32 + base - speed * 0.5
+                slot * speed / SCROLL_DIVISOR as f32 + base - speed * 0.5
             }
         })
         .collect()
 }
+
+/// The scroll divisor the original keeps in a global; it holds 1.
+const SCROLL_DIVISOR: f64 = 1.0;
 
 /// A fade hook: a callback and its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,8 +539,8 @@ mod tests {
         assert_eq!(AURA_BLOCK, 0xf0);
         assert_eq!(DISPLACEMENT_BLOCK, 0xf0);
         assert_eq!(NOISE_SIZE, (256, 256, 4));
-        assert_eq!(NOISE_LAYERS, 0x33);
-        assert_eq!((NOISE_FLAGS, NOISE_USAGE), (0x0100_4200, 0x0200_7000));
+        assert_eq!((NOISE_WORD, NOISE_WORD_REDUCED), (0x2f0, 0x33));
+        assert_eq!((NOISE_FLAGS, NOISE_USAGE), (0x0100_4200, 0x2007_0000));
         assert_eq!((GI_LIGHT, GI_ATTEN), ("Light", "Atten"));
     }
 
@@ -550,12 +570,13 @@ mod tests {
         assert_eq!(barrier.material, Some(BARRIER_MATERIAL));
         assert_eq!(barrier.position, Vec3::new(10.0, 100.0, 20.0));
         assert_eq!(barrier.block, BARRIER_BLOCK);
-        assert_eq!(barrier.sounds.len(), 3);
+        assert_eq!(barrier.sounds.len(), 2);
         let barricade = creator(EffectKind::Barricade, &input());
         assert_eq!(barricade.position, Vec3::new(100.0, 110.0, 50.0));
         assert_eq!(barricade.sounds[1].0, "thmfrc_bc01");
+        assert_eq!(barricade.sounds[2], ("thmfrc_ss", 0.8 + 0.5 * 0.4));
         let bubble = creator(EffectKind::Bubble, &input());
-        assert_eq!(bubble.sounds[3].0, "thmfrc_brf");
+        assert_eq!(bubble.sounds[2].0, "thmfrc_brf");
     }
 
     #[test]
@@ -583,9 +604,10 @@ mod tests {
     fn the_effect_shader_scrolls_its_layers() {
         let centred = scroll_offsets(3, 10, 0.5, 1.0, true);
         assert_eq!(centred.len(), 3);
-        assert_eq!(centred[0], ((10.0 + 0.5) * 0.002) / 3.0 + 0.5 - 0.001);
+        assert_eq!(centred[0], ((10.5f64 * 0.002) + 0.5 - 0.001) as f32);
+        assert_eq!(centred[2], ((12.5f64 * 0.002) + 0.5 - 0.001) as f32);
         let plain = scroll_offsets(2, 4, 0.25, 0.75, false);
-        assert_eq!(plain[0], (4.5 * 0.75) / 2.0 + 0.25 - 0.375);
+        assert_eq!(plain[0], 4.5f32 * 0.75 + 0.25 - 0.375);
         assert!(scroll_offsets(0, 0, 0.0, 1.0, true).is_empty());
     }
 
@@ -619,11 +641,27 @@ mod tests {
     }
 
     #[test]
-    fn the_noise_picture_has_four_planes() {
-        let pixels = noise_pixels(7);
-        assert_eq!(pixels.len(), (256 * 256 * 4) as usize);
-        assert_eq!(pixels, noise_pixels(7));
-        assert_ne!(pixels, noise_pixels(8));
+    fn the_noise_picture_is_one_channel() {
+        let mut state = 7u32;
+        let mut seeds = || {
+            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+            state
+        };
+        let field = noise_field(0, &mut seeds);
+        assert_eq!((field.keep, field.add), (0.5, 0.5));
+        let pixels = noise_bytes(&field);
+        assert_eq!(pixels.len(), 256 * 256);
+    }
+
+    #[test]
+    fn the_bytes_clamp_and_round_to_even() {
+        assert_eq!(
+            float_bytes(&[-1.0, 0.0, 1.0, 2.0, f32::NAN]),
+            [0, 0, 255, 255, 0]
+        );
+        // 0.5 * 255 = 127.5 rounds to the even 128; 2^-7 * 255 is 1.99 and
+        // 2^-9 * 255 is 0.498.
+        assert_eq!(float_bytes(&[0.5, 0.007_812_5, 0.001_953_125]), [128, 2, 0]);
     }
 
     #[test]
