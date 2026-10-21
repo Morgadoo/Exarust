@@ -85,8 +85,11 @@ The hit reaction then runs the striker's side (`SwingState::after_wound`):
 the wound bits on its swing, its striker's window shut, and a cleave or a
 follow-through by its size, the blow's impact and where on the weapon it
 struck; a guard (for a striker under 1.4) or a body that turns blows
-(`StateFlags::TURNS_BLOWS`) recoils it (`SwingState::recoil_from`). The
-blow sag rides the `Shove` to the struck body.
+(`StateFlags::TURNS_BLOWS`, checked before a parry) recoils it
+(`SwingState::recoil_from`), and a clash or a block marks the swing's
+weapon and shield sounds once a swing (`strike_back`). Each contact's
+striker is dealt right after its struck side, as the original's routine
+runs per contact. The blow sag rides the `Shove` to the struck body.
 
 ## Grips
 

@@ -1659,7 +1659,17 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   400·k′ ms on.
 - A parried or shielded blow, or one a body turns, makes it recoil
   (strength and stall ½, the stance 200 + 40·v·W17 ms on); a guard does so
-  only to a striker under 1.4.
+  only to a striker under 1.4. A parrying body whose state flag 0x400 is
+  set is checked before the parry: any striker recoils and the parrier
+  takes nothing (no lock, no attack-state clear, no sag).
+- A clash and a block set the swing's weapon-sound bit 0x1000 (the
+  weapon's hit sound once a swing); a block sets the shield-sound bit
+  0x200 once a swing (a wound's bits already hold it) and then draws the
+  shield's sound cooldown from the generator (300 − 0..150 ms).
+- The routine runs per contact: each contact's striker is dealt right
+  after its struck side, before the frame's next contact, so two fighters
+  wounding each other in one frame take a follow-through before the other
+  contact's stall.
 - An armed bite above 0.1 would stick the weapon (`exa_combat::bite`);
   weapons are not bodies yet, so nothing sticks.
 

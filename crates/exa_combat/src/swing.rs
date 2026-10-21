@@ -149,6 +149,11 @@ pub mod flags {
     /// What a wound sets on the striker's swing: cleaving and recoiled, with
     /// the swing's clash (0x100), block (0x200) and wound (0x400) bits.
     pub const WOUNDED: u32 = 0x724;
+    /// A shield's sound rang this swing (the block's bit of
+    /// [`WOUNDED`]): its sound and cooldown draw come once a swing.
+    pub const SHIELD_RUNG: u32 = 0x200;
+    /// The weapon's hit sound rang on a weapon or a shield this swing.
+    pub const WEAPON_RUNG: u32 = 0x1000;
     /// Held back after a wound by the edge: stalling, released, chained
     /// past a quarter or without Remise; such a swing follows the wound
     /// through instead of cleaving on.
