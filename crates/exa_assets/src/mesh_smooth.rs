@@ -48,7 +48,7 @@ pub enum Subdivided {
     /// The mesh was subdivided; faces with a repeated point were found
     /// along the way (the original logs their count).
     Done { degenerate_faces: usize },
-    /// Four times the faces would exceed [`MAX_FACES`]; nothing changed.
+    /// The mesh has more than [`MAX_FACES`] faces; nothing changed.
     TooManyFaces,
 }
 
@@ -528,11 +528,10 @@ impl Rule<'_> {
                         };
                         let (t0, t1) = (across(opposite[0]), across(opposite[1]));
                         let rest = 0.25 - (wa + wb) * 0.125;
-                        if t0[1] * t1[1] + t0[0] * t1[0] <= 0.0 {
-                            let s = rest / count as f32;
-                            n[0] += sum[0] * s;
-                            n[1] += sum[1] * s;
-                        } else {
+                        // An ordered compare: a zero-length texture edge
+                        // makes the product NaN, and the original then
+                        // takes the plain branch.
+                        if t0[1] * t1[1] + t0[0] * t1[0] > 0.0 {
                             bits[f] |= 1 << i;
                             let inv = 1.0 / count as f32;
                             let m = [sum[0] * inv - da[0], sum[1] * inv - da[1]];
@@ -540,6 +539,10 @@ impl Rule<'_> {
                             let m = [dot * d[0] + da[0], dot * d[1] + da[1]];
                             n[0] += m[0] * rest;
                             n[1] += m[1] * rest;
+                        } else {
+                            let s = rest / count as f32;
+                            n[0] += sum[0] * s;
+                            n[1] += sum[1] * s;
                         }
                         n
                     }
