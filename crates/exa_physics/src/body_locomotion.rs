@@ -613,19 +613,25 @@ pub fn turn_rate(by: &TurnBy, speed: f32) -> f32 {
 /// quarter turn toward it; within 0.6 rad the rate shrinks by |err|/0.6;
 /// moving by the keys ×0.9; the step is the rate ÷ √scale; a turn within
 /// 1e-4 rad, or within one step, ends on the heading, else the yaw is
-/// brought once within ±π.
+/// brought once within ±π. Both wraps compare in double precision against
+/// the double π (an error of the single-precision π, just above it, is
+/// wrapped).
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn turn(body: &mut Locomotor, heading: f32, rate: f32, scale: f32, keys_moving: bool) {
-    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    use std::f32::consts::{FRAC_PI_2, TAU};
+    use std::f64::consts::PI;
     let heading = wrap(heading);
     let mut error = heading - body.yaw;
-    if error < -PI {
+    if f64::from(error) < -PI {
         error += TAU;
-    } else if PI < error {
+    } else if f64::from(error) > PI {
         error -= TAU;
     }
     body.error = error;
     body.turning = true;
-    body.stance_facing = if error.abs() <= FRAC_PI_2 {
+    // Beyond a quarter turn (not NaN) the facing is the yaw a quarter turn
+    // toward the heading.
+    body.stance_facing = if !(error.abs() > FRAC_PI_2) {
         heading
     } else {
         wrap(sign(error) * FRAC_PI_2 + body.yaw)
@@ -645,9 +651,9 @@ pub fn turn(body: &mut Locomotor, heading: f32, rate: f32, scale: f32, keys_movi
         body.turning = false;
     } else {
         let mut yaw = sign(error) * step + body.yaw;
-        if yaw > PI {
+        if f64::from(yaw) > PI {
             yaw -= TAU;
-        } else if yaw < -PI {
+        } else if f64::from(yaw) < -PI {
             yaw += TAU;
         }
         body.yaw = yaw;

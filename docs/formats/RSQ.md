@@ -1137,7 +1137,9 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   (240°/s; the original writes it at its unit init). Then ×0.6 crouched
   beyond 0.5, ×|err|/0.6 within 0.6 rad of the heading, ×0.9 moving by the
   keys, the step ÷ √scale; within 1e-4 rad or one step it ends on the
-  heading, else the yaw is brought once within ±π. (The original also
+  heading, else the yaw is brought once within ±π. Both wraps compare the
+  single-precision angle, widened, against the double π, so an error of
+  exactly the single π (just above the double) is wrapped. (The original also
   takes 10·|err| off a per-tick factor whose only reader stores it where
   nothing reads it: ported as nothing.)
 - **Alignment** of the pelvis with the heading: kept 0.97 a tick toward 1 − enc standing, 0.4 +

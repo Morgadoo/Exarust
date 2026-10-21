@@ -27,7 +27,8 @@ fn looking(look: f32) -> TwistBy {
 /// The original's arc cosine: 1.046816 for 0.5 (the exact 1.047198),
 /// 2.0947766 for −0.5, π/2, 0 and π at 0, 1 and −1. Its yaw of a
 /// direction: 0.785179 for (1, 0, 1), negative for a negative x, 0 for a
-/// vertical one.
+/// vertical one; a NaN direction goes to the arc cosine (NaN), not to 0
+/// or π, as the original's unordered compares send it.
 #[test]
 fn the_yaw_is_the_originals_arc_cosine() {
     assert!(close(acos_approx(0.5), 1.046_816));
@@ -38,6 +39,8 @@ fn the_yaw_is_the_originals_arc_cosine() {
     assert!(close(heading_of(Vec3::new(1.0, 0.0, 1.0)), 0.785_179));
     assert!(close(heading_of(Vec3::new(-1.0, 0.0, 1.0)), -0.785_179));
     assert_eq!(heading_of(Vec3::Y), 0.0);
+    assert!(heading_of(Vec3::new(f32::NAN, 0.0, 1.0)).is_nan());
+    assert!(heading_of(Vec3::new(0.0, 0.0, f32::NAN)).is_nan());
 }
 
 /// Standing, the twist's yaw follows the look 0.05 rad a tick (0.05 after

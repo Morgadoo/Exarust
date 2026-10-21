@@ -486,3 +486,23 @@ fn the_stance_facing_stays_within_a_quarter_turn() {
     hold_turn(&mut body);
     assert_eq!(body.stance_facing, 0.3);
 }
+
+/// The turn's wraps compare in double precision: an error of exactly the
+/// single-precision π (3.1415927, just above the double π) is wrapped to
+/// −3.1415927, so a body at yaw 0 heading π turns the negative way (its
+/// yaw −0.06 after a tick at 0.06), and a yaw stepped past the double π
+/// is wrapped too.
+#[test]
+fn the_turn_wraps_against_the_double_pi() {
+    let mut body = Locomotor::default();
+    turn(&mut body, PI, 0.06, 1.0, false);
+    assert_eq!(body.error, PI - 2.0 * PI);
+    assert!((body.yaw + 0.06).abs() < 1e-7, "{}", body.yaw);
+    // From 3.1 a step of 0.0415928 lands on the single π: wrapped.
+    let mut body = Locomotor {
+        yaw: 3.1,
+        ..default()
+    };
+    turn(&mut body, -2.0, 0.041_592_8, 1.0, false);
+    assert!(body.yaw < 0.0, "{}", body.yaw);
+}

@@ -66,15 +66,17 @@ pub struct TwistBy {
 
 /// The original's yaw of a direction: acos(z/|xz|) by its approximation
 /// ([`acos_approx`]), negative for a negative x; 0 when its horizontal
-/// length² is under 1e-8.
+/// length² is under 1e-8; π at a cosine of −1 or less, 0 above 1 (a NaN
+/// length or cosine goes to the approximation, as the original's compares
+/// send it).
 pub fn heading_of(d: Vec3) -> f32 {
     let flat = d.z * d.z + d.x * d.x;
-    if !(flat >= NO_YAW) {
+    if flat < NO_YAW {
         return 0.0;
     }
     let c = d.z / flat.sqrt();
-    let yaw = if c > -1.0 {
-        if c <= 1.0 { acos_approx(c) } else { 0.0 }
+    let yaw = if !(c <= -1.0) {
+        if !(c > 1.0) { acos_approx(c) } else { 0.0 }
     } else {
         std::f32::consts::PI
     };
