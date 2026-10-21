@@ -521,6 +521,18 @@ fn held_roles_add_inherit_remove_and_pack() {
     assert_eq!(ids, [(6, true, 0), (3, false, 1)]);
     assert_eq!(list[0].weight, 0.5);
     assert_eq!(list[1].weight, 1.0);
+    // The share is computed in double precision: 5 % is 0.05 rounded once
+    // to f32, not 5.0f32 · 0.01f32.
+    let mut db5 = RoleDb::default();
+    db5.roles.push(Role {
+        id: 2,
+        weight: 5,
+        ..Role::default()
+    });
+    let mut five = Vec::new();
+    add_held_role(&db5, &mut five, 2);
+    assert_eq!(five[0].weight, 0.05);
+    assert_ne!(five[0].weight, 5.0f32 * 0.01f32);
     // Asking again changes nothing and reports the role as held.
     assert!(add_held_role(&db, &mut list, 6));
     assert_eq!(list.len(), 2);

@@ -289,10 +289,9 @@ pub fn add_held_role(db: &RoleDb, list: &mut Vec<HeldRole>, role: u32) -> bool {
         }
         let record = db.get(id);
         if !found {
-            let weight = record.map_or(0, |r| r.weight & 0xFF) as f32 * 0.01;
             added.push(HeldRole {
                 id,
-                weight,
+                weight: record.map_or(0.0, Role::share),
                 explicit: id == role,
                 inherited: u8::from(id != role),
                 values: Vec::new(),

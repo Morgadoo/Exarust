@@ -503,4 +503,62 @@ mod tests {
         assert_eq!(IdleState::of(6), IdleState::Wait);
         assert_eq!(IdleState::of(99), IdleState::Wait);
     }
+
+    /// The shipped init scripts are single assignments the old statement
+    /// splitter ran; through the interpreter every one gives the same
+    /// activities (for held values 0 and 9) and reports nothing.
+    #[test]
+    fn shipped_init_scripts_match_their_assignments() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let db = RoleDb::parse(resource.get("charroles.rdb").unwrap()).unwrap();
+        // The assignments the scripts make, read without the interpreter.
+        let expect = |record: &Role, values: &[u32], out: &mut Assigned| {
+            let text: String = record.init_script.iter().map(|&c| c as char).collect();
+            for statement in text.split(';') {
+                let statement: String = statement.chars().filter(|c| !c.is_whitespace()).collect();
+                let Some((target, value)) = statement.split_once('=') else {
+                    continue;
+                };
+                let value = match value.strip_prefix("Role.") {
+                    Some(name) => record
+                        .variables
+                        .iter()
+                        .position(|v| v.name.bytes().eq_ignore_ascii_case(name.as_bytes()))
+                        .and_then(|i| values.get(i))
+                        .map_or(0, |v| *v as i32),
+                    None => value.parse().unwrap(),
+                };
+                match target {
+                    "Actor.Activity" => out.activity = value,
+                    "Actor.IdleActivity" => out.idle_activity = value,
+                    other => panic!("role {}: {other}", record.id),
+                }
+            }
+        };
+        let mut scripted = 0;
+        for record in db.roles.iter().filter(|r| !r.init_script.is_empty()) {
+            for fill in [0, 9] {
+                let values = vec![fill; record.variables.len()];
+                let mut want = Assigned {
+                    activity: -1,
+                    idle_activity: -1,
+                };
+                expect(record, &values, &mut want);
+                let mut got = Assigned {
+                    activity: -1,
+                    idle_activity: -1,
+                };
+                let mut skipped = Vec::new();
+                run_init(record, &values, &mut got, &mut skipped);
+                assert_eq!(got, want, "role {}", record.id);
+                assert!(skipped.is_empty(), "role {}: {skipped:?}", record.id);
+            }
+            scripted += 1;
+        }
+        assert!(scripted >= 5, "{scripted} roles with init scripts");
+    }
 }
