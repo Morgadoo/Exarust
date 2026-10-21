@@ -574,7 +574,13 @@ m₁ = pᵢ − pᵢ₋₁                                     last segment
 ```
 
 So the curve leaves its first key with no slope and arrives at its last
-along the last chord: not symmetric.
+along the last chord: not symmetric. A time that is not a number (the
+original's unordered compare fails) takes the first key, and the last key's
+time is the track's duration.
+
+The original's other key controller, the linear one, is never built by a
+stored chunk; it evaluates the same clamped range with the straight chord
+between the bracketing keys (`KeyTrack::linear_position_at`).
 
 **Shipped.** One track in all the data (`exa-tool corpus tracks`): the
 brick of the secret switch (`Objects.rpk` `uwa01 brkswtch`, node `Box001`

@@ -322,7 +322,7 @@ impl Animator {
         let rotations = sources
             .iter()
             .zip(&target.rotations)
-            .map(|(&a, &z)| a.slerp(to_quat(z), b.f))
+            .map(|(&a, &z)| super::slerp(a, to_quat(z), b.f))
             .collect();
         let mut root = root_from.lerp(Vec3::from(target.root), b.f);
         if in_place {
@@ -440,7 +440,7 @@ pub fn overlay_toward(pose: &mut ClipPose, over: &Clip, b: &Bracket, weight: f32
     };
     for (i, q) in pose.rotations.iter_mut().enumerate() {
         if let (Some(&from), Some(&to)) = (from.rotations.get(i), to.rotations.get(i)) {
-            *q = q.slerp(to_quat(from).slerp(to_quat(to), b.f), weight);
+            *q = super::slerp(*q, super::slerp(to_quat(from), to_quat(to), b.f), weight);
         }
     }
 }

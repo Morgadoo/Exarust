@@ -115,37 +115,7 @@ pub fn clock(mode: PlayMode, duration: f32, elapsed: f32) -> (f32, bool) {
 /// for a track without keys or a time no key brackets (a NaN time), which
 /// leaves the node as it is, as the original does.
 pub fn position_at(track: &KeyTrack, t: f32) -> Option<Vec3> {
-    let keys = &track.keys;
-    let p = |i: usize| Vec3::from(keys[i].position);
-    let time = |i: usize| keys[i].time;
-    let last = keys.len().checked_sub(1)?;
-    // Every comparison with a NaN fails, as the original's: a NaN time
-    // takes neither end and brackets no key.
-    if t <= time(0) {
-        return Some(p(0));
-    }
-    if t >= time(last) {
-        return Some(p(last));
-    }
-    let i = (1..=last).find(|&i| t <= time(i))?;
-    let span = time(i) - time(i - 1);
-    let s = (t - time(i - 1)) / span;
-    let (s2, s3) = (s * s, s * s * s);
-    let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
-    let h01 = 3.0 * s2 - 2.0 * s3;
-    let h10 = s3 - 2.0 * s2 + s;
-    let h11 = s3 - s2;
-    let leave = if i < 2 {
-        Vec3::ZERO
-    } else {
-        (p(i) - p(i - 2)) * (span / (time(i) - time(i - 2)))
-    };
-    let arrive = if i < last {
-        (p(i + 1) - p(i - 1)) * (span / (time(i + 1) - time(i - 1)))
-    } else {
-        p(i) - p(i - 1)
-    };
-    Some(p(i - 1) * h00 + p(i) * h01 + leave * h10 + arrive * h11)
+    track.position_at(t).map(Vec3::from)
 }
 
 /// F7 starts every track of the level.
@@ -276,14 +246,14 @@ mod tests {
     }
 
     /// Outside the keys the curve holds the first and the last position;
-    /// a NaN time leaves the node as it is; keys out of order bracket by
-    /// the first key at or past the time.
+    /// a NaN time takes the first key, as the original's unordered compare
+    /// does; keys out of order bracket by the first key at or past the time.
     #[test]
     fn curve_clamps_outside_the_keys() {
         let mut b = brick();
         b.keys[3].position = [1.0, 2.0, 3.0];
         assert_eq!(position_at(&b, -1.0), Some(Vec3::ZERO));
-        assert_eq!(position_at(&b, f32::NAN), None);
+        assert_eq!(position_at(&b, f32::NAN), Some(Vec3::ZERO));
         assert_eq!(position_at(&b, 3.0), Some(Vec3::new(1.0, 2.0, 3.0)));
         assert_eq!(position_at(&b, 9.0), Some(Vec3::new(1.0, 2.0, 3.0)));
         let one = KeyTrack {

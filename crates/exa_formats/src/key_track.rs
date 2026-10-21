@@ -65,6 +65,85 @@ pub struct KeyTrack {
 }
 
 impl KeyTrack {
+    /// The time of the last key, the track's duration; 0 for no keys. The
+    /// original reads the time of the key its stored last index names.
+    pub fn duration(&self) -> f32 {
+        self.keys.last().map_or(0.0, |key| key.time)
+    }
+
+    /// Where the track's curve puts its node at time `t` (seconds), as a
+    /// stored track evaluates it: the Catmull-Rom curve of the original's
+    /// keyframe controller (the only curve the stored chunk builds).
+    ///
+    /// The first key's position holds up to its time, the last key's from
+    /// its time on. In between, the segment from the first key at or past
+    /// `t` back to the key before it is the cubic Hermite curve with
+    /// tangents from the neighbouring keys, each scaled by the share of its
+    /// own key span the segment takes. The first segment leaves its key
+    /// with no slope, the last arrives along its own chord. A NaN time
+    /// takes the first key, as the original's unordered comparison does.
+    pub fn position_at(&self, t: f32) -> Option<[f32; 3]> {
+        let keys = &self.keys;
+        let first = keys.first()?.position;
+        let last = keys.len().checked_sub(1)?;
+        let at_or_after_first = keys[0].time <= t;
+        if !at_or_after_first || t == keys[0].time {
+            return Some(first);
+        }
+        let before_last = t < keys[last].time;
+        if !before_last {
+            return Some(keys[last].position);
+        }
+        let i = (1..=last).find(|&i| t <= keys[i].time)?;
+        let span = keys[i].time - keys[i - 1].time;
+        let f = (t - keys[i - 1].time) / span;
+        let (f2, f3) = (f * f, f * f * f);
+        let p = |i: usize| keys[i].position;
+        let mut out = scale(p(i - 1), (f3 * 2.0 - f2 * 3.0) + 1.0);
+        let coefficient = f2 * 3.0 + f3 * -2.0;
+        out = add_scaled(out, p(i), coefficient);
+        let (leave, leave_scale) = if i < 2 {
+            (sub(p(i), p(i - 1)), 0.0)
+        } else {
+            let scale = span / (keys[i].time - keys[i - 2].time);
+            (sub(p(i), p(i - 2)), scale)
+        };
+        out = add_scaled(out, leave, ((f3 - f2 * 2.0) + f) * leave_scale);
+        let (arrive, arrive_scale) = if i < last {
+            let scale = span / (keys[i + 1].time - keys[i - 1].time);
+            (sub(p(i + 1), p(i - 1)), scale)
+        } else {
+            (sub(p(i), p(i - 1)), 1.0)
+        };
+        out = add_scaled(out, arrive, (f3 - f2) * arrive_scale);
+        Some(out)
+    }
+
+    /// Where a linear track puts its node at time `t`: the first key's
+    /// position up to its time, the last key's from its time on, and in
+    /// between the straight line between the bracketing keys. This is the
+    /// original's other keyframe controller, which no stored chunk builds.
+    /// A NaN time takes the first key, as the original does.
+    pub fn linear_position_at(&self, t: f32) -> Option<[f32; 3]> {
+        let keys = &self.keys;
+        let first = keys.first()?.position;
+        let last = keys.len().checked_sub(1)?;
+        let at_or_after_first = keys[0].time <= t;
+        if !at_or_after_first || t == keys[0].time {
+            return Some(first);
+        }
+        let before_last = t < keys[last].time;
+        if !before_last {
+            return Some(keys[last].position);
+        }
+        let i = (1..=last).find(|&i| t <= keys[i].time)?;
+        let from = keys[i - 1].time;
+        let f = (t - from) / (keys[i].time - from);
+        let a = keys[i - 1].position;
+        let b = keys[i].position;
+        Some(std::array::from_fn(|k| a[k] + (b[k] - a[k]) * f))
+    }
+
     /// Decodes a `0x3AC1` payload.
     pub fn parse(b: &[u8]) -> Result<Self> {
         let word = |o: usize| -> Result<u32> { crate::read_u32(b, o) };
@@ -100,6 +179,21 @@ impl KeyTrack {
             keys,
         })
     }
+}
+
+/// A stored position scaled by `s` ([guess: the engine's vector scale]).
+fn scale(v: [f32; 3], s: f32) -> [f32; 3] {
+    [v[0] * s, v[1] * s, v[2] * s]
+}
+
+/// `a + v · s`, one component per sum.
+fn add_scaled(a: [f32; 3], v: [f32; 3], s: f32) -> [f32; 3] {
+    [a[0] + v[0] * s, a[1] + v[1] * s, a[2] + v[2] * s]
+}
+
+/// `a − b`.
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 #[cfg(test)]
@@ -142,6 +236,80 @@ mod tests {
         assert_eq!(t.keys[1].time, 1.0);
         assert_eq!(t.keys[1].position, [0.0, 0.0, -5.0 * CENTIMETRES_TO_METRES]);
         assert_eq!(t.keys[3].time, 3.0);
+    }
+
+    /// Three keys at 0, 1 and 3 s. The Catmull-Rom curve and the linear
+    /// one agree on the keys and on the midpoint of the first segment (the
+    /// first segment has no slope at its start and its end tangent is
+    /// scaled by the segment's share, 1/3, of the two-second key span).
+    fn three_keys() -> KeyTrack {
+        KeyTrack {
+            mode: PlayMode::Free,
+            duration: 3.0,
+            keys: vec![
+                PositionKey {
+                    time: 0.0,
+                    position: [0.0, 0.0, 0.0],
+                },
+                PositionKey {
+                    time: 1.0,
+                    position: [10.0, 0.0, 0.0],
+                },
+                PositionKey {
+                    time: 3.0,
+                    position: [0.0, 0.0, 20.0],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn the_catmull_rom_curve_uses_scaled_neighbour_tangents() {
+        let t = three_keys();
+        assert_eq!(t.duration(), 3.0);
+        assert_eq!(t.position_at(1.0), Some([10.0, 0.0, 0.0]));
+        assert_eq!(t.position_at(3.0), Some([0.0, 0.0, 20.0]));
+        assert_eq!(t.position_at(9.0), Some([0.0, 0.0, 20.0]));
+        // The end tangent's coefficient (f³ − f²) times the 1/3 span share
+        // is −1/24; the curve is half way along the chord, less 5/6 in z.
+        let mid = t.position_at(0.5).unwrap();
+        assert!((mid[0] - 5.0).abs() < 1e-6, "{mid:?}");
+        assert!((mid[2] + 0.833_333_4).abs() < 1e-6, "{mid:?}");
+        // The second segment: its start tangent is (p2 − p0) by 2/3 and its
+        // end tangent (the last one) is the chord p2 − p1.
+        let second = t.position_at(2.0).unwrap();
+        assert!((second[0] - 6.25).abs() < 1e-6, "{second:?}");
+        assert!((second[2] - 9.166_667).abs() < 1e-6, "{second:?}");
+        // A NaN time takes the first key, as the unordered compare does.
+        assert_eq!(t.position_at(f32::NAN), Some([0.0, 0.0, 0.0]));
+        assert_eq!(t.position_at(-1.0), Some([0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn the_linear_track_is_the_bracketing_chord() {
+        let t = three_keys();
+        assert_eq!(t.linear_position_at(0.5), Some([5.0, 0.0, 0.0]));
+        assert_eq!(t.linear_position_at(2.0), Some([5.0, 0.0, 10.0]));
+        assert_eq!(t.linear_position_at(1.0), Some([10.0, 0.0, 0.0]));
+        assert_eq!(t.linear_position_at(f32::NAN), Some([0.0, 0.0, 0.0]));
+        let one = KeyTrack {
+            mode: PlayMode::Free,
+            duration: 2.0,
+            keys: vec![PositionKey {
+                time: 2.0,
+                position: [1.0, 2.0, 3.0],
+            }],
+        };
+        assert_eq!(one.duration(), 2.0);
+        assert_eq!(one.position_at(0.0), Some([1.0, 2.0, 3.0]));
+        assert_eq!(one.linear_position_at(5.0), Some([1.0, 2.0, 3.0]));
+        let none = KeyTrack {
+            mode: PlayMode::Free,
+            duration: 0.0,
+            keys: Vec::new(),
+        };
+        assert_eq!(none.duration(), 0.0);
+        assert_eq!(none.position_at(0.0), None);
     }
 
     #[test]

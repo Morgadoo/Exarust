@@ -420,10 +420,47 @@ pub fn sample(clip: &Clip, time: f32) -> Option<(Vec<Quat>, Vec3)> {
         .rotations
         .iter()
         .zip(&z.rotations)
-        .map(|(ra, rz)| to_quat(*ra).slerp(to_quat(*rz), b.f))
+        .map(|(ra, rz)| slerp(to_quat(*ra), to_quat(*rz), b.f))
         .collect();
     let root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
     Some((rotations, root))
+}
+
+/// The original's quaternion slerp, shortest way round: the weight of the
+/// end is `t`, of the start `1 − t`.
+///
+/// The dot product decides the sign: with a negative dot the end is
+/// negated and its dot made positive. When `1 − dot` is at most 1.19e-7
+/// the two rotations are taken as equal and the weights are the plain
+/// `t` and `1 − t`; otherwise the angle is `acos(dot)` and the weights are
+/// `sin(t·angle)` and `sin((1 − t)·angle)` over `sin(angle)`. The sum is
+/// `w_end · end + w_start · start` per component. The original uses its
+/// own sine and arc-cosine helpers; Exarust's `sin`/`acos` stand in.
+/// Called by the clip samplers of the body's motion controller.
+pub fn slerp(a: Quat, b: Quat, t: f32) -> Quat {
+    let mut dot = b.w * a.w + b.z * a.z + b.y * a.y + b.x * a.x;
+    let end = if 0.0 <= dot {
+        b
+    } else {
+        dot = -dot;
+        Quat::from_xyzw(-b.x, -b.y, -b.z, -b.w)
+    };
+    let (w_start, w_end) = if 1.0 - dot <= 1.192_09e-7 {
+        (1.0 - t, t)
+    } else {
+        let angle = dot.acos();
+        let sin_angle = angle.sin();
+        (
+            ((1.0 - t) * angle).sin() / sin_angle,
+            (t * angle).sin() / sin_angle,
+        )
+    };
+    Quat::from_xyzw(
+        w_end * end.x + w_start * a.x,
+        w_end * end.y + w_start * a.y,
+        w_end * end.z + w_start * a.z,
+        w_end * end.w + w_start * a.w,
+    )
 }
 
 /// A pose: each bone's rotation (bone − 1 indexed), and the root position.
@@ -540,6 +577,29 @@ mod tests {
         let animator = Animator::new(DEFAULT_MOVESET, "Idle");
         assert!(motions.clip(&animator, "Idle").is_none());
         assert!(motions.table("Other", MovesetConfig::NONE).is_none());
+    }
+
+    /// The shortest-way slerp: half way from no turn to +90° about Y is
+    /// +45° (axis y = sin 22.5°), and to −90° it is −45°; the ends are
+    /// returned at 0 and 1, and two rotations closer than 1.19e-7 in dot
+    /// product are blended linearly.
+    #[test]
+    fn slerp_takes_the_shortest_way() {
+        let a = Quat::IDENTITY;
+        let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let half = slerp(a, quarter, 0.5);
+        let want = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 / 2.0);
+        assert!(half.dot(want).abs() > 1.0 - 1e-6, "{half:?}");
+        let back = slerp(a, Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2), 0.5);
+        let want = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2 / 2.0);
+        assert!(back.dot(want).abs() > 1.0 - 1e-6, "{back:?}");
+        assert!(slerp(a, quarter, 0.0).dot(a).abs() > 1.0 - 1e-6);
+        assert!(slerp(a, quarter, 1.0).dot(quarter).abs() > 1.0 - 1e-6);
+        // 1 − dot below 1.19e-7: a plain weighted sum.
+        let close = Quat::from_rotation_y(1e-8);
+        let blended = slerp(a, close, 0.25);
+        assert_eq!(blended.w, 0.75 + 0.25 * close.w);
+        assert_eq!(blended.y, 0.25 * close.y);
     }
 
     fn key(time: f32, angle: f32, y: f32) -> Key {
