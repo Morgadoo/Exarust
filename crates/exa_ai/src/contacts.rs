@@ -358,6 +358,37 @@ pub fn wakes(asleep: bool, best_level: i32) -> bool {
     asleep && 0 < best_level
 }
 
+/// The nearby list holds this many characters.
+pub const MOST_NEARBY: usize = 16;
+/// A character farther than this (cm), squared, is not nearby.
+pub const NEARBY_CM2: f32 = 9e6;
+
+/// The nearby characters of a brain: the characters its room and the
+/// rooms its exits lead to hold, the ones in sight within 3000 cm, nearest
+/// first, at most sixteen. `around` gives each candidate's id, squared
+/// distance and whether the brain sees it, in the rooms' order; a new
+/// candidate is placed by its distance and a full list drops the farthest
+/// when the new one sorts past the last [guess: equal distances keep the
+/// order the rooms give them].
+pub fn nearby(around: &[(u64, f32, bool)]) -> Vec<(u64, f32)> {
+    let mut kept: Vec<(u64, f32)> = Vec::with_capacity(MOST_NEARBY);
+    for &(id, squared, seen) in around {
+        if !seen || squared > NEARBY_CM2 || squared.is_nan() {
+            continue;
+        }
+        let d = squared.sqrt();
+        let at = kept.partition_point(|&(_, other)| other < d);
+        if MOST_NEARBY <= at {
+            continue;
+        }
+        kept.insert(at, (id, d));
+        if MOST_NEARBY < kept.len() {
+            kept.pop();
+        }
+    }
+    kept
+}
+
 /// The smallest float the integration counts as seen.
 pub const TINY: f32 = f32::from_bits(0x33ff_ffd7);
 /// The notice scale a quiet brain takes (the f32 of 0.99).
@@ -904,6 +935,25 @@ pub fn refresh_slot(contacts: &[ContactRecord], cursor: usize) -> Option<usize> 
         Some(at)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod nearby_tests {
+    use super::*;
+
+    #[test]
+    fn the_nearby_list_keeps_sixteen_nearest_seen_characters() {
+        let mut around = vec![(1, 9e6, true), (2, 9e6 + 1.0, true), (3, 100.0, false)];
+        for id in 0..20 {
+            around.push((100 + id, (id * id) as f32, true));
+        }
+        let kept = nearby(&around);
+        assert_eq!(kept.len(), MOST_NEARBY);
+        assert!(kept.windows(2).all(|w| w[0].1 <= w[1].1));
+        assert_eq!(kept[0], (100, 0.0));
+        assert_eq!(kept[15], (115, 15.0));
+        assert!(!kept.iter().any(|&(id, _)| id == 1 || id == 3));
     }
 }
 
