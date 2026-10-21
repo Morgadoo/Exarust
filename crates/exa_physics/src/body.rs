@@ -327,14 +327,13 @@ pub fn push_fraction(push: Vec3, local_point: Vec3) -> f32 {
     }
     let dot = push.x * local_point.x + push.y * local_point.y + push.z * local_point.z;
     let scaled = dot * PUSH_WEIGHT;
-    if scaled >= PUSH_EPSILON {
-        if scaled < len2 {
-            1.0 - scaled / len2
-        } else {
-            0.0
-        }
-    } else {
+    // Only a strictly small value (not a NaN) takes the full push.
+    if scaled < PUSH_EPSILON {
         1.0
+    } else if len2 > scaled {
+        1.0 - scaled / len2
+    } else {
+        0.0
     }
 }
 
