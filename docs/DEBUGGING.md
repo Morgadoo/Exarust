@@ -36,6 +36,22 @@ In `play arena`, which has no opponent's start, the duellist stands 2.5 m
 in front of the player, facing it (`--at` moves both); in an arena match
 it takes the ring's other slot.
 
+## Debug commands
+
+The original has a named debug-command registry: units register a name and
+a handler, a line is split at its first space, the command is matched with
+ASCII case ignored, and the handler gets the rest. Two commands are
+registered: `cshd` (reload the shader programs) and `msm` (smooth a
+scene's meshes). The settings file's `KeyDef` lines hold lists of such
+lines, run one after another with a frame between; the first six are the
+ones the original binds. `exa_game::commands` is that registry and queue;
+`exarust` registers `cshd` (`exa_render::shader_reload::reload` asks the
+asset server to rebuild every embedded shader) and `msm`. Example:
+
+```
+shift+S: cshd; msm
+```
+
 ## Flags
 
 | flag | effect |

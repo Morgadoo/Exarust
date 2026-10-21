@@ -14,6 +14,7 @@ pub mod mesh_weld;
 pub mod model;
 pub mod morph;
 pub mod morph_controller;
+pub mod noise;
 pub mod paint;
 pub mod polyhedra;
 pub mod skin;

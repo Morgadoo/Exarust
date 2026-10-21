@@ -30,8 +30,7 @@ pub mod terrain;
 
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
-use exa_formats::objdb::{self, Appearance, Item};
-use exa_formats::rdb::Database;
+use exa_formats::objdb::{Appearance, Item};
 use exa_formats::rfc::{Light, Scene};
 
 pub struct WorldPlugin;
@@ -67,6 +66,20 @@ pub struct PartBounds {
 #[derive(Component)]
 pub struct LevelRoot {
     pub name: String,
+}
+
+/// The level's object database: the base tier and its string library, kept
+/// for later object requests, as the original's per-scene object manager
+/// is. The local tier stays in the level's own database chunk.
+#[derive(Resource, Clone)]
+pub struct SceneObjectDb(pub std::sync::Arc<exa_formats::objdb::ObjectDb>);
+
+impl std::ops::Deref for SceneObjectDb {
+    type Target = exa_formats::objdb::ObjectDb;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 /// A placed object of the object database, on its model root: the record
@@ -631,28 +644,30 @@ pub fn spawn_model_nodes(
             ))
             .id();
         let mut parts = Vec::with_capacity(node.parts.len());
-        for (mesh, material) in &node.parts {
-            let part = commands
-                .spawn((MeshMaterial3d(material.clone()), ChildOf(e)))
-                .id();
-            match node.skin_bone {
-                Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
-                    bone,
-                    mesh: mesh.clone(),
-                }),
-                None => commands.entity(part).insert(Mesh3d(mesh.clone())),
-            };
-            if node.is_skin {
-                commands.entity(part).insert(exa_assets::RaceSkinPart);
+        if !node.placeholder {
+            for (mesh, material) in &node.parts {
+                let part = commands
+                    .spawn((MeshMaterial3d(material.clone()), ChildOf(e)))
+                    .id();
+                match node.skin_bone {
+                    Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
+                        bone,
+                        mesh: mesh.clone(),
+                    }),
+                    None => commands.entity(part).insert(Mesh3d(mesh.clone())),
+                };
+                if node.is_skin {
+                    commands.entity(part).insert(exa_assets::RaceSkinPart);
+                }
+                // The level the mesh ships with. Builders that set their own
+                // (grid sets, floors) replace it.
+                if node.shadow_bias != 0 {
+                    commands
+                        .entity(part)
+                        .insert(exa_render::lights::ShadowBias(node.shadow_bias));
+                }
+                parts.push(part);
             }
-            // The level the mesh ships with. Builders that set their own
-            // (grid sets, floors) replace it.
-            if node.shadow_bias != 0 {
-                commands
-                    .entity(part)
-                    .insert(exa_render::lights::ShadowBias(node.shadow_bias));
-            }
-            parts.push(part);
         }
         if !parts.is_empty() {
             commands
@@ -660,6 +675,10 @@ pub fn spawn_model_nodes(
                 .insert(node_parts::NodeParts::new(parts.clone()));
         }
         parts_of.push(parts);
+        if node.placeholder {
+            entities.push(e);
+            continue;
+        }
         if let Some(light) = &node.light {
             commands
                 .entity(e)
@@ -1063,22 +1082,20 @@ impl LevelLoad {
             }
             Stage::Props => {
                 while let Some(prop) = self.scene.props.get(self.prop_entities.len()) {
+                    // The original searches the project's object libraries
+                    // for the prop's entry; `Objlib` is the usual one.
+                    let kind = loader.object_pack(&prop.object).unwrap_or(PackKind::Objlib);
                     // A prop whose materials do not warm up in time waits
                     // for the next step.
                     if let Some(deadline) = started.checked_add(budget)
-                        && !loader.warm_materials(PackKind::Objlib, &prop.object, deadline)
+                        && !loader.warm_materials(kind, &prop.object, deadline)
                     {
                         break;
                     }
                     let placement = transform_from_rows(&prop.transform);
                     self.min = self.min.min(placement.translation);
                     self.max = self.max.max(placement.translation);
-                    let e = match placement_base(
-                        loader,
-                        PackKind::Objlib,
-                        &prop.object,
-                        &prop.attachments,
-                    ) {
+                    let e = match placement_base(loader, kind, &prop.object, &prop.attachments) {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
                             let owned;
@@ -1114,13 +1131,29 @@ impl LevelLoad {
                 }
                 if self.prop_entities.len() == self.scene.props.len() {
                     self.link_props(commands);
-                    self.global_items = loader
-                        .game
-                        .pack(PackKind::Resource)
-                        .and_then(|p| p.get("objdb.rdb"))
-                        .and_then(|b| Database::parse(b).ok())
-                        .map(|db| objdb::items(&db))
-                        .unwrap_or_default();
+                    // The per-scene object manager's data: the base tier
+                    // with its string library. The original keeps the
+                    // manager on the scene for every later object request;
+                    // here the resource holds the same owned database (the
+                    // local tier comes from the level itself).
+                    let resource = loader.game.pack(PackKind::Resource);
+                    let db = resource.and_then(|p| p.get("objdb.rdb"));
+                    let strings = resource
+                        .and_then(|p| p.get("objstrings.rdb"))
+                        .unwrap_or(&[]);
+                    match db.and_then(|b| match exa_formats::objdb::ObjectDb::parse(b, strings) {
+                        Ok(objects) => Some(objects),
+                        Err(e) => {
+                            warn!("objdb.rdb: {e}");
+                            None
+                        }
+                    }) {
+                        Some(objects) => {
+                            self.global_items = objects.items();
+                            commands.insert_resource(SceneObjectDb(std::sync::Arc::new(objects)));
+                        }
+                        None => self.global_items.clear(),
+                    }
                     self.stage = Stage::PlacedObjects;
                 }
             }
@@ -1314,6 +1347,7 @@ impl LevelLoad {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::objdb;
     use bevy::ecs::world::CommandQueue;
     use exa_assets::{GameData, ModelCache};
     use exa_formats::characters::{
@@ -1582,6 +1616,7 @@ mod tests {
             tracks: Vec::new(),
             shadow_bias: 0,
             is_skin: false,
+            placeholder: false,
         }
     }
 

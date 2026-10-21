@@ -1087,6 +1087,7 @@ mod tests {
             tracks: Vec::new(),
             shadow_bias: 0,
             is_skin: false,
+            placeholder: false,
         }
     }
 

@@ -458,6 +458,18 @@ controls page's `InputMode` drives its controller flag. There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 
+## Debug commands
+
+`commands` is the original's named debug-command registry: units register
+a name and a handler (`cshd` from the shader programs, `msm` from the mesh
+subdivider), a line splits at its first space into the command and its
+argument, the command is matched with ASCII case ignored, and the first
+registered match runs. The settings file's `KeyDef` hotkeys
+(`settings_ini::Hotkey`) become `KeyCommands`; the first six the original
+binds run their lines from `CommandQueue`, one line per frame, as the
+settings unit does. `exarust` registers `cshd` (reload every embedded
+render shader) and `msm`.
+
 ## In-game screens
 
 `gui_screens` runs the in-game unit's screens for the player: the I and J

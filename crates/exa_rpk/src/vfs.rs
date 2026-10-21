@@ -88,23 +88,81 @@ impl GameData {
         })?;
         let project = Project::parse(&bytes)?;
         let mut packs = BTreeMap::new();
+        // The resource pack named by the project. The project stores its
+        // path without the extension (`Resource`); the original resolves it
+        // against the project folder and appends `.rpk`.
+        let resource_file = Project::resolve_path(
+            &root,
+            &format!("{}.rpk", project.resource_pack.trim_end_matches(".rpk")),
+        );
+        let resource = MappedArchive::open(&resource_file)?;
+        packs.insert(PackKind::Resource, resource);
+        // The project's object and texture libraries must be there; a
+        // missing one is fatal ("Unable to locate data files.").
+        for name in project
+            .object_libraries
+            .iter()
+            .chain(&project.texture_libraries)
+        {
+            let kind = PackKind::from_name(name).ok_or_else(|| {
+                Error::Malformed(format!("project names unknown library {name:?}"))
+            })?;
+            let path = Project::resolve_path(&root, &format!("{}.rpk", kind.file_stem()));
+            if !path.exists() {
+                return Err(Error::Malformed(format!(
+                    "{} has no {}",
+                    root.display(),
+                    path.display()
+                )));
+            }
+            packs.insert(kind, MappedArchive::open(&path)?);
+        }
+        // Exarust also uses the packs the original opens on demand later
+        // (items, characters, sounds, …); they are optional here.
         for kind in PackKind::ALL {
+            if packs.contains_key(&kind) {
+                continue;
+            }
             let path = root.join(format!("{}.rpk", kind.file_stem()));
             if path.exists() {
                 packs.insert(kind, MappedArchive::open(&path)?);
             }
-        }
-        if !packs.contains_key(&PackKind::Resource) {
-            return Err(Error::Malformed(format!(
-                "{} has no Resource.rpk",
-                root.display()
-            )));
         }
         Ok(Self {
             root,
             project,
             packs,
         })
+    }
+
+    /// The original's user folder: `<root>/Userdata` when it exists, else
+    /// `<APPDATA>/<project name>` (see [`Project::user_folder`]).
+    pub fn user_folder(&self) -> PathBuf {
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+        Project::user_folder(&self.root, &self.project.name, appdata.as_deref())
+    }
+
+    /// A project path resolved against the installation folder.
+    pub fn resolve_path(&self, path: &str) -> PathBuf {
+        Project::resolve_path(&self.root, path)
+    }
+
+    /// The object libraries the project names, as opened packs, in the
+    /// project's order.
+    pub fn object_libraries(&self) -> impl Iterator<Item = &MappedArchive> {
+        self.project
+            .object_libraries
+            .iter()
+            .filter_map(|name| self.pack(PackKind::from_name(name)?))
+    }
+
+    /// The texture libraries the project names, as opened packs, in the
+    /// project's order.
+    pub fn texture_libraries(&self) -> impl Iterator<Item = &MappedArchive> {
+        self.project
+            .texture_libraries
+            .iter()
+            .filter_map(|name| self.pack(PackKind::from_name(name)?))
     }
 
     pub fn root(&self) -> &Path {

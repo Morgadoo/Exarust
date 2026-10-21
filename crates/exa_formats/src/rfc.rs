@@ -161,6 +161,13 @@ impl Node {
     /// ([`crate::level::Prop::STATIC`]) sets it on every node of the prop.
     pub const STATIC: u32 = 0x8_0000;
 
+    /// Node flag: a child an object clone leaves as an empty placeholder.
+    /// The original's object-library clone keeps the node's transform but
+    /// gives it no body; the node is filled in later by the game (a door's
+    /// moving part, an item's attached piece). Seen in shipped prop and
+    /// object models.
+    pub const PLACEHOLDER: u32 = 0x8_000;
+
     /// Whether the node is marked as level geometry ([`Node::STATIC`]).
     pub fn is_static(&self) -> bool {
         self.flags & Self::STATIC != 0

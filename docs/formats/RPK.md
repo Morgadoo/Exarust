@@ -28,7 +28,19 @@ u32  table_len    bytes of the table, a multiple of 32
 ### Variant `02 0C BF AF`
 
 `Resource/objstrings.rdb` starts with magic `0xAFBF0C02` and a different
-record shape (16-byte records). Not parsed yet.
+record shape (16-byte records); it is the object string library
+([`exa_formats::objstrings`], Object database below).
+
+## In-memory packs
+
+The same table layout is edited in memory by the original's material and
+shader libraries (`TMemBlockLibrary`): the table is sorted by the 16-byte
+lower-cased name; adding a name inserts a zeroed entry, replacing a
+payload overwrites it in place at the same length, else closes the old
+bytes' hole, moves later payloads and offsets, and appends the new bytes,
+and deleting replaces with an empty payload and closes the table up.
+`exa_rpk::MemArchive` reproduces those edits and writes the pack back
+(byte for byte when nothing was edited).
 
 ## Project file (`.rfp`)
 
@@ -46,9 +58,15 @@ str = u32 length + bytes (no terminator)
 ```
 
 The interpretation of the three counts is inferred (it consumes the file
-exactly). The other packs (`Apparel`, `Characters`, `CharExt`, `Components`,
-`ComponentTex`, `Emblems`, `Factories`, `Objects`, `Sound`) are not listed and
-are mounted by the engine by name.
+exactly). The resource pack path is resolved against the project's folder
+and gets `.rpk` appended; a path containing a drive (`:`) is taken as it
+is. The listed object and texture libraries are opened at start-up and a
+missing one is fatal ("Unable to locate data files."). The user folder is
+`<project folder>/Userdata` when it exists, else `%APPDATA%/<name>`
+(roaming appdata; `Project::user_folder`). The other packs (`Apparel`,
+`Characters`, `CharExt`, `Components`, `ComponentTex`, `Emblems`,
+`Factories`, `Objects`, `Sound`) are not listed and are mounted by the
+engine by name.
 
 ## Inventory of a retail install
 

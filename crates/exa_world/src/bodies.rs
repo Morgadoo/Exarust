@@ -219,7 +219,15 @@ pub fn register_bodies(
     let shape: Vec<_> = model
         .nodes
         .iter()
-        .map(|n| (n.parent, n.rigid.as_ref().map(|r| r.body.as_ref())))
+        .map(|n| {
+            (
+                n.parent,
+                (!n.placeholder)
+                    .then_some(n.rigid.as_ref())
+                    .flatten()
+                    .map(|r| r.body.as_ref()),
+            )
+        })
         .collect();
     let (counts, trees) = plan(&shape, placement);
     for tree in trees {

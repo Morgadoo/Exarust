@@ -33,6 +33,34 @@
 use std::collections::VecDeque;
 
 use crate::stream::RingQueue;
+use exa_formats::data_stream::DataStream;
+
+/// The stream thread's own buffers: the chunk stream and the record parser
+/// it reads level objects, database objects and characters with. The
+/// original creates both in its constructor; the scheduler above runs on
+/// whichever executor drives it (Bevy's task pool here).
+#[derive(Debug, Default)]
+pub struct StreamThread {
+    chunk_stream: DataStream,
+    parser: DataStream,
+}
+
+impl StreamThread {
+    /// A thread with empty buffers, as the constructor leaves them.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The chunk stream.
+    pub fn chunk_stream(&mut self) -> &mut DataStream {
+        &mut self.chunk_stream
+    }
+
+    /// The record parser.
+    pub fn parser(&mut self) -> &mut DataStream {
+        &mut self.parser
+    }
+}
 
 /// A completion callback, run on the main thread after its job.
 pub type Completion = Box<dyn FnOnce() + Send>;
@@ -1208,5 +1236,16 @@ mod tests {
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].node, 11);
         assert!(stream.wait_for_characters(&mut builders, || {}).is_empty());
+    }
+
+    #[test]
+    fn a_stream_thread_starts_with_its_two_empty_buffers() {
+        let mut thread = StreamThread::new();
+        assert_eq!(thread.chunk_stream().size(), 0);
+        assert_eq!(thread.parser().size(), 0);
+        thread.chunk_stream().write_u32(0x3D23);
+        thread.parser().write_u32(7);
+        assert_eq!(thread.chunk_stream().bytes(), &0x3D23u32.to_le_bytes());
+        assert_eq!(thread.parser().bytes(), &7u32.to_le_bytes());
     }
 }

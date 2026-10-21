@@ -693,19 +693,14 @@ pub struct Line {
     pub text: Vec<u8>,
 }
 
-/// The id a level has in `locales.rdb`: the record whose name (the first
-/// 20 bytes of its 44-byte payload) is the level's name, without the
-/// extension and ignoring case (`exanima01.rfc` → 2). A bad database or an
-/// unknown level has none.
+/// The id a level has in `locales.rdb`: the record whose lower-cased
+/// 16-byte name is the level's name without the extension (`exanima01.rfc`
+/// → 2). A bad database or an unknown level has none.
 pub fn locale_id(locales: &[u8], level: &str) -> Option<u32> {
     let stem = level.rsplit_once('.').map_or(level, |(stem, _)| stem);
-    let db = Database::parse(locales).ok()?;
-    db.records.iter().find_map(|r| {
-        let raw = db.payload(r).get(..20)?;
-        let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
-        let name = latin1(&raw[..end]);
-        (!name.is_empty() && name.eq_ignore_ascii_case(stem)).then_some(r.id)
-    })
+    let db = crate::locales::LocaleDb::load(locales).ok()?;
+    let id = db.find(stem);
+    (id != 0).then_some(id)
 }
 
 struct Reader<'a> {

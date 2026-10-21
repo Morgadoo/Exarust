@@ -21,6 +21,7 @@ pub mod quads;
 pub mod quality;
 pub mod queue;
 pub mod shader_program;
+pub mod shader_reload;
 pub mod shader_template;
 pub mod shader_uniforms;
 pub mod shell;

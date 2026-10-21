@@ -79,6 +79,10 @@ pub struct ModelNode {
     /// Whether a part of this node is the race's built-in skin (a body
     /// model's `skinhuman`), which a character's tone re-tints.
     pub is_skin: bool,
+    /// Whether the node is an object-library placeholder
+    /// ([`exa_formats::rfc::Node::PLACEHOLDER`]): a clone keeps its
+    /// transform but draws nothing.
+    pub placeholder: bool,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -226,6 +230,26 @@ impl ModelLoader<'_> {
         let model = self.load(pack, entry).map(Arc::new);
         self.cache.models.insert(key, model.clone());
         model
+    }
+
+    /// The first pack, in the project's object-library order, that holds
+    /// `entry` (the original's "search each object library" step). The
+    /// project names `Objlib`; a project with more libraries searches them
+    /// in its order.
+    pub fn object_pack(&self, entry: &str) -> Option<PackKind> {
+        self.game
+            .project()
+            .object_libraries
+            .iter()
+            .filter_map(|name| PackKind::from_name(name))
+            .find(|&pack| self.game.pack(pack).is_some_and(|p| p.get(entry).is_some()))
+    }
+
+    /// The model of an object-library entry, searched from the project's
+    /// object libraries ([`ModelLoader::object_pack`]).
+    pub fn object_model(&mut self, entry: &str) -> Option<Arc<Model>> {
+        let pack = self.object_pack(entry)?;
+        self.model(pack, entry)
     }
 
     /// The model of `entry` with every mesh smoothed as the original's
@@ -500,6 +524,7 @@ impl ModelLoader<'_> {
                     _ => 0,
                 },
                 is_skin,
+                placeholder: node.flags & exa_formats::rfc::Node::PLACEHOLDER != 0,
             });
         }
         // An instance node shares the node it names (1-based): the original

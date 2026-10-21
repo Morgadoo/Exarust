@@ -18,7 +18,7 @@
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --splash                   the original's start-up splash (the BME logos, about five seconds), then the main menu
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
-//!          --size WxH                 window size (default 1600x900)
+//!          --size WxH                 window size (default 1600x1080)
 //!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate (off unless FPSLimit is set)
 //!          --no-settings              ignore the user's settings files (see below)
 //!          --benchmark                run the GPU benchmark and take its quality levels
@@ -407,6 +407,30 @@ fn parse_clicks(list: &str) -> Option<Vec<u32>> {
         .filter(|s| !s.trim().is_empty())
         .map(|f| f.trim().parse().ok())
         .collect()
+}
+
+/// Registers the debug commands the original's units install: `cshd` from
+/// the shader programs and `msm` from the mesh subdivider.
+fn register_debug_commands(
+    mut registry: ResMut<exa_game::commands::CommandRegistry>,
+    server: Res<AssetServer>,
+) {
+    let server = server.clone();
+    registry.register("cshd", move |_| {
+        let count = exa_render::shader_reload::reload(&server);
+        info!("cshd: reloading {count} shader programs");
+    });
+    registry.register("msm", |argument| {
+        // The subdivider's own scene walk needs a live level; the model view
+        // smooths at load through `--msm`, which runs the same Loop
+        // subdivision on every mesh.
+        let argument = String::from_utf8_lossy(argument);
+        if argument.is_empty() {
+            info!("msm: smoothing a whole scene; use the model view's --msm");
+        } else {
+            info!("msm: smoothing {argument}; use the model view's --msm");
+        }
+    });
 }
 
 fn main() -> AppExit {
@@ -805,11 +829,13 @@ fn main() -> AppExit {
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
-                    title: "Exarust".into(),
+                    title: "Exanima".into(),
                     // The Wayland app id (X11 class): without one, GNOME
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),
-                    resolution: options.size.unwrap_or((1600, 900)).into(),
+                    // The original's default window when the settings name
+                    // no size: 1600 x 1080.
+                    resolution: options.size.unwrap_or((1600, 1080)).into(),
                     // The original's track-size minimum.
                     resize_constraints: bevy::window::WindowResizeConstraints {
                         min_width: exa_game::window::MIN_WINDOW_SIZE.x as f32,
@@ -894,9 +920,13 @@ fn main() -> AppExit {
         if let Some(bindings) = user.bindings() {
             app.insert_resource(bindings);
         }
+        app.insert_resource(exa_game::commands::KeyCommands::of_hotkeys(
+            &user.settings.hotkeys,
+        ));
         app.insert_resource(user.clone())
             .add_systems(Update, user_settings::gui_size_from_display);
     }
+    app.add_systems(Startup, register_debug_commands);
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.

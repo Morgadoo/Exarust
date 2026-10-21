@@ -94,6 +94,39 @@ impl Project {
             material_libraries,
         })
     }
+
+    /// Resolves a path from the project the way the original's path resolver
+    /// does: a path with a drive letter in it (`C:\…`, or any `:`) is taken
+    /// as it is; any other path is joined to the project's folder. Windows
+    /// separators become the platform's, so a project's `Resource\Common.rml`
+    /// names the same entry on every host.
+    pub fn resolve_path(folder: &std::path::Path, path: &str) -> std::path::PathBuf {
+        if path.contains(':') {
+            return std::path::PathBuf::from(path);
+        }
+        let separator = std::path::MAIN_SEPARATOR;
+        let relative = path.replace(['\\', '/'], &separator.to_string());
+        folder.join(relative)
+    }
+
+    /// The user folder the original picks: the project's `Userdata` folder
+    /// when it exists, otherwise `<appdata>/<project name>`; without an
+    /// `APPDATA` (a non-Windows host) it keeps the project's `Userdata`.
+    /// The original's appdata is the roaming one (`CSIDL_APPDATA`).
+    pub fn user_folder(
+        folder: &std::path::Path,
+        name: &str,
+        appdata: Option<&std::path::Path>,
+    ) -> std::path::PathBuf {
+        let local = folder.join("Userdata");
+        if local.is_dir() {
+            return local;
+        }
+        match appdata {
+            Some(appdata) => appdata.join(name),
+            None => local,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,5 +156,43 @@ mod tests {
         assert_eq!(p.name, "Game");
         assert_eq!(p.object_libraries, ["Objlib"]);
         assert_eq!(p.material_libraries.len(), 2);
+    }
+
+    #[test]
+    fn paths_with_a_drive_are_absolute_and_others_join_the_folder() {
+        let root = std::path::Path::new("/games/exanima");
+        assert_eq!(
+            Project::resolve_path(root, "C:\\Games\\Exanima\\Resource.rpk"),
+            std::path::PathBuf::from("C:\\Games\\Exanima\\Resource.rpk")
+        );
+        assert_eq!(
+            Project::resolve_path(root, "Resource\\Common.rml"),
+            root.join("Resource").join("Common.rml")
+        );
+        assert_eq!(
+            Project::resolve_path(root, "Resource.rpk"),
+            root.join("Resource.rpk")
+        );
+    }
+
+    #[test]
+    fn the_user_folder_prefers_the_projects_own_and_then_appdata() {
+        let dir = std::env::temp_dir().join("exarust-project-user-folder-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Userdata")).unwrap();
+        assert_eq!(
+            Project::user_folder(&dir, "Exanima", Some(std::path::Path::new("C:\\AppData"))),
+            dir.join("Userdata")
+        );
+        std::fs::remove_dir_all(dir.join("Userdata")).unwrap();
+        assert_eq!(
+            Project::user_folder(&dir, "Exanima", Some(std::path::Path::new("C:\\AppData"))),
+            std::path::Path::new("C:\\AppData").join("Exanima")
+        );
+        assert_eq!(
+            Project::user_folder(&dir, "Exanima", None),
+            dir.join("Userdata")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

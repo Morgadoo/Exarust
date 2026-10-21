@@ -16,6 +16,7 @@ pub mod balance;
 pub mod bindings;
 pub mod body_overlay;
 pub mod career;
+pub mod commands;
 pub mod create;
 pub mod cursor;
 pub mod destination;
@@ -114,6 +115,7 @@ impl Plugin for GamePlugin {
                 idle_orbit::IdleOrbitPlugin,
                 hotkeys::HotkeyPlugin,
                 player_light::PlayerLightPlugin,
+                commands::CommandPlugin,
             ),
             hud::HudPlugin,
             torch::TorchPlugin,

@@ -488,9 +488,17 @@ fn a_level_names_its_locale() {
         p
     };
     let db = database(&[(1, entry("Exanima", 0)), (2, entry("Exanima01", 1))]);
-    assert_eq!(locale_id(&db, "exanima01.rfc"), Some(2));
-    assert_eq!(locale_id(&db, "Exanima"), Some(1));
-    assert_eq!(locale_id(&db, "arena7.rfc"), None);
+    // The generic role database keeps one record per table slot; the
+    // locale manager's loader reads one slot fewer, so give it the trailing
+    // slot every shipped `.rdb` table has.
+    let mut locales = db;
+    let table_len = u32::from_le_bytes(locales[4..8].try_into().unwrap()) as usize;
+    locales.splice(8 + table_len..8 + table_len, [0; 16]);
+    locales[4..8].copy_from_slice(&((table_len + 16) as u32).to_le_bytes());
+    locales[..4].copy_from_slice(&crate::uid::LOCALE_MAGIC.to_le_bytes());
+    assert_eq!(locale_id(&locales, "exanima01.rfc"), Some(2));
+    assert_eq!(locale_id(&locales, "Exanima"), Some(1));
+    assert_eq!(locale_id(&locales, "arena7.rfc"), None);
     assert_eq!(locale_id(&[0; 3], "exanima01.rfc"), None);
 }
 
