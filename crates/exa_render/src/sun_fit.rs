@@ -446,7 +446,9 @@ fn same_point(a: Vec3, b: Vec3) -> bool {
 fn chain(segments: &mut Vec<[Vec3; 2]>, points: &mut Vec<Vec3>) {
     let mut i = 1;
     while i < segments.len() {
-        let end = *points.last().expect("a chain starts with two points");
+        // A chain is seeded with two points and only grows; the guard keeps
+        // the helper total all the same.
+        let Some(&end) = points.last() else { break };
         let [a, b] = segments[i];
         let next = if same_point(a, end) {
             b
@@ -660,6 +662,12 @@ mod tests {
 
     fn v(x: f32, y: f32, z: f32) -> Vec3 {
         Vec3::new(x, y, z)
+    }
+
+    #[test]
+    fn the_sun_map_is_the_top_detail_size() {
+        assert_eq!(crate::SUN_SHADOW_SIZE, 4096);
+        assert_eq!(crate::POINT_SHADOW_SIZE, 512);
     }
 
     #[test]
