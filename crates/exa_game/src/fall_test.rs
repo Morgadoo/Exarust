@@ -183,6 +183,7 @@ fn fallen_out() -> Ragdoll {
         spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
         origin: Vec3::ZERO,
         links: Vec::new(),
+        mesh: None,
     }]);
     body.wake();
     for _ in 0..2000 {

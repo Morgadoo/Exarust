@@ -31,6 +31,7 @@ fn crate_at(at: Vec3) -> RigidPart {
         ],
         origin: Vec3::ZERO,
         links: Vec::new(),
+        mesh: None,
     }
 }
 

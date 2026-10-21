@@ -15,6 +15,8 @@
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
+use crate::sector::Bounds;
+
 use super::{
     LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, WorldLink, pairs, setup_smoothing,
     tree_orders, world_link,
@@ -59,6 +61,10 @@ pub struct RigidPart {
     pub origin: Vec3,
     /// An articulated child's stored links to its parent body.
     pub links: Vec<RigidLink>,
+    /// The node's mesh box and bounding radius in its frame, which the
+    /// pair stage buckets and meets the body by (the original copies the
+    /// node's bounds); without one the box around its spheres stands in.
+    pub mesh: Option<Bounds>,
 }
 
 /// A stored link of an articulated child to its parent body.
@@ -119,7 +125,13 @@ impl Part {
             inverse_mass: s.mobility,
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
-            pairing: Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility),
+            pairing: {
+                let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);
+                if let Some(mesh) = s.mesh {
+                    pairing.mesh = mesh;
+                }
+                pairing
+            },
             rest_inverse,
             no_level: false,
             friction: RIGID_FRICTION,

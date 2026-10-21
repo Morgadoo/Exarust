@@ -17,6 +17,7 @@ use exa_assets::{Model, NodeRigidBody};
 use exa_formats::rigid_body::RigidBody;
 use exa_physics::body::{RigidLink, RigidPart};
 use exa_physics::prop::{BodyNode, PendingProp};
+use exa_physics::sector::Bounds;
 
 /// What a body tree (a top body and its body children) is to the solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +145,7 @@ fn rigid_part(
     parent: Option<usize>,
     rigid: &NodeRigidBody,
     origin: Vec3,
+    mesh: Bounds,
 ) -> RigidPart {
     let b = &rigid.body;
     RigidPart {
@@ -161,6 +163,7 @@ fn rigid_part(
             .collect(),
         origin,
         links: b.links.iter().map(child_link).collect(),
+        mesh: Some(mesh),
     }
 }
 
@@ -231,6 +234,13 @@ pub fn register_bodies(
                     parent,
                     node.rigid.as_ref()?,
                     node.transform.translation,
+                    // The node's box and radius, as the original copies
+                    // them into the body's mesh bound.
+                    Bounds {
+                        centre: node.bounds.0,
+                        half: node.half_extents,
+                        radius: node.bounds.1,
+                    },
                 ))
             })
             .collect();
