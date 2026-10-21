@@ -84,12 +84,13 @@ pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
 
 /// Simulation rate of the body.
 pub const BODY_HZ: f32 = 83.0;
-const GRAVITY: f32 = -9.806_65;
+/// The solver's gravity (m/s²): the original's environment value.
+pub const GRAVITY: f32 = -9.806_65;
 /// Velocity a limp part keeps per second, by its speed: fast, slow and
 /// resting (the original's default environment, which every body uses).
-const RETENTION: [f32; 3] = [0.426, 0.25, 0.05];
+pub const RETENTION: [f32; 3] = [0.426, 0.25, 0.05];
 /// Speeds (cm/s) a limp part's last tick must exceed to be fast, or slow.
-const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
+pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// u = (1 − b)(1 − r) + r, from a race's limb damping ratio r and the
 /// balance b. A living limb keeps the fast retention × u², and a human's r
 /// of 1 makes u 1 at any balance.
