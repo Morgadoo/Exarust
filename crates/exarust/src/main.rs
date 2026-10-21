@@ -829,7 +829,7 @@ fn main() -> AppExit {
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
-                    title: "Exanima".into(),
+                    title: "Exarust".into(),
                     // The Wayland app id (X11 class): without one, GNOME
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),

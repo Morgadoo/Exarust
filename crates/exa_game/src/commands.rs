@@ -4,8 +4,9 @@
 //! the shader programs, `msm` from the mesh subdivider). A line is split at
 //! its first space into the command and the rest; the command is looked up
 //! with ASCII case ignored and its handler gets the rest. The settings
-//! unit's key bindings (`KeyDef` lines) hold lists of such lines, which run
-//! one after another, one per frame.
+//! unit's key bindings (`KeyDef` lines) hold lists of such lines. Running
+//! them one per frame is a guess: the code that advances a binding's list
+//! was not part of the evidence for the registry itself.
 //!
 //! Rules and evidence: `docs/formats/SETTINGS.md` (`KeyDef`) and
 //! `docs/DEBUGGING.md`.
@@ -83,8 +84,8 @@ impl CommandRegistry {
     }
 }
 
-/// Lines waiting to run, oldest first. One line runs per frame, as the
-/// original's binding list advances with the frame's step.
+/// Lines waiting to run, oldest first. One line runs per frame (a guess,
+/// see the module notes).
 #[derive(Resource, Default)]
 pub struct CommandQueue {
     pending: VecDeque<Vec<u8>>,
