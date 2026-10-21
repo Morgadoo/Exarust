@@ -353,9 +353,12 @@ impl TimedBitPower {
 
     /// One control tick: clears the bit and answers 2 once its length has
     /// passed or it is ending.
-    pub fn control(&self, now: u32, state: i32, flags: u32) -> BitStep {
+    pub fn control(&mut self, now: u32, flags: u32) -> BitStep {
         let elapsed = now.wrapping_sub(self.start);
-        if elapsed > self.length || state == 2 {
+        if elapsed > self.length {
+            self.state = 2;
+        }
+        if self.state == 2 {
             BitStep {
                 flags: flags & !self.bit,
                 result: 2,
@@ -1044,11 +1047,13 @@ mod tests {
 
     #[test]
     fn the_timed_powers_own_their_clock() {
-        let confusion = TimedBitPower::confusion(100);
-        assert_eq!(confusion.control(15_100, 0, CONFUSED).result, 0);
-        assert_eq!(confusion.control(15_101, 0, CONFUSED).flags, 0);
-        let enrage = TimedBitPower::enrage(0);
-        assert_eq!(enrage.control(1, 2, ENRAGED).result, 2);
+        let mut confusion = TimedBitPower::confusion(100);
+        assert_eq!(confusion.control(15_100, CONFUSED).result, 0);
+        assert_eq!(confusion.control(15_101, CONFUSED).flags, 0);
+        assert_eq!(confusion.state, 2);
+        let mut enrage = TimedBitPower::enrage(0);
+        enrage.state = 2;
+        assert_eq!(enrage.control(1, ENRAGED).result, 2);
         let mut trust = TimedEffect::trust(1000);
         assert_eq!(trust.control(21_000), 0);
         assert_eq!(trust.control(21_001), 2);
