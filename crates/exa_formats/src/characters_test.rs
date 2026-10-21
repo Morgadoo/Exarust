@@ -806,6 +806,7 @@ fn shipped_records_write_back_byte_for_byte() {
     let game = exa_rpk::GameData::open(&dir).unwrap();
     let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
     let mut checked = 0;
+    let mut reworded = 0;
     let mut bad = Vec::new();
     let mut check = |name: &str, payload: &[u8]| {
         let Ok(r) = CharacterRecord::parse(0, payload) else {
@@ -816,12 +817,20 @@ fn shipped_records_write_back_byte_for_byte() {
         }
         let size = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
         let written = r.to_bytes().unwrap();
+        let stored = &payload[..8 + size];
         checked += 1;
-        if written != payload[..8 + size] {
-            let at = written
-                .iter()
-                .zip(&payload[..8 + size])
-                .position(|(a, b)| a != b);
+        // The game writes the voice field as `vi` and the record's voice
+        // number, so the two records whose stored name is not that form
+        // (`HM04`) come back with the canonical name.
+        let voice = 8 + 64..8 + 80;
+        if written[voice.clone()] != stored[voice.clone()] {
+            reworded += 1;
+            assert_eq!(&stored[voice.clone()], b"HM04\0\0\0\0\0\0\0\0\0\0\0\0");
+        }
+        let mut comparable = written.clone();
+        comparable[voice.clone()].copy_from_slice(&stored[voice.clone()]);
+        if comparable != stored {
+            let at = comparable.iter().zip(stored).position(|(a, b)| a != b);
             bad.push(format!(
                 "{name} {}: {} bytes written, {} stored, first difference at {at:?}",
                 r.name,
@@ -856,5 +865,6 @@ fn shipped_records_write_back_byte_for_byte() {
         check(&e.name, actors.bytes(e));
     }
     assert_eq!(checked, 485, "{checked} records");
+    assert_eq!(reworded, 2, "records with a non-canonical voice name");
     assert!(bad.is_empty(), "{bad:#?}");
 }

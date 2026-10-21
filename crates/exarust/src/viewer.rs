@@ -683,14 +683,15 @@ fn spawn_players(
     );
     // In the story a killing blow also costs red health.
     commands.insert_resource(exa_combat::StoryMode(story));
-    // The player and the duellist have no record of their own yet: a new
-    // human record (height 0, of feral level `feral`), without a natural
-    // armour layer.
+    // The player and the duellist have no record of their own yet: the
+    // record the character creator starts from (a male human of average
+    // physique, in the underwear), of feral level `feral` and without a
+    // natural armour layer.
     let new_human = |feral: f32| {
         let human = exa_formats::races::of_character(&races, exa_character::HUMAN);
         let record = exa_formats::characters::CharacterRecord {
             feral,
-            ..Default::default()
+            ..exa_formats::characters::CharacterRecord::reset()
         };
         CharacterStats::derive(&record, human, Spawn { story, dead: false })
     };
@@ -848,7 +849,8 @@ fn spawn_players(
             female: false,
             worn: Vec::new(),
             held: None,
-            record: exa_formats::characters::CharacterRecord::default(),
+            hands: [const { None }; exa_formats::characters::HANDS],
+            record: exa_formats::characters::CharacterRecord::reset(),
             encumbrance: 0.0,
         })
         .collect();
@@ -1387,9 +1389,29 @@ fn spawn_placed_characters(
                 ..default()
             });
         }
+        // What the record holds picks its moveset: the first hand is the
+        // main one, the first pair's other hand a second weapon or a
+        // shield. Only the main hand's item is drawn so far.
+        let mut hands = exa_character::held::Hands::default();
+        if let Some(item) = &c.hands[0]
+            && let Some(weapon) = item.weapon
+        {
+            hands.main = Some(exa_character::held::HeldItem::weapon(weapon.flags));
+        }
+        if let Some(item) = &c.hands[1] {
+            if item.shield {
+                hands.shield = Some(exa_character::held::ShieldStyle::Plain);
+            } else if let Some(weapon) = item.weapon
+                && hands.main.is_some()
+            {
+                hands.second = Some(exa_character::held::HeldItem::weapon(weapon.flags));
+            }
+        }
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
             anim,
+            hands,
+            exa_character::record::CharacterData::of_record(c.record.clone()),
             exa_character::Outfit(
                 c.worn
                     .iter()

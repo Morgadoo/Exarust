@@ -133,12 +133,25 @@ pub struct PlacedCharacter {
     /// Item in the right hand: model (`@factory` for assembled weapons) and
     /// its weapon data.
     pub held: Option<(String, Option<exa_formats::objdb::Weapon>)>,
+    /// The four hand slots of the record, resolved to their items.
+    pub hands: [Option<HandItem>; exa_formats::characters::HANDS],
     /// The character's whole record, from which its spawn derives its
     /// stats.
     pub record: exa_formats::characters::CharacterRecord,
     /// What it wears and the shield it holds weigh, as the spawn's armour
     /// pass sums them.
     pub encumbrance: f32,
+}
+
+/// An item in one of a record's four hand slots.
+#[derive(Debug, Clone)]
+pub struct HandItem {
+    /// The model it shows (`@factory` for an assembled weapon).
+    pub model: String,
+    /// Its weapon section, when it is a weapon.
+    pub weapon: Option<exa_formats::objdb::Weapon>,
+    /// It blocks as a shield.
+    pub shield: bool,
 }
 
 /// An item a placed character wears.
@@ -172,12 +185,17 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 };
                 items.iter().find(|i| i.id == id & ID_MASK)
             };
-            let held = record
-                .hands
-                .first()
-                .filter(|hand| hand.is_some())
-                .and_then(|hand| find(hand.id))
-                .filter(|item| !item.model.is_empty())
+            let hand = |hand: exa_formats::characters::ItemRef| -> Option<HandItem> {
+                let item = find(hand.id)?;
+                (!item.model.is_empty()).then(|| HandItem {
+                    model: item.model.clone(),
+                    weapon: item.weapon,
+                    shield: item.shield.is_some(),
+                })
+            };
+            let hands = record.hands.map(hand);
+            let held = hands[0]
+                .as_ref()
                 .map(|item| (item.model.clone(), item.weapon));
             let worn = record
                 .worn
@@ -203,6 +221,7 @@ fn placed_characters(scene: &Scene, global: &[Item]) -> Vec<PlacedCharacter> {
                 female: record.female,
                 worn,
                 held,
+                hands,
                 record: record.clone(),
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
             })

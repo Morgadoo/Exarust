@@ -867,7 +867,9 @@ the sub-chunks it has (powers always under `CDEC01`, the reserved words,
 then the loadouts). Three details of its behaviour:
 - the voice field is rebuilt from the record's voice number as `vi` and the
   number plus one, zero-padded to two digits (`vi01` is number 0); the
-  stored name is not copied.
+  stored name is not copied. Two shipped records (the villager and Derrin
+  of `xac_derrin`) store `HM04` (number 3), which a save rewrites as
+  `vi04`.
 - the four traits are written as `round(value) + 100` in a byte, wrapping.
 - a skill is written only when it has a chosen technique: its points, the
   technique count up to the first empty slot (at most five, so a sixth
@@ -877,8 +879,11 @@ then the loadouts). Three details of its behaviour:
   appends; its meaning is not traced.
 
 `CharacterRecord::to_bytes` writes exactly those bytes: all 485 version 7
-records of the shipped levels and actors (478 + 7) come back byte for byte
+records of the shipped levels and actors (478 + 7) come back byte for byte,
+the two non-canonical voice names aside
 (`exa_formats::characters` test `shipped_records_write_back_byte_for_byte`).
+The profession word keeps its bits other than the female bit and the race
+byte as read (one shipped record sets `0x40`).
 
 **Defaults.** A new record (`CharacterRecord::new`) is blank, with yellow
 and red at 0xFFFF and voice pitch 1. The creator's `reset` also sets a male

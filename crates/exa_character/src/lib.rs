@@ -17,6 +17,8 @@
 
 pub mod held;
 
+pub mod record;
+
 pub mod blood;
 pub mod spray;
 

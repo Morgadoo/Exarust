@@ -266,6 +266,9 @@ pub struct CharacterRecord {
     pub voice_pitch: f32,
     pub female: bool,
     pub race: u8,
+    /// The profession word's other bits, whose meaning is not traced (kept
+    /// so a record writes back as it was read).
+    pub profession_rest: u32,
     /// The last level the character was in.
     pub locale: u32,
     /// Four hand slots: two hands, then a second pair of hands.
@@ -344,6 +347,7 @@ impl CharacterRecord {
             voice_pitch: 1.0,
             female: false,
             race: 0,
+            profession_rest: 0,
             locale: 0,
             hands: [ItemRef::NONE; HANDS],
             worn: Vec::new(),
@@ -387,15 +391,17 @@ impl CharacterRecord {
         record
     }
 
-    /// The profession word: bit 0 female, byte 1 the race.
+    /// The profession word: bit 0 female, byte 1 the race, the other bits
+    /// kept as stored.
     pub fn profession(&self) -> u32 {
-        u32::from(self.female) | u32::from(self.race) << 8
+        self.profession_rest | u32::from(self.female) | u32::from(self.race) << 8
     }
 
     /// Sets sex and race from the profession word, as the reader does.
     pub fn set_profession(&mut self, profession: u32) {
         self.female = profession & 1 != 0;
         self.race = (profession >> 8) as u8;
+        self.profession_rest = profession & !0xFF01;
     }
 
     /// The worn item ids, without their flags.
