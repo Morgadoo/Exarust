@@ -190,9 +190,10 @@ Other shader-word bits:
 - `LocalRef` (screen-space reflection); the warm-up clears it below
   shading quality 5.
 
-`SdwSmps` is the shadow quality's `2^(shadow quality − 1)` taps, split over
-the supersampling level `L` as `2^max(q−1, L−1) / 2^(L−1)`, never below one.
-At shadow quality 4 and the original's 4× supersampling that is 2 taps per
+`SdwSmps` is the shadow quality's `2^(q−1)` taps (`q` the shadow quality),
+split over the supersampling level `L`: with `l = L` for `L ≤ 1` and
+`l = L−1` otherwise, it is `2^max(q−1, l) / 2^l`, never below one. At shadow
+quality 4 and the original's 4× supersampling (`L = 3`) that is 2 taps per
 sub-frame; at no supersampling it is 8.
 
 The material key masks the record's feature bits with `0x09FE0B1F` and the
