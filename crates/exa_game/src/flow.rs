@@ -1270,6 +1270,8 @@ impl Flow {
         self.phase = Phase::Menu;
         self.hook = Hook::None;
         self.menu_open = true;
+        // The shipped build's first-run switch sets the second end-page tip.
+        self.practice.next_tip = true;
         steps.push(Step::ShowMenu(Page::Title));
         steps.push(Step::SessionTask(false));
         steps
@@ -1288,6 +1290,7 @@ impl Flow {
             return Vec::new();
         }
         let mut steps = Vec::new();
+        let was_practice = self.mode.practice_family();
         if let Some(slot) = player_slot(self.mode) {
             self.player[slot] = true;
         }
@@ -1296,7 +1299,9 @@ impl Flow {
         match mode {
             Mode::Practice => {
                 self.hook = Hook::Practice;
-                self.practice.start_ms = now;
+                if !was_practice {
+                    self.practice.start_ms = now;
+                }
                 self.slot = None;
                 steps.push(Step::SessionTask(false));
                 steps.push(Step::Hook(Hook::Practice));
@@ -1421,7 +1426,7 @@ impl Flow {
             ladder,
             fight: FIRST_FIGHT,
             start_ms: now,
-            next_tip: false,
+            ..Default::default()
         };
         let step = practice::next_practice(0, ladder, health, health);
         let start = PracticeStart {
@@ -1694,6 +1699,9 @@ impl Flow {
         others: &[u32],
     ) -> Vec<Step> {
         let player_condition = player.map_or(0, |p| p.condition);
+        if player_condition == DEAD {
+            return self.die(player.map_or(0.0, |p| p.health));
+        }
         match practice_round(
             self.phase,
             now,
