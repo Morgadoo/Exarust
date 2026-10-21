@@ -1019,40 +1019,54 @@ means no map), DEPTH_COMPONENT16, clamp-to-edge, linear, compare to texture,
 less. The sun's own flags give 0, so the top detail is 4096²
 (`exa_render::SUN_SHADOW_SIZE`).
 
-Every frame of its fitted mode the update copies the active view's convex
-volume, clips it by up to three planes on the side the sun comes from, fits
-the smallest sphere around the surviving corners, and works in centimetres
-(×100):
+The original fits the map only when the scene has a terrain; other levels
+get a whole-scene map (centre and radius from the scene's bounding sphere,
+with a minimum extent, cached until something changes), which Exarust does
+not reproduce. Every frame of the fitted mode the update copies the camera's
+view volume (the camera view's frustum: six quads; the constructor's camera
+has a 100 cm near and a 125 m far plane, what the game sets later was not
+traced), clips it by up to three planes, fits the smallest sphere around the
+surviving corners, and works in centimetres (×100):
 
-- **Clipping.** The scene's bounds give a centre and half extents per axis
-  (y forced to 1.5 m ± 6.5 m, so the vertical planes sit at −5 m and 8 m);
-  an axis whose sun direction component is negative gets the plane
-  `axis ≤ centre + extent`, one whose component is positive
-  `axis ≥ centre − extent`, and a zero component adds none. Another camera
-  mode instead clips both vertical planes (the level's floor and ceiling,
-  0 and 340 cm in the grid levels). A face keeps the part where
-  `normal · p − w ≤ 0`; the cut segments chain into a cap, appended last.
-- **Corners.** Every face's vertices, in face order, merged within 0.1 cm².
-  Fewer than two corners skip the whole fit (the previous frame's
-  projection stays). The corners are then scaled by 0.01 into the solver's
-  metres and the fitted centre and radius are scaled back by 100.
-- **Radius.** `h = 200·round(r/200 + 0.4)`, the conversion being the
-  processor's `cvtsd2si` (nearest, ties to even; the engine's floor and
-  ceil helpers are separate routines this path never calls). The half
-  extent is kept across frames: the quantised value is taken only when it
-  differs *and* `r > h + 200·0.3` (grow) or `r < h − 200·0.1` (shrink).
-  The constructor starts it at 3000 cm.
+- **Clipping.** The planes follow the camera, not the sun: per axis, the
+  sign of the camera's *backward* axis (its frame's third row) picks the
+  plane. A negative component (the camera looks towards +axis) keeps
+  `axis ≤ high`, a positive one `axis ≥ low`, a zero or NaN one adds none,
+  so the view is cut where it leaves the scene. On x and z, high and low
+  are the scene box's centre ± half extent. On y they are the level's
+  ceiling and floor from its environment record (whole centimetres); a
+  level without the record takes the box's *x* centre ± half extent there,
+  as the original reads it. The update also writes 150 cm and 650 cm into
+  the box's vertical centre and extent first; the fit never reads them.
+  Another camera mode (not in Exarust) clips both vertical planes instead.
+  A face keeps the part where `normal · p − w ≤ 0` (a NaN is outside); the
+  cut is the engine's convex-volume clip (`exa_physics::intersect`).
+- **Corners.** Every face's vertices, in face order, merged within 0.1 cm²
+  (squared distance summed `(x² + y²) + z²`, a NaN never merges). Fewer
+  than two corners end the whole update: the map and its matrices stay as
+  they were. The corners are then scaled by 0.01 into the solver's metres
+  and the fitted centre and radius are scaled back by 100.
+- **Radius.** `h = 200·round(r/200 + 0.4)`: the quotient is single
+  precision, widened before the 0.4 (double) is added, and converted with
+  the processor's default rounding (nearest, ties to even; a NaN or an
+  out-of-range value gives the lowest 64-bit integer). The half extent is
+  kept across frames: the quantised value is taken only when it differs
+  *and* `r > h + 200·0.3` (grow) or `r < h − 200·0.1` (shrink), both
+  compared in double precision. The constructor starts it at 3000 cm.
 - **Centre and depth.** The centre is rotated into the light's frame (its
-  travel direction is the negated, normalised vector towards the sun;
-  `right = dir × +Y`, `up = right × dir`; a fixed frame when
-  |dir.y| > 0.9999), its x and y are snapped to the texel grid
-  (`round(c / texel)·texel`, `texel = 2h / size`) and the box extends
+  travel direction is the negated, normalised vector towards the sun, the
+  length summed `(x² + z²) + y²`; `right = dir × +Y`, `up = right × dir`;
+  past |dir.y| > 0.9999, compared in double precision, the fixed frame
+  right +X, up −Z, forward −Y whichever way the light points). Its x and y
+  are snapped to the texel grid (`round(c / texel)·texel`, `texel =
+  2h / size`, single precision, the same conversion) and the box extends
   ±8000 cm along the light from it.
 - **Softness and bias.** The same update writes the sun light's softness
-  `(c + 1)·400 / h` (c the light's own value, 0 by default), floored at
-  0.15 with `c' = 0.15 / (the unfloored value)`; the render routine's
-  polygon offset is `1 + 1000/h + 2000c'/h` and it nudges casters by
-  1.25·(c' + 1) cm in window depth.
+  `(c + 1)·(400 / h)` (c the light's own value, 0 by default); below 0.15
+  (a double compare) it writes 0.15 and `c' = 0.15 / (the unfloored value)`
+  in double precision. The render routine's polygon offset is
+  `1 + 1000/h + 2000c'/h` and it nudges casters by 1.25·(c' + 1) cm in
+  window depth.
 
 The solver is `exa_render::bound_sphere`, reproduced to the bit (reverse
 engineered from Exanima.exe):
@@ -1084,24 +1098,41 @@ engineered from Exanima.exe):
 - No points: only the radius is written, 4000 in the points' units (the
   shadow fit never calls it with fewer than two).
 
-Exarust's fit is `exa_render::sun_fit`: plain functions for the clip, the
-sphere (`bound_sphere`), the quantisation, the snap and the matrices, plus
-the `SunFit` state that carries the half extent between frames.
-`exa_world::sun_shadow` builds the region from the scene camera's frustum
-(near plane out to the 60 m shadow range) and the level's bounds, then
-replaces the sun's single Bevy cascade entry with the fitted matrices each
-frame, after Bevy's cascade builder and before it derives the shadow frusta
-(so the CPU caster culling follows them too). The `CascadeShadowConfig` has
-one bound, at the shadow range: past it the map is unshadowed, as past the
-original's fitted region.
+Exarust's fit is `exa_render::sun_fit`: plain functions for the planes,
+the corners, the sphere (`bound_sphere`), the quantisation, the snap and the
+matrices, plus the `SunFit` state that carries the half extent between
+frames. In a level with a terrain, `exa_world::sun_shadow` builds each active
+camera's frustum out to 125 m (the original camera's default far plane),
+clips it at the level's box (the props' origins and the terrain's tiles) and
+the record's floor and ceiling, and replaces the sun's Bevy cascades for that
+camera with one cascade holding the fitted matrices, each frame after Bevy's
+cascade builder and before it derives the shadow frusta (so the CPU caster
+culling follows the map too). The sun's `CascadeShadowConfig` then has one
+bound at 125 m. A frame that fits nothing keeps the previous matrices.
+Levels without a terrain, and every level with `--bevy-sun-cascades`, keep
+Bevy's two cascades over 60 m, which stand in for the whole-scene map. Both
+use the 4096² map.
 
-The camera frustum stands in for the original's visible-region volume (its
-active rooms and portals, which Exarust does not keep as a convex volume),
-and the shadow range for the original's untraced camera far plane; Bevy's
-1000 m far would make one 4096² map far coarser than the original's. Not
-wired: the softness, which needs a filter-radius uniform Bevy's directional
-shadows only have with its PCSS feature, and the polygon offset and
-caster-side depth nudge (Bevy's own depth and normal biases apply instead).
+What the fitted map looks like: one texel is `2h/4096`, a few centimetres
+for a view the scene bounds to a few tens of metres; the centre snap keeps
+texels still while the camera moves and the hysteresis keeps the size still
+until the view grows or shrinks by a fraction of a step, so the edges do not
+swim. Bevy's normal bias scales with the cascade's texel size, which the
+fit reports, and its depth bias is in metres along the light, so the bias
+holds as for its own cascades: no new acne or peter-panning. The depth range
+is 160 m in a 32-bit float map. Casters up-sun of the box's near plane are
+still drawn (Bevy culls directional casters without the near plane and
+clamps their depth). Receivers outside the fitted box are lit, where the
+original's clamp-to-edge map repeats its border texel.
+
+Not reproduced: the whole-scene mode; the softness, which needs a
+filter-radius uniform Bevy's directional shadows only have with its PCSS
+feature; the polygon offset and caster-side depth nudge (Bevy's own depth
+and normal biases apply instead); the other camera mode. The scene box is a
+stand-in: the original's comes from the scene's own bounds, Exarust's from
+prop origins and terrain tiles. Exarust's record ceiling falls back to the
+grid top when the record's highest point is 0, where the original would clip
+at 0 (whether a shipped level has a zero there was not checked).
 
 ## Fires
 

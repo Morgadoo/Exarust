@@ -8,6 +8,7 @@ flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,
 `--pause-on-hit`, `--pause-after-jet`, `--pause-after-collapse`, `--press`,
 `--click`, `--cursor`, `--still-opponent`, `--debug-wound`, `--debug-nav`,
+`--bevy-sun-cascades`,
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
 The user's settings files (`Exanima.ini`, `Exanima.set`,

@@ -66,6 +66,7 @@ it takes the ring's other slot.
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
 | `--msm` | in the model view, every mesh smoothed once as the original's `msm` debug command smooths a scene (Loop subdivision, [formats/RFC.md](formats/RFC.md), Editable meshes), e.g. `exarust model CharExt "hair hula01" --msm` for the hair the creation scene smooths; warns of meshes with too many faces |
+| `--bevy-sun-cascades` | the sun keeps Bevy's two cascades in terrain levels too, instead of the original's one fitted map, to compare the two ([RENDERING.md](RENDERING.md), Sun shadow fit) |
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
 | `--debug-spray bone,R[,dx,dy,dz]` | a blood jet from the player's or the character view's body part every second, as a bleeding blow of size R swinging along d would spray ([Wounds](#wounds)); repeatable |
 | `--debug-arcs` | in play mode, the Shock power's arcs on the player's right hand, kept while the run lasts: they end at the level and shock other fighters ([THAUMATURGY.md](THAUMATURGY.md), In the game) |
