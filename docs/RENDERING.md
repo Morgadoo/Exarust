@@ -215,11 +215,12 @@ layers that do not cover the pixel:
 - texture coordinates (X, −Z)·f0/12 per metre;
 - colour: texture × linear(tint) × 1.5·min(f9, 1), cover f9, sharpness
   f2/f3; then × 0.75 (the terrain's `MatDif`);
-- normal: (N·2 − 1)·f11, mixed by the mask-sharpened opacity (f4/f5), in
-  the frame the original builds from the vertex normal s: +X projected onto
-  the surface, then its cross with s (on flat ground +X and +Z, green along
-  −v); the stored z is the square root of 1 − the xy length squared, capped
-  at 0.999, and the vector is normalised;
+- normal: (N·2 − 1)·f11, mixed by the mask-sharpened opacity (f4/f5); the
+  composite's z is the square root of 1 − the xy length squared, capped at
+  0.999, and the vector is normalised (`terrain_nrm`). The lit program
+  applies it in the frame it builds from the vertex normal s: +X projected
+  onto the surface, then its cross with s (on flat ground +X and +Z, green
+  along −v); the parallax's view vector uses the same frame;
 - gloss: the gloss texture × f10 × 1.5·min(f9, 1), stacked like the colour
   and clamped to the 8-bit composite's range; roughness = 1 − gloss (no
   wetness indoors);
@@ -228,13 +229,18 @@ layers that do not cover the pixel:
 - parallax: scale 0.007 in 6 m block units, four accumulating steps, then
   eased back toward the unshifted coordinates by min((h₀ − h₃)·2, 1);
 - Fresnel F0 = 0.04 per light; GI or cube ambient, cube reflections;
-  specular × min(255·r, 1), with r the composite colour before the 0.75
-  (the original masks with the composite's red, then applies `MatDif`).
+  specular × min(255·r, 1), with r the red of the diffuse colour, the
+  composite already times the 0.75 (`shadetrn_f`: `difCol = DifTex ×
+  MatDif`, then the mask).
 - The palette's header float at offset 28 is the draw's specular level
   (`+ 0.3`, unused while the gloss pass is on) and turns on the wet-floor
-  flag above 0.4; only the sewer palette ships 0.5. Exarust reads the float
-  (`Palette::wetness`) but does not apply the wet-floor term, whose shader
-  expression was not recovered.
+  flag above 0.4; only the sewer palette ships 0.5. With the flag the lit
+  program's roughness is `1 − min(G + 8c², 0.85)`, with
+  `c = max((y + 35)·−0.03, 0)²·n.y` and y in world centimetres, so the
+  gloss is capped at 0.85 and ground below −35 cm grows glossier. Exarust
+  reads the float (`Palette::wetness`) but does not apply the term: that
+  the palette's float reaches the draw's environment is inferred, not
+  traced.
 
 The original's composites hold about 170 texels per metre and have no mip
 levels, so its terrain always shows the layers' full detail. Exarust reads

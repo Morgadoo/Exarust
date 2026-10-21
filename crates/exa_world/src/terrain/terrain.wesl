@@ -290,8 +290,11 @@ fn fragment(
     // Parallax in 6 m block coordinates, as the original's terrain program:
     // the tangent-space view shifts them by the composited height in four
     // accumulating steps, then eases back where the height changes sharply.
+    // The frame is the lit program's (+X projected onto the surface, then
+    // its cross with the normal, +Z on flat ground); its second axis is
+    // negated because these coordinates run along −Z.
     let tu = normalize(vec3(1.0, 0.0, 0.0) - ng * ng.x);
-    let tv = normalize(vec3(0.0, 0.0, -1.0) + ng * ng.z);
+    let tv = -cross(tu, ng);
     let eye = -v;
     let vt = vec3(dot(eye, tu), dot(eye, tv), dot(eye, ng));
     let dsp = vt.xy * PARALLAX * (4.0 + 3.0 * vt.z);
@@ -337,10 +340,10 @@ fn fragment(
             nxy = stack_normal(nxy, nk, a, su.b, k);
         }
     }
-    // The specular term is masked by the composite colour, before the
-    // terrain's diffuse factor, as the original's program does.
-    let specular_mask = min(colour.r * 255.0, 1.0);
+    // The original's diffuse colour is the composite times `MatDif`, and the
+    // specular term is masked by its red (`min(255·r, 1)`) after that.
     colour *= TERRAIN_DIFFUSE;
+    let specular_mask = min(colour.r * 255.0, 1.0);
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
     // The normal map's frame, as the original's lit program builds it: +X
     // projected onto the surface, then its cross with the normal (on flat

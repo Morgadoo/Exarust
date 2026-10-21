@@ -38,8 +38,10 @@ The terrain material lives in `exa_world::terrain`; its shader
 terrain and models see the same lights, GI, reflections and shadows. Its
 palette normal map is applied in the original's tangent frame (+X projected
 onto the surface, crossed with the vertex normal), its gloss is the
-composite gloss (roughness 1 − it), and its specular is masked by the
-composite colour before the terrain's 0.75 diffuse factor. Rules:
+composite gloss (roughness 1 − it, a full gloss being a mirror whose one
+singular point the shared light keeps at 0), and its specular is masked by
+the red of its diffuse colour (the composite times the terrain's 0.75).
+Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 
 ## Blood
