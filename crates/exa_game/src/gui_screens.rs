@@ -5,26 +5,27 @@
 //! hotkey handler ([`crate::hotkeys`]), which applies its own permissions
 //! and sends a [`ScreenRequest`].
 //!
-//! The screens are not drawn yet and hold no controls; what runs is the
-//! open, focus and close state, the open-container registry and the
-//! journal's session entries. Escape closing the focused screen is
-//! Exarust's (the original closes them through their frame marks and the
-//! keys again). The skills key's screen and the power tree are outside
-//! this unit; the technique selector opens from a power slot, which the
-//! HUD does not draw yet.
+//! The inventory and journal are painted through the GUI draw path
+//! ([`crate::gui_paint`]): their frames, the item pack's panel and the
+//! control records the constructors append (labels and buttons, placed by
+//! the control layout pass). The character view, the item icons, the
+//! journal's entry list and the controls' callbacks are not wired. Escape
+//! closing the focused screen is Exarust's (the original closes them
+//! through their frame marks and the keys again). The skills key's screen
+//! and the power tree are outside this unit; the technique selector opens
+//! from a power slot, which the HUD does not draw yet.
 //!
 //! Rules: `docs/UI.md` (The in-game GUI unit).
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_items::possession::Possessions;
 use exa_ui::form::{ClientRect, UNPLACED, place_unset};
 use exa_ui::game_gui::{
     CONTAINER_FAMILY, GameScreen, INVENTORY_PLACE, INVENTORY_TITLE, InventoryInput, JOURNAL_TEXT,
     JOURNAL_TITLE, Journal, JournalInput, OpenContainers, ScreenAction, forms_with_tag,
-    inventory_place, inventory_screen, journal_screen, preview_shares, tagged_container,
+    inventory_place, inventory_screen, journal_screen, tagged_container,
 };
-use exa_ui::gui_controls::Control;
+use exa_ui::gui_controls::{Control, LayoutClient, layout_records};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
@@ -49,52 +50,80 @@ pub struct OpenScreen {
     pub form: FormId,
 }
 
-/// The control records a screen's form carries, as the constructors append
-/// them: the journal's New (4, 20, 104 × 24) and Erase (120, 20, same), the
-/// inventory's pack panel and its Primary button. The places are the
-/// records' laid-out places inside the form's client.
+/// The class of the inventory's second record, whose draw and behaviour are
+/// not located; it is kept for its place in the record order.
+pub const UNLOCATED_CLASS: u16 = 0xac01;
+
+/// The unit the layout pass is given (it reads it only for a first record's
+/// unit anchor and for trackbars, which these screens have none of).
+const LAYOUT_UNIT: i32 = 4;
+
+/// The record's y for the full-height inventory: the constructor writes
+/// one of three values by the form's height variant (0x54 in the arsenal,
+/// 0x5e under the compact flag, 0x62 otherwise).
+const INVENTORY_LABEL_ROW: i32 = 0x62;
+
+/// A button record: class 1, the style word the journal and inventory
+/// constructors share, and its caption.
+fn button_record(x: i32, y: i32, w: i32, text: &str) -> Control {
+    let mut control = Control::new(1, x, y, w, 0);
+    control.style = 0x40_3320;
+    control.text = text.as_bytes().to_vec();
+    control
+}
+
+/// The inventory constructor's three records, as stored: the Encumbrance
+/// label, the unlocated control beside it and the Primary button.
+fn inventory_records() -> Vec<Control> {
+    let mut label = Control::new(5, 4, INVENTORY_LABEL_ROW, 12, 28);
+    label.style = 0;
+    label.text = b"Encumbrance:".to_vec();
+    let unlocated = Control::new(UNLOCATED_CLASS, 100, -0x8000, 12, 28);
+    // The button's x is stored as a plain 4 and its y as an anchor of eight
+    // rows below the record above.
+    let primary = button_record(4, -0x7ff8, 108, "Primary");
+    vec![label, unlocated, primary]
+}
+
+/// The journal constructor's two records, as stored: New, and Erase placed
+/// after it by an anchor. The text box is a child form, not a record.
+fn journal_records() -> Vec<Control> {
+    vec![
+        button_record(4, 6, 104, "New"),
+        button_record(-0x7ff9, -0x8000, 104, "Erase"),
+    ]
+}
+
+/// The control records a screen's form carries, laid out by the control
+/// layout pass inside the form's client (inset by `spacing`) and moved to
+/// window coordinates. None of these records is a trackbar or the first
+/// record's unit anchor, so the pass does not depend on the GUI unit.
 pub fn screen_controls(kind: GameScreen, bounds: GuiRect) -> Vec<Control> {
-    match kind {
-        GameScreen::Inventory => {
-            let spacing = crate::gui_paint::SCREEN_SPACING;
-            let client = GuiRect::new(
-                bounds.left + spacing,
-                bounds.top + spacing,
-                bounds.width() - spacing * 2,
-                bounds.height() - spacing * 2,
-            );
-            vec![
-                Control::new(
-                    1,
-                    client.left,
-                    client.bottom - crate::gui_paint::PACK.1,
-                    crate::gui_paint::PACK.0,
-                    crate::gui_paint::PACK.1,
-                ),
-                Control::new(1, client.left + 4, client.top + 20, 104, 24),
-            ]
-        }
-        GameScreen::Journal => {
-            let client = GuiRect::new(
-                bounds.left + 2,
-                bounds.top + 2,
-                bounds.width() - 4,
-                bounds.height() - 4,
-            );
-            vec![
-                Control::new(1, client.left + 4, client.top + 20, 104, 24),
-                Control::new(1, client.left + 120, client.top + 20, 104, 24),
-                Control::new(
-                    1,
-                    JOURNAL_TEXT.left + client.left,
-                    JOURNAL_TEXT.top + client.top,
-                    JOURNAL_TEXT.width(),
-                    JOURNAL_TEXT.height(),
-                ),
-            ]
-        }
-        _ => Vec::new(),
+    let (mut records, spacing) = match kind {
+        GameScreen::Inventory => (inventory_records(), gui_paint::INVENTORY_SPACING),
+        GameScreen::Journal => (journal_records(), gui_paint::FORM_SPACING),
+        _ => return Vec::new(),
+    };
+    let client = GuiRect::new(
+        bounds.left + spacing,
+        bounds.top + spacing,
+        bounds.width() - spacing * 2,
+        bounds.height() - spacing * 2,
+    );
+    layout_records(
+        &mut records,
+        LayoutClient {
+            inner_right: client.width(),
+            border: gui_paint::BORDER,
+            bottom: client.height(),
+        },
+        LAYOUT_UNIT,
+    );
+    for record in &mut records {
+        record.x += client.left;
+        record.y += client.top;
     }
+    records
 }
 
 /// The `--debug-gui-form` flag: opens one empty form through the skin's
@@ -114,10 +143,6 @@ pub struct ScreenForm {
     pub selected: i32,
     /// Which screen this form is, for the painter.
     pub kind: GameScreen,
-    /// The inventory's controlled tabs are records 3 and 4; the lit one is
-    /// [`exa_ui::game_gui::inventory_tab`]'s. The screens keep the choice
-    /// here until the record's own controls are traced.
-    pub tab: usize,
     /// The form's controls, in record order (1-based in messages).
     pub controls: Vec<Control>,
 }
@@ -152,12 +177,6 @@ impl FormHost for ScreenForm {
             return 0;
         }
         self.selected = control;
-        // The tab records are the third and the fourth; selecting one of
-        // the screen's tab controls stores the choice in the same field the
-        // game's record sends.
-        if control >= 3 && self.kind == GameScreen::Inventory {
-            self.tab = control as usize;
-        }
         3
     }
     fn selected_control(&self) -> i32 {
@@ -238,7 +257,6 @@ impl GameScreens {
             doomed: false,
             selected: 0,
             kind,
-            tab: 2,
             controls,
         }));
         self.open.push(OpenScreen { kind, form });
@@ -393,7 +411,6 @@ impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameScreens>()
             .init_resource::<DebugGuiForm>()
-            .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<GuiFrames>()
             .add_message::<ScreenRequest>()
             .add_systems(
@@ -474,136 +491,75 @@ pub(crate) fn screen_font<'a>(
     (base, font_texture(textures, base))
 }
 
-/// Paints a line of text at a window position.
-fn text_layer(
+/// Paints the control records a screen's form carries: buttons with their
+/// caption and labels as text. The unlocated control is not drawn.
+fn paint_controls(
+    controls: &[Control],
+    unit: i32,
+    palette: &exa_ui::skin::SkinPalette,
     font: &exa_ui::gui_font::GuiFont,
-    text: &[u8],
-    x: i32,
-    baseline: i32,
-    ink: [u8; 4],
-    textures: &GuiTextures,
-) -> Option<exa_ui::gui_draw::GuiLayer> {
-    let size = font_texture(textures, font)?;
-    let quads = exa_ui::gui_text::draw_line(font, text, x, baseline);
-    Some(exa_ui::gui_draw::GuiLayer::new(
-        exa_ui::gui_draw::text_batch(font, &quads, ink, size),
-        exa_ui::gui_draw::LayerTexture::Named(font.texture),
-    ))
+    size: Option<(u16, u16)>,
+    painted: &mut gui_paint::Painted,
+) {
+    for control in controls {
+        let rect = GuiRect::new(control.x, control.y, control.w, control.h);
+        let text = String::from_utf8_lossy(&control.text);
+        let layers = match control.class {
+            1 => gui_paint::paint_button(
+                rect,
+                control.style,
+                unit,
+                palette,
+                font,
+                size,
+                &text,
+                false,
+                false,
+            ),
+            5 => gui_paint::paint_label(rect, control.style, unit, palette, font, size, &text),
+            _ => continue,
+        };
+        for layer in layers.layers {
+            painted.push(layer);
+        }
+    }
 }
 
-/// The inventory's frame, character view, pack panel, encumbrance label,
-/// Primary button and preview bars.
-fn paint_inventory(
-    bounds: GuiRect,
-    possessions: Option<&Possessions>,
-    bars: Option<&exa_ui::HudBars>,
-    unit: i32,
-    textures: &GuiTextures,
-) -> gui_paint::Painted {
+/// The inventory's frame, the item pack's panel and the Encumbrance label
+/// and Primary button records. The character view, the pack's item icons
+/// and the preview bars are not drawn.
+fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
-    frame.spacing = gui_paint::SCREEN_SPACING;
+    frame.spacing = gui_paint::INVENTORY_SPACING;
     let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
     let client = frame.client();
-    let view = GuiRect::new(
-        client.left,
-        client.top,
-        gui_paint::VIEW_WIDTH,
-        bounds.height() - gui_paint::VIEW_BOTTOM,
-    );
-    for layer in gui_paint::paint_view_background(view).layers {
-        painted.push(layer);
-    }
     let pack = GuiRect::new(
         client.left,
         client.bottom - gui_paint::PACK.1,
         gui_paint::PACK.0,
         gui_paint::PACK.1,
     );
-    // The pack's own form: the item container's attribute and style words.
-    for layer in gui_paint::paint_panel(pack, unit, &palette, 0x310032, 0x80).layers {
-        painted.push(layer);
-    }
-    // The pack's entries: the container keeps them in its own coordinates;
-    // their icons need the item renderer, which is not wired yet.
-    if let Some(possessions) = possessions {
-        let container = exa_game_container(possessions, unit);
-        container.paint(|_| None, |_, _, _| {});
-    }
-    // Encumbrance: the record's label at its laid-out place.
-    if let Some(layer) = text_layer(
-        font,
-        b"Encumbrance:",
-        client.left + 4,
-        client.top + 382 + font.ascent,
-        palette.text[6],
-        textures,
-    ) {
-        painted.push(layer);
-    }
-    // Primary: the record's button at (4, 20) inside the client.
-    for layer in gui_paint::paint_button(
-        GuiRect::new(client.left + 4, client.top + 20, 104, 24),
+    for layer in gui_paint::paint_panel(
+        pack,
+        unit,
         &palette,
-        font,
-        size,
-        "Primary",
-        false,
-        false,
+        gui_paint::PACK_ATTRIBUTES,
+        gui_paint::PACK_STYLE,
     )
     .layers
     {
         painted.push(layer);
     }
-    // The preview bars: the HUD's layout in the character view's size.
-    let shares = bars
-        .map(|bars| {
-            let word = |value: f32, max: f32| {
-                if max > 0.0 {
-                    ((value / max).clamp(0.0, 1.0) * 65535.0).round_ties_even() as u16
-                } else {
-                    0
-                }
-            };
-            preview_shares(word(bars.yellow, bars.max), word(bars.red, bars.max))
-        })
-        .unwrap_or((0.0, 0.0));
-    for layer in gui_paint::paint_preview_bars(view, unit, shares).layers {
-        painted.push(layer);
-    }
+    let controls = screen_controls(GameScreen::Inventory, bounds);
+    paint_controls(&controls, unit, &palette, font, size, &mut painted);
     painted
 }
 
-/// The pack's container: its 50-entry, 400-bulk limit and the panel's
-/// 228 × 180 client, with the carried list loaded at its saved positions.
-fn exa_game_container(possessions: &Possessions, unit: i32) -> crate::item_container::Container {
-    let children: Vec<crate::item_container::ListChild> = possessions
-        .carried
-        .iter()
-        .map(|carried| crate::item_container::ListChild {
-            id: carried.id,
-            flags: carried.flags,
-            x: carried.x,
-            y: carried.y,
-        })
-        .collect();
-    let mut container = crate::item_container::Container {
-        capacity: 400,
-        max_item: 50,
-        client: (228, 180),
-        icon_size: exa_items::icon_cache::icon_size(unit),
-        unit,
-        ..Default::default()
-    };
-    container.load_list(&children, |_, _| Some((0, 0)), |_| Some((0, 0)));
-    container
-}
-
-/// The journal's frame, its New and Erase buttons and the selected entry's
-/// text through the text box's own draw.
-#[allow(clippy::too_many_arguments)]
+/// The journal's frame, its New and Erase button records and the selected
+/// entry's text through the text box's own draw.
 fn paint_journal(
     bounds: GuiRect,
     journal: &Journal,
@@ -615,35 +571,11 @@ fn paint_journal(
     let fonts = exa_ui::gui_font::gui_level(level);
     let (font, size) = screen_font(fonts.main, textures);
     let mut frame = Frame::new(bounds, unit, JOURNAL_TITLE);
-    frame.spacing = 2;
+    frame.attributes = gui_paint::JOURNAL_ATTRIBUTES;
     let mut painted = gui_paint::paint_frame(&frame, &palette, font, size);
     let client = frame.client();
-    for layer in gui_paint::paint_button(
-        GuiRect::new(client.left + 4, client.top + 20, 104, 24),
-        &palette,
-        font,
-        size,
-        "New",
-        false,
-        false,
-    )
-    .layers
-    {
-        painted.push(layer);
-    }
-    for layer in gui_paint::paint_button(
-        GuiRect::new(client.left + 120, client.top + 20, 104, 24),
-        &palette,
-        font,
-        size,
-        "Erase",
-        false,
-        false,
-    )
-    .layers
-    {
-        painted.push(layer);
-    }
+    let controls = screen_controls(GameScreen::Journal, bounds);
+    paint_controls(&controls, unit, &palette, font, size, &mut painted);
     let box_client = exa_ui::form::ClientRect {
         left: client.left + JOURNAL_TEXT.left,
         top: client.top + JOURNAL_TEXT.top,
@@ -712,14 +644,11 @@ fn paint_journal(
 }
 
 /// Draws the open screens and the debug form into the GUI's queue.
-#[allow(clippy::too_many_arguments)]
 fn draw_screens(
     screens: Res<GameScreens>,
     debug: Res<DebugGuiForm>,
     menu: Option<Res<MenuScreen>>,
     textures: Option<Res<GuiTextures>>,
-    bars: Option<Res<exa_ui::HudBars>>,
-    possessions: Query<&Possessions, With<crate::player::PlayerBody>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
 ) {
@@ -734,16 +663,13 @@ fn draw_screens(
         .ok()
         .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
         .unwrap_or(4);
-    let possessions = possessions.iter().next();
     for screen in &screens.open {
         let Some(form) = screens.task.form(screen.form) else {
             continue;
         };
         let bounds = form.bounds();
         let painted = match screen.kind {
-            GameScreen::Inventory => {
-                paint_inventory(bounds, possessions, bars.as_deref(), unit, textures)
-            }
+            GameScreen::Inventory => paint_inventory(bounds, unit, textures),
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
             _ => continue,
         };
@@ -758,6 +684,35 @@ fn draw_screens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn client_of(bounds: GuiRect, spacing: i32) -> (i32, i32) {
+        (bounds.left + spacing, bounds.top + spacing)
+    }
+
+    #[test]
+    fn the_inventory_records_lay_out_where_the_constructor_places_them() {
+        let bounds = GuiRect::new(8, 8, 244, 644);
+        let (left, top) = client_of(bounds, gui_paint::INVENTORY_SPACING);
+        let controls = screen_controls(GameScreen::Inventory, bounds);
+        assert_eq!(controls.len(), 3);
+        let place = |c: &Control| (c.x - left, c.y - top, c.w, c.h);
+        assert_eq!(controls[0].class, 5);
+        assert_eq!((place(&controls[0]).0, place(&controls[0]).1), (4, 386));
+        assert_eq!(controls[1].class, UNLOCATED_CLASS);
+        assert_eq!(controls[2].class, 1);
+        assert_eq!(place(&controls[2]), (4, 416, 108, 24));
+    }
+
+    #[test]
+    fn the_journal_records_lay_out_where_the_constructor_places_them() {
+        let bounds = GuiRect::new(4, 36, 244, 518);
+        let (left, top) = client_of(bounds, gui_paint::FORM_SPACING);
+        let controls = screen_controls(GameScreen::Journal, bounds);
+        assert_eq!(controls.len(), 2);
+        let place = |c: &Control| (c.x - left, c.y - top, c.w, c.h);
+        assert_eq!(place(&controls[0]), (4, 20, 104, 24));
+        assert_eq!(place(&controls[1]), (120, 20, 104, 24));
+    }
 
     #[test]
     fn the_inventory_opens_focuses_and_toggles() {
@@ -814,6 +769,7 @@ mod tests {
     fn the_draw_path_runs_for_three_frames_on_an_empty_app() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
             .add_plugins(GameScreensPlugin);
         for _ in 0..3 {
             app.update();
@@ -836,6 +792,7 @@ mod tests {
     fn an_inventory_request_submits_a_frame_with_the_skins_modes() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
             .add_plugins(GameScreensPlugin);
         app.world_mut().write_message(ScreenRequest {
             screen: GameScreen::Inventory,
@@ -915,6 +872,7 @@ mod tests {
     fn a_journal_with_two_entries_draws_the_selected_text() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
             .add_plugins(GameScreensPlugin);
         {
             let mut screens = app.world_mut().resource_mut::<GameScreens>();
