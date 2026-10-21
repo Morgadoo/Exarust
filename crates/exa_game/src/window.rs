@@ -109,6 +109,23 @@ impl DisplayMode {
     }
 }
 
+/// The swap's present mode for the vertical-sync setting and the adaptive
+/// choice: off presents immediately, adaptive vertical sync lets a late
+/// frame tear instead of waiting (`FifoRelaxed`), and plain vertical sync
+/// waits for the display (`Fifo`). The original sets the swap interval to
+/// 0, 1 or −1 respectively.
+pub fn present_mode(vertical_sync: bool, adaptive: bool) -> bevy::window::PresentMode {
+    use bevy::window::PresentMode;
+    if !vertical_sync {
+        PresentMode::AutoNoVsync
+    } else if adaptive {
+        // AutoVsync prefers FifoRelaxed, the swap-control-tear behaviour.
+        PresentMode::AutoVsync
+    } else {
+        PresentMode::Fifo
+    }
+}
+
 /// The Bevy window mode for a style. Exclusive full screen uses the display's
 /// current mode (winit's video-mode selection); on Wayland, which has no
 /// exclusive mode, Bevy falls back to a borderless window.
@@ -251,6 +268,14 @@ mod tests {
             fit_window(UVec2::new(3000, 2000), origin, work, true),
             (origin, work)
         );
+    }
+
+    #[test]
+    fn the_present_mode_follows_the_swap_interval() {
+        use bevy::window::PresentMode;
+        assert_eq!(present_mode(false, false), PresentMode::AutoNoVsync);
+        assert_eq!(present_mode(true, false), PresentMode::Fifo);
+        assert_eq!(present_mode(true, true), PresentMode::AutoVsync);
     }
 
     #[test]

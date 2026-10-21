@@ -620,11 +620,7 @@ fn apply_window(
             window.resolution.set(width as f32, height as f32);
         }
     }
-    let present = if config.live.vertical_sync {
-        PresentMode::AutoVsync
-    } else {
-        PresentMode::AutoNoVsync
-    };
+    let present = crate::window::present_mode(config.live.vertical_sync, false);
     if window.present_mode != present {
         window.present_mode = present;
     }

@@ -779,11 +779,11 @@ fn main() -> AppExit {
                         ..default()
                     },
                     mode: frame_loop::launch_window_mode(options.fullscreen),
-                    present_mode: if options.no_vsync {
-                        bevy::window::PresentMode::AutoNoVsync
-                    } else {
-                        bevy::window::PresentMode::AutoVsync
-                    },
+                    // Swap interval 1 or 0; adaptive is not a launch option.
+                    present_mode: exa_game::window::present_mode(
+                        !options.no_vsync,
+                        false,
+                    ),
                     ..default()
                 }),
                 ..default()

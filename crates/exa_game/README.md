@@ -11,11 +11,15 @@ and 1 ms early), the real/game clock with its paused-time accumulator
 (`FrameClock`), the periodic timer table (intervals scaled by the time
 multiplier, re-armed from the frame time, rescheduled from the interval),
 the 128-slot deferred-call ring, the redraw-flag idle waits (1, 32, 64 or
-1024 ms) and the logger's presentation levels (status line, timed overlay,
-message box, file only). `window` holds the display-mode list (modes at
+1024 ms), the logger's presentation levels (status line, timed overlay,
+message box, file only), the sixteen-entry newest-first status history and
+the sixteen-line timed overlay whose lines stay two seconds plus fifty
+milliseconds a character. `window` holds the display-mode list (modes at
 least 640 wide, one per size, ordered by area) and work-area fitting, the
 640 × 480 minimum, the windowed/borderless/exclusive styles with their
-winit modes, the Alt+Enter toggle and the full-screen setting's style.
+winit modes, the swap interval's present mode (immediate, plain Fifo or
+adaptive FifoRelaxed), the Alt+Enter toggle and the full-screen setting's
+style.
 Tests pin the pacing arithmetic, the timer and ring orders, the idle rule,
 the display-mode ordering and the fitting. `exarust::frame_loop` applies
 the pacing, the exclusive display mode and Alt+Enter; the other models are

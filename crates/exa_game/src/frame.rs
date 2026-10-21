@@ -190,6 +190,115 @@ pub mod redraw {
     pub const ACTIVE: u32 = 0x200;
     /// Draw now, without waiting.
     pub const IMMEDIATE: u32 = 0x400;
+
+    /// Asks for a draw and a present, as every changed GUI control does.
+    pub fn request(flags: &mut u32) {
+        *flags |= DRAW | PRESENT;
+    }
+}
+
+/// One line of the status/history display.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusEntry {
+    /// The log level the line came in at (1 for the title, 2 and 3 for
+    /// messages).
+    pub level: i32,
+    pub text: String,
+}
+
+/// The status/history line's newest-first list of at most sixteen entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatusHistory {
+    entries: Vec<StatusEntry>,
+}
+
+impl StatusHistory {
+    /// Adds a line at the front, dropping the oldest past sixteen.
+    pub fn push(&mut self, level: i32, text: impl Into<String>) {
+        self.entries.insert(
+            0,
+            StatusEntry {
+                level,
+                text: text.into(),
+            },
+        );
+        self.entries.truncate(LOG_HISTORY);
+    }
+
+    /// The entries, newest first.
+    pub fn entries(&self) -> &[StatusEntry] {
+        &self.entries
+    }
+
+    /// The title line's text (the newest level-1 entry).
+    pub fn title(&self) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.level == 1)
+            .map(|e| e.text.as_str())
+    }
+}
+
+/// One line of the timed on-screen log overlay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverlayLine {
+    pub text: String,
+    /// The game time the line goes away; it stays while `now <= expiry`.
+    pub expires_ms: u32,
+}
+
+/// The timed on-screen log overlay: a ring of sixteen lines, each staying two
+/// seconds plus fifty milliseconds a character from the game time it was
+/// logged at, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogOverlay {
+    lines: VecDeque<OverlayLine>,
+}
+
+impl LogOverlay {
+    /// Adds a line if the ring has room and returns whether it did. The
+    /// expiry is measured from `now_ms`.
+    pub fn push(&mut self, text: impl Into<String>, now_ms: u32) -> bool {
+        let text = text.into();
+        if self.lines.len() >= LOG_OVERLAY {
+            return false;
+        }
+        self.lines.push_back(OverlayLine {
+            expires_ms: now_ms.wrapping_add(overlay_lifetime_ms(&text)),
+            text,
+        });
+        true
+    }
+
+    /// Drops every line whose expiry is strictly before `now_ms` and returns
+    /// whether any went; the original requests a redraw when one does.
+    pub fn expire(&mut self, now_ms: u32) -> bool {
+        let mut removed = false;
+        while let Some(front) = self.lines.front() {
+            if now_ms > front.expires_ms {
+                self.lines.pop_front();
+                removed = true;
+            } else {
+                break;
+            }
+        }
+        removed
+    }
+
+    /// The live lines, oldest first.
+    pub fn lines(&self) -> impl Iterator<Item = &OverlayLine> {
+        self.lines.iter()
+    }
+
+    /// How many lines wait.
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Whether the overlay is empty.
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
 }
 
 /// How long the message loop may wait before the next frame, in
@@ -608,6 +717,37 @@ mod tests {
             idle_wait_ms(DRAW | PRESENT | ANIMATION, true, false),
             Some(32)
         );
+    }
+
+    #[test]
+    fn the_status_line_keeps_sixteen_newest_first() {
+        let mut history = StatusHistory::default();
+        for i in 0..20 {
+            history.push(2, format!("line {i}"));
+        }
+        assert_eq!(history.entries().len(), LOG_HISTORY);
+        assert_eq!(history.entries()[0].text, "line 19");
+        assert_eq!(history.entries()[15].text, "line 4");
+        history.push(1, "Title");
+        assert_eq!(history.title(), Some("Title"));
+        assert_eq!(history.entries()[0].level, 1);
+    }
+
+    #[test]
+    fn overlay_lines_expire_strictly_after_their_time() {
+        let mut overlay = LogOverlay::default();
+        assert!(overlay.push("abcd", 1_000));
+        // Two seconds plus fifty milliseconds a character.
+        assert_eq!(overlay.lines().next().unwrap().expires_ms, 3_200);
+        assert!(!overlay.expire(3_200));
+        assert!(overlay.expire(3_201));
+        assert!(overlay.is_empty());
+        // Sixteen lines at most; the seventeenth is dropped.
+        for i in 0..LOG_OVERLAY {
+            assert!(overlay.push(format!("{i}"), 0), "{i}");
+        }
+        assert!(!overlay.push("seventeen", 0));
+        assert_eq!(overlay.len(), LOG_OVERLAY);
     }
 
     #[test]
