@@ -51,8 +51,9 @@ payloads               at their offsets, each at the 0x2000 boundary after
   package: the magic, count 1 and the sentinel, written over the start.
   The file is not truncated. (The slot scan and the legacy pass open every
   matching file, so they reset a damaged one.) A file with the magic keeps
-  its directory count as stored; a count of zero (no sentinel) reads as an
-  empty package, as the original's reader simply loops over no entries.
+  its directory count as stored; a count of zero or a negative count (the
+  word is signed) reads as an empty package, as the original's reader
+  simply loops over no entries.
 * **Writing a section** ([`exa_formats::save_package::PackageImage`]):
   * the **gap scan** walks every pair of consecutive entries, the sentinel
     included; a pair's room is the next offset minus this offset minus this

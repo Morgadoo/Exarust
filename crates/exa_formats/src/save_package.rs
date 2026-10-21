@@ -216,8 +216,8 @@ impl Package<'_> {
 }
 
 /// Parses a package. Entry 0 is the sentinel and is not exposed. A count of
-/// zero (no sentinel at all) is legal to the original, which reads no
-/// entries then; the parser accepts it and yields an empty package.
+/// zero or a negative count (the word is signed) reads as an empty package,
+/// as the original's entry loop then runs no times.
 pub fn parse(bytes: &[u8]) -> Result<Package<'_>, PackageError> {
     if bytes.len() < 8 {
         return Err(PackageError::Short);
@@ -226,7 +226,10 @@ pub fn parse(bytes: &[u8]) -> Result<Package<'_>, PackageError> {
     if magic != PACKAGE_MAGIC {
         return Err(PackageError::BadMagic(magic));
     }
-    let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as i32;
+    // The count is signed in the original. A zero or negative count makes
+    // its entry loop run no times, so the package has no sections.
+    let count = count.max(0) as usize;
     let directory_end = 8usize
         .checked_add(count.checked_mul(24).ok_or(PackageError::BadDirectory)?)
         .ok_or(PackageError::BadDirectory)?;
@@ -294,7 +297,8 @@ impl PackageImage {
     pub fn read(bytes: &[u8]) -> Result<Self, PackageError> {
         let package = parse(bytes)?;
         // Rebuild from the directory so the offsets survive a round trip.
-        let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let count = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as i32;
+        let count = count.max(0) as usize;
         let mut sentinel = (0, SENTINEL_SIZE, [0u8; NAME_LEN]);
         if count >= 1 {
             let mut sentinel_name = [0u8; NAME_LEN];
@@ -1567,16 +1571,18 @@ mod tests {
 
     #[test]
     fn a_count_of_zero_is_an_empty_package() {
-        let mut bytes = PACKAGE_MAGIC.to_le_bytes().to_vec();
-        bytes.extend_from_slice(&0u32.to_le_bytes());
-        let package = parse(&bytes).unwrap();
-        assert!(package.sections.is_empty());
-        let image = PackageImage::read(&bytes).unwrap();
-        assert!(image.entries().is_empty());
-        // Writing it back adds the sentinel the original's reset writes.
-        let out = image.to_bytes();
-        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0x10);
+        for count in [0u32, (-1i32) as u32] {
+            let mut bytes = PACKAGE_MAGIC.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&count.to_le_bytes());
+            let package = parse(&bytes).unwrap();
+            assert!(package.sections.is_empty());
+            let image = PackageImage::read(&bytes).unwrap();
+            assert!(image.entries().is_empty());
+            // Writing it back adds the sentinel the original's reset writes.
+            let out = image.to_bytes();
+            assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), 1);
+            assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0x10);
+        }
     }
 
     #[test]

@@ -290,10 +290,9 @@ pub fn player_name(package: &PackageImage, data: &PlayerData) -> Option<String> 
     let id = data.character_record_id()?;
     let section = package.section(save_package::WORLD_CHARACTER_DB)?;
     let chunks = save_package::parse_chunks(section).ok()?;
-    let payload = chunks
-        .iter()
-        .find(|chunk| chunk.id == save_package::WORLD_CHARACTERS_CHUNK)?
-        .payload;
+    // The original's import takes the section's first chunk whatever its
+    // id.
+    let payload = chunks.first()?.payload;
     let records = exa_formats::characters::read_character_database(payload).ok()?;
     let (_, record) = records
         .iter()
@@ -749,6 +748,11 @@ mod tests {
             &save_package::world_character_db(&db),
         );
         package.put_section(PLAYER_DATA, &data.write());
+        assert_eq!(player_name(&package, &data).as_deref(), Some("Ash"));
+        // The importer takes the section's first chunk whatever its id.
+        let mut other = Vec::new();
+        save_package::write_chunk(&mut other, 0x1234, &db);
+        package.put_section(save_package::WORLD_CHARACTER_DB, &other);
         assert_eq!(player_name(&package, &data).as_deref(), Some("Ash"));
         // A reference without the world bit does not look in this database.
         data.character = Some(

@@ -104,6 +104,28 @@ pub struct LoadedSave {
     pub converted: bool,
 }
 
+impl LoadedSave {
+    /// The player's character record, as the character screen loads it: the
+    /// placement's reference names a record in the save's world character
+    /// database. None when the reference points at the other database, the
+    /// section is missing, or the record is not there.
+    pub fn player_record(&self) -> Option<exa_formats::characters::CharacterRecord> {
+        let reference = self.data.character_reference()?;
+        if reference & save_package::CHARACTER_IN_WORLD_DB == 0 {
+            return None;
+        }
+        let id = reference & exa_formats::characters::ID_MASK;
+        let section = self.package.section(save_package::WORLD_CHARACTER_DB)?;
+        let chunks = save_package::parse_chunks(section).ok()?;
+        let records =
+            exa_formats::characters::read_character_database(chunks.first()?.payload).ok()?;
+        records
+            .into_iter()
+            .find(|(record_id, _)| record_id & exa_formats::characters::ID_MASK == id)
+            .and_then(|(_, record)| record.ok())
+    }
+}
+
 impl Slots {
     /// The story's slots in `dir`.
     pub fn story(dir: impl Into<PathBuf>) -> Self {
@@ -1459,6 +1481,54 @@ mod tests {
         let loaded = slots.load_character_screen(number, false).unwrap();
         assert_eq!(loaded.kind, SlotKind::Checkpoint);
         assert_eq!(loaded.data.header.clock(), 99);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_load_exposes_the_placed_player_record() {
+        use exa_formats::characters::{CharacterRecord, WORLD_DB};
+        let dir = folder("record");
+        let slots = Slots::story(&dir);
+        let number = slots.create(&Session::story()).unwrap();
+        let mut record = CharacterRecord::new();
+        record.id = 5;
+        record.name = "Ash".to_string();
+        let record = record.to_bytes().unwrap();
+        let mut db = Vec::new();
+        db.extend_from_slice(&0xDBAC_CD00u32.to_le_bytes());
+        db.extend_from_slice(&16u32.to_le_bytes());
+        db.extend_from_slice(&5u32.to_le_bytes());
+        db.extend_from_slice(&0u32.to_le_bytes());
+        db.extend_from_slice(&0u32.to_le_bytes());
+        db.extend_from_slice(&(record.len() as u32).to_le_bytes());
+        db.extend_from_slice(&record);
+        let path = slots.file(number, SlotKind::Save);
+        let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(&db),
+        );
+        let mut data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: WORLD_DB | 5,
+                position: [1.0, 2.0, 3.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        package.put_section(PLAYER_DATA, &data.write_ordered());
+        fs::write(&path, package.to_bytes()).unwrap();
+        let loaded = slots.load_package(number, false).unwrap();
+        let record = loaded.player_record().unwrap();
+        assert_eq!(record.name, "Ash");
+        assert_eq!(record.id, 5);
         let _ = fs::remove_dir_all(&dir);
     }
 
