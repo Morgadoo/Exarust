@@ -937,6 +937,26 @@ beside the slots, and a record with known powers opens the power tree when
 it is committed. Evidence: REA on the character screen's unit routines
 and the record layout above.
 
+**Arena chunks** (`exa_formats::arena_save`): status **specified from the
+retail writers and loaders, checked on synthetic bytes** (no shipped file
+holds them). Framed `u32 id, u32 length, payload`; a string is a `u32` byte
+count and its bytes.
+
+| chunk | payload |
+|---|---|
+| company `0xA0DC0000` | name, a second string (empty in a new career), the 28-byte emblem record, three words, one unused word (skipped on reading), sixteen record words (the thirteen of the records window, three unused) |
+| day `0xA0D10000` | today's matches, copper spent, copper earned; a count of special matches and per match its template id, rank, flags and an unused word; a word beside the log; the log's count and its twenty-byte records |
+| tournament `0xA0600000` | the week's prize word, the six event rows (0x120 bytes), the sixteen rival companies (sixteen words; a first word of 0 makes the loader draw a new field), per event its template id, rank and two more words, then four week words and the eight-word prize history |
+
+On loading, a special match is copied from the special table by its id (an
+id the table lacks takes its last row) and rolled again for its slot; a
+tournament event takes the tournament table's row of its id.
+
+**Character creation** (`exa_game::create`): a new record takes the
+appearance (four words, a count and a parts list, then a tail and its
+list); the source keeps its words and loses both counts and lists.
+Evidence: the 228-byte routine at `0x10012bd20`.
+
 ## Terrain (`.rft` and `.ftb`)
 
 Moved to [TERRAIN.md](TERRAIN.md) (verified).
