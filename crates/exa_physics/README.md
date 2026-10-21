@@ -206,18 +206,21 @@ the original does: they run the volume fit, sort the extracted spheres
 around the node's box centre or origin, take the node's box (a limb's cut
 at its own origin so the box reaches the joint), clamp the extents (the two
 smaller at least a fifth of the largest, in double precision, then six
-centimetres), order the axes by extent smallest first (a limb overrides the
-order from its own numbers), lay the regular tetrahedron over the box (the
-middle √2 sign fixes the handedness for every axis order; a mirrored limb
-on the +x side flips x and y), and weigh the body: mobility 10 000 over the
-volume and point masses 4 over the barycentric weights of the volume's
-centre. The quality flag gives one voxel per centimetre and eight cells at
-least; the wide-query flag reaches the grid; a factory weapon takes its
-resolution multiplier, even-axis word, depth, free-corner count, map tag and
-mirror byte from its definition's fit record instead. The original scales
-and offsets only three of the four rest points (its loop runs over three);
-the fourth stays the unit template vertex, and the shipped prop bodies,
-made by the editor, have all four scaled.
+centimetres), order the axes by extent smallest first (a mirrored body
+overrides the order from its own numbers), lay the regular tetrahedron over
+the box and scale and place all four points (the middle √2 sign fixes the
+handedness for every axis order; a mirrored body on the +x side flips x and
+y), and weigh the body: mobility 10 000 over the volume, point masses 4
+over the barycentric weights of the volume's centre, and gravity shares 4
+over each mass scaled to sum to four. The resolution comes from the node
+box's smallest half extent; the quality flag gives one voxel per
+centimetre and eight cells at least; the wide-query flag reaches the grid;
+a factory weapon takes its resolution multiplier, even-axis word, depth,
+free-corner count, map tag and mirror byte from its definition's fit
+record instead (every factory weapon shares one record: 1.1, even axes, 6
+cells, no free corners, tag 2, not mirrored). Nothing calls the builders
+yet: the character generator and the item factory still build their
+bodies the old way.
 
 The dynamics world unit (`src/dynamics.rs`) holds the rest of the world's
 side of the solver as data and rules: the simulation clock and the step

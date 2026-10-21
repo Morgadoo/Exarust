@@ -6,16 +6,17 @@
 //! node's mesh ([`crate::volume::fit`]), sorts the extracted spheres around
 //! the node's box centre ([`sort_spheres`]), takes the node's box (a limb's
 //! cut at its own origin), clamps its extents ([`clamp_extents`]), orders
-//! the axes by extent ([`extent_order`], a limb overrides the order by the
-//! node's own numbers), lays the regular tetrahedron over the box
-//! ([`tetrahedron`]) and weighs the body from the volume's centre
+//! the axes by extent ([`extent_order`], a mirrored body overrides the
+//! order by the node's own numbers), lays the regular tetrahedron over the
+//! box ([`tetrahedron`]) and weighs the body from the volume's centre
 //! ([`crate::volume::VolumeSummary::point_masses`]).
 //!
 //! The builders differ in three places:
 //!
 //! * a limb cuts its box at the node's origin, so the box always reaches
-//!   the joint, and overrides the axis order for a mirrored limb;
-//! * a root keeps the node's box as it is;
+//!   the joint (its growth over the children is overwritten by the cut);
+//! * a root keeps the node's box, grown over its children's when mirrored
+//!   and set off to a side;
 //! * a factory weapon takes its resolution, depth and flag words from its
 //!   definition's fit record ([`WeaponFit`]) rather than the two global
 //!   quality flags.
@@ -37,12 +38,13 @@ use crate::voxel::{Bounds, Sphere};
 pub const MIN_HALF_EXTENT: f32 = 6.0;
 /// The two smaller extents are at least this share of the largest.
 pub const MINOR_EXTENT_SHARE: f64 = 0.2;
-/// A box centre farther than this (cm) from the node's origin is a limb set
-/// off to one side: its box grows over its children and the tetrahedron is
-/// mirrored.
+/// A box centre whose x is farther than this (cm) from the model's centre
+/// plane is set off to one side: a mirrored root's or weapon's box grows
+/// over its children and takes the side's axis order, and on the +x side
+/// the tetrahedron flips.
 pub const SIDE_REACH: f32 = 5.0;
-/// A mirrored limb whose origin is within this (cm) of the model's centre
-/// takes the centre limbs' axis order.
+/// A mirrored body whose origin's x is within this (cm) of the model's
+/// centre plane takes the centre's axis order.
 pub const CENTRE_REACH: f32 = 2.0;
 /// Spheres farther than this squared distance (cm²) from the sort centre
 /// are never chosen by the sphere sort (the original's `1e8`).
@@ -57,18 +59,20 @@ pub const BUILDER_MAP_TAG: u32 = 2;
 /// A mesh node's box and origin, as the builders read them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeShape {
-    /// The node's box centre (the original's `+0x10`), in the mesh's space.
+    /// The node's box centre, in the mesh's space.
     pub box_centre: Vec3,
-    /// The node's box half extents (`+0x30`), in the mesh's space.
+    /// The node's box half extents, in the mesh's space: they also choose
+    /// the fit's resolution.
     pub half_extents: Vec3,
-    /// The node's own translation (`+0x94`): the joint a limb's box is cut
-    /// at, and the number that chooses a mirrored limb's axis order.
+    /// The node's own translation: the joint a limb's box is cut at, and
+    /// the number that chooses a mirrored body's axis order.
     pub origin: Vec3,
-    /// The direct children's box half extents: a mirrored box grows over
-    /// them.
+    /// The direct children's box half extents: a mirrored root's or
+    /// weapon's box grows over them.
     pub children: Vec<Vec3>,
     /// Whether the sort centre is the box centre rather than the origin:
-    /// the original tests the node's record flags with `& 0x5f == 0x11`.
+    /// the original takes the box centre when the node's parent is of one
+    /// node kind (its kind word masked by `0x5f` equals `0x11`).
     pub sort_at_box: bool,
 }
 
@@ -93,8 +97,10 @@ pub struct BuilderFlags {
     pub precise: bool,
     /// The voxeliser's wide-query flag (every builder).
     pub wide_queries: bool,
-    /// Mirror the tetrahedron and cut the box at the origin (a limb on the
-    /// body's +x side; the factory weapon record's byte says).
+    /// The builder's side flag (the caller's argument for a limb or root;
+    /// a factory weapon's record byte instead): the box grows over the
+    /// children, the axis order is overridden and the tetrahedron flips,
+    /// each under its own test of the node's numbers.
     pub mirror: bool,
 }
 
@@ -195,7 +201,7 @@ pub fn clamp_extents(mut half: Vec3, order: [usize; 3]) -> Vec3 {
 }
 
 /// The regular tetrahedron laid over a box of half extents `half` centred
-/// at `centre`, in the builders' order.
+/// at `centre`, in the builders' order (`order` smallest first).
 ///
 /// With the axes ordered smallest, middle, largest:
 ///
@@ -203,54 +209,45 @@ pub fn clamp_extents(mut half: Vec3, order: [usize; 3]) -> Vec3 {
 /// * p2 = +√2 middle, +1 largest; p3 = −√2 middle, +1 largest.
 ///
 /// The middle sign is flipped for the odd axis permutations, so every order
-/// gives the same handedness. `mirror` flips x and y of the first three
-/// points when the box centre is more than [`SIDE_REACH`] from the origin
-/// (a limb on the body's +x side).
-///
-/// The original scales and places only the first three points: the fourth
-/// stays the unit template vertex at the node's origin (the assembly's
-/// scale loop runs over three vertices). This is the original's own
-/// behaviour, not a simplification; the shipped prop bodies, made by the
-/// editor rather than by this routine, have all four points scaled.
+/// gives the same handedness. `mirror` flips x and y of every point when
+/// the box centre's x is more than [`SIDE_REACH`] (a body on the +x side;
+/// the sign counts here, unlike the box growth's and axis order's tests).
+/// Every point is then scaled by the half extents and moved to the centre
+/// (the original's loop runs its counter from 0 through 3).
 pub fn tetrahedron(half: Vec3, centre: Vec3, order: [usize; 3], mirror: bool) -> [Vec3; 4] {
-    let [major, middle, minor] = order;
-    let sign = if middle as i64 - major as i64 == 1 || minor as i64 - middle as i64 == 1 {
+    let [small, middle, large] = order;
+    let sign = if middle as i64 - small as i64 == 1 || large as i64 - middle as i64 == 1 {
         1.0
     } else {
         -1.0
     };
     let mut unit = [Vec3::ZERO; 4];
-    unit[0][major] = std::f32::consts::SQRT_2;
-    unit[0][minor] = -1.0;
-    unit[1][major] = -std::f32::consts::SQRT_2;
-    unit[1][minor] = -1.0;
+    unit[0][small] = std::f32::consts::SQRT_2;
+    unit[0][large] = -1.0;
+    unit[1][small] = -std::f32::consts::SQRT_2;
+    unit[1][large] = -1.0;
     unit[2][middle] = sign * std::f32::consts::SQRT_2;
-    unit[2][minor] = 1.0;
+    unit[2][large] = 1.0;
     unit[3][middle] = -sign * std::f32::consts::SQRT_2;
-    unit[3][minor] = 1.0;
+    unit[3][large] = 1.0;
     let flip = mirror && centre.x > SIDE_REACH;
-    let mut rest = [Vec3::ZERO; 4];
-    for (i, r) in rest.iter_mut().take(3).enumerate() {
-        let mut u = unit[i];
+    unit.map(|mut u| {
         if flip {
             u.x = -u.x;
             u.y = -u.y;
         }
-        *r = u * half + centre;
-    }
-    rest[3] = unit[3];
-    rest
+        u * half + centre
+    })
 }
 
-/// The builders' gravity shares from a body's point masses: 4 over each
-/// mass, normalised so that the first three shares sum to four (the
-/// original's setup sums three of the four masses, an off-by-one in its
-/// loop that every built body has), then all four scaled by the same
-/// factor. Non-finite shares fall back to one each (Exarust's guard; the
-/// original has none).
+/// The body setup's gravity shares from a body's point masses: 4 over each
+/// mass, summed in particle order from zero, and each multiplied by 4 over
+/// that sum (the quotient taken first), so the four shares sum to four and
+/// gravity acts at the centre of mass. Non-finite shares fall back to one
+/// each (Exarust's guard; the original has none).
 pub fn setup_gravity(point_masses: [f32; 4]) -> [f32; 4] {
     let inverse = point_masses.map(|m| 4.0 / m);
-    let sum: f32 = inverse[0] + inverse[1] + inverse[2];
+    let sum = inverse.iter().fold(0.0f32, |sum, w| sum + w);
     let scale = 4.0 / sum;
     let shares = inverse.map(|w| w * scale);
     if shares.iter().all(|w| w.is_finite()) {
@@ -261,10 +258,10 @@ pub fn setup_gravity(point_masses: [f32; 4]) -> [f32; 4] {
 }
 
 /// The builders' sphere sort: repeatedly take the unused sphere nearest
-/// the `centre` (squared distance, the first index winning a tie), except
-/// that a tie goes to the one farther from the sphere picked before it, so
-/// consecutive spheres spread out; spheres over [`SORT_LIMIT`] squared from
-/// the centre are not chosen. The array keeps its length: when no unused
+/// the `centre` (squared distance); among equally near ones the one at
+/// least as far from the sphere picked before it wins, so a later index
+/// wins an exact tie and consecutive spheres spread out; spheres over
+/// [`SORT_LIMIT`] squared from the centre are not chosen. The array keeps its length: when no unused
 /// sphere qualifies, the next sphere after the last pick is marked used and
 /// copied (the original's own behaviour).
 pub fn sort_spheres(spheres: &mut [Sphere], centre: Vec3) {
@@ -324,8 +321,9 @@ pub fn sort_spheres(spheres: &mut [Sphere], centre: Vec3) {
 }
 
 /// The volume options a limb or root builder asks for: the global precise
-/// flag's cell per centimetre and eight cells at least, or the mesh's
-/// smallest half extent: 0.3 cells per centimetre from 10 cm up, else 0.6.
+/// flag's cell per centimetre and eight cells at least, or by the node
+/// box's smallest half extent: 0.3 cells per centimetre from 10 cm up,
+/// else 0.6.
 /// The wide-query flag is the process's.
 pub fn builder_options(bounds: &Bounds, flags: BuilderFlags) -> VolumeOptions {
     let mut options = VolumeOptions::for_bounds(bounds, flags.precise);
@@ -333,7 +331,7 @@ pub fn builder_options(bounds: &Bounds, flags: BuilderFlags) -> VolumeOptions {
     options
 }
 
-/// The volume options a factory weapon asks for: the mesh's resolution
+/// The volume options a factory weapon asks for: the node box's resolution
 /// (0.3 or 0.6) times the record's multiplier, the record's even-axis word
 /// and depth, the record's free-corner count and the process's wide-query
 /// flag. The precise flag does not reach a weapon.
@@ -357,7 +355,6 @@ fn assemble(
     options: &VolumeOptions,
     half: Vec3,
     mirror: bool,
-    limb: bool,
 ) -> Shape {
     let fitted = volume::fit(mesh, options);
     let mut spheres = fitted.spheres;
@@ -369,10 +366,13 @@ fn assemble(
     sort_spheres(&mut spheres, sort_centre);
     let mut order = extent_order(half);
     let half = clamp_extents(half, order);
-    if limb && mirror {
+    // Every builder overrides the order of a mirrored body after the
+    // clamp: the centre's order when the origin is within 2 cm of the
+    // model's centre plane, the side's when the box is set off to a side.
+    if mirror {
         if node.origin.x.abs() < CENTRE_REACH {
             order = [0, 2, 1];
-        } else if node.box_centre.x > SIDE_REACH {
+        } else if node.box_centre.x.abs() > SIDE_REACH {
             order = [1, 2, 0];
         }
     }
@@ -400,12 +400,15 @@ fn assemble(
 fn limb_box(node: &NodeShape) -> Vec3 {
     let mut low = node.box_centre - node.half_extents;
     let mut high = node.box_centre + node.half_extents;
-    low.x = low.x.min(0.0);
-    low.y = low.y.min(0.0);
-    low.z = low.z.min(0.0);
-    high.x = high.x.max(0.0);
-    high.y = high.y.max(0.0);
-    high.z = high.z.max(0.0);
+    // Plain compares: a NaN bound stays NaN.
+    for a in 0..3 {
+        if low[a] > 0.0 {
+            low[a] = 0.0;
+        }
+        if high[a] < 0.0 {
+            high[a] = 0.0;
+        }
+    }
     let middle = low + (high - low) * 0.5;
     high - middle
 }
@@ -426,28 +429,37 @@ fn grown_box(node: &NodeShape, mirror: bool) -> Vec3 {
     half
 }
 
+/// The node's box as the fit's options read it.
+fn node_bounds(node: &NodeShape) -> Bounds {
+    Bounds {
+        centre: node.box_centre,
+        half_extents: node.half_extents,
+    }
+}
+
 /// The limb builder: a character part fitted to its mesh.
 pub fn build_limb(mesh: &Mesh, node: &NodeShape, flags: BuilderFlags) -> Shape {
-    let options = builder_options(&mesh.bounds(), flags);
+    let options = builder_options(&node_bounds(node), flags);
     let half = limb_box(node);
-    assemble(mesh, node, &options, half, flags.mirror, true)
+    assemble(mesh, node, &options, half, flags.mirror)
 }
 
 /// The root builder: a character's root body fitted to its mesh.
 pub fn build_root(mesh: &Mesh, node: &NodeShape, flags: BuilderFlags) -> Shape {
-    let options = builder_options(&mesh.bounds(), flags);
+    let options = builder_options(&node_bounds(node), flags);
     let half = grown_box(node, flags.mirror);
-    assemble(mesh, node, &options, half, flags.mirror, false)
+    assemble(mesh, node, &options, half, flags.mirror)
 }
 
 /// The factory-weapon builder: an item's body fitted to its mesh with its
 /// definition's fit record.
 pub fn build_weapon(mesh: &Mesh, node: &NodeShape, flags: BuilderFlags, fit: &WeaponFit) -> Shape {
-    let options = weapon_options(&mesh.bounds(), fit, flags);
+    let options = weapon_options(&node_bounds(node), fit, flags);
     let half = grown_box(node, fit.mirror);
-    // The record's map tag is only a stack slot in the original (the map
-    // never reads it); kept in the fit for the caller's records.
-    assemble(mesh, node, &options, half, fit.mirror, false)
+    // The record's map tag picks the mesh tree's per-thread query stack
+    // (as the limb and root builders' fixed 2 does); Exarust's tree needs
+    // none, so it is kept in the fit for the caller's records.
+    assemble(mesh, node, &options, half, fit.mirror)
 }
 
 #[cfg(test)]

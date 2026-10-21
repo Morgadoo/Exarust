@@ -83,8 +83,8 @@ fn extents_are_clamped() {
 }
 
 /// A limb cuts its box at its origin and lays the tetrahedron over the cut
-/// box; a mirrored limb on the body's +x side flips the three placed
-/// points, and the fourth stays the unit template vertex.
+/// box; a mirrored limb on the body's +x side flips all four points, each
+/// scaled and placed.
 #[test]
 fn a_limb_cuts_its_box_at_the_origin() {
     let node = NodeShape::new(
@@ -109,7 +109,7 @@ fn a_limb_cuts_its_box_at_the_origin() {
     assert_eq!(shape.rest[0], scaled(Vec3::new(1.0, -s, 0.0)));
     assert_eq!(shape.rest[1], scaled(Vec3::new(1.0, s, 0.0)));
     assert_eq!(shape.rest[2], scaled(Vec3::new(-1.0, 0.0, s)));
-    assert_eq!(shape.rest[3], Vec3::new(1.0, 0.0, -s));
+    assert_eq!(shape.rest[3], scaled(Vec3::new(-1.0, 0.0, -s)));
     // A limb whose origin is at the model's centre takes the centre
     // limbs' order (x smallest, z middle, y largest).
     let centre = NodeShape::new(Vec3::ZERO, Vec3::splat(10.0), Vec3::new(1.0, 0.0, 0.0));
@@ -140,7 +140,7 @@ fn a_root_lays_the_tetrahedron_over_its_box() {
     assert_eq!(shape.rest[0], Vec3::new(s * h.x, 0.0, -h.z));
     assert_eq!(shape.rest[1], Vec3::new(-s * h.x, 0.0, -h.z));
     assert_eq!(shape.rest[2], Vec3::new(0.0, s * h.y, h.z));
-    assert_eq!(shape.rest[3], Vec3::new(0.0, -s, 1.0));
+    assert_eq!(shape.rest[3], Vec3::new(0.0, -s * h.y, h.z));
     // The odd order (y, x, z) flips the middle sign.
     let node = NodeShape::new(Vec3::ZERO, Vec3::new(20.0, 10.0, 40.0), Vec3::ZERO);
     let shape = build_root(
@@ -151,7 +151,42 @@ fn a_root_lays_the_tetrahedron_over_its_box() {
     assert_eq!(shape.axis_order, [1, 0, 2]);
     let h = shape.half_extents;
     assert_eq!(shape.rest[2], Vec3::new(-s * h.x, 0.0, h.z));
-    assert_eq!(shape.rest[3], Vec3::new(s, 0.0, 1.0));
+    assert_eq!(shape.rest[3], Vec3::new(s * h.x, 0.0, h.z));
+}
+
+/// A mirrored root set off to the −x side grows its box over its
+/// children's and takes the side's axis order (the side test reads the
+/// distance, so −x counts), but its tetrahedron does not flip (that test
+/// reads the sign).
+#[test]
+fn a_mirrored_root_on_the_left_takes_the_side_order() {
+    let mut node = NodeShape::new(
+        Vec3::new(-20.0, 0.0, 0.0),
+        Vec3::new(8.0, 12.0, 10.0),
+        Vec3::new(-20.0, 0.0, 0.0),
+    );
+    node.children = vec![Vec3::new(9.0, 1.0, 16.0)];
+    let flags = BuilderFlags {
+        mirror: true,
+        ..BuilderFlags::default()
+    };
+    let shape = build_root(&mesh(Vec3::new(8.0, 12.0, 10.0)), &node, flags);
+    assert_eq!(shape.half_extents, Vec3::new(9.0, 12.0, 16.0));
+    assert_eq!(shape.axis_order, [1, 2, 0]);
+    let s = std::f32::consts::SQRT_2;
+    let h = shape.half_extents;
+    let c = node.box_centre;
+    // y smallest, z middle, x largest: p0 = +√2 y, −1 x; not flipped.
+    assert_eq!(shape.rest[0], Vec3::new(-h.x, s * h.y, 0.0) + c);
+    assert_eq!(shape.rest[3], Vec3::new(h.x, 0.0, -s * h.z) + c);
+    // Unmirrored, the same node keeps its own box and order.
+    let shape = build_root(
+        &mesh(Vec3::new(8.0, 12.0, 10.0)),
+        &node,
+        BuilderFlags::default(),
+    );
+    assert_eq!(shape.half_extents, Vec3::new(8.0, 12.0, 10.0));
+    assert_eq!(shape.axis_order, [0, 2, 1]);
 }
 
 /// The quality flag asks for a cell per centimetre and eight cells at
@@ -235,19 +270,20 @@ fn spheres_are_sorted_around_their_centre() {
     );
 }
 
-/// Gravity shares are 4/mᵢ normalised over the first three masses only
-/// (the original's setup loop) and scaled over all four.
+/// Gravity shares are 4/mᵢ scaled by 4 over their sum over all four
+/// masses: equal masses share equally, masses 2, 4, 8, 8 give 2, 1, ½, ½.
 #[test]
-fn gravity_shares_are_normalised_over_three_masses() {
-    let shares = setup_gravity([4.0; 4]);
-    for s in shares {
-        assert!((s - 4.0 / 3.0).abs() < 1e-6, "{shares:?}");
-    }
-    let shares = setup_gravity([2.0, 4.0, 8.0, 8.0]);
-    let want = [2.285_714_4, 1.142_857_2, 0.571_428_6, 0.571_428_6];
-    for (s, w) in shares.iter().zip(want) {
-        assert!((s - w).abs() < 1e-5, "{shares:?}");
-    }
+fn gravity_shares_sum_to_four() {
+    assert_eq!(setup_gravity([4.0; 4]), [1.0; 4]);
+    assert_eq!(setup_gravity([2.0, 4.0, 8.0, 8.0]), [2.0, 1.0, 0.5, 0.5]);
+    // 4/3, 4/5, 4/7, 4/9 sum to 2.9841…; the quotient 4/sum is taken first.
+    let inverse = [4.0f32 / 3.0, 4.0 / 5.0, 4.0 / 7.0, 4.0 / 9.0];
+    let sum = ((inverse[0] + inverse[1]) + inverse[2]) + inverse[3];
+    let scale = 4.0 / sum;
+    assert_eq!(
+        setup_gravity([3.0, 5.0, 7.0, 9.0]),
+        inverse.map(|w| w * scale)
+    );
     // No usable masses: one each (Exarust's guard).
     assert_eq!(setup_gravity([0.0, 4.0, 4.0, 4.0]), [1.0; 4]);
 }
