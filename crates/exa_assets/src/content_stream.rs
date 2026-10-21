@@ -5,29 +5,27 @@
 //! thread: generic jobs, their completions, object requests and results,
 //! character requests and results, and characters to attach to an existing
 //! scene node. It also keeps a list of streamed characters and a list of
-//! placed level objects. One pass of the thread, in this order:
+//! placed level objects. One pass of the thread:
 //!
-//! 1. a placed level object, while the level's list is unfinished;
-//! 2. one generic job, whose completion callback is queued for the main
-//!    thread;
-//! 3. one requested database object;
-//! 4. one requested character;
-//! 5. the pending streamed character nearest the focus point;
-//! 6. otherwise, sleep until woken.
+//! 1. while the level's list is unfinished, its next placed object and
+//!    nothing else;
+//! 2. otherwise one generic job (its completion callback is queued for the
+//!    main thread), then one requested database object, then one requested
+//!    character, each when one is queued, all in the same pass;
+//! 3. when none of those three ran, the pending streamed character nearest
+//!    the focus point;
+//! 4. when that did not run either, sleep until woken.
 //!
-//! The main-thread pump runs the completion callbacks, attaches finished
-//! characters and adds them to the scene. Requests and results are keyed
-//! lookups, so the caller fetches what it asked for rather than reading a
-//! shared object. Exarust drives [`ContentStream::step`] from its own
+//! The main-thread pump runs the completion callbacks, inserts the streamed
+//! characters into the scene and attaches the characters requested for an
+//! existing entity. Requested database objects and the other requested
+//! characters wait in their result rings until the caller fetches them by
+//! the key it asked with. Exarust drives [`ContentStream::step`] from its own
 //! executor; the original runs the same loop on its stream thread.
 
 use std::collections::VecDeque;
 
-use crate::stream::{RING_GROWTH, RingQueue};
-
-/// The distance below which no character is nearer: the original starts its
-/// nearest search with the largest f32.
-pub const FARTHEST: f32 = 3.4e38;
+use crate::stream::RingQueue;
 
 /// A completion callback, run on the main thread after its job.
 pub type Completion = Box<dyn FnOnce() + Send>;
@@ -66,6 +64,8 @@ pub enum CharacterSink {
     /// A character attached to an existing entity (its request had flag
     /// `0x400`).
     Attach,
+    /// A streamed character built in place, which the pump inserts.
+    Streamed,
 }
 
 /// A finished database object with the request that asked for it.
@@ -97,12 +97,14 @@ pub struct StreamedCharacter {
 pub enum Step {
     /// Built (or skipped) the next placed level object.
     LevelObject { built: bool },
-    /// Ran a generic job.
-    Job,
-    /// Built a requested database object.
-    Object { built: bool },
-    /// Built a requested character.
-    Character { built: bool },
+    /// Served the request rings: whether a generic job ran, and whether a
+    /// requested database object and a requested character were taken
+    /// (`Some`) and built (`Some(true)`).
+    Requests {
+        job: bool,
+        object: Option<bool>,
+        character: Option<bool>,
+    },
     /// Built the nearest pending streamed character.
     Streamed { built: bool },
     /// Nothing to do; the original sleeps until woken.
@@ -128,10 +130,10 @@ pub trait ContentBuilders {
 pub struct Pumped {
     /// Completion callbacks run.
     pub completions: usize,
-    /// Characters attached to existing entities, and new characters for the
-    /// scene.
-    pub attached: Vec<CharacterResult>,
+    /// Streamed characters to insert into the scene, then characters to
+    /// attach to existing entities, each in build order.
     pub added: Vec<CharacterResult>,
+    pub attached: Vec<CharacterResult>,
 }
 
 /// A level's list of placed objects being streamed.
@@ -163,14 +165,14 @@ pub struct ContentStream {
     character_requests: RingQueue<CharacterRequest>,
     character_results: RingQueue<CharacterResult>,
     attachments: RingQueue<CharacterResult>,
+    /// Streamed characters built in place, waiting for the pump.
+    streamed_results: RingQueue<CharacterResult>,
     /// The placed characters of the current level, front = already built.
     streamed: VecDeque<StreamedCharacter>,
     stream_cursor: usize,
     scene: u64,
     focus: [f32; 3],
     level: LevelObjects,
-    /// Object requests that found no record since the last report.
-    missing_objects: usize,
     terminated: bool,
 }
 
@@ -181,9 +183,9 @@ impl Default for ContentStream {
 }
 
 impl ContentStream {
-    /// Creates the queues with the original's capacities: 16 jobs and
-    /// completions, 32 object and character requests and results, 16
-    /// attachments, 128 streamed characters.
+    /// Creates the queues with the original's capacities: 16 jobs,
+    /// completions and attachments, 32 object and character requests and
+    /// results, 128 streamed results.
     pub fn new() -> Self {
         Self {
             jobs: RingQueue::new(16, 1),
@@ -193,12 +195,12 @@ impl ContentStream {
             character_requests: RingQueue::new(32, 1),
             character_results: RingQueue::new(32, 1),
             attachments: RingQueue::new(16, 1),
-            streamed: VecDeque::with_capacity(128),
+            streamed_results: RingQueue::new(128, 1),
+            streamed: VecDeque::new(),
             stream_cursor: 0,
             scene: 0,
             focus: [0.0; 3],
             level: LevelObjects::default(),
-            missing_objects: 0,
             terminated: false,
         }
     }
@@ -297,13 +299,10 @@ impl ContentStream {
         self.streamed.len().saturating_sub(self.stream_cursor)
     }
 
-    /// Object requests that found no record, since the last call.
-    pub fn take_missing_objects(&mut self) -> usize {
-        std::mem::take(&mut self.missing_objects)
-    }
-
-    /// One pass of the stream thread: level object, generic job, database
-    /// object, character, nearest streamed character, else idle.
+    /// One pass of the stream thread: the next level object alone while the
+    /// level's list is unfinished; otherwise a generic job, a database
+    /// object and a character, one of each that is queued, and only when
+    /// none was the nearest streamed character; else idle.
     pub fn step(&mut self, builders: &mut dyn ContentBuilders) -> Step {
         if self.terminated {
             return Step::Idle;
@@ -320,24 +319,23 @@ impl ContentStream {
                 built: built.is_some(),
             };
         }
-        if let Some(job) = self.jobs.pop() {
-            (job.work)();
-            if let Some(done) = job.done {
+        let mut job = false;
+        if let Some(next) = self.jobs.pop() {
+            (next.work)();
+            if let Some(done) = next.done {
                 self.completions.push(done);
             }
-            return Step::Job;
+            job = true;
         }
-        if let Some(request) = self.object_requests.pop() {
+        // A request that builds nothing is dropped.
+        let object = self.object_requests.pop().map(|request| {
             let built = builders.object(&request);
-            match built {
-                Some(node) => self.object_results.push(ObjectResult { request, node }),
-                None => self.missing_objects += 1,
+            if let Some(node) = built {
+                self.object_results.push(ObjectResult { request, node });
             }
-            return Step::Object {
-                built: built.is_some(),
-            };
-        }
-        if let Some(request) = self.character_requests.pop() {
+            built.is_some()
+        });
+        let character = self.character_requests.pop().map(|request| {
             let built = builders.character(&request);
             if let Some(node) = built {
                 let sink = if request.flags & 0x400 != 0 {
@@ -353,11 +351,18 @@ impl ContentStream {
                 };
                 match sink {
                     CharacterSink::Attach => self.attachments.push(result),
-                    CharacterSink::Scene => self.character_results.push(result),
+                    CharacterSink::Scene | CharacterSink::Streamed => {
+                        self.character_results.push(result)
+                    }
                 }
             }
-            return Step::Character {
-                built: built.is_some(),
+            built.is_some()
+        });
+        if job || object.is_some() || character.is_some() {
+            return Step::Requests {
+                job,
+                object,
+                character,
             };
         }
         if self.stream_cursor < self.streamed.len() {
@@ -375,6 +380,14 @@ impl ContentStream {
             self.streamed.swap(self.stream_cursor, best);
             let character = self.streamed[self.stream_cursor];
             let built = builders.streamed_character(&character);
+            if let Some(node) = built {
+                self.streamed_results.push(CharacterResult {
+                    owner: character.node,
+                    scene: character.scene,
+                    node,
+                    sink: CharacterSink::Streamed,
+                });
+            }
             self.stream_cursor += 1;
             return Step::Streamed {
                 built: built.is_some(),
@@ -383,19 +396,21 @@ impl ContentStream {
         Step::Idle
     }
 
-    /// Runs completion callbacks and collects the finished characters for
-    /// the main thread to insert (the original's pump).
+    /// Runs the completion callbacks, then collects the streamed characters
+    /// to insert into the scene and the characters to attach (the
+    /// original's pump, in its order). Requested characters without the
+    /// attach flag stay for [`ContentStream::fetch_character`].
     pub fn pump(&mut self) -> Pumped {
         let mut pumped = Pumped::default();
         while let Some(completion) = self.completions.pop() {
             completion();
             pumped.completions += 1;
         }
+        while let Some(result) = self.streamed_results.pop() {
+            pumped.added.push(result);
+        }
         while let Some(result) = self.attachments.pop() {
             pumped.attached.push(result);
-        }
-        while let Some(result) = self.character_results.pop() {
-            pumped.added.push(result);
         }
         pumped
     }
@@ -444,26 +459,27 @@ impl ContentStream {
         stream
     }
 
-    /// Waits for the character requests to finish, draining the attachment
-    /// queue and letting the caller pump other work (the original drains the
-    /// texture uploads and the procedural material step while it waits).
+    /// Waits for the character requests to finish: each round notes whether
+    /// the request ring is empty, drains the attachment ring, and stops if
+    /// it was; otherwise the caller pumps other work (the original drains
+    /// the texture uploads and the procedural material step) and the
+    /// scheduler runs a pass.
     pub fn wait_for_characters(
         &mut self,
         builders: &mut dyn ContentBuilders,
         mut idle: impl FnMut(),
     ) -> Vec<CharacterResult> {
         let mut finished = Vec::new();
-        while !self.character_requests.is_empty() && !self.terminated {
+        loop {
+            let empty = self.character_requests.is_empty();
             while let Some(result) = self.attachments.pop() {
                 finished.push(result);
             }
-            let step = self.step(builders);
-            if !matches!(step, Step::Character { .. }) {
-                idle();
+            if empty || self.terminated {
+                break;
             }
-        }
-        while let Some(result) = self.attachments.pop() {
-            finished.push(result);
+            idle();
+            self.step(builders);
         }
         finished
     }
@@ -478,26 +494,22 @@ impl ContentStream {
         self.character_requests.reset();
         self.character_results.reset();
         self.attachments.reset();
+        self.streamed_results.reset();
         self.streamed.clear();
         self.stream_cursor = 0;
         self.level = LevelObjects::default();
-        self.missing_objects = 0;
         self.scene = 0;
     }
 }
 
-/// Squared distance between two points; the nearest-first order only needs
-/// a monotonic measure.
+/// Squared distance between two points, summed x, y, then z in single
+/// precision, as the original's helper does.
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     let dz = a[2] - b[2];
     dx * dx + dy * dy + dz * dz
 }
-
-/// The growth the original's request rings use, exposed for callers that
-/// size their own.
-pub const CONTENT_GROWTH: usize = RING_GROWTH;
 
 #[cfg(test)]
 mod tests {
@@ -590,22 +602,61 @@ mod tests {
             stream.step(&mut builders),
             Step::LevelObject { built: false }
         );
-        assert_eq!(stream.step(&mut builders), Step::Job);
-        assert_eq!(stream.step(&mut builders), Step::Object { built: true });
-        assert_eq!(stream.step(&mut builders), Step::Character { built: true });
+        // The job, the object and the character share one pass.
+        assert_eq!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: true,
+                object: Some(true),
+                character: Some(true),
+            }
+        );
         assert_eq!(stream.step(&mut builders), Step::Idle);
         assert_eq!(
             *calls.lock().unwrap(),
             ["level 0", "level 1", "object 5", "character 9"]
         );
-        assert_eq!(stream.take_missing_objects(), 0);
         assert_eq!(stream.fetch_object(5, 0, 7), Some(20));
         assert_eq!(stream.fetch_object(5, 0, 7), None);
-        // The pump drains the finished characters into the scene list.
+        // The pump leaves a requested character for its fetch.
+        let pumped = stream.pump();
+        assert!(pumped.added.is_empty());
+        assert_eq!(stream.fetch_character(9, 7).unwrap().node, 30);
+    }
+
+    #[test]
+    fn a_streamed_character_waits_for_a_pass_without_requests() {
+        let mut stream = ContentStream::new();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut builders = Recorder {
+            calls: calls.clone(),
+            objects: vec![None],
+            streamed_ok: true,
+            ..Recorder::default()
+        };
+        stream.begin_characters(7, [0.0; 3], [character(3, [1.0, 0.0, 0.0])]);
+        stream.request_object(ObjectRequest {
+            id: 5,
+            flags: 0,
+            parent: 7,
+        });
+        // A request that builds nothing still takes the pass, and is dropped.
+        assert_eq!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: false,
+                object: Some(false),
+                character: None,
+            }
+        );
+        assert_eq!(stream.fetch_object(5, 0, 7), None);
+        assert_eq!(stream.step(&mut builders), Step::Streamed { built: true });
+        assert_eq!(*calls.lock().unwrap(), ["object 5", "streamed 3"]);
+        // The pump inserts it into the scene.
         let pumped = stream.pump();
         assert_eq!(pumped.added.len(), 1);
-        assert_eq!(pumped.added[0].node, 30);
-        assert_eq!(pumped.added[0].sink, CharacterSink::Scene);
+        assert_eq!(pumped.added[0].node, 3);
+        assert_eq!(pumped.added[0].sink, CharacterSink::Streamed);
     }
 
     #[test]
@@ -621,7 +672,14 @@ mod tests {
             class: 1,
             flags: 0,
         });
-        assert_eq!(stream.step(&mut builders), Step::Character { built: true });
+        assert_eq!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: false,
+                object: None,
+                character: Some(true),
+            }
+        );
         assert_eq!(
             stream.fetch_character(9, 7).unwrap().sink,
             CharacterSink::Scene
@@ -670,7 +728,14 @@ mod tests {
             done: Some(Box::new(move || done_log.lock().unwrap().push("done"))),
         });
         let mut builders = Recorder::default();
-        assert_eq!(stream.step(&mut builders), Step::Job);
+        assert_eq!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: true,
+                object: None,
+                character: None,
+            }
+        );
         // The callback waits for the main thread.
         assert_eq!(*read_log.lock().unwrap(), ["work"]);
         assert_eq!(stream.pump().completions, 1);
@@ -683,7 +748,14 @@ mod tests {
             flags: 0x400,
         });
         builders.characters = vec![Some(40)];
-        assert_eq!(stream.step(&mut builders), Step::Character { built: true });
+        assert_eq!(
+            stream.step(&mut builders),
+            Step::Requests {
+                job: false,
+                object: None,
+                character: Some(true),
+            }
+        );
         let pumped = stream.pump();
         assert_eq!(pumped.added.len(), 0);
         assert_eq!(pumped.attached.len(), 1);
