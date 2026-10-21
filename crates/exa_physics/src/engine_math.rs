@@ -704,16 +704,20 @@ pub fn library_arcsin(x: f64) -> f64 {
     library_arctan2(x, ((1.0 + x) * (1.0 - x)).sqrt())
 }
 
-/// The inverse of a 4×4 matrix by Gauss-Jordan elimination with partial
-/// pivoting, starting from the identity. A singular matrix divides by zero
-/// as the original does.
+/// The inverse of a 4×4 matrix by Gauss-Jordan elimination, starting from
+/// the identity and working on the four stored rows (a [`Mat4`]'s
+/// columns). The pivot search compares each lower row's magnitude with the
+/// diagonal's, not with the best so far, so the last row larger than the
+/// diagonal wins (NaN never does). A singular matrix divides by zero as the
+/// original does.
 pub fn inverse4(matrix: &Mat4) -> Mat4 {
     let mut source = matrix.to_cols_array();
     let mut inverse = Mat4::IDENTITY.to_cols_array();
     for column in 0..4usize {
         let mut pivot = column;
+        let diagonal = source[column * 4 + column].abs();
         for row in column + 1..4 {
-            if source[row * 4 + column].abs() > source[pivot * 4 + column].abs() {
+            if diagonal < source[row * 4 + column].abs() {
                 pivot = row;
             }
         }
@@ -805,16 +809,16 @@ pub fn perspective(
 /// A matrix mapping a pixel rectangle's size and the viewport's corners to
 /// normalized device coordinates, as the renderer's pixel-rectangle helper
 /// does. `rect` is the rectangle's width and height, `viewport` its two
-/// corner pairs.
+/// corner pairs. The differences are taken in 64-bit integers and every
+/// quotient in double, then rounded to single.
 pub fn pixel_rect(rect: [i32; 2], viewport: [[i32; 2]; 2]) -> Mat4 {
+    let [[x0, y0], [x1, y1]] = viewport.map(|corner| corner.map(i64::from));
+    let [width, height] = rect.map(i64::from);
     let mut m = Mat4::IDENTITY.to_cols_array();
-    let width = (viewport[1][0] - viewport[0][0]) as f32;
-    let height = (viewport[1][1] - viewport[0][1]) as f32;
-    m[0] = rect[0] as f32 / width;
-    m[5] = rect[1] as f32 / height;
-    m[12] = f64::from((rect[0] - viewport[0][0]) - viewport[1][0]) as f32 / f64::from(width) as f32;
-    m[13] =
-        f64::from((rect[1] - viewport[1][1]) - viewport[0][1]) as f32 / f64::from(-height) as f32;
+    m[0] = (width as f64 / (x1 - x0) as f64) as f32;
+    m[5] = (height as f64 / (y1 - y0) as f64) as f32;
+    m[12] = (((width - x0) - x1) as f64 / (x1 - x0) as f64) as f32;
+    m[13] = (((height - y1) - y0) as f64 / (y0 - y1) as f64) as f32;
     Mat4::from_cols_array(&m)
 }
 
@@ -1069,10 +1073,38 @@ mod tests {
         let shifted = perspective(90.0, 1.0, 1.0, 11.0, [10.0, -10.0], [1000, 2000]);
         assert!(close(shifted.z_axis.x, -10.0 / 500.0));
         assert!(close(shifted.z_axis.y, 10.0 / 1000.0));
+        // The pivot is the last row above the diagonal, not the largest:
+        // with rows 2 and 3 both above row 0's 1 in the first column, row
+        // 3 (the smaller) is swapped up. This takes that path; the product
+        // is still the identity.
+        let pivoting = Mat4::from_cols(
+            Vec4::new(1.0, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, 1.0, 0.0, 0.0),
+            Vec4::new(8.0, 0.0, 1.0, 0.0),
+            Vec4::new(3.0, 0.0, 0.0, 1.0),
+        );
+        let product = pivoting * inverse4(&pivoting);
+        for (a, b) in product
+            .to_cols_array()
+            .iter()
+            .zip(Mat4::IDENTITY.to_cols_array())
+        {
+            assert!((a - b).abs() < 1e-5, "{product:?}");
+        }
         let rect = pixel_rect([100, 50], [[0, 0], [200, 100]]);
         assert_eq!(rect.x_axis.x, 0.5);
         assert_eq!(rect.y_axis.y, 0.5);
-        assert!(close(rect.w_axis.x, (100.0 - 0.0 - 200.0) / 200.0));
-        assert!(close(rect.w_axis.y, (50.0 - 100.0 - 0.0) / -100.0));
+        assert_eq!(rect.w_axis.x, (100.0 - 0.0 - 200.0) / 200.0);
+        assert_eq!(rect.w_axis.y, (50.0 - 100.0 - 0.0) / -100.0);
+        // The quotient is rounded once from double: 1/3 of a 3-pixel
+        // viewport, and corners whose difference overflows 32 bits.
+        assert_eq!(
+            pixel_rect([1, 1], [[0, 0], [3, 3]]).x_axis.x,
+            (1.0f64 / 3.0) as f32
+        );
+        let wide = pixel_rect([0, 0], [[i32::MIN, 0], [i32::MAX, 1]]);
+        assert_eq!(wide.x_axis.x, 0.0);
+        // (0 − (−2^31)) − (2^31 − 1) = 1 over 2^32 − 1.
+        assert_eq!(wide.w_axis.x, (1.0f64 / 4_294_967_295.0) as f32);
     }
 }
