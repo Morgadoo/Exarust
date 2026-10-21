@@ -45,13 +45,21 @@ fn lowest(body: &Ragdoll) -> f32 {
         .fold(f32::MAX, f32::min)
 }
 
-/// Gravity shares 4/mᵢ scaled to sum to 4: equal masses share equally;
-/// point masses 2, 4, 8, 8 (a centre of mass at weights ½, ¼, ⅛, ⅛) give
-/// 2, 1, 0.5, 0.5; masses that give no shares fall back to equal ones.
+/// Gravity shares 4/mᵢ normalised over the first three masses (the
+/// original's setup loop) and scaled over all four: equal masses of 4 give
+/// 4/3 each; point masses 2, 4, 8, 8 (a centre of mass at weights ½, ¼, ⅛,
+/// ⅛) give 16/7, 8/7, 4/7, 4/7; masses that give no shares fall back to
+/// equal ones.
 #[test]
 fn gravity_acts_at_the_centre_of_mass() {
-    assert_eq!(gravity_shares([4.0; 4]), [1.0; 4]);
-    assert_eq!(gravity_shares([2.0, 4.0, 8.0, 8.0]), [2.0, 1.0, 0.5, 0.5]);
+    for s in gravity_shares([4.0; 4]) {
+        assert!((s - 4.0 / 3.0).abs() < 1e-6);
+    }
+    let shares = gravity_shares([2.0, 4.0, 8.0, 8.0]);
+    let want = [16.0 / 7.0, 8.0 / 7.0, 4.0 / 7.0, 4.0 / 7.0];
+    for (s, w) in shares.iter().zip(want) {
+        assert!((s - w).abs() < 1e-5, "{shares:?}");
+    }
     assert_eq!(gravity_shares([0.0, 4.0, 4.0, 4.0]), [1.0; 4]);
     // One integration from rest moves each particle by its share of a
     // tick's gravity (0.142352 cm a tick²).
@@ -61,7 +69,7 @@ fn gravity_acts_at_the_centre_of_mass() {
     body.sleep = Sleep::Awake;
     let before = body.parts[0].positions;
     body.integrate();
-    for (i, w) in [2.0, 1.0, 0.5, 0.5].into_iter().enumerate() {
+    for (i, w) in want.into_iter().enumerate() {
         let fell = (before[i].y - body.parts[0].positions[i].y) * 100.0;
         assert!(
             (fell - 0.142352 * w).abs() < 1e-4,
@@ -359,7 +367,8 @@ fn a_limb_pushes_a_prop() {
 
 /// A body that falls below −50 m has fallen out of the world (the original
 /// removes its node there); the fast retention holds it under 11.5 m/s
-/// (0.1391 m a tick), so it takes 5.5 s.
+/// (0.1855 m a tick with equal masses' 4/3 gravity share), so it takes
+/// 4.4 s.
 #[test]
 fn a_body_below_minus_fifty_metres_falls_out() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
@@ -373,8 +382,8 @@ fn a_body_below_minus_fifty_metres_falls_out() {
         }
     }
     let out = out.expect("never fell out");
-    // 455 ticks (5.5 s).
-    assert!((440..470).contains(&out), "fell out after {out} ticks");
+    // 363 ticks (4.4 s).
+    assert!((350..380).contains(&out), "fell out after {out} ticks");
     assert!(body.parts[0].positions[0].y < FALL_OUT_HEIGHT);
 }
 
@@ -440,7 +449,7 @@ fn a_settling_body_falls_without_inertia() {
         body.tick(NONE);
         let drop = last.y - body.parts[0].positions[0].y;
         assert!(
-            (drop - 0.001_423_5).abs() < 2e-7,
+            (drop - 0.001_898_0).abs() < 2e-7,
             "tick {tick} dropped {:.8} m",
             drop
         );
@@ -507,7 +516,7 @@ fn placing_a_body_sets_it_at_rest() {
     body.tick(NONE);
     // No velocity is left over: the next tick only adds gravity.
     assert!(body.parts[0].positions[0].y < placed[0].y + 1e-9);
-    assert!((placed[0].y - body.parts[0].positions[0].y - 0.001_423_5).abs() < 2e-6);
+    assert!((placed[0].y - body.parts[0].positions[0].y - 0.001_898_0).abs() < 2e-6);
 }
 
 /// The hand's drag of a resting crate (mobility 0.5, strength 1, the

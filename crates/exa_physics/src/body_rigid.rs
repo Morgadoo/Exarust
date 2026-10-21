@@ -19,6 +19,10 @@ use super::{
     LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, pairs, setup_smoothing, tree_orders,
 };
 
+/// The gravity shares a built or stored body's point masses give, as the
+/// original's setup works them out ([`crate::shape::setup_gravity`]).
+pub use crate::shape::setup_gravity as gravity_shares;
+
 /// Friction of a rigid body against the level: its constructor's, whatever
 /// the file stores.
 pub const RIGID_FRICTION: f32 = 0.75;
@@ -73,21 +77,6 @@ impl RigidPart {
         let r = self.rest;
         let edges = Mat3::from_cols(r[1] - r[0], r[2] - r[0], r[3] - r[0]);
         edges.determinant().abs() > MIN_REST_VOLUME && edges.is_finite()
-    }
-}
-
-/// Each particle's share of gravity: 4/mᵢ scaled so the shares sum to 4,
-/// from the stored point masses mᵢ (4 over the centre of mass's weight on
-/// each particle), so gravity acts at the centre of mass. Equal shares when
-/// the masses give none.
-pub fn gravity_shares(point_masses: [f32; 4]) -> [f32; 4] {
-    let inverse = point_masses.map(|m| 4.0 / m);
-    let sum: f32 = inverse.iter().sum();
-    let shares = inverse.map(|w| w * 4.0 / sum);
-    if shares.iter().all(|w| w.is_finite()) {
-        shares
-    } else {
-        [1.0; 4]
     }
 }
 

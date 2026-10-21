@@ -15,6 +15,7 @@ pub mod motile;
 pub mod plate;
 pub mod prop;
 pub mod relay;
+pub mod shape;
 pub mod signal;
 pub mod volume;
 pub mod voxel;
