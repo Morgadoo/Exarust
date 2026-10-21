@@ -260,6 +260,26 @@ pub fn bytes_per_pixel(format_word: u32) -> usize {
 /// Copies whole rows of `dst_width` texels from `src`, the first source row
 /// at `first_row` and the first source byte at `byte_column` (the
 /// original's sub-image copy). Returns whether the rectangles fit.
+/// The first level `k` (1 through 13) at which a destination size scaled by
+/// `2^k` reaches the source size on both axes, as the original's
+/// power-of-two resample looks for it. `None` when the sizes are not a
+/// power-of-two ratio.
+pub fn power_of_two_level(
+    src_width: usize,
+    src_height: usize,
+    dst_width: usize,
+    dst_height: usize,
+) -> Option<u32> {
+    for level in 1..=KAISER_MAX_LEVEL {
+        if dst_width.checked_shl(level)? == src_width
+            && dst_height.checked_shl(level)? == src_height
+        {
+            return Some(level);
+        }
+    }
+    None
+}
+
 /// Normalises the first three floats of every RGBA texel to unit length, as
 /// the original does to a filtered level of an image whose flag `0x4000000`
 /// asks for it (normal maps). A zero-length vector is left alone; the
@@ -424,6 +444,15 @@ mod tests {
         assert_eq!(bytes_per_pixel(id::XY8), 2);
         assert_eq!(bytes_per_pixel(id::LUM1), 1);
         assert_eq!(bytes_per_pixel(id::RGBAF), 16);
+    }
+
+    #[test]
+    fn power_of_two_resampling_finds_its_level() {
+        assert_eq!(power_of_two_level(8, 8, 4, 4), Some(1));
+        assert_eq!(power_of_two_level(8, 8, 2, 2), Some(2));
+        assert_eq!(power_of_two_level(32, 16, 4, 2), Some(3));
+        assert_eq!(power_of_two_level(8, 4, 2, 2), None);
+        assert_eq!(power_of_two_level(8, 8, 3, 3), None);
     }
 
     #[test]

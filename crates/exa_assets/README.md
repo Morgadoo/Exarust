@@ -174,3 +174,14 @@ every mesh node of a model and refits its bounds (`exarust model … --msm`).
 `polyhedra` builds the icosahedron, its cap and their subdivisions for the
 effect shells. See [`docs/formats/RFC.md`](../../docs/formats/RFC.md)
 (Editable meshes).
+
+Model meshes are built per material group with the original's split
+tangents (`tangents::split_tangents`: a per-face unweighted tangent and
+bitangent accumulated per vertex, the determinant floor, the tangent made
+perpendicular to the surface normal, and the inverted handedness sign) and
+the smallest index type that fits the group (u16 up to 65 535 vertices,
+then u32; Bevy has no u8 indices). A mesh's box and bounding sphere are
+refitted from its positions as the original does (`Mesh::bounds`: box
+centre, half extents floored at 1 mm and the farthest vertex's radius), and
+its triangles can be regrouped by material (`Mesh::regroup_by_material`),
+the render-form equivalent of the original's face regrouping.

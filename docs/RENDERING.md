@@ -130,9 +130,14 @@ program.
 - Dirt maps only act through vertex colours, which level meshes do not
   have. Dirt mode 4 is wound blood ([Blood](#blood)).
 - Tangents are generated from the UVs, and the original's bitangent runs
-  along −v (its tangent sign is the opposite of MikkTSpace's). Bevy flips
-  the MikkTSpace sign too, so its bitangent also runs along −v and the
-  normal map's channels are used as stored.
+  along −v (its tangent sign is the opposite of MikkTSpace's). Exarust's
+  `exa_assets::tangents` reproduces the original's splitter: per-face
+  tangents accumulated unweighted per vertex, a determinant floor of 1e-10
+  (f64), the tangent projected onto the surface normal and normalised, and
+  the −1/1 handedness sign from `n · (t × b)`. The normal itself is the
+  angle-weighted sum of unit face normals over the smoothing group, with
+  the original's corner-angle approximation
+  `sin θ·(1.571 − 0.1945 cos θ + 0.111(cos² θ − cos³ θ))`.
 - The program follows the material type:
   - 0 legacy;
   - 1 PBR;

@@ -136,7 +136,12 @@ of the two registration routines and every converter (REA).
 When the original builds a mip chain itself (single-level images), it
 turns the base into floats, filters every level from them (the Kaiser
 chain, `exa_render::mipmap`) and turns each level back into bytes. The
-format word picks the conversion:
+chain uses 13 normalised kernels: level `L` has `8·2^(L−1)` taps and a
+sinc scale of `2^−L`, with `I0(4·√(1 − t²))/I0(4)` as its window. Each
+level shifts the sides right with a floor of one, so non-power-of-two
+images are mipmapped as well, and the chain stops after the level whose
+two sides sum to two (a 1×1 level is filtered and kept). The format word
+picks the conversion:
 
 - bit 28 set (signed data: XYZ8, XY8, XYZV8): centred, (b − 127.5)/127.5,
   and back by the signed form;
@@ -147,6 +152,14 @@ format word picks the conversion:
   three-channel words square every channel; their way back clamps on the
   float's raw bits (0 when they read as a non-positive integer, 255 from
   `0x3F7F7F6F`, just under 1, up).
+
+A header flag of `0x0400_0000` marks vector data (normal maps): before
+each filtered level is converted back, every texel's first three channels
+are normalised to unit length. The same flag applies to the
+resample-to-size path used for icons, cursors, terrain inputs and GUI
+images, which uses a separate phase-shifted window
+(`(1 − t)³·(1 + 3t − 3t² − 13.6t³)`, two output texels each way) instead
+of the Kaiser bank.
 
 So a 0/255 checker halves to about 180, not 128, in a plain RGB8 or RGBA8
 texture. A test for an exact `ALPHA8` word, which would select the linear

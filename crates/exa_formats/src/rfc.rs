@@ -412,7 +412,7 @@ impl Mesh {
     }
 
     /// Works the normals out again from the positions, as at load: the
-    /// area-weighted face normals summed over the vertices sharing a
+    /// angle-weighted face normals summed over the vertices sharing a
     /// smoothing key. A morphed mesh takes its normals from its new shape.
     pub fn recompute_normals(&mut self) {
         let n = self.positions.len();
