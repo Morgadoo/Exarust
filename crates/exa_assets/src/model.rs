@@ -20,7 +20,7 @@ use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
     Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
 };
-use crate::skin::{Joint, VertexSkin, auto_skin};
+use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::material::flags as material_flags;
@@ -140,9 +140,6 @@ pub struct ModelCache {
     painted: HashMap<(String, Appearance), Handle<ExaMaterial>>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
-    /// The body's skinned vertices per bone (part space, metres), for
-    /// apparel to take its weights from.
-    body_skin: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
     bleeding_stems: Option<HashSet<String>>,
     /// Mobility divisors by material cache key ([`ModelLoader::mobility_divisor`]).
@@ -314,20 +311,10 @@ impl ModelLoader<'_> {
                 return None;
             }
         };
-        // Apparel takes its weights from the body, which must be known first.
-        if pack == PackKind::Characters && self.cache.body_skin.is_empty() {
-            self.model(PackKind::Resource, BODY_MODEL);
-        }
-        let body = if pack == PackKind::Characters {
-            self.cache.body_skin.clone()
-        } else {
-            HashMap::new()
-        };
         Some(ModelJob {
             pack,
             entry: entry.to_string(),
             scene,
-            body,
             morph: None,
             smooth: None,
         })
@@ -345,39 +332,22 @@ impl ModelLoader<'_> {
         model
     }
 
-    /// Adds a built model's meshes and materials. Remembers the unmorphed
-    /// human body's weights, which apparel is fitted to, and the shares of
-    /// the morphs a morphed variant used.
+    /// Adds a built model's meshes and materials, and remembers the shares
+    /// of the morphs a morphed variant used.
     fn assemble(&mut self, built: BuiltModel) -> Model {
         let BuiltModel {
-            pack,
+            pack: _,
             entry,
             scene,
             nodes: built_nodes,
             morph,
         } = built;
-        let morphed = morph.is_some();
         if let Some(m) = morph {
             self.cache.morph.parts.insert(m.parts_key, m.parts);
         }
         let mut nodes = Vec::with_capacity(scene.nodes.len());
         for (node, built) in scene.nodes.iter().zip(built_nodes) {
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
-            if let (NodeBody::Mesh(mesh), Some((bone, skin))) = (&node.body, &built.skin)
-                && !morphed
-                && pack == PackKind::Resource
-                && entry.eq_ignore_ascii_case(BODY_MODEL)
-            {
-                let reference = mesh
-                    .positions
-                    .iter()
-                    .map(|p| Vec3::from(*p))
-                    .zip(skin.iter().copied());
-                self.cache
-                    .body_skin
-                    .entry(*bone)
-                    .or_insert_with(|| Arc::new(reference.collect()));
-            }
             // A node marked as level geometry never registers its body.
             let rigid =
                 node.rigid()
@@ -980,14 +950,12 @@ impl ModelLoader<'_> {
     }
 }
 
-/// A model to build: its parsed file, for apparel the body's weights by
-/// bone ([`ModelLoader::model_job`]), and for a character's variant what
+/// A model to build: its parsed file, and for a character's variant what
 /// morphing it takes ([`ModelLoader::morphed_job`]).
 pub struct ModelJob {
     pack: PackKind,
     entry: String,
     scene: Scene,
-    body: HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
     pub(crate) morph: Option<JobMorph>,
     /// Smooth every mesh node first, with these split flags per node's
     /// groups ([`ModelLoader::smoothed_model`]).
@@ -1021,7 +989,6 @@ impl ModelJob {
             pack,
             entry,
             mut scene,
-            body,
             morph,
             smooth,
         } = self;
@@ -1038,7 +1005,7 @@ impl ModelJob {
                 .iter()
                 .enumerate()
                 .map(|(index, node)| match &node.body {
-                    NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack, &body),
+                    NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack),
                     _ => None,
                 })
                 .collect()
@@ -1104,44 +1071,37 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
     }
 }
 
-/// Skin weights of a node's mesh: worked out from the seams for body parts
-/// (nodes named after a bone with bone neighbours), taken from the nearest
-/// vertex of the body's part (`body`, by bone) for apparel.
+/// Skin weights of a node's mesh: worked out from its seams for body parts
+/// and garments alike (nodes named after a bone), with the parent and the
+/// bone-named children as joints. A `Resource` model of a race body is a
+/// body part; a `Characters` model is apparel, whose seams are the marked
+/// ones.
 fn node_skin(
     scene: &Scene,
     index: usize,
     mesh: &RfcMesh,
     pack: PackKind,
-    body: &HashMap<u16, Arc<Vec<(Vec3, VertexSkin)>>>,
 ) -> Option<(u16, Vec<VertexSkin>)> {
     let node = &scene.nodes[index];
-    let bone = bone_index(&node.name)? as u16;
-    if pack == PackKind::Characters {
-        let body = body.get(&bone)?;
-        let skin = mesh
-            .positions
-            .iter()
-            .map(|p| {
-                let p = Vec3::from(*p);
-                body.iter()
-                    .min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p)))
-                    .map_or([(bone, 1.0), (bone, 0.0), (bone, 0.0), (bone, 0.0)], |b| {
-                        b.1
-                    })
-            })
-            .collect();
-        return Some((bone, skin));
+    // Nodes the original leaves out of the skin (its flag bit 5).
+    if node.flags & 0x20 != 0 {
+        return None;
     }
+    let bone = bone_index(&node.name)? as u16;
     let bone_of = |i: usize| bone_index(&scene.nodes[i].name).map(|b| b as u16);
     let mut joints = Vec::new();
-    if let Some(parent) = node.parent.and_then(|p| p.checked_sub(1)).and_then(bone_of) {
+    if let Some(parent) = node.parent.and_then(|p| p.checked_sub(1))
+        && let NodeBody::Mesh(_) = &scene.nodes[parent].body
+        && let Some(b) = bone_of(parent)
+    {
         joints.push(Joint {
-            bone: parent,
+            bone: b,
             pivot: Vec3::ZERO,
         });
     }
     for (i, child) in scene.nodes.iter().enumerate() {
         if child.parent == Some(index + 1)
+            && let NodeBody::Mesh(_) = &child.body
             && let Some(b) = bone_of(i)
         {
             joints.push(Joint {
@@ -1150,10 +1110,15 @@ fn node_skin(
             });
         }
     }
-    if joints.is_empty() || mesh.triangle_flags.is_none() {
+    if mesh.skin.is_none() && (joints.is_empty() || mesh.triangle_flags.is_none()) {
         return None;
     }
-    Some((bone, auto_skin(mesh, bone, &joints)))
+    let seams = if pack == PackKind::Characters {
+        Seams::Apparel
+    } else {
+        Seams::Body
+    };
+    Some((bone, auto_skin(mesh, bone, &joints, seams)))
 }
 
 /// The meshes of a mesh's drawn groups (`_null` marks geometry the

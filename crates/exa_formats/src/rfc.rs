@@ -245,7 +245,8 @@ pub struct Mesh {
     /// `0x200000`/`0x400000`.
     pub triangle_flags: Option<Vec<u32>>,
     /// Per-triangle edge bits (sub-chunk `0x3DC2`, three low bits, one per
-    /// edge): kept through edits, not drawn.
+    /// edge): kept through edits, not drawn. Bit `i + 3` marks corner `i`
+    /// as one the apparel skin builder leaves out of its boundary edges.
     pub triangle_edges: Option<Vec<u8>>,
     /// Points sampling the surfaces on a ~40 cm lattice (sub-chunk
     /// `0x3D0CEC05`, after the mesh body), in metres: they mark the mesh's
