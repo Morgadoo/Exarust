@@ -223,6 +223,13 @@ stops. A block restarts the rate at 0, about 6 s to full rate and 15 s
 from empty to full. The body tick that calls it is the kernel lane's
 (`TMotileDynamics`); the rule and its test live here.
 
+The character's voice lines (`voice`, the part's request): a grunt
+(`Voice::GRUNT_WAIT` 400 ms), a groan (500 ms) and a scream (300 ms after
+the last line), each scaled by the character's volume and pitch gains; a
+line with no sample plays nothing and leaves the wait alone, and a line
+still on its wait is refused. The collapse asks for the groan and the
+damage routine for the pain lines; nothing plays them in the game yet.
+
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and
 checked by `FallDeath::check` from a `FallReading` (the chest's slow
