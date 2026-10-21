@@ -234,7 +234,7 @@ pub struct NoGiShape;
 
 impl GiEmissive for NoGiShape {}
 
-/// A voxel light (the original's `0x3D0C` node: a salve's, a power
+/// A voxel light (the original's voxel-light node: a salve's, a power
 /// crystal's or embers' glow). Every step it adds its colour straight into
 /// the voxels around it; it never lights a surface directly.
 ///
@@ -249,7 +249,7 @@ pub struct VoxelLight {
     pub color: [f32; 3],
     /// The current intensity: the colour counts by its square root.
     pub intensity: f32,
-    /// The base intensity the condition share is taken from.
+    /// The record's intensity; effects scale it to set the current one.
     pub base_intensity: f32,
     /// The base radius, metres.
     pub radius: f32,
@@ -257,8 +257,8 @@ pub struct VoxelLight {
     pub active_radius: f32,
     /// lin(colour)·√intensity·3 (×0.6 on the legacy path).
     pub colour: Vec3,
-    /// The node flag word: bit 2 marks the colour changed, bit 1 the light
-    /// activated.
+    /// The node flag word ([`voxel_flags`]): the colour-changed and the
+    /// activated bits.
     pub flags: u32,
 }
 
@@ -329,12 +329,13 @@ impl VoxelLight {
         self.flags |= voxel_flags::ACTIVE;
     }
 
-    /// Changes the current intensity at run time: the base intensity moves
-    /// with it (the original's effects write the node's intensity and call
-    /// the colour update). The colour is recomputed on the modern path.
+    /// Changes the current intensity at run time, as the original's effects
+    /// do (they write the node's intensity, typically the base intensity
+    /// times a factor, and call the colour update). The base intensity is
+    /// the record's value and does not move. The colour is recomputed on the
+    /// modern path.
     pub fn set_intensity(&mut self, intensity: f32) {
         self.intensity = intensity;
-        self.base_intensity = intensity;
         self.colour_update(false);
     }
 
@@ -1485,7 +1486,8 @@ mod tests {
         assert_eq!(light.flags, voxel_flags::COLOUR_DIRTY);
         // A run-time intensity change recomputes the colour: √9 × 3.
         light.set_intensity(9.0);
-        assert_eq!(light.base_intensity, 9.0);
+        assert_eq!(light.intensity, 9.0);
+        assert_eq!(light.base_intensity, 4.0);
         assert!((light.colour.z - (9f32.sqrt() * 3.0) * linear_rgb([0.25; 3]).z).abs() < 1e-6);
         // Activation after a radius change copies the new base radius.
         light.radius = 7.0;

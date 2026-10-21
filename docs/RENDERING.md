@@ -1148,8 +1148,8 @@ the warm-up:
   in double precision on its legacy path), × 0.1 per step. The node keeps
   its base colour, current intensity, base intensity, base radius and
   active radius (copied from the base by activation), plus a flag word
-  whose bit 2 marks a colour update and bit 1 an active light. A clone copies the master's colour, intensities,
-  radii and derived linear colour. An item whose model section sets
+  that marks a colour update and an active light. A clone copies the
+  master's colour, intensities, radii and derived linear colour. An item whose model section sets
   bit 0 scales the intensity of the voxel lights under its root by
   k = (1 − c/255)², c its placement's condition byte, and the emissive
   colour (not its alpha) of the meshes under its root by the same k, so a
@@ -1890,9 +1890,12 @@ undrawn whatever the player should not see (`exa_world::rooms`,
 - The camera node is built with a vertical field of view of 70° and, scaled
   by the original's 25 000-unit base, near 100 and far 12 500 engine units
   (1 and 125 m). A view overrides the field of view (the play zoom, the
-  viewer's `--fov`) but keeps the planes. The 3D view carries exposure 1
-  (unused by Exarust's shaders), bloom strength 1, post on and its
-  supersample level.
+  viewer's `--fov`). Exarust's cameras keep Bevy's planes: the play
+  camera's far distance comes from the scene's visibility and fog, which
+  have not been traced back to this node, so `exa_render::camera` holds the
+  node's planes as data only. The 3D view is built with exposure 1 (unused
+  by Exarust's shaders), bloom strength 1, post on, a six-plane clipping
+  volume and no scene camera slot.
 - Vertical field of view in degrees.
 - Main menu: 60°, eye (0, 5, 7) m looking at (0, 0, −2) m.
 - Character creation: 50°, looking at (0, 0.6, 0) m from 4 m along the

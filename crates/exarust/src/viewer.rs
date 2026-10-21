@@ -438,10 +438,12 @@ fn spawn_fly_camera(
 ) -> Entity {
     let transform = fly_transform(pose, options);
     let (yaw, pitch, _) = transform.rotation.to_euler(EulerRot::YXZ);
-    let camera_node = exa_render::camera::CameraNode::with_fov(options.fov.unwrap_or(fov));
     let camera = commands.spawn((
         Camera3d::default(),
-        Projection::Perspective(camera_node.projection()),
+        Projection::Perspective(PerspectiveProjection {
+            fov: options.fov.unwrap_or(fov).to_radians(),
+            ..default()
+        }),
         Exposure {
             ev100: options.ev100,
         },
@@ -487,7 +489,6 @@ fn spawn_chase_camera(commands: &mut Commands, options: &Options) -> Entity {
     let camera = commands
         .spawn((
             Camera3d::default(),
-            Projection::Perspective(exa_render::camera::CameraNode::with_fov(45.0).projection()),
             Exposure {
                 ev100: options.ev100,
             },

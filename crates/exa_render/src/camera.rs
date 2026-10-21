@@ -8,9 +8,9 @@
 //! view that owns it (the play camera's zoom, the viewer's `--fov`).
 //!
 //! A 3D view (the game's, the icon renderer's, the item viewer's) carries
-//! the camera node, a convex volume for clipping, exposure 1, bloom strength
-//! 1, post-processing on and its supersample level. Exarust's shaders never
-//! apply Bevy exposure, so the 1 is the effective exposure.
+//! the camera node, a six-plane convex volume for clipping, exposure 1,
+//! bloom strength 1 and post-processing on. Exarust's shaders never apply
+//! Bevy exposure, so the 1 is the effective exposure.
 //!
 //! Rules: `docs/RENDERING.md`.
 
@@ -31,8 +31,13 @@ const CM_PER_METRE: f32 = 100.0;
 
 /// The camera node's settings: vertical field of view (degrees) and its
 /// near and far planes in engine units (centimetres).
+///
+/// Exarust's cameras do not use these planes yet: the play camera's far
+/// plane is set by the scene's visibility and fog, which have not been
+/// traced back to this node, so the planes are held here as data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraNode {
+    /// Vertical field of view, degrees.
     pub fov_degrees: f32,
     /// Near plane, engine units.
     pub near: f32,
@@ -95,11 +100,16 @@ impl CameraNode {
     }
 }
 
-/// A rendered 3D view (the game's, the icon renderer's, the item viewer's):
-/// its camera and convex volume, its exposure (1, unused by Exarust's
-/// shaders), bloom strength (1), post-processing flag and supersample
-/// level. Exarust keeps one game camera; the icon and item views are Bevy
-/// cameras of their own.
+/// Where a 3D view places its camera when built, engine units: off to one
+/// side, above and in front of the origin, looking at a target node at the
+/// origin. The viewers that own a view set their own pose afterwards.
+pub const VIEW_CAMERA_START: [f32; 3] = [-300.0, 200.0, 500.0];
+
+/// A rendered 3D view (the game's, the icon renderer's, the item viewer's)
+/// as its constructor leaves it: exposure 1, bloom strength 1, post on and
+/// no scene camera slot. Exarust keeps one game camera; the icon and item
+/// views are Bevy cameras of their own, and its shaders never apply Bevy
+/// exposure, so the 1 is the effective exposure.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewSettings {
     /// Exposure multiplier the original applies; 1.
@@ -108,8 +118,9 @@ pub struct ViewSettings {
     pub bloom: f32,
     /// Post-processing on.
     pub post: bool,
-    /// Supersample level (0 off).
-    pub supersample: u8,
+    /// The slot of the scene camera list the view's camera is registered
+    /// in: -1 until a scene binds it.
+    pub scene_slot: i32,
 }
 
 impl Default for ViewSettings {
@@ -118,17 +129,16 @@ impl Default for ViewSettings {
             exposure: 1.0,
             bloom: 1.0,
             post: true,
-            supersample: crate::view::SupersampleLevel::default().0,
+            scene_slot: -1,
         }
     }
 }
 
 impl ViewSettings {
-    /// The settings when the view's camera is bound to a scene: the scene
-    /// counts the view's camera. Exarust has no separate scene camera
-    /// count, so this only reports whether a camera is bound.
-    pub fn binds_camera(&self, camera: Option<Entity>) -> bool {
-        camera.is_some()
+    /// Whether a scene has bound the view's camera (the original's release
+    /// drops the scene's camera count only for a bound view).
+    pub fn binds_camera(&self) -> bool {
+        self.scene_slot >= 0
     }
 }
 
@@ -167,7 +177,8 @@ mod tests {
         assert_eq!(v.exposure, 1.0);
         assert_eq!(v.bloom, 1.0);
         assert!(v.post);
-        assert_eq!(v.supersample, 3);
-        assert!(!v.binds_camera(None));
+        assert_eq!(v.scene_slot, -1);
+        assert!(!v.binds_camera());
+        assert!(ViewSettings { scene_slot: 0, ..v }.binds_camera());
     }
 }
