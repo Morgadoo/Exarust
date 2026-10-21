@@ -73,6 +73,7 @@ impl PathProbe {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn plan_probe(
     mut probe: ResMut<PathProbe>,
     grid: Option<ResMut<NavGrid>>,

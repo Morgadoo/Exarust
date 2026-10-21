@@ -577,7 +577,10 @@ fn search(
         let at = centre_cm(&nodes[usize::from(end)]);
         let goal_cm = [cm(to.x), cm(to.y), cm(to.z)];
         let d = [at[0] - goal_cm[0], at[1] - goal_cm[1], at[2] - goal_cm[2]];
-        reached = !(NEAR_ENOUGH_SQ < d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        let squared = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        // Not farther than 100 cm; a NaN distance counts as near, as the
+        // original's compare does.
+        reached = squared.partial_cmp(&NEAR_ENOUGH_SQ) != Some(std::cmp::Ordering::Greater);
     }
     if !reached {
         let rough = (ROUGH / (i64::from(size) + 1)) as i32;
