@@ -255,14 +255,47 @@ fn a_directional_pick_takes_the_nearest_control_of_the_dominant_axis() {
         },
     ];
     assert_eq!(
-        pick_control(Vec2::new(0.0, 1.0), IVec2::ZERO, &targets),
+        pick_control(Vec2::new(0.0, 1.0), IVec2::ZERO, &targets, 4),
         Some(2)
     );
-    // A target further sideways than 320 pixels is not straight below.
+    // Nothing lies below.
     assert_eq!(
-        pick_control(Vec2::new(0.0, -1.0), IVec2::ZERO, &targets),
+        pick_control(Vec2::new(0.0, -1.0), IVec2::ZERO, &targets, 4),
         None
     );
+}
+
+#[test]
+fn a_pick_needs_a_unit_along_the_axis_and_reaches_eighty_units_sideways() {
+    let at = |id: i32, x: i32, y: i32| PickTarget {
+        id,
+        centre: IVec2::new(x, y),
+        reachable: true,
+        current: false,
+    };
+    // Three pixels along is under the unit of 4; four is enough.
+    assert_eq!(pick_control(Vec2::Y, IVec2::ZERO, &[at(1, 0, 3)], 4), None);
+    assert_eq!(
+        pick_control(Vec2::Y, IVec2::ZERO, &[at(1, 0, 4)], 4),
+        Some(1)
+    );
+    // 600 pixels sideways is past 320 at unit 4, inside 640 at unit 8.
+    assert_eq!(
+        pick_control(Vec2::Y, IVec2::ZERO, &[at(1, 600, 40)], 4),
+        None
+    );
+    assert_eq!(
+        pick_control(Vec2::Y, IVec2::ZERO, &[at(1, 600, 40)], 8),
+        Some(1)
+    );
+    // The direction is normalised first: a short cursor picks the same.
+    assert_eq!(
+        pick_control(Vec2::new(0.0, 0.01), IVec2::ZERO, &[at(1, 0, 4)], 4),
+        Some(1)
+    );
+    // A vertical tie in rounded distance goes to the smaller sideways one.
+    let tie = [at(1, 3, 50), at(2, 2, 50)];
+    assert_eq!(pick_control(Vec2::Y, IVec2::ZERO, &tie, 4), Some(2));
 }
 
 #[test]
@@ -288,13 +321,13 @@ fn a_horizontal_pick_scores_the_offset_with_its_vertical_part_stretched() {
         },
     ];
     assert_eq!(
-        pick_control(Vec2::new(1.0, 0.0), IVec2::ZERO, &targets),
+        pick_control(Vec2::new(1.0, 0.0), IVec2::ZERO, &targets, 4),
         Some(1)
     );
     // With only the far-down target left, its stretched offset is under the
     // 0.3 alignment.
     assert_eq!(
-        pick_control(Vec2::new(1.0, 0.0), IVec2::ZERO, &targets[2..]),
+        pick_control(Vec2::new(1.0, 0.0), IVec2::ZERO, &targets[2..], 4),
         None
     );
 }
@@ -304,26 +337,20 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
     let mut stack = FocusStack::default();
     assert!(!stack.focused());
     assert_eq!(
-        stack.push(FocusEntry {
-            form: 7,
-            flags: 0,
-            full_screen: false
-        }),
+        stack.push(FocusEntry { form: 7, flags: 0 }),
         FocusChange::Menus
     );
     assert_eq!(
         stack.push(FocusEntry {
             form: 8,
-            flags: 0x8001,
-            full_screen: false
+            flags: 0x8001
         }),
         FocusChange::Gameplay(0)
     );
     assert_eq!(
         stack.push(FocusEntry {
             form: 9,
-            flags: 0x8002,
-            full_screen: true
+            flags: 0x8002
         }),
         FocusChange::Gameplay(1)
     );
@@ -331,11 +358,7 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
     assert!(stack.contains(8) && !stack.contains(10));
     // A form pushed again moves to the top.
     assert_eq!(
-        stack.push(FocusEntry {
-            form: 7,
-            flags: 0,
-            full_screen: false
-        }),
+        stack.push(FocusEntry { form: 7, flags: 0 }),
         FocusChange::Menus
     );
     assert_eq!(stack.depth(), 3);
@@ -346,11 +369,7 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
     assert!(!stack.focused());
     assert_eq!(stack.pop(8), FocusChange::None);
     for form in 0..9 {
-        stack.push(FocusEntry {
-            form,
-            flags: 0,
-            full_screen: false,
-        });
+        stack.push(FocusEntry { form, flags: 0 });
     }
     assert_eq!(stack.depth(), FocusStack::LIMIT);
 }
@@ -675,9 +694,9 @@ fn the_set_registry_starts_on_interact_and_switches_with_the_variant() {
 }
 
 #[test]
-fn a_picked_control_receives_the_focus_bit_unless_its_form_is_full_screen() {
-    assert_eq!(picked_key(7, true), 7);
-    assert_eq!(picked_key(7, false), 0x1_0007);
+fn a_picked_control_receives_the_focus_bit_when_its_form_has_controls() {
+    assert_eq!(picked_key(7, false), 7);
+    assert_eq!(picked_key(7, true), 0x1_0007);
 }
 
 #[test]

@@ -716,8 +716,8 @@ impl MenuPad {
 /// A control a directional menu pick can land on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PickTarget {
-    /// The control's id, which the form's focus call receives with 0x10000
-    /// set when the form is not full screen.
+    /// The control's id (its 1-based index), which the form's focus call
+    /// receives with 0x10000 set ([`picked_key`]).
     pub id: i32,
     /// The control's centre in the focused form's client pixels.
     pub centre: IVec2,
@@ -727,35 +727,45 @@ pub struct PickTarget {
     pub current: bool,
 }
 
-/// The lateral reach of a vertical pick, as the original's `4 * 80` client
-/// pixels: a control further sideways than this is not straight above or
-/// below.
-pub const PICK_REACH: i64 = 320;
-/// The minimum alignment a horizontal pick needs (the dot product of the
-/// normalized offset and the stick's direction).
-pub const PICK_ALIGN: f32 = 0.3;
+/// The lateral reach of a vertical pick, in GUI units: a control further
+/// sideways than `80 × unit` client pixels (320 at the default unit 4) is
+/// not straight above or below.
+pub const PICK_REACH_UNITS: i64 = 80;
+/// The minimum alignment a horizontal pick needs: the dot product of the
+/// normalised offset and the stick's direction, compared in double
+/// precision.
+pub const PICK_ALIGN: f64 = 0.3;
 /// The vertical offset of a horizontal pick is stretched by this, so the
 /// pick prefers controls across the row rather than down a column.
 pub const PICK_STRETCH: f32 = 8.0;
-/// The original's smallest accepted direction product: the `f32` whose bit
-/// pattern is 4, a denormal, so the test is "same sign as the stick".
-const PICK_SIGN_BIT: f32 = f32::from_bits(4);
+
+/// The engine's normalisation of a pair: each axis times the reciprocal of
+/// `√(y·y + x·x)`, in single precision.
+fn normalized(v: Vec2) -> (Vec2, f32) {
+    let length = (v.y * v.y + v.x * v.x).sqrt();
+    let inverse = 1.0 / length;
+    (Vec2::new(v.x * inverse, v.y * inverse), length)
+}
 
 /// The control under a menu stick's direction, as the original's pick
-/// walks the focused form: the nearest control in the stick's direction
-/// from `origin` (the current control's centre). Vertical picks take the
-/// nearest control within [`PICK_REACH`] pixels sideways; horizontal picks
-/// score the offset with its `y` stretched by [`PICK_STRETCH`] and take the
-/// smallest length divided by the alignment, at [`PICK_ALIGN`] or more.
-/// The current control and unreachable controls are skipped.
-pub fn pick_control(cursor: Vec2, origin: IVec2, targets: &[PickTarget]) -> Option<i32> {
-    let vertical = cursor.x.abs() <= cursor.y.abs();
-    let length = (cursor.x * cursor.x + cursor.y * cursor.y).sqrt();
-    let dir = if length > 0.0 {
-        Vec2::new(cursor.x / length, cursor.y / length)
-    } else {
-        Vec2::ZERO
-    };
+/// walks the focused form: `cursor` is the menu cursor (y down) and
+/// `origin` the current control's centre, both in client pixels, at GUI
+/// unit `unit` (4 by default). The cursor is normalised and its axis chosen
+/// (vertical unless the horizontal part is strictly larger; a NaN is
+/// vertical). A control is a candidate when its offset along that axis
+/// times the direction's part is at least the unit (a NaN passes). A
+/// vertical pick takes the control with the smallest rounded vertical
+/// distance within `80 × unit` pixels sideways, ties to the smaller
+/// sideways distance (both rounded half to even). A horizontal pick
+/// stretches the offset's `y` by [`PICK_STRETCH`], normalises it and takes
+/// the smallest length over alignment among alignments of at least
+/// [`PICK_ALIGN`]. The current control and unreachable controls are
+/// skipped.
+pub fn pick_control(cursor: Vec2, origin: IVec2, targets: &[PickTarget], unit: i32) -> Option<i32> {
+    let (dir, _) = normalized(cursor);
+    let vertical = !(dir.y.abs() < dir.x.abs());
+    let least = unit as f32;
+    let reach = i64::from(unit) * PICK_REACH_UNITS;
     let mut best_x = 100_000_i64;
     let mut best_y = 100_000_i64;
     let mut best_score = 1_000_000.0_f32;
@@ -764,42 +774,45 @@ pub fn pick_control(cursor: Vec2, origin: IVec2, targets: &[PickTarget]) -> Opti
         if target.current || !target.reachable {
             continue;
         }
-        let dx = (target.centre.x - origin.x) as f32;
-        let dy = (target.centre.y - origin.y) as f32;
-        let (along, stick) = if vertical {
-            (dy, cursor.y)
-        } else {
-            (dx, cursor.x)
-        };
-        if stick * along <= PICK_SIGN_BIT {
+        let dx = (i64::from(target.centre.x) - i64::from(origin.x)) as f32;
+        let dy = (i64::from(target.centre.y) - i64::from(origin.y)) as f32;
+        let product = if vertical { dir.y * dy } else { dir.x * dx };
+        if least > product {
             continue;
         }
+        let ax = round_even_i64(dx.abs());
+        let ay = round_even_i64(dy.abs());
         if vertical {
-            let ax = dx.abs().round_ties_even() as i64;
-            let ay = dy.abs().round_ties_even() as i64;
-            if ax <= PICK_REACH && ay <= best_y && (ay < best_y || ax < best_x) {
+            if ax <= reach && ay <= best_y && (ay < best_y || ax < best_x) {
                 best_x = ax;
                 best_y = ay;
                 best = Some(target.id);
             }
         } else {
-            let offset = Vec2::new(dx, dy * PICK_STRETCH);
-            let length = offset.length();
-            let score = if length > 0.0 {
-                offset.dot(dir) / length
-            } else {
-                0.0
-            };
-            if score >= PICK_ALIGN {
-                let ratio = length / score;
-                if ratio < best_score {
-                    best_score = ratio;
-                    best = Some(target.id);
-                }
+            let (unit_offset, length) = normalized(Vec2::new(dx, dy * PICK_STRETCH));
+            let alignment = unit_offset.x * dir.x + unit_offset.y * dir.y;
+            if f64::from(alignment) < PICK_ALIGN {
+                continue;
+            }
+            let ratio = length / alignment;
+            if ratio < best_score {
+                best_score = ratio;
+                best = Some(target.id);
             }
         }
     }
     best
+}
+
+/// The processor's conversion of a single to an integer under the default
+/// rounding: half to even (a NaN or an out-of-range value is the integer
+/// indefinite, the most negative value).
+fn round_even_i64(value: f32) -> i64 {
+    if value.is_nan() || value.abs() >= 9.223_372e18 {
+        i64::MIN
+    } else {
+        value.round_ties_even() as i64
+    }
 }
 
 /// The active action set.
@@ -913,10 +926,11 @@ impl Variant {
     }
 }
 
-/// The key a picked control receives: its id, or its id with 0x10000 set
-/// when the form is not full screen (the original's send-key rule).
-pub fn picked_key(id: i32, full_screen: bool) -> i32 {
-    if full_screen { id } else { id | 0x1_0000 }
+/// The focus key a picked control receives: its id, with 0x10000 set when
+/// the form has a control list (the id is then a 1-based control index;
+/// a form without one draws its own items and takes the bare id).
+pub fn picked_key(id: i32, has_controls: bool) -> i32 {
+    if has_controls { id | 0x1_0000 } else { id }
 }
 
 /// The raw gamepad fallback's move, from a 16-bit stick pair: each axis over
@@ -947,8 +961,6 @@ pub struct FocusEntry {
     /// The set word the form pushed with (its low byte names a registered
     /// gameplay set when bit 0x8000 is set).
     pub flags: u32,
-    /// Whether the form is full screen.
-    pub full_screen: bool,
 }
 
 /// What a focus change asks of the action sets.
