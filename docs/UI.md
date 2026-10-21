@@ -654,8 +654,8 @@ layout, Up and Down by one; F2 renames.
 
 The base draw skin (`exa_ui::skin`) is the original's `TGUIDrawSkin`: it
 owns the palette, the layout metrics and the GUI batches, and draws every
-flat-coloured control part. The textured subclasses (the HUD's stone skin,
-the `guiskin.rfi` atlas) add their texture binds and shaders; the flat
+flat-coloured control part. The textured subclasses (the HUD's `guitex.rfi` stone skin, the
+`guiskin.rfi` atlas) add their texture binds and shaders; the flat
 primitives below are the base class's.
 
 - **Palette.** The scheme record has four colours, each with a scale and a
