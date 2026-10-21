@@ -234,6 +234,26 @@ pub struct Light {
     /// Falls off with distance (node flag `0x40000`); otherwise the light
     /// reaches everywhere at full strength.
     pub ranged: bool,
+    /// The flicker and fade parameters a body with flag `0x10000` or
+    /// `0x20000` stores after the shaping words; `None` for the others,
+    /// which keep the light constructor's defaults.
+    pub animation: Option<LightAnimation>,
+}
+
+/// A light body's flicker and fade parameters, in the order the original's
+/// loader reads them (after one skipped word).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightAnimation {
+    /// How far the flicker moves the intensity: `(1 + 0.1·x·amplitude)` of
+    /// the base for the walk's `x`; the level a fade falls to. The
+    /// constructor's default is 0.1.
+    pub amplitude: f32,
+    /// How fast the walk and a fade move, per frame millisecond (×0.01).
+    /// The constructor's default is 0.5.
+    pub speed: f32,
+    /// How much of the walk the parent mesh's emissive takes. The
+    /// constructor's default is 0.5.
+    pub emissive: f32,
 }
 
 /// A voxel light (`0x3D0C`): a glowing item's light (salves, power
@@ -1089,12 +1109,9 @@ pub const KEY_TRACK: u32 = 0x3AC1;
 /// Sub-chunk of a morph set (`morph::MorphSet`) after a mesh body: the
 /// physique targets of a race's morph body.
 pub const MORPH: u32 = 0xEDC0_C589;
-/// Light body flags under which the body ends with four more words (one
-/// skipped, then three values the original keeps for the flicker and the
-/// fade; not decoded).
+/// Light body flags under which the body ends with four more words: one
+/// skipped, then the flicker and fade parameters ([`LightAnimation`]).
 const LIGHT_EXTRA_FLAGS: u32 = 0x3_0000;
-/// Bytes of those words.
-const LIGHT_EXTRA_LEN: usize = 16;
 /// A camera node (`0x3D08`): its body is the node its view follows (a
 /// 1-based index) and one word.
 const NODE_3D08: u32 = 0x3D08;
@@ -1233,8 +1250,11 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         }
     } else if kind == NODE_LIGHT {
         match read_light(&mut c, flags2) {
-            Ok(l) => {
-                if l.flags & LIGHT_EXTRA_FLAGS == 0 || c.skip(LIGHT_EXTRA_LEN).is_ok() {
+            Ok(mut l) => {
+                if l.flags & LIGHT_EXTRA_FLAGS == 0 {
+                    sub = read_sub_chunks(&mut c);
+                } else if let Ok(animation) = read_light_animation(&mut c) {
+                    l.animation = Some(animation);
                     sub = read_sub_chunks(&mut c);
                 }
                 NodeBody::Light(l)
@@ -1310,6 +1330,18 @@ fn read_light(c: &mut Cursor<'_>, node_flags: u32) -> Result<Light> {
         softness,
         spot,
         ranged: node_flags & RANGED != 0,
+        animation: None,
+    })
+}
+
+/// The flicker and fade words of a light body whose flags ask for them:
+/// one skipped word, the amplitude, the speed and the emissive share.
+fn read_light_animation(c: &mut Cursor<'_>) -> Result<LightAnimation> {
+    c.skip(4)?;
+    Ok(LightAnimation {
+        amplitude: c.f32()?,
+        speed: c.f32()?,
+        emissive: c.f32()?,
     })
 }
 
@@ -2183,6 +2215,18 @@ mod tests {
             scene.nodes[1].body,
             NodeBody::Light(Light { spot: Some(_), .. })
         ));
+        // The flicker and fade words: amplitude, speed, emissive share.
+        let animation = |n: usize| match &scene.nodes[n].body {
+            NodeBody::Light(l) => l.animation,
+            _ => panic!("light"),
+        };
+        assert_eq!(animation(0), None);
+        let flicker = animation(2).unwrap();
+        assert_eq!(
+            (flicker.amplitude, flicker.speed, flicker.emissive),
+            (0.25, 0.5, 0.75)
+        );
+        assert_eq!(animation(3), Some(flicker));
         assert!(matches!(
             scene.nodes[5].body,
             NodeBody::Emitter {

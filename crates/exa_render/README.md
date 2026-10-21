@@ -70,7 +70,6 @@ and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 - `material_state`: the default material factory's type registry (five built-ins, plug-in registration) and the material-to-draw-state builder: the scale order, gloss floor, subsurface split, premultiplied diffuse, specular triple, dirt colours, texture-slot order and shadow flags. `exa_assets` uses its diffuse and gloss rules.
 - `smoke`: the original's `shadesmk_f` smoke/mist draw: the cached program table keyed by the material state bits, the 80-second `UVOfst` cycle and the per-supersample-quadrant draw count (`shadesmk.wesl`).
 - `quads`: the pixel-space 2-D quad batcher and its textured and line variants: the begin scale, flipped y, 16-level translation stack, quad texture coordinates and RGBA colours, the two-triangle index list, and a Bevy mesh with `QuadMaterial` (`quad.wesl`). Shader compile and link are wgpu's.
-- `icon`: the offscreen icon renderer: a private camera and scene layer, 30° view, 10 cm near plane, 2× sRGB target, the original's ambient and light, the fit distance, GPU readback, row unpadding, 2×2 average and bottom-up output for the icon atlas (`IconRenderRequest`, `IconRendered`).
 
 ## Scope
 

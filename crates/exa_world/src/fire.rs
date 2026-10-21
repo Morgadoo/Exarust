@@ -666,6 +666,7 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
                 softness: SOFTNESS,
                 spot: None,
                 ranged: true,
+                animation: None,
             });
             commands.spawn((
                 Name::new(spec.name),

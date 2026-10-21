@@ -130,6 +130,7 @@ pub fn light_record() -> exa_formats::rfc::Light {
         softness: SOFTNESS,
         spot: None,
         ranged: true,
+        animation: None,
     }
 }
 

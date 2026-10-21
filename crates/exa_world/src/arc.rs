@@ -78,6 +78,7 @@ pub fn spawn_arc(
                 softness: point.softness,
                 spot: None,
                 ranged: true,
+                animation: None,
             };
             commands.spawn((
                 Name::new("_ElecLight"),

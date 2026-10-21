@@ -16,7 +16,7 @@ pub mod light_flood;
 pub mod light_source;
 pub mod mechanisms;
 pub mod nav;
-pub mod node_life;
+pub mod node_parts;
 pub mod particles;
 pub mod room_view;
 pub mod rooms;
@@ -48,7 +48,6 @@ impl Plugin for WorldPlugin {
             nav::NavPlugin,
             shadow_links::ShadowLinksPlugin,
             light_source::LightSourcePlugin,
-            node_life::NodeLifePlugin,
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
         ));
@@ -658,7 +657,7 @@ pub fn spawn_model_nodes(
         if !parts.is_empty() {
             commands
                 .entity(e)
-                .insert(node_life::NodeParts::new(parts.clone()));
+                .insert(node_parts::NodeParts::new(parts.clone()));
         }
         parts_of.push(parts);
         if let Some(light) = &node.light {
@@ -1335,6 +1334,7 @@ mod tests {
             softness: 2.0,
             spot: None,
             ranged: true,
+            animation: None,
         };
         let (point, ..) = light_bundle(&light);
         assert_eq!(point.shadow_map_near_z, 0.03);

@@ -409,6 +409,7 @@ pub fn portal_light() -> exa_formats::rfc::Light {
         softness: PORTAL_LIGHT.softness,
         spot: None,
         ranged: true,
+        animation: None,
     }
 }
 

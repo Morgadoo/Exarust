@@ -86,21 +86,6 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
 
 The ACES curve found among the shader programs is unused.
 
-## Mesh queries
-
-`exa_physics::kdtree` holds the background kd-tree plumbing: a grow-on-full
-ring (256 slots, grown by 128; the original's two locked queues), the
-builder thread's idle-priority/stop/reset state, the query install that
-copies the ray, sphere and capsule callbacks to a mesh's instances, and the
-queries themselves over a triangle set (segment-triangle, closest-point and
-segment-triangle distance; the engine's per-face routines are outside the
-group). `exa_physics::StaticBuild` routes its build queue and finished
-colliders through the rings and drains the done ring from the frame hook.
-The original's point-to-oriented-box distance is
-`exa_physics::intersect::point_obb_distance_squared`, which compares the
-overhang bits as integers as the original does. The sign-extended three-bit
-face decode is `kdtree::decode_three_bits`.
-
 ## Shader builder
 
 The original does not ship fixed GLSL binaries: `Resource.rpk`'s
@@ -240,33 +225,37 @@ between different materials follows the phase's own sort.
 A level's light node reads its flags, colour, multiplier, intensity, radius
 and softness; `exa_world::light_bundle` turns them into the Bevy light, the
 GI share and the shadow reach (`read_light`, `shadow_radius`,
-`vertical_shaping`). The fields the original keeps beside them are run by
-`exa_world::light_source`:
+`vertical_shaping`). A body whose flags carry `0x10000` or `0x20000` also
+stores, after one skipped word, the flicker amplitude, speed and emissive
+share (`exa_formats::rfc::LightAnimation`); others keep the constructor's
+0.1, 0.5 and 0.5. `exa_world::light_source` runs what the original does
+with them:
 
-- **activation** copies the stored base intensity (`+0x2c8`) into the
-  current one and sets the light's shadow-quality offset from the low two
-  flag bits: 00 → 0, 01 → +1, 10 → −1, 11 → −2. The offset is added to the
-  scene's shadow quality and held to 1..5; the shipped cube pool uses one
-  size, so Exarust carries the offset without per-light map sizes.
-- **a lever** sets the intensity scale: `intensity = base × scale`, and a
-  light whose parent is drawable scales that node's first sub-object
-  material's emissive by `scale × 0.5` and the node's emissive scale to the
-  same, marking the light dirty.
-- **flicker** (flag `0x10000`) random-walks a flicker term by
-  `depth × scene × 0.01` per tick (the depth 0.5, the scene scalar 1) and
-  moves the scale by `scene × 0.1 × u × flicker`, clamped to ±1; intensity
-  is `(scale × rate × 0.1 + 1) × base` (rate 0.1) and the fixture's
-  emissive `scale × 0.5 + 1`. The two uniform draws are made in that order.
-- **fade** (flag `0x20000`) draws nothing: with a flicker term at or below
-  zero the scale falls by the same step toward the rate, otherwise it rises
-  toward one; intensity and the fixture follow, and the flicker flag clears
-  when it arrives.
-- **aliases** (`TLightAlias`) keep a per-sector copy: syncing replaces the
-  alias's flags' high byte and copies the source's frame, derived colours,
-  fade amount, softness and shadow offset.
+- **activation** copies the base intensity into the current one and picks
+  the shadow-quality offset from the low two flag bits: 00 → 0, 01 → +1,
+  10 → −1, 11 → −2 (not applied: the shipped cube pool has one size);
+- **a lever** sets the scale: `intensity = base × scale`, and the parent
+  mesh's emissive scale becomes `scale × share`;
+- **flicker** (flag `0x10000`), once a frame with the step
+  `speed × frame ms × 0.01` (the frame time held to 0…16.667 ms): the term
+  drifts down by `u·step` at a scale of 0.9 and above, up by `u·step` at
+  −0.9 and below, and by `2·step·(u − ½)` between (the bounds compared in
+  double precision); then `scale += frame ms × 0.1 × u′ × term` in double
+  precision, held to ±1. The intensity is `(scale·amplitude·0.1 + 1)·base`
+  and the parent mesh's emissive scale `scale × share + 1`. `u` and `u′`
+  are two draws of the engine's `× 0x08088405 + 1` generator, in that
+  order;
+- **fade** (flag `0x20000`) draws nothing: with a positive term the scale
+  rises by the step and settles at the base intensity on reaching one,
+  otherwise it falls and settles at `amplitude × base` on reaching the
+  amplitude; settling clears `0x10000`. The parent mesh's emissive scale is
+  `scale × share`.
 
-The private icon scene and the smoke draw below use these fields only
-through their own materials.
+The parent mesh's emissive scale goes to its first part (the original
+writes it into that sub-object; which uniform its draw scales is not
+traced, so Exarust scales the part's emissive colour, on a material copy
+of the part's own). A light at rest leaves its mesh as loaded. Per-sector
+light aliases are not reproduced.
 
 ## Surfaces
 
@@ -922,46 +911,6 @@ frame, part link and seed, the spray template and its derived values,
 the particle tick, spawn, quad and colour routines with the template's
 flags, the droplet material), and `BldPrt02`'s header (256², BC1, the
 file's wrap flags); the rules are pinned by tests.
-
-## Smoke and mist
-
-`exa_render::smoke` is the original's `shadesmk_f` draw (the "Shading-mask
-GLSL snippets" cluster): an unlit, two-sided, alpha-blended texture with no
-depth writes and no shadows, drawn from the shared vertex stage. The
-original compiles `shading_v` + `shadesmk_f` once per state key
-(`state & 0x0003_C00F_0048_0008`), locates `UVOfst` and repeats the draw
-once per supersample quadrant. Exarust runs one WESL program with the key in
-the uniform, caches programs by the same key, scrolls the texture on the
-original's 80-second cycle, `UVOfst = (0.5, node scale + (now mod 80 000) /
-80 000 + 0.5)`, and relies on the supersampled scene camera for the four
-quadrant draws (`smoke_quadrants`).
-
-## Pixel-space 2-D batcher
-
-`exa_render::quads` reproduces the immediate-draw helper cluster's batcher:
-`begin` takes the viewport's pixel rectangle and sets `1/width` and
-`1/height`; a vertex maps to `((x + tx)·sx, (ty − y)·sy)` with the y axis
-flipped, where `(tx, ty)` is the 16-deep translation stack frozen at
-`begin`. A texture coordinate belongs to the next vertex (or four at once
-with `quad_texcoords`); a colour is RGBA bytes. `flush` turns each four
-vertices into two triangles indexed `(0,1,2)`, `(0,2,3)` and drops a partial
-quad; the line variant emits vertex pairs without indices. A flush becomes a
-Bevy mesh with the batcher's `Vertex_Color` attribute and `QuadMaterial`
-(`quad.wesl`). Shader compile and link are wgpu's.
-
-## Icons
-
-`exa_render::icon` is the original's `FLX_IconRender`: a private scene and
-camera on their own render layer, a 30° field of view, a 10 cm near plane,
-bloom 0.8 and no sharpen, the fixed ambient (0.35, 0.36, 0.37) and a global
-light of 100, a render target twice the icon size in sRGB, framed by the
-subjects' bounding sphere (`distance = radius / sin(fov/2) / margin`, 0.75
-for the still capture and 0.8 for the asynchronous path). Bevy's GPU
-readback returns the 2× pixels; each row is unpadded (the copy aligns rows
-to 256 bytes), every 2 × 2 block is averaged and the rows are emitted
-bottom-up, the order the icon atlas stores, ready for
-`exa_ui::icon_atlas::IconImage::from_rgba`. The exact fit call is outside
-the group, so that framing is Exarust's guess.
 
 ## Voxel GI
 
