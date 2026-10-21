@@ -26,34 +26,40 @@ Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
 braies only and clears the hands; the arena keeps the first two hands only
 when its kit offers them and keeps braies only; modes whose 2 bit is set
-clear the fist placeholder and the carried list), the three story presets and
-their settings keys, the free-create and entry plans, and full health for
-every non-continued record. The chosen name, hands, worn and carried lists,
-skills and full pools are written into the spawned record. The unknown
-background and the free creator reset the gear before the kit is offered;
-a named background keeps its preset's gear or adopts its template's. The six skills start as Close Combat, Armour
-and Shields at five levels with their first techniques; the skills page
-caps them to the account's experience (a knight or proctor has at least
-10000), keeps the first truncated slot's chosen technique, gives the
-leftover to the skill in training up to its next level, and shows the
-effective worth (each level at weights 4, 5, …, only the first partial
-level, quartered down). The apparel and weapon kit tables follow the mode,
-skip what the record already holds and resolve aliases and instance
-colours. The two pages name their tabs and final button (RECRUIT, BEGIN,
-READY or CREATE), the arena and story commits return their new global
-experience and preset key, and the continue screen chooses between a save
-and a checkpoint with its own labels, list and name cut to fifteen
-characters. Appearance sliders settle and copy with the original's epsilon
-and 64-bit debounce (a NaN distance takes the write branch, as the
-unordered compare does), the face variant
-steps through seven values, and sex, hair visibility, voice names, pitch,
-the voice preview's 300-unit throttle and its non-repeating random variant
-are in. The creator icon sheet is four 96-pixel cells at a scale of eight
-units. The form's labels and page captions live in `exa_ui::creation`.
-Drawing the form, loading the model preview and sounds, the object database
-behind the kit, record serialization, the advanced character editor and the
-running mode transitions are not in. Rules are plain functions with tests
-pinned to concrete numbers.
+clear the fist placeholder and the carried list), the story presets and
+their settings keys (the first key per background, one shared character
+key), the free-create and entry plans (recruits are not filtered, story
+records lose their experience, every non-continued record is set to full
+health). The unknown background resets its gear and starts the
+thaumaturge's two powers; a named background always wears its template's
+gear. The chosen name, hands, worn and carried lists, skills and full pools
+are written into the spawned record. The starting skills write Close
+Combat, Armour and Shields at five levels with their first five
+techniques and leave the rest of the record; the skills page caps them to
+the account's experience (a knight or proctor has at least 10000), keeps
+the first truncated slot's chosen technique, gives the leftover to the
+skill in training up to its next level, and shows the account's worth less
+the committed character's, converted back to experience (each level of
+worth at weights 4, 5, …, only the first partial level, quartered toward
+zero). The apparel and weapon kits come from the original's seven tables
+by mode, skip what the record already holds and resolve aliases and new
+instances. The two pages name their tabs and final button (RECRUIT, BEGIN,
+READY or CREATE), list the equipment panels per mode, open the power tree
+for a record with powers, and the continue screen toggles between a save
+and a checkpoint only while both exist, with its list, details and name
+cut to fifteen characters. Appearance sliders settle and copy with the
+original's epsilon and 64-bit debounce (a NaN distance takes the write
+branch, as the unordered compare does), the face variant steps through
+seven values, and sex, hair visibility, the voice sample names
+(`VHM01_GruntS`, `VHMDA01_GruntS`), the pitch (worked in doubles), the
+voice preview's 300-unit throttle (a 64-bit difference) and its
+non-repeating random variant are in. The creator icon sheet is four
+96-pixel cells at a scale of eight units. The form's labels and page
+captions live in `exa_ui::creation`. Drawing the form, loading the model
+preview and sounds, the object database behind the kit, record
+serialization, the power tree and the running mode transitions are not
+in, and nothing here is wired into the running game yet. Rules are plain
+functions with tests pinned to concrete numbers.
 
 Story experience (`experience`): new item kinds, kills and explored map
 cells (the 5 × 5 cells around the player on a 600-unit grid, the position

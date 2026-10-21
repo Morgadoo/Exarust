@@ -879,12 +879,19 @@ the carried list; the source keeps the hand items and loses both lists.
 The mode filter keeps story background 0 in braies only and clears its
 hands; the arena keeps the first two hands only when its preset kit offers
 them and keeps braies only; modes whose 2 bit is set clear the fist
-placeholder (31) from the first two hands. Every branch empties the
-carried list. The skills are six slots of a `u16` points word and six
-technique bytes; a freely created character starts with Close Combat,
-Armour and Shields at 25000 points and their first techniques. Each story
-background keeps its own preset in the settings, and the arena keeps its
-career character. Evidence: REA on the character screen's unit routines
+placeholder (31) from the first two hands. Each of those three filters
+empties the carried list; a named story background and the other modes
+are left as they are. The skills are six slots of a `u16` points word and
+six technique bytes; the free creator writes Close Combat, Armour and
+Shields to 25000 points and their first five techniques, leaving the other
+slots and each sixth technique. Each story background keeps its preset in
+the settings under the path `0x6431bc02 + background`, `0x6431cc01`, and
+the arena keeps its career character under `0x6431bc01`, `0x6431cc01`. A
+loaded preset loses its race byte, known powers and power slots; the
+unknown background then gets two known powers (`0x101`, `0x201`), its
+first two slots (`0x100101`, `0x201`), the power word `0x510000` and 4.0
+beside the slots, and a record with known powers opens the power tree when
+it is committed. Evidence: REA on the character screen's unit routines
 and the record layout above.
 
 ## Terrain (`.rft` and `.ftb`)

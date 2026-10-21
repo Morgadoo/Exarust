@@ -3062,9 +3062,11 @@ pub struct PreviewPush {
 /// Adds a preview icon; a hovered last item moves the selection to the new
 /// last one.
 pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
-    let count = count.saturating_add(1);
+    let count = count.wrapping_add(1);
+    // The hovered index is zero-extended and the count sign-extended, both
+    // in 64 bits.
     let selected = hovered
-        .filter(|hovered| hovered.saturating_add(1) == count - 1)
+        .filter(|hovered| u64::from(*hovered as u32) as i64 + 1 == i64::from(count) - 1)
         .map(|_| count - 1);
     PreviewPush { count, selected }
 }
@@ -5058,6 +5060,8 @@ mod tests {
 
     #[test]
     fn adding_a_preview_selects_it_after_the_last_was_hovered() {
+        // A hovered -1 is 2^32 - 1 unsigned and never matches.
+        assert_eq!(push_preview(0, Some(-1)).selected, None);
         assert_eq!(
             push_preview(4, None),
             PreviewPush {

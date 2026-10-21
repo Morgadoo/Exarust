@@ -392,12 +392,15 @@ The original's own forms and controls that Exarust rebuilds, with the
   at 4, 24, 172 wide and 620 or 568 tall; the weapon panel against the
   parent's right edge less 176; the skills panel 216 wide, 516 or 660
   tall, 12 in from the right; the skill tab slides four units per index
-  and the panel narrows by the same; the continue list starts at 59 units
-  and the name at 4, 40, 228 wide to the form's bottom. The rules (gear
+  and the panel narrows by the same; on the continue screen the character
+  view starts at 59 units, the item list at 4, 116 (228 by 180), the
+  details form at 0, 328 (236 wide, 320 or 260 tall) and the name inside
+  it at 4, 40, 228 wide to its bottom. The continue toggle is enabled only
+  while both a save and a checkpoint exist. The rules (gear
   filter, starting skills, experience budget, kit tables, page flow, save
   choice) are plain functions in the game crate with tests pinned to
   concrete numbers. The form itself, its model preview, sound playback and
-  the advanced editor are not drawn yet.
+  the power tree are not drawn yet.
 
 When the GUI unit changes, every form rescales from the old unit to the
 new (`exa_ui::gui_rescale`): lengths are divided by the old unit, then
