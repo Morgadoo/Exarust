@@ -80,7 +80,43 @@ pub struct TextureLayer {
     pub amount: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// The identity UV transform: no offset, unit scale, no rotation.
+pub const IDENTITY_UV: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+/// The texture-coordinate transform the material's UV builder makes: a
+/// 2-D scale about the coordinate centre, then a rotation, then the stored
+/// translation, as a row-major 3 × 4 matrix over `(u, v, 1)`: three rows of
+/// three and a translation row. The original computes it only for a record
+/// whose extra flags carry `0x40`.
+///
+/// `m[0] = cos·sx`, `m[1] = −sin·sy`, `m[3] = sin·sx`, `m[4] = cos·sy`,
+/// `m[9] = ((½ − m[0]·½) − m[3]·½) + tx`, `m[10] = ((½ − m[1]·½) −
+/// m[4]·½) + ty`, each in single precision in that order. (The original
+/// computes the angle with its fast trig after flipping the angle's sign
+/// bit; whether its helper returns sine or cosine first is not established,
+/// so the standard rotation that fits the matrix is used.)
+pub fn uv_transform(angle: f32, scale: [f32; 2], offset: [f32; 2]) -> [f32; 12] {
+    let (sin, cos) = angle.sin_cos();
+    let mut m = [0.0f32; 12];
+    m[0] = cos * scale[0];
+    m[1] = -sin * scale[1];
+    m[3] = sin * scale[0];
+    m[4] = cos * scale[1];
+    m[8] = 1.0;
+    m[9] = ((0.5 - m[0] * 0.5) - m[3] * 0.5) + offset[0];
+    m[10] = ((0.5 - m[1] * 0.5) - m[4] * 0.5) + offset[1];
+    m
+}
+
+/// One texture-coordinate through a [`uv_transform`].
+pub fn apply_uv(m: &[f32; 12], uv: [f32; 2]) -> [f32; 2] {
+    [
+        m[0] * uv[0] + m[1] * uv[1] + m[9],
+        m[3] * uv[0] + m[4] * uv[1] + m[10],
+    ]
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Material {
     /// Colours as stored: sRGB, linearised by the renderer.
     pub emissive: [f32; 4],
@@ -97,6 +133,10 @@ pub struct Material {
     /// Dirt strength (`0x30`): the dirt modes' colour take, `2 − this` in the
     /// material uniform's `MatDrt.w`.
     pub dirt_amount: f32,
+    /// The word at `0x34`, which the material builder writes into the dirt
+    /// uniform's fourth lane for a state with bit 0 set. Its meaning is not
+    /// established; it ships as 1 in most records.
+    pub dirt_lane: f32,
     /// Shading flags ([`flags`]) and the texture slots in use.
     pub flags: u32,
     /// 0: legacy (diffuse ×1.5); bit 0: the specular map is a packed
@@ -117,10 +157,35 @@ pub struct Material {
     /// fade with the view angle when the amount exceeds 0.01.
     pub falloff_amount: f32,
     pub falloff_exponent: f32,
+    /// The vertical shaping word (`0x58`), floored to 1 when it is zero:
+    /// the material builder writes it to the spot-shaping half-float of a
+    /// record whose mode (`kind & 0x300`) is `0x200`. Its exact effect on
+    /// the shading is not established.
+    pub shaping: f32,
+    /// The texture-coordinate transform the UV builder makes from `0x7C`
+    /// (translation), `0x84` (scale) and `0x8C` (angle): a row-major 3 × 3
+    /// matrix over `(u, v, 1)`. Identity unless extra flag `0x40` is set.
+    pub uv_transform: [f32; 12],
+    /// The texture-coordinate rotation angle (`0x8C`), radians.
+    pub uv_angle: f32,
+    /// The texture-coordinate translation (`0x7C`) and scale (`0x84`).
+    pub uv_offset: [f32; 2],
+    pub uv_scale: [f32; 2],
+    /// Render-state word (`0x90`): the flags the material manager keeps
+    /// across a plugin pass.
+    pub render_state: u32,
+    /// Plug-in mask (`0x94`): which material types' plug-ins the record asks
+    /// for.
+    pub plugin_mask: u32,
+    /// Words `0x98`, `0x9C`, `0xA0` and `0xA8`: kept whole, no reader found
+    /// for them in the shipped data.
+    pub reserved: [u32; 4],
     /// Physical divisor (`0xA4`): a rigid body on a node whose first mesh
     /// part has this material moves by its stored mobility over it. The
     /// original loads 0 as 1 ([`Material::mobility_divisor`]).
     pub physical_divisor: f32,
+    /// The last two block words (`0xB0`, `0xB4`), kept whole.
+    pub tail: [u32; 2],
     /// Collision sound prefix (`0xAC`, up to 4 characters, empty in most
     /// records): the original's impact sound set is this prefix, or the
     /// material name's first three characters when empty, followed by
@@ -130,6 +195,9 @@ pub struct Material {
     /// material starts from (`0x70000` = repeat on all axes in the shipped
     /// data), combined with the texture quality mask by the texture loader.
     pub texture_flags: u32,
+    /// Every word of the 184-byte block, in order: the whole record, so a
+    /// pass-through rewrite keeps it.
+    pub raw_block: [u32; PARAMETER_BLOCK / 4],
     pub layers: Vec<TextureLayer>,
 }
 
@@ -142,6 +210,44 @@ pub mod flags {
     pub const TWO_SIDED: u32 = 0x10;
     pub const REFRACT: u32 = 0x200;
     pub const OPACITY_FALLOFF: u32 = 0x800;
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            emissive: [0.0; 4],
+            diffuse: [0.0; 4],
+            specular: [0.0; 4],
+            opacity: 0.0,
+            glossiness: 0.0,
+            specular_level: 0.0,
+            class: 0,
+            dirt_amount: 0.0,
+            dirt_lane: 0.0,
+            flags: 0,
+            kind: 0,
+            extra: 0,
+            subsurface: [0.0; 4],
+            displacement_step: 0.0,
+            displacement_bias: 0.0,
+            falloff_amount: 0.0,
+            falloff_exponent: 0.0,
+            shaping: 0.0,
+            uv_transform: [0.0; 12],
+            uv_angle: 0.0,
+            uv_offset: [0.0; 2],
+            uv_scale: [0.0; 2],
+            render_state: 0,
+            plugin_mask: 0,
+            reserved: [0; 4],
+            physical_divisor: 0.0,
+            tail: [0; 2],
+            collision_sound: String::new(),
+            texture_flags: 0,
+            raw_block: [0; PARAMETER_BLOCK / 4],
+            layers: Vec::new(),
+        }
+    }
 }
 
 impl Material {
@@ -164,6 +270,11 @@ impl Material {
         };
         let f32_at = |o: usize| f32::from_le_bytes(payload[o..o + 4].try_into().expect("4 bytes"));
         let u32_at = |o: usize| u32::from_le_bytes(payload[o..o + 4].try_into().expect("4 bytes"));
+        let vec2_at = |o: usize| [f32_at(o), f32_at(o + 4)];
+        let mut raw_block = [0u32; PARAMETER_BLOCK / 4];
+        for (i, word) in raw_block.iter_mut().enumerate() {
+            *word = u32_at(i * 4);
+        }
         let mut layers = Vec::new();
         let mut p = PARAMETER_BLOCK;
         while p < payload.len() {
@@ -199,6 +310,7 @@ impl Material {
             specular_level: f32_at(0x40),
             class: u32_at(0x44),
             dirt_amount: f32_at(0x30),
+            dirt_lane: f32_at(0x34),
             flags: u32_at(0x48),
             kind: u32_at(0x50),
             extra: u32_at(0x4C),
@@ -208,6 +320,27 @@ impl Material {
             displacement_bias: f32_at(0x60),
             falloff_amount: f32_at(0x64),
             falloff_exponent: f32_at(0x68),
+            shaping: {
+                let v = f32_at(0x58);
+                if v.abs() < 1.192_089_982_282_595_9e-7 {
+                    1.0
+                } else {
+                    v
+                }
+            },
+            uv_angle: f32_at(0x8C),
+            uv_offset: vec2_at(0x7C),
+            uv_scale: vec2_at(0x84),
+            uv_transform: if u32_at(0x4C) & 0x40 != 0 {
+                uv_transform(f32_at(0x8C), vec2_at(0x84), vec2_at(0x7C))
+            } else {
+                IDENTITY_UV
+            },
+            render_state: u32_at(0x90),
+            plugin_mask: u32_at(0x94),
+            reserved: [u32_at(0x98), u32_at(0x9C), u32_at(0xA0), u32_at(0xA8)],
+            tail: [u32_at(0xB0), u32_at(0xB4)],
+            raw_block,
             physical_divisor: f32_at(0xA4),
             collision_sound: {
                 let raw = &payload[0xAC..0xB0];
@@ -415,5 +548,73 @@ mod tests {
         p.extend(layer(0x0002_0000, "x"));
         p[PARAMETER_BLOCK + 4] = 40;
         assert!(Material::parse(&p).is_err());
+    }
+
+    /// Every word of the 184-byte block is decoded, including the ones with
+    /// no established meaning, so a rewrite keeps the record whole.
+    #[test]
+    fn the_whole_block_is_decoded() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        for (i, word) in p.chunks_mut(4).enumerate() {
+            word.copy_from_slice(&(0x1000_0000u32 + i as u32).to_le_bytes());
+        }
+        let m = Material::parse(&p).unwrap();
+        assert_eq!(m.raw_block.len(), 46);
+        assert_eq!(m.raw_block[0], 0x1000_0000);
+        assert_eq!(m.raw_block[45], 0x1000_002D);
+        assert_eq!(m.raw_block[0xB0 / 4], m.tail[0]);
+        assert_eq!(m.raw_block[0xB4 / 4], m.tail[1]);
+        assert_eq!(m.raw_block[0x98 / 4], m.reserved[0]);
+        assert_eq!(m.raw_block[0xA8 / 4], m.reserved[3]);
+        assert_eq!(m.render_state, 0x1000_0024);
+        assert_eq!(m.plugin_mask, 0x1000_0025);
+        // The shaping word is floored to one when its magnitude is under
+        // the engine's epsilon; all other floats are kept as stored.
+        let mut q = vec![0u8; PARAMETER_BLOCK];
+        assert_eq!(Material::parse(&q).unwrap().shaping, 1.0);
+        q[0x58..0x5C].copy_from_slice(&0.5f32.to_le_bytes());
+        assert_eq!(Material::parse(&q).unwrap().shaping, 0.5);
+        q[0x58..0x5C].copy_from_slice(&1e-30f32.to_le_bytes());
+        assert_eq!(Material::parse(&q).unwrap().shaping, 1.0);
+    }
+
+    #[test]
+    fn the_uv_builder_scales_about_the_centre_then_rotates() {
+        // Unit scale, no rotation: the identity, including the translation.
+        let m = uv_transform(0.0, [1.0, 1.0], [0.0, 0.0]);
+        assert!((m[0] - 1.0).abs() < 1e-6 && m[1].abs() < 1e-6);
+        assert!(m[9].abs() < 1e-6 && m[10].abs() < 1e-6);
+        assert_eq!(apply_uv(&m, [0.25, 0.75]), [0.25, 0.75]);
+        // Scale 2: the corners go to -0.5 and 1.5.
+        let m = uv_transform(0.0, [2.0, 2.0], [0.0, 0.0]);
+        assert_eq!((m[0], m[4], m[9], m[10]), (2.0, 2.0, -0.5, -0.5));
+        assert_eq!(apply_uv(&m, [0.0, 0.0]), [-0.5, -0.5]);
+        assert_eq!(apply_uv(&m, [1.0, 1.0]), [1.5, 1.5]);
+        // A translation adds last.
+        let m = uv_transform(0.0, [1.0, 1.0], [0.25, -0.5]);
+        assert_eq!((m[9], m[10]), (0.25, -0.5));
+        // A quarter turn, pinned to the original's translation formula:
+        // m[0] = cos = 0, m[1] = -sin = -1, m[3] = sin = 1, m[4] = cos = 0,
+        // m[9] = 0.5 - 0 - 0.5 = 0, m[10] = 0.5 + 0.5 - 0 = 1.
+        let m = uv_transform(std::f32::consts::FRAC_PI_2, [1.0, 1.0], [0.0, 0.0]);
+        assert!(m[0].abs() < 1e-6 && (m[1] + 1.0).abs() < 1e-6);
+        assert!((m[3] - 1.0).abs() < 1e-6 && m[4].abs() < 1e-6);
+        assert!(m[9].abs() < 1e-6 && (m[10] - 1.0).abs() < 1e-6);
+        assert_eq!(apply_uv(&m, [1.0, 0.0])[1], 2.0);
+        assert!(apply_uv(&m, [1.0, 0.0])[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_uv_transform_is_read_only_with_extra_flag_0x40() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        p[0x84..0x88].copy_from_slice(&2.0f32.to_le_bytes());
+        p[0x88..0x8C].copy_from_slice(&2.0f32.to_le_bytes());
+        let m = Material::parse(&p).unwrap();
+        assert_eq!(m.uv_transform, IDENTITY_UV);
+        assert_eq!(m.uv_scale, [2.0, 2.0]);
+        p[0x4C..0x50].copy_from_slice(&0x40u32.to_le_bytes());
+        let m = Material::parse(&p).unwrap();
+        assert_eq!(m.uv_transform[0], 2.0);
+        assert_eq!(m.uv_transform[9], -0.5);
     }
 }

@@ -556,6 +556,12 @@ pub fn linear_rgb(c: [f32; 3]) -> Vec3 {
     Vec3::new(linear(c[0]), linear(c[1]), linear(c[2]))
 }
 
+/// An sRGB colour with alpha, linearised in rgb.
+pub fn linear_rgb4(c: [f32; 4]) -> [f32; 4] {
+    let rgb = linear_rgb([c[0], c[1], c[2]]);
+    [rgb.x, rgb.y, rgb.z, c[3]]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

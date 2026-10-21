@@ -1879,12 +1879,7 @@ impl PaintJob {
 /// The diffuse colour as the original's material uniform takes it: linear,
 /// after legacy materials (type 0) brighten it by 1.5.
 fn material_diffuse(m: &Material) -> Vec3 {
-    let scale = if m.kind & 0xFF == 0 { 1.5 } else { 1.0 };
-    linear_rgb([
-        m.diffuse[0] * scale,
-        m.diffuse[1] * scale,
-        m.diffuse[2] * scale,
-    ])
+    Vec3::from_array(exa_render::material_state::builder_diffuse(m))
 }
 
 /// The shading quality the program choice of library materials assumes
@@ -1925,11 +1920,7 @@ fn reflects_cube(m: &Material) -> bool {
 /// The record's glossiness as stored; type-0 materials below 0.01 are
 /// raised to it, as the original's loader does.
 fn material_gloss(m: &Material) -> f32 {
-    if m.kind & 0xFF == 0 && m.glossiness < 0.01 {
-        0.01
-    } else {
-        m.glossiness
-    }
+    exa_render::material_state::builder_gloss(m)
 }
 
 /// How a material blends, from its blend word: `0x4000` alpha-tests (when

@@ -1083,7 +1083,7 @@ mod tests {
         let target = ImageData::render_target(4, 4, 0x0100_E608, 0).unwrap();
         assert!(target.header.has_mip_chain());
         assert_eq!(target.header.detail_class(), 2);
-        assert_eq!(target.header.data_size, 4 * 4 * 4 + 2 * 2 * 4 + 1);
+        assert_eq!(target.header.data_size, 4 * 4 * 4 + 2 * 2 * 4 + 4);
         assert!(ImageData::blank(2, 2, 0x0100_C600, 0).is_ok());
     }
 

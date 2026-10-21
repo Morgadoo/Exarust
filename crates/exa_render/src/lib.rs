@@ -11,6 +11,7 @@ pub mod glow;
 pub mod image_noise;
 pub mod lights;
 pub mod material;
+pub mod material_state;
 pub mod mipmap;
 pub mod passes;
 pub mod post;
