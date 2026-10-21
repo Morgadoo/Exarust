@@ -238,6 +238,22 @@ impl IconCache {
             .map_or(0, |e| e.id)
     }
 
+    /// Where an icon centred on `(x, y)` is drawn from: half the icon size
+    /// back, then its half width right and its half height up.
+    pub fn draw_origin(&self, handle: usize, x: i32, y: i32, icon_size: i32) -> Option<(i32, i32)> {
+        let e = self.entries.get(handle.checked_sub(1)?)?;
+        let h = ((icon_size as u32) >> 1) as i32;
+        Some(((x - h) + e.half_width, (y - h) - e.half_height))
+    }
+
+    /// The point an icon's pixel test reads for a cursor at `(x, y)`: the
+    /// inverse of [`IconCache::draw_origin`].
+    pub fn test_point(&self, handle: usize, x: i32, y: i32, icon_size: i32) -> Option<(i32, i32)> {
+        let e = self.entries.get(handle.checked_sub(1)?)?;
+        let h = ((icon_size as u32) >> 1) as i32;
+        Some((h + x - e.half_width, h + y + e.half_height))
+    }
+
     /// A level or save load empties the cache.
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -399,6 +415,15 @@ mod tests {
                 refs: 1
             }
         );
+        assert_eq!(
+            c.draw_origin(1, 100, 100, 160),
+            Some((100 - 80 + 108, 100 - 80 - 68))
+        );
+        assert_eq!(
+            c.test_point(1, 148, -48, 160),
+            Some((80 + 148 - 108, 80 - 48 + 68))
+        );
+        assert_eq!(c.draw_origin(0, 0, 0, 160), None);
         c.clear();
         assert!(c.entries.is_empty());
         assert_eq!(icon_size(4), 160);
