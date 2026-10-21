@@ -333,17 +333,20 @@ pub fn vec4_mul_4x3(v: Vec4, rows: &[[f32; 3]; 4]) -> Vec3 {
     out
 }
 
-/// The difference of two 4×3 products: two matrices of four rows of three,
-/// the second 48 bytes after the first. Each output column is the first
-/// product less the second.
-pub fn vec4_mul_4x3_difference(first: Vec4, second: Vec4, rows: &[[f32; 3]; 8]) -> Vec3 {
-    let mut one = [[0.0f32; 3]; 4];
-    let mut two = [[0.0f32; 3]; 4];
-    one.copy_from_slice(&rows[..4]);
-    two.copy_from_slice(&rows[4..]);
-    let first = vec4_mul_4x3(first, &one);
-    let second = vec4_mul_4x3(second, &two);
-    Vec3::new(first.x - second.x, first.y - second.y, first.z - second.z)
+/// One four-vector times two 4×3 matrices (eight rows of three, the second
+/// matrix right after the first), the first product less the second. Unlike
+/// [`vec4_mul_4x3`], each product sums its four terms one after another:
+/// `((v.x·r0 + v.y·r1) + v.z·r2) + v.w·r3`.
+pub fn vec4_mul_4x3_difference(v: Vec4, rows: &[[f32; 3]; 8]) -> Vec3 {
+    let mut out = Vec3::ZERO;
+    for column in 0..3 {
+        let first = ((rows[0][column] * v.x + rows[1][column] * v.y) + rows[2][column] * v.z)
+            + rows[3][column] * v.w;
+        let second = ((v.x * rows[4][column] + v.y * rows[5][column]) + v.z * rows[6][column])
+            + v.w * rows[7][column];
+        out[column] = first - second;
+    }
+    out
 }
 
 /// The scalar triple product `a · (b × c)`, summed in the original's
@@ -831,12 +834,27 @@ mod tests {
         pair[..4].copy_from_slice(&rows);
         pair[4..].copy_from_slice(&rows);
         assert_eq!(
-            vec4_mul_4x3_difference(
-                Vec4::new(1.0, 0.0, 0.0, 0.0),
-                Vec4::new(1.0, 0.0, 0.0, 0.0),
-                &pair
-            ),
+            vec4_mul_4x3_difference(Vec4::new(1.0, 1.0, 1.0, 1.0), &pair),
             Vec3::new(0.0, 0.0, 0.0)
+        );
+        // The second matrix the identity rows and a zero row: the
+        // difference is v times the first less v's first three.
+        pair[4..].copy_from_slice(&[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]]);
+        assert_eq!(
+            vec4_mul_4x3_difference(Vec4::new(1.0, 2.0, 3.0, 4.0), &pair),
+            Vec3::new(70.0 - 1.0, 80.0 - 2.0, 90.0 - 3.0)
+        );
+        // The sums run one after another: ((1 + 2^24) + 1) − 2^24 loses
+        // both ones to rounding and gives 0, where the pairwise
+        // (1 + 2^24) + (1 − 2^24) would give 1.
+        let mut sequential = [[0.0f32; 3]; 8];
+        sequential[0] = [1.0; 3];
+        sequential[1] = [16_777_216.0; 3];
+        sequential[2] = [1.0; 3];
+        sequential[3] = [-16_777_216.0; 3];
+        assert_eq!(
+            vec4_mul_4x3_difference(Vec4::ONE, &sequential),
+            Vec3::splat(0.0)
         );
         assert_eq!(triple_product(Vec3::X, Vec3::Y, Vec3::Z), 1.0);
         assert!(close(
