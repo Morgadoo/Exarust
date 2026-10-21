@@ -14,7 +14,9 @@
 //! does not check the room. Leaving releases those flags, drops the id from
 //! the tournament entries and renumbers the later ones, and does the same
 //! to the log's "saved" records. A dismissal logs the name and counts one
-//! more fired.
+//! more fired. A roster row dragged onto another takes its place (onto
+//! nothing, the last place; never the manager's), and the ids that moved
+//! follow in the log's saves, the tournament entries and the order list.
 //!
 //! Evidence: the retail arena's hire, recruitment, renumber, kit, remove
 //! and dismiss routines read from `Exanima.exe` (`context/re/arena-staff.md`).
@@ -383,6 +385,84 @@ impl Staff {
         log.append_words(LOG_DISMISSED, name_words(&name));
         records.fired = records.fired.wrapping_add(1);
         self.remove(index, arsenal, kind, entries, log)
+    }
+
+    /// The end of the day's lessons: the first trainer on the staff teaches
+    /// the manager (`None`), then every fighter in staff order. No trainer,
+    /// no lessons.
+    pub fn lesson_round(&self) -> Option<(usize, Vec<Option<usize>>)> {
+        let trainer = self.employees.iter().position(|e| e.class == TRAINER)?;
+        let mut students = vec![None];
+        students.extend(
+            self.employees
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.fights())
+                .map(|(index, _)| Some(index)),
+        );
+        Some((trainer, students))
+    }
+
+    /// Drag a roster row onto another. `row` is the dragged row (0 the
+    /// manager, who does not move) and `drop` the row under the cursor
+    /// counted from 1 (0 for none). The target is that row, the last row
+    /// when there is none, and never the manager's. The rows between close
+    /// up, and every id that moved is remapped in the log's "saved"
+    /// records, the tournament entries and the order list's entries up to
+    /// the staff's count. Returns whether anything moved.
+    pub fn move_employee(
+        &mut self,
+        row: usize,
+        drop: i32,
+        log: &mut ArenaLog,
+        entries: &mut Roster,
+    ) -> bool {
+        if row == 0 || row > self.employees.len() {
+            return false;
+        }
+        let target = match drop - 1 {
+            t if t < 0 => self.employees.len(),
+            t => (t as usize).max(1),
+        };
+        let target = target.min(self.employees.len());
+        let mut map: [u32; 11] = std::array::from_fn(|id| id as u32);
+        let moved = self.employees.remove(row - 1);
+        if row > target {
+            for id in target..row {
+                if let Some(slot) = map.get_mut(id) {
+                    *slot += 1;
+                }
+            }
+        } else {
+            for id in row + 1..=target {
+                if let Some(slot) = map.get_mut(id) {
+                    *slot -= 1;
+                }
+            }
+        }
+        if let Some(slot) = map.get_mut(row) {
+            *slot = target as u32;
+        }
+        self.employees.insert(target - 1, moved);
+        let remap = |id: u32| map.get(id as usize).copied().unwrap_or(id);
+        for record in &mut log.records {
+            if record.id == LOG_SAVED {
+                record.words[0] = remap(record.words[0] as u32) as i32;
+            }
+        }
+        for event in entries.iter_mut() {
+            let count = (event.count as usize).min(event.entries.len());
+            for entrant in &mut event.entries[..count] {
+                entrant.actor_id = remap(entrant.actor_id);
+            }
+        }
+        let staff = self.employees.len() as i32;
+        for number in &mut self.order {
+            if *number <= staff {
+                *number = remap(*number as u32) as i32;
+            }
+        }
+        true
     }
 }
 
@@ -753,5 +833,88 @@ mod tests {
         staff.order = vec![1];
         hire(&mut staff, &mut books, combatant("B"), 1).unwrap();
         assert_eq!(staff.order, vec![1, 2]);
+    }
+
+    fn staff_of(names: &[&str]) -> Staff {
+        Staff {
+            employees: names
+                .iter()
+                .map(|text| Employee {
+                    class: COMBATANT,
+                    name: name(text),
+                    ..Employee::default()
+                })
+                .collect(),
+            order: Vec::new(),
+        }
+    }
+
+    fn names(staff: &Staff) -> Vec<String> {
+        staff
+            .employees
+            .iter()
+            .map(|e| crate::report::name_text(&e.name))
+            .collect()
+    }
+
+    #[test]
+    fn a_dragged_row_moves_and_its_ids_follow() {
+        let mut staff = staff_of(&["A", "B", "C", "D"]);
+        staff.order = vec![4, 1, 2, 7];
+        let mut log = ArenaLog::default();
+        log.append_value(LOG_SAVED, 4);
+        log.append_value(LOG_SAVED, 2);
+        log.append_value(crate::arena_match::LOG_WON, 4);
+        let mut entries = Roster::default();
+        entries[0] = RosterRow {
+            count: 2,
+            entries: [
+                Entrant {
+                    actor_id: 4,
+                    weapon: [0; 2],
+                },
+                Entrant {
+                    actor_id: 3,
+                    weapon: [0; 2],
+                },
+            ],
+            team_id: 0,
+        };
+        // D (row 4) dropped on row 2 lands in the place of B.
+        assert!(staff.move_employee(4, 3, &mut log, &mut entries));
+        assert_eq!(names(&staff), ["A", "D", "B", "C"]);
+        assert_eq!(staff.order, vec![2, 1, 3, 7]);
+        assert_eq!(log.records[0].words[0], 2);
+        assert_eq!(log.records[1].words[0], 3);
+        assert_eq!(log.records[2].words[0], 4);
+        assert_eq!(entries[0].entries[0].actor_id, 2);
+        assert_eq!(entries[0].entries[1].actor_id, 4);
+    }
+
+    #[test]
+    fn a_row_dropped_nowhere_goes_last_and_never_above_the_manager() {
+        let mut staff = staff_of(&["A", "B", "C"]);
+        let mut log = ArenaLog::default();
+        let mut entries = Roster::default();
+        assert!(staff.move_employee(1, 0, &mut log, &mut entries));
+        assert_eq!(names(&staff), ["B", "C", "A"]);
+        assert!(staff.move_employee(3, 1, &mut log, &mut entries));
+        assert_eq!(names(&staff), ["A", "B", "C"]);
+        assert!(!staff.move_employee(0, 2, &mut log, &mut entries));
+        assert!(staff.move_employee(2, 3, &mut log, &mut entries));
+        assert_eq!(names(&staff), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn a_trainer_teaches_the_manager_then_the_fighters() {
+        let mut staff = staff_of(&["A", "B", "C", "D"]);
+        assert_eq!(staff.lesson_round(), None);
+        staff.employees[1].class = TRAINER;
+        staff.employees[2].class = MERCHANT;
+        staff.employees[3].class = RECRUIT;
+        assert_eq!(
+            staff.lesson_round(),
+            Some((1, vec![None, Some(0), Some(3)]))
+        );
     }
 }

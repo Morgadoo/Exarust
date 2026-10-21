@@ -498,6 +498,46 @@ of its control. The weapon check's item kind of a fighter's event value and
 the tournament day's day-end checks are the arena's and are supplied by the
 caller. The board does not count matches; the arena does.
 
+## Arena company windows
+
+The hub's company windows are modelled as rules (`exa_game::manage`); no
+hub screen draws them yet. Their controls are read from the original's form
+tables.
+
+- **Manage Company** (0x2c4 × 0x1d4): Roster and Report tables, Manage,
+  Arsenal, Recruit and Hire, the Owned, Upkeep, Earned today and Spent today
+  coins, End Day, Close and Records. The roster's columns are Name (0x84),
+  Rank (0x50) and Health (0x84). A rank cell reads Merchant, Trainer or
+  Physician for a specialist, else the rank name, marked "+" while the
+  fighter is ready to train. A name is drawn in 255, 210, 100 at three
+  fifths of the skin's alpha for the manager, 220, 180, 160 at two thirds
+  for a specialist, 160, 180, 240 at two thirds for a hired combatant, and
+  in the skin's text colour for a recruit. Recruit closes at eight fighters
+  and Hire at ten employees. A row dragged onto another takes its place
+  (`staff::Staff::move_employee`). A report line opens the board's
+  tournament tab, the hire list on the first candidate of its profession,
+  or the roster on its first row.
+- **Arsenal** form (TLoadoutForm): a list with Previous, Next and Dismiss,
+  the Rank slider, "Points: n / m", Encumbrance, five shelf and five box
+  buttons, CLOSE, and on the hire page HIRE with the hire fee and upkeep.
+  Its pages are the roster, the hire list (opening on tab 5), a
+  specialist's record (shelves filtered by 0x200, no rank controls, no
+  tab) and an event's lineup; the others filter by 0x400. Previous and
+  Dismiss are disabled on the first row and Next on the last; a step loads
+  its record and is committed after the frame; Dismiss asks "Are you sure
+  you want to dismiss " the name "?" and moves the selection up. The
+  slider's rank is its value × 5 rounded to even; the points line halves
+  the cost plus one and the doubled loadout limit. A record's title is
+  "Name (Rank)" or "Name (Profession)"; a candidate shows "Profession: …"
+  and the profession's description. A pressed shelf or box button stores
+  the view in its box and loads the new one, sorting a marked box once. An
+  event's lineup opens on its first entrant at the event's rank tab, and
+  closing it writes the hands back with the second hand's item cleared.
+- **Company Status**: the company's name, Renown and Reputation "Unknown",
+  Morale "Good", Total Staff (the manager counted) and Masters (fighters
+  above Expert, or "None"). **Company Records** lists the thirteen company
+  records, the last two as coins.
+
 ## Forms
 
 The original's own forms and controls that Exarust rebuilds, with the
