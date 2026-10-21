@@ -1725,7 +1725,7 @@ impl Container {
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, entry)| {
+            .find(|&(_, entry)| {
                 inside(entry) && second(entry.icon, x - entry.cell.x, y - entry.cell.y)
             })
             .map(|(i, _)| i)

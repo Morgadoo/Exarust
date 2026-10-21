@@ -392,12 +392,12 @@ pub fn select_condition_text(text: &str, condition: u8) -> String {
             .map_or(-1, |at| at as i32)
     };
     // The run-time library's copy of `count` bytes from 1-based `from`.
-    let copy = |from: i32, count: i32| -> &[u8] {
+    let copy = |from: i32, count: i32| -> Vec<u8> {
         if count <= 0 || from < 1 || from as usize > s.len() {
-            return &[];
+            return Vec::new();
         }
         let start = from as usize - 1;
-        &s[start..(start + count as usize).min(s.len())]
+        s[start..(start + count as usize).min(s.len())].to_vec()
     };
     let mut len = s.len() as i32;
     let mut p = find(1, len) + 1;
@@ -418,11 +418,11 @@ pub fn select_condition_text(text: &str, condition: u8) -> String {
         let next = if found < 1 { len + p + 3 } else { found + p };
         if limit >= percent {
             let mut out = if first > 1 {
-                copy(1, first - 1).to_vec()
+                copy(1, first - 1)
             } else {
                 Vec::new()
             };
-            out.extend_from_slice(copy(p, next - p - 3));
+            out.extend(copy(p, next - p - 3));
             return String::from_utf8_lossy(&out).into_owned();
         }
         len = len - p + 8;
