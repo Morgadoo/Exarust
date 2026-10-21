@@ -188,7 +188,7 @@ pub fn scroll_metrics(width: i32, content_w: i32, border: i32, rail: i32, f: f32
     } else if track < thumb {
         thumb = track;
     }
-    let x = border + rail + ((track - thumb) as f32 * f) as i32;
+    let x = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
     ScrollMetrics {
         step,
         thumb,
@@ -220,7 +220,7 @@ pub fn set_scroll_x(
         f = 0.0;
     }
     let track = cw - 2 * rail;
-    let x = border + rail + ((track - thumb) as f32 * f) as i32;
+    let x = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
     (f, x)
 }
 
@@ -1130,7 +1130,7 @@ pub fn vertical_scroll_metrics(
     } else if track < thumb {
         thumb = track;
     }
-    let y = border + rail + ((track - thumb) as f32 * f) as i32;
+    let y = border + rail + ((track - thumb) as f32 * f).round_ties_even() as i32;
     VerticalScroll {
         step,
         thumb,
@@ -1174,7 +1174,7 @@ pub fn set_scroll_y(
         value = 0.0;
     }
     let track = ch - 2 * rail;
-    let y = border + rail + ((track - thumb) as f32 * value) as i32;
+    let y = border + rail + ((track - thumb) as f32 * value).round_ties_even() as i32;
     (value, y)
 }
 

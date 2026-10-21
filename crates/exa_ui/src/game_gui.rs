@@ -854,9 +854,9 @@ pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> FormRect {
 /// and `height + 4` tall, centred on the bar.
 pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> FormRect {
     FormRect {
-        left: x,
+        left: x - 2,
         top: y - 1,
-        right: x + width,
+        right: x + width + 2,
         bottom: y - 1 + height + 4,
     }
 }
@@ -1422,9 +1422,9 @@ mod tests {
         assert_eq!(
             gauge_frame(760, 861, 240, 10),
             FormRect {
-                left: 760,
+                left: 758,
                 top: 860,
-                right: 1000,
+                right: 1002,
                 bottom: 874
             }
         );
