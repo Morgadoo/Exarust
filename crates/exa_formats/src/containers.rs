@@ -351,6 +351,38 @@ mod tests {
     }
 
     #[test]
+    fn shipped_containers_and_tables() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let db = crate::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let (mut containers, mut chests, mut tables, mut rows) = (0, 0, 0, 0);
+        for r in &db.records {
+            let payload = db.payload(r);
+            if let Some(body) = section(payload, CONTAINER) {
+                let c = Container::parse(body).expect("every shipped container parses");
+                // The game's database lists none of their contents.
+                assert!(c.children.is_empty());
+                containers += 1;
+                if (c.capacity, c.max_item) == (200, 50) {
+                    chests += 1;
+                }
+            }
+            if let Some(body) = section(payload, RANDOM_TABLE) {
+                let t = RandomTable::parse(body).expect("every shipped table parses");
+                // The empty row comes first in every shipped table.
+                assert_eq!(t.entries[0].id, 0);
+                assert_eq!((t.min, t.max), (0, 0));
+                tables += 1;
+                rows += t.entries.len();
+            }
+        }
+        assert_eq!((containers, chests, tables, rows), (137, 24, 24, 438));
+    }
+
+    #[test]
     fn the_model_facts() {
         let mut body = vec![0u8; 0x28];
         body[0x10] = 1;
