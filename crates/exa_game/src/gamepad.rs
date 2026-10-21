@@ -1543,6 +1543,9 @@ pub struct PadStatus {
     pub connected: bool,
     /// `Bindings::controller` is set (the controls page's controller mode).
     pub controller: bool,
+    /// The pad showed activity while the saved mode was the keyboard, so
+    /// Exarust turned the controller on for this session.
+    pub auto: bool,
 }
 
 impl PadStatus {
@@ -1611,7 +1614,6 @@ fn read_pad(
     mut status: ResMut<PadStatus>,
 ) {
     let now = time.elapsed().as_millis() as i64;
-    status.controller = bindings.controller;
     let Some(pad) = pads.iter().next() else {
         status.connected = false;
         menu.frame(
@@ -1626,6 +1628,10 @@ fn read_pad(
         return;
     };
     status.connected = true;
+    if !bindings.controller && !status.auto && pad_activity(pad) {
+        status.auto = true;
+        info!("gamepad: controller mode on");
+    }
     let sample = sample_pad(pad);
     let variant = if players.iter().next().is_some_and(|body| body.combat) {
         Variant::Combat
@@ -1679,22 +1685,33 @@ fn sample_pad(pad: &Gamepad) -> PadSample {
     sample
 }
 
-/// Copies the controls page's controller mode into the bindings, and turns
-/// the controller on once a gamepad is connected when no settings file
-/// exists (Exarust's own convenience: without a Controls page there is no
-/// other switch to press).
+/// Whether the pad was used this frame: a button pressed, a stick pushed
+/// past half, or a trigger past half.
+fn pad_activity(pad: &Gamepad) -> bool {
+    GamepadButton::all()
+        .iter()
+        .any(|button| pad.just_pressed(*button))
+        || pad.left_stick().length() > 0.5
+        || pad.right_stick().length() > 0.5
+        || pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0) > 0.5
+        || pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0) > 0.5
+}
+
+/// Copies the controls page's controller mode into the bindings. A gamepad
+/// connected with no settings file, or one used while the saved mode is the
+/// keyboard, turns the controller on for the session (Exarust's own: the
+/// original's Deck detection and Steam Input switch are not reproduced).
 fn sync_controller_mode(
-    status: Res<PadStatus>,
+    mut status: ResMut<PadStatus>,
     config: Option<Res<crate::hw_config::HardwareConfig>>,
     mut bindings: ResMut<crate::bindings::Bindings>,
 ) {
-    let enabled = match config.as_ref() {
-        Some(config) => config.live.controller,
-        None => status.connected,
-    };
-    if bindings.controller != enabled && (!bindings.controller || config.is_some()) {
+    let explicit = config.as_ref().is_some_and(|config| config.live.controller);
+    let enabled = explicit || (status.connected && (config.is_none() || status.auto));
+    if bindings.controller != enabled {
         bindings.controller = enabled;
     }
+    status.controller = bindings.controller;
 }
 
 #[cfg(test)]

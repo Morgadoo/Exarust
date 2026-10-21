@@ -2043,6 +2043,7 @@ mod tests {
         app.insert_resource(pad).insert_resource(PadStatus {
             connected: true,
             controller: true,
+            ..PadStatus::default()
         });
         app.world_mut().run_schedule(FixedPreUpdate);
         let anim = app.world().get::<Animator>(body).unwrap();

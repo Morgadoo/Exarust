@@ -630,6 +630,23 @@ fn the_raw_fallback_scales_its_stick_and_marks_the_run() {
 }
 
 #[test]
+fn pad_activity_counts_a_button_or_a_half_pushed_stick() {
+    let pad = Gamepad::default();
+    assert!(!pad_activity(&pad));
+    let mut pressed = Gamepad::default();
+    pressed.digital_mut().press(GamepadButton::South);
+    assert!(pad_activity(&pressed));
+    let mut stick = Gamepad::default();
+    stick.analog_mut().set(GamepadAxis::LeftStickX, 0.51);
+    assert!(pad_activity(&stick));
+    stick.analog_mut().set(GamepadAxis::LeftStickX, 0.49);
+    assert!(!pad_activity(&stick));
+    let mut trigger = Gamepad::default();
+    trigger.analog_mut().set(GamepadButton::RightTrigger2, 0.6);
+    assert!(pad_activity(&trigger));
+}
+
+#[test]
 fn the_default_table_reads_bevys_buttons_and_sticks() {
     let mut pad = Gamepad::default();
     pad.digital_mut().press(GamepadButton::RightTrigger2);
