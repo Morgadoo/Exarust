@@ -134,6 +134,7 @@ impl Plugin for GamePlugin {
             thaum::visuals::VisualPlugin,
             ),
         ))
+        .add_plugins(thaum::cast::CastPlugin)
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

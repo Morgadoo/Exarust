@@ -115,6 +115,15 @@ impl Motions {
         self.0.table_clip(&table, action)
     }
 
+    /// The name of the action at `index`, which is the original's motion id
+    /// (0x22 Force Blast … 0x28 Disp Form), when the motion set has it.
+    pub fn action_name(&self, index: u32) -> Option<&str> {
+        self.0
+            .actions
+            .get(index as usize)
+            .map(|action| action.name.as_str())
+    }
+
     /// The motion library: `humanoid.rsq` parsed with the human body's leg
     /// length and each bone's physical body. Without the file the original
     /// falls back on one unnamed action and one `Default` moveset with no

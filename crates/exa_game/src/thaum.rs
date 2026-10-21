@@ -34,6 +34,7 @@ use bevy::math::Vec3;
 
 pub mod arcs;
 pub mod barricade;
+pub mod cast;
 pub mod casting;
 pub mod displacement;
 pub mod energy;

@@ -101,6 +101,13 @@ impl Plugin for ThaumEffectsPlugin {
 #[derive(Resource)]
 pub struct EffectDraws(pub Mt19937);
 
+impl Default for EffectDraws {
+    /// The stream the effects start from.
+    fn default() -> Self {
+        Self(Mt19937::new(5489))
+    }
+}
+
 /// The engine's own generator, for the effects that use it.
 #[derive(Resource, Default)]
 pub struct EffectRoll(pub Roll);
