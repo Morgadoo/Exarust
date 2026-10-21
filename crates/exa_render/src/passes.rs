@@ -1,71 +1,91 @@
 //! The renderer's pass order and render-state lists.
 //!
-//! The original walks per-material render-state records twice a frame: an
-//! opaque pass with depth writes, then the depth-write-free passes, the
-//! refraction copy, the blended lists and the particles, each with its own
-//! hook list. Its two list orderings are modelled here, and the pass order
-//! is the contract Exarust's render graph follows: Bevy's opaque, alpha-mask
-//! and transparent phases take the place of the fixed list walk, and the
-//! custom nodes (`exa_cube_shadows`, `exa_gi`, `exa_post`) fill the
-//! per-frame slots.
+//! The original walks per-material render-state lists in one fixed order a
+//! frame: a clear to the environment's background colour, the alpha-tested
+//! and opaque lists with depth writes, hook lists, the depth-biased decal
+//! list with depth writes off, the blended lists and the particles, each
+//! group followed by its hook list. Its two list orderings are modelled
+//! here, and the pass order is the contract Exarust's render graph follows:
+//! Bevy's opaque, alpha-mask and transparent phases take the place of the
+//! fixed list walk, and the custom nodes (`exa_cube_shadows`, `exa_gi`,
+//! `exa_post`) fill the per-frame slots.
 //!
-//! Rules: `docs/RENDERING.md` (Blending, Supersampling).
+//! Rules: `docs/RENDERING.md` (Pass order).
 
 /// One slot of the renderer's fixed frame walk, in the order the original
 /// draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pass {
-    /// The scene environment's sky, before any list.
-    Sky,
+    /// The environment's per-frame setup (fog, background colour) and the
+    /// clear. The environment's own sky hooks around the lists are empty, so
+    /// no sky is drawn here.
+    Clear,
     /// The alpha-tested class (`0x8000`), with depth writes.
     AlphaTest,
     /// The opaque class, with depth writes.
     Opaque,
-    /// Hooks run once with depth writes still on.
+    /// The hook list after the opaque lists.
     AfterOpaqueHooks,
-    /// Depth writes go off for everything after this point.
-    DepthWritesOff,
-    /// The `0x10000` class, drawn after depth writes are switched off.
-    DepthIndependent,
-    /// A copy of the frame for refracting surfaces.
-    RefractionCopy,
-    /// The hook list for overlays on the copied frame.
-    AfterCopyHooks,
-    /// The blended class: one list per scene sector, or one list for a
-    /// sectorless scene.
+    /// Two more hook lists with depth writes explicitly on, then the depth
+    /// test on and depth writes off.
+    DepthHooks,
+    /// The `0x10000` class (decals), with depth writes off and every view's
+    /// projection depth term raised by 2·10⁻⁵ (a depth bias that stays on
+    /// through the blended lists).
+    Decals,
+    /// The hook list after the decals, once the region scissor is off.
+    AfterDecalHooks,
+    /// The blended class: one list for a sectorless scene, or one per scene
+    /// sector, depth writes off and still depth-biased.
     Blended,
-    /// The particles' depth pre-pass.
+    /// The hook list after the blended lists (the projection bias is gone).
+    AfterBlendedHooks,
+    /// The particles' depth-only pre-pass (colour writes off, depth writes
+    /// on).
     ParticleDepth,
     /// The particles' colour, with depth writes off.
     ParticleColour,
+    /// The environment's weather effects after the particles.
+    EnvironmentEffects,
     /// The closing hook list, then depth writes back on.
     EndHooks,
 }
 
 /// The frame's pass order.
-pub const PASS_ORDER: [Pass; 12] = [
-    Pass::Sky,
+pub const PASS_ORDER: [Pass; 13] = [
+    Pass::Clear,
     Pass::AlphaTest,
     Pass::Opaque,
     Pass::AfterOpaqueHooks,
-    Pass::DepthWritesOff,
-    Pass::DepthIndependent,
-    Pass::RefractionCopy,
-    Pass::AfterCopyHooks,
+    Pass::DepthHooks,
+    Pass::Decals,
+    Pass::AfterDecalHooks,
     Pass::Blended,
+    Pass::AfterBlendedHooks,
     Pass::ParticleDepth,
     Pass::ParticleColour,
+    Pass::EnvironmentEffects,
     Pass::EndHooks,
 ];
 
+/// The depth bias the decal class draws with: added to the projection's
+/// `[2][2]` term of every view from the decals to the end of the blended
+/// lists.
+pub const DECAL_DEPTH_BIAS: f32 = 2.0e-5;
+
 impl Pass {
-    /// Whether the pass writes depth. The original draws both opaque
-    /// classes before switching depth writes off; the particles' pre-pass
-    /// switches them back on for its depth only.
+    /// Whether the pass draws with depth writes on. The original draws both
+    /// opaque classes and the first hook lists with them on, switches them
+    /// off before the decals, and switches them on only for the particles'
+    /// depth pre-pass until the end of the frame.
     pub fn writes_depth(self) -> bool {
         matches!(
             self,
-            Self::AlphaTest | Self::Opaque | Self::AfterOpaqueHooks | Self::ParticleDepth
+            Self::AlphaTest
+                | Self::Opaque
+                | Self::AfterOpaqueHooks
+                | Self::DepthHooks
+                | Self::ParticleDepth
         )
     }
 
@@ -73,17 +93,16 @@ impl Pass {
     /// pass Exarust has no separate equivalent for.
     pub fn bevy_phase(self) -> Option<&'static str> {
         match self {
-            Self::Sky => Some("the environment's sky camera"),
+            Self::Clear => Some("the camera's clear colour"),
             Self::AlphaTest => Some("AlphaMask3d"),
             Self::Opaque => Some("Opaque3d"),
-            Self::AfterOpaqueHooks => None,
-            Self::DepthWritesOff => Some("Transparent3d setup"),
-            Self::DepthIndependent => Some("Transparent3d"),
-            Self::RefractionCopy => None,
-            Self::AfterCopyHooks => None,
+            Self::AfterOpaqueHooks | Self::DepthHooks => None,
+            Self::Decals => Some("Transparent3d"),
+            Self::AfterDecalHooks | Self::AfterBlendedHooks => None,
             Self::Blended => Some("Transparent3d"),
             Self::ParticleDepth => None,
             Self::ParticleColour => Some("Transparent3d"),
+            Self::EnvironmentEffects => None,
             Self::EndHooks => None,
         }
     }
@@ -94,7 +113,8 @@ impl Pass {
 pub struct RenderEntry {
     /// The material program key (a short in the original's state record).
     pub key: i16,
-    /// The blend layer in the blend word's bits 4–7.
+    /// The blend layer, the blend word's bits 4–7 (0–15; higher bits are
+    /// ignored).
     pub layer: u8,
     /// The material's opacity.
     pub opacity: f32,
@@ -107,12 +127,13 @@ pub struct RenderEntry {
 ///
 /// The original is a selection pass, not a comparison sort. Each output slot
 /// scans every unused entry, keeps the first with a layer below the current
-/// best, and within the same layer replaces the best only when the
-/// candidate's opacity is strictly greater. The opacity starts at −1 for
-/// each output slot and a NaN candidate never compares greater (the
+/// best (starting from 16, so every 4-bit layer is below it), and within the
+/// same layer replaces the best only when the candidate's opacity is
+/// strictly greater. The opacity starts at −1 for each output slot and is
+/// not reset when a lower layer is found, so an opacity seen in a higher
+/// layer still has to be beaten. A NaN candidate never compares greater (the
 /// unordered compare is skipped), so an entry whose opacity is NaN is picked
-/// only by being the first of a lower layer. When nothing can be picked the
-/// output ends early.
+/// only by being the first of a lower layer.
 pub fn sort_blended(entries: &[RenderEntry]) -> Vec<RenderEntry> {
     let mut used = vec![false; entries.len()];
     let mut out = Vec::with_capacity(entries.len());
@@ -124,12 +145,11 @@ pub fn sort_blended(entries: &[RenderEntry]) -> Vec<RenderEntry> {
             if used[i] {
                 continue;
             }
-            if best_layer > entry.layer {
-                best_layer = entry.layer;
+            let layer = entry.layer & 0x0f;
+            if best_layer > layer {
+                best_layer = layer;
                 best = Some(i);
-            } else if best_layer == entry.layer
-                && best_opacity < entry.opacity
-                && !entry.opacity.is_nan()
+            } else if best_layer == layer && best_opacity < entry.opacity && !entry.opacity.is_nan()
             {
                 best_opacity = entry.opacity;
                 best = Some(i);
@@ -201,43 +221,26 @@ mod tests {
 
     #[test]
     fn the_pass_order_is_the_original_frame_walk() {
+        assert_eq!(PASS_ORDER.len(), 13);
+        assert_eq!(PASS_ORDER[0], Pass::Clear);
+        assert_eq!(PASS_ORDER[PASS_ORDER.len() - 1], Pass::EndHooks);
+        // Depth writes are on from the alpha-tested class through the depth
+        // hooks, off from the decals on, except for the particle pre-pass.
+        let writes: Vec<bool> = PASS_ORDER.iter().map(|p| p.writes_depth()).collect();
         assert_eq!(
-            PASS_ORDER,
+            writes,
             [
-                Pass::Sky,
-                Pass::AlphaTest,
-                Pass::Opaque,
-                Pass::AfterOpaqueHooks,
-                Pass::DepthWritesOff,
-                Pass::DepthIndependent,
-                Pass::RefractionCopy,
-                Pass::AfterCopyHooks,
-                Pass::Blended,
-                Pass::ParticleDepth,
-                Pass::ParticleColour,
-                Pass::EndHooks,
+                false, true, true, true, true, false, false, false, false, true, false, false,
+                false
             ]
         );
-        // Depth writes are on for the two opaque classes and off from the
-        // depth-independent class onward; the particle pre-pass is the one
-        // exception.
-        let depth_off = PASS_ORDER
-            .iter()
-            .position(|p| *p == Pass::DepthWritesOff)
-            .unwrap();
-        // `Sky` is a camera clear rather than a listed draw; the two
-        // opaque classes before the switch write depth.
-        assert!(!Pass::Sky.writes_depth());
-        for pass in &PASS_ORDER[1..depth_off] {
-            assert!(pass.writes_depth(), "{pass:?}");
-        }
-        for pass in &PASS_ORDER[depth_off + 1..] {
-            assert_eq!(
-                pass.writes_depth(),
-                *pass == Pass::ParticleDepth,
-                "{pass:?}"
-            );
-        }
+        // The alpha-tested class comes before the opaque one, the decals
+        // before the blended lists, the blended lists before the particles.
+        let at = |pass| PASS_ORDER.iter().position(|p| *p == pass).unwrap();
+        assert!(at(Pass::AlphaTest) < at(Pass::Opaque));
+        assert!(at(Pass::Decals) < at(Pass::Blended));
+        assert!(at(Pass::Blended) < at(Pass::ParticleDepth));
+        assert!(at(Pass::ParticleDepth) < at(Pass::ParticleColour));
     }
 
     #[test]
@@ -257,6 +260,28 @@ mod tests {
         // of that layer (material 6 at 0.5) can come before it (material 1
         // also at 0.5).
         assert_eq!(order, [5, 2, 4, 7, 3, 6, 1]);
+    }
+
+    #[test]
+    fn an_opacity_from_a_higher_layer_is_carried_down() {
+        // Layer 2's 0.9 is still the opacity to beat when layer 1 is found,
+        // so layer 1's 0.6 cannot replace its 0.5 in the first slot.
+        let entries = [
+            entry(2, 0.1, 1),
+            entry(2, 0.9, 2),
+            entry(1, 0.5, 3),
+            entry(1, 0.6, 4),
+        ];
+        let order: Vec<u32> = sort_blended(&entries).iter().map(|e| e.material).collect();
+        assert_eq!(order, [3, 4, 2, 1]);
+        // Only the layer's four bits count.
+        let entries = [
+            entry(0x12, 0.5, 1),
+            entry(0x01, 0.5, 2),
+            entry(0x00, 0.5, 3),
+        ];
+        let order: Vec<u32> = sort_blended(&entries).iter().map(|e| e.material).collect();
+        assert_eq!(order, [3, 2, 1]);
     }
 
     #[test]
