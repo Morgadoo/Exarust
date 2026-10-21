@@ -172,9 +172,11 @@ pub fn shock_charge(clip_ms: u32, cost: f32) -> ShockCharge {
 }
 
 /// The charge object the Shock creator instantiates: its owner, the cast
-/// flag (1), the base cost it was cast with, its charge and hand arcs, and
-/// the two sounds its creation and release play. The original also adds it
-/// to the owner's active powers with node flag 0x401.
+/// flag (1), the base cost it was cast with, its charge and hand arcs, the
+/// charge-up sound it looks up and the release sound it keeps. The original
+/// also adds it to the owner's active powers with the flags `0x401`, and
+/// tells the player controls first when the owner is the player; neither is
+/// modelled here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShockPower {
     pub owner: u64,
@@ -186,9 +188,9 @@ pub struct ShockPower {
     /// The hand arcs the charge object creates (`0x201`, 20 tendrils of 5
     /// segments at the hand's −15, −5 cm).
     pub arcs: super::arcs::ArcParams,
-    /// The charge-up sound (`thmnrg_chrga`).
+    /// The charge-up sound it looks up (`thmnrg_chrga`).
     pub sound: &'static str,
-    /// The release sound it stores (`thmnrg_shock`).
+    /// The release sound it keeps (`thmnrg_shock`).
     pub release_sound: &'static str,
 }
 

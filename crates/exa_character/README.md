@@ -202,9 +202,9 @@ These are tested rules the running game does not drive yet.
 ## Blood
 
 The sprays also carry the original's one scene node description
-(`_BloodSpray`, built-in material `_BloodPrt02` over `BldPrt02`, node flag
-0x1000) and a session reset that drops the jets and flying droplets while
-keeping the ring's sizes.
+(`spray::BloodSprays::scene_node`: the `_BloodSpray` node, the built-in
+`_BloodPrt02` material over `BldPrt02`, and the node and material flag
+words). Nothing builds that node yet.
 
 - `blood::PaintWound` paints a wound now, as the original's painter does:
   around the contact point less half the striking point's travel, a ball

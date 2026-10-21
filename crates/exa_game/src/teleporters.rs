@@ -400,7 +400,6 @@ fn end_sessions(
     mut latch: ResMut<Latch>,
     mut ended: MessageWriter<SessionEnded>,
     mut commands: Commands,
-    mut sprays: Option<ResMut<exa_character::spray::BloodSprays>>,
     identities: Query<&RecordIdentity>,
     mut fighters: Query<&mut exa_combat::Fighter>,
 ) {
@@ -410,11 +409,6 @@ fn end_sessions(
         };
         let identity = identities.get(end.user).map(|i| i.0).unwrap_or(0);
         let outcome = teleporters::session_end(fighter.health.red, end.story, identity, &mut latch);
-        // The session's spray jets are cleared as the original clears them
-        // at session end; a respawn starts with none.
-        if let Some(sprays) = sprays.as_mut() {
-            sprays.reset();
-        }
         if outcome == (SessionEnd::Reconstructed { stripped: true }) {
             let share = teleporters::stripped_share();
             fighter.health.yellow = fighter.health.max * share;

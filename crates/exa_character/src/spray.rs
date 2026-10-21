@@ -112,15 +112,15 @@ pub const DROPLET_SLOTS: usize = 512;
 /// The name of the scene's one spray node.
 pub const SPRAY_NODE_NAME: &str = "_BloodSpray";
 /// The node flag word the spray node takes (added to the scene's effect
-/// list, not a ordinary scene node).
+/// list, not an ordinary scene node).
 pub const SPRAY_NODE_FLAGS: u32 = 0x1000;
 /// The built-in material the droplets draw with.
 pub const SPRAY_MATERIAL: &str = "_BloodPrt02";
 /// The droplet texture in that material's emissive slot.
 pub const SPRAY_MATERIAL_TEXTURE: &str = "BldPrt02";
-/// The built-in material's shading flags: emissive and unlit.
+/// The built-in material record's first flag word.
 pub const SPRAY_MATERIAL_FLAGS: u32 = 0x0008_0008;
-/// The built-in material's extra flags: no shadow.
+/// The built-in material record's second flag word.
 pub const SPRAY_MATERIAL_EXTRA: u32 = 6;
 /// The share of the jet's own motion a new droplet takes.
 pub const JET_INHERIT: f32 = 0.15;
@@ -320,9 +320,9 @@ pub struct SprayNode {
     pub texture: &'static str,
     /// The node's flag word (`0x1000`: in the scene's effect list).
     pub flags: u32,
-    /// The built-in material's shading flags (emissive, unlit).
+    /// The built-in material record's first flag word.
     pub material_flags: u32,
-    /// Its extra flags (no shadow).
+    /// Its second flag word.
     pub material_extra: u32,
 }
 
@@ -381,15 +381,6 @@ impl BloodSprays {
             Some(free) => *free = jet,
             None => self.jets.push(jet),
         }
-    }
-
-    /// Ends the session's sprays, as the reset and respawn paths do: the
-    /// jets are dropped, the flying droplets cleared and the emission clock
-    /// reset. The ring's sizes (the scene's emitter state) stay.
-    pub fn reset(&mut self) {
-        self.jets.clear();
-        self.droplets.clear();
-        self.owed = 0.0;
     }
 
     /// The scene node the original builds once for the sprays: a geometry
@@ -1228,7 +1219,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod reset_tests {
+mod node_tests {
     use super::*;
 
     #[test]
@@ -1240,32 +1231,5 @@ mod reset_tests {
         assert_eq!(node.flags, 0x1000);
         assert_eq!(node.material_flags, 0x0008_0008);
         assert_eq!(node.material_extra, 6);
-    }
-
-    #[test]
-    fn reset_drops_the_jets_and_droplets_but_keeps_the_sizes() {
-        let mut sprays = BloodSprays::new(3);
-        let sizes = sprays.sizes.clone();
-        // A droplet and a finished jet stand in for a session's sprays.
-        sprays.droplets.push_back(Droplet {
-            p: Vec3::ZERO,
-            q: Vec3::ZERO,
-            life: 10,
-            look: 0,
-            slot: 0,
-        });
-        sprays.start(Jet {
-            body: Entity::PLACEHOLDER,
-            part: Entity::PLACEHOLDER,
-            local: Affine3A::IDENTITY,
-            last: Vec3::ZERO,
-            motion: Vec3::ZERO,
-            carry: Vec3::ZERO,
-            left: 3,
-        });
-        sprays.reset();
-        assert!(sprays.jets.is_empty());
-        assert!(sprays.droplets.is_empty());
-        assert_eq!(sprays.sizes, sizes);
     }
 }
