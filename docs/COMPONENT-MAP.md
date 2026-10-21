@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **37.8% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 32.4% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **39.9% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 35.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **32.3%** reproduced.
 
 ## By section
@@ -15,7 +15,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
 | Core, math & threading | 282 | 37 | 11 | 59% | 1% |  |
-| Data, assets & I/O | 440 | 91 | 26 | 43% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
+| Data, assets & I/O | 440 | 91 | 26 | 56% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
 | Rendering & GPU | 823 | 334 | 63 | 51% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
 | World, levels & terrain | 454 | 174 | 31 | 52% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 39% | 0% | RFE_Dynamics_Cloth, TSimObject |
@@ -26,8 +26,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 61% | 0% | TDialogueChoices, TScriptRole, TGameTips |
-| Game modes, arena & session | 646 | 193 | 23 | 19% | 0% | TMatchBoard, TLoadoutForm, TDivCardForm |
-| UI | 959 | 312 | 63 | 31% | 0% | TCharacterView, TCompactSkillUI, RF_GUI_Text_Edit |
+| Game modes, arena & session | 646 | 193 | 23 | 34% | 0% | TLoadoutForm, TDivCardForm, TCharCreation |
+| UI | 959 | 312 | 63 | 34% | 0% | TCharacterView, TCompactSkillUI, RF_GUI_Text_Edit |
 | Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -54,17 +54,12 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
 | SG_PlayerControls | AI & behaviour | 122 | 47 | 10% |
-| XA_SaveGames | Game modes, arena & session | 96 | 27 | 12% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
 | SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
-| SG_ObjectDB2 | Data, assets & I/O | 116 | 19 | 11% |
-| TMatchBoard | Game modes, arena & session | 30 | 17 | 3% |
-| SG_Character_Create | Game modes, arena & session | 90 | 17 | 15% |
 | RF_GUI_Controls_Ex | UI | 54 | 16 | 13% |
 | RF_Navigation | Rendering & GPU | 37 | 16 | 6% |
-| RF_HW_Config | UI | 89 | 15 | 7% |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 5% |
 | Steam Input action bindings | Runtime & platform | 29 | 11 | 0% |
 | TCharacterView | UI | 21 | 8 | 1% |
@@ -78,6 +73,11 @@ Ordered by code size; these are where most of the original still has no counterp
 | TForceBarrierEffect | Thaumaturgy & effects | 7 | 5 | 9% |
 | TSelectionUI | UI | 18 | 5 | 0% |
 | TEmblemForm | UI | 18 | 4 | 0% |
+| TPwrForceKinesis_S | Thaumaturgy & effects | 9 | 4 | 10% |
+| TSkillSelector | UI | 8 | 3 | 0% |
+| TCharCreation | Game modes, arena & session | 12 | 3 | 3% |
+| XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 9 | 3 | 0% |
+| RF_Env_Effects | Thaumaturgy & effects | 6 | 3 | 0% |
 
 ## Best covered components
 
@@ -92,7 +92,9 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 88% | exa_assets/src/mesh_smooth.rs; exa_assets/src/model.rs |
 | TMesh | Rendering & GPU | 25 | 60% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | TGSLines | UI | 24 | 60% | exa_ui/src/skin.rs |
+| SG_ObjectDB2 | Data, assets & I/O | 19 | 74% | exa_formats/src/objdb.rs; exa_formats/src/objdb/store.rs |
 | TCombatant | AI & behaviour | 17 | 85% | exa_ai/src/combatant.rs; exa_ai/src/place.rs |
+| TMatchBoard | Game modes, arena & session | 17 | 82% | exa_ui/src/match_board.rs; exa_game/src/arena_board.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 70% | exa_assets/src/mesh_edit.rs; exa_assets/src/vertex_cache.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
@@ -100,9 +102,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFG_Dialogue | Script, dialogue & story | 18 | 65% | exa_script/src/dialogue.rs; exa_script/src/bubbles.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
 | RF_Intersection | Physics, bodies & cloth | 14 | 85% | exa_physics/src/intersect.rs; exa_render/src/cube_shadows.rs |
-| TStaticTerrain | World, levels & terrain | 20 | 57% | exa_world/src/terrain/mod.rs; exa_world/src/terrain/patch.rs |
-| TTendrilEmitter | Thaumaturgy & effects | 15 | 72% | exa_game/src/thaum/arcs.rs; exa_game/src/thaum/engine.rs |
-| TTextBox | UI | 12 | 88% | exa_ui/src/text_box.rs; exa_ui/src/text_layout.rs |
+| RF_HW_Config | UI | 15 | 78% | exa_formats/src/hw_config.rs; exa_ui/src/settings.rs |
 
 ## Combat rules
 
