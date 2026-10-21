@@ -824,14 +824,24 @@ pub enum ActiveSet {
     Gameplay { index: usize, variant: Variant },
 }
 
-/// The registered gameplay sets and the active set, as the original's set
-/// table holds them: the interact set and the combat set, registered in that
-/// order, with the interact set active at start-up. Switching a set primes
-/// the input reader, as the original's activation callback does.
+/// The registered gameplay sets, the active set and the gameplay layer, as
+/// the original's set table holds them: the interact set and the combat
+/// set, registered in that order (1-based indices 1 and 2), with the
+/// interact set the layer and active at start-up.
+///
+/// There are two ways in. A focused form activates the set its push names
+/// directly ([`Self::activate`], [`Self::apply`]). The player controls
+/// choose the gameplay layer ([`Self::select`], [`Self::set_variant`]),
+/// which only becomes active while no form has the focus, and which the
+/// last form's pop restores ([`FocusChange::Restore`]). A newly selected
+/// layer primes its reader, as the original's activation callback does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetRegistry {
     names: Vec<&'static str>,
     active: ActiveSet,
+    /// The selected layer: 0 the menus, 1 and up a registered set, `None`
+    /// while a pop restores it (the original's −1).
+    layer: Option<usize>,
 }
 
 impl Default for SetRegistry {
@@ -842,6 +852,7 @@ impl Default for SetRegistry {
                 index: 0,
                 variant: Variant::Interact,
             },
+            layer: Some(1),
         }
     }
 }
@@ -857,6 +868,11 @@ impl SetRegistry {
         self.active
     }
 
+    /// The selected gameplay layer (0 the menus, 1 and up a registered set).
+    pub fn layer(&self) -> Option<usize> {
+        self.layer
+    }
+
     /// The gameplay set's variant, or `None` for the menus.
     pub fn variant(&self) -> Option<Variant> {
         match self.active {
@@ -865,19 +881,16 @@ impl SetRegistry {
         }
     }
 
-    /// Registers a gameplay set with `name`; returns its index, or `None`
-    /// when the table is full (the original's registration fails when its
-    /// eight-entry table is full).
-    pub fn register(&mut self, name: &'static str) -> Option<usize> {
-        if self.names.len() >= 8 {
-            return None;
-        }
+    /// Registers a gameplay set with `name`; returns its 1-based index, the
+    /// count after the append (the original checks no bound).
+    pub fn register(&mut self, name: &'static str) -> usize {
         self.names.push(name);
-        Some(self.names.len() - 1)
+        self.names.len()
     }
 
-    /// Activates set `index`: 0 is the menus; 1 and up are the registered
-    /// gameplay sets. Returns whether the active set changed.
+    /// Activates set `index` directly, as a focused form does: 0 is the
+    /// menus; 1 and up are the registered gameplay sets. Returns whether
+    /// the active set changed.
     pub fn activate(&mut self, index: usize) -> bool {
         let next = if index == 0 {
             ActiveSet::Menus
@@ -894,17 +907,42 @@ impl SetRegistry {
         changed
     }
 
-    /// Activates the set a focus change names.
+    /// Selects layer `index` (0 the menus, 1 and up a registered set), as
+    /// the player controls do; it is activated only when no form is
+    /// `focused`. Returns whether the layer changed, which is when the
+    /// original primes the set's reader (the menu reader for 0, the
+    /// gameplay set's callback otherwise).
+    pub fn select(&mut self, index: usize, focused: bool) -> bool {
+        if self.layer == Some(index) {
+            return false;
+        }
+        self.layer = Some(index);
+        if !focused {
+            self.activate(index);
+        }
+        true
+    }
+
+    /// Activates the set a focus change names; a restore reselects the
+    /// gameplay layer the forms covered (when it was a gameplay set).
+    /// Returns whether the active set changed or a layer was reselected.
     pub fn apply(&mut self, change: FocusChange) -> bool {
         match change {
             FocusChange::Menus => self.activate(0),
             FocusChange::Gameplay(index) => self.activate(index + 1),
+            FocusChange::Restore => match self.layer {
+                Some(layer) if layer > 0 => {
+                    self.layer = None;
+                    self.select(layer, false)
+                }
+                _ => false,
+            },
             FocusChange::None => false,
         }
     }
 
-    /// Switches to the variant's gameplay set.
-    pub fn set_variant(&mut self, variant: Variant) -> bool {
+    /// Selects the variant's gameplay set as the layer.
+    pub fn set_variant(&mut self, variant: Variant, focused: bool) -> bool {
         let Some(at) = self
             .names
             .iter()
@@ -912,7 +950,7 @@ impl SetRegistry {
         else {
             return false;
         };
-        self.activate(at + 1)
+        self.select(at + 1, focused)
     }
 }
 
@@ -971,6 +1009,9 @@ pub enum FocusChange {
     /// Registered gameplay set `index` (zero-based; 0 is the interact set
     /// when both sets registered in the original's order).
     Gameplay(usize),
+    /// The last form left: the gameplay layer the forms covered comes back
+    /// ([`SetRegistry::apply`]).
+    Restore,
     /// No change.
     None,
 }
@@ -1036,19 +1077,17 @@ impl FocusStack {
         Self::change(&entry)
     }
 
-    /// Pops `form`, wherever it is; returns the set the new top asks for
-    /// (or the menus when none is left), or none when it was not on the
-    /// stack.
+    /// Pops `form`, wherever it is (searched from the top); returns the set
+    /// the new top asks for, a restore of the gameplay layer when none is
+    /// left, or none when it was not on the stack.
     pub fn pop(&mut self, form: u64) -> FocusChange {
-        let Some(at) = self.entries.iter().position(|e| e.form == form) else {
+        let Some(at) = self.entries.iter().rposition(|e| e.form == form) else {
             return FocusChange::None;
         };
         self.entries.remove(at);
-        self.top_change_or_menus()
-    }
-
-    fn top_change_or_menus(&self) -> FocusChange {
-        self.entries.last().map_or(FocusChange::Menus, Self::change)
+        self.entries
+            .last()
+            .map_or(FocusChange::Restore, Self::change)
     }
 }
 

@@ -365,7 +365,8 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
     assert_eq!(stack.entries().last().map(|e| e.form), Some(7));
     assert_eq!(stack.pop(7), FocusChange::Gameplay(1));
     assert_eq!(stack.pop(9), FocusChange::Gameplay(0));
-    assert_eq!(stack.pop(8), FocusChange::Menus);
+    // The last pop restores the gameplay layer rather than the menus.
+    assert_eq!(stack.pop(8), FocusChange::Restore);
     assert!(!stack.focused());
     assert_eq!(stack.pop(8), FocusChange::None);
     for form in 0..9 {
@@ -717,6 +718,7 @@ fn the_set_registry_starts_on_interact_and_switches_with_the_variant() {
     let mut sets = SetRegistry::default();
     assert_eq!(sets.names(), ["Set_Interact", "Set_Combat"]);
     assert_eq!(sets.variant(), Some(Variant::Interact));
+    assert_eq!(sets.layer(), Some(1));
     assert!(!sets.activate(1));
     assert!(sets.activate(2));
     assert_eq!(sets.variant(), Some(Variant::Combat));
@@ -727,15 +729,36 @@ fn the_set_registry_starts_on_interact_and_switches_with_the_variant() {
             variant: Variant::Combat
         }
     );
-    assert!(sets.set_variant(Variant::Interact));
-    assert_eq!(sets.variant(), Some(Variant::Interact));
     assert!(sets.activate(0));
     assert_eq!(sets.active(), ActiveSet::Menus);
     assert_eq!(sets.variant(), None);
     assert!(sets.apply(FocusChange::Gameplay(1)));
     assert_eq!(sets.variant(), Some(Variant::Combat));
     assert!(!sets.apply(FocusChange::None));
-    assert_eq!(sets.register("Set_Test"), Some(2));
+    assert_eq!(sets.register("Set_Test"), 3);
+}
+
+#[test]
+fn the_gameplay_layer_waits_under_a_form_and_comes_back_when_it_leaves() {
+    let mut sets = SetRegistry::default();
+    let mut stack = FocusStack::default();
+    // A form takes the menus.
+    assert!(sets.apply(stack.push(FocusEntry { form: 1, flags: 0 })));
+    assert_eq!(sets.active(), ActiveSet::Menus);
+    // Combat mode under the form selects the combat layer but leaves the
+    // menus active; selecting it again is no change.
+    assert!(sets.set_variant(Variant::Combat, stack.focused()));
+    assert!(!sets.set_variant(Variant::Combat, stack.focused()));
+    assert_eq!(sets.active(), ActiveSet::Menus);
+    assert_eq!(sets.layer(), Some(2));
+    // The form leaves: the combat layer becomes active.
+    assert!(sets.apply(stack.pop(1)));
+    assert_eq!(sets.variant(), Some(Variant::Combat));
+    assert_eq!(sets.layer(), Some(2));
+    // With the menus as the layer, a restore changes nothing.
+    assert!(sets.select(0, false));
+    assert_eq!(sets.active(), ActiveSet::Menus);
+    assert!(!sets.apply(FocusChange::Restore));
 }
 
 #[test]
