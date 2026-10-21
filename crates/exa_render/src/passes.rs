@@ -259,6 +259,22 @@ pub fn state_list(flags: u32, second_mode: bool) -> Option<StateList> {
     }
 }
 
+/// The list the renderer's own lookup walks when it finds an existing state
+/// for a material (`0x10004d860`). It reads the flag word differently from
+/// [`state_list`]: the `0x10000` bit is ignored, `0x8000` picks the
+/// alpha-tested list, a nibble of 0 the opaque list, 1–4 the blended list
+/// and 5–15 nothing.
+pub fn existing_state_list(flags: u32) -> Option<StateList> {
+    if flags & 0x8000 != 0 {
+        return Some(StateList::AlphaTest);
+    }
+    match flags & 0xF {
+        0 => Some(StateList::Opaque),
+        1..=4 => Some(StateList::Blend),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,5 +423,14 @@ mod tests {
         assert_eq!(state_list(1, true), Some(StateList::SecondBlend));
         assert_eq!(state_list(4, true), Some(StateList::SecondBlend));
         assert_eq!(state_list(5, true), None);
+    }
+
+    #[test]
+    fn the_lookup_ignores_the_decal_bit() {
+        assert_eq!(existing_state_list(0x10000), Some(StateList::Opaque));
+        assert_eq!(existing_state_list(0x8000), Some(StateList::AlphaTest));
+        assert_eq!(existing_state_list(0), Some(StateList::Opaque));
+        assert_eq!(existing_state_list(3), Some(StateList::Blend));
+        assert_eq!(existing_state_list(5), None);
     }
 }

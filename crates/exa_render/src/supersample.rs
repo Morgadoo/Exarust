@@ -128,7 +128,21 @@ pub type SceneCamera = (With<Camera3d>, Without<DisplayCamera>);
 /// lights' shadow casters.
 pub const RESOLVE_LAYER: usize = 1;
 /// Scene resolution per window pixel, on each axis.
-const SCALE: u32 = 2;
+/// The scale of the shared supersample framebuffer: twice the window on
+/// each axis.
+pub const TARGET_SCALE: u32 = 2;
+
+/// The supersample framebuffer's size for a window: the largest view's
+/// request, twice the render size per axis (Exarust sizes it to the window,
+/// which is the only view in the running game).
+pub fn target_size(width: u32, height: u32) -> (u32, u32) {
+    (
+        width.saturating_mul(TARGET_SCALE),
+        height.saturating_mul(TARGET_SCALE),
+    )
+}
+
+const SCALE: u32 = TARGET_SCALE;
 
 /// The supersampled scene's image, and the quad showing it.
 #[derive(Component)]

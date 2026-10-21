@@ -232,6 +232,18 @@ impl TableView {
         }
     }
 
+    /// The table's default row and the centre of a rectangle: selects the
+    /// first row when none is selected and the table has rows, and returns
+    /// the selected row with the rectangle's midpoint (each side less the
+    /// other, halved toward zero).
+    pub fn centre_and_default(&mut self, rect: [i32; 4]) -> (i32, (i32, i32)) {
+        let centre = ((rect[2] - rect[0]) / 2, (rect[3] - rect[1]) / 2);
+        if self.selected == 0 && self.row_count() > 0 {
+            self.selected = 1;
+        }
+        (self.selected, centre)
+    }
+
     /// The row count.
     pub fn row_count(&self) -> i32 {
         self.rows.len() as i32
@@ -1100,6 +1112,18 @@ mod tests {
         assert_eq!(rect[3], 28);
         // Centred by the font's text height (17 in Rayform10R).
         assert_eq!(pen, (65, 85 + (30 + 17 + 1) / 2));
+    }
+
+    #[test]
+    fn the_default_row_is_the_first_and_the_centre_is_halved() {
+        let mut t = table(3);
+        assert_eq!(t.centre_and_default([10, 20, 110, 80]), (1, (50, 30)));
+        assert_eq!(t.selected, 1);
+        // An existing selection stays; an empty table selects nothing.
+        t.selected = 2;
+        assert_eq!(t.centre_and_default([0, 0, 9, 5]), (2, (4, 2)));
+        let mut empty = table(0);
+        assert_eq!(empty.centre_and_default([0, 0, 1, 1]), (0, (0, 0)));
     }
 
     #[test]
