@@ -771,6 +771,7 @@ impl ModelLoader<'_> {
             environment: self.environment_map(),
             ..default()
         };
+        mat.params.texture_bias = self.cache.textures.settings().lod_bias();
         match self.texture(&format!("{texture_key}d"), ColorSpace::Srgb) {
             Some((img, alpha)) => {
                 mat.diffuse_map = Some(img);
@@ -1056,6 +1057,7 @@ impl ModelLoader<'_> {
             environment: self.environment_map(),
             ..default()
         };
+        mat.params.texture_bias = self.cache.textures.settings().lod_bias();
         if alpha {
             mat.alpha_mode = AlphaMode::Mask(0.5);
             mat.params.flags |= flags::TWO_SIDED;

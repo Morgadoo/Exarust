@@ -295,6 +295,7 @@ pub fn skin_material_of(
         environment: loader.environment_map(),
         ..default()
     };
+    mat.params.texture_bias = loader.cache.textures.settings().lod_bias();
     // All read as stored, as the original loads them: the tint applies to
     // the encoded colour texels and the shading decodes the product.
     let [colour, normal, gloss] = race_textures(&stem, female);
