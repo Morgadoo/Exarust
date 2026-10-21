@@ -171,7 +171,7 @@ pub enum NodeBody {
     /// The node reuses another object's data; nothing else is stored.
     Instance(u32),
     /// A plain node carrying a particle emitter record (`0x3DD0E002` is a
-    /// fire): its type and size.
+    /// fire, `0x3DD0E004` a level portal): its type and size.
     Emitter {
         kind: u32,
         size: f32,
@@ -587,6 +587,8 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
 /// Emitter records end a plain node's body: `u32 type, u32 4, f32 size`.
 const EMITTER: u32 = 0x3DD0_E000;
 pub const FIRE: u32 = 0x3DD0_E002;
+/// The level portal's marker (`_PortalPrt` in `uwportal01`).
+pub const PORTAL: u32 = 0x3DD0_E004;
 
 fn emitter(body: &[u8]) -> Option<NodeBody> {
     let tail = body.len().checked_sub(12).map(|at| &body[at..])?;

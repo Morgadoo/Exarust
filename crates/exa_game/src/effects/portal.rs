@@ -373,6 +373,31 @@ pub fn burst_bounds(points: &[Vec3]) -> Option<BurstBounds> {
     })
 }
 
+/// The portal light's node: a child of the marker 50 cm above it.
+#[derive(Component, Debug)]
+pub struct PortalLight;
+
+/// A loaded level portal marker gets the portal's blue light, as the
+/// original's import handler builds it on the marker's place when the
+/// marker is loaded into the game's scene (the game plugin running is that
+/// scene). The marker's spark system is not simulated. The light hangs
+/// 50 cm up the marker's own axis; the original's system takes only the
+/// marker's position, which is the same for an upright marker.
+pub fn light_portals(
+    mut commands: Commands,
+    markers: Query<Entity, Added<exa_world::PortalMarker>>,
+) {
+    for marker in &markers {
+        commands.spawn((
+            Name::new(PORTAL_NODE_NAME),
+            PortalLight,
+            exa_world::light_bundle(&portal_light()),
+            Transform::from_translation(PORTAL_LIGHT.offset_cm / 100.0),
+            ChildOf(marker),
+        ));
+    }
+}
+
 /// The light record a portal marker adds, in the engine's metres.
 pub fn portal_light() -> exa_formats::rfc::Light {
     exa_formats::rfc::Light {
@@ -430,6 +455,32 @@ mod tests {
         assert_eq!(DISSOLVE_EFFECT.sound, "portaluse01");
         assert_eq!(DISSOLVE_EFFECT.volume, 0.6);
         assert_eq!(DISSOLVE_EFFECT.pitch, 1.0);
+    }
+
+    #[test]
+    fn a_loaded_portal_marker_gets_its_light() {
+        let mut app = App::new();
+        app.add_systems(Update, light_portals);
+        let marker = app
+            .world_mut()
+            .spawn((
+                Transform::default(),
+                exa_world::PortalMarker { size: 100.0 },
+            ))
+            .id();
+        app.update();
+        let mut lights = app
+            .world_mut()
+            .query_filtered::<(&ChildOf, &Transform, &PointLight), With<PortalLight>>();
+        let found: Vec<_> = lights.iter(app.world()).collect();
+        assert_eq!(found.len(), 1);
+        let (parent, at, light) = found[0];
+        assert_eq!(parent.parent(), marker);
+        assert_eq!(at.translation, Vec3::new(0.0, 0.5, 0.0));
+        assert_eq!(light.intensity, 0.75 * exa_world::LUMENS_PER_INTENSITY);
+        // Run again: an old marker gets no second light.
+        app.update();
+        assert_eq!(lights.iter(app.world()).count(), 1);
     }
 
     #[test]

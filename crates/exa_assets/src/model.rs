@@ -49,6 +49,10 @@ pub struct ModelNode {
     pub voxel_light: Option<exa_formats::rfc::VoxelLight>,
     /// Size of the fire this node becomes (torches 0.2, braziers 0.41).
     pub fire: Option<f32>,
+    /// Size of the level portal marker this node is (`uwportal01`'s
+    /// `_PortalPrt`: 100), which the game replaces with the portal's sparks
+    /// and light.
+    pub portal: Option<f32>,
     /// Bounding sphere in the node's space (metres).
     pub bounds: (Vec3, f32),
     /// Half extents of the node's bounding box about the sphere's centre
@@ -371,6 +375,12 @@ impl ModelLoader<'_> {
                 }),
                 fire: match &node.body {
                     NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::FIRE => {
+                        Some(*size)
+                    }
+                    _ => None,
+                },
+                portal: match &node.body {
+                    NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::PORTAL => {
                         Some(*size)
                     }
                     _ => None,

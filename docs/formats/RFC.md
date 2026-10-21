@@ -115,7 +115,8 @@ every node that stores data, whatever its kind (an instance stores none):
 `0x3AC1` keyframe track, `0x3D0CEC04`, `0x3D0CEC05` GI points,
 `0x3DD0B001` rigid body, `0x3DD0C001` cloth marker, `0xEDC0C589` morph
 blob, and on plain nodes the emitter records (`0x3DD0E002` fire,
-`0x3DD0E004`). The original reads them in one loop after the body of any
+`0x3DD0E004` level portal: `_PortalPrt` in `uwportal01`, size 100; the
+game replaces it with the portal's spark system and blue light). The original reads them in one loop after the body of any
 kind (REA on the node reader); walking them after every kind's body ends
 exactly at each node's end in every chunk tree of the installed packs.
 Exarust reads the GI points of meshes, the rigid body

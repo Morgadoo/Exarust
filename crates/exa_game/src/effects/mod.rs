@@ -9,7 +9,12 @@
 //!
 //! The rules are plain data and functions so they can be tested without a
 //! Bevy app. The Bevy systems step components that gameplay inserts, on
-//! the original's 83 Hz tick; they never spawn an effect on their own.
+//! the original's 83 Hz tick. The one effect spawned here is a level
+//! portal's light, on the marker node a loaded model carries
+//! ([`exa_world::PortalMarker`], `uwportal01`); the others wait for the
+//! systems that start them in the original (the teleporters, the portal
+//! screen, the displacement powers, the power tree and a burning item's
+//! ability record), which Exarust does not have yet.
 
 pub mod bubble;
 pub mod fire_row;
@@ -104,7 +109,7 @@ impl Plugin for EffectsPlugin {
             )
                 .chain(),
         );
-        app.add_systems(Update, fire_row::frame_rows);
+        app.add_systems(Update, (fire_row::frame_rows, portal::light_portals));
     }
 }
 

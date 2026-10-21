@@ -428,6 +428,9 @@ pub fn spawn_model_nodes(
         if let Some(size) = node.fire {
             fire::spawn_fire(commands, e, size);
         }
+        if let Some(size) = node.portal {
+            commands.entity(e).insert(PortalMarker { size });
+        }
         if !node.gi_points.is_empty() {
             commands
                 .entity(e)
@@ -492,6 +495,14 @@ fn self_shadowless(model: &Model) -> Vec<(usize, usize)> {
     out.sort_unstable();
     out.dedup();
     out
+}
+
+/// A level portal's marker node (the `0x3DD0E004` emitter record) with its
+/// stored size. The game replaces it with the portal's sparks and light
+/// (`exa_game::effects::portal`).
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct PortalMarker {
+    pub size: f32,
 }
 
 /// Approximation of the original omni light in Bevy units.
@@ -1242,6 +1253,7 @@ mod tests {
                 radius: 3.0,
             }),
             fire: None,
+            portal: None,
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
