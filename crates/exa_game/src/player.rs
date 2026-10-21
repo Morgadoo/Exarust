@@ -167,6 +167,12 @@ impl PlayerBody {
         self
     }
 
+    /// The cursor's last direction (a yaw) and distance (m) as the
+    /// behaviour read it, once it was 50 cm or more away.
+    pub(crate) fn cursor(&self) -> Option<(f32, f32)> {
+        self.steering.raw
+    }
+
     /// The left button starts or stops holding an object
     /// ([`crate::hand`]): while it holds one, the standing quarter turns
     /// wait.

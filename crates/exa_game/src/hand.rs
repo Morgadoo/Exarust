@@ -2,11 +2,14 @@
 //! drag that follows the cursor, and whether the point under the cursor is
 //! within reach. Rules: `docs/PLAYER.md` (The hand).
 //!
-//! **The press.** A left press does nothing while combat mode keeps the
-//! button for attacks (it does unless Ctrl is held or the hand already
-//! holds something), while the point under the cursor is out of reach, or
-//! while the player is down. Otherwise the pick under the cursor is named
-//! ([`crate::pick::classify`]):
+//! **The press** is the left button's drag start: the pointer, the button
+//! held, moves from where it was pressed by more than 2 pixels on either
+//! axis, or within the first 190 ms by more than 2 × ((200 − t)/20)
+//! pixels, t the milliseconds since the press (so 20 at once). It does
+//! nothing while combat mode keeps the button for attacks (it does unless
+//! Ctrl is held or the hand already holds something), while the point under
+//! the cursor is out of reach, or while the player is down. Otherwise the
+//! pick at the pressed point is named ([`crate::pick::classify`]):
 //! - a prop or item the hand can move, not while the player locomotes: it
 //!   holds an object (the standing quarter turns stop) and, with Ctrl held,
 //!   drags it: a grab on the part the pick hit, at the hit point, strength
@@ -31,6 +34,11 @@
 //! release does not (the original's quirk: the quarter turns stay off until
 //! a lift is released).
 //!
+//! **A click** (released before the drag starts) turns the player, outside
+//! combat mode, toward the cursor's point once it is farther than 70 cm:
+//! the heading takes the cursor's direction. (The original then names or
+//! uses what was clicked; Exarust has no description to show yet.)
+//!
 //! **The reach** is measured each frame while the right button is not
 //! walking to the cursor: a held drag is always in reach, else the pick
 //! under the cursor must be within [`crate::pick::within_reach`] of the
@@ -49,7 +57,7 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_combat::Condition;
 use exa_physics::Physics;
-use exa_physics::body::locomotion::Locomotor;
+use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{Ragdoll, WAKE_COUNT};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
@@ -76,6 +84,14 @@ const ANCHOR_REACH: f32 = 200.0;
 const DRAG_WAKE: i32 = WAKE_COUNT;
 /// Without a body, the hip is this high over the feet (m).
 const HIP: f32 = 0.9;
+/// The pointer moves more than this many pixels from the press to start a
+/// drag, and the early allowance's step and span (ms).
+const DRAG_PIXELS: i64 = 2;
+const EARLY_MS: i64 = 191;
+const EARLY_FROM_MS: i64 = 200;
+const EARLY_STEP_MS: i64 = 20;
+/// A click turns the player toward a cursor farther than this (cm).
+const TURN_BEYOND_CM: f32 = 70.0;
 
 /// What the left button holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -101,6 +117,43 @@ pub struct Hand {
     pub holding: Holding,
     /// The point under the cursor is out of reach.
     pub out_of_reach: bool,
+    /// The left button's press, until its release.
+    pub left: Option<LeftPress>,
+}
+
+/// Where and when the left button went down, and whether its drag started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeftPress {
+    /// The pointer (logical window pixels) and in window pixels.
+    pub at: Vec2,
+    pub pixels: IVec2,
+    /// Real time (ms).
+    pub ms: i64,
+    pub dragging: bool,
+}
+
+/// The pointer's allowance (pixels) `elapsed` ms after the press: 2 × ((200
+/// − t) / 20) within 190 ms (integer division), else 2.
+pub fn drag_threshold(elapsed: i64) -> i64 {
+    if elapsed < EARLY_MS {
+        (EARLY_FROM_MS - elapsed) / EARLY_STEP_MS * DRAG_PIXELS
+    } else {
+        DRAG_PIXELS
+    }
+}
+
+/// Whether the pointer at `now` starts the drag of a press at `from`,
+/// `elapsed` ms after it.
+pub fn starts_drag(from: IVec2, now: IVec2, elapsed: i64) -> bool {
+    let limit = drag_threshold(elapsed);
+    let dx = (i64::from(now.x) - i64::from(from.x)).abs();
+    let dy = (i64::from(now.y) - i64::from(from.y)).abs();
+    dx > limit || dy > limit
+}
+
+/// Whether a click turns the player toward a cursor `distance_cm` away.
+pub fn click_turns(distance_cm: f32) -> bool {
+    TURN_BEYOND_CM < distance_cm
 }
 
 impl Hand {
@@ -425,6 +478,7 @@ fn player_child(
 /// A left press: the pick named and its interaction started.
 #[allow(clippy::too_many_arguments)]
 fn press_hand(
+    real: Res<Time<Real>>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
@@ -438,14 +492,39 @@ fn press_hand(
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) {
+    let now = real.elapsed().as_millis() as i64;
+    let pointer = windows.single().ok().and_then(|w| {
+        scripted
+            .position(w)
+            .map(|p| (p, (p * w.scale_factor()).as_ivec2()))
+    });
+    if buttons.just_pressed(MouseButton::Left) {
+        hand.left = pointer.map(|(at, pixels)| LeftPress {
+            at,
+            pixels,
+            ms: now,
+            dragging: false,
+        });
         return;
     }
+    let Some(mut left) = hand.left.filter(|l| !l.dragging) else {
+        return;
+    };
+    let moved = pointer.is_some_and(|(_, px)| starts_drag(left.pixels, px, now - left.ms));
+    if !buttons.pressed(MouseButton::Left) || !moved {
+        return;
+    }
+    left.dragging = true;
+    hand.left = Some(left);
     let Some((_, child)) = player_child(&players, &player_bodies) else {
         return;
     };
     let ctrl = bindings.pressed(&keys, Action::Interact);
-    let ray = cursor_ray(&scripted, &windows, &cameras);
+    let ray = windows
+        .single()
+        .ok()
+        .zip(cameras.single().ok())
+        .and_then(|(window, (camera, eye))| window_ray(camera, eye, window, left.at));
     let Ok((pb, own, condition, locomotor)) = player_bodies.get(child) else {
         return;
     };
@@ -529,10 +608,26 @@ fn hold_hand(
     mut hand: ResMut<Hand>,
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
+    mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
+    // A release before the drag started is a click: outside combat mode
+    // the player turns toward the cursor.
+    if released {
+        let left = hand.left.take();
+        if left.is_some_and(|l| !l.dragging)
+            && let Some((_, child)) = player
+            && let Ok((pb, ..)) = player_bodies.get(child)
+            && !pb.combat
+            && let Some((yaw, distance)) = pb.cursor()
+            && click_turns(distance * CM)
+            && let Ok(mut req) = requests.get_mut(child)
+        {
+            req.heading = yaw;
+        }
+    }
     match hand.holding {
         Holding::Nothing => {}
         Holding::Refused => {
@@ -740,6 +835,26 @@ mod tests {
         ));
     }
 
+    /// The drag starts past 2 pixels, or early on past 2 × ((200 − t)/20):
+    /// 20 at once, 2 from 190 ms; a click turns past 70 cm.
+    #[test]
+    fn the_drag_starts_past_its_allowance() {
+        assert_eq!(drag_threshold(0), 20);
+        assert_eq!(drag_threshold(19), 18);
+        assert_eq!(drag_threshold(100), 10);
+        assert_eq!(drag_threshold(181), 0);
+        assert_eq!(drag_threshold(190), 0);
+        assert_eq!(drag_threshold(191), 2);
+        let at = IVec2::new(500, 300);
+        assert!(!starts_drag(at, IVec2::new(520, 300), 0));
+        assert!(starts_drag(at, IVec2::new(521, 300), 0));
+        assert!(!starts_drag(at, IVec2::new(502, 298), 500));
+        assert!(starts_drag(at, IVec2::new(500, 303), 500));
+        assert!(starts_drag(at, IVec2::new(501, 300), 185));
+        assert!(!click_turns(70.0));
+        assert!(click_turns(70.1));
+    }
+
     /// The point lets go beyond 330 cm in any direction.
     #[test]
     fn the_drag_lets_go_beyond_330_cm() {
@@ -854,6 +969,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<Time<Real>>()
             .init_resource::<Bindings>()
             .init_resource::<ScriptedPointer>()
             .init_resource::<StandIns>()

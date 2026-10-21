@@ -286,11 +286,23 @@ point lies in the player's navigation region with nothing between.
 
 ### The hand
 
-A press of the left button does nothing while combat mode keeps the button
-for attacks (unless Ctrl is held or something is already held), while the
-point under the cursor is out of reach, or while the player is down. Each
-press starts from nothing held. The pick then names what is under the
-cursor:
+The hand acts on the left button's **drag start**, not on its press: the
+interface sends it once the pointer, the button held, has moved from where
+it was pressed by more than 2 pixels on either axis, or within the first
+190 ms by more than 2 × ((200 − t)/20) pixels, t the milliseconds since the
+press (20 pixels at once, nothing between 181 and 190 ms). A release before
+that is a **click**: outside combat mode it turns the player toward the
+cursor's point once that is farther than 70 cm (the heading takes the
+cursor's direction); the original then names or uses what was clicked,
+which Exarust cannot show yet. A double click (a second press within the
+double-click time and 2 pixels) opens containers, loots corpses and talks
+in the original; Exarust has no window for them yet.
+
+A drag start does nothing while combat mode keeps the button for attacks
+(unless Ctrl is held or something is already held), while the point under
+the cursor is out of reach, or while the player is down. Each one starts
+from nothing held. The pick at the pressed point then names what is
+there:
 
 - **A prop or item the hand can move**, while the player does not
   locomote: the object's hold begins (the standing quarter turns wait), and
