@@ -31,6 +31,7 @@
 //! fall step and the frame's follow, draw and shader sources, read from
 //! `Exanima.exe`.
 
+use bevy::mesh::{Mesh, VertexAttributeValues};
 use bevy::prelude::*;
 
 use crate::arena::Mt19937;
@@ -232,6 +233,43 @@ impl Rain {
         )
     }
 
+    /// The drawn line vertices: two per drawn drop, the head transparent,
+    /// the tail opaque.
+    pub fn vertices(&self) -> (Vec<[f32; 3]>, Vec<[f32; 4]>) {
+        let count = self.drawn.max(0).min(MAX_DROPS as i32) as usize;
+        let mut positions = Vec::with_capacity(count * 2);
+        let mut colours = Vec::with_capacity(count * 2);
+        for drop in self.drops.iter().take(count) {
+            positions.push([drop.head.x, drop.head.y, drop.head.z]);
+            colours.push([
+                0.0,
+                0.0,
+                0.0,
+                f32::from(HEAD_ALPHA) / f32::from(DROP_COLOUR[3]),
+            ]);
+            positions.push([drop.tail.x, drop.tail.y, drop.tail.z]);
+            colours.push([1.0, 1.0, 1.0, 1.0]);
+        }
+        (positions, colours)
+    }
+
+    /// The drawn mesh: one line per drawn drop, unlit and additive as the
+    /// existing effect draws are.
+    pub fn mesh(&self) -> Mesh {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::mesh::{Indices, PrimitiveTopology};
+        let (positions, colours) = self.vertices();
+        let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
+        let indices: Vec<u32> = (0..positions.len() as u32).collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            VertexAttributeValues::Float32x4(colours),
+        );
+        mesh.insert_indices(Indices::U32(indices));
+        mesh
+    }
+
     /// The box moved by a frame's basis: the `Frame` rule.
     pub fn bounds_in(frame: &Frame) -> (Vec3, Vec3) {
         Self::bounds(frame.at)
@@ -325,6 +363,17 @@ mod tests {
         assert_eq!(rain.drops[2000].head, still);
         assert_ne!(rain.drops[0].head.y, still.y);
         assert_eq!(rain.drawn, 1024);
+    }
+
+    #[test]
+    fn the_mesh_has_two_vertices_per_drawn_drop() {
+        let mut rain = rain();
+        rain.set_intensity(0.5);
+        let (positions, colours) = rain.vertices();
+        assert_eq!(positions.len(), 2048 * 2);
+        assert_eq!(colours.len(), positions.len());
+        assert_eq!(colours[0][3], 0.0);
+        assert_eq!(colours[1][3], 1.0);
     }
 
     #[test]
