@@ -998,7 +998,16 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
 `0x10203` (no queued motion starts). State flags sit beside the word
 (dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
-`0x100`, a potion `0x800000`).
+`0x100`, a potion `0x800000`). Death (`exa_combat::condition::settle_death`),
+called once the fall counter is past 1 and when a collapse's tone gives
+out, leaves a body that is already dead alone. Otherwise the word becomes
+dead. The dormant flag is cleared when that counter is greater than 1, or
+when the health word is below 0.01 in double and the race's first flag
+word lacks `0x80` (that test reads the first flag word). If the dormant
+flag remains and the shock stagger does not, the
+wake clock is the game clock plus 10000 ms; otherwise the clock is
+disabled. Each part that has a child loses the strike-chain bit on that
+first child.
 
 The body tick writes the word once, in this order: the daze block makes a
 dazed character normal unless the word holds `0xAC0` or is 2; then the

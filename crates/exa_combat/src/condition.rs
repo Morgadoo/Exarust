@@ -148,9 +148,74 @@ impl Condition {
     }
 }
 
-/// The original's state flags beside the condition word. Nothing in
-/// Exarust sets them yet (no knock-outs, dormant corpses, shocks or
-/// potions).
+/// How long a dormant corpse waits before it may stir, when death leaves
+/// the dormant flag set and the shock stagger clear.
+pub const DEATH_WAKE_MS: u32 = 10_000;
+/// Health below this, compared in double, clears the dormant flag unless
+/// the race's first flag word carries red regeneration.
+pub const DEATH_HEALTH: f64 = 0.01;
+
+/// What death writes when the body was not already dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettledDeath {
+    pub condition: Condition,
+    pub flags: StateFlags,
+    /// When the corpse may stir. `None` is the disabled clock.
+    pub wake_at_ms: Option<u32>,
+}
+
+/// Death's condition, dormant flag and wake clock.
+///
+/// A body that is already dead is left alone. Otherwise the condition
+/// becomes dead. The dormant flag is cleared when `fall_stage` is greater
+/// than 1 (the fall-to-death counter: 2 lost, 3 fading, 4 gone) or when
+/// `health` is below [`DEATH_HEALTH`] and `first_flag_red` is false.
+/// `first_flag_red` is the race record's first flag word bit `0x80` (the
+/// golem suit). The second flag word's regeneration bit is a different
+/// test and does not count here.
+///
+/// When the flags then still have the dormant bit and not the shock
+/// stagger, the wake clock is `now_ms` plus [`DEATH_WAKE_MS`]. Otherwise
+/// the clock is disabled.
+pub fn settle_death(
+    condition: Condition,
+    flags: StateFlags,
+    fall_stage: u32,
+    health: f32,
+    first_flag_red: bool,
+    now_ms: u32,
+) -> Option<SettledDeath> {
+    if condition == Condition::DEAD {
+        return None;
+    }
+    let mut bits = flags.0;
+    if fall_stage > 1 || (f64::from(health) < DEATH_HEALTH && !first_flag_red) {
+        bits &= !StateFlags::DORMANT;
+    }
+    let wake_at_ms =
+        if bits & (StateFlags::DORMANT | StateFlags::SHOCK_STAGGER) == StateFlags::DORMANT {
+            Some(now_ms.wrapping_add(DEATH_WAKE_MS))
+        } else {
+            None
+        };
+    Some(SettledDeath {
+        condition: Condition::DEAD,
+        flags: StateFlags(bits),
+        wake_at_ms,
+    })
+}
+
+/// Death clears the strike-chain bit on the first child of every part that
+/// has one. A part with no child is `None`.
+pub fn clear_death_strikes(first_children: &mut [Option<u32>]) {
+    for flags in first_children.iter_mut().flatten() {
+        *flags &= !exa_physics::part::PartState::STRIKE_CHAIN;
+    }
+}
+
+/// The original's state flags beside the condition word. [`settle_death`]
+/// returns them with the dormant bit cleared in death's cases. Knock-outs,
+/// shocks and potions still have no writer on the running body.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StateFlags(pub u32);
 
@@ -712,6 +777,42 @@ mod knockout_tests {
         );
         assert_eq!(knocked.condition, Condition::DOWN);
         assert_eq!(knocked.stance, Some(0.0));
+    }
+
+    #[test]
+    fn death_clears_a_lost_body_and_keeps_a_dormant_corpse_waiting() {
+        let dormant = StateFlags(StateFlags::DORMANT | StateFlags::WAKING);
+        let lost = settle_death(Condition::COLLAPSING, dormant, 2, 1.0, true, 50).unwrap();
+        assert_eq!(lost.condition, Condition::DEAD);
+        assert_eq!(lost.flags.0, StateFlags::WAKING);
+        assert_eq!(lost.wake_at_ms, None);
+
+        let kept = settle_death(Condition::COLLAPSING, dormant, 1, 1.0, true, 50).unwrap();
+        assert_eq!(kept.flags.0, dormant.0);
+        assert_eq!(kept.wake_at_ms, Some(50 + DEATH_WAKE_MS));
+
+        let low = settle_death(Condition::COLLAPSING, dormant, 0, 0.0, false, 50).unwrap();
+        assert_eq!(low.flags.0, StateFlags::WAKING);
+        assert!(settle_death(Condition::DEAD, dormant, 0, 0.0, false, 50).is_none());
+
+        // 0.01 is not below the double threshold. A NaN is not either.
+        let edge = settle_death(Condition::NORMAL, dormant, 0, 0.01, false, 0).unwrap();
+        assert_eq!(edge.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
+        let nan = settle_death(Condition::NORMAL, dormant, 0, f32::NAN, false, 0).unwrap();
+        assert_eq!(nan.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
+
+        let shocked = StateFlags(StateFlags::DORMANT | StateFlags::SHOCK_STAGGER);
+        let held = settle_death(Condition::NORMAL, shocked, 0, 1.0, true, 10).unwrap();
+        assert_eq!(held.wake_at_ms, None);
+        assert_eq!(held.flags.0, shocked.0);
+    }
+
+    #[test]
+    fn death_clears_the_first_childs_strike_chain() {
+        let chain = exa_physics::part::PartState::STRIKE_CHAIN;
+        let mut children = [Some(chain | 0x4), None, Some(0x4)];
+        clear_death_strikes(&mut children);
+        assert_eq!(children, [Some(0x4), None, Some(0x4)]);
     }
 
     #[test]

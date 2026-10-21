@@ -861,7 +861,11 @@ squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
 blow; live 0.9–1.4 s at like energies). The stagger step's length and
 target are in. The footwork that walks that target is in, and the
 dying tick calls it. The held weapons are dropped when the collapse
-starts and again on the first dying tick if they are still held.
+starts and again on the first dying tick if they are still held. Death's
+own write (`settle_death`) clears the dormant flag once the fall counter
+is past 1, or when health is below 0.01 and the race's first flag word
+lacks red regeneration, and leaves a dormant corpse a 10000 ms wake clock
+when the shock stagger is clear.
 Done (change `regenerate-health`, M43 of the master plan): wounds heal as
 in the original. Each fixed tick yellow health regains √red × a rate that
 ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with
