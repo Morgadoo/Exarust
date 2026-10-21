@@ -617,11 +617,13 @@ pub fn scale(m: &mut Mat3A, scale: f32) {
     m.z_axis *= scale;
 }
 
-/// The turn of the original's angles (x pitch, y yaw, z roll).
+/// The turn of the original's angles (x pitch, y yaw, z roll). The sines
+/// and cosines are the runtime library's ([`library_sin_cos`]), not the
+/// engine's fast polynomials.
 pub fn from_euler(e: Vec3) -> Mat3A {
-    let (sx, cx) = e.x.sin_cos();
-    let (sy, cy) = e.y.sin_cos();
-    let (sz, cz) = e.z.sin_cos();
+    let (sx, cx) = library_sin_cos(e.x);
+    let (sy, cy) = library_sin_cos(e.y);
+    let (sz, cz) = library_sin_cos(e.z);
     let cxsz = cx * sz;
     let sxsz = sx * sz;
     Mat3A::from_cols(
@@ -632,25 +634,74 @@ pub fn from_euler(e: Vec3) -> Mat3A {
 }
 
 /// The original's angles of a turn: the roll from the first row's y, then
-/// the pitch and yaw over the rolled cosine when it is over 0.005
-/// (double), else no pitch and the yaw from the last row's x and z. All in
-/// double precision.
+/// the pitch and yaw over the rolled cosine when its magnitude is over
+/// 0.005 (double; NaN takes the other side), else no pitch and the yaw from
+/// the last row's x and z. The arc sine, cosine and two-argument arctangent
+/// are the runtime library's, in double precision, each result rounded to
+/// single ([`library_arcsin`], [`library_arctan2`]).
 pub fn mat3_to_euler(m: &Mat3A) -> Vec3 {
     let rows = [
         m.x_axis.to_array(),
         m.y_axis.to_array(),
         m.z_axis.to_array(),
     ];
-    let roll = f64::from(rows[0][1]).asin() as f32;
+    let roll = library_arcsin(f64::from(rows[0][1])) as f32;
     let c = f64::from(roll).cos() as f32;
     if f64::from(c.abs()) > GIMBAL_LIMIT {
-        let pitch = f64::from(-rows[2][1] / c).atan2(f64::from(rows[1][1] / c)) as f32;
-        let yaw = f64::from(-rows[0][2] / c).atan2(f64::from(rows[0][0] / c)) as f32;
+        let pitch = library_arctan2(f64::from(-rows[2][1] / c), f64::from(rows[1][1] / c)) as f32;
+        let yaw = library_arctan2(f64::from(-rows[0][2] / c), f64::from(rows[0][0] / c)) as f32;
         Vec3::new(pitch, yaw, roll)
     } else {
-        let yaw = f64::from(rows[2][0]).atan2(f64::from(rows[2][2])) as f32;
+        let yaw = library_arctan2(f64::from(rows[2][0]), f64::from(rows[2][2])) as f32;
         Vec3::new(0.0, yaw, roll)
     }
+}
+
+/// The runtime library's single-precision sine and cosine. The original
+/// runs the x87 `FSINCOS` on the value and stores each result rounded to
+/// single; here the double-precision functions are rounded to single,
+/// which gives the same value unless a result lies within a double's error
+/// of a single-precision rounding boundary. Beyond `|x| = 2^63`, where the
+/// x87 instruction leaves its operand unreduced, this is not the original.
+pub fn library_sin_cos(x: f32) -> (f32, f32) {
+    let (sin, cos) = f64::from(x).sin_cos();
+    (sin as f32, cos as f32)
+}
+
+/// The runtime library's two-argument arctangent of `y` over `x`, in
+/// double. A zero `x` (either sign) gives 0, π/2 or −π/2 by `y` (a NaN `y`
+/// leaves the original's result unset; NaN here); otherwise the arctangent
+/// of `y / x`, plus π when `x` is negative, less 2π when that passes π. So
+/// `(−0, −1)` gives +π where `f64::atan2` gives −π. The single-argument
+/// arctangent is the platform's `atan`.
+pub fn library_arctan2(y: f64, x: f64) -> f64 {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let mut angle = if x == 0.0 {
+        if y == 0.0 {
+            0.0
+        } else if y > 0.0 {
+            FRAC_PI_2
+        } else if y < 0.0 {
+            -FRAC_PI_2
+        } else {
+            f64::NAN
+        }
+    } else {
+        (y / x).atan()
+    };
+    if x < 0.0 {
+        angle += PI;
+    }
+    if angle > PI {
+        angle -= TAU;
+    }
+    angle
+}
+
+/// The runtime library's arc sine in double: [`library_arctan2`] of `x`
+/// over `√((1 + x)(1 − x))`.
+pub fn library_arcsin(x: f64) -> f64 {
+    library_arctan2(x, ((1.0 + x) * (1.0 - x)).sqrt())
 }
 
 /// The inverse of a 4×4 matrix by Gauss-Jordan elimination with partial
@@ -956,6 +1007,23 @@ mod tests {
         assert!((look.y_axis.y - 1.0).abs() < 1e-3);
         assert!((look.x_axis.x + 1.0).abs() < 1e-3);
         assert!(look_rotation(Vec3::Y).x_axis.x.is_nan());
+        // The library arctangent's quadrant fix-up: −0 over −1 is +π, a
+        // tiny negative over −1 rounds to +π too, and a zero x is ±π/2.
+        assert_eq!(library_arctan2(-0.0, -1.0), std::f64::consts::PI);
+        assert_eq!(library_arctan2(-1e-300, -1.0), std::f64::consts::PI);
+        assert_eq!(library_arctan2(-2.0, -0.0), -std::f64::consts::FRAC_PI_2);
+        assert_eq!(library_arctan2(0.0, -0.0), 0.0);
+        assert!((library_arctan2(-1.0, -1.0) + 0.75 * std::f64::consts::PI).abs() < 1e-15);
+        assert_eq!(library_arcsin(1.0), std::f64::consts::FRAC_PI_2);
+        assert!(library_arcsin(1.5).is_nan());
+        // A half turn of pitch reads back as +π (the library's quadrant
+        // fix-up of −0 over −1), where `f64::atan2` would give −π.
+        let flipped = mat3_to_euler(&Mat3A::from_cols(
+            Vec3A::X,
+            Vec3A::new(0.0, -1.0, 0.0),
+            Vec3A::new(0.0, 0.0, -1.0),
+        ));
+        assert_eq!(flipped.x, std::f32::consts::PI);
         // The euler angles round-trip a small turn.
         let e = Vec3::new(0.2, 0.3, 0.1);
         assert!((mat3_to_euler(&from_euler(e)) - e).length() < 1e-5);
