@@ -481,21 +481,30 @@ impl Mesh {
     /// pieces into one mesh: vertices and triangles are appended, triangles
     /// whose materials match join the existing group (a new group is made
     /// for a material this mesh does not have yet), and the per-vertex
-    /// streams, the per-triangle flags and edges and the GI points follow.
-    /// The result is regrouped by material, as the original's regroup does
-    /// after an assembly.
+    /// streams and the per-triangle flags and edges follow. The result is
+    /// regrouped by material, as the original's regroup does after an
+    /// assembly. The mesh's GI points are not touched (they belong to the
+    /// node, not to the merge).
     ///
     /// This is the render-form equivalent of the original's assembly: it
     /// works on unified vertices and streams where the original appends the
     /// editable channels and the per-group GPU buffers. Both meshes must be
     /// in the same node space (the original transforms the appended part
     /// from its node into the destination's, which a caller merging two
-    /// nodes must do before calling this). An attribute stream present on
-    /// only one side is filled on the other (white vertex colours, zero
-    /// texture coordinates and weights, triangle flags 0, edge bits 7), as
-    /// the original fills the joined channel. Smoothing keys are shifted so
-    /// the two meshes' groups stay apart; the original copies the editable
-    /// smoothing bits unchanged. The destination's render flags are kept.
+    /// nodes must do before calling this).
+    ///
+    /// A stream only one side has is joined the way the original joins its
+    /// channels. A channel the destination lacks is made, padded for the
+    /// destination's vertices with white (colours) or zero (skin weights),
+    /// and the destination's texture coordinates take the part's first
+    /// element; a part without texture coordinates uses the destination's
+    /// first element. Triangle flags missing on a side join as 1 (smoothing
+    /// group 1 only) and edge bits as 7. A part without colours or skin
+    /// weights leaves the destination's channel short in the original; here
+    /// its vertices get white colours and zero weights. Smoothing keys are
+    /// shifted so the two meshes' groups stay apart; the original copies
+    /// the face smoothing bits unchanged and rebuilds the key channel from
+    /// them. The destination's render flags are kept.
     ///
     /// A malformed input (a triangle index or group range outside the
     /// arrays, or an attribute array whose length does not match the
@@ -518,6 +527,7 @@ impl Mesh {
         if self.positions.is_empty() {
             let mut merged = other.clone();
             merged.render_flags = self.render_flags;
+            merged.gi_points = std::mem::take(&mut self.gi_points);
             *self = merged;
             return Ok(());
         }
@@ -566,28 +576,39 @@ impl Mesh {
         self.position_count =
             base_position as usize + other.position_count.max(other.positions.len());
 
+        // The texture-coordinate stream has its own index map. A side
+        // without it gets index 0 for its triangles, which names element 0
+        // of the joined stream: the other side's first element.
+        let first_uv = |mesh: &Mesh| {
+            mesh.uvs.as_ref().map_or([0.0; 2], |uvs| {
+                mesh.uv_ids
+                    .iter()
+                    .position(|&id| id == 0)
+                    .map_or([0.0; 2], |v| uvs[v])
+            })
+        };
+        let (mine_first, theirs_first) = (first_uv(self), first_uv(other));
         match (&mut self.uvs, &other.uvs) {
-            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
-            (None, Some(theirs)) => {
-                self.uvs = Some(vec![[0.0; 2]; self.positions.len() - other.positions.len()]);
-                self.uvs
-                    .as_mut()
-                    .expect("just set")
-                    .extend_from_slice(theirs);
-            }
-            (Some(mine), None) => mine.extend(std::iter::repeat_n([0.0; 2], other.positions.len())),
-            (None, None) => {}
-        }
-        if self.uvs.is_some() {
-            self.uv_ids.resize(base_vertex as usize, 0);
-            if other.uvs.is_some() {
+            (Some(mine), Some(theirs)) => {
+                mine.extend_from_slice(theirs);
                 self.uv_ids
                     .extend(other.uv_ids.iter().map(|&i| i + base_uv));
-            } else {
-                self.uv_ids
-                    .extend(std::iter::repeat_n(base_uv, other.positions.len()));
+                self.uv_count = base_uv as usize + other.uv_count.max(other.uv_ids.len());
             }
-            self.uv_count = base_uv as usize + other.uv_count.max(other.uv_ids.len());
+            (None, Some(theirs)) => {
+                let mut uvs = vec![theirs_first; base_vertex as usize];
+                uvs.extend_from_slice(theirs);
+                self.uvs = Some(uvs);
+                self.uv_ids = vec![0; base_vertex as usize];
+                self.uv_ids.extend_from_slice(&other.uv_ids);
+                self.uv_count = other.uv_count.max(other.uv_ids.len());
+            }
+            (Some(mine), None) => {
+                mine.extend(std::iter::repeat_n(mine_first, other.positions.len()));
+                self.uv_ids
+                    .extend(std::iter::repeat_n(0, other.positions.len()));
+            }
+            (None, None) => {}
         }
 
         match (&mut self.colors, &other.colors) {
@@ -630,13 +651,13 @@ impl Mesh {
         match (&mut self.triangle_flags, &other.triangle_flags) {
             (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
             (None, Some(theirs)) => {
-                self.triangle_flags = Some(vec![0; triangles]);
+                self.triangle_flags = Some(vec![1; triangles]);
                 self.triangle_flags
                     .as_mut()
                     .expect("just set")
                     .extend_from_slice(theirs);
             }
-            (Some(mine), None) => mine.extend(std::iter::repeat_n(0, other.indices.len() / 3)),
+            (Some(mine), None) => mine.extend(std::iter::repeat_n(1, other.indices.len() / 3)),
             (None, None) => {}
         }
         match (&mut self.triangle_edges, &other.triangle_edges) {
@@ -651,7 +672,6 @@ impl Mesh {
             (Some(mine), None) => mine.extend(std::iter::repeat_n(7, other.indices.len() / 3)),
             (None, None) => {}
         }
-        self.gi_points.extend_from_slice(&other.gi_points);
         self.regroup_by_material(&group_of_triangle)
     }
 
@@ -2717,6 +2737,7 @@ mod tests {
     #[test]
     fn merging_a_new_material_adds_a_group_and_fills_missing_streams() {
         let mut left = piece("mat", 0.0, [10, 20, 30, 255], 0);
+        left.uvs.as_mut().unwrap()[0] = [0.25, 0.5];
         let mut other = piece("other", 10.0, [40, 50, 60, 128], 0);
         other.uvs = None;
         other.colors = None;
@@ -2729,14 +2750,15 @@ mod tests {
             (left.groups[1].first_index, left.groups[1].index_count),
             (3, 3)
         );
-        // The missing texture coordinates join as zero.
-        assert_eq!(left.uvs.as_deref().unwrap()[3], [0.0, 0.0]);
-        assert_eq!(left.uv_ids, [0, 1, 2, 3, 3, 3]);
-        assert_eq!(left.uv_count, 6);
+        // The part has no texture coordinates: its triangles index element
+        // 0 of the destination's stream, which is the first vertex's.
+        assert_eq!(left.uvs.as_deref().unwrap()[3], [0.25, 0.5]);
+        assert_eq!(left.uv_ids, [0, 1, 2, 0, 0, 0]);
+        assert_eq!(left.uv_count, 3);
         // The missing vertex colours join white.
         assert_eq!(left.colors.as_deref().unwrap()[3], [255; 4]);
-        // Missing triangle flags join 0 and edge bits 7.
-        assert_eq!(left.triangle_flags.as_deref(), Some(&[0x20, 0][..]));
+        // Missing triangle flags join 1 (smoothing group 1) and edge bits 7.
+        assert_eq!(left.triangle_flags.as_deref(), Some(&[0x20, 1][..]));
         assert_eq!(left.triangle_edges.as_deref(), Some(&[1u8, 7][..]));
         // A malformed part leaves the mesh as it was.
         let before = left.clone();
@@ -2744,6 +2766,29 @@ mod tests {
         bad.indices[2] = 7;
         assert!(left.merge(&bad).is_err());
         assert_eq!(left, before);
+    }
+
+    /// A destination without texture coordinates takes the part's: its own
+    /// vertices index element 0 of the joined stream. Flags it lacks join
+    /// as 1 for its own triangles.
+    #[test]
+    fn merging_a_part_with_streams_the_destination_lacks() {
+        let mut left = piece("mat", 0.0, [0; 4], 0);
+        left.uvs = None;
+        left.uv_ids = Vec::new();
+        left.uv_count = 0;
+        left.colors = None;
+        left.triangle_flags = None;
+        let mut part = piece("mat", 10.0, [40, 50, 60, 128], 0);
+        part.uvs.as_mut().unwrap()[0] = [0.75, 0.125];
+        left.merge(&part).unwrap();
+        assert_eq!(left.uvs.as_deref().unwrap()[0], [0.75, 0.125]);
+        assert_eq!(left.uvs.as_deref().unwrap()[4], [1.0, 0.0]);
+        assert_eq!(left.uv_ids, [0, 0, 0, 0, 1, 2]);
+        assert_eq!(left.uv_count, 3);
+        assert_eq!(left.colors.as_deref().unwrap()[0], [255; 4]);
+        assert_eq!(left.colors.as_deref().unwrap()[3], [40, 50, 60, 128]);
+        assert_eq!(left.triangle_flags.as_deref(), Some(&[1, 0x20][..]));
     }
 
     #[test]
