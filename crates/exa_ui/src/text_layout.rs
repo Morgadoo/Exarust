@@ -531,6 +531,32 @@ pub struct GlyphQuad {
     pub ink: [u8; 4],
 }
 
+impl GlyphQuad {
+    /// The glyph's atlas coordinate: the low nibble is the column and the
+    /// high nibble the row of the 16×16 sheet, each a sixteenth apart.
+    pub fn uv(&self) -> (f32, f32) {
+        (
+            f32::from(self.byte & 0x0f) * 0.0625,
+            f32::from(self.byte >> 4) * 0.0625,
+        )
+    }
+
+    /// The glyph's four corners at `font`'s glyph size, clockwise from the
+    /// top-left. The top edge leans right by `slant`; the bottom edge does
+    /// not.
+    pub fn corners(&self, font: &GuiFont) -> [[f32; 2]; 4] {
+        let (w, h) = font.glyph;
+        let (x, y) = (self.x as f32, self.y as f32);
+        let (w, h) = (w as f32, h as f32);
+        [
+            [x + self.slant, y],
+            [x + w + self.slant, y],
+            [x + w, y + h],
+            [x, y + h],
+        ]
+    }
+}
+
 /// An inline picture: its name and rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextPicture {
@@ -1149,6 +1175,22 @@ mod tests {
         // The closing brace still leans; the byte after it does not.
         assert_eq!(g[4], (b'}', 3.0, blue));
         assert_eq!(g[5], (b'y', 0.0, [255, 250, 230, 200]));
+    }
+
+    #[test]
+    fn glyph_atlas_coordinates_and_slanted_corners() {
+        let f = tens();
+        let d = draw_text(b"A", 0, 0, 0, (0, 0), &frame(100), &f, &inks(), 5, &none);
+        let mut g = d.glyphs[0];
+        // 'A' is 0x41: column 1, row 4 of the 16×16 sheet.
+        assert_eq!(g.uv(), (0.0625, 0.25));
+        // A slanted glyph (a `[scrp=i]` or `{%` span) leans its top edge
+        // right; the bottom does not.
+        g.slant = 3.0;
+        assert_eq!(
+            g.corners(&f),
+            [[3.0, 0.0], [15.0, 0.0], [12.0, 16.0], [0.0, 16.0]]
+        );
     }
 
     #[test]

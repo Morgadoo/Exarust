@@ -7059,9 +7059,326 @@ pub fn glow_text(x: i32, y: i32, palette: &SkinPalette) -> GlowText {
     }
 }
 
+/// The original's abstract skin base publishes five virtual slots whose
+/// bodies are the shared empty stub. These are their Exarust names by the
+/// role of the slot: drawing a form's background, hit-testing its frame,
+/// setting up the skin's programs, answering the palette's alpha and drawing
+/// one control part.
+pub trait SkinHooks {
+    fn draw_form(&mut self, _form: u32) {}
+    fn hit_frame(&mut self, _x: i32, _y: i32) -> i32 {
+        0
+    }
+    fn prepare(&mut self) {}
+    fn palette_alpha(&mut self) -> f32 {
+        1.0
+    }
+    fn draw_control(&mut self, _part: i32) {}
+}
+
+/// The base skin itself: every hook is the empty stub.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BaseSkin;
+
+impl SkinHooks for BaseSkin {}
+
+/// The GUI skin globals: the lazily made default skin, the active skin and
+/// the global alpha/fade pair every form fades with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinGlobals {
+    /// The default skin was made by the first request.
+    pub default_made: bool,
+    /// The active skin's identity, if any.
+    pub active: Option<u32>,
+    /// The skin whose one-time preparation ran, if any.
+    pub prepared: Option<u32>,
+    /// The alpha the GUI draws at, 0..1.
+    pub alpha: f32,
+    /// The fade value handed to the skin with the alpha.
+    pub fade: f32,
+    /// The alpha's byte, `round(alpha · 255)`.
+    pub alpha_byte: u8,
+}
+
+impl Default for SkinGlobals {
+    fn default() -> Self {
+        Self {
+            default_made: false,
+            active: None,
+            prepared: None,
+            alpha: 1.0,
+            fade: 0.0,
+            alpha_byte: 255,
+        }
+    }
+}
+
+impl SkinGlobals {
+    /// The default-skin request: makes the skin and applies its scheme the
+    /// first time, then returns it.
+    pub fn default_skin(&mut self) -> bool {
+        let made = !self.default_made;
+        self.default_made = true;
+        made
+    }
+
+    /// Makes `skin` active. A switch to a different skin runs its one-time
+    /// preparation once and then hands it the current alpha and fade;
+    /// asking for the active skin again does nothing.
+    pub fn activate(&mut self, skin: u32) -> bool {
+        if self.active == Some(skin) {
+            return false;
+        }
+        self.active = Some(skin);
+        let first = self.prepared != Some(skin);
+        if first {
+            self.prepared = Some(skin);
+        }
+        first
+    }
+
+    /// Sets the global alpha, clamped to 0..1, and its byte. NaN clamps to
+    /// zero (a guess: the engine's clamp helper's unordered branch was not
+    /// traced).
+    pub fn set_alpha(&mut self, alpha: f32, fade: f32) {
+        let alpha = if alpha.is_nan() {
+            0.0
+        } else {
+            alpha.clamp(0.0, 1.0)
+        };
+        self.alpha = alpha;
+        self.fade = fade;
+        self.alpha_byte = crate::gui_font::round_i32(f64::from(alpha * 255.0)) as u8;
+    }
+}
+
+/// The sampler word a GUI texture loads with: repeat across and along, the
+/// filter bits `0x33`, plus the data bit when the caller asks (`0x100`).
+pub const GUI_TEXTURE_FLAGS: u32 = 0x33;
+/// The textured skin's atlas word: the GUI filter and repeat bits plus
+/// `0x70100` (mipmapped and data).
+pub const TEXTURED_SKIN_TEXTURE_FLAGS: u32 = GUI_TEXTURE_FLAGS | 0x70100;
+/// The game skin's atlas is resized to this many units by this many.
+pub const GUISKIN_UNITS: (i32, i32) = (40, 20);
+/// The texture atlas the game skin loads.
+pub const GUISKIN_FILE: &str = "guiskin.rfi";
+
+/// The size the game skin's atlas is resampled to at `unit`: 40 by 20 units
+/// (160 by 80 at unit 4).
+pub fn guiskin_size(unit: i32) -> (i32, i32) {
+    (unit * GUISKIN_UNITS.0, unit * GUISKIN_UNITS.1)
+}
+
+/// The five GUI shader sources, in the order the original releases them:
+/// solid, textured with `TexCol`, rounded with `Scale`, the textured vertex
+/// program with `TexScl`/`TexPos`, and the plain textured fragment.
+pub const GUI_SOLID_SHADER: &str =
+    "in vec4 vrCol;\r\nout vec4 FragColor;\r\nvoid main() {\r\nFragColor = vrCol;}";
+pub const GUI_TEXTURED_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform float TexCol;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec4 tcol = texture(Tex, vrTex);\r\ntcol.rgb = tcol.rgb * TexCol + 1.0 - TexCol;\r\nFragColor.rgb = vrCol.rgb * tcol.rgb;FragColor.a = vrCol.a * tcol.a;}";
+pub const GUI_ROUNDED_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 Scale;\r\nvoid main() {\r\nvec2 s = abs(0.5 - vrTex);\r\ns = (s - Scale.xy) * Scale.zw;\r\nfloat a = length(max(s,0.0));\r\na = max(1.0 - a, 0.0);\r\na = a * a;\r\na = a * a;\r\nFragColor.rgb = vrCol.rgb;FragColor.a = vrCol.a * a;}";
+pub const TEXTURED_SKIN_VERTEX: &str = "in vec3 vPos;\r\nin vec4 vCol;\r\nout vec2 vrTex;\r\nout vec4 vrCol;\r\nuniform mat4 MPrj;\r\nuniform vec2 TexScl;\r\nuniform vec2 TexPos;\r\nvoid main() {\r\ngl_Position = MPrj * vec4(vPos,1.0);\r\nvrTex = vPos.xy * TexScl + TexPos;\r\nvrCol = vCol * 0.003921568;\r\n}";
+pub const TEXTURED_SKIN_FRAGMENT: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nFragColor = vrCol * texture(Tex, vrTex);}";
+
+/// What binding a GUI skin texture changed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinTextureBind {
+    /// The texture was bound to unit 0.
+    pub bound: bool,
+    /// The texture has one of the `0xc000` bits: the shader's `TexCol` is 1,
+    /// else 0.
+    pub tex_col: f32,
+}
+
+/// The skin-texture bind helper: a texture different from the current one
+/// binds to unit 0, and a texture whose word has one of the `0xc000` bits
+/// asks the `TexCol` uniform for 1 (opaque atlas colour), else 0. The
+/// uniform is only set in the textured renderer mode (2).
+pub fn bind_skin_texture(
+    current: Option<u32>,
+    texture: Option<u32>,
+    flags: u32,
+    _mode: i32,
+) -> SkinTextureBind {
+    let bound = texture.is_some() && texture != current;
+    SkinTextureBind {
+        bound,
+        tex_col: if flags & 0xc000 != 0 { 1.0 } else { 0.0 },
+    }
+}
+
+/// Which of the textured frame's three inks is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TexturedFrameState {
+    Idle,
+    Hot,
+    Pressed,
+}
+
+/// One inset of a textured frame: its rectangle and the two texture samples
+/// its corners use (offsets into the skin's sample table).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TexturedFrameLayer {
+    pub rect: [f32; 4],
+    pub sample_a: i32,
+    pub sample_b: i32,
+}
+
+/// A textured skin frame: a two-pixel inner edge, a one-pixel edge and the
+/// fill, each with its samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TexturedFrame {
+    pub state: TexturedFrameState,
+    pub outer: TexturedFrameLayer,
+    pub inner: TexturedFrameLayer,
+    pub fill: [f32; 4],
+    pub fill_sample: i32,
+}
+
+/// The textured skin's frame: the outer edge inset two pixels, the inner
+/// edge one, then the fill. Idle and pressed frames take sample slots 0x78
+/// and 0x80 (the border reads its own slot twice), a hot frame 0x48 and
+/// 0x50; the fill binds 0x6c, or 0x9c when hot.
+pub fn draw_textured_frame(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    pressed: bool,
+    hot: bool,
+) -> TexturedFrame {
+    let state = if pressed {
+        TexturedFrameState::Pressed
+    } else if hot {
+        TexturedFrameState::Hot
+    } else {
+        TexturedFrameState::Idle
+    };
+    let (outer_sample, inner_sample, fill_sample) = match state {
+        TexturedFrameState::Hot => (0x48, 0x50, 0x9c),
+        TexturedFrameState::Idle | TexturedFrameState::Pressed => (0x78, 0x80, 0x6c),
+    };
+    let (x, y) = (x as f32, y as f32);
+    let (w, h) = (width as f32, height as f32);
+    TexturedFrame {
+        state,
+        outer: TexturedFrameLayer {
+            rect: [x + 2.0, y + 2.0, x + w - 2.0, y + h - 2.0],
+            sample_a: outer_sample,
+            sample_b: if state == TexturedFrameState::Idle {
+                outer_sample + 4
+            } else {
+                outer_sample
+            },
+        },
+        inner: TexturedFrameLayer {
+            rect: [x + 1.0, y + 1.0, x + w - 1.0, y + h - 1.0],
+            sample_a: inner_sample,
+            sample_b: if state == TexturedFrameState::Idle {
+                inner_sample + 4
+            } else {
+                inner_sample
+            },
+        },
+        fill: [x, y, x + w, y + h],
+        fill_sample,
+    }
+}
+
+/// The textured skin's per-frame draw setup: the program's `TexScl` is the
+/// screen's size over 512 and `TexPos` comes from the skin; the mode is 4.
+pub fn textured_skin_draw(screen: [i32; 4], tex_pos: [f32; 2]) -> ([f32; 2], [f32; 2], i32) {
+    let w = (screen[2] - screen[0]).max(0) as f32;
+    let h = (screen[3] - screen[1]).max(0) as f32;
+    ([w * 0.001_953_125, h * 0.001_953_125], tex_pos, 4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_base_skin_hooks_are_empty() {
+        let mut skin = BaseSkin;
+        skin.draw_form(7);
+        assert_eq!(skin.hit_frame(10, 20), 0);
+        skin.prepare();
+        assert_eq!(skin.palette_alpha(), 1.0);
+        skin.draw_control(3);
+    }
+
+    #[test]
+    fn the_skin_globals_make_activate_and_fade() {
+        let mut globals = SkinGlobals::default();
+        assert!(globals.default_skin());
+        assert!(!globals.default_skin());
+        // The first activation prepares the skin; the same skin is a no-op.
+        assert!(globals.activate(11));
+        assert!(!globals.activate(11));
+        assert!(globals.activate(12));
+        assert_eq!(globals.prepared, Some(12));
+        // Alpha clamps and rounds to its byte; the fade is kept as given.
+        globals.set_alpha(0.5, 0.25);
+        assert_eq!((globals.alpha, globals.fade), (0.5, 0.25));
+        assert_eq!(globals.alpha_byte, 128);
+        globals.set_alpha(-2.0, 0.0);
+        assert_eq!((globals.alpha, globals.alpha_byte), (0.0, 0));
+        globals.set_alpha(3.0, 0.0);
+        assert_eq!((globals.alpha, globals.alpha_byte), (1.0, 255));
+        globals.set_alpha(f32::NAN, 0.0);
+        assert_eq!((globals.alpha, globals.alpha_byte), (0.0, 0));
+    }
+
+    #[test]
+    fn the_game_skin_atlas_is_forty_by_twenty_units() {
+        assert_eq!(guiskin_size(4), (160, 80));
+        assert_eq!(guiskin_size(5), (200, 100));
+        assert_eq!(TEXTURED_SKIN_TEXTURE_FLAGS, 0x70133);
+        assert_eq!(GUI_TEXTURE_FLAGS, 0x33);
+    }
+
+    #[test]
+    fn binding_a_skin_texture_sets_tex_col() {
+        let idle = bind_skin_texture(None, Some(9), 0x100, 2);
+        assert!(idle.bound);
+        assert_eq!(idle.tex_col, 0.0);
+        // The same texture is not bound again.
+        assert!(!bind_skin_texture(Some(9), Some(9), 0x4000, 2).bound);
+        // A `0xc000` bit asks for opaque atlas colour.
+        assert_eq!(bind_skin_texture(None, Some(9), 0x4000, 2).tex_col, 1.0);
+        assert!(!bind_skin_texture(None, None, 0, 2).bound);
+    }
+
+    #[test]
+    fn the_textured_frame_insets_and_samples() {
+        let idle = draw_textured_frame(10, 20, 100, 80, false, false);
+        assert_eq!(idle.state, TexturedFrameState::Idle);
+        assert_eq!(idle.outer.rect, [12.0, 22.0, 108.0, 98.0]);
+        assert_eq!((idle.outer.sample_a, idle.outer.sample_b), (0x78, 0x7c));
+        assert_eq!(idle.inner.rect, [11.0, 21.0, 109.0, 99.0]);
+        assert_eq!((idle.inner.sample_a, idle.inner.sample_b), (0x80, 0x84));
+        assert_eq!(idle.fill, [10.0, 20.0, 110.0, 100.0]);
+        assert_eq!(idle.fill_sample, 0x6c);
+        // Hot frames use the other sample pair and the 0x9c fill.
+        let hot = draw_textured_frame(10, 20, 100, 80, false, true);
+        assert_eq!((hot.outer.sample_a, hot.outer.sample_b), (0x48, 0x48));
+        assert_eq!((hot.inner.sample_a, hot.inner.sample_b), (0x50, 0x50));
+        assert_eq!(hot.fill_sample, 0x9c);
+        // A pressed frame keeps the idle samples but its own state.
+        let pressed = draw_textured_frame(10, 20, 100, 80, true, true);
+        assert_eq!(pressed.state, TexturedFrameState::Pressed);
+        assert_eq!(
+            (pressed.outer.sample_a, pressed.outer.sample_b),
+            (0x78, 0x78)
+        );
+    }
+
+    #[test]
+    fn the_textured_draw_scales_the_screen_by_one_over_512() {
+        let (scl, pos, mode) = textured_skin_draw([0, 0, 1024, 768], [0.25, 0.5]);
+        assert_eq!(scl, [2.0, 1.5]);
+        assert_eq!(pos, [0.25, 0.5]);
+        assert_eq!(mode, 4);
+    }
 
     #[test]
     fn a_skin_stores_the_unit_and_the_three_colours() {

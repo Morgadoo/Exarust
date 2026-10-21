@@ -1250,6 +1250,19 @@ flat-coloured control part. The textured subclasses (the HUD's `guitex.rfi` ston
 `guiskin.rfi` atlas) add their texture binds and shaders; the flat
 primitives below are the base class's.
 
+`exa_ui::skin::SkinHooks` is the abstract base's five empty virtual hooks
+(form draw, frame hit, preparation, palette alpha, control part). The GUI
+globals keep the lazily made default skin, the active skin (prepared once
+per skin) and the global alpha/fade: alpha clamps to 0..1 and its byte is
+`round(alpha · 255)`. The game skin's atlas is `guiskin.rfi`, resampled to
+40 by 20 units (160×80 at unit 4) and loaded with the word `0x70133`. Its
+textured frame draws an outer edge two pixels in, an inner edge one pixel
+in and the fill; idle and pressed frames sample slots `0x78`/`0x80`, a hot
+frame `0x48`/`0x50`, and the fill `0x6c` (`0x9c` when hot). A bind of the
+skin texture into unit 0 sets `TexCol` to 1 when the texture word has one
+of the `0xc000` bits, else 0; the per-frame `TexScl` is the screen size
+over 512.
+
 - **Palette.** The scheme record has four colours, each with a scale and a
   tone, an accent, one float and two alpha bytes. A colour expands into
   twelve shades: the base at 4, then the base times the scale, its square
