@@ -94,3 +94,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | c4d28091 | clean | 50.8% | 5.7% | 45.0% | 44.1% | pathfinder, power classes, force effect nodes |
 | 2026-10-21 | 0aa173a7 | clean | 52.8% | 5.7% | 47.0% | 44.1% | game flow, splash, forms and game GUI, saves, world links, mesh unit, texture streaming, line skin |
 | 2026-10-21 | 76e5297b | clean | 54.7% | 5.7% | 48.2% | 44.1% | mind casts and force streams, NPC chase, motile part rules, combat walk and player behaviour |
+| 2026-10-21 | f1082e7d | clean | 56.0% | 5.7% | 49.3% | 44.1% | arena staff and outfits, character generator and hair picker, motile combat body |
