@@ -108,45 +108,62 @@ physique values and the body morphs they select remain the body's concern
   read `objdb.rdb` (`EXANIMA_DIR`) and check a helm on the head, boots on
   the feet and braies that hide nothing.
 - `look` reads the race's look word (`races.rdb` `0x14`): the skin texture
-  set (men's or women's), the six beards and their `bearda0N d/n` maps, the
-  normal-map layers and their 0.01 thresholds, the age darkening and the
-  two random skin-map offsets drawn from the record's look seed
-  (`search_seed`; a zero word is replaced from the engine's generator). It
-  also gives the per-limb leg scale: a thigh or shin over its 55/54 cm
-  stretch limit keeps the mean of the required and the body's scale.
+  set (men's or women's; both sexes take the men's extra normal map), the
+  six beards and their `bearda0N d/n` maps, the normal-map layers (weight
+  `i` drives physique map `i + 1`, over 0.01 in double, none without a
+  morph controller), the darkening and the two random skin-map offsets
+  drawn from the record's look seed (`search_seed`; a zero word is
+  replaced). The hair rules read the worn set's head coverage union: bit 0
+  shows the style's `?` roots, bit 1 grows no hair, and the look rebuild
+  keeps, removes or rebuilds the hair by comparing the built and wanted
+  hair codes. `limb_scale` is the per-limb leg scale's arithmetic (not
+  called yet).
 - `hair` builds a placed character's `CharExt` style under its head part
-  (2 ms of styles a frame, so a crowd loads over several frames), keeping
-  the `?` roots only under a covered head; `exa_assets::hair` gives
-  the record's colour, specular, gloss and opacity. The builder's refresh
-  cut (keep, cover, replace) is `look::hair_refresh`.
+  (2 ms of styles a frame, so a crowd loads over several frames) by those
+  head rules; `exa_assets::hair` gives the record's colour, specular, gloss
+  and opacity. Not done: the `HarHPC1` texture set of profession bit
+  `0x10000`, hair as cloth and its smoothing.
 
 ## The generator's runtime
 
+These are tested rules the running game does not drive yet.
+
 - `runtime` is the body tree the generator walks: each node's local and
-  world frame, slot and layer, mesh/held/cloth flags and its dynamics state.
-  It reproduces the subtree word writes and held marks, slot chaining and
-  re-framing from the slot rest frames, the dynamics build/split/rebuild
-  passes, frame save/restore, pose restore, scene detach, cloth velocity and
-  the node-state copy. The dynamics object keeps the fields the builder
-  touches (flags, four scales, rest vectors, followed body).
-- `factory` is the start-up data: the eighteen slots' child tables and the
+  world frame, slot and layer, chunk kind, node and render flag words, the
+  loader's owner word and its dynamics state. It reproduces the owner word
+  write, the held marks (direct mesh children), the slot chain, slot
+  numbering and re-framing on the base body's slot frames, the morph frame
+  refresh, the dynamics build/split/rebuild passes, frame save (normalised
+  with the reciprocal square root estimate) and rows-only restore, the
+  state copy by slot, scene detach, cloth velocity, rest-point placement,
+  the clone's cloth rule, the merge order along the slot tree, the overlay
+  marks and both saved-pose restores (a bone tree matched by position, and
+  a flat list). The rest vectors come from the engine's shape builder,
+  which the caller supplies.
+- `factory` is the start-up data: the eighteen slots' child tables, the
   skin-map side/format from the pixel-format setting (512 below 3, 1024
-  from 3), the item-database override and material lock.
+  from 3), the item-database override and the material lock.
 - `texture_job` describes the skin job the renderer runs: the race's colour,
-  gloss and normal maps, the record's tone and seed offsets, the age
-  darkening, the beard and the normal-layer blend, plus the first apparel
-  texture the job carries. `exa_assets::human_skin` draws the parts it can.
-- `rebuild` keeps the rebuild paths: saving frames before a body, look or
-  texture rebuild; the dressed-mesh plan (per garment: chosen slots,
-  visible mask, merge order; the body's mask and merged slots); a texture-only rebuild; and the hair cut/root rules. The
-  background dispatcher runs a rebuild inline or through an installed
-  worker.
-- `spawn` plans what the spawn writes: the stance and motion (saved attack
-  motions reset to 3, 0x13 or 0x19), the root heights (standing less 8 cm,
-  lying less 5, player less 5, saved pose less 6), the corpse's 0xA00, the
-  first two hands' equip pass, and an item model's factory/Characters
-  source. `pose` writes a placement's saved bone frames onto the body parts
-  when it spawns.
+  gloss and normal maps, the record's tone words, look seed and offsets,
+  the darkening, the beard and its colour, the normal-layer blend, plus the
+  first apparel texture the job carries. `exa_assets::human_skin` draws the
+  parts it can; the tone colour, the beard and the blend are not drawn.
+- `rebuild` keeps the look rebuild's own steps (job reset and first
+  apparel, frame save, dynamics rebuild, frame restore, the root lift by
+  the new standing height, the double-precision body scale), the
+  dressed-mesh plan (per garment: chosen slots, visible mask, merge order;
+  the body's mask and merged slots), a texture-only rebuild (without the
+  feral apparel overlay) and the creation scene's hair roots.
+  `background` hands a runner the rebuild's build and apply steps apart,
+  or runs both inline.
+- `spawn` plans what the spawn writes: the motions (saved attack motions
+  reset to 3, else 0x13, or 0x19 for profession bit `0x1000`; the player's
+  3 or 0x13), the root heights (placement height plus standing less 8 cm,
+  lying standing less 5, the player's standing less 5 or frame height plus
+  standing less 6), the corpse's 0xA00, the equip pass over both hands
+  (the off hand's torch section, else weapon before shield) and an item
+  model's factory or library source. The viewer fills the moveset's hands
+  from the equip pass.
 
 ## Held items
 

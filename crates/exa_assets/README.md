@@ -22,16 +22,20 @@ build on the compute pool; a mesh that ships weights keeps them.
 Hair (`hair`): the original's hair colour picker (five decoded hue anchors,
 desaturation by the saturated value, a specular grey moved in, the engine's
 sRGB chain), with the feral level's lightening, the material's gloss
-0.9 − 0.4·f and opacity (1 − 0.65·f)². The character crate's `hair` system
-tints the hair materials with it.
+0.9 − 0.4·f and opacity (1 − 0.65·f)², each mixed-precision step (a value
+widened to double and narrowed) as the instructions take it. The character
+crate's `hair` system tints the hair materials with it.
 
 Merging (`merge`): `merge_parts` appends the visible body parts and garment
 pieces into one skinned mesh as the original's character assembly does:
 each part placed by its frame, its vertices, normals, UVs and colours
 appended, its weights kept vertex for vertex (a part without them bound to
 its bone), and its triangles grouped by material in first-seen order. `culled_indices` drops triangles with a slot's cull bits
-(`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
-generator's per-vertex occlusion mask. The loader still draws a mesh per
+(`exa_character::layers::cull_bits`; which triangle flags they test is
+not traced) and `occlusion_alpha` writes the generator's per-vertex
+occlusion alpha (vertices on the border of the marked triangles fade). The
+merge order itself comes from the skin builder, outside the generator, and
+is not checked against its instructions here. The loader still draws a mesh per
 node; the merged mesh is built by callers, not by the loader yet.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
