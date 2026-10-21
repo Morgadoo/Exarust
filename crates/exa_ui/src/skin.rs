@@ -7196,7 +7196,7 @@ pub struct SkinTextureBind {
     /// For a texture that exists: the `TexCol` value, 1 when its word has
     /// one of the `0xc000` bits and 0 otherwise. It is always stored.
     pub tex_col: Option<f32>,
-    /// The uniform is only written in the textured renderer mode (2).
+    /// The uniform is only written in renderer mode 2.
     pub upload: bool,
 }
 

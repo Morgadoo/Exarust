@@ -1273,9 +1273,9 @@ table twice each, an idle one two slots paired with the next, a hot one a
 second pair, and the fill takes the skin's fill ink (its hot fill ink when hot).
 Binding a skin texture different from the current one sets `TexCol` to 1
 when the texture word has one of the `0xc000` bits, else 0, and writes the
-uniform only in the textured renderer mode. The per-frame `TexScl` is the
-screen size over 512, set unless the renderer already is in the textured
-mode.
+uniform only in renderer mode 2. The per-frame `TexScl` is the screen size
+over 512, set unless the renderer already is in mode 4, the mode that setup
+leaves behind.
 
 - **Palette.** The scheme record has four colours, each with a scale and a
   tone, an accent, one float and two alpha bytes. A colour expands into
