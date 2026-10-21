@@ -384,9 +384,13 @@ pub struct ZoneMarker {
 /// wanted id must have the character within its horizontal radius and no
 /// more than [`ZONE_HEIGHT`] above or below it.
 pub fn zone_match(locale: u32, wanted_locale: i32, zone: i32, markers: &[ZoneMarker]) -> bool {
-    if locale as i32 != wanted_locale {
-        return false;
-    }
+    locale as i32 == wanted_locale && zone_marker_matches(zone, markers)
+}
+
+/// The marker part of `InZone` (the locale is checked before this): some
+/// marker of type [`ZONE_MARKER_TYPE`] with `zone`'s id has the character
+/// within its radius and height.
+pub fn zone_marker_matches(zone: i32, markers: &[ZoneMarker]) -> bool {
     markers.iter().any(|m| {
         m.kind == ZONE_MARKER_TYPE
             && m.id as i32 == zone

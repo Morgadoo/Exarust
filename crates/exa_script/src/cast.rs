@@ -27,6 +27,8 @@ use exa_formats::roles::{
     HeldRole, RoleDb, add_held_role, held_role_bytes, held_role_word, remove_held_role,
 };
 
+use crate::builtins::ZoneMarker;
+
 /// A memory block: the words of one dialogue's nodes; `None` before any
 /// were stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +132,8 @@ pub struct Character {
     pub arousal: f32,
     /// Out of action (body state flag `0x800`): ends its dialogues.
     pub out_of_action: bool,
+    /// The zone markers around it, as `InZone` tests them.
+    pub zones: Vec<ZoneMarker>,
 }
 
 impl Character {
@@ -151,6 +155,7 @@ impl Character {
             context_object: None,
             arousal: 0.0,
             out_of_action: false,
+            zones: Vec::new(),
         }
     }
 

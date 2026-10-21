@@ -40,7 +40,7 @@
 use exa_formats::roles::{Dialogue, NODE_ENTRY, NODE_NOT_ENTRY, Name, Node, RoleDb};
 
 use crate::bubbles::{Bubbles, Speaker};
-use crate::builtins::Host;
+use crate::builtins::{self, Host};
 use crate::cast::{Cast, Character, Memory};
 use crate::interp::{self, Context};
 use crate::topics::{self, MemoryKey};
@@ -624,6 +624,10 @@ impl Host for SceneHost<'_, '_> {
     }
     fn locale(&self) -> u32 {
         self.scene.locale
+    }
+    fn in_zone(&self, actor: u32, zone: i32) -> bool {
+        self.character(actor)
+            .is_some_and(|c| builtins::zone_marker_matches(zone, &c.zones))
     }
     fn add_action(&mut self, actor: u32, action: u32) {
         if let Some(c) = self.character_mut(actor) {

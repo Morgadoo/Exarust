@@ -5,7 +5,7 @@
 //! [`ScriptPlugin`] loads the role database and the narrator graph from the
 //! installation, keeps the session's conversations, and steps them each
 //! frame on the virtual clock. Other systems talk to it through messages:
-//! [`Narrate`], [`Talk`], [`PickReply`] in, [`ScriptEffect`] out.
+//! [`Narrate`], [`NarrateText`], [`Talk`], [`PickReply`] in, [`ScriptEffect`] out.
 //!
 //! See `README.md` next to this crate and `docs/PLAN.md`.
 
@@ -32,6 +32,7 @@ impl Plugin for ScriptPlugin {
         app.init_resource::<Conversations>()
             .add_message::<Narrate>()
             .add_message::<Talk>()
+            .add_message::<NarrateText>()
             .add_message::<PickReply>()
             .add_message::<ScriptEffect>()
             .add_systems(
@@ -100,6 +101,14 @@ pub struct Narrate {
     pub delay: u32,
 }
 
+/// Show narrator text without a graph (after `delay` ms; the original uses
+/// this for the plain-text narrator lines of the player controls).
+#[derive(Message, Debug, Clone)]
+pub struct NarrateText {
+    pub text: String,
+    pub delay: u32,
+}
+
 /// The player talks to a character (opens the reply panel).
 #[derive(Message, Debug, Clone, Copy)]
 pub struct Talk(pub u32);
@@ -135,6 +144,7 @@ fn run_conversations(
     scripts: Res<Scripts>,
     mut conversations: ResMut<Conversations>,
     mut narrate: MessageReader<Narrate>,
+    mut narrate_text: MessageReader<NarrateText>,
     mut talk: MessageReader<Talk>,
     mut pick: MessageReader<PickReply>,
     mut effects: MessageWriter<ScriptEffect>,
@@ -164,6 +174,9 @@ fn run_conversations(
     };
     for n in narrate.read() {
         engine.narrate(&mut scene, Name::from_bytes(n.topic.as_bytes()), n.delay);
+    }
+    for n in narrate_text.read() {
+        engine.narrate_text(&mut scene, n.text.as_bytes(), n.delay);
     }
     for t in talk.read() {
         engine.talk(&mut scene, t.0);

@@ -29,6 +29,8 @@ struct World {
     activated: Vec<(Name, i32)>,
     witnessed: Vec<u32>,
     started: Vec<(Option<u32>, Option<u32>, Name)>,
+    locale: u32,
+    zones: HashMap<u32, Vec<builtins::ZoneMarker>>,
 }
 
 impl Host for World {
@@ -118,6 +120,14 @@ impl Host for World {
     }
     fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
         self.started.push((a, b, topic));
+    }
+    fn locale(&self) -> u32 {
+        self.locale
+    }
+    fn in_zone(&self, a: u32, zone: i32) -> bool {
+        self.zones
+            .get(&a)
+            .is_some_and(|m| builtins::zone_marker_matches(zone, m))
     }
 }
 
@@ -543,4 +553,29 @@ fn start_dialogue_carries_the_first_two_actors() {
     let mut empty: Context<u32> = Context::new(Vec::new());
     run(&mut w, &mut empty, "StartDialogue(Wake);");
     assert_eq!(w.started[1], (None, None, w.started[1].2));
+}
+
+/// `InZone` checks the locale and then a zone marker of the id within its
+/// radius and 10 cm of height.
+#[test]
+fn in_zone_reads_the_locale_and_the_marker() {
+    let mut w = World {
+        locale: 2,
+        ..World::default()
+    };
+    w.zones.insert(
+        GOLEM,
+        vec![builtins::ZoneMarker {
+            kind: builtins::ZONE_MARKER_TYPE,
+            id: 9,
+            horizontal_sq: 100.0,
+            radius: 10.0,
+            vertical: 0.0,
+        }],
+    );
+    let mut c = ctx();
+    assert_eq!(run(&mut w, &mut c, "result = Actor[0].InZone(2, 9);"), 1);
+    assert_eq!(run(&mut w, &mut c, "result = Actor[0].InZone(1, 9);"), 0);
+    assert_eq!(run(&mut w, &mut c, "result = Actor[0].InZone(2, 8);"), 0);
+    assert_eq!(run(&mut w, &mut c, "result = Actor[1].InZone(2, 9);"), 0);
 }

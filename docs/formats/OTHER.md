@@ -2023,6 +2023,27 @@ when the branch ends; bits 9–10 the highest hostility it is meant for; bits
 4–8 attitude bands (stored, not tested). Text is Windows-1252; `{…}` groups in
 lines are script expressions (`{Actor[1].Name}`).
 
+### Topic memory at run time
+
+Each dialogue keeps one u32 per node in the owner's relation record about
+the partner, under a relation-role entry and a block key (the stores in
+`exa_script::topics`):
+
+- a role-to-role graph: entry = the aimed-at role (the graph's target), key
+  = the owner's role;
+- a relation role's own graph: entry = the relation role, key = the graph's
+  target;
+- `ActivateTopicN` aimed at no role: entry 0, key = the role.
+
+The stored block is a u32 node count word followed by one word per node.
+When a dialogue loads a block whose count differs from its node count, the
+requested count is written into the first slot and the stored words follow
+it (the node words shift by one); an equal count copies the block straight.
+The dialogue search looks a role-to-role block up under the word the stored
+role list has at the role's slot, reading that list as 12 bytes per entry
+even when a role's variable values follow it (a quirk kept from the
+original).
+
 ## Material libraries (`.rml`)
 
 Packs of material payloads (the same layout as `BA01` payloads, see

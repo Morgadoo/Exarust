@@ -22,7 +22,7 @@ bubbles, scripted objects, and the story/journal state.
 `ScriptPlugin` loads `charroles.rdb` and `narrator.rcd` (`Scripts`) once
 the installation is open, keeps the session's `Conversations` (engine,
 cast, player, world clock base, locale) and steps the engine every frame on
-`Time<Virtual>`. Messages: `Narrate`, `Talk`, `PickReply` in;
+`Time<Virtual>`. Messages: `Narrate`, `NarrateText`, `Talk`, `PickReply` in;
 `ScriptEffect` (game events, inventory, checkpoint saves, witness roles,
 `StartDialogue`, script errors) out.
 
