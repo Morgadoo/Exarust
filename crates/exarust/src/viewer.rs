@@ -1117,13 +1117,21 @@ fn fly_camera(
     t.translation += dir.normalize_or_zero() * cam.speed * boost * time.delta_secs();
 }
 
+/// Frames the `--screenshot` waits for the texture loader to finish
+/// before it takes the picture anyway (about 30 s at 60 fps).
+const SCREENSHOT_TEXTURE_WAIT_FRAMES: u32 = 1800;
+
 /// Saves the `--screenshot` after `--frames` frames of the scene (frames
 /// behind the loading screen do not count, nor, with a scripted pause
-/// armed, frames before the simulation pauses), then exits.
+/// armed, frames before the simulation pauses, nor, up to
+/// [`SCREENSHOT_TEXTURE_WAIT_FRAMES`], frames while textures are still
+/// streaming in, so the picture does not show placeholders), then exits.
 fn screenshot_after_frames(
     mut commands: Commands,
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    textures: Option<Res<exa_assets::TextureLoader>>,
+    mut texture_waits: Local<u32>,
     control: Res<exa_game::sim_control::SimControl>,
     time: Res<Time<Virtual>>,
     mut frames: Local<u32>,
@@ -1133,6 +1141,12 @@ fn screenshot_after_frames(
         return;
     };
     if loading.is_some() || (control.waits_for_pause() && !time.is_paused()) {
+        return;
+    }
+    if textures.is_some_and(|loader| !loader.is_idle())
+        && *texture_waits < SCREENSHOT_TEXTURE_WAIT_FRAMES
+    {
+        *texture_waits += 1;
         return;
     }
     *frames += 1;
