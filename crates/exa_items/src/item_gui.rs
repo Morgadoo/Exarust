@@ -313,6 +313,59 @@ pub struct SocketCommit {
     pub ar: bool,
 }
 
+/// What a card control's event procedure answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlAnswer {
+    /// The original returns 0.
+    Nothing,
+    /// The original returns its "ignore" code.
+    Ignore,
+    /// The original returns 1.
+    Hit,
+    /// The original runs its press callback and returns 0.
+    Press,
+}
+
+/// The rating-dot and value controls: a draw draws and answers nothing, a
+/// hover always answers "ignore", anything else answers nothing.
+pub fn value_control_event(event: u32) -> ControlAnswer {
+    if event > 1 {
+        if event == EVENT_HOVER {
+            return ControlAnswer::Ignore;
+        }
+        if event == EVENT_DRAW {
+            return ControlAnswer::Nothing;
+        }
+    }
+    ControlAnswer::Nothing
+}
+
+/// The item-icon cell: a hover answers "hit" or "ignore"; a left press with
+/// the drag flag answers `Press` when a handler exists, else nothing; a draw
+/// and every other event answer nothing.
+pub fn icon_cell_event(event: u32, hit: bool, action: u32, handler: bool) -> ControlAnswer {
+    if event <= 1 {
+        return ControlAnswer::Nothing;
+    }
+    match event {
+        EVENT_HOVER => {
+            if hit {
+                ControlAnswer::Hit
+            } else {
+                ControlAnswer::Ignore
+            }
+        }
+        EVENT_MOUSE => {
+            if action & 7 == 1 && action & EVENT_DRAG_OVER != 0 && handler {
+                ControlAnswer::Press
+            } else {
+                ControlAnswer::Nothing
+            }
+        }
+        _ => ControlAnswer::Nothing,
+    }
+}
+
 /// One drawn crystal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrystalIcon {
@@ -750,6 +803,34 @@ mod tests {
         assert_eq!(s.knob, 100);
         assert_eq!((s.left, s.right), (Some((11, 107)), Some((115, 211))));
         assert_eq!(slider(0, 200, 0.0).left, None);
+    }
+
+    #[test]
+    fn the_card_controls_answer_their_events() {
+        assert_eq!(value_control_event(EVENT_DRAW), ControlAnswer::Nothing);
+        assert_eq!(value_control_event(EVENT_HOVER), ControlAnswer::Ignore);
+        assert_eq!(value_control_event(EVENT_MOUSE), ControlAnswer::Nothing);
+        assert_eq!(value_control_event(1), ControlAnswer::Nothing);
+        assert_eq!(
+            icon_cell_event(EVENT_HOVER, true, 0, false),
+            ControlAnswer::Hit
+        );
+        assert_eq!(
+            icon_cell_event(EVENT_HOVER, false, 0, false),
+            ControlAnswer::Ignore
+        );
+        assert_eq!(
+            icon_cell_event(EVENT_MOUSE, true, 0x2001, true),
+            ControlAnswer::Press
+        );
+        assert_eq!(
+            icon_cell_event(EVENT_MOUSE, true, 0x2001, false),
+            ControlAnswer::Nothing
+        );
+        assert_eq!(
+            icon_cell_event(EVENT_DRAW, true, 0, true),
+            ControlAnswer::Nothing
+        );
     }
 
     #[test]
