@@ -27,27 +27,44 @@ is bound by the CPU (about 9 FPS) and is next.
 
 ## Frame pacing
 
-The original's frame tick measures real time from the previous frame's
-start, sleeps to a target interval and only then takes the frame's game
-delta. The target is 32 ms while the window is unfocused; otherwise the
-display's refresh rate when the cap is automatic, the refresh rate again
-when a fixed cap is at or above it, and the fixed rate below it. The fixed
-rate's whole-millisecond period truncates (`1000/fps`, one millisecond
-early); the display's period rounds to nearest, ties to even, then loses
-1 ms. Time spent under a fixed FPS setting is added to a paused-time
-accumulator, so game time advances by exactly one capped interval a frame;
-pausing adds the whole frame.
+The original's frame tick reads its millisecond clock, sleeps until a
+target interval has passed since the previous frame's start, reads the
+clock again and only then takes the frame's real and game deltas. The
+target comes from the `FPSLimit` cap (default −1, automatic): 32 ms while
+the window is unfocused; with vertical sync the display's period less 1 ms
+for an automatic cap or a cap at or above the refresh rate, and the cap's
+own period less one below it; without vertical sync the period of the
+refresh rate (at least 120 Hz) for an automatic cap and the cap's own
+period otherwise, less one. Every period is `1000 / rate` in double
+precision rounded to nearest, ties to even, so 60 frames a second hold
+16 ms. A refresh rate below 30 Hz counts as unknown (0): under vertical
+sync that divides by zero and holds nothing. A second, fixed-rate path
+(`1000 / fps` truncated, less one, crediting the paused-time accumulator
+with the frame less `1000 / fps`) is never taken: nothing in the shipped
+executable sets its rate. A paused game adds the whole frame to the
+accumulator, so game time stops.
 
-`exa_game::frame` holds these rules (`FramePacer`, `FrameClock`) with tests,
-and `exarust` applies them only when `--max-fps` asks for a cap: with no cap
-the swap chain's vertical sync and the GPU already set the pace, and adding
+After the frame, the tick picks how long the message loop may wait for
+input before the next tick, from the redraw flags every view and the GUI
+report (bits 4–7 also count as bits 8–11): no wait for an immediate
+redraw, 1 ms (32 unfocused) for an active interface, 32 ms (64) for an
+animation and 32 ms (1024) when idle; a minimised window always waits, at
+least 32 ms, and draws nothing.
+
+`exa_game::frame` holds these rules (`FramePacer`, `FrameClock`,
+`idle_wait`, the periodic timer table, the deferred-call ring and the
+logger's presentation levels) with tests. `exarust` applies the cap only
+when `--max-fps` or the settings file's `FPSLimit` asks for one: with no
+cap the swap chain's vertical sync and the GPU already set the pace, and
 the original's pre-frame sleep would only take time from the frame. A
-background window uses winit's 32 ms reactive update. The rest of the tick's
-work is Bevy's schedules: the fixed 83 Hz ticks run up to four steps behind
-a slow frame (`exa_physics::MAX_STEPS_BEHIND`, 48 ms), and the periodic
-timer table, the deferred-call ring and the redraw-driven idle wait are
-engine-internal in the original, modelled in `exa_game::frame` and not
-needed by Exarust's event-driven winit loop.
+background window uses winit's low-power reactive update, woken by the
+window's own events and otherwise every 32 ms (unattended screenshot and
+fixed-frame runs keep running at full speed). The rest of the tick's work
+is Bevy's schedules: the fixed 83 Hz ticks run up to four steps behind a
+slow frame (`exa_physics::MAX_STEPS_BEHIND`, 48 ms), and the timer table,
+the deferred-call ring and the redraw-driven wait are engine-internal in
+the original, modelled in `exa_game::frame` and not needed by Exarust's
+event-driven winit loop.
 
 ## Frame profiler
 

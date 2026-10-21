@@ -35,13 +35,22 @@ drawn four times at window resolution:
 Bloom and the final pass then run at window resolution. Supersampling also
 turns on the final pass's sharpen.
 
-The level table is (sub-views, render scale): 1 at 1, 2 at 3/4, 3 at 2/3,
-4 at 3/5 and 8 at 1/2, the jitter entries above being the four the 4×
-level uses. Each sub-view's projection is offset by
-`2·jitter·half-extent / size` in NDC. The shared buffer is twice each
-sub-view's size (`exa_render::view` holds the table, the jitters and the
-projection arithmetic, pinned by tests). Supersampling also sets the final
-pass's sharpen to 1.5 × (0.075·level + 0.4).
+The level table gives each level its sub-view count and first jitter
+entry: levels 0–4 draw 1, 2, 3, 4 and 8 sub-views (levels 5–7 of the table,
+15, 24 and 66, are beyond the settings' range), up to four a pass, one per
+quadrant. Each sub-view's frustum edges move by `2·half-extent·jitter /
+size` (single precision, `size` the render size on that axis). The render
+size is the window's: the view's separate render-scale mode, which would
+draw the sub-views at `3·trunc(w/4)`, `2·trunc(w/3)`, `3·trunc(w/5)` or
+`trunc(w/2)` and offset the resolve by 0, −1/3, −0.2 or −0.5, starts at 0
+and is not changed in play. The shared buffer is twice the render size.
+The final pass's sharpen is 1.5 × (0.075·level + 0.4) in double precision.
+The view's projection takes half the field of view in single precision,
+divides the near distance by cos/sin of it (the cosine in double precision,
+the sine in single) and multiplies the half height by the aspect in single
+precision. `exa_render::view` holds the table, the jitters, the render
+scale, the projection, the point-to-window projection, the framebuffer
+viewport and region stacks and the view copy's quad, pinned by tests.
 
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
@@ -173,35 +182,43 @@ The original renders a frame in one fixed walk over its per-material
 render-state lists (`exa_render::passes` holds the model and the two list
 orderings, pinned by tests):
 
-1. the scene environment's sky;
-2. the alpha-tested class (`0x8000`) and the opaque class, both with depth
-   writes on;
-3. the after-opaque hook lists;
-4. depth writes off;
-5. the `0x10000` class, then the frame copy refracting surfaces read;
-6. the copy's hook list;
-7. the blended class, one list per scene sector (or one for a sectorless
-   scene);
-8. the particles' depth pre-pass (depth writes back on) and their colour;
-9. the closing hooks, then depth writes back on.
+1. the environment's per-frame setup (fog, background colour) and the
+   clear; the environment's sky hooks around the lists are empty;
+2. the alpha-tested class (`0x8000`), then the opaque class, both with
+   depth writes on;
+3. the after-opaque hook list;
+4. two more hook lists with depth writes on, then the depth test on and
+   depth writes off;
+5. the `0x10000` class (decals) with every view's projection `[2][2]` term
+   raised by 2·10⁻⁵, a depth bias that lasts through the blended lists;
+6. the region scissor off, then a hook list (the frame copy refracting
+   surfaces read is reached through a hook, by the earlier notes; the walk
+   itself does not copy);
+7. the blended class, one list for a sectorless scene or one per scene
+   sector, still biased; the bias is removed after them;
+8. a hook list, then the particles: a depth-only pre-pass (colour writes
+   off, depth writes on) and their colour (depth writes off);
+9. the environment's weather effects, the closing hook list, then depth
+   writes back on.
 
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,
 and when none is left it takes the last unused state and moves to its key.
 This is a grouping, not an ascending sort. The blended list is selected by
-the lowest blend layer first and then the highest opacity; within a layer
-the first state found by layer alone does not set the opacity that later
-states of the layer compare against.
+the lowest blend layer (bits 4–7 of the blend word) first and then the
+highest opacity; the opacity to beat starts at −1 for each slot and is
+reset neither by a lower layer nor by the first state found by layer
+alone, so an opacity seen earlier in the scan still has to be beaten.
 
 Exarust lets Bevy's phases take the place of the fixed walk: `Opaque3d` for
 the opaque class, `AlphaMask3d` for the alpha-tested one and `Transparent3d`
-for the depth-write-free classes and the particles. The sky is Bevy's
-atmosphere or the environment camera; the frame copy and the hook lists
-have no separate node yet. `exa_cube_shadows` and `exa_gi` run in the
-`Core3d` prepass, and the post chain follows the transparent phase. The
-original's list order inside a phase is not reproduced by Bevy's batching
-(the same materials and meshes batch in any order); draw order between
-different materials follows the phase's own sort.
+for the depth-write-free classes and the particles. The clear is the
+camera's clear colour; the decal bias, the particles' depth pre-pass and
+the hook lists have no separate node yet. `exa_cube_shadows` and `exa_gi`
+run in the `Core3d` prepass, and the post chain follows the transparent
+phase. The original's list order inside a phase is not reproduced by Bevy's
+batching (the same materials and meshes batch in any order); draw order
+between different materials follows the phase's own sort.
 
 ## Surfaces
 

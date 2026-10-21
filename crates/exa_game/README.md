@@ -5,27 +5,30 @@ Game modes and session flow: Story, Arena (company management, matches, seasons)
 **Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: the arena career (`career`) has the company, the roster, matches, a shop line priced at 1, 12, 144 or 1440 copper with a quartered sale, wages, the season, overnight rest and a trainer's lesson. One effect per thaumaturgy domain (`thaum`) and an Exarust session save (`session`) are in; `thaum::{casting, force, energy, displacement}` run the Force, Energy and Displacement casts with their gates, prices, slots and AI advice, and `thaum::{arcs, barricade, wisps}` the electric arcs, the force barricade and the displacement wisps, live in the game through `thaum::live` (`--debug-arcs`, `--debug-barricade`, `--debug-wisps`; [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md)). The name klean selects emblem background 52 and design 81. A practice fight (`practice`) advances by one and stops at 8: novice names opponent01 through opponent08, expert names opponent09 through opponent16, and red gains a tenth of the maximum. The partner is not spawned. An unwatched match draws a team from `(count × 0.5 + 0.5) × strength sum`; mode 16 leaves the player's team out. A bracket clears losing ids. The first group keeps a forced id and does not step the roll. A later group keeps the team whose weights pass the high half of the weight total times the stepped roll. A tournament field draws 16 of the 19 companies. Roll 0 ends at 0x4b157bf0. Roll 1 ends at 0xead32bb1. A day chooses six of seven templates. Rolls 0 and 1 end at 0x1210d4e5. Roll 4 ends at 0xb761a41e. A performance counter replaces the roll by reversing its low 32 bits. A copied match multiplies the fee and the prize by one more than the slot. A seeded unit draw tempers 624 words. Seed 5489 starts at 0xd091bb5c. A record copy writes plain fields, the gaps, and the tail. Managed strings are not in. Before a match the first specialist under 700 health is removed and the death count rises. Health from 700 through 64999 leaves without that rise. Health of 65000 stays. A combatant stays. Kit release is not in. In-game menu command 4 in arena dismisses a child whose flags include 0xce100000. That child releases a capture and clears style bit 0x20 when it holds one. A remaining capture publishes its code and name. Bit 0x8000 passes its low byte as the shape. Shape 0 shows the default image when it differs and is not zero, and stamps the clock. Shape 7 shows its record. The child clears a hover, closes the task's other children that name it, then closes its own children from the first to the last with argument 0, unless it is already closed. After the lists, a focus is counted once before argument 1 copies ten hand words, when a focus is set or the mask shares bit 0. A session mark of 1 becomes 0, a flag becomes 0, and a code becomes 4. Side 0 copies sixteen words from the first bank when its flag is set. A ready install of index 1 shows that record once and runs its hook. Index 0 shows a fallback and stamps the clock. A shown value is passed with two platform words. A shown value activates the action set. The Steam library is not loaded. The gate hook sets its flags to 1. The watch hook stores a stamp of 0 without bit 0x2000, and a leave enters the session. A clear gate counts a pick. A taken item sets flags 5. A hold byte does not pick. A parent equal to the world counts an open. A fast aim copies its place. A miss with the hold byte clears the aimed word. A taken item sets click flags 0x11. A hover stores flags 0x15. A record of kind 0x10010a or 0x10010d whose link is the world counts one open. A different link does not. An item id of 0 does not count a kind call. Bit 0x80000000 searches the high table and bit 0x40000000 searches the wide table, after those bits are dropped. A span that holds 0x20000 counts one kind call. A cursor at the view edge clears the hit. A marked item drops a held count above 0, and byte 1 closes a pointer. The first pane tagged 0xce1c2013 is shown. A scene keeps the last positive body. A new pane doubles the row before the slot and clamps the place. The ray starts at 4000 along z. A centre at 100 leaves reach 100, and a centre at 500 is left. A centre child sits at half the spare. A free camera ray, nested children, and the focus method body are not in. A cleared mark registers code 0x8001 unless the hold byte is set. Raising the mark drops the hooks. An open world sets the side from its byte. Raising the mark to 1 installs index 0 and does not copy a bank. A mask without a focus does not count it. A shown child hides and the redraw word gains bits 0 and 1. A pinned child raises a notice and still closes them. The command then runs that leave, asks for a save that does not abort on low health, marks the hub busy, and sets the phase to transitioning. Drawing the cursor image and the other menu commands are not in. Menus, the other emblem controls, and the original's packages are not.
 
 The platform layer's rules live here as plain models: `frame` holds the
-original's frame-rate cap (`FramePacer`: unfocused 32 ms, the display's
-rate rounded to nearest with ties to even, a fixed cap below it truncated
-and 1 ms early), the real/game clock with its paused-time accumulator
+original's frame-rate cap (`FramePacer`: unfocused 32 ms, else the
+display's or the cap's period rounded to nearest with ties to even and
+1 ms early), the real/game clock with its paused-time accumulator
 (`FrameClock`), the periodic timer table (intervals scaled by the time
 multiplier, re-armed from the frame time, rescheduled from the interval),
-the 128-slot deferred-call ring, the redraw-flag idle waits (1, 32, 64 or
-1024 ms), the logger's presentation levels (status line, timed overlay,
-message box, file only), the sixteen-entry newest-first status history and
-the sixteen-line timed overlay whose lines stay two seconds plus fifty
-milliseconds a character. `window` holds the display-mode list (modes at
-least 640 wide, one per size, ordered by area) and work-area fitting, the
-640 × 480 minimum, the windowed/borderless/exclusive styles with their
-winit modes, the swap interval's present mode (immediate, plain Fifo or
-adaptive FifoRelaxed), the Alt+Enter toggle and the full-screen setting's
-style.
-Tests pin the pacing arithmetic, the timer and ring orders, the idle rule,
-the display-mode ordering and the fitting. `exarust::frame_loop` applies
-the pacing, the exclusive display mode and Alt+Enter; the other models are
-documentation of the original's loop, which winit's event loop replaces.
-Rules: [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md) (Frame pacing)
-and [`docs/RENDERING.md`](../../docs/RENDERING.md) (Supersampling).
+the 128-slot deferred-call ring (127 calls; once wrapped only its head runs
+a tick), the redraw-flag idle wait (`idle_wait`: 1, 32, 64 or 1024 ms, none
+for an immediate redraw, at least 32 ms minimised), the logger's
+presentation levels (status line, timed overlay, message box, file only;
+level 5 skips the file), the sixteen-entry newest-first status history and
+the fifteen-line timed overlay whose `title : message` lines stay two
+seconds plus fifty milliseconds a byte and go one a tick. `window` holds the
+display-mode list (modes at least 640 wide, every refresh rate per size,
+the original's exchange sort by area), the refresh rate (unknown below
+30 Hz), work-area fitting, the 640 × 480 minimum track size, the full-screen
+rule (`fullscreen_mode`: borderless over the desktop, exclusive only for a
+listed `ScreenWidth`/`ScreenHeight` other than the desktop's), the swap
+interval's present mode (immediate or plain Fifo) and the Alt+Enter toggle.
+Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
+rule and the present mode, `exarust::frame_loop` the pacing, the focus key
+release and Alt+Enter; the other models document the original's loop, which
+winit's event loop replaces. Rules:
+[`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md) (Frame pacing) and
+[`docs/UI.md`](../../docs/UI.md) (Settings options).
 
 The save game (`session`, `slots`) writes `ExanimaNNN.rsg` or
 `ArenaNNN.rsg` packages in the original's container: `#playerdata` with

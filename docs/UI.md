@@ -1329,10 +1329,14 @@ name keeps its old label (Exarust's [`Scale::text`] returns `None`).
 
 Window: the original's window-mode checkbox is the inverse of its full
 screen flag; setting it and pressing Apply toggles full screen immediately.
-Exarust asks winit for an exclusive full-screen mode at the requested size
-when the display lists it, as the original changes the display mode, and
-keeps the current mode when it does not; a platform without exclusive
-full screen falls back to a borderless window.
+The original's full screen is a window over the desktop; it changes the
+display mode first only when `ScreenWidth`/`ScreenHeight` ask for a size
+other than the desktop's, and keeps the desktop's size ("Display mode not
+supported.") when the display refuses it. Exarust gives a borderless window
+over the primary display, and exclusive full screen at that video mode when
+the settings ask for another size the display lists
+(`exa_game::window::fullscreen_mode`). Wayland has no primary monitor, so
+there full screen is always borderless.
 
 ### Opening the page
 
