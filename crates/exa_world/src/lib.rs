@@ -21,6 +21,7 @@ pub mod scene_env;
 pub mod scene_nodes;
 pub mod shadow_links;
 pub mod start;
+pub mod teleporters;
 pub mod terrain;
 
 use bevy::prelude::*;
@@ -60,6 +61,38 @@ pub struct PartBounds {
 #[derive(Component)]
 pub struct LevelRoot {
     pub name: String,
+}
+
+/// A placed object of the object database, on its model root: the record
+/// id and the condition byte of its placement word (bits 16..23), which a
+/// power crystal's charge is.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedItem {
+    pub id: u32,
+    pub condition: u8,
+}
+
+impl PlacedItem {
+    /// The item and placement.
+    pub fn of(item: &Item, object: &exa_formats::rfc::PlacedObject) -> Self {
+        Self {
+            id: item.id,
+            condition: ((object.flags >> 16) & 0xFF) as u8,
+        }
+    }
+
+    /// The id without the local/world tier bits.
+    pub fn base_id(&self) -> u32 {
+        self.id & teleporters::OBJECT_ID_MASK
+    }
+}
+
+/// A teleporter or reconstruction device placed in a level: its operative
+/// kind and record. The `[` child under its root marks the crystal slot.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TeleportDevice {
+    pub kind: u8,
+    pub operative: exa_formats::objdb::Operative,
 }
 
 /// What a level spawn produced.
@@ -263,6 +296,7 @@ fn spawn_placed_object(
             transform_from_rows(&object.transform),
             Name::new(item.name.clone()),
             room_view::PendingRoom::default(),
+            PlacedItem::of(item, object),
             ChildOf(parent),
         ));
         return Some(PlacedSpawn::Placed {
@@ -293,11 +327,22 @@ fn spawn_placed_object(
     commands.entity(e).insert((
         Name::new(item.name.clone()),
         room_view::PendingRoom::default(),
+        PlacedItem::of(item, object),
         ChildOf(parent),
     ));
     // Its door and operative records, for the signals and mechanisms.
     if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
         commands.entity(e).insert(records);
+    }
+    if let Some(operative) = item.operative.filter(|o| {
+        o.class == exa_formats::objdb::operative::DEVICE
+            && (o.kind == exa_formats::objdb::operative::TELEPORTER
+                || o.kind == exa_formats::objdb::operative::RES_DEVICE)
+    }) {
+        commands.entity(e).insert(TeleportDevice {
+            kind: operative.kind,
+            operative,
+        });
     }
     // A door, lever or push surface keeps its body for its mechanism.
     let placement = if item.mechanism().is_some() {

@@ -112,7 +112,15 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
-tests pin the "Torch" clips' arm on the body model), the per-tick body trace
+tests pin the "Torch" clips' arm on the body model), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
+request finds the device's crystal slot and the placed object on it, opens
+the destination screen with the record's atlas and level ids, or starts the
+scan with its sound, 1600 ms delay and glow pulse and raises the transition
+latch; a level load's `ArriveAtLevel` strips the matching character once,
+clearing its hand and worn data and leaving just under half health; the
+device's 12 ms clock, the scan's marker and the sound and effect requests
+are hooks for the effects modules, whose wardrobe has no undress pass yet),
+the per-tick body trace
 (`trace`, with the foot contacts' states and anchors and the ankles,
 ending with the condition word and the swing's rate, strength and state
 word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):

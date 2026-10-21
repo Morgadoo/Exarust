@@ -210,10 +210,17 @@ pub fn door_sound(letter: u8, suffix: &str) -> String {
 
 /// Operative classes and kinds (the operative section's first two bytes).
 pub mod operative {
+    /// The class of the devices that read an item on their `[` slot:
+    /// teleporters, reconstruction devices and the pedestal hand.
+    pub const DEVICE: u8 = 2;
     pub const KEY: u8 = 1;
     pub const LEVER: u8 = 3;
     /// Buttons and pressure plates.
     pub const PUSH_SURFACE: u8 = 5;
+    /// A teleporter: the destination screen.
+    pub const TELEPORTER: u8 = 0x0F;
+    /// A reconstruction device: the scan before a transition.
+    pub const RES_DEVICE: u8 = 0x12;
     /// A deferred job run on a signal: kind [`FIRE`] or [`LIGHT`].
     pub const JOB: u8 = 6;
     /// Forwards signals: kind 0 and 3 combine inputs into a code, 1
@@ -230,6 +237,10 @@ pub mod operative {
     /// Push-surface kind: the signals are inverted.
     pub const PUSH_INVERTED: u8 = 2;
 }
+
+/// A teleporter's record holds up to this many destination level ids,
+/// from `+0x20` of its operative body.
+pub const DESTINATIONS: usize = 7;
 
 /// The operative section of an object (`0x10000`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -249,13 +260,29 @@ pub struct Operative {
     pub target: u32,
     /// The second target, or a relay's code.
     pub second: u32,
+    /// A teleporter's symbol atlas name (16 bytes, zero padded), from
+    /// `+0x10` of the body; empty when the section is short.
+    pub atlas: [u8; 16],
+    /// A teleporter's destination level ids (the locale list's ids), from
+    /// `+0x20` of the body; 0 for an empty entry.
+    pub destinations: [u32; DESTINATIONS],
 }
 
 impl Operative {
     fn parse(b: &[u8]) -> Option<Self> {
+        let full = b.get(..60);
         let b = b.get(..16)?;
         let u16_at = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().expect("2 bytes"));
         let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"));
+        let mut atlas = [0u8; 16];
+        let mut destinations = [0u32; DESTINATIONS];
+        if let Some(full) = full {
+            atlas.copy_from_slice(&full[0x10..0x20]);
+            for (i, d) in destinations.iter_mut().enumerate() {
+                let at = 0x20 + 4 * i;
+                *d = u32::from_le_bytes(full[at..at + 4].try_into().expect("4 bytes"));
+            }
+        }
         Some(Self {
             class: b[0],
             kind: b[1],
@@ -264,12 +291,30 @@ impl Operative {
             time: u16_at(6),
             target: u32_at(8),
             second: u32_at(12),
+            atlas,
+            destinations,
         })
     }
 
     /// A lever's auto-return time in milliseconds.
     pub fn return_ms(&self) -> u32 {
         u32::from(self.time) * 100
+    }
+
+    /// The teleporter's symbol atlas name, without its zero padding. A name
+    /// that is not UTF-8 reads as empty.
+    pub fn atlas_name(&self) -> &str {
+        let end = self
+            .atlas
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.atlas.len());
+        std::str::from_utf8(&self.atlas[..end]).unwrap_or("")
+    }
+
+    /// The non-zero destination level ids, in the record's order.
+    pub fn reachable(&self) -> impl Iterator<Item = u32> + '_ {
+        self.destinations.iter().copied().filter(|&id| id != 0)
     }
 }
 
@@ -384,6 +429,20 @@ impl Item {
     /// trousers, hose and braies do.
     pub fn covers_groin(&self) -> bool {
         self.occupancy[0] as u8 & GROIN != 0
+    }
+
+    /// The record of a teleporter: a device whose operative kind opens the
+    /// destination screen.
+    pub fn teleporter(&self) -> Option<Operative> {
+        self.operative
+            .filter(|o| o.class == operative::DEVICE && o.kind == operative::TELEPORTER)
+    }
+
+    /// The record of a reconstruction device: a device whose operative kind
+    /// scans a body before a transition.
+    pub fn res_device(&self) -> Option<Operative> {
+        self.operative
+            .filter(|o| o.class == operative::DEVICE && o.kind == operative::RES_DEVICE)
     }
 
     /// The mechanism its model's rigid body becomes: a lever or push
@@ -835,6 +894,38 @@ mod tests {
         )
         .unwrap();
         assert!(short.operative.is_none());
+    }
+
+    /// A teleporter's operative body names its symbol atlas and the level
+    /// ids its screen offers: the four ids of the shipped teleporter, with
+    /// the unused entries zero.
+    #[test]
+    fn teleporter_destinations() {
+        let mut body = vec![operative::DEVICE, operative::TELEPORTER, 0x40, 0];
+        body.extend([0; 12]);
+        body.extend(padded("PrtlSmblA.rfi", 16));
+        for id in [7u32, 10, 12, 13, 0, 0, 0] {
+            body.extend(id.to_le_bytes());
+        }
+        assert_eq!(body.len(), 60);
+        let item = Item::parse(0x555, &section(OPERATIVE, &body)).unwrap();
+        let o = item.teleporter().unwrap();
+        assert_eq!(o.class, operative::DEVICE);
+        assert_eq!(o.flags, 0x40);
+        assert_eq!(o.atlas_name(), "PrtlSmblA.rfi");
+        assert_eq!(o.reachable().collect::<Vec<_>>(), [7, 10, 12, 13]);
+        assert!(item.res_device().is_none());
+        // The same body with the reconstruction device's kind: no screen.
+        body[1] = operative::RES_DEVICE;
+        let item = Item::parse(0x556, &section(OPERATIVE, &body)).unwrap();
+        assert!(item.teleporter().is_none());
+        assert_eq!(item.res_device().unwrap().kind, 0x12);
+
+        // A short operative body has no atlas and no destinations.
+        let short = Item::parse(1, &section(OPERATIVE, &body[..16])).unwrap();
+        let o = short.operative.unwrap();
+        assert_eq!(o.atlas_name(), "");
+        assert_eq!(o.reachable().count(), 0);
     }
 
     /// The operative class decides before the door section: a lever with a

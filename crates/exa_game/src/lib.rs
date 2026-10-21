@@ -34,6 +34,7 @@ pub mod shell_draw;
 pub mod sim_control;
 pub mod stages;
 pub mod steering;
+pub mod teleporters;
 pub mod thaum;
 pub mod torch;
 pub mod trace;
@@ -71,6 +72,7 @@ impl Plugin for GamePlugin {
             trace::TracePlugin,
             effects::EffectsPlugin,
             thaum::live::ThaumEffectsPlugin,
+            teleporters::TeleportPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
