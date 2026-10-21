@@ -27,6 +27,7 @@
 | `corpus levels` | grids, props and placed characters of every level; placed humans covered at the groin and their worn items with a `Characters.rpk` model |
 | `corpus images` | every image by format word and storage; decodes the uncompressed ones and checks that RGB8 normal maps hold z in blue |
 | `corpus winding` | near-horizontal level faces up or down (grid pieces, level meshes, props), open downward faces, mirrored nodes |
+| `corpus colours` | per mesh pack: meshes with stored vertex colours, translucent and tinted ones, vertices with alpha below 255, meshes drawing a dirt-mode material (and the wound-blood mode) |
 | `nav <level> [--png out.png]` | the level's navigation grid built as the game builds it at load: size, inputs, columns by span count, floor, passable and open-sky cells per layer; the picture shows both layers ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)) |
 | `export-gltf <pack> <entry> <out.glb>` | static meshes, node hierarchy and materials with embedded PNG textures |
 | `shader [library] [material]` | the original GLSL a material's program expands to from `Resource.rpk`'s `shading.flb` (`shader common.rml cobweb02`), with `--lights`, `--quality`, `--shadow-quality`, `--supersample`, vertex-stream and environment options; `--warmup` lists the 29 warmed variants, `--all` every record of the library with its key words and program, `--dump DIR` writes the decoded entries, `--list` the shader library's entries (choose `--shader-library textures.flb` for the procedural textures) ([FLB.md](../../docs/formats/FLB.md)) |
