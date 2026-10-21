@@ -12,8 +12,8 @@
 //! dialogue uses (the aimed-at role, the owner's role), a relation role's
 //! dialogue (the relation role, the aimed-at role). Loading pads a shorter
 //! block with zeros; when the stored count differs from the dialogue's,
-//! the dialogue's own count word lands in the first slot and the stored
-//! words follow it, as in the original.
+//! the stored count word itself lands in the first node slot and the
+//! stored words follow it, as in the original.
 //!
 //! Evidence: the topic gate, the activation updater, the memory load and
 //! store of the run-time dialogue, the cooldown table (16 words), the
@@ -183,17 +183,14 @@ pub fn load(owner: &Character, at: MemoryKey, count: usize) -> (Option<Vec<u32>>
     if stored.len() == count {
         words.copy_from_slice(stored);
     } else {
-        // The original writes the requested node count into the first slot
-        // and copies the stored words behind it: the node words end up
-        // shifted by one, and the tail (or the excess) is cut.
-        if let Some(first) = words.first_mut() {
-            *first = count as u32;
-        }
-        let n = stored.len().min(count.saturating_sub(1));
-        for (i, &w) in stored.iter().take(n).enumerate() {
-            if let Some(slot) = words.get_mut(i + 1) {
-                *slot = w;
-            }
+        // The original's buffer is a count word and the node words. It
+        // writes the requested count into the count word, then copies the
+        // stored block from its own count word on, as many words as the
+        // block holds (at most the requested count): node 0 gets the
+        // stored count and the stored words follow, shifted by one.
+        let shifted = std::iter::once(stored.len() as u32).chain(stored.iter().copied());
+        for (w, s) in words.iter_mut().zip(shifted).take(stored.len().min(count)) {
+            *w = s;
         }
     }
     (Some(words), true)

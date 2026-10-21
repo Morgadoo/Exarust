@@ -2036,9 +2036,11 @@ the partner, under a relation-role entry and a block key (the stores in
 - `ActivateTopicN` aimed at no role: entry 0, key = the role.
 
 The stored block is a u32 node count word followed by one word per node.
-When a dialogue loads a block whose count differs from its node count, the
-requested count is written into the first slot and the stored words follow
-it (the node words shift by one); an equal count copies the block straight.
+When a dialogue loads a block whose count differs from its node count, its
+buffer's count word gets its own node count and the stored block is copied
+behind it from the block's count word on, as many words as the block holds
+(at most the node count): node 0 receives the stored count and node i the
+stored word i − 1, the rest zero. An equal count copies the block straight.
 The dialogue search looks a role-to-role block up under the word the stored
 role list has at the role's slot, reading that list as 12 bytes per entry
 even when a role's variable values follow it (a quirk kept from the
