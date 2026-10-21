@@ -579,6 +579,8 @@ material table, levels 0–3) times the set's weight, set 12 takes the
 plain plate below the palette's plate level and its plate above it, set 13
 the palette's mail, the others pick evenly; the colour follows the
 material's class and the layer's colour mode.
+The original's texture job reads the first seven layers only (the eighth is
+never looked at) and stops at the first layer whose mask the set lacks.
 
 **Occupancy table** at body `0x10`: a `u64` for each of bones 1..20 (bone b
 at `0x10 + 8(b − 1)`). Byte L is a bit mask of the bone's sub-parts the

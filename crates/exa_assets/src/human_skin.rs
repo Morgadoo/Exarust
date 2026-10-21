@@ -170,9 +170,15 @@ fn race_stem(entry: &str) -> String {
 }
 
 /// The race's skin textures the generated maps are made from: colour,
-/// normal and gloss, the men's versions and the first physique's normal map.
-pub fn race_textures(stem: &str) -> [String; 3] {
-    ["difm", "nrmm0", "spcm"].map(|suffix| format!("{stem}{suffix}"))
+/// normal and gloss, the men's or the women's versions (`difm`/`diff`,
+/// `nrmm0`/`nrmf0`, `spcm`/`spcf`) with the first physique's normal map.
+pub fn race_textures(stem: &str, female: bool) -> [String; 3] {
+    let suffixes = if female {
+        ["diff", "nrmf0", "spcf"]
+    } else {
+        ["difm", "nrmm0", "spcm"]
+    };
+    suffixes.map(|suffix| format!("{stem}{suffix}"))
 }
 
 /// The built-in skin's shading parameters, without textures.
@@ -194,12 +200,17 @@ pub fn skin_params_of(kind: SkinKind, tone: [f32; 3]) -> ExaParams {
 /// The built-in skin of the race whose body model is `entry`, with the
 /// race's textures, at the middle tone.
 pub fn skin_material(loader: &mut ModelLoader, entry: &str) -> ExaMaterial {
-    skin_material_of(loader, entry, MIDDLE_SKIN_TONE)
+    skin_material_of(loader, entry, MIDDLE_SKIN_TONE, false)
 }
 
 /// The built-in skin of the race whose body model is `entry` for a skin
-/// tone multiplier ([`tone_colour`]).
-pub fn skin_material_of(loader: &mut ModelLoader, entry: &str, tone: [f32; 3]) -> ExaMaterial {
+/// tone multiplier ([`tone_colour`]), in the men's or women's texture set.
+pub fn skin_material_of(
+    loader: &mut ModelLoader,
+    entry: &str,
+    tone: [f32; 3],
+    female: bool,
+) -> ExaMaterial {
     let stem = race_stem(entry);
     let kind = SkinKind::of_stem(&stem);
     let mut mat = ExaMaterial {
@@ -209,7 +220,7 @@ pub fn skin_material_of(loader: &mut ModelLoader, entry: &str, tone: [f32; 3]) -
     };
     // All read as stored, as the original loads them: the tint applies to
     // the encoded colour texels and the shading decodes the product.
-    let [colour, normal, gloss] = race_textures(&stem);
+    let [colour, normal, gloss] = race_textures(&stem, female);
     mat.diffuse_map = loader.texture(&colour, ColorSpace::Linear).map(|t| t.0);
     mat.normal_map = loader.texture(&normal, ColorSpace::Linear).map(|t| t.0);
     mat.gloss_map = loader.texture(&gloss, ColorSpace::Linear).map(|t| t.0);
@@ -269,8 +280,12 @@ mod tests {
     fn the_race_names_its_skin_textures() {
         assert_eq!(race_stem("HumanBase.rfc"), "human");
         assert_eq!(
-            race_textures(&race_stem("ancientbase.rfc")),
+            race_textures(&race_stem("ancientbase.rfc"), false),
             ["ancientdifm", "ancientnrmm0", "ancientspcm"]
+        );
+        assert_eq!(
+            race_textures(&race_stem("humanbase.rfc"), true),
+            ["humandiff", "humannrmf0", "humanspcf"]
         );
         assert_eq!(SkinKind::of_stem("human"), SkinKind::Human);
         assert_eq!(SkinKind::of_stem("Ancient"), SkinKind::Ancient);

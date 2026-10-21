@@ -153,6 +153,11 @@ chunk 0x3DC0 topology:
     sub-chunks: 0x3DC2 u8[triangles] edge bits, 0x3DC3 u32[triangles] flags
 ```
 
+`0x3DC3` holds each triangle's render/skin flags: seam classes in the high
+byte and boundary-edge markers in byte 2 ([RSQ.md](RSQ.md), Skinning).
+`0x3DC2` holds one byte per triangle whose bits 3–5 name corners the apparel
+seam builder leaves out.
+
 The render flags are copied onto the original's mesh node as the body is
 read (REA on the mesh-body reader: a chunk version of at least 0x3D22 reads
 the word into the node's render word). Bits 16–18 are the node's

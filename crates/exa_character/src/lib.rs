@@ -295,7 +295,7 @@ fn apply_skin_looks(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     for (root, look) in &looks {
-        let material = loader.skin_material_of(&look.entry(), look.tone);
+        let material = loader.skin_material_of(&look.entry(), look.tone, look.female);
         for part in children.iter_descendants(root) {
             if !skins.contains(part) {
                 continue;

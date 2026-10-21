@@ -1559,47 +1559,70 @@ creature classes' own clock bases.
 
 ## Skinning
 
-The original computes skin weights for the body at load time; none are
-stored. Body parts (`humanbase.rfc`) are meshes in their bone's space. Each
-carries invisible seam triangles (material `_null`) whose per-triangle flags
-(sub-chunk `0x3DC3` after the triangle ranges: a `u32` per triangle) hold a
-seam class in the high byte:
+The original computes skin weights for the body and apparel at load time;
+none are stored. Body parts (`humanbase.rfc`) are meshes in their bone's
+space. Each carries invisible seam triangles (material `_null`) whose
+per-triangle flags (sub-chunk `0x3DC3` after the triangle ranges: a `u32` per
+triangle) hold a seam class in the high byte and boundary-edge markers in
+byte 2. The classes, as the builder tests them:
 
-| bits | falloff radius | multiplier on distance² (cm²) |
-|---|---|---|
-| `0xC0000000` | 20 cm | 0.0025 |
-| `0x30000000` | 15 cm | 0.00444 |
-| `0x0C000000` | 10 cm | 0.01 |
-| `0x03000000` | 5 cm | 0.04 |
+| bits | falloff radius | multiplier on distance² (cm²) | seam share |
+|---|---|---|---|
+| `0x80000000`/`0x40000000` | 20 cm | 0.0025 | 0.5 |
+| `0x20000000`/`0x10000000` | 15 cm | 0.00444 | 0.25 |
+| `0x08000000`/`0x04000000` | 10 cm | 0.01 | 0.125 |
+| any other seam bit | 5 cm | 0.04 | none |
 
-Visible skin triangles have flag 1. Bits `0x200000`/`0x400000` are apparel
-cull bits. The word before a mesh's streams (newer files) holds skinning-mode
-flags; `0x100000` marks apparel.
+Shipped body seams use `0x80000000` and `0x20000000`, together with one or
+more byte-2 markers (`0x10000`, `0x20000`, `0x80000`, `0x200000`, …); a seam
+without a marker gets no loop edges. The per-triangle byte sub-chunk
+`0x3DC2` marks corners (bits 3–5) whose apparel edge is left out.
 
 Rules (`exa_assets::skin`):
 
-1. Connected regions of seam triangles (class `0xC0`) form groups. Their
-   boundary edges (shared with non-seam triangles) form the loop that meets
-   the neighbouring part. The group centre is the centre of the loop's box.
-2. Joints: the parent at the part's origin, each child at its translation.
-   Each joint takes the nearest free group, nearest pairs first.
-3. Vertices of a seam region are split between the own bone and the group's
-   neighbour: 0.5 on class `0xC0`, 0.25 on `0x30`, 0.125 on `0x0C`.
-   Shared loops therefore sit half and half, and adjacent parts coincide.
-4. Other vertices: for each group, m = min over loop edges of
-   distance²·multiplier. Keep up to 3 groups with m < 0.999. Each gets
-   w = 1 − √m, damped with s = Σw, q = Σw², k = s/q (s ≤ 1) or 1/q,
-   w = min(w, w²k). Each neighbour receives 0.5·w; the own bone keeps the rest.
+1. Seams of class `0xC0` seed groups, grown over every triangle of that class
+   sharing a position id. A group's boundary edges are its edges shared with
+   a triangle of another class, when one of the two flags has a byte-2
+   marker. The group's box is the box of those edge endpoints, or the first
+   corner when it has none; the centre is the middle of that box. The group
+   then grows over the coarse classes (`0xF0000000`) and again over every
+   seam class (`0xFC000000`), adding position ids.
+2. Leftover seams of class `0x30` seed a second set of groups, grown over
+   every seam class. Their box is the box of the group's positions, except
+   that the first vertex with more than ten adjacent triangles stops it at
+   that vertex. After the centre, the group grows once more over every class
+   without revisiting its own vertices.
+3. Joints: the parent at the part's origin and every bone-named mesh child at
+   its translation. On a body, each joint in order takes its nearest group;
+   a group already taken is given up only when the summed distances of the
+   two joints and their new groups improve (the original's spare-group helper
+   returns the first free group, not the nearest). On apparel every group
+   takes its nearest joint, the parent on a tie.
+4. Apparel seams: triangles with a byte-2 marker seed groups, grown over the
+   same markers. An edge is a boundary one when no other triangle around its
+   first corner shares it; the corner byte's bits 3–5 leave that corner's
+   edge out.
+5. A position in a matched group's grown set is split between its own bone
+   and the group's — 0.5, 0.25 or 0.125 by the widest seam class around it —
+   and later groups overwrite earlier ones.
+6. Other positions blend towards up to three matched groups: for each, m is
+   the least distance²·falloff over the group's edges; keep m < 0.999, take
+   w = 1 − √m, damp with s = Σw, q = Σw², k = s/q (s ≤ 1) or 1/q, and
+   w = min(w, w²k). Each neighbour receives 0.5·w; the own bone keeps the
+   rest. Weights are per position id.
 
 Checked against the shipped body: in `12RUArm`, the elbow and shoulder loops
-get 0.5/0.5, and at x = −20.3 cm the weights are 0.563 own, 0.403 forearm and
-0.033 shoulder.
+get 0.5/0.5, and at x = −20.3 cm a vertex has 0.658 own, 0.294 forearm and
+0.048 shoulder.
 
 Exarust skins each part as a Bevy `SkinnedMesh` whose joint j is the part of
 bone j. The inverse bind pose is relative to the part's rest pose. A skinned
 part gets its mesh only when it is bound, since Bevy cannot draw a mesh with
-skin attributes and no skin. Apparel
-takes each vertex's weights from the nearest body vertex of its bone. The
-original runs a similar builder for apparel; it also hides covered body slots
-(per-slot coverage bits of equipped items) and culls apparel triangles by the
-cull bits. Neither is done yet.
+skin attributes and no skin. A mesh that ships weights keeps them. Apparel
+with no joints (one-node garments) stays rigid on its bone.
+
+Not reproduced: the `_SKIN` merge (the original appends every part and
+garment into one mesh, grouped by material, with the per-triangle cull bits
+of hidden body slots removing covered triangles). Exarust keeps a mesh per
+node and hides whole body-part entities under apparel instead. The per-scene
+skin controller and manager are Bevy's.

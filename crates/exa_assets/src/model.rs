@@ -141,8 +141,9 @@ pub struct ModelCache {
     texels: HashMap<String, Option<Arc<Texels>>>,
     /// Painted apparel materials by texture stem and appearance.
     painted: HashMap<(String, Appearance), Handle<ExaMaterial>>,
-    /// The built-in race skin by body model and tone ([`ModelLoader::skin_material_of`]).
-    skin_materials: HashMap<(String, [u16; 2]), Handle<ExaMaterial>>,
+    /// The built-in race skin by body model, tone and sex
+    /// ([`ModelLoader::skin_material_of`]).
+    skin_materials: HashMap<(String, [u16; 2], bool), Handle<ExaMaterial>>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
@@ -772,8 +773,10 @@ impl ModelLoader<'_> {
         let mut names = vec![format!("{stem}d")];
         for layer in appearance.used_layers() {
             let mask = format!("{stem}m{}", layer.mask);
+            // A layer whose mask the set lacks ends the list: the original
+            // stops reading there.
             if self.game.texture(&mask).is_none() {
-                continue;
+                break;
             }
             names.push(mask);
             let material = layer_material(layer);
@@ -818,10 +821,11 @@ impl ModelLoader<'_> {
         };
         let mut layers: Vec<OwnedLayer> = Vec::new();
         for layer in appearance.used_layers() {
-            // Items and recipes may name masks a texture set lacks.
+            // A layer whose mask the set lacks ends the list, as the
+            // original's job stops reading there.
             let mask_name = format!("{stem}m{}", layer.mask);
             if self.game.texture(&mask_name).is_none() {
-                continue;
+                break;
             }
             let Some(mask) = self.texels(&mask_name) else {
                 continue;
@@ -885,14 +889,19 @@ impl ModelLoader<'_> {
     }
 
     /// The built-in skin of a body model at a character's tone
-    /// ([`crate::human_skin::tone_colour`]), cached by model and tone.
-    pub fn skin_material_of(&mut self, entry: &str, tone: [u16; 2]) -> Handle<ExaMaterial> {
-        let key = (entry.to_ascii_lowercase(), tone);
+    /// ([`crate::human_skin::tone_colour`]) and sex, cached by them.
+    pub fn skin_material_of(
+        &mut self,
+        entry: &str,
+        tone: [u16; 2],
+        female: bool,
+    ) -> Handle<ExaMaterial> {
+        let key = (entry.to_ascii_lowercase(), tone, female);
         if let Some(handle) = self.cache.skin_materials.get(&key) {
             return handle.clone();
         }
         let colour = crate::human_skin::tone_colour(tone);
-        let material = crate::human_skin::skin_material_of(self, entry, colour);
+        let material = crate::human_skin::skin_material_of(self, entry, colour, female);
         let handle = self.materials.add(material);
         self.cache.skin_materials.insert(key, handle.clone());
         handle
@@ -1953,6 +1962,50 @@ mod tests {
         let painted = loader.painted_apparel("braies__aa", &braies);
         let m = loader.materials.get(&painted).unwrap();
         assert_eq!(m.blood(), Some(BloodProgram::Cloth));
+    }
+
+    /// A mask the texture set lacks ends the layer list (skipped without
+    /// the game): the braies list four masks, Apparel has two.
+    #[test]
+    fn a_missing_mask_ends_the_layer_list() {
+        use exa_formats::objdb::items;
+        use exa_formats::rdb::Database;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let db = Database::parse(
+            game.pack(PackKind::Resource)
+                .unwrap()
+                .get("objdb.rdb")
+                .unwrap(),
+        )
+        .unwrap();
+        let braies = items(&db)
+            .into_iter()
+            .find(|i| i.id == 8)
+            .unwrap()
+            .appearance
+            .unwrap();
+        let masks: Vec<u8> = braies.used_layers().map(|l| l.mask).collect();
+        assert_eq!(masks, [1, 2, 3, 4]);
+        assert!(game.texture("braies__aam3").is_none());
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let Paint::Job(job) = loader.paint_job("braies__aa", &braies) else {
+            panic!("the braies have a shade map")
+        };
+        assert_eq!(job.layers.len(), 2);
     }
 
     /// The speckle blood shows through (skipped without the game): texels

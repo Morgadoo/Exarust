@@ -321,8 +321,8 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
   (gloss) and `<stem>nrmm0…5` (normal, one per physique), with `f` in place
   of the last `m` for women. Whatever the skin material names plays no
   part: `humanbase.rfc`'s names the same textures, `ancientbase.rfc`'s only
-  a `missing.dds`. Exarust uses the men's textures and the first physique's
-  normal map.
+  a `missing.dds`. Exarust uses the men's set, or the women's when the
+  character's record is female, and the first physique's normal map.
 - **Diffuse map**: the race's skin texture (`humandifm`, `humandiff` for
   women) times the character's skin tone. The original loads the race
   texture as data, so the product is taken on its stored, sRGB-encoded
@@ -331,8 +331,12 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
   from a 3 × 3 grid read bilinearly at the appearance's two tone values:
   0.29–0.64, (0.46, 0.47, 0.47) at the centre. The texture's own skin
   colour, sRGB (0.80, 0.65, 0.57), shows as linear (0.112, 0.076, 0.059) at
-  the middle tone. Exarust has no skin tones yet: every human and ancient
-  wears the middle one.
+  the middle tone. Exarust reads the record's two tone words
+  (`CharacterRecord::skin_tone`) and applies its grid multiplier to the
+  stored texels (`human_skin::tone_colour`); the nine grid colours are
+  recovered from the published multipliers, which are known to two
+  decimals. A body without a record (the player, the duellist) keeps the
+  middle tone.
 - **Specular map**: intensity 1, gloss 0.8 × the race's gloss texture
   (`humanspcm`), no metal. So F0 is 0.04 and the roughness 1 − 0.8·gloss.
 - **Subsurface program**: of the diffuse colour, the subsurface colour's
@@ -346,9 +350,9 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
 - There is no light-receive scale, skin cap or exposure adaptation: lit skin
   is limited only by the 8-bit scene clamp.
 
-Not yet: skin tones per character (the player's are in its save, which is
-not shipped), women's skin textures, the generated normal map's blend of
-the physique variants (`humannrmm0…5`), the dirt layer. Blood: see
+Not yet: the player's tone (it is in the save, which is not shipped), the
+generated normal map's blend of the physique variants (`humannrmm0…5`), the
+race-flag check that restricts some races to the men's set, the dirt layer. Blood: see
 [Blood](#blood).
 
 ### Blood

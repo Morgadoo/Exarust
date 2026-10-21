@@ -56,14 +56,16 @@ pub struct RaceSkinPart;
 pub struct SkinLook {
     pub stem: String,
     pub tone: [u16; 2],
+    /// The women's texture set instead of the men's.
+    pub female: bool,
 }
 
 impl SkinLook {
     /// The look of a body model entry (`humanbase.rfc` → `human`).
-    pub fn of_entry(entry: &str, tone: [u16; 2]) -> Self {
+    pub fn of_entry(entry: &str, tone: [u16; 2], female: bool) -> Self {
         let lower = entry.to_ascii_lowercase();
         let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
-        Self { stem, tone }
+        Self { stem, tone, female }
     }
 
     /// The body model entry whose skin this is.

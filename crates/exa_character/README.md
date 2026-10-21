@@ -68,8 +68,8 @@ physique values and the body morphs they select remain the body's concern
 - `Outfit` lists garments by `Characters.rpk` model; `equip_outfits` fits
   each to the body parts, paints it from its appearance (or from the first
   object-database item worn as the model) and hides the body parts it
-  covers. The fitting (the garment's weights from the nearest body vertex,
-  its meshes) and the painting run on the async compute pool, and at most
+  covers. The fitting (the garment's weights from its own seam groups, as
+  the body's, its meshes) and the painting run on the async compute pool, and at most
   32 MiB of painted textures are made a frame; a body is dressed, 8 ms of
   dressing a frame, once everything it wears is in, before the animation
   systems bind the skinned parts in the same frame.
@@ -79,6 +79,10 @@ physique values and the body morphs they select remain the body's concern
   built on the async pool and cached by the physique), weighted from the
   unmorphed body. See [`docs/formats/RFC.md`](../../docs/formats/RFC.md)
   (Morph sets).
+- Skin: a body's `exa_assets::SkinLook` (a placed character's record tone
+  and sex, set by the spawner) re-binds its race skin parts to the built-in
+  skin material of that tone, made once per race, tone and sex
+  (`apply_skin_looks`). Bodies without a look keep the middle tone.
 - Underwear: humans marked `WearsUnderwear` (the player, the character
   view's human body) wear the object database's braies (item 8) beneath
   their outfit whenever nothing in it covers the groin on the innermost
