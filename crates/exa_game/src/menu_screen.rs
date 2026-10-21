@@ -225,7 +225,7 @@ impl FormHost for MenuForm {
         }
     }
 
-    fn focus_changed(&mut self, control: i32) -> u32 {
+    fn select(&mut self, control: i32) -> u32 {
         self.selected = control;
         3
     }
@@ -352,6 +352,7 @@ fn input(
     let x = (cursor.x * scale) as i32;
     let y = (cursor.y * scale) as i32;
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
+    router.task.screen = (width, height);
     if let Ok(mut geometry) = router.geometry.lock() {
         geometry.bounds = GuiRect::new(0, 0, width, height);
         geometry.rows = rows
