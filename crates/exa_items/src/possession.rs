@@ -168,8 +168,10 @@ impl Possessions {
     /// unmarked as hands it fills, less the hands of the stowed set that
     /// hold it too. Each stowed hand's item is marked held the same way. A
     /// two-handed item (both hands the same id) is counted once, from the
-    /// main hand. Returns what the hands must take, then the sets trade
-    /// places.
+    /// main hand. Returns what the hands must take; the sets trade places
+    /// only when a hand changes, since the original exchanges them in the
+    /// step that re-dresses the hands and skips that step when neither
+    /// hand's item differs (the flag and the marks still change).
     pub fn swap_sets<F>(&mut self, kind: F) -> Option<HandPlan>
     where
         F: Fn(u32) -> Option<ItemKind>,
@@ -199,7 +201,9 @@ impl Possessions {
             }
         }
         let plan = hand_plan(&self.out, &self.stowed, kind);
-        std::mem::swap(&mut self.out, &mut self.stowed);
+        if plan.is_some() {
+            std::mem::swap(&mut self.out, &mut self.stowed);
+        }
         plan
     }
 
@@ -715,6 +719,22 @@ mod tests {
         assert_eq!(p.flags, 0);
         let flags: Vec<u32> = p.carried.iter().map(|c| c.flags).collect();
         assert_eq!(flags, vec![HELD, 0, 0, 0]);
+    }
+
+    #[test]
+    fn sets_holding_the_same_items_keep_their_own_flags() {
+        // Neither hand changes: no plan, so the hands' flags stay put while
+        // the record's flag still toggles.
+        let mut p = Possessions {
+            out: [Hand { id: 5, flags: 0 }, Hand::default()],
+            stowed: [Hand { id: 5, flags: LIT }, Hand::default()],
+            carried: vec![entry(5, HELD)],
+            ..Default::default()
+        };
+        assert!(p.swap_sets(|_| weapon(0x10)).is_none());
+        assert_eq!(p.flags, SECOND_SET);
+        assert_eq!((p.out[0].flags, p.stowed[0].flags), (0, LIT));
+        assert_eq!(p.carried[0].flags, HELD);
     }
 
     #[test]

@@ -584,7 +584,10 @@ character body's possession routines; addresses are in the research notes.
   as hands it fills (a two-handed item, the same id in both hands, counts
   twice and is handled once from the main hand), less the hands of the
   incoming set that hold it too; the incoming set's items are marked held
-  the same way. The hands then take what changed: a weapon as a weapon
+  the same way. The two sets trade places only when a hand's item changes
+  (the original exchanges them in the step that re-dresses the hands and
+  skips that step otherwise, so sets holding the same items keep their own
+  flags). The hands then take what changed: a weapon as a weapon
   (in the off hand a weapon that is a light as a light), a shield as a
   shield, any other item with a held-light section as a light, anything
   else as a weapon; only a weapon takes the stored lit and flipped bits.
