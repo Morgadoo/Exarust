@@ -304,47 +304,47 @@ pub fn shield_points(show: bool, skill: u8) -> Option<f32> {
     }
 }
 
-/// The pronoun kinds an item description's template can name.
-pub const PRONOUN_SUBJECT: u32 = 5;
-pub const PRONOUN_OBJECT: u32 = 6;
-pub const PRONOUN_POSSESSIVE: u32 = 7;
+/// The pronoun names an item description's marker can end with, and the
+/// word each gives for a male and a female owner, in the original's table
+/// order.
+pub const PRONOUNS: [(&str, &str, &str); 4] = [
+    ("HeShe", "he", "she"),
+    ("HimHer", "him", "her"),
+    ("HisHer", "his", "her"),
+    ("HisHers", "his", "hers"),
+];
 
-/// The word for a pronoun kind, by the owner's sex bit (bit 0 of its body
-/// word at `+0x54`).
-pub fn pronoun(kind: u32, female: bool) -> Option<&'static str> {
-    Some(match (kind, female) {
-        (PRONOUN_SUBJECT, false) => "he",
-        (PRONOUN_SUBJECT, true) => "she",
-        (PRONOUN_OBJECT, false) => "him",
-        (PRONOUN_OBJECT, true) => "her",
-        (PRONOUN_POSSESSIVE, false) => "his",
-        (PRONOUN_POSSESSIVE, true) => "her",
-        _ => return None,
-    })
+/// The word for a pronoun name (matched exactly, case and length), by the
+/// owner's sex bit; `None` for a name the table lacks. A missing owner
+/// counts as male.
+pub fn pronoun(name: &str, female: bool) -> Option<&'static str> {
+    PRONOUNS
+        .iter()
+        .find(|(key, _, _)| *key == name)
+        .map(|&(_, male, woman)| if female { woman } else { male })
 }
 
-/// Replaces the pronoun markers in a card's text. A marker is
-/// `{` `0xAE` fields separated by dots `}`, and its last field is the
-/// decimal pronoun kind (the byte is written as UTF-8 here, so the two
-/// bytes are `0xC2 0xAE`). An unknown kind is removed. The replacement is
-/// capitalised when the marker starts the text or follows a dot two bytes
-/// before it, matching the original's byte positions.
+/// Replaces the pronoun markers in a card's text. A marker is `{`, the
+/// byte `0xAE`, fields separated by dots, then `}`; its last field names
+/// the pronoun ([`PRONOUNS`]). The original's text is Latin-1, so here the
+/// byte is the UTF-8 `®` (`0xC2 0xAE`). An unknown name is removed. A
+/// marker with no closing brace runs to the last byte of the text, which
+/// it swallows. The word is capitalised when the marker starts the text or
+/// the byte two before its brace is a dot.
 pub fn expand_pronouns(text: &str, female: bool) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{'
-            && bytes.get(i + 1) == Some(&0xC2)
-            && bytes.get(i + 2) == Some(&0xAE)
-            && let Some(close) = bytes[i + 3..].iter().position(|b| *b == b'}')
-        {
-            let close = i + 3 + close;
-            let fields = &text[i + 3..close];
-            let last = fields.rsplit('.').next().unwrap_or("");
-            let kind = last.trim().parse::<u32>().ok();
-            let word = kind.and_then(|kind| pronoun(kind, female)).unwrap_or("");
-            let capitalize = i < 2 || (i >= 2 && bytes[i - 2] == b'.');
+        if bytes[i] == b'{' && bytes.get(i + 1) == Some(&0xC2) && bytes.get(i + 2) == Some(&0xAE) {
+            let close = bytes[i + 1..]
+                .iter()
+                .position(|b| *b == b'}')
+                .map_or(bytes.len() - 1, |at| i + 1 + at);
+            let fields = String::from_utf8_lossy(bytes.get(i + 3..close).unwrap_or_default());
+            let name = fields.rsplit('.').next().unwrap_or("");
+            let word = pronoun(name, female).unwrap_or("");
+            let capitalize = i < 2 || bytes[i - 2] == b'.';
             if capitalize {
                 let mut chars = word.chars();
                 if let Some(first) = chars.next() {
@@ -387,9 +387,12 @@ pub struct WeaponHandling {
 /// The weapon card's weight, balance and handling from the weapon section's
 /// weight (`w`), balance (`b`) and grip (`g`) bytes. A weapon flagged
 /// `0x6000000` shows weight 1, handling 5 and balance 0. Otherwise:
-/// weight `w·0.01`, balance `b·0.05`, and handling
-/// `((g − 127)·0.01 + f·0.96153843)·5`, where a balance under 101 gives
-/// `f = (1 − b·0.01)·0.6 + w·0.004 + 0.1` and otherwise `w·0.004 + 0.1`.
+/// weight `w·0.01` and balance `b·0.05`, each in double precision narrowed
+/// to single, and handling `5·(a + f)` where `a = (g − 127)·0.01` is
+/// narrowed to single, `f = (w·0.004 + 0.1)·(1/1.04)` for a balance byte
+/// over 100 and `f = ((1 − b·0.01)·0.6 + w·0.004 + 0.1)·(1/1.04)` otherwise
+/// (in double precision), `a + f` is summed in double, narrowed, and the
+/// five is a single-precision multiply.
 pub fn weapon_handling(flags: u32, w: u8, b: u8, g: u8) -> WeaponHandling {
     if flags & 0x0600_0000 != 0 {
         return WeaponHandling {
@@ -398,25 +401,21 @@ pub fn weapon_handling(flags: u32, w: u8, b: u8, g: u8) -> WeaponHandling {
             handling: 5.0,
         };
     }
-    let weight = f32::from(w) * 0.01;
-    let balance = f32::from(b) * 0.05;
-    let mut f = f32::from(w) * 0.004 + 0.1;
-    if b < 101 {
-        f += (1.0 - f32::from(b) * 0.01) * 0.6;
-    }
-    let handling = ((f64::from(g) - 127.0) as f32 * 0.01 + f * 0.961_538_43) * 5.0;
+    let (w64, b64) = (f64::from(w), f64::from(b));
+    let weight = (w64 * 0.01) as f32;
+    let a = ((f64::from(g) - 127.0) * 0.01) as f32;
+    let reach = w64 * 0.004 + 0.1;
+    let f = if b > 100 {
+        reach * 0.961_538_461_538_461_5
+    } else {
+        ((1.0 - b64 * 0.01) * 0.6 + reach) * 0.961_538_461_538_461_5
+    };
+    let handling = (f64::from(a) + f) as f32 * 5.0;
     WeaponHandling {
         weight,
-        balance,
+        balance: (b64 * 0.05) as f32,
         handling,
     }
-}
-
-/// The shield card's three bars: weight `+0xc·0.01`, impact `+0xd·0.05`,
-/// encumbrance `+0xe·0.05`, with the two fixed bits giving weight 1 and
-/// encumbrance 8.
-pub fn shield_card(flags: u32, weight: u8, impact: u8, encumbrance: u8) -> ShieldBars {
-    shield_bars(flags, weight, impact, encumbrance)
 }
 
 /// One description phrase and the inclusive byte range that may use it.
@@ -807,38 +806,34 @@ pub fn apparel_sentence(
 }
 
 /// A sample "well made … plate armour" sentence: "well made ", then (one
-/// draw in four) a material name from the two-entry table followed by a
-/// space, "plate armour", then a phrase from the flawless table with a
+/// draw in four) a material name from the two-entry table (the first is
+/// empty, so the space after it doubles) followed by a space, "plate
+/// armour", then one of the first [`FLAWLESS_ROWS`] flawless phrases with a
 /// leading space unless the phrase starts with a comma, a dot, and the
-/// indefinite article. The original builds it with no caller; Exarust keeps
-/// it for the same reason.
+/// indefinite article. Three or four draws from the engine's generator. The
+/// original builds it with no caller; Exarust keeps it for the same
+/// reason. A row past the table's end reads as empty.
 pub fn plate_armour_phrase(
     state: u32,
     materials: [Option<&str>; 2],
     phrases: &[&str],
 ) -> ItemSentence {
+    let next = |state: u32| state.wrapping_mul(0x0808_8405).wrapping_add(1);
     let mut text = String::from("well made ");
-    let mut state = state;
-    if !phrases.is_empty() {
-        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
-        let branch = ((u64::from(state) << 2) >> 32) as u32;
-        if branch == 0 {
-            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let pick = (state >> 31) as usize;
-            text.push_str(materials[pick].unwrap_or(""));
-            text.push(' ');
-        }
-        text.push_str("plate armour");
-        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
-        let index = ((u64::from(state) * phrases.len() as u64) >> 32) as usize;
-        let phrase = phrases[index];
-        if !phrase.starts_with(',') {
-            text.push(' ');
-        }
-        text.push_str(phrase);
-    } else {
-        text.push_str("plate armour");
+    let mut state = next(state);
+    if (u64::from(state) << 2) >> 32 == 0 {
+        state = next(state);
+        text.push_str(materials[(state >> 31) as usize].unwrap_or(""));
+        text.push(' ');
     }
+    text.push_str("plate armour");
+    state = next(state);
+    let index = ((u64::from(state) * FLAWLESS_ROWS as u64) >> 32) as usize;
+    let phrase = phrases.get(index).copied().unwrap_or("");
+    if !phrase.starts_with(',') {
+        text.push(' ');
+    }
+    text.push_str(phrase);
     text.push('.');
     if takes_an(&text) {
         text.insert_str(0, "An ");
@@ -1373,14 +1368,18 @@ mod tests {
 
     #[test]
     fn pronoun_markers_follow_the_owner_and_the_sentence_start() {
-        assert_eq!(expand_pronouns("{®5}", false), "He");
-        assert_eq!(expand_pronouns("x. {®5}", true), "x. She");
-        assert_eq!(expand_pronouns("x {®5}", true), "x she");
-        assert_eq!(expand_pronouns("x {®6.a}", true), "x ");
-        assert_eq!(expand_pronouns("x {®9}", true), "x ");
-        assert_eq!(expand_pronouns("x{®5}", false), "xHe");
-        assert_eq!(pronoun(PRONOUN_SUBJECT, true), Some("she"));
-        assert_eq!(pronoun(8, true), None);
+        assert_eq!(expand_pronouns("{®HeShe}", false), "He");
+        assert_eq!(expand_pronouns("x. {®HeShe}", true), "x. She");
+        assert_eq!(expand_pronouns("x {®HeShe}", true), "x she");
+        assert_eq!(expand_pronouns("x {®a.b.HisHers}", true), "x hers");
+        assert_eq!(expand_pronouns("x {®HimHer.a}", true), "x ");
+        assert_eq!(expand_pronouns("x {®heshe}", true), "x ");
+        assert_eq!(expand_pronouns("x{®HeShe}", false), "xHe");
+        // An unclosed marker runs to the end and swallows the last byte.
+        assert_eq!(expand_pronouns("x {®HisHerz", false), "x his");
+        assert_eq!(pronoun("HisHer", true), Some("her"));
+        assert_eq!(pronoun("HisHers", false), Some("his"));
+        assert_eq!(pronoun("He", true), None);
     }
 
     #[test]
@@ -1397,27 +1396,28 @@ mod tests {
         let light = weapon_handling(0, 50, 120, 126);
         // f = 0.2 + 0.1 = 0.3; handling = (−0.01 + 0.28846) · 5.
         assert!((light.handling - 1.392_307_7).abs() < 1e-5);
-    }
-
-    #[test]
-    fn a_shield_card_reuses_the_three_bars() {
-        let bars = shield_card(0, 150, 20, 3);
-        assert_eq!(bars.weight.to_bits(), 1.5f32.to_bits());
-        assert!(bars.encumbrance.is_some());
+        // Weight 9 × 0.01 is narrowed from double precision.
+        assert_eq!(weapon_handling(0, 9, 0, 0).weight, (9.0f64 * 0.01) as f32);
+        assert_ne!(weapon_handling(0, 9, 0, 0).weight, 9.0f32 * 0.01);
+        assert_eq!(weapon_handling(0, 0, 9, 0).balance, (9.0f64 * 0.05) as f32);
     }
 
     #[test]
     fn the_sample_plate_armour_sentence() {
         let none = [None, Some("light")];
-        let phrases = [", but old", "in fine condition"];
+        // State 8: no material (the draw is not in the lowest quarter), then
+        // row (s · 11) >> 32 = 7, whose comma takes no space.
+        let mut rows = vec!["x"; 11];
+        rows[7] = ", but old";
         assert_eq!(
-            plate_armour_phrase(8, none, &phrases),
+            plate_armour_phrase(8, none, &rows),
             ItemSentence {
                 state: 0xAB31_C4CE,
-                text: "A well made plate armour in fine condition.".to_string()
+                text: "A well made plate armour, but old.".to_string()
             }
         );
-        let rows: Vec<&str> = vec!["x"; 11];
+        // State 0: the material draw picks the empty first name, so the
+        // spaces double; row 9.
         assert_eq!(
             plate_armour_phrase(0, none, &rows),
             ItemSentence {
@@ -1425,9 +1425,15 @@ mod tests {
                 text: "A well made  plate armour x.".to_string()
             }
         );
+        // State 1 picks the second name.
         assert_eq!(
-            plate_armour_phrase(0, none, &[]).text,
-            "A well made plate armour."
+            plate_armour_phrase(1, none, &rows).text,
+            "A well made light plate armour x."
+        );
+        // The row index always spans eleven rows; a missing row is empty.
+        assert_eq!(
+            plate_armour_phrase(8, none, &["x", "y"]).text,
+            "A well made plate armour ."
         );
     }
 

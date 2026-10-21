@@ -1948,23 +1948,11 @@ mod container_tests {
 
     #[test]
     fn pronouns_follow_the_owner_sex_bit() {
-        assert_eq!(
-            exa_items::card::pronoun(exa_items::card::PRONOUN_SUBJECT, false),
-            Some("he")
-        );
-        assert_eq!(
-            exa_items::card::pronoun(exa_items::card::PRONOUN_SUBJECT, true),
-            Some("she")
-        );
-        assert_eq!(
-            exa_items::card::pronoun(exa_items::card::PRONOUN_OBJECT, true),
-            Some("her")
-        );
-        assert_eq!(
-            exa_items::card::pronoun(exa_items::card::PRONOUN_POSSESSIVE, false),
-            Some("his")
-        );
-        assert_eq!(exa_items::card::pronoun(8, true), None);
+        assert_eq!(exa_items::card::pronoun("HeShe", false), Some("he"));
+        assert_eq!(exa_items::card::pronoun("HeShe", true), Some("she"));
+        assert_eq!(exa_items::card::pronoun("HimHer", true), Some("her"));
+        assert_eq!(exa_items::card::pronoun("HisHer", false), Some("his"));
+        assert_eq!(exa_items::card::pronoun("Her", true), None);
         assert_eq!(card_text_width(228, 8), 204);
         assert_eq!(card_action(false, false, Some(1)), CardAction::None);
         assert_eq!(card_action(true, true, Some(1)), CardAction::None);

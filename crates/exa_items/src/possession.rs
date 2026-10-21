@@ -107,27 +107,32 @@ impl ItemKind {
 /// Where a given item went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Given {
-    /// Into the open pack's panel.
+    /// Into the open pack's panel, which then places it.
     Panel,
-    /// Appended to the carried list at the origin.
+    /// The open pack's panel refused it (it has no icon): the item is lost.
+    Refused,
+    /// Appended to the carried list at the origin (no pack panel is open).
     List,
 }
 
 impl Possessions {
-    /// Gives an item the way the original does with an open panel: the
-    /// panel takes it when it can (its callback places and grids it), and
-    /// otherwise the list gets it at its origin.
+    /// Gives an item the way the original does: when the owner's character
+    /// view is open (`panel` is its pack panel's add), the panel takes it
+    /// at its centre and places it, and an item it refuses goes nowhere;
+    /// with no view open the carried list gets it at its origin.
     pub fn give_to(
         &mut self,
         id: u32,
         flags: u32,
-        mut panel: impl FnMut(u32, u32) -> bool,
+        panel: Option<&mut dyn FnMut(u32, u32) -> bool>,
     ) -> Given {
-        if panel(id, flags) {
-            Given::Panel
-        } else {
-            self.give(id, flags);
-            Given::List
+        match panel {
+            Some(add) if add(id, flags) => Given::Panel,
+            Some(_) => Given::Refused,
+            None => {
+                self.give(id, flags);
+                Given::List
+            }
         }
     }
 }
@@ -728,12 +733,13 @@ mod tests {
     #[test]
     fn a_given_item_prefers_the_open_panel() {
         let mut p = Possessions::default();
-        assert_eq!(
-            p.give_to(7, 0x10, |id, flags| id == 7 && flags == 0x10),
-            Given::Panel
-        );
+        let mut takes = |id: u32, flags: u32| id == 7 && flags == 0x10;
+        assert_eq!(p.give_to(7, 0x10, Some(&mut takes)), Given::Panel);
         assert!(p.carried.is_empty());
-        assert_eq!(p.give_to(8, 0, |_, _| false), Given::List);
+        // An open panel that refuses the item loses it.
+        assert_eq!(p.give_to(9, 0, Some(&mut takes)), Given::Refused);
+        assert!(p.carried.is_empty());
+        assert_eq!(p.give_to(8, 0, None), Given::List);
         assert_eq!(
             p.carried,
             vec![Carried {
