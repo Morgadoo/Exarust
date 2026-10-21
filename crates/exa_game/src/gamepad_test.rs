@@ -376,37 +376,65 @@ fn the_focus_stack_moves_duplicates_and_picks_the_sets() {
 
 #[test]
 fn the_camera_stick_has_a_half_dead_zone_vertically_and_a_squared_tenth_horizontally() {
-    assert_eq!(look_input(Vec2::new(0.0, 0.4999)), Vec2::ZERO);
-    assert_eq!(look_input(Vec2::new(0.0, 0.5)), Vec2::new(0.0, 5.0));
-    assert_eq!(look_input(Vec2::new(0.0, -0.5)), Vec2::new(0.0, -5.0));
-    assert_eq!(look_input(Vec2::new(0.09, 0.0)), Vec2::ZERO);
-    // 0.1 squared is exactly the 0.01 the original needs to be over.
-    assert_eq!(look_input(Vec2::new(0.1, 0.0)), Vec2::ZERO);
-    // Squared, the horizontal axis must then clear the 0.01 pair threshold,
-    // so 0.2 is still inside the response's floor and 0.4 is out.
-    assert_eq!(look_input(Vec2::new(0.2, 0.0)), Vec2::ZERO);
-    assert_eq!(look_input(Vec2::new(0.4, 0.0)), Vec2::new(4.8, 0.0));
-    assert_eq!(look_input(Vec2::new(-0.5, 0.0)), Vec2::new(-7.5, 0.0));
-    // The vertical dead zone alone is enough for a look.
-    assert_eq!(look_input(Vec2::new(0.0, 0.6)), Vec2::new(0.0, 6.0));
+    assert_eq!(look_input(Vec2::new(0.0, 0.4999)), None);
+    assert_eq!(look_input(Vec2::new(0.0, 0.5)), Some(Vec2::new(0.0, 5.0)));
+    assert_eq!(look_input(Vec2::new(0.0, -0.5)), Some(Vec2::new(0.0, -5.0)));
+    assert_eq!(look_input(Vec2::new(0.09, 0.0)), None);
+    // 0.1 passes the horizontal dead zone (as a single it is just over the
+    // double 0.1) but squares to 0.01, whose square 0.0001 is under the
+    // pair threshold: no look.
+    assert_eq!(look_input(Vec2::new(0.1, 0.0)), None);
+    // Squared, the horizontal axis must then clear the 0.01 pair threshold:
+    // 0.2 gives 0.04, whose square 0.0016 is under it; 0.4 gives 0.16.
+    assert_eq!(look_input(Vec2::new(0.2, 0.0)), None);
+    let look = look_input(Vec2::new(0.4, 0.0)).unwrap();
+    assert!(near(look.x, 0.16 * 30.0) && look.y == 0.0, "{look:?}");
+    assert_eq!(look_input(Vec2::new(-0.5, 0.0)), Some(Vec2::new(-7.5, 0.0)));
+    // A NaN axis passes the horizontal dead zone, as the unordered compare
+    // does, and then fails the pair threshold.
+    assert_eq!(look_input(Vec2::new(f32::NAN, 0.0)), None);
 }
 
 #[test]
-fn the_look_rate_is_the_aim_speed_times_the_original_scale() {
-    let look = look_input(Vec2::new(1.0, 1.0));
+fn the_look_turns_at_the_orbit_rate_and_raises_the_pitch_for_up() {
+    let look = look_input(Vec2::new(1.0, 1.0)).unwrap();
     assert_eq!(look, Vec2::new(30.0, 10.0));
-    let delta = look_delta(look, 0.29);
-    assert!(near(delta.x, -0.021_75), "{delta:?}");
-    assert!(near(delta.y, -0.007_25), "{delta:?}");
-    let full = look_delta(look, 1.0);
-    assert!(near(full.x, -0.075));
-    assert!(near(full.y, -0.025));
+    // On a 1920-pixel screen the orbit rate is 0.0025 rad a pixel: a full
+    // stick turns 0.075 rad of yaw and 0.025 rad of pitch a frame.
+    let rate = crate::nav_camera::orbit_per_pixel(1920.0);
+    let (yaw, pitch) = look_turn(1.0, 1.0, 0.8, 1.5, look, rate);
+    assert!(near(yaw, 1.0 - 0.075), "{yaw}");
+    assert!(near(pitch, 1.025), "{pitch}");
+    // The turn starts from the held pitch: an asked pitch under the floor
+    // counts as the floor.
+    let (_, pitch) = look_turn(0.0, 0.5, 0.8, 1.5, Vec2::new(0.0, 4.0), rate);
+    assert!(near(pitch, 0.81), "{pitch}");
+    // And it is held between the floor and the cap.
+    let (_, pitch) = look_turn(0.0, 1.49, 0.8, 1.5, look, rate);
+    assert_eq!(pitch, 1.5);
+    let (_, pitch) = look_turn(0.0, 0.81, 0.8, 1.5, -look, rate);
+    assert_eq!(pitch, 0.8);
 }
 
 #[test]
-fn the_zoom_action_moves_twenty_on_the_eight_hundred_to_two_thousand_scale() {
-    assert!((zoom_step(10.0) - 20.0).abs() < 1e-4, "{}", zoom_step(10.0));
-    assert!((zoom_step(-10.0) + 20.0).abs() < 1e-4);
+fn a_zoom_frame_moves_a_hundred_and_twentieth_of_a_stop_per_step() {
+    // The stop is 240 on 800–2000; ten steps of 1/120 move 20, inwards.
+    assert_eq!(zoom_step(1300.0, ZOOM_IN_STEPS, 800.0, 2000.0), 1280.0);
+    assert_eq!(zoom_step(1300.0, -ZOOM_IN_STEPS, 800.0, 2000.0), 1320.0);
+    assert_eq!(zoom_step(810.0, ZOOM_IN_STEPS, 800.0, 2000.0), 800.0);
+    assert_eq!(zoom_step(1990.0, -ZOOM_IN_STEPS, 800.0, 2000.0), 2000.0);
+    assert!(zoom_step(f32::NAN, ZOOM_IN_STEPS, 800.0, 2000.0).is_nan());
+}
+
+#[test]
+fn the_zoom_buttons_are_read_into_the_frame() {
+    let mut play = primed_play();
+    let sample = pad()
+        .with_digital(Id::ZoomIn, true)
+        .with_analog(Id::Camera, Vec2::new(0.0, 1.0));
+    let frame = *play.update(4, &sample, play_ctx());
+    assert!(frame.zoom_in && !frame.zoom_out);
+    assert_eq!(frame.look, Some(Vec2::new(0.0, 10.0)));
 }
 
 #[test]

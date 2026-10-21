@@ -1120,13 +1120,14 @@ pub struct PlayFrame {
     pub aim_raw: Vec2,
     /// The aim stick turned into the world by the camera's basis.
     pub aim_world: Vec3,
-    /// The camera stick's processed axes: `x` squared past its 0.1 dead
-    /// zone, `y` past its 0.5 dead zone, before the 30 and 10 gains.
-    pub look: Vec2,
-    /// The camera's turn this frame (rad): yaw and pitch.
-    pub look_delta: Vec2,
-    /// The camera's zoom change this frame (Exarust's 800–2000 scale).
-    pub zoom: f32,
+    /// The camera stick's look this frame ([`look_input`]): applied to the
+    /// camera with [`look_turn`].
+    pub look: Option<Vec2>,
+    /// `Zoom_In` is held: the camera takes [`ZOOM_IN_STEPS`] this frame.
+    pub zoom_in: bool,
+    /// `Zoom_Out` is held: the camera takes the negative steps after the
+    /// zoom in's.
+    pub zoom_out: bool,
     /// The player command word after this frame.
     pub commands: u32,
     /// The digital state bits the pad set this frame.
@@ -1159,9 +1160,9 @@ impl Default for PlayFrame {
             move_fast: false,
             aim_raw: Vec2::ZERO,
             aim_world: Vec3::ZERO,
-            look: Vec2::ZERO,
-            look_delta: Vec2::ZERO,
-            zoom: 0.0,
+            look: None,
+            zoom_in: false,
+            zoom_out: false,
             commands: 0,
             state: 0,
             pressed: 0,
@@ -1177,55 +1178,72 @@ impl Default for PlayFrame {
     }
 }
 
-/// The camera stick's response per frame: the original's `0.0025` times the
-/// camera's scale field, which Exarust takes as the aim speed (a guess: the
-/// field's owner is outside this component; the default aim speed 0.29
-/// turns a full stick 0.02175 rad a frame). Positive `x` turns right
-/// (negative yaw) and positive `y` looks up (negative pitch, Exarust's pitch
-/// being below the horizon).
-pub const LOOK_RATE: f32 = 0.0025;
 /// A full camera stick's yaw gain.
 pub const LOOK_YAW_GAIN: f32 = 30.0;
 /// A full camera stick's pitch gain.
 pub const LOOK_PITCH_GAIN: f32 = 10.0;
-/// The zoom's travel on Exarust's 800–2000 scale.
-pub const ZOOM_RANGE: f32 = 1200.0;
-/// The zoom's rate per unit of the action's step: the original's
-/// `step × 0.008333334 × range × 0.2`, 20 for a step of 10 on a range of
-/// 1200. The factors are applied in the original's order.
-pub const ZOOM_RATE: f32 = 0.008_333_334;
+/// The zoom steps one frame of `Zoom_In` asks for (`Zoom_Out` asks for
+/// the negative).
+pub const ZOOM_IN_STEPS: i32 = 10;
+/// A zoom step's share of the stepped camera's stop: the single nearest
+/// 1/120.
+pub const ZOOM_STEP_SHARE: f32 = 0.008_333_334;
+/// The stepped camera's stop as a share of its zoom range.
+pub const ZOOM_STOP_SHARE: f32 = 0.2;
 
-/// The processed camera stick: `y` is zero below a 0.5 dead zone; `x` is
-/// squared past a 0.1 dead zone; a magnitude over 0.01 (of the squared
-/// pair) gives `(x·30, y·10)`, else nothing.
-pub fn look_input(axes: Vec2) -> Vec2 {
+/// The processed camera stick, or `None` when it is inside its dead zones:
+/// `y` is zero below 0.5 (single precision); `x` is zero below 0.1
+/// (compared in double precision, a NaN passes) and otherwise
+/// `|x|·x`; the pair counts when `y·y + x·x` is over 0.01 (double
+/// precision), and then gives `(x·30, y·10)`.
+pub fn look_input(axes: Vec2) -> Option<Vec2> {
     let y = if axes.y.abs() < 0.5 { 0.0 } else { axes.y };
-    let x = if f64::from(axes.x.abs()) >= 0.1 {
-        axes.x.abs() * axes.x
-    } else {
+    let x = if f64::from(axes.x.abs()) < 0.1 {
         0.0
-    };
-    if 0.01 < f64::from(y * y + x * x) {
-        Vec2::new(x * LOOK_YAW_GAIN, y * LOOK_PITCH_GAIN)
     } else {
-        Vec2::ZERO
+        axes.x.abs() * axes.x
+    };
+    (f64::from(y * y + x * x) > 0.01).then(|| Vec2::new(x * LOOK_YAW_GAIN, y * LOOK_PITCH_GAIN))
+}
+
+/// The camera after a look of `input` (from [`look_input`]), as the
+/// navigation unit's look routine turns it: `rate` is the orbit's radians
+/// per screen pixel ([`crate::nav_camera::orbit_per_pixel`]) times the
+/// camera's sensitivity (1 for the game's camera). The asked pitch becomes
+/// the held pitch (the asked one, or `floor` when that is steeper) plus
+/// `rate·y`, then the floor below and `cap` above; the yaw loses `rate·x`.
+/// So right turns as a rightward mouse drag does and up raises the pitch
+/// (steeper), the opposite of an upward drag. Returns `(yaw, asked
+/// pitch)`.
+pub fn look_turn(
+    yaw: f32,
+    asked_pitch: f32,
+    floor: f32,
+    cap: f32,
+    input: Vec2,
+    rate: f32,
+) -> (f32, f32) {
+    use crate::nav_camera::{clamp_pitch, pitch_held};
+    let pitch = rate * input.y + pitch_held(asked_pitch, floor);
+    (yaw - rate * input.x, clamp_pitch(pitch, floor, cap))
+}
+
+/// The stepped camera's zoom after `steps` zoom steps, as the navigation
+/// unit's step routine moves it: the stop is `(max − min) × 0.2`, the move
+/// `(steps × 0.008333334) × stop`, subtracted (positive steps zoom in), and
+/// the result held in `[min, max]` (below the least takes the least, then
+/// above the most takes the most; a NaN stays). On the game's 800–2000
+/// range a frame of `Zoom_In` moves 20.
+pub fn zoom_step(zoom: f32, steps: i32, min: f32, max: f32) -> f32 {
+    let stop = (max - min) * ZOOM_STOP_SHARE;
+    let moved = zoom - steps as f32 * ZOOM_STEP_SHARE * stop;
+    if moved < min {
+        min
+    } else if moved > max {
+        max
+    } else {
+        moved
     }
-}
-
-/// The camera's turn from processed look input at `aim_speed`: the
-/// original's `0.0025` rate, with the aim speed as its scale. Returns
-/// `(yaw, pitch)` in radians, both negative for right and up.
-pub fn look_delta(input: Vec2, aim_speed: f32) -> Vec2 {
-    Vec2::new(
-        -LOOK_RATE * aim_speed * input.x,
-        -LOOK_RATE * aim_speed * input.y,
-    )
-}
-
-/// The zoom change one frame of the zoom actions makes on a range of
-/// [`ZOOM_RANGE`]: `input × 0.008333334 × range × 0.2`.
-pub fn zoom_step(input: f32) -> f32 {
-    input * ZOOM_RATE * ZOOM_RANGE * 0.2
 }
 
 /// What the gameplay reader knows about the game this frame.
@@ -1238,8 +1256,6 @@ pub struct PlayContext {
     /// The game's raw-aim mode: the aim stick is kept as a raw pair instead
     /// of being turned into the camera's frame.
     pub aim_in_world: bool,
-    /// The live aim speed (0 to 1 and beyond; the setting's default 0.29).
-    pub aim_speed: f32,
     /// The camera's world right axis.
     pub camera_right: Vec3,
     /// The camera's world forward axis.
@@ -1252,7 +1268,6 @@ impl Default for PlayContext {
             variant: Variant::Interact,
             modes: StepModes::default(),
             aim_in_world: false,
-            aim_speed: 0.29,
             camera_right: Vec3::X,
             camera_forward: Vec3::Z,
         }
@@ -1440,9 +1455,7 @@ impl PlayPad {
             frame.move_world = (right * move_axes.x + forward * move_axes.y).with_y(0.0);
         }
         frame.step = direction;
-        let look = look_input(sample.analog(Id::Camera));
-        frame.look = look;
-        frame.look_delta = look_delta(look, ctx.aim_speed);
+        frame.look = look_input(sample.analog(Id::Camera));
         let aim = sample.analog(Id::Aim);
         frame.aim_raw = aim;
         frame.aim_world = if ctx.aim_in_world {
@@ -1450,14 +1463,8 @@ impl PlayPad {
         } else {
             right * aim.x + forward * aim.y
         };
-        let mut zoom = 0.0;
-        if sample.digital(Id::ZoomIn) {
-            zoom += zoom_step(10.0);
-        }
-        if sample.digital(Id::ZoomOut) {
-            zoom -= zoom_step(10.0);
-        }
-        frame.zoom = zoom;
+        frame.zoom_in = sample.digital(Id::ZoomIn);
+        frame.zoom_out = sample.digital(Id::ZoomOut);
         frame.alternate = ctx.variant == Variant::Combat && sample.digital(Id::Alternate);
         frame.crouch = ctx.variant == Variant::Combat && sample.digital(Id::Crouch);
         frame.sprint = sample.digital(Id::Sprint);
@@ -1640,7 +1647,6 @@ fn read_pad(
     pads: Query<&Gamepad>,
     players: Query<&crate::player::PlayerBody, With<crate::player::Player>>,
     cameras: Query<&GlobalTransform, With<crate::player::ChaseCamera>>,
-    config: Option<Res<crate::hw_config::HardwareConfig>>,
     bindings: Res<crate::bindings::Bindings>,
     focus: Res<FocusStack>,
     mut menu: ResMut<MenuPad>,
@@ -1692,7 +1698,6 @@ fn read_pad(
     });
     let ctx = PlayContext {
         variant,
-        aim_speed: config.as_ref().map_or(0.29, |c| c.live.aim_speed),
         camera_right: right,
         camera_forward: forward,
         ..PlayContext::default()

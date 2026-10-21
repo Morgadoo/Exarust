@@ -1406,10 +1406,23 @@ pub(crate) fn chase_camera(
             && let Some(pad) = pad.as_deref()
         {
             let frame = pad.frame();
-            cam.yaw += frame.look_delta.x;
-            cam.user_pitch += frame.look_delta.y;
-            if frame.zoom != 0.0 {
-                cam.zoom = (cam.zoom + frame.zoom).clamp(800.0, 2000.0);
+            if let Some(look) = frame.look {
+                (cam.yaw, cam.user_pitch) = crate::gamepad::look_turn(
+                    cam.yaw,
+                    cam.user_pitch,
+                    pitch_floor(cam.shown_zoom),
+                    MAX_PITCH,
+                    look,
+                    orbit_per_pixel(width),
+                );
+            }
+            for (held, steps) in [
+                (frame.zoom_in, crate::gamepad::ZOOM_IN_STEPS),
+                (frame.zoom_out, -crate::gamepad::ZOOM_IN_STEPS),
+            ] {
+                if held {
+                    cam.zoom = crate::gamepad::zoom_step(cam.zoom, steps, 800.0, 2000.0);
+                }
             }
         }
         let floor = pitch_floor(cam.shown_zoom);
