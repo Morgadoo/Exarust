@@ -585,7 +585,7 @@ The label SHALL align its measured width and line height from the style word and
 - **THEN** the second ink is used with no nudge
 
 ### Requirement: Line rail
-At unit 5 and place 10, 20 of size 100 by 80 the rail SHALL draw a left cap from 0, 85 to 30, 105, a right cap from 100, 85 to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from 105, 30 to 95, 40. The cap sample SHALL bind twice, the middle once and the thumb once. Sixteen colour writes SHALL be counted. Bit 0x10 SHALL select the first ink, otherwise the second. Mode 0x10000 SHALL rebind the thumb in the third ink with alpha 255.
+At unit 5 and place 10, 20 of size 100 by 80 the rail SHALL draw a left cap from 0, 85 to 30, 105, a right cap from 120, 85 to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from -5, 30 to -15, 40, whose x does not follow the place. The cap sample SHALL bind twice, the middle once and the thumb once. Sixteen colour writes SHALL be counted. Bit 0x10 SHALL select the first ink, otherwise the second. Mode 0x10000 SHALL rebind the thumb in the third ink with alpha 255.
 
 #### Scenario: The track and the thumb draw
 - **WHEN** the rail is drawn at unit 5, place 10, 20, size 100 by 80, with a clear state and distinct inks
@@ -619,7 +619,7 @@ The scale method SHALL store three heights from 80, 104 and 128 times the vertic
 - **THEN** the heights are 160, 208 and 0
 
 ### Requirement: Line hit test
-The hit test SHALL use a span of four units, or six when the wide switch is set. The trim test SHALL run when flags masked with 0x30 equal 0x10 and y is at or above the span. The strip test SHALL run otherwise when control bit 0x200 is set and x is past the left limit. The returned code SHALL be the original's unchanged.
+The hit test SHALL use a span of four units, or six when the wide switch is set. The trim test SHALL run when flags masked with 0x30 equal 0x10 and y is at or above the span. The strip test SHALL run when control bit 0x200 is set and x is past the left limit, after a trim test that returned nothing as well as otherwise. The edge sums SHALL be 64-bit. The returned code SHALL be the original's unchanged.
 
 #### Scenario: The trim test returns its codes
 - **WHEN** the flags are 0x10, the control word has bit 2, the right limit is 100, the span is 20 and the point is 90, 10
@@ -635,6 +635,10 @@ The hit test SHALL use a span of four units, or six when the wide switch is set.
 - **WHEN** y is at or past the bottom limit but below it plus the span
 - **THEN** the code is -10
 - **WHEN** y is at or below the top limit and above it minus the span
+- **THEN** the code is -9
+
+#### Scenario: A title-band miss falls through to the strip
+- **WHEN** the flags are 0x10, the control word is 0x202, the top limit is 20 and the point 50, 15 misses the close corner
 - **THEN** the code is -9
 
 #### Scenario: Every other point is 0
@@ -669,18 +673,18 @@ Opening a skin at unit 5 SHALL store a fifth extent of 20.
 - **THEN** the fifth extent is 20
 
 ### Requirement: Close-edge highlight
-With the still bit set, close mark -9 SHALL draw a strip from x0 plus one unit to x0 plus three units between y0 and y0 plus two units. Mark -10 SHALL draw the same strip below y0. Mark -8 SHALL draw a four-unit square at x0, y0. The tint SHALL use the tab sample and the colour 255, 204, 153, 255.
+With the state's tab bit 0x200 on a bar frame, close mark -9 SHALL tint the upper tab, -10 the lower tab and -8 the square below the scroll thumb, each at the quad the frame draws there, in 255, 204, 153, 255. The tabs SHALL keep the tab sample and the square SHALL bind the marker's sample.
 
 #### Scenario: The marks draw their tints
-- **WHEN** the still bit is set, the close x is 10, the close y is 20, the unit is 5 and the close mark is -9
-- **THEN** the strip is (16, 40), (16, 30), (26, 30), (26, 40)
+- **WHEN** a held bar frame at unit 5 has its tab bit, a client right of 10, a client top of 20, a client bottom of 80, a thumb at 40, room to spare, and close mark -9
+- **THEN** the tint is (16, 40), (16, 30), (26, 30), (26, 40)
 - **WHEN** the mark is -10
-- **THEN** the strip is (16, 20), (16, 30), (26, 30), (26, 20)
+- **THEN** the tint is (16, 60), (16, 70), (26, 70), (26, 60)
 - **WHEN** the mark is -8
-- **THEN** the square is (11, 50), (11, 30), (31, 30), (31, 50)
+- **THEN** the tint is (11, 55), (11, 35), (31, 35), (31, 55) with the marker's sample
 
 #### Scenario: Other marks draw nothing
-- **WHEN** the still bit is set and the close mark is -4
+- **WHEN** the close mark is -4, or the tab bit is clear
 - **THEN** no close-edge tint is drawn
 
 ### Requirement: Line opening wrapper
@@ -2910,3 +2914,65 @@ The running game SHALL open the inventory and journal from the I and J hotkeys t
 #### Scenario: Two screens
 - **WHEN** I and then J are pressed and then Escape
 - **THEN** the journal closes and the inventory takes the focus
+
+### Requirement: Line unit lengths
+The line skin SHALL keep five unit lengths, 2, 1, 2, 2 and 4 units, set by a setter the parent constructor calls through the object's table before the line constructor rewrites the first four. A once-only flag SHALL register the unit.
+
+#### Scenario: Unit 5
+- **WHEN** the lengths are set at unit 5
+- **THEN** they are 10, 5, 10, 10 and 20
+
+### Requirement: Line centred icon
+The line skin's centred icon SHALL be placed as the parent's is. A marked state SHALL bind no ink. Otherwise state bit 0x10 SHALL bind the label group's fourth shade as stored; with style bit 0x80000000 clear, state bit 0x40 SHALL bind the eighth shade and any other state the fourth, both with alpha 255; with it set, state bit 0x40 SHALL bind the seventh shade with its alpha raised by 0x40 in a byte, and any other state the sixth as stored. Style bit 0x40000000 SHALL pick the mirrored draw.
+
+#### Scenario: The inks
+- **WHEN** icon 16 is centred at 10, 20 in 100 by 80 with a clear state, then with state bit 0x40, then with style bit 0x80000000 and state bit 0x40
+- **THEN** it sits at 52, 52 and binds the fourth shade opaque, then the eighth opaque, then the seventh raised
+
+#### Scenario: The raised alpha wraps
+- **WHEN** the seventh shade's alpha is 0xd0
+- **THEN** the bound alpha is 0x10
+
+### Requirement: Line scroll refresh
+The scroll refresh SHALL take the edge mask 0xf without style bit 4, and otherwise set bit 1 for a top above the unit, bit 4 for a right edge within a unit of the owner's room and bit 8 for the bottom, never bit 2. The rail SHALL start five units below the client top with bits 1 and 4, else four, end five or four units above the client bottom with bits 4 and 8, and place the thumb at the start plus the vertical fraction of the span less two units, rounded half to even.
+
+#### Scenario: A NaN fraction
+- **WHEN** the fraction is NaN
+- **THEN** the thumb is at the start
+
+#### Scenario: Room to spare
+- **WHEN** a window at 10, 20 of 100 by 80 with client top 30 and bottom 90 in a 400 by 300 owner refreshes at unit 5 with fraction one half
+- **THEN** the mask is 0, the rail runs from 50 to 70, and the thumb is 55
+
+#### Scenario: A window at its owner's corner
+- **WHEN** the window is at 2, 2 in a 100 by 80 owner
+- **THEN** the mask is 0xd and the rail runs from 55 to 65
+
+### Requirement: Line progress strip
+A titled window without state bit 0x800000, and an untitled open bar, SHALL draw a strip between the skin's first and third side lengths: a cap at each end eight units in and the track between them. A titled window SHALL split the track at the title's gap, half of the width less the title width and five units, with a cap on the inner side of each piece.
+
+#### Scenario: A titled window
+- **WHEN** a 100-wide window at unit 5 has a 40-wide title
+- **THEN** the strip has six quads and its first track piece runs from 40 back to 17
+
+#### Scenario: An open bar
+- **WHEN** an untitled open bar 100 wide is drawn at unit 5
+- **THEN** the strip has three quads and the track runs from 40, 10 to 60, 20
+
+### Requirement: Maximised window frame
+A window style with the maximised state bit SHALL draw its own frame: the top, left and right bars, the bottom bar and four corner arms reaching two units outside and six in, with side bars four units from the corners, or two with style bit 4. Style bit 4 SHALL also bind the hot ink on style bit 0x40, else the normal ink, and add an outer top bar unless the window sits within a unit of a focused owner's top.
+
+#### Scenario: A plain maximised window
+- **WHEN** a 100 by 80 maximised window without style bit 4 is drawn at unit 5
+- **THEN** eight quads are drawn, the top bar from 30, 0 to 70, 10
+
+#### Scenario: A held maximised window
+- **WHEN** style bits 0x44 are set and the owner is not focused
+- **THEN** nine quads are drawn in the hot ink
+
+### Requirement: Integer span bar
+The compact skill screen's span bar SHALL draw the capped span from integer arguments with no ink bind: caps from two units outside to four units inside each end, four units tall from the top, and the middle from two units down.
+
+#### Scenario: Unit 5
+- **WHEN** the bar is drawn at 10, 20 with width 100
+- **THEN** the caps run from 0, 20 to 30, 40 and from 120, 20 to 90, 40 around a middle from 30, 30 to 90, 40
