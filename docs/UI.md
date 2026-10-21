@@ -646,11 +646,75 @@ down the screen (or a quarter down), its top turned into design pixels
 label sits at 12, 4, its Ok and Cancel buttons are 80 wide, 96 apart,
 centred at grid row 13.
 
+### The game flow
+
+`exa_game::flow` is the original's game-main flow as a state machine over a
+mode word, a phase word and a session hook. Its methods return named steps
+(a menu page, a level load, a save, a camera shot, a cursor warp) instead of
+calling the rest of the game, so the order is testable.
+
+- **Boot.** First-run settings, the actor library, the game and item
+  interfaces, the hardware settings, the unlock words, the two save managers
+  (story signature, arena signature and data version), the arena data, the
+  transition form, the script hooks, the splash, then the title page.
+- **Modes and phases.** The mode word is 0 (title), 2 (practice), 4 (story),
+  8 (arena) or a scripted mode (versus is 0x1010). Phases: 0 transition, 1
+  title, 3 playing, 4 won, 5 ended, 8 round won, 0x10 forfeit and 0x20
+  paused. Switching stores the outgoing mode's player, restores the incoming
+  one, sets the mode's flags and installs its hook; story mode uses
+  checkpoints, arena mode overrides the inventory.
+- **Starts.** A story starts at `exanima01` with its background's role,
+  flags, pose, light and Derrin (unknown background), or the knight,
+  proctor or villager pose; practice starts at `arena`/`arenae` with
+  `opponent01`/`opponent09`, the ladder's music, the wide shot and the ring's
+  middle; a continue loads the save's locale (or `exanima01`) and frames the
+  player; the arena continue loads `arenahub` with the hub's music.
+- **Transitions.** Everything that changes the world runs behind the
+  transition screen, 100 ms later: the quit to the title, the story respawn
+  at `exanima05`, the revival, a level load. The phase before the transition
+  is kept.
+- **The frame.** While no menu covers the game and no transition runs, each
+  frame ticks the dialogue engine and then the mode's hook. The story hook
+  checks the three wake-up flags, runs discovery once a second and handles a
+  knocked-out player (five seconds, then a revival; a dead one dies). The
+  practice hook waits a second, then the first dead opponent ends the round;
+  the eighth fight wins the ladder and unlocks expert.
+- **Death and the end menu.** Death shows the end menu and, in the story,
+  drops the save unless the player can be rebuilt (then the first death
+  strips them). The end menus are EXIT; (a won story or arena), RESTART/EXIT
+  (practice over), CONTINUE/EXIT (rebuilt), CONTINUE/LOBBY/EXIT (arena) and
+  NEXT FIGHT, at scales 0.9, 0.85 and 0.78.
+- **Level exits.** A level changed by a trigger or a teleporter names its
+  locale by campaign number; levels 1 to 6 write the transition save unless
+  it is off or the level is already saved, levels past 6 do not. A dead
+  player drops the save instead.
+- **The exit-trigger nudge** pushes a player standing in an exit trigger out
+  along the nearer local axis, by the span minus the signed offset plus
+  75 cm (the negative branch keeps the original's overshoot), after the
+  trigger's radius plus 50 cm and box-distance checks.
+- **Wiring.** `FlowPlugin` boots the flow, ticks it on the 12 ms game clock,
+  watches a play level's player (a sandbox practice session) and turns a
+  teleporter's `TravelToLevel` into a level exit; F1 then opens the in-game
+  page with the flow's mode and phase words.
+
+### The splash screen
+
+`exa_game::splash` is the start-up splash: `bmelogol01.rfi` and
+`bmelogol02.rfi` centred at `round(H/135)·0.125`, a one-second renderer
+warm-up, a 600 ms fade-in, a two-second hold, the second logo with
+`BME Critters` at 0.2, a 200 ms hold, a 300 ms fade-out, the hand-over to the
+menu, a one-second hold and a one-second fade to the game (closing under the
+float 1.1920899822825959e-07). The alpha is the fade times 255, rounded half
+to even; the screen holds a busy count until the menu is up. The plugin can
+run and log it; nothing starts it by default.
+
 ### The main menu screen
 
 The running app opens the main menu with F1 (`exa_game::menu_screen`); the
 original opens it from its session flow, which belongs to the game modes.
-The screen follows `TMainMenu`'s rules (`exa_game::menu_pages`):
+F1 shows the flow's page: the in-game page while a session runs, the title
+otherwise, with the flow's mode, phase and page state. The screen follows
+`TMainMenu`'s rules (`exa_game::menu_pages`):
 
 - **Pages.** Title: BEGIN, CONTINUE (greyed without a story save), ARENA,
   MANUAL, SETTINGS, EXIT. Arena: NEW CAREER, CONTINUE (greyed without an

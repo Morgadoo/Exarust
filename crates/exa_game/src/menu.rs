@@ -16,9 +16,9 @@ pub const IN_GAME_PAGE: u32 = 2;
 /// The command that begins a match from that page.
 pub const BEGIN_COMMAND: u32 = 4;
 /// Session phase while a transition is starting.
-pub const PHASE_TRANSITIONING: u32 = 0;
+pub const PHASE_TRANSITIONING: u32 = crate::flow::PHASE_TRANSITION;
 /// Session phase while play is underway.
-pub const PHASE_PLAYING: u32 = 3;
+pub const PHASE_PLAYING: u32 = crate::flow::PHASE_PLAYING;
 /// Flag bits a child must all have before a match begin dismisses it.
 pub const DISMISS_MARK: u32 = 0xce10_0000;
 /// Style bit set while this child holds the capture.

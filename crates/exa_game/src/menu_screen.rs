@@ -25,6 +25,7 @@ use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::menu::{back_main_menu, menu_row_scale};
 use exa_ui::scale::GuiScale;
 
+use crate::flow::Flow;
 use crate::menu_pages::{
     MenuCommand, MenuGeometry, MenuHit, Page, PageState, Row, RowKind, game_mode, menu_command,
     menu_hit, page_origin, page_rows, paint, row_h, session_state,
@@ -80,6 +81,13 @@ impl MenuScreen {
     pub fn open(&mut self) {
         self.open = true;
         self.show(Page::Title);
+    }
+
+    /// Opens `page` (the flow's page: the in-game page during a session, the
+    /// title otherwise).
+    pub fn open_at(&mut self, page: Page) {
+        self.open = true;
+        self.show(page);
     }
 
     pub fn close(&mut self) {
@@ -289,15 +297,24 @@ fn setup_router(mut commands: Commands) {
     });
 }
 
-/// F1 opens and closes the menu.
-fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<MenuScreen>) {
+/// F1 opens and closes the menu. Opening it in a session shows the in-game
+/// page for the flow's mode and session words.
+fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<MenuScreen>, flow: Option<Res<Flow>>) {
     if !keys.just_pressed(KeyCode::F1) {
         return;
     }
     if menu.open {
         menu.close();
-    } else {
-        menu.open();
+        return;
+    }
+    match flow {
+        Some(flow) => {
+            menu.game = flow.mode.word();
+            menu.session = flow.phase.word();
+            menu.state = flow.page_state();
+            menu.open_at(flow.menu_page());
+        }
+        None => menu.open(),
     }
 }
 
@@ -676,6 +693,11 @@ mod tests {
         menu.open();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+        assert_eq!(menu.selected, 0);
+        // A session's F1 opens the in-game page instead.
+        menu.close();
+        menu.open_at(Page::InGame);
+        assert_eq!(menu.page, Page::InGame);
         assert_eq!(menu.selected, 0);
     }
 

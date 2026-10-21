@@ -480,26 +480,30 @@ impl RowKind {
 
 /// The game-mode word's values the menu reads.
 pub mod game_mode {
+    use crate::flow;
+
     /// The title menu, no game.
-    pub const MENU: u32 = 0;
-    pub const PRACTICE: u32 = 2;
-    pub const STORY: u32 = 4;
-    pub const ARENA: u32 = 8;
+    pub const MENU: u32 = flow::MENU_MODE;
+    pub const PRACTICE: u32 = flow::PRACTICE_MODE;
+    pub const STORY: u32 = flow::STORY_MODE;
+    pub const ARENA: u32 = flow::ARENA_MODE;
     /// The versus lobby, one of the script modes.
-    pub const VERSUS: u32 = 0x1010;
+    pub const VERSUS: u32 = flow::VERSUS_MODE;
 }
 
 /// The session-state word's values the menu reads.
 pub mod session_state {
-    pub const TRANSITIONING: u32 = 0;
-    pub const MAIN_MENU: u32 = 1;
+    use crate::flow;
+
+    pub const TRANSITIONING: u32 = flow::PHASE_TRANSITION;
+    pub const MAIN_MENU: u32 = flow::PHASE_MENU;
     /// The character creator is showing.
     pub const CREATOR: u32 = 2;
-    pub const PLAYING: u32 = 3;
-    pub const WON: u32 = 4;
-    pub const ENDED: u32 = 5;
-    pub const ROUND_WON: u32 = 8;
-    pub const FORFEIT: u32 = 0x10;
+    pub const PLAYING: u32 = flow::PHASE_PLAYING;
+    pub const WON: u32 = flow::PHASE_WON;
+    pub const ENDED: u32 = flow::PHASE_ENDED;
+    pub const ROUND_WON: u32 = flow::PHASE_ROUND_WON;
+    pub const FORFEIT: u32 = flow::PHASE_FORFEIT;
     /// A setup form before a game (the class select or the emblem).
     pub const SETUP: u32 = 0x40;
 }

@@ -20,8 +20,10 @@ pub mod effects;
 pub mod emblem;
 pub mod experience;
 pub mod fall;
+pub mod flow;
 pub mod footprints;
 pub mod frame;
+pub mod game_event;
 pub mod gamepad;
 pub mod hand;
 pub mod hirelings;
@@ -54,6 +56,7 @@ pub mod session;
 pub mod shell_draw;
 pub mod sim_control;
 pub mod slots;
+pub mod splash;
 pub mod staff;
 pub mod stages;
 pub mod steering;
@@ -110,6 +113,7 @@ impl Plugin for GamePlugin {
             destination::DestinationPlugin,
             (menu_screen::MenuScreenPlugin, arena_match::ArenaMatchPlugin),
         ))
+        .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
             body_overlay::BodyOverlayPlugin,

@@ -347,6 +347,40 @@ gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 - Save games in the original's package and player-data shape, with our own
   payload for the session state.
 
+## Game flow
+
+`flow` is the original's game-main flow: boot into the title, the mode
+switch (practice, story, arena, scripted modes), the session starters
+(story from a background with its role, pose, light and Derrin, practice
+from the ladder, the story and arena continues, the arena hub), the
+transition screen's 100 ms actions, the per-frame dialogue and session hook,
+the story's wake-up, knockout and revival, death and the end-of-session
+menu, level exits and the transition save, the story respawn at
+`exanima05`, the quit and autosave, and the pause. The rules return named
+steps; `FlowPlugin` runs them on the 12 ms game clock, follows a play
+level's player as a sandbox practice session, and turns a teleporter's
+journey into a level exit. F1 opens the in-game page while a session runs.
+The exit-trigger nudge, the practice scene filter, the practice and menu
+music, the camera shots with their cursor warps, the unlock words and the
+save managers' signatures are pinned by tests. Rules: `docs/UI.md` (The
+game flow).
+
+`splash` is the start-up splash screen: the two BME logos, the one-second
+recording warm-up, the 600 ms fade-in, the two-second hold, the second logo
+with `BME Critters`, the 200 ms hold, the 300 ms fade-out, the hand-over, the
+one-second menu hold and the one-second fade to the game, with the logos
+centred at `round(H/135)·0.125`. `SplashPlugin` can run it; nothing starts it
+by default.
+
+`game_event` is the story scripts' `GameEvent`: memory fragments (head pain,
+a flash, `XU_Memory`, a fragment bit and a potential point for a player with
+the memory role), the raise-dead lines, Corlian's line, the mind and force
+awakenings (the potential plus ten less the fragments seen, the class word
+and the voice, wail and swing) and the background-unlock bit.
+
+The main menu screen's F1 now takes the flow's mode, phase and page state,
+and its in-game page in a session.
+
 ## Main menu screen
 
 `menu_screen` is the running app's main menu, opened and closed with F1 (the
