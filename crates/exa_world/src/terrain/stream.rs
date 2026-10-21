@@ -8,9 +8,10 @@
 //! models of the original's rules rather than the driver of a live
 //! streamer; they reproduce its numbers.
 //!
-//! Evidence: the frame hook and its block selection (REA on the terrain
-//! code), and the composites' 44.4 m / 15 m cut-offs with 21 high-res and
-//! 43 low-res texture sets.
+//! Evidence: REA on the terrain's priority slot, its block selection and
+//! the 3 × 3 gather: the composites' 44.4 m / 15 m cut-offs as squared
+//! centimetres, the 189-entry list, and the pools of 21 high-res and 43
+//! low-res texture sets.
 
 use bevy::math::Vec2;
 
@@ -27,19 +28,36 @@ pub const HIGH_SETS: usize = 21;
 pub const LOW_SETS: usize = 43;
 /// Blocks the original keeps in its selected list (189 entries).
 pub const MAX_SELECTED: usize = 189;
-/// Cell and block side, metres: a block's centre falls on a 6 m grid.
-const BLOCK: f32 = 6.0;
-/// The original looks 10 m ahead of the camera and snaps that point to the
-/// centre of the 6 m block it lands in.
-const LOOK_AHEAD: f32 = 10.0;
+/// Block side, centimetres: a block's centre falls on a 6 m grid.
+const BLOCK_CM: i64 = 600;
+/// The original's reciprocal of the block side, 1/600 cm (its literal
+/// single-precision constant).
+const INV_BLOCK_CM: f32 = 0.001_666_666_7;
+/// The original moves the camera −1000 cm along its back axis, 10 m ahead.
+const LOOK_AHEAD_CM: f32 = -1000.0;
 
-/// The point whose blocks get composites: the camera moved 10 m along its
-/// view and snapped to the centre of its 6 m block (the block coordinate is
-/// floored, then half a block added). Both axes are independent.
-pub fn composite_focus(camera: Vec2, forward: Vec2) -> Vec2 {
-    let p = camera - forward * LOOK_AHEAD;
-    let snap = |v: f32| (v / BLOCK).floor() * BLOCK + BLOCK * 0.5;
-    Vec2::new(snap(p.x), snap(p.y))
+/// The point whose blocks get composites: the camera position (`camera`,
+/// metres, world X and Z) moved −10 m along the camera's back axis
+/// (`back`, its local +Z in world X and Z, unnormalised in the plane), so
+/// 10 m ahead of it, and snapped to the centre of its 6 m block. In the
+/// original's centimetres each axis is the engine floor of `p · 1/600`,
+/// times 600, plus 300.
+pub fn composite_focus(camera: Vec2, back: Vec2) -> Vec2 {
+    let p = camera * 100.0 + back * LOOK_AHEAD_CM;
+    let snap = |v: f32| (i64::from(round_down(v * INV_BLOCK_CM)) * BLOCK_CM + BLOCK_CM / 2) as f32;
+    Vec2::new(snap(p.x), snap(p.y)) / 100.0
+}
+
+/// The engine's "round" helper: a conversion with the rounding mode set
+/// toward minus infinity; NaN and out-of-range values give the integer
+/// indefinite (`i32::MIN`).
+fn round_down(value: f32) -> i32 {
+    let r = value.floor();
+    if r.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&r) {
+        i32::MIN
+    } else {
+        r as i32
+    }
 }
 
 /// One block that would be composited.
@@ -53,7 +71,9 @@ pub struct CompositeBlock {
 
 /// The blocks within [`FAR`] of `focus`, in the caller's order, at most
 /// [`MAX_SELECTED`]. Distances are squared centimetres, as the original
-/// compares them; a block exactly 15 m away is low resolution.
+/// compares them; a block exactly 15 m away is low resolution. The original
+/// drops a block only when its squared distance compares above the far
+/// cut-off, so a NaN distance is kept (at low resolution).
 pub fn select_composites(
     focus: Vec2,
     centres: impl IntoIterator<Item = Vec2>,
@@ -65,7 +85,7 @@ pub fn select_composites(
         }
         let (dx, dz) = ((centre.x - focus.x) * 100.0, (centre.y - focus.y) * 100.0);
         let d2 = dz * dz + dx * dx;
-        if d2 <= 19_713_600.0 {
+        if !(d2 > 19_713_600.0) {
             out.push(CompositeBlock {
                 index,
                 high: d2 < 2_250_000.0,
@@ -84,11 +104,12 @@ pub struct BlockPriority {
     /// `round(6000 − distance)` in centimetres while the block is within
     /// 60 m, else 0.
     pub distance: i16,
-    /// The block's priority (`0x444` in the original).
+    /// The block's priority.
     pub rank: u32,
-    /// The block wants a composite (`flags & 2`).
+    /// The block still needs its composite drawn (the selection sets this
+    /// when a block turns high resolution).
     pub wants: bool,
-    /// The block is in the camera's visible sectors (`0xe0 & 1`).
+    /// The block's scene node is visible this frame.
     pub visible: bool,
 }
 
@@ -105,14 +126,17 @@ pub fn distance_rank(centre: Vec2, focus: Vec2) -> i16 {
 }
 
 /// Updates every block's priority from `focus` and returns the terrain's
-/// new priority base (`terrain + 0x1c8`).
+/// new priority base.
 ///
 /// Blocks that want a composite and are visible keep their relative order:
-/// the base is the midpoint of their old ranks, plus 6000. Every block then
-/// takes `base − distance`, and those in the visible set take their old
-/// rank's offset from the lowest one instead of the base, so the visible
-/// blocks stay ahead of the rest. With no visible block the old ranks are
-/// dropped and the base is 6000.
+/// the base is half the spread of their old ranks, plus 6000. Every block
+/// then takes `base − distance`, and those in the visible set take half
+/// their old rank's offset from the lowest one, plus 6000, instead, so the
+/// visible blocks stay ahead of the rest. The original scans for the lowest
+/// and highest rank in one pass where a rank that lowers the lowest is not
+/// also tried as the highest, and drops both (lowest and highest 0) when
+/// the highest ends below the lowest: with no visible block, or with one,
+/// or with ranks that only fall, the base is 6000.
 pub fn update_priorities(blocks: &mut [BlockPriority], focus: Vec2) -> u32 {
     let mut lowest = u32::MAX;
     let mut highest = 0u32;
@@ -121,8 +145,11 @@ pub fn update_priorities(blocks: &mut [BlockPriority], focus: Vec2) -> u32 {
     }
     for block in blocks.iter() {
         if block.wants && block.visible {
-            lowest = lowest.min(block.rank);
-            highest = highest.max(block.rank);
+            if block.rank < lowest {
+                lowest = block.rank;
+            } else if block.rank > highest {
+                highest = block.rank;
+            }
         }
     }
     if highest < lowest {
@@ -182,11 +209,19 @@ mod tests {
 
     #[test]
     fn the_focus_looks_ahead_and_snaps_to_a_block_centre() {
-        // Camera at (20, −4) looking along −Z: 10 m ahead is (20, 6), in
-        // block (3, 1), whose centre is (21, 9).
+        // Camera at (20, −4) looking along −Z (its back axis is +Z): 10 m
+        // ahead is (20, −14) m, in block (3, −3) of 600 cm, whose centre is
+        // (2100, −1500) cm.
         assert_eq!(
-            composite_focus(Vec2::new(20.0, -4.0), Vec2::new(0.0, -1.0)),
-            Vec2::new(21.0, 9.0)
+            composite_focus(Vec2::new(20.0, -4.0), Vec2::new(0.0, 1.0)),
+            Vec2::new(21.0, -15.0)
+        );
+        // Looking down at 60°, the back axis is short in the plane and the
+        // look-ahead with it: (0, 0) + 0.5 · 10 m along −X is (−5, 0),
+        // block (−1, 0).
+        assert_eq!(
+            composite_focus(Vec2::ZERO, Vec2::new(0.5, 0.0)),
+            Vec2::new(-3.0, 3.0)
         );
         // A point exactly on a block's low edge floors into that block.
         assert_eq!(
@@ -232,6 +267,15 @@ mod tests {
                     high: false
                 },
             ]
+        );
+        // A NaN distance never compares above the cut-off: kept, low.
+        let nan = select_composites(focus, [Vec2::new(f32::NAN, 0.0)]);
+        assert_eq!(
+            nan,
+            vec![CompositeBlock {
+                index: 0,
+                high: false
+            }]
         );
         // The list stops at 189 entries.
         let many = select_composites(focus, std::iter::repeat_n(Vec2::ZERO, 300));
@@ -283,6 +327,18 @@ mod tests {
         let mut blocks = vec![block(Vec2::new(0.0, 0.0), 9, false, false)];
         assert_eq!(update_priorities(&mut blocks, focus), 6000);
         assert_eq!(blocks[0].rank, 0);
+        // Ranks that only fall never reach the highest: 300 then 100 sets
+        // the lowest twice, the highest stays 0 below it, and both drop to
+        // 0. The visible blocks then take rank/2 + 6000 − distance.
+        let mut blocks = vec![
+            block(Vec2::new(0.0, 0.0), 300, true, true),
+            block(Vec2::new(6.0, 0.0), 100, true, true),
+            block(Vec2::new(30.0, 0.0), 0, false, false),
+        ];
+        assert_eq!(update_priorities(&mut blocks, focus), 6000);
+        assert_eq!(blocks[0].rank, 150);
+        assert_eq!(blocks[1].rank, 50 + 600);
+        assert_eq!(blocks[2].rank, 3000);
     }
 
     #[test]
