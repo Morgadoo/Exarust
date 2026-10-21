@@ -686,7 +686,7 @@ impl ItemView {
     /// original first hides a shown tooltip. A positive entry becomes the
     /// hovered one and answers 3; an icons-only view also hands its name
     /// over as the tooltip text and answers 0x303 (0x100 asks for the
-    /// tooltip, 0x200 at once). No entry (`index` below 1) goes through the
+    /// tooltip, 0x200 keeps its full delay when one already shows). No entry (`index` below 1) goes through the
     /// form's own select, which answers 0 for a view without control
     /// records, and answers 3 when an entry was hovered before.
     pub fn select(&mut self, index: i32) -> (u32, Option<Vec<u8>>) {
