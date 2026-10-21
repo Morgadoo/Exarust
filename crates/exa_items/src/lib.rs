@@ -16,6 +16,7 @@ pub mod palette;
 pub mod pane;
 pub mod possession;
 pub mod randomise;
+pub mod refresh;
 
 pub struct ItemsPlugin;
 

@@ -408,6 +408,33 @@ impl ApparelBlock {
         })
     }
 
+    /// Writes the block back into an item body; false when the body is
+    /// too short. The bytes the block does not read are kept.
+    pub fn write_to(&self, body: &mut [u8]) -> bool {
+        let Some(b) = body.get_mut(BLOCK_OFFSET..BLOCK_OFFSET + BLOCK_LEN) else {
+            return false;
+        };
+        b[0] = self.armour;
+        b[1] = self.variance;
+        b[2] = self.variant;
+        b[4..8].copy_from_slice(&self.seed.to_le_bytes());
+        b[8] = self.quality;
+        b[9] = self.damage;
+        b[10] = self.dirt;
+        b[11] = self.spreads.0;
+        for (i, l) in self.layers.iter().enumerate() {
+            let at = &mut b[0xC + 12 * i..0xC + 12 * (i + 1)];
+            at[0] = l.flags as u8;
+            at[1] = l.mask;
+            at[2] = l.set;
+            at[3] = l.level;
+            at[4] = l.material;
+            at[8] = l.colour;
+            at[0xB] = l.mode;
+        }
+        true
+    }
+
     /// The item's wealth offset as a share.
     pub fn variance_share(&self) -> f32 {
         let n = (self.variance & 0x7C) >> 2;
@@ -764,5 +791,11 @@ mod tests {
             (5, 1, 5)
         );
         assert_eq!(ApparelBlock::of_body(&body[..0x213]), None);
+        let mut copy = vec![0xEEu8; 0x214];
+        assert!(b.write_to(&mut copy));
+        assert_eq!(ApparelBlock::of_body(&copy).unwrap(), b);
+        // A byte the block does not read is kept.
+        assert_eq!(copy[0x1AB], 0xEE);
+        assert!(!b.write_to(&mut copy[..0x200]));
     }
 }
