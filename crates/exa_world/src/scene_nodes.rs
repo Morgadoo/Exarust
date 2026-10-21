@@ -29,9 +29,10 @@
 //!
 //! Meshes also carry the original's cut-away fade: an amount that moves
 //! towards its target at 0.003 per millisecond, turning a solid draw into a
-//! dithered or partial one. [`Scene::detect_cut_away`] is the detector that
-//! sets the target: the camera's segment from behind the eye past the
-//! player marks the meshes it meets.
+//! dithered or partial one. [`Scene::detect_cut_away`] is the camera's
+//! detector that marks the meshes to fade: those the segment from beyond
+//! the eye to a metre short of the player meets, and those over the
+//! player.
 //!
 //! Frames are kept as the original keeps them: a node directly under its
 //! sector has its local frame as its frame, so every node frame is in its
@@ -53,7 +54,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::math::{Mat3, Vec2, Vec3};
-use exa_physics::intersect::{ConvexVolume, Obb};
+use exa_physics::intersect::{ConvexVolume, Obb, segment_sphere};
 
 use crate::rooms::RoomState;
 
@@ -64,6 +65,26 @@ pub const IN_SCENE: u32 = 0x0004_0000;
 /// Scene word: owned elsewhere; the unit's cleanup hook leaves the node and
 /// its subtree alone.
 pub const OWNED: u32 = 0x0200_0000;
+/// Scene word: the camera's cut-away detector tests this mesh.
+pub const CUT_AWAY_CANDIDATE: u32 = 0x2000_0000;
+/// Scene word: the cut-away kind, three bits that include
+/// [`CUT_AWAY_CANDIDATE`].
+pub const CUT_AWAY_KIND: u32 = 0x7000_0000;
+/// Cut-away kind: the camera's segment must meet the bounding sphere and
+/// then the mesh's own segment callback.
+pub const CUT_AWAY_TESTED: u32 = 0x2000_0000;
+/// Cut-away kind: meeting the bounding sphere is enough.
+pub const CUT_AWAY_SPHERE: u32 = 0x3000_0000;
+/// Cut-away kind: a mesh over the player, met by a 10 m segment straight
+/// down onto the looked-at point and then by the mesh's ray callback.
+pub const CUT_AWAY_OVERHEAD: u32 = 0x6000_0000;
+/// Scene word: a marked or cleared mesh marks or clears its parent too.
+pub const CUT_AWAY_PARENT: u32 = 0x0100_0000;
+/// Scene word: a marked or cleared mesh marks or clears its mesh children
+/// too (the same bit as [`OWNED`]; the detector reads it for this).
+pub const CUT_AWAY_CHILDREN: u32 = 0x0200_0000;
+/// How far above the looked-at point the overhead probe starts (m).
+pub const CUT_AWAY_OVERHEAD_HEIGHT: f32 = 10.0;
 
 /// Option word: the node has been prepared (its one-time set-up ran when
 /// it was first registered).
@@ -74,10 +95,6 @@ pub const WORLD_LIGHT: u32 = 0x2;
 /// Option word: a mesh that bounds its sector's first box; the others only
 /// widen the second.
 pub const BOUNDS_SPLIT: u32 = 0x1_0000;
-/// Option word: the camera's cut-away detector tests this mesh (the
-/// original tests class bit `0x0200_0000`; Exarust keeps it in the option
-/// word, as it keeps the other per-node flags).
-pub const CUT_AWAY_CANDIDATE: u32 = 0x0200_0000;
 
 /// Sector option word: registration into the sector is skipped. The unit's
 /// global `_World` sector carries it.
@@ -563,7 +580,8 @@ pub struct ScreenRect {
 #[derive(Clone, Debug)]
 pub struct SceneNode {
     pub kind: NodeKind,
-    /// Scene word bits: [`IN_SCENE`], [`OWNED`].
+    /// Scene word bits: [`IN_SCENE`], [`OWNED`] and the cut-away bits
+    /// ([`CUT_AWAY_KIND`], [`CUT_AWAY_PARENT`], [`CUT_AWAY_CHILDREN`]).
     pub scene_flags: u32,
     /// Option word bits: [`PREPARED`], [`WORLD_LIGHT`], [`BOUNDS_SPLIT`].
     pub flags: u32,
@@ -1232,37 +1250,83 @@ impl Scene {
         moved_seen
     }
 
-    /// The camera's cut-away detector: the segment from `from` along the
-    /// unit `direction` for `length` is the one the camera's navigation
-    /// unit casts from behind the eye towards the player, two camera
-    /// distances long and 100 cm short of the player. Every candidate mesh
-    /// ([`CUT_AWAY_CANDIDATE`]) whose box the segment meets is marked for
-    /// the fade; every other candidate is cleared. Returns how many meshes
-    /// changed their mark.
+    /// The camera's cut-away detector, as the original's probe walks the
+    /// scene: every sector the first view draws (its mask has [`MAIN`]),
+    /// every mesh registered in it that carries [`CUT_AWAY_CANDIDATE`],
+    /// with the segments moved into the sector's space (less its origin).
     ///
-    /// The original tests the mesh's own ray callback after the box; with
-    /// no CPU triangles Exarust stops at the box (guess: the box is what
-    /// the callback's rejection volume surrounds).
-    pub fn detect_cut_away(&mut self, from: Vec3, direction: Vec3, length: f32) -> usize {
-        let nodes: Vec<usize> = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.kind == NodeKind::Mesh && node.flags & CUT_AWAY_CANDIDATE != 0)
-            .map(|(index, _)| index)
-            .collect();
-        self.refresh_stale(&nodes);
+    /// An [`CUT_AWAY_OVERHEAD`] mesh is tested with the segment from
+    /// [`CUT_AWAY_OVERHEAD_HEIGHT`] above `focus` straight down to it; every
+    /// other kind with the camera's segment from `from` along the unit
+    /// `direction` for `length` (the camera unit's `cut_away_segment`). The
+    /// segment must meet the mesh's bounding sphere (its box's centre and
+    /// the box's radius); a [`CUT_AWAY_SPHERE`] mesh is then marked, and a
+    /// [`CUT_AWAY_TESTED`] or overhead mesh would be asked its own segment
+    /// or ray callback (guess: with no CPU triangles Exarust stops at the
+    /// sphere). Any other kind, or a miss, clears a marked mesh. Marking or
+    /// clearing carries to the parent ([`CUT_AWAY_PARENT`]) and to the mesh
+    /// children ([`CUT_AWAY_CHILDREN`]); a mesh that was not marked is left
+    /// alone, children included.
+    ///
+    /// Returns how many meshes changed their mark (the original returns
+    /// nothing useful).
+    pub fn detect_cut_away(
+        &mut self,
+        from: Vec3,
+        direction: Vec3,
+        length: f32,
+        focus: Vec3,
+    ) -> usize {
         let segment = direction * length;
+        let top = focus + Vec3::Y * CUT_AWAY_OVERHEAD_HEIGHT;
+        let down = Vec3::Y * -CUT_AWAY_OVERHEAD_HEIGHT;
         let mut changed = 0;
-        for node in &mut self.nodes {
-            if node.kind != NodeKind::Mesh || node.flags & CUT_AWAY_CANDIDATE == 0 {
+        for sector in 0..self.sectors.len() {
+            if self.sectors[sector].mask & MAIN == 0 {
                 continue;
             }
-            let (obb, _) = node.obb();
-            let cut = exa_physics::intersect::segment_obb_hit(from, segment, &obb);
-            if node.cut_away != cut {
-                node.cut_away = cut;
-                changed += 1;
+            let origin = self.sectors[sector].origin;
+            let (from, top) = (from - origin, top - origin);
+            let meshes = self.sectors[sector].meshes.clone();
+            self.refresh_stale(&meshes);
+            for mesh in meshes {
+                let node = &self.nodes[mesh];
+                if node.kind != NodeKind::Mesh || node.scene_flags & CUT_AWAY_CANDIDATE == 0 {
+                    continue;
+                }
+                let flags = node.scene_flags;
+                let (centre, radius) = (node.world, radius_of(node.half_extents));
+                let kind = flags & CUT_AWAY_KIND;
+                let cut = if kind == CUT_AWAY_OVERHEAD {
+                    segment_sphere(top, down, centre, radius)
+                } else {
+                    segment_sphere(from, segment, centre, radius)
+                        && (kind == CUT_AWAY_TESTED || kind == CUT_AWAY_SPHERE)
+                };
+                if !cut && !node.cut_away {
+                    continue;
+                }
+                let mut marked = vec![mesh];
+                if flags & CUT_AWAY_PARENT != 0
+                    && let Some(parent) = node.parent
+                {
+                    marked.push(parent);
+                }
+                if flags & CUT_AWAY_CHILDREN != 0 {
+                    marked.extend(
+                        node.children
+                            .iter()
+                            .flatten()
+                            .copied()
+                            .filter(|&child| self.nodes[child].kind == NodeKind::Mesh),
+                    );
+                }
+                for node in marked {
+                    if self.nodes[node].cut_away != cut {
+                        self.nodes[node].cut_away = cut;
+                        changed += 1;
+                    }
+                }
             }
         }
         changed
@@ -2091,55 +2155,88 @@ mod tests {
     #[test]
     fn the_camera_cuts_away_the_candidate_meshes_between_it_and_the_player() {
         let mut scene = Scene::new((32, 40));
-        let on_line = scene.add_node(NodeKind::Mesh, None);
-        scene.nodes[on_line].flags |= CUT_AWAY_CANDIDATE;
-        scene.set_frame(
-            on_line,
-            Vec3::new(0.0, 0.0, 0.0),
-            Mat3::IDENTITY,
-            Vec3::splat(1.0),
-        );
-        let beside = scene.add_node(NodeKind::Mesh, None);
-        scene.nodes[beside].flags |= CUT_AWAY_CANDIDATE;
-        scene.set_frame(
-            beside,
-            Vec3::new(10.0, 0.0, 0.0),
-            Mat3::IDENTITY,
-            Vec3::splat(1.0),
-        );
-        let unflagged = scene.add_node(NodeKind::Mesh, None);
-        scene.set_frame(
-            unflagged,
-            Vec3::new(0.0, 0.0, 0.0),
-            Mat3::IDENTITY,
-            Vec3::splat(1.0),
-        );
-        // The camera's segment runs from behind it, two distances long.
-        assert_eq!(
-            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 100.0),
-            1
-        );
-        assert!(scene.nodes[on_line].cut_away);
-        assert!(!scene.nodes[beside].cut_away);
-        assert!(!scene.nodes[unflagged].cut_away);
+        let sector = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[sector]);
+        let sector = 1;
+        scene.sectors[sector].origin = Vec3::new(100.0, 0.0, 0.0);
+        scene.sectors[sector].mask = MAIN;
+        let mesh = |scene: &mut Scene, at: Vec3, flags: u32| {
+            let node = scene.add_node(NodeKind::Mesh, None);
+            scene.set_frame(node, at, Mat3::IDENTITY, Vec3::splat(1.0));
+            scene.register(node, sector);
+            scene.nodes[node].scene_flags |= flags;
+            node
+        };
+        let on_line = mesh(&mut scene, Vec3::ZERO, CUT_AWAY_SPHERE);
+        let tested = mesh(&mut scene, Vec3::ZERO, CUT_AWAY_TESTED);
+        let beside = mesh(&mut scene, Vec3::new(10.0, 0.0, 0.0), CUT_AWAY_SPHERE);
+        let unflagged = mesh(&mut scene, Vec3::ZERO, 0);
+        let other_kind = mesh(&mut scene, Vec3::ZERO, CUT_AWAY_KIND);
+        let overhead = mesh(&mut scene, Vec3::new(0.0, 5.0, 30.0), CUT_AWAY_OVERHEAD);
+        // The camera's segment, in world space: the sector's origin moves
+        // it to z −50..50 on the sector's axis. The player stands at z 30
+        // under the overhead mesh.
+        let from = Vec3::new(100.0, 0.0, -50.0);
+        let focus = Vec3::new(100.0, 0.0, 30.0);
+        assert_eq!(scene.detect_cut_away(from, Vec3::Z, 100.0, focus), 3);
+        for (node, cut) in [
+            (on_line, true),
+            (tested, true),
+            (beside, false),
+            (unflagged, false),
+            (other_kind, false),
+            (overhead, true),
+        ] {
+            assert_eq!(scene.nodes[node].cut_away, cut, "node {node}");
+        }
         // Without a change the count stays 0.
+        assert_eq!(scene.detect_cut_away(from, Vec3::Z, 100.0, focus), 0);
+        // A segment elsewhere clears the marks for the fade back in.
+        let away = Vec3::new(100.0, 0.0, -100.0);
         assert_eq!(
-            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 100.0),
-            0
+            scene.detect_cut_away(Vec3::new(100.0, 0.0, 50.0), Vec3::Z, 10.0, away),
+            3
         );
-        // Looking the other way clears it for the fade back in.
-        assert_eq!(
-            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), Vec3::Z, 10.0),
-            1
-        );
-        assert!(!scene.nodes[on_line].cut_away);
-        // Casting through it again leaves the mark as it is.
+        assert!(!scene.nodes[on_line].cut_away && !scene.nodes[overhead].cut_away);
+        // A sector the first view does not draw is not probed.
+        scene.sectors[sector].mask = 0;
         scene.nodes[on_line].cut_away = true;
+        assert_eq!(scene.detect_cut_away(from, Vec3::Z, 100.0, focus), 0);
+        assert!(scene.nodes[on_line].cut_away);
+    }
+
+    #[test]
+    fn a_cut_away_mark_carries_to_the_parent_and_the_mesh_children() {
+        let (mut scene, sector, _) = node_scene();
+        scene.sectors[sector].mask = MAIN;
+        let group = scene.add_node(NodeKind::Mesh, None);
+        scene.set_frame(group, Vec3::ZERO, Mat3::IDENTITY, Vec3::splat(1.0));
+        let piece = scene.add_node(NodeKind::Mesh, Some(group));
+        scene.set_frame(piece, Vec3::ZERO, Mat3::IDENTITY, Vec3::splat(1.0));
+        scene.register(piece, sector);
+        scene.nodes[piece].scene_flags |= CUT_AWAY_SPHERE | CUT_AWAY_PARENT | CUT_AWAY_CHILDREN;
+        let bit = scene.add_node(NodeKind::Mesh, Some(piece));
+        let light = scene.add_node(NodeKind::Light, Some(piece));
+        let focus = Vec3::new(0.0, 0.0, 30.0);
         assert_eq!(
-            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), -Vec3::Z, 100.0),
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, -5.0), Vec3::Z, 10.0, focus),
+            3
+        );
+        assert!(scene.nodes[group].cut_away && scene.nodes[bit].cut_away);
+        assert!(!scene.nodes[light].cut_away);
+        // Clearing carries too.
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), Vec3::Z, 1.0, focus),
+            3
+        );
+        assert!(!scene.nodes[group].cut_away && !scene.nodes[bit].cut_away);
+        // A mesh that was not marked leaves its relatives alone.
+        scene.nodes[bit].cut_away = true;
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), Vec3::Z, 1.0, focus),
             0
         );
-        assert!(scene.nodes[on_line].cut_away);
+        assert!(scene.nodes[bit].cut_away);
     }
 
     #[test]
