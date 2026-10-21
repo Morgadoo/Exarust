@@ -20,10 +20,10 @@
 //! head through the level (not the props) puts it where the ball first
 //! meets the ceiling. Not while the game is paused.
 //!
-//! The second off rule is a held item whose weapon section is kind 3 and
-//! whose held part is lit. Exarust's item records do not expose that lit
-//! bit yet, so the running switch passes it off; the rule is here and
-//! tested. Not in Exarust: the Mind power that forces the light on, and the
+//! The second off rule is an item in either hand whose weapon section is of
+//! kind 3 while the player's held part carries its lit flag (one part's
+//! flag, read for either hand). Exarust's bodies do not keep that flag yet,
+//! so the running switch passes it off; the rule is here and tested. Not in Exarust: the Mind power that forces the light on, and the
 //! spectating view's own light.
 //!
 //! Evidence: the controls' light maker, frame and switch and the
@@ -64,8 +64,8 @@ const PROBE_RADIUS_CM: f32 = 10.0;
 /// The head's bone.
 const HEAD: usize = 10;
 
-/// Whether a held item's weapon section puts the light out: kind 3, with
-/// its held part lit.
+/// Whether a held item's weapon section puts the light out: kind 3, while
+/// the player's held part is flagged lit.
 pub fn weapon_puts_out(weapon_kind: Option<u8>, held_part_lit: bool) -> bool {
     weapon_kind == Some(3) && held_part_lit
 }
@@ -172,8 +172,8 @@ fn switch_player_light(
     if torch && hands.is_some_and(|h| h.main.is_some_and(|m| m.light) || h.off_light) {
         hands_light[0] = true;
     }
-    // No item record exposes the held part's lit bit yet, so the weapon's
-    // second off rule is passed off here.
+    // The player's held part keeps no lit flag yet, so the weapon's second
+    // off rule is passed off here.
     let on = switched_on(worn, hands_light, false);
     let made = lights.iter().next();
     match (on, made) {

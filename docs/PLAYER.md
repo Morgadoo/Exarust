@@ -765,6 +765,34 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).
 
+### The behaviour's aim and contact rules
+
+The player's behaviour keeps rules that Exarust holds as tested functions
+with no caller yet (`player_behaviour`):
+
+- **Aim point.** The cursor's point on the plane 80 cm over the player's
+  ground; with a target, its head and its nearest bone on screen (the
+  bone's fraction `t = (b − a)·(c − a)/|b − a|²`, clamped into [0, 1]) set
+  a lock: within the pixel radius 80 cm make at the head's depth the aim
+  height is the locked point's, within twice it the two blend by
+  `(d − r)/r`. Without a target the point the cursor's pick meets replaces
+  it when it is above the plane's point and under the ground plus 200 cm.
+- **Contacts.** Every character within 12 m, rebuilt each tick: closeness
+  `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
+  0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²`, score half of each;
+  twelve kept, a new one replacing the lowest it outscores.
+- **Engaged enemy.** The largest threat among the living characters within
+  the player's reach plus 70 cm, in front of the heading by more than 0.3
+  of their distance (in double precision), whose own contact score for the
+  player is over 2.
+- **Attack timing.** The wind-up step `(1 − 0.05·√E)` (1 at no energy),
+  floored at 0.1, over the weapon's rate, times 0.03, floored at 0.01; the
+  next attack `1000/(80·step)` ms on, at most the swing's length; the
+  recovery `(2f + 1)·(round(100·rate) + 100)` ms, f being `(3 − 2b)·b²` for
+  `b = balance/0.7` while a swing's leg mode (5 to 12) is on and the balance
+  is at most 0.7, else 1.
+- **On screen.** The living character whose point shows nearest the cursor.
+
 ## The combat stance
 
 Every fighter keeps a **stance**: the looping clip it returns to. Every
@@ -1126,10 +1154,12 @@ character body's possession routines; addresses are in the research notes.
   camera's target yaw turns by 0.0001 rad for each millisecond since the
   last frame (0.1 rad a second, in double precision, then single), less a
   whole turn once it passes 2π, and the behaviour stops reading the cursor
-  until the player is busy again. A blocked screen (a dead player, the
-  in-game menu) turns it without the idle test; a modal form or an open
-  window stops it and restamps the clock (`idle_orbit::Frame`). Not in
-  Exarust: a dialogue or the power bar as the modal form.
+  until the player is busy again. A screen that blocks the controls turns
+  it with only the ten-second test; an open window (the active view not the
+  game's) only restamps the clock, and a dialogue or the power bar keeps the
+  player busy (`idle_orbit::Frame`). Exarust's in-game menu is such a
+  window; no Exarust screen blocks the controls yet, and there is no
+  dialogue or power bar.
 
 ## Start outfit
 
@@ -1247,9 +1277,10 @@ is more than 1 cm up, a 10 cm ball swept up from the head through the level
 (not the props) puts it where the ball first meets the ceiling. Nothing
 moves while the game is paused.
 
-The second off rule (a held weapon section of kind 3 whose held part is
-lit) is modelled (`player_light::weapon_puts_out`) but no Exarust item
-record exposes that lit bit yet, so the running switch passes it off. Not
+The second off rule (an item in either hand whose weapon section is of
+kind 3 while the player's held part carries its lit flag) is modelled
+(`player_light::weapon_puts_out`), but Exarust's bodies keep no such flag
+yet, so the running switch passes it off. Not
 in Exarust: the Mind power that forces it on, and the spectating view's
 light. A normal start wears no such helm, so the light stays off, as in the
 original.

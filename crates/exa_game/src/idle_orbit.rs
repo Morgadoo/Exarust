@@ -78,13 +78,13 @@ pub struct Frame {
     pub holding: bool,
     /// A mouse button is held.
     pub buttons: bool,
-    /// A blocked screen (the death screen, the in-game menu): it turns the
-    /// camera without the idle test.
+    /// A screen blocks the controls: the camera turns with only the
+    /// ten-second test.
     pub blocked: bool,
-    /// A modal form (a dialogue, the power bar) stops the turn.
+    /// A dialogue or the power bar is up: the player is busy.
     pub modal: bool,
-    /// An open window consumes the input and stops the turn, restamping the
-    /// idle clock.
+    /// The active view is not the game's (a window has the input): the idle
+    /// clock is restamped and nothing turns.
     pub window_open: bool,
 }
 
