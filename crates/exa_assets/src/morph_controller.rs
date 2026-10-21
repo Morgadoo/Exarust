@@ -1953,3 +1953,124 @@ mod adopt_tests {
         assert!(add_morph_part(&[[0.0; 3]], &[]).is_none());
     }
 }
+
+/// The number a morph part's name begins with: its leading decimal digits,
+/// parsed as the engine's text-to-integer conversion. A name with no leading
+/// digit is 0, which sorts it before the numbered parts (the original's
+/// registration compares with an initial 100).
+pub fn part_number(name: &[u8]) -> i32 {
+    let mut value: i64 = 0;
+    let mut digits = 0;
+    for &c in name {
+        if !c.is_ascii_digit() {
+            break;
+        }
+        value = value.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+        digits += 1;
+        if digits >= 9 {
+            break;
+        }
+    }
+    value as i32
+}
+
+/// The order a morph controller registers its parts in: ascending by the
+/// number their names begin with, as the original's selection sort swaps
+/// each next slot with the smallest remaining part (a later equal part does
+/// not displace the current best).
+pub fn order_morph_parts(names: &[&[u8]]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..names.len()).collect();
+    let numbers: Vec<i32> = names.iter().map(|n| part_number(n)).collect();
+    for slot in 0..order.len() {
+        let mut best = slot;
+        for i in slot + 1..order.len() {
+            if numbers[order[i]] < numbers[order[best]] {
+                best = i;
+            }
+        }
+        order.swap(slot, best);
+    }
+    order
+}
+
+/// Applies an apparel piece's morph blob to the vertices its target list
+/// names: each selected vertex gets the blob's base point plus every part's
+/// delta at its weight (a weight under the epsilon is skipped), in part
+/// order. Returns the base point and one position per selected vertex, in
+/// the selection's order.
+pub fn apply_morph_targets(
+    data: &MorphData,
+    weights: &[f32],
+    selected: &[usize],
+) -> ([f32; 3], Vec<[f32; 3]>) {
+    let base = morph_weighted_base(data, weights);
+    let positions = selected
+        .iter()
+        .map(|&vertex| {
+            let mut p = data.rest.get(vertex).copied().unwrap_or([0.0; 3]);
+            for (part, &weight) in data.parts.iter().zip(weights) {
+                if weight.abs() < MORPH_EPSILON {
+                    continue;
+                }
+                if let Some(delta) = part.deltas.get(vertex) {
+                    for (axis, value) in p.iter_mut().enumerate() {
+                        *value += delta[axis] * weight;
+                    }
+                }
+            }
+            p
+        })
+        .collect();
+    (base, positions)
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn part_numbers_are_the_leading_digits() {
+        assert_eq!(part_number(b"01Pelvis"), 1);
+        assert_eq!(part_number(b"17RHand"), 17);
+        assert_eq!(part_number(b"HumanHair"), 0);
+        assert_eq!(part_number(b""), 0);
+        assert_eq!(part_number(b"000000012"), 12);
+        assert_eq!(part_number(b"9999999999"), 999_999_999);
+    }
+
+    /// Ascending by number, ties stable: 5, 1, 3, 2 becomes 1, 2, 3, 5.
+    #[test]
+    fn parts_are_ordered_by_their_numbers() {
+        let names: [&[u8]; 5] = [b"05Chest", b"01Pelvis", b"Hair", b"03Leg", b"02Foot"];
+        assert_eq!(order_morph_parts(&names), [2, 1, 4, 3, 0]);
+        let ties: [&[u8]; 3] = [b"02b", b"02a", b"01"];
+        assert_eq!(order_morph_parts(&ties), [2, 1, 0]);
+        assert!(order_morph_parts(&[]).is_empty());
+    }
+
+    /// An apparel blob applies only the named vertices, with the weighted
+    /// base and the parts' deltas.
+    #[test]
+    fn an_apparel_blob_paints_its_selected_vertices() {
+        let data = build_morph_data(
+            [1.0, 0.0, 0.0],
+            &[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+            vec![MorphPartData {
+                pivot: [2.0, 0.0, 0.0],
+                deltas: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            }],
+        );
+        let (base, points) = apply_morph_targets(&data, &[0.5], &[2, 0, 1]);
+        assert_eq!(base, [2.0, 0.0, 0.0]);
+        assert_eq!(points[0], [2.0, 0.0, 0.5]);
+        assert_eq!(points[1], [0.5, 0.0, 0.0]);
+        assert_eq!(points[2], [1.0, 0.5, 0.0]);
+        // A sub-epsilon weight leaves the base points alone.
+        let (base, points) = apply_morph_targets(&data, &[1e-8], &[1]);
+        assert_eq!(base, [1.0, 0.0, 0.0]);
+        assert_eq!(points[0], [1.0, 0.0, 0.0]);
+        // A vertex past the rest list contributes nothing.
+        let (_, points) = apply_morph_targets(&data, &[0.5], &[9]);
+        assert_eq!(points[0], [0.0, 0.0, 0.0]);
+    }
+}
