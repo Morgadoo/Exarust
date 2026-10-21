@@ -2,7 +2,9 @@
 //! (Included from roles.rs: `#[path = "roles_test.rs"] mod tests;`)
 
 use super::*;
-use exa_formats::roles::{INHERITS_PARENT, Name, RELATION_ROLE, SECTION_INTERACTION};
+use exa_formats::roles::{
+    INHERITS_PARENT, Name, RELATION_ROLE, SECTION_DIALOGUE, SECTION_INTERACTION,
+};
 
 fn attitude_entry(target: u32, value: i8, tolerance: u8) -> RoleEntry {
     RoleEntry {
@@ -245,8 +247,8 @@ fn relation_roles_decide_before_own_roles() {
     assert!(!rel.add_role(&b, &skeleton, 5, 21, 0, 2));
     let r = attitude(&b, &skeleton, &mut rel, &partner, 2);
     assert_eq!((r.attitude, r.tolerance), (10.0, 100.0));
-    assert!(rel.remove_role(5, 21));
-    assert!(!rel.remove_role(5, 21));
+    assert!(rel.remove_role(5, 21, 2));
+    assert!(!rel.remove_role(5, 21, 2));
     assert!(rel.find(5).unwrap().roles.as_ref().unwrap().is_empty());
 }
 
@@ -479,4 +481,123 @@ fn a_record_gives_its_roles() {
     assert_eq!(legacy.ids().collect::<Vec<_>>(), vec![9, 2]);
     assert!(invalid(&roles_of(&b, &[999]), &Relations::default(), &b, 0));
     assert!(!invalid(&legacy, &Relations::default(), &b, 0));
+}
+
+/// Every corpse-script entry of the dead character's roles that targets the
+/// Player, newest role first, through the corpse accessor.
+#[test]
+fn a_corpse_script_is_found_for_the_player() {
+    let mut b = book();
+    add(
+        &mut b,
+        47,
+        0,
+        0,
+        0,
+        vec![RoleEntry {
+            kind: SECTION_CORPSE,
+            target: 7,
+            corpse: Some(b"Actor.Loot();".to_vec()),
+            ..RoleEntry::default()
+        }],
+    );
+    add(
+        &mut b,
+        48,
+        0,
+        0,
+        0,
+        vec![RoleEntry {
+            kind: SECTION_CORPSE,
+            target: 6,
+            corpse: Some(b"Other();".to_vec()),
+            ..RoleEntry::default()
+        }],
+    );
+    let corpse = roles_of(&b, &[47, 48]);
+    let scripts = corpse_scripts(&b, &corpse);
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(scripts[0].role, 47);
+    assert_eq!(scripts[0].script, b"Actor.Loot();");
+    assert!(corpse_scripts(&b, &roles_of(&b, &[7])).is_empty());
+}
+
+/// The interaction and dialogue wrappers hand out the section of the entry
+/// the finder answers.
+#[test]
+fn the_condition_and_dialogue_wrappers_use_the_finder() {
+    let mut b = book();
+    let dialogue = exa_formats::roles::Dialogue {
+        target: 0,
+        actors: Vec::new(),
+        nodes: Vec::new(),
+    };
+    add(
+        &mut b,
+        49,
+        0,
+        0,
+        0,
+        vec![RoleEntry {
+            kind: SECTION_DIALOGUE,
+            target: 7,
+            dialogue: Some(dialogue.clone()),
+            ..RoleEntry::default()
+        }],
+    );
+    add(
+        &mut b,
+        50,
+        0,
+        0,
+        0,
+        vec![RoleEntry {
+            kind: SECTION_INTERACTION,
+            target: 7,
+            interaction: Some(b"result = 1;".to_vec()),
+            ..RoleEntry::default()
+        }],
+    );
+    let player = roles_of(&b, &[7]);
+    let partner = Partner {
+        id: 1,
+        roles: &player,
+        former: None,
+    };
+    let rel = Relations::default();
+    let holder = roles_of(&b, &[49]);
+    assert_eq!(dialogue_for(&b, &holder, &rel, &partner), Some(&dialogue));
+    assert_eq!(interaction_condition(&b, &holder, &rel, &partner), None);
+    let other = roles_of(&b, &[50]);
+    assert_eq!(
+        interaction_condition(&b, &other, &rel, &partner),
+        Some(&b"result = 1;"[..])
+    );
+    assert_eq!(dialogue_for(&b, &other, &rel, &partner), None);
+}
+
+/// StartDialogue copies the calling context; ChangeRole is the original's
+/// missing-function error. The unit registers them in this order.
+#[test]
+fn the_roles_scripts_are_registered_and_start_dialogue_copies_its_context() {
+    assert_eq!(SCRIPT_FUNCTIONS, ["StartDialogue", "ChangeRole"]);
+    let context = DialogueStart {
+        owner: 3,
+        partner: 4,
+        role: 21,
+        partner_role: 7,
+    };
+    assert_eq!(start_dialogue(context), context);
+    let error = change_role().unwrap_err();
+    assert_eq!(error.to_string(), "Function \"ChangeRole\" does not exist.");
+}
+
+/// A level character's relation removal selects the locale's table when
+/// none is current, even when it then finds no relation role.
+#[test]
+fn removing_a_level_relation_selects_the_level_table() {
+    let mut rel = Relations::default();
+    assert!(!rel.remove_role(LOCAL_ID | 5, 21, 9));
+    assert_eq!(rel.locale(), Some(9));
+    assert_eq!(rel.levels.len(), 1);
 }

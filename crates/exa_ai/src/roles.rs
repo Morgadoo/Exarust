@@ -26,6 +26,15 @@
 //! role's weight share. Nothing matching leaves the familiarity and
 //! tolerance 0.
 //!
+//! The scripts around the database: the player handling a dead character
+//! runs every corpse-section entry of the dead character's roles that
+//! targets the Player, with the corpse as actor 1 and the player as actor 2;
+//! the interaction condition and dialogue of A toward B come from the same
+//! entry finder the attitude roles use. The unit registers `StartDialogue`
+//! (which copies the owner, partner, role and matched partner role into the
+//! engine's context) and the `ChangeRole` stub that always reports its
+//! missing function. The brain does not feed the script engine yet.
+//!
 //! Evidence: the original's role database routines (add, remove, has,
 //! validate, relation tables, add and remove relation, familiarity, the
 //! attitude, the encounter and the entry finder), and the shipped
@@ -35,7 +44,10 @@ use std::collections::BTreeMap;
 
 use bevy::prelude::Component;
 use exa_formats::characters::CharacterRecord;
-use exa_formats::roles::{ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER};
+use exa_formats::roles::{
+    ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_DIALOGUE, SECTION_ENCOUNTER,
+    SECTION_INTERACTION,
+};
 
 /// The Player role.
 pub const PLAYER: u32 = 7;
@@ -371,6 +383,9 @@ impl Relations {
         value: u32,
         locale: u32,
     ) -> bool {
+        // The original also decrements the partner character record's
+        // reference counter in the character database while it copies the
+        // relation. Exarust's records are owned values, not counted.
         let fresh = || RelationRole {
             id: role_id,
             weight: share(role(book, role_id)),
@@ -394,8 +409,13 @@ impl Relations {
     }
 
     /// Removes the relation role `role_id` toward `id`. True when it was
-    /// held. The relation keeps its role flag.
-    pub fn remove_role(&mut self, id: u32, role_id: u32) -> bool {
+    /// held. The relation keeps its role flag. A level character with no
+    /// current level table selects the table of `locale` first, as the
+    /// original does before it looks the relation up.
+    pub fn remove_role(&mut self, id: u32, role_id: u32, locale: u32) -> bool {
+        if id & LOCAL_ID != 0 && self.current.is_none() {
+            self.select(locale);
+        }
         let Some(held) = self.find_mut(id).and_then(|r| r.roles.as_mut()) else {
             return false;
         };
@@ -591,6 +611,99 @@ pub fn entry_for<'a>(
         }
     }
     None
+}
+
+/// The interaction condition A holds for B (kind `0x40`): the first section
+/// the entry finder answers, as the player's use of B runs it.
+pub fn interaction_condition<'a>(
+    book: &'a RoleDb,
+    roles: &Roles,
+    relations: &Relations,
+    partner: &Partner<'_>,
+) -> Option<&'a [u8]> {
+    entry_for(book, roles, relations, partner, SECTION_INTERACTION)
+        .and_then(|e| e.script(SECTION_INTERACTION))
+}
+
+/// The dialogue graph A holds for B (kind `0x2`): the first graph the entry
+/// finder answers, in the role and entry order the original walks.
+pub fn dialogue_for<'a>(
+    book: &'a RoleDb,
+    roles: &Roles,
+    relations: &Relations,
+    partner: &Partner<'_>,
+) -> Option<&'a exa_formats::roles::Dialogue> {
+    entry_for(book, roles, relations, partner, SECTION_DIALOGUE).and_then(|e| e.dialogue.as_ref())
+}
+
+/// A corpse script to run: the dead character's role that holds it and its
+/// text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpseScript<'a> {
+    pub role: u32,
+    pub script: &'a [u8],
+}
+
+/// The scripts the player's handling of a corpse runs: every entry of the
+/// dead character's roles, newest first and in entry order, that targets
+/// the Player role and carries the corpse section (kind `0x20`). The script
+/// sees the corpse as its first actor and the player as its second.
+pub fn corpse_scripts<'a>(book: &'a RoleDb, corpse: &Roles) -> Vec<CorpseScript<'a>> {
+    let mut out = Vec::new();
+    for id in corpse.ids() {
+        let Some(record) = role(book, id) else {
+            continue;
+        };
+        for entry in &record.entries {
+            if entry.target != PLAYER {
+                continue;
+            }
+            if let Some(script) = entry.script(SECTION_CORPSE) {
+                out.push(CorpseScript { role: id, script });
+            }
+        }
+    }
+    out
+}
+
+/// The script context roles hand the engine: the owner, the partner, the
+/// role that held the script and the partner role it matched (0 for one
+/// character or any partner).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialogueStart {
+    pub owner: u32,
+    pub partner: u32,
+    pub role: u32,
+    pub partner_role: u32,
+}
+
+/// The names the roles unit registers with the script engine, in the order
+/// it registers them.
+pub const SCRIPT_FUNCTIONS: [&str; 2] = ["StartDialogue", "ChangeRole"];
+
+/// `ChangeRole` is a stub in the original: it reports that the function does
+/// not exist and returns 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MissingScriptFunction;
+
+impl std::fmt::Display for MissingScriptFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Function \"ChangeRole\" does not exist.")
+    }
+}
+
+impl std::error::Error for MissingScriptFunction {}
+
+/// `StartDialogue`: copies the calling context and hands it to the dialogue
+/// engine. The context is returned rather than run, because the script
+/// engine is not fed from the brain yet.
+pub fn start_dialogue(context: DialogueStart) -> DialogueStart {
+    context
+}
+
+/// `ChangeRole`: always the original's missing-function error.
+pub fn change_role() -> Result<(), MissingScriptFunction> {
+    Err(MissingScriptFunction)
 }
 
 #[cfg(test)]

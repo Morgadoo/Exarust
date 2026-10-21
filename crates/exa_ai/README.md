@@ -29,7 +29,7 @@ notice drops the sleep role and wakes.
 
 | module | what it holds |
 |---|---|
-| `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts and the entry finder |
+| `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts, corpse scripts, the interaction-condition and dialogue wrappers, the entry finder, and the `StartDialogue`/`ChangeRole` registration |
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming and tidying |
@@ -90,8 +90,8 @@ flight starts there.
 
 Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two
-slots); encounters, dialogue and condition scripts are found, not run from
-the AI; the brain feeding the
+slots); encounter, corpse, dialogue and condition scripts and
+`StartDialogue` are found and modelled, not run from the AI; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol walk only
 once the running game has a navigation grid, and the search has no item
