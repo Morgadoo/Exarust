@@ -489,6 +489,7 @@ mod tests {
             links: vec![],
             foot: None,
             pins: vec![Vec3::ZERO],
+            spheres: None,
         }];
         let mut body = Ragdoll::new(&setup).with_drive();
         body.drive.as_mut().unwrap().energy = 1.0;

@@ -726,6 +726,7 @@ mod tests {
             links: Vec::new(),
             foot: None,
             pins: Vec::new(),
+            spheres: None,
         };
         let mut doll = Ragdoll::new(&[setup]);
         let old = teleport(&mut doll, Vec3::new(100.0, 0.0, 50.0), None);
