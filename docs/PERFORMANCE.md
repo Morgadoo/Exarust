@@ -136,7 +136,7 @@ or the original does not do it).
 | technique | status | notes |
 |---|---|---|
 | Texture compression (BC) | done | BC textures upload as BC. |
-| Mipmaps | done | Every stored level is uploaded. A single-level uncompressed image gets the original's Kaiser chain at load (non-power-of-two sides and the final 1×1 included, normal maps renormalised); the horizontal and vertical passes are split over threads on large images. Terrain reads its base level on purpose, as the original's mip-less composites show. |
+| Mipmaps | done | Every stored level is uploaded. A single-level uncompressed image gets the original's chain at load (the Kaiser bank for colour, the cheaper uniform bank for data words; non-power-of-two sides and the final 1×1 included, normal maps renormalised); the horizontal and vertical passes are split over threads on large images. Terrain reads its base level on purpose, as the original's mip-less composites show. |
 | Texture streaming | later | The original decodes textures on a loader thread with a placeholder until ready. That shortens loads, not frames. |
 | Fixed-step simulation | done | Physics, AI and particles tick at 83 Hz, as in the original. A slow frame catches up at most 4 steps, as the original drops its backlog; the fixed schedule no longer spirals (play mode 6 → 35 FPS). Characters are drawn between steps. |
 | Settled characters | done | A grounded character not trying to move is not swept by the character controller. |

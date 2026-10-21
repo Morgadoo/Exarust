@@ -133,15 +133,22 @@ of the two registration routines and every converter (REA).
 
 ## Generated mip levels
 
-When the original builds a mip chain itself (single-level images), it
-turns the base into floats, filters every level from them (the Kaiser
-chain, `exa_render::mipmap`) and turns each level back into bytes. The
-chain uses 13 normalised kernels: level `L` has `8·2^(L−1)` taps and a
-sinc scale of `2^−L`, with `I0(4·√(1 − t²))/I0(4)` as its window. Each
+When the original builds a mip chain itself (single-level uncompressed
+images), it turns the base into floats, filters every level from them
+(`exa_render::mipmap`) and turns each level back into bytes. Colour
+images use a bank of 13 normalised Kaiser kernels: level `L` has
+`8·2^(L−1)` taps and a sinc scale of `2^−L`, with `I0(4·√(1 − t²))/I0(4)`
+as its window, the weights summed in double precision. Data images
+(format word bit 16 set, bit 31 clear: the `0x0111` and `0x1111` words)
+use a second, uniform bank instead: `2^L` taps of `2^−L`, a plain box.
+Each axis wraps by the image's own header flags (`0x10000` across,
+`0x20000` along the height) and clamps to the edge without them. Each
 level shifts the sides right with a floor of one, so non-power-of-two
 images are mipmapped as well, and the chain stops after the level whose
-two sides sum to two (a 1×1 level is filtered and kept). The format word
-picks the conversion:
+two sides sum to two (a 1×1 level is filtered and kept). Established by
+reverse engineering of the unit's two bank builders, its chain driver and
+the texture loader's call into it (REA). The format word picks the
+conversion:
 
 - bit 28 set (signed data: XYZ8, XY8, XYZV8): centred, (b − 127.5)/127.5,
   and back by the signed form;
@@ -154,12 +161,17 @@ picks the conversion:
   `0x3F7F7F6F`, just under 1, up).
 
 A header flag of `0x0400_0000` marks vector data (normal maps): before
-each filtered level is converted back, every texel's first three channels
-are normalised to unit length. The same flag applies to the
-resample-to-size path used for icons, cursors, terrain inputs and GUI
-images, which uses a separate phase-shifted window
-(`(1 − t)³·(1 + 3t − 3t² − 13.6t³)`, two output texels each way) instead
-of the Kaiser bank.
+each filtered level of a three- or four-channel image is converted back,
+every texel's first three channels go through the engine's vector
+normaliser (a zero vector stays zero); one- and two-channel images are
+left alone. The same flag applies to the resample-to-size path used for
+icons, cursors, terrain inputs and GUI images. That path takes the
+chain's level `k` when the destination is the source shifted down by `k`
+(1–13) on both axes, and otherwise a separate phase-shifted window
+(`(1 − t)³·(1 + 3t − 3t² − 13.6t³)`, two output texels each way), in a
+space of its own: signed words centred, data words and magnified images
+linear, other words squared, with RGBA8 and LUMA8 colour words squared
+(linear alpha) whatever the sizes.
 
 So a 0/255 checker halves to about 180, not 128, in a plain RGB8 or RGBA8
 texture. A test for an exact `ALPHA8` word, which would select the linear

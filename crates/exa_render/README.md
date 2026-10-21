@@ -15,14 +15,17 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
   maps) and their ridge fold, ridged float octaves, and `NoiseField`, the
   animated field of the force and spirit powers ([`docs/RENDERING.md`](../../docs/RENDERING.md),
   Procedural noise).
-- `mipmap`: the original's resampling unit: the Kaiser chain (a bank of 13
-  normalised kernels, each level filtered directly from the base, sides
-  shifted right with a floor of one and a final 1×1 level, wrap or clamp per
-  tap), filtered in the space the format word picks (linear, squared colour
-  or centred), the chain from a later first level, which the texture detail
+- `mipmap`: the original's resampling unit: the generated chain (a bank of
+  13 normalised Kaiser kernels for colour words, a uniform bank for data
+  words, each level filtered directly from the base, sides shifted right
+  with a floor of one and a final 1×1 level, each axis wrapping or clamping
+  by the image's own flags; `ChainOptions::for_image`), filtered in the
+  space the format word picks (linear, squared colour or centred), the
+  chain from a later first level, which the texture detail
   setting uploads as the base (all levels from it, or that level alone when
-  mipmapping is off), the phase-shifted window it uses to resample to an
-  arbitrary size, normal-map renormalisation for images flagged
+  mipmapping is off), the resample to an arbitrary size (the chain's level
+  for a power-of-two ratio, else the phase-shifted window), normal-map
+  renormalisation for three- and four-channel images flagged
   `0x0400_0000`, the sharpen kernel, kernel normalisation, bytes-per-pixel,
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).

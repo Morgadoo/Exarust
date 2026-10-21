@@ -179,8 +179,17 @@ level 0, 378 level 1, 2 761 level 2, 174 level 3 and 3 level 4; one mesh
 Index maps link each unified vertex to an element of every stream whose id
 has the same low 16 bits: key `…0001` → positions (and the colour/skin
 streams), `…0010` → texture coordinates. Key `0x0002` has no stream: it
-groups vertices for normal smoothing. Normals are not stored. Exarust
-computes them by area-weighted accumulation per smoothing group.
+groups vertices for normal smoothing. Normals are not stored. The original
+builds them per smoothing group: every face's unit normal (its edge cross
+product times the processor's reciprocal square root estimate) is added at
+each corner, weighted by the corner's angle from the arc-cosine
+approximation `√(1 − c)·(1.571 − 0.1945c + 0.111c² − 0.111c³)` of the
+cosine c between the corner's two edges (0 when the product of their
+squared lengths is not above `0x33FFFFD7`, or c ≥ 1), and the sum is
+normalised. With triangle flags, a face carrying `0x10000` counts only for
+a group no face without it has reached. Established by REA on the normal
+builder and its corner-angle helper; Exarust computes them the same way
+(`exa_formats::rfc`).
 
 Orientation: floor modules (`gefs_*`) lie at y = 0 with every horizontal face
 pointing +Y under right-handed, counter-clockwise winding, and floor modules

@@ -133,11 +133,14 @@ program.
   along −v (its tangent sign is the opposite of MikkTSpace's). Exarust's
   `exa_assets::tangents` reproduces the original's splitter: per-face
   tangents accumulated unweighted per vertex, a determinant floor of 1e-10
-  (f64), the tangent projected onto the surface normal and normalised, and
-  the −1/1 handedness sign from `n · (t × b)`. The normal itself is the
-  angle-weighted sum of unit face normals over the smoothing group, with
-  the original's corner-angle approximation
-  `sin θ·(1.571 − 0.1945 cos θ + 0.111(cos² θ − cos³ θ))`.
+  (f64), the tangent projected onto the surface normal and normalised (a
+  zero one stays zero), and the sign 1 when (n × t)·b < 0 for the
+  unprojected t, else −1. The normal itself is the angle-weighted sum of
+  unit face normals over the smoothing group, with the original's
+  arc-cosine approximation for the corner angle,
+  `√(1 − cos θ)·(1.571 − 0.1945 cos θ + 0.111 cos² θ − 0.111 cos³ θ)`;
+  faces whose flags carry `0x10000` count only for a group no other face
+  reaches.
 - The program follows the material type:
   - 0 legacy;
   - 1 PBR;
