@@ -1,7 +1,9 @@
 # retail-screens Specification
 
 ## Purpose
-TBD - created by archiving change model-the-retail-screens. Update Purpose after archive.
+Models the original's modal screens, popups, pickers, item windows and
+script role classes as plain records of what each form stores and calls,
+ready for the painters that will draw them.
 
 ## Requirements
 
