@@ -15,9 +15,10 @@ payloads
 roles with their scripts and dialogue graphs; see [Roles](#roles-charrolesrdb)), `locales.rdb` (the level list:
 ids 1 Exanima, 2 Exanima01 … 13 Exanima67, 17 Arak_Ar),
 `objdb.rdb` (object database, 0x5900/16 = 1424 records), `objstrings.rdb`
-(string library, magic `0xAFBF0C02`). The community spec reports a trailing
-garbage record in each table (the reader skips entries pointing outside the
-file). `objdb` item records, race records, role records and the locale
+(string library, magic `0xAFBF0C02`). Each table ends with one slot more
+than it has records, which the original's writer saves as it holds it (see
+[Object database](#object-database)); this reader skips entries pointing
+outside the file. `objdb` item records, race records, role records and the locale
 names are decoded; other payloads are not.
 
 **Races** (`exa_formats::races`): 18 records of 624 bytes, then an empty
@@ -131,173 +132,313 @@ it [guess: the global those entries read is the current locale's id].
 
 ## Object database
 
-Status: **verified** for the file framing, the record chain, the three tiers,
-the string library, the sections below, folder contents, instancing, promotion
-and template migration (`exa_formats::objdb`, `exa_formats::objstrings`). Not
-reproduced: the upgrade chain for older database magics, the procedural
-material-set check in the appearance refresh, the editor's use classification
-and palette randomiser, the currency helpers, and the scene-entity id rewrite.
-The item fields themselves, their apparel meaning and their readers are in
+Status: **verified** for the file framing and its writer, the upgrade of the
+`0xDBAC0D08` and `0xDBAC0D07` layouts, the record chain, the three tiers, the
+string library and its writer, the sections below, folder contents,
+instancing, duplication, promotion, removal, template migration with the
+condition refresh, the item-use test, and the packed fields and amounts
+(`exa_formats::objdb`, `exa_formats::objstrings`). Not reproduced: the body
+converter of the oldest layout (`0xDBAC0D06`, not shipped), the item factory's
+regeneration of `@` weapons during migration, the condition refresh's special
+handlers (body byte `0x1AA` 1–8, not shipped), the editor's palette
+randomiser, and the scene walks of the entity lookup and entity-id rewrite
+(the id rule itself is `ObjectDb::remap_entity_id`). The item fields
+themselves, their apparel meaning and their readers are in
 [Object database items and apparel painting](#object-database-items-and-apparel-painting)
 below.
 
-### Framing, records and flags
+### Framing, the table and the writer
 
 ```
-u32 magic       0xDBAC0D09 (older: 0xDBAC0D08, 0xDBAC0D07)
-u32 table_len   multiple of 16
-records[table_len/16]: u32 id, u32 flags, u32 offset, u32 size
-payloads        offsets from the end of the table
+u32 magic       0xDBAC0D09 (older: 0xDBAC0D08, 0xDBAC0D07, 0xDBAC0D06)
+u32 table_len
+entries[table_len/16 - 1]: u32 id, u32 flags, u32 offset, u32 size
+u8  slot[16]    the table slot after the last entry
+payloads        the blob; offsets count from the end of the table
 ```
 
-The loader keeps the payloads after the table and builds an id-sorted table;
-the reader takes `table_len/16 − 1` records, because the last table entry is
-garbage (its payload points outside the file in `objdb.rdb`). The older magics
-are converted by the original before use; Exarust refuses them.
+The loader counts `table_len/16 − 1` records (the table length is read as an
+unsigned word shifted down, then made a signed count). With fewer than one
+record it reads nothing past the header: the writer saves an empty database as
+the 8-byte header alone (a one-slot table length and no table), which is how
+half the level string libraries ship. Otherwise it keeps the table and the blob as
+the file has them: it does not sort the table, compact the blob or check the
+offsets. Lookups are a binary search that compares ids by their 32-bit
+difference; insertion uses its own search of the same kind, and a duplicate
+id is refused. A record whose size is 0 has no view (lookups that need one
+fail).
 
-A record payload is a chain of `u32 tag, u32 size` sections, the size counting
-the 8-byte header. The table's **flags word is the OR of the tags** of the
-sections the record holds: 1422 of the 1423 shipped records agree (the
-exception, "Map", carries its own `0x80000b03` tag, which the flags word does
-not include). The original's fast section test checks the flags word first and
-then walks the chain; the walking resolver ignores the flags. A section size
-below 8 or one that runs past the payload is malformed; the walk stops there.
+Storing a payload of the same size overwrites it in place; any other size
+first removes the old bytes from the blob (every entry whose payload starts
+after them moves down by the old size), then appends the new payload at the
+blob's end. Deleting stores an empty payload and closes the table up; the
+table's memory is not shrunk, so the slot after the last entry then holds the
+deleted entry (when it was the last) or a copy of the new last entry. After
+the table grows, that slot lies past the allocation.
+
+The writer saves the magic, a table length of `(records + 1) × 16`, and, when
+there is a record, the table, the slot after it and the blob as held. So a
+database the original loaded and saves unchanged is written back byte for
+byte, and the shipped files show the editor's history: `objdb.rdb`'s blob has
+371 payloads out of table order and 80 bytes of holes, and the slots after
+the tables hold stale entries (`arenao3`: an entry for id `0x47`) or heap
+bytes (`0xBAADF00D` in `exanima05`'s library). Exarust keeps all of it and
+writes it back; it writes zeros for the slot once the table has grown.
+
+**Older layouts.** After loading, a magic other than `0xDBAC0D09` is looked up
+in a three-entry table and runs that converter and every newer one: `0D08`
+the operative converter; `0D07` the weapon converter, then the operative one;
+`0D06` the body converter, then both. Any other magic logs "Invalid or
+obsolete database format." and empties the database (Exarust: an error).
+Each converter rewrites one section in every record: it gets the old section
+and a zeroed new body, the old section is deleted and the new body appended
+with the same tag. 17 of the 20 shipped arena actors' databases
+(`actors.rpk`) are `0D08`; none holds an operative section.
+
+- Operative (`0D08`, 60-byte body): the old class byte maps through
+  `[0, 1, 4, 3, 5, 6, 7, 8, 2, 0, 0, 0]`; the kind maps through
+  `[0, 8, 11, 7, 1, 12, 2, 13, 6, 5, 14, 9, 10, 3, 4, 0]` (a higher kind
+  reads on into the class table) unless the new class is a relay (7), which
+  keeps it; bytes 2–31 are kept, the rest is zero.
+- Weapon (`0D07`, 96-byte body): the flags from the old word at `0x10`
+  (bits 16–23: 0 gives `0x11`, `0x14` for class byte `0x1F` = 4, `0x13` for
+  5–6, else `0x12`; `0x10000` gives `0x421` for class 0, `0x23` for 5–6, else
+  `0x22`; `0x20000` `0x32`; `0x410000` `0x521`; else `0x22`), with `0x400`
+  and `0x100` adding `0x1000000` and `0x2000000`; the seeds from `0` and `4`
+  to `4` and `0xC`; the stat bytes `0x14`–`0x16`, `0x1B`, `0x17`, `0x1F`,
+  `0x1E` to `0x30`–`0x33`, `0x40`–`0x42`; byte `0x34` = 1; `0x35`/`0x36` from
+  byte `0x1C` = v (below `0x47`: 20 and 200; below `0x5A`: 2(v − 10) and
+  2(v + 10); else 2(2v − 100) and 200, all in bytes); `0x18`–`0x1A` to
+  `0x37`–`0x39`; the words at `0x20` and `0x24` to `0x44` and `0x48`.
+
+### Records, sections and flags
+
+A record payload is a chain of `u32 tag, u32 size` sections, the size
+counting the 8-byte header. The original's section finder walks it without
+checks (a size of 0 would loop); Exarust stops at a size below 8 or past the
+payload. The table's **flags word is the OR of the tags** of the sections a
+record holds: all 1423 records of `objdb.rdb` but "Map", whose own
+`0x80000b03` section is not in its flags. Only the flagged lookup tests the
+flags (it reads the local tier for a local id, the base tier for an untagged
+one, and nothing for a world id); the plain lookup and the existence test
+walk the chain. Every shipped record starts with its header, and several
+routines read the header's words straight from payload `0x18` (flags) and
+`0x1C` (parent) rather than through the finder.
 
 | tag | section |
 |---|---|
-| `0x10000000` | header: display name[16], word at `0x10`, parent at `0x14` |
-| `0x00100000` | model: ground/icon model[16], flags at `0x10`, name string id at `0x14`, description string id at `0x18`, rarity byte at `0x1D`, size words at `0x20`/`0x24` |
-| `0x1000` | item body (worn model, occupancy `0x10`, slots `0xA8`, coverage `0x150`, protection `0x1A0`, appearance `0x1B0`, special `0x214`, power `0x218`, set `0x220`) |
+| `0x10000000` | header: display name[16], flags word at `0x10`, parent at `0x14` |
+| `0x00100000` | model: ground/icon model[16], flags at `0x10`, name string id at `0x14`, description string id at `0x18`, class byte `0x1C`, rarity `0x1D`, value word `0x1E` (compact amount), size words at `0x20`/`0x24` |
+| `0x1000` | item body (548 bytes; worn model, occupancy `0x10`, slots `0xA8`, coverage `0x150`, protection `0x1A0`, appearance `0x1B0`, special `0x214`, power `0x218`, set `0x220`) |
 | `0x200` | folder contents (see below) |
 | `0x4000` | weapon (flags `0`, seeds `4`/`8`, quality/damage/dirt `0xC`–`0xE`, materials `0x10`, stored choices `0x50`, stats `0x30`–`0x42`) |
 | `0x8000` | shield (weight/block/bulk at body 4/5/6) |
 | `0x10000` | operative object (class `0`, kind `1`, flags `2`, value `4`, time `6`, target `8`, second/code `12`) |
-| `0x20000` | container: count at `0x1C`, 12-byte child entries at `0x20` (id, then two words) |
-| `0x40000` | door/link (see [Door and operative sections](#door-and-operative-sections)) |
+| `0x20000` | container: count at `0x14`, 12-byte child entries from `0x18` (the child's id, then two words), so a body is `0x18 + 12n` bytes (all 1283 shipped containers) |
+| `0x40000` | door/link: flags at `0`, linked object at `4` (see [Door and operative sections](#door-and-operative-sections)) |
 | `0x100` | the torch's extra section; 16 zero bytes in the one shipped record, meaning not established |
 | `0x80000b03` | the map record's own section (record "Map"): zeroed volume, then `Map_Exanima01` |
 | `0x8000ac07` | older invisible container volume (ushort extents); not shipped |
 
+The original's section editing routines (used by the converters): delete
+removes a section and closes the gap; resize to a smaller or equal body
+writes the new size and closes the gap, while growing only moves the bytes
+after the section up and leaves the size word and the gap as they were;
+append adds a section at the end (its body uninitialised there, zeroed in
+Exarust); a mask test asks whether any tag shares a bit with a mask.
+
 **Header word** bit 0 marks a template the game instantiates into the local
 tier when it is used; bits 16–23 are the material class that template
-migration compares (the migration routine compares exactly these bits of the
-instance's and the template's header words). The parent word is the editor
-folder for a global item (record 8 "Braies_A" names folder 91 "+Misc"), the
-source item for a level-local copy, and the template id for an instance.
+migration compares. The parent word is the editor folder for a global item
+(record 8 "Braies_A" names folder 91 "+Misc"), the source item for a
+level-local copy, and the template id for an instance.
 
 **Model flags** bit 0 dims the model's voxel lights and glow meshes by the
-placed copy's condition byte (see `Item::light_share`); bits 4–6 are the shop's
-rarity tier; the two words at `0x20`/`0x24` must be non-zero for a stocked
-item [`guess`: the icon's size]. The name and description ids follow the
-string rules below.
+placed copy's condition byte (see `Item::light_share`); bits 4–6 are the
+shop's rarity tier; the two words at `0x20`/`0x24` must be non-zero for a
+stocked item [`guess`: the icon's size]. The name and description ids follow
+the string rules below.
 
 ### Tiers, ids and lookup
 
-Three databases exist: the base templates (`objdb.rdb`, no id tag), a level's
-local objects (ids tagged `0x80000000`), and the world tier (ids tagged
-`0x40000000`) that objects are promoted into. The id resolver checks bit 31
-first (local), then bit 30 (world), otherwise the base tier; the low 30 bits
-are the record id, and the base lookup passes the id unmasked. Tables are kept
-sorted by id and searched by binary search; ids are unique because insertion
-refuses a duplicate. The first free id is the smallest positive integer the
-tier lacks (the original scans the sorted table and stops at the first gap).
-Every tier owns a string library; the base tier's is the shared
-`objstrings.rdb`.
+Three databases exist: the base templates (`objdb.rdb`, no id tag, its string
+library the shared `objstrings.rdb`), a level's local objects (ids tagged
+`0x80000000`, its own library), and the world tier (ids tagged `0x40000000`,
+its own library) that objects are promoted into. The id resolver checks bit
+31 first (local), then bit 30 (world), otherwise the base tier; the low 30
+bits are the record id, and the base lookup passes the id unmasked. The first
+free id is the smallest positive integer the tier lacks: the original scans
+the table, stepping past matching ids and stopping at the first id above the
+candidate. Clearing a tier empties its table and blob and leaves its string
+library alone.
 
 ### String library
 
-`objstrings.rdb` is the pool of display names and description phrases:
+`objstrings.rdb`, and each level's `0xDBCD` sub-chunk, is a pool of display
+names and description phrases:
 
 ```
 u32 magic       0xAFBF0C02
-u32 table_len   multiple of 16
-entries[table_len/16]: u32 unused, u32 references, u32 offset, u32 length
+u32 table_len
+entries[table_len/16 - 1]: u32 unused, u32 references, u32 offset, u32 length
+u8  slot[16]    the table slot after the last entry
 text            from the end of the table, Latin-1
 ```
 
-The last entry is garbage and is skipped, as in the record databases. Ids are
-one-based: id 0 means "none", and an entry of length 0 reads as empty. The
-first word of an entry is always 0 in the shipped file; the second is the
-reference count the library's add/release routines maintain. Adding takes the
-first free slot at or after the library's high-water hint, else appends;
-releasing decrements the count and frees the slot at zero; setting text
-rewrites the text area and compacts the hole, keeping every other entry's id
-pointing at its own text. The text area is append-ordered and 460 bytes of
-holes remain in the shipped file from removed strings.
+It is loaded and saved like the record databases (the same count rule, the
+header alone for no entries, the slot and the text written back as held);
+offsets are not checked. Ids are one-based; the getter fails for id 0 and an
+entry of length 0. The first word of an entry is never read (0 in every
+shipped entry, zeroed when a slot is freed). The allocator takes the first
+slot without references at or after the free hint (giving it one reference,
+its offset and length left as they are), else appends a zeroed slot with one
+reference. The setter stores text: empty text releases the slot and fails;
+text of the slot's length overwrites it in place; any other length removes
+the old text (every entry whose text starts after it moves down) and appends
+the new text at the end. Releasing decrements the reference count (a 32-bit
+count, so a free slot wraps instead) and, at zero, zeroes the slot, leaving
+its text as a hole and raising the free hint to the slot when it is higher.
+The shipped `objstrings.rdb` has 1124 entries and 460 bytes of holes; 11 of
+the 22 level libraries are the header alone.
 
 A record's model section names its display name and description by string id,
-resolved by the original's string resolver:
+resolved by the original's string resolver (the record found in the tier its
+id selects, by the low 30 bits):
 
 | id | meaning |
 |---|---|
 | 0 | none |
-| exactly `0x80000000` | inherit: read the template's same field and look it up in the **shared** library (one level; a failed template read or empty id gives none) |
-| top bit set with other bits | the record's own tier library, id `& 0x3FFFFFFF` |
+| exactly `0x80000000` | inherit: read the same field of the record the payload's parent word (`0x1C`) names and look it up in the **shared** library (one level; a parent that does not resolve, or a field of 0, gives none) |
+| bit 31 set with other bits | the record's own tier library, id `& 0x3FFFFFFF` |
 | anything else | the shared library |
 
-The name is an editor/display label; the game's own item names and description
-phrases are these strings (record 2's model ids resolve to "Leather Gloves"
-and "A pair of thick leather gauntlets.").
+Once an id is chosen the resolver succeeds even when the slot has no text
+(an empty name). The game's item names and description phrases are these
+strings (record 2's model ids resolve to "Leather Gloves" and "A pair of
+thick leather gauntlets."); the 119 own strings of the level databases all
+resolve in their level's library.
 
-### Instancing, promotion and migration
+### Instancing, duplication, promotion and removal
 
-- **Instancing** (`Record` header flag bit 0): a base template used as an
-  object is cloned into the local tier under the first free id. The clone
-  copies the table flags, names the template in its header, and sets both model
-  string ids to inherit. When the instance is not its own template, the
-  clone's body copies the template's occupancy, slot table and
-  coverage/protection blocks, and a description that differs from the
-  template's is moved into the local library as an own string.
-- **Local duplication**: an instance with the header flag clones itself under a
-  new local id (releasing its own strings first); an instance without the flag
-  clones the template it names.
-- **Promotion**: a local object moves to the world tier under a new id. Its
-  container children are promoted first and their ids rewritten; its own name
-  and description strings move from the local library into the world library;
-  the local record is deleted. When recording is on, the old→new id pair is
-  kept; objects with an operative section of kind 0 are also recorded for the
-  door-link rewrite (every local door's linked-object word at `+0x0C` is
-  rewritten through it). A world object only refreshes its children. The
-  original's scene-entity id rewrite (`+0x180`) is caller-side here:
-  `ObjectDb::remapped` exposes the pairs.
-- **Removing and clearing**: removing an object releases the strings it owns
-  and drops the record from its tier; clearing a tier empties it and, for the
-  local and world tiers, its string library. The template helpers read an
-  instance's template id (the header's, when it resolves), the template the
-  instance should name (its header's when that template has a model name),
-  and the model class byte at the template's model `0x1C`; the item
-  dispatcher instantiates a marked base template into the local tier,
-  duplicates a local id and gives nothing for a world or missing id.
-- **Weapon variants**: a weapon section's word at `0x42` low five bits is the
-  variant count, one less for the half-sword form (`flags & 0x30 == 0x10`),
-  never below zero.
-- **Migration**: an instance refreshes from its template. When the header's
-  material class (bits 16–23) differs, the appearance layers are refreshed
-  (layer bytes 0/1/2/3 from the template; the colour only when the template's
-  is non-zero; byte `0xB`, and its colour when it is 5). A template body whose
-  first appearance layer word is `0xFFFFFFFF` means "no appearance": the
-  instance's `0x1AC` word becomes `0xFFFFFFFF`, its damage byte copies, each
-  layer's byte `+7` becomes `0x88` for materials 1–26 and 0 otherwise, and the
-  power bytes at `0x218` keep their `0x80` bit only when the template's set
-  word at `0x220` has it. An instance whose `0x1AC` word is `0xFFFFFFFF` (body
-  not yet initialised) copies the template body whole. Then the body's model
-  name, occupancy (`0x10`), slot table from `0xB0` (slot 0 stays), coverage
-  and protection to `0x19F`, bytes `0x1A6`–`0x1A8` and the set word `0x220`
-  copy; the weapon section keeps its stored factory choices (unless the
-  template's `+0x0C` word is `0xFFFFFFFF`, which copies the seeds) and copies
-  the stat bytes `0x30`–`0x42` unless the instance is in the "default" state
-  (the words at `+4`/`+8` are non-zero and byte `+0xF` is zero); the container
-  copies its word at `0`, its words at `8` and `0xA`; the door gains the
-  template's `0x200` flag; the model copies its name, flags and words
-  `0x1C`–`0x1F` (or the whole 40-byte head plus inherit ids when the material
-  class changed). The procedural material-set correction of the appearance
-  layer's material byte is not ported: an instance keeps its stored material
-  (a **guess** only when the set changed and the stored material is invalid).
+- **Template clone**: a base record is copied into a tier under its first
+  free id with the base entry's table flags; the header's parent becomes the
+  template's id and both model string ids inherit. A missing id comes back
+  unchanged, 0 gives 0.
+- **Instancing** (a placed or used object): a tagged id is migrated and comes
+  back unchanged. An untagged base record whose header flags have bit 0 is
+  copied into the local tier under its first free id; its header names the
+  *instance template*: the record's parent word when the base tier has that
+  id with a model section whose name is not empty, else the record itself.
+  Both model ids inherit. When the template is another record, the copy's
+  body takes the template's occupancy (`0x10`, 160 bytes), slot table
+  (`0xB0`, 160 bytes) and coverage/protection (`0x150`, 80 bytes). (The
+  original then compares the copy's description id with its source's to
+  decide whether to make it an own string; the two never differ, so the
+  description always inherits.) Unmarked or missing records come back
+  unchanged.
+- **The item dispatcher**: a local id is duplicated; a world id gives 0; an
+  untagged id gives 0 when missing, a template clone into the local tier
+  when its header word has bit 0, and itself otherwise.
+- **Local duplication**: an instance whose header flag bit 0 is clear clones
+  the template its header names (when it names one); one with the bit set is
+  copied under the first free local id, keeping its string ids and adding a
+  reference to each own string. The copy's table flags are read by the
+  source's index after the insertion, so a copy inserted at or before that
+  index takes another entry's flags (its own zero flags when it took the
+  source's index).
+- **Promotion**: a local object (tag exactly bit 31) comes back as its
+  recorded world id when the id remap table holds it. Otherwise its container
+  children are promoted first and their ids rewritten; each own string whose
+  text it finds moves from the local library to the world library (one
+  without text becomes inherit); it is inserted under the world tier's first
+  free id with its table flags and deleted from the local tier; the pair is
+  recorded in the id remap table and, for an operative object of kind 0, in
+  the link remap table, each when switched on. A world object with a
+  container flag promotes its children in place. A missing local object
+  gives 0; untagged and both-tag ids come back unchanged. (The original
+  recurses without a limit; Exarust stops 64 containers deep.)
+- **Remap tables**: switching either table on or off empties it. The link
+  rewrite (after an arena save loads) turns its table off, then, when it
+  holds pairs, rewrites the linked-object word (door body `+4`) of every
+  local record flagged as a door and empties the table. The entity rewrite
+  maps a scene entity's object id (`+0x180`) that is tagged exactly local
+  through the id remap table.
+- **Removal** ("Remove DB reference"): only for local and world ids; an
+  object with a folder section is kept; otherwise each model string id whose
+  low 31 bits are not zero is released (with its top bit cleared) in the
+  tier's library, and the record deleted. An unguarded deletion does the
+  same for any tier without the folder test (the base tier releasing in the
+  shared library).
+- **Template helpers**: an object's template is its parent word (or the id
+  when it does not resolve); the model class byte (`0x1C`) is read from the
+  template a tagged id's header names, and from an untagged id's own model.
+- **Item-use test**: by the operative section, 0 without one and for classes
+  2, 4, 8 and 0 (class 0 kind `0x11` gives 2 when bits 16–23 of the caller's
+  word are clear; for another kind the original first runs a use action:
+  kind 7 hands the header name to a registered reader, kind 5 opens a form);
+  1 for class 1 of kind 8, 9, 10 or 14 with those bits set; 2 otherwise.
+- **Weapon variants**: a weapon section's word at `0x42` low five bits is
+  the variant count, one less for the half-sword form (`flags & 0x30 ==
+  0x10`), never below zero.
+
+### Migration
+
+An instance (tag exactly local or world, or every record of a tier after a
+save loads) refreshes from the template its header names, when that resolves.
+The material class compares bits 16–23 of the template's header word (read
+at its payload `0x18`) with the instance's. Each instance section with a tag
+of `0x1000` or more that the template also has is then refreshed:
+
+- **Model**: with the class changed, the template's first 40 bytes with both
+  string ids set to inherit; else the name, the flags word and the bytes
+  `0x1C`–`0x1F` (class, rarity, value).
+- **Body**: with the class changed, the appearance layers first (below).
+  Then, when the template's word at `0x1AC` is `0xFFFFFFFF` (no appearance):
+  the instance's becomes so too, bytes `0x1B0`/`0x1B1` copy, each of the
+  eight layers' byte `+7` (`0x1BB` + 12i) becomes `0x88` for a layer
+  material (`+4`) of 1–25 and 0 otherwise, and each of the four power bytes
+  (`0x218` + 2i) keeps its value with `0x80` set when the template's has
+  `0x80`, else becomes 0. Else, when the instance's `0x1AC` word is
+  `0xFFFFFFFF`, it takes the template's first `0x224` bytes. Then the bytes
+  `0x00`–`0x0F`, `0x10`–`0x19F`, `0x1A6`–`0x1A8` and the word `0x220` copy,
+  and the condition refresh runs (below).
+- **Weapon**: when the template's word at `+4` is `0xFFFFFFFF`, the
+  instance's words `+4` and `+8` become so and `+0xC` copies; the flags take
+  the template's low 28 bits; when the instance's words `+4` and `+8` are
+  non-zero and byte `+0xF` is zero, the stat bytes `0x30`–`0x40` and `0x42`
+  copy, and a factory weapon (model name starting with `@`) is regenerated
+  by the item factory (not reproduced).
+- **Container**: the word at `0`, the words at `8` and `0xA`.
+- **Door**: the template's `0x200` flag is ORed in.
+
+**Appearance refresh** (eight 12-byte layers from `0x1B4`): byte 0 and the
+mask byte 1 copy; when the template's mask is not zero the set byte 2 copies
+and the instance's material (byte 4) is checked against that set's materials,
+taking the set's first when it is not among them; byte 3 copies; the
+template's material replaces the instance's when it is not zero; unless the
+instance's byte `0xB` is 5, it copies, and the colour (byte 8) with it when
+the template's is 5. The procedural material sets are: 1 and 5 `1 2 3 4 7 8
+9`, 2 `5 6 10`, 3 and 6 `1 2 3 4`, 4 `7 8 9`, 7 `13 20`, 8 `1 2 3 4 17 13
+20`, 9 `5 6`, 10 `7`, 11 `11`, 12 `13 14`, 13 `13 14 15`, 14 `20`, 15 `23`;
+other sets list none (the original then substitutes an uninitialised byte;
+Exarust keeps the material).
+
+**Condition refresh** (quality q and damage d at body `0x1B0`/`0x1B1`, all
+from the template's bytes): k = (1 − d·0.4/255)·(q/510 + 0.8) (single
+precision after a double product); protection bytes `0x1A0`–`0x1A3` =
+round(t·k), capped at 160 (the low byte of the rounded value is stored
+first); `0x1A4` = round((0.3k + 0.7)·t); `0x1A5` = round(t / ((1 −
+d·0.15/255)(q·0.3/255 + 0.85))); bodies whose byte `0x1AA` is 1–8 then run a
+special handler (every shipped body has 0 or 255 there; not reproduced); and
+the model's value word (compact form) becomes v / (2tq² + 0.5) · (2q'² +
+0.5)(2(1 − d')² + 0.5) · 0.5, with tq the template's quality and q', d' the
+instance's, each /255. Rounding is to nearest, ties to even.
 
 ### Folder contents (`0x200`)
 
 The editor's folders are records whose `0x200` section lists their items:
-`u32 count` at body `0x0C`, then 16-byte entries at `0x10` while they fit:
+`u32 count` at body `0x0C`, then 16-byte entries at `0x10` (every shipped
+folder's body is exactly `0x10 + 16n` bytes):
 
 | offset | field |
 |---|---|
@@ -306,50 +447,50 @@ The editor's folders are records whose `0x200` section lists their items:
 | 10 | five packed fractions, see below |
 | 12 | trailing word, zero in every shipped entry |
 
-The packed word's fields, from the original's getters/setters:
+The packed word's fields, from the original's getters/setters (the setters
+OR the rounded value in without masking it, so an out-of-range value spills
+into the next field):
 
 | bits | getter | setter |
 |---|---|---|
-| 0–3 | value ×0.25 | round(v·4) in the four bits |
+| 0–3 | value ×0.25 | round(v·4) |
 | 6–8 | value ×0.25 | round(v·4) << 6 |
 | 9–10 | value ×0.25, 0 reads 0.125 | below 0.1875 → 0; below 0.625 → round(v·4); else 3 |
 | 11–13 | value ×0.25 | round(v·4) << 11 |
-| 14–15 | value ×0.25, 0 reads 0.125 | below 0.2 → 0; else round(v·4) |
+| 14–15 | value ×0.25, 0 reads 0.125 | below 0.2 (a double compare) → 0; else round(v·4) |
 
-The converter's default word is `0x5284` (1.0, 0.5, 0.25, 0.5, 0.25); the
-shipped folders use `0x5284` 406 times, `0x5484` 15, `0x9484` 15 and `0x9486`
-2 across 438 entries. The meanings of the five fractions are not established
-[`guess`: condition, finish and wear of a stock entry].
+The old body converter's default word is `0x5284` (1.0, 0.5, 0.25, 0.5,
+0.25); the shipped folders use `0x5284` 406 times, `0x5484` 15, `0x9484` 15
+and `0x9486` 2 across 438 entries. The meanings of the five fractions are not
+established [`guess`: condition, finish and wear of a stock entry].
 
 ### Quantised item fields
 
-The same unit holds the packed getters/setters the item descriptions, trade
-and arena share. They read one 16-bit word:
+The same unit holds the packed getters/setters the item descriptions, trade,
+the arena and the randomisers share. They read byte 0 and byte 3 of a record
+whose layout is not established:
 
-| bits | getter | setter |
+| field | getter | setter |
 |---|---|---|
-| 0–1 | 0..3 | clamps to 0..3 and rounds |
-| 2–6, sign in 7 | magnitude/31, negated by bit 7 | trunc(|v|·31) into bits 2–6, bit 7 for a negative |
-| 5–7 | the top three bits | not seen |
-| 0–4 | the low five bits | not seen |
-| 3-level fractions at 0, 3, 6 | 0, 0.125, 0.25, 0.5, 0.75, 1 (n<2 → n/8, else (n−1)/4) | round(v·8); above 1 fold to (n>>1)+1; cap 5 (3 in the two-bit field at 6) |
+| byte 0 bits 0–1 | 0..3 | clamps to 0..3 (NaN to 0) and rounds |
+| byte 0 bits 2–6, sign bit 7 | n·(1/31) in double precision, negated by bit 7 | round(\|31v\|) << 2 (a value past 31 spills into bit 7), then bit 7 for a negative v |
+| byte 0 bits 5–7 | the top three bits | — |
+| byte 0 bits 0–4 | the low five bits | — |
+| byte 3 fractions at bits 0, 3, 6 | n < 2 → n/8, else (n − 1)/4: 0, 0.125, 0.25, 0.5, 0.75, 1 | n = round(8v); above 1 → (n >> 1) + 1 capped at 5 (3 in the two-bit field at 6), ORed in unmasked (a negative n sets the bits above) |
 
-The field owners are item variant/condition records whose layout is not
-established; only one of the 16-bit words is the folder fraction word above
-(the item code and the arena share them).
+**Amounts.** A `u8` + `u8` + `u16` triple of units 1, 12 and 144
+(`b0 + 12·b1 + 144·w`); packing cuts the word to 16 bits. The add helper
+adds 32-bit units, the subtract helper a second packed amount, the total
+helper two packed amounts; a result of zero or less clears the amount. The
+16-bit compact form's top two bits scale the low 14 by 1, 12, 144 or 1440,
+the first scale that fits (below `0x4000`, below `0x2FFF5`, below `0x23FF70`,
+else 1440). Exarust: `objdb::{amount_units, amount_bytes, amount_add,
+amount_sub, amount_total, amount_compact, amount_expand}`.
 
-**Currency helpers.** The unit also packs amounts: a `u8` + `u8` + `u16` triple
-of units 1, 12 and 144 (`b0 + 12·b1 + 144·w`), and a 16-bit compact form whose
-top two bits scale the low 14 by 1, 12, 144 or 1440 (it picks the first scale
-that fits: below `0x4000`, below `0x2FFF5`, below `0x23FF70`, else 1440). The
-add, subtract and total helpers keep a result below one unit at zero. Exarust:
-`objdb::{amount_units, amount_bytes, amount_add, amount_sub, amount_total,
-amount_compact, amount_expand}`.
+### Corpus
 
-### Corpus (installed `objdb.rdb`)
-
-- 1424 table entries, 1423 records after the garbage entry; 368,966 payload
-  bytes.
+- `objdb.rdb`: 1424 table slots, 1423 records and the slot after them;
+  368,966 blob bytes (payloads 368,886, holes 80).
 - Section counts: header 1423, model 1403, body 388, weapon 208, container
   137, operative 49, door 47, folder 24, shield 22, torch extra 1, map tag 1.
 - Distinct table flag words: 11 (`0x10100000` 529, `0x10101000` 387,
@@ -357,36 +498,44 @@ amount_compact, amount_expand}`.
   `0x10100200` 24, `0x10108000` 22, `0x10000000` 19, `0x10001000` 1,
   `0x10104100` 1).
 - Folders: 24, 438 entries, every folder's first entry is its own id 0.
-- `objstrings.rdb`: 1124 entries; the first is "Sword", entry 88
-  "Breastplate", 89 "Plate Helm", 285 "Falchion", 170 "Torch", 182 "A simple
-  torch." Every model-section name and description id that is neither 0 nor an
-  inherit marker resolves in the shared library (0 unresolved); ids stay below
-  the table's 1124 entries.
+- 22 levels carry a local database (`0xDBC0` → `0xDBDB` records, `0xDBCD`
+  library): 3812 records, 1283 containers, 119 own strings.
+- `actors.rpk`: 20 of the 21 actors carry a database, 17 of the `0D08`
+  layout.
+- Every one of these databases and libraries writes back byte for byte (the
+  older actor databases with the current magic, as the original would save
+  them); `objstrings.rdb`'s first entry is "Sword", entry 88 "Breastplate",
+  89 "Plate Helm", 285 "Falchion", 170 "Torch", 182 "A simple torch."; every
+  model name and description id of `objdb.rdb` that is neither 0 nor inherit
+  resolves in the shared library.
 
 ### Evidence and precision
 
-Established by reverse engineering of `Exanima.exe` 0.9.5: the lazy loader
-(reading `objdb.rdb` and `objstrings.rdb` from the resource pack and opening
-Objects.rpk), the database loader (magic, table, blob, upgrade chain), the
-section finder and record view, the id resolver and binary search, the table
-insert/delete/store routines, the string library's get/add/set/add-reference/
-release routines and the string resolver, the instancer, the local duplicator,
-the promoter (container recursion, string moves, id remaps, door-link rewrite),
-the template migrator (body/appearance/weapon/container/door/model branches),
-the folder converter, the packed-field accessors, and the database writer.
-No floating-point minimum/maximum or sign-bit tricks are involved in the
-ported rules: the rounding is the original's `ROUND` (taken as half-to-even,
-Pascal's FPU rounding) and the setters' thresholds are ordered compares. Where
-the pseudo-code left only ordered compares, a NaN input is undefined in Exarust
-too; no shipped or synthetic data passes one.
+Established by reverse engineering of `Exanima.exe` 0.9.5: the lazy loader,
+the database loader (count rule, upgrade table and dispatch) and writer, the
+string library's loader, writer, getter, allocator, setter, add-reference and
+release, the section finder, mask test and editing routines, the record view,
+the id resolver, binary search, first-free scan, sorted insertion, payload
+store and deletion, the string resolver, the template clone, instancer,
+instance-template and template helpers, model-class helper, dispatcher,
+duplicator, promoter (container recursion, string moves, remap tables), the
+remap switches, the link and entity rewrites, both removal routines, the
+item-use test, the migrator (by its assembly), the appearance refresh and
+its material-set table, the condition refresh (by its assembly and
+constants), the two old-section converters, the packed-field accessors and
+the amount helpers (the float ones by their assembly). The conversions are
+the processor's round-to-nearest-even (`cvtss2si`/`cvtsd2si`), whose NaN or
+out-of-range result is the integer indefinite; the precision of each step
+(single or double) follows the assembly. Counts are from the installed
+databases (`objdb::shipped`, `objstrings::tests`).
 
 ## Object database items and apparel painting
 
 The section layouts, the three tiers and the string rules are above; this
 section decodes the item fields themselves.
 
-`objdb.rdb` holds 1424 table entries; the last points outside the file and is
-skipped. An item record payload is a chain of `u32 tag, u32 size` sections,
+`objdb.rdb` holds 1423 records and the table slot after them (see
+[Framing](#framing-the-table-and-the-writer)). An item record payload is a chain of `u32 tag, u32 size` sections,
 where the size counts the 8-byte header. A record's table flags are the OR
 of the tags of the sections it holds (1422 of 1423 records; the exception
 is "Map"), so `0x10101000` is name, ground model and body, and `0x10001000`
