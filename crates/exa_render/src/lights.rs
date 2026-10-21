@@ -101,15 +101,19 @@ pub struct MeshLights(pub Vec<u32>);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShadowBias(pub u32);
 
-/// A node's two shadow-bias scales (`+0x224`, `+0x228`) from its render
-/// flags (`0x204`): `(receive, cast)`.
+/// A drawable node's two shadow-depth scales from its render flags:
+/// `(receive, cast)`.
 ///
 /// - With bit `0x80000`, both are `1 + v·0.005` for the level `v` in bits
-///   16–18 (an inflated receiver and caster; one shipped mesh), computed
-///   in double precision.
-/// - Otherwise, with a level, receive is `1 − v·0.005` and cast is that
-///   less 0.01.
+///   16–18, in double precision.
+/// - Otherwise, with a level, receive is `1 − v·0.005` (double precision)
+///   and cast is that less 0.01 (the original subtracts in double from the
+///   single-precision receive; the result is the same at every level).
 /// - Without either, both are 1.
+///
+/// The surface shader already applies the level-only rule
+/// (`shadow_depth_scale`); this is the whole rule, kept for the
+/// `0x80000` branch the shader lacks.
 pub fn shadow_bias_scales(flags: u32) -> (f32, f32) {
     if flags & 0x8_0000 != 0 {
         let v = f64::from((flags & 0x7_0000) >> 16);

@@ -253,10 +253,10 @@ pub struct TerrainPart;
 /// original's 48 m tile and level 3 (8 × 8 blocks) the step is 6 m, half 3,
 /// first −21.
 ///
-/// Activation (`0x1001aa170`) sets the node visible, gives it the floor's
-/// shadow-bias level (3) and its light-link distances 1, then builds its
-/// kd-tree; Exarust's room visibility is the activation, and its shadow
-/// bias is the same floor level.
+/// Activation sets the node visible, gives it the floor's shadow-bias
+/// level (3) and its light-link distances 1, then builds its kd-tree;
+/// Exarust's room visibility is the activation, and its shadow bias is the
+/// same floor level.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct TerrainBlock {
     pub bx: u32,
