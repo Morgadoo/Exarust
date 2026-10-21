@@ -257,7 +257,10 @@ impl Slots {
             Mode::Arena => save_package::Flavour::Arena,
         };
         match PlayerData::parse(section, flavour) {
-            Ok(data) => {
+            Ok(mut data) => {
+                // The scan's load mask is 0: the header and the character
+                // are read, no chunk is dispatched.
+                data.apply_mask(0);
                 let mut info = session::slot_info_of(&data);
                 info.player_name = session::player_name(package, &data);
                 Verdict::Keep(info)
