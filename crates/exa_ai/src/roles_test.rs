@@ -2,9 +2,7 @@
 //! (Included from roles.rs: `#[path = "roles_test.rs"] mod tests;`)
 
 use super::*;
-use exa_formats::roles::{
-    INHERITS_PARENT, Name, RELATION_ROLE, SECTION_DIALOGUE, SECTION_INTERACTION,
-};
+use exa_formats::roles::{INHERITS_PARENT, Name, RELATION_ROLE, SECTION_INTERACTION};
 
 fn attitude_entry(target: u32, value: i8, tolerance: u8) -> RoleEntry {
     RoleEntry {
@@ -483,38 +481,29 @@ fn a_record_gives_its_roles() {
     assert!(!invalid(&legacy, &Relations::default(), &b, 0));
 }
 
-/// Every corpse-script entry of the dead character's roles that targets the
-/// Player, newest role first, through the corpse accessor.
+/// For each of the dead character's roles, the corpse section of its first
+/// entry aimed at the Player: a role whose first such entry lacks the
+/// section gives nothing, even with a later entry that has it.
 #[test]
 fn a_corpse_script_is_found_for_the_player() {
     let mut b = book();
+    let corpse_entry = |target: u32, text: &[u8]| RoleEntry {
+        kind: SECTION_CORPSE,
+        target,
+        corpse: Some(text.to_vec()),
+        ..RoleEntry::default()
+    };
+    add(&mut b, 47, 0, 0, 0, vec![corpse_entry(7, b"Actor.Loot();")]);
+    add(&mut b, 48, 0, 0, 0, vec![corpse_entry(6, b"Other();")]);
     add(
         &mut b,
-        47,
+        49,
         0,
         0,
         0,
-        vec![RoleEntry {
-            kind: SECTION_CORPSE,
-            target: 7,
-            corpse: Some(b"Actor.Loot();".to_vec()),
-            ..RoleEntry::default()
-        }],
+        vec![attitude_entry(7, 10, 0), corpse_entry(7, b"Later();")],
     );
-    add(
-        &mut b,
-        48,
-        0,
-        0,
-        0,
-        vec![RoleEntry {
-            kind: SECTION_CORPSE,
-            target: 6,
-            corpse: Some(b"Other();".to_vec()),
-            ..RoleEntry::default()
-        }],
-    );
-    let corpse = roles_of(&b, &[47, 48]);
+    let corpse = roles_of(&b, &[47, 48, 49]);
     let scripts = corpse_scripts(&b, &corpse);
     assert_eq!(scripts.len(), 1);
     assert_eq!(scripts[0].role, 47);
@@ -522,29 +511,11 @@ fn a_corpse_script_is_found_for_the_player() {
     assert!(corpse_scripts(&b, &roles_of(&b, &[7])).is_empty());
 }
 
-/// The interaction and dialogue wrappers hand out the section of the entry
-/// the finder answers.
+/// The interaction wrapper hands out the section of the entry the finder
+/// answers.
 #[test]
-fn the_condition_and_dialogue_wrappers_use_the_finder() {
+fn the_condition_wrapper_uses_the_finder() {
     let mut b = book();
-    let dialogue = exa_formats::roles::Dialogue {
-        target: 0,
-        actors: Vec::new(),
-        nodes: Vec::new(),
-    };
-    add(
-        &mut b,
-        49,
-        0,
-        0,
-        0,
-        vec![RoleEntry {
-            kind: SECTION_DIALOGUE,
-            target: 7,
-            dialogue: Some(dialogue.clone()),
-            ..RoleEntry::default()
-        }],
-    );
     add(
         &mut b,
         50,
@@ -565,15 +536,14 @@ fn the_condition_and_dialogue_wrappers_use_the_finder() {
         former: None,
     };
     let rel = Relations::default();
-    let holder = roles_of(&b, &[49]);
-    assert_eq!(dialogue_for(&b, &holder, &rel, &partner), Some(&dialogue));
-    assert_eq!(interaction_condition(&b, &holder, &rel, &partner), None);
-    let other = roles_of(&b, &[50]);
     assert_eq!(
-        interaction_condition(&b, &other, &rel, &partner),
+        interaction_condition(&b, &Roles::default(), &rel, &partner),
+        None
+    );
+    assert_eq!(
+        interaction_condition(&b, &roles_of(&b, &[50]), &rel, &partner),
         Some(&b"result = 1;"[..])
     );
-    assert_eq!(dialogue_for(&b, &other, &rel, &partner), None);
 }
 
 /// StartDialogue copies the calling context; ChangeRole is the original's

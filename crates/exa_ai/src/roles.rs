@@ -27,10 +27,11 @@
 //! tolerance 0.
 //!
 //! The scripts around the database: the player handling a dead character
-//! runs every corpse-section entry of the dead character's roles that
-//! targets the Player, with the corpse as actor 1 and the player as actor 2;
-//! the interaction condition and dialogue of A toward B come from the same
-//! entry finder the attitude roles use. The unit registers `StartDialogue`
+//! runs, for each of its roles, the corpse section of the role's first
+//! entry aimed at the Player, with the corpse as actor 1 and the player as
+//! actor 2; the interaction condition of A toward B comes from the same
+//! entry finder the attitude roles use. A role's dialogue toward a key is
+//! `exa_formats::roles::Role::dialogue_for`. The unit registers `StartDialogue`
 //! (which copies the owner, partner, role and matched partner role into the
 //! engine's context) and the `ChangeRole` stub that always reports its
 //! missing function. The brain does not feed the script engine yet.
@@ -45,8 +46,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::Component;
 use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::{
-    ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_DIALOGUE, SECTION_ENCOUNTER,
-    SECTION_INTERACTION,
+    ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER, SECTION_INTERACTION,
 };
 
 /// The Player role.
@@ -625,17 +625,6 @@ pub fn interaction_condition<'a>(
         .and_then(|e| e.script(SECTION_INTERACTION))
 }
 
-/// The dialogue graph A holds for B (kind `0x2`): the first graph the entry
-/// finder answers, in the role and entry order the original walks.
-pub fn dialogue_for<'a>(
-    book: &'a RoleDb,
-    roles: &Roles,
-    relations: &Relations,
-    partner: &Partner<'_>,
-) -> Option<&'a exa_formats::roles::Dialogue> {
-    entry_for(book, roles, relations, partner, SECTION_DIALOGUE).and_then(|e| e.dialogue.as_ref())
-}
-
 /// A corpse script to run: the dead character's role that holds it and its
 /// text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -644,26 +633,27 @@ pub struct CorpseScript<'a> {
     pub script: &'a [u8],
 }
 
-/// The scripts the player's handling of a corpse runs: every entry of the
-/// dead character's roles, newest first and in entry order, that targets
-/// the Player role and carries the corpse section (kind `0x20`). The script
-/// sees the corpse as its first actor and the player as its second.
+/// The scripts the player's handling of a corpse runs: for each of the
+/// dead character's roles in list order (an invalid role skipped), the
+/// role's first entry aimed at the Player with no condition, when that
+/// entry carries the corpse section (kind `0x20`). A role whose first such
+/// entry lacks the section gives nothing, even when a later one has it.
+/// The script sees the corpse as its first actor and the player as its
+/// second.
 pub fn corpse_scripts<'a>(book: &'a RoleDb, corpse: &Roles) -> Vec<CorpseScript<'a>> {
-    let mut out = Vec::new();
-    for id in corpse.ids() {
-        let Some(record) = role(book, id) else {
-            continue;
-        };
-        for entry in &record.entries {
-            if entry.target != PLAYER {
-                continue;
+    corpse
+        .ids()
+        .filter_map(|id| {
+            let entry = role(book, id)?.entry_for(PLAYER)?;
+            if entry.kind & SECTION_CORPSE == 0 {
+                return None;
             }
-            if let Some(script) = entry.script(SECTION_CORPSE) {
-                out.push(CorpseScript { role: id, script });
-            }
-        }
-    }
-    out
+            Some(CorpseScript {
+                role: id,
+                script: entry.script(SECTION_CORPSE)?,
+            })
+        })
+        .collect()
 }
 
 /// The script context roles hand the engine: the owner, the partner, the
