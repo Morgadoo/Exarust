@@ -324,13 +324,7 @@ pub fn mood_values(mood: &Mood, collapsed: bool) -> [f32; 3] {
         (1.0, 1.0)
     } else {
         let fear = if fear < 0.0 { 0.0 } else { fear };
-        let anger = if anger < 0.0 {
-            0.0
-        } else if 1.0 < anger {
-            1.0
-        } else {
-            anger
-        };
+        let anger = anger.clamp(0.0, 1.0);
         let larger = if fear < anger { anger } else { fear };
         let share = if 0.0 < larger {
             fear / (fear + anger)

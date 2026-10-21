@@ -18,6 +18,8 @@
 //! | barricade | `effectfbrcd_v` | `effectfbrcd_f` |
 //! | strikes | `effectshell_v` | `effectfrcstrk_f` |
 //! | tendril | `effectforce_v` | `effectsmoke_f` |
+//! | blast (and bolt and wave) | `effectforce_v` | `effectforce_f` |
+//! | torrent | `effectforce_v` | `effecttorrent_f` |
 //! | effect (generic) | — | — |
 //!
 //! The barrier, bubble and barricade bind `ObjMat`, `ViewPos`, `Fade`,
@@ -25,7 +27,10 @@
 //! (the barrier has none); the barricade adds its `BExt`; the strikes add
 //! `LclMat`, `FdPln`, `ColourInt`, `TexScale` and `Gradient`; the tendril
 //! binds only `ObjMat`, `TexOfs` and `EmiTex`, its offset `(0, a, b)` from
-//! its effect.
+//! its effect; the blast and the torrent bind the same three, their offsets
+//! `(0, r, s)` (the first chunk's radius and the setup's texture scale) and
+//! `(0, scroll, 1)` from their effects. The tendril, blast and torrent
+//! draw their passes on the 0.002 row step ([`force_row`]).
 //!
 //! Evidence: the classes' geometry constructors and program setups and the
 //! shared effect renderer's instance loop, read from `Exanima.exe`.
@@ -41,8 +46,8 @@ pub const SUB_OBJECT_KIND: i32 = 35_044;
 /// The pass count the row step divides by (1 in the original's data; a
 /// renderer setting may change it at run time).
 pub const ROW_PASSES: f32 = 1.0;
-/// The tendril's row step, 0.002.
-pub const TENDRIL_ROW_STEP: f32 = 0.002;
+/// The tendril's, blast's and torrent's row step, 0.002.
+pub const FORCE_ROW_STEP: f32 = 0.002;
 
 /// A force geometry class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +64,10 @@ pub enum Class {
     Strikes,
     /// The displacement tendril.
     Tendril,
+    /// The force blast's chunks (the bolt and the wave share it).
+    Blast,
+    /// The force torrent's streams.
+    Torrent,
     /// A plain effect geometry.
     Effect,
 }
@@ -122,6 +131,16 @@ impl Class {
                 fragment: Some("effectsmoke_f"),
                 uniforms: &["ObjMat", "TexOfs", "EmiTex"],
             },
+            Class::Blast => Geometry {
+                vertex: Some("effectforce_v"),
+                fragment: Some("effectforce_f"),
+                uniforms: &["ObjMat", "TexOfs", "EmiTex"],
+            },
+            Class::Torrent => Geometry {
+                vertex: Some("effectforce_v"),
+                fragment: Some("effecttorrent_f"),
+                uniforms: &["ObjMat", "TexOfs", "EmiTex"],
+            },
         }
     }
 }
@@ -137,10 +156,10 @@ pub fn effect_row(pass: i32, frame: i32, start: f32, lod: f32) -> f32 {
     instance_row(pass, frame, start, lod)
 }
 
-/// The tendril's pass row, step 0.002 (its half, 0.001, as the original's
-/// literal).
-pub fn tendril_row(pass: i32, frame: i32, start: f32) -> f32 {
-    (((i64::from(pass) + i64::from(frame)) as f32 + 0.5) * TENDRIL_ROW_STEP) / ROW_PASSES + start
+/// The tendril's, blast's and torrent's pass row, step 0.002 (its half,
+/// 0.001, as the original's literal).
+pub fn force_row(pass: i32, frame: i32, start: f32) -> f32 {
+    (((i64::from(pass) + i64::from(frame)) as f32 + 0.5) * FORCE_ROW_STEP) / ROW_PASSES + start
         - 0.001
 }
 
@@ -197,6 +216,12 @@ mod tests {
             &["ObjMat", "TexOfs", "EmiTex"]
         );
         assert_eq!(Class::Force.geometry().vertex, None);
+        assert_eq!(Class::Blast.geometry().fragment, Some("effectforce_f"));
+        assert_eq!(Class::Torrent.geometry().fragment, Some("effecttorrent_f"));
+        assert_eq!(
+            Class::Torrent.geometry().vertex,
+            Class::Tendril.geometry().vertex
+        );
         // The bubble and barrier share the vertex program.
         assert_eq!(
             Class::Barrier.geometry().vertex,
@@ -211,9 +236,9 @@ mod tests {
         assert_eq!(effect_row(1, 0, 0.0, 1.0), 1.0);
         // Step 0.5, frame 10, start 0.25: ((11 + 0.5)·0.5) + 0.25 − 0.25.
         assert_eq!(effect_row(1, 10, 0.25, 0.5), 5.75);
-        // The tendril's 0.002 step: rows 0 and 0.002.
-        assert!(tendril_row(0, 0, 0.0).abs() < 1e-7);
-        assert!((tendril_row(1, 0, 0.0) - 0.002).abs() < 1e-7);
+        // The force geometries' 0.002 step: rows 0 and 0.002.
+        assert!(force_row(0, 0, 0.0).abs() < 1e-7);
+        assert!((force_row(1, 0, 0.0) - 0.002).abs() < 1e-7);
     }
 
     #[test]

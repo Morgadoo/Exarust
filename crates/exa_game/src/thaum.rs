@@ -1046,12 +1046,14 @@ pub fn step_torrent(phase: i32, charge: f32, level: f32, left: f32, right: f32) 
     }
 }
 
-/// How many streams a span asks for. Eight tenths, rounded to the nearest even integer.
+/// A torrent point's life in ticks for a tick rate: eight tenths of it, in
+/// double precision, rounded to the nearest even integer.
 pub fn torrent_streams(span: i32) -> i32 {
     (f64::from(span) * 0.8).round_ties_even() as i32
 }
 
-/// Place one stream: 16 times its direction, then the height times 1.5 minus 30.
+/// A torrent stream's birth place in the hand's frame: 16 times its
+/// direction, then the height times 1.5 minus 30.
 pub fn torrent_birth(dir: [f32; 3]) -> [f32; 3] {
     let placed = [dir[0] * 16.0, dir[1] * 16.0, dir[2] * 16.0];
     [placed[0], placed[1], placed[2] * 1.5 - 30.0]

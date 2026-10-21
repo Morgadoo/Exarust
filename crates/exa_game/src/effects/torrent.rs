@@ -1,1238 +1,858 @@
-//! The force torrent: a sustained stream of force from the caster's hand.
+//! The force torrent: a sustained stream of force from the caster's hand,
+//! sixteen streams of sixteen points that are fed from the hand, drift,
+//! draw together and split, as the original's torrent simulation runs
+//! them.
 //!
-//! - **Streams**: sixteen stream records are born on a sphere 16 cm out,
-//!   their height 1.5 times the direction less 30 cm, each with two random
-//!   tints and a spawn delay of 8 less a random 0 to 2 ticks.
-//! - **Charge**: the level follows `0.4·(2 − charge)·charge`; charge rises
-//!   by five sixths of the tick in seconds. Past 1 the torrent runs: every
-//!   stream pushes 15 cm along the aim a tick, respawning after its delay.
-//! - **Fade**: a torrent asked to end drops its level by 0.01 a tick and
-//!   stops below 0.02; a fizzle falls at twice the charge rate.
-//! - **Hits**: a point inside a stream's reach takes 1 % of its overshoot
-//!   as a push; the stream's two channels rise by the hit's age share,
-//!   0.005 and 0.01, the second stopping at 1.8.
-//! - **Draw**: each stream's ribbon runs through 16 history points, 12
-//!   quads of 2 vertices each.
-//! - **Light**: tint (0.12, 0.06, 0), radius 120 cm, strength
-//!   `caster light · level · 0.25 · (2 − charge) · charge · 1.2`, 2000 in
-//!   the light's own strength uniform.
+//! - **Start** ([`Torrent::new`]): each stream is born at a blast chunk
+//!   direction ([`chunk_directions`]) times 16 cm, its height 1.5 times less
+//!   30 cm, in the hand's frame, with two random draws (its colour) and a
+//!   spawn delay of 8; up to 24 streams. A point lives `round(83·0.8)` = 66
+//!   ticks. The start then places each stream's first two points 18 and
+//!   9 cm along the aim (widths 0.8 and 0.5, age 12), its head at slot 1,
+//!   and a delay of `8 − roll(3)` ticks (the engine's own generator).
+//! - **Aim**: the blast's ([`blast_aim`]); the frame turns with the
+//!   player's turned aim (the player behaviour's turn spring, outside this
+//!   group, which the caller gives).
+//! - **Sounds** ([`step_torrent`]): the charge loop's volume follows
+//!   `0.4·(2 − c)·c` while charging and then falls 0.01 a tick, stopping
+//!   under 0.02; the stream loop's volume and pitch ease 6 % toward 0.5
+//!   and 0.6 while it runs and keep 0.96 while it ends.
+//! - **Charging** (state 0): each stream's source eases a tenth toward its
+//!   birth place, its head point takes the birth place plus 15 cm along the
+//!   aim and the point before it 30 cm; the caster pays the drain (running
+//!   out fizzles), and past a charge of 1 the torrent runs (flags
+//!   `0xb_0000`), each head and the point before it 9 cm out from where
+//!   they were, and "PowerUsed" is raised. A fizzle (state −1) loses twice
+//!   the rate and ends below 0.
+//! - **Running** (state 1, paying half the drain; state 2 ends it): each
+//!   stream's source takes its birth place. While running, when its delay
+//!   runs out a new head is spawned 9 cm out along a direction drawn round
+//!   the aim (`(0.3·sin a, 0.3·cos a, 1)` normalised, eased half way toward
+//!   the stream's last one and turned into the frame), its width carried on
+//!   from the old head over the distance to the source. Every live point,
+//!   from the head back: ages a tick, pulls its neighbour toward it by
+//!   `0.1·(1/2 − 2500/(d² + 2500))`, moves on by 0.999 of its last move and
+//!   keeps the least cosine of that move with its direction. A point more
+//!   than 1000 m² (squared) from its neighbour splits the stream there into
+//!   a new one. The source's width follows the head's less `0.004·d`.
+//!   Dead streams other than the first are removed: the original moves the
+//!   last-but-one record into the hole, so the last stream is lost and the
+//!   one before it doubled.
+//! - **Bounds**: every live point's box, its middle, its half extents plus
+//!   40 cm and the margin, and their length.
+//! - **Frame** ([`Torrent::frame`]): the texture offset `(0, scroll, 1)`
+//!   with the scroll between its last two ticks; each stream's samples (its
+//!   source and its live points between their last two places, with their
+//!   width, life curve `(2 − s)·s` and age) and colour bytes; the GI
+//!   light's points ([`LightPoints::merge`]).
+//! - **Hits** ([`torrent_reach`], [`torrent_hit`], [`push_torrent_point`],
+//!   [`limb_terms`], [`limb_impulse`], [`character_knock`]): the contact
+//!   arithmetic; the engine's mesh tests are not ported.
 //!
-//! Evidence: the torrent constructor, start, tick, hit, draw and light
-//! routines, read from `Exanima.exe`.
+//! Evidence: the torrent's start, chunk setup, aim, tick, contact entries
+//! and callbacks, frame and light merge, read from `Exanima.exe`
+//! (instructions for each compare, sum order and precision).
+
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::prelude::*;
 
-use crate::effects::round_i32;
+pub use super::blast::{CharacterKnock, character_knock};
+use super::blast::{EPSILON, Frame, blast_aim, chunk_directions};
+use crate::arena::Mt19937;
+use crate::thaum::casting::{CastBody, spend_tick};
+use crate::thaum::engine::{Roll, dist_sq, lerp, normalize, sin_cos};
+pub use crate::thaum::{TorrentMix, push_torrent_point, step_torrent, torrent_hit, torrent_reach};
+use crate::thaum::{charge_rate, torrent_birth, torrent_streams};
 
-/// The stream records' history length.
-pub const STREAM_POINTS: usize = 16;
-/// The quads one stream draws.
-pub const STREAM_QUADS: usize = 12;
-/// The streams the constructor makes.
+/// A stream's points.
+pub const POINTS: usize = 16;
+/// The streams a torrent starts with, and the most it keeps.
 pub const STREAMS: usize = 16;
-/// The spawn radius, cm.
-pub const BIRTH_RADIUS: f32 = 16.0;
-/// The height's scale and offset, cm.
-pub const BIRTH_HEIGHT: f32 = 1.5;
-pub const BIRTH_DROP: f32 = 30.0;
-/// The charge's rise: five sixths of the tick in seconds.
-pub const CHARGE_RATE: f64 = 5.0 / 6.0;
-/// The stream record's life in ticks: 0.8 s.
-pub const STREAM_LIFE_TICKS: i32 = 66;
-/// The run's forward step, cm.
-pub const STREAM_STEP: f32 = 15.0;
-/// The fade's fall and its floor.
-pub const LEVEL_FALL: f32 = 0.01;
-pub const LEVEL_FLOOR: f32 = 0.02;
-/// The charge's level curve.
-pub const LEVEL_CURVE: f32 = 0.4;
-/// The push's share of the overshoot.
-pub const PUSH_SHARE: f32 = 0.01;
-/// The hit channels' gains and the second's ceiling.
-pub const CHANNEL_LEFT: f32 = 0.005;
-pub const CHANNEL_RIGHT: f32 = 0.01;
-pub const CHANNEL_RIGHT_MAX: f32 = 1.8;
-/// The hit's reach terms, cm.
-pub const REACH_ADD: f32 = 40.0;
-/// The light's radius and tint.
-pub const LIGHT_RADIUS: f32 = 120.0;
-pub const LIGHT_TINT: [f32; 3] = [0.12, 0.06, 0.0];
-pub const LIGHT_UNIFORM: f32 = 2000.0;
-/// The light's charge curve terms.
-pub const LIGHT_CURVE: f32 = 0.25;
-pub const LIGHT_CHARGE: f32 = 1.2;
-/// The cast motion the start asks for and the two loop sounds.
+pub const MOST_STREAMS: usize = STREAMS + 8;
+/// The charging head's and the point before's reach along the aim, cm.
+pub const CHARGE_HEAD: f32 = 15.0;
+pub const CHARGE_TAIL: f32 = 30.0;
+/// The spawn's and the release's step out, cm.
+pub const STEP_OUT: f32 = 9.0;
+/// A new point's age.
+pub const NEW_AGE: f32 = 12.0;
+/// The pull's scale and its distance term, and the move kept.
+pub const PULL: f64 = -0.1;
+pub const PULL_SPAN: f32 = 2500.0;
+pub const KEEP_MOVE: f32 = f32::from_bits(0x3f7f_be77);
+/// The squared gap a stream splits past.
+pub const SPLIT_GAP: f32 = 1e10;
+/// The source width's fall over the head's distance.
+pub const WIDTH_FALL: f64 = 0.004;
+/// The flags a running torrent sets.
+pub const RUNNING_FLAGS: u32 = 0xb_0000;
+/// The cast motion the start asks for.
 pub const TORRENT_MOTION: u32 = 0x26;
-pub const CHARGE_SOUND: &str = "thmfrc_cu01";
-pub const LOOP_SOUND: &str = "thmfrc_trntdr";
-/// The event a release raises.
-pub const POWER_USED: &str = "PowerUsed";
-/// The draw's texture offset, as the geometry sets it.
-pub const TEXTURE_OFFSET: [f32; 3] = [0.0, 0.0, 0.0];
+/// The stream loop's starting pitch.
+pub const LOOP_PITCH: f32 = 6.0;
+/// The scroll a tick.
+pub const SCROLL: f64 = 0.0015;
+/// The bounds' margin, cm.
+pub const BOUNDS_MARGIN: f32 = 40.0;
+/// The light buckets' reach and merge distances (squared), and the most.
+pub const LIGHT_REACH_SQ: f32 = 25_600.0;
+pub const LIGHT_MERGE_SQ: f32 = 6_400.0;
+pub const MOST_LIGHTS: usize = 16;
 
-/// The torrent's phase word.
+/// The torrent's states.
+pub const FIZZLED: i32 = -2;
+pub const FIZZLING: i32 = -1;
 pub const CHARGING: i32 = 0;
 pub const RUNNING: i32 = 1;
-pub const FADING: i32 = 2;
-pub const FIZZLED: i32 = -1;
-pub const FINISHED: i32 = -2;
+pub const ENDING: i32 = 2;
 
-/// One stream record's history.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One point of a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StreamPoint {
-    pub at: [f32; 3],
-    /// The point's remaining life, in ticks.
+    pub at: Vec3,
+    pub previous: Vec3,
+    pub age: f32,
     pub life: i32,
-    /// The point's channel level.
-    pub level: f32,
+    pub width: f32,
+    pub direction: Vec3,
+    /// The least cosine of its move with its direction.
+    pub straightness: f32,
 }
 
-/// One force stream.
-#[derive(Debug, Clone, PartialEq)]
+/// One stream record.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Stream {
-    /// The newest point.
     pub head: usize,
-    pub points: [StreamPoint; STREAM_POINTS],
-    /// The spawn countdown, in ticks.
+    pub points: [StreamPoint; POINTS],
+    /// Its birth place in the hand's frame.
+    pub birth: Vec3,
+    pub source_previous: Vec3,
+    pub source: Vec3,
+    /// The last spawn direction, before the frame.
+    pub spread: Vec3,
     pub delay: i32,
-    /// The stream's two random tints.
-    pub tint0: f32,
-    pub tint1: f32,
-    /// The channel the hits raise and its ceiling.
-    pub channel_left: f32,
-    pub channel_right: f32,
-    /// The stream's own level, as the light reads it.
-    pub level: f32,
-    /// The stream's aim and its spread.
-    pub aim: Vec3,
-    pub spread: f32,
+    /// The source's width.
+    pub base_width: f32,
+    pub draws: [f32; 2],
+    /// The ribbon's frames the draw keeps: the mean normal, the first, the
+    /// last, and the one before it (the tick copies the last into the one
+    /// before when a point dies).
+    pub normals: [Vec3; 4],
+    /// Split off another stream.
+    pub split: bool,
 }
 
-impl Stream {
-    /// The newest point.
-    pub fn newest(&self) -> StreamPoint {
-        self.points[self.head]
-    }
-
-    /// The stream's tint bytes.
-    pub fn colour(&self) -> [u8; 4] {
-        [
-            round_i32(self.tint0 * 255.0) as u8,
-            round_i32(self.tint1 * 255.0) as u8,
-            0xff,
-            round_i32((2.0 - self.level) * self.level * 255.0) as u8,
-        ]
-    }
-}
-
-/// What a torrent step did.
+/// What the world tells a tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentStep {
-    pub phase: i32,
-    pub charge: f32,
-    pub level: f32,
-    pub released: bool,
-    pub finished: bool,
+pub struct TorrentView {
+    /// The AI's aim point.
+    pub target: Vec3,
+    /// The hand's node and the hand part's place.
+    pub hand_node: Vec3,
+    pub hand: Vec3,
+    /// The body's facing.
+    pub facing: Vec3,
+    /// The player behaviour's turned aim.
+    pub turned_aim: Vec3,
 }
 
-/// A torrent in flight.
+/// The torrent's two sounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TorrentSounds {
+    pub charge_volume: f32,
+    pub charge_playing: bool,
+    pub loop_volume: f32,
+    pub loop_pitch: f32,
+}
+
+/// What a tick asks of the world.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TorrentEvents {
+    pub power_used: bool,
+}
+
+/// The torrent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Torrent {
-    pub phase: i32,
+    pub state: i32,
+    pub drain: f32,
     pub charge: f32,
     pub rate: f32,
-    /// The shown level: `0.4·(2 − charge)·charge` while charging, then the
-    /// fall to zero.
-    pub level: f32,
-    /// The caster's light scale, which the emissive multiplies.
-    pub light: f32,
-    pub streams: Vec<Stream>,
-    /// The caster's hand.
-    pub hand: Vec3,
-    /// Whether the power has been reported used.
-    pub power_used: bool,
-    /// The hit scan's reach scale (0.25 static, 0.5 a character).
-    pub hit_scale: f32,
-    /// The hit scan's additive reach.
-    pub hit_margin: f32,
-    /// The share the stream point keeps toward a hit contact.
-    pub hit_share: f32,
-    /// Whether the last scan touched a body.
-    pub hit: bool,
-    /// The aim, a unit vector.
+    pub point_life: i32,
+    pub scroll: f32,
+    pub previous_scroll: f32,
     pub aim: Vec3,
+    pub frame: Frame,
+    /// The stream records; `count` of them run, `charging` of them charge.
+    pub records: Vec<Stream>,
+    pub count: usize,
+    pub charging: usize,
+    pub flags: u32,
+    pub margin: f32,
+    pub sounds: TorrentSounds,
+    pub lights: LightPoints,
+    pub roll: Roll,
+    pub centre: Vec3,
+    pub half: Vec3,
+    pub bound_radius: f32,
 }
 
 impl Torrent {
-    pub fn new(tick_ms: u32, hand: Vec3, aim: Vec3, light: f32) -> Self {
-        let rate = f64::from(tick_ms) * 0.001 * CHARGE_RATE;
-        Self {
-            phase: CHARGING,
+    /// A torrent costing `cost` focus a second (drained on the start's tick
+    /// length), its stream draws from `random` and its delays from `roll`.
+    pub fn new(
+        cost: f32,
+        tick_ms: u32,
+        view: &TorrentView,
+        random: &mut Mt19937,
+        roll: Roll,
+    ) -> Self {
+        let seconds = (f64::from(tick_ms) * 0.001) as f32;
+        let aim = blast_aim(view.hand_node, view.target, view.facing);
+        let frame = Frame::looking(view.turned_aim, view.hand);
+        let point_life = torrent_streams(crate::effects::TICK_HZ as i32);
+        let mut records = vec![Stream::default(); MOST_STREAMS];
+        for (stream, direction) in records.iter_mut().zip(chunk_directions()) {
+            stream.head = 0;
+            stream.draws = [random.unit() as f32, random.unit() as f32];
+            stream.delay = 8;
+            stream.birth = Vec3::from_array(torrent_birth(direction.to_array()));
+            let at = frame.place(stream.birth);
+            stream.points[0].at = at;
+            stream.points[0].previous = at;
+            stream.source = at;
+            stream.source_previous = at;
+            stream.spread = Vec3::Z;
+        }
+        let mut torrent = Self {
+            state: CHARGING,
+            drain: cost * seconds,
             charge: 0.0,
-            rate: rate as f32,
-            level: 0.0,
-            light,
-            streams: Vec::new(),
-            hand,
+            rate: charge_rate(tick_ms),
+            point_life,
+            scroll: 0.0,
+            previous_scroll: 0.0,
             aim,
-            power_used: false,
-            hit_scale: 0.25,
-            hit_margin: 0.0,
-            hit_share: 0.5,
-            hit: false,
-        }
-    }
-
-    /// The sixteen births: the shared sixteen directions scaled by 16,
-    /// their height by 1.5 less 30 cm.
-    pub fn spawn(&mut self, tints: impl Iterator<Item = (f32, f32)>) {
-        let mut tints = tints;
-        self.streams.clear();
-        for dir in crate::effects::blast::spawn_directions() {
-            let local = Vec3::new(
-                dir[0] * BIRTH_RADIUS,
-                dir[1] * BIRTH_RADIUS,
-                dir[2] * BIRTH_HEIGHT - BIRTH_DROP,
-            );
-            let (tint0, tint1) = tints.next().unwrap_or((0.0, 0.0));
-            let mut stream = Stream {
-                head: 0,
-                points: [StreamPoint {
-                    at: [0.0; 3],
-                    life: 0,
-                    level: 0.0,
-                }; STREAM_POINTS],
-                delay: 8,
-                tint0,
-                tint1,
-                channel_left: 0.0,
-                channel_right: 0.0,
-                level: 0.0,
-                aim: self.aim,
-                spread: 0.0,
-            };
-            let origin = self.hand + local;
-            for point in &mut stream.points {
-                point.at = [origin.x, origin.y, origin.z];
-            }
-            self.streams.push(stream);
-        }
-    }
-
-    /// The spawn delay a generator draw leaves: 8 less the draw's 0 to 2.
-    pub fn spawn_delay(roll: f32) -> i32 {
-        8 - (roll * 3.0) as i32
-    }
-
-    /// One tick.
-    pub fn step(&mut self, hand: Vec3, aim: Vec3, roll: f32) -> TorrentStep {
-        self.hand = hand;
-        self.aim = aim;
-        if self.streams.is_empty() && self.phase == CHARGING {
-            self.spawn(std::iter::empty());
-        }
-        match self.phase {
-            CHARGING => self.step_charging(roll),
-            RUNNING | FADING => self.step_running(hand, aim, roll),
-            FIZZLED => self.step_fizzling(),
-            _ => TorrentStep {
-                phase: self.phase,
-                charge: self.charge,
-                level: self.level,
-                released: false,
-                finished: self.phase == FINISHED,
+            frame,
+            records,
+            count: STREAMS,
+            charging: STREAMS,
+            flags: 0,
+            margin: 0.0,
+            sounds: TorrentSounds {
+                charge_volume: 0.0,
+                charge_playing: true,
+                loop_volume: 0.0,
+                loop_pitch: LOOP_PITCH,
             },
+            lights: LightPoints::default(),
+            roll,
+            centre: Vec3::ZERO,
+            half: Vec3::ZERO,
+            bound_radius: 0.0,
+        };
+        for stream in &mut torrent.records[..torrent.count] {
+            stream.head = 1;
+            let place = torrent.frame.place(stream.birth);
+            let p1 = &mut stream.points[1];
+            p1.previous = place;
+            p1.at = place + torrent.aim * STEP_OUT;
+            p1.life = point_life;
+            p1.age = NEW_AGE;
+            p1.width = 0.5;
+            let p0 = &mut stream.points[0];
+            p0.previous = place;
+            p0.at = place + torrent.aim * (STEP_OUT * 2.0);
+            p0.age = NEW_AGE;
+            p0.width = 0.8;
+            stream.source = stream.points[1].at;
+            stream.delay = 8 - below3(&mut torrent.roll);
         }
+        torrent
     }
 
-    fn step_charging(&mut self, roll: f32) -> TorrentStep {
-        self.charge += self.rate;
-        self.level = LEVEL_CURVE * (2.0 - self.charge) * self.charge;
-        for stream in &mut self.streams {
-            stream.level = self.level;
-            advance(stream, self.hand, self.aim, roll, 0.1);
-        }
-        let mut released = false;
-        if self.charge > 1.0 {
-            self.charge = 1.0;
-            self.phase = RUNNING;
-            self.level = LEVEL_CURVE;
-            self.power_used = true;
-            released = true;
-            for stream in &mut self.streams {
-                stream.aim = self.aim;
-                let local = self.aim * STREAM_STEP;
-                let at = Vec3::from_array(stream.newest().at) + local;
-                if let Some(point) = stream.points.get_mut(stream.head) {
-                    point.at = [at.x, at.y, at.z];
-                }
-            }
-        }
-        TorrentStep {
-            phase: self.phase,
-            charge: self.charge,
-            level: self.level,
-            released,
-            finished: false,
-        }
-    }
-
-    fn step_running(&mut self, hand: Vec3, aim: Vec3, roll: f32) -> TorrentStep {
-        for stream in &mut self.streams {
-            stream.level = self.level;
-            if stream.delay > 0 {
-                stream.delay -= 1;
-            }
-            if stream.delay < 1 {
-                respawn(stream, hand, aim, roll);
-                stream.delay = Self::spawn_delay(roll);
-            }
-            advance(stream, hand, aim, roll, 0.05);
-            for point in &mut stream.points {
-                if point.life > 0 {
-                    point.life -= 1;
-                }
-            }
-        }
-        if self.phase == FADING {
-            self.level -= LEVEL_FALL;
-            if self.level < LEVEL_FLOOR {
-                self.level = 0.0;
-                self.phase = FINISHED;
-            }
-        }
-        let finished = self.phase == FINISHED;
-        TorrentStep {
-            phase: self.phase,
-            charge: self.charge,
-            level: self.level,
-            released: false,
-            finished,
-        }
-    }
-
-    fn step_fizzling(&mut self) -> TorrentStep {
-        self.charge -= self.rate * 2.0;
-        let mut finished = false;
-        if self.charge < 0.0 {
-            self.charge = 0.0;
-            self.phase = FINISHED;
-            finished = true;
-        }
-        self.level = 0.0;
-        TorrentStep {
-            phase: self.phase,
-            charge: self.charge,
-            level: self.level,
-            released: false,
-            finished,
-        }
-    }
-
-    /// Asks a running torrent to fade.
+    /// The cast's hook, when the caster lets go or runs out of focus: a
+    /// charging torrent fizzles, any other ends.
     pub fn release(&mut self) {
-        if self.phase == RUNNING {
-            self.phase = FADING;
+        self.state = if self.state == CHARGING {
+            FIZZLING
+        } else {
+            ENDING
+        };
+    }
+
+    /// One tick. `caster` pays the drain; `random` draws the spawn angles.
+    pub fn tick(
+        &mut self,
+        view: &TorrentView,
+        caster: &mut CastBody,
+        random: &mut Mt19937,
+    ) -> TorrentEvents {
+        let mut events = TorrentEvents::default();
+        self.aim = blast_aim(view.hand_node, view.target, view.facing);
+        self.frame = Frame::looking(view.turned_aim, view.hand);
+        self.previous_scroll = self.scroll;
+        self.scroll = (f64::from(self.scroll) + SCROLL) as f32;
+        let mix = step_torrent(
+            self.state,
+            self.charge,
+            self.sounds.charge_volume,
+            self.sounds.loop_volume,
+            self.sounds.loop_pitch,
+        );
+        if self.sounds.charge_playing {
+            self.sounds.charge_volume = mix.level;
+            self.sounds.charge_playing = mix.playing;
         }
-    }
-
-    /// The two sounds the start plays.
-    pub fn start_sounds(&self) -> [&'static str; 2] {
-        [CHARGE_SOUND, LOOP_SOUND]
-    }
-
-    /// The reach of a stream point: the point's age (its life lost) times
-    /// the stream's scale, plus the additive term.
-    pub fn reach(point: &StreamPoint, scale: f32) -> f32 {
-        let age = STREAM_LIFE_TICKS - point.life;
-        (age as f32) * scale + REACH_ADD
-    }
-
-    /// The push a point inside a stream's reach takes.
-    pub fn push(&self, at: Vec3, direction: Vec3, dist_sq: f32, reach: f32) -> Option<Vec3> {
-        let span = reach * reach;
-        if dist_sq > span {
-            return None;
-        }
-        let step = (1.0 - dist_sq / span) * PUSH_SHARE;
-        Some(at + direction * step)
-    }
-
-    /// Raises a stream's two channels by a hit's remaining-life share.
-    pub fn hit(stream: &mut Stream, life: i32, samples: i32) {
-        let fraction = life as f32 / samples as f32;
-        stream.channel_left += fraction * CHANNEL_LEFT;
-        if stream.channel_right < CHANNEL_RIGHT_MAX {
-            stream.channel_right += fraction * CHANNEL_RIGHT;
-        }
-    }
-
-    /// The light strength one stream shows.
-    pub fn light_strength(&self, stream: &Stream) -> f32 {
-        self.light * stream.level * LIGHT_CURVE * (2.0 - self.charge) * self.charge * LIGHT_CHARGE
-    }
-
-    /// The draw's texture offset.
-    pub fn texture_offset(&self) -> [f32; 3] {
-        TEXTURE_OFFSET
-    }
-
-    /// The light's whole set: its position, its 2000 strength uniform and
-    /// one colour block a stream.
-    pub fn light_set(&self) -> TorrentLightSet {
-        let mut blocks = Vec::with_capacity(self.streams.len());
-        for stream in &self.streams {
-            blocks.push([LIGHT_TINT[0], LIGHT_TINT[1], LIGHT_TINT[2]].map(|c| {
-                c * self.light
-                    * stream.level
-                    * LIGHT_CURVE
-                    * (2.0 - self.charge)
-                    * self.charge
-                    * LIGHT_CHARGE
-            }));
-        }
-        TorrentLightSet {
-            position: self.light_position(),
-            strength: LIGHT_UNIFORM,
-            blocks,
-        }
-    }
-
-    /// The light's position: the mean of the stream heads, 120 cm on each
-    /// axis.
-    pub fn light_position(&self) -> Vec3 {
-        if self.streams.is_empty() {
-            return self.hand;
-        }
-        let first = Vec3::from_array(self.streams[0].newest().at);
-        let mut min = first;
-        let mut max = first;
-        for stream in &self.streams {
-            let at = Vec3::from_array(stream.newest().at);
-            min = min.min(at);
-            max = max.max(at);
-        }
-        // The middle of the streams' bounds, 120 cm on each axis.
-        (min + max) * 0.5 + Vec3::splat(LIGHT_RADIUS)
-    }
-
-    /// The stream points as a frame between two ticks draws them.
-    pub fn drawn_points(&self, alpha: f32) -> Vec<Vec3> {
-        let mut out = Vec::new();
-        for stream in &self.streams {
-            for step in 0..STREAM_POINTS {
-                let index = (stream.head + STREAM_POINTS - step) % STREAM_POINTS;
-                let point = stream.points[index];
-                let previous = stream.points[(index + 1) % STREAM_POINTS];
-                let a = Vec3::from_array(previous.at);
-                let b = Vec3::from_array(point.at);
-                out.push(a + (b - a) * alpha);
+        self.sounds.loop_volume = mix.left;
+        self.sounds.loop_pitch = mix.right;
+        if self.state < RUNNING {
+            for stream in &mut self.records[..self.charging] {
+                stream.source_previous = stream.source;
+                let gap = self.frame.place(stream.birth) - stream.source;
+                stream.source += gap * 0.1;
+                let h = stream.head;
+                let p = &mut stream.points[h];
+                p.previous = p.at;
+                p.at = self.frame.place(stream.birth) + self.aim * CHARGE_HEAD;
+                let p = &mut stream.points[h - 1];
+                p.previous = p.at;
+                p.at = self.frame.place(stream.birth) + self.aim * CHARGE_TAIL;
+            }
+            if self.state < CHARGING {
+                self.charge -= self.rate * 2.0;
+                if self.charge < 0.0 {
+                    self.charge = 0.0;
+                    self.state = FIZZLED;
+                }
+            } else {
+                if spend_tick(caster, self.drain) {
+                    self.release();
+                    caster.cast_hook = None;
+                }
+                self.charge += self.rate;
+                if 1.0 < self.charge {
+                    self.charge = 1.0;
+                    self.state = RUNNING;
+                    self.flags |= RUNNING_FLAGS;
+                    for stream in &mut self.records[..self.charging] {
+                        let h = stream.head;
+                        for k in [h, h - 1] {
+                            let p = &mut stream.points[k];
+                            p.at = p.previous + self.aim * STEP_OUT;
+                        }
+                    }
+                    events.power_used = true;
+                }
+            }
+        } else {
+            if self.state == RUNNING && spend_tick(caster, self.drain * 0.5) {
+                self.release();
+                caster.cast_hook = None;
+            }
+            let streams = self.count;
+            for index in 0..streams {
+                self.run_stream(index, random);
+            }
+            let mut i = 1;
+            while i < self.count {
+                let stream = &self.records[i];
+                if stream.points[stream.head].life < 1 {
+                    self.count -= 1;
+                    // The original copies the record before the last.
+                    self.records[i] = self.records[self.count - 1];
+                } else {
+                    i += 1;
+                }
             }
         }
-        out
+        self.update_bounds();
+        events
     }
 
-    /// A stream's ribbon: 12 quads through its history.
-    pub fn ribbon(&self, stream: &Stream) -> Vec<[f32; 3]> {
-        let mut out = Vec::with_capacity((STREAM_QUADS + 1) * 2);
-        for step in 0..=STREAM_QUADS {
-            let index = (stream.head + STREAM_POINTS - step) % STREAM_POINTS;
-            let point = stream.points[index];
-            let next = stream.points[(index + 1) % STREAM_POINTS];
-            let along = Vec3::from_array(next.at) - Vec3::from_array(point.at);
-            let side = along.cross(Vec3::Z).normalize_or_zero();
-            let width = point.level * 4.0 + 0.5;
-            out.push([
-                point.at[0] + side.x * width,
-                point.at[1] + side.y * width,
-                point.at[2] + side.z * width,
-            ]);
-            out.push([
-                point.at[0] - side.x * width,
-                point.at[1] - side.y * width,
-                point.at[2] - side.z * width,
-            ]);
+    fn run_stream(&mut self, index: usize, random: &mut Mt19937) {
+        let frame = self.frame;
+        let point_life = self.point_life;
+        let running = self.state == RUNNING;
+        let stream = &mut self.records[index];
+        stream.source_previous = stream.source;
+        stream.source = frame.place(stream.birth);
+        if running {
+            stream.delay -= 1;
+            if stream.delay < 1 {
+                let next = if stream.head + 1 > POINTS - 1 {
+                    0
+                } else {
+                    stream.head + 1
+                };
+                let angle = random.unit() as f32 * std::f32::consts::TAU;
+                let (sin, cos) = sin_cos(angle);
+                let mut v = Vec3::new(
+                    (f64::from(sin) * 0.3) as f32,
+                    (f64::from(cos) * 0.3) as f32,
+                    1.0,
+                );
+                v = normalize(v);
+                v = lerp(v, stream.spread, 0.5);
+                stream.spread = v;
+                let turned = frame.rotate(v);
+                let place = frame.place(stream.birth);
+                let head_width = stream.points[stream.head].width;
+                let d2 = dist_sq(stream.source, stream.points[stream.head].at);
+                let p = &mut stream.points[next];
+                p.direction = turned;
+                p.straightness = 1.0;
+                p.previous = place;
+                p.at = place + turned * STEP_OUT;
+                p.life = point_life;
+                p.age = NEW_AGE;
+                p.width =
+                    (head_width - stream.base_width) * (STEP_OUT / d2.sqrt()) + stream.base_width;
+                stream.head = next;
+                stream.delay = 8 - below3(&mut self.roll);
+            }
         }
-        out
+        let stream = &mut self.records[index];
+        let mut prev = stream.head;
+        let mut k = stream.head;
+        let mut split_at = None;
+        loop {
+            stream.points[k].life -= 1;
+            if stream.points[k].life == 0 {
+                stream.normals[2] = stream.normals[3];
+            }
+            stream.points[k].age += 1.0;
+            if k != stream.head {
+                let d = stream.points[k].at - stream.points[prev].at;
+                let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+                let f = (f64::from(PULL_SPAN / (d2 + PULL_SPAN) - 0.5) * PULL) as f32;
+                let d = d * f;
+                stream.points[prev].at += d;
+                stream.points[k].at -= d;
+                stream.points[prev].previous += d;
+                stream.points[k].previous -= d;
+            }
+            let p = &mut stream.points[k];
+            let step = p.at - p.previous;
+            p.previous = p.at;
+            let cosine = cosine_between(step, p.direction);
+            if cosine < p.straightness {
+                p.straightness = cosine;
+            }
+            p.at += step * KEEP_MOVE;
+            if stream.points[k].life < 1 {
+                break;
+            }
+            if self.count < MOST_STREAMS
+                && k != stream.head
+                && !stream.split
+                && SPLIT_GAP < dist_sq(stream.points[k].at, stream.points[prev].at)
+            {
+                split_at = Some((k, prev));
+                break;
+            }
+            prev = k;
+            k = if k == 0 { POINTS - 1 } else { k - 1 };
+        }
+        if let Some((k, prev)) = split_at {
+            let parent = self.records[index];
+            let new_index = self.count;
+            let mut slot = POINTS - 1;
+            let mut from = prev;
+            loop {
+                self.records[new_index].points[slot] = parent.points[from];
+                slot = if slot == 0 { POINTS - 1 } else { slot - 1 };
+                if parent.points[from].life < 1 {
+                    break;
+                }
+                from = if from == 0 { POINTS - 1 } else { from - 1 };
+            }
+            let new = &mut self.records[new_index];
+            new.points[slot].life = 0;
+            new.head = POINTS - 1;
+            new.delay = i32::MAX;
+            new.split = true;
+            new.draws = parent.draws;
+            self.count += 1;
+            self.records[index].points[k].life = 0;
+        }
+        let stream = &mut self.records[index];
+        let d2 = dist_sq(stream.source, stream.points[stream.head].at);
+        if EPSILON < d2 {
+            stream.base_width = (f64::from(stream.points[stream.head].width)
+                - f64::from(d2.sqrt()) * WIDTH_FALL) as f32;
+        }
+    }
+
+    fn update_bounds(&mut self) {
+        let first = &self.records[0];
+        let mut low = first.points[first.head].at;
+        let mut high = low;
+        for stream in &self.records[..self.count] {
+            let mut k = stream.head;
+            loop {
+                let v = stream.points[k].at;
+                for axis in 0..3 {
+                    if v[axis] < low[axis] {
+                        low[axis] = v[axis];
+                    } else if high[axis] < v[axis] {
+                        high[axis] = v[axis];
+                    }
+                }
+                k = if k == 0 { POINTS - 1 } else { k - 1 };
+                if stream.points[k].life < 1 {
+                    break;
+                }
+            }
+        }
+        self.centre = lerp(low, high, 0.5);
+        self.half = high - self.centre;
+        self.half += Vec3::splat(BOUNDS_MARGIN);
+        self.half += Vec3::splat(self.margin);
+        let h = self.half;
+        let r2 = (h.x * h.x + h.y * h.y) + h.z * h.z;
+        self.bound_radius = if 0.0 < r2 { r2.sqrt() } else { r2 };
     }
 }
 
-/// The torrent's GI light: one light fed by every stream's colour block.
+/// `8 − roll(3)`'s draw: the high half of the state times 3.
+fn below3(roll: &mut Roll) -> i32 {
+    ((u64::from(roll.step()) * 3) >> 32) as i32
+}
+
+/// The cosine between two moves, 0 when either is shorter than 1e-8
+/// (squared, multiplied).
+pub fn cosine_between(a: Vec3, b: Vec3) -> f32 {
+    let la = (a.y * a.y + a.x * a.x) + a.z * a.z;
+    let lb = (b.y * b.y + b.x * b.x) + b.z * b.z;
+    let p = lb * la;
+    if p > 1e-8 {
+        ((a.y * b.y + a.x * b.x) + a.z * b.z) / p.sqrt()
+    } else {
+        0.0
+    }
+}
+
+/// One sample the draw takes of a stream.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StreamSample {
+    pub at: Vec3,
+    pub width: f32,
+    /// The life curve `(2 − s)·s` (1 for the source).
+    pub weight: f32,
+    pub age: f32,
+}
+
+/// The torrent's GI light points: places, their weights and how many
+/// points each gathered.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LightPoints {
+    pub points: Vec<(Vec3, f32, i32)>,
+}
+
+impl LightPoints {
+    /// Gathers a sample of weight `w` (as `(2 − w)·w`): into the nearest
+    /// point within 160 cm when 16 are kept or it is within 80 cm, else as a
+    /// new point.
+    pub fn merge(&mut self, at: Vec3, w: f32) {
+        let w = (2.0 - w) * w;
+        if self.points.is_empty() {
+            self.points.push((at, w, 1));
+            return;
+        }
+        let mut best = LIGHT_REACH_SQ;
+        let mut nearest = None;
+        for (i, point) in self.points.iter().enumerate() {
+            let d2 = dist_sq(point.0, at);
+            if d2 < best {
+                best = d2;
+                nearest = Some(i);
+            }
+        }
+        if self.points.len() > MOST_LIGHTS - 1 || best <= LIGHT_MERGE_SQ {
+            if let Some(i) = nearest {
+                let point = &mut self.points[i];
+                point.2 += 1;
+                point.0 = lerp(point.0, at, 1.0 / point.2 as f32);
+                point.1 += w;
+            }
+        } else {
+            self.points.push((at, w, 1));
+        }
+    }
+}
+
+/// A frame's values outside the draw.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TorrentLightSet {
-    pub position: Vec3,
-    /// The light's strength uniform, 2000.
-    pub strength: f32,
-    pub blocks: Vec<[f32; 3]>,
+pub struct TorrentFrame {
+    pub texture_offset: Vec3,
+    /// Each stream's colour bytes and samples.
+    pub streams: Vec<([u8; 4], Vec<StreamSample>)>,
 }
 
-/// Advances one stream's history: the newest point is pushed toward the
-/// hand's offset and the older ones follow it.
-fn advance(stream: &mut Stream, hand: Vec3, aim: Vec3, _roll: f32, share: f32) {
-    let head = stream.head;
-    let target = hand + aim * (BIRTH_RADIUS * 0.5);
-    let newest = Vec3::from_array(stream.points[head].at);
-    let moved = newest + (target - newest) * share;
-    stream.points[head].at = [moved.x, moved.y, moved.z];
-    stream.points[head].life = STREAM_LIFE_TICKS;
-    stream.points[head].level = stream.level;
-    stream.head = (head + STREAM_POINTS - 1) % STREAM_POINTS;
+impl Torrent {
+    /// The frame `t` of the way between the last two ticks; it also
+    /// gathers the light points.
+    pub fn frame(&mut self, t: f32) -> TorrentFrame {
+        let scroll = (1.0 - t) * self.previous_scroll + self.scroll * t;
+        for point in &mut self.lights.points {
+            point.1 = 0.0;
+            point.2 = 1;
+        }
+        let byte = |v: f32| (v * 255.0).round_ties_even() as i32 as u8;
+        let level = self.charge;
+        let mut streams = Vec::new();
+        if self.state != FIZZLED {
+            for stream in &self.records[..self.count] {
+                let colour = [
+                    byte(stream.draws[0]),
+                    byte(stream.draws[1]),
+                    0xff,
+                    byte((2.0 - level) * level),
+                ];
+                let mut samples = Vec::new();
+                if !stream.split && self.state != ENDING {
+                    samples.push(StreamSample {
+                        at: lerp(stream.source_previous, stream.source, t),
+                        width: stream.base_width,
+                        weight: 1.0,
+                        age: NEW_AGE,
+                    });
+                }
+                let mut k = stream.head;
+                loop {
+                    let p = &stream.points[k];
+                    let s = p.life as f32 / self.point_life as f32;
+                    samples.push(StreamSample {
+                        at: lerp(p.previous, p.at, t),
+                        width: p.width,
+                        weight: (2.0 - s) * s,
+                        age: p.age,
+                    });
+                    if p.life < 1 {
+                        break;
+                    }
+                    k = if k == 0 { POINTS - 1 } else { k - 1 };
+                    if k == stream.head {
+                        break;
+                    }
+                }
+                if samples.len() > 2 {
+                    if stream.split {
+                        self.lights.merge(samples[0].at, samples[0].weight);
+                    }
+                    for sample in &samples[1..] {
+                        self.lights.merge(sample.at, sample.weight);
+                    }
+                }
+                streams.push((colour, samples));
+            }
+        }
+        let mut i = 0;
+        while i < self.lights.points.len() {
+            if 1.0 <= self.lights.points[i].1 {
+                i += 1;
+            } else {
+                self.lights.points.swap_remove(i);
+            }
+        }
+        TorrentFrame {
+            texture_offset: Vec3::new(0.0, scroll, 1.0),
+            streams,
+        }
+    }
 }
 
-/// Puts a run stream back at the hand with a spread of 0.3 of a random
-/// angle around the aim.
-fn respawn(stream: &mut Stream, hand: Vec3, aim: Vec3, roll: f32) {
-    let angle = roll * std::f32::consts::TAU;
-    let local = Vec3::new(angle.cos() * 0.3, angle.sin() * 0.3, 1.0);
-    let direction = (aim + local * 0.3).normalize_or_zero();
-    let at = hand + direction * BIRTH_RADIUS;
-    let head = stream.head;
-    stream.points[head].at = [at.x, at.y, at.z];
-    stream.points[head].life = STREAM_LIFE_TICKS;
-    stream.points[head].level = 1.0;
-    stream.level = 1.0;
-    stream.aim = direction;
+/// The limb contact's scale, push and ease: a character's limb 0.5,
+/// `0.8/mass` and `0.5/(inverse + 1)`; any other body's
+/// `min(inverse/4 + 1/2, 3)`, 0.5 and the same ease.
+pub fn limb_terms(character: bool, inverse_mass: f32, body_mass: f32) -> (f32, f32, f32) {
+    let ease = 0.5 / (inverse_mass + 1.0);
+    if character {
+        (0.5, (1.0 / body_mass) * 0.8, ease)
+    } else {
+        ((inverse_mass * 0.25 + 0.5).min(3.0), 0.5, ease)
+    }
+}
+
+/// The impulse a limb takes from a stream point: `k = inverse/(inverse +
+/// 0.5)·push·0.3·(2 − s)·s` with `s` the point's life share; along its move
+/// by `k·f·straightness` (`f = 1 − (v·move)/(move·move)` with the limb's
+/// velocity `v` at the contacts' mean, clamped to 0..1, nothing at 0 or
+/// below), plus `(contact − point)·(1 − straightness)·(−k)`.
+pub fn limb_impulse(
+    point: &StreamPoint,
+    contact: Vec3,
+    limb_velocity: Vec3,
+    inverse_mass: f32,
+    push: f32,
+    life_share: f32,
+) -> Vec3 {
+    let motion = point.at - point.previous;
+    let k = (inverse_mass / (inverse_mass + 0.5)) * push * 0.3 * (2.0 - life_share) * life_share;
+    let along =
+        limb_velocity.z * motion.z + limb_velocity.y * motion.y + limb_velocity.x * motion.x;
+    let length = motion.z * motion.z + motion.y * motion.y + motion.x * motion.x;
+    let mut f = 1.0 - along / length;
+    let mut impulse = if f <= 0.0 {
+        Vec3::ZERO
+    } else {
+        if 1.0 < f {
+            f = 1.0;
+        }
+        motion * (k * f * point.straightness)
+    };
+    impulse += (contact - point.at) * ((1.0 - point.straightness) * -k);
+    impulse
+}
+
+/// A character's energy loss on a torrent hit: `k/2000` with `k = 1/mass`,
+/// only above 0.25.
+pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
+    let k = 1.0 / body_mass;
+    if 0.25 < energy {
+        energy - k * 0.0005
+    } else {
+        energy
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn torrent() -> Torrent {
-        let mut torrent = Torrent::new(12, Vec3::ZERO, Vec3::X, 1.0);
-        torrent.spawn([(0.5, 0.25)].into_iter().cycle().take(STREAMS));
-        torrent
-    }
-
-    #[test]
-    fn the_streams_are_born_on_a_sphere() {
-        let torrent = torrent();
-        assert_eq!(torrent.streams.len(), 16);
-        assert_eq!(torrent.streams[0].newest().at, [0.0, 0.0, -28.5]);
-        assert!((torrent.streams[1].newest().at[0] - 6.805_2).abs() < 1e-3);
-        assert_eq!(Torrent::spawn_delay(0.0), 8);
-        assert_eq!(Torrent::spawn_delay(0.5), 7);
-        assert_eq!(Torrent::spawn_delay(0.9), 6);
-    }
-
-    #[test]
-    fn the_level_follows_the_charge_and_the_fade() {
-        let mut torrent = torrent();
-        let step = torrent.step(Vec3::ZERO, Vec3::X, 0.0);
-        assert_eq!(step.phase, CHARGING);
-        assert!(step.level > 0.0);
-        torrent.charge = 1.0;
-        let step = torrent.step(Vec3::ZERO, Vec3::X, 0.0);
-        assert!(step.released);
-        assert_eq!(step.phase, RUNNING);
-        assert_eq!(step.level, 0.4);
-        torrent.release();
-        let step = torrent.step(Vec3::ZERO, Vec3::X, 0.0);
-        assert!((step.level - 0.39).abs() < 1e-6);
-        torrent.level = 0.02;
-        let step = torrent.step(Vec3::ZERO, Vec3::X, 0.0);
-        assert!(step.finished);
-    }
-
-    #[test]
-    fn a_hit_raises_the_two_channels() {
-        let mut stream = torrent().streams[0].clone();
-        Torrent::hit(&mut stream, 33, 66);
-        assert!((stream.channel_left - 0.0025).abs() < 1e-6);
-        assert!((stream.channel_right - 0.005).abs() < 1e-6);
-        stream.channel_right = 1.79;
-        Torrent::hit(&mut stream, 66, 66);
-        assert!((stream.channel_right - 1.8).abs() < 1e-6);
-        stream.channel_right = 1.8;
-        Torrent::hit(&mut stream, 66, 66);
-        assert_eq!(stream.channel_right, 1.8);
-    }
-
-    #[test]
-    fn a_point_inside_the_reach_is_pushed() {
-        let torrent = torrent();
-        let push = torrent
-            .push(Vec3::ZERO, Vec3::X, 0.0, 10.0)
-            .expect("a push");
-        assert!((push.x - 0.01).abs() < 1e-6);
-        assert!(torrent.push(Vec3::ZERO, Vec3::X, 101.0, 10.0).is_none());
-    }
-
-    #[test]
-    fn the_light_reads_the_charge_and_the_stream_level() {
-        let mut torrent = torrent();
-        torrent.charge = 0.5;
-        torrent.level = 0.3;
-        let mut stream = torrent.streams[0].clone();
-        stream.level = 0.3;
-        let strength = torrent.light_strength(&stream);
-        assert!((strength - 1.0 * 0.3 * 0.25 * 1.5 * 0.5 * 1.2).abs() < 1e-6);
-        let at = torrent.light_position();
-        let mut min = Vec3::from_array(torrent.streams[0].newest().at);
-        let mut max = min;
-        for stream in &torrent.streams {
-            let p = Vec3::from_array(stream.newest().at);
-            min = min.min(p);
-            max = max.max(p);
-        }
-        assert!((at - ((min + max) * 0.5 + Vec3::splat(120.0))).length() < 1e-4);
-    }
-
-    #[test]
-    fn the_light_set_feeds_every_stream() {
-        let mut torrent = torrent();
-        torrent.charge = 0.5;
-        for stream in &mut torrent.streams {
-            stream.level = 0.5;
-        }
-        let set = torrent.light_set();
-        assert_eq!(set.strength, 2000.0);
-        assert_eq!(set.blocks.len(), 16);
-        let expected = 0.12 * 1.0 * 0.5 * 0.25 * 1.5 * 0.5 * 1.2;
-        assert!((set.blocks[0][0] - expected).abs() < 1e-6);
-        assert_eq!(torrent.texture_offset(), [0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn the_start_sounds_and_the_power_used_are_recorded() {
-        let mut torrent = torrent();
-        assert_eq!(torrent.start_sounds(), ["thmfrc_cu01", "thmfrc_trntdr"]);
-        assert!(!torrent.power_used);
-        torrent.charge = 1.0;
-        torrent.step(Vec3::ZERO, Vec3::X, 0.0);
-        assert!(torrent.power_used);
-        torrent.release();
-        assert_eq!(torrent.phase, FADING);
-    }
-
-    #[test]
-    fn a_frame_draws_between_the_history_points() {
-        let mut torrent = torrent();
-        let head = torrent.streams[0].head;
-        torrent.streams[0].points[head].at = [10.0, 0.0, 0.0];
-        torrent.streams[0].points[(head + 1) % STREAM_POINTS].at = [0.0, 0.0, 0.0];
-        let points = torrent.drawn_points(0.5);
-        assert_eq!(points.len(), STREAM_POINTS * STREAMS);
-        assert_eq!(points[0].x, 5.0);
-    }
-
-    #[test]
-    fn a_ribbon_runs_through_the_history() {
-        let torrent = torrent();
-        let ribbon = torrent.ribbon(&torrent.streams[0]);
-        assert_eq!(ribbon.len(), (STREAM_QUADS + 1) * 2);
-    }
-}
-
-/// The close a torrent keeps for a hit point: the nearest within 6400 cm²
-/// joins that bucket, and one further than 25600 cm² opens a new one until
-/// sixteen exist.
-pub const LIGHT_NEAR_SQ: f32 = 6400.0;
-pub const LIGHT_FAR_SQ: f32 = 25600.0;
-pub const LIGHT_BUCKETS: usize = 16;
-
-/// One light bucket of a hit point.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LightBucket {
-    pub at: Vec3,
-    /// The summed level.
-    pub level: f32,
-    /// How many hits the bucket holds.
-    pub weight: i32,
-}
-
-/// The hit points' merged light buckets.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct LightBuckets {
-    pub buckets: Vec<LightBucket>,
-}
-
-impl LightBuckets {
-    /// Merges one hit at a position with a charge: the level is
-    /// `(2 − charge)·charge`. Returns whether a bucket was opened.
-    pub fn merge(&mut self, at: Vec3, charge: f32) -> bool {
-        let level = (2.0 - charge) * charge;
-        if self.buckets.is_empty() {
-            self.buckets.push(LightBucket {
-                at,
-                level,
-                weight: 1,
-            });
-            return true;
-        }
-        let mut nearest = -1i32;
-        let mut best = LIGHT_FAR_SQ;
-        for (index, bucket) in self.buckets.iter().enumerate() {
-            let d = bucket.at - at;
-            let distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
-            if distance_sq < best {
-                best = distance_sq;
-                nearest = index as i32;
-            }
-        }
-        if self.buckets.len() > LIGHT_BUCKETS - 1 || best <= LIGHT_NEAR_SQ {
-            if 0 <= nearest {
-                let bucket = &mut self.buckets[nearest as usize];
-                bucket.weight += 1;
-                let share = 1.0 / bucket.weight as f32;
-                bucket.at += (at - bucket.at) * share;
-                bucket.level += level;
-            }
-            false
-        } else {
-            self.buckets.push(LightBucket {
-                at,
-                level,
-                weight: 1,
-            });
-            true
+    fn view() -> TorrentView {
+        TorrentView {
+            target: Vec3::new(0.0, 150.0, 1000.0),
+            hand_node: Vec3::new(0.0, 150.0, 0.0),
+            hand: Vec3::new(0.0, 150.0, 0.0),
+            facing: Vec3::Z,
+            turned_aim: Vec3::Z,
         }
     }
-}
-
-/// A character state the torrent hits.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentCharacter {
-    /// The inverse mass the torrent reads.
-    pub inverse_mass: f32,
-    /// The balance/guard value.
-    pub guard: f32,
-    /// How many hits the character has taken.
-    pub hits: i32,
-    /// The character's state word; 0x10 is a stance the hit knocks out.
-    pub state: u32,
-    /// The stun the hit sets.
-    pub stun: f32,
-    /// The stance timer the hit clears.
-    pub stance: f32,
-    /// The struck part's flag word.
-    pub part_flags: u32,
-    /// The hostility the hit adds toward the caster.
-    pub anger: f32,
-}
-
-/// What a torrent character hit changed.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentCharacterHit {
-    pub knock: Vec3,
-    pub stun: f32,
-    pub anger: f32,
-    pub hits: i32,
-    pub knocked: bool,
-}
-
-/// The torrent's hit on a character: the guard drops by the inverse mass
-/// over 2000, the hit count rises, an impulse over one is normalised, capped
-/// at 30 and doubled into the knock, a stance state loses its flag and its
-/// timer, the anger gains 0.01, and the stun is `0.08·(1 − inv mass)`
-/// floored at zero and — the original's inverted clamp — set to 0.008 above
-/// 0.08.
-pub fn torrent_character_hit(
-    character: &mut TorrentCharacter,
-    impulse: Vec3,
-) -> TorrentCharacterHit {
-    if 0.25 < character.guard {
-        character.guard =
-            (f64::from(character.guard) - f64::from(character.inverse_mass) * 0.0005) as f32;
-    }
-    character.hits += 1;
-    let speed = impulse.length();
-    let mut knock = Vec3::ZERO;
-    if speed > 1.0 {
-        let direction = impulse / speed;
-        let capped = if speed > 30.0 { 30.0 } else { speed };
-        knock = direction * capped * 2.0;
-        if character.state == 0x10 {
-            character.part_flags |= 0x80;
-            character.stance = 0.0;
-        }
-    }
-    character.anger += 0.01;
-    let mut stun = ((1.0 - f64::from(character.inverse_mass)) * 0.08) as f32;
-    if stun < 0.0 {
-        stun = 0.0;
-    } else if 0.08f64 < f64::from(stun) {
-        stun = 0.008;
-    }
-    character.stun = stun;
-    TorrentCharacterHit {
-        knock,
-        stun,
-        anger: 0.01,
-        hits: character.hits,
-        knocked: speed > 1.0,
-    }
-}
-
-/// A torrent's aim: the hand's direction, its yaw clamped to 45° around the
-/// body's aim, and the pitch.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentAim {
-    pub yaw: f32,
-    pub pitch: f32,
-    pub direction: Vec3,
-}
-
-/// The torrent's aim from the hand, the view's origin and the body's aim
-/// yaw: the planar yaw of the hand's direction, limited to a quarter turn
-/// around the body's, and the pitch is the negated arc sine of the height.
-pub fn torrent_aim(hand: Vec3, origin: Vec3, body_yaw: f32) -> TorrentAim {
-    let d = (hand - origin).normalize_or_zero();
-    let mut yaw = crate::nav_camera::planar_yaw(d);
-    let mut delta = yaw - body_yaw;
-    if delta < -std::f32::consts::PI {
-        delta += std::f32::consts::TAU;
-    } else if std::f32::consts::PI < delta {
-        delta -= std::f32::consts::TAU;
-    }
-    if std::f32::consts::FRAC_PI_4 < delta {
-        yaw = body_yaw + std::f32::consts::FRAC_PI_4;
-    } else if delta < -std::f32::consts::FRAC_PI_4 {
-        yaw = body_yaw - std::f32::consts::FRAC_PI_4;
-    }
-    if yaw < -std::f32::consts::PI {
-        yaw += std::f32::consts::TAU;
-    } else if std::f32::consts::PI < yaw {
-        yaw -= std::f32::consts::TAU;
-    }
-    let pitch = -d.y.clamp(-1.0, 1.0).asin();
-    TorrentAim {
-        yaw,
-        pitch,
-        direction: Vec3::new(
-            yaw.sin() * pitch.cos(),
-            -pitch.sin(),
-            yaw.cos() * pitch.cos(),
-        ),
-    }
-}
-
-/// A torrent's contact setup: the body's frame, the push (0.2) and the
-/// share (0.5) it uses.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentContact {
-    pub origin: Vec3,
-    pub push: f32,
-    pub share: f32,
-    /// Whether a hit callback was set; the setup clears it.
-    pub callback: bool,
-}
-
-/// The link the draw callback installs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TorrentLink {
-    pub geometry: bool,
-    pub effect_flag: u32,
-    pub callback: bool,
-}
-
-/// What destroying a torrent releases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TorrentTeardown {
-    pub stopped: bool,
-    pub sounds_released: usize,
-    pub light_released: bool,
-    pub streams_released: usize,
-}
-
-impl Torrent {
-    /// Aims the torrent from the hand at the view's origin, limited to 45°
-    /// around the body's aim yaw.
-    pub fn aim_at(&mut self, origin: Vec3, body_yaw: f32) -> TorrentAim {
-        let aim = torrent_aim(self.hand, origin, body_yaw);
-        self.aim = aim.direction;
-        aim
-    }
-
-    /// The contact a body's hit begins with.
-    pub fn contact(&mut self, origin: Vec3) -> TorrentContact {
-        self.hit_scale = 0.25;
-        self.hit_margin = 0.0;
-        self.hit_share = 0.5;
-        self.hit = false;
-        TorrentContact {
-            origin,
-            push: self.hit_scale,
-            share: self.hit_share,
-            callback: false,
-        }
-    }
-
-    /// Links the geometry and installs the draw callback.
-    pub fn link(&mut self) -> TorrentLink {
-        TorrentLink {
-            geometry: true,
-            effect_flag: 0x1_0000,
-            callback: true,
-        }
-    }
-
-    /// Destroys the torrent: `stop` stops a running loop first; the two
-    /// sound handles and the GI light are released and the streams dropped.
-    pub fn destroy(&mut self, stop: bool) -> TorrentTeardown {
-        let stopped = stop && !self.streams.is_empty();
-        let streams = self.streams.len();
-        self.streams.clear();
-        self.power_used = false;
-        self.phase = FINISHED;
-        TorrentTeardown {
-            stopped,
-            sounds_released: 2,
-            light_released: true,
-            streams_released: streams,
-        }
-    }
-
-    /// The effect's frame: its translation at the hand.
-    pub fn frame_matrix(&self) -> [[f32; 4]; 4] {
-        [
-            [1.0, 0.0, 0.0, self.hand.x],
-            [0.0, 1.0, 0.0, self.hand.y],
-            [0.0, 0.0, 1.0, self.hand.z],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    }
-
-    /// The torrent's draw descriptions, one a view.
-    pub fn draw_calls(&self, views: &[[[f32; 4]; 4]]) -> Vec<crate::effects::draw::DrawCall> {
-        crate::effects::draw::torrent_geometry_draws(
-            views,
-            self.frame_matrix(),
-            self.texture_offset(),
-        )
-    }
-}
-
-#[cfg(test)]
-mod hit_tests {
-    use super::*;
 
     fn torrent() -> Torrent {
-        let mut torrent = Torrent::new(12, Vec3::ZERO, Vec3::X, 1.0);
-        torrent.spawn([(0.5, 0.25)].into_iter().cycle().take(STREAMS));
-        torrent
+        Torrent::new(0.2, 12, &view(), &mut Mt19937::new(1), Roll(7))
     }
 
     #[test]
-    fn a_close_hit_merges_and_a_far_one_opens_a_bucket() {
-        let mut buckets = LightBuckets::default();
-        assert!(buckets.merge(Vec3::ZERO, 0.5));
-        assert_eq!(buckets.buckets[0].level, 0.75);
-        assert!(!buckets.merge(Vec3::new(10.0, 0.0, 0.0), 0.5));
-        assert_eq!(buckets.buckets.len(), 1);
-        assert_eq!(buckets.buckets[0].weight, 2);
-        assert_eq!(buckets.buckets[0].level, 1.5);
-        assert_eq!(buckets.buckets[0].at, Vec3::new(5.0, 0.0, 0.0));
-        assert!(buckets.merge(Vec3::new(0.0, 200.0, 0.0), 0.5));
-        assert_eq!(buckets.buckets.len(), 2);
+    fn a_new_torrent_places_its_first_two_points() {
+        let t = torrent();
+        assert_eq!((t.count, t.charging, t.point_life), (16, 16, 66));
+        let s = &t.records[0];
+        // Stream 0 is born straight ahead: 16 cm along +z, then 1.5 times
+        // less 30.
+        assert_eq!(s.birth, Vec3::new(0.0, 0.0, -6.0));
+        assert_eq!(s.head, 1);
+        assert!((s.points[1].at.z - (-6.0 + 9.0)).abs() < 1e-3);
+        assert!((s.points[0].at.z - (-6.0 + 18.0)).abs() < 1e-3);
+        assert_eq!((s.points[1].width, s.points[0].width), (0.5, 0.8));
+        assert_eq!(s.points[1].life, 66);
+        assert_eq!(s.points[0].life, 0);
+        assert!((6..=8).contains(&s.delay));
+        assert!(t.records[16..].iter().all(|r| *r == Stream::default()));
     }
 
     #[test]
-    fn a_full_bucket_list_merges_its_nearest_whatever_the_distance() {
-        let mut buckets = LightBuckets::default();
-        for index in 0..LIGHT_BUCKETS {
-            assert!(buckets.merge(Vec3::new(index as f32 * 200.0, 0.0, 0.0), 0.5));
+    fn charging_feeds_the_points_and_runs_past_one() {
+        let mut t = Torrent::new(0.2, 1300, &view(), &mut Mt19937::new(1), Roll(7));
+        let mut caster = CastBody::default();
+        let events = t.tick(&view(), &mut caster, &mut Mt19937::new(2));
+        assert!(events.power_used);
+        assert_eq!((t.state, t.charge, t.flags), (RUNNING, 1.0, RUNNING_FLAGS));
+        let s = &t.records[0];
+        // The head was put 15 cm out, then 9 cm on from where it was.
+        assert!((s.points[1].at.z - (-6.0 + 9.0 + 9.0)).abs() < 1e-3);
+        assert!((t.sounds.charge_volume - 0.0).abs() < 1e-6);
+        assert_eq!(caster.spent, t.drain);
+    }
+
+    #[test]
+    fn a_running_stream_spawns_ages_and_pulls() {
+        let mut t = torrent();
+        t.state = RUNNING;
+        t.charge = 1.0;
+        for s in &mut t.records[..16] {
+            s.delay = 1;
         }
-        assert_eq!(buckets.buckets.len(), LIGHT_BUCKETS);
-        assert!(!buckets.merge(Vec3::new(0.0, 0.0, 0.0), 0.5));
-        assert_eq!(buckets.buckets.len(), LIGHT_BUCKETS);
-        assert_eq!(buckets.buckets[0].weight, 2);
+        t.tick(&view(), &mut CastBody::default(), &mut Mt19937::new(3));
+        let s = &t.records[0];
+        assert_eq!(s.head, 2);
+        let p = &s.points[2];
+        assert_eq!(p.life, 65);
+        assert_eq!(p.age, 13.0);
+        // Half way between a unit draw round +z and +z, not renormalised.
+        assert!(p.direction.z > 0.9 && p.direction.length() <= 1.0);
+        // Point 1 aged and lost a tick of life.
+        assert_eq!(s.points[1].life, 65);
+        assert!((5..=8).contains(&s.delay));
     }
 
     #[test]
-    fn a_torrent_hit_knocks_stuns_and_angers() {
-        let mut character = TorrentCharacter {
-            inverse_mass: 0.2,
-            guard: 0.3,
-            hits: 0,
-            state: 0x10,
-            stun: 0.0,
-            stance: 2.0,
-            part_flags: 0,
-            anger: 0.0,
-        };
-        let hit = torrent_character_hit(&mut character, Vec3::new(100.0, 0.0, 0.0));
-        assert_eq!(hit.knock, Vec3::new(60.0, 0.0, 0.0));
-        assert_eq!(hit.hits, 1);
-        assert!((character.guard - (0.3 - 0.2 * 0.0005)).abs() < 1e-6);
-        assert_eq!(character.part_flags, 0x80);
-        assert_eq!(character.stance, 0.0);
-        assert!((character.stun - 0.064).abs() < 1e-6);
-        assert_eq!(character.anger, 0.01);
-        assert!(hit.knocked);
+    fn a_dead_stream_is_replaced_by_the_one_before_the_last() {
+        let mut t = torrent();
+        t.state = RUNNING;
+        t.charge = 1.0;
+        for (i, s) in t.records[..16].iter_mut().enumerate() {
+            s.draws = [i as f32, 0.0];
+            s.delay = 100;
+        }
+        let h = t.records[5].head;
+        t.records[5].points[h].life = 1;
+        t.tick(&view(), &mut CastBody::default(), &mut Mt19937::new(3));
+        assert_eq!(t.count, 15);
+        assert_eq!(t.records[5].draws[0], 14.0);
+        assert_eq!(t.records[14].draws[0], 14.0);
     }
 
     #[test]
-    fn a_slow_torrent_hit_still_counts_and_the_stun_clamp_is_inverted() {
-        let mut character = TorrentCharacter {
-            inverse_mass: 2.0,
-            guard: 0.1,
-            hits: 4,
-            state: 0,
-            stun: 0.0,
-            stance: 0.0,
-            part_flags: 0,
-            anger: 0.0,
-        };
-        let hit = torrent_character_hit(&mut character, Vec3::new(0.5, 0.0, 0.0));
-        assert_eq!(hit.knock, Vec3::ZERO);
-        assert_eq!(hit.hits, 5);
-        assert_eq!(character.stun, 0.0);
-        let mut high = TorrentCharacter {
-            inverse_mass: -0.5,
-            ..character
-        };
-        torrent_character_hit(&mut high, Vec3::new(0.5, 0.0, 0.0));
-        assert_eq!(high.stun, 0.008);
+    fn the_cosine_and_the_light_merge_carry_the_numbers() {
+        assert_eq!(cosine_between(Vec3::X, Vec3::X * 2.0), 1.0);
+        assert_eq!(cosine_between(Vec3::ZERO, Vec3::X), 0.0);
+        let mut lights = LightPoints::default();
+        lights.merge(Vec3::ZERO, 1.0);
+        lights.merge(Vec3::new(50.0, 0.0, 0.0), 1.0);
+        assert_eq!(lights.points.len(), 1);
+        assert_eq!(lights.points[0], (Vec3::new(25.0, 0.0, 0.0), 2.0, 2));
+        lights.merge(Vec3::new(200.0, 0.0, 0.0), 0.5);
+        assert_eq!(lights.points.len(), 2);
+        assert_eq!(lights.points[1].1, 0.75);
     }
 
     #[test]
-    fn the_aim_is_clamped_around_the_body() {
-        let aim = torrent_aim(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 0.0);
-        assert!(aim.yaw.abs() < 1e-6);
-        assert!(aim.direction.z > 0.99);
-        let side = torrent_aim(Vec3::new(10.0, 0.0, 10.0), Vec3::ZERO, 0.0);
-        assert!((side.yaw - std::f32::consts::FRAC_PI_4).abs() < 2e-3);
-        let up = torrent_aim(Vec3::new(0.0, 10.0, 10.0), Vec3::ZERO, 0.0);
-        assert!((up.pitch + std::f32::consts::FRAC_PI_4).abs() < 1e-5);
-        assert!(up.direction.y > 0.7);
+    fn the_frame_samples_the_streams() {
+        let mut t = torrent();
+        let frame = t.frame(0.5);
+        assert_eq!(frame.texture_offset, Vec3::new(0.0, 0.0, 1.0));
+        assert_eq!(frame.streams.len(), 16);
+        let (colour, samples) = &frame.streams[0];
+        assert_eq!(colour[2], 0xff);
+        // The source, point 1 and the dead point 0.
+        assert_eq!(samples.len(), 3);
+        assert_eq!(samples[0].weight, 1.0);
+        assert_eq!(samples[2].weight, 0.0);
     }
 
     #[test]
-    fn the_contact_and_destroy_keep_the_numbers() {
-        let mut torrent = torrent();
-        torrent.hand = Vec3::new(0.0, 0.0, 10.0);
-        let aim = torrent.aim_at(Vec3::ZERO, 0.0);
-        assert!(aim.direction.z > 0.99);
-        assert!(torrent.aim.z > 0.99);
-        let contact = torrent.contact(Vec3::new(1.0, 2.0, 3.0));
+    fn the_contact_rules_carry_the_numbers() {
         assert_eq!(
-            (contact.push, contact.share, contact.callback),
-            (0.25, 0.5, false)
+            limb_terms(true, 1.0, 80.0),
+            (0.5, (1.0f32 / 80.0) * 0.8, 0.25)
         );
-        assert!(torrent.link().callback);
-        assert_eq!(
-            torrent
-                .draw_calls(&[[
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0]
-                ]])
-                .len(),
-            1
-        );
-        let teardown = torrent.destroy(true);
-        assert!(teardown.stopped);
-        assert_eq!(teardown.sounds_released, 2);
-        assert!(teardown.light_released);
-        assert_eq!(teardown.streams_released, 16);
-    }
-}
-
-/// A body the torrent's scan can touch: its capsule, bounding radius, the
-/// points that move and the impact gathered.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TorrentBody {
-    pub centre: Vec3,
-    pub second: Vec3,
-    pub bounding: f32,
-    pub points: Vec<Vec3>,
-    pub impact: f64,
-}
-
-/// What a torrent scan touched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TorrentScan {
-    pub hit: bool,
-    pub pushes: usize,
-}
-
-/// The static contact's surface push: a stream point inside a body's sphere
-/// moves to its surface and reports the contact normal and distance.
-pub fn push_stream_to_surface(point: Vec3, centre: Vec3, radius: f32) -> Option<(Vec3, Vec3, f32)> {
-    let d = point - centre;
-    let distance_sq = d.length_squared();
-    if distance_sq < 0.000_000_119_208_998_228_259_58 || radius * radius <= distance_sq {
-        return None;
-    }
-    let distance = distance_sq.sqrt();
-    let normal = d / distance;
-    let pushed = centre + normal * radius;
-    Some((pushed, normal, radius - distance))
-}
-
-/// The torrent's push on a limb: the mass share `mass/(mass + 0.5)` times
-/// the effect's scale, 0.3, the age's `(2 − s)·s` and the point's weight,
-/// with the overshoot's clamp and the recoil along the point.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TorrentLimbPush {
-    pub impulse: Vec3,
-    pub recoil: Vec3,
-}
-
-/// The limb push of a torrent contact.
-#[allow(clippy::too_many_arguments)]
-pub fn torrent_limb_push(
-    direction: Vec3,
-    point_offset: Vec3,
-    mass: f32,
-    scale: f32,
-    age: i32,
-    max_age: i32,
-    weight: f32,
-    share: f32,
-) -> TorrentLimbPush {
-    let factor = ((f64::from(mass) / f64::from(mass + 0.5)) * f64::from(scale) * 0.3) as f32;
-    let fraction = (age as f64 / max_age as f64) as f32;
-    let factor = factor * (2.0 - fraction) * fraction;
-    let length_sq = point_offset.length_squared();
-    if length_sq <= 0.0 {
-        return TorrentLimbPush {
-            impulse: Vec3::ZERO,
-            recoil: Vec3::ZERO,
+        assert_eq!(limb_terms(false, 12.0, 0.0), (3.0, 0.5, 0.5 / 13.0));
+        let p = StreamPoint {
+            at: Vec3::new(0.0, 0.0, 10.0),
+            previous: Vec3::ZERO,
+            straightness: 1.0,
+            ..StreamPoint::default()
         };
-    }
-    let overlap = 1.0 - direction.dot(point_offset) / length_sq;
-    if overlap <= 0.0 {
-        return TorrentLimbPush {
-            impulse: Vec3::ZERO,
-            recoil: Vec3::ZERO,
-        };
-    }
-    let overlap = if overlap > 1.0 { 1.0 } else { overlap };
-    TorrentLimbPush {
-        impulse: direction * (factor * overlap * weight),
-        recoil: (point_offset * -1.0) * ((1.0 - weight) * factor * share),
-    }
-}
-
-impl Torrent {
-    /// The hit scan over the streams' history: every live point whose reach
-    /// (`age·scale + margin + 10`) meets the body pushes its points by
-    /// `(1 − d²/r²)·0.01`, leaves 0.5 of the stream point on the contact,
-    /// raises the stream's channels and records the hit.
-    pub fn scan_hits(&mut self, body: &mut TorrentBody) -> TorrentScan {
-        let mut pushes = 0;
-        self.hit = false;
-        for stream in &mut self.streams {
-            let mut index = (stream.head + 1) % STREAM_POINTS;
-            loop {
-                index = (index + STREAM_POINTS - 1) % STREAM_POINTS;
-                if stream.points[index].life < 1 {
-                    break;
-                }
-                let point = stream.points[index];
-                let age = STREAM_LIFE_TICKS - point.life;
-                let reach = age as f32 * self.hit_scale + self.hit_margin + 10.0;
-                let reach_sq = reach * reach;
-                let centre_d = Vec3::from_array(point.at) - body.centre;
-                let span = reach + body.bounding;
-                if centre_d.length_squared() > span * span {
-                    continue;
-                }
-                if crate::effects::blast::point_segment_distance_sq(
-                    Vec3::from_array(point.at),
-                    body.centre,
-                    body.second,
-                ) > reach_sq
-                {
-                    continue;
-                }
-                let previous = stream.points[(index + 1) % STREAM_POINTS];
-                let motion = Vec3::from_array(point.at) - Vec3::from_array(previous.at);
-                for body_point in &mut body.points {
-                    let d = Vec3::from_array(point.at) - *body_point;
-                    let distance_sq = d.length_squared();
-                    if distance_sq <= reach_sq {
-                        let fraction = 1.0 - distance_sq / reach_sq;
-                        *body_point += motion * (fraction * 0.01);
-                        body.impact += f64::from(fraction) * 0.00001;
-                        let at = Vec3::from_array(point.at);
-                        let moved = at + (*body_point - at) * self.hit_share;
-                        stream.points[index].at = [moved.x, moved.y, moved.z];
-                        pushes += 1;
-                        self.hit = true;
-                    }
-                }
-                let life_share = point.life as f32 / STREAM_LIFE_TICKS as f32;
-                stream.level += life_share * 0.005;
-                if stream.channel_right < CHANNEL_RIGHT_MAX {
-                    stream.channel_right += life_share * CHANNEL_RIGHT;
-                }
-                if index == stream.head {
-                    break;
-                }
-            }
-        }
-        TorrentScan {
-            hit: self.hit,
-            pushes,
-        }
-    }
-}
-
-#[cfg(test)]
-mod scan_tests {
-    use super::*;
-
-    fn torrent() -> Torrent {
-        let mut torrent = Torrent::new(12, Vec3::ZERO, Vec3::X, 1.0);
-        torrent.spawn([(0.5, 0.25)].into_iter().cycle().take(STREAMS));
-        torrent
-    }
-
-    #[test]
-    fn a_stream_point_on_a_body_pushes_its_points() {
-        let mut torrent = torrent();
-        let mut body = TorrentBody {
-            centre: Vec3::ZERO,
-            second: Vec3::ZERO,
-            bounding: 1.0,
-            points: vec![Vec3::new(0.0, 0.0, 1.0)],
-            impact: 0.0,
-        };
-        for stream in &mut torrent.streams {
-            for (slot, point) in stream.points.iter_mut().enumerate() {
-                point.at = [0.0, 0.0, if slot == 0 { 0.0 } else { -1.0 }];
-                point.life = STREAM_LIFE_TICKS;
-            }
-        }
-        let scan = torrent.scan_hits(&mut body);
-        assert!(scan.hit);
-        assert!(scan.pushes >= 1);
-        // The newest point moved a centimetre up from its previous one, so
-        // the body point at z = 1 is pushed the same way.
-        assert!(body.points[0].z > 1.0);
-        assert!(body.impact > 0.0);
-    }
-
-    #[test]
-    fn a_surface_push_moves_the_point_to_the_radius() {
-        let (point, normal, depth) =
-            push_stream_to_surface(Vec3::new(0.0, 0.0, 2.0), Vec3::ZERO, 5.0).expect("a push");
-        assert_eq!(point, Vec3::new(0.0, 0.0, 5.0));
-        assert_eq!(normal, Vec3::Z);
-        assert_eq!(depth, 3.0);
-        assert!(push_stream_to_surface(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, 5.0).is_none());
-    }
-
-    #[test]
-    fn a_limb_takes_the_mass_share_and_the_age_curve() {
-        let push = torrent_limb_push(
-            Vec3::X,
-            Vec3::new(10.0, 0.0, 0.0),
-            0.5,
-            0.5,
-            33,
-            66,
-            1.0,
-            0.5,
-        );
-        // 0.5/1.0 · 0.5 · 0.3 · (2 − 0.5) · 0.5 · 0.9 = 0.050625.
-        assert!((push.impulse.x - 0.050625).abs() < 1e-6);
-        assert_eq!(push.recoil, Vec3::ZERO);
-        let outside = torrent_limb_push(Vec3::X, Vec3::ZERO, 0.5, 0.5, 33, 66, 1.0, 0.5);
-        assert_eq!(outside.impulse, Vec3::ZERO);
+        let i = limb_impulse(&p, Vec3::new(0.0, 0.0, 12.0), Vec3::ZERO, 1.0, 0.5, 0.5);
+        let k = (1.0 / 1.5) * 0.5 * 0.3 * 1.5 * 0.5;
+        assert!((i.z - 10.0 * k).abs() < 1e-5);
+        assert!((energy_after(1.0, 80.0) - (1.0 - 0.0125 * 0.0005)).abs() < 1e-7);
+        assert_eq!(energy_after(0.2, 80.0), 0.2);
+        assert_eq!(torrent_reach(12.0, 0.25, 0.0), 13.0);
     }
 }

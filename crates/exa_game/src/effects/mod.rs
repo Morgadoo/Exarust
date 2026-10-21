@@ -10,9 +10,8 @@
 //! Wave (`force_wave`), the vanish (`vanish`), the GI emissives the force
 //! effects carry (`emissive`), the force geometries' programs and pass rows
 //! (`effect_geometry`), what the AI sees of a blast, a wave or a
-//! barricade (`danger`), the force blast and torrent with their ribbons
-//! and GI lights (`blast`, `torrent`), and the draw descriptions the
-//! renderer consumes (`draw`).
+//! barricade (`danger`), and the force blast and torrent (`blast`,
+//! `torrent`).
 //!
 //! The rules are plain data and functions so they can be tested without a
 //! Bevy app. The Bevy systems step components that gameplay inserts, on
@@ -28,7 +27,6 @@
 pub mod blast;
 pub mod bubble;
 pub mod danger;
-pub mod draw;
 pub mod effect_geometry;
 pub mod emissive;
 pub mod fire_node;
@@ -44,8 +42,6 @@ pub mod torrent;
 pub mod vanish;
 pub mod wheel;
 
-use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 /// The original's simulation rate, ticks per second.
@@ -140,42 +136,6 @@ pub(crate) fn advance_clock(time: Res<Time>, mut clock: ResMut<EffectClock>) {
     *clock = EffectClock::at(time.elapsed());
 }
 
-/// A ribbon as a mesh for the glow material: every point gets a vertex on
-/// each side of `side`, the samples join into a triangle list, and each
-/// vertex carries the effect's linear colour (the glow material multiplies
-/// it by its tint). Points are in the original's centimetres, so the caller
-/// converts them to metres before drawing.
-pub fn ribbon_mesh(points: &[[f32; 3]], side: [[f32; 3]; 2], colour: [f32; 4]) -> Mesh {
-    let mut positions = Vec::with_capacity(points.len() * 2);
-    let mut colours = Vec::with_capacity(points.len() * 2);
-    for point in points {
-        for offset in side {
-            positions.push([
-                point[0] + offset[0],
-                point[1] + offset[1],
-                point[2] + offset[2],
-            ]);
-            colours.push(colour);
-        }
-    }
-    let mut indices = Vec::new();
-    for sample in 0..points.len().saturating_sub(1) {
-        let a = (sample * 2) as u32;
-        let b = a + 1;
-        let c = a + 2;
-        let d = a + 3;
-        indices.extend_from_slice(&[a, b, c, b, d, c]);
-    }
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
-    mesh.insert_indices(Indices::U32(indices));
-    mesh
-}
-
 /// The original's float-to-integer conversion in these effects: the
 /// processor's default rounding, ties to the even integer.
 pub(crate) fn round_i32(value: f32) -> i32 {
@@ -262,20 +222,6 @@ mod tests {
             child.point(Vec3::new(1.0, 0.0, 0.0)),
             Vec3::new(10.0, 1.0, 0.0)
         );
-    }
-
-    #[test]
-    fn a_ribbon_makes_two_triangles_a_segment() {
-        let mesh = ribbon_mesh(
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
-            [[0.0, 0.5, 0.0], [0.0, -0.5, 0.0]],
-            [1.0, 0.0, 0.0, 1.0],
-        );
-        assert_eq!(mesh.count_vertices(), 6);
-        let Some(Indices::U32(indices)) = mesh.indices() else {
-            panic!("32-bit indices");
-        };
-        assert_eq!(indices.len(), 12);
     }
 
     #[test]

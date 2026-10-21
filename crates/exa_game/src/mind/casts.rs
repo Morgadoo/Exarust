@@ -612,7 +612,7 @@ fn settle(from: &mut f32, into: &mut f32) {
         *from -= 10.0;
         *into += 30.0;
     } else {
-        *into = *from * 3.0 + *into;
+        *into += *from * 3.0;
         *from = 0.0;
     }
 }
@@ -1055,7 +1055,7 @@ pub fn revive(body: &mut MindBody, load: f32, build: f32) -> Revival {
 
 /// The shared head of the dead powers: the target must not have been
 /// raised and its character must allow it.
-fn dead_target<'a>(target: Option<&'a mut MindBody>) -> Option<&'a mut MindBody> {
+fn dead_target(target: Option<&mut MindBody>) -> Option<&mut MindBody> {
     let target = target?;
     if target.rules & RAISED_RULE != 0 || target.character_flags & NO_RAISE != 0 {
         return None;

@@ -35,9 +35,14 @@
 //!   `(2 − charge)·charge·s`; the fade `max(1 − fade, 0)` under state 5;
 //!   the animation phase `(ms mod p)/p` with `p = 500 − round(350·charge)`.
 //!
+//! - **Blast** ([`blast_light`]) and **torrent** ([`torrent_light`]):
+//!   multi-point lights, one point a chunk or a gathered stream sample,
+//!   coloured (0.16, 0.08, 1) and (0.12, 0.06, 1); their strengths follow
+//!   the blast's charge or its chunks' life and the torrent's level.
+//!
 //! The boxes are the mesh node's axis-aligned bounds widened 10 cm and
-//! rounded, plus 60 cm of falloff (80 for the cuboid); the tendril's is
-//! its points' bounds plus 120 cm.
+//! rounded, plus 60 cm of falloff (80 for the cuboid); the tendril's, the
+//! blast's and the torrent's are their points' bounds plus 120 cm.
 //!
 //! Nothing injects these lights into Exarust's voxel volume yet.
 //!
@@ -309,8 +314,9 @@ pub fn world_box(centre: Vec3, axes: [Vec3; 3], scale: Vec3, falloff: f32) -> (V
     (middle, half)
 }
 
-/// The tendril light's box: the bounds of its points, their middle, and the
-/// half extents plus 120 cm.
+/// The tendril's, blast's and torrent's light box: the bounds of its
+/// points, their middle, and the half extents plus 120 cm (the blast then
+/// moves the middle by its node's place).
 pub fn point_box(points: &[Vec3]) -> Option<(Vec3, Vec3)> {
     let first = *points.first()?;
     let mut min = first;
@@ -328,6 +334,91 @@ pub fn point_box(points: &[Vec3]) -> Option<(Vec3, Vec3)> {
     let centre = min + (max - min) * 0.5;
     let half = max - centre + Vec3::splat(TENDRIL_FALLOFF_CM);
     Some((centre, half))
+}
+
+/// The blast's and the torrent's light colours.
+pub const BLAST_COLOUR: Vec3 = Vec3::new(0.16, 0.08, 1.0);
+pub const TORRENT_COLOUR: Vec3 = Vec3::new(0.12, 0.06, 1.0);
+/// The blast light's attenuation while charging and once its chunks have
+/// spent 0.3 of their life; the torrent light's.
+pub const BLAST_CHARGE_ATTENUATION: f32 = 5000.0;
+pub const BLAST_SPENT_ATTENUATION: f32 = 1000.0;
+pub const TORRENT_ATTENUATION: f32 = 2000.0;
+
+/// A multi-point light: each point's place and colour, and the shared
+/// attenuation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiPointLight {
+    pub points: Vec<(Vec3, Vec3)>,
+    pub attenuation: f32,
+}
+
+/// The blast's light: one point a chunk (its life record's light point),
+/// coloured [`BLAST_COLOUR`] times the gain, the strength and the setup's
+/// light. While charging the strength is 1 from a charge of 0.3 and
+/// `(0.6 − c)·c·11.11` below it (in double precision), the attenuation
+/// 5000. Thrown, with `f = 1 − ticks/life` (in double precision), the
+/// strength is 1 up to 0.666 and `max(4 − 4.5·f, 0)²` above, the
+/// attenuation 1000 from 0.3 and `5000 − 13333·f` below; the attenuation
+/// is the last chunk's.
+pub fn blast_light(
+    points: &[(Vec3, i32)],
+    thrown: bool,
+    charge: f32,
+    life_ticks: i32,
+    light: f32,
+    gain: f32,
+) -> MultiPointLight {
+    let mut attenuation = BLAST_CHARGE_ATTENUATION;
+    let points = points
+        .iter()
+        .map(|&(at, ticks)| {
+            let strength = if !thrown {
+                attenuation = BLAST_CHARGE_ATTENUATION;
+                let c = f64::from(charge);
+                if c < 0.3 {
+                    ((0.6 - c) * c * 11.11) as f32
+                } else {
+                    1.0
+                }
+            } else {
+                let f = (1.0 - f64::from(ticks) / f64::from(life_ticks)) as f32;
+                attenuation = if f64::from(f) < 0.3 {
+                    5000.0 - f * 13_333.0
+                } else {
+                    BLAST_SPENT_ATTENUATION
+                };
+                if f64::from(f) > 0.666 {
+                    // MAXSS returns its second operand, 0, for a NaN.
+                    let s = 4.0 - f * 4.5;
+                    let s = if s > 0.0 { s } else { 0.0 };
+                    s * s
+                } else {
+                    1.0
+                }
+            };
+            (at, BLAST_COLOUR * ((gain * strength) * light))
+        })
+        .collect();
+    MultiPointLight {
+        points,
+        attenuation,
+    }
+}
+
+/// The torrent's light: one point a light point of its frame, coloured
+/// [`TORRENT_COLOUR`] times the gain, the point's weight over 4 and
+/// `(2 − l)·l·1.2` of the torrent's level `l` (the last in double
+/// precision); attenuation 2000.
+pub fn torrent_light(points: &[(Vec3, f32)], level: f32, gain: f32) -> MultiPointLight {
+    let curve = (f64::from((2.0 - level) * level) * 1.2) as f32;
+    MultiPointLight {
+        points: points
+            .iter()
+            .map(|&(at, weight)| (at, TORRENT_COLOUR * ((gain * (weight * 0.25)) * curve)))
+            .collect(),
+        attenuation: TORRENT_ATTENUATION,
+    }
 }
 
 #[cfg(test)]
@@ -443,5 +534,28 @@ mod tests {
             point_box(&[Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 20.0, 0.0)]).unwrap();
         assert_eq!(centre, Vec3::new(50.0, 10.0, 0.0));
         assert_eq!(half, Vec3::new(50.0 + 120.0, 10.0 + 120.0, 120.0));
+    }
+    #[test]
+    fn the_blast_light_follows_its_charge_and_life() {
+        let charging = blast_light(&[(Vec3::ZERO, 58)], false, 0.1, 58, 0.6, 1.0);
+        assert_eq!(charging.attenuation, 5000.0);
+        let s = ((0.6f64 - f64::from(0.1f32)) * f64::from(0.1f32) * 11.11) as f32;
+        assert_eq!(charging.points[0].1, BLAST_COLOUR * (s * 0.6));
+        // A third of its life left: f = 2/3 is above 0.666.
+        let late = blast_light(&[(Vec3::ZERO, 20)], true, 0.0, 60, 0.6, 1.0);
+        assert_eq!(late.attenuation, 1000.0);
+        let f = (1.0 - 20.0f64 / 60.0) as f32;
+        let s = 4.0 - f * 4.5;
+        assert_eq!(late.points[0].1, BLAST_COLOUR * ((s * s) * 0.6));
+        let fresh = blast_light(&[(Vec3::ZERO, 60)], true, 0.0, 60, 0.6, 1.0);
+        assert_eq!(fresh.attenuation, 5000.0);
+        assert_eq!(fresh.points[0].1, BLAST_COLOUR * 0.6);
+    }
+
+    #[test]
+    fn the_torrent_light_scales_by_its_level() {
+        let light = torrent_light(&[(Vec3::ZERO, 2.0)], 1.0, 1.0);
+        assert_eq!(light.attenuation, 2000.0);
+        assert_eq!(light.points[0].1, TORRENT_COLOUR * (0.5 * 1.2));
     }
 }

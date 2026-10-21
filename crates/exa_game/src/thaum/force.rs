@@ -145,31 +145,36 @@ pub const STRIKES_MOTION: u32 = 0x25;
 pub const BARRICADE_MOTION: u32 = 0x24;
 
 /// The blast family's tuning, as each creator leaves it on the blast
-/// simulation (the bolt and the wave change the blast's defaults).
+/// simulation (the bolt and the wave change the blast's defaults); how
+/// [`crate::effects::blast`] reads each field.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlastSetup {
     /// The id its cast motion stores.
     pub power: u32,
-    /// Added to each chunk's radius every tick.
+    /// Added to each thrown chunk's reach every tick.
     pub growth: f32,
-    /// What a struck body's push gains.
-    pub push: f32,
-    /// Scales the chunk count.
-    pub chunks: f32,
-    /// The share of their speed chunks keep each tick.
+    /// Added to each release direction's forward part before it is turned
+    /// into the aim's frame.
+    pub forward: f32,
+    /// A chunk's life, in seconds.
+    pub life: f32,
+    /// The share of their move thrown chunks keep each tick.
     pub retention: f32,
-    /// The speed term's scale.
-    pub speed: f32,
-    /// The light's strength.
-    pub light: f32,
-    /// Added to the bounds (cm).
+    /// The chunks' radius growth's scale.
+    pub swell: f32,
+    /// The release sound's volume.
+    pub release_volume: f32,
+    /// Added to the bounds and the contact reach (cm).
     pub margin: f32,
-    /// Further values the blast's tick reads, in the creator's order (their
-    /// roles are not traced here).
-    pub scale: f32,
-    pub impact: f32,
-    pub impact_share: f32,
-    pub after: f32,
+    /// The geometry's texture offset's depth.
+    pub texture_scale: f32,
+    /// The push a limb of a body other than a character takes.
+    pub body_push: f32,
+    /// The push a character's limb takes (over its body's mass halved), and
+    /// the push a simulated object's points take.
+    pub character_push: f32,
+    /// The GI light's strength.
+    pub light: f32,
     /// A bolt flies through the level's static check.
     pub piercing: bool,
     pub charge_sound: &'static str,
@@ -180,16 +185,16 @@ pub struct BlastSetup {
 pub const BLAST_SETUP: BlastSetup = BlastSetup {
     power: 0x201,
     growth: 0.4,
-    push: 5.0,
-    chunks: 0.7,
+    forward: 5.0,
+    life: 0.7,
     retention: 0.96,
-    speed: 1.0,
-    light: 0.3,
+    swell: 1.0,
+    release_volume: 0.3,
     margin: 0.0,
-    scale: 1.0,
-    impact: 0.5,
-    impact_share: 0.8,
-    after: 0.6,
+    texture_scale: 1.0,
+    body_push: 0.5,
+    character_push: 0.8,
+    light: 0.6,
     piercing: false,
     charge_sound: "thmfrc_cu01",
     release_sound: "thmfrc_bb",
@@ -199,26 +204,27 @@ pub const BLAST_SETUP: BlastSetup = BlastSetup {
 pub const BOLT_SETUP: BlastSetup = BlastSetup {
     power: 0x202,
     growth: 0.01,
-    push: 80.0,
-    chunks: 1.0,
+    forward: 80.0,
+    life: 1.0,
     retention: 0.99,
-    speed: 0.75,
-    light: 0.4,
+    swell: 0.75,
+    release_volume: 0.4,
     margin: 20.0,
-    scale: 0.3,
-    impact: 0.5,
-    impact_share: 0.5,
-    after: 0.6,
+    texture_scale: 0.3,
+    body_push: 0.5,
+    character_push: 0.5,
+    light: 0.6,
     piercing: true,
     charge_sound: "thmfrc_cu01",
     release_sound: "thmfrc_blt",
 };
 
-/// The wave: the blast's defaults with its light, scale and speed.
+/// The wave: the blast's defaults with its release volume, texture scale
+/// and swell.
 pub const WAVE_SETUP: BlastSetup = BlastSetup {
-    light: 0.5,
-    scale: 1.25,
-    speed: 1.25,
+    release_volume: 0.5,
+    texture_scale: 1.25,
+    swell: 1.25,
     release_sound: "thmfrc_wav",
     ..BLAST_SETUP
 };
