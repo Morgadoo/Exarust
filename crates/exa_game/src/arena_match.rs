@@ -616,6 +616,55 @@ fn convert(value: f32) -> i64 {
     }
 }
 
+/// The share of a full bar a record's health word fills in the company
+/// tables: the word times the double 1/65535, stored as single.
+pub fn health_bar(word: u16) -> f32 {
+    (f64::from(word) * WORD_SHARE) as f32
+}
+
+/// Whether any of the week's six events has a fighter entered.
+pub fn any_entry(rows: &crate::arena::Roster) -> bool {
+    rows.iter().any(|row| (row.count as i32) > 0)
+}
+
+/// Whether today is a tournament day (a multiple of 7) with an entered
+/// event that has no winner yet.
+pub fn event_pending(day: u32, rows: &crate::arena::Roster) -> bool {
+    day.is_multiple_of(7)
+        && rows
+            .iter()
+            .any(|row| (row.count as i32) > 0 && row.team_id == 0)
+}
+
+/// Whether the manage window lets the day end: on a tournament day with
+/// entries, once every entered event is decided; any other day, once a
+/// match was fought.
+pub fn day_can_end(day: u32, rows: &crate::arena::Roster, matches_today: u32) -> bool {
+    if day.is_multiple_of(7) && any_entry(rows) {
+        return !event_pending(day, rows);
+    }
+    0 < matches_today as i32
+}
+
+/// The tournament event the board's Begin starts: the first with no winner
+/// and a fighter entered.
+pub fn next_event(rows: &crate::arena::Roster) -> Option<usize> {
+    rows.iter()
+        .position(|row| row.team_id == 0 && (row.count as i32) > 0)
+}
+
+/// The board's Begin warns once that the manager is entered (the tip
+/// "You are about to enter your manager into a match..."): while the
+/// warning is armed and the manager is a participant, it is disarmed and,
+/// when the tip shows, the Begin waits.
+pub fn warn_manager(armed: &mut bool, manager_entered: bool) -> bool {
+    if *armed && manager_entered {
+        *armed = false;
+        return true;
+    }
+    false
+}
+
 /// What the end screen's Continue does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Continue {
@@ -1217,6 +1266,42 @@ mod tests {
         assert!(!log_fall(&mut log, Fall::Died, 4, None, &mut deaths));
         assert!(!log_fall(&mut log, Fall::Survived, 4, None, &mut deaths));
         assert_eq!((log.records.len(), deaths), (2, 1));
+    }
+
+    #[test]
+    fn the_board_and_the_day_follow_the_entries() {
+        use crate::arena::{Roster, RosterRow};
+        let mut rows: Roster = Default::default();
+        assert!(!any_entry(&rows));
+        assert_eq!(next_event(&rows), None);
+        assert!(!day_can_end(3, &rows, 0));
+        assert!(day_can_end(3, &rows, 1));
+        rows[2] = RosterRow {
+            count: 1,
+            ..RosterRow::default()
+        };
+        rows[4] = RosterRow {
+            count: 2,
+            ..RosterRow::default()
+        };
+        assert!(any_entry(&rows));
+        assert_eq!(next_event(&rows), Some(2));
+        assert!(event_pending(7, &rows));
+        assert!(!event_pending(8, &rows));
+        assert!(!day_can_end(7, &rows, 3));
+        rows[2].team_id = 1;
+        assert_eq!(next_event(&rows), Some(4));
+        rows[4].team_id = 5;
+        assert!(day_can_end(7, &rows, 0));
+        assert_eq!(next_event(&rows), None);
+        // Not a tournament day: a fought match ends it.
+        assert!(!day_can_end(8, &rows, 0));
+        let mut armed = true;
+        assert!(!warn_manager(&mut armed, false));
+        assert!(warn_manager(&mut armed, true));
+        assert!(!armed && !warn_manager(&mut armed, true));
+        assert_eq!(health_bar(65535).to_bits(), 0x3f80_0000);
+        assert_eq!(health_bar(32768).to_bits(), 0x3f00_0080);
     }
 
     #[test]
