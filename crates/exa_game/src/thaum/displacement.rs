@@ -351,7 +351,7 @@ impl PhaseStreak {
             None
         } else {
             self.0 = if self.0 < 0 { 0 } else { self.0 + 1 };
-            Some(roll.unit() * 0.2 + 0.9)
+            Some((f64::from(roll.unit()) * 0.2 + 0.9) as f32)
         }
     }
 }

@@ -13,9 +13,10 @@ zoom and spring, the domain wheel's shares, the ten-slot power bar with its
 load, store, cycle, drop and flash timings, the cast entry that dispatches
 by domain and the persistent-slot budget; its store writes a domain's
 learnt and picked nodes back into the record. A constantly displaced body
-(`thaum::veil`) gets its shell, its displaced collision bit, its hum, its
-left-behind image of mesh and skin nodes, its visibility bits and the hit
-veto with the 500 ms collision restore. The running screen (`power_screen`) opens the tree with P, the bar with C,
+(`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
+parts), its displaced collision bit, its hum start point, its tendril
+image, its visibility bits and the hit veto with the 500 ms collision
+restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P, the bar with C,
 draws both through `exa_ui::tree_draw` and casts the chosen slot through
 the domain front ends; `thaum::visuals` makes the creators' scene nodes,
 materials, noise, hooks and the teleport placement. Rules:

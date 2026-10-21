@@ -3,109 +3,113 @@
 //! collision bits it turns off, and the hit veto that compares one blow's
 //! roll with the phased streak.
 //!
-//! - **The shell** ([`ShellWear`]): a `_EffectShell01` effect whose fade
-//!   starts at zero, whose node starts at flags `0x21000000` and whose end
-//!   event sets the fade to zero and asks the node to play `0x10`. The body
-//!   hands the shell its fade tick; the effect's own subobjects are marked
-//!   with bit 8 when it ends. A timed segment shows
-//!   `clamp((elapsed − start) / (end − start), 0, 1)`, inverted unless the
-//!   segment is reversed, and draws on its side of one half.
-//! - **Constant displacement** ([`ConstantVeil::start`]): every physics node
-//!   of the body gains collision bit `0x4000`, the shell is made, the
-//!   left-behind image is gathered from the body's mesh (`kind 9`) and skin
-//!   (`kind 5`) nodes, and the `thmdsp_cns01` hum loops at a pitch of
-//!   `0.8 × its length × a random draw`, its first play at volume zero.
+//! - **Constant displacement** ([`ConstantVeil::start`]): a shell effect
+//!   is made and starts dead (visibility word `0x8000_0000`); every physics
+//!   node of the body gains collision bit `0x4000`; a tendril image is made
+//!   (node flags `0x2100_0000`, also dead at first, eight spare strands, its
+//!   scale multiplied by the body's size factor); and the `thmdsp_cns01`
+//!   hum starts silent at normal pitch, looping from a random point
+//!   `0.8 × its length × a draw` seconds in (the product is taken in double
+//!   precision).
+//! - **The shell** ([`ShellWear`]): its end sets the fade to zero, tells the
+//!   node to play `0x10` and marks every subobject with bit 8. A timed
+//!   segment shows `clamp((elapsed − start) / (end − start), 0, 1)`,
+//!   inverted unless the segment is reversed, and draws on its side of one
+//!   half ([`ShellTimeline`]).
 //! - **The hit veto** ([`ConstantVeil::hit`]): a percentage draw either
 //!   passes the blow through or not, following [`PhaseStreak`]; a pass
-//!   plays `thmdsp_phs` at pitch `0.9 + 0.2·r`, sets collision bits
-//!   `0xC000` on every part of the struck node, lists the node with the
-//!   stamp, and makes a wisp at the contact. A weapon's collisions come
-//!   back 500 ms after the blow ([`ConstantVeil::restore`]), which also
-//!   ends the shell.
-//! - **Visibility** ([`set_visibility`]): a mesh node (`kind 9`) that is not
-//!   dead carries bits `0x10` or `0x20`; setting one clears the node's
+//!   plays `thmdsp_phs` at pitch `0.9 + 0.2·r` (double precision) and volume
+//!   0.6, sets collision bits `0xC000` on the struck node and its
+//!   descendants, makes a wisp at the contact and lists the node with the
+//!   stamp. The restore tick ([`ConstantVeil::restore`]) gives a listed
+//!   node its collisions back once more than 500 ms have passed, and ends
+//!   the shell effect of the node's owner (the last child that has one).
+//! - **Visibility** ([`set_visibility`]): a mesh node (kind 9) that is not
+//!   dead carries bit `0x10` or `0x20`; setting one clears the node's
 //!   hidden flag, and clearing them hides a node that has subobjects by
-//!   setting its low hidden bit. Fading out first marks the node `0x4` and
-//!   sets `0x10`.
-//! - **The left-behind image** ([`gather_parts`], [`prune_meshes`]): the
-//!   image takes every mesh and skin node; a mesh is pruned by its
-//!   subobjects' `0x40` flags: mixed flags drop it, all-set flags move it
-//!   to the front, none leaves it in place. The image keeps eight spare
-//!   strands and scales by the body's fade length.
+//!   setting its low render bit.
+//! - **The shell's parts** ([`ShellParts`]): the shell effect gathers every
+//!   mesh (kind 9, neither skipped by node flag `0x80000` nor dead) and skin
+//!   (kind 5) node of a body by reference, in walk order. A mesh is pruned
+//!   by its children's `0x40` part flags: mixed flags move it behind the
+//!   rest, all-set flags move it behind the kept ones, none leaves it in
+//!   place. Fading out marks each mesh `0x4` and sets `0x10`; restoring sets
+//!   each mesh's and skin's fade to one and shows the meshes with `0x20`.
 //! - **Restoring shells** ([`restore_shells`], [`clear_shells`]): a child
-//!   node of a body is patched when its `0x10000000` mark is set: the
-//!   restore sets render bits `0x1000` and a 1000-unit stamp, the clear
-//!   takes bit `0x1000` away.
+//!   node whose shell effect carries mark `0x10000000` gets render bit
+//!   `0x1000` (clearing `0x900`) and a 1000-unit stamp, any other loses
+//!   render bit `0x800`; the clear takes bit `0x1000` away.
 //!
-//! Evidence: the shell creator and its end, the constant-displacement start
-//! and its hit veto, the restore tick, the visibility setter, the part
-//! gathers and the pruning pass, read from `Exanima.exe`.
+//! Not modelled: the tendril image's per-bone anchors beyond
+//! [`super::visuals::tendril_parts`], the shell's and the tendrils' draw
+//! passes, the audio instance, the delayed wisp event, and the global list
+//! being shared by every displaced body (each [`ConstantVeil`] keeps its
+//! own). The module is not wired into the running game yet: no power
+//! class calls it.
+//!
+//! Evidence: the constant-displacement start, its hit veto and restore
+//! tick, the shell's creator, end and timeline, the visibility setter, the
+//! part gather and prune passes, the fades and the shell restore and clear
+//! walks, read from `Exanima.exe`.
 
-use super::displacement::{PhaseStreak, PhasedWeapons};
+use super::displacement::{DISPLACED_BIT, PHASED_BITS, PhaseStreak, PhasedWeapons};
 use super::engine::Roll;
 
-/// The material a displacement shell wears.
-pub const SHELL_MATERIAL: &str = "_EffectShell01";
-/// The material the left-behind tendrils wear.
-pub const TENDRIL_MATERIAL: &str = "_TDispMat01";
-/// The picture the tendrils draw.
-pub const TENDRIL_TEXTURE: &str = "FlameletsA3.rfi";
-/// The shell node's starting flags.
-pub const SHELL_FLAGS: u32 = 0x2100_0000;
+/// The node flags a tendril image starts with.
+pub const TENDRIL_FLAGS: u32 = 0x2100_0000;
 /// The end event the shell node is told.
 pub const SHELL_END: u32 = 0x10;
-/// The collision bit a constantly displaced body's physics nodes gain.
-pub const DISPLACED_BIT: u32 = 0x4000;
-/// The collision bits a phased weapon loses.
-pub const PHASED_BITS: u32 = 0xC000;
-/// The loop sound a constant displacement plays.
-pub const HUM_SOUND: &str = "thmdsp_cns01";
-/// The sound a passing blow plays.
-pub const PHASE_SOUND: &str = "thmdsp_phs";
+/// The visibility word of a node that starts dead.
+pub const DEAD: u32 = 0x8000_0000;
 /// The hum's first play is silent.
 pub const HUM_VOLUME: f32 = 0.0;
-/// The phase sound's volume.
-pub const PHASE_VOLUME: f32 = 0.6;
-/// The image keeps eight spare strands beyond its anchors.
-pub const SPARE_STRANDS: usize = 8;
-/// The tendril geometry's registered type word.
-pub const TENDRIL_KIND: u32 = 0x15;
+/// The node-flag bit a physics node carries.
+pub const PHYSICS: u32 = 0x2000;
+/// The node-flag bit that keeps a mesh out of the shell's parts.
+pub const SKIPPED: u32 = 0x0008_0000;
+/// The render-flag bit that marks a node with subobjects.
+pub const SUBOBJECTS: u32 = 0x0100_0000;
+/// The part-flag bit the prune pass reads.
+pub const PRUNE_FLAG: u32 = 0x40;
+/// The subobject mark the shell's end sets.
+pub const ENDED: u32 = 0x8;
 
 /// A node of a body the displacement routines walk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VeilNode {
-    /// The node's condition/class word: its low seven bits name the kind
-    /// (9 a mesh, 5 a skin).
+    /// The node's class word: `status & 0x5f` names the kind (9 a mesh,
+    /// 5 a skin).
     pub status: u32,
-    /// The physics flag: only a node with bit 0x2000 takes the body's
-    /// collision bits and passes them on.
-    pub physics: bool,
+    /// The node flags: [`PHYSICS`] takes the body's collision bits and
+    /// passes them on, [`SKIPPED`] keeps a mesh out of the shell's parts.
+    pub flags: u32,
     /// The collision bits.
     pub collision: u32,
-    /// The fade bits (0x10 shown, 0x20 hidden, 0x4 fading out,
-    /// 0x8000_0000 dead).
+    /// The visibility bits (0x10 shown, 0x20 hidden, 0x4 fading out,
+    /// [`DEAD`]).
     pub visibility: u32,
     /// The node's fade value.
     pub fade: f32,
-    /// The node's low render flags: bit 1 is hidden with subobjects.
+    /// The render flags: bit 1 hides a node with subobjects,
+    /// [`SUBOBJECTS`] says it has some.
     pub render_flags: u32,
-    /// The node carries subobjects.
-    pub subobjects: bool,
+    /// The part flags the prune pass reads ([`PRUNE_FLAG`]).
+    pub part_flags: u32,
     /// The child nodes.
     pub children: Vec<VeilNode>,
 }
 
 impl VeilNode {
-    /// A mesh node with the given children.
+    /// A physics mesh node with the given children.
     pub fn mesh(children: Vec<VeilNode>) -> Self {
         Self {
             status: 9,
-            physics: true,
+            flags: PHYSICS,
             collision: 0,
             visibility: 0,
             fade: 0.0,
-            render_flags: 0,
-            subobjects: !children.is_empty(),
+            render_flags: if children.is_empty() { 0 } else { SUBOBJECTS },
+            part_flags: 0,
             children,
         }
     }
@@ -126,6 +130,11 @@ impl VeilNode {
         }
     }
 
+    /// Whether the node takes the body's collision bits.
+    pub fn physics(&self) -> bool {
+        self.flags & PHYSICS != 0
+    }
+
     /// Walks this node and its children.
     pub fn walk(&self, visit: &mut dyn FnMut(&VeilNode)) {
         visit(self);
@@ -143,9 +152,10 @@ impl VeilNode {
     }
 }
 
-/// Adds collision `mask` to the node and its physics children.
+/// Adds collision `mask` to a physics node and, through it, to its
+/// children; a node that is not a physics node stops the walk.
 pub fn add_physics_bits(node: &mut VeilNode, mask: u32) {
-    if node.physics {
+    if node.physics() {
         node.collision |= mask;
         for child in &mut node.children {
             add_physics_bits(child, mask);
@@ -173,7 +183,7 @@ pub fn clear_bits(node: &mut VeilNode, mask: u32) {
 /// of 0x10 and 0x20. Setting one clears its hidden flag; clearing them
 /// sets the hidden flag of a part with subobjects.
 pub fn set_visibility(part: &mut VeilNode, mask: u32) {
-    if part.status & 0x5f != 9 || part.visibility & 0x8000_0000 != 0 {
+    if part.status & 0x5f != 9 || part.visibility & DEAD != 0 {
         return;
     }
     if part.visibility & 0x30 == 0 {
@@ -183,30 +193,13 @@ pub fn set_visibility(part: &mut VeilNode, mask: u32) {
             return;
         }
     } else if mask == 0 {
-        if part.subobjects {
+        if part.render_flags & SUBOBJECTS != 0 {
             part.render_flags |= 1;
         }
-        part.visibility &= !0x30;
+        part.visibility = (part.visibility & !0x30) | mask;
         return;
     }
     part.visibility = (part.visibility & !0x30) | mask;
-}
-
-/// Fades the gathered nodes out: a mesh sets its fade to one and hides,
-/// a skin only sets its fade.
-pub fn fade_out(parts: &mut [VeilNode]) {
-    for part in parts {
-        part.render_flags |= 4;
-        set_visibility(part, 0x10);
-    }
-}
-
-/// Restores the gathered nodes: marks them fading and shows the meshes.
-pub fn fade_restore(parts: &mut [VeilNode]) {
-    for part in parts {
-        part.fade = 1.0;
-        set_visibility(part, 0x20);
-    }
 }
 
 /// The shell a constant displacement wears.
@@ -215,26 +208,29 @@ pub struct ShellWear {
     pub fade: f32,
     /// The node's event word.
     pub event: u32,
-    /// The shell's subobjects were told to drop.
+    /// The shell's visibility word: it starts dead.
+    pub visibility: u32,
+    /// Every subobject was marked [`ENDED`].
     pub hidden: bool,
 }
 
 impl ShellWear {
-    /// A shell starting at zero.
+    /// A shell as the constant displacement leaves it at the start.
     pub fn new() -> Self {
         Self {
             fade: 0.0,
             event: 0,
+            visibility: DEAD,
             hidden: false,
         }
     }
 
-    /// The shell's end: its fade returns to zero and the node is told
-    /// [`SHELL_END`].
+    /// The shell's end: every subobject is marked, its fade returns to zero
+    /// and the node is told [`SHELL_END`].
     pub fn end(&mut self) {
+        self.hidden = true;
         self.fade = 0.0;
         self.event = SHELL_END;
-        self.hidden = true;
     }
 }
 
@@ -244,60 +240,132 @@ impl Default for ShellWear {
     }
 }
 
-/// The left-behind image's parts.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct LeftBehind {
-    /// The mesh nodes (kind 9), in the body's order.
-    pub meshes: Vec<VeilNode>,
-    /// The skin nodes (kind 5).
-    pub skins: Vec<VeilNode>,
-    /// The image's scale, from the body's fade length.
+/// The tendril image a constant displacement leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TendrilImage {
+    /// The effect node's flags.
+    pub flags: u32,
+    /// The image node's visibility word: it starts dead.
+    pub visibility: u32,
+    /// Strands kept beyond its anchors.
+    pub spare: usize,
+    /// The image's scale: the geometry's own times the body's size factor.
     pub scale: f32,
 }
 
-impl LeftBehind {
-    /// Gathers a body's parts: a live mesh without the 0x80000 flag and a
-    /// skin, in the walk's order.
-    pub fn gather(root: &VeilNode) -> Self {
-        let mut image = Self::default();
-        gather_parts(root, &mut image.meshes, &mut image.skins);
-        prune_meshes(&mut image.meshes);
-        image
-    }
-}
-
-/// Collects a node's mesh and skin parts into the image's lists.
-pub fn gather_parts(node: &VeilNode, meshes: &mut Vec<VeilNode>, skins: &mut Vec<VeilNode>) {
-    let kind = node.status & 0x5f;
-    if kind == 9 {
-        if node.render_flags & 0x0008_0000 == 0 && node.visibility & 0x8000_0000 == 0 {
-            meshes.push(node.clone());
+impl TendrilImage {
+    /// An image on a body of the given size factor, over a geometry whose
+    /// own scale is `base`.
+    pub fn new(base: f32, size_factor: f32) -> Self {
+        Self {
+            flags: TENDRIL_FLAGS,
+            visibility: DEAD,
+            spare: super::displacement::SPARE_STRANDS,
+            scale: base * size_factor,
         }
-    } else if kind == 5 {
-        skins.push(node.clone());
-    }
-    for child in &node.children {
-        gather_parts(child, meshes, skins);
     }
 }
 
-/// Orders the meshes by their subobjects' 0x40 flags: a mesh with none
-/// stays at the front, one with all set moves behind the kept ones, and
+/// The node at a path, if it exists.
+pub fn find<'a>(root: &'a VeilNode, path: &[usize]) -> Option<&'a VeilNode> {
+    let mut node = root;
+    for step in path {
+        node = node.children.get(*step)?;
+    }
+    Some(node)
+}
+
+/// The shell's parts: paths from a body's root to the mesh and skin nodes
+/// the shell hides and shows. The original keeps pointers into the live
+/// body; a path stands for one here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShellParts {
+    /// The mesh nodes (kind 9), in the walk's order.
+    pub meshes: Vec<Vec<usize>>,
+    /// The skin nodes (kind 5).
+    pub skins: Vec<Vec<usize>>,
+}
+
+impl ShellParts {
+    /// Gathers a body's parts: a live mesh without [`SKIPPED`] and every
+    /// skin, node before children.
+    pub fn gather(root: &VeilNode) -> Self {
+        let mut parts = Self::default();
+        let mut path = Vec::new();
+        gather_parts(root, &mut path, &mut parts);
+        prune_meshes(root, &mut parts.meshes);
+        parts
+    }
+
+    /// Fades the meshes out: each is marked fading and shown with 0x10.
+    pub fn fade_out(&self, root: &mut VeilNode) {
+        for path in &self.meshes {
+            if let Some(part) = find_mut(root, path) {
+                part.visibility |= 4;
+                set_visibility(part, 0x10);
+            }
+        }
+    }
+
+    /// Restores the parts: each mesh's fade becomes one and it is shown
+    /// with 0x20; each skin's fade becomes one.
+    pub fn fade_restore(&self, root: &mut VeilNode) {
+        for path in &self.meshes {
+            if let Some(part) = find_mut(root, path) {
+                part.fade = 1.0;
+                set_visibility(part, 0x20);
+            }
+        }
+        for path in &self.skins {
+            if let Some(part) = find_mut(root, path) {
+                part.fade = 1.0;
+            }
+        }
+    }
+}
+
+/// Collects a node's mesh and skin parts into `parts`, then those of its
+/// children.
+pub fn gather_parts(node: &VeilNode, path: &mut Vec<usize>, parts: &mut ShellParts) {
+    match node.status & 0x5f {
+        9 => {
+            if node.flags & SKIPPED == 0 && node.visibility & DEAD == 0 {
+                parts.meshes.push(path.clone());
+            }
+        }
+        5 => parts.skins.push(path.clone()),
+        _ => {}
+    }
+    for (index, child) in node.children.iter().enumerate() {
+        path.push(index);
+        gather_parts(child, path, parts);
+        path.pop();
+    }
+}
+
+/// Orders the meshes by their children's [`PRUNE_FLAG`]: a mesh with none
+/// set stays at the front, one with all set moves behind the kept ones, and
 /// one with both moves behind both. The list keeps every mesh; the
-/// original's scan and drop cursors walk the tail as they swap.
-pub fn prune_meshes(meshes: &mut [VeilNode]) {
+/// original's scan and tail cursors walk the tail as they swap.
+pub fn prune_meshes(root: &VeilNode, meshes: &mut [Vec<usize>]) {
     let mut scan = meshes.len();
-    let mut drop = meshes.len();
+    let mut tail = meshes.len();
     let mut index = 0;
     while index < scan {
         let mut seen = 0u32;
-        for child in &meshes[index].children {
-            seen |= if child.render_flags & 0x40 == 0 { 1 } else { 2 };
+        if let Some(mesh) = find(root, &meshes[index]) {
+            for child in &mesh.children {
+                seen |= if child.part_flags & PRUNE_FLAG == 0 {
+                    1
+                } else {
+                    2
+                };
+            }
         }
         if seen >= 3 {
             scan -= 1;
-            drop -= 1;
-            meshes.swap(index, drop);
+            tail -= 1;
+            meshes.swap(index, tail);
         } else if seen == 2 {
             scan -= 1;
             meshes.swap(index, scan);
@@ -313,13 +381,15 @@ pub struct ConstantVeil {
     /// The body's root node.
     pub body: VeilNode,
     pub shell: ShellWear,
-    pub left_behind: LeftBehind,
+    /// The meshes and skins the shell fades.
+    pub parts: ShellParts,
+    pub image: TendrilImage,
     /// The phased nodes, each with the stamp its collisions return.
     pub phased: PhasedWeapons,
     /// The streak deciding each blow.
     pub streak: PhaseStreak,
-    /// The hum's pitch.
-    pub hum_pitch: f32,
+    /// Where in the hum's loop it starts, in seconds.
+    pub hum_start: f32,
     /// The wisp the last passing blow made, if any.
     pub last_wisp: Option<[f32; 3]>,
     /// The passing blow's sound pitch.
@@ -328,29 +398,28 @@ pub struct ConstantVeil {
 
 impl ConstantVeil {
     /// Starts a constant displacement on `body`. `hum_length` is the hum
-    /// sound's length in seconds; `roll` draws the hum's pitch and the
-    /// first frame leaves the loop's volume at zero.
-    pub fn start(body: VeilNode, hum_length: f32, roll: &mut Roll) -> Self {
+    /// sound's length in seconds, `size_factor` the body's size factor and
+    /// `roll` draws the hum's start point.
+    pub fn start(body: VeilNode, hum_length: f32, size_factor: f32, roll: &mut Roll) -> Self {
         let mut body = body;
         add_physics_bits(&mut body, DISPLACED_BIT);
-        let left_behind = LeftBehind {
-            scale: 1.0,
-            ..LeftBehind::gather(&body)
-        };
+        let parts = ShellParts::gather(&body);
+        let hum_start = (f64::from(hum_length) * 0.8 * f64::from(roll.unit())) as f32;
         Self {
             body,
             shell: ShellWear::new(),
-            left_behind,
+            parts,
+            image: TendrilImage::new(1.0, size_factor),
             phased: PhasedWeapons::default(),
             streak: PhaseStreak::default(),
-            hum_pitch: hum_length * 0.8 * roll.unit(),
+            hum_start,
             last_wisp: None,
             last_pitch: None,
         }
     }
 
     /// One blow on a node: true when it passes through. On a pass the
-    /// node and its children lose [`PHASED_BITS`], the node is listed with
+    /// node and its children gain [`PHASED_BITS`], the node is listed with
     /// `now`, and `contact` is where the wisp sits.
     pub fn hit(
         &mut self,
@@ -372,7 +441,7 @@ impl ConstantVeil {
     }
 
     /// Returns the collisions of the nodes whose 500 ms are over at `now`.
-    /// Any return ends the shell, as each restored weapon does.
+    /// Each return ends a shell effect, as each restored weapon does.
     pub fn restore(&mut self, now: u64) -> Vec<u64> {
         let freed = self.phased.restore(now);
         if !freed.is_empty() {
@@ -390,7 +459,7 @@ impl ConstantVeil {
     pub fn has_displaced_bit(&self) -> bool {
         let mut all = true;
         self.body.walk(&mut |node| {
-            if node.physics && node.collision & DISPLACED_BIT == 0 {
+            if node.physics() && node.collision & DISPLACED_BIT == 0 {
                 all = false;
             }
         });
@@ -531,6 +600,10 @@ pub struct ShellTimeline {
     pub shown: f32,
     /// The segment whose callback ran this step.
     pub fired: Option<usize>,
+    /// Whether the fired segment was on the closing side of its draw
+    /// window when it ended (read from the segment that ended, not from the
+    /// one that follows).
+    pub fired_closing: bool,
 }
 
 impl ShellTimeline {
@@ -553,6 +626,7 @@ impl ShellTimeline {
         let elapsed = now.wrapping_sub(self.start);
         if segment.end < elapsed {
             let fired = self.index;
+            self.fired_closing = self.closing_draw();
             self.index += 1;
             self.fired = Some(fired);
             Some(fired)
@@ -576,10 +650,6 @@ impl ShellTimeline {
     }
 }
 
-/// How long a tendril strand lives after its node's restore, in the
-/// original's milliseconds.
-pub const TENDRIL_MS: u32 = 50;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,7 +672,7 @@ mod tests {
     fn a_displaced_body_gains_the_physics_bit_only_on_physics_nodes() {
         let mut body = VeilNode::mesh(vec![
             VeilNode {
-                physics: false,
+                flags: 0,
                 ..VeilNode::mesh(vec![])
             },
             VeilNode::mesh(vec![VeilNode::skin()]),
@@ -640,109 +710,98 @@ mod tests {
 
     #[test]
     fn fading_marks_and_shows_the_parts() {
-        let mut parts = vec![
+        let mut body = VeilNode::mesh(vec![
             VeilNode::mesh(vec![VeilNode::mesh(vec![])]),
             VeilNode::skin(),
-        ];
-        fade_out(&mut parts);
-        assert_eq!(parts[0].render_flags & 4, 4);
-        assert_eq!(parts[0].visibility, 0x10);
-        assert_eq!(parts[1].visibility, 0);
-        fade_restore(&mut parts);
-        assert_eq!(parts[0].visibility, 0x20);
-        assert_eq!(parts[0].fade, 1.0);
-        assert_eq!(parts[1].fade, 1.0);
+        ]);
+        let parts = ShellParts::gather(&body);
+        assert_eq!(parts.meshes.len(), 3);
+        assert_eq!(parts.skins, vec![vec![1]]);
+        parts.fade_out(&mut body);
+        // The fading bit is on the visibility word, with the shown bit.
+        assert_eq!(body.children[0].visibility, 0x14);
+        assert_eq!(body.children[0].render_flags & 4, 0);
+        assert_eq!(body.children[1].visibility, 0);
+        parts.fade_restore(&mut body);
+        assert_eq!(body.children[0].visibility, 0x24);
+        assert_eq!(body.children[0].fade, 1.0);
+        // The skin's own fade is restored too.
+        assert_eq!(body.children[1].fade, 1.0);
     }
 
     #[test]
-    fn the_left_behind_takes_meshes_and_skins() {
+    fn the_shell_parts_take_meshes_and_skins() {
         let body = VeilNode::mesh(vec![
             VeilNode::mesh(vec![]),
             VeilNode::other(3),
             VeilNode::skin(),
             VeilNode {
-                render_flags: 0x0008_0000,
+                flags: PHYSICS | SKIPPED,
                 ..VeilNode::mesh(vec![])
             },
             VeilNode {
-                visibility: 0x8000_0000,
+                visibility: DEAD,
                 ..VeilNode::mesh(vec![])
             },
         ]);
-        let image = LeftBehind::gather(&body);
-        assert_eq!(image.meshes.len(), 2);
-        assert_eq!(image.skins.len(), 1);
+        let parts = ShellParts::gather(&body);
+        // The body's own root counts: it is a live mesh.
+        assert_eq!(parts.meshes, vec![vec![], vec![0]]);
+        assert_eq!(parts.skins, vec![vec![2]]);
     }
 
     #[test]
-    fn the_prune_orders_the_meshes_by_their_subobject_flags() {
-        let full = |flags: u32| VeilNode {
-            children: vec![
-                VeilNode {
-                    render_flags: flags,
-                    ..VeilNode::mesh(vec![])
-                },
-                VeilNode {
-                    render_flags: flags,
-                    ..VeilNode::mesh(vec![])
-                },
-            ],
+    fn the_prune_orders_the_meshes_by_their_part_flags() {
+        let kid = |flags: u32| VeilNode {
+            part_flags: flags,
             ..VeilNode::mesh(vec![])
         };
-        let mixed = VeilNode::mesh(vec![
-            VeilNode {
-                render_flags: 0,
-                ..VeilNode::mesh(vec![])
-            },
-            VeilNode {
-                render_flags: 0x40,
-                ..VeilNode::mesh(vec![])
-            },
+        let full = VeilNode::mesh(vec![kid(0x40), kid(0x40)]);
+        let mixed = VeilNode::mesh(vec![kid(0), kid(0x40)]);
+        // Mesh 0 and 3 have no children, 1 has all set, 2 is mixed.
+        let body = VeilNode::mesh(vec![
+            VeilNode::mesh(vec![]),
+            full,
+            mixed,
+            VeilNode::mesh(vec![]),
         ]);
-        let mut meshes = vec![
-            VeilNode::mesh(vec![]),
-            full(0x40),
-            mixed.clone(),
-            VeilNode::mesh(vec![]),
-        ];
-        prune_meshes(&mut meshes);
-        // The meshes with nothing set stay first in order, the all-set
-        // follow, and the mixed last; the list keeps all four.
-        assert_eq!(meshes.len(), 4);
-        assert!(meshes[0].children.is_empty());
-        assert!(meshes[1].children.is_empty());
-        assert_eq!(meshes[2].children.len(), 2);
-        assert!(
-            meshes[2]
-                .children
-                .iter()
-                .all(|c| c.render_flags & 0x40 != 0)
-        );
-        assert_eq!(meshes[3].children.len(), 2);
-        assert!(
-            meshes[3]
-                .children
-                .iter()
-                .any(|c| c.render_flags & 0x40 == 0)
-        );
+        let mut meshes = vec![vec![0], vec![1], vec![2], vec![3]];
+        prune_meshes(&body, &mut meshes);
+        // Nothing set stays in front in order, all-set follows, mixed is
+        // last; the list keeps all four.
+        assert_eq!(meshes, vec![vec![0], vec![3], vec![1], vec![2]]);
+        // A render flag is not a part flag.
+        let mut other = VeilNode::mesh(vec![VeilNode {
+            render_flags: 0x40,
+            ..VeilNode::mesh(vec![])
+        }]);
+        other.children.push(other.children[0].clone());
+        let mut one = vec![vec![]];
+        prune_meshes(&other, &mut one);
+        assert_eq!(one, vec![Vec::<usize>::new()]);
+    }
 
-        let mut one = vec![VeilNode::mesh(vec![]), mixed, full(0x40)];
-        prune_meshes(&mut one);
-        assert_eq!(one.len(), 3);
-        assert!(one[0].children.is_empty());
-        assert!(one[1].children.iter().all(|c| c.render_flags & 0x40 != 0));
-        assert!(one[2].children.iter().any(|c| c.render_flags & 0x40 == 0));
+    #[test]
+    fn the_tendril_image_starts_dead_and_scales_with_the_body() {
+        let image = TendrilImage::new(0.5, 1.5);
+        assert_eq!(image.flags, 0x2100_0000);
+        assert_eq!(image.visibility, 0x8000_0000);
+        assert_eq!(image.scale, 0.75);
+        assert_eq!(image.spare, 8);
+        assert_eq!(ShellWear::new().visibility, 0x8000_0000);
     }
 
     #[test]
     fn a_constant_displacement_hides_its_weapon_for_half_a_second() {
         let mut draw = Roll(0x26b0_5733);
-        let expected_pitch = 2.0f32 * 0.8 * draw.unit();
+        // The product is taken in double precision.
+        let expected = (2.0f64 * 0.8 * f64::from(draw.unit())) as f32;
         let mut roll = Roll(0x26b0_5733);
         let body = VeilNode::mesh(vec![VeilNode::mesh(vec![])]);
-        let mut veil = ConstantVeil::start(body, 2.0, &mut roll);
+        let mut veil = ConstantVeil::start(body, 2.0, 1.0, &mut roll);
         assert!(veil.has_displaced_bit());
-        assert_eq!(veil.hum_pitch, expected_pitch);
+        assert_eq!(veil.hum_start, expected);
+        assert_eq!(veil.parts.meshes.len(), 2);
         // The first draw passes (the streak starts at zero): the node and
         // its child lose 0xC000.
         let through = veil.hit(&[0], 1000, [1.0, 2.0, 3.0], &mut Roll(0x26b0_5733));
@@ -809,6 +868,8 @@ mod tests {
         assert!(!timeline.closing_draw());
         assert!(timeline.advance(1100).is_none());
         assert_eq!(timeline.advance(1101), Some(0));
+        // The first segment ended past its half: the draw is not closing.
+        assert!(!timeline.fired_closing);
         assert_eq!(timeline.index, 1);
         assert_eq!(timeline.fired, Some(0));
         assert_eq!(timeline.step(1201), (1.0, true));
