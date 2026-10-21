@@ -17,6 +17,7 @@ pub mod motile;
 pub mod part;
 pub mod plate;
 pub mod prop;
+pub mod race_runtime;
 pub mod relay;
 pub mod sector;
 pub mod shape;

@@ -2520,6 +2520,7 @@ name = "exa_physics"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "exa_formats",
  "rapier3d",
 ]
 

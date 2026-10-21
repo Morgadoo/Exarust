@@ -2027,6 +2027,7 @@ mod tests {
             natural: Natural::default(),
             body: exa_formats::races::RaceBody::FALLBACK,
             stats: exa_formats::races::RaceStats::FALLBACK,
+            voice: exa_formats::races::RaceVoice::default(),
         };
         let of = |r: &Race| Fighter::of_stats(Some(r), CharacterStats::default());
         let skeleton = of(&race(0));

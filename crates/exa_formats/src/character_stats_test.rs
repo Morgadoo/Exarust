@@ -15,6 +15,7 @@ fn race(byte: u8, health: f32) -> Race {
         natural: Natural::default(),
         body: RaceBody::FALLBACK,
         stats: RaceStats::FALLBACK,
+        voice: crate::races::RaceVoice::default(),
     }
 }
 
