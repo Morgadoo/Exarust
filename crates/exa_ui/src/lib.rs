@@ -11,10 +11,12 @@
 //! layout and the text box ([`text_layout`], [`text_box`]), icon atlases
 //! and glyphs ([`icon_atlas`], [`gui_glyphs`]), the table and item views
 //! ([`table_view`], [`item_view`]) and the basic controls
-//! ([`gui_controls`]), and how forms rescale with the unit
-//! ([`gui_rescale`]). The arena match board's tabs, match and event
-//! tables, tournament and season rows, fighter assignment, layout and
-//! drawing order live in [`match_board`].
+//! ([`gui_controls`]), how forms rescale with the unit
+//! ([`gui_rescale`]), and the original's draw skin ([`skin`]): its palette,
+//! layout metrics, immediate-mode batches, flat control parts, form chrome,
+//! background, page order and labels. The arena match board's tabs, match
+//! and event tables, tournament and season rows, fighter assignment, layout
+//! and drawing order live in [`match_board`].
 
 pub mod blend;
 pub mod controls;
@@ -93,12 +95,14 @@ pub use skill::{
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,
-    CloseEdge, ControlPlace, ControlScrollPlace, ControlSliderPlace, DispatchPlace, DrawSkin,
-    FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER, FORM_EDGE, FRAME_CORNER, FRAME_EDGE,
-    FadedLabel, FlatSlider, FormDispatch, FrameDraw, FramePlace, GuiDraw, GuiPrimitive, GuiRect,
-    GuiVertex, HELD_CAP, HELD_END, HELD_FLIP, HELD_OVER, HELD_POST, HELD_RIGHT, HELD_TAB, HitPlace,
-    IconPlace, InkLine, InkQuad, LINE_CHIP, LINE_CHIP_ALT, LINE_HEIGHTS, LINE_RAIL, LabelMetrics,
-    LabelPlace, LineChip, LineLabel, LineOpen, LineRail, LineScale, LineShade, LineShadeInks,
+    CloseEdge, ControlLabelDraw, ControlLabelPlace, ControlPlace, ControlScrollPlace,
+    ControlSliderPlace, DispatchPlace, DrawSkin, FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER,
+    FORM_EDGE, FRAME_CORNER, FRAME_EDGE, FadedLabel, FlatSlider, FormBackground,
+    FormBackgroundPlace, FormChrome, FormChromePlace, FormDispatch, FormPage, FormPagePlace,
+    FormRectPlace, FormScroll, FrameDraw, FramePlace, GuiDraw, GuiPrimitive, GuiRect, GuiVertex,
+    HELD_CAP, HELD_END, HELD_FLIP, HELD_OVER, HELD_POST, HELD_RIGHT, HELD_TAB, HitPlace, IconPlace,
+    InkLine, InkQuad, LINE_CHIP, LINE_CHIP_ALT, LINE_HEIGHTS, LINE_RAIL, LabelMetrics, LabelPlace,
+    LabelVariant, LineChip, LineLabel, LineOpen, LineRail, LineScale, LineShade, LineShadeInks,
     LineShadePlace, LineShadeQuad, LineShadeRect, MarkIcon, RailPlace, SCROLL_BAR, SCROLL_EDGE,
     SKIN_FRAME_A, SKIN_FRAME_B, SKIN_FRAME_C, SKIN_INK, SKIN_ROUNDED_SHADER, SKIN_SOLID_SHADER,
     SKIN_TEXTURED_SHADER, SLIDER_CAP, SLIDER_THUMB, SLIDER_TRACK, SPAN_BAR, SPAN_CAP, SPAN_END,
@@ -112,20 +116,21 @@ pub use skin::{
     SpanView, TitleDraw, WIDE_BAR, WIDE_CAP, bevel_rect, bevel_ring, bordered_rect, control_rect,
     dispatch_form, double_frame, draw_bar_with_boxes, draw_bevel, draw_button_box,
     draw_button_face, draw_capped_span, draw_centred_icon, draw_control_box, draw_control_fill,
-    draw_control_scrollbar, draw_control_shell, draw_control_slider, draw_flat_slider, draw_frame,
+    draw_control_label, draw_control_scrollbar, draw_control_shell, draw_control_slider,
+    draw_flat_slider, draw_form_background, draw_form_chrome, draw_form_page, draw_frame,
     draw_frame_control, draw_gradient_button_face, draw_inset_bevel, draw_line_chip,
     draw_line_rail, draw_line_shade, draw_mark, draw_mark_icon, draw_mark_plain, draw_mark_pressed,
     draw_panel, draw_skin_bevel, draw_skin_cross, draw_skin_detail, draw_skin_image,
     draw_skin_rect, draw_skin_region, draw_skin_scroll, draw_skin_shade, draw_skin_slider,
     draw_skin_strip, draw_span_bar, draw_span_square, draw_style_frames, edge_frame, expand_group,
-    fade_label, fade_rect, faded_rect, four_ink_frame, four_stop_rect, gradient_box,
+    fade_label, fade_rect, faded_rect, form_rect, four_ink_frame, four_stop_rect, gradient_box,
     gradient_frame, hit_line, hit_skin, load_scheme, mark_active, open_line, open_skin,
     outline_rect, pair_rect, place_line_label, place_skin_label, prepare_skin_programs,
     prepare_skin_renderer, rounded_fill, rounded_fill_fixed, rounded_grow, rounded_scale,
     rounded_textured_frame, scale_line, scale_palette_alpha, scale_skin_alpha,
     scroll_arrow_horizontal, scroll_arrow_vertical, selection_band, set_skin_metrics, shadow_ring,
     skin_constructor, skin_frames, skin_measures, solid_rect, stripe_bar, sunken_ring,
-    two_ink_band, vertical_gradient, vertical_gradient_frame, with_alpha,
+    two_ink_band, two_ink_outline, vertical_gradient, vertical_gradient_frame, with_alpha,
 };
 
 pub struct UiPlugin;

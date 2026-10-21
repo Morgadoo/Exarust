@@ -5991,6 +5991,1043 @@ pub fn fade_label(start: u32, now: u32, rect_y: i32, ink: SkinInk) -> FadedLabel
     }
 }
 
+/// A line box whose top and left sides take the first ink and whose bottom
+/// and right sides take the second, with the last point half a pixel up.
+pub fn two_ink_outline(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    top_left: SkinInk,
+    bottom_right: SkinInk,
+) {
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    batch.begin();
+    batch.set_ink(top_left);
+    batch.vertex(x1 - 0.5, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y1);
+    batch.set_ink(bottom_right);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y0 - 1.0);
+    batch.end_lines();
+}
+
+/// The form fields a control-code rectangle reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormRectPlace {
+    pub width: i32,
+    pub height: i32,
+    pub inset: i32,
+    pub client_top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub flags: u32,
+}
+
+/// A form's frame rectangle for a close or rail code. Codes outside the
+/// switch leave the rectangle untouched.
+pub fn form_rect(place: FormRectPlace, code: i32, rect: &mut [i32; 4]) -> bool {
+    let rail = 15;
+    match code {
+        -14 => {
+            rect[0] = place.right - rail;
+            rect[1] = (place.height - place.inset) - rail;
+            rect[2] = rail;
+            rect[3] = rail;
+            true
+        }
+        -13 => {
+            rect[0] = place.inset;
+            rect[1] = (place.height - place.inset) - rail;
+            rect[2] = rail;
+            rect[3] = rail;
+            true
+        }
+        -10 => {
+            rect[0] = (place.width - place.inset) - rail;
+            rect[1] = (place.height - place.inset) - rail;
+            rect[2] = rail;
+            rect[3] = rail;
+            true
+        }
+        -9 => {
+            rect[0] = (place.width - place.inset) - rail;
+            rect[1] = place.client_top;
+            rect[2] = rail;
+            rect[3] = rail;
+            true
+        }
+        -6 => {
+            rect[0] = (place.width - 17) - place.inset;
+            if (place.flags & 2) == 2 {
+                rect[0] -= 3;
+            }
+            rect[1] = place.inset - 1;
+            rect[2] = 17;
+            rect[3] = (24 - place.inset) + 3;
+            true
+        }
+        -5 => {
+            rect[0] = (place.width - 17) - place.inset;
+            rect[0] -= if (place.flags & 0xa) == 0xa {
+                6
+            } else if (place.flags & 0xa) == 0 {
+                0
+            } else {
+                3
+            };
+            rect[1] = place.inset - 1;
+            rect[2] = 17;
+            rect[3] = (24 - place.inset) + 3;
+            true
+        }
+        -4 => {
+            rect[0] = (place.width - 17) - place.inset;
+            rect[1] = place.inset - 1;
+            rect[2] = 17;
+            rect[3] = (24 - place.inset) + 3;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The fields a form's chrome reads. The client rectangle's four edges are
+/// kept separately, as the original stores them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormChromePlace {
+    pub rect: GuiRect,
+    pub frame_style: u32,
+    pub flags: u32,
+    pub state: u32,
+    pub margin: f32,
+    pub bar: f32,
+    pub client_left: f32,
+    pub client_top: f32,
+    pub client_right: f32,
+    pub client_bottom: f32,
+    /// The form's own fill colour, or the base palette's shade 3.
+    pub fill: Option<SkinInk>,
+    pub flat: bool,
+}
+
+/// The chrome's geometry: the gutter quads, the fill and the frames.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormChrome {
+    pub gutters: Vec<[(f32, f32); 4]>,
+    pub fill: Option<[(f32, f32); 4]>,
+    pub fills: Vec<[(f32, f32); 4]>,
+    pub frames: u32,
+    pub begin_calls: u32,
+    pub end_calls: u32,
+    pub mode_calls: u32,
+}
+
+/// Draws a form's frame: the scrollbar gutters, the client fill and the
+/// double frames its style word selects.
+pub fn draw_form_chrome(
+    batch: &mut SkinBatch,
+    place: FormChromePlace,
+    palette: &SkinPalette,
+) -> FormChrome {
+    let mut chrome = FormChrome {
+        gutters: Vec::new(),
+        fill: None,
+        fills: Vec::new(),
+        frames: 0,
+        begin_calls: 0,
+        end_calls: 0,
+        mode_calls: 0,
+    };
+    let begin_before = batch.begin_calls;
+    let end_before = batch.end_calls;
+    let mode_before = batch.mode_calls;
+    if (place.state & 1) == 1 {
+        match place.frame_style & 0x30 {
+            0x10 => {
+                if (place.state & 0x40) == 0x40 {
+                    batch.set_ink(palette.form[5]);
+                    solid_rect(batch, place.rect);
+                } else {
+                    double_frame(batch, place.rect, palette.form[0], palette.form[5]);
+                }
+                chrome.frames += 1;
+            }
+            0x20 => {
+                two_ink_outline(batch, place.rect, palette.form[0], palette.form[6]);
+                chrome.frames += 1;
+            }
+            _ => {}
+        }
+    } else {
+        if (place.flags & 0x2_0000) != 0 && (place.state & 4) == 0 {
+            let m = place.margin;
+            let bar = place.bar;
+            let top = place.client_top;
+            let left = place.client_left;
+            let right = place.client_right;
+            let bottom = place.client_bottom;
+            let w = place.rect.x1;
+            let h = place.rect.y1;
+            batch.begin();
+            if m + bar < top {
+                batch.set_ink(palette.form[3]);
+                batch.vertex(m, m);
+                batch.vertex(m, top - bar);
+                batch.vertex(w - m, top - bar);
+                batch.vertex(w - m, m);
+            }
+            if m + bar < left {
+                batch.vertex(m, top - bar);
+                batch.vertex(m, h - m);
+                batch.vertex(left - bar, h - m);
+                batch.vertex(left - bar, top - bar);
+            }
+            if right < (w - m) - bar {
+                batch.vertex(right + bar, top - bar);
+                batch.vertex(right + bar, h - m);
+                batch.vertex(w - m, h - m);
+                batch.vertex(w - m, top - bar);
+            }
+            if bottom < (h - m) - bar {
+                batch.vertex(left - bar, bottom + bar);
+                batch.vertex(left - bar, h - m);
+                batch.vertex(right + bar, h - m);
+                batch.vertex(right + bar, bottom + bar);
+            }
+            batch.end_quads();
+            if let Some(primitive) = batch.primitives.last() {
+                chrome.gutters = primitive
+                    .vertices
+                    .chunks(4)
+                    .map(|quad| {
+                        [
+                            (quad[0].x, quad[0].y),
+                            (quad[1].x, quad[1].y),
+                            (quad[2].x, quad[2].y),
+                            (quad[3].x, quad[3].y),
+                        ]
+                    })
+                    .collect();
+            }
+        }
+        if (place.state & 0x20) != 0 && place.flat {
+            batch.select(0x10, 0, false);
+            chrome.mode_calls += 1;
+            batch.set_ink(place.fill.unwrap_or(palette.form[3]));
+            let corners = [
+                (place.client_left, place.client_top),
+                (place.client_left, place.client_bottom),
+                (place.client_right, place.client_bottom),
+                (place.client_right, place.client_top),
+            ];
+            batch.begin();
+            for (x, y) in corners {
+                batch.vertex(x, y);
+            }
+            batch.end_quads();
+            chrome.fill = Some(corners);
+            chrome.fills.push(corners);
+        }
+        match place.frame_style & 0x30 {
+            0x10 => {
+                if (place.state & 0x40) == 0x40 {
+                    batch.set_ink(palette.form[5]);
+                    solid_rect(
+                        batch,
+                        GuiRect {
+                            x0: place.rect.x0 + 1.0,
+                            y0: place.rect.y0 + 1.0,
+                            x1: place.rect.x1 + 1.0,
+                            y1: place.rect.y1 + 1.0,
+                        },
+                    );
+                } else {
+                    double_frame(batch, place.rect, palette.form[0], palette.form[5]);
+                }
+                chrome.frames += 1;
+            }
+            0x20 => {
+                double_frame(batch, place.rect, palette.form[5], palette.form[0]);
+                chrome.frames += 1;
+            }
+            _ => {}
+        }
+        let grown = GuiRect {
+            x0: place.rect.x0 - 2.0,
+            y0: place.rect.y0 - 2.0,
+            x1: place.rect.x1 + 2.0,
+            y1: place.rect.y1 + 2.0,
+        };
+        match place.frame_style & 0xc0 {
+            0x40 => {
+                double_frame(batch, grown, palette.form[0], palette.form[5]);
+                chrome.frames += 1;
+            }
+            0x80 => {
+                double_frame(batch, grown, palette.form[5], palette.form[0]);
+                chrome.frames += 1;
+            }
+            _ => {}
+        }
+    }
+    chrome.begin_calls = batch.begin_calls - begin_before;
+    chrome.end_calls = batch.end_calls - end_before;
+    chrome.mode_calls += batch.mode_calls - mode_before;
+    chrome
+}
+
+/// A form's scrollbar: where its thumb starts and how long it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormScroll {
+    pub position: i32,
+    pub length: i32,
+}
+
+/// The form background's inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormBackgroundPlace {
+    pub rect: GuiRect,
+    pub inset: i32,
+    pub client_top: i32,
+    pub client_right: i32,
+    pub client_bottom: i32,
+    pub state: u32,
+    pub flags: u32,
+    pub frame_style: u32,
+    pub margin: f32,
+    pub bar: f32,
+    pub vertical: Option<FormScroll>,
+    pub horizontal: Option<FormScroll>,
+    pub title_width: i32,
+    pub title_x: i32,
+    pub title_y: i32,
+    pub title_style: u32,
+    pub title_offset: i32,
+    pub marks: Vec<(i32, u32, bool)>,
+    pub active_code: i32,
+    pub hot_code: i32,
+    pub hot_flag: bool,
+}
+
+/// A form background's structure in draw order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormBackground {
+    pub rounded: bool,
+    pub chrome: bool,
+    pub title_bar: bool,
+    pub title_band: bool,
+    pub mark_rects: Vec<[i32; 4]>,
+    pub mark_icons: Vec<MarkIcon>,
+    pub scroll_frames: Vec<[i32; 4]>,
+    pub scroll_shadows: Vec<[i32; 4]>,
+    pub scroll_bars: Vec<[i32; 4]>,
+    pub arrow_icons: Vec<MarkIcon>,
+    pub title: Option<[[i32; 3]; 2]>,
+    pub begin_calls: u32,
+}
+
+/// Draws a form's default background: the rounded shell, the chrome, the
+/// title bar, the scrollbars with their arrows, and the title text blocks.
+pub fn draw_form_background(
+    batch: &mut SkinBatch,
+    place: FormBackgroundPlace,
+    unit: i32,
+    palette: &SkinPalette,
+) -> FormBackground {
+    let mut drawn = FormBackground {
+        rounded: false,
+        chrome: false,
+        title_bar: false,
+        title_band: false,
+        mark_rects: Vec::new(),
+        mark_icons: Vec::new(),
+        scroll_frames: Vec::new(),
+        scroll_shadows: Vec::new(),
+        scroll_bars: Vec::new(),
+        arrow_icons: Vec::new(),
+        title: None,
+        begin_calls: 0,
+    };
+    let start = batch.primitives.len();
+    if (place.state & 0x40) == 0x40 {
+        rounded_textured_frame(
+            batch,
+            GuiRect {
+                x0: 1.0,
+                y0: 1.0,
+                x1: place.rect.x1 - 1.0,
+                y1: place.rect.y1 - 1.0,
+            },
+            unit,
+            4,
+            120,
+        );
+        drawn.rounded = true;
+    }
+    batch.select(0x10, 0, false);
+    draw_form_chrome(
+        batch,
+        FormChromePlace {
+            rect: place.rect,
+            frame_style: place.frame_style,
+            flags: place.flags,
+            state: place.state,
+            margin: place.margin,
+            bar: place.bar,
+            client_left: place.inset as f32,
+            client_top: place.client_top as f32,
+            client_right: place.client_right as f32,
+            client_bottom: place.client_bottom as f32,
+            fill: None,
+            flat: false,
+        },
+        palette,
+    );
+    drawn.chrome = true;
+    if (place.state & 1) == 1 {
+        let width = place.rect.x1;
+        let title = GuiRect::corners(2.0, 2.0, width - 2.0, 24.0);
+        fade_rect(batch, title, palette.form[3], palette.form[2]);
+        drawn.title_bar = true;
+        if (place.state & 0x800030) == 0x20 && (place.frame_style & 0x80) == 0 {
+            two_ink_band(
+                batch,
+                GuiRect::corners(2.0, 24.0, width - 2.0, 26.0),
+                palette.form[1],
+                palette.form[5],
+            );
+            drawn.title_band = true;
+        }
+        let mut rect = [0; 4];
+        for (code, id, selected) in place.marks.clone() {
+            if form_rect(
+                FormRectPlace {
+                    width: place.rect.x1 as i32,
+                    height: place.rect.y1 as i32,
+                    inset: place.inset,
+                    client_top: place.client_top,
+                    right: place.client_right,
+                    bottom: place.client_bottom,
+                    flags: place.state,
+                },
+                code,
+                &mut rect,
+            ) {
+                drawn.mark_rects.push(rect);
+                let hot = selected || (code == place.hot_code && place.hot_flag);
+                let active = code == place.active_code;
+                let shape = GuiRect::corners(
+                    rect[0] as f32,
+                    rect[1] as f32,
+                    (rect[0] + rect[2]) as f32,
+                    (rect[1] + rect[3]) as f32,
+                );
+                draw_mark(batch, shape, hot, active, palette);
+                drawn.mark_icons.push(draw_mark_icon(
+                    shape,
+                    unit,
+                    id,
+                    mark_active(code, place.active_code, place.hot_flag, place.hot_code),
+                    palette,
+                ));
+            }
+        }
+    }
+    batch.select(2, 0, false);
+    for (code, id, vertical) in [
+        (-9, 4, true),
+        (-6, 5, true),
+        (-13, 2, false),
+        (-14, 3, false),
+    ] {
+        let enabled = if vertical {
+            (place.state & 0x200) != 0
+        } else {
+            (place.state & 0x100) != 0
+        };
+        if !enabled {
+            continue;
+        }
+        let mut rect = [0; 4];
+        if !form_rect(
+            FormRectPlace {
+                width: place.rect.x1 as i32,
+                height: place.rect.y1 as i32,
+                inset: place.inset,
+                client_top: place.client_top,
+                right: place.client_right,
+                bottom: place.client_bottom,
+                flags: place.state,
+            },
+            code,
+            &mut rect,
+        ) {
+            continue;
+        }
+        let active = mark_active(code, place.active_code, place.hot_flag, place.hot_code);
+        drawn.arrow_icons.push(MarkIcon {
+            x: (rect[0] + (unit >> 1)) as f32,
+            y: (rect[1] + (unit >> 1)) as f32,
+            id,
+            ink: if active { None } else { Some(palette.text[5]) },
+            scale: active.then_some(1.0),
+        });
+    }
+    if (place.state & 0x200) != 0
+        && let Some(scroll) = place.vertical
+    {
+        let mut rect = [0; 4];
+        if form_rect(
+            FormRectPlace {
+                width: place.rect.x1 as i32,
+                height: place.rect.y1 as i32,
+                inset: place.inset,
+                client_top: place.client_top,
+                right: place.client_right,
+                bottom: place.client_bottom,
+                flags: place.state,
+            },
+            -9,
+            &mut rect,
+        ) {
+            let mut top = scroll.position - (place.client_top + 15);
+            if top > 0 {
+                drawn.scroll_shadows.push([
+                    (place.rect.x1 as i32 - place.inset - 15),
+                    place.client_top + 15,
+                    15,
+                    top,
+                ]);
+                shadow_ring(
+                    batch,
+                    GuiRect::sized(
+                        (place.rect.x1 as i32 - place.inset - 15) as f32,
+                        (place.client_top + 15) as f32,
+                        15.0,
+                        top as f32,
+                    ),
+                    unit,
+                    0x30,
+                );
+            }
+            top = (place.rect.y1 as i32 - place.client_top - scroll.position - scroll.length) - 15;
+            if top > 0 {
+                drawn.scroll_shadows.push([
+                    (place.rect.x1 as i32 - place.inset - 15),
+                    scroll.position + scroll.length,
+                    15,
+                    top,
+                ]);
+                shadow_ring(
+                    batch,
+                    GuiRect::sized(
+                        (place.rect.x1 as i32 - place.inset - 15) as f32,
+                        (scroll.position + scroll.length) as f32,
+                        15.0,
+                        top as f32,
+                    ),
+                    unit,
+                    0x30,
+                );
+            }
+            let selected = true;
+            draw_frame_control(
+                batch,
+                GuiRect::sized(
+                    rect[0] as f32,
+                    rect[1] as f32,
+                    rect[2] as f32,
+                    rect[3] as f32,
+                ),
+                selected,
+                false,
+                palette,
+            );
+            batch.add_texture_shift(0.0, scroll.position as f32);
+            draw_bar_with_boxes(
+                batch,
+                GuiRect::sized(
+                    rect[0] as f32,
+                    scroll.position as f32,
+                    rect[2] as f32,
+                    scroll.length as f32,
+                ),
+                unit,
+                false,
+                palette,
+            );
+            batch.add_texture_shift(0.0, -(scroll.position as f32));
+            drawn
+                .scroll_bars
+                .push([rect[0], scroll.position, rect[2], scroll.length]);
+            let frame = GuiRect::corners(
+                (place.rect.x1 as i32 - place.inset - 17) as f32,
+                (place.client_top - 2) as f32,
+                (place.rect.x1 as i32 - place.inset + 2) as f32,
+                (place.rect.y1 as i32 - place.inset + 2) as f32,
+            );
+            double_frame(batch, frame, palette.form[5], palette.form[0]);
+            drawn.scroll_frames.push(rect);
+        }
+        if (place.state & 0x100) != 0
+            && let Some(scroll) = place.horizontal
+        {
+            let mut rect = [0; 4];
+            if form_rect(
+                FormRectPlace {
+                    width: place.rect.x1 as i32,
+                    height: place.rect.y1 as i32,
+                    inset: place.inset,
+                    client_top: place.client_top,
+                    right: place.client_right,
+                    bottom: place.client_bottom,
+                    flags: place.state,
+                },
+                -13,
+                &mut rect,
+            ) {
+                draw_frame_control(
+                    batch,
+                    GuiRect::sized(
+                        rect[0] as f32,
+                        rect[1] as f32,
+                        rect[2] as f32,
+                        rect[3] as f32,
+                    ),
+                    true,
+                    false,
+                    palette,
+                );
+                batch.add_texture_shift(scroll.position as f32, 0.0);
+                draw_bar_with_boxes(
+                    batch,
+                    GuiRect::sized(
+                        scroll.position as f32,
+                        rect[1] as f32,
+                        scroll.length as f32,
+                        rect[3] as f32,
+                    ),
+                    unit,
+                    false,
+                    palette,
+                );
+                batch.add_texture_shift(-(scroll.position as f32), 0.0);
+                drawn
+                    .scroll_bars
+                    .push([scroll.position, rect[1], scroll.length, rect[3]]);
+                let frame = GuiRect::corners(
+                    (place.inset - 2) as f32,
+                    (place.rect.y1 as i32 - place.inset - 17) as f32,
+                    (place.client_right + 2) as f32,
+                    (place.rect.y1 as i32 - place.inset + 2) as f32,
+                );
+                double_frame(batch, frame, palette.form[5], palette.form[0]);
+                drawn.scroll_frames.push(rect);
+            }
+        }
+    }
+    if (place.state & 1) == 1 {
+        let mut width = place.rect.x1 as i32 - (unit + place.inset) * 2;
+        if (place.state & 2) == 2 {
+            width -= 17;
+        }
+        if (place.state & 4) == 4 {
+            width -= 20;
+        }
+        let x = if (place.title_style & 0x3000) == 0x3000 {
+            (place.rect.x1 as i32 - place.title_width) / 2
+        } else if place.title_x < 1 {
+            place.inset + unit
+        } else {
+            width -= 17;
+            place.inset + 0x15
+        };
+        let y = (place.client_top + place.title_offset + 24 + 1) >> 1;
+        let first = [x - 1, y, width];
+        let second = [x, y + 1, width];
+        drawn.title = Some([first, second]);
+    }
+    drawn.begin_calls = (batch.primitives.len() - start) as u32;
+    drawn
+}
+
+/// A form page's fields for the draw-order model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormPagePlace {
+    pub rect: GuiRect,
+    pub inset: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub scroll_x: i32,
+    pub scroll_y: i32,
+    pub scale: [f32; 2],
+    pub flags: u32,
+    pub own_background: bool,
+    pub clip_ok: bool,
+    pub lines: Vec<GuiRect>,
+    pub controls: u32,
+    pub children: Vec<bool>,
+}
+
+/// A form page's clip, origin, lines and draw-order counts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormPage {
+    pub background_calls: u32,
+    pub clip: [i32; 4],
+    pub visible: bool,
+    pub origin: [i32; 2],
+    pub scroll: [i32; 2],
+    pub lines: Vec<[(f32, f32); 4]>,
+    pub control_calls: u32,
+    pub child_calls: u32,
+    pub shadow: Option<GuiRect>,
+}
+
+/// Draws a form: its own background or the skin's, clips to the client,
+/// applies the scroll offset, then draws the lines, the control records and
+/// the visible children, and last the drop shadow.
+pub fn draw_form_page(
+    batch: &mut SkinBatch,
+    place: FormPagePlace,
+    unit: i32,
+    palette: &SkinPalette,
+) -> FormPage {
+    batch.select(0x10, 0, false);
+    let background_calls = u32::from(!place.own_background);
+    let clip = [
+        place.rect.x0 as i32 + place.inset,
+        place.rect.y0 as i32 + place.top,
+        place.right - place.inset,
+        place.bottom - place.top,
+    ];
+    let overlap = clip[2].max(0) > 0 && clip[3].max(0) > 0;
+    let (scroll, origin) = if (place.flags & 0x800) != 0 {
+        ([0, 0], [place.rect.x0 as i32, place.rect.y0 as i32])
+    } else {
+        let x = ((place.scroll_x - (place.right - place.inset)) as f32 * place.scale[0])
+            .round_ties_even() as i32;
+        let y = ((place.scroll_y - (place.bottom - place.top)) as f32 * place.scale[1])
+            .round_ties_even() as i32;
+        ([x, y], [place.rect.x0 as i32 - x, place.rect.y0 as i32 - y])
+    };
+    if !overlap || !place.clip_ok {
+        return FormPage {
+            background_calls,
+            clip,
+            visible: false,
+            origin,
+            scroll,
+            lines: Vec::new(),
+            control_calls: 0,
+            child_calls: 0,
+            shadow: None,
+        };
+    }
+    batch.select(0x10, 0, false);
+    let mut lines = Vec::new();
+    if !place.lines.is_empty() {
+        batch.set_ink(palette.form[3]);
+        batch.begin();
+        for line in &place.lines {
+            batch.vertex(line.x0, line.y0);
+            batch.vertex(line.x0, line.y1);
+            batch.vertex(line.x1, line.y1);
+            batch.vertex(line.x1, line.y0);
+        }
+        batch.end_quads();
+        lines = place
+            .lines
+            .iter()
+            .map(|line| {
+                [
+                    (line.x0, line.y0),
+                    (line.x0, line.y1),
+                    (line.x1, line.y1),
+                    (line.x1, line.y0),
+                ]
+            })
+            .collect();
+    }
+    let child_calls = place.children.iter().filter(|visible| **visible).count() as u32;
+    let shadow = if (place.flags & 0x80) != 0 {
+        batch.select(1, 0, false);
+        let rect = GuiRect::sized(
+            scroll[0] as f32,
+            scroll[1] as f32,
+            (place.right - place.inset) as f32,
+            (place.bottom - place.top) as f32,
+        );
+        shadow_ring(batch, rect, unit, 0x30);
+        Some(rect)
+    } else if (place.flags & 0x10_0000) != 0 {
+        batch.select(1, 0, false);
+        let rect = GuiRect::sized(
+            scroll[0] as f32,
+            scroll[1] as f32,
+            (place.right - place.inset) as f32,
+            (place.bottom - place.top) as f32,
+        );
+        shadow_ring(batch, rect, unit * 4, 0x50);
+        Some(rect)
+    } else {
+        None
+    };
+    FormPage {
+        background_calls,
+        clip,
+        visible: true,
+        origin,
+        scroll,
+        lines,
+        control_calls: place.controls,
+        child_calls,
+        shadow,
+    }
+}
+
+/// A control label's measured placement. The text width is measured in the
+/// control's font; the line height and base come from the same font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlLabelPlace {
+    pub rect: GuiRect,
+    pub inset: i32,
+    pub style: u32,
+    pub state: u32,
+    pub offset: i32,
+    pub text_width: i32,
+    pub line_height: i32,
+    pub base: i32,
+    pub text_len: usize,
+    pub step: i32,
+}
+
+/// The control-label draw variants the skin carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelVariant {
+    /// Bit 0x10 picks the focused ink, otherwise the plain one.
+    Plain,
+    /// The plain form, but bit 0x10000 draws text with its cursor.
+    WithText,
+    /// Bit 0x10 picks the selected ink, otherwise the caller's ink.
+    Ink,
+    /// Truncates the text to the width and draws it as a block.
+    Block,
+    /// The slot's full matrix: focus, colour, shadow or idle.
+    Slot,
+}
+
+/// What a label draw asks the text renderer to do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlLabelDraw {
+    pub x: i32,
+    pub y: i32,
+    /// The ink of the single call, when there is one.
+    pub ink: Option<SkinInk>,
+    /// The two calls of the shadow arm, first then second.
+    pub shadow: Option<[(i32, i32); 2]>,
+    /// True for the coloured renderer.
+    pub coloured: bool,
+    /// The bytes of the text the block arm keeps.
+    pub keep: usize,
+    /// The cursor cross drawn after coloured text, and the blend it uses.
+    pub cross: Option<SkinInk>,
+    pub calls: u32,
+    pub mode_calls: u32,
+}
+
+fn place_control_text(place: &ControlLabelPlace, unit: i32) -> (i32, i32) {
+    let px = place.rect.x0 as i32;
+    let py = place.rect.y0 as i32;
+    let pw = (place.rect.x1 - place.rect.x0) as i32;
+    let ph = (place.rect.y1 - place.rect.y0) as i32;
+    let x = match place.style & 0x7000 {
+        0x1000 => px - place.text_width - unit,
+        0x3000 => px + (pw - 1 - place.text_width) / 2,
+        0x4000 => px + pw - place.text_width - unit,
+        0x5000 => px + pw + unit,
+        _ => px + place.inset + (unit + 1) / 2,
+    };
+    let y = match place.style & 0x700 {
+        0x100 => py - unit / 2,
+        0x300 => py + (ph + place.line_height + 2) / 2,
+        0x400 => py + ph + place.base - 1,
+        0x500 => py + ph,
+        _ => (unit + 1) / 2 + py,
+    };
+    (x, y)
+}
+
+/// Places and selects a control label: the measured x and y, then the ink
+/// and the calls the variant makes.
+pub fn draw_control_label(
+    place: ControlLabelPlace,
+    variant: LabelVariant,
+    ink: SkinInk,
+    palette: &SkinPalette,
+    unit: i32,
+) -> ControlLabelDraw {
+    let (x, y) = place_control_text(&place, unit);
+    let focused = (place.state & 0x10) == 0x10;
+    let coloured = (place.state & 0xf_0000) == 0x1_0000;
+    match variant {
+        LabelVariant::Plain => ControlLabelDraw {
+            x,
+            y: y + place.offset,
+            ink: Some(if focused {
+                palette.text[2]
+            } else {
+                palette.text[5]
+            }),
+            shadow: None,
+            coloured: false,
+            keep: place.text_len,
+            cross: None,
+            calls: 1,
+            mode_calls: 0,
+        },
+        LabelVariant::WithText => {
+            if focused {
+                ControlLabelDraw {
+                    x,
+                    y: y + place.offset,
+                    ink: Some(palette.text[2]),
+                    shadow: None,
+                    coloured: false,
+                    keep: place.text_len,
+                    cross: None,
+                    calls: 1,
+                    mode_calls: 0,
+                }
+            } else if coloured {
+                ControlLabelDraw {
+                    x,
+                    y: y + place.offset,
+                    ink: Some(palette.text[6]),
+                    shadow: None,
+                    coloured: true,
+                    keep: place.text_len,
+                    cross: Some(palette.highlight[0]),
+                    calls: 1,
+                    mode_calls: 2,
+                }
+            } else {
+                ControlLabelDraw {
+                    x,
+                    y: y + place.offset,
+                    ink: Some(palette.text[5]),
+                    shadow: None,
+                    coloured: false,
+                    keep: place.text_len,
+                    cross: None,
+                    calls: 1,
+                    mode_calls: 0,
+                }
+            }
+        }
+        LabelVariant::Ink => ControlLabelDraw {
+            x,
+            y: y + place.offset,
+            ink: Some(if focused { palette.text[3] } else { ink }),
+            shadow: None,
+            coloured: false,
+            keep: place.text_len,
+            cross: None,
+            calls: 1,
+            mode_calls: 0,
+        },
+        LabelVariant::Block => {
+            let keep = if place.step > 0 {
+                let fit = ((place.rect.x1 - place.rect.x0) as i32 - place.inset * 2) / place.step;
+                place.text_len.min(fit.max(0) as usize)
+            } else {
+                place.text_len
+            };
+            ControlLabelDraw {
+                x,
+                y,
+                ink: Some(if coloured {
+                    with_alpha(
+                        [
+                            palette.highlight[7][0],
+                            palette.highlight[7][1],
+                            palette.highlight[7][2],
+                            0,
+                        ],
+                        0xff,
+                    )
+                } else {
+                    palette.text[5]
+                }),
+                shadow: None,
+                coloured,
+                keep,
+                cross: None,
+                calls: 1,
+                mode_calls: 0,
+            }
+        }
+        LabelVariant::Slot => {
+            if focused {
+                ControlLabelDraw {
+                    x,
+                    y,
+                    ink: Some(palette.text[2]),
+                    shadow: None,
+                    coloured: false,
+                    keep: place.text_len,
+                    cross: None,
+                    calls: 1,
+                    mode_calls: 0,
+                }
+            } else if coloured {
+                let nudge = i32::from((place.state & 0x40) == 0x40);
+                ControlLabelDraw {
+                    x,
+                    y: y + nudge,
+                    ink: Some(palette.text[6]),
+                    shadow: None,
+                    coloured: true,
+                    keep: place.text_len,
+                    cross: Some(palette.highlight[0]),
+                    calls: 1,
+                    mode_calls: 2,
+                }
+            } else if (place.state & 0x40) == 0x40 {
+                ControlLabelDraw {
+                    x,
+                    y,
+                    ink: None,
+                    shadow: Some([(x - 1, y), (x, y + 1)]),
+                    coloured: false,
+                    keep: place.text_len,
+                    cross: None,
+                    calls: 2,
+                    mode_calls: 0,
+                }
+            } else {
+                ControlLabelDraw {
+                    x,
+                    y,
+                    ink: Some(palette.text[7]),
+                    shadow: None,
+                    coloured: false,
+                    keep: place.text_len,
+                    cross: None,
+                    calls: 1,
+                    mode_calls: 0,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10216,5 +11253,389 @@ mod tests {
         assert!(done.finished);
         assert!(done.clear_bit);
         assert_eq!(done.ink, [1, 2, 3, 200]);
+    }
+
+    fn form_rect_place() -> FormRectPlace {
+        FormRectPlace {
+            width: 200,
+            height: 100,
+            inset: 5,
+            client_top: 24,
+            right: 180,
+            bottom: 90,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn a_form_rect_switches_on_its_code() {
+        let mut rect = [0; 4];
+        assert!(form_rect(form_rect_place(), -4, &mut rect));
+        assert_eq!(rect, [178, 4, 17, 22]);
+        assert!(form_rect(form_rect_place(), -6, &mut rect));
+        assert_eq!(rect, [178, 4, 17, 22]);
+        assert!(form_rect(
+            FormRectPlace {
+                flags: 2,
+                ..form_rect_place()
+            },
+            -6,
+            &mut rect
+        ));
+        assert_eq!(rect[0], 175);
+        assert!(form_rect(
+            FormRectPlace {
+                flags: 0xa,
+                ..form_rect_place()
+            },
+            -5,
+            &mut rect
+        ));
+        assert_eq!(rect[0], 172);
+        assert!(form_rect(form_rect_place(), -9, &mut rect));
+        assert_eq!(rect, [180, 24, 15, 15]);
+        assert!(form_rect(form_rect_place(), -13, &mut rect));
+        assert_eq!(rect, [5, 80, 15, 15]);
+        assert!(form_rect(form_rect_place(), -14, &mut rect));
+        assert_eq!(rect, [165, 80, 15, 15]);
+        assert!(form_rect(form_rect_place(), -10, &mut rect));
+        assert_eq!(rect, [180, 80, 15, 15]);
+        rect = [1, 2, 3, 4];
+        assert!(!form_rect(form_rect_place(), -8, &mut rect));
+        assert_eq!(rect, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_chrome_draws_the_scrollbar_gutters_and_the_client_fill() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let place = FormChromePlace {
+            rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
+            frame_style: 0,
+            flags: 0x2_0000,
+            state: 0x20,
+            margin: 4.0,
+            bar: 8.0,
+            client_left: 20.0,
+            client_top: 30.0,
+            client_right: 180.0,
+            client_bottom: 80.0,
+            fill: Some([1, 2, 3, 4]),
+            flat: true,
+        };
+        let chrome = draw_form_chrome(&mut batch, place, &palette);
+        assert_eq!(chrome.gutters.len(), 4);
+        assert_eq!(
+            chrome.gutters[0],
+            [(4.0, 4.0), (4.0, 22.0), (196.0, 22.0), (196.0, 4.0)]
+        );
+        assert_eq!(
+            chrome.gutters[3],
+            [(12.0, 88.0), (12.0, 96.0), (188.0, 96.0), (188.0, 88.0)]
+        );
+        assert_eq!(
+            chrome.fill,
+            Some([(20.0, 30.0), (20.0, 80.0), (180.0, 80.0), (180.0, 30.0)])
+        );
+        assert_eq!(batch.mode, SkinMode::Skin);
+        assert_eq!(chrome.frames, 0);
+        assert_eq!((chrome.begin_calls, chrome.end_calls), (2, 2));
+    }
+
+    #[test]
+    fn a_flat_styled_chrome_frames_the_form() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let chrome = draw_form_chrome(
+            &mut batch,
+            FormChromePlace {
+                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
+                frame_style: 0x10,
+                flags: 0,
+                state: 1,
+                margin: 0.0,
+                bar: 0.0,
+                client_left: 0.0,
+                client_top: 0.0,
+                client_right: 0.0,
+                client_bottom: 0.0,
+                fill: None,
+                flat: false,
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        assert_eq!(batch.primitives.len(), 1);
+        assert_eq!(batch.primitives[0].vertices.len(), 16);
+        assert_eq!(batch.primitives[0].vertices[0].ink, [10, 11, 12, 40]);
+    }
+
+    #[test]
+    fn a_form_background_orders_the_round_shell_title_marks_and_text() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_form_background(
+            &mut batch,
+            FormBackgroundPlace {
+                rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
+                inset: 5,
+                client_top: 24,
+                client_right: 180,
+                client_bottom: 90,
+                state: 0x40 | 1 | 2,
+                flags: 0,
+                frame_style: 0,
+                margin: 4.0,
+                bar: 8.0,
+                vertical: None,
+                horizontal: None,
+                title_width: 0,
+                title_x: 0,
+                title_y: 0,
+                title_style: 0,
+                title_offset: 0,
+                marks: vec![(-4, 1, false)],
+                active_code: -4,
+                hot_code: 0,
+                hot_flag: false,
+            },
+            4,
+            &palette,
+        );
+        assert!(drawn.rounded);
+        assert!(drawn.chrome);
+        assert!(drawn.title_bar);
+        assert_eq!(drawn.mark_rects, vec![[178, 4, 17, 22]]);
+        assert_eq!(drawn.mark_icons.len(), 1);
+        assert_eq!(
+            (drawn.mark_icons[0].x, drawn.mark_icons[0].y),
+            (180.0, 26.0)
+        );
+        assert_eq!(drawn.mark_icons[0].scale, Some(1.0));
+        assert_eq!(drawn.title, Some([[8, 24, 165], [9, 25, 165]]));
+        assert_eq!(batch.primitives[0].vertices.len(), 16);
+    }
+
+    #[test]
+    fn a_form_page_clips_scrolls_and_counts_its_children() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let page = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
+                inset: 5,
+                top: 24,
+                right: 200,
+                bottom: 130,
+                scroll_x: 0,
+                scroll_y: 0,
+                scale: [1.0, 1.0],
+                flags: 0,
+                own_background: false,
+                clip_ok: true,
+                lines: vec![
+                    GuiRect::sized(0.0, 0.0, 10.0, 10.0),
+                    GuiRect::sized(0.0, 20.0, 10.0, 10.0),
+                ],
+                controls: 5,
+                children: vec![true, false, true],
+            },
+            4,
+            &palette,
+        );
+        assert!(page.visible);
+        assert_eq!(page.background_calls, 1);
+        assert_eq!(page.clip, [15, 44, 195, 106]);
+        assert_eq!(page.scroll, [-195, -106]);
+        assert_eq!(page.origin, [205, 126]);
+        assert_eq!(page.lines.len(), 2);
+        assert_eq!(page.control_calls, 5);
+        assert_eq!(page.child_calls, 2);
+        assert_eq!(page.shadow, None);
+
+        let locked = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
+                inset: 5,
+                top: 24,
+                right: 200,
+                bottom: 130,
+                scroll_x: 0,
+                scroll_y: 0,
+                scale: [1.0, 1.0],
+                flags: 0x800,
+                own_background: true,
+                clip_ok: true,
+                lines: Vec::new(),
+                controls: 0,
+                children: Vec::new(),
+            },
+            4,
+            &palette,
+        );
+        assert_eq!(locked.scroll, [0, 0]);
+        assert_eq!(locked.origin, [10, 20]);
+        assert_eq!(locked.background_calls, 0);
+
+        let hidden = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
+                inset: 5,
+                top: 24,
+                right: 200,
+                bottom: 130,
+                scroll_x: 0,
+                scroll_y: 0,
+                scale: [1.0, 1.0],
+                flags: 0,
+                own_background: false,
+                clip_ok: false,
+                lines: Vec::new(),
+                controls: 3,
+                children: vec![true],
+            },
+            4,
+            &palette,
+        );
+        assert!(!hidden.visible);
+        assert_eq!(hidden.control_calls, 0);
+        assert_eq!(hidden.child_calls, 0);
+    }
+
+    #[test]
+    fn a_form_page_draws_its_drop_shadow_last() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let page = draw_form_page(
+            &mut batch,
+            FormPagePlace {
+                rect: GuiRect::corners(10.0, 20.0, 210.0, 140.0),
+                inset: 5,
+                top: 24,
+                right: 200,
+                bottom: 130,
+                scroll_x: 0,
+                scroll_y: 0,
+                scale: [1.0, 1.0],
+                flags: 0x80,
+                own_background: true,
+                clip_ok: true,
+                lines: Vec::new(),
+                controls: 0,
+                children: Vec::new(),
+            },
+            4,
+            &palette,
+        );
+        let shadow = page.shadow.expect("a shadow");
+        assert_eq!((shadow.x0, shadow.y0), (-195.0, -106.0));
+        assert_eq!((shadow.x1, shadow.y1), (0.0, 0.0));
+        let primitive = batch.primitives.last().expect("a shadow draw");
+        assert_eq!(primitive.vertices.len(), 16);
+        assert_eq!(primitive.vertices[0].ink, [0, 0, 0, 0x30]);
+    }
+
+    fn label_place(style: u32, state: u32) -> ControlLabelPlace {
+        ControlLabelPlace {
+            rect: GuiRect::sized(10.0, 20.0, 100.0, 80.0),
+            inset: 2,
+            style,
+            state,
+            offset: 0,
+            text_width: 40,
+            line_height: 24,
+            base: 18,
+            text_len: 20,
+            step: 7,
+        }
+    }
+
+    #[test]
+    fn a_control_label_aligns_by_its_style_word() {
+        let (x, y) = place_control_text(&label_place(0x1000, 0), 5);
+        assert_eq!((x, y), (-35, 23));
+        let (x, y) = place_control_text(&label_place(0x2000, 0), 5);
+        assert_eq!((x, y), (15, 23));
+        let (x, y) = place_control_text(&label_place(0x3000, 0), 5);
+        assert_eq!((x, y), (39, 23));
+        let (x, y) = place_control_text(&label_place(0x4000, 0), 5);
+        assert_eq!((x, y), (65, 23));
+        let (x, y) = place_control_text(&label_place(0x5000, 0), 5);
+        assert_eq!((x, y), (115, 23));
+        let (_, y) = place_control_text(&label_place(0x100, 0), 5);
+        assert_eq!(y, 18);
+        let (_, y) = place_control_text(&label_place(0x300, 0), 5);
+        assert_eq!(y, 73);
+        let (_, y) = place_control_text(&label_place(0x400, 0), 5);
+        assert_eq!(y, 117);
+        let (_, y) = place_control_text(&label_place(0x500, 0), 5);
+        assert_eq!(y, 100);
+    }
+
+    #[test]
+    fn a_control_label_picks_the_focused_or_the_plain_ink() {
+        let palette = palette_for_faces();
+        let plain = draw_control_label(label_place(0, 0), LabelVariant::Plain, [0; 4], &palette, 5);
+        assert_eq!(plain.ink, Some(palette.text[5]));
+        let focused = draw_control_label(
+            label_place(0, 0x10),
+            LabelVariant::Plain,
+            [0; 4],
+            &palette,
+            5,
+        );
+        assert_eq!(focused.ink, Some(palette.text[2]));
+        let ink = draw_control_label(
+            label_place(0, 0),
+            LabelVariant::Ink,
+            [7, 8, 9, 10],
+            &palette,
+            5,
+        );
+        assert_eq!(ink.ink, Some([7, 8, 9, 10]));
+    }
+
+    #[test]
+    fn a_block_label_keeps_only_the_bytes_that_fit() {
+        let palette = palette_for_faces();
+        let block = draw_control_label(label_place(0, 0), LabelVariant::Block, [0; 4], &palette, 5);
+        assert_eq!(block.keep, 13);
+        assert_eq!(block.ink, Some(palette.text[5]));
+        let coloured = draw_control_label(
+            label_place(0, 0x1_0000),
+            LabelVariant::Block,
+            [0; 4],
+            &palette,
+            5,
+        );
+        assert!(coloured.coloured);
+        assert_eq!(coloured.ink.expect("an ink")[3], 255);
+    }
+
+    #[test]
+    fn a_slot_label_with_a_shadow_makes_two_calls() {
+        let palette = palette_for_faces();
+        let shadow = draw_control_label(
+            label_place(0, 0x40),
+            LabelVariant::Slot,
+            [0; 4],
+            &palette,
+            5,
+        );
+        assert_eq!(shadow.calls, 2);
+        assert_eq!(shadow.shadow, Some([(14, 23), (15, 24)]));
+        let coloured = draw_control_label(
+            label_place(0, 0x1_0000),
+            LabelVariant::Slot,
+            [0; 4],
+            &palette,
+            5,
+        );
+        assert!(coloured.coloured);
+        assert_eq!(coloured.cross, Some(palette.highlight[0]));
+        assert_eq!(coloured.mode_calls, 2);
     }
 }

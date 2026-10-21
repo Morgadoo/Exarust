@@ -650,6 +650,91 @@ next entry whose name starts with them, case-blind, the letters adding up
 within 600 ms. Left and Right move by a line of entries outside the list
 layout, Up and Down by one; F2 renames.
 
+## Skin
+
+The base draw skin (`exa_ui::skin`) is the original's `TGUIDrawSkin`: it
+owns the palette, the layout metrics and the GUI batches, and draws every
+flat-coloured control part. The textured subclasses (the HUD's stone skin,
+the `guiskin.rfi` atlas) add their texture binds and shaders; the flat
+primitives below are the base class's.
+
+- **Palette.** The scheme record has four colours, each with a scale and a
+  tone, an accent, one float and two alpha bytes. A colour expands into
+  twelve shades: the base, its scale, scale squared and cubed, then four
+  shades pulled towards their luminance (0.299 red, 0.587 green, 0.114
+  blue) by 1.75, 2, 2.25 and 2.5 times the tone and scaled by the fourth
+  to seventh powers, then the inverse scales (1/scale to 1/scale⁴ with
+  two 0.909 factors). A second tone pass at 0.5, 1, 1.25 and 1.5 finishes
+  the last four. The scaled entries keep the alpha the palette had, as the
+  original stores only three bytes. The accent is halved and also scaled
+  by 1.9 and toned by 0.8; four mixes at 0.4, 0.6, 0.5 and 0.9 of the way
+  towards the bright end are stored, and the last two are blended with the
+  third base shade by the second alpha byte times the scheme's float over
+  255. The first group is copied to the hot group. The layout metrics are
+  border 2, pad 2, title 24, reach 4·unit + 4, edge 2, gap 2, head 24 and
+  row 20.
+- **Batches.** Geometry is gathered between a begin and an end in window
+  pixels, with a current ink and texture coordinate, a program (flat,
+  textured with `TexCol`, rounded with the `Scale` uniform, or the
+  subclass's own) and a blend word. An end submits quads as two triangles
+  per four vertices, lines as consecutive pairs, or triangles as they are.
+  A texture offset in 512ths shifts sampling; the scroll bars set it while
+  their thumb or trough is drawn.
+- **Primitives.** Line rectangles inset half a pixel (`outline`), four-stop
+  vertical gradients (0.43/0.57 and 0.4/0.6 tones), alpha-scaled gradients,
+  striped bars that interpolate each stripe to the next colour, listing
+  selection bands (a faded outline plus glow bands above and below, wider
+  when selected), rounded fills and textured rounded frames through the
+  rounded shader, one- and two-ink rectangles, one- and two-pixel line
+  boxes, four-ink and four-stop bands, drop shadows and inverted `inset`
+  rings that fade towards the middle, fixed bevel rings, clamped vertical
+  gradients and their line form, and the two scroll arrows (six line
+  pairs, two thirds alpha after the fourth vertex).
+- **Control parts.** A control face is a two-ink inner rectangle, a
+  bordered one-pixel box and an outline, in the pressed, hot (the form
+  group's copy) or idle inks; its gradient form swaps the first two for a
+  four-stop gradient and a bevelled line box. A panel either draws that
+  bevel and outline with an inner shadow or the frame slot. A mark is a
+  bevel box just outside its rectangle, with a second bevelled ring and a
+  faded face when selected; its icon starts at the rectangle's bottom-left,
+  a quarter unit in, at scale 1 when the mark is active. A slider draws a
+  faded track and a framed thumb moved by the value, or a striped fill and
+  the unit-wide bar at the value; a scroll bar draws a box with a thumb
+  `4·unit + 1` wide (the track points back at the same rectangle) or the
+  striped fill. The shell adds the frame, an optional drop shadow at
+  `-unit/2` and the sunken face; the fill is the control's own colour,
+  forced opaque.
+- **Form chrome and background.** A form's chrome first draws the four
+  scrollbar-gutter strips (between the margin and the client's left, top,
+  right and bottom, each `bar` wide, when there is room), then the client
+  fill, then the double frames its style's two three-bit fields select (the
+  second inset by a pixel), and an outer pair two pixels outside. A flat
+  form uses a two-ink outline instead. The default background adds the
+  rounded textured shell when the state has bit 0x40, a title gradient from
+  y 2 to 24 with an optional two-ink band below it, the close, small and
+  large marks (their rectangles from the form's control-code switch), the
+  vertical and horizontal scrollbar frames, their shadows, thumbs and
+  arrows, and the title's two text blocks (base ink one pixel left and
+  above, plain ink at the place) whose width drops by 17 per small mark and
+  20 for the large one, centred when the style says so.
+- **Form page and clipping.** A page draws its own background or the skin's,
+  clips to the client rectangle (the original scissors to the parent's
+  client), applies the scroll offset (the stored scroll less the limit from
+  the inset or title, times the view scale; bit 0x800 locks it), draws the
+  line rectangles in the base ink, the control records, the visible
+  children, and last one drop shadow (unit and alpha 0x30, or 4·unit and
+  0x50) unless the scroll is locked.
+- **Labels.** A label's place follows its style word: 0x1000 left of the
+  control, 0x3000 centred by the measured width, 0x4000 right, 0x5000 past
+  the right edge, otherwise the inset and half the unit plus one; the
+  vertical arms are half a unit up, centred on the line height, at the
+  base, below the control, or the same default. The variants pick the
+  focused, plain, selected or caller's ink, the coloured renderer with its
+  cursor cross, the shadow pair one pixel left and one below, or the block
+  form that keeps only the bytes that fit (`(width − 2·inset) / step`).
+  A fade scales the ink's alpha by the elapsed third of a second and clears
+  the fade bit once it is complete.
+
 ## Controls
 
 The seven basic control classes (`exa_ui::gui_controls`), with their

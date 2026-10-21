@@ -16,9 +16,23 @@ its shape), the health and focus bars with their fade and the stamina gauge
 (`heartbeat`; the game crate starts it), the fade to black of the
 player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
 bars; the game crate starts it), and gamma-space compositing for images
-painted on the CPU (`blend`). A draw skin (`skin`) opened with unit 5
-stores spans 10, 5, 10 and 10 and the colour 255, 250, 230, 100 three
-times. A flat slider at unit 5, place 10, 20 and width 100 stores a thumb
+painted on the CPU (`blend`). The skin (`skin`) now also reads a scheme
+into its five colour groups with their twelve shades, the accent mixes and
+the two alpha ramps, and the constructor's layout metrics. It gathers
+geometry through an immediate-mode batch (program, blend, ink, texture
+offset, quads/lines/triangles) and draws the flat control parts: outlines,
+vertical and alpha-scaled gradients, striped bars, selection bands,
+rounded fills and textured frames, edge and bevel frames, solid and two-ink
+rectangles, drop shadows and embossed rings, clamped vertical gradients and
+the scroll arrows. The control faces, panels, marks, sliders and scroll
+bars are built from them in the original's ink order. A form's chrome
+(gutter strips, client fill, double frames), its default background (round
+shell, title bar, marks, scrollbars and title blocks) and a page's draw
+order (background, clip, scroll, lines, controls, children, shadow) are
+modelled too, as are the label placements and the label fade. A draw skin
+opened with unit 5 stores spans 10, 5, 10 and 10 and the colour 255, 250,
+230, 100 three times. A flat slider at unit 5, place 10, 20 and width 100
+stores a thumb
 of 5 at value 0 and of 40 at one half, with pad 10. A scroll bar there
 with height 80 and lip 4 stores twelve quads and a thumb of 10 at value 0,
 or 52 at one half. A frame at unit 5, place 10, 20 and size 100 by 20
