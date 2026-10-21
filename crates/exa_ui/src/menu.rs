@@ -287,7 +287,8 @@ pub struct EndSessionInput {
 pub struct EndSessionDispatch {
     pub actions: Vec<EndSessionAction>,
     pub clears_action: bool,
-    pub clears_field_204: bool,
+    /// The item the pointer went down on is cleared.
+    pub clears_pressed_item: bool,
     pub result: i32,
 }
 
@@ -346,7 +347,7 @@ pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
     EndSessionDispatch {
         actions,
         clears_action: true,
-        clears_field_204: true,
+        clears_pressed_item: true,
         result: 0,
     }
 }
@@ -361,14 +362,20 @@ pub struct MenuHover {
 }
 
 /// Updates the main menu's hover and rate-limits its sound to 200 units.
+/// `pressed_item` is the item the pointer went down on (0 none): only it
+/// highlights while hovered.
 pub fn update_menu_hover(
     hover: i32,
-    field_204: i32,
+    pressed_item: i32,
     previous: i32,
     stamp: i32,
     now: i32,
 ) -> MenuHover {
-    let candidate = if hover == field_204 { field_204 } else { 0 };
+    let candidate = if hover == pressed_item {
+        pressed_item
+    } else {
+        0
+    };
     if candidate == previous {
         return MenuHover {
             selection: candidate,
@@ -722,11 +729,17 @@ pub fn draw_skill_selector(place: SkillSelectorDrawPlace, unit: i32) -> SkillSel
 pub struct SkillTipShowInput {
     pub found: bool,
     pub anchor: [i32; 2],
-    pub object_b8: i32,
-    pub row_38: i32,
+    /// The selector's skill (1-based), the first index into the technique
+    /// texts.
+    pub skill_index: i32,
+    /// The hovered row's technique (1-based), the second index.
+    pub technique_index: i32,
     pub unit: i32,
-    pub global_2ad3c0: i32,
-    pub offset_120: i32,
+    /// The GUI scale index (0 the smallest scale, which takes the taller
+    /// box).
+    pub gui_level: i32,
+    /// When the tooltip's fade-in ends.
+    pub fade_end: i32,
     pub stamp_base: i32,
 }
 
@@ -761,14 +774,14 @@ pub fn show_skill_tip(input: SkillTipShowInput) -> SkillTipShow {
     }
     SkillTipShow {
         shown: true,
-        index: Some(input.object_b8 - 1),
-        threshold: Some(input.row_38 - 1),
+        index: Some(input.skill_index - 1),
+        threshold: Some(input.technique_index - 1),
         flags_or: 0x10,
         place: [
             input.anchor[0],
             input.unit.wrapping_mul(9).wrapping_add(input.anchor[1]),
         ],
-        height: if input.global_2ad3c0 == 0 {
+        height: if input.gui_level == 0 {
             input.unit.wrapping_mul(24)
         } else {
             input.unit.wrapping_mul(18)
@@ -778,7 +791,7 @@ pub fn show_skill_tip(input: SkillTipShowInput) -> SkillTipShow {
         stamp: input
             .stamp_base
             .wrapping_mul(3)
-            .wrapping_add(input.offset_120),
+            .wrapping_add(input.fade_end),
     }
 }
 
@@ -1681,7 +1694,7 @@ mod tests {
 
         let done = dispatch_end_session(input(2, 1, 0, false, None));
         assert!(done.clears_action);
-        assert!(done.clears_field_204);
+        assert!(done.clears_pressed_item);
         assert_eq!(done.result, 0);
     }
 
@@ -1924,11 +1937,11 @@ mod tests {
         let input = SkillTipShowInput {
             found: true,
             anchor: [7, 8],
-            object_b8: 5,
-            row_38: 4,
+            skill_index: 5,
+            technique_index: 4,
             unit: 5,
-            global_2ad3c0: 0,
-            offset_120: 20,
+            gui_level: 0,
+            fade_end: 20,
             stamp_base: 10,
         };
         let shown = show_skill_tip(input);
@@ -1943,7 +1956,7 @@ mod tests {
         assert_eq!(shown.stamp, 50);
 
         let short = show_skill_tip(SkillTipShowInput {
-            global_2ad3c0: 1,
+            gui_level: 1,
             ..input
         });
         assert_eq!(short.height, 90);

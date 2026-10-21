@@ -129,9 +129,9 @@ pub struct SkillRing {
     pub count: i32,
     /// The ring radius in units (64, 58 with the inset layout flag, 72 on a
     /// four-group page).
-    pub offset_a: i32,
+    pub radius: i32,
     /// The horizontal stretch (1.0 as built); it scales only the x offset.
-    pub offset_b: f32,
+    pub stretch: f32,
     /// The reveal scale the draw stores; it also turns the ring as it opens.
     pub turn: f32,
     pub width: i32,
@@ -161,12 +161,12 @@ fn ring_angle(slot: f32, shift: f32, ring: &SkillRing) -> f32 {
 }
 
 /// A ring node's offset from the centre: the radius times the unit times the
-/// engine's sine across (stretched by `offset_b`) and its cosine down, each
+/// engine's sine across (stretched by `stretch`) and its cosine down, each
 /// rounded half to even and scaled by the reveal.
 fn ring_offset(angle: f32, ring: &SkillRing) -> (f32, f32) {
     let unit = ring.unit as f32;
-    let radius = ring.offset_a as f32;
-    let x = (radius * (unit * angle.sin()) * ring.offset_b).round_ties_even() * ring.turn;
+    let radius = ring.radius as f32;
+    let x = (radius * (unit * angle.sin()) * ring.stretch).round_ties_even() * ring.turn;
     let y = (radius * (unit * angle.cos())).round_ties_even() * ring.turn;
     (x, y)
 }
@@ -487,7 +487,9 @@ pub struct SkillInputInput {
     /// The node whose learning row is open.
     pub low: i32,
     pub hide: u8,
-    pub flag_1ea: bool,
+    /// The panel only shows the skills (an arena recruit's or hireling's):
+    /// a node click does nothing.
+    pub read_only: bool,
     pub clock: i32,
     /// The learning row's requirement mask; a row slot (1–8) reads byte
     /// `slot − 1`.
@@ -496,9 +498,13 @@ pub struct SkillInputInput {
     pub selected: i32,
     pub base: i32,
     pub delay: i32,
-    pub deadline_160: i32,
-    pub deadline_164: i32,
-    pub deadline_15c: i32,
+    /// The open state's deadline, 500 ms after state 4 turns to 1 (the
+    /// screen does not close until 400 ms before it).
+    pub open_end: i32,
+    /// When the close fade ends.
+    pub close_end: i32,
+    /// When the hint panel's fade ends (300 ms in, 200 ms out).
+    pub hint_fade_end: i32,
 }
 
 /// What the skill screen pointer input did.
@@ -510,9 +516,9 @@ pub struct SkillInputOutput {
     pub low: i32,
     pub state: u16,
     pub hide: u8,
-    pub deadline_160: i32,
-    pub deadline_164: i32,
-    pub deadline_15c: i32,
+    pub open_end: i32,
+    pub close_end: i32,
+    pub hint_fade_end: i32,
     pub clear: bool,
     pub hint: bool,
     pub select: bool,
@@ -537,9 +543,9 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
         low: input.low,
         state: input.state,
         hide: input.hide,
-        deadline_160: input.deadline_160,
-        deadline_164: input.deadline_164,
-        deadline_15c: input.deadline_15c,
+        open_end: input.open_end,
+        close_end: input.close_end,
+        hint_fade_end: input.hint_fade_end,
         clear: false,
         hint: false,
         select: false,
@@ -576,7 +582,7 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
         }
         if out.hide == 0 {
             out.hide = 2;
-            out.deadline_15c = input.clock + 200;
+            out.hint_fade_end = input.clock + 200;
         }
         out.hint = true;
         skill_input_finish(&input, &mut out);
@@ -588,17 +594,17 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
         }
         if out.state as u8 == 4 {
             out.state = 1;
-            out.deadline_160 = input.clock + 500;
+            out.open_end = input.clock + 500;
             return out;
         }
         if out.state & 2 != 0 {
             return out;
         }
         out.state |= 2;
-        out.deadline_164 = input.clock + input.delay;
+        out.close_end = input.clock + input.delay;
         return out;
     }
-    if input.flag_1ea {
+    if input.read_only {
         return out;
     }
     if input.mask & 0x2000 == 0 {
@@ -616,7 +622,7 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
         }
         out.hint = true;
         out.hide = 1;
-        out.deadline_15c = input.clock + 300;
+        out.hint_fade_end = input.clock + 300;
         skill_input_finish(&input, &mut out);
         return out;
     }
@@ -641,7 +647,7 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
     out.hint = true;
     if out.hide == 0 {
         out.hide = 2;
-        out.deadline_15c = input.clock + 200;
+        out.hint_fade_end = input.clock + 200;
     }
     skill_input_finish(&input, &mut out);
     out
@@ -1414,8 +1420,8 @@ impl SkillScreen {
     pub fn ring(&self, turn: f32) -> SkillRing {
         SkillRing {
             count: self.count,
-            offset_a: self.radius,
-            offset_b: self.stretch,
+            radius: self.radius,
+            stretch: self.stretch,
             turn,
             width: self.bounds.right - self.bounds.left,
             height: self.bounds.bottom - self.bounds.top,
@@ -2185,8 +2191,8 @@ mod tests {
     fn a_skill_ring_places_its_nodes() {
         let ring = SkillRing {
             count: 8,
-            offset_a: 10,
-            offset_b: 5.0,
+            radius: 10,
+            stretch: 5.0,
             turn: 1.0,
             width: 200,
             height: 100,
@@ -2338,8 +2344,8 @@ mod tests {
     fn a_stored_slot_places_its_satellites() {
         let ring = SkillRing {
             count: 8,
-            offset_a: 10,
-            offset_b: 5.0,
+            radius: 10,
+            stretch: 5.0,
             turn: 1.0,
             width: 200,
             height: 100,
@@ -2549,16 +2555,16 @@ mod tests {
             high: 0,
             low: 0,
             hide: 0,
-            flag_1ea: false,
+            read_only: false,
             clock: 100,
             used: [1; 8],
             repage: 0,
             selected: 0,
             base: 7,
             delay: 250,
-            deadline_160: 0,
-            deadline_164: 0,
-            deadline_15c: 0,
+            open_end: 0,
+            close_end: 0,
+            hint_fade_end: 0,
         }
     }
 
@@ -2613,7 +2619,7 @@ mod tests {
             ..input()
         });
         assert_eq!(hidden.hide, 2);
-        assert_eq!(hidden.deadline_15c, 300);
+        assert_eq!(hidden.hint_fade_end, 300);
         assert!(hidden.hint);
         assert_eq!(hidden.result, 0x10);
 
@@ -2624,7 +2630,7 @@ mod tests {
             ..input()
         });
         assert_eq!(shown.state, 1);
-        assert_eq!(shown.deadline_160, 600);
+        assert_eq!(shown.open_end, 600);
         assert_eq!(shown.result, 0x10);
 
         let second = handle_skill_input(SkillInputInput {
@@ -2635,7 +2641,7 @@ mod tests {
             ..input()
         });
         assert_eq!(second.state, 2);
-        assert_eq!(second.deadline_164, 350);
+        assert_eq!(second.close_end, 350);
 
         let high = handle_skill_input(SkillInputInput {
             index: 5,
@@ -2646,7 +2652,7 @@ mod tests {
         assert_eq!(high.high, 5);
         assert!(high.hint);
         assert_eq!(high.hide, 1);
-        assert_eq!(high.deadline_15c, 400);
+        assert_eq!(high.hint_fade_end, 400);
 
         let low = handle_skill_input(SkillInputInput {
             index: 5,
@@ -2694,7 +2700,7 @@ mod tests {
             index: 5,
             mask: 0x2000,
             low: 1,
-            flag_1ea: true,
+            read_only: true,
             ..input()
         });
         assert_eq!(flagged.result, 0x10);

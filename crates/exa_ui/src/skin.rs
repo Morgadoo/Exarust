@@ -3258,8 +3258,9 @@ pub fn draw_skin_image(place: SkinImagePlace, inks: SkinImageInks) -> SkinImageD
         None
     };
 
-    let mode_10000 = (place.flags & 0xf_0000) == 0x1_0000;
-    let (ink, colour, scale) = if mode_10000 {
+    // Mode 0x1_0000 draws the image as it is: no ink, no colour, scale 1.
+    let unshaded = (place.flags & 0xf_0000) == 0x1_0000;
+    let (ink, colour, scale) = if unshaded {
         (None, None, Some(1.0))
     } else if (place.style & 0x100_0000) != 0 {
         if (place.flags & 0x10) != 0 {
@@ -3306,7 +3307,8 @@ pub struct SkinHitPlace {
     pub limit_right: i32,
     pub limit_top: i32,
     pub limit_bottom: i32,
-    pub word_5c: u32,
+    /// The form's frame style word; bit 0x80 drops the unit under the title.
+    pub frame_style: u32,
     pub flags: u32,
 }
 
@@ -3348,7 +3350,7 @@ pub fn hit_skin(
     };
 
     if (place.flags & 1) != 0 {
-        let threshold = if (place.flags & 0x80_0030) == 0x20 || (place.word_5c & 0x80) != 0 {
+        let threshold = if (place.flags & 0x80_0030) == 0x20 || (place.frame_style & 0x80) != 0 {
             place.limit_top
         } else {
             place.limit_top.wrapping_add(unit)
@@ -10241,7 +10243,7 @@ mod tests {
             limit_right: 90,
             limit_top: 50,
             limit_bottom: 90,
-            word_5c: 0,
+            frame_style: 0,
             flags,
         };
         let none = |_: i32| None;
