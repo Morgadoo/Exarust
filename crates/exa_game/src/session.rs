@@ -141,11 +141,24 @@ pub fn player_data(session: &Session) -> PlayerData {
 }
 
 /// The `#playerdata` section a session writes: the mode's header, the
-/// journal and the Exarust chunk with everything else.
-pub fn player_section(session: &Session) -> Vec<u8> {
+/// journal and the Exarust chunk with everything else. A previous section's
+/// character placement is carried over when the session has none (the
+/// original's arena writer does this for a save made with no scene loaded).
+pub fn player_section_after(session: &Session, previous: Option<&[u8]>) -> Vec<u8> {
     let mut data = player_data(session);
+    if data.character.is_none()
+        && let Some(bytes) = previous
+        && let Ok(old) = PlayerData::parse(bytes, flavour_of(bytes))
+    {
+        data.character = old.character;
+    }
     data.set_chunk(EXARUST_CHUNK, write_body(session));
     data.write()
+}
+
+/// The `#playerdata` section a session writes into an empty save.
+pub fn player_section(session: &Session) -> Vec<u8> {
+    player_section_after(session, None)
 }
 
 /// The package a session writes into an empty file.

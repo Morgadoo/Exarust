@@ -232,14 +232,19 @@ impl Slots {
     }
 
     /// Writes a session to a slot's save file, keeping the sections that are
-    /// already there (the original updates the package in place).
+    /// already there (the original updates the package in place) and the
+    /// character placement when the session has none.
     pub fn save(&self, number: u32, session: &Session) -> io::Result<()> {
         let path = self.file(number, SlotKind::Save);
         let mut package = match fs::read(&path) {
             Ok(bytes) => PackageImage::read(&bytes).unwrap_or_default(),
             Err(_) => PackageImage::new(),
         };
-        package.put_section(PLAYER_DATA, &session::player_section(session));
+        let previous = package.section(PLAYER_DATA).map(<[u8]>::to_vec);
+        package.put_section(
+            PLAYER_DATA,
+            &session::player_section_after(session, previous.as_deref()),
+        );
         fs::write(path, package.to_bytes())
     }
 
@@ -391,6 +396,7 @@ impl Slots {
 mod tests {
     use super::*;
     use crate::career::Profession;
+    use exa_formats::save_package::PlayerData;
 
     fn folder(name: &str) -> PathBuf {
         let path =
@@ -549,6 +555,37 @@ mod tests {
         bare.put_section(&save_package::name("exanima02"), &[]);
         fs::write(slots.file(number, SlotKind::Save), bare.to_bytes()).unwrap();
         assert!(!slots.transition_save(number, "exanima02", &later).unwrap());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_keeps_the_character_placement_a_save_already_has() {
+        let dir = folder("character");
+        let slots = Slots::arena(&dir);
+        let session = arena("Ash");
+        let number = slots.create(&session).unwrap();
+        let path = slots.file(number, SlotKind::Save);
+        let mut package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let mut data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Arena,
+        )
+        .unwrap();
+        data.character = Some(vec![7, 7, 7]);
+        package.put_section(PLAYER_DATA, &data.write());
+        fs::write(&path, package.to_bytes()).unwrap();
+        // A save without a character of its own keeps the old placement.
+        let mut later = arena("Ash");
+        later.clock = 3;
+        slots.save(number, &later).unwrap();
+        let package = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let data = PlayerData::parse(
+            package.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Arena,
+        )
+        .unwrap();
+        assert_eq!(data.character, Some(vec![7, 7, 7]));
+        assert_eq!(data.header.clock(), 3);
         let _ = fs::remove_dir_all(&dir);
     }
 

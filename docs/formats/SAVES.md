@@ -77,6 +77,11 @@ extension are compared ignoring ASCII case; the file name must be exactly
 `prefix + 3 + extension` characters long, and the extension exactly four
 bytes including its terminator (`.rsg`/`.rcp`).
 
+The number formatter writes `000` for zero, otherwise the decimal digits
+left-padded to three. A negative number would come out as `00` in the
+original (the padding runs without any digits); Exarust returns `000` for
+it, a value the scanner never produces.
+
 The **scanner** walks the folder with `FindNextFile` (so directory order),
 skips directories, and for each matching name:
 
@@ -235,7 +240,8 @@ The full save writes: `#worldchrdb` (when the scene has characters),
 under its locale name (a full level export). Exarust writes only
 `#playerdata` until it has a world to export; its `#playerdata` leaves out
 the character placement when it has no character, which the original never
-does.
+does — but writing such a save over one that has a placement keeps the old
+placement, as the arena writer does when no scene is loaded.
 
 ### Level transitions
 
