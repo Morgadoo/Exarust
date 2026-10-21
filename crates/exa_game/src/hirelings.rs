@@ -207,6 +207,102 @@ pub fn ranked_loadouts(
         .collect()
 }
 
+/// The message box a broken loadout list raises before it is rebuilt.
+pub const CORRUPTED_TITLE: &str = "Loadout corrupted";
+pub const CORRUPTED_TEXT: &str = "Loadout corrupted, attempting save recovery.";
+
+/// Repair a fighter's loadouts before a match or in the loadout window: a
+/// list that does not hold six is rebuilt from the kit, all six trimmed to
+/// their ranks. Returns whether it was rebuilt (the message box shows).
+pub fn repair_loadouts(
+    kit: &Loadout,
+    loadouts: &mut Vec<Loadout>,
+    apparel_rank_byte: impl Fn(u32) -> Option<u8>,
+) -> bool {
+    if loadouts.len() == LOADOUTS {
+        return false;
+    }
+    *loadouts = ranked_loadouts(kit, LOADOUTS as i32, apparel_rank_byte);
+    true
+}
+
+/// Which kit a fighter takes into a match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchKit {
+    /// The match has no gear tier: the first loadout with both hands empty.
+    Bare,
+    /// The loadout of this rank. A Captain's wing at tier 0 or 1 names a
+    /// rank below 0, before the first loadout.
+    Rank(i32),
+}
+
+/// The loadout a fighter of `level_sum` levels takes into a match of
+/// `tier`: its rank (half the levels) at most the tier, or two under the
+/// tier for a Captain's entrants after the first (that cap compared in 64
+/// bits). A tier below 0 takes no gear.
+pub fn match_kit(level_sum: i32, tier: i32, captain_wing: bool) -> MatchKit {
+    if tier < 0 {
+        return MatchKit::Bare;
+    }
+    let rank = level_sum / 2;
+    let cap = if captain_wing {
+        i64::from(tier) - 2
+    } else {
+        i64::from(tier)
+    };
+    if cap < i64::from(rank) {
+        MatchKit::Rank(cap as i32)
+    } else {
+        MatchKit::Rank(rank)
+    }
+}
+
+/// The fighting skill a fighter's match copy is given: ten for every level
+/// and ten more under ten levels, else 100. (The record word it sets ranges
+/// 0 to 100 like the AI's fighting skill; that it is that word is inferred.)
+pub fn match_fighting_skill(level_sum: i32) -> f32 {
+    if level_sum < 10 {
+        ((i64::from(level_sum) + 1) * 10) as f32
+    } else {
+        100.0
+    }
+}
+
+/// After a skill level is gained, a fighter whose levels sum to an even
+/// number under 11 takes the loadout of the rank below into its new rank.
+/// Returns whether a loadout was copied.
+pub fn promote_loadout(loadouts: &mut [Loadout], level_sum: i32, levelled: bool) -> bool {
+    if !levelled || level_sum >= 11 || level_sum & 1 != 0 {
+        return false;
+    }
+    let rank = (level_sum / 2) as usize;
+    if rank == 0 || rank >= loadouts.len() {
+        return false;
+    }
+    loadouts[rank] = loadouts[rank - 1].clone();
+    true
+}
+
+/// The copper an outfit is worth: each carried item's value word and each
+/// held hand item's, priced as a shop line (1, 12, 144 or 1440 copper a
+/// count), summed.
+pub fn kit_value(items: &[u32], hands: [u32; 2], value_word: impl Fn(u32) -> Option<u16>) -> u32 {
+    let mut total = 0u32;
+    for &item in items {
+        if let Some(word) = value_word(item) {
+            total = total.wrapping_add(crate::career::line_price(word));
+        }
+    }
+    for hand in hands {
+        if hand != 0
+            && let Some(word) = value_word(hand)
+        {
+            total = total.wrapping_add(crate::career::line_price(word));
+        }
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +396,62 @@ mod tests {
         assert_eq!(techniques[3], [7; 6]);
         assert_eq!(techniques[4], [0, 7, 7, 7, 7, 7]);
         assert_eq!(techniques[5], [7; 6]);
+    }
+
+    #[test]
+    fn a_match_takes_the_loadout_of_its_tier() {
+        assert_eq!(match_kit(7, 5, false), MatchKit::Rank(3));
+        assert_eq!(match_kit(12, 2, false), MatchKit::Rank(2));
+        assert_eq!(match_kit(12, -1, false), MatchKit::Bare);
+        assert_eq!(match_kit(12, 4, true), MatchKit::Rank(2));
+        assert_eq!(match_kit(3, 4, true), MatchKit::Rank(1));
+        assert_eq!(match_kit(12, 1, true), MatchKit::Rank(-1));
+        assert_eq!(match_fighting_skill(0), 10.0);
+        assert_eq!(match_fighting_skill(9), 100.0);
+        assert_eq!(match_fighting_skill(14), 100.0);
+        assert_eq!(match_fighting_skill(4), 50.0);
+    }
+
+    #[test]
+    fn broken_loadouts_are_rebuilt_and_ranks_inherit() {
+        let rank = |item: u32| (item == 1).then_some(0x40);
+        let kit = Loadout {
+            hands: [9, 0],
+            items: vec![1, 3],
+        };
+        let mut loadouts = vec![kit.clone(); 6];
+        assert!(!repair_loadouts(&kit, &mut loadouts, rank));
+        let mut broken = vec![kit.clone(); 2];
+        assert!(repair_loadouts(&kit, &mut broken, rank));
+        assert_eq!(broken.len(), 6);
+        assert_eq!(broken[0].items, vec![3]);
+        assert_eq!(broken[5].items, vec![1, 3]);
+        assert!(broken.iter().all(|l| l.hands == [0, 0]));
+        assert_eq!(
+            CORRUPTED_TEXT,
+            "Loadout corrupted, attempting save recovery."
+        );
+        // Levels 4 copy rank 1 into rank 2; odd sums and sums of 11 or more do not.
+        broken[1].items = vec![7];
+        assert!(promote_loadout(&mut broken, 4, true));
+        assert_eq!(broken[2].items, vec![7]);
+        assert!(!promote_loadout(&mut broken, 5, true));
+        assert!(!promote_loadout(&mut broken, 12, true));
+        assert!(!promote_loadout(&mut broken, 4, false));
+        assert!(!promote_loadout(&mut broken, 0, true));
+    }
+
+    #[test]
+    fn an_outfit_is_valued_as_shop_lines() {
+        // 7 copper, 2 silver, and a hand of 1 gold; item 4 has no value.
+        let value = |item: u32| match item {
+            1 => Some(7),
+            2 => Some(0x4002),
+            3 => Some(0x8001),
+            _ => None,
+        };
+        assert_eq!(kit_value(&[1, 2, 4], [3, 0], value), 7 + 24 + 144);
+        assert_eq!(kit_value(&[], [0, 0], value), 0);
     }
 
     #[test]
