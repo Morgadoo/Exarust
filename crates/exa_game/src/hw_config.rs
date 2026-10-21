@@ -385,20 +385,18 @@ pub struct HardwareConfigPlugin;
 
 impl Plugin for HardwareConfigPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<HardwareConfig>()
-            .init_resource::<BindingEditor>()
-            .add_systems(
-                Update,
-                (
-                    rebind_keys,
-                    drive_benchmark,
-                    apply_options,
-                    apply_window,
-                    start_benchmark_scene,
-                    cleanup_benchmark,
-                )
-                    .chain(),
-            );
+        app.init_resource::<BindingEditor>().add_systems(
+            Update,
+            (
+                rebind_keys,
+                drive_benchmark,
+                apply_options,
+                apply_window,
+                start_benchmark_scene,
+                cleanup_benchmark,
+            )
+                .chain(),
+        );
     }
 }
 
@@ -407,8 +405,11 @@ pub fn rebind_keys(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut editor: ResMut<BindingEditor>,
-    mut bindings: ResMut<Bindings>,
+    bindings: Option<ResMut<Bindings>>,
 ) {
+    let Some(mut bindings) = bindings else {
+        return;
+    };
     if editor.row.is_none() {
         return;
     }
@@ -436,7 +437,7 @@ pub fn rebind_keys(
 
 /// Pushes changed live options into the renderer, the audio and the window.
 fn apply_options(
-    config: Res<HardwareConfig>,
+    config: Option<Res<HardwareConfig>>,
     mut sampling: ResMut<SuperSampling>,
     mut shadow: ResMut<ShadowQuality>,
     mut multisample: ResMut<MultisampleSetting>,
@@ -444,6 +445,9 @@ fn apply_options(
     mut music: Option<ResMut<MusicSetting>>,
     mut show_fps: Option<ResMut<exa_ui::ShowFps>>,
 ) {
+    let Some(config) = config else {
+        return;
+    };
     if !config.is_changed() {
         return;
     }
@@ -480,10 +484,13 @@ type AppliedWindow = (bool, Option<(u32, u32)>, bool);
 
 /// Applies the live window mode, size and vertical sync.
 fn apply_window(
-    config: Res<HardwareConfig>,
+    config: Option<Res<HardwareConfig>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
     mut applied: Local<Option<AppliedWindow>>,
 ) {
+    let Some(config) = config else {
+        return;
+    };
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
@@ -542,11 +549,14 @@ const BENCHMARK_QUAD: &str = "_BenchmarkQuad";
 /// are exact (the GPU and its driver differ anyway).
 fn start_benchmark_scene(
     mut commands: Commands,
-    config: Res<HardwareConfig>,
+    config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,
     mut images: ResMut<Assets<Image>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
+    let Some(config) = config else {
+        return;
+    };
     if config.benchmark.is_none() {
         return;
     }
@@ -641,9 +651,12 @@ fn start_benchmark_scene(
 /// ends takes the auto-detected quality and tears the scene down.
 fn drive_benchmark(
     time: Res<Time<Real>>,
-    mut config: ResMut<HardwareConfig>,
+    config: Option<ResMut<HardwareConfig>>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
+    let Some(mut config) = config else {
+        return;
+    };
     let ticks = (time.elapsed_secs_f64() * BENCHMARK_FREQUENCY as f64) as u64;
     let Some(perf) = config
         .benchmark
@@ -668,12 +681,12 @@ fn drive_benchmark(
 /// the window's present mode.
 fn cleanup_benchmark(
     mut commands: Commands,
-    config: Res<HardwareConfig>,
+    config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,
     mut images: ResMut<Assets<Image>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
-    if config.benchmark.is_some() {
+    if config.is_none_or(|config| config.benchmark.is_some()) {
         return;
     }
     let Some(scene) = scene else {
