@@ -50,6 +50,8 @@ pub mod pair_trace;
 pub mod path_probe;
 pub mod pick;
 pub mod player;
+pub mod player_behaviour;
+pub mod player_controls;
 pub mod player_light;
 pub mod practice;
 pub mod report;
