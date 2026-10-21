@@ -756,6 +756,43 @@ mod tests {
     }
 
     #[test]
+    fn the_penalty_shift_costs_the_byte_times_two_to_the_shift() {
+        let mut grid = corridor(8);
+        let mut cell = grid.cell(4, 3, Layer::Lower);
+        cell.penalty = 4;
+        grid.set_cell(4, 3, Layer::Lower, cell);
+        let from = grid.cell_centre(1, 3);
+        let to = grid.cell_centre(5, 3);
+        let path = find_path_with(
+            &grid,
+            Vec3::new(from.x, 2.0, from.y),
+            Vec3::new(to.x, 2.0, to.y),
+            0,
+            0.0,
+            1,
+        );
+        assert_eq!(path.cost, 23, "{path:?}");
+    }
+
+    #[test]
+    fn an_accept_distance_stops_the_search_early() {
+        let grid = corridor(8);
+        let from = grid.cell_centre(1, 3);
+        let to = grid.cell_centre(5, 3);
+        let path = find_path_with(
+            &grid,
+            Vec3::new(from.x, 2.0, from.y),
+            Vec3::new(to.x, 2.0, to.y),
+            0,
+            1000.0,
+            0,
+        );
+        assert!(path.reached, "{path:?}");
+        assert!(path.cost < 15, "{path:?}");
+        assert_eq!(path.points.len(), 2, "{path:?}");
+    }
+
+    #[test]
     fn no_path_starts_outside_the_grid_or_crosses_a_gap() {
         let grid = corridor(8);
         let probe = find_path(&grid, Vec3::new(9.0, 2.0, 0.0), Vec3::ZERO, 0);
