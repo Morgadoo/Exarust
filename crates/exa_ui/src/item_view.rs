@@ -128,6 +128,10 @@ pub struct ItemView {
     pub scroll: (f32, f32),
     pub step: (f32, f32),
     pub unit: i32,
+    /// The owner's allow-drag-start hook (no hook: allowed).
+    pub allow_drag: bool,
+    /// The owner's allow-drag-out hook (no hook: allowed).
+    pub allow_drag_out: bool,
 }
 
 impl ItemView {
@@ -157,6 +161,8 @@ impl ItemView {
             scroll: (0.0, 0.0),
             step: (0.0, 0.0),
             unit,
+            allow_drag: true,
+            allow_drag_out: true,
         }
     }
 
@@ -666,6 +672,167 @@ impl ItemView {
     }
 }
 
+impl ItemView {
+    /// The destructor: the entries and their names go (the original frees
+    /// every name, the entry array and the owner's drag label).
+    pub fn destroy(&mut self) {
+        self.entries.clear();
+        self.renaming = false;
+        self.backup.clear();
+        self.typed.clear();
+        self.drag_kind = 0;
+        self.selected = 0;
+        self.hover = 0;
+    }
+
+    /// The select slot: a positive entry becomes the selection; an
+    /// icons-only view also copies its name to the tooltip and answers
+    /// 0x303. A selection of nothing keeps the form's word (3 when an entry
+    /// was selected). The original calls the tooltip class directly; the
+    /// name is returned for the caller to show.
+    pub fn select(&mut self, index: i32) -> (u32, Option<Vec<u8>>) {
+        if index < 1 {
+            if self.selected < 1 {
+                return (0, None);
+            }
+            return (3, None);
+        }
+        self.selected = index;
+        if self.style & style::ICONS_ONLY != 0 {
+            let name = self
+                .entries
+                .get(index as usize - 1)
+                .map(|entry| entry.name.clone());
+            return (0x303, name);
+        }
+        (3, None)
+    }
+
+    /// The drag centre: half the client's width and height, each truncated
+    /// toward zero as the original's sign-fix and shift does. The drag
+    /// payload's centre field uses it.
+    pub fn centre(&self) -> (i32, i32) {
+        (self.client.width() / 2, self.client.height() / 2)
+    }
+
+    /// The drop test: the payload's kind must be this view's drag kind, and
+    /// the style must not forbid drops (0x100000). A word of 1 (a view that
+    /// may take the drop), 0x201 with the high bit, and 0x301 with the
+    /// 0x40000000 bit; the focused form's own view refuses (0).
+    pub fn accepts_drop(&self, kind: i32, focused: bool) -> u32 {
+        if kind != self.drag_kind || self.style & 0x0010_0000 != 0 {
+            return 0;
+        }
+        let mut word = 1;
+        if self.style & 0x8000_0000 == 0 {
+            return if focused { 0 } else { word };
+        }
+        word = 0x201;
+        if self.style & 0x4000_0000 != 0 {
+            word |= 0x300;
+        }
+        word
+    }
+
+    /// Whether a drag may start on the view (the owner's allow-start hook,
+    /// absent: allowed).
+    pub fn drag_start_allowed(&self) -> bool {
+        self.allow_drag
+    }
+
+    /// Whether a drag may leave the view (the owner's allow-out hook,
+    /// absent: allowed).
+    pub fn drag_out_allowed(&self) -> bool {
+        self.allow_drag_out
+    }
+
+    /// The caret an edit-field press puts in the renamed entry: the point
+    /// moved into the entry's text row (its column's pitch and the icon
+    /// width taken off, the row's own scroll included) and the text edit's
+    /// caret rule applied.
+    pub fn edit_caret_hit(&mut self, font: &GuiFont, x: i32, y: i32) -> u8 {
+        let per = if self.is(style::LIST) {
+            self.count().max(1)
+        } else {
+            self.per_line.max(1)
+        };
+        let index = (self.selected - 1).max(0);
+        let column = index / per;
+        let mut x = x - column * self.pitch - self.unit;
+        if self.style & style::NO_ICON_SPACE == 0 {
+            x -= self.icon;
+        }
+        let _ = y;
+        let len = self.entries[index as usize].name.len();
+        let mut view = crate::text_edit::EditView {
+            anchor: 0,
+            caret: 0,
+            length: len.min(255) as u8,
+            first: 0,
+        };
+        crate::text_edit::scroll_view(
+            font,
+            &self.entries[index as usize].name,
+            &mut view,
+            self.pitch,
+        );
+        crate::text_edit::caret_from_x(font, &self.entries[index as usize].name, &mut view, x)
+    }
+
+    /// The pointer moves over the renamed entry: the caret goes to the
+    /// pointer and the visible run is kept within the entry's pitch. The
+    /// original answers 3 while renaming, else the form's word.
+    pub fn rename_move(&mut self, font: &GuiFont, x: i32, y: i32) -> u32 {
+        if !self.renaming {
+            return 0;
+        }
+        let caret = self.edit_caret_hit(font, x, y);
+        let index = (self.selected - 1).max(0) as usize;
+        if let Some(entry) = self.entries.get_mut(index) {
+            let mut view = crate::text_edit::EditView {
+                anchor: caret,
+                caret,
+                length: entry.name.len().min(255) as u8,
+                first: 0,
+            };
+            crate::text_edit::scroll_view(font, &entry.name, &mut view, self.pitch);
+        }
+        3
+    }
+
+    /// The marker-only draw: every marked entry in view draws its marker
+    /// handle where its icon would sit (the style's markers-only path).
+    pub fn marker_draws(&self) -> Vec<(i32, (i32, i32))> {
+        self.draw_list(&crate::gui_font::RAYFORM_10)
+            .into_iter()
+            .filter(|draw| {
+                self.entries
+                    .get(draw.index as usize)
+                    .is_some_and(|entry| entry.flags & entry::MARKED != 0)
+            })
+            .filter_map(|draw| draw.icon.map(|(_, at)| (self.marker, at)))
+            .collect()
+    }
+
+    /// The edit field's box: the selected entry's row and the text's room,
+    /// while a rename is in progress.
+    pub fn edit_box(&self) -> Option<[i32; 4]> {
+        if !self.renaming || self.selected < 1 {
+            return None;
+        }
+        let per = if self.is(style::LIST) {
+            self.count().max(1)
+        } else {
+            self.per_line.max(1)
+        };
+        let index = self.selected - 1;
+        let (column, row) = (index / per, index % per);
+        let (x, y) = (self.unit + column * self.pitch, self.unit + row * self.row);
+        let _ = column;
+        Some([x, y, x + self.pitch + 2, y + self.row - 1])
+    }
+}
+
 /// Whether `name` starts with the lower-cased `typed`, the name's capitals
 /// read as small letters.
 pub fn prefix_matches(typed: &[u8], name: &[u8]) -> bool {
@@ -872,6 +1039,10 @@ mod tests {
         }
     }
 
+    fn view_of(style: u32, n: usize) -> ItemView {
+        view(style, n)
+    }
+
     fn view(style: u32, n: usize) -> ItemView {
         let mut v = ItemView::new(5, style, client(200, 120));
         for i in 0..n {
@@ -1071,6 +1242,66 @@ mod tests {
         assert_eq!(label.icon, (95, 88));
         assert_eq!(label.pen, Some((5 + 95 + 20, 88 + (17 + 25 + 1) / 2)));
         assert_eq!(v.pointer_move(), ViewReply::Form);
+    }
+
+    #[test]
+    fn the_extra_slots_select_centre_and_take_drops() {
+        let mut view = view(style::LIST, 3);
+        assert_eq!(view.select(0).0, 0);
+        assert_eq!(view.select(2), (3, None));
+        assert_eq!(view.selected, 2);
+        assert_eq!(view.select(0).0, 3);
+        // An icons-only view hands back the name and the tooltip word.
+        let mut icons = view_of(style::LIST | style::ICONS_ONLY, 2);
+        icons.select(1);
+        assert_eq!(icons.select(1).0, 0x303);
+        assert_eq!(icons.select(2).1, Some(b"Item1".to_vec()));
+        assert_eq!(view.centre(), (100, 60));
+    }
+
+    #[test]
+    fn drops_need_the_view_s_kind_and_its_permission() {
+        let mut view = view(style::LIST, 2);
+        view.drag_kind = 4;
+        assert_eq!(view.accepts_drop(4, false), 1);
+        assert_eq!(view.accepts_drop(5, false), 0);
+        assert_eq!(view.accepts_drop(4, true), 0);
+        view.style |= 0x8000_0000;
+        assert_eq!(view.accepts_drop(4, true), 0x201);
+        view.style |= 0x4000_0000;
+        assert_eq!(view.accepts_drop(4, true), 0x301);
+        view.style |= 0x0010_0000;
+        assert_eq!(view.accepts_drop(4, false), 0);
+        assert!(view.drag_start_allowed() && view.drag_out_allowed());
+        view.allow_drag_out = false;
+        assert!(!view.drag_out_allowed());
+    }
+
+    #[test]
+    fn the_rename_caret_and_its_box() {
+        let mut view = view(style::LIST, 2);
+        view.selected = 1;
+        view.renaming = true;
+        // The text starts a unit and the icon in: x = 25 is the start.
+        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 25, 20), 0);
+        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 25 + 25, 20), 3);
+        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 250, 20), 5);
+        assert_eq!(view.rename_move(&RAYFORM_10, 25, 20), 3);
+        assert_eq!(view.edit_box(), Some([5, 5, 197, 29]));
+        view.renaming = false;
+        assert_eq!(view.edit_box(), None);
+        assert_eq!(view.rename_move(&RAYFORM_10, 0, 0), 0);
+    }
+
+    #[test]
+    fn a_marked_entry_draws_its_marker() {
+        let mut view = view_of(style::LIST | style::MARKERS, 3);
+        view.entries[1].flags = entry::MARKED;
+        view.entries[2].flags = entry::MARKED;
+        let markers = view.marker_draws();
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0].0, DEFAULT_MARKER);
+        assert_eq!(markers[0].1, (5, 5 + 1 + 1 + 25));
     }
 
     #[test]

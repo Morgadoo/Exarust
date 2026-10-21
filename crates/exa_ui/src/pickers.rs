@@ -14,6 +14,8 @@
 //! both constructors, the tone field's pick and draw, the hair picker's
 //! refresh, set and draw, and the task notification word 7.
 
+use crate::colour_picker::{hsv_to_rgb, rgb_to_hsv};
+
 /// The tone table's 3 × 3 colours, red green blue, raw bytes read as
 /// floats.
 pub const TONE_TABLE: [[[f32; 3]; 3]; 3] = [
@@ -228,6 +230,12 @@ impl TonePicker {
         quads
     }
 
+    /// The press slot: a press on the field itself (the pointer's control
+    /// code −1) picks the point and answers 5, the picker's hold word.
+    pub fn press(&mut self, x: i32, y: i32) -> ([f32; 3], u32) {
+        (self.pick(x, y), 5)
+    }
+
     /// Where the marker sits: the point over the field's size.
     pub fn marker(&self) -> PickerMarker {
         PickerMarker {
@@ -332,6 +340,35 @@ impl HairColPicker {
         self.colour
     }
 
+    /// The press slot: a press on the field picks the point and answers 5.
+    pub fn press(&mut self, x: i32, y: i32) -> ([u8; 3], u32) {
+        (self.pick(x, y), 5)
+    }
+
+    /// The refresh callback choice: when the owner has a callback it hears
+    /// the new colour; otherwise the marker node is updated in place. The
+    /// task is notified with word 7 either way.
+    pub fn refresh_with(&mut self, owner: Option<&mut dyn FnMut([u8; 3])>) {
+        self.refresh();
+        if let Some(callback) = owner {
+            callback(self.colour);
+        }
+    }
+
+    /// The child callback: the picker refreshes and tells its owner (the
+    /// original's +0x198 hook).
+    pub fn child_refresh(&mut self, owner: Option<&mut dyn FnMut([u8; 3])>) {
+        self.refresh_with(owner);
+    }
+
+    /// Attaches the character generator's version: it becomes the picker's
+    /// shading version and the refresh runs.
+    pub fn attach(&mut self, version: f32) -> [u8; 3] {
+        self.version = version;
+        self.refresh();
+        self.colour
+    }
+
     /// The set slot: a point and the shading version, then a refresh.
     pub fn set(&mut self, point: PickPoint, version: f32) -> [u8; 3] {
         self.point = PickPoint {
@@ -430,6 +467,59 @@ impl Default for HairColPicker {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The two colour buffers the hair picker's shading routine produces from
+/// its point and the character generator's version: the first a lighter
+/// highlight and the second the shaded hair colour. The routine blends the
+/// column's table colours, folds in the value and the version, and hands
+/// both through the engine's colour helpers. The helpers' exact transfer
+/// (the linear/sRGB pair and the brightness adjustment) is outside the
+/// pack; they are modelled here as a clamp to 0–1, a channel scale,
+/// `rgb_to_hsv`, a saturation of 1.5 and a value from the version, and the
+/// numbers are pinned to those guesses.
+pub fn hair_shading(u: f32, v: f32, version: f32) -> ([f32; 3], [f32; 3]) {
+    let scaled = u * 3.0;
+    let index = (scaled as i32).clamp(0, 2) as usize;
+    let fraction = scaled - index as f32;
+    let a = HAIR_TABLE[0][index];
+    let b = HAIR_TABLE[0][index + 1];
+    let mixed = [
+        (f32::from(a[0]) + (f32::from(b[0]) - f32::from(a[0])) * fraction) / 255.0,
+        (f32::from(a[1]) + (f32::from(b[1]) - f32::from(a[1])) * fraction) / 255.0,
+        (f32::from(a[2]) + (f32::from(b[2]) - f32::from(a[2])) * fraction) / 255.0,
+    ];
+    let value = v + 0.1;
+    // The brightness adjustment's first pass.
+    let adjusted = [
+        mixed[0] * value * value * 0.1,
+        mixed[1] * value * value * 0.1,
+        mixed[2] * value * value * 0.1,
+    ];
+    let grey = 0.75 * value * 0.3;
+    let t = version * 0.8 + 0.2;
+    let blended = [
+        adjusted[0] + (grey - adjusted[0]) * t,
+        adjusted[1] + (grey - adjusted[1]) * t,
+        adjusted[2] + (grey - adjusted[2]) * t,
+    ];
+    let first = {
+        let scale = value * 0.4 + 0.3;
+        [
+            (blended[0] * scale * 2.0).clamp(0.0, 1.0),
+            (blended[1] * scale * 2.0).clamp(0.0, 1.0),
+            (blended[2] * scale * 2.0).clamp(0.0, 1.0),
+        ]
+    };
+    let mut hsv = rgb_to_hsv([
+        blended[0].clamp(0.0, 1.0),
+        blended[1].clamp(0.0, 1.0),
+        blended[2].clamp(0.0, 1.0),
+    ]);
+    hsv[1] *= 1.5;
+    hsv[2] = ((value * 0.9 + 0.3) - version * 0.1) * 0.8;
+    let second = hsv_to_rgb(hsv);
+    (first, second)
 }
 
 #[cfg(test)]
@@ -538,6 +628,11 @@ mod tests {
         assert_eq!(cells[0][0].colour, HAIR_TABLE[0][0]);
         assert_eq!(cells[0][3].colour, HAIR_TABLE[0][1]);
         assert_eq!((cells[0][0].at, cells[0][3].at), ((0, 0), (53, 0)));
+        // The shading's two buffers: the table's first colour at u = 0
+        // with v = 0.5 and version 0.5.
+        let (light, shaded) = hair_shading(0.0, 0.5, 0.5);
+        assert_eq!(light, [0.09748208, 0.093456864, 0.09040745]);
+        assert_eq!(shaded, [0.632, 0.5928554, 0.5632003]);
         let quad = picker.shade_quad();
         assert_eq!(quad[1].at, (0, 0));
         assert_eq!(quad[2].at, (0, 134));

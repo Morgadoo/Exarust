@@ -301,6 +301,15 @@ impl DropDownList {
         }
     }
 
+    /// The close slot: the list and its item strings are freed and the
+    /// owner hears the close.
+    pub fn close(&mut self, owner: &mut impl DropDownOwner) {
+        owner.drop_closed();
+        self.items.clear();
+        self.pending = 0;
+        self.shown = false;
+    }
+
     /// The focus-without-control slot: a pending choice does not let the
     /// focus go (1); otherwise the parent handles it.
     pub fn focus_without_control(&self) -> Option<u32> {

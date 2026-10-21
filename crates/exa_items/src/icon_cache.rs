@@ -33,6 +33,80 @@ pub mod variant {
 /// The message a release past the last reference reports.
 pub const UNDERFLOW: &str = "Item reference underflow.";
 
+/// The manager's icon-atlas flags.
+pub const MANAGER_ICON_FLAGS: u32 = 0x103;
+/// The manager's atlas texture flags.
+pub const MANAGER_TEXTURE_FLAGS: u32 = 0x100e608;
+/// An icon's size in units.
+pub const MANAGER_ICON_UNITS: i32 = 40;
+/// The apparel texture size at shade quality 3 and above.
+pub const APPAREL_SIZE_HIGH: i32 = 0x400;
+/// The apparel texture size below it.
+pub const APPAREL_SIZE_LOW: i32 = 0x200;
+/// The RFC reader's two flags after the manager's constructor.
+pub const MANAGER_RFC_FLAGS: [u8; 2] = [1, 1];
+
+/// The manager's construction: the unit, the atlas flags and sizes, the
+/// apparel painter's texture size and the RFC reader's flags. The original
+/// makes the object database access, the shared apparel painter, the item
+/// renderer, an icon atlas with [`MANAGER_ICON_FLAGS`] and an icon size of
+/// 40 units, and a reader whose scene is the renderer's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagerSetup {
+    pub unit: i32,
+    pub icon_flags: u32,
+    pub texture_flags: u32,
+    pub icon_size: i32,
+    pub apparel_size: i32,
+    pub rfc_flags: [u8; 2],
+}
+
+impl ManagerSetup {
+    /// The manager as its constructor makes it: `shade_quality` 3 and above
+    /// paints apparel at 1024, below it at 512.
+    pub fn new(unit: i32, shade_quality: i32) -> Self {
+        Self {
+            unit,
+            icon_flags: MANAGER_ICON_FLAGS,
+            texture_flags: MANAGER_TEXTURE_FLAGS,
+            icon_size: MANAGER_ICON_UNITS * unit,
+            apparel_size: if shade_quality >= 3 {
+                APPAREL_SIZE_HIGH
+            } else {
+                APPAREL_SIZE_LOW
+            },
+            rfc_flags: MANAGER_RFC_FLAGS,
+        }
+    }
+}
+
+/// Where a user item id is looked up: its top two bits tag the database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserItemSource {
+    /// The level's objects (bit 31).
+    Level,
+    /// The world's objects (bit 30).
+    World,
+    /// The game's objects (neither tag).
+    Game,
+}
+
+/// The part of a user item id past its database tag.
+pub fn user_item_id(id: u32) -> u32 {
+    id & 0x3fff_ffff
+}
+
+/// The database a user item's tag names.
+pub fn user_item_source(id: u32) -> UserItemSource {
+    if id & 0x8000_0000 != 0 {
+        UserItemSource::Level
+    } else if id & 0x4000_0000 != 0 {
+        UserItemSource::World
+    } else {
+        UserItemSource::Game
+    }
+}
+
 /// The cache key of an icon: an item lit by its model's flags keeps the
 /// framing bit and its condition and gains [`variant::LIT`]; any other
 /// keeps only the framing bit.
@@ -210,10 +284,8 @@ impl IconCache {
             return Released::Kept;
         }
         let underflow = e.refs < 0;
-        *e = Entry {
-            cell: e.cell,
-            ..Entry::default()
-        };
+        e.refs = 0;
+        e.id = 0;
         if underflow {
             self.errors.push(UNDERFLOW.to_string());
         }
@@ -235,10 +307,8 @@ impl IconCache {
         if e.refs >= 1 {
             return Released::Kept;
         }
-        *e = Entry {
-            cell: e.cell,
-            ..Entry::default()
-        };
+        e.refs = 0;
+        e.id = 0;
         Released::Freed
     }
 
@@ -264,6 +334,64 @@ impl IconCache {
         let e = self.entries.get(handle.checked_sub(1)?)?;
         let h = ((icon_size as u32) >> 1) as i32;
         Some((h + x - e.half_width, h + y + e.half_height))
+    }
+
+    /// Renders a cached icon again by its handle (the debug editor's
+    /// refresh): the stored id and variant go to `render`, and a success
+    /// replaces the cell and both extents. False for a bad handle or a
+    /// failed render.
+    pub fn refresh_handle<R>(&mut self, handle: usize, mut render: R) -> bool
+    where
+        R: FnMut(u32, u32) -> Option<Rendered>,
+    {
+        let Some(entry) = handle
+            .checked_sub(1)
+            .and_then(|index| self.entries.get(index).copied())
+        else {
+            return false;
+        };
+        let Some(rendered) = render(entry.id, entry.variant) else {
+            return false;
+        };
+        let (half_width, half_height) = self.halves(rendered);
+        let slot = &mut self.entries[handle - 1];
+        slot.cell = rendered.cell;
+        slot.half_width = half_width;
+        slot.half_height = half_height;
+        true
+    }
+
+    /// One cached icon's draw: its atlas cell and the position the atlas is
+    /// asked to draw at. The original only draws a nonzero handle, with
+    /// white inks.
+    pub fn draw(&self, handle: usize, at: (i32, i32)) -> Option<(i32, (i32, i32))> {
+        let entry = handle.checked_sub(1).and_then(|i| self.entries.get(i))?;
+        if handle == 0 {
+            return None;
+        }
+        Some((entry.cell, at))
+    }
+
+    /// The pointed pixel test: only a nonzero handle, and only when the
+    /// atlas's alpha at the point is above zero.
+    pub fn pixel_test(
+        &self,
+        handle: usize,
+        point: (i32, i32),
+        alpha_at: impl Fn(i32, i32) -> f32,
+    ) -> bool {
+        handle != 0 && handle <= self.entries.len() && alpha_at(point.0, point.1) > 0.0
+    }
+
+    /// The loose pixel test: the atlas's own second test, which decides
+    /// from its cell's coverage; a zero handle never passes.
+    pub fn loose_pixel_test(
+        &self,
+        handle: usize,
+        point: (i32, i32),
+        covered: impl Fn(i32, i32) -> bool,
+    ) -> bool {
+        handle != 0 && handle <= self.entries.len() && covered(point.0, point.1)
     }
 
     /// A level or save load empties the cache.
@@ -441,6 +569,92 @@ mod tests {
         c.clear();
         assert!(c.entries.is_empty());
         assert_eq!(icon_size(4), 160);
+    }
+
+    #[test]
+    fn the_manager_is_built_for_forty_unit_icons() {
+        let setup = ManagerSetup::new(5, 3);
+        assert_eq!(setup.icon_flags, 0x103);
+        assert_eq!(setup.texture_flags, 0x100e608);
+        assert_eq!(setup.icon_size, 200);
+        assert_eq!(setup.apparel_size, 0x400);
+        assert_eq!(setup.rfc_flags, [1, 1]);
+        assert_eq!(ManagerSetup::new(4, 2).apparel_size, 0x200);
+        assert_eq!(MANAGER_ICON_UNITS, 40);
+    }
+
+    #[test]
+    fn a_user_item_id_names_its_database() {
+        assert_eq!(user_item_id(0x8000_0012), 0x12);
+        assert_eq!(user_item_id(0x4000_00ff), 0xff);
+        assert_eq!(user_item_id(0x0123_4567), 0x0123_4567);
+        assert_eq!(user_item_source(0x8000_0001), UserItemSource::Level);
+        assert_eq!(user_item_source(0x4000_0001), UserItemSource::World);
+        assert_eq!(user_item_source(1), UserItemSource::Game);
+        assert_eq!(user_item_source(0xc000_0001), UserItemSource::Level);
+    }
+
+    #[test]
+    fn a_handle_refresh_replaces_the_cell_and_extents() {
+        let mut c = IconCache::new(4);
+        c.acquire(7, 0, Some(false), render(1));
+        assert!(c.refresh_handle(1, |id, variant| {
+            assert_eq!((id, variant), (7, 0));
+            Some(Rendered {
+                cell: 8,
+                width: 200.0,
+                height: 100.0,
+            })
+        }));
+        assert_eq!(
+            (
+                c.entries[0].cell,
+                c.entries[0].half_width,
+                c.entries[0].half_height
+            ),
+            (8, 104, 54)
+        );
+        assert!(!c.refresh_handle(2, |_, _| Some(Rendered {
+            cell: 1,
+            width: 100.0,
+            height: 61.0
+        })));
+        assert!(!c.refresh_handle(1, |_, _| None));
+    }
+
+    #[test]
+    fn a_freed_slot_keeps_its_cell_variant_and_halves() {
+        let mut c = IconCache::new(4);
+        c.acquire(7, 0x0100_0000, Some(true), render(9));
+        let before = c.entries[0];
+        let mut handle = 1;
+        assert_eq!(c.release(&mut handle), Released::Freed);
+        let after = c.entries[0];
+        assert_eq!(after.id, 0);
+        assert_eq!(after.refs, 0);
+        assert_eq!(
+            (
+                after.cell,
+                after.variant,
+                after.half_width,
+                after.half_height
+            ),
+            (
+                before.cell,
+                before.variant,
+                before.half_width,
+                before.half_height
+            )
+        );
+        // Drawing and the two pixel tests still need a live handle.
+        assert_eq!(c.draw(0, (1, 2)), None);
+        assert!(!c.pixel_test(0, (0, 0), |_, _| 1.0));
+        assert!(!c.loose_pixel_test(0, (0, 0), |_, _| true));
+        assert_eq!(c.draw(1, (1, 2)), Some((9, (1, 2))));
+        assert!(c.pixel_test(1, (0, 0), |_, _| 0.5));
+        assert!(!c.pixel_test(1, (0, 0), |_, _| 0.0));
+        assert!(c.loose_pixel_test(1, (0, 0), |_, _| true));
+        assert!(!c.loose_pixel_test(9, (0, 0), |_, _| true));
     }
 
     #[test]

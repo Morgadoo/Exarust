@@ -247,6 +247,8 @@ pub struct TaskLayer {
     pub state: u32,
     /// How many frames the layer has run.
     pub frames: u64,
+    /// The layer left the task list.
+    pub closed: bool,
     pub focus: TaskFocus,
 }
 
@@ -266,6 +268,7 @@ impl TaskLayer {
             root: false,
             state: 0,
             frames: 0,
+            closed: false,
             focus: TaskFocus::default(),
         }
     }
@@ -398,6 +401,22 @@ impl TaskLayer {
         let before = self.forms.len();
         self.forms.retain(|owned| owned.id != form);
         self.forms.len() != before
+    }
+
+    /// The layer's destructor: every owned form, shortcut and callback goes
+    /// (the original frees its form list, shortcut array and callback list).
+    pub fn destroy(&mut self) {
+        self.forms.clear();
+        self.shortcuts.clear();
+        self.callbacks.clear();
+        self.focus = TaskFocus::default();
+        self.notices = 0;
+        self.closed = true;
+    }
+
+    /// The close slot: the layer leaves the task list.
+    pub fn close(&mut self) {
+        self.closed = true;
     }
 
     /// The frame's per-frame slot: the layer becomes the current task and
