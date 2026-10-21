@@ -154,6 +154,16 @@ pub struct CastBody {
     pub weapon_class: u32,
     /// The simulation tick in milliseconds.
     pub tick_ms: u32,
+    /// The share of a blow's energy a force shell keeps off the body: the
+    /// hit formula multiplies by `1 - hit_damping` (the shell's 0.5).
+    pub hit_damping: f32,
+    /// The attacker's strike factor, which the hit formula adds half of
+    /// (Force Strikes' 1.0).
+    pub strike_factor: f32,
+    /// The swing's factor: sound and reach (Force Strikes' 3.0, else 1).
+    pub swing_factor: f32,
+    /// How visible a displacement power leaves the body: 1 shown, 0 hidden.
+    pub shown: f32,
 }
 
 impl Default for CastBody {
@@ -180,6 +190,10 @@ impl Default for CastBody {
             last_instant: 0,
             weapon_class: 0,
             tick_ms: 12,
+            hit_damping: 0.0,
+            strike_factor: 0.0,
+            swing_factor: 1.0,
+            shown: 1.0,
         }
     }
 }
