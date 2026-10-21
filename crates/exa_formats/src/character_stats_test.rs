@@ -611,3 +611,11 @@ fn the_attack_reach() {
     // A NaN age is not negative: the aged product is NaN.
     assert!(human.attack_reach(f32::NAN).is_nan());
 }
+
+#[test]
+fn the_builders_nan_keeps_reach_the_stats() {
+    let s = CharacterStats::derive(&record(0, f32::NAN, f32::NAN), Some(&human()), ALIVE);
+    assert_eq!((s.height, s.feral), (-1.0, 0.0));
+    assert!((s.scale - 1.05).abs() < 1e-6, "{}", s.scale);
+    assert_eq!(s.max_energy, 1.0);
+}

@@ -1546,7 +1546,14 @@ fn spawn_placed_characters(
                 exa_character::RaceWeaponry::of_race,
             ),
             morph,
-            exa_assets::SkinLook::of_entry(&model_name, c.record.skin, c.record.female),
+            exa_assets::SkinLook::of_entry(
+                &model_name,
+                c.record.skin,
+                race.is_some_and(|r| {
+                    exa_character::look::skin_set(r.look, c.record.female)
+                        == exa_character::look::SkinSet::Female
+                }),
+            ),
             exa_character::hair::Hair {
                 style: c.record.hair_style,
                 colour: [
