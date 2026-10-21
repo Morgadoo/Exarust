@@ -672,3 +672,34 @@ fn a_pair_keeps_four_points_spread_widest() {
     pair.offer(at([0.0, 0.0, 0.0, 0.99]));
     assert_eq!(pair.points.iter().map(|p| p.a).collect::<Vec<_>>(), kept);
 }
+
+/// A timing probe for the 83 Hz pair stage (`--ignored --nocapture`): 400
+/// awake balls 25 cm apart over a 5 m square, half of them touching a
+/// neighbour, detected 500 times. It prints the mean time of one
+/// detection, to compare a change against the tree before it.
+#[test]
+#[ignore = "timing probe"]
+fn pair_detection_timing() {
+    let mut bodies: Vec<Ragdoll> = (0..400u32)
+        .map(|i| {
+            let (x, z) = ((i % 20) as f32 * 0.25, (i / 20) as f32 * 0.25);
+            let lift = if i % 2 == 0 { 0.0 } else { 0.05 };
+            ball(i + 1, 11, Vec3::new(x + lift, 2.0, z), 0.12)
+        })
+        .collect();
+    let mut stages = pairs();
+    let mut all: Vec<&mut Ragdoll> = bodies.iter_mut().collect();
+    for _ in 0..50 {
+        stages[0].detect(&mut all, &mut []);
+    }
+    let runs = 500;
+    let start = std::time::Instant::now();
+    for _ in 0..runs {
+        stages[0].detect(&mut all, &mut []);
+    }
+    let each = start.elapsed().as_secs_f64() * 1e6 / runs as f64;
+    println!(
+        "pair detection: {each:.1} us per tick, {} touches",
+        the_pairs(&stages).touches().len()
+    );
+}
