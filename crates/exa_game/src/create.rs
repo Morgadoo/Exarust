@@ -441,12 +441,20 @@ pub struct CreationDefaults {
     pub flags: i32,
 }
 
-/// The two option entries and the fixed words the creation object opens with.
+/// The thaumaturge's starting powers, which the unknown story background
+/// gives its record.
+///
+/// Two known powers of 16 bytes each (`0x101` and `0x201`, both with
+/// `0x5fff`); the first power slot holds the first power with bit 20 set
+/// (`0x100101`), the second the second power; the power word is
+/// `0x510000` and the float beside the slots 4.0. The other eight slots are
+/// cleared. A record with known powers opens the power tree when it is
+/// committed ([`CommitKind::PowerTree`]).
 pub fn creation_defaults() -> CreationDefaults {
     CreationDefaults {
         count: 2,
         stride: 16,
-        slots: [[0x100101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]],
+        slots: [[0x101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]],
         first: 0x100101,
         second: 0x201,
         value: 4.0,
@@ -520,13 +528,18 @@ pub struct CreationContinue {
     pub enabled: bool,
 }
 
-/// Picks the continue label and flags from the mode.
+/// Picks the continue toggle's label and flags from the chosen kind.
+///
+/// The button shows the chosen kind and is enabled while the kind is below
+/// the availability mask (an unsigned compare). With both a checkpoint and
+/// a save (mask 3) either kind can switch; with only one there is nothing
+/// to switch to and the button is disabled.
 pub fn creation_continue_button(kind: i32, availability: i32) -> CreationContinue {
     let save = kind == 2;
     CreationContinue {
         label: exa_ui::creation::continue_label(kind),
         mirrored: save,
-        enabled: kind >= availability,
+        enabled: (kind as u32) < (availability as u32),
     }
 }
 
@@ -1999,8 +2012,9 @@ pub enum CommitKind {
     Begin,
     Ready,
     Create,
-    /// The record asks for the advanced character editor.
-    AdvancedEditor,
+    /// The record knows thaumaturgy powers: the power tree opens, and its
+    /// own commit saves the preset and starts the story.
+    PowerTree,
 }
 
 /// The state the character screen's final button reads.
@@ -2008,11 +2022,14 @@ pub enum CommitKind {
 pub struct SubmitInput {
     pub page: CreationScreenPage,
     pub name_len: usize,
-    /// The record's creation-object count: positive opens the advanced editor.
-    pub object_count: i32,
+    /// The record's known thaumaturgy powers: any opens the power tree
+    /// instead of committing, and hides the final button's label.
+    pub known_powers: i32,
     pub game_mode: i32,
     pub screen_mode: i32,
     pub continue_mode: bool,
+    /// The versus script installed its equipment hook.
+    pub equipment_hook: bool,
 }
 
 /// What pressing the final button did.
@@ -2023,19 +2040,66 @@ pub struct Submit {
     pub missing_name: bool,
     /// The equipment page is built.
     pub build_equipment: bool,
+    /// What the equipment page holds for the mode.
+    pub panels: EquipmentPanels,
     pub button: Option<&'static str>,
     /// The screen flags that a versus lobby button needs.
     pub ready_flags: bool,
     pub commit: Option<CommitKind>,
 }
 
+/// The panels the equipment page builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EquipmentPanels {
+    pub apparel: bool,
+    pub weapons: bool,
+    pub skills: bool,
+    /// The starting skill slots are written first
+    /// ([`apply_starting_skills`]).
+    pub starting_skills: bool,
+    /// Versus with its script hooks: the script's equipment and lobby
+    /// forms stand in for the panels it replaces.
+    pub versus_script: bool,
+}
+
+/// The equipment page's panels for a game mode.
+///
+/// The arena and story show apparel and skills. Versus shows apparel, or
+/// with the script's equipment hook its equipment form and a read-only
+/// skills panel at 100000 experience. Every other mode rewrites the
+/// starting skills and shows apparel and weapons.
+pub fn equipment_panels(game_mode: i32, equipment_hook: bool) -> EquipmentPanels {
+    match game_mode {
+        4 | 8 => EquipmentPanels {
+            apparel: true,
+            skills: true,
+            ..EquipmentPanels::default()
+        },
+        0x1010 => EquipmentPanels {
+            apparel: !equipment_hook,
+            skills: equipment_hook,
+            versus_script: equipment_hook,
+            ..EquipmentPanels::default()
+        },
+        _ => EquipmentPanels {
+            apparel: true,
+            weapons: true,
+            starting_skills: true,
+            ..EquipmentPanels::default()
+        },
+    }
+}
+
 /// Advances the creator's page or commits the character.
 ///
 /// On the appearance page a non-continued character needs a name; a
 /// missing one asks for it and changes nothing. A present one builds the
-/// equipment page and labels the button for the mode. On the equipment
-/// page a record with a creation object opens the advanced editor;
-/// otherwise the mode decides what the commit starts.
+/// equipment page and, when the record knows no powers, labels the button
+/// for the mode. On the equipment page a record with powers opens the
+/// power tree; otherwise the mode decides what the commit does: a recruit
+/// is handed to the arena's hook (or the form closes), versus readies its
+/// lobby, and every other mode saves the preset, commits the record,
+/// stores its worth and starts the game.
 pub fn submit_creation(input: SubmitInput) -> Submit {
     if input.page == CreationScreenPage::Appearance {
         if !input.continue_mode && input.name_len < 1 {
@@ -2043,12 +2107,13 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
                 page: input.page,
                 missing_name: true,
                 build_equipment: false,
+                panels: EquipmentPanels::default(),
                 button: None,
                 ready_flags: false,
                 commit: None,
             };
         }
-        let button = if input.object_count == 0 {
+        let button = if input.known_powers == 0 {
             Some(exa_ui::creation::commit_label(
                 input.screen_mode,
                 input.game_mode,
@@ -2060,19 +2125,21 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             page: CreationScreenPage::Equipment,
             missing_name: false,
             build_equipment: true,
+            panels: equipment_panels(input.game_mode, input.equipment_hook),
             button,
-            ready_flags: input.object_count == 0 && input.game_mode == 0x1010,
+            ready_flags: input.known_powers == 0 && input.game_mode == 0x1010,
             commit: None,
         };
     }
-    if input.object_count > 0 {
+    if input.known_powers > 0 {
         return Submit {
             page: input.page,
             missing_name: false,
             build_equipment: false,
+            panels: EquipmentPanels::default(),
             button: None,
             ready_flags: false,
-            commit: Some(CommitKind::AdvancedEditor),
+            commit: Some(CommitKind::PowerTree),
         };
     }
     let commit = if input.screen_mode == 10 {
@@ -2088,6 +2155,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
         page: input.page,
         missing_name: false,
         build_equipment: false,
+        panels: EquipmentPanels::default(),
         button: None,
         ready_flags: false,
         commit: Some(commit),
@@ -2133,8 +2201,9 @@ pub enum PageDestination {
     Appearance,
     /// Start the arena's recruit form.
     Arena,
-    /// Start the mode's transition.
-    Transition,
+    /// Leave the creator for the menu it came from, as the cancel key and
+    /// an emptied save list do.
+    Menu,
 }
 
 /// The result of the equipment page's tab.
@@ -2145,8 +2214,9 @@ pub struct PageSwitch {
     pub header: Option<PageHeader>,
 }
 
-/// Switches from the equipment page back, or commits from the appearance
-/// page.
+/// Switches from the equipment page back to the appearance page, or leaves
+/// the creator from the appearance page: a recruit returns to the arena,
+/// anyone else to the menu.
 pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageSwitch {
     if page == CreationScreenPage::Equipment {
         PageSwitch {
@@ -2160,7 +2230,7 @@ pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageS
             destination: if screen_mode == 10 {
                 PageDestination::Arena
             } else {
-                PageDestination::Transition
+                PageDestination::Menu
             },
             header: None,
         }
@@ -2266,9 +2336,22 @@ pub struct SaveSelection {
 
 /// Selects a save slot with its kind, adjusting the kind to what the slot
 /// offers.
+///
+/// The save manager reports what the slot offers; a zero mask leaves the
+/// kind and the screen alone. Otherwise the creator's record is shown
+/// again, a save the slot lacks falls back to its checkpoint and a missing
+/// checkpoint to its save, and the screen is refreshed.
 pub fn select_save(index: i32, kind: SaveKind, availability: SaveAvailability) -> SaveSelection {
     let mut kind = kind;
     let mut adjusted = false;
+    if availability.0 == 0 {
+        return SaveSelection {
+            index,
+            kind,
+            availability,
+            adjusted,
+        };
+    }
     if kind == SaveKind::Save && !availability.has(SaveKind::Save) {
         kind = SaveKind::Checkpoint;
         adjusted = true;
@@ -2284,7 +2367,8 @@ pub fn select_save(index: i32, kind: SaveKind, availability: SaveAvailability) -
     }
 }
 
-/// Steps to the previous save, if any.
+/// Steps to the previous save, if any. Stepping, like picking from the
+/// list, selects the new slot's checkpoint first.
 pub fn previous_save(index: i32) -> Option<i32> {
     (index > 0).then_some(index - 1)
 }
@@ -2296,10 +2380,10 @@ pub fn next_save(index: i32, count: i32) -> Option<i32> {
 }
 
 /// Selects the save at one-based list position `selected` unless it is
-/// already the current one.
+/// already the current one. The comparison is made in 64 bits and the
+/// index passed on is the 32-bit one below `selected`, unchecked.
 pub fn select_save_from_list(selected: i32, current: i32) -> Option<i32> {
-    let index = selected.checked_sub(1)?;
-    (index >= 0 && index != current).then_some(index)
+    (i64::from(selected) - 1 != i64::from(current)).then_some(selected.wrapping_sub(1))
 }
 
 /// Toggles the save kind against the availability mask.
@@ -2445,22 +2529,39 @@ pub fn throttle_voice(clock: i32, last: i32) -> VoiceThrottle {
     }
 }
 
-/// The hair button's state from the creator's flags.
+/// The hair checkbox's state word from the record's flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HairButton {
+    /// A female record: the box is hidden (state 0x10, the same bit the
+    /// look hides the face variant controls with).
     Hidden,
-    Visible,
-    Expanded,
+    /// A male record with a face variant: state 0x60, which holds 0x40,
+    /// the bit the sex radio reads as checked.
+    Checked,
+    /// A male record without a face variant: state 0.
+    Clear,
 }
 
-/// Reads the hair button's state: bit 0 shows it, a face variant expands it.
+impl HairButton {
+    /// The state word the original stores on the checkbox.
+    pub fn state(self) -> u32 {
+        match self {
+            Self::Hidden => 0x10,
+            Self::Checked => 0x60,
+            Self::Clear => 0,
+        }
+    }
+}
+
+/// Reads the hair checkbox's state: bit 0 (female) hides it, otherwise a
+/// face variant checks it.
 pub fn hair_button(sex_or_word: i32, variant_bits: i32) -> HairButton {
     if sex_or_word & 1 != 0 {
-        HairButton::Visible
-    } else if variant_bits & 0xf0_0000 != 0 {
-        HairButton::Expanded
-    } else {
         HairButton::Hidden
+    } else if variant_bits & 0xf0_0000 != 0 {
+        HairButton::Checked
+    } else {
+        HairButton::Clear
     }
 }
 
@@ -2805,47 +2906,43 @@ pub fn skill_tab_place(
     }
 }
 
-/// The continue screen's name label and item list.
+/// The continue screen's panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContinuePlace {
-    /// The save list's extent.
+    /// The character view's left edge: 59 GUI units.
+    pub view_x: i32,
+    /// The carried items' list.
     pub list: PanelPlace,
-    /// The name box's extent; its height runs to the parent's bottom.
+    /// The details form under it.
+    pub details: PanelPlace,
+    /// The name box inside the details form, down to its bottom.
     pub name: PanelPlace,
 }
 
-/// Lays out the continue screen; one GUI unit is 59 pixels of row.
-pub fn continue_place(unit: i32, parent_height: i32) -> ContinuePlace {
+/// Lays out the continue screen. `tall` is the same window aspect flag the
+/// equipment panels read (clear in the original's short layout).
+pub fn continue_place(unit: i32, tall: bool) -> ContinuePlace {
+    let details = PanelPlace {
+        x: 0,
+        y: 0x148,
+        w: 0xec,
+        h: if tall { 0x140 } else { 0x104 },
+    };
     ContinuePlace {
+        view_x: unit * 0x3b,
         list: PanelPlace {
-            x: unit * 0x3b,
+            x: 4,
             y: 0x74,
             w: 0xe4,
             h: 0xb4,
         },
+        details,
         name: PanelPlace {
             x: 4,
             y: 0x28,
             w: 0xe4,
-            h: parent_height - 0x28,
+            h: details.h - 0x28,
         },
-    }
-}
-
-/// Reselects a save slot when its availability changes.
-///
-/// A zero mask leaves the chosen kind alone; otherwise the kind follows
-/// what the slot offers.
-pub fn reselect_save(index: i32, kind: SaveKind, availability: SaveAvailability) -> SaveSelection {
-    if availability.0 == 0 {
-        SaveSelection {
-            index,
-            kind,
-            availability,
-            adjusted: false,
-        }
-    } else {
-        select_save(index, kind, availability)
     }
 }
 
@@ -2892,7 +2989,7 @@ pub fn equipment_tab(index: i32) -> EquipmentTab {
         EquipmentTab::Character
     } else {
         EquipmentTab::Other {
-            enabled: index == 0,
+            enabled: index != 0,
         }
     }
 }
@@ -2915,21 +3012,21 @@ pub fn select_variant_voice(index: i32, race_set: bool, sample_exists: bool) -> 
 pub struct PresetLoad {
     /// The profession word keeps its sex bit and clears its race byte.
     pub profession: i32,
-    /// The creation-object count is cleared.
-    pub object_count: i32,
-    /// The five option entries are cleared.
-    pub options_cleared: bool,
+    /// The known powers are cleared.
+    pub known_powers: i32,
+    /// The ten power slots are cleared.
+    pub power_slots_cleared: bool,
 }
 
 /// Finishes a successful preset load.
 ///
-/// The record's race byte is cleared, its option entries and object count
-/// are zeroed; the rest of the record stays as the preset wrote it.
+/// The record's race byte is cleared, its known powers and power slots
+/// are emptied; the rest of the record stays as the preset wrote it.
 pub fn apply_loaded_preset(profession: i32) -> PresetLoad {
     PresetLoad {
         profession: profession & !0x0000_ff00,
-        object_count: 0,
-        options_cleared: true,
+        known_powers: 0,
+        power_slots_cleared: true,
     }
 }
 
@@ -2938,16 +3035,18 @@ pub fn apply_loaded_preset(profession: i32) -> PresetLoad {
 pub struct TemplateUse {
     /// The record the creator had before was freed.
     pub replaced: bool,
-    pub object_count: i32,
-    pub options_cleared: bool,
+    /// The template's known powers are cleared.
+    pub known_powers: i32,
+    /// Its ten power slots are cleared.
+    pub power_slots_cleared: bool,
 }
 
 /// Adopts the template record when a named background has no saved preset.
 pub fn use_template(has_record: bool) -> TemplateUse {
     TemplateUse {
         replaced: has_record,
-        object_count: 0,
-        options_cleared: true,
+        known_powers: 0,
+        power_slots_cleared: true,
     }
 }
 
@@ -2970,7 +3069,10 @@ pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
     PreviewPush { count, selected }
 }
 
-/// The continue list's name row for a selected item, one-based.
+/// The text row a pick in the continue screen's list shows, from its
+/// one-based position: that row's text fills the details box. The
+/// original indexes without a check; a position below one shows nothing
+/// here.
 pub fn continue_name_row(selected: i32) -> Option<usize> {
     usize::try_from(selected.checked_sub(1)?).ok()
 }
@@ -3333,7 +3435,7 @@ mod tests {
         assert_eq!(defaults.stride, 16);
         assert_eq!(
             defaults.slots,
-            [[0x100101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]]
+            [[0x101, 0x5fff, 0, 0], [0x201, 0x5fff, 0, 0]]
         );
         assert_eq!(defaults.first, 0x100101);
         assert_eq!(defaults.second, 0x201);
@@ -3395,17 +3497,21 @@ mod tests {
 
     #[test]
     fn the_creation_continue_button_follows_its_mode() {
+        // With both kinds available either one can switch.
         let save = creation_continue_button(2, 3);
         assert_eq!(save.label, "Continue from save");
         assert!(save.mirrored);
-        assert!(!save.enabled);
+        assert!(save.enabled);
 
-        let checkpoint = creation_continue_button(5, 3);
+        let checkpoint = creation_continue_button(1, 3);
         assert_eq!(checkpoint.label, "Continue from checkpoint");
         assert!(!checkpoint.mirrored);
         assert!(checkpoint.enabled);
 
-        assert!(creation_continue_button(3, 3).enabled);
+        // A lone save or checkpoint has nothing to switch to.
+        assert!(!creation_continue_button(2, 2).enabled);
+        assert!(!creation_continue_button(1, 1).enabled);
+        assert!(!creation_continue_button(5, 3).enabled);
     }
 
     #[test]
@@ -4320,10 +4426,11 @@ mod tests {
         let unnamed = submit_creation(SubmitInput {
             page: CreationScreenPage::Appearance,
             name_len: 0,
-            object_count: 0,
+            known_powers: 0,
             game_mode: 4,
             screen_mode: 4,
             continue_mode: false,
+            equipment_hook: false,
         });
         assert!(unnamed.missing_name);
         assert_eq!(unnamed.page, CreationScreenPage::Appearance);
@@ -4332,55 +4439,84 @@ mod tests {
         let named = submit_creation(SubmitInput {
             page: CreationScreenPage::Appearance,
             name_len: 1,
-            object_count: 0,
+            known_powers: 0,
             game_mode: 4,
             screen_mode: 4,
             continue_mode: false,
+            equipment_hook: false,
         });
         assert!(!named.missing_name);
         assert_eq!(named.page, CreationScreenPage::Equipment);
         assert!(named.build_equipment);
         assert_eq!(named.button, Some("BEGIN"));
         assert!(!named.ready_flags);
+        assert_eq!(
+            named.panels,
+            EquipmentPanels {
+                apparel: true,
+                skills: true,
+                ..EquipmentPanels::default()
+            }
+        );
 
         let ready = submit_creation(SubmitInput {
             page: CreationScreenPage::Appearance,
             name_len: 3,
-            object_count: 0,
+            known_powers: 0,
             game_mode: 0x1010,
             screen_mode: 0,
             continue_mode: false,
+            equipment_hook: false,
         });
         assert_eq!(ready.button, Some("READY"));
         assert!(ready.ready_flags);
+        assert!(ready.panels.apparel);
+        assert!(!ready.panels.skills);
+        let scripted = equipment_panels(0x1010, true);
+        assert!(!scripted.apparel);
+        assert!(scripted.skills);
+        assert!(scripted.versus_script);
+        // The free creator rewrites its starting skills on every visit.
+        assert_eq!(
+            equipment_panels(0, false),
+            EquipmentPanels {
+                apparel: true,
+                weapons: true,
+                starting_skills: true,
+                ..EquipmentPanels::default()
+            }
+        );
 
         let recruit = submit_creation(SubmitInput {
             page: CreationScreenPage::Equipment,
             name_len: 3,
-            object_count: 0,
+            known_powers: 0,
             game_mode: 8,
             screen_mode: 10,
             continue_mode: false,
+            equipment_hook: false,
         });
         assert_eq!(recruit.commit, Some(CommitKind::Recruit));
 
         let advanced = submit_creation(SubmitInput {
             page: CreationScreenPage::Equipment,
             name_len: 3,
-            object_count: 2,
+            known_powers: 2,
             game_mode: 8,
             screen_mode: 10,
             continue_mode: false,
+            equipment_hook: false,
         });
-        assert_eq!(advanced.commit, Some(CommitKind::AdvancedEditor));
+        assert_eq!(advanced.commit, Some(CommitKind::PowerTree));
 
         let free = submit_creation(SubmitInput {
             page: CreationScreenPage::Equipment,
             name_len: 3,
-            object_count: 0,
+            known_powers: 0,
             game_mode: 0,
             screen_mode: 0,
             continue_mode: false,
+            equipment_hook: false,
         });
         assert_eq!(free.commit, Some(CommitKind::Create));
     }
@@ -4400,7 +4536,7 @@ mod tests {
         assert!(arena.header.is_none());
 
         let other = switch_creation_page(CreationScreenPage::Appearance, 4);
-        assert_eq!(other.destination, PageDestination::Transition);
+        assert_eq!(other.destination, PageDestination::Menu);
     }
 
     #[test]
@@ -4522,14 +4658,14 @@ mod tests {
         assert_eq!(layout.name, "A very long cha");
         assert_eq!(layout.button.label, "Continue from save");
         assert!(layout.button.mirrored);
-        assert!(layout.button.enabled);
+        assert!(!layout.button.enabled);
 
         let last = continue_layout(2, 3, SaveKind::Checkpoint, SaveAvailability(3), "X");
         assert!(!last.previous_disabled);
         assert!(last.next_disabled);
         assert_eq!(last.button.label, "Continue from checkpoint");
         assert!(!last.button.mirrored);
-        assert!(!last.button.enabled);
+        assert!(last.button.enabled);
     }
 
     #[test]
@@ -4577,10 +4713,12 @@ mod tests {
 
     #[test]
     fn the_hair_button_and_sex_change_read_the_flags() {
-        assert_eq!(hair_button(0, 0), HairButton::Hidden);
-        assert_eq!(hair_button(1, 0), HairButton::Visible);
-        assert_eq!(hair_button(0, 0x10_0000), HairButton::Expanded);
-        assert_eq!(hair_button(0, 0x1_0000), HairButton::Hidden);
+        assert_eq!(hair_button(0, 0), HairButton::Clear);
+        assert_eq!(hair_button(1, 0), HairButton::Hidden);
+        assert_eq!(hair_button(1, 0).state(), 0x10);
+        assert_eq!(hair_button(0, 0x10_0000), HairButton::Checked);
+        assert_eq!(hair_button(0, 0x10_0000).state(), 0x60);
+        assert_eq!(hair_button(0, 0x1_0000), HairButton::Clear);
 
         assert_eq!(set_hair_visible(0, true), 0x1_0000);
         assert_eq!(set_hair_visible(0x1_0000, false), 0);
@@ -4793,14 +4931,24 @@ mod tests {
 
     #[test]
     fn the_continue_screen_places_its_list_and_name() {
-        let place = continue_place(4, 300);
+        let place = continue_place(4, true);
+        assert_eq!(place.view_x, 236);
         assert_eq!(
             place.list,
             PanelPlace {
-                x: 236,
+                x: 4,
                 y: 0x74,
                 w: 0xe4,
                 h: 0xb4
+            }
+        );
+        assert_eq!(
+            place.details,
+            PanelPlace {
+                x: 0,
+                y: 0x148,
+                w: 0xec,
+                h: 0x140
             }
         );
         assert_eq!(
@@ -4809,20 +4957,26 @@ mod tests {
                 x: 4,
                 y: 0x28,
                 w: 0xe4,
-                h: 260
+                h: 0x118
             }
         );
+        assert_eq!(continue_place(4, false).name.h, 0xdc);
     }
 
     #[test]
-    fn reselecting_a_save_keeps_the_kind_when_nothing_is_available() {
-        let none = reselect_save(4, SaveKind::Save, SaveAvailability(0));
+    fn a_save_slot_offering_nothing_keeps_the_kind() {
+        let none = select_save(4, SaveKind::Save, SaveAvailability(0));
         assert_eq!(none.kind, SaveKind::Save);
         assert!(!none.adjusted);
 
-        let changed = reselect_save(4, SaveKind::Save, SaveAvailability(1));
+        let changed = select_save(4, SaveKind::Save, SaveAvailability(1));
         assert_eq!(changed.kind, SaveKind::Checkpoint);
         assert!(changed.adjusted);
+
+        assert_eq!(select_save_from_list(3, 1), Some(2));
+        assert_eq!(select_save_from_list(3, 2), None);
+        // Position 0 is not filtered: it selects index -1.
+        assert_eq!(select_save_from_list(0, 0), Some(-1));
     }
 
     #[test]
@@ -4845,8 +4999,9 @@ mod tests {
     #[test]
     fn the_equipment_tabs_store_and_toggle() {
         assert_eq!(equipment_tab(2), EquipmentTab::Character);
-        assert_eq!(equipment_tab(0), EquipmentTab::Other { enabled: true });
-        assert_eq!(equipment_tab(1), EquipmentTab::Other { enabled: false });
+        // Index 0 hides the form; any other index shows it.
+        assert_eq!(equipment_tab(0), EquipmentTab::Other { enabled: false });
+        assert_eq!(equipment_tab(1), EquipmentTab::Other { enabled: true });
     }
 
     #[test]
@@ -4888,16 +5043,16 @@ mod tests {
     }
 
     #[test]
-    fn a_loaded_preset_clears_the_race_and_options() {
+    fn a_loaded_preset_clears_the_race_and_powers() {
         let load = apply_loaded_preset(0x1234_0101);
         assert_eq!(load.profession, 0x1234_0001);
-        assert_eq!(load.object_count, 0);
-        assert!(load.options_cleared);
+        assert_eq!(load.known_powers, 0);
+        assert!(load.power_slots_cleared);
 
         let template = use_template(true);
         assert!(template.replaced);
-        assert_eq!(template.object_count, 0);
-        assert!(template.options_cleared);
+        assert_eq!(template.known_powers, 0);
+        assert!(template.power_slots_cleared);
         assert!(!use_template(false).replaced);
     }
 
@@ -4938,7 +5093,7 @@ mod tests {
 
         assert_eq!(select_save_from_list(4, 2), Some(3));
         assert_eq!(select_save_from_list(3, 2), None);
-        assert_eq!(select_save_from_list(0, 2), None);
+        assert_eq!(select_save_from_list(0, 2), Some(-1));
     }
 
     #[test]
