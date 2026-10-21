@@ -155,18 +155,18 @@ pub const START_ACTIVATION_RADIUS2: f32 = 16_000_000.0;
 pub const END_ACTIVATION_RADIUS2: f32 = 400_000_000.0;
 
 /// The player-control singleton's state at creation: the hotkey permission
-/// mask 31, and both flags the constructor sets to 1. The first flag is the
-/// controls flag the input handlers read and the second the combat flag Tab
-/// toggles; the original's names for the flags are not traced [?], and
-/// Exarust's running player keeps its combat state on the body
+/// mask 31, and two flags the constructor sets to 1. Only the constructor
+/// is traced: what reads the flags, and so their names, are guesses
+/// [guess: controls and combat], and nothing in Exarust reads this
+/// resource. The running player keeps its combat state on the body
 /// (`exa_game::player::PlayerBody`), which starts out of combat.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerControl {
-    /// The hotkey permission mask (+0xA8): 31 at creation.
+    /// The hotkey permission mask: 31 at creation.
     pub hotkey_mask: u32,
-    /// The constructor's first flag (+0xAC): 1.
+    /// The constructor's first flag: 1 [guess: the controls flag].
     pub controls: bool,
-    /// The constructor's second flag (+0xAE): 1. Tab toggles it.
+    /// The constructor's second flag: 1 [guess: the combat flag].
     pub combat: bool,
 }
 
