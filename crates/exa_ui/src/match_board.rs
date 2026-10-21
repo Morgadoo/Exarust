@@ -3318,6 +3318,71 @@ mod tests {
     }
 
     #[test]
+    fn odd_input_and_empty_rosters_do_not_panic() {
+        let mut board = Board::new(true, u32::MAX, Vec::new());
+        assert_eq!(
+            board.handle(BoardInput::SelectTab(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::SelectMatch(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::SelectRank(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::SelectTier(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::ClickEvent(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::ClickWinner(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::DoubleClickAvailable(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::DoubleClickTeam(usize::MAX)),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::DropOnTeam {
+                from: usize::MAX,
+                to: Some(usize::MAX)
+            }),
+            BoardAction::None
+        );
+        assert_eq!(
+            board.handle(BoardInput::DropOnAvailable(usize::MAX)),
+            BoardAction::None
+        );
+        assert!(board.team.is_empty());
+        assert!(board.available.is_empty());
+        assert!(!board.double_click_available(0));
+        assert!(!board.move_to_available(0));
+        assert!(!board.move_to_team(0, Some(0)));
+        assert_eq!(board.entered_label(), "Entered 0/1");
+        assert!(board.entered_label().contains('0'));
+        assert_eq!(board.hit_test((-10, -10)), BoardHit::Outside);
+        assert_eq!(board.hit_test((i32::MAX, i32::MIN)), BoardHit::Outside);
+        assert_eq!(board.click((i32::MAX, i32::MIN)), BoardAction::None);
+        assert!(!board.paint().is_empty());
+        assert_eq!(
+            season_index(u32::MAX),
+            ((u32::MAX as u64 + 6) / 28 % 4) as u32
+        );
+        assert_eq!(season_picture_name(u32::MAX).len(), 15);
+        assert_eq!(season_weeks_elapsed(u32::MAX), 1);
+    }
+
+    #[test]
     fn the_match_board_opens_and_destroys() {
         let shown = show_match_board(MatchBoardShowInput {
             seed: 7,
