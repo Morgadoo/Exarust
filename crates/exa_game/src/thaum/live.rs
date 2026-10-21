@@ -5,14 +5,19 @@
 //!
 //! - **Each tick** (after the bodies): an arc follows its hand, ticks,
 //!   ends at the level (the static colliders) and tests every other body's
-//!   parts, sending [`ArcShocked`] for a struck character; a shocked
-//!   fighter loses the strength in yellow health, at most once every
-//!   150 ms. A barricade ticks on the game clock, ends once its caster is
-//!   20 m away, and shoves every body part it holds: each sphere's push
-//!   moves the part's particles ([`exa_physics::body::Ragdoll::push_sphere`]),
-//!   the body wakes, a character struck in front is knocked back a step
-//!   (doubled, at most its step length), its instability counter set to 100
-//!   and its energy above 0.25 lowered. Wisps follow their body parts.
+//!   parts, sending [`ArcShocked`] for a struck character. A shock reaches
+//!   a fighter once the game clock is within 150 ms of its next shock time
+//!   ([`ShockReady`]), which then moves to 500 ms plus a draw below 200 ms
+//!   of the engine's generator ahead; a fighter that is not collapsing or
+//!   dead loses the strength in yellow health (floored at 0). A barricade
+//!   ticks on the game clock, ends once its caster is 20 m away, and
+//!   shoves every body part it holds: each sphere's push moves the part's
+//!   particles ([`exa_physics::body::Ragdoll::push_sphere`]), the body
+//!   wakes for 32 ticks, and each part of a character struck in front
+//!   knocks it back a step (doubled, at most its step length), sets its
+//!   instability counter to 100 and, while its energy is above 0.25,
+//!   lowers it, so a body struck by several parts loses that much for
+//!   each. Wisps follow their body parts.
 //! - **Each frame**: the arcs' and wisps' ribbons and the barricade's slab
 //!   are drawn with [`exa_render::glow::GlowMaterial`], a stand-in for the
 //!   original's effect programs, which are not ported. An effect that ends
@@ -32,10 +37,10 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
-use exa_combat::Fighter;
+use exa_combat::{Condition, Fighter};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, Shove, step_length};
+use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
 use exa_render::glow::GlowMaterial;
 
 use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
@@ -52,8 +57,12 @@ use crate::player::PlayerBody;
 
 /// Centimetres a metre: the original's effects run in cm.
 const CM: f32 = 100.0;
-/// The shock reaction's spacing (ms), as a fighter takes a shock.
-pub const SHOCK_GAP_MS: u64 = super::SHOCK_GAP_MS as u64;
+/// A shock reaches a fighter this many ms before its next shock time.
+pub const SHOCK_EARLY_MS: u64 = 150;
+/// After a shock the next one is due this many ms later ...
+pub const SHOCK_SPACING_MS: u64 = 500;
+/// ... plus a draw below this many ms of the engine's generator.
+pub const SHOCK_SPREAD_MS: u64 = 200;
 /// The chest's bone and the right hand's.
 const CHEST: usize = 9;
 const RIGHT_HAND: usize = 17;
@@ -106,9 +115,35 @@ pub struct ArcShocked {
     pub strength: f32,
 }
 
-/// When a fighter last took a shock (ms of game time).
+/// When a fighter's next shock is due (ms of game time); a fighter without
+/// one has never been shocked.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShockedAt(pub u64);
+pub struct ShockReady(pub u64);
+
+/// The shock reaction's clock and health rule, as the original's character
+/// takes a shock: `None` while the shock comes too early, else the next
+/// shock time and the yellow health left (`dying` keeps it).
+pub fn shock_reaction(
+    ready: Option<u64>,
+    now: u64,
+    yellow: f32,
+    strength: f32,
+    dying: bool,
+    roll: &mut Roll,
+) -> Option<(u64, f32)> {
+    if ready.is_some_and(|next| next > now + SHOCK_EARLY_MS) {
+        return None;
+    }
+    let spread = (u64::from(roll.step()) * SHOCK_SPREAD_MS) >> 32;
+    let next = now + SHOCK_SPACING_MS + spread;
+    let left = if dying {
+        yellow
+    } else {
+        let left = yellow - strength;
+        if left < 0.0 { 0.0 } else { left }
+    };
+    Some((next, left))
+}
 
 /// Arcs in the scene: the body and bone whose part they ride (its place is
 /// their frame's anchor, the hand arcs' node offset turned with it), and
@@ -225,38 +260,68 @@ fn segment_meets(a: Vec3, b: Vec3, c: Vec3, r: f32) -> bool {
 }
 
 fn shock_fighters(
-    mut commands: Commands,
     mut shocks: MessageReader<ArcShocked>,
-    mut fighters: Query<(&mut Fighter, Option<&ShockedAt>)>,
+    mut fighters: Query<(&mut Fighter, Option<&mut ShockReady>, Option<&Condition>)>,
     ticks: Option<Res<BodyTicks>>,
+    mut roll: ResMut<EffectRoll>,
+    mut commands: Commands,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
+    // Next shock times set this tick on fighters that had none yet (their
+    // component arrives with the commands).
+    let mut set: Vec<(Entity, u64)> = Vec::new();
     for shock in shocks.read() {
-        let Ok((mut fighter, at)) = fighters.get_mut(shock.body) else {
+        let Ok((mut fighter, ready, condition)) = fighters.get_mut(shock.body) else {
             continue;
         };
-        if at.is_some_and(|ShockedAt(then)| now.saturating_sub(*then) < SHOCK_GAP_MS) {
+        let dying = condition.is_some_and(|c| c.dying());
+        let known = ready.as_deref().map(|r| r.0).or_else(|| {
+            set.iter()
+                .rev()
+                .find(|(e, _)| *e == shock.body)
+                .map(|&(_, next)| next)
+        });
+        let Some((next, yellow)) = shock_reaction(
+            known,
+            now,
+            fighter.health.yellow,
+            shock.strength,
+            dying,
+            &mut roll.0,
+        ) else {
             continue;
+        };
+        fighter.health.yellow = yellow;
+        match ready {
+            Some(mut ready) => ready.0 = next,
+            None => {
+                set.push((shock.body, next));
+                commands.entity(shock.body).insert(ShockReady(next));
+            }
         }
-        let yellow = fighter.health.yellow;
-        fighter.health.yellow = (yellow - shock.strength).max(0.0);
-        commands.entity(shock.body).insert(ShockedAt(now));
     }
+}
+
+/// A character's energy after the knocks of the parts a barricade struck in
+/// front this tick: each lowers it by its loss while it is above 0.25.
+pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
+    losses
+        .iter()
+        .fold(energy, |e, &loss| if 0.25 < e { e - loss } else { e })
 }
 
 fn tick_barricades(
     mut commands: Commands,
     mut walls: Query<(Entity, &mut LiveBarricade)>,
-    mut bodies: Query<(Entity, &mut Ragdoll)>,
+    mut bodies: Query<&mut Ragdoll>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
-    mut shoves: MessageWriter<Shove>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live) in &mut walls {
         let live = &mut *live;
         if let Some(caster) = live.caster
-            && let Ok((_, body)) = bodies.get(caster)
+            && let Ok(body) = bodies.get(caster)
             && let Some(at) = body.parts.first().map(|p| p.transform().translation * CM)
             && power_ends(0, live.wall.centre, at.into())
         {
@@ -265,7 +330,7 @@ fn tick_barricades(
         if live.wall.tick(now) {
             debug!("barricade {wall_entity}: gone");
         }
-        for (entity, mut body) in &mut bodies {
+        for mut body in &mut bodies {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)
                     .and_then(|k| part_point(&body, k, Vec3::ZERO))
@@ -274,8 +339,9 @@ fn tick_barricades(
                 (chest, d.stats.scale, step)
             });
             let mut touched = false;
-            let mut knock = None;
-            let mut energy_loss = 0.0;
+            // Each part struck in front knocks the character back and
+            // lowers its energy again.
+            let mut knocks: Vec<(Vec3, f32)> = Vec::new();
             for k in 0..body.parts.len() {
                 let part = &body.parts[k];
                 let world = part.transform();
@@ -305,27 +371,22 @@ fn tick_barricades(
                     body.push_sphere(k, *sphere, *push / CM);
                 }
                 if let Some(step) = shove.knockback {
-                    knock = Some((body.parts[k].bone, step));
-                    energy_loss = shove.energy_loss;
+                    knocks.push((step, shove.energy_loss));
                 }
             }
             if touched {
                 body.touch(WAKE_TICKS);
             }
-            if let Some((bone, step)) = knock {
+            if let Some(&(step, _)) = knocks.last() {
+                // The original's knockback sets the step's target and does
+                // not wake the body, so no blow is queued; every part's
+                // knockback aims at the same target.
+                body.begin_knockback(step / CM);
                 if let Some(drive) = body.drive.as_mut() {
-                    if 0.25 < drive.energy {
-                        drive.energy -= energy_loss;
-                    }
                     drive.balance_mut().set_counter(100);
+                    let losses: Vec<f32> = knocks.iter().map(|k| k.1).collect();
+                    drive.energy = energy_after_knocks(drive.energy, &losses);
                 }
-                shoves.write(Shove {
-                    body: entity,
-                    bone,
-                    velocity: Vec3::ZERO,
-                    daze: 0.0,
-                    step: Some(step / CM),
-                });
             }
         }
         if live.wall.state == super::barricade::state::GONE {
@@ -682,10 +743,38 @@ mod tests {
     }
 
     #[test]
-    fn a_shocked_fighter_loses_yellow_once_per_gap() {
+    fn a_shock_comes_within_150_ms_of_its_time() {
+        let mut roll = Roll(0);
+        // Never shocked: it lands, the next is due 500 ms on plus a draw of
+        // the generator (state 1: 0 ms).
+        let (next, yellow) = shock_reaction(None, 0, 0.25, 0.05, false, &mut roll).unwrap();
+        assert_eq!(next, 500);
+        assert!((yellow - 0.2).abs() < 1e-6);
+        // 499 + 150 is short of 500 by a millisecond.
+        assert_eq!(
+            shock_reaction(Some(500), 349, 0.2, 0.05, false, &mut roll),
+            None
+        );
+        assert_eq!(roll, Roll(1), "a refused shock draws nothing");
+        // State 0x0808_8406 times 200, high half: 6 ms.
+        let (next, yellow) = shock_reaction(Some(500), 350, 0.2, 0.05, false, &mut roll).unwrap();
+        assert_eq!(next, 856);
+        assert!((yellow - 0.15).abs() < 1e-6);
+        // Collapsing or dead: the clock moves, the health stays.
+        let (_, kept) = shock_reaction(None, 0, 0.1, 0.05, true, &mut roll).unwrap();
+        assert_eq!(kept, 0.1);
+        assert_eq!(
+            shock_reaction(None, 0, 0.03, 0.05, false, &mut roll).map(|s| s.1),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn a_shocked_fighter_waits_for_its_next_shock() {
         let mut app = App::new();
         app.add_message::<ArcShocked>()
             .insert_resource(BodyTicks(0))
+            .insert_resource(EffectRoll(Roll(0)))
             .add_systems(Update, shock_fighters);
         let fighter = app.world_mut().spawn(Fighter::default()).id();
         let shock = ArcShocked {
@@ -693,21 +782,36 @@ mod tests {
             direction: Vec3::Y,
             strength: 0.05,
         };
+        let yellow = |app: &App| app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        // Two arcs in one tick: the second comes too early.
+        app.world_mut().write_message(shock);
         app.world_mut().write_message(shock);
         app.update();
-        let yellow = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
-        assert!((yellow - 0.20).abs() < 1e-6);
-        // 12 ticks are 144 ms: within the gap.
-        app.insert_resource(BodyTicks(12));
+        assert!((yellow(&app) - 0.20).abs() < 1e-6);
+        assert_eq!(
+            app.world().get::<ShockReady>(fighter),
+            Some(&ShockReady(500))
+        );
+        // 29 ticks are 348 ms: 348 + 150 is short of 500.
+        app.insert_resource(BodyTicks(29));
         app.world_mut().write_message(shock);
         app.update();
-        let still = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
-        assert_eq!(still, yellow);
-        // 13 ticks are 156 ms.
-        app.insert_resource(BodyTicks(13));
+        assert!((yellow(&app) - 0.20).abs() < 1e-6);
+        // 30 ticks are 360 ms.
+        app.insert_resource(BodyTicks(30));
         app.world_mut().write_message(shock);
         app.update();
-        let after = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
-        assert!((after - 0.15).abs() < 1e-6);
+        assert!((yellow(&app) - 0.15).abs() < 1e-6);
+        assert_eq!(
+            app.world().get::<ShockReady>(fighter),
+            Some(&ShockReady(866))
+        );
+    }
+
+    #[test]
+    fn each_struck_part_lowers_the_energy_above_a_quarter() {
+        assert!((energy_after_knocks(0.26, &[0.004; 3]) - 0.248).abs() < 1e-6);
+        assert_eq!(energy_after_knocks(0.25, &[0.004]), 0.25);
+        assert_eq!(energy_after_knocks(1.0, &[]), 1.0);
     }
 }

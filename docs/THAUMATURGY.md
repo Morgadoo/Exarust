@@ -114,9 +114,15 @@ drawn as smoothed camera-facing strips.
 
 `exa_game::thaum::live::ThaumEffectsPlugin` runs live arcs, barricades and
 wisps after the bodies: arcs follow their hand, end at the static level and
-shock other fighters (yellow health, at most every 150 ms); a barricade
-pushes the particles of every body part it holds (`Ragdoll::push_sphere`),
-wakes the body, knocks a character back a step and sets its instability;
+shock other fighters: a shock lands once the game clock is within 150 ms
+of the fighter's next shock time, which then moves 500 ms plus a draw below
+200 ms of the engine's generator ahead, and a fighter that is not
+collapsing or dead loses the strength in yellow health (the rest of the
+shock reaction, its motion and stagger, is not wired); a barricade pushes
+the particles of every body part it holds (`Ragdoll::push_sphere`), wakes
+the body for 32 ticks, knocks a character back a step and sets its
+instability, and each part it strikes in front lowers the character's
+energy again while it is above 0.25;
 wisps ride their parts. The player cannot cast yet (there is no power bar):
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` put the effects on
 the player ([DEBUGGING.md](DEBUGGING.md)).
