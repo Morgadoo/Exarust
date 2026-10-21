@@ -53,7 +53,7 @@ fn light(s: Surface, l: vec3<f32>, colour: vec3<f32>) -> Lit {
         return out;
     }
     let h = normalize(l + s.v);
-    let ndh = max(dot(s.n, h), 0.0);
+    let ndh = clamp(dot(s.n, h), 0.0, 1.0);
     let hdv = max(dot(h, s.v), 0.0);
     let r2 = pow(s.rough, 4.0);
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
@@ -379,12 +379,12 @@ fn gi_sample(
     n: vec3<f32>,
     t: Taps,
 ) -> vec4<f32> {
-    // Any frame across the normal will do (the disc is turned per pixel);
-    // this one holds for every normal, unlike the shadows' frame, which
-    // fails toward −Z.
-    let a = select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(n.y) > 0.9);
-    let ax = normalize(cross(n, a));
-    let ay = cross(n, ax);
+    // The original's frame across the normal, with its 0.1 clamp that keeps
+    // the 1/(1 + n.z) term finite toward −Z.
+    let a = 1.0 / max(1.0 + n.z, 0.1);
+    let cross_xy = -n.x * n.y * a;
+    let ax = vec3(1.0 - n.x * n.x * a, cross_xy, -n.x);
+    let ay = vec3(cross_xy, 1.0 - n.y * n.y * a, -n.y);
     var sum = vec4(0.0);
     for (var j = t.first; j < t.first + t.count; j++) {
         let rs = tap(t, j);

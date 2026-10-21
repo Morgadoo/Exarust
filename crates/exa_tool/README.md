@@ -28,4 +28,5 @@
 | `corpus winding` | near-horizontal level faces up or down (grid pieces, level meshes, props), open downward faces, mirrored nodes |
 | `nav <level> [--png out.png]` | the level's navigation grid built as the game builds it at load: size, inputs, columns by span count, floor, passable and open-sky cells per layer; the picture shows both layers ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)) |
 | `export-gltf <pack> <entry> <out.glb>` | static meshes, node hierarchy and materials with embedded PNG textures |
+| `shader [library] [material]` | the original GLSL a material's program expands to from `Resource.rpk`'s `shading.flb` (`shader common.rml cobweb02`), with `--lights`, `--quality`, `--shadow-quality`, `--supersample`, vertex-stream and environment options; `--warmup` lists the 29 warmed variants and `--list` the library's entries ([FLB.md](../../docs/formats/FLB.md)) |
 Extracted data stays on your machine; `/extracted/` is git-ignored.

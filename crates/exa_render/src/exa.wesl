@@ -192,50 +192,64 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         alpha = material.diffuse.a * o * o;
     }
 
-    // Unlit: emissive only.
+    // Unlit: emissive only. An emissive map's glow uses its alpha unless the
+    // fall-off sets the alpha; a bare opacity map scales it. The original
+    // never combines the two maps on an unlit surface.
     if !has(LIT) {
         var e = material.emissive.rgb;
-        if has(EMISSIVE_MAP) {
-            e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb;
-        }
         var a = material.emissive.a;
-        if has(OPACITY_FALLOFF) && has(EMISSIVE_MAP) {
-            // The opacity fall-off with the view angle: a salve's glow is
-            // strong where it faces the eye and fades toward its outline.
-            let f = material.opacity_falloff;
-            a += exp2((f.x - abs(dot(v, ns))) * f.y) * f.z;
-        }
-        if has(OPACITY_MAP) {
+        if has(EMISSIVE_MAP) {
+            let em = textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS);
+            e *= em.rgb;
+            if has(OPACITY_FALLOFF) {
+                // The opacity fall-off with the view angle: a salve's glow is
+                // strong where it faces the eye and fades toward its outline.
+                let f = material.opacity_falloff;
+                a += exp2((f.x - abs(dot(v, ns))) * f.y) * f.z;
+            } else {
+                a *= em.a;
+            }
+        } else if has(OPACITY_MAP) {
             a *= textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
         }
         out.color = blended(e, a);
         return out;
     }
 
-    var n = normalize(in.world_normal);
-    if !is_front {
-        n = -n;
-    }
     // Skin: the light scattered under it reads a blurred normal.
     let skin = has(SUBSURFACE);
     let blur = material.subsurface.w;
-    var sn = n;
+    let geom = ns;
+    let back_face = has(TWO_SIDED) && !is_front;
+    var n = geom;
+    var sn = geom;
 @if(VERTEX_TANGENTS) {
     if has(NORMAL_MAP) {
-        let t = normalize(in.world_tangent.xyz - n * dot(in.world_tangent.xyz, n));
-        let b = cross(n, t) * in.world_tangent.w;
+        let t = normalize(in.world_tangent.xyz - geom * dot(in.world_tangent.xyz, geom));
+        let b = cross(geom, t) * in.world_tangent.w;
         // The original's bitangent runs along −v of the stored UVs, as
         // Bevy's (its MikkTSpace sign is flipped), so green maps as stored.
         let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
         let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+        // A two-sided back face flips only the map's z, not the tangent
+        // frame, as the original's normal include does.
+        n = normalize(t * xy.x + b * xy.y + geom * select(z, -z, back_face));
         if skin {
             let bxy = textureSampleLevel(normal_map, normal_sampler, uv, blur).rg * 2.0 - 1.0;
             let bz = sqrt(max(1.0 - dot(bxy, bxy), 0.0));
-            sn = normalize(t * bxy.x + b * bxy.y + n * bz);
+            sn = normalize(t * bxy.x + b * bxy.y + geom * select(bz, -bz, back_face));
+        } else {
+            sn = n;
         }
-        n = normalize(t * xy.x + b * xy.y + n * z);
+    } else if back_face {
+        n = -geom;
+        sn = n;
     }
+} else if back_face {
+    n = -geom;
+    sn = n;
 }
+    let shadow_normal = select(geom, -geom, back_face);
     var s: Surface;
     s.n = n;
     s.v = v;
@@ -262,7 +276,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let rgm = textureSampleBias(specular_map, specular_sampler, uv, select(TEXTURE_BIAS, 0.0, has(PACKED_SPECULAR)));
         if has(PACKED_SPECULAR) {
             let metal = rgm.b;
-            s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
+            if has(DIFFUSE_MAP) {
+                s.f0 = mix(vec3(0.04), dif_tex.rgb * material.specular.rgb, metal);
+            } else {
+                // Without a diffuse map the original mixes the other way:
+                // the specular colour scaled by the metal amount, toward
+                // 0.04.
+                s.f0 = mix(material.diffuse.rgb * material.specular.rgb, vec3(0.04), metal);
+            }
             dif_col *= 1.0 - metal;
             scatter_col *= 1.0 - metal;
             s.rough = 1.0 - material.specular.w * rgm.g;
@@ -310,6 +331,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 }
     s.rough = clamp(s.rough, 0.02, 1.0);
+    // The skin program sets the fragment's alpha to the material opacity at
+    // the end, ignoring the diffuse map's alpha.
+    if skin {
+        alpha = material.diffuse.a;
+    }
 
     var diffuse = vec3(0.0);
     var scatter = vec3(0.0);
@@ -340,7 +366,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var shadow = light_shadow(id, p, n, disc, tag, receiver);
         let l = to / max(d, 1e-4);
         if self_shadowed {
-            shadow *= displacement_shadow(uv, l, ax, ay, ns, h0);
+            shadow *= displacement_shadow(uv, l, ax, ay, shadow_normal, h0);
         }
         let colour = (*lt).color_inverse_square_range.rgb * atn * shadow;
         if skin {
@@ -362,7 +388,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             shadow = shadows::fetch_directional_shadow(i, in.world_position, in.world_normal, view_z, in.position.xy);
         }
         if self_shadowed {
-            shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, ns, h0);
+            shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, shadow_normal, h0);
         }
         let colour = (*sun).color.rgb / SUN_LUX * shadow;
         if skin {
@@ -399,17 +425,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         ambient = gi_ambient(g, level);
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
+            reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+        } else {
+            // Without a reflection cube the original's specular GI is a
+            // quarter of the ambient, not a cube sample.
+            reflected = ambient * 0.25 * gv;
         }
-        reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
     } else {
+        // The cube always lights the surface outside the GI volume.
+        ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
         if has(ENVIRONMENT) {
-            ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
+            reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+        } else {
+            reflected = ambient * 0.25 * gv;
         }
-        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
     }
-    // Parallax without displacement shadows darkens the ambient in hollows.
-    if displaced && !self_shadowed {
+    // Parallax darkens the ambient in hollows, with or without the
+    // displacement shadows (the original's `Mat.TexDsp` branch is
+    // independent of `Shd.DispSdw`).
+    if displaced {
         ambient *= min(dsp_val + 1.2, 1.0);
     }
     var colour = (diffuse + ambient) * dif_col;

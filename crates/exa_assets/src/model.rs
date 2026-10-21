@@ -522,21 +522,9 @@ impl ModelLoader<'_> {
 
     /// A material shaded like the original's from its library record.
     fn exa_material(&mut self, m: &Material) -> ExaMaterial {
-        let rgb = |c: [f32; 4]| linear_rgb([c[0], c[1], c[2]]);
-        // Legacy materials brighten their diffuse colour.
-        let mut diffuse = rgb(m.diffuse);
-        if m.kind == 0 {
-            diffuse *= 1.5;
-        }
         let packed = m.kind & 1 != 0;
-        // No specular without the material's specular bit; PBR materials
-        // with a specular map triple it.
-        let mut specular = rgb(m.specular) * m.specular_level;
-        if m.flags & material_flags::SPECULAR == 0 {
-            specular = Vec3::ZERO;
-        } else if packed && m.texture(TextureSlot::Specular).is_some() {
-            specular *= 3.0;
-        }
+        let diffuse = material_diffuse(m);
+        let specular = material_specular(m);
         let mut shading = 0;
         if m.flags & material_flags::LIT != 0 {
             shading |= flags::LIT;
@@ -550,7 +538,7 @@ impl ModelLoader<'_> {
         let mut mat = ExaMaterial {
             params: ExaParams {
                 diffuse: diffuse.extend(m.opacity.clamp(0.0, 1.0)),
-                specular: specular.extend(m.glossiness.clamp(0.01, 1.0)),
+                specular: specular.extend(material_gloss(m)),
                 emissive: emissive(m),
                 flags: shading,
                 ..default()
@@ -666,7 +654,14 @@ impl ModelLoader<'_> {
             let spatter = self.spatter();
             mat = mat.with_blood(program, spatter);
         }
-        mat.with_map_flags()
+        // Only a record with its own reflection cube takes the cube path;
+        // every other surface's specular GI is a quarter of the ambient.
+        let reflection = m.layer(TextureSlot::Reflection).is_some();
+        mat = mat.with_map_flags();
+        if reflection {
+            mat.params.flags |= flags::ENVIRONMENT;
+        }
+        mat
     }
 
     /// The material of a run-time (`&`) apparel texture set without its
@@ -1511,6 +1506,41 @@ impl PaintJob {
 /// How a material blends, from its blend word: `0x4000` alpha-tests (when
 /// a map gives alpha); otherwise the source and destination factors (bits
 /// 8–11 and 0–3) pick opaque, premultiplied, additive or alpha blending.
+/// The diffuse colour as the original's material uniform takes it: linear,
+/// after legacy materials (type 0) brighten it by 1.5.
+fn material_diffuse(m: &Material) -> Vec3 {
+    let scale = if m.kind & 0xFF == 0 { 1.5 } else { 1.0 };
+    linear_rgb([
+        m.diffuse[0] * scale,
+        m.diffuse[1] * scale,
+        m.diffuse[2] * scale,
+    ])
+}
+
+/// The specular colour: linear, times the record's specular level; zero
+/// without the specular bit, and tripled for a PBR record with a packed
+/// specular map (the `shadeopt` program's `MatSpc`).
+fn material_specular(m: &Material) -> Vec3 {
+    if m.flags & material_flags::SPECULAR == 0 {
+        return Vec3::ZERO;
+    }
+    let mut specular = linear_rgb([m.specular[0], m.specular[1], m.specular[2]]) * m.specular_level;
+    if m.kind & 1 != 0 && m.texture(TextureSlot::Specular).is_some() {
+        specular *= 3.0;
+    }
+    specular
+}
+
+/// The record's glossiness as stored; type-0 materials are raised to 0.01,
+/// as the original's material uniform does.
+fn material_gloss(m: &Material) -> f32 {
+    if m.kind & 0xFF == 0 {
+        m.glossiness.clamp(0.01, 1.0)
+    } else {
+        m.glossiness
+    }
+}
+
 fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
     const ONE: u32 = 1;
     const SRC_ALPHA: u32 = 2;
@@ -1902,6 +1932,58 @@ mod tests {
             opacity,
             ..default()
         }
+    }
+
+    #[test]
+    fn legacy_materials_scale_before_linearising() {
+        // The material uniform brightens a type-0 diffuse colour before the
+        // sRGB transfer: 0.5 becomes liner(0.75), not liner(0.5) * 1.5.
+        let legacy = Material {
+            diffuse: [0.5, 0.25, 0.125, 1.0],
+            kind: 0,
+            ..default()
+        };
+        let d = material_diffuse(&legacy);
+        assert!((d.x - linear(0.75)).abs() < 1e-6);
+        assert!((d.y - linear(0.375)).abs() < 1e-6);
+        let pbr = Material {
+            kind: 1,
+            ..legacy.clone()
+        };
+        assert!((material_diffuse(&pbr).x - linear(0.5)).abs() < 1e-6);
+        // A type-0 glossiness below 0.01 is raised; other kinds keep it.
+        let dull = Material {
+            glossiness: 0.005,
+            ..legacy
+        };
+        assert_eq!(material_gloss(&dull), 0.01);
+        assert_eq!(material_gloss(&Material { kind: 1, ..dull }), 0.005);
+    }
+
+    #[test]
+    fn specular_needs_the_bit_and_a_pbr_map_triples_it() {
+        let mut m = Material {
+            specular: [1.0, 0.5, 0.25, 1.0],
+            specular_level: 0.5,
+            kind: 1,
+            flags: 0x4,
+            ..default()
+        };
+        let s = material_specular(&m);
+        assert!((s.x - 0.5).abs() < 1e-6);
+        assert_eq!(
+            material_specular(&Material {
+                flags: 0,
+                ..m.clone()
+            }),
+            Vec3::ZERO
+        );
+        m.layers.push(exa_formats::material::TextureLayer {
+            slot: TextureSlot::Specular,
+            texture: "s".into(),
+            amount: 0.0,
+        });
+        assert!((material_specular(&m).x - 1.5).abs() < 1e-6);
     }
 
     #[test]

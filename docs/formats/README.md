@@ -23,7 +23,7 @@ extension; the format is identified by its leading magic
 | weapon factory | `0x 0F CE AF` | Factories (106) | observed | [OTHER.md](OTHER.md#weapon-factories) |
 | actor | `06/07 AC CD 00` | `Resource/actors.rpk` (21) | verified (character record) | [OTHER.md](OTHER.md#actors) |
 | material library `.rml` | pack | Resource (4) | verified (texture layers) | [OTHER.md](OTHER.md#material-libraries-rml) |
-| shader library `.flb` | pack, entries obfuscated | Resource (2) | unknown | [OTHER.md](OTHER.md#shader-libraries-flb) |
+| shader library `.flb` | pack, entries cipher-rotated | Resource (2) | verified (container, cipher, template language, program choices) | [FLB.md](FLB.md) |
 | save `.rsg` (not shipped) | `02 EA 7A DA` | `%APPDATA%\\Exanima` | verified (package, slots, player-data framing; chunk payloads partly) | [SAVES.md](SAVES.md) |
 | manual `.fds` | pack of marked-up text | Resource (2) | verified | [OTHER.md](OTHER.md#manual-pages-fds) |
 | sound | `RIFF` (PCM WAVE) | Sound (1131) | verified | [OTHER.md](OTHER.md#sound) |

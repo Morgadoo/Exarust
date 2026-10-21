@@ -1840,10 +1840,17 @@ Packs of material payloads (the same layout as `BA01` payloads, see
 
 `shading.flb` (54 programs: `ambient`, `bloomfilter`, `blurconv_x/y`,
 `dispshell_f/v`, `effectbarrier_f/v`, …) and `textures.flb` (61 procedural
-texture programs: `chardecomp_d/n/s`, `chargen_*`, `cloth_*`, …). Entries are
-obfuscated: identical plaintext prefixes give identical ciphertext prefixes,
-which suggests a position-keyed XOR or a static dictionary coder over GLSL.
-Decoding them is optional (we write WGSL) but helps visual fidelity.
+texture programs: `chardecomp_d/n/s`, `chargen_*`, `cloth_*`, …).
+
+The container is the pack table of contents (32-byte records, offsets from
+the end of the table). Each entry is rotated word by word by a
+position-keyed stream cipher: with a key restarted at `0x2BCBE389` for every
+entry, each little-endian u32 advances `key = key·0x10A860C1 mod 2^32`, and
+the word is rotated left by `(key >> 13) & 31`, with bit 2 forced when
+`(key >> 13) & 7` is zero. The decoded text is the GLSL template the
+original's shader builder expands; the language, flag tables, program
+choices and uniform blocks are in [FLB.md](FLB.md). `exa_formats::flb`
+decodes the library; `exa-tool shader` prints a material's program.
 
 ## Manual pages (`.fds`)
 

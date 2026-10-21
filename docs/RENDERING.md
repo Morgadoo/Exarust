@@ -69,6 +69,75 @@ Always on (`exa_render::post`, replacing Bevy's tonemapping; cameras get
 
 The ACES curve found among the shader programs is unused.
 
+## Shader builder
+
+The original does not ship fixed GLSL binaries: `Resource.rpk`'s
+`shading.flb` holds templates, and `TShaderBuilder` expands one per
+permutation at run time (`docs/formats/FLB.md`). Exarust generates the same
+text, for comparison, in `exa_render::shader_template` and
+`exa_render::shader_program`, and prints a material's program with
+`exa-tool shader <library> <material>`.
+
+**Programs.** A material's record becomes a shader word whose low nibble
+picks `shading_f` (0 legacy, 2 unlit), `shadeopt_f` (1 PBR), `shadehar_f`
+(3 hair), `shadesss_f` (5/6 skin) or `shadetrl_f` (7 translucent); every set
+shares the vertex program `shading_v`. A non-zero subsurface colour (the
+record's secondary colour, RGB) lifts it to skin at shading quality 3 and
+above, and the translucent mode overrides to 7.
+
+**Flags and numbers.** The templates test the `Mat.`, `Shd.`, `Obj.` and
+`Env.` words, and the integers `Lights` (0–6), `SdwSmps`, `ShadeQual` and
+`DspSdws`. `SdwSmps` is the shadow quality's `2^(quality − 1)` taps split
+over the supersampling passes: at shadow quality 4 and 4× supersampling each
+sub-frame takes 2 of the 8 taps (so an output pixel averages 8); without
+supersampling it takes all 8. `ShadeQual` is `quality − 3` held to 0…3, and
+`DspSdws` 4 or 0.
+
+**Permutations.** For a material the builder compiles one key per light
+count 0–6 for lit surfaces (none for unlit), keyed by the object and
+environment words as well: vertex colours, deformed vertices, quad rendering
+(supersampling and `PassIdx`), GI, fog mode, outdoor, wet floor, tone map
+and sharpen. The game warms 29 common material/flag rows and their light
+counts (`exa-tool shader --warmup`).
+
+**Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
+three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
+
+**Fixes from the decoded programs.** Comparing every original program with
+Exarust's WESL equivalent corrected these (all are the template's maths, not
+a guess):
+
+- PBR F0 without a diffuse map mixes the other way:
+  `mix(MatDif·MatSpc, 0.04, metal)` (the `shadeopt` template's `{?ELSE?}`
+  branch), not `mix(0.04, albedo·MatSpc, metal)`.
+- An unlit surface with an emissive map and no fall-off takes the alpha
+  MatEmi.a × the emissive map's alpha and never samples an opacity map;
+  the fall-off path takes MatEmi.a + the fall-off and ignores the map's
+  alpha.
+- A two-sided back face flips only the normal map's `z`, not the tangent
+  frame: `nrm = t·x + b·y + (−N)·z` with the original's `t`/`b` from the
+  unflipped geometric normal.
+- The skin program's final alpha is the material opacity, not the diffuse
+  map's alpha.
+- Parallax's ambient darkening applies with displacement shadows too.
+- The GI lookup's disc frame is the original's
+  `(1 − n.x²a, −n.x n.y a, −n.x)` / `(−n.x n.y a, 1 − n.y²a, −n.y)` with
+  `a = 1/max(1 + n.z, 0.1)`, not an arbitrary frame.
+- Only a record with a reflection layer (`Mat.TexRef`) reflects the cube;
+  the rest use a quarter of the ambient (above).
+- A legacy record's diffuse colour is multiplied by 1.5 before the sRGB
+  decode, so 0.5 becomes linear(0.75) = 0.522, not 1.5 × linear(0.5) =
+  0.321.
+- The glossiness raised to 0.01 only for type-0 records (the material
+  uniform's rule), as is the specular ×3 for PBR records with a specular
+  map.
+- The PBR `Lighting` clamps `N·H` to [0, 1].
+
+Not reproduced from these programs: the legacy unlit program's vertex-colour
+branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
+`BlendMode = 4` multiply branch, the hair and translucent programs, and the
+`Shd.DispSdwF` pre-pass.
+
 ## Surfaces
 
 `exa_render::material::ExaMaterial` with `exa.wesl` reproduces the main lit
@@ -116,8 +185,13 @@ program.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread.
-- Reflections sample the cube along the mirror direction at mip
-  (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term.
+- Reflections only use the cube for a record with a reflection layer
+  (`Mat.TexRef`, slot `0x100000`: metals, marble, eyes, skin); every other
+  surface's specular GI is **a quarter of the ambient** (the shader's
+  `{?Mat.TexRef?}` alternate). With the layer the cube is sampled along the
+  mirror direction at mip (rough − 0.1)·8, as (e + e²) × level ambient × 8 ×
+  the geometry term; in the GI path at mip (rough − 0.05)·8 and × ambient ×
+  8 × 2.
 - Roughness ("Gloss" in the shaders) depends on the maps present:
   - 1 − glossiness × specular map green;
   - otherwise 1 − glossiness × gloss map red;
@@ -147,10 +221,12 @@ program.
   - 2 unlit;
   - 3 hair;
   - 4 skin (subsurface).
-- Legacy materials (type 0) use the older program:
+- Legacy materials (type 0) use the older program (their diffuse colour is
+  brightened ×1.5 **before** the sRGB decode):
   - no Fresnel per light, and diffuse is N·L;
   - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);
-  - the specular colour is ×3 with a specular map.
+  - the specular map multiplies the light and reflection specular at the
+    end (there is no uniform ×3 for legacy materials).
 - **Emissive** (MatEmi) is lin(emissive colour), doubled for materials
   with lit or specular bits and an emissive layer (torch handles, lamp
   bodies). It adds on top. With an emissive map the PBR program weights
@@ -158,7 +234,10 @@ program.
   fall-off).
 - **Unlit** materials (no lit or specular bits) show only their emissive:
   colour MatEmi × the emissive map, alpha the opacity (`0x38`, not the
-  colour's alpha), plus the fall-off when they have an emissive map.
+  colour's alpha), plus the fall-off when they have an emissive map. With an
+  emissive map and no fall-off the alpha is MatEmi.a × the map's alpha; a
+  bare opacity map is only used when there is no emissive map (the two are
+  never combined).
 - **Opacity fall-off**, for every record whose amount `0x64` exceeds 0.01
   in magnitude: alpha += 2^((x − N·V)·y)·z, with f = 2^(−1.8·`0x68`).
   The original packs a = (f + 1)·`0x64` and y = 1.8·`0x68`, both negated
@@ -193,8 +272,9 @@ program.
     `0x60`·0.05 + ½.
   - The taps are averaged: four per pass, sixteen in all over the original's
     four supersampling passes.
-- Without displacement shadows, parallax darkens the ambient by
-  min(h − ½ + 1.2, 1).
+- Parallax darkens the ambient by min(h − ½ + 1.2, 1) whenever a height map
+  exists, with or without displacement shadows (the template's `Mat.TexDsp`
+  branch is separate from `Shd.DispSdw`).
 
 **Textures** are sampled with the original's settings at its top texture
 quality (`TextureQuality = 5`) and 4× supersampling:
@@ -1567,7 +1647,7 @@ bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 The emissive scale of a fire's parent mesh by the fire, the per-tick
 tendril motion of an electric arc and its emissive texture, the looping
 fire and electricity sounds, body contacts being driven from the physics
-step, the emissive map's alpha on unlit surfaces without a fall-off, the
+step, the
 jittered supersampling pattern, the sun and terrain in the GI volume,
 several resident GI blocks (and their margin copies), the GI injection's
 cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes

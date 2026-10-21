@@ -4,8 +4,23 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 
 **Phase:** Phase 2 (static world), Phase 5 (lighting fidelity) (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: skeleton.
 
+## Shader builder
+
+`shader_template` expands the original's `.flb` templates (`{?…?}`
+conditionals with the `Mat./Shd./Obj./Env.` flags, `{%LOOP%}`,
+`{%expr%}`, includes and the generated `{$Interface}`) and is pure and
+tested; `shader_program` holds the flag tables, the shader word and program
+choice (`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow-sample
+split, the warm-up variants; `shader_uniforms` the 252-byte `Global` block,
+the 112-byte `Material` block and the per-light `vec4`s. `exa-tool shader`
+prints a material's original GLSL for comparison. Rules and evidence:
+[`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
+[`docs/RENDERING.md`](../../docs/RENDERING.md) (Shader builder).
+
 ## Modules
 
+- `shader_template`, `shader_program`, `shader_uniforms`: the original's
+  template expansion, program choice and uniform blocks (above).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `glow`: `GlowMaterial`, the thaumaturgy effects' additive stand-in (vertex colour times a tint, both faces, no shadows) until their own programs are ported ([`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md), Drawing).
 - `sun_fit`: the fitted orthographic region of the sun's one shadow map in a terrain level: the clipping planes the camera's view direction picks at the scene's edges and the level's floor and ceiling (cut with `exa_physics::intersect::ConvexVolume`), the corner merge, the 200 cm radius quantisation with its 0.3/0.1 step hysteresis, the texel-grid centre snap, the fixed ±8000 cm depth, the light's frame and the cascade matrices Bevy's shadow pass uses; `SunFit` keeps the half extent between frames ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).

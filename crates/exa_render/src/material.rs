@@ -89,7 +89,9 @@ pub mod flags {
     /// The specular map packs intensity, gloss and metalness.
     pub const PACKED_SPECULAR: u32 = 64;
     pub const TWO_SIDED: u32 = 128;
-    /// The environment cube lights and reflects the surface.
+    /// The record has a reflection cube (`Mat.TexRef`, slot `0x100000`), so
+    /// the surface reflects the environment cube; without it the original's
+    /// specular GI is a quarter of the ambient.
     pub const ENVIRONMENT: u32 = 256;
     /// A dirt texture is bound (the blood speckle, [`super::BloodProgram`]).
     pub const DIRT_MAP: u32 = 512;
@@ -330,7 +332,9 @@ pub struct ExaMaterial {
     #[texture(109)]
     #[sampler(110)]
     pub opacity_map: Option<Handle<Image>>,
-    /// The scene's environment cube (`genref01r` indoors).
+    /// The scene's environment cube (`genref01r` indoors). It also lights the
+    /// surface outside the GI volume; only [`flags::ENVIRONMENT`] materials
+    /// reflect it.
     #[texture(111, dimension = "cube")]
     #[sampler(112)]
     pub environment: Option<Handle<Image>>,
