@@ -19,6 +19,7 @@ pub mod stream;
 pub mod tangents;
 pub mod texture;
 pub mod texture_cache;
+pub mod texture_stream;
 pub mod vertex_cache;
 pub mod weapon;
 
@@ -29,10 +30,13 @@ use bevy::prelude::*;
 use exa_formats::rfi::Rfi;
 pub use exa_rpk::{GameData, PackKind, locate_install};
 
-pub use model::{Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, transform_from_rows};
+pub use model::{
+    Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo, transform_from_rows,
+};
 pub use morph::BodyMorph;
 pub use texture::ColorSpace;
 pub use texture_cache::{TextureCache, TextureKey, TextureName, TextureRecord};
+pub use texture_stream::{TextureLoader, TextureStreamPlugin};
 
 /// A mesh whose vertices carry skin weights over a character's bones, in
 /// the space of body part `bone`; bound to the skeleton once it is known.
@@ -80,7 +84,13 @@ pub struct AssetsPlugin;
 
 impl Plugin for AssetsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ModelCache>();
+        // The running game decodes textures on the loader's queue with a
+        // placeholder until the upload arrives, as the original does; tools
+        // and tests that build their own cache keep decoding where they ask.
+        let mut cache = ModelCache::default();
+        cache.textures.set_streaming(true);
+        app.insert_resource(cache);
+        app.add_plugins(TextureStreamPlugin);
     }
 }
 

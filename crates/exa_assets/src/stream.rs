@@ -238,8 +238,9 @@ impl<'a, T> Iterator for RingIter<'a, T> {
     }
 }
 
-/// Run after each upload: the original's wake-up step.
-pub type UploadCallback = Box<dyn FnMut(&TextureKey)>;
+/// Run after each upload: the original's wake-up step. `Send + Sync` so a
+/// stream can live in a Bevy resource.
+pub type UploadCallback = Box<dyn FnMut(&TextureKey) + Send + Sync>;
 
 /// One texture load waiting for the loader thread.
 #[derive(Debug, Clone)]
@@ -310,8 +311,8 @@ pub struct TextureStream {
     decoded: HashSet<TextureKey>,
     /// Released while loading (status bit 16).
     cancelled: HashSet<TextureKey>,
-    /// The request the loader is decoding now (status bit 1).
-    in_hand: Option<TextureKey>,
+    /// The requests the loader is decoding now (status bit 1 per record).
+    in_hand: HashSet<TextureKey>,
     in_flight: usize,
     /// Whether the request decoded last was promoted.
     last_promoted: bool,
@@ -391,7 +392,7 @@ impl TextureStream {
             .position(|upload| &upload.key == key)
             .map(|index| self.uploads.remove(index))
             .is_some();
-        let in_hand = self.in_hand.as_ref() == Some(key);
+        let in_hand = self.in_hand.contains(key);
         if !queued && !uploading && !in_hand {
             return false;
         }
@@ -423,7 +424,7 @@ impl TextureStream {
     pub fn take_next(&mut self) -> Option<TextureRequest> {
         let request = self.requests.as_mut().and_then(RingQueue::pop)?;
         self.last_promoted = request.promoted;
-        self.in_hand = Some(request.key);
+        self.in_hand.insert(request.key);
         self.decoded.insert(request.key);
         Some(request)
     }
@@ -437,7 +438,7 @@ impl TextureStream {
         request: TextureRequest,
         decoded: Option<(Image, bool)>,
     ) -> bool {
-        self.in_hand = None;
+        self.in_hand.remove(&request.key);
         if self.cancelled.remove(&request.key) {
             self.in_flight = self.in_flight.saturating_sub(1);
             return false;
@@ -487,7 +488,6 @@ impl TextureStream {
             .as_ref()
             .is_some_and(|queue| !queue.is_empty())
             && !self.wants_to_yield()
-            && self.in_hand.is_none()
     }
 
     /// Uploads the requests that were ready when the pass started, up to
@@ -544,7 +544,7 @@ impl TextureStream {
     /// waiting for its upload: the original's idle flag, which its wait loop
     /// spins on.
     pub fn is_idle(&self) -> bool {
-        self.in_flight == 0 && self.uploads.is_empty() && self.in_hand.is_none()
+        self.in_flight == 0 && self.uploads.is_empty() && self.in_hand.is_empty()
     }
 
     pub fn queued(&self) -> usize {
@@ -560,9 +560,9 @@ impl TextureStream {
         self.uploads.len()
     }
 
-    /// The request being decoded right now, if any.
-    pub fn in_hand(&self) -> Option<&TextureKey> {
-        self.in_hand.as_ref()
+    /// How many requests the loader is decoding right now.
+    pub fn in_hand(&self) -> usize {
+        self.in_hand.len()
     }
 
     /// Whether `key` is still queued or waiting to upload.
@@ -571,7 +571,7 @@ impl TextureStream {
             .as_ref()
             .is_some_and(|queue| queue.iter().any(|request| &request.key == key))
             || self.uploads.iter().any(|upload| &upload.key == key)
-            || self.in_hand.as_ref() == Some(key)
+            || self.in_hand.contains(key)
     }
 
     /// Loads one texture to completion on the main thread: promotes its
@@ -625,7 +625,7 @@ impl TextureStream {
         self.finished.clear();
         self.decoded.clear();
         self.cancelled.clear();
-        self.in_hand = None;
+        self.in_hand.clear();
         self.in_flight = 0;
         self.last_promoted = false;
     }

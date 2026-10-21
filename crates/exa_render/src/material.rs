@@ -136,6 +136,10 @@ pub mod flags {
     /// Blood, as the original's hair program shows it
     /// ([`super::BloodProgram::Hair`]).
     pub const BLOOD_HAIR: u32 = 8388608;
+    /// The diffuse map is a single-channel BC4 image, uploaded as the
+    /// original's luminance LATC format: its red channel stands for all
+    /// three colour channels, and there is no sRGB variant to decode it.
+    pub const GREY_DIFFUSE: u32 = 16777216;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex

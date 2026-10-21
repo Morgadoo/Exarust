@@ -50,11 +50,14 @@ pub mod flags {
     /// The texture's target kind, bits 28–30.
     pub const TARGET_MASK: u32 = 0x7000_0000;
     pub const TARGET_2D: u32 = 0x0000_0000;
-    pub const TARGET_3D: u32 = 0x1000_0000;
+    /// `GL_TEXTURE_1D`.
+    pub const TARGET_1D: u32 = 0x1000_0000;
     /// A second 2D value the original maps to `GL_TEXTURE_2D`.
     pub const TARGET_2D_ALT: u32 = 0x2000_0000;
-    pub const TARGET_CUBE: u32 = 0x3000_0000;
-    pub const TARGET_CUBE_ARRAY: u32 = 0x4000_0000;
+    /// `GL_TEXTURE_3D`.
+    pub const TARGET_3D: u32 = 0x3000_0000;
+    /// `GL_TEXTURE_CUBE_MAP`.
+    pub const TARGET_CUBE: u32 = 0x4000_0000;
     /// The anisotropy mode, subtracted from the quality's level.
     pub const ANISOTROPY_MASK: u32 = 0x3;
     /// The filtered image's texels are vectors: every generated mip level
@@ -145,22 +148,24 @@ impl Default for TextureSettings {
 /// meets.
 pub const DEVICE_MAX_TEXTURE_SIZE: u32 = 8192;
 
-/// The texture's target, from bits 28–30 of its word.
+/// The texture's target, from bits 28–30 of its word: the original's switch
+/// over those bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextureTarget {
+    D1,
     D2,
     D3,
     Cube,
-    CubeArray,
 }
 
 impl TextureTarget {
     pub fn from_flags(flags: u32) -> TextureTarget {
         match flags & flags::TARGET_MASK {
+            flags::TARGET_1D => TextureTarget::D1,
             flags::TARGET_3D => TextureTarget::D3,
             flags::TARGET_CUBE => TextureTarget::Cube,
-            flags::TARGET_CUBE_ARRAY => TextureTarget::CubeArray,
-            // Both 0 and 0x20000000 map to GL_TEXTURE_2D.
+            // Both 0, 0x20000000 and the three values above 0x40000000 map
+            // to GL_TEXTURE_2D.
             _ => TextureTarget::D2,
         }
     }
@@ -181,15 +186,15 @@ pub struct TextureSampler {
 }
 
 /// The LOD bias of a supersampling setting: the setting (or one less from 2
-/// up) times the f32 third, then times the base, in the original's f32
-/// order.
+/// up) times the base, then times the f32 third, in the original's order
+/// (the pseudo-code's left-to-right `base · f · 0.33333334`).
 pub fn lod_bias(base: f32, supersample: i32) -> f32 {
     let factor = if supersample < 2 {
         supersample as f32
     } else {
         (supersample as i64 - 1) as f32
     };
-    base * (factor * 0.333_333_34)
+    base * factor * 0.333_333_34
 }
 
 impl TextureSampler {
@@ -290,14 +295,49 @@ pub fn word_is_data(format_word: u32) -> bool {
     }
 }
 
+/// The original's table of uncompressed pixel formats it uploads as they
+/// are, in its order: the stored format word (compared under
+/// [`COMPATIBLE_MASK`]) and whether the GPU has an sRGB internal format for
+/// it. ALPHA8 and the two-channel words store the same linear format in
+/// both of the table's columns, so their values are never sRGB-decoded.
+pub const COMPATIBLE_FORMATS: [(u32, bool); 7] = [
+    (0x0100_C600, true),  // RGB8
+    (0x0100_E608, true),  // RGBA8
+    (0x0100_4200, true),  // LUM8
+    (0x0100_2008, false), // ALPHA8
+    (0x0100_6208, true),  // LUMA8
+    (0x0100_8400, false), // AB8
+    (0x1111_8400, false), // XY8
+];
+
+/// The mask the original's format table compares a stored word under: it
+/// drops the packed-data bits (bit 16 and the top-nibble kind).
+pub const COMPATIBLE_MASK: u32 = 0x800C_FFFF;
+
+/// Whether an uncompressed stored word has an sRGB internal format in the
+/// original's table. A word the table does not list is converted by the
+/// image codec before upload; Exarust decodes it to RGBA8, which has an
+/// sRGB variant.
+pub fn has_srgb_format(format_word: u32) -> bool {
+    let key = format_word & COMPATIBLE_MASK;
+    COMPATIBLE_FORMATS
+        .iter()
+        .find(|(word, _)| word & COMPATIBLE_MASK == key)
+        .is_some_and(|(_, srgb)| *srgb)
+}
+
 /// The header flags a named image adds to the requested word: everything
 /// from bit 16 up (wrap, stored chain, detail class, target kind).
 pub const IMAGE_FLAG_MASK: u32 = 0xffff_0000;
 
-/// Whether the word asks for the sRGB formats: the request's data bit and
-/// the stored format's own class both have a say.
+/// Whether the word asks for the sRGB formats: the request's data bit, the
+/// stored format's own class and whether the format has an sRGB variant all
+/// have a say.
 pub fn is_srgb(space: ColorSpace, flags: u32, format_word: u32) -> bool {
-    space == ColorSpace::Srgb && flags & flags::DATA == 0 && !word_is_data(format_word)
+    space == ColorSpace::Srgb
+        && flags & flags::DATA == 0
+        && !word_is_data(format_word)
+        && (format_word & 0x8000_0000 != 0 || has_srgb_format(format_word))
 }
 
 /// The header flags of the original's placeholder image: repeat on every
@@ -344,6 +384,24 @@ pub fn rfi_to_image(
         default_flags(),
         &TextureSettings::default(),
     )
+}
+
+/// Decodes one image for an upload: the `.rfi` bytes, colour space, word and
+/// settings a loader request carries. `None` when the bytes are not an image
+/// the loader can read (the caller uploads the placeholder), with the alpha
+/// flag the header gives.
+pub fn decode_uploaded(
+    bytes: &[u8],
+    space: ColorSpace,
+    flags: u32,
+    settings: &TextureSettings,
+    bc_supported: bool,
+) -> Option<(Image, bool)> {
+    let rfi = Rfi::parse(bytes).ok()?;
+    let alpha = has_alpha(&rfi);
+    rfi_to_texture(&rfi, space, bc_supported, flags, settings)
+        .ok()
+        .map(|image| (image, alpha))
 }
 
 /// The word a material texture gets when the record does not say.
@@ -401,6 +459,11 @@ pub fn rfi_to_texture(
         PixelFormat::Bc1 => Some(TextureFormat::Bc1RgbaUnorm),
         PixelFormat::Bc3 if srgb => Some(TextureFormat::Bc3RgbaUnormSrgb),
         PixelFormat::Bc3 => Some(TextureFormat::Bc3RgbaUnorm),
+        // A single grey channel: the original's luminance LATC format, which
+        // has no sRGB variant, so the value is never decoded. The shader
+        // repeats the red channel over rgb ([`crate::model::TextureInfo`]'s
+        // grey flag).
+        PixelFormat::Bc4 => Some(TextureFormat::Bc4RUnorm),
         // Two-channel normal maps: Bevy reconstructs Z for RG formats.
         PixelFormat::Bc5 if !srgb => Some(TextureFormat::Bc5RgUnorm),
         _ => None,
@@ -538,24 +601,39 @@ pub fn has_alpha(rfi: &Rfi) -> bool {
     )
 }
 
+/// Whether the upload is the single grey channel of a BC4 image: the
+/// original's luminance LATC format, whose red channel stands for the whole
+/// colour and which no sRGB format decodes. The upload takes this path when
+/// the GPU supports BC and the image is block aligned, exactly as
+/// [`rfi_to_texture`] does.
+pub fn is_grey_upload(rfi: &Rfi, bc_supported: bool) -> bool {
+    matches!(rfi.format, PixelFormat::Bc4)
+        && bc_supported
+        && rfi.header.width.is_multiple_of(4)
+        && rfi.header.height.is_multiple_of(4)
+        && !rfi.is_packed()
+}
+
 #[cfg(test)]
 mod sampler_tests {
     use super::*;
 
     #[test]
     fn the_lod_bias_follows_the_supersampling_setting() {
-        // base * f / 3 in f32, f = ss below 2 and ss - 1 from 2 up.
+        // (base · f) · ⅓ in f32, the original's left-to-right order, with
+        // f = ss below 2 and ss - 1 from 2 up.
         assert_eq!(lod_bias(-0.75, 0), 0.0);
         assert_eq!(lod_bias(-0.75, 1), -0.25);
         assert_eq!(lod_bias(-0.75, 2), -0.25);
         assert_eq!(lod_bias(-0.75, 3), -0.5);
         assert_eq!(lod_bias(-0.75, 4), -0.75);
-        assert!((lod_bias(-0.5, 4) + 0.5).abs() < 1e-7);
-        // The third is applied to the factor first: base -0.007 at 4x
-        // gives exactly -0.007, where (base * 3) * third would give
-        // -0.0070000007.
-        assert_eq!(lod_bias(-0.007, 4), -0.007);
+        assert_eq!(lod_bias(-0.5, 4), -0.5);
+        // The order is visible where the product is not exactly one:
+        // (-0.007 · 3) · ⅓ is -0.0070000006, where -0.007 · (3 · ⅓) is
+        // exactly -0.007 (3 · ⅓ rounds to 1).
+        assert_eq!(lod_bias(-0.007, 4), -0.007f32 * 3.0 * 0.333_333_34);
         assert_ne!(-0.007f32 * 3.0 * 0.333_333_34, -0.007);
+        assert_eq!(-0.007f32 * (3.0 * 0.333_333_34), -0.007);
     }
 
     #[test]
@@ -619,23 +697,28 @@ mod sampler_tests {
 
     #[test]
     fn the_target_comes_from_the_top_kind_bits() {
+        // The original's switch: 0x10000000 is GL_TEXTURE_1D, 0x30000000
+        // GL_TEXTURE_3D, 0x40000000 the cube, and everything else (0,
+        // 0x20000000 and 0x50000000 up) GL_TEXTURE_2D.
         assert_eq!(TextureTarget::from_flags(0), TextureTarget::D2);
         assert_eq!(
-            TextureTarget::from_flags(flags::TARGET_3D),
-            TextureTarget::D3
+            TextureTarget::from_flags(flags::TARGET_1D),
+            TextureTarget::D1
         );
         assert_eq!(
             TextureTarget::from_flags(flags::TARGET_2D_ALT),
             TextureTarget::D2
         );
         assert_eq!(
+            TextureTarget::from_flags(flags::TARGET_3D),
+            TextureTarget::D3
+        );
+        assert_eq!(
             TextureTarget::from_flags(flags::TARGET_CUBE),
             TextureTarget::Cube
         );
-        assert_eq!(
-            TextureTarget::from_flags(flags::TARGET_CUBE_ARRAY),
-            TextureTarget::CubeArray
-        );
+        assert_eq!(TextureTarget::from_flags(0x5000_0000), TextureTarget::D2);
+        assert_eq!(TextureTarget::from_flags(0x7000_0000), TextureTarget::D2);
     }
 
     #[test]
@@ -689,6 +772,27 @@ mod sampler_tests {
             assert!(!word_is_data(word), "{word:#010x}");
             assert!(is_srgb(ColorSpace::Srgb, 0, word), "{word:#010x}");
         }
+    }
+
+    #[test]
+    fn the_compatible_format_table_has_no_srgb_alpha_or_two_channel() {
+        // The seven uncompressed formats the original uploads as they are,
+        // compared under the mask that drops the data-kind bits.
+        assert_eq!(COMPATIBLE_MASK, 0x800C_FFFF);
+        assert!(has_srgb_format(0x0100_C600));
+        assert!(has_srgb_format(0x0100_E608));
+        assert!(has_srgb_format(0x0100_4200));
+        assert!(!has_srgb_format(0x0100_2008));
+        assert!(has_srgb_format(0x0100_6208));
+        assert!(!has_srgb_format(0x0100_8400));
+        assert!(!has_srgb_format(0x1111_8400));
+        // The packed data words share the RGB8 entry, but stay data.
+        assert_eq!(0x0111_C600 & COMPATIBLE_MASK, 0x0000_C600);
+        assert_eq!(0x1111_C600 & COMPATIBLE_MASK, 0x0000_C600);
+        // An alpha-only image is uploaded linear, as its table row has the
+        // same format in both columns.
+        assert!(!is_srgb(ColorSpace::Srgb, 0, 0x0100_2008));
+        assert!(is_srgb(ColorSpace::Srgb, 0, 0x0100_6208));
     }
 
     #[test]
@@ -829,6 +933,7 @@ mod level_tests {
         );
     }
 
+    /// A header and its pixel data as `.rfi` bytes.
     fn rfi_bytes(header: &RfiHeader, data: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for v in [
@@ -981,6 +1086,73 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         assert_eq!(image.data.as_ref().unwrap().len(), 4);
     }
+
+    /// A BC4 image uploads as one grey channel, the original's luminance
+    /// LATC format: no sRGB variant, so nothing decodes it. Without BC
+    /// support (or when unaligned) it decodes to RGBA8 instead.
+    #[test]
+    fn a_bc4_image_uploads_as_one_grey_channel() {
+        // 8 x 8, four 8-byte blocks.
+        let header = RfiHeader {
+            width: 8,
+            height: 8,
+            depth: 1,
+            format_word: 0x813B_4200,
+            flags: 0,
+            storage: 0x1000_0000,
+            data_size: 32,
+        };
+        let bytes = rfi_bytes(&header, &[0u8; 32]);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        assert!(is_grey_upload(&rfi, true));
+        assert!(!is_grey_upload(&rfi, false));
+        let image = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            true,
+            default_flags(),
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Bc4RUnorm);
+        assert_eq!(image.texture_descriptor.size.width, 8);
+        let decoded = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags(),
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.texture_descriptor.format,
+            TextureFormat::Rgba8UnormSrgb
+        );
+        // An unaligned side cannot be a BC block texture.
+        let unaligned = RfiHeader {
+            width: 6,
+            height: 8,
+            ..header
+        };
+        let bytes = rfi_bytes(&unaligned, &[0u8; 32]);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        assert!(!is_grey_upload(&rfi, true));
+    }
+
+    /// The loader's pure decode: the image and its alpha flag, or nothing
+    /// for bytes that are not an image.
+    #[test]
+    fn a_named_image_decodes_for_an_upload() {
+        let (data, header) = rgba_image(2, 2, 1, 0);
+        let bytes = rfi_bytes(&header, &data);
+        let settings = TextureSettings::default();
+        let (image, alpha) =
+            decode_uploaded(&bytes, ColorSpace::Srgb, default_flags(), &settings, true).unwrap();
+        assert!(alpha, "RGBA8 carries alpha");
+        assert_eq!(image.texture_descriptor.size.width, 2);
+        assert_eq!(image.texture_descriptor.mip_level_count, 2);
+        assert!(decode_uploaded(b"not an image", ColorSpace::Srgb, 0, &settings, true).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -1007,6 +1179,7 @@ mod corpus_tests {
         let mut later = 0usize;
         let mut stored_chain = 0usize;
         let mut unchained_compressed = 0usize;
+        let mut grey = 0usize;
         let mut images = 0usize;
         // The generated chains, and how many filter with the uniform bank,
         // clamp on an axis or renormalise.
@@ -1061,10 +1234,21 @@ mod corpus_tests {
                 let size = image.texture_descriptor.size;
                 assert!(size.width >= 1 && size.height >= 1, "{}", entry.name);
                 assert!(image.data.as_ref().is_some_and(|d| !d.is_empty()));
+                // A BC4 image is the one single-channel upload: its format
+                // says grey and nothing else does.
+                let is_grey = is_grey_upload(&rfi, true);
+                assert_eq!(
+                    is_grey,
+                    image.texture_descriptor.format == TextureFormat::Bc4RUnorm,
+                    "{}",
+                    entry.name
+                );
+                grey += usize::from(is_grey);
             }
         }
         eprintln!(
-            "{images} images, classes {classes:?}, {stored_chain} with a stored chain, \
+            "{images} images, {grey} single grey channels (BC4), \
+             classes {classes:?}, {stored_chain} with a stored chain, \
              {unchained_compressed} compressed without one, \
              {later} start at a later level at detail {}; generated chains \
              [all, box bank, clamped on an axis, renormalised] {generated:?}; {:?}",

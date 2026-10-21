@@ -14,6 +14,7 @@
 
 use bevy::prelude::*;
 
+use crate::stream::TextureRequest;
 use crate::texture::{ColorSpace, TextureSettings, TextureTarget};
 
 /// A texture name as the original stores it: sixteen bytes, the rest of a
@@ -112,6 +113,10 @@ pub struct TextureRecord {
     pub alpha: bool,
     /// The uploaded image, once the loader has finished it.
     pub image: Option<Handle<Image>>,
+    /// The upload is a single grey channel (BC4), whose red stands for the
+    /// colour of all three channels and is never sRGB-decoded
+    /// ([`crate::texture::is_grey_upload`]).
+    pub grey: bool,
     /// The original's reference count; the record is freed at zero.
     pub references: u32,
 }
@@ -131,6 +136,13 @@ impl TextureRecord {
 pub struct TextureCache {
     entries: Vec<TextureRecord>,
     settings: TextureSettings,
+    /// Whether a new record is decoded by the loader queue rather than on the
+    /// calling thread (the original's streaming path: the record draws its
+    /// placeholder until the loader thread's upload arrives).
+    streaming: bool,
+    /// Loads the streaming path queued, in request order, waiting for the
+    /// loader to take them.
+    pending: Vec<TextureRequest>,
 }
 
 /// What [`TextureCache::acquire`] found.
@@ -146,6 +158,7 @@ impl TextureCache {
         Self {
             entries: Vec::new(),
             settings,
+            ..Self::default()
         }
     }
 
@@ -155,6 +168,43 @@ impl TextureCache {
 
     pub fn set_settings(&mut self, settings: TextureSettings) {
         self.settings = settings;
+    }
+
+    /// Whether new records go through the loader queue (the streaming path).
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// Turns the loader queue on or off: on, a created record draws its
+    /// placeholder until the loader's upload replaces it; off, the caller
+    /// decodes it itself.
+    pub fn set_streaming(&mut self, streaming: bool) {
+        self.streaming = streaming;
+    }
+
+    /// Queues a load for the loader thread and returns its position.
+    pub fn queue(&mut self, request: TextureRequest) -> usize {
+        self.pending.push(request);
+        self.pending.len() - 1
+    }
+
+    /// Drops a load still queued for the loader (the original's record freed
+    /// before the loader reached it). A load already being decoded is not
+    /// touched.
+    pub fn cancel_pending(&mut self, key: &TextureKey) -> bool {
+        let before = self.pending.len();
+        self.pending.retain(|request| &request.key != key);
+        self.pending.len() != before
+    }
+
+    /// Takes the queued loads, in request order, for the loader to own.
+    pub fn take_requests(&mut self) -> Vec<TextureRequest> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// The queued loads not yet handed to the loader.
+    pub fn pending(&self) -> &[TextureRequest] {
+        &self.pending
     }
 
     /// The records in name order, as the manager's array holds them.
@@ -195,6 +245,7 @@ impl TextureCache {
                         flags,
                         alpha: false,
                         image: None,
+                        grey: false,
                         references: 1,
                     },
                 );
@@ -222,6 +273,7 @@ impl TextureCache {
                 flags,
                 alpha: false,
                 image: None,
+                grey: false,
                 references: 1,
             },
         );
@@ -256,6 +308,15 @@ impl TextureCache {
         }
     }
 
+    /// Records whether the upload is the single grey channel of a BC4 image.
+    /// The loader knows it as soon as it has read the image header, before
+    /// the image itself arrives.
+    pub fn set_grey(&mut self, key: &TextureKey, grey: bool) {
+        if let Some(record) = self.get_mut(key) {
+            record.grey = grey;
+        }
+    }
+
     /// Gives up a reference; the record is freed when the last one goes.
     /// `true` when this call freed the record.
     pub fn release(&mut self, key: &TextureKey) -> bool {
@@ -266,6 +327,9 @@ impl TextureCache {
         record.references = record.references.saturating_sub(1);
         if record.references == 0 {
             self.entries.remove(index);
+            // A load still waiting for the loader must not upload a freed
+            // record.
+            self.pending.retain(|request| &request.key != key);
             return true;
         }
         false

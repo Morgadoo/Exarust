@@ -131,6 +131,17 @@ pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 /// A loaded texture and whether it carries alpha.
 type CachedTexture = Option<(Handle<Image>, bool)>;
 
+/// A texture a material binds, with what the shading needs to know about
+/// the upload: whether it carries alpha worth alpha-testing, and whether it
+/// is a single grey channel (BC4) whose red stands for the colour of all
+/// three channels.
+#[derive(Debug, Clone)]
+pub struct TextureInfo {
+    pub image: Handle<Image>,
+    pub alpha: bool,
+    pub grey: bool,
+}
+
 #[derive(Resource, Default)]
 pub struct ModelCache {
     models: HashMap<String, Option<Arc<Model>>>,
@@ -632,9 +643,12 @@ impl ModelLoader<'_> {
             } else {
                 base_flags
             };
-            if let Some((img, alpha)) = self.texture_with_flags(t, ColorSpace::Srgb, flags) {
-                mat.diffuse_map = Some(img);
-                cut_out = alpha;
+            if let Some(info) = self.texture_info(t, ColorSpace::Srgb, flags) {
+                mat.diffuse_map = Some(info.image);
+                cut_out = info.alpha;
+                if info.grey {
+                    mat.params.flags |= flags::GREY_DIFFUSE;
+                }
             }
         }
         if let Some(t) = m.texture(TextureSlot::Normal) {
@@ -1092,6 +1106,26 @@ impl ModelLoader<'_> {
         handle
     }
 
+    /// The image handle, its alpha flag and whether it is a single grey
+    /// channel, with the creation/sampler word a material asks for.
+    /// [`ModelLoader::texture_with_flags`]'
+    /// [`crate::texture_cache::TextureRecord`] carries the flags, so they
+    /// are known before a streamed upload arrives.
+    pub fn texture_info(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+    ) -> Option<TextureInfo> {
+        let (image, alpha) = self.texture_with_flags(name, space, flags)?;
+        let grey = self
+            .cache
+            .textures
+            .get(&TextureKey::new(name, space))
+            .is_some_and(|record| record.grey);
+        Some(TextureInfo { image, alpha, grey })
+    }
+
     /// Image handle and whether it has alpha, with the default texture word
     /// (a material texture at the retail settings).
     pub fn texture(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
@@ -1102,6 +1136,12 @@ impl ModelLoader<'_> {
     /// word a material asks for. The image is looked up by its stored name
     /// (cut at the last dot, folded) and decoded once; a live record keeps
     /// the word it was created with, as the original's manager does.
+    ///
+    /// With the manager's streaming path on ([`crate::texture_cache::TextureCache::set_streaming`])
+    /// a new record gets the original's 1×1 grey placeholder and a load in
+    /// the loader's queue; the loader's upload replaces the image under the
+    /// same handle, so a material that binds it draws the placeholder until
+    /// then. Otherwise the image is decoded here, on the calling thread.
     ///
     /// An image that is shipped but cannot be read uploads the original's
     /// 1x1 grey placeholder, which the record keeps. One the game does not
@@ -1115,6 +1155,28 @@ impl ModelLoader<'_> {
         space: ColorSpace,
         flags: u32,
     ) -> CachedTexture {
+        let streaming = self.cache.textures.streaming();
+        self.texture_load(name, space, flags, streaming)
+    }
+
+    /// Loads a texture now, on the calling thread: the original's priority
+    /// path (its synchronous create, or its "load this one first" wait). A
+    /// load still queued for the loader is dropped, so it cannot upload a
+    /// second copy; one already being decoded writes the same pixels under
+    /// the record's handle, which is harmless.
+    pub fn texture_now(&mut self, name: &str, space: ColorSpace, flags: u32) -> CachedTexture {
+        let key = TextureKey::new(name, space);
+        self.cache.textures.cancel_pending(&key);
+        self.texture_load(name, space, flags, false)
+    }
+
+    fn texture_load(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+        streaming: bool,
+    ) -> CachedTexture {
         let key = TextureKey::new(name, space);
         let created = self.cache.textures.acquire(key, flags).created;
         if created {
@@ -1123,30 +1185,57 @@ impl ModelLoader<'_> {
                 self.warn_once(format!("texture {name:?} not found"));
                 return None;
             };
-            let result = Rfi::parse(bytes)
-                .and_then(|rfi| {
-                    let alpha = has_alpha(&rfi);
-                    rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings)
-                        .map(|img| (img, alpha))
-                })
-                .map_err(|e| format!("texture {name:?}: {e}"));
-            match result {
-                Ok((img, alpha)) => {
-                    let handle = self.images.add(img);
-                    self.cache.textures.finish(&key, handle, alpha);
-                }
-                Err(msg) => {
-                    self.warn_once(msg);
+            let rfi = match Rfi::parse(bytes) {
+                Ok(rfi) => rfi,
+                Err(e) => {
+                    self.warn_once(format!("texture {name:?}: {e}"));
                     let image = crate::texture::placeholder_image(space, flags, &settings);
                     let handle = self.images.add(image);
-                    self.cache.textures.finish(&key, handle, false);
+                    self.cache.textures.finish(&key, handle.clone(), false);
+                    return Some((handle, false));
+                }
+            };
+            let alpha = has_alpha(&rfi);
+            self.cache.textures.set_grey(
+                &key,
+                crate::texture::is_grey_upload(&rfi, self.bc_supported),
+            );
+            if streaming {
+                // The record draws its placeholder until the loader's upload
+                // arrives under the same handle.
+                let image = crate::texture::placeholder_image(space, flags, &settings);
+                let handle = self.images.add(image);
+                self.cache.textures.finish(&key, handle.clone(), alpha);
+                self.cache
+                    .textures
+                    .queue(crate::stream::TextureRequest::new(
+                        key.name.as_str(),
+                        space,
+                        flags,
+                        key.name.as_str(),
+                    ));
+                return Some((handle, alpha));
+            }
+            match rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings) {
+                Ok(image) => {
+                    let handle = self.images.add(image);
+                    self.cache.textures.finish(&key, handle.clone(), alpha);
+                    Some((handle, alpha))
+                }
+                Err(e) => {
+                    self.warn_once(format!("texture {name:?}: {e}"));
+                    let image = crate::texture::placeholder_image(space, flags, &settings);
+                    let handle = self.images.add(image);
+                    self.cache.textures.finish(&key, handle.clone(), false);
+                    Some((handle, false))
                 }
             }
+        } else {
+            self.cache
+                .textures
+                .get(&key)
+                .and_then(|record| record.image.clone().map(|image| (image, record.alpha)))
         }
-        self.cache
-            .textures
-            .get(&key)
-            .and_then(|record| record.image.clone().map(|image| (image, record.alpha)))
     }
 }
 

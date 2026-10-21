@@ -70,6 +70,9 @@ const OPACITY_FALLOFF: u32 = 1048576u;
 const BLOOD: u32 = 2097152u;
 const BLOOD_SKIN: u32 = 4194304u;
 const BLOOD_HAIR: u32 = 8388608u;
+// The diffuse map is a single-channel BC4 image (the original's luminance
+// LATC upload): its red channel is the whole colour, with no sRGB decode.
+const GREY_DIFFUSE: u32 = 16777216u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -185,6 +188,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var dif_tex = vec4(1.0);
     if has(DIFFUSE_MAP) {
         dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, TEXTURE_BIAS);
+        if has(GREY_DIFFUSE) {
+            // A BC4 diffuse is the original's single-channel luminance
+            // format: one grey channel, never sRGB-decoded by the hardware.
+            dif_tex = vec4(dif_tex.rrr, dif_tex.a);
+        }
     }
     var alpha = material.diffuse.a * dif_tex.a;
     if has(OPACITY_MAP) {
