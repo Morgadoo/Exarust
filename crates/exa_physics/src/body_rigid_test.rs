@@ -723,3 +723,33 @@ fn a_world_slider_slides_to_its_travel() {
         "point at {there}"
     );
 }
+
+/// The held items' flags: a walk's start clears the motion flag, the armed
+/// move branch sets and the stop branch clears the static-only flag, and a
+/// released item takes its flags with it.
+#[test]
+fn held_items_keep_their_motion_and_static_only_flags() {
+    let mut body = Ragdoll::new(&[PartSetup {
+        bone: 1,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+    }]);
+    assert!(body.held_flags().is_empty());
+    body.hold_item(super::super::HELD_MOTION_FLAG | super::super::HELD_STATIC_ONLY);
+    assert_eq!(body.held_flags(), [0x90000]);
+    body.walk_started();
+    assert_eq!(body.held_flags(), [super::super::HELD_STATIC_ONLY]);
+    body.set_held_static_only(false);
+    assert_eq!(body.held_flags(), [0]);
+    body.set_held_static_only(true);
+    assert_eq!(body.held_flags(), [super::super::HELD_STATIC_ONLY]);
+    body.drop_items();
+    assert!(body.held_flags().is_empty());
+}
