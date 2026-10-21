@@ -25,6 +25,8 @@ pub const TILE_CHANNEL: usize = TILE_CELLS + 5;
 pub const CELL_CM: f32 = 20.0;
 /// A tile's side (48 m).
 pub const TILE_CM: f32 = TILE_CELLS as f32 * CELL_CM;
+/// One over a tile's side (the manager's constant-return stub).
+pub const INVERSE_TILE: f32 = 1.0 / TILE_CM;
 /// Blocks along a tile's side.
 pub const BLOCK_SIDE: usize = 8;
 /// Cells along a 6 m block's side (30).
@@ -97,6 +99,17 @@ pub struct ManagerConfig {
 }
 
 impl ManagerConfig {
+    /// The manager's virtual slot that answers whether it is ready: false
+    /// in the base.
+    pub fn ready(&self) -> bool {
+        false
+    }
+
+    /// The manager's constant-return slot: one over the tile side.
+    pub fn inverse_tile(&self) -> f32 {
+        INVERSE_TILE
+    }
+
     /// The constructor's values. `texture_detail` is the original's texture
     /// quality setting and `palette_scale` its configured palette scale
     /// (zero means derive it from the detail size).
@@ -376,6 +389,8 @@ mod tests {
         );
         assert_eq!(ManagerConfig::new(3, 2.5).palette_scale, 2.5);
         assert_eq!(ManagerConfig::new(3, 0.0).detail_size, 8192);
+        assert_eq!(c.inverse_tile(), 0.000_208_333_34);
+        assert!(!c.ready());
     }
 
     #[test]

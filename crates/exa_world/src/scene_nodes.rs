@@ -755,6 +755,18 @@ impl SceneNode {
         }
     }
 
+    /// The node's world matrix as three rows (the scene's matrix copy from
+    /// the node's world words): the rotation's columns with the frame's
+    /// translation in the fourth column.
+    pub fn world_matrix(&self) -> [[f32; 4]; 3] {
+        let c = self.world_rotation.to_cols_array_2d();
+        [
+            [c[0][0], c[1][0], c[2][0], self.world.x],
+            [c[0][1], c[1][1], c[2][1], self.world.y],
+            [c[0][2], c[1][2], c[2][2], self.world.z],
+        ]
+    }
+
     /// The node's oriented box, with its bounding radius as the original
     /// keeps it.
     pub fn obb(&self) -> (Obb, f32) {
@@ -2790,6 +2802,22 @@ mod tests {
         assert_eq!(portal.quad[1].z, -0.5);
         assert_eq!(portal.quad[2].y, 2.5);
         assert!((portal.distance(Vec3::new(-1.0, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_node_world_matrix_carries_rotation_and_translation() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        scene.set_frame(
+            node,
+            Vec3::new(2.0, 3.0, 4.0),
+            Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::ONE,
+        );
+        scene.refresh(node);
+        let m = scene.nodes[node].world_matrix();
+        assert_eq!([m[0][3], m[1][3], m[2][3]], [2.0, 3.0, 4.0]);
+        assert!((m[0][0]).abs() < 1e-6 && (m[2][0] + 1.0).abs() < 1e-6);
     }
 
     #[test]
