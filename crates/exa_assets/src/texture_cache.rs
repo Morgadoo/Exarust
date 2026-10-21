@@ -4,8 +4,8 @@
 //! inserts new ones at the search point. Each record has a reference count;
 //! the last release frees it, which is the only eviction (there is no size
 //! budget). A second creation request for a live name returns the same
-//! record and only replaces the creation word, so the last request's
-//! sampler flags win.
+//! record with one more reference and leaves it as it is, so the first
+//! request's sampler word stays.
 //!
 //! Exarust keys a record by the name and its colour space: the space is
 //! part of the creation word, and Bevy needs separate images for the sRGB
@@ -16,24 +16,66 @@ use bevy::prelude::*;
 
 use crate::texture::{ColorSpace, TextureSettings, TextureTarget};
 
-/// A texture name as the original stores it: sixteen bytes, upper-case
-/// letters folded to lower case, the rest of a longer name cut off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A texture name as the original stores it: sixteen bytes, the rest of a
+/// longer name cut off, the bytes from the last `.` among them on zeroed
+/// (unless the name starts with it), and `A`–`Z` folded to lower case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TextureName(pub [u8; 16]);
 
 impl TextureName {
     pub fn new(name: &str) -> Self {
         let mut bytes = [0u8; 16];
         for (slot, byte) in bytes.iter_mut().zip(name.bytes()) {
-            *slot = byte.to_ascii_lowercase();
+            *slot = byte;
         }
+        if let Some(dot) = bytes.iter().rposition(|&b| b == b'.')
+            && dot > 0
+        {
+            bytes[dot..].fill(0);
+        }
+        bytes.make_ascii_lowercase();
         Self(bytes)
+    }
+
+    /// The four little-endian words the manager compares, in order.
+    fn words(&self) -> [i32; 4] {
+        std::array::from_fn(|i| {
+            i32::from_le_bytes([
+                self.0[4 * i],
+                self.0[4 * i + 1],
+                self.0[4 * i + 2],
+                self.0[4 * i + 3],
+            ])
+        })
     }
 
     /// The name as text, up to the first zero.
     pub fn as_str(&self) -> &str {
         let end = self.0.iter().position(|&b| b == 0).unwrap_or(16);
         std::str::from_utf8(&self.0[..end]).unwrap_or("")
+    }
+}
+
+/// The manager's order: the first of the four 32-bit words whose wrapping
+/// difference is not zero decides by that difference's sign. For ASCII
+/// names this compares the fourth, third, second and first byte of each
+/// group of four, not the text.
+impl Ord for TextureName {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (a, b) = (self.words(), other.words());
+        for (x, y) in a.into_iter().zip(b) {
+            let difference = x.wrapping_sub(y);
+            if difference != 0 {
+                return difference.cmp(&0);
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+}
+
+impl PartialOrd for TextureName {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -137,14 +179,12 @@ impl TextureCache {
     /// Finds a record and takes a reference, or creates one with a single
     /// reference. A new record has no image yet.
     ///
-    /// On a hit the creation word is replaced by `flags`, as the original
-    /// does before it looks at the image.
+    /// On a hit the record is returned as it is: its creation word stays
+    /// the first request's, as in the original.
     pub fn acquire(&mut self, key: TextureKey, flags: u32) -> Acquired {
         match self.search(&key) {
             Ok(index) => {
-                let record = &mut self.entries[index];
-                record.references += 1;
-                record.flags = flags;
+                self.entries[index].references += 1;
                 Acquired { created: false }
             }
             Err(index) => {
@@ -165,12 +205,16 @@ impl TextureCache {
 
     /// Adds a record the caller has already decoded. `false` when the name
     /// is already in the manager: the original logs "Added texture already
-    /// exists.", releases the supplied image and returns the live record.
+    /// exists.", releases the supplied image and returns the live record,
+    /// which its lookup gave one more reference.
     pub fn insert_new(&mut self, key: TextureKey, flags: u32) -> bool {
-        if self.search(&key).is_ok() {
-            return false;
-        }
-        let index = self.search(&key).unwrap_or_else(|index| index);
+        let index = match self.search(&key) {
+            Ok(index) => {
+                self.entries[index].references += 1;
+                return false;
+            }
+            Err(index) => index,
+        };
         self.entries.insert(
             index,
             TextureRecord {
@@ -251,6 +295,35 @@ mod tests {
         // The comparison is the 16 stored bytes, not the text.
         assert_eq!(key("Wall01D"), key("wall01d"));
         assert_ne!(key("wall01d"), key("wall01n"));
+        // The last dot among the 16 bytes ends the name, unless it leads.
+        assert_eq!(TextureName::new("wall01n.rfi").as_str(), "wall01n");
+        assert_eq!(TextureName::new("a.b.rfi").as_str(), "a.b");
+        assert_eq!(TextureName::new(".hidden").as_str(), ".hidden");
+        assert_eq!(
+            TextureName::new("a_very_long_name.rfi").as_str(),
+            "a_very_long_name"
+        );
+        // Only A-Z fold.
+        assert_eq!(TextureName::new("ÄB").0[..3], [0xC3, 0x84, b'b']);
+    }
+
+    #[test]
+    fn names_order_by_their_four_words() {
+        // "abcd" < "abce" by the first word; "bbbb" < "abbc" because the
+        // fourth byte of the group is the most significant.
+        assert!(TextureName::new("abcd") < TextureName::new("abce"));
+        assert!(TextureName::new("bbbb") < TextureName::new("abbc"));
+        assert!(TextureName::new("abcd") < TextureName::new("abcda"));
+        let mut cache = TextureCache::default();
+        for name in ["abbc", "bbbb", "aaaz"] {
+            cache.acquire(key(name), 0);
+        }
+        let names: Vec<&str> = cache
+            .entries()
+            .iter()
+            .map(|e| e.key.name.as_str())
+            .collect();
+        assert_eq!(names, ["bbbb", "abbc", "aaaz"]);
     }
 
     #[test]
@@ -264,12 +337,15 @@ mod tests {
             .iter()
             .map(|e| e.key.name.as_str())
             .collect();
-        assert_eq!(names, ["brick02d", "stone01d", "wood03d"]);
+        // The manager's word order: "bric" < "wood" < "ston" read as
+        // little-endian words.
+        assert_eq!(names, ["brick02d", "wood03d", "stone01d"]);
         // A second acquire is a hit: one more reference, no new record.
         assert!(!cache.acquire(key("stone01d"), 0x70000).created);
         assert_eq!(cache.len(), 3);
         assert_eq!(cache.references(&key("stone01d")), 2);
-        assert_eq!(cache.get(&key("stone01d")).unwrap().flags, 0x70000);
+        // The first request's word stays.
+        assert_eq!(cache.get(&key("stone01d")).unwrap().flags, 0);
         // Release frees only the last reference, and the array closes up.
         assert!(!cache.release(&key("stone01d")));
         assert!(cache.release(&key("stone01d")));
@@ -283,9 +359,10 @@ mod tests {
         assert!(cache.insert_new(key("wall01d"), 0));
         assert!(!cache.insert_new(key("wall01d"), 0x70000));
         assert_eq!(cache.len(), 1);
-        assert_eq!(cache.references(&key("wall01d")), 1);
-        assert!(!cache.acquire(key("wall01d"), 0x300).created);
         assert_eq!(cache.references(&key("wall01d")), 2);
+        assert_eq!(cache.get(&key("wall01d")).unwrap().flags, 0);
+        assert!(!cache.acquire(key("wall01d"), 0x300).created);
+        assert_eq!(cache.references(&key("wall01d")), 3);
     }
 
     #[test]
