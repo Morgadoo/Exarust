@@ -1363,20 +1363,22 @@ pub struct ExperienceRates {
 impl SkillScreen {
     /// A screen as the original builds it: six groups at a 64-unit radius
     /// (58 with the inset-layout flag), stretch 1, the reveal running for
-    /// 500 ms. A positive `page` opens a four-group page at a 72-unit
-    /// radius instead.
+    /// 500 ms. A positive `page` (the skill window's constructor) opens a
+    /// four-group page instead, at a 72-unit radius stretched 1.25 across,
+    /// or 64 units stretched 0.9 with the inset-layout flag.
     pub fn open(bounds: SkillBounds, unit: i32, inset: bool, page: i32, clock: i32) -> Self {
-        let (count, radius) = if page > 0 {
-            (4, 72)
-        } else {
-            (6, if inset { 58 } else { 64 })
+        let (count, radius, stretch) = match (page > 0, inset) {
+            (true, true) => (4, 64, 0.9),
+            (true, false) => (4, 72, 1.25),
+            (false, true) => (6, 58, 1.0),
+            (false, false) => (6, 64, 1.0),
         };
         Self {
             bounds,
             unit,
             count,
             radius,
-            stretch: 1.0,
+            stretch,
             page: page.max(0),
             inset,
             state: 1,
@@ -1536,6 +1538,19 @@ impl SkillScreen {
             self.popup_deadline = clock.wrapping_add(200);
         }
         changed
+    }
+
+    /// Attaches a character record (the compact screen's constructor, the
+    /// character screen and the arena do): each group's committed points
+    /// become the record's points of its skill, or 0 with `clear`, and the
+    /// ready flag is refreshed.
+    pub fn attach(&mut self, data: &mut CharacterData, clear: bool, rates: ExperienceRates) {
+        self.base = if clear {
+            [0; SKILLS]
+        } else {
+            std::array::from_fn(|skill| data.record.skills[skill].points)
+        };
+        self.refresh(data, rates);
     }
 
     /// Refreshes the ready flag. A locked screen is never ready. Otherwise
@@ -3128,6 +3143,20 @@ mod tests {
         assert!(!screen.ready);
     }
 
+    #[test]
+    fn attaching_a_record_commits_its_points_or_clears_them() {
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 0);
+        let mut data = CharacterData::new();
+        for (k, entry) in data.record.skills.iter_mut().enumerate() {
+            *entry = skill(1_000 * (k as u16 + 1), [0; 6]);
+        }
+        screen.attach(&mut data, false, SAME);
+        assert_eq!(screen.base, [1_000, 2_000, 3_000, 4_000, 5_000, 6_000]);
+        assert!(screen.ready);
+        screen.attach(&mut data, true, SAME);
+        assert_eq!(screen.base, [0; SKILLS]);
+    }
+
     fn bounds() -> SkillBounds {
         SkillBounds {
             left: 0,
@@ -3202,6 +3231,10 @@ mod tests {
         assert_eq!(SkillScreen::open(bounds(), 4, true, 0, 0).radius, 58);
         let page = SkillScreen::open(bounds(), 4, false, 2, 0);
         assert_eq!((page.count, page.radius, page.page), (4, 72, 2));
+        assert_eq!(page.stretch, 1.25);
+        let inset_page = SkillScreen::open(bounds(), 4, true, 2, 0);
+        assert_eq!((inset_page.radius, inset_page.stretch), (64, 0.9));
+        assert_eq!(screen.stretch, 1.0);
         assert_eq!(page.slot_group(1), Some(1));
         assert_eq!(screen.slot_group(2), Some(2));
         assert_eq!(screen.group_slot(1), Some(6));
