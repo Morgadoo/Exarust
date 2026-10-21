@@ -371,77 +371,99 @@ impl Palette {
     }
 }
 
-/// A version 1 palette, upgraded as the original's loader does it: its
-/// materials keep the old shader-era fields (moved into the runtime record),
-/// a legacy grass material is renamed to the `Trn_GrasA01*` set, and the
-/// plant list is replaced by three default plants. The file has no 144-byte
-/// header: name, width, height and the material count follow the magic, then
-/// 152-byte materials, a rule count with 64-byte rules, and no plants.
+/// A version 1 palette, upgraded as the original's loader does it. The
+/// header is a version 2 header cut short: magic, a word, the name, the two
+/// header floats and the material count (no padding to 144 bytes). Then
+/// come 152-byte materials, a rule count with 64-byte rules, and no plants:
+/// the loader gives the palette three default plants.
 ///
-/// [guess] The parameter moves are the loader's field assignments, but the
-/// shading meaning of the version 1 fields themselves is not established;
-/// no shipped palette is a version 1 file.
+/// Each old material is moved into the runtime record (REA on the version 1
+/// upgrade): its name and flags; textures 1, 2 and 4 into the diffuse,
+/// normal and height slots (the third, an old specular map, is dropped); the
+/// mask slot from the diffuse name with its last letter turned to `M` when
+/// the old height amount is above `f32::EPSILON`; parameter 0 from the first
+/// old float and parameter 1 equal to it; 3, 1, 3 and 1.5 for parameters
+/// 2–5; the old tint (floats 3–5) times 1.4; the negated old offset (1 when
+/// it is below `f32::EPSILON`); 0.1; one less the old float 8; the old
+/// floats 9–16; and parameters 20–28 zero. A diffuse map named `???Sh…` (an
+/// old shader grass) takes the `Trn_GrasA01` set and tiling 2; a height map
+/// named `???r…` or `???R…` zeroes parameters 16 and 17. No shipped palette
+/// is version 1, so none of this is exercised by the game's data.
 fn parse_v1(b: &[u8]) -> Result<Palette> {
+    const MATERIAL_V1: usize = 152;
     let mut r = Reader::new(b);
     r.u32()?; // magic
     r.u32()?;
     let name = r.name()?;
-    r.u32()?; // width
-    r.u32()?; // height
+    let environment = r.f32()?;
+    let wetness = r.f32()?;
     let count = r.u32()? as usize;
-    if count.checked_mul(152).is_none_or(|n| n > r.remaining()) {
-        return Err(Error::Malformed(format!(
-            "{count} version 1 materials do not fit"
-        )));
-    }
+    r.fits(count, MATERIAL_V1)?;
     let mut materials = Vec::with_capacity(count);
     for _ in 0..count {
-        let name = r.name()?;
-        let mut textures: [String; 6] = Default::default();
-        textures[0] = r.name()?;
-        textures[1] = r.name()?;
-        // The third name is the old specular texture; the runtime record
-        // leaves the gloss slot empty for it.
-        r.name()?;
-        textures[4] = r.name()?;
-        let mut f = [0.0f32; 17];
-        for v in &mut f {
-            *v = r.f32()?;
-        }
-        let flags = r.u32()?;
+        let raw = r.bytes(MATERIAL_V1)?;
+        let f = |offset: usize| {
+            f32::from_le_bytes(raw[offset..offset + 4].try_into().expect("4 bytes"))
+        };
+        let field =
+            |offset: usize| -> [u8; 16] { raw[offset..offset + 16].try_into().expect("16 bytes") };
+        // The runtime record's six texture names, as raw 16-byte fields.
+        let mut slots = [[0u8; 16]; 6];
+        slots[0] = field(0x10);
+        slots[1] = field(0x20);
+        slots[4] = field(0x40);
         let mut p = [0.0f32; 29];
-        p[0] = f[0];
-        p[6] = f[3];
-        p[7] = f[4];
-        p[8] = f[5];
-        // The loader stores the negated height offset, and 1 for a value
-        // that is not negative.
-        p[9] = if -f[6] < 1.192_089_98e-7 { 1.0 } else { -f[6] };
-        p[10] = 0.1;
-        p[11] = 1.0 - f[8];
-        p[12..16].copy_from_slice(&f[9..13]);
-        p[16..20].copy_from_slice(&f[13..17]);
-        p[20..24].copy_from_slice(&[0.5, 0.3, 0.5, 1.0]);
-        // The mask texture is the diffuse name with its last character
-        // replaced by `M` when the material has a height amount.
-        if f[1] > 1.192_089_98e-7 && !textures[0].is_empty() {
-            let mut mask = textures[0].clone();
-            mask.pop();
-            mask.push('M');
-            textures[3] = mask;
+        p[0] = f(0x50);
+        if f(0x54) > f32::EPSILON {
+            slots[3] = slots[0];
+            if let Some(last) = slots[3].iter().rposition(|&c| c != 0) {
+                slots[3][last] = b'M';
+            }
         }
-        // An old shader-era grass material takes the `Trn_GrasA01*` set.
-        if name.as_bytes().get(7) == Some(&b'S') && name.as_bytes().get(8) == Some(&b'h') {
-            textures[0] = "Trn_GrasA01D".into();
-            textures[1] = "Trn_GrasA01N".into();
-            textures[2] = "Trn_GrasA01G".into();
-            textures[3] = "Trn_GrasA01M".into();
+        if slots[0][3] == b'S' && slots[0][4] == b'h' {
+            let named = |s: &[u8]| {
+                let mut n = [0u8; 16];
+                n[..s.len()].copy_from_slice(s);
+                n
+            };
+            slots[0] = named(b"Trn_GrasA01D");
+            slots[1] = named(b"Trn_GrasA01N");
+            slots[2] = named(b"Trn_GrasA01G");
+            slots[3] = named(b"Trn_GrasA01M");
             p[0] = 2.0;
         }
+        p[1] = p[0];
+        p[2] = 3.0;
+        p[3] = 1.0;
+        p[4] = 3.0;
+        p[5] = 1.5;
+        p[6] = f(0x5C);
+        p[7] = f(0x60);
+        p[8] = f(0x64);
+        p[9] = -f(0x68);
+        if p[9] < f32::EPSILON {
+            p[9] = 1.0;
+        }
+        for v in &mut p[6..9] {
+            *v *= 1.4;
+        }
+        p[10] = 0.1;
+        p[11] = 1.0 - f(0x70);
+        for (i, v) in p[12..20].iter_mut().enumerate() {
+            *v = f(0x74 + 4 * i);
+        }
+        if matches!(slots[4][3], b'r' | b'R') {
+            p[16] = 0.0;
+            p[17] = 0.0;
+        }
+        let text = |raw: &[u8]| -> String {
+            let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+            raw[..end].iter().map(|&c| c as char).collect()
+        };
         materials.push(TerrainMaterial {
-            name,
-            flags,
-            textures,
+            name: text(&raw[..16]),
+            flags: u32::from_le_bytes(raw[0x94..0x98].try_into().expect("4 bytes")),
+            textures: slots.map(|s| text(&s)),
             params: p.to_vec(),
         });
     }
@@ -459,7 +481,7 @@ fn parse_v1(b: &[u8]) -> Result<Palette> {
             hi: r.f32()?,
         });
     }
-    let plants = ["Trn_GrasA01", "Trn_SPlnA01", "Trn_BPlntA01"]
+    let plants = ["Trn_GrassA01", "Trn_SPlntA01", "Trn_BPlntA01"]
         .into_iter()
         .map(|name| Plant {
             flags: 1,
@@ -469,21 +491,21 @@ fn parse_v1(b: &[u8]) -> Result<Palette> {
         .collect();
     Ok(Palette {
         name,
-        environment: 0.0,
-        wetness: 0.0,
+        environment,
+        wetness,
         materials,
         rules,
         plants,
     })
 }
 
-/// The three plants a version 1 palette gains: the grass, small-plant and
-/// large-plant defaults (colour 0.72, 0.56, 0.6 at the first two, 0.6, 1 at
-/// the next two, and the loader's fixed parameters after them).
+/// The 21 parameters each of a version 1 palette's three default plants
+/// gets: colours (0.72, 0.56, 0.6, 1) twice, then 0.1, 0.1, 0.35, 1, 0.5,
+/// 0.3, 0.6, 2, 0, 1, 0, 1 and a last 0.
 fn default_plant_params() -> Vec<f32> {
     vec![
         0.72, 0.56, 0.6, 1.0, 0.72, 0.56, 0.6, 1.0, 0.1, 0.1, 0.35, 1.0, 0.5, 0.3, 0.6, 2.0, 0.0,
-        1.0, 0.0, 1.0,
+        1.0, 0.0, 1.0, 0.0,
     ]
 }
 
@@ -614,52 +636,90 @@ mod tests {
 
     #[test]
     fn a_version_1_palette_is_upgraded() {
+        let material = |name_: &str, textures: [&str; 4], f: [f32; 17], flags: u32| {
+            let mut m = name(name_);
+            for t in textures {
+                m.extend(name(t));
+            }
+            m.extend(f32s(&f));
+            m.extend(u32s(&[flags]));
+            m
+        };
         let mut b = u32s(&[PALETTE_MAGIC_V1, 0]);
         b.extend(name("Old"));
-        b.extend(u32s(&[1, 1, 1]));
-        b.extend(name("OldShade"));
-        b.extend(name("Dtex"));
-        b.extend(name("Ntex"));
-        b.extend(name("Gtex"));
-        b.extend(name("Htex"));
+        b.extend(f32s(&[0.25, 0.5]));
+        b.extend(u32s(&[3]));
         let mut f = [0.0f32; 17];
         f[0] = 1.5;
         f[1] = 0.5;
         f[3] = 0.1;
         f[4] = 0.2;
-        f[5] = 0.3;
+        f[5] = 0.5;
         f[6] = -2.0;
         f[8] = 0.25;
         for (i, v) in f[9..].iter_mut().enumerate() {
-            *v = 0.4 + i as f32;
+            *v = 0.5 + i as f32;
         }
-        b.extend(f32s(&f));
-        b.extend(u32s(&[0x11, 0]));
+        b.extend(material(
+            "OldShade",
+            ["Dtex", "Ntex", "Gtex", "Htex"],
+            f,
+            0x11,
+        ));
+        // An old shader grass (diffuse `???Sh…`) with no height amount and a
+        // positive offset; a height map `???r…` zeroes 16 and 17.
+        let mut g = [0.0f32; 17];
+        g[6] = 3.0;
+        g[13] = 7.0;
+        b.extend(material("Grass", ["GrsShade", "", "", "Bmpr"], g, 0));
+        // No height amount: the mask slot stays empty.
+        b.extend(material("Plain", ["Dtex", "", "", ""], [0.0; 17], 0));
+        b.extend(u32s(&[0]));
         let pal = Palette::parse(&b).unwrap();
         assert_eq!(pal.name, "Old");
+        assert_eq!((pal.environment, pal.wetness), (0.25, 0.5));
         let m = &pal.materials[0];
-        assert_eq!(m.flags, 0x11);
+        assert_eq!((m.name.as_str(), m.flags), ("OldShade", 0x11));
         assert_eq!(
-            [
-                m.textures[0].as_str(),
-                m.textures[1].as_str(),
-                m.textures[2].as_str(),
-                m.textures[3].as_str(),
-                m.textures[4].as_str()
-            ],
-            ["Dtex", "Ntex", "", "DteM", "Htex"]
+            m.textures.each_ref().map(String::as_str),
+            ["Dtex", "Ntex", "", "DteM", "Htex", ""]
         );
         assert_eq!(m.params.len(), 29);
-        assert_eq!(m.params[0], 1.5);
-        assert_eq!(&m.params[6..11], &[0.1, 0.2, 0.3, 2.0, 0.1]);
-        assert_eq!(m.params[11], 0.75);
-        assert_eq!(&m.params[12..16], &[0.4, 1.4, 2.4, 3.4]);
-        assert_eq!(&m.params[16..20], &[4.4, 5.4, 6.4, 7.4]);
-        assert_eq!(&m.params[20..24], &[0.5, 0.3, 0.5, 1.0]);
+        assert_eq!(&m.params[0..6], &[1.5, 1.5, 3.0, 1.0, 3.0, 1.5]);
+        // The tint times 1.4 in f32, the negated offset, 0.1, 1 − 0.25.
+        assert_eq!(&m.params[6..9], &[0.1 * 1.4, 0.2 * 1.4, 0.5 * 1.4]);
+        assert_eq!(&m.params[9..12], &[2.0, 0.1, 0.75]);
+        assert_eq!(&m.params[12..20], &[0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]);
+        assert!(m.params[20..].iter().all(|&v| v == 0.0));
+        let g = &pal.materials[1];
+        assert_eq!(
+            g.textures.each_ref().map(String::as_str),
+            [
+                "Trn_GrasA01D",
+                "Trn_GrasA01N",
+                "Trn_GrasA01G",
+                "Trn_GrasA01M",
+                "Bmpr",
+                ""
+            ]
+        );
+        assert_eq!(&g.params[0..2], &[2.0, 2.0]);
+        // −3 is below epsilon, so the offset becomes 1.
+        assert_eq!(g.params[9], 1.0);
+        assert_eq!(&g.params[16..18], &[0.0, 0.0]);
+        assert_eq!(pal.materials[2].textures[3], "");
         assert_eq!(pal.plants.len(), 3);
-        assert_eq!(pal.plants[0].name, "Trn_GrasA01");
-        assert_eq!(pal.plants[2].name, "Trn_BPlntA01");
-        assert_eq!(&pal.plants[0].params[..3], &[0.72, 0.56, 0.6]);
+        assert_eq!(
+            pal.plants
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Trn_GrassA01", "Trn_SPlntA01", "Trn_BPlntA01"]
+        );
+        assert_eq!(pal.plants[0].params.len(), 21);
+        assert_eq!(&pal.plants[0].params[..4], &[0.72, 0.56, 0.6, 1.0]);
+        // A truncated material list is an error, not a panic.
+        assert!(Palette::parse(&b[..60]).is_err());
     }
 
     #[test]

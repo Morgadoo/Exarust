@@ -132,17 +132,34 @@ become the runtime's 24–28. A missing palette falls back to `default.ftb`,
 with the "Could not find … (Terrain Palette)" message; a palette file that
 is there but does not parse is not replaced (the loader fails).
 
-A version 1 palette has no 144-byte header: after the name come width,
-height and the material count, then 152-byte materials (name, four old
-texture names, 17 floats and a flags word), a rule count with 64-byte rules,
-and no plants. Its loader moves the old fields into the runtime material (a
-version 2 record's shape), derives the mask texture name from the diffuse
-name when the old height amount is set, renames a legacy shader grass
-material to the `Trn_GrasA01*` set, and gives the palette three default
-plants (`Trn_GrasA01`, `Trn_SPlnA01`, `Trn_BPlntA01`, colour 0.72, 0.56,
-0.6). The exact shading meaning of the old fields is not established (no
-shipped palette is version 1), so the field moves are marked a guess in
-`exa_formats::terrain`.
+A version 1 palette (`0x3EEFBD01`) has no 144-byte header: after the name
+come the two header floats (offsets 24 and 28, as in later versions) and the
+material count at offset 32, then 152-byte materials, a rule count with
+64-byte rules, and no plants. REA on the loader's upgrade gives each field's
+move into the runtime record (the 232-byte version 3 shape):
+
+| v1 offset | content | runtime |
+|---|---|---|
+| 0 | name[16] | name |
+| 16, 32, 64 | texture names | diffuse, normal, height slots (the name at 48, an old specular map, is dropped) |
+| 80 | f32 | parameter 0 and parameter 1 |
+| 84 | f32 height amount | above `f32::EPSILON`: the mask slot is the diffuse name with its last non-zero byte turned to `M` |
+| 92, 96, 100 | f32 × 3 | parameters 6–8, times 1.4 |
+| 104 | f32 offset | parameter 9, negated; 1 when that is below `f32::EPSILON` |
+| 112 | f32 | parameter 11 is 1 less it |
+| 116–147 | f32 × 8 | parameters 12–19 |
+| 148 | u32 | flags |
+
+Parameters 2–5 become 3, 1, 3 and 1.5, parameter 10 is 0.1 and 20–28 stay
+zero (the four defaults a version 2 palette gains are not inserted). A
+diffuse name whose fourth and fifth letters are `Sh` (an old shader grass)
+takes `Trn_GrasA01D`/`N`/`G`/`M` and parameter 0 (and so 1) of 2; a height
+name whose fourth letter is `r` or `R` zeroes parameters 16 and 17. The
+palette gets three plants, `Trn_GrassA01`, `Trn_SPlntA01` and
+`Trn_BPlntA01`, each flags 1 with the colours (0.72, 0.56, 0.6, 1) twice and
+then 0.1, 0.1, 0.35, 1, 0.5, 0.3, 0.6, 2, 0, 1, 0, 1, 0. No shipped palette
+is version 1 (two are version 2: `default.ftb`, `uwa1b.ftb`; the rest are
+version 3), so the shading meaning of the old fields is not exercised.
 
 ### Material (232 bytes in v3, 216 in v2)
 
