@@ -165,9 +165,11 @@ pub struct ItemFacts {
     pub rank_word: u16,
     /// The item kind byte used to classify weapons.
     pub weapon_kind: u8,
-    /// The apparel class read from the item's apparel data.
+    /// The apparel class: the top three bits of the byte at the start of the
+    /// item's apparel data (the lookup uses the apparel mask).
     pub apparel_class: u32,
-    /// The apparel's point value read from the item's apparel data.
+    /// The apparel's point value: the low five bits of the word at the start
+    /// of the item's apparel data.
     pub apparel_points: i32,
     /// Low material byte used to scale weapon bonuses.
     pub material_lo: u8,
