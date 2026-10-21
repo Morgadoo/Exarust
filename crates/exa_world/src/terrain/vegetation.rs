@@ -82,8 +82,9 @@ fn poisson_disc() -> Vec<Vec2> {
         for _ in 0..ATTEMPTS {
             let angle = rng.unit() * std::f32::consts::TAU;
             let radius = (rng.unit() + 1.0) * r;
-            // The runtime's SinCos gives sin first, then cos.
-            let p = centre + Vec2::new(angle.sin(), angle.cos()) * radius;
+            // The engine's sine and cosine: the cosine is the x offset.
+            let (sin, cos) = sin_cos(angle);
+            let p = centre + Vec2::new(cos * radius, sin * radius);
             if p.x <= margin || p.y <= margin || p.x >= SIDE - margin || p.y >= SIDE - margin {
                 continue;
             }
@@ -103,6 +104,39 @@ fn poisson_disc() -> Vec<Vec2> {
         active.swap_remove(pick);
     }
     points
+}
+
+/// The engine's sine and cosine, as the scatter takes them: the angle
+/// reduced by the nearest even multiple of π/4 (one Cody–Waite step), then
+/// the single-precision polynomials of the reduced angle, each octant
+/// picking and signing them (the same routine as
+/// `exa_game::thaum::engine::sin_cos`).
+fn sin_cos(x: f32) -> (f32, f32) {
+    let sign_sin = x.to_bits() & 0x8000_0000;
+    let x = f32::from_bits(x.to_bits() & 0x7fff_ffff);
+    let j = ((x * 1.273_239_5).round_ties_even() as i32).wrapping_add(1) & !1;
+    let y = j as f32;
+    let first = j & 2 == 0;
+    let sign_sin = sign_sin ^ (((j & 4) as u32) << 29);
+    let sign_cos = ((!(j.wrapping_sub(2)) & 4) as u32) << 29;
+    let x = x - y * 0.785_398_2;
+    let z = x * x;
+    let mut c = 2.443_315_7e-5 * z + -1.388_731_6e-3;
+    c = c * z + 4.166_664_6e-2;
+    c *= z;
+    c *= z;
+    c -= 0.5 * z;
+    c += 1.0;
+    let mut s = -1.951_529_6e-4 * z + 8.332_161e-3;
+    s = s * z + -1.666_665_5e-1;
+    s *= z;
+    s *= x;
+    s += x;
+    let (sin, cos) = if first { (s, c) } else { (c, s) };
+    (
+        f32::from_bits(sin.to_bits() ^ sign_sin),
+        f32::from_bits(cos.to_bits() ^ sign_cos),
+    )
 }
 
 /// Splits points into chunks by partitioning in place: rows first, then
@@ -269,6 +303,25 @@ pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_engine_sine_and_cosine_are_close_to_the_true_ones() {
+        // The reduction rounds to nearest (the original's conversion), so
+        // the reduced angle reaches 3π/8 and the polynomials stray by up
+        // to about 4e-6 there; within π/8 of a multiple of π/2 they hold
+        // to a few ulps.
+        for i in 0..=64 {
+            let angle = i as f32 * std::f32::consts::TAU / 64.0;
+            let (sin, cos) = sin_cos(angle);
+            assert!((sin - angle.sin()).abs() < 1e-4, "{angle}: {sin}");
+            assert!((cos - angle.cos()).abs() < 1e-4, "{angle}: {cos}");
+        }
+        let (sin, cos) = sin_cos(0.1);
+        assert!((sin - 0.1f32.sin()).abs() < 1e-7 && (cos - 0.1f32.cos()).abs() < 1e-7);
+        // The first is the sine: a quarter turn is (1, 0).
+        let (sin, cos) = sin_cos(std::f32::consts::FRAC_PI_2);
+        assert!((sin - 1.0).abs() < 1e-7 && cos.abs() < 1e-7);
+    }
 
     #[test]
     fn the_scatter_starts_at_the_seeds_first_two_draws() {
