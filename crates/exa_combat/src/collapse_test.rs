@@ -281,6 +281,84 @@ fn the_body_dies_250_ticks_after_the_blow() {
     assert_eq!(yellow(&app), 0.0);
 }
 
+/// One dying tick from a tone that crosses 0.25. A low body loses the
+/// dormant flag. The golem suit keeps it and waits 10000 ms. A lost fall
+/// clears it even for that suit.
+#[test]
+fn a_collapsing_death_settles_the_dormant_flag() {
+    use crate::condition::{DeathClock, StateFlags};
+    use crate::fall::{FallDeath, FallStage};
+    use exa_physics::body::BodyTicks;
+
+    let run = |fighter, stage| {
+        let mut app = App::new();
+        app.add_systems(Update, dying_tick);
+        let mut body = Ragdoll::new(&[]).with_drive();
+        body.drive.as_mut().unwrap().tone = 0.25;
+        let id = app
+            .world_mut()
+            .spawn((
+                fighter,
+                Condition::COLLAPSING,
+                StateFlags(StateFlags::DORMANT | StateFlags::WAKING),
+                FallDeath {
+                    stage,
+                    ..FallDeath::default()
+                },
+                Collapse::default(),
+                body,
+                Animator::new("Default", FALL_BACKWARD),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: id,
+            character: None,
+        });
+        app.insert_resource(BodyTicks(0));
+        app.update();
+        let flags = app.world().get::<StateFlags>(id).unwrap().0;
+        let clock = *app.world().get::<DeathClock>(id).unwrap();
+        (flags, clock)
+    };
+
+    let low = Fighter {
+        health: crate::Health {
+            yellow: 0.0,
+            ..crate::Health::of_race(1.0)
+        },
+        ..Fighter::default()
+    };
+    let (flags, clock) = run(low, FallStage::Steady);
+    assert_eq!(flags, StateFlags::WAKING);
+    assert_eq!(clock.wake_at_ms, None);
+    assert_eq!(clock.died_at_ms, 0);
+
+    let suited = Fighter {
+        health: crate::Health {
+            yellow: 0.01,
+            ..crate::Health::of_race(1.0)
+        },
+        first_flag_red: true,
+        ..Fighter::default()
+    };
+    let (flags, clock) = run(suited, FallStage::Steady);
+    assert_eq!(flags, StateFlags::DORMANT | StateFlags::WAKING);
+    assert_eq!(clock.wake_at_ms, Some(crate::condition::DEATH_WAKE_MS));
+
+    let lost = Fighter {
+        first_flag_red: true,
+        health: crate::Health {
+            yellow: 1.0,
+            ..crate::Health::of_race(1.0)
+        },
+        ..Fighter::default()
+    };
+    let (flags, clock) = run(lost, FallStage::Lost);
+    assert_eq!(flags, StateFlags::WAKING);
+    assert_eq!(clock.wake_at_ms, None);
+}
+
 fn falling() -> CollapseStep {
     CollapseStep {
         stepping: false,

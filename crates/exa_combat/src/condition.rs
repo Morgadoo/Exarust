@@ -164,6 +164,16 @@ pub struct SettledDeath {
     pub wake_at_ms: Option<u32>,
 }
 
+/// The clocks death stamps on the body: when it died, and when a dormant
+/// corpse may stir.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeathClock {
+    /// When the corpse may stir. `None` is the disabled clock.
+    pub wake_at_ms: Option<u32>,
+    /// The game clock when death wrote the clocks.
+    pub died_at_ms: u32,
+}
+
 /// Death's condition, dormant flag and wake clock.
 ///
 /// A body that is already dead is left alone. Otherwise the condition

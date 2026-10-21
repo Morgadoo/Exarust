@@ -619,6 +619,12 @@ impl Race {
         self.flags & REGENERATES_RED != 0 || self.stats.flags2 & REGENERATES_RED_TOO != 0
     }
 
+    /// Whether death keeps a low-health body of this race dormant: the
+    /// first flag word's red-regeneration bit, the golem suit.
+    pub fn keeps_dormant_corpse(&self) -> bool {
+        self.flags & REGENERATES_RED != 0
+    }
+
     /// Whether the race fights with claws.
     pub fn clawed(&self) -> bool {
         self.stats.kind & CLAWED != 0
@@ -708,6 +714,29 @@ mod tests {
         b[PROTECTION..PROTECTION + 4].copy_from_slice(&[70, 130, 70, 80]);
         b[COVERAGE + 4 * 9] = 100;
         b
+    }
+
+    #[test]
+    fn the_golem_suit_keeps_a_dormant_corpse() {
+        let mut suited = record("Golem", "Golem", "Golem");
+        suited[FLAGS..FLAGS + 4].copy_from_slice(&REGENERATES_RED.to_le_bytes());
+        suited[FLAGS2..FLAGS2 + 4].copy_from_slice(&REGENERATES_RED_TOO.to_le_bytes());
+        let mut ogre = record("Ogre", "Ogre", "Ogre");
+        ogre[FLAGS2..FLAGS2 + 4].copy_from_slice(&REGENERATES_RED_TOO.to_le_bytes());
+        let mut file = Vec::new();
+        file.extend_from_slice(&0xDBCB_0D00u32.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for (i, id) in [1u32, 2].iter().enumerate() {
+            file.extend_from_slice(&id.to_le_bytes());
+            file.extend_from_slice(&0u32.to_le_bytes());
+            file.extend_from_slice(&((i * RECORD) as u32).to_le_bytes());
+            file.extend_from_slice(&(RECORD as u32).to_le_bytes());
+        }
+        file.extend_from_slice(&suited);
+        file.extend_from_slice(&ogre);
+        let races = parse(&file).unwrap();
+        assert!(races[0].keeps_dormant_corpse() && races[0].regenerates_red());
+        assert!(!races[1].keeps_dormant_corpse() && races[1].regenerates_red());
     }
 
     #[test]

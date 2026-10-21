@@ -41,6 +41,9 @@ pub struct Fighter {
     pub readiness: f32,
     /// Its race bleeds: its wounds paint blood (`races.rdb` flag bit 0).
     pub bleeds: bool,
+    /// The race's first flag word has red regeneration, so death keeps a
+    /// low-health body dormant (the golem suit).
+    pub first_flag_red: bool,
     /// What its record and race gave it when it spawned (maximum health,
     /// scale, size, reach, rule bits, …).
     pub stats: CharacterStats,
@@ -85,6 +88,7 @@ impl Fighter {
             armour: damage::armour_layers(natural.as_ref(), &[], stats.deflection),
             readiness: 0.0,
             bleeds: race.is_none_or(Race::bleeds),
+            first_flag_red: race.is_some_and(Race::keeps_dormant_corpse),
             stats,
             perks: Perks::default(),
             guard: Guard::Open,
