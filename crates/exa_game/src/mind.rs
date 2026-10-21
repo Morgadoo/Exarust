@@ -1534,7 +1534,7 @@ pub fn mind_cost(id: u32, table_cost: f32, tick_ms: u32, techniques: u32, castin
         }
         table_cost
     } else if id & 0x3_0000 == 0x1_0000 {
-        let mut cost = (f32::from(tick_ms as u16) * table_cost) / 1000.0;
+        let mut cost = (tick_ms as f32 * table_cost) / 1000.0;
         if techniques & SUSTAIN_TECHNIQUE != 0 {
             cost *= 0.5;
         }
@@ -1548,9 +1548,15 @@ pub fn mind_cost(id: u32, table_cost: f32, tick_ms: u32, techniques: u32, castin
 /// or three quarters with the reserve technique.
 pub fn restore_mind_power(id: u32, state: &mut MindState) -> Option<f32> {
     let row = MIND_POWERS.iter().find(|row| row.id == id)?;
+    // Only the rows that have an effect constructor can be restored: the
+    // persistent sense and mask, the loyalty bind and the command over the
+    // dead.
     if !matches!(
         row.cast,
-        MindCast::SensePersistent | MindCast::MaskPersistent
+        MindCast::SensePersistent
+            | MindCast::MaskPersistent
+            | MindCast::LoyaltyStart
+            | MindCast::CommandDead
     ) {
         return None;
     }
@@ -2469,10 +2475,12 @@ mod power_tests {
         let mut state = MindState::new(1, 1.0, 0);
         assert_eq!(restore_mind_power(0x20101, &mut state), Some(0.27));
         assert_eq!(restore_mind_power(0x20102, &mut state), Some(0.24));
+        assert_eq!(restore_mind_power(0x2010A, &mut state), Some(0.29));
+        assert_eq!(restore_mind_power(0x2010D, &mut state), Some(0.25));
         assert_eq!(restore_mind_power(0x103, &mut state), None);
         state.resistance = MIND_RESERVE_TECHNIQUE;
         assert_eq!(restore_mind_power(0x20101, &mut state), Some(0.27));
-        assert!((state.reserved - 0.27 - 0.24 - 0.2025).abs() < 1e-6);
+        assert!((state.reserved - 0.27 - 0.24 - 0.29 - 0.25 - 0.2025).abs() < 1e-6);
     }
 }
 

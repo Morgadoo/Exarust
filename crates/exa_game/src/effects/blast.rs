@@ -296,7 +296,7 @@ impl Blast {
         }
         for chunk in &mut self.chunks {
             chunk.previous = chunk.at;
-            chunk.at = self.hand + (chunk.at - self.hand) * 0.0;
+            chunk.at = self.hand;
             chunk.heading = Vec3::ZERO;
             chunk.radius += 0.0015;
             chunk.reach += 0.0015;
