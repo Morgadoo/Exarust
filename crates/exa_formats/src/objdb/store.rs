@@ -71,27 +71,22 @@ impl Store {
     /// 1` records; with fewer than one nothing past the header is read
     /// (the writer saves an empty database as the header alone), otherwise
     /// the blob is everything after the table. The table is neither sorted
-    /// nor checked against the blob: an entry outside it has no view. The
-    /// older layouts need the original's upgrade chain and are refused.
+    /// nor checked against the blob: an entry outside it has no view. A
+    /// database of an older layout (`0xDBAC0D08`, `0xDBAC0D07`) is then
+    /// converted by the original's upgrade chain; the oldest
+    /// (`0xDBAC0D06`) needs a converter that is not reproduced and is
+    /// refused, as is any other magic.
     pub fn parse(b: &[u8]) -> Result<Self> {
         let magic = crate::read_u32(b, 0)?;
         let table_len = crate::read_u32(b, 4)? as usize;
-        match magic {
-            super::MAGIC => {}
-            0xDBAC_0D06..=0xDBAC_0D08 => {
-                return Err(Error::Unsupported(format!(
-                    "object database of the older layout {magic:#010x}"
-                )));
-            }
-            found => {
-                return Err(Error::BadMagic {
-                    found,
-                    expected: super::MAGIC,
-                });
-            }
+        if !(0xDBAC_0D06..=super::MAGIC).contains(&magic) {
+            return Err(Error::BadMagic {
+                found: magic,
+                expected: super::MAGIC,
+            });
         }
         let count = (table_len >> 4) as i64 - 1;
-        let store = if count < 1 {
+        let mut store = if count < 1 {
             Self {
                 negative: count < 0,
                 ..Self::default()
@@ -118,6 +113,7 @@ impl Store {
                 blob: b[blob_start..].to_vec(),
             }
         };
+        super::upgrade::upgrade(&mut store, magic)?;
         Ok(store)
     }
 

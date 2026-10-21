@@ -648,6 +648,7 @@ mod record;
 mod shipped;
 mod store;
 mod tiers;
+mod upgrade;
 
 pub use migrate::material_set;
 pub use packed::{

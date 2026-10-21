@@ -191,3 +191,36 @@ fn shipped_level_databases() {
     assert_eq!(own, 119);
     assert_eq!(containers, 1283);
 }
+
+#[test]
+fn shipped_actor_databases() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let actors = exa_rpk::Archive::parse(resource.get("actors.rpk").unwrap()).unwrap();
+    let (mut databases, mut older) = (0, 0);
+    for e in actors.entries() {
+        let b = actors.bytes(e);
+        let size = u32_at(b, 4) as usize;
+        let rest = &b[8 + size..];
+        if rest.is_empty() {
+            continue;
+        }
+        assert_eq!(u32_at(rest, 0), 0xDBDB, "{}", e.name);
+        let len = u32_at(rest, 4) as usize;
+        let file = &rest[8..8 + len];
+        let store = Store::parse(file).unwrap_or_else(|err| panic!("{}: {err}", e.name));
+        // No actor database has an operative section, so the upgrade of
+        // the older layout changes nothing but the magic it is saved with.
+        let mut expected = file.to_vec();
+        expected[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        assert_eq!(store.write(), expected, "{}", e.name);
+        if u32_at(file, 0) == 0xDBAC_0D08 {
+            older += 1;
+        }
+        databases += 1;
+    }
+    assert_eq!((databases, older), (20, 17));
+}
