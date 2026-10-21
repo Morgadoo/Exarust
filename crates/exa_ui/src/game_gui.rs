@@ -25,6 +25,44 @@ pub const MENU_CURSOR: &str = "menucursor";
 /// The compass's texture.
 pub const COMPASS: &str = "compass";
 
+/// The in-game screens this unit opens, with their type tags and sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GameScreen {
+    Inventory,
+    Loot,
+    Journal,
+    SkillSelector,
+}
+
+impl GameScreen {
+    /// The screen's form tag.
+    pub fn tag(self) -> u32 {
+        match self {
+            GameScreen::Inventory => CHARACTER_SCREEN,
+            GameScreen::Loot => LOOT_SCREEN,
+            GameScreen::Journal => JOURNAL_SCREEN,
+            // Guess: the skill selector is created by its owner control's
+            // code in the original; the power-tree family is its only known
+            // group.
+            GameScreen::SkillSelector => 0xce10_0001,
+        }
+    }
+
+    /// The screen's window size in physical pixels at unit 4. The
+    /// inventory is 244 × 644 (628 compact, 590 inside the arsenal); the
+    /// loot window is two 228-pixel panels; the journal is its original
+    /// 244 × 518; the skill selector's size is a guess (its form is not in
+    /// the evidence).
+    pub fn size(self) -> (i32, i32) {
+        match self {
+            GameScreen::Inventory => (244, 644),
+            GameScreen::Loot => (476, 220),
+            GameScreen::Journal => JOURNAL_SIZE,
+            GameScreen::SkillSelector => (332, 112),
+        }
+    }
+}
+
 /// The screens' type tags (the original's 32-bit form codes). They are
 /// grouped by their high 20 bits: 0xce1c0000 covers the container and
 /// journal screens, 0xce100000 the power-tree screens.
@@ -634,9 +672,288 @@ pub fn tagged_container(id: i32) -> i32 {
 /// and its texture slot.
 pub const GUITEX_TEXTURE_SLOT: u32 = 0x6966;
 
+/// The HUD's three control classes and their default sizes, in registration
+/// order: the 40 × 40 power slot, then the two 28 × 16 counters.
+pub const HUD_CONTROLS: [(u32, i32, i32); 3] = [(0xac3, 40, 40), (0xac2, 28, 16), (0xac4, 28, 16)];
+
+/// One layer of the in-game HUD, in the original's draw order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HudLayer {
+    /// The low-health heartbeat's border.
+    Heartbeat,
+    /// The black page lifting over a level.
+    Curtain,
+    /// The compass disc.
+    Compass,
+    /// The crossed-status marker and the skill-ready alert.
+    StatusMarker,
+    /// The health and focus bars.
+    Bars,
+    /// The block-stamina gauge.
+    Gauge,
+    /// Dialogue choices.
+    Dialogue,
+    /// The debug overlay.
+    Debug,
+}
+
+/// The HUD's paint order: the heartbeat's border, the level curtain, the
+/// compass, the status marker, the bars, the gauge, dialogue and the debug
+/// overlay (the world cursor is a separate pass).
+pub fn hud_layers() -> &'static [HudLayer] {
+    &[
+        HudLayer::Heartbeat,
+        HudLayer::Curtain,
+        HudLayer::Compass,
+        HudLayer::StatusMarker,
+        HudLayer::Bars,
+        HudLayer::Gauge,
+        HudLayer::Dialogue,
+        HudLayer::Debug,
+    ]
+}
+
+/// A heartbeat's fade-out: the border's alpha and the sound's gain `since`
+/// ms after the fade began. The original fades over a second at
+/// `1 − elapsed / 1000`; at or below the GUI's invisible threshold it stops
+/// both.
+pub fn heartbeat_fade(elapsed: i64) -> Option<(f32, f32)> {
+    let alpha = 1.0 - elapsed.max(0) as f64 * 0.001;
+    if alpha < 1.192_089_982_282_595_9e-7 {
+        return None;
+    }
+    let alpha = alpha as f32;
+    Some((alpha, alpha * 0.3))
+}
+
+/// The menu cursor's size: `round(scale × height × 32 / 1080)`, at most
+/// 128 pixels.
+pub fn menu_cursor_size(screen_height: i32, gui_scale: f32) -> i32 {
+    let size = (gui_scale as f64 * screen_height as f64 * 0.000_925_925_925_925_926 * 32.0)
+        .round_ties_even() as i32;
+    size.min(128)
+}
+
+/// The menu cursor's hotspot from its size: 0.176 across and 0.08 down.
+pub fn menu_cursor_hotspot(size: i32) -> (i32, i32) {
+    (
+        (size as f64 * 0.176).round_ties_even() as i32,
+        (size as f64 * 0.08).round_ties_even() as i32,
+    )
+}
+
+/// When the status marker hides: the given clock with the delay added (the
+/// original wraps the 32-bit word).
+pub fn status_hide_at(now: u32, delay: u32) -> u32 {
+    now.wrapping_add(delay)
+}
+
+/// The inventory's two pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InventoryTab {
+    /// The first page (`0x60` in the original's viewport field).
+    First,
+    /// The second page (`0`).
+    Second,
+}
+
+/// The tab the inventory shows: the character flag 0x1000000 picks the
+/// second page.
+pub fn inventory_tab(flag: u32) -> InventoryTab {
+    if flag & 0x0100_0000 == 0 {
+        InventoryTab::First
+    } else {
+        InventoryTab::Second
+    }
+}
+
+/// What filling the inventory knows about the character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryFill {
+    /// The screen belongs to the player, so the remembered place is used.
+    pub player_owned: bool,
+    /// The character is mind-controlled: the transfer is locked.
+    pub mind_locked: bool,
+    pub tab: InventoryTab,
+}
+
+/// The inventory fill's rules: the player's screen restores its remembered
+/// place and locks the transfer when the character is mind-controlled; the
+/// flag 0x1000000 picks the page.
+pub fn inventory_fill(player_owned: bool, mind_controlled: bool, flag: u32) -> InventoryFill {
+    InventoryFill {
+        player_owned,
+        mind_locked: mind_controlled,
+        tab: inventory_tab(flag),
+    }
+}
+
+/// The character view's destroy: closes the view of a character and reports
+/// whether one was found (the original's close helper returns 1).
+pub fn close_character_view(has_view: bool) -> bool {
+    has_view
+}
+
+/// The in-game unit's shutdown: the `guitex` skin is released and the
+/// registered hook runs.
+pub fn shutdown_skin(released: bool, hook: bool) -> (bool, bool) {
+    (released, hook)
+}
+
+/// Sets the GUI unit the HUD skin and the second skin follow (`0x100132730`).
+pub fn set_skin_unit(unit: i32, has_skin: bool, has_other: bool) -> SkinUnit {
+    SkinUnit {
+        unit,
+        skin_updated: has_skin,
+        other_updated: has_other,
+    }
+}
+
+/// The unit a skin change reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinUnit {
+    pub unit: i32,
+    pub skin_updated: bool,
+    pub other_updated: bool,
+}
+
+/// The heartbeat's fade-out start (`0x10013d7a0`): only an active heartbeat
+/// fades, and its clock is stamped.
+pub fn heartbeat_fade_start(active: bool, now: u32) -> Option<u32> {
+    active.then_some(now)
+}
+
+/// The screen reset (`0x10013d7e0`): a completed curtain decrements the
+/// open-level count, the curtain state clears and the heartbeat fades.
+pub fn screen_reset(curtain_state: u8, level_holds: i32) -> (u8, i32, bool) {
+    let level_holds = if curtain_state == 2 {
+        level_holds - 1
+    } else {
+        level_holds
+    };
+    (0, level_holds, true)
+}
+
+/// The bar frame drawn around a bar (`0x10013c3d0`): the rectangle from
+/// `x − 2, y` to `x + width + 2, y + 4·unit − 2`.
+pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> FormRect {
+    FormRect {
+        left: x - 2,
+        top: y,
+        right: x + width + 2,
+        bottom: y + 4 * unit - 2,
+    }
+}
+
+/// The gauge frame (`0x10013c420`): a rectangle one pixel above the gauge
+/// and `height + 4` tall, centred on the bar.
+pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> FormRect {
+    FormRect {
+        left: x,
+        top: y - 1,
+        right: x + width,
+        bottom: y - 1 + height + 4,
+    }
+}
+
+/// The shadow opacity of the HUD's bar frames (`0xdc`).
+pub const BAR_SHADOW_ALPHA: u8 = 0xdc;
+
+/// The preview bars of a character form (the two bars at the bottom
+/// centre, as [`crate::hud`] draws the player's): the health bar and the
+/// focus bar's rectangles.
+pub fn preview_bar_frames(window_width: i32, window_height: i32, unit: i32) -> [FormRect; 2] {
+    let x = (window_width >> 1) - 50 * unit;
+    let y = window_height - 5 * unit;
+    let width = 48 * unit;
+    [
+        bar_frame(x, y, width, unit),
+        bar_frame(x + 52 * unit, y, width, unit),
+    ]
+}
+
+/// Whether the character view rescales when the form's style has either of
+/// the 0x60 bits (`0x100137ae0`).
+pub fn rescales_view(style: u32) -> bool {
+    style & 0x60 != 0
+}
+
+/// Whether a power-tree screen is open (`0x100139560`): any tag in the
+/// 0xce100000 family.
+pub fn has_power_tree(tags: &[u32]) -> bool {
+    tags.iter()
+        .any(|tag| tag & POWER_TREE_MASK == POWER_TREE_MASK)
+}
+
+/// The character screens to close (`0x10013f2e0`), back to front, when the
+/// mode changed or the form's flags say so.
+pub fn character_screens_to_close(tags: &[u32], flags: u32, mode: u32) -> Vec<usize> {
+    if !closes_character_screen(flags, mode) {
+        return Vec::new();
+    }
+    (0..tags.len())
+        .rev()
+        .filter(|&index| tags[index] == CHARACTER_SCREEN)
+        .collect()
+}
+
+/// The tooltip singleton's creation (`0x10013b660`): the same tooltip form
+/// is made once.
+pub fn tooltip_singleton(exists: bool) -> bool {
+    !exists
+}
+
+/// The compass's installation (`0x10013f220`): registers the world-cursor
+/// callback, loads `compass.rfi` and installs the level-fade hook.
+pub fn compass_install(installed: bool) -> CompassInstall {
+    CompassInstall {
+        installed: true,
+        registered_cursor: !installed,
+        loaded_texture: !installed,
+        installed_hook: !installed,
+    }
+}
+
+/// What the compass installation did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompassInstall {
+    pub installed: bool,
+    pub registered_cursor: bool,
+    pub loaded_texture: bool,
+    pub installed_hook: bool,
+}
+
+/// A form close deferred to the end of the frame (`0x10013f390`): the game
+/// queues the call and returns at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredClose {
+    pub queued: bool,
+    pub ran_now: bool,
+}
+
+/// Queues a close for the frame's end.
+pub fn defer_close() -> DeferredClose {
+    DeferredClose {
+        queued: true,
+        ran_now: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_game_screens() {
+        assert_eq!(GameScreen::Inventory.tag(), CHARACTER_SCREEN);
+        assert_eq!(GameScreen::Loot.tag(), LOOT_SCREEN);
+        assert_eq!(GameScreen::Journal.tag(), JOURNAL_SCREEN);
+        assert_eq!(GameScreen::SkillSelector.tag(), 0xce10_0001);
+        assert_eq!(GameScreen::Inventory.size(), (244, 644));
+        assert_eq!(GameScreen::Loot.size(), (476, 220));
+        assert_eq!(GameScreen::Journal.size(), (244, 518));
+        assert_eq!(GameScreen::SkillSelector.size(), (332, 112));
+    }
 
     #[test]
     fn the_open_container_registry() {
@@ -946,5 +1263,136 @@ mod tests {
         assert!(closes_character_screen(0x80000, 0xa00));
         assert!(!closes_character_screen(0, 0xa00));
         assert!(closes_character_screen(0, 0));
+    }
+
+    #[test]
+    fn the_hud_layers_and_controls() {
+        assert_eq!(
+            hud_layers(),
+            &[
+                HudLayer::Heartbeat,
+                HudLayer::Curtain,
+                HudLayer::Compass,
+                HudLayer::StatusMarker,
+                HudLayer::Bars,
+                HudLayer::Gauge,
+                HudLayer::Dialogue,
+                HudLayer::Debug,
+            ]
+        );
+        assert_eq!(HUD_CONTROLS[0], (0xac3, 40, 40));
+        assert_eq!(HUD_CONTROLS[1], (0xac2, 28, 16));
+        assert_eq!(HUD_CONTROLS[2], (0xac4, 28, 16));
+    }
+
+    #[test]
+    fn the_heartbeat_fade() {
+        assert_eq!(heartbeat_fade(0), Some((1.0, 0.30000001)));
+        let (alpha, gain) = heartbeat_fade(500).unwrap();
+        assert!((alpha - 0.5).abs() < 1e-6);
+        assert!((gain - 0.15).abs() < 1e-6);
+        assert_eq!(heartbeat_fade(1000), None);
+        assert_eq!(heartbeat_fade(5000), None);
+    }
+
+    #[test]
+    fn the_menu_cursor_size() {
+        assert_eq!(menu_cursor_size(1080, 1.0), 32);
+        assert_eq!(menu_cursor_size(2160, 1.0), 64);
+        assert_eq!(menu_cursor_size(1080, 4.0), 128);
+        assert_eq!(menu_cursor_hotspot(32), (6, 3));
+        assert_eq!(menu_cursor_hotspot(128), (23, 10));
+    }
+
+    #[test]
+    fn the_hud_frames_and_preview() {
+        assert_eq!(
+            bar_frame(550, 974, 240, 5),
+            FormRect {
+                left: 548,
+                top: 974,
+                right: 792,
+                bottom: 992
+            }
+        );
+        assert_eq!(
+            gauge_frame(760, 861, 240, 10),
+            FormRect {
+                left: 760,
+                top: 860,
+                right: 1000,
+                bottom: 874
+            }
+        );
+        assert_eq!(
+            preview_bar_frames(1600, 1014, 5),
+            [
+                FormRect {
+                    left: 548,
+                    top: 989,
+                    right: 792,
+                    bottom: 1007
+                },
+                FormRect {
+                    left: 808,
+                    top: 989,
+                    right: 1052,
+                    bottom: 1007
+                }
+            ]
+        );
+        assert_eq!(BAR_SHADOW_ALPHA, 0xdc);
+    }
+
+    #[test]
+    fn the_small_unit_rules() {
+        let unit = set_skin_unit(5, true, false);
+        assert_eq!(
+            unit,
+            SkinUnit {
+                unit: 5,
+                skin_updated: true,
+                other_updated: false
+            }
+        );
+        assert_eq!(heartbeat_fade_start(false, 10), None);
+        assert_eq!(heartbeat_fade_start(true, 10), Some(10));
+        assert_eq!(screen_reset(2, 3), (0, 2, true));
+        assert_eq!(screen_reset(1, 3), (0, 3, true));
+        assert!(rescales_view(0x60));
+        assert!(!rescales_view(0x80));
+        assert!(has_power_tree(&[0xce100001]));
+        assert!(has_power_tree(&[0xce1c2030]));
+        assert!(!has_power_tree(&[0x1234]));
+        assert_eq!(
+            character_screens_to_close(&[CHARACTER_SCREEN, 1], 0, 0),
+            vec![0]
+        );
+        assert!(character_screens_to_close(&[CHARACTER_SCREEN], 0, 0xa00).is_empty());
+        assert!(tooltip_singleton(false));
+        assert!(!tooltip_singleton(true));
+        let install = compass_install(false);
+        assert!(install.installed && install.registered_cursor && install.loaded_texture);
+        assert!(!compass_install(true).registered_cursor);
+        assert_eq!(
+            defer_close(),
+            DeferredClose {
+                queued: true,
+                ran_now: false
+            }
+        );
+    }
+
+    #[test]
+    fn the_status_clock_and_inventory_fill() {
+        assert_eq!(status_hide_at(10, 400), 410);
+        assert_eq!(status_hide_at(u32::MAX, 1), 0);
+        assert_eq!(inventory_tab(0), InventoryTab::First);
+        assert_eq!(inventory_tab(0x0100_0000), InventoryTab::Second);
+        assert!(inventory_fill(true, true, 0).mind_locked);
+        assert!(!inventory_fill(true, false, 0).mind_locked);
+        assert!(!inventory_fill(false, true, 0).player_owned);
+        assert!(close_character_view(true));
+        assert!(!close_character_view(false));
     }
 }

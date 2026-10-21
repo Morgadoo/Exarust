@@ -234,6 +234,273 @@ pub fn selected_nudge(unit: i32) -> i32 {
     unit / 3
 }
 
+/// The constructor's wheel step (`+0x1c`). The component map says 0.1; the
+/// instruction stores 0.25, which is what this follows.
+pub const DEFAULT_WHEEL_STEP: f32 = 0.25;
+/// The constructor's attribute word: a page, no gutters, a vertical
+/// scrollbar and a snapping scroll.
+pub const DEFAULT_ATTRIBUTES: u32 = 0x30022;
+/// The constructor's state word: laid out, the page shown.
+pub const DEFAULT_STATE: u32 = 0x3000;
+
+/// The form constructor's fields.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormDefaults {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub border: i32,
+    pub content: (i32, i32),
+    /// The horizontal scroll step and the wheel step.
+    pub step: f32,
+    pub wheel: f32,
+    /// The smallest page (width, height).
+    pub min_page: (i32, i32),
+    pub attributes: u32,
+    pub state: u32,
+    pub visible: bool,
+}
+
+/// The original's form constructor defaults.
+pub fn form_defaults() -> FormDefaults {
+    FormDefaults {
+        x: UNPLACED,
+        y: UNPLACED,
+        width: DEFAULT_WIDTH,
+        height: DEFAULT_HEIGHT,
+        border: DEFAULT_BORDER,
+        content: DEFAULT_CONTENT,
+        step: DEFAULT_SCROLL_STEP,
+        wheel: DEFAULT_WHEEL_STEP,
+        min_page: PAGE_MIN,
+        attributes: DEFAULT_ATTRIBUTES,
+        state: DEFAULT_STATE,
+        visible: true,
+    }
+}
+
+/// What showing a form does to it and its children.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShowPlan {
+    pub attach_to_root: bool,
+    pub attach_to_parent: bool,
+    /// The task takes the shown form's title when its own is empty.
+    pub adopt_title: bool,
+    /// The unplaced y becomes the default 36.
+    pub default_y: bool,
+    pub layout: bool,
+    pub rescale_controls: bool,
+    /// Re-centre x or y from the style word.
+    pub recentre_x: bool,
+    pub recentre_y: bool,
+    pub snap_parent: bool,
+    pub snap_self: bool,
+    pub snap_children: bool,
+    pub redraw: bool,
+}
+
+/// The show's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShowInput {
+    pub attached: bool,
+    /// The call attaches the form (its `param_2`).
+    pub attach: bool,
+    pub y_unset: bool,
+    /// The style word's centring/placement bits.
+    pub style: u32,
+    /// The task's own name is empty and the form is its active child.
+    pub adopt_title: bool,
+    /// The form's parent is not the root.
+    pub parent_not_root: bool,
+    pub child_count: usize,
+    /// The GUI unit differs from the base 4.
+    pub unit_differs: bool,
+}
+
+/// The show's rule (`0x100029470`): attach, adopt the task's empty title,
+/// give an unset y 36 (unless centred or bottom-placed), lay out and rescale,
+/// re-centre, rebuild the snap edges and redraw.
+pub fn show_plan(input: ShowInput) -> ShowPlan {
+    ShowPlan {
+        attach_to_root: !input.attached,
+        attach_to_parent: input.attached && input.attach,
+        adopt_title: input.adopt_title,
+        default_y: input.y_unset && input.style & 0xc_8000 == 0,
+        layout: true,
+        rescale_controls: input.unit_differs,
+        recentre_x: input.style & style::CENTRE_X != 0,
+        recentre_y: input.style & style::CENTRE_Y != 0,
+        snap_parent: input.parent_not_root,
+        snap_self: true,
+        snap_children: input.child_count > 0,
+        redraw: true,
+    }
+}
+
+/// What closing a form does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClosePlan {
+    /// Mark the form as closing (its 0x11b).
+    pub mark_closing: bool,
+    pub task_message: bool,
+    pub hide_tooltip: bool,
+    pub run_callback: bool,
+    /// The form is the task's active child: unlink it, calling the owner.
+    pub unlink_active: bool,
+    /// Close the siblings whose owner is this form.
+    pub close_owner_children: bool,
+    /// Close this form's own children.
+    pub close_children: bool,
+    pub hide: bool,
+    pub redraw: bool,
+    pub result: u32,
+}
+
+/// The close's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseInput {
+    pub already_closing: bool,
+    /// The form's 0x119 bit marks the session as closing.
+    pub mark_session: bool,
+    pub is_main_menu: bool,
+    pub is_tooltip: bool,
+    /// The form is the task's active child.
+    pub is_active_child: bool,
+    pub has_callback: bool,
+    pub owner_children: usize,
+    pub children: usize,
+}
+
+/// The close's rule (`0x10002c410`): a form already closing is left alone;
+/// the task's active child is unlinked with its owner told, every other form
+/// detaches, tells its dependants and children, hides and runs its callback.
+pub fn close_plan(input: CloseInput) -> ClosePlan {
+    if input.already_closing {
+        return ClosePlan {
+            result: 1,
+            ..Default::default()
+        };
+    }
+    let mut plan = ClosePlan {
+        mark_closing: true,
+        task_message: input.is_main_menu,
+        hide_tooltip: input.is_tooltip,
+        run_callback: input.has_callback,
+        redraw: true,
+        result: 1,
+        ..Default::default()
+    };
+    let _ = input.mark_session;
+    if input.is_active_child {
+        plan.unlink_active = true;
+    } else {
+        plan.close_owner_children = input.owner_children > 0;
+        plan.close_children = input.children > 0;
+        plan.hide = true;
+    }
+    plan
+}
+
+/// What hiding or showing a form does to its tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VisibilityPlan {
+    pub visible: bool,
+    pub hide_children: bool,
+    /// Hiding the task's active child hides the task too.
+    pub hide_parent: bool,
+    /// Hiding a non-active form detaches it from its owner.
+    pub detach: bool,
+    pub focus: bool,
+    pub redraw: bool,
+}
+
+/// The visibility rule (`0x10002c8f0`): showing focuses the form (or its
+/// parent when it is the task's active child); hiding hides the children and
+/// either the parent (when active) or the form itself.
+pub fn visibility_plan(visible: bool, is_active_child: bool, child_count: usize) -> VisibilityPlan {
+    if visible {
+        VisibilityPlan {
+            visible: true,
+            focus: !is_active_child,
+            hide_parent: is_active_child,
+            redraw: false,
+            ..Default::default()
+        }
+    } else {
+        VisibilityPlan {
+            visible: false,
+            hide_children: child_count > 0,
+            hide_parent: is_active_child,
+            detach: !is_active_child,
+            redraw: true,
+            ..Default::default()
+        }
+    }
+}
+
+/// The form's saved window record for a maximise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormRecord {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub border: i32,
+    pub tail: i32,
+    pub right: i32,
+    pub top: i32,
+    pub bottom: i32,
+    pub style: u32,
+    pub attributes: u32,
+    pub unit: i32,
+}
+
+/// Maximises a form (`0x100029660`): the record saves its geometry and words,
+/// the place becomes 0, 0, the style keeps the bottom/right anchors and the
+/// size becomes the screen's. `already_free` is attribute bit 0x40000; a free
+/// form clears its 0x4f attributes and its spacing instead.
+///
+/// The fields the original stores in the record's spare words are not
+/// modelled (their meaning is not established); the geometry, style and
+/// attributes are.
+pub fn maximise(
+    record: FormRecord,
+    screen: (i32, i32),
+    already_free: bool,
+) -> (FormRecord, FormRecord) {
+    let saved = record;
+    let mut maximised = record;
+    maximised.x = 0;
+    maximised.y = 0;
+    maximised.style |= 0xf_0000;
+    if already_free {
+        maximised.attributes &= !0xc04f;
+        maximised.style &= !0xf0;
+    } else {
+        maximised.attributes &= !0xc000;
+    }
+    maximised.width = screen.0;
+    maximised.height = screen.1;
+    (saved, maximised)
+}
+
+/// Restores a maximised form (`0x100029780`): the unit is rescaled back from
+/// the saved record's unit and the saved geometry goes to the screen-sized
+/// stored values. Returns the restored record.
+pub fn restore(saved: FormRecord, unit: i32) -> FormRecord {
+    let saved_unit = if saved.unit == 0 { 1 } else { saved.unit };
+    FormRecord {
+        x: unit * (saved.x / saved_unit),
+        y: unit * (saved.y / saved_unit),
+        width: ((unit as f64) * (saved.width as f64 / saved_unit as f64)).round_ties_even() as i32,
+        style: saved.style,
+        attributes: saved.attributes,
+        unit,
+        ..saved
+    }
+}
+
 /// An unplaced coordinate (the constructor's sentinel).
 pub const UNPLACED: i32 = -987_654_321;
 
@@ -1324,6 +1591,145 @@ mod tests {
         // A child's edge is outside it, so the root answers there.
         let hit = hit_test_tree(&root, 100, 150).unwrap();
         assert_eq!((hit.form, hit.control), (Some(1), 0));
+    }
+
+    #[test]
+    fn the_constructor_defaults() {
+        let d = form_defaults();
+        assert_eq!(
+            (
+                d.width,
+                d.height,
+                d.border,
+                d.content,
+                d.min_page,
+                d.attributes,
+                d.state
+            ),
+            (302, 402, 2, (300, 800), (76, 90), 0x30022, 0x3000)
+        );
+        assert_eq!((d.x, d.y), (UNPLACED, UNPLACED));
+        assert_eq!((d.step, d.wheel), (0.025, 0.25));
+        assert!(d.visible);
+    }
+
+    #[test]
+    fn the_show_plan() {
+        let base = ShowInput {
+            attached: false,
+            attach: false,
+            y_unset: true,
+            style: 0,
+            adopt_title: false,
+            parent_not_root: false,
+            child_count: 0,
+            unit_differs: false,
+        };
+        let plan = show_plan(base);
+        assert!(plan.attach_to_root && plan.default_y && plan.layout);
+        assert!(!plan.attach_to_parent && !plan.snap_parent);
+        let plan = show_plan(ShowInput {
+            attached: true,
+            attach: true,
+            y_unset: false,
+            style: style::CENTRE_X | style::CENTRE_Y,
+            adopt_title: true,
+            parent_not_root: true,
+            child_count: 2,
+            unit_differs: true,
+        });
+        assert!(plan.attach_to_parent && !plan.default_y);
+        assert!(plan.adopt_title && plan.recentre_x && plan.recentre_y);
+        assert!(plan.snap_parent && plan.snap_self && plan.snap_children);
+        assert!(plan.rescale_controls && plan.redraw);
+        assert!(
+            !show_plan(ShowInput {
+                style: style::BOTTOM,
+                ..base
+            })
+            .default_y
+        );
+        assert!(
+            !show_plan(ShowInput {
+                style: style::CENTRE_Y,
+                ..base
+            })
+            .default_y
+        );
+    }
+
+    #[test]
+    fn the_close_and_visibility_plans() {
+        let base = CloseInput {
+            already_closing: false,
+            mark_session: true,
+            is_main_menu: false,
+            is_tooltip: false,
+            is_active_child: false,
+            has_callback: true,
+            owner_children: 2,
+            children: 1,
+        };
+        let plan = close_plan(base);
+        assert!(plan.mark_closing && plan.run_callback && plan.hide);
+        assert!(plan.close_owner_children && plan.close_children);
+        assert!(!plan.unlink_active && plan.result == 1);
+        let plan = close_plan(CloseInput {
+            is_active_child: true,
+            ..base
+        });
+        assert!(plan.unlink_active && !plan.hide);
+        let plan = close_plan(CloseInput {
+            already_closing: true,
+            ..base
+        });
+        assert!(!plan.mark_closing && plan.result == 1);
+        let plan = close_plan(CloseInput {
+            is_main_menu: true,
+            is_tooltip: true,
+            ..base
+        });
+        assert!(plan.task_message && plan.hide_tooltip);
+        let plan = visibility_plan(false, false, 3);
+        assert!(!plan.visible && plan.hide_children && plan.detach && plan.redraw);
+        let plan = visibility_plan(false, true, 0);
+        assert!(plan.hide_parent && !plan.detach);
+        let plan = visibility_plan(true, false, 0);
+        assert!(plan.visible && plan.focus);
+        let plan = visibility_plan(true, true, 0);
+        assert!(!plan.focus && plan.hide_parent);
+    }
+
+    #[test]
+    fn maximising_and_restoring() {
+        let record = FormRecord {
+            x: 10,
+            y: 20,
+            width: 302,
+            height: 402,
+            border: 2,
+            tail: 0,
+            right: 300,
+            top: 2,
+            bottom: 400,
+            style: 0,
+            attributes: 0x30022,
+            unit: 4,
+        };
+        let (saved, max) = maximise(record, (1600, 900), false);
+        assert_eq!(saved, record);
+        assert_eq!((max.x, max.y, max.width, max.height), (0, 0, 1600, 900));
+        assert_eq!(max.style & 0xf0000, 0xf0000);
+        assert_eq!(max.attributes & 0xc000, 0);
+        let (_, free) = maximise(record, (1600, 900), true);
+        assert_eq!(free.attributes & 0x4f, 0);
+        assert_eq!(free.style & 0xf0, 0);
+        // The original divides by the record's unit before multiplying: a
+        // coordinate is a multiple of the unit.
+        let restored = restore(saved, 4);
+        assert_eq!((restored.x, restored.y, restored.width), (8, 20, 302));
+        let doubled = restore(saved, 8);
+        assert_eq!((doubled.x, doubled.y, doubled.width), (16, 40, 604));
     }
 
     #[test]

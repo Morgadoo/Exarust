@@ -340,6 +340,19 @@ controls page's `InputMode` drives its controller flag. There is no Steam
 library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 
+## In-game screens
+
+`gui_screens` runs the in-game unit's screens for the player: the
+character/inventory, journal and skill selector are forms on an
+`exa_ui::gui_core::GuiTask`, so their focus follows the window manager.
+The player's bound I opens or toggles the inventory (registered as a
+tagged open container, placed at the screen's right edge), J the journal
+(it stores its entry text and remembered place on close) and K the skill
+selector; Escape closes the focused screen. The original's rules are in
+`exa_ui::game_gui`; the power tree and power bar do nothing because the
+game has no powers yet. The screens are not drawn, and the pack and worn
+lists are not saved.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

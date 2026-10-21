@@ -18,8 +18,10 @@
 //!
 //! Wired in Exarust: Tab (with the hand's cancel and the request bits it
 //! clears), R (with the player's condition word and the lift counting as a
-//! drag) and F (the record's light flag). The others have no window or
-//! dialogue to open yet.
+//! drag) and F (the record's light flag); I, J and K are read again by
+//! [`crate::gui_screens`], which opens the inventory, journal and skill
+//! selector on the window manager. The power tree and power bar need
+//! powers, which the game has none of yet, and there is no dialogue.
 //!
 //! Evidence: the controls' key handler, the combat toggle and the swap and
 //! light requests, read in the instructions

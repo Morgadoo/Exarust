@@ -25,6 +25,7 @@ pub mod footprints;
 pub mod frame;
 pub mod game_event;
 pub mod gamepad;
+pub mod gui_screens;
 pub mod hand;
 pub mod hirelings;
 pub mod hotkeys;
@@ -111,7 +112,11 @@ impl Plugin for GamePlugin {
             teleporters::TeleportPlugin,
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,
-            (menu_screen::MenuScreenPlugin, arena_match::ArenaMatchPlugin),
+            (
+                menu_screen::MenuScreenPlugin,
+                arena_match::ArenaMatchPlugin,
+                gui_screens::GameScreensPlugin,
+            ),
         ))
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
         // Debug tools: idle unless their flags or keys turn them on.

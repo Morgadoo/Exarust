@@ -100,14 +100,20 @@ pub use form::{
     wheel_control, wheel_scroll,
 };
 pub use game_gui::{
-    CHARACTER_SCREEN, COMPASS, CONTAINER_MASK, CONTAINER_SCREEN, CONTAINER_TAG, CURSORS,
-    CharacterScreenInput, Counter, GUITEX, GUITEX_TEXTURE_SLOT, HudSpan, JOURNAL_SCREEN,
-    JOURNAL_SIZE, JOURNAL_TEXT, JOURNAL_TITLE, Journal, JournalAction, JournalEntry, JournalInput,
-    LOOT_SCREEN, MENU_CURSOR, NEW_ENTRY, OPEN_CONTAINERS, OpenContainers, POWER_SLOT_SIZE,
-    POWER_TREE_MASK, PowerSlot, SaveAction, ScreenAction, SlotAnswer, character_screen, close_mask,
-    closes_character_screen, compass_anchors, compass_extent, forms_with_tag, hud_span,
-    inventory_place, journal_screen, level_curtain, loot_allowed, ready_place, save_action,
-    selector_place, status_marker, status_place, status_pulse, tagged_container,
+    BAR_SHADOW_ALPHA, CHARACTER_SCREEN, COMPASS, CONTAINER_MASK, CONTAINER_SCREEN, CONTAINER_TAG,
+    CURSORS, CharacterScreenInput, CompassInstall, Counter, DeferredClose, GUITEX,
+    GUITEX_TEXTURE_SLOT, GameScreen, HUD_CONTROLS, HudLayer, HudSpan, InventoryFill, InventoryTab,
+    JOURNAL_SCREEN, JOURNAL_SIZE, JOURNAL_TEXT, JOURNAL_TITLE, Journal, JournalAction,
+    JournalEntry, JournalInput, LOOT_SCREEN, MENU_CURSOR, NEW_ENTRY, OPEN_CONTAINERS,
+    OpenContainers, POWER_SLOT_SIZE, POWER_TREE_MASK, PowerSlot, SaveAction, ScreenAction,
+    SkinUnit, SlotAnswer, bar_frame, character_screen, character_screens_to_close,
+    close_character_view, close_mask, closes_character_screen, compass_anchors, compass_extent,
+    compass_install, defer_close, forms_with_tag, gauge_frame, has_power_tree, heartbeat_fade,
+    heartbeat_fade_start, hud_layers, hud_span, inventory_fill, inventory_place, inventory_tab,
+    journal_screen, level_curtain, loot_allowed, menu_cursor_hotspot, menu_cursor_size,
+    preview_bar_frames, ready_place, rescales_view, save_action, screen_reset, selector_place,
+    set_skin_unit, shutdown_skin, status_hide_at, status_marker, status_place, status_pulse,
+    tagged_container, tooltip_singleton,
 };
 
 pub use fps::ShowFps;

@@ -334,6 +334,32 @@ trackbar and scroll-bar geometry, with `CVTSS2SI`'s indefinite result and
 the unordered clamps that let a NaN through. The screen and the controls
 are not drawn by a form yet.
 
+## Form base and the in-game unit
+
+`form` extends its metrics with the original form class's own rules: the
+302 × 402 constructor defaults (border 2, content 300 × 800, scroll step
+0.025, wheel step 0.25, page minimum 76 × 90, attributes 0x30022, state
+0x3000), the unset and show placements (centre, right/bottom, defaults 4
+and 36), the sibling layering (0x2000 stays below, 0x1000 on top), the
+256 ms show/hide fade in its linear and eased modes, the vertical
+scrollbar beside the horizontal one (thumb ties to even, snapping with
+`CVTSS2SI`, NaN passing the clamps), the wheel's eighths and a held
+arrow's steps, Tab traversal, the caret blink, the close-band codes and
+resize cursors, the tree hit test (children last first, strictly inside,
+controls within two units, the pass-through bit) and the magnetic snap
+slots. It also plans show, close, hide/show and maximise/restore.
+
+`game_gui` is the in-game unit's non-drawing half: the eight-slot
+open-container registry, the character/loot/journal show rules, the
+journal's entries and geometry, the player's inventory place and page,
+the 40 × 40 power slot's and 28 × 16 counters' message rules, the health
+and focus bars' spans, the status marker and skill-ready alert's places
+and pulse, the three-second level curtain, the heartbeat's fade-out, the
+menu cursor's size, the compass anchors, the HUD's layer order and three
+control classes, and the close/save scopes. `exa_game::gui_screens` opens
+the screens from the bound I, J and K keys on a `GuiTask`, and Escape
+closes the focused one; the forms are not drawn yet.
+
 ## Scope
 
 - GUI skin and icon atlases from `Resource.rpk` (`guiskin`, `guitex`, icon sheets).
