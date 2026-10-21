@@ -48,61 +48,85 @@ AI evaluators and effect classes of `Exanima.exe`; research notes in
 
 `exa_game::thaum::power`. The casts hand their work to these classes; each
 has a state (1 ready, 0 running, 2 ending), the focus it holds and,
-where it names one, its target.
+where it names one, its target. They use the cast protocol's focus
+plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
+`start_cast`) and the body's power list.
 
-- **The base** (`PowerBase`): taking focus adds it to what the body has
-  spent, three quarters with the reserve technique; releasing it takes the
-  same amount back. A control event 2 marks a power ending and answers 0;
-  the next tick releases its focus and answers 2. A persistent power (id
-  bit 0x2_0000) publishes HUD word 2 while it runs and 12 with the clock
-  and a 200 ms fade once it ends. The power list is walked by id (an index,
-  and an order to end one), a saved `(id, size)` list rebuilds Force
-  powers (three quarters of their cost with the reserve technique), and AI
+- **The base** (`PowerBase`): taking focus adds it to the body's reserve
+  and spent focus, three quarters with the reserve technique, and to what
+  the power holds; releasing it takes the held amount back off the
+  reserve only. A control event 2 marks a power ending and answers 0; the
+  next tick releases its focus and answers 2. A persistent power (id bit
+  0x2_0000) publishes HUD word 2 while it runs and 12 with the clock and a
+  200 ms fade once it ends. The record's known powers are searched by id,
+  a running power is ended by id, a saved `(id, size)` list rebuilds Force
+  powers (the rebuild reserves three quarters with the technique, and the
+  load then takes the held focus down by 0.75 once more), and AI
   evaluation dispatches on the id's domain byte (0x200 Force, 0x400
-  Energy, 0x600 Displacement; anything else answers 0x400_0000).
+  Energy, 0x600 Displacement; anything else answers 0x400_0000). Power
+  Glean teaches Vanish or else Shock from a shaper dying within 20 m (a
+  distance that is not a number passes) to a player who knows at least
+  one power and none of that domain.
 - **Mind**: Sense Minds (continuous, overlay on while it runs; instant,
-  end stamp plus a 2 s fade) and Mask Mind (continuous, body bit 0x1_0000;
-  instant, 15 s with an intensity that fades between 5 and 10 s over a
-  10 s square curve and a second that fades between 10 and 15 s, at 0.9
-  and 0.8). Confusion and Enrage clear body bits 0x4_0000 and 0x8_0000
-  after 15 s; Trust and Suspicion last 20 s. Loyalty binds a living target
-  (its marker id 0x10010A), builds the target's trust toward 10 by a ten-
-  thousandth of the gap a tick, and after 800 ticks pulls its strength
-  toward `((relation + 100)·0.005)²·100·0.05` while keeping 0.95;
-  ending one half ends the other. Command Dead (0x2010D) does the same
-  with marker 0x10010D. Control Mind (0x2010C) spends 0.002 of focus a
-  tick for 2 s, then hands the player to the target body (handover bit
-  0x10_0000 on the caster, 0x60_0000 on the target) with a possession
-  marker (0x10010C) that ends the caster's half when it ends. Spirit Form
-  drains its tick cost, clamps the focus at zero and fades over 1.2 s
-  through `exa_game::mind`.
-- **Force**: Shell halves a blow's energy (the body's hit damping is 0.5) and clears
-  it at the end; a bubble or barricade ends once its centre is more than
-  20 m from the caster; Strikes sets the strike factor 1.0 and the swing
-  factor 3.0, keeps at most four weapon auras and reports a swing of an
-  armed weapon; Kinesis steers its held body by its reach (half its
-  radius plus one) toward the aim (`1/dist`, 0.02 within 50 cm), turns it
-  by `reach²·0.001` a tick and stamps its user for 2 s; Throw lifts at
-  `record·strength·0.00125`, launches along the aim at
-  `mass/(mass + 0.1)` (a fiftieth within 50 cm), drops the shell after
-  800 ms and restores the materials 200 ms later.
-- **Energy**: Shock charges by its rate, fires one arc burst when it
-  passes 1, spends its focus while charging and answers 2 on the next
-  cycle; Shock Weapons starts motion 0x25 and clears its weapon arcs when
-  it ends.
-- **Displacement**: the vanish effect hides the body (status bit 0x800),
-  fades out over 300 ms, holds (Vanish spends half its cost a tick), moves
-  the body on release (the long door to the grid's place, the summon to
-  the demon's), fades in over 400 ms and cleans up after 300 ms. Constant
-  Displacement's shell grows 0.002 a tick up to 0.12. The summon waits
-  2 s, fades over 3 s, waits 1 s and brings in `demon a01` with role 0x21
-  and a 300 relation both ways.
+  end stamp plus a 2 s fade added in 64 bits) and Mask Mind (continuous,
+  status bit 0x1_0000; instant, 15 s with an intensity that fades between
+  5 and 15 s over a 10 s square curve and a second that fades between 10
+  and 15 s, at 0.9 and 0.8, and a HUD row that turns timed for the last
+  5 s, ending on the real clock). Confusion and Enrage clear status bits
+  0x4_0000 and 0x8_0000 once the unsigned 32-bit elapsed time passes 15 s
+  (the state word is not written); Trust and Suspicion last 20 s. Loyalty
+  binds a target that is not collapsing (marker 0x10010A); the target's
+  trust is set to a ten-thousandth of its gap to 10 each tick while below
+  10, and after 800 ticks its strength blends `((relation + 100)·0.005)²·100`
+  (double until narrowed) at 0.05 with 0.95 of the old; its limit test
+  adds 10 when the loyal body has technique bit 0x1_0000; ending one half
+  ends the other, and the target's end runs the experience hook and plays
+  `ThmMnd_E01` at 0.15. Command Dead (0x2010D) does the same with marker
+  0x10010D. Control Mind (0x2010C) counts its binding down by the double
+  0.002 and spends the single 0.002 a tick; after 2 s it hands the player
+  to the target body (handover bit 0x10_0000 on the caster, 0x60_0000 on
+  the target) with a possession marker (0x10010C) that ends the caster's
+  half when it ends; taking control back writes the caster's status less
+  the control bits over the released body. Spirit Form drains its tick
+  cost, clamps the focus at zero below the double 0.001 and fades over
+  1.2 s through `exa_game::mind`; the spirit body is a race 0xE00 record
+  sharing the caster's known powers, 60 cm along its facing, with its
+  focus pool, techniques and running powers.
+- **Force**: Shell halves a blow's energy (the body's hit damping is 0.5)
+  and clears it at the end; a bubble or barricade ends once its centre is
+  more than 20 m from the caster; Strikes sets the strike factor 1.0 and
+  the swing factor 3.0, keeps at most four weapon auras, ripples an aura
+  at half a swing's strength and plays `thmfrc_brf` as it ends; Kinesis
+  steers its held body at its reach (half its radius plus one) along the
+  unit direction to the aim (the direction times 0.02 within 50 cm or for
+  a distance that is not a number), turns it by `reach²` times the double
+  0.001 a tick by the stick or the key pairs (each pair if/else), holds a
+  pick at a third of its extents' sum and stamps its user for 2 s; Throw
+  holds no reserve: its lift aims 100 cm above the body and spends
+  `tick·cost·0.00125` every steered tick at `mass/(0.1 + mass)` of the
+  unit direction, drops the shell after 800 ms and coasts at six times
+  that share toward the caster's aim point (ending at once within 100 cm),
+  and restores the materials 200 ms later.
+- **Energy**: Shock's first tick installs its cast hook and plays the
+  charge; it charges by its rate, spends its focus while charging, fires
+  one arc burst when it passes 1 (clearing the cast hook and id) and
+  answers 2 on the next cycle; Shock Weapons starts motion 0x25 and clears
+  its weapon arcs when it ends.
+- **Displacement**: the vanish effect waits 400 ms spending its tick cost,
+  hides the body (status bit 0x800), fades it out over 300 ms, holds
+  (Vanish until released, spending half its cost a tick; the Long Door for
+  400 ms, spending nothing), moves the body, fades it in over 400 ms (the
+  share narrowed before it is taken from 1) and finishes after 300 ms; a
+  shell shared with Constant Displacement goes back to it. Constant
+  Displacement's hum rises by the double 0.002 each tick while under 0.12.
+  The summon brings in `demon a01` with role 0x21 and a 300 relation both
+  ways, waits 2 s, fades the caster over 3 s and finishes 1 s later.
 
 The classes are plain functions with tests; nothing in the running game
-calls them yet, and the combat factors they publish are not read by
-`exa_combat`'s hit formula. The player swap, the spirit body's character
-generation and the effect meshes are descriptions here, not spawned
-entities.
+calls them yet (the player has no power bar), and the combat factors they
+publish are not read by `exa_combat`'s hit formula. The player swap, the
+spirit body's character generation, the kinesis aim sweep and the effect
+meshes are descriptions here, not spawned entities.
 
 ## Force
 
