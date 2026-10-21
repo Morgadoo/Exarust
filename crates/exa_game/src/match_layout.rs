@@ -22,12 +22,14 @@
 //! each other, both ways, and both of their AI clocks wait 3000 ms. Fewer
 //! than three formed sides are hostile; three or more are a free-for-all.
 //! The side whose id is the player's is stood from the company list, and
-//! the player's own entry is not spawned again. A rematch, which drops
-//! bodies in the dead mode and repositions the rest, is a separate branch.
+//! the player's own entry is not spawned again. A rematch drops bodies in
+//! the dead mode and stands whoever remains on the player's spread.
 //!
 //! Evidence: the retail arena's eleven template setups, the ring placement,
 //! the fixed placement templates, the next-round routine and the fresh
 //! match generator, read from `Exanima.exe` 0.9.5 (`context/re/arena-layout.md`).
+
+use exa_formats::characters::{DEAD, FULL_POOL};
 
 use crate::arena_spawn::{
     GenericPlan, HirePlan, MANAGER_ROLE, SPAWN_DAMAGE, SPAWN_HEALTH, generic_plan, hire_plan,
@@ -652,6 +654,183 @@ fn opponent_plan(team: i32, spec: &FreshMatch<'_>) -> OpponentPlan {
     }
 }
 
+/// Flag on a character whose health is stored before a rematch.
+pub const HEALTH_TRACK: u32 = 0x2000_0000;
+/// How long a rematch holds a non-player's AI clocks.
+pub const REMATCH_GRACE_MS: u32 = 10_000;
+/// The yield a rematch gives the frame before it touches the bodies.
+pub const REMATCH_YIELD_MS: u32 = 13;
+/// Behaviour written onto a body a rematch keeps: mode 3, parameter 0,
+/// and not forced. The stand first writes the mode word to −1, so the
+/// reset runs even when the mode is already 3.
+pub const STANDBY_BEHAVIOUR: BehaviourReset = BehaviourReset {
+    mode: 3,
+    parameter: 0,
+    forced: false,
+};
+/// The ratio word a stood body is given.
+const STOOD_RATIO: f32 = 1.0;
+/// The generator a rematch jitters with.
+const ROLL_STEP: u32 = 0x0808_8405;
+
+/// The health word stored for a tracked character, or nothing when the
+/// track flag is clear.
+///
+/// At or below zero the word is 0. Above zero it is the nearest integer
+/// of `health / maximum × 65535`, ties to even, kept in sixteen bits.
+#[must_use]
+pub fn stored_health(flags: u32, health: f32, maximum: f32) -> Option<u16> {
+    if flags & HEALTH_TRACK == 0 {
+        return None;
+    }
+    if health <= 0.0 {
+        return Some(0);
+    }
+    let scaled = (f64::from(health) / f64::from(maximum) * f64::from(FULL_POOL)).round_ties_even();
+    if !scaled.is_finite() {
+        return Some(0);
+    }
+    Some(scaled as i64 as u16)
+}
+
+/// One body still in the match when a rematch starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveBody {
+    pub id: u32,
+    pub mode: i32,
+    pub health: f32,
+    pub is_player: bool,
+}
+
+/// A body a rematch kept.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReposedBody {
+    pub id: u32,
+    pub is_player: bool,
+    pub health: f32,
+    /// The cleanup's standby, written for everyone but the player.
+    pub standby: bool,
+    /// Where the player's side stands this body. Absent when that side is
+    /// not in the bracket.
+    pub place: Option<Place>,
+    /// Health copied into the saved word, once the side is stood.
+    pub saved_health: Option<f32>,
+    /// Condition after the stand. The dead mode is cleared to 0.
+    pub mode: Option<i32>,
+    /// The ratio word, set to 1 once the side is stood.
+    pub ratio: Option<f32>,
+    /// Both plain AI clocks, for a non-player on a stood side.
+    pub act_at_ms: Option<u32>,
+    /// The third clock: the roll's high half of ×10000, plus the grace.
+    pub jitter_at_ms: Option<u32>,
+    pub behaviour: Option<BehaviourReset>,
+}
+
+/// What a rematch does to the bodies already in the match.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rematch {
+    pub standing: Vec<ReposedBody>,
+    pub dropped: Vec<u32>,
+    /// The player's body was in the dead mode, so it is spawned again.
+    pub respawn_player: bool,
+    pub yield_ms: u32,
+}
+
+/// Drop dead bodies and stand whoever remains.
+///
+/// A body whose condition is the dead mode is removed, and the next body
+/// is examined in its place. A dead player is removed and marked to be
+/// spawned again. Everyone else who is not the player is put on standby.
+/// When the player's side is in the bracket, each survivor is stood on
+/// that side's spread at its new index: the spread is the side's member
+/// count, not how many bodies survived. The condition becomes 0, the
+/// saved health takes the current health, and the ratio becomes 1. A
+/// non-player's two AI clocks wait [`REMATCH_GRACE_MS`], and a third clock
+/// adds the high half of the stepped roll times 10000. The roll steps
+/// once per such body, and only when the side is stood.
+#[must_use]
+pub fn stand_rematch(
+    spec: &FreshMatch<'_>,
+    bodies: &[LiveBody],
+    now_ms: u32,
+    roll: &mut u32,
+) -> Rematch {
+    let respawn_player = bodies
+        .iter()
+        .any(|body| body.is_player && body.mode == DEAD);
+    let mut survivors = Vec::new();
+    let mut dropped = Vec::new();
+    let mut pending: Vec<LiveBody> = bodies.to_vec();
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        if pending[cursor].mode == DEAD {
+            dropped.push(pending[cursor].id);
+            pending.remove(cursor);
+        } else {
+            survivors.push(pending[cursor]);
+            cursor += 1;
+        }
+    }
+
+    let laid = bracket_layout(spec.slots, spec.per_team, spec.teams, spec.spawn_at);
+    let player_side = laid.iter().position(|side| side.team == spec.player_team);
+    let radius = (i64::from(spec.teams) * i64::from(spec.per_team) * 50 + 100).min(350) as f32;
+    let standing = survivors
+        .iter()
+        .enumerate()
+        .map(|(order, body)| {
+            let mut reposed = ReposedBody {
+                id: body.id,
+                is_player: body.is_player,
+                health: body.health,
+                standby: !body.is_player,
+                place: None,
+                saved_health: None,
+                mode: None,
+                ratio: None,
+                act_at_ms: None,
+                jitter_at_ms: None,
+                behaviour: (!body.is_player).then_some(STANDBY_BEHAVIOUR),
+            };
+            if let Some(side) = player_side {
+                let members = laid[side].members.len();
+                let (spread, start) = side_spread(side, laid.len(), members);
+                let angle = order as f32 * spread + start;
+                reposed.place = Some(bracket_place(spec.spawn_at, angle, radius));
+                reposed.saved_health = Some(body.health);
+                reposed.mode = Some(0);
+                reposed.ratio = Some(STOOD_RATIO);
+                reposed.behaviour = Some(STANDBY_BEHAVIOUR);
+                if !body.is_player {
+                    *roll = roll.wrapping_mul(ROLL_STEP).wrapping_add(1);
+                    let jitter = ((u64::from(*roll) * u64::from(REMATCH_GRACE_MS)) >> 32) as u32;
+                    let grace = now_ms.saturating_add(REMATCH_GRACE_MS);
+                    reposed.act_at_ms = Some(grace);
+                    reposed.jitter_at_ms = Some(grace.saturating_add(jitter));
+                }
+            }
+            reposed
+        })
+        .collect();
+    Rematch {
+        standing,
+        dropped,
+        respawn_player,
+        yield_ms: REMATCH_YIELD_MS,
+    }
+}
+
+/// Spread and start angle of one side, the same split [`bracket_layout`] uses.
+fn side_spread(side: usize, sides: usize, members: usize) -> (f32, f32) {
+    let count = members as i64;
+    let mut spread = ((count - 1) as f64 / (count + 1) as f64 * 2.0) as f32;
+    let start = side as f32 / sides as f32 * 6.0 - spread * 0.5;
+    if count > 1 {
+        spread /= (count - 1) as f32;
+    }
+    (spread, start)
+}
+
 /// The next round's change.
 pub fn next_round(losses: i32, fighter_dead: bool) -> NextRound {
     if losses < 1 || !fighter_dead {
@@ -1050,6 +1229,106 @@ mod tests {
         );
         assert_eq!(raised.reports.len(), 1);
         assert!(raised.links.is_empty());
+    }
+
+    fn body(id: u32, mode: i32, health: f32, is_player: bool) -> LiveBody {
+        LiveBody {
+            id,
+            mode,
+            health,
+            is_player,
+        }
+    }
+
+    #[test]
+    fn a_rematch_drops_the_dead_and_stands_the_rest() {
+        let slots = [1, 1, 2];
+        let spec = fresh(&slots, 1, 2);
+        let bodies = [
+            body(10, 0, 40.0, false),
+            body(11, DEAD, 0.0, false),
+            body(12, 0, 80.0, true),
+        ];
+        let mut roll = 0;
+        let rematch = stand_rematch(&spec, &bodies, 1_000, &mut roll);
+        assert_eq!(rematch.dropped, vec![11]);
+        assert!(!rematch.respawn_player);
+        assert_eq!(rematch.yield_ms, REMATCH_YIELD_MS);
+        assert_eq!(rematch.standing[0].id, 10);
+        assert!(rematch.standing[0].standby);
+        assert_eq!(rematch.standing[0].saved_health, Some(40.0));
+        assert_eq!(rematch.standing[0].mode, Some(0));
+        assert_eq!(rematch.standing[0].ratio, Some(1.0));
+        assert_eq!(rematch.standing[0].behaviour, Some(STANDBY_BEHAVIOUR));
+        assert_eq!(rematch.standing[0].act_at_ms, Some(11_000));
+        assert_eq!(rematch.standing[0].jitter_at_ms, Some(11_000));
+        assert_eq!(roll, 1);
+        assert!(rematch.standing[1].is_player);
+        assert!(!rematch.standing[1].standby);
+        assert_eq!(rematch.standing[1].act_at_ms, None);
+        let laid = bracket_layout(&slots, 1, 2, [0.0; 3]);
+        assert_eq!(rematch.standing[0].place, Some(laid[0].members[0].1));
+        assert_eq!(rematch.standing[1].place, rematch.standing[0].place);
+    }
+
+    #[test]
+    fn a_dead_player_is_spawned_again() {
+        let slots = [1];
+        let spec = fresh(&slots, 1, 1);
+        let bodies = [body(1, DEAD, 0.0, true), body(2, 0, 10.0, false)];
+        let mut roll = 1;
+        let rematch = stand_rematch(&spec, &bodies, 0, &mut roll);
+        assert!(rematch.respawn_player);
+        assert_eq!(rematch.dropped, vec![1]);
+        assert_eq!(rematch.standing.len(), 1);
+        let stepped = 1u32.wrapping_mul(0x0808_8405).wrapping_add(1);
+        assert_eq!(roll, stepped);
+        let jitter = ((u64::from(stepped) * 10_000) >> 32) as u32;
+        assert_eq!(
+            rematch.standing[0].jitter_at_ms,
+            Some(REMATCH_GRACE_MS + jitter)
+        );
+    }
+
+    #[test]
+    fn two_dead_bodies_in_a_row_leave_the_living() {
+        let slots = [1, 1];
+        let spec = fresh(&slots, 2, 1);
+        let bodies = [
+            body(1, DEAD, 0.0, false),
+            body(2, DEAD, 0.0, false),
+            body(3, 0, 5.0, false),
+        ];
+        let mut roll = 0;
+        let rematch = stand_rematch(&spec, &bodies, 0, &mut roll);
+        assert_eq!(rematch.dropped, vec![1, 2]);
+        assert_eq!(
+            rematch.standing.iter().map(|b| b.id).collect::<Vec<_>>(),
+            vec![3]
+        );
+        let laid = bracket_layout(&slots, 2, 1, [0.0; 3]);
+        assert_eq!(rematch.standing[0].place, Some(laid[0].members[0].1));
+    }
+
+    #[test]
+    fn without_the_player_side_nobody_is_stood() {
+        let slots = [4, 4];
+        let spec = fresh(&slots, 2, 1);
+        let mut roll = 7;
+        let rematch = stand_rematch(&spec, &[body(1, 0, 5.0, false)], 0, &mut roll);
+        assert!(rematch.standing[0].place.is_none());
+        assert!(rematch.standing[0].standby);
+        assert!(rematch.standing[0].act_at_ms.is_none());
+        assert_eq!(roll, 7);
+    }
+
+    #[test]
+    fn stored_health_scales_a_tracked_fighter() {
+        assert_eq!(stored_health(0, 50.0, 100.0), None);
+        assert_eq!(stored_health(HEALTH_TRACK, 0.0, 100.0), Some(0));
+        assert_eq!(stored_health(HEALTH_TRACK, -1.0, 100.0), Some(0));
+        assert_eq!(stored_health(HEALTH_TRACK, 100.0, 100.0), Some(FULL_POOL));
+        assert_eq!(stored_health(HEALTH_TRACK, 50.0, 100.0), Some(32_768));
     }
 
     #[test]

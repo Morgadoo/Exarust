@@ -1807,8 +1807,10 @@ against Exarust and lists the largest missing ones. In order:
    and both of their AI clocks wait 3000 ms; fewer than three formed sides
    are hostile and three or more are a free-for-all; the player's side is
    stood from the company list and the player's own entry is not spawned
-   again. A rematch (dropping the dead mode and repositioning the bodies
-   that remain) is not in, and neither is creating the scene bodies. A hub
+   again. A rematch (`match_layout::stand_rematch`) drops bodies in the
+   dead mode, stores a tracked fighter's health on the full scale, and
+   stands the survivors on the player's spread with a 10000 ms grace.
+   Creating the scene bodies is not in. A hub
    screen to draw and wire the windows comes next. The gamepad drives the
    player in controller mode; its menu keys and picks wait for those drawn
    forms.
