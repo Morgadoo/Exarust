@@ -343,7 +343,12 @@ impl TaskLayer {
     /// is visible, its state word does not carry [`NO_HIT`] and the point
     /// lies inside its rectangle. `hit` receives the form and the point in
     /// its coordinates. Returns the form and the code it answered.
-    pub fn hit(&self, x: i32, y: i32, mut hit: impl FnMut(FormId, i32, i32) -> i32) -> Option<(FormId, i32)> {
+    pub fn hit(
+        &self,
+        x: i32,
+        y: i32,
+        mut hit: impl FnMut(FormId, i32, i32) -> i32,
+    ) -> Option<(FormId, i32)> {
         if self.state & NO_HIT != 0 {
             return None;
         }

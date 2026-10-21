@@ -26,11 +26,14 @@
 
 pub mod blend;
 pub mod character_view;
+pub mod col_swatch;
+pub mod colour_picker;
 pub mod compact_skill;
 pub mod controls;
 pub mod creation;
 pub mod cursor;
 pub mod div_card;
+pub mod drop_down;
 pub mod emblem_form;
 pub mod engine_math;
 pub mod fade;
@@ -76,6 +79,15 @@ pub use character_view::{
     drag_end as figure_drag_end, drag_start as figure_drag_start, drop_kind, ease_race_share,
     find_owner, held_index, insight_blocks, player_pack, show_item, supersample_level,
 };
+pub use col_swatch::{
+    BLOCK, CELL_UNITS, COLUMNS, ColourSwatch, FRAMELESS, GreyPalette, Palette, ROWS, SWATCH_STYLE,
+    SwatchForm, SwatchMetrics, SwatchPick,
+};
+pub use colour_picker::{
+    COLOUR_SWATCH_CLASS, ColourPicker, FOCUS_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
+    Refresh, Rgba, SwatchControl, channel_ramps, field_corners, hsv_to_rgb, rgb_bytes, rgb_to_hsv,
+    to_byte,
+};
 pub use compact_skill::{
     CompactBase, CompactDraw, CompactMetrics, CompactRow, CompactSkillState, NodeDraw, Pip,
     cell_centre, decode_cell, draw_order as compact_draw_order, handle_key as compact_key,
@@ -90,6 +102,10 @@ pub use div_card::{
     CARDS, CardDraw, CardVertex, Reading, SHEET, SOUND, ShadowVertex, back_quad, card_place,
     card_size, clock_step, deal_cards, draw_order as div_draw_order, ease, face_quad, fade_alpha,
     mouse as div_mouse, shadow_mesh, shadow_outline, turn, turn_share,
+};
+pub use drop_down::{
+    DropCommand, DropDownList, DropDownOwner, DropLayout, DropPress, DropRelease, LIST_STATE,
+    LIST_STYLE, MAX_ROWS, ROW_UNITS, RowDraw, SCROLL_BIT, layout as drop_down_layout,
 };
 pub use emblem_form::{
     BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
