@@ -97,6 +97,7 @@ fn scene<'a>(
         now,
         world_time: 1000 + now / 1000,
         player: Some(PLAYER),
+        player2: None,
         locale: 2,
         effects: Vec::new(),
     }
@@ -652,4 +653,115 @@ fn a_broadcast_reaches_a_witness_through_its_relation_role() {
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 30, 31).and_then(|m| m.words.clone());
     assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+}
+
+/// The mood mask and mood code reproduce the original's nested `<=` tests:
+/// a hostile contact, a NaN concern, and an unworldly attitude each take
+/// the first branch of the test they reach.
+#[test]
+fn the_mood_mask_and_code_test_exactly() {
+    use crate::dialogue::{mood, mood_code};
+    let mut cast = Cast::default();
+    let mut c = Character::new(1, "A");
+    c.contacts.push(Contact {
+        other: 2,
+        concern: 0.0,
+        attitude: 0.0,
+        state: 0,
+        range: 0.0,
+    });
+    cast.characters.push(c);
+    let set = |cast: &mut Cast, f: &dyn Fn(&mut Contact)| {
+        let c = cast.get_mut(1).unwrap();
+        c.contacts[0] = Contact {
+            other: 2,
+            concern: 0.0,
+            attitude: 0.0,
+            state: 0,
+            range: 0.0,
+        };
+        f(&mut c.contacts[0]);
+    };
+
+    set(&mut cast, &|c| c.attitude = 80.0);
+    assert_eq!(mood(&cast, 1, 2), 0x10);
+    assert_eq!(mood_code(&cast, 1, 2), 0x1000_0000);
+    set(&mut cast, &|c| c.attitude = 50.0);
+    assert_eq!(mood(&cast, 1, 2), 0x20);
+    assert_eq!(mood_code(&cast, 1, 2), 0x2000_0000);
+    set(&mut cast, &|c| c.attitude = 0.0);
+    assert_eq!(mood(&cast, 1, 2), 0x40);
+    assert_eq!(mood_code(&cast, 1, 2), 0x3000_0000);
+    // Below −30 is the hostile band. The inner `−60 <= attitude` test can
+    // never fail once `−30 <= attitude` has: 0x100 and 0x50000000 are
+    // unreachable, as in the original.
+    set(&mut cast, &|c| c.attitude = -40.0);
+    assert_eq!(mood(&cast, 1, 2), 0x80);
+    assert_eq!(mood_code(&cast, 1, 2), 0x4000_0000);
+    set(&mut cast, &|c| c.attitude = -70.0);
+    assert_eq!(mood(&cast, 1, 2), 0x80);
+    assert_eq!(mood_code(&cast, 1, 2), 0x4000_0000);
+    // An unordered attitude takes every `<=` branch: > 70.
+    set(&mut cast, &|c| c.attitude = f32::NAN);
+    assert_eq!(mood(&cast, 1, 2), 0x10);
+    assert_eq!(mood_code(&cast, 1, 2), 0x1000_0000);
+    // The contact value scales the attitude by (10 − x)²/100; 5 makes an
+    // 80 attitude 20, still the neutral band.
+    set(&mut cast, &|c| {
+        c.attitude = 80.0;
+        c.range = 5.0;
+    });
+    assert_eq!(mood(&cast, 1, 2), 0x40);
+    // Past 10 (and an unordered value) the attitude counts for nothing.
+    set(&mut cast, &|c| {
+        c.attitude = 80.0;
+        c.range = 11.0;
+    });
+    assert_eq!(mood(&cast, 1, 2), 0x40);
+    set(&mut cast, &|c| {
+        c.attitude = 80.0;
+        c.range = f32::NAN;
+    });
+    assert_eq!(mood(&cast, 1, 2), 0x40);
+    // Concern over 4, and an unordered concern, make a hostile code; over
+    // 1.2 a wary one.
+    set(&mut cast, &|c| {
+        c.state = 1;
+        c.concern = 5.0;
+    });
+    assert_eq!(mood(&cast, 1, 2) & 0x600, 0x600);
+    assert_eq!(mood_code(&cast, 1, 2), 0x6000_0000);
+    set(&mut cast, &|c| {
+        c.state = 1;
+        c.concern = f32::NAN;
+    });
+    assert_eq!(mood(&cast, 1, 2) & 0x600, 0x600);
+    set(&mut cast, &|c| {
+        c.state = 1;
+        c.concern = 2.0;
+    });
+    assert_eq!(mood(&cast, 1, 2) & 0x600, 0x200);
+    // Hostile bit.
+    set(&mut cast, &|c| c.state = 2);
+    assert_eq!(mood(&cast, 1, 2) & 0x600, 0x600);
+    assert_eq!(mood_code(&cast, 1, 2), 0x7000_0000);
+}
+
+/// Both player slots speak reply choices; only the first is shortened.
+#[test]
+fn the_second_player_slot_is_a_player_too() {
+    use crate::dialogue::is_player;
+    let db = RoleDb::default();
+    let mut cast = Cast::default();
+    let mut sc = scene(&db, None, &mut cast, 0);
+    sc.player2 = Some(TRAVELLER);
+    assert!(is_player(&sc, Speaker::Character(PLAYER)));
+    assert!(is_player(&sc, Speaker::Character(TRAVELLER)));
+    assert!(!is_player(&sc, Speaker::Character(GUARD)));
+    assert!(!is_player(&sc, Speaker::Narrator));
+    assert_eq!(
+        bubbles::duration(Speaker::Character(TRAVELLER), 10, sc.player),
+        1500,
+        "the second player's line is not halved"
+    );
 }

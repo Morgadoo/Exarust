@@ -339,8 +339,47 @@ pub fn clamp_concern(c: f32) -> f32 {
     }
 }
 
+/// Type word of a zone marker object, as `InZone` looks it up in the object
+/// database.
+pub const ZONE_MARKER_TYPE: u32 = 0x8000_AC07;
+/// The vertical slack of the zone-marker test.
+pub const ZONE_HEIGHT: f32 = 0.1;
+
+/// One zone marker as `InZone` tests it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoneMarker {
+    /// The object's database type.
+    pub kind: u32,
+    /// The marker's zone id.
+    pub id: u32,
+    /// Horizontal distance from the character, squared.
+    pub horizontal_sq: f32,
+    /// The marker's horizontal radius.
+    pub radius: f32,
+    /// Vertical distance from the character.
+    pub vertical: f32,
+}
+
+/// The original's `InZone(wanted_locale, zone)`: the current locale must be
+/// the wanted one, and some marker of type [`ZONE_MARKER_TYPE`] with the
+/// wanted id must have the character within its horizontal radius and no
+/// more than [`ZONE_HEIGHT`] above or below it.
+pub fn zone_match(locale: u32, wanted_locale: i32, zone: i32, markers: &[ZoneMarker]) -> bool {
+    if locale as i32 != wanted_locale {
+        return false;
+    }
+    markers.iter().any(|m| {
+        m.kind == ZONE_MARKER_TYPE
+            && m.id as i32 == zone
+            && m.horizontal_sq <= m.radius * m.radius
+            && m.vertical <= ZONE_HEIGHT
+    })
+}
+
+/// The original's `Round` helper, a floor (the instruction's note on the
+/// pseudo-code's ROUND): `Trust` and `Concern` round down.
 fn round(v: f32) -> i32 {
-    v.round_ties_even() as i32
+    v.floor() as i32
 }
 
 pub(crate) fn call_actor<H: Host>(

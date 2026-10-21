@@ -84,6 +84,8 @@ pub struct Conversations {
     pub cast: Cast,
     /// The player's character id.
     pub player: Option<u32>,
+    /// The second player slot (its lines are reply choices too).
+    pub player2: Option<u32>,
     /// World time (s) the session started at (the save's clock).
     pub world_base: u32,
     /// The current locale id (`locales.rdb`).
@@ -142,6 +144,7 @@ fn run_conversations(
         engine,
         cast,
         player,
+        player2,
         world_base,
         locale,
         ..
@@ -155,6 +158,7 @@ fn run_conversations(
         now,
         world_time: topics::world_time(*world_base, now, 0),
         player: *player,
+        player2: *player2,
         locale: *locale,
         effects: Vec::new(),
     };

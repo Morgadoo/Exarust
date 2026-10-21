@@ -23,6 +23,11 @@ struct World {
     relations: Vec<(u32, u32, u32, u32)>,
     world_time: u32,
     used: HashMap<Name, i32>,
+    trust: HashMap<(u32, u32), f32>,
+    near: Vec<(u32, i32, i32, i32, Name)>,
+    with: Vec<(u32, u32, Name, u32, u32)>,
+    activated: Vec<(Name, i32)>,
+    witnessed: Vec<u32>,
 }
 
 impl Host for World {
@@ -93,6 +98,22 @@ impl Host for World {
     }
     fn topic_used(&self, topic: Name) -> i32 {
         self.used.get(&topic).copied().unwrap_or(0)
+    }
+    fn trust(&self, a: u32, b: u32) -> f32 {
+        self.trust.get(&(a, b)).copied().unwrap_or(0.0)
+    }
+    fn activate_near(&mut self, a: u32, role: i32, target: i32, mode: i32, topic: Name) {
+        self.near.push((a, role, target, mode, topic));
+    }
+    fn activate_with(&mut self, a: u32, b: u32, topic: Name, role: u32, target: u32) {
+        self.with.push((a, b, topic, role, target));
+    }
+    fn activate_topic(&mut self, topic: Name, mode: i32) -> bool {
+        self.activated.push((topic, mode));
+        false
+    }
+    fn witness_role(&mut self, role: u32) {
+        self.witnessed.push(role);
     }
 }
 
@@ -376,4 +397,117 @@ fn every_prefix_runs() {
             interp::substitute(&mut w, &mut c, &s.as_bytes()[..end]);
         }
     }
+}
+
+/// `Trust` and `Concern` round with the original's floor, not to nearest.
+#[test]
+fn trust_and_concern_round_down() {
+    let mut w = World::default();
+    w.trust.insert((GOLEM, PLAYER), 70.9);
+    w.trust.insert((PLAYER, GOLEM), -30.1);
+    w.concern.insert((PLAYER, GOLEM), 2.9);
+    let mut c = ctx();
+    assert_eq!(
+        run(&mut w, &mut c, "result = Actor[0].Trust(Actor[1]);"),
+        70
+    );
+    assert_eq!(
+        run(&mut w, &mut c, "result = Actor[1].Trust(Actor[0]);"),
+        -31
+    );
+    assert_eq!(
+        run(&mut w, &mut c, "result = Actor[0].Trust(Actor[0]);"),
+        100
+    );
+    assert_eq!(
+        run(&mut w, &mut c, "result = Actor[1].Concern(Actor[0]);"),
+        2
+    );
+    assert_eq!(
+        run(&mut w, &mut c, "result = Actor[0].Concern(Actor[1]);"),
+        0,
+        "no contact reads 0"
+    );
+}
+
+/// The topic built-ins pass their arguments in the original's order: role,
+/// target, topic, mode for `ActivateTopicN`; topic, role, target for
+/// `Actor.ActivateTopic`; and `WitnessRole` only takes an `Operative`.
+#[test]
+fn the_topic_builtins_take_their_arguments_in_order() {
+    let mut w = World::default();
+    let mut c = ctx();
+    run(&mut w, &mut c, "Actor[0].ActivateTopicN(30, 0, Topic, 1);");
+    assert_eq!(w.near.len(), 1);
+    assert_eq!(w.near[0].0, GOLEM);
+    assert_eq!((w.near[0].1, w.near[0].2, w.near[0].3), (30, 0, 1));
+    assert_eq!(w.near[0].4.text(), "Topic");
+    run(
+        &mut w,
+        &mut c,
+        "Actor[0].ActivateTopic(Actor[1], Topic, 7, 0);",
+    );
+    assert_eq!(w.with.len(), 1);
+    assert_eq!(w.with[0].0, GOLEM);
+    assert_eq!(w.with[0].1, PLAYER);
+    assert_eq!(w.with[0].2.text(), "Topic");
+    assert_eq!((w.with[0].3, w.with[0].4), (7, 0));
+    run(&mut w, &mut c, "ActivateTopic(Topic, 5);");
+    assert_eq!(w.activated.len(), 1);
+    assert_eq!(w.activated[0].0.text(), "Topic");
+    assert_eq!(w.activated[0].1, 5);
+    run(&mut w, &mut c, "WitnessRole(Operative, 31);");
+    run(&mut w, &mut c, "WitnessRole(Other, 31);");
+    assert_eq!(w.witnessed, [31]);
+}
+
+/// `InZone` needs the wanted locale, a marker of the zone type with the
+/// wanted id, the character inside its horizontal radius, and no more than
+/// 10 cm above or below it.
+#[test]
+fn zone_markers_match_by_locale_radius_height_and_id() {
+    use crate::builtins::{ZONE_HEIGHT, ZONE_MARKER_TYPE, ZoneMarker, zone_match};
+    let marker = ZoneMarker {
+        kind: ZONE_MARKER_TYPE,
+        id: 9,
+        horizontal_sq: 40_000.0,
+        radius: 200.0,
+        vertical: ZONE_HEIGHT,
+    };
+    assert!(zone_match(2, 2, 9, &[marker]));
+    assert!(!zone_match(1, 2, 9, &[marker]), "locale");
+    assert!(!zone_match(2, 2, 8, &[marker]), "id");
+    assert!(
+        !zone_match(
+            2,
+            2,
+            9,
+            &[ZoneMarker {
+                horizontal_sq: 40_001.0,
+                ..marker
+            }]
+        ),
+        "outside the radius"
+    );
+    assert!(
+        !zone_match(
+            2,
+            2,
+            9,
+            &[ZoneMarker {
+                vertical: 0.11,
+                ..marker
+            }]
+        ),
+        "above the height"
+    );
+    assert!(!zone_match(
+        2,
+        2,
+        9,
+        &[ZoneMarker {
+            kind: 0x4000,
+            ..marker
+        }]
+    ));
 }

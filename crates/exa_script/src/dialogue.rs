@@ -13,11 +13,15 @@
 //!
 //! **Running a node.** Each actor's mood toward the other is a hostility
 //! code (0x600 hostile or engaged with concern above 4, 0x200 above 1.2)
-//! plus an attitude band (>70: 0x10, >30: 0x20, ≥−30: 0x40, else 0x80; the
-//! attitude first scaled by ((10 − x)/10)² for a contact value x ≤ 10).
-//! Branches of the current group are tried in order: a player's line
-//! becomes a reply choice when choices are being offered (after the
-//! branch's condition passes); another speaker's line is a candidate if
+//! plus an attitude band (above 70: 0x10, above 30: 0x20, at least −30:
+//! 0x40, below that: 0x80; the inner −60 test can never fail and its 0x100
+//! band is unreachable). The attitude is first scaled by ((10 − x)/10)²
+//! for a contact value x ≤ 10; past that (and for an unordered value) it
+//! counts for nothing. Every test is the original's `<=`, so an unordered
+//! attitude takes the > 70 band and an unordered concern the hostile code.
+//! Branches of the current group are tried in order: a line of either
+//! player slot becomes a reply choice when choices are being offered (after
+//! the branch's condition passes); another speaker's line is a candidate if
 //! the branch has no mood flags or the speaker's hostility code does not
 //! exceed the branch's. The first branch with a candidate is spoken: one
 //! line at random, `{…}` substituted, as a bubble; its action runs and its
@@ -330,7 +334,11 @@ pub struct Scene<'a> {
     pub now: u32,
     /// World time, s.
     pub world_time: u32,
+    /// The first player character (its lines are halved in length).
     pub player: Option<u32>,
+    /// The second player slot of the original (its lines are reply choices
+    /// too; only the first player's lines are shortened).
+    pub player2: Option<u32>,
     pub locale: u32,
     pub effects: Vec<Effect>,
 }
@@ -396,6 +404,10 @@ pub enum Purpose {
 }
 
 /// The mood mask of `a` toward `b` (hostility code + attitude band).
+///
+/// The comparisons are the original's `<=` tests, in the original's order:
+/// an unordered value (NaN) takes the first branch of every test (hostile
+/// contact, no attitude scaling and the > 70 band).
 pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
     let Some(ca) = cast.get(a) else { return 0 };
     let contact = ca.contact(b);
@@ -405,30 +417,35 @@ pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
         if c.state & 2 != 0 {
             m = 0x600;
         } else if c.state == 1 {
-            if c.concern > 4.0 {
+            if c.concern <= 4.0 {
+                if c.concern > 1.2 {
+                    m = 0x200;
+                }
+            } else {
                 m = 0x600;
-            } else if c.concern > 1.2 {
-                m = 0x200;
             }
         }
-        // Past 10 the attitude counts for nothing; otherwise (an
-        // unordered value included) it is scaled.
-        att = if c.range > 10.0 {
-            0.0
-        } else {
+        // Past 10 the attitude counts for nothing; otherwise the contact
+        // value scales it by ((10 − x) / 10)².
+        att = if c.range <= 10.0 {
             let s = f64::from(10.0 - c.range) * 0.1;
             (s * s * f64::from(att)) as f32
+        } else {
+            0.0
         };
     }
-    m | if att > 70.0 {
-        0x10
-    } else if att > 30.0 {
-        0x20
-    } else if att < -30.0 {
-        // The −60 test that follows is never reached.
-        0x80
+    m | if att <= 70.0 {
+        if att <= 30.0 {
+            if -30.0 <= att {
+                if -60.0 <= att { 0x40 } else { 0x100 }
+            } else {
+                0x80
+            }
+        } else {
+            0x20
+        }
     } else {
-        0x40
+        0x10
     }
 }
 
@@ -445,15 +462,29 @@ pub fn mood_code(cast: &Cast, a: u32, b: u32) -> u32 {
         }
     }
     let att = contact.map_or(0.0, |c| c.attitude);
-    if att > 70.0 {
-        0x1000_0000
-    } else if att > 30.0 {
-        0x2000_0000
-    } else if att < -30.0 {
-        0x4000_0000
+    if att <= 70.0 {
+        if att <= 30.0 {
+            if -30.0 <= att {
+                if -60.0 <= att {
+                    0x3000_0000
+                } else {
+                    0x5000_0000
+                }
+            } else {
+                0x4000_0000
+            }
+        } else {
+            0x2000_0000
+        }
     } else {
-        0x3000_0000
+        0x1000_0000
     }
+}
+
+/// Whether a speaker's lines are a player's: the original tests the
+/// first player and the second player slot, and both become reply choices.
+pub fn is_player(scene: &Scene<'_>, who: Speaker) -> bool {
+    matches!(who, Speaker::Character(c) if Some(c) == scene.player || Some(c) == scene.player2)
 }
 
 /// Whether a node passes the greeting filter: calm class 0.
@@ -1057,6 +1088,17 @@ fn activate_word(
     }
 }
 
+/// Whether `who` holds a role the database does not have. The original's
+/// role-set validation reports a character whose roles cannot be resolved
+/// (a guess: the routine's exact test is not in the packet).
+fn role_set_invalid(scene: &Scene<'_>, who: u32) -> bool {
+    scene.cast.get(who).is_none_or(|c| {
+        c.roles
+            .iter()
+            .any(|r| scene.library.roles.get(r.id).is_none())
+    })
+}
+
 impl Engine {
     fn conv(&self, id: usize) -> Option<&Conversation> {
         self.conversations.get(id).and_then(Option::as_ref)
@@ -1147,8 +1189,11 @@ impl Engine {
         r
     }
 
-    /// `{…}` substitution with conversation `id`'s actors.
+    /// `{…}` substitution with conversation `id`'s actors. As in the
+    /// original, a substituted expression counts as the conversation whose
+    /// script last ran (`EndDialogue` inside it closes that one).
     fn substitute(&mut self, scene: &mut Scene<'_>, id: usize, text: &[u8]) -> Vec<u8> {
+        self.last_run = Some(id);
         let Some(conv) = self.conversations.get_mut(id).and_then(Option::as_mut) else {
             return text.to_vec();
         };
@@ -1235,7 +1280,11 @@ impl Engine {
                     continue;
                 };
                 let target = library.graph(g).map_or(0, |d| d.target);
-                let block = block_of(target, r);
+                // The memory block is looked up under the word the stored
+                // role list has at the role's slot (12 bytes per entry), as
+                // the original reads it.
+                let key = scene.cast.get(a).map_or(0, |c| c.role_list_word(i));
+                let block = block_of(target, key);
                 if self.open(scene, req, g, r, block.as_ref()) {
                     return true;
                 }
@@ -1553,7 +1602,7 @@ impl Engine {
                     continue;
                 }
                 let Some(who) = actors[s - 1] else { continue };
-                let is_player = matches!(who, Speaker::Character(c) if Some(c) == scene.player);
+                let is_player = is_player(scene, who);
                 if is_player {
                     if self.offering {
                         if !passed {
@@ -1816,6 +1865,7 @@ impl Engine {
         // The third slot is added to the conversation but not to the
         // interpreter, which keeps the two actors it was bound with.
         if let Some(c) = self.conv_mut(id) {
+            c.state = State::Speaking;
             c.actors.truncate(2);
             c.actors.push(third.map(Speaker::Character));
         }
@@ -1836,6 +1886,21 @@ impl Engine {
         }
         if let Some(c) = self.conv_mut(id) {
             c.actors.truncate(2);
+            c.state = State::Waiting;
+        }
+        // The original validates both actors' role sets after the event and
+        // names the actor slot that is invalid.
+        let actors: Vec<Option<Speaker>> =
+            self.conv(id).map_or_else(Vec::new, |c| c.actors.clone());
+        for (slot, actor) in actors.iter().take(2).enumerate() {
+            if let Some(Speaker::Character(who)) = actor
+                && role_set_invalid(scene, *who)
+            {
+                scene.effects.push(Effect::Report(
+                    "Process Event".to_string(),
+                    format!("Actor {slot} invalid role identifier."),
+                ));
+            }
         }
         self.settle(scene);
         handled

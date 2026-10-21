@@ -493,3 +493,66 @@ fn a_level_names_its_locale() {
     assert_eq!(locale_id(&db, "arena7.rfc"), None);
     assert_eq!(locale_id(&[0; 3], "exanima01.rfc"), None);
 }
+
+/// The shared role list: adding pulls in inherited parents (newest first),
+/// removing an explicit role counts the parents down, and the 12-byte
+/// stored-list read lands inside the values of a role that has them.
+#[test]
+fn held_roles_add_inherit_remove_and_pack() {
+    let mut db = RoleDb::default();
+    db.roles.push(Role {
+        id: 6,
+        parent: 3,
+        flags: INHERITS_PARENT,
+        weight: 50,
+        ..Role::default()
+    });
+    db.roles.push(Role {
+        id: 3,
+        weight: 100,
+        ..Role::default()
+    });
+    let mut list = Vec::new();
+    assert!(add_held_role(&db, &mut list, 6));
+    let ids: Vec<(u32, bool, u8)> = list
+        .iter()
+        .map(|r| (r.id, r.explicit, r.inherited))
+        .collect();
+    assert_eq!(ids, [(6, true, 0), (3, false, 1)]);
+    assert_eq!(list[0].weight, 0.5);
+    assert_eq!(list[1].weight, 1.0);
+    // Asking again changes nothing and reports the role as held.
+    assert!(add_held_role(&db, &mut list, 6));
+    assert_eq!(list.len(), 2);
+    // Removing the child drops the parent held once.
+    assert!(remove_held_role(&db, &mut list, 6));
+    assert!(list.is_empty());
+    // A parent that is not explicit cannot be removed on its own.
+    assert!(add_held_role(&db, &mut list, 6));
+    assert!(!remove_held_role(&db, &mut list, 3), "not explicit");
+
+    let list = vec![
+        HeldRole {
+            id: 0x10,
+            weight: 0.25,
+            explicit: true,
+            inherited: 0,
+            values: vec![7, 8],
+        },
+        HeldRole {
+            id: 0x20,
+            weight: 1.0,
+            explicit: true,
+            inherited: 0,
+            values: Vec::new(),
+        },
+    ];
+    // Entry 0 is 12 bytes plus its two values, so the word at 12 is the
+    // first value and the second role starts at byte 20, not 12.
+    assert_eq!(held_role_word(&list, 0), 0x10);
+    assert_eq!(held_role_word(&list, 1), 7);
+    // Byte 24 is the second entry's weight, not its id (byte 20).
+    assert_eq!(held_role_word(&list, 2), 0x3F80_0000);
+    assert_eq!(held_role_word(&list, 3), 0);
+    assert_eq!(held_role_bytes(&list).len(), 20 + 12);
+}

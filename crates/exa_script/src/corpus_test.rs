@@ -30,6 +30,7 @@ fn scene<'a>(s: &'a Scripts, cast: &'a mut Cast, now: u32) -> Scene<'a> {
         now,
         world_time: 5000 + now / 1000,
         player: Some(PLAYER),
+        player2: None,
         locale: 2,
         effects: Vec::new(),
     }
