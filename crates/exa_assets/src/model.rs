@@ -620,13 +620,18 @@ impl ModelLoader<'_> {
     /// A material shaded like the original's from its library record.
     fn exa_material(&mut self, m: &Material) -> ExaMaterial {
         let packed = m.kind & 1 != 0;
-        let diffuse = material_diffuse(m);
+        let key = exa_render::shader_program::feature_key(m);
+        let lit = key & material_flags::LIT != 0;
+        let state_word =
+            exa_render::shader_program::state_words(m, SHADING_QUALITY).map_or(0, |(mat, _)| mat);
+        let maps = factory_maps(m, key, state_word);
+        let diffuse = shaded_diffuse(m, key);
         let specular = material_specular(m);
         let mut shading = 0;
-        if m.flags & material_flags::LIT != 0 {
+        if lit {
             shading |= flags::LIT;
         }
-        if m.flags & material_flags::TWO_SIDED != 0 {
+        if key & material_flags::TWO_SIDED != 0 {
             shading |= flags::TWO_SIDED;
         }
         if packed {
@@ -634,9 +639,9 @@ impl ModelLoader<'_> {
         }
         let mut mat = ExaMaterial {
             params: ExaParams {
-                diffuse: diffuse.extend(m.opacity.clamp(0.0, 1.0)),
+                diffuse: diffuse.extend(m.opacity),
                 specular: specular.extend(material_gloss(m)),
-                emissive: emissive(m),
+                emissive: emissive(m, key),
                 flags: shading,
                 ..default()
             },
@@ -652,7 +657,9 @@ impl ModelLoader<'_> {
         let data_flags = base_flags | texture::flags::DATA | texture::flags::NO_LOD_BIAS;
         let bias_skipped = base_flags | texture::flags::NO_LOD_BIAS;
         let mut cut_out = false;
-        if let Some(t) = m.texture(TextureSlot::Diffuse) {
+        if maps.diffuse
+            && let Some(t) = m.texture(TextureSlot::Diffuse)
+        {
             let flags = if m.has_secondary_colour() {
                 bias_skipped
             } else {
@@ -664,12 +671,16 @@ impl ModelLoader<'_> {
                 mat.params.flags |= diffuse_shading_flags(flags, info.grey);
             }
         }
-        if let Some(t) = m.texture(TextureSlot::Normal) {
+        if maps.normal
+            && let Some(t) = m.texture(TextureSlot::Normal)
+        {
             mat.normal_map = self
                 .texture_with_flags(t, ColorSpace::Linear, data_flags)
                 .map(|t| t.0);
         }
-        if let Some(t) = m.texture(TextureSlot::Specular) {
+        if maps.specular
+            && let Some(t) = m.texture(TextureSlot::Specular)
+        {
             let space = if packed {
                 ColorSpace::Linear
             } else {
@@ -682,27 +693,33 @@ impl ModelLoader<'_> {
             };
             mat.specular_map = self.texture_with_flags(t, space, flags).map(|t| t.0);
         }
-        if let Some(t) = m.texture(TextureSlot::Emissive) {
+        if maps.emissive
+            && let Some(t) = m.texture(TextureSlot::Emissive)
+        {
             mat.emissive_map = self
                 .texture_with_flags(t, ColorSpace::Srgb, base_flags)
                 .map(|t| t.0);
         }
-        if let Some(t) = m.texture(TextureSlot::Opacity) {
+        if maps.opacity
+            && let Some(t) = m.texture(TextureSlot::Opacity)
+        {
             mat.opacity_map = self
                 .texture_with_flags(t, ColorSpace::Linear, base_flags)
                 .map(|t| t.0);
         }
         // Dirt maps only act through vertex colours, which level meshes lack.
-        if let Some(t) = m.texture(TextureSlot::Gloss) {
+        if maps.gloss
+            && let Some(t) = m.texture(TextureSlot::Gloss)
+        {
             mat.gloss_map = self
                 .texture_with_flags(t, ColorSpace::Linear, data_flags)
                 .map(|t| t.0);
         }
         // Parallax: the height layer's depth as a fixed number of texels of
         // the height map (loaded now: its size is the decoded image's); displacement shadows when the record asks.
-        if let Some(layer) = m.layer(TextureSlot::Height)
+        if maps.height
+            && let Some(layer) = m.layer(TextureSlot::Height)
             && layer.amount > 0.0
-            && mat.normal_map.is_some()
             && let Some((img, _)) = self.texture_now(&layer.texture, ColorSpace::Linear, data_flags)
             && let Some(size) = self.images.get(&img).map(|i| i.size())
             && size.x > 1
@@ -721,18 +738,15 @@ impl ModelLoader<'_> {
             }
             mat.height_map = Some(img);
         }
-        mat.alpha_mode = blend_mode(m.class, cut_out || mat.opacity_map.is_some());
+        mat.alpha_mode = blend_mode(blended_class(m), cut_out || mat.opacity_map.is_some());
         if mat.alpha_mode == AlphaMode::Add {
             mat.params.flags |= flags::ADDITIVE;
         }
         // Faint surfaces (glass, decals) and those the record marks cast no
-        // shadows.
-        mat.no_shadows = m.opacity <= 0.8 || m.extra & NO_SHADOWS != 0;
+        // shadows; a refracting record casts, and one whose destination
+        // factor is ONE never does.
+        mat.no_shadows = !casts_shadow(m);
         mat.cut_shadow = cuts_shadow(m, mat.opacity_map.is_some());
-        if mat.alpha_mode == AlphaMode::Premultiplied {
-            let a = mat.params.diffuse.w;
-            mat.params.diffuse = (mat.params.diffuse.truncate() * a).extend(a);
-        }
         // The fall-off's floor comes off the opacity (after the
         // premultiplication, which takes the opacity as stored).
         if let Some((f, floor)) = opacity_falloff(m) {
@@ -1614,21 +1628,119 @@ impl FactoryPaint {
 }
 
 /// A record's emissive term as the shader takes it (the original's MatEmi):
-/// the linear colour, doubled for shaded materials (lit or specular bits)
-/// with an emissive layer; alpha the opacity for the others, the colour's
-/// own alpha for shaded ones.
-fn emissive(m: &Material) -> Vec4 {
-    let shaded = m.flags & SHADED != 0;
+/// the linear colour, doubled while the type keeps `MatEmi` (`key & 8`) on
+/// a lit or specular record whose type also keeps the emissive layer
+/// (`key & 0x80000`); alpha the opacity for an emissive-only record, the
+/// colour's own alpha otherwise. `key` is [`exa_render::shader_program::feature_key`],
+/// the flags masked by the material type.
+fn emissive(m: &Material, key: u32) -> Vec4 {
     let mut rgb = linear_rgb([m.emissive[0], m.emissive[1], m.emissive[2]]);
-    if shaded && m.flags & EMISSIVE_LAYER != 0 {
+    if key & 0x8 != 0 && key & SHADED != 0 && key & EMISSIVE_LAYER != 0 {
         rgb *= 2.0;
     }
-    let alpha = if shaded {
-        m.emissive[3]
+    let alpha = if key & 0x8 != 0 && key & SHADED == 0 {
+        m.opacity
     } else {
-        m.opacity.clamp(0.0, 1.0)
+        m.emissive[3]
     };
     rgb.extend(alpha)
+}
+
+/// Which of Exarust's texture maps the original's material factory would
+/// bind for a record. Every map needs the layer and the feature bit its
+/// type's plug-in keeps; the normal map also needs a surface the factory
+/// shades (`0x100807`), and the height map needs the normal layer loaded.
+/// A type-2 record keeps only `MatEmi`, two-sided and the colour/opacity
+/// slot, so nothing but `opacity` can be set for it.
+struct FactoryMaps {
+    diffuse: bool,
+    opacity: bool,
+    emissive: bool,
+    specular: bool,
+    normal: bool,
+    gloss: bool,
+    height: bool,
+}
+
+/// The factory's map bindings for a record with feature word `key` and
+/// material word `material_word` (see [`FactoryMaps`]).
+fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
+    FactoryMaps {
+        diffuse: key & 0x2_0000 != 0 && m.texture(TextureSlot::Diffuse).is_some(),
+        opacity: key & OPACITY_FLAG != 0 && m.texture(TextureSlot::Opacity).is_some(),
+        emissive: key & 0x8_0000 != 0
+            && key & 0x8 != 0
+            && m.texture(TextureSlot::Emissive).is_some(),
+        specular: key & 0x4_0000 != 0
+            && key & 0x10_0004 != 0
+            && m.texture(TextureSlot::Specular).is_some(),
+        normal: key & 0x20_0000 != 0
+            && material_word & 0x10_0807 != 0
+            && m.texture(TextureSlot::Normal).is_some(),
+        gloss: key & 0x100_0000 != 0 && m.texture(TextureSlot::Gloss).is_some(),
+        height: key & 0x80_0000 != 0
+            && m.texture(TextureSlot::Height).is_some()
+            && m.texture(TextureSlot::Normal).is_some(),
+    }
+}
+
+/// The blend word after the material loader's late opaque rewrite: a
+/// record whose destination nibble is 3 (the transparent class) becomes
+/// source ONE / destination ZERO when it is in refraction mode (flags
+/// `0x300` = `0x200`), or when its opacity is above 0.99 in double
+/// precision, its fall-off amount below 0.01 and its opacity flag
+/// (`0x400000`) is clear. NaN fails both comparisons, as the original's
+/// COMISD branches do. The comparisons widen the stored f32 to f64: the
+/// original compares them with the f64 constants, so `0.99` stored as f32
+/// is above the bound and `0.01` is below it.
+fn blended_class(m: &Material) -> u32 {
+    let mut class = m.class;
+    if class & 0xF == 3
+        && (m.flags & MODE_MASK == REFRACTION_MODE
+            || ((m.opacity as f64) > LATE_OPAQUE_OPACITY
+                && (m.falloff_amount as f64) < LATE_OPAQUE_FALLOFF
+                && m.flags & OPACITY_FLAG == 0))
+    {
+        class = class & 0xFFFF_C0F0 | 0x100;
+    }
+    class
+}
+
+/// Whether the record casts shadows: refraction mode always does (before
+/// extra flag `0x4` clears it), else an opacity above 0.8 in double
+/// precision and a destination nibble other than ONE (3, ONE_MINUS_SRC_ALPHA,
+/// also casts); NaN casts none.
+fn casts_shadow(m: &Material) -> bool {
+    let casts = if m.flags & MODE_MASK == REFRACTION_MODE {
+        true
+    } else {
+        (m.opacity as f64) > SHADOW_OPACITY && m.class & 0xF != 1
+    };
+    casts && m.extra & NO_SHADOWS == 0
+}
+
+/// Whether the diffuse colour is pre-scaled by the opacity: every lit
+/// record whose blend source nibble is ONE, except in refraction mode. The
+/// class is the one after the late rewrite.
+fn premultiplies(m: &Material, key: u32) -> bool {
+    key & material_flags::LIT != 0
+        && m.flags & MODE_MASK != REFRACTION_MODE
+        && (blended_class(m) >> 8) & 0xF == 1
+}
+
+/// The MatDif rgb before the fall-off floor: zero for an unlit record,
+/// otherwise the linear diffuse pre-scaled by the opacity when
+/// [`premultiplies`] says so.
+fn shaded_diffuse(m: &Material, key: u32) -> Vec3 {
+    if key & material_flags::LIT == 0 {
+        return Vec3::ZERO;
+    }
+    let diffuse = material_diffuse(m);
+    if premultiplies(m, key) {
+        diffuse * m.opacity
+    } else {
+        diffuse
+    }
 }
 
 /// The opacity fall-off of a record whose amount (`0x64`) is above 0.01 in
@@ -1975,6 +2087,20 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
 const PARALLAX_UNIT: f32 = 3e-5;
 /// Material extra flag (`0x4C`): casts no shadows.
 const NO_SHADOWS: u32 = 0x4;
+/// The record's material-mode bits (`0x48`): `0x100` translucent, `0x200`
+/// refraction.
+const MODE_MASK: u32 = 0x300;
+/// The refraction material mode (`0x48`).
+const REFRACTION_MODE: u32 = 0x200;
+/// A transparent record above this opacity, with a fall-off below
+/// [`LATE_OPAQUE_FALLOFF`] and no opacity flag, is rewritten opaque. The
+/// original narrows the stored f32 to f64 for the compare.
+const LATE_OPAQUE_OPACITY: f64 = 0.99;
+/// See [`LATE_OPAQUE_OPACITY`].
+const LATE_OPAQUE_FALLOFF: f64 = 0.01;
+/// A record above this opacity casts shadows (unless refraction mode or the
+/// destination nibble is ONE). The original narrows the stored f32 to f64.
+const SHADOW_OPACITY: f64 = 0.8;
 /// A material with the opacity flag and an opacity above this casts a cut
 /// shadow, whatever its blending.
 const CUT_SHADOW_OPACITY: f32 = 0.75;
@@ -2304,7 +2430,7 @@ mod tests {
             ..default()
         };
         assert_eq!(blend_mode(glow.class, false), AlphaMode::Add);
-        let e = emissive(&glow);
+        let e = emissive(&glow, 0x0008_0008);
         // Unlit: no doubling, and the opacity as alpha.
         assert!(
             (e.truncate() - Vec3::new(0.0450, 0.1845, 0.3515))
@@ -2350,10 +2476,10 @@ mod tests {
     fn lit_emissive_maps_double_the_colour() {
         let handle = Material {
             emissive: [1.0, 0.5, 0.0, 1.0],
-            flags: 0x0008_0003,
+            flags: 0x0008_000B,
             ..default()
         };
-        let e = emissive(&handle);
+        let e = emissive(&handle, 0x0008_000B);
         assert!(
             (e.truncate() - Vec3::new(2.0, 2.0 * linear(0.5), 0.0))
                 .abs()
@@ -2361,12 +2487,218 @@ mod tests {
                 < 1e-5
         );
         assert_eq!(e.w, 1.0);
-        // Without an emissive layer the colour stays as it is.
+        // Without the emissive layer or MatEmi the colour stays as it is.
         let plain = Material {
             flags: 0x3,
             ..handle.clone()
         };
-        assert_eq!(emissive(&plain).x, 1.0);
+        assert_eq!(emissive(&plain, 0x3).x, 1.0);
+        let no_mat_emi = Material {
+            flags: 0x0008_0003,
+            ..handle.clone()
+        };
+        assert_eq!(emissive(&no_mat_emi, 0x0008_0003).x, 1.0);
+    }
+
+    /// A record with one layer per slot, all named after the slot.
+    fn with_layers(flags: u32, kind: u32, slots: &[TextureSlot]) -> Material {
+        Material {
+            flags,
+            kind,
+            layers: slots
+                .iter()
+                .map(|&slot| exa_formats::material::TextureLayer {
+                    slot,
+                    texture: format!("{slot:?}").to_ascii_lowercase(),
+                    parameter: 0,
+                    amount: 0.0,
+                })
+                .collect(),
+            ..default()
+        }
+    }
+
+    /// The loader's late rewrite: a destination THREE (the transparent
+    /// class) becomes source ONE / destination ZERO in refraction mode, or
+    /// with opacity above 0.99, fall-off below 0.01 and no opacity flag.
+    /// The comparisons widen the stored f32 to f64, so 0.99f32 and 0.01f32
+    /// sit on the passing side of their bounds.
+    #[test]
+    fn transparent_records_are_rewritten_opaque_late() {
+        let mut m = record(0x0203, 0, 1.0);
+        assert_eq!(blended_class(&m), 0x100);
+        assert_eq!(blend_mode(blended_class(&m), false), AlphaMode::Opaque);
+        // 0.99f32 widens above the f64 bound; 0.9899999 is below it.
+        m.opacity = 0.99;
+        assert_eq!(blended_class(&m), 0x100);
+        m.opacity = 0.989_999_9;
+        assert_eq!(blended_class(&m), 0x0203);
+        // 0.01f32 widens below the f64 bound; 0.010000001 is above it.
+        m.opacity = 1.0;
+        m.falloff_amount = 0.01;
+        assert_eq!(blended_class(&m), 0x100);
+        m.falloff_amount = 0.010_000_001;
+        assert_eq!(blended_class(&m), 0x0203);
+        // The opacity flag keeps the surface blended.
+        m.falloff_amount = 0.0;
+        m.flags = OPACITY_FLAG;
+        assert_eq!(blended_class(&m), 0x0203);
+        // Refraction rewrites whatever the opacity and fall-off.
+        let glass = record(0x0203, REFRACTION_MODE, 0.2);
+        assert_eq!(blended_class(&glass), 0x100);
+        // Only the destination nibble 3 is rewritten.
+        let other = record(0x0204, REFRACTION_MODE, 0.2);
+        assert_eq!(blended_class(&other), 0x0204);
+        // NaN fails the opacity compare.
+        let nan = record(0x0203, 0, f32::NAN);
+        assert_eq!(blended_class(&nan), 0x0203);
+    }
+
+    /// MatDif.rgb is zero for an unlit record; a lit record with source
+    /// nibble ONE premultiplies by the opacity, except in refraction mode.
+    #[test]
+    fn the_diffuse_colour_is_premultiplied_only_for_a_lit_one_source() {
+        let mut m = Material {
+            diffuse: [0.5, 0.25, 0.125, 1.0],
+            opacity: 0.5,
+            class: 0x0103,
+            flags: material_flags::LIT,
+            ..default()
+        };
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(key, material_flags::LIT);
+        assert!(premultiplies(&m, key));
+        let d = shaded_diffuse(&m, key);
+        let linear_half_scale = linear(0.75);
+        assert!((d.x - linear_half_scale * 0.5).abs() < 1e-6);
+        assert!((d.y - linear(0.375) * 0.5).abs() < 1e-6);
+        // Source TWO does not premultiply, whatever the destination.
+        m.class = 0x0203;
+        assert!(!premultiplies(&m, key));
+        assert!((shaded_diffuse(&m, key).x - linear_half_scale).abs() < 1e-6);
+        // Source ONE with destination ONE does.
+        m.class = 0x0101;
+        assert!(premultiplies(&m, key));
+        // Refraction mode never premultiplies.
+        m.class = 0x0103;
+        m.flags = material_flags::LIT | REFRACTION_MODE;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert!(!premultiplies(&m, key));
+        assert!((shaded_diffuse(&m, key).x - linear_half_scale).abs() < 1e-6);
+        // An unlit record has no diffuse colour at all.
+        m.flags = 0;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(shaded_diffuse(&m, key), Vec3::ZERO);
+    }
+
+    /// The emissive colour doubles only when the plug-in-masked word keeps
+    /// MatEmi, the lit/specular bits and the emissive layer; an unlit
+    /// record's alpha is the stored opacity, unclamped.
+    #[test]
+    fn emissive_doubling_follows_the_masked_type_flags() {
+        let mut m = Material {
+            emissive: [1.0, 0.5, 0.0, 1.0],
+            opacity: 0.4,
+            flags: 0x8 | 0x8_0000 | 0x1,
+            ..default()
+        };
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(key, 0x8_0009);
+        let e = emissive(&m, key);
+        assert!((e.x - 2.0).abs() < 1e-6);
+        assert!((e.y - 2.0 * linear(0.5)).abs() < 1e-6);
+        // Type 2 keeps MatEmi but not the lit bit or the emissive layer.
+        m.kind = 2;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(key, 0x8);
+        let e = emissive(&m, key);
+        assert!((e.x - 1.0).abs() < 1e-6);
+        assert_eq!(e.w, 0.4);
+        // Without MatEmi there is no doubling, and alpha is the colour's.
+        m.kind = 0;
+        m.flags = 0x8_0000 | 0x1;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(emissive(&m, key).x, 1.0);
+        assert_eq!(emissive(&m, key).w, 1.0);
+        // The unlit alpha is the opacity as stored, not clamped to 1.
+        m.kind = 2;
+        m.flags = 0x8;
+        m.opacity = 1.5;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(emissive(&m, key).w, 1.5);
+    }
+
+    /// Refracting glass casts, a destination ONE never does, and the opacity
+    /// compare widens to f64 (so 0.8f32 is above 0.8).
+    #[test]
+    fn refraction_and_the_destination_nibble_choose_the_shadow_caster() {
+        let glass = record(0x0203, REFRACTION_MODE, 0.0);
+        assert!(casts_shadow(&glass));
+        // 0.8f32 widens above the f64 bound; the next f32 below does not.
+        assert!(casts_shadow(&record(0x0203, 0, 0.8)));
+        assert!(!casts_shadow(&record(0x0203, 0, 0.799_999_9)));
+        assert!(!casts_shadow(&record(0x0201, 0, 1.0)));
+        assert!(!casts_shadow(&record(0x0203, 0, f32::NAN)));
+        // Refraction wins over destination ONE; extra flag 4 clears either.
+        assert!(casts_shadow(&record(0x0201, REFRACTION_MODE, 0.0)));
+        assert!(!casts_shadow(&Material {
+            extra: NO_SHADOWS,
+            ..glass.clone()
+        }));
+    }
+
+    /// A map binds only where the factory's masked feature word and material
+    /// word say so; a type-2 record keeps only the colour/opacity slot.
+    #[test]
+    fn the_factory_gates_each_texture_slot() {
+        use exa_render::shader_program::{feature_key, state_words};
+        let maps = |m: &Material| {
+            let key = feature_key(m);
+            let word = state_words(m, SHADING_QUALITY).map_or(0, |(mat, _)| mat);
+            factory_maps(m, key, word)
+        };
+        // Emissive needs the layer bit and `key & 8`.
+        let mut m = with_layers(0x8_0003, 0, &[TextureSlot::Emissive]);
+        assert!(!maps(&m).emissive);
+        m.flags |= 0x8;
+        assert!(maps(&m).emissive);
+        // Specular needs the layer bit and `key & 0x100004`.
+        let mut m = with_layers(0x4_0003, 0, &[TextureSlot::Specular]);
+        assert!(!maps(&m).specular);
+        m.flags |= 0x4;
+        assert!(maps(&m).specular);
+        m.flags = 0x4_0003 | 0x10_0000;
+        assert!(maps(&m).specular);
+        // Normal needs the layer bit and a shaded material word (`0x100807`).
+        let mut m = with_layers(0x20_0003, 0, &[TextureSlot::Normal]);
+        assert!(maps(&m).normal);
+        m.flags = 0x20_0000;
+        m.opacity = 1.0;
+        // No low nibble: the factory replaces the whole word with MatEmi.
+        assert_eq!(feature_key(&m), 0x8);
+        assert!(!maps(&m).normal);
+        // Type 2 keeps only MatEmi, two-sided and TexOpc.
+        let m = with_layers(
+            0x40_0018,
+            2,
+            &[
+                TextureSlot::Diffuse,
+                TextureSlot::Opacity,
+                TextureSlot::Emissive,
+                TextureSlot::Specular,
+                TextureSlot::Normal,
+                TextureSlot::Gloss,
+                TextureSlot::Height,
+            ],
+        );
+        let maps = maps(&m);
+        assert!(!maps.diffuse);
+        assert!(maps.opacity);
+        assert!(!maps.emissive);
+        assert!(!maps.specular);
+        assert!(!maps.normal);
+        assert!(!maps.gloss);
+        assert!(!maps.height);
     }
 
     #[test]

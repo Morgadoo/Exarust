@@ -313,17 +313,17 @@ program.
   - (lights + reflection) × specular colour × (0.5 + 0.5·Schlick);
   - the specular map multiplies the light and reflection specular at the
     end (there is no uniform ×3 for legacy materials).
-- **Emissive** (MatEmi) is lin(emissive colour), doubled for materials
-  with lit or specular bits and an emissive layer (torch handles, lamp
-  bodies). It adds on top. With an emissive map the PBR program weights
-  it by N·V²·z + 1 − z, z the fall-off's amount term (0 without a
-  fall-off).
+- **Emissive** (MatEmi) is lin(emissive colour), doubled when the
+  plug-in-masked feature word keeps `MatEmi` (`0x8`), the lit or specular
+  bits and the emissive layer (torch handles, lamp bodies). It adds on
+  top. With an emissive map the PBR program weights it by N·V²·z + 1 − z,
+  z the fall-off's amount term (0 without a fall-off).
 - **Unlit** materials (no lit or specular bits) show only their emissive:
-  colour MatEmi × the emissive map, alpha the opacity (`0x38`, not the
-  colour's alpha), plus the fall-off when they have an emissive map. With an
-  emissive map and no fall-off the alpha is MatEmi.a × the map's alpha; a
-  bare opacity map is only used when there is no emissive map (the two are
-  never combined).
+  `MatDif.rgb` is zero and colour MatEmi × the emissive map, alpha the
+  opacity (`0x38`, not the colour's alpha, and not clamped), plus the
+  fall-off when they have an emissive map. With an emissive map and no
+  fall-off the alpha is MatEmi.a × the map's alpha; a bare opacity map is
+  only used when there is no emissive map (the two are never combined).
 - **Opacity fall-off**, for every record whose amount `0x64` exceeds 0.01
   in magnitude: alpha += 2^((x − N·V)·y)·z, with f = 2^(−1.8·`0x68`).
   The original packs a = (f + 1)·`0x64` and y = 1.8·`0x68`, both negated
@@ -481,8 +481,18 @@ is effectively off in the original (its step is ~0).
 **Blending** comes from the material's blend word (`0x44`):
 - the source factor is bits 8–11 and the destination bits 0–3;
 - `0x100` is opaque;
-- ONE / ONE_MINUS_SRC_ALPHA is premultiplied (the diffuse is pre-scaled by
-  opacity);
+- every lit record whose source is ONE pre-scales its diffuse colour by
+  the opacity, except in refraction mode (flags `0x300` = `0x200`); the
+  stored opacity is used, not a clamped one. The blend's destination does
+  not enter this test;
+- a record whose destination nibble is 3 (the transparent class) is
+  rewritten late to source ONE / destination ZERO, i.e. opaque, when it is
+  in refraction mode, or when its opacity is above 0.99, its fall-off
+  amount below 0.01 and the opacity flag (`0x400000`) is clear. The two
+  compares widen the stored f32 to f64, so `0.99` stored as f32 passes the
+  first and `0.01` passes the second; NaN fails both. The destination and
+  source nibbles (bits 0–3 and 8–13) are cleared and source ONE is set,
+  keeping the blend-layer bits 4–7;
 - SRC_ALPHA / ONE is additive. Exarust draws it through Bevy's
   premultiplied blending as (colour·alpha, 0), colour clamped to 1 first;
 - every fragment's alpha is clamped to [0, 1] before blending, as the
@@ -1189,8 +1199,12 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   smeared over the floor instead of following the body.
 - Lights cast shadows from cube maps (512² per face; the sun's map is 4096²
   at the top shadow detail).
-- Surfaces with opacity ≤ 0.8 (glass, decals) and those whose record has
-  extra flag `0x4` cast no shadows. The others cast whole, except through
+- Surfaces with opacity ≤ 0.8 in double precision (glass, decals) and those
+  whose record has extra flag `0x4` cast no shadows; the compare widens the
+  stored f32 to f64, so `0.8` stored as f32 is above the bound. A record in
+  refraction mode (`0x48 & 0x300` = `0x200`) always casts, whatever its
+  opacity; a record whose blend-word destination nibble is ONE never casts.
+  The others cast whole, except through
   the original's **alpha-tested caster**, which is used for:
   - alpha-tested materials (blend word `0x4000`), with or without a map
     that gives alpha;

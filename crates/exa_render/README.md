@@ -10,11 +10,13 @@ Rendering on Bevy/wgpu: material plug-ins, skinned characters, terrain, grass, l
 conditionals with the `Mat./Shd./Obj./Env.` flags, `{%LOOP%}`,
 `{%expr%}`, includes and the generated `{$Interface}`) and is pure and
 tested; `shader_program` holds the material factory's material and shader
-words, the program choice (`shading/shadeopt/shadehar/shadesss/shadetrl`),
-the shadow and displacement sample splits, the warm-up variants; `shader_uniforms` the 252-byte `Global` block,
-the 112-byte `Material` block and the per-light `vec4`s. `exa-tool shader`
-prints a material's original GLSL for comparison. Rules and evidence:
-[`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
+words, the plug-in-masked feature word (`feature_key`, also used for map
+binding and the emissive's doubling), the program choice
+(`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow and displacement
+sample splits, the warm-up variants; `shader_uniforms` the 252-byte `Global`
+block, the 112-byte `Material` block and the per-light `vec4`s.
+`exa-tool shader` prints a material's original GLSL for comparison. Rules
+and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Shader builder).
 
 ## Modules

@@ -200,6 +200,24 @@ pub fn loaded_class(material: &Material) -> u32 {
     class
 }
 
+/// The record's feature bits after loading, masked by its type's plug-in:
+/// its flags (`0x48`), plus the fall-off bit for a positive fall-off, the
+/// bits the diffuse, opacity, height, gloss, `0x4000000` and dirt layers
+/// add, and the emissive bit an opacity-only unlit record gets. The factory
+/// replaces a word with no low nibble by `MatEmi` (`0x8`) when the record
+/// still has an opacity above zero, and returns no state (`0`) when it does
+/// not.
+pub fn feature_key(material: &Material) -> u32 {
+    let mut key = loaded_flags(material) & PLUGIN_MASKS[plugin(material)];
+    if key & 0xF == 0 {
+        if material.opacity <= 0.0 || material.opacity.is_nan() {
+            return 0;
+        }
+        key = 0x8;
+    }
+    key
+}
+
 /// The material and shader state words the original's material factory
 /// builds for a record at shading quality `quality`, before the program key
 /// masks them. `None` when the record draws nothing (no feature bits and no
@@ -219,12 +237,9 @@ pub fn loaded_class(material: &Material) -> u32 {
 /// and liquid material modes.
 pub fn state_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
     let plugin = plugin(material);
-    let mut key = loaded_flags(material) & PLUGIN_MASKS[plugin];
-    if key & 0xF == 0 {
-        if material.opacity <= 0.0 || material.opacity.is_nan() {
-            return None;
-        }
-        key = 0x8;
+    let key = feature_key(material);
+    if key == 0 {
+        return None;
     }
     let extra = material.extra;
     let class = loaded_class(material);

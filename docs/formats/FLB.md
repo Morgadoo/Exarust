@@ -222,10 +222,14 @@ Then, each bit needing its feature bit (and, for a map, its layer):
   when the fall-off amount's magnitude exceeds 0.01; `MatSpc`; `TexDif` for
   a lit record with a diffuse (or opacity) layer; `TexOpc` with the opacity
   bit and that layer, or with the emissive map; `TexEmi` with `MatEmi`;
-  `TexSpc` with `MatSpc` or `TexRef`; `TexRef`; `TexNrm`; `TexGls`;
+  `TexSpc` with `MatSpc` or `TexRef` (the layer and `0x100004`); `TexRef`;
+  `TexNrm` with the layer and a shaded material word (`0x100807`); `TexGls`;
   `TexDsp` for a height layer with a positive amount and a normal map;
   `DrtTex` (`0x8000000`); the translucent (`0x100`) and liquid (`0x200`)
-  modes from the flag bits `0x300`;
+  modes from the flag bits `0x300`. A type-2 plug-in keeps only
+  `MatEmi`, two-sided and `TexOpc`, so it can bind only the colour/opacity
+  slot; the emissive map also needs `MatEmi`, so a type-2 record never binds
+  it;
 - a secondary (subsurface) colour at shading quality 3 or above: class 5
   and material bits `0x300`, and no `MatEmi`;
 - shader: `FastLgt` from extra flag `0x200` (lit records); `BlendMode` 4
@@ -297,9 +301,9 @@ light in the environment word (unlit rows have an empty one).
 
 | offset | field | value |
 |---|---|---|
-| 0 | `MatDif` | linear diffuse (×1.5 before linearising for type 0) × opacity if the blend source is ONE × `(1 − sss)`; `w` = opacity minus the fall-off's `(f+1)f` whenever the fall-off exceeds 0.01 (the factory's test for blended states compares a four-bit field with `0x100` and never holds) |
+| 0 | `MatDif` | linear diffuse (×1.5 before linearising for type 0) × opacity if the blend source is ONE and the record is not in refraction mode (flags `0x300` = `0x200`), × `(1 − sss)`; rgb is zero on an unlit record; `w` = the stored opacity minus the fall-off's `(f+1)f` whenever the fall-off exceeds 0.01 (the factory's test for blended states compares a four-bit field with `0x100` and never holds) |
 | 16 | `MatSpc` | linear specular × specular level, zero without the specular bit, ×3 when the shader word's bit 0 is set (classes 1, 3, 5, 7) and the material word has a specular map; `w` = glossiness (raised to 0.01 only for type 0) |
-| 32 | `MatEmi` | linear emissive × exposure (×2 for a lit material with an emissive map); the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
+| 32 | `MatEmi` | linear emissive × exposure (×2 when the plug-in-masked word keeps `MatEmi` `0x8`, the lit/specular bits and the emissive-layer bit `0x80000`); the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
 | 48 | `MatDrt` | mode 4 `(0.45, 0.03, 0.02, 0.5)`; else `w = 2 − 0x30` |
 | 64 | `MatDsp` | parallax texel counts × 3·10⁻⁵ |
 | 72 | `DrtUVs` | the diffuse map's aspect |

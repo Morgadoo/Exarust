@@ -47,6 +47,25 @@ Model nodes carry their rigid body with the physical divisor of their first
 mesh part's material (`ModelNode::rigid`, `NodeRigidBody::mobility`), what
 the solver registers a prop with.
 
+## Materials
+
+`ModelLoader::exa_material` builds the draw state from a library record with
+the original's plug-in-masked feature word (`shader_program::feature_key`):
+the record's flags after loading, masked by its type. An unlit record's
+`MatDif.rgb` is zero (it draws emission only), every lit record whose blend
+source nibble is ONE premultiplies its diffuse by the opacity (not in
+refraction mode), and the emissive doubles only when that masked word keeps
+`MatEmi` (`0x8`) with the lit/specular bits and the emissive layer. A
+transparent record (destination nibble 3) is rewritten opaque when in
+refraction mode, or with opacity above 0.99, fall-off below 0.01 and no
+opacity flag; the compare widens the stored f32 to f64 as the original's
+does. Maps bind only where the factory binds them: the colour slot needs
+`0x20000` (diffuse) or `0x400000` (opacity), the emissive needs `0x80000`
+and `MatEmi`, the specular `0x40000` and `0x100004`, the normal `0x200000`
+and a shaded material word (`0x100807`), and a type-2 record keeps only the
+colour/opacity slot. Refracting records cast shadows, and a record whose
+destination nibble is ONE never does.
+
 ## Textures
 
 `texture` turns a `.rfi` into a Bevy image with the original's texture
