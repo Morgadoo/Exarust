@@ -557,6 +557,7 @@ mod tests {
         ));
         world.spawn((
             PlacedItem {
+                flags: 0,
                 id: crystal,
                 condition: 0,
             },

@@ -6,6 +6,7 @@
 pub mod arc;
 pub mod bodies;
 pub mod cloth_draw;
+pub mod db_objects;
 pub mod environment;
 pub mod fire;
 pub mod flame;
@@ -72,6 +73,9 @@ pub struct LevelRoot {
 pub struct PlacedItem {
     pub id: u32,
     pub condition: u8,
+    /// The record's kind flags ([`db_objects::object_flags`]): wearable,
+    /// door or operative.
+    pub flags: u32,
 }
 
 impl PlacedItem {
@@ -80,6 +84,7 @@ impl PlacedItem {
         Self {
             id: item.id,
             condition: ((object.flags >> 16) & 0xFF) as u8,
+            flags: db_objects::object_flags(item).0,
         }
     }
 }
@@ -339,6 +344,25 @@ fn spawn_placed_object(
     let model = placed_object_model(loader, scene, global, object)
         .and_then(|(kind, entry)| placement_base(loader, kind, &entry, &object.attachments));
     let Some(model) = model else {
+        // No model: an operative or otherwise usable object gets the
+        // original's 50 cm placeholder node, so its placement still exists.
+        if item.operative.is_some() {
+            let e = commands
+                .spawn((
+                    transform_from_rows(&object.transform),
+                    Name::new(item.name.clone()),
+                    room_view::PendingRoom::default(),
+                    PlacedItem::of(item, object),
+                    db_objects::PlaceholderNode::default(),
+                    ChildOf(parent),
+                ))
+                .id();
+            let _ = e;
+            return Some(PlacedSpawn::Placed {
+                lights: 0,
+                bodies: bodies::BodyCounts::default(),
+            });
+        }
         return Some(PlacedSpawn::Missing);
     };
     let share = item.light_share(object.flags);
@@ -385,7 +409,7 @@ fn spawn_placed_object(
         });
     }
     // A door, lever or push surface keeps its body for its mechanism.
-    let placement = if item.mechanism().is_some() {
+    let placement = if db_objects::collision_class(item) != db_objects::CollisionClass::None {
         bodies::Placement::Mechanism
     } else {
         bodies::Placement::Loose
