@@ -253,13 +253,14 @@ fn a_combatant_contact_is_classified() {
     );
 }
 
-/// A contact seen this tick, with a soothe term, a rising concern and a
-/// sighting of 2 its noticed level rises toward.
+/// A contact seen this tick, with a hostile soothe term (the perceived
+/// attitude), a rising concern and a sighting of 2 its noticed level rises
+/// toward.
 fn seen(id: u64) -> ContactRecord {
     ContactRecord {
         id,
         seen: 1.0,
-        soothe: 20.0,
+        soothe: -20.0,
         concern: 1.0,
         concern_target: 2.0,
         sighting: 2.0,
@@ -285,8 +286,8 @@ fn the_contacts_sober_and_rise_toward_their_targets() {
     };
     let out = integrate(&mut state, &mut contacts, &sight, 1000);
     let c = contacts[0];
-    // Hostility: 1 − 20·5e-05 = 0.999, then ×0.999.
-    assert!((c.hostility - 0.998_001).abs() < 1e-6, "{}", c.hostility);
+    // Hostility: 1 − (−20)·5e-05 = 1.001, then ×0.999.
+    assert!((c.hostility - 0.999_999).abs() < 1e-6, "{}", c.hostility);
     // Concern rises 0.5 % of the gap, the noticed level 0.5 % of the
     // sighting.
     assert!((c.concern - 1.005).abs() < 1e-6);
@@ -307,6 +308,25 @@ fn the_contacts_sober_and_rise_toward_their_targets() {
         "{}",
         state.readiness
     );
+}
+
+#[test]
+fn a_friendly_attitude_does_not_lower_hostility_without_the_decay() {
+    // The assembly's branch takes the soothe term only when it is below
+    // zero; a positive attitude leaves hostility to its own 0.999 decay.
+    let mut state = Integration {
+        soothe_scale: 1.0,
+        ..Integration::default()
+    };
+    let mut contacts = vec![ContactRecord {
+        id: 9,
+        seen: 1.0,
+        soothe: 20.0,
+        hostility: 1.0,
+        ..ContactRecord::default()
+    }];
+    integrate(&mut state, &mut contacts, &FoeSight::default(), 0);
+    assert!((contacts[0].hostility - 0.999).abs() < 1e-6);
 }
 
 #[test]
@@ -565,10 +585,10 @@ fn the_round_robin_looks_two_on_from_its_cursor() {
     assert_eq!(refresh_slot(&contacts, 1), (1, None));
 }
 
-/// The calming drift is `(1 − restraint)·5e-5`, scaled by the calming
-/// scale; an object is not calmed.
+/// The hostility drift is `(1 − restraint)·5e-5`, scaled by the soothing
+/// scale; an object's hostility is not touched.
 #[test]
-fn the_restraint_slows_the_calming() {
+fn the_restraint_slows_the_drift() {
     let mut state = Integration {
         restraint: 0.5,
         soothe_scale: 2.0,
@@ -583,8 +603,8 @@ fn the_restraint_slows_the_calming() {
     ];
     integrate(&mut state, &mut contacts, &FoeSight::default(), 0);
     let drift = (0.5f64 * 5e-05) as f32;
-    let calmed = 1.0 - (20.0 * drift) * 2.0;
-    assert_eq!(contacts[0].hostility, (f64::from(calmed) * 0.999) as f32);
+    let risen = 1.0 + (20.0 * drift) * 2.0;
+    assert_eq!(contacts[0].hostility, (f64::from(risen) * 0.999) as f32);
     assert_eq!(contacts[1].hostility, (1.0f64 * 0.999) as f32);
 }
 

@@ -577,7 +577,11 @@ pub fn integrate(
                 if state.marked_body {
                     let drop = f64::from(one_minus) * (f64::from(c.soothe - 100.0) * 0.0001);
                     c.hostility = (f64::from(c.hostility) - drop) as f32;
-                } else if 0.0 < c.soothe {
+                } else if c.soothe < 0.0 {
+                    // The soothe term is the perceived attitude: only a
+                    // hostile one (below zero) feeds hostility. The
+                    // subtraction adds, as the original's `sub` of a
+                    // negative product does.
                     c.hostility -= one_minus * ((c.soothe * drift) * soothe_scale);
                 }
             }
