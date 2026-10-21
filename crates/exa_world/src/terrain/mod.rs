@@ -360,10 +360,10 @@ impl Plants {
             std::array::from_fn(|i| p.params.get(i).copied().unwrap_or(1.0))
         });
         let base_color_texture = loader
-            .texture("plantset_01d", ColorSpace::Srgb)
+            .texture_sync("plantset_01d", ColorSpace::Srgb)
             .map(|(t, _)| t);
         let normal_map_texture = loader
-            .texture("plantset_01n", ColorSpace::Linear)
+            .texture_sync("plantset_01n", ColorSpace::Linear)
             .map(|(t, _)| t);
         use exa_render::material::{ExaMaterial, ExaParams, flags};
         let material = loader.materials.add(
@@ -923,12 +923,12 @@ impl TerrainBuild {
             self.surfaces.remove(&m);
             let diffuse = material
                 .texture(TerrainTexture::Diffuse)
-                .and_then(|name| loader.texture(name, ColorSpace::Srgb))
+                .and_then(|name| loader.texture_sync(name, ColorSpace::Srgb))
                 .map(|(img, _)| img);
             let surface = Some(loader.images.add(surface));
             let normal = material
                 .texture(TerrainTexture::Normal)
-                .and_then(|name| loader.texture(name, ColorSpace::Linear))
+                .and_then(|name| loader.texture_sync(name, ColorSpace::Linear))
                 .map(|(img, _)| img);
             let size = |image: &Option<Handle<Image>>| {
                 image

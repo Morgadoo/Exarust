@@ -699,12 +699,11 @@ impl ModelLoader<'_> {
                 .map(|t| t.0);
         }
         // Parallax: the height layer's depth as a fixed number of texels of
-        // the height map; displacement shadows when the record asks.
+        // the height map (loaded now: its size is the decoded image's); displacement shadows when the record asks.
         if let Some(layer) = m.layer(TextureSlot::Height)
             && layer.amount > 0.0
             && mat.normal_map.is_some()
-            && let Some((img, _)) =
-                self.texture_with_flags(&layer.texture, ColorSpace::Linear, data_flags)
+            && let Some((img, _)) = self.texture_now(&layer.texture, ColorSpace::Linear, data_flags)
             && let Some(size) = self.images.get(&img).map(|i| i.size())
             && size.x > 1
             && size.y > 1
@@ -1201,6 +1200,13 @@ impl ModelLoader<'_> {
         let key = TextureKey::new(name, space);
         self.cache.textures.cancel_pending(&key);
         self.texture_load(name, space, flags, false)
+    }
+
+    /// [`ModelLoader::texture_now`] with the default texture word: for the
+    /// consumers that cannot take a placeholder (terrain and particle
+    /// materials, whose bindings the loader's upload does not refresh).
+    pub fn texture_sync(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
+        self.texture_now(name, space, crate::texture::default_flags())
     }
 
     fn texture_load(

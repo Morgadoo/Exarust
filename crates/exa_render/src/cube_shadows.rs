@@ -45,7 +45,8 @@ use bevy::render::render_resource::{
     RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
     SamplerBindingType, ShaderStages, SpecializedMeshPipeline, SpecializedMeshPipelineError,
     SpecializedMeshPipelines, StoreOp, TextureDimension, TextureFormat, TextureSampleType,
-    TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, VertexState,
+    TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension, TextureViewId,
+    VertexState,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
@@ -738,7 +739,10 @@ struct PreparedCubes {
     buffer: RawBufferVec<GpuDraw>,
     joints: RawBufferVec<[f32; 16]>,
     draws: Option<BindGroup>,
-    cuts: HashMap<AssetId<Image>, BindGroup>,
+    /// The bind group of each shadow-cutting texture, with the texture view
+    /// it was made for: an image replaced under its handle (a streamed
+    /// texture arriving) gets a new view and a new group.
+    cuts: HashMap<AssetId<Image>, (TextureViewId, BindGroup)>,
     /// Per draw, its pipeline.
     pipelines: Vec<Option<CachedRenderPipelineId>>,
     /// Specialized ids, keyed by mesh and key.
@@ -873,15 +877,18 @@ fn prepare_draws(
         });
         pipelines.push(id);
         if let Some(cut) = d.cut
-            && !prepared.cuts.contains_key(&cut)
             && let Some(image) = images.get(cut)
+            && prepared
+                .cuts
+                .get(&cut)
+                .is_none_or(|(view, _)| *view != image.texture_view.id())
         {
             let group = device.create_bind_group(
                 "exa_cube_cut",
                 &cache.get_bind_group_layout(&pipeline.cut),
                 &BindGroupEntries::sequential((&image.texture_view, &image.sampler)),
             );
-            prepared.cuts.insert(cut, group);
+            prepared.cuts.insert(cut, (image.texture_view.id(), group));
         }
     }
     prepared.pipelines = pipelines;
@@ -961,7 +968,7 @@ fn render_faces(
                 continue;
             };
             if let Some(cut) = d.cut {
-                let Some(group) = prepared.cuts.get(&cut) else {
+                let Some((_, group)) = prepared.cuts.get(&cut) else {
                     complete = false;
                     continue;
                 };

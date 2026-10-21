@@ -18,7 +18,9 @@
 
 use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+
+use exa_render::material::ExaMaterial;
 
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 
@@ -106,8 +108,61 @@ pub struct TextureStreamPlugin;
 impl Plugin for TextureStreamPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TextureLoader>()
-            .add_systems(Update, run_texture_loader);
+            .add_systems(Update, (run_texture_loader, rebind_replaced_images).chain());
     }
+}
+
+/// Touches the materials that bind an image whose contents were replaced.
+///
+/// A material's bind group keeps the texture view it was prepared with, so a
+/// material built while its texture was the 1x1 placeholder would go on
+/// drawing the placeholder after the loader's upload replaced the image
+/// under the same handle. Touching the material (a `get_mut`) makes Bevy
+/// prepare its bind group again with the new image. The scan runs only on a
+/// frame in which some image was modified, and looks at each material's
+/// handles once.
+fn rebind_replaced_images(
+    mut events: MessageReader<AssetEvent<Image>>,
+    materials: Option<ResMut<Assets<ExaMaterial>>>,
+) {
+    let replaced: HashSet<AssetId<Image>> = events
+        .read()
+        .filter_map(|event| match event {
+            AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let Some(mut materials) = materials else {
+        return;
+    };
+    if replaced.is_empty() {
+        return;
+    }
+    let touched: Vec<AssetId<ExaMaterial>> = materials
+        .iter()
+        .filter(|(_, material)| binds_any(material, &replaced))
+        .map(|(id, _)| id)
+        .collect();
+    for id in touched {
+        let _ = materials.get_mut(id);
+    }
+}
+
+/// Whether the material binds one of the images.
+fn binds_any(material: &ExaMaterial, images: &HashSet<AssetId<Image>>) -> bool {
+    [
+        &material.diffuse_map,
+        &material.normal_map,
+        &material.specular_map,
+        &material.emissive_map,
+        &material.opacity_map,
+        &material.dirt_map,
+        &material.gloss_map,
+        &material.height_map,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|handle| images.contains(&handle.id()))
 }
 
 fn run_texture_loader(
@@ -369,5 +424,58 @@ mod tests {
         let cache = app.world().resource::<ModelCache>();
         assert!(cache.textures.queued_loads().is_empty());
         assert!(!cache.textures.get(&key).unwrap().pending);
+    }
+
+    /// A material that binds an image is touched when the image is replaced
+    /// under its handle, and one that does not is left alone.
+    #[test]
+    fn replacing_an_image_touches_the_materials_that_bind_it() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<ExaMaterial>()
+            .add_systems(Update, rebind_replaced_images);
+        let (image, other) = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            (
+                images.add(texture::placeholder_image(
+                    texture::ColorSpace::Srgb,
+                    texture::default_flags(),
+                    &texture::TextureSettings::default(),
+                )),
+                images.add(Image::default()),
+            )
+        };
+        let (bound, unbound) = {
+            let mut materials = app.world_mut().resource_mut::<Assets<ExaMaterial>>();
+            let bound = materials.add(ExaMaterial {
+                gloss_map: Some(image.clone()),
+                ..default()
+            });
+            let unbound = materials.add(ExaMaterial {
+                diffuse_map: Some(other),
+                ..default()
+            });
+            (bound.id(), unbound.id())
+        };
+        // Settle the creation events, then replace the image.
+        app.update();
+        app.update();
+        let _ = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(image.id(), Image::default());
+        app.update();
+        app.update();
+        let mut modified = Vec::new();
+        let events = app.world().resource::<Messages<AssetEvent<ExaMaterial>>>();
+        let mut cursor = events.get_cursor();
+        for event in cursor.read(events) {
+            if let AssetEvent::Modified { id } = event {
+                modified.push(*id);
+            }
+        }
+        assert!(modified.contains(&bound));
+        assert!(!modified.contains(&unbound));
     }
 }
