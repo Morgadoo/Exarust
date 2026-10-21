@@ -707,3 +707,17 @@ A drop onto the creation preview SHALL ignore item 8, go to the mode's own list 
 #### Scenario: An item of kind 0x8000
 - **WHEN** an item whose record has only kind 0x8000 is dropped outside game modes 8 and 0x1010
 - **THEN** it goes to the weapon list and is not placed
+
+### Requirement: Centred slider weight
+The system SHALL set a centred creation slider's weight to its position less one half, negated, so the middle gives a negative zero and the ends -0.5 and +0.5.
+
+#### Scenario: Slider in the middle
+- **WHEN** a centred slider is at 0.5
+- **THEN** its weight is a negative zero
+
+### Requirement: Decomposition maps and layers
+The system SHALL name the decomposition passes' maps by their shipped unit order (diffuse: humandcmpw, ancientdifm, skindecomp, humandcmpf; specular: humandcmpw, ancientdifm, humandcmpg; normal: ancientnrmm0, humandcmpn) and SHALL cap the normal pass at four layers.
+
+#### Scenario: More than four weights
+- **WHEN** five normal layers carry weights
+- **THEN** only the first four are blended
