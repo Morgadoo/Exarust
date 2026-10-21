@@ -61,21 +61,29 @@ and the grid's rooms; portal clipping is next (see
 - `cloth`: the level's cloth-marked meshes (long hair, four banners, the wraith's robe) become a simulated cloth (`ClothInstance`) over their vertex positions, pinned at the shipped meshes' rest points with the loose 0.1 weight (the pin rule is a labelled guess), stepped once per 83 Hz body tick with gravity and written back into the mesh's positions (each cloth takes a copy of the mesh asset, since one asset is shared by every copy of a model, and a node whose mesh has no triangles is marked `ClothSkipped`); the two-face draw passes come from `cloth_draw`.
 - `nav`: the original's navigation grid (30 cm cells, two layers, cost bytes), built for each level when its load ends from its terrain (the 6 m blocks the level builds), its meshes' GI sample points and its tile-grid floors, on the async compute pool (`NavGrid` resource, `NavState`, `nav::finder::InstalledPathfinder`: the level's grid or the 64 × 64 abstract fallback, whose queries answer nothing); its queries (`nav::query`: the line walk, the straight walk, the obstacle test; `nav::walkable`: a point's cost and the nearest walkable point by the original's flood; `nav::path`: the planner — the 256-cell window with its blocked border, the two-layer step rule, its LIFO open list and unsigned strict-total pop, the relaxation rule, the goal-height heuristic, the node cap, the closest-node answer with the 100 cm rule and the rough cut, and the corners' budget line walk; `nav::mover`: dirty rectangles, the sixteen-slot ring, the scene-wide countdown and the refresh from the floors as built, which the grid keeps beside the current ones; `nav::stamp`: a line stamped on the penalty bytes, as a barricade stamps its wall — its cells, their ring and the cells beside the ring, on the layer whose height band holds them, and the stamp taken back); `--debug-nav`/F6 draws it, `nav::headless` builds it without a window ([`docs/NAVIGATION.md`](../../docs/NAVIGATION.md)).
 - `presets`: the environment unit's six-preset preparation: the sRGB
-  linearisation of the twelve colour words and the separately converted
-  ambient word, the 0.75 scale of five sky words, and the 25 % blend that
-  fills an empty ambient colour; applied by `PresetTable::configure` when
-  linear lighting is on. The shipped six records stay with the level data;
-  Exarust's level lighting still chooses Indoor/Outdoor/FromRecord.
-- `scene_nodes` also carries the live scene's bookkeeping: the timed
-  transition list (an add flips the controller's 1/2 state, the advance
-  passes seconds since the start, removes finished entries by swap and
-  clears the node's moved word), the 256-entry node-removal queue (255
-  usable; a full queue still marks the node and the sector's removal bits),
-  the despawn that resolves an instance to its master and reports the
-  character data or object-database slot, the detail level's 0.01 scale, the
-  renderer and light lists with swap removal, and the sector destructor.
-- `scene_plugin`: the scene extension list with its attach and node-batch
-  hooks, in attach order.
+  linearisation of the twelve colour words (a double-precision division
+  below the knee, the engine's fast logarithm and exponential above it, so
+  the curve is close to the exact one but not equal) and the separately
+  converted ambient word (only when it is above zero), the 0.75 scale of
+  five sky words, and the 25 % blend that fills an empty ambient colour
+  (only when its first channel equals zero); applied by
+  `PresetTable::configure`, linearisation only when linear lighting is on.
+  The shipped six records stay with the level data; Exarust's level lighting
+  still chooses Indoor/Outdoor/FromRecord.
+- `scene_nodes` also carries the live scene's bookkeeping, none of it on a
+  draw path yet: the timed transition list (an add skips a repeated node and
+  controller and flips the controller's 1/2 state; the advance passes the
+  signed seconds since the start, overwrites finished entries with the last
+  one and clears the moved word of the node under the sector), the
+  256-entry node-removal queue (255 usable; a full queue still marks the
+  node and the sector's removal bits), the despawn (a payload carrying both
+  climb bits stands for the node under its sector; a character payload
+  reports its character data, a live object-database word its slot), the
+  detail level's 0.01 scale with the shadow size, the renderer and light
+  lists (the added hook runs before a light is listed, the removed hook and
+  swap removal after; the cell lights of a scene that keeps them are
+  cleared first), and the sector destructor, which only empties the sector's
+  lists. `flush_removals` is Exarust's own consumer of the removal queue.
 - `terrain::manager`: the manager's construction numbers (a 48 m tile of 240
   cells of 20 cm, 241 vertices, 244 apron rows; detail size 4096/8192 from
   the texture-detail setting, quality tables from a separate quality level,

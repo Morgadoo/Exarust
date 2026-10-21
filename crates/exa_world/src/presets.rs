@@ -10,6 +10,8 @@
 //! once at start-up; a record whose ambient word is zero gets a quarter of
 //! the way from its first to its second sky colour.
 
+use exa_assets::vertex_cache::{fast_exp, fast_ln};
+
 /// A preset's size in bytes.
 pub const PRESET_BYTES: usize = 0xdc;
 /// A preset's size in `f32` words.
@@ -42,26 +44,20 @@ pub const SRGB_DIVISOR: f64 = 1.055;
 /// The sRGB curve's exponent.
 pub const SRGB_EXPONENT: f32 = 2.4;
 
-/// One `f32` word of a preset.
-pub fn word(preset: &[f32; PRESET_WORDS], at: usize) -> f32 {
-    preset[at]
-}
-
-/// The `f32` at byte offset `at` (the record's own addressing).
-pub fn word_at(preset: &[f32; PRESET_WORDS], byte: usize) -> f32 {
-    preset[byte / 4]
-}
-
-/// One sRGB channel to linear light: the standard EOTF, with the branch at
-/// 0.04045. The original evaluates it in double precision and stores `f32`.
+/// One sRGB channel to linear light. At or below the knee (compared in
+/// double) the channel is divided by 12.92 in double; above it, or when it
+/// is not a number, `((x + 0.055) / 1.055)` is worked out in double, rounded
+/// to `f32`, and raised to 2.4 with the engine's fast logarithm and
+/// exponential (`exp(2.4 * ln t)`), so the result is close to the exact
+/// curve, not equal to it: 1.0 comes out as 1.0000396.
 pub fn srgb_to_linear(c: f32) -> f32 {
     let x = f64::from(c);
-    let y = if x <= SRGB_KNEE {
-        x / SRGB_SLOPE
-    } else {
-        ((x + SRGB_OFFSET) / SRGB_DIVISOR).powf(f64::from(SRGB_EXPONENT))
-    };
-    y as f32
+    // Not "above the knee": a NaN takes the power branch too.
+    if x <= SRGB_KNEE {
+        return (x / SRGB_SLOPE) as f32;
+    }
+    let t = ((x + SRGB_OFFSET) / SRGB_DIVISOR) as f32;
+    fast_exp(fast_ln(t) * SRGB_EXPONENT)
 }
 
 /// Linearises the three channels at `word` in place.
@@ -96,9 +92,11 @@ pub fn linearise(preset: &mut [f32; PRESET_WORDS]) {
 
 /// Fills a preset's empty ambient colour with 25 % of the way from the
 /// first sky colour (offset 0x50) to the second (offset 0x74). Only the
-/// first channel is tested, as the original tests it.
+/// first channel is tested, as the original tests it, and only when it
+/// equals zero (a NaN does not).
 pub fn fill_empty_colour(preset: &mut [f32; PRESET_WORDS]) {
-    if preset[EMPTY_WORD] != 0.0 {
+    // Only an exactly-zero colour is filled: a NaN is left alone.
+    if preset[EMPTY_WORD] != 0.0 || preset[EMPTY_WORD].is_nan() {
         return;
     }
     for c in 0..3 {
@@ -156,10 +154,16 @@ mod tests {
     #[test]
     fn srgb_curve_matches_its_knee() {
         assert_eq!(srgb_to_linear(0.0), 0.0);
-        assert_eq!(srgb_to_linear(1.0), 1.0);
-        assert_eq!(srgb_to_linear(0.04), 0.003_095_975_2);
-        assert_eq!(srgb_to_linear(0.040_45), 0.003_130_805);
-        assert_eq!(srgb_to_linear(0.5), 0.214_041_13);
+        // Below the knee: a plain division by 12.92.
+        assert_eq!(srgb_to_linear(0.04), (0.04_f32 as f64 / 12.92) as f32);
+        // Above it: the engine's fast logarithm and exponential, close to
+        // the exact curve (0.2140411, 1.0) but not equal to it.
+        assert_eq!(srgb_to_linear(0.5).to_bits(), 0x3e5b_2ba4);
+        assert_eq!(srgb_to_linear(1.0).to_bits(), 0x3f80_014c);
+        assert!((srgb_to_linear(0.5) - 0.214_041_13).abs() < 1e-4);
+        // A NaN takes the power branch, where the exponential's clamp
+        // turns it into a number.
+        assert!(!srgb_to_linear(f32::NAN).is_nan());
     }
 
     #[test]
@@ -194,6 +198,11 @@ mod tests {
         let before = set;
         fill_empty_colour(&mut set);
         assert_eq!(set, before, "a non-empty colour is left alone");
+        let mut nan = p;
+        nan[EMPTY_WORD] = f32::NAN;
+        fill_empty_colour(&mut nan);
+        assert!(nan[EMPTY_WORD].is_nan(), "a NaN is not zero");
+        assert_eq!(nan[EMPTY_WORD + 1], p[EMPTY_WORD + 1]);
     }
 
     #[test]
