@@ -44,6 +44,7 @@ pub mod gui_font;
 pub mod gui_glyphs;
 pub mod gui_level;
 pub mod gui_rescale;
+pub mod gui_task;
 pub mod gui_text;
 pub mod heartbeat;
 pub mod hud;
@@ -109,6 +110,10 @@ pub use gui_core::{
     set_control_on, set_control_text, set_modal,
 };
 pub use gui_level::GuiLevelState;
+pub use gui_task::{
+    ACTIVE_ALPHA, INACTIVE_ALPHA, LAYER_DRAW_MODE, LAYER_STYLE, NO_HIT, NO_SHORTCUT_KEY, OwnedForm,
+    Shortcut, TaskFocus, TaskLayer, modifier, modifier_score,
+};
 pub use gui_text::{
     ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
     count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail,
