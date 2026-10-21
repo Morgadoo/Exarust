@@ -421,6 +421,11 @@ impl AudioEnvironment {
         VoiceHandle(id)
     }
 
+    /// The voice a handle is bound to, if any.
+    pub fn handle_voice(&self, handle: VoiceHandle) -> Option<u32> {
+        self.handles.get(handle.0 as usize).copied().flatten()
+    }
+
     /// Whether a handle is bound to a live voice.
     pub fn handle_is_bound(&self, handle: VoiceHandle) -> bool {
         self.handles
@@ -580,6 +585,55 @@ impl AudioEnvironment {
         voice.gain = gain;
         voice.pitch = pitch;
         true
+    }
+
+    /// Starts a looping variant of a set attached to a caller-held handle:
+    /// the held items' and the body's loops. Like [`Self::play_set_attached`]
+    /// but with the looping flag. Returns false when the handle is unset,
+    /// the environment is silent or the set is empty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_loop_attached(
+        &mut self,
+        bank: &mut SoundBank,
+        set: u32,
+        handle: VoiceHandle,
+        position: Vec3,
+        gain: f32,
+        pitch: f32,
+    ) -> bool {
+        if handle == VoiceHandle::NONE || !self.is_live() || bank.set_count(set) == 0 {
+            return false;
+        }
+        let Some(id) = self.allocate() else {
+            return false;
+        };
+        if let Some(old) = self.handles.get(handle.0 as usize).copied().flatten()
+            && let Some(voice) = self.voices.get_mut(old as usize)
+        {
+            voice.owner = None;
+        }
+        if let Some(slot) = self.handles.get_mut(handle.0 as usize) {
+            *slot = Some(id);
+        }
+        let Some(buffer) = bank.pick_set_variant(set) else {
+            return false;
+        };
+        let voice = &mut self.voices[id as usize];
+        voice.flags = self.default_flags | voice_flags::LOOPING;
+        voice.owner = Some(handle.0);
+        voice.buffer = buffer;
+        voice.position = position;
+        voice.gain = gain;
+        voice.pitch = pitch;
+        true
+    }
+
+    /// Frees a handle's voice: the original's source release. Leaves the
+    /// handle unbound.
+    pub fn free_handle(&mut self, bank: &mut SoundBank, handle: VoiceHandle) {
+        if let Some(id) = self.handles.get(handle.0 as usize).copied().flatten() {
+            self.free_voice(bank, id);
+        }
     }
 
     /// Restarts a voice on a random variant of a set, keeping the caller's

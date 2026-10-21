@@ -35,6 +35,7 @@ pub mod fighter;
 pub mod grip;
 pub mod parry;
 pub mod regen;
+pub mod sounds;
 pub mod stance;
 pub mod swing;
 pub mod voice;

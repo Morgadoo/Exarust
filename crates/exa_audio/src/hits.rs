@@ -5,31 +5,58 @@
 
 use bevy::prelude::*;
 use exa_assets::Game;
+use exa_combat::Fighter;
 use exa_combat::Hit;
+use exa_combat::sounds::part_hit_sound;
 
 use crate::environment::AudioEnvironment;
+use crate::sounds::hit_set;
 use crate::{SoundBank, SoundSet};
 
-/// Sword impacts.
+/// Sword impacts, the fallback when a weapon names no set.
 pub(crate) const SWORD_IMPACTS: SoundSet<'static> = SoundSet::new("wh_sworda", 6);
 /// Human voices, each with its grunts.
 pub(crate) const VOICES: SoundSet<'static> = SoundSet::new("vhm", 9);
 pub(crate) const GRUNTS: usize = 6;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hit_sounds(
     game: Option<Res<Game>>,
     mut hits: MessageReader<Hit>,
+    fighters: Query<&Fighter>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
     mut impacts: Local<Option<u32>>,
+    mut weapon_sets: Local<[Option<u32>; 9]>,
+    mut part_sets: Local<[Option<u32>; 7]>,
     mut grunt_sets: Local<[Option<u32>; VOICES.count]>,
 ) {
     let Some(game) = game else { return };
     for hit in hits.read() {
-        let impact = *impacts
-            .get_or_insert_with(|| bank.load_set(&game, &mut sources, SWORD_IMPACTS.prefix));
-        env.play_set(&mut bank, impact, hit.point, 1.0, 1.0, 0);
+        // The weapon's own hit set, by its record's class.
+        let class = usize::from(hit.weapon.hit_sound);
+        let weapon = if let Some(name) = hit.weapon.hit_sound_name() {
+            *weapon_sets
+                .get_mut(class)
+                .unwrap_or(&mut None)
+                .get_or_insert_with(|| bank.load_set(&game, &mut sources, name))
+        } else {
+            *impacts.get_or_insert_with(|| bank.load_set(&game, &mut sources, SWORD_IMPACTS.prefix))
+        };
+        env.play_set(&mut bank, weapon, hit.point, 1.0, 1.0, 0);
+        // The struck part's material: its outer covering layer's class, or
+        // the flesh default.
+        if let Ok(fighter) = fighters.get(hit.target)
+            && let Some(armour) = hit.bone.checked_sub(1).and_then(|i| fighter.armour.get(i))
+            && let Some(sound) = part_hit_sound(armour, false, false)
+            && let Some(set) = hit_set(sound)
+        {
+            let class = usize::from(sound_class(sound));
+            let id = *part_sets[class]
+                .get_or_insert_with(|| bank.load_set(&game, &mut sources, set.prefix));
+            env.play_set(&mut bank, id, hit.point, 1.0, 1.0, 0);
+        }
         let voice = bank.pick(VOICES.count);
         let grunt = match grunt_sets[voice] {
             Some(set) => set,
@@ -42,6 +69,16 @@ pub(crate) fn hit_sounds(
             }
         };
         env.play_set(&mut bank, grunt, hit.point, 0.8, 1.0, 0);
+    }
+}
+
+/// The table index a part's material takes.
+fn sound_class(sound: exa_combat::sounds::HitSound) -> u8 {
+    use exa_combat::sounds::HitSound;
+    match sound {
+        HitSound::Flesh | HitSound::Skeleton => 0,
+        HitSound::Golem => 6,
+        HitSound::Class(c) => c.min(6),
     }
 }
 

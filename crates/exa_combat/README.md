@@ -256,6 +256,17 @@ which `track_condition` writes each tick). Rules:
 - Momentum/energy based damage; blunt, cut and pierce through armour layers.
 - Stagger, knockdown, grabs, blocking with weapon or shield.
 
+## Sounds
+
+`sounds` chooses a body part's hit sound and its clothing foley from the
+armour layers the crate already keeps: the first layer (outer, then inner)
+covering at least half the part gives its class, or the flesh/skeleton
+default, or the golem's `HitGlm`; the foley sums each layer's coverage times
+its bone's weight per class, picks the largest class sum times its factor,
+and above 1 gives the loop's volume (the class's volume factor). The
+golem bodies' `FoleyPlH` (2) and `Golem_Foley` (6, or 1 for race 0x1200)
+are the body loops. `exa_audio` plays them.
+
 ## Wounds
 
 `wounds`: a blow bleeds when the struck fighter's race bleeds

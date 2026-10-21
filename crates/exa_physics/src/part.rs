@@ -193,6 +193,64 @@ pub fn ragdoll_state(state: PartState) -> PartState {
     state.with(PartState::MUSCLED)
 }
 
+/// The material record a part's impact sound uses (`+0x470`), the tree's
+/// (`+0x728`) and the record's use count (`+0x4c`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MaterialUse {
+    /// The part's own sound material (`+0x470`), once it has one.
+    pub reference: Option<u32>,
+    /// The material a leaf of the tree takes (`+0x728`).
+    pub tree: Option<u32>,
+    /// References taken (a leaf takes one, or two when its own is still
+    /// unset).
+    pub uses: u32,
+}
+
+/// Gives a body tree the impact-sound material `material` (`0x100165900`):
+/// a leaf part takes it as its tree material, and as its own if it has none
+/// (each a reference); a part that is not a living limb passes the material
+/// on to its limb-family children. The states and parents describe the tree
+/// (see [`PartState::is_limb`]); a cycle in bad input is cut by a visited
+/// set. This is a setup-time walk, not a per-tick one.
+pub fn assign_tree_material(
+    states: &[PartState],
+    parents: &[Option<usize>],
+    root: usize,
+    material: u32,
+    out: &mut [MaterialUse],
+) {
+    let len = states.len().min(out.len());
+    if root >= len {
+        return;
+    }
+    let mut seen = vec![false; len];
+    let mut stack = vec![root];
+    while let Some(i) = stack.pop() {
+        if i >= len || seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        let children: Vec<usize> = (0..len)
+            .filter(|&j| parents.get(j).copied().flatten() == Some(i))
+            .collect();
+        if children.is_empty() {
+            out[i].tree = Some(material);
+            out[i].uses += 1;
+            if out[i].reference.is_none() {
+                out[i].reference = Some(material);
+                out[i].uses += 1;
+            }
+        }
+        if !states[i].is_limb() {
+            for child in children {
+                if states[child].is_limb() {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+}
+
 /// The contact mobility a limp part gets back: its own. The original writes
 /// `mobility = own mobility × 1.0` for every limb when the body dies; a
 /// body that is not holding anything already has it, so this is the
@@ -747,6 +805,51 @@ mod tests {
         assert_eq!(classify(&c), None);
         c.other_guarded = false;
         assert_eq!(classify(&c).unwrap().kind, ContactKind::Wound);
+    }
+
+    #[test]
+    fn a_weapon_tree_gives_its_material_to_its_limbs() {
+        // A weapon (no limb family) with two limb children; one child has a
+        // reference already.
+        let states = [PartState(0), PartState::LIMB_FRESH, PartState::LIMB_FRESH];
+        let parents = [None, Some(0), Some(0)];
+        let mut out = [MaterialUse::default(); 3];
+        out[1].reference = Some(7);
+        out[1].uses = 1;
+        assign_tree_material(&states, &parents, 0, 42, &mut out);
+        assert_eq!(out[0], MaterialUse::default());
+        assert_eq!(
+            out[1],
+            MaterialUse {
+                reference: Some(7),
+                tree: Some(42),
+                uses: 2,
+            }
+        );
+        assert_eq!(
+            out[2],
+            MaterialUse {
+                reference: Some(42),
+                tree: Some(42),
+                uses: 2,
+            }
+        );
+        // A lone limb is its own leaf.
+        let mut solo = [MaterialUse::default(); 1];
+        assign_tree_material(&states[1..2], &[None], 0, 9, &mut solo);
+        assert_eq!(solo[0].tree, Some(9));
+        assert_eq!(solo[0].uses, 2);
+        // A limb with a limb child does not recurse (the original's bone
+        // test), so the child takes nothing.
+        let mut nested = [MaterialUse::default(); 2];
+        assign_tree_material(
+            &[PartState::LIMB_FRESH; 2],
+            &[None, Some(0)],
+            0,
+            5,
+            &mut nested,
+        );
+        assert_eq!(nested[1], MaterialUse::default());
     }
 
     #[test]

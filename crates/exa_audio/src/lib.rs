@@ -16,9 +16,11 @@ mod bank;
 mod environment;
 mod footsteps;
 mod hits;
+mod loops;
 mod music;
 mod playback;
 mod reverb;
+mod sounds;
 
 use bevy::prelude::*;
 
@@ -28,12 +30,14 @@ pub use environment::{
     AudioEnvironment, BusGains, Listener, SourceCommand, SourcePlay, SourceUpdate, UpdateInput,
     Voice, VoiceHandle, heard_gain, voice_flags,
 };
+pub use loops::{LoopSources, MAX_HELD};
 pub use music::{
     LevelMusic, LevelMusicStart, LevelMusicVolume, MUSIC_VOLUME, MusicSetting, StoryMusic,
     music_for_level, story_music, story_music_changes,
 };
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
+pub use sounds::{FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HealSound, SWING, foley_set, hit_set};
 
 pub struct AudioPlugin;
 
@@ -43,10 +47,13 @@ impl Plugin for AudioPlugin {
             .init_resource::<AudioEnvironment>()
             .init_resource::<playback::SourceEntities>()
             .init_resource::<MusicSetting>()
+            .add_message::<sounds::HealSound>()
             .add_systems(
                 Update,
                 (
                     hits::hit_sounds,
+                    sounds::heal_sounds,
+                    sounds::swing_sounds,
                     footsteps::footsteps,
                     music::start_music,
                     music::apply_music_setting,

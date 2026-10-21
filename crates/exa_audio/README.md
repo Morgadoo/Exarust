@@ -17,6 +17,8 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `ambience` | an area's looping bed and its scheduled one-shots |
 | `reverb` | the global EAX reverb parameter block and the level's decay offset |
 | `hits`, `footsteps` | the game's first two users of the mixer |
+| `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the hit classes (`BdyCol`, `SkelHit`, `HitGlm`, cloth, leather, mail, plate) and the foley loops (`FoleyPlH`, `Golem_Foley`) |
+| `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
 | `playback` | one Bevy audio entity per real source slot, driven by the mixer's commands; the listener anchor |
 
 ## Rules recovered from the original
@@ -113,6 +115,26 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   reference distance 4 m, maximum distance 30 m and rolloff 1: full gain
   inside 4 m, falling linearly to silence at 30 m. The heard gain is held
   between the source's minimum gain and OpenAL's default maximum of 1.
+
+### Body sounds (`sounds`, `loops`)
+
+- A fighter's strike window opening plays one `SwingHA` variant at its
+  primary weapon's swing volume and pitch (W25, W26), about its body.
+- A second wind's heal plays `StmHeal01` at 0.1 and pitch 1.
+- A blow plays the weapon's own set by its record's hit-sound class
+  (`WH_SwordA`, `BdyCol` for fists, …) and the struck part's material set:
+  its outer armour layer covering at least half, else the inner, its class
+  (`foley` classes 2 cloth, 3 leather, 4 mail, 5 plate), the flesh
+  (`BdyCol`) or skeleton (`SkelHit`) default, or `HitGlm`; the class rules
+  are `exa_combat::sounds`. The part's sound falls silent when no layer
+  covers half. Then the pain grunt.
+- A character keeps a looping source per held item and a pair for its body
+  (voice and foley), made lazily and freed on death (`LoopSources`);
+  `play_loop_attached` binds a looping variant to a caller-held handle.
+- A clothing foley loop is chosen by the summed coverage per hit-sound
+  class times the per-bone weights (`FoleyPlH`) and its volume by the
+  class's volume factor; a golem body plays `FoleyPlH` at 2, or
+  `Golem_Foley` at 6 (1 for race 0x1200).
 
 ### Music (`music`)
 
