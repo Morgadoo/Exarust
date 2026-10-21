@@ -12,6 +12,8 @@
 //! instead of waiting for room, so no request is ever dropped; the original
 //! blocks its producer until the consumer catches up.
 
+use std::collections::HashSet;
+
 use bevy::prelude::*;
 
 use crate::texture::{ColorSpace, TextureSettings, placeholder_image};
@@ -248,9 +250,22 @@ pub struct TextureRequest {
     pub flags: u32,
     /// The image entry to decode.
     pub source: String,
-    /// Promoted to the front (the original's "priority" mark): its decode
-    /// does not yield to waiting uploads.
+    /// Promoted to the front (the original's "priority" mark, status bit 2):
+    /// its decode does not yield to waiting uploads.
     pub promoted: bool,
+}
+
+impl TextureRequest {
+    /// A request for `name` in `source`, not yet promoted.
+    pub fn new(name: &str, space: ColorSpace, flags: u32, source: impl Into<String>) -> Self {
+        Self {
+            key: TextureKey::new(name, space),
+            space,
+            flags,
+            source: source.into(),
+            promoted: false,
+        }
+    }
 }
 
 /// A decoded image waiting for the main thread to add it to Bevy.
@@ -275,12 +290,28 @@ pub enum RequestOutcome {
 /// the main thread each frame; the loader yields the main thread whenever
 /// uploads are waiting, and a request can be promoted to the front so a
 /// material that needs it can wait out the load.
+///
+/// A request's progress is the original record's low status bits:
+///
+/// | bit | meaning |
+/// |---:|---|
+/// | `0x1` | taken by the loader, still in its pass (Exarust's `in_hand`) |
+/// | `0x2` | promoted (the priority item) |
+/// | `0x4` | decoded at least once; never cleared, so a later priority load finds it |
+/// | `0x8` | decoded, waiting for the main thread's upload |
+/// | `0x10` | released while loading; its upload is dropped |
 #[derive(Default)]
 pub struct TextureStream {
     requests: Option<RingQueue<TextureRequest>>,
     uploads: Vec<TextureUpload>,
     /// The keys uploaded since the last [`TextureStream::take_finished`].
     finished: Vec<TextureKey>,
+    /// Taken by the loader at least once (status bit 4).
+    decoded: HashSet<TextureKey>,
+    /// Released while loading (status bit 16).
+    cancelled: HashSet<TextureKey>,
+    /// The request the loader is decoding now (status bit 1).
+    in_hand: Option<TextureKey>,
     in_flight: usize,
     /// Whether the request decoded last was promoted.
     last_promoted: bool,
@@ -311,6 +342,9 @@ impl TextureStream {
         if queue.iter().any(|queued| queued.key == request.key) {
             return RequestOutcome::AlreadyQueued;
         }
+        // A fresh request is a fresh record: any cancellation of an earlier
+        // one is spent.
+        self.cancelled.remove(&request.key);
         queue.push(request);
         self.in_flight += 1;
         self.wake();
@@ -318,12 +352,14 @@ impl TextureStream {
     }
 
     /// Moves a queued request to the front and marks it promoted: the
-    /// original's "priority item". A request already decoded and waiting
-    /// for its upload counts as found, as the original's in-progress mark
-    /// does. `false` when it is neither (unknown or already uploaded),
-    /// which the caller reports as "Priority item not found.".
+    /// original's "priority item". A request the loader has already taken
+    /// counts as found, whether it is decoding, waiting for its upload or
+    /// already uploaded: the original's status bit 4 is never cleared, so a
+    /// later priority load of the same texture is a no-op success. `false`
+    /// when it is neither, which the caller reports as "Priority item not
+    /// found.".
     pub fn promote(&mut self, key: &TextureKey) -> bool {
-        if self.uploads.iter().any(|upload| &upload.key == key) {
+        if self.decoded.contains(key) {
             return true;
         }
         let Some(queue) = self.requests.as_mut() else {
@@ -338,18 +374,39 @@ impl TextureStream {
         true
     }
 
-    /// Drops a queued request. Exarust's model of a texture released while it
-    /// was still queued; the original leaves the entry and skips the upload.
+    /// Drops a load that has not uploaded yet. A queued request is removed
+    /// in order; one already decoded and waiting for its upload is dropped
+    /// with it; one being decoded now is marked (the original's status bit
+    /// 16) so its upload is skipped. The original's record is freed, which
+    /// is the same outcome. `false` when nothing was pending (the texture
+    /// was already uploaded).
     pub fn cancel(&mut self, key: &TextureKey) -> bool {
-        let Some(queue) = self.requests.as_mut() else {
+        let queued = self
+            .requests
+            .as_mut()
+            .is_some_and(|queue| queue.remove(|request| &request.key == key).is_some());
+        let uploading = self
+            .uploads
+            .iter()
+            .position(|upload| &upload.key == key)
+            .map(|index| self.uploads.remove(index))
+            .is_some();
+        let in_hand = self.in_hand.as_ref() == Some(key);
+        if !queued && !uploading && !in_hand {
             return false;
-        };
-        let removed = queue.remove(|request| &request.key == key);
-        if removed.is_some() {
-            self.in_flight = self.in_flight.saturating_sub(1);
-            return true;
         }
-        false
+        if queued {
+            self.in_flight = self.in_flight.saturating_sub(1);
+        }
+        if uploading {
+            self.in_flight = self.in_flight.saturating_sub(1);
+        }
+        // A record freed while its load runs must not be found by a later
+        // priority load under the same name; one still decoding is dropped
+        // when the pass finishes.
+        self.decoded.remove(key);
+        self.cancelled.insert(*key);
+        true
     }
 
     pub fn settings(&self) -> &TextureSettings {
@@ -361,25 +418,31 @@ impl TextureStream {
     }
 
     /// The next request to decode, taken off the queue (the loader's side).
-    pub fn next_request(&mut self) -> Option<TextureRequest> {
-        self.requests.as_mut().and_then(RingQueue::pop)
+    /// The record is marked in progress before the decode, as the original's
+    /// loader does; [`TextureStream::finish_decode`] completes the pass.
+    pub fn take_next(&mut self) -> Option<TextureRequest> {
+        let request = self.requests.as_mut().and_then(RingQueue::pop)?;
+        self.last_promoted = request.promoted;
+        self.in_hand = Some(request.key);
+        self.decoded.insert(request.key);
+        Some(request)
     }
 
-    /// Decodes at most one request with `decode` and queues the result for
-    /// upload. The caller runs this on whatever executor it has (the
-    /// original uses its own loader thread). Returns whether a request was
-    /// taken.
-    pub fn decode_next(
+    /// Completes a pass started by [`TextureStream::take_next`]: queues the
+    /// decoded image for upload, or the 1×1 grey placeholder when it could
+    /// not be read. A request released while it was decoding is dropped
+    /// (status bit 16). Returns whether an upload was queued.
+    pub fn finish_decode(
         &mut self,
-        mut decode: impl FnMut(&TextureRequest) -> Option<(Image, bool)>,
+        request: TextureRequest,
+        decoded: Option<(Image, bool)>,
     ) -> bool {
-        let Some(request) = self.next_request() else {
+        self.in_hand = None;
+        if self.cancelled.remove(&request.key) {
+            self.in_flight = self.in_flight.saturating_sub(1);
             return false;
-        };
-        self.last_promoted = request.promoted;
-        // A failed decode uploads the original's 1x1 grey placeholder, as the
-        // synchronous image loader does.
-        let (image, alpha) = decode(&request).unwrap_or_else(|| {
+        }
+        let (image, alpha) = decoded.unwrap_or_else(|| {
             (
                 placeholder_image(request.space, request.flags, &self.settings),
                 false,
@@ -393,6 +456,22 @@ impl TextureStream {
         true
     }
 
+    /// Decodes at most one request with `decode` and queues the result for
+    /// upload. The caller runs this on whatever executor it has (the
+    /// original uses its own loader thread). Returns whether a request was
+    /// taken.
+    pub fn decode_next(
+        &mut self,
+        mut decode: impl FnMut(&TextureRequest) -> Option<(Image, bool)>,
+    ) -> bool {
+        let Some(request) = self.take_next() else {
+            return false;
+        };
+        let decoded = decode(&request);
+        self.finish_decode(request, decoded);
+        true
+    }
+
     /// The loader's backpressure rule: while uploads are waiting, it waits
     /// for the main thread before it goes on, unless the request it just
     /// decoded was promoted. Pausing only stops the wake-ups.
@@ -400,9 +479,21 @@ impl TextureStream {
         !self.uploads.is_empty() && !self.last_promoted
     }
 
+    /// Whether the loader may start another decode now: it waits for the
+    /// main thread whenever uploads are waiting and the last one it decoded
+    /// was not a priority item.
+    pub fn can_decode(&self) -> bool {
+        self.requests
+            .as_ref()
+            .is_some_and(|queue| !queue.is_empty())
+            && !self.wants_to_yield()
+            && self.in_hand.is_none()
+    }
+
     /// Uploads the requests that were ready when the pass started, up to
     /// `budget` of them. Entries queued during the pass wait for the next
-    /// one, as in the original. Returns how many were uploaded.
+    /// one, as in the original. The pass wakes the loader afterwards, as the
+    /// original's pump does. Returns how many were uploaded.
     pub fn pump_uploads(&mut self, budget: usize, mut upload: impl FnMut(TextureUpload)) -> usize {
         let ready = self.uploads.len().min(budget);
         if ready == 0 {
@@ -419,6 +510,9 @@ impl TextureStream {
             }
             upload(item);
             done += 1;
+        }
+        if done > 0 {
+            self.wake();
         }
         done
     }
@@ -446,16 +540,29 @@ impl TextureStream {
         std::mem::take(&mut self.awake)
     }
 
+    /// Whether the loader has nothing queued, nothing decoding and nothing
+    /// waiting for its upload: the original's idle flag, which its wait loop
+    /// spins on.
     pub fn is_idle(&self) -> bool {
-        self.in_flight == 0 && self.uploads.is_empty()
+        self.in_flight == 0 && self.uploads.is_empty() && self.in_hand.is_none()
     }
 
     pub fn queued(&self) -> usize {
         self.requests.as_ref().map_or(0, RingQueue::len)
     }
 
+    /// Whether any request is queued for the loader.
+    pub fn has_requests(&self) -> bool {
+        self.queued() > 0
+    }
+
     pub fn pending_uploads(&self) -> usize {
         self.uploads.len()
+    }
+
+    /// The request being decoded right now, if any.
+    pub fn in_hand(&self) -> Option<&TextureKey> {
+        self.in_hand.as_ref()
     }
 
     /// Whether `key` is still queued or waiting to upload.
@@ -464,35 +571,36 @@ impl TextureStream {
             .as_ref()
             .is_some_and(|queue| queue.iter().any(|request| &request.key == key))
             || self.uploads.iter().any(|upload| &upload.key == key)
+            || self.in_hand.as_ref() == Some(key)
     }
 
-    /// Loads one texture to completion: promotes its request to the front,
-    /// then decodes and uploads until it is no longer pending. The original's
-    /// "priority item" path. Returns `false` when the request was not queued.
+    /// Loads one texture to completion on the main thread: promotes its
+    /// request to the front, decodes it if it is still queued, and drains
+    /// every ready upload as the original's pump does. The original's
+    /// "priority item" path (it spins until the loader clears the record's
+    /// pending bit). Returns `false` when the request was not found, which
+    /// the original reports as "Priority item not found.".
     pub fn load_now(
         &mut self,
         key: &TextureKey,
-        budget: usize,
         mut decode: impl FnMut(&TextureRequest) -> Option<(Image, bool)>,
         mut upload: impl FnMut(TextureUpload),
     ) -> bool {
         if !self.promote(key) {
             return false;
         }
-        // Decode the promoted request alone; it is now at the front.
-        let queued = self
+        // The promoted request sits at the front unless it is already being
+        // decoded or uploaded.
+        let front = self
             .requests
             .as_ref()
-            .is_some_and(|queue| queue.iter().any(|request| &request.key == key));
-        if queued {
+            .and_then(RingQueue::front)
+            .is_some_and(|request| &request.key == key);
+        if front {
             self.decode_next(&mut decode);
         }
-        // Then upload it, even if the budget needs several passes.
-        while self.uploads.iter().any(|upload| &upload.key == key) {
-            self.pump_uploads(budget, &mut upload);
-            if budget == 0 {
-                break;
-            }
+        while self.uploads.iter().any(|item| &item.key == key) {
+            self.pump_uploads(usize::MAX, &mut upload);
         }
         true
     }
@@ -515,7 +623,11 @@ impl TextureStream {
         }
         self.uploads.clear();
         self.finished.clear();
+        self.decoded.clear();
+        self.cancelled.clear();
+        self.in_hand = None;
         self.in_flight = 0;
+        self.last_promoted = false;
     }
 
     fn wake(&mut self) {
@@ -534,13 +646,7 @@ mod tests {
     }
 
     fn request(name: &str) -> TextureRequest {
-        TextureRequest {
-            key: key(name),
-            space: ColorSpace::Srgb,
-            flags: 0,
-            source: name.to_string(),
-            promoted: false,
-        }
+        TextureRequest::new(name, ColorSpace::Srgb, 0, name)
     }
 
     fn names(queue: &RingQueue<TextureRequest>) -> Vec<String> {
@@ -661,7 +767,7 @@ mod tests {
         assert!(stream.take_wake());
         assert!(stream.promote(&key("c")));
         assert!(!stream.promote(&key("zz")));
-        assert_eq!(stream.next_request().unwrap().key, key("c"));
+        assert_eq!(stream.take_next().unwrap().key, key("c"));
         assert!(stream.cancel(&key("a")));
         assert!(!stream.cancel(&key("a")));
         assert_eq!(stream.queued(), 1);
@@ -704,7 +810,6 @@ mod tests {
         let mut order = Vec::new();
         let done = stream.load_now(
             &key("c"),
-            usize::MAX,
             |request| {
                 order.push(request.key.name.as_str().to_string());
                 Some((Image::default(), false))
@@ -718,13 +823,12 @@ mod tests {
         assert_eq!(uploaded, ["c"]);
         assert_eq!(stream.queued(), 2);
         assert!(!stream.is_idle());
-        // A settled key is no longer a priority item: nothing is decoded or
-        // uploaded for it.
+        // The original's status bit 4 is never cleared: a later priority
+        // load of the same, already uploaded texture is a found no-op.
         let mut second_order = Vec::new();
         let mut second_upload = Vec::new();
-        assert!(!stream.load_now(
+        assert!(stream.load_now(
             &key("c"),
-            1,
             |request| {
                 second_order.push(request.key.name.as_str().to_string());
                 Some((Image::default(), false))
@@ -734,7 +838,37 @@ mod tests {
         assert!(second_order.is_empty());
         assert!(second_upload.is_empty());
         assert_eq!(stream.queued(), 2);
-        assert!(!stream.load_now(&key("zz"), 1, |_| None, |_| {}));
+        assert!(!stream.load_now(&key("zz"), |_| None, |_| {}));
+    }
+
+    #[test]
+    fn a_released_load_is_dropped_wherever_it_is() {
+        let mut stream = TextureStream::new();
+        for name in ["uploaded", "queued", "decoding", "decoded"] {
+            stream.request(request(name));
+        }
+        // Uploaded: nothing pending, so nothing to cancel.
+        let done = stream.take_next().unwrap();
+        stream.finish_decode(done, Some((Image::default(), false)));
+        stream.pump_uploads(usize::MAX, |_| {});
+        assert!(!stream.cancel(&key("uploaded")));
+        // Queued: removed in order.
+        assert!(stream.cancel(&key("queued")));
+        assert_eq!(stream.queued(), 2);
+        assert!(!stream.is_pending(&key("queued")));
+        // Decoding: the pass finishes but its upload is dropped.
+        let request = stream.take_next().unwrap();
+        assert!(stream.cancel(&key("decoding")));
+        assert!(!stream.finish_decode(request, Some((Image::default(), false))));
+        assert_eq!(stream.pending_uploads(), 0);
+        // Decoded and waiting for its upload: dropped with it.
+        let request = stream.take_next().unwrap();
+        assert!(stream.finish_decode(request, Some((Image::default(), false))));
+        assert_eq!(stream.pending_uploads(), 1);
+        assert!(stream.cancel(&key("decoded")));
+        assert_eq!(stream.pending_uploads(), 0);
+        assert!(stream.is_idle());
+        assert!(!stream.cancel(&key("decoded")));
     }
 
     #[test]
@@ -755,6 +889,7 @@ mod tests {
         // A decoded request waiting for its upload is still found.
         assert!(stream.promote(&key("a")));
         stream.pump_uploads(usize::MAX, |_| {});
-        assert!(!stream.promote(&key("a")));
+        // The status bit that marks a taken record is never cleared.
+        assert!(stream.promote(&key("a")));
     }
 }
