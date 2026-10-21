@@ -7,8 +7,9 @@
 //! cipher, so identical plaintext prefixes give identical ciphertext
 //! prefixes. Layout and evidence: `docs/formats/FLB.md`.
 //!
-//! Entry text is kept as the engine sees it: the NUL-terminated string it
-//! hands to the shader expander, cut at its first NUL. A parser returns an
+//! Entry text is kept as the engine keeps it: the decoded bytes less up to
+//! four trailing NULs of padding. The expander walks the text by its length;
+//! GL sees the finished program up to its first NUL. A parser returns an
 //! error, never a panic, on malformed input.
 
 use std::collections::HashMap;
@@ -32,7 +33,8 @@ const CIPHER_MULTIPLIER: u32 = 0x10A8_60C1;
 pub struct ShaderEntry {
     /// The entry name from the table of contents, e.g. `shadeopt_f`.
     pub name: String,
-    /// The program text, from the entry's first byte to its first NUL.
+    /// The program text: the decoded bytes, one character per byte, less
+    /// the trailing NUL padding.
     pub source: String,
 }
 
@@ -85,13 +87,7 @@ impl ShaderLibrary {
                     bytes.len()
                 ))
             })?;
-            let decoded = decode_entry(encoded);
-            // The engine passes a NUL-terminated string to GLSL, so anything
-            // after an embedded NUL is invisible to it.
-            let source = match decoded.iter().position(|&c| c == 0) {
-                Some(nul) => &decoded[..nul],
-                None => &decoded[..],
-            };
+            let source = decode_entry(encoded);
             by_name.insert(name.clone(), entries.len());
             entries.push(ShaderEntry {
                 name,
@@ -150,9 +146,10 @@ fn decode_entry(encoded: &[u8]) -> Vec<u8> {
         };
         out[index * 4..index * 4 + 4].copy_from_slice(&plain.to_le_bytes());
     }
-    // The engine trims the entry's NUL padding, at most three bytes.
+    // The engine trims the entry's NUL padding: at most four bytes, and only
+    // when the last one is a NUL.
     if out.last() == Some(&0) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             if out.last() == Some(&0) {
                 out.pop();
             }
@@ -244,10 +241,12 @@ mod tests {
     }
 
     #[test]
-    fn text_stops_at_an_embedded_nul() {
-        let bytes = library(&[("prog", b"abc\0def")]);
+    fn text_keeps_an_embedded_nul_and_drops_the_padding() {
+        let bytes = library(&[("prog", b"abc\0def"), ("pad", b"abc\0\0\0\0\0")]);
         let lib = ShaderLibrary::parse(&bytes).unwrap();
-        assert_eq!(lib.get("prog"), Some("abc"));
+        assert_eq!(lib.get("prog"), Some("abc\0def"));
+        // Four NULs go; a fifth stays.
+        assert_eq!(lib.get("pad"), Some("abc\0"));
     }
 
     #[test]

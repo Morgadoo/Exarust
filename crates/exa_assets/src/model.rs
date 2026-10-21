@@ -1984,6 +1984,7 @@ mod tests {
         m.layers.push(exa_formats::material::TextureLayer {
             slot: TextureSlot::Specular,
             texture: "s".into(),
+            parameter: 0,
             amount: 0.0,
         });
         assert!((material_specular(&m).x - 1.5).abs() < 1e-6);

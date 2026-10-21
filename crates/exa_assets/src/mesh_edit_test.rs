@@ -92,6 +92,7 @@ fn textured_and_normal_mapped_materials_split_their_vertices() {
     let layer = |slot| TextureLayer {
         slot,
         texture: "t".into(),
+        parameter: 0,
         amount: 1.0,
     };
     let mut m = Material::default();

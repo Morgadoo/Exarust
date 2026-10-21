@@ -163,7 +163,7 @@ enum Cmd {
         /// Shadow quality, 1 through 6 (the taps before supersampling).
         #[arg(long, default_value_t = 4)]
         shadow_quality: u32,
-        /// Supersampling level: 0 off, 1, or 3 for the original's 4x.
+        /// Super-sampling setting: 0 off, 1, 3 (the original's 4x), 4, 5.
         #[arg(long, default_value_t = 3)]
         supersample: u32,
         /// The mesh has a vertex-colour stream (`Obj.VrtCol`).
@@ -203,6 +203,14 @@ enum Cmd {
         /// List the shader library's entries.
         #[arg(long)]
         list: bool,
+        /// Print one line per material of the library: its program, key
+        /// words and reflection layer.
+        #[arg(long)]
+        all: bool,
+        /// Write every decoded library entry, unexpanded, to this directory
+        /// as `<name>.glsl` (from the installed game, for comparison).
+        #[arg(long)]
+        dump: Option<PathBuf>,
     },
     /// Write entries to a directory, with an extension guessed from the magic.
     Extract {
@@ -261,6 +269,8 @@ fn main() -> Result<()> {
             fragment_only,
             warmup,
             list,
+            all,
+            dump,
         } => shader(
             &game,
             &ShaderRequest {
@@ -285,6 +295,8 @@ fn main() -> Result<()> {
                 fragment_only,
                 warmup,
                 list,
+                all,
+                dump,
             },
         ),
         Cmd::Ls { pack, inner } => with_archive(&game, &pack, inner.as_deref(), |a| {
@@ -759,14 +771,16 @@ struct ShaderRequest {
     fragment_only: bool,
     warmup: bool,
     list: bool,
+    all: bool,
+    dump: Option<PathBuf>,
 }
 
 fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
     use exa_formats::flb::ShaderLibrary;
-    use exa_formats::material::Material;
+    use exa_formats::material::{Material, TextureSlot};
     use exa_render::shader_program::{
-        GeometryOptions, SceneOptions, SurfaceProgram, program_for_shader_word, program_keys,
-        warmup_keys,
+        GeometryOptions, SceneOptions, SurfaceProgram, key_words, program_for_shader_word,
+        program_keys, shade_quality, warmup_keys,
     };
     use exa_render::shader_template::LightKind;
 
@@ -777,7 +791,7 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
     let scene = SceneOptions {
         quality: request.quality,
         shadow_quality: request.shadow_quality,
-        supersample_level: request.supersample,
+        supersample: request.supersample,
         fog_mode: request.fog,
         voxel_gi: !request.no_gi,
         voxel_gi_specular: request.vxgi_spec,
@@ -791,6 +805,15 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         for entry in shaders.entries() {
             println!("{}", entry.name);
         }
+        return Ok(());
+    }
+    if let Some(dir) = &request.dump {
+        fs::create_dir_all(dir)?;
+        for entry in shaders.entries() {
+            let bytes: Vec<u8> = entry.source.chars().map(|c| c as u32 as u8).collect();
+            fs::write(dir.join(format!("{}.glsl", entry.name)), bytes)?;
+        }
+        println!("{} entries written to {}", shaders.len(), dir.display());
         return Ok(());
     }
     if request.warmup {
@@ -815,14 +838,35 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         return Ok(());
     }
 
-    let name = request
-        .material
-        .as_deref()
-        .ok_or_else(|| anyhow!("name a material, or pass --list or --warmup"))?;
     let library_bytes = game
         .resource_file(&request.library)
         .ok_or_else(|| anyhow!("{} is not installed", request.library))?;
     let library = Archive::parse(library_bytes)?;
+    if request.all {
+        for entry in library.entries() {
+            let Ok(material) = Material::parse(library.bytes(entry)) else {
+                continue;
+            };
+            let reflection = material.layer(TextureSlot::Reflection).is_some();
+            match key_words(&material, request.quality) {
+                Some((mat, shd)) => println!(
+                    "{:<24} type {} mat {:#010x} shd {:#010x} {}_f{}",
+                    entry.name,
+                    material.kind & 0xFF,
+                    mat,
+                    shd,
+                    program_for_shader_word(shd).set(),
+                    if reflection { " reflection" } else { "" },
+                ),
+                None => println!("{:<24} draws nothing", entry.name),
+            }
+        }
+        return Ok(());
+    }
+    let name = request
+        .material
+        .as_deref()
+        .ok_or_else(|| anyhow!("name a material, or pass --list, --all, --dump or --warmup"))?;
     let payload = library
         .get(name)
         .ok_or_else(|| anyhow!("material {name:?} not found in {}", request.library))?;
@@ -837,8 +881,8 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         .into_iter()
         .find(|key| key.numbers.lights == wanted)
         .ok_or_else(|| anyhow!("no program variant for {wanted} lights"))?;
-    if request.sun_first && !key.lights.is_empty() {
-        key.lights[0] = LightKind::Directional;
+    if request.sun_first {
+        key.set_light(0, LightKind::Directional);
     }
     let program: SurfaceProgram = program_for_shader_word(key.flags.shader);
     let text = program.expand(&shaders, &key.context())?;
@@ -848,7 +892,7 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         program.set(),
         key.numbers.lights,
         key.numbers.shadow_samples,
-        key.numbers.shade_quality,
+        shade_quality(key.flags.shader),
         key.numbers.displacement_samples,
     );
     if !request.fragment_only {

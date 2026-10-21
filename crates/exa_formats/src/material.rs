@@ -73,6 +73,9 @@ pub struct TextureLayer {
     pub slot: TextureSlot,
     /// Texture entry name, without any `.rfi`/`.dds` extension.
     pub texture: String,
+    /// The layer's parameter word (body +0); on a normal-map layer `0x10`
+    /// marks an object-space map (no tangent frame).
+    pub parameter: u32,
     /// The layer's amount (body +4); for a height layer, the parallax depth.
     pub amount: f32,
 }
@@ -182,6 +185,7 @@ impl Material {
             layers.push(TextureLayer {
                 slot: TextureSlot::from_flag(flag),
                 texture: strip_extension(&name).to_string(),
+                parameter: u32::from_le_bytes(rec[8..12].try_into().expect("4 bytes")),
                 amount: f32::from_le_bytes(rec[12..16].try_into().expect("4 bytes")),
             });
             p += LAYER_LEN;
@@ -370,8 +374,13 @@ mod tests {
         let mut h = layer(0x0080_0000, "UA1FA01H.rfi");
         h[12..16].copy_from_slice(&0.6f32.to_le_bytes());
         p.extend(h);
+        let mut n = layer(0x0020_0000, "n");
+        n[8..12].copy_from_slice(&0x10u32.to_le_bytes());
+        p.extend(n);
         let m = Material::parse(&p).unwrap();
+        assert_eq!(m.layer(TextureSlot::Normal).unwrap().parameter, 0x10);
         let height = m.layer(TextureSlot::Height).unwrap();
+        assert_eq!(height.parameter, 0);
         assert_eq!(height.texture, "UA1FA01H");
         assert!((height.amount - 0.6).abs() < 1e-6);
         assert_eq!(m.extra, 0x0010_0100);

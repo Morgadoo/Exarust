@@ -321,6 +321,10 @@ pub enum UniformProgram {
 #[derive(Clone, Copy, Debug)]
 pub struct MaterialInputs {
     pub program: UniformProgram,
+    /// The program class nibble of the shader word: the writer triples the
+    /// specular colour of a record with a specular map when its bit 0 is
+    /// set (classes 1, 3, 5 and 7).
+    pub class: u32,
     /// The exposure (1 in play).
     pub exposure: f32,
     /// The blend word's source factor is ONE (the diffuse is pre-scaled by
@@ -340,6 +344,7 @@ impl Default for MaterialInputs {
     fn default() -> Self {
         Self {
             program: UniformProgram::Optimized,
+            class: 1,
             exposure: 1.0,
             premultiplied: false,
             diffuse_texture: None,
@@ -390,9 +395,11 @@ impl MaterialUniforms {
             linear_diffuse[2] * premultiply * (1.0 - subsurface[2]),
             material.opacity,
         ];
-        // Blended surfaces with an opacity fall-off lose its floor from the
-        // colour's alpha: (f + 1)·f.
-        if material.falloff_amount.abs() > 0.01 && material.class & 0xF == 3 {
+        // A surface with an opacity fall-off loses its floor from the
+        // colour's alpha: (f + 1)·f. (The factory's test for blended states
+        // compares a four-bit field with 0x100 and never holds, so every
+        // fall-off takes this path.)
+        if material.falloff_amount.abs() > 0.01 {
             let f = (-1.8 * material.falloff_exponent).exp2();
             mat_dif[3] -= (f + 1.0) * f;
         }
@@ -403,12 +410,14 @@ impl MaterialUniforms {
             crate::material::linear(material.specular[2]) * material.specular_level,
         ];
         let has_specular = material.flags & 0x4 != 0;
-        let specular_scale =
-            if inputs.program == UniformProgram::Optimized && material.flags & 0x40000 != 0 {
-                3.0
-            } else {
-                1.0
-            };
+        let specular_scale = if inputs.class & 1 != 0
+            && material.flags & 0x40000 != 0
+            && material.layer(TextureSlot::Specular).is_some()
+        {
+            3.0
+        } else {
+            1.0
+        };
         let mut gloss = material.glossiness;
         if legacy && gloss < 0.01 {
             gloss = 0.01;
@@ -524,21 +533,27 @@ impl MaterialUniforms {
 }
 
 /// The parallax texel scale from a height layer: `P = round(50·amount)`,
-/// `Y = round(P·2048/height)`, `X = round(Y·height/width)`.
+/// `Y = round(P·(2048/height))`, `X = round((height/width)·Y)`.
 ///
-/// The engine's round helper floors; a NaN amount gives zero. The values are
-/// stored as 16-bit texel counts before the uniform scales them by 3·10⁻⁵.
+/// The depth is rounded in single precision, the two scales in double, all
+/// to nearest with ties to even (the conversions' default mode), and each
+/// stored as a 16-bit texel count before the uniform scales it by 3·10⁻⁵. A
+/// NaN or a zero size gives zero, as the conversion's "indefinite" result
+/// truncated to 16 bits does. (A one-texel-tall height map turns parallax
+/// off; that is the caller's test.)
 pub fn parallax_texels(amount: f32, width: u32, height: u32) -> (u16, u16) {
-    if width == 0 || height == 0 || !amount.is_finite() {
-        return (0, 0);
+    fn round(value: f64) -> u16 {
+        if value.is_finite() && value.abs() < 9.2e18 {
+            value.round_ties_even() as i64 as u16
+        } else {
+            0
+        }
     }
-    let depth = (50.0 * amount).floor();
-    let y = (depth * 2048.0 / height as f32).floor();
-    let x = (y * height as f32 / width as f32).floor();
-    (
-        x.clamp(0.0, f32::from(u16::MAX)) as u16,
-        y.clamp(0.0, f32::from(u16::MAX)) as u16,
-    )
+    let depth = round(f64::from(amount * 50.0));
+    let (w, h) = (f64::from(width as u16), f64::from(height as u16));
+    let y = round(f64::from(depth) * (2048.0 / h));
+    let x = round(h / w * f64::from(y));
+    (x, y)
 }
 
 /// A spot light's vertical shaping terms from its two stored values `q` and
@@ -725,6 +740,12 @@ mod tests {
             class: 0x100,
             flags: 0x2 | 0x4 | 0x8 | 0x20000 | 0x40000,
             kind: 1,
+            layers: vec![exa_formats::material::TextureLayer {
+                slot: TextureSlot::Specular,
+                texture: "s".into(),
+                parameter: 0,
+                amount: 0.0,
+            }],
             ..Material::default()
         }
     }
@@ -820,6 +841,8 @@ mod tests {
         close(u.opc_fll[0], 1.0);
         close(u.opc_fll[1], -3.6);
         close(u.opc_fll[2], f + 1.0);
+        // Opaque or blended, the fall-off's floor leaves the alpha.
+        close(u.mat_dif[3], 0.8 - (f + 1.0) * f);
         let e = 2f32.powf((1.0 - 1.0) * -3.6) * (f + 1.0);
         close(e, f + 1.0);
         let e = 2f32.powf((1.0 - 0.0) * -3.6) * (f + 1.0);
@@ -852,6 +875,11 @@ mod tests {
         assert_eq!(parallax_texels(0.6, 1024, 2048), (60, 30));
         assert_eq!(parallax_texels(0.0, 1024, 1024), (0, 0));
         assert_eq!(parallax_texels(f32::NAN, 1024, 1024), (0, 0));
+        assert_eq!(parallax_texels(0.6, 0, 0), (0, 0));
+        // Ties go to even: 0.25·50 = 12.5 → 12, and 12·2048/1536 = 16.
+        assert_eq!(parallax_texels(0.25, 1536, 1536), (16, 16));
+        // 0.31·50 = 15.5 → 16: rounding, not flooring.
+        assert_eq!(parallax_texels(0.31, 1024, 1024).1, 32);
     }
 
     #[test]
