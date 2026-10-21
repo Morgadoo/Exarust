@@ -66,6 +66,7 @@ it takes the ring's other slot.
 | `--arena-match <id>` | in an arena level, `--opponent` laid out as the original's match template `<id>` (1 duel, 2 doubles, 3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain, 12 brawl, 13 valiance, 14 valour): the player takes the company's first place on the arena's spawn spot and a duellist stands on each opponent's place, all facing the spot; the company's other entrants and the beast are not spawned. The match tick logs each round's end ("arena match: round 0 won -> state 4"); with `--opponent` alone the match is a duel ([formats/OTHER.md](formats/OTHER.md), Arena matches) |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
+| `--debug-path x,y,z` | play mode: plan a path from the player's feet to this point (metres) with the planner, again whenever the player has moved a metre; log each plan and draw it ([Navigation grid](#navigation-grid)) |
 | `--msm` | in the model view, every mesh smoothed once as the original's `msm` debug command smooths a scene (Loop subdivision, [formats/RFC.md](formats/RFC.md), Editable meshes), e.g. `exarust model CharExt "hair hula01" --msm` for the hair the creation scene smooths; warns of meshes with too many faces |
 | `--bevy-sun-cascades` | the sun keeps Bevy's two cascades in terrain levels too, instead of the original's one fitted map, to compare the two ([RENDERING.md](RENDERING.md), Sun shadow fit) |
 | `--weapon-blood <a>` | the player's or the character view's held weapon holds blood a (0 to 1) from the start, so its stain shows without a fight ([Wounds](#wounds)) |
@@ -508,6 +509,14 @@ around where the camera looks:
   faint (white the look-ahead, yellow a soft stop's goal, cyan a footwork
   step's target), the walk green when free and orange when blocked, with
   a ring at its end, and a magenta cross on a goal it walks to.
+
+`--debug-path x,y,z` plans from the player's feet to the point with the
+planner (`exa_world::nav::find_path_with`: size class 3, penalties doubled,
+stopping at the goal's cell, the player's own footprint lifted while it
+plans), again whenever the player has moved more than a metre, logs each
+plan (`debug path from …`: points, cost, reached or ends short, then each
+point) and draws it: yellow when it reaches the goal, orange when it ends
+short, a ring at each point, a cyan cross at the goal. Nothing walks it.
 
 `exarust --debug-nav --no-gi --no-supersample --size 960x540 play arena`
 shows the arena's floor cut by its walls. Without a window, `exa-tool nav

@@ -44,6 +44,7 @@ pub mod mind;
 pub mod nav_camera;
 pub mod nav_pick;
 pub mod pair_trace;
+pub mod path_probe;
 pub mod pick;
 pub mod player;
 pub mod player_light;
@@ -115,6 +116,7 @@ impl Plugin for GamePlugin {
             joint_trace::JointTracePlugin,
             look_overlay::LookOverlayPlugin,
             pair_trace::PairTracePlugin,
+            path_probe::PathProbePlugin,
             sim_control::SimControlPlugin,
         ));
     }

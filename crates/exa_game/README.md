@@ -225,8 +225,9 @@ ending with the condition word and the swing's rate, strength and state
 word), and the debug tools ([`docs/DEBUGGING.md`](../../docs/DEBUGGING.md)):
 the body overlay and joint readout (`body_overlay`, with the feet's
 anchors and states), the joint trace
-(`joint_trace`), the trace of contacts between body parts (`pair_trace`)
-and the simulation controls (`sim_control`, with the scripted pauses at a
+(`joint_trace`), the trace of contacts between body parts (`pair_trace`),
+the planner probe (`path_probe`, `--debug-path`: a plan from the player's
+feet to a point, drawn and logged) and the simulation controls (`sim_control`, with the scripted pauses at a
 tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 

@@ -46,6 +46,8 @@
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
+//!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
+//!                                     again whenever the player has moved a metre
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
 //!          --profiler                 frame profiler: main/render thread and GPU times, overlay shown (F10 toggles)
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
@@ -195,6 +197,8 @@ pub struct Options {
     pub debug_bodies: bool,
     /// Start with the navigation grid drawn.
     pub debug_nav: bool,
+    /// Play mode: the debug path's goal (`--debug-path`, metres).
+    pub debug_path: Option<[f32; 3]>,
     /// Once loaded, log every mesh over these floor points (x, z in metres).
     pub debug_column: Vec<[f32; 2]>,
     /// Log the frame profiler's report every this many seconds.
@@ -624,7 +628,7 @@ fn main() -> AppExit {
                     Err(_) => eprintln!("--corpse: cannot read {v:?} (x,y,z)"),
                 }
             }
-            "--at" | "--torch" => {
+            "--at" | "--torch" | "--debug-path" => {
                 let v: Vec<f32> = args
                     .next()
                     .unwrap_or_default()
@@ -632,10 +636,10 @@ fn main() -> AppExit {
                     .filter_map(|x| x.trim().parse().ok())
                     .collect();
                 let point = <[f32; 3]>::try_from(v.as_slice()).ok();
-                if a == "--at" {
-                    options.at = point;
-                } else {
-                    options.torch = point;
+                match a.as_str() {
+                    "--at" => options.at = point,
+                    "--torch" => options.torch = point,
+                    _ => options.debug_path = point,
                 }
             }
             _ => positional.push(a),
@@ -831,6 +835,10 @@ fn main() -> AppExit {
     })
     .insert_resource(exa_world::nav::NavOverlay {
         on: options.debug_nav,
+    })
+    .insert_resource(match options.debug_path {
+        Some(goal) => exa_game::path_probe::PathProbe::to(Vec3::from(goal)),
+        None => exa_game::path_probe::PathProbe::default(),
     })
     .insert_resource(
         exa_game::sim_control::SimControl::scripted(
