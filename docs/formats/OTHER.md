@@ -878,7 +878,7 @@ carried list. A new record takes all four hand items, the worn list and
 the carried list; the source keeps the hand items and loses both lists.
 The mode filter keeps story background 0 in braies only and clears its
 hands; the arena keeps the first two hands only when its preset kit offers
-them and keeps braies only; modes with the 2 bit clear the fist
+them and keeps braies only; modes whose 2 bit is set clear the fist
 placeholder (31) from the first two hands. Every branch empties the
 carried list. The skills are six slots of a `u16` points word and six
 technique bytes; a freely created character starts with Close Combat,

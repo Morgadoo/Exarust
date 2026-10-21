@@ -25,8 +25,8 @@ nothing is not loadable by the original.
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
 braies only and clears the hands; the arena keeps the first two hands only
-when its kit offers them and keeps braies only; modes with the 2 bit clear
-the fist placeholder and the carried list), the three story presets and
+when its kit offers them and keeps braies only; modes whose 2 bit is set
+clear the fist placeholder and the carried list), the three story presets and
 their settings keys, the free-create and entry plans, and full health for
 every non-continued record. The chosen name, hands, worn and carried lists,
 skills and full pools are written into the spawned record. The unknown
