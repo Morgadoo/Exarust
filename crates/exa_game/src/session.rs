@@ -10,7 +10,9 @@
 //!
 //! The original's own character placement, discovery, world databases and
 //! level sections are not written yet: Exarust has no world to export.
-//! A short, mistyped or otherwise malformed file is an error.
+//! A short, mistyped or otherwise malformed file is an error. The Exarust
+//! chunk's own payload is version 2 (version 1 had no discovery,
+//! experience-worth, memory or transition fields).
 
 use exa_formats::save_package::{
     self, ARENA_DATA_VERSION, EXARUST_CHUNK, Flavour, JournalRecord, PLAYER_DATA, PackageImage,
@@ -382,7 +384,9 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
             session.transition = Some(data.transition_state());
         }
         // The story reader resets the journal to one "New Entry" page and
-        // then reads the chunk; an absent chunk is that default page.
+        // then reads the chunk; an absent chunk is that default page. The
+        // script model cannot hold an empty journal, so a chunk with no
+        // entries falls back to the default page.
         let records = data
             .journal_or_default()
             .map_err(|_| SaveError::Malformed)?;
@@ -393,7 +397,7 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
                 text: record.text,
             })
             .collect();
-        let journal = Journal::from_entries(entries).ok_or(SaveError::Malformed)?;
+        let journal = Journal::from_entries(entries).unwrap_or_default();
         session.story = Story::restore(
             session.story.index(),
             journal,
