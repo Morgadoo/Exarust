@@ -1896,6 +1896,15 @@ their volumes are in the same module; their names are the sound bank's
 `openspec/specs/arena-career`. The hire list is `exa_game::hirelings`, the
 arsenal's shelves `exa_game::arsenal`.
 
+The staff (`exa_game::staff`) keeps the original's 56-byte employee
+records reduced to what its routines read: a class byte (1 a recruit, 2 a
+combatant, 4 a merchant, 8 a physician, 0x10 a trainer), the name's sixteen
+bytes, a fighter's kit, a specialist's own items, hands and worn items.
+Fighter ids are the place on the staff plus one (0x10000000 added for a
+recruit, and the manager's word); the tournament entries and the log's
+"saved" records refer to them. The manage window's report text is
+`exa_game::report`; the rank names are the item card's.
+
 ## Actors
 
 `actors.rpk` inside Resource: 21 entries, each a character record (the
