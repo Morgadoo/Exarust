@@ -41,6 +41,7 @@ use crate::bindings::{Action, Bindings, virtual_key};
 use crate::gui_screens::ScreenRequest;
 use crate::hand::{Hand, Holding};
 use crate::player::PlayerBody;
+use crate::thaum::cast::{BarAction, BarCommand, PowerCaster};
 
 /// The permission bits of the key handler's mask.
 pub mod allow {
@@ -196,13 +197,15 @@ pub struct HotkeyPlugin;
 
 impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ScreenRequest>().add_systems(
-            Update,
-            press_hotkeys
-                .in_set(HotkeySet)
-                .after(crate::player::cursor_ground)
-                .before(crate::player::player_combat),
-        );
+        app.add_message::<ScreenRequest>()
+            .add_message::<BarCommand>()
+            .add_systems(
+                Update,
+                press_hotkeys
+                    .in_set(HotkeySet)
+                    .after(crate::player::cursor_ground)
+                    .before(crate::player::player_combat),
+            );
     }
 }
 
@@ -227,8 +230,10 @@ fn press_hotkeys(
         Option<&Hands>,
         Option<&mut Possessions>,
     )>,
+    casters: Query<&PowerCaster>,
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
     mut screens: MessageWriter<ScreenRequest>,
+    mut bars: MessageWriter<BarCommand>,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -262,9 +267,12 @@ fn press_hotkeys(
     let mut hand = hand;
     for (entity, mut pb, mut req, condition, hands, mut possessions) in &mut players {
         let word = condition.copied().unwrap_or_default();
+        let caster = casters.get(entity).ok();
         let context = Context {
             dead: word.is_dead(),
             collapsing: word.dying(),
+            power_bar: caster.is_some_and(|c| c.bar_open),
+            powers: caster.map_or(0, |c| c.known.len() as i32),
             ..Context::default()
         };
         for &key in &pressed {
@@ -316,7 +324,30 @@ fn press_hotkeys(
                         player_alive: !word.is_dead(),
                     });
                 }
-                // No skills screen, dialogue or power bar to open yet.
+                Hotkey::PowerBar => {
+                    bars.write(BarCommand {
+                        caster: entity,
+                        action: BarAction::Toggle,
+                    });
+                }
+                Hotkey::Power(index) => {
+                    bars.write(BarCommand {
+                        caster: entity,
+                        action: if index < 0 {
+                            BarAction::Use
+                        } else {
+                            BarAction::Pick(index as usize)
+                        },
+                    });
+                }
+                Hotkey::StepPower(direction) => {
+                    bars.write(BarCommand {
+                        caster: entity,
+                        action: BarAction::Step(i32::from(direction)),
+                    });
+                }
+                // No skills screen or dialogue to open yet (the power tree
+                // has its own key reader).
                 _ => {}
             }
         }
@@ -433,6 +464,52 @@ mod tests {
         assert_eq!(hotkey(0x49, &b, falling), Some(Hotkey::Inventory));
     }
 
+    /// C, a digit, Q and the arrows send the bar's commands for the caster.
+    #[test]
+    fn the_power_bar_keys_send_commands() {
+        let run = |key: KeyCode, bar_open: bool| {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<Bindings>()
+                .init_resource::<Hand>()
+                .add_plugins(HotkeyPlugin);
+            let caster = app
+                .world_mut()
+                .spawn((PlayerBody::new(0.0), PowerCaster::new(&[0x201])))
+                .id();
+            app.world_mut()
+                .get_mut::<PowerCaster>(caster)
+                .unwrap()
+                .bar_open = bar_open;
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            let messages = app.world().resource::<Messages<BarCommand>>();
+            let out: Vec<BarCommand> = messages.iter_current_update_messages().copied().collect();
+            (caster, out)
+        };
+        let (caster, out) = run(KeyCode::KeyC, false);
+        assert_eq!(
+            out,
+            vec![BarCommand {
+                caster,
+                action: BarAction::Toggle
+            }]
+        );
+        assert_eq!(run(KeyCode::Digit2, true).1[0].action, BarAction::Pick(1));
+        assert_eq!(run(KeyCode::KeyQ, true).1[0].action, BarAction::Use);
+        assert_eq!(run(KeyCode::KeyQ, false).1[0].action, BarAction::Use);
+        assert_eq!(
+            run(KeyCode::ArrowLeft, true).1[0].action,
+            BarAction::Step(-1)
+        );
+        assert_eq!(
+            run(KeyCode::ArrowRight, true).1[0].action,
+            BarAction::Step(1)
+        );
+    }
+
     /// In the running game Tab toggles the player's combat mode, but not a
     /// dead player's.
     #[test]
@@ -443,6 +520,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<BarCommand>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -465,6 +543,7 @@ mod tests {
                 .init_resource::<Bindings>()
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
+                .add_message::<BarCommand>()
                 .add_systems(Update, press_hotkeys);
             app.world_mut().spawn((PlayerBody::new(0.0), word));
             app.world_mut()
