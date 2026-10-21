@@ -898,8 +898,10 @@ Exarust applies:
   mouse", "Right mouse" and "Middle mouse".
 
 Not reproduced, for lack of the matching feature: shading quality (Exarust
-has one shader), texture quality and texture detail (no streaming or mip
-selection), shadow detail (no per-detail shadow path), vertex-buffer,
+has one shader), texture quality and texture detail (the texture loader's
+`exa_assets::texture::TextureSettings` follows both rules but keeps the
+retail user's values; the live options are not pushed into it yet), shadow
+detail (no per-detail shadow path), vertex-buffer,
 mipmap, swap-copy and GI-precision switches (the GI is already the
 original's 8-bit low-precision format), the aim-speed scaling, controller
 and Steam Input bindings, the video-device and video-memory readouts, and

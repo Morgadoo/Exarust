@@ -76,7 +76,6 @@ impl Plugin for GamePlugin {
             effects::EffectsPlugin,
             thaum::live::ThaumEffectsPlugin,
             teleporters::TeleportPlugin,
-
             hw_config::HardwareConfigPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.

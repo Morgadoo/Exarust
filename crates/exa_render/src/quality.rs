@@ -10,7 +10,8 @@
 //! super-sampling target is torn down or rebuilt as it is turned off or on.
 //!
 //! The other options have no Exarust feature to drive: shading quality has
-//! one shader, texture quality and detail no streaming, the GI is already
+//! one shader, texture quality and detail wait to be pushed into the texture
+//! loader's settings (which keep the retail user's values), the GI is already
 //! 8-bit (the original's low-precision format), and hardware multi-sampling
 //! does not apply while the scene is super-sampled (the original disables its
 //! control then too). Rules: `docs/UI.md` (Settings options).
