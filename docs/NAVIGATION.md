@@ -159,6 +159,29 @@ Besides planning, the pathfinder answers point and line questions on the
 grid (heights in voxels, `h` the start's, `fl`/`ul` and `fu`/`uu` a
 cell's lower and upper floor and underside):
 
+- **Planning** (`nav::find_path`; `nav::find_path_with` adds the accept
+  distance and the penalty shift): the start and goal become cells by
+  rounding `world_cm/30 + 0.5` ties to even; both must lie in the grid's
+  ten-cell margin and within 253 cells of each other. A 256 × 256 window
+  is centred between them. The start takes the upper layer when its height
+  (truncated `(y − base)/10`) is above the upper underside less 3 and below
+  its floor plus 15, otherwise the lower one; every step reads the lower
+  floor of the cell it leaves. Neighbours go north-west, north, north-east,
+  west, east, south-west, south, south-east; a step may rise at most four
+  floor units and fall less than 21, needs a lower floor, chooses the lower
+  layer first or a higher upper floor when that is within four, then the
+  upper one only when the lower is more than four above and the upper has
+  enough underside room, and pays `10·Δ² + 5 or 7 + 2·clearance + (penalty
+  << shift)`, refused when the shifted penalty is 601 or more. The
+  clearance test is `180/(size + 1)`. The open list is LIFO, popped by the
+  smallest f with the newest winning a tie; a relaxed node keeps its place
+  and a node already closed is not reopened. The heuristic is ten times
+  the 3-D cell distance, its vertical leg from the start height, truncated.
+  The search stops under the accept distance, with an empty open list, or
+  at 4096 nodes, and answers the closest node. The parent chain is
+  collapsed through runs of one direction and layer, then each kept point
+  is offered to the budget line walk. Points sit on cell centres at the
+  node's layer floor. A search that finds only the start has no points.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
   footwork targets): one cell a step along the line's longer axis; a floor
   more than 4 above the running height blocks when less than 10 lie under
