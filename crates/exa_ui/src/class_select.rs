@@ -12,7 +12,7 @@
 //! Evidence: the picker's constructor, draw, hit test, hover, confirm and
 //! key handlers (`docs/UI.md`, story backgrounds).
 
-use crate::form::{cvtsd2si, cvtss2si, cvtss2si64};
+use crate::form::{cvtss2si, cvtss2si64};
 
 /// The portrait strip.
 pub const STRIP: &str = "startcharsxa.rfi";

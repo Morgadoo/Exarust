@@ -296,10 +296,8 @@ impl ScriptRole {
             Some((at, stored)) => Self::rebuild(blob, slots, at, stored, end),
             None => Commit::Missing,
         });
-        if self.controller {
-            if let Some(c) = controller {
-                c.roles_changed = true;
-            }
+        if let (true, Some(c)) = (self.controller, controller) {
+            c.roles_changed = true;
         }
         outcome
     }

@@ -72,13 +72,7 @@ pub struct PickerKey {
 /// Below zero becomes zero, above one becomes one; an unordered value
 /// passes both tests and stays unordered, as does −0.
 fn hold(v: f32) -> f32 {
-    if v < 0.0 {
-        0.0
-    } else if v > 1.0 {
-        1.0
-    } else {
-        v
-    }
+    v.clamp(0.0, 1.0)
 }
 
 impl Picker {
@@ -111,10 +105,10 @@ impl Picker {
             self.flags &= !MARKER_FLAG;
         } else if code & KEY_MOVE_BITS != 0 {
             let stick = if code & 0x20 != 0 { sticks.1 } else { sticks.0 };
-            for axis in 0..2 {
+            for (point, step) in self.point.iter_mut().zip(stick) {
                 // The product and the sum are worked in double.
-                let moved = f64::from(stick[axis]) * 0.01 + f64::from(self.point[axis]);
-                self.point[axis] = hold(moved as f32);
+                let moved = f64::from(step) * 0.01 + f64::from(*point);
+                *point = hold(moved as f32);
             }
             callback = true;
         }
