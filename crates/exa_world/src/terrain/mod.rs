@@ -1233,29 +1233,31 @@ fn build_tile(
     let normals = grid_normals(&positions, n);
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
-    // Quads (and, at the tile's edge, the skirt below them) go to the mesh
-    // of their 6 m block; quads of absent blocks are not built. The quads
-    // are the original's serpentine patch, row by row, each split along its
-    // low-to-high diagonal.
+    // Each 6 m block draws the original's shared block patch (serpentine
+    // rows, quads split along their low-to-high diagonal) from its first
+    // vertex; holes' quads are left out, and absent blocks are not built.
+    // At the tile's edge the skirt below joins its block's mesh.
     let side = TileBlocks::SIDE;
     let block_at = |i: usize, j: usize| TileBlocks::of(i, j, n);
     let present = |bx: usize, by: usize| blocks.is_none_or(|b| b.has(bx, by));
+    let shared = patch::GridPatch::block().flat_indices(1, n as u16);
+    let cells = patch::BLOCK_CELLS as usize;
     let mut groups: Vec<Option<Vec<u32>>> = vec![None; side * side];
-    for j in 0..n - 1 {
-        let forward = j % 2 == 0;
-        for k in 0..n - 1 {
-            let i = if forward { k } else { n - 2 - k };
-            if tile.is_hole(i, j) {
-                continue;
-            }
-            let (bx, by) = block_at(i, j);
+    for by in 0..side {
+        for bx in 0..side {
             if !present(bx, by) {
                 continue;
             }
-            let tri = patch::quad_indices(i as u32, (j * n) as u32, ((j + 1) * n) as u32, forward);
-            groups[by * side + bx]
-                .get_or_insert_with(Vec::new)
-                .extend_from_slice(&tri);
+            let first = (by * n + bx) * cells;
+            let group = groups[by * side + bx].get_or_insert_with(Vec::new);
+            for quad in shared.as_chunks::<6>().0 {
+                // A quad's smallest index is its low corner.
+                let low = first + *quad.iter().min().unwrap_or(&0) as usize;
+                if tile.is_hole(low % n, low / n) {
+                    continue;
+                }
+                group.extend(quad.iter().map(|&v| (first + v as usize) as u32));
+            }
         }
     }
     // A skirt hanging from the tile's edge hides cracks where neighbouring
@@ -1302,7 +1304,7 @@ fn build_tile(
     let mut built = Vec::new();
     for by in 0..side {
         for bx in 0..side {
-            let Some(indices) = groups[by * side + bx].take() else {
+            let Some(indices) = groups[by * side + bx].take().filter(|i| !i.is_empty()) else {
                 continue;
             };
             built.push(BuiltBlock {

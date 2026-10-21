@@ -244,11 +244,13 @@ smooth the aliasing.
 **Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
 20 cm, and the original draws it as one terrain mesh per 6 m block: a
 30 × 30 cell window of the same grid, each block in its grid cell's room.
-The shared triangle list is serpentine, cell row 0 running along +X, row 1
-back along −X, and every quad splits along the diagonal from its low corner
-(i, j) to its high corner (i + 1, j + 1). Exarust builds one mesh per built
-block the same way (`terrain::patch`), so rooms and visibility work per
-6 m block rather than per room. A hole removes the quads whose low corner
+Every block draws one shared 30 × 30 cell triangle list, flattened into the
+tile's 241-vertex rows, from its own first vertex. The list is serpentine,
+cell row 0 running along +X, row 1 back along −X, and every quad splits
+along the diagonal from its low corner (i, j) to its high corner
+(i + 1, j + 1). Exarust builds one mesh per built block from the same patch
+(`terrain::patch`), so rooms and visibility work per 6 m block rather than
+per room. A hole removes the quads whose low corner
 is a hole, and each tile's edge hangs a 0.5 m skirt (an Exarust addition).
 
 **Streaming.** The original builds a tile's geometry and masks on a worker

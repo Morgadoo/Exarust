@@ -46,13 +46,16 @@ traced].
 
 A tile's geometry is one 241 × 241 vertex grid (240 × 240 cells of 20 cm)
 and one mesh per 6 m block, the block's 30 × 30 cell window of that grid.
-The original builds one shared triangle list for the tile: serpentine cell
-rows, row 0 along +X and row 1 back along −X, each quad split along the
-diagonal from its low corner (i, j) to its high corner (i + 1, j + 1).
-Exarust builds each block's mesh with the same patch (`terrain::patch`), so
-a room's terrain is one mesh per block rather than one per room. Evidence:
-REA on the block mesh builder and the patch builder; the block draw names a
-vertex offset of 30·(241·by + bx) into the tile's shared grid.
+The original builds one triangle list over a block's 30 × 30 cells and
+shares it between every block: serpentine cell rows, row 0 along +X and row
+1 back along −X, each quad split along the diagonal from its low corner
+(i, j) to its high corner (i + 1, j + 1). Its indices are flattened into the
+tile's 241-vertex rows, and each block draws them from its own first vertex,
+30·(241·by + bx). Exarust builds each block's mesh from the same patch
+(`terrain::patch`), so a room's terrain is one mesh per block rather than
+one per room. Evidence: REA on the patch builder (its 30 × 30 size is the
+tile's 240 cells over its 8 blocks), the patch flattener (scales 1 and the
+tile's row of 241) and the block draw's vertex offset.
 
 ### Height query
 
