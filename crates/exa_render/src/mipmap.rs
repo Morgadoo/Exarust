@@ -66,7 +66,8 @@ pub fn bessel_i0(x: f64) -> f64 {
         term *= half / m;
         let squared = term * term;
         sum += squared;
-        if !(sum * 1e-16 < squared) {
+        // Ordered: continue only while the term is still larger.
+        if (sum * 1e-16).partial_cmp(&squared) != Some(std::cmp::Ordering::Less) {
             return sum;
         }
         m += 1.0;
