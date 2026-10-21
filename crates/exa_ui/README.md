@@ -137,9 +137,9 @@ for 0x3000, 115 for 0x4000, and 13 otherwise; y is 18 for 0x100, 73 for 0x200,
 117 for 0x300, 100 for 0x400, and 23 otherwise. State bit 0x10 selects the
 first ink, mode 0x10000 the coloured renderer, bits 0x60 the third ink with a
 nudge, and any other word the second ink. A rail at unit 5, place 10, 20 of
-size 100 by 80 draws a left cap from 0, 85 to 30, 105, a right cap from 100, 85
-to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from 105, 30 to
-95, 40. Its cap sample binds twice, the middle once and the thumb once. A
+size 100 by 80 draws a left cap from 0, 85 to 30, 105, a right cap from 120, 85
+to 90, 105, a middle from 30, 95 to 90, 105, and a thumb from -5, 30 to
+-15, 40. Its cap sample binds twice, the middle once and the thumb once. A
 vertical scale of 1 stores heights 80, 104 and 128; one half stores 40, 52 and
 64; 2 stores 160, 208 and 0. The rail hit test uses a span of four units, or
 six when wide: flags 0x30 equal 0x10 and a y at or above the span return -4
@@ -148,8 +148,9 @@ left limit return -8, -10 or -9 around the limits. The meaning of the codes is
 not established. A shade at unit 5, place 10, 20 of size 100 by 80 with side
 inset 15 draws cap, bar and cap quads from y 13 to 23 around edges 25 and 95,
 the same three from y 97 to 107, and an inner rectangle from 15, 25 to 105, 95.
-State band 0x10000 selects the special ink with alpha 255. Opening a skin at
-unit 5 also stores a fifth extent of 20. With the still bit set, close mark
+State band 0x10000 selects the special ink with alpha 255. Opening a skin
+leaves the fifth extent at zero; the metric setter called after it stores
+10, 5, 10, 10 and 20 at unit 5. With the still bit set, close mark
 -9 draws a tab tint from x0 plus one to three units between y0 and y0 plus two
 units, -10 draws it below y0, and -8 draws a four-unit square; the tint is
 255, 204, 153, 255. Opening the line calls the parent's open once and the
@@ -237,6 +238,31 @@ their controls rescale with the unit, the glyph sheet and the message
 box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
+
+The original's line skin (`exa_ui::line_skin`, `TGSLines`) draws the same
+widgets with thin lines instead of filled bevels. Its draw call sets three
+side lengths (2, 3 and 4 units), optionally lays a soft plate under a
+floating form and a textured backdrop in it, clips to the client (the
+stored scroll less the client's extent, times the view scale; bit 0x800
+locks it at zero), draws its own content and each visible child, then the
+caption and the chrome. Two style groups select a window frame and a bar
+frame. The window group draws six-unit corner squares, a title band with
+caps around the caption and 6.6-unit side and bottom rails, or, maximised,
+a thirteen-arm double frame; the bar group draws its frame from the
+owner-room edge mask, with the close-edge tints of marks -9, -10 and -8.
+A close mark of -4 draws the late orange square at the top right. A widget
+whose style is 0x80 and whose mask is 3 draws its caps, a mask of 5 the
+right arm, 0xa the bottom corners and 0xc the lower right; the close and
+arrow strips use the scroll thumb's place. The sliders, frames, chips,
+icons and labels are the same shapes the base skin draws; the line skin's
+own helpers add the four-unit marker, the 6.6-unit bordered rectangle, the
+three-quad open bars, the nine-quad scroll rail and the three- or six-quad
+progress bar with its selected thumb. At unit 5 a bar at 10, 20 and width 100 draws
+its caps from 0, 20 to 30, 40 and 120, 20 to 90, 40 around a middle from
+30, 30 to 90, 40. A 100 by 80 widget with the line bar style, style word
+0x44 and state 0x200 draws 14 quads, its first frame arm from -10, -10 to
+30, 30. A maximised bar draws thirteen arms. A window with a 40-wide title,
+state 3 and close mark -4 draws 18 quads and puts its caption at 30.
 
 ## Character view
 

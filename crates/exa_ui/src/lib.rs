@@ -14,7 +14,9 @@
 //! ([`gui_controls`]), how forms rescale with the unit
 //! ([`gui_rescale`]), and the original's draw skin ([`skin`]): its palette,
 //! layout metrics, immediate-mode batches, flat control parts, form chrome,
-//! background, page order and labels. The arena match board's tabs, match
+//! background, page order and labels, and its thin-line subclass
+//! ([`line_skin`]): the window and bar chrome, the progress and scroll rails,
+//! the caption, the marker and the rectangle slot. The arena match board's tabs, match
 //! and event tables, tournament and season rows, fighter assignment, layout
 //! and drawing order live in [`match_board`]. The in-game unit's screens,
 //! journal, open-container registry, power-slot and counter controls, HUD
@@ -46,6 +48,7 @@ pub mod heartbeat;
 pub mod hud;
 pub mod icon_atlas;
 pub mod item_view;
+pub mod line_skin;
 pub mod loading;
 pub mod loadout;
 pub mod match_board;
@@ -112,6 +115,16 @@ pub use gui_text::{
 };
 pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
+pub use line_skin::{
+    LINE_BAR, LINE_CAP, LINE_CLOSE, LINE_CORNER, LINE_EDGE, LINE_EDGE_ALT, LINE_END, LINE_FACE,
+    LINE_FACE_HOT, LINE_FRAME, LINE_FRAME_ALT, LINE_OPEN, LINE_RIGHT, LINE_SCROLL_BAR,
+    LINE_SCROLL_EDGE, LINE_SCROLL_THUMB, LINE_SLIDER_CAP, LINE_SLIDER_MIDDLE, LINE_SLIDER_THUMB,
+    LINE_TRACK, LineDraw, LineInks, LineLabelDraw, LineMetrics, LineOwner, LineQuad, LineScroll,
+    LineShadow, LineSolid, LineSpans, LineTitle, LineWidget, draw_line_bar, draw_line_border,
+    draw_line_detail, draw_line_label, draw_line_marker, draw_line_progress, draw_line_rect,
+    draw_line_rule, draw_line_scroll, draw_line_widget, refresh_line_scroll, register_line_skin,
+    set_line_metrics,
+};
 pub use loading::LoadingStatus;
 pub use loadout::{
     DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,

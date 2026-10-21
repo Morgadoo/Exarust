@@ -1353,6 +1353,53 @@ primitives below are the base class's.
   fade scales the seventh shade's alpha by the elapsed third of a second
   (a start of 0 is now) and clears the fade bit once it passes 1.
 
+
+### Line skin
+
+The original's `TGSLines` (`exa_ui::line_skin`) is the flat, thin-line
+variant of the draw skin. It keeps its own five unit lengths (2, 1, 2, 2
+and 4 units), its own hit test, scale and centred icon, and overrides the
+draw call, the window frame, the bar frame, the rectangle slot, the
+marker, the rail, the detail strip and the caption.
+
+- **Draw.** The draw sets sides 2, 3 and 4 units. A state bit 0x40 lays a
+  soft plate under the widget. A state bit 0x2_0000 with a style word clear
+  of bit 4 fills the widget with a textured backdrop (u, v 0,0 to 1,1).
+  Bit 0x800 locks the scroll; otherwise the clip's translation is the
+  stored scroll less the client's extent times the view scale, rounded to
+  even. The widget clips to its client, draws its own content, then each
+  visible child in order, and takes the clip away. It selects the textured
+  program, draws the caption centred from the font's ascent when state bit
+  1 is set, binds the skin texture and the normal ink, and opens one run.
+- **Window frame.** Style bits 0x30 equal to 0x10 draw a window. Unless
+  state bit 0x40_0000 (maximised) is set, it draws 6-unit corner squares,
+  a 4-unit close square at the top right when state bit 2 is set and the
+  close mark is not -4, the caption band from 6.6 units in with a 2-unit
+  height, caps around the measured caption, 6.6-unit side and bottom rails,
+  and a progress bar when state bit 1 is set and the fixed-width bit is
+  clear. Maximised, it draws the 13-quad double frame from a unit outside
+  each edge. Otherwise the scroll rail is drawn.
+- **Bar frame.** Style bits 0xc0 equal to 0x80 draw a bar. A style word
+  without bit 4 draws only the progress bar when state bit 1 is clear. With
+  bit 4 the owner-room mask gives bit 1 for a top above the unit, bit 2
+  for a left before it, bit 4 and bit 8 for a widget reaching past the
+  owner's right or bottom by a unit. The skin then draws the doubled top
+  bar, the close-edge strips (marks -9, -10 and -8, with an orange tint
+  when active), the side arms, the corner caps chosen by mask bits 3, 5,
+  0xa and 0xc, and the bottom bar. A clear state bit 0x200 selects the
+  wider right and corner arms. State bit 0x40_0000 draws the maximised
+  thirteen-arm frame instead.
+- **Helpers.** A progress bar draws two caps, one or two track pieces and
+  a cap on each side of the selected thumb; the border draws six thin
+  lines half a unit outside; the marker is a four-unit square; the open
+  bars draw a cap, a middle and a cap; the detail strip a bar between two
+  caps; the scroll rail nine quads, with the top bar drawn twice while
+  the owner is focused and the top is in view; the caption picks the
+  pressed, owner-drawn, plain or hot ink and moves the hot one a pixel
+  down. The centred icon sits on half the spare, marks the state with bit
+  0x40 one pixel lower, and mirrors (outlined when marked) on style bit
+  0x4000_0000.
+
 ## Controls
 
 The seven basic control classes (`exa_ui::gui_controls`), with their

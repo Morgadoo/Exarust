@@ -44,7 +44,7 @@ pub fn open_skin(unit: i32, arg: i32, allocated: bool) -> Option<DrawSkin> {
         span_b: unit,
         span_c: doubled,
         span_d: doubled,
-        span_e: unit.wrapping_shl(2),
+        span_e: 0,
         pad_a: 8,
         pad_b: 4,
         pad_c: 8,
@@ -92,9 +92,6 @@ const FRAME_HOT: u32 = 0x60;
 const ICON_MARK: u32 = 0x1_0000;
 const ICON_NUDGE: u32 = 0x40;
 const ICON_BAND: u32 = 0x60;
-const ICON_STYLE: u32 = 0x0100_0000;
-const ICON_FOCUS: u32 = 0x11;
-const ICON_TURN: u32 = 0x7000_0000;
 const ICON_SCALE: u32 = 0x3f80_0000;
 const FORM_SHADE: u32 = 0x40;
 const FORM_BACK: u32 = 0x2_0000;
@@ -721,12 +718,15 @@ pub struct IconPlace {
 pub struct CentredIcon {
     pub own: bool,
     pub marked: bool,
-    /// The icon-list turn, 0 when the icon is drawn upright.
-    pub turn: u8,
-    /// The ink the icon binds: 0 the label group's fourth shade (focus),
-    /// 1 its eleventh and 2 its seventh shade, 3 and 4 those two forced
-    /// opaque for a styled icon.
+    /// The icon list is drawn mirrored when this is set.
+    pub mirrored: bool,
+    /// A marked icon is drawn outlined as well as mirrored.
+    pub outlined: bool,
+    /// The ink the icon binds: 0 the plain ink, 1 the hot ink, 2 the focus
+    /// ink and 3 the raised ink. A marked icon binds no ink at all.
     pub ink: u8,
+    /// The raised ink lifts its alpha by 0x40 before it is bound.
+    pub alpha_boost: bool,
     pub id: u32,
     pub x: i32,
     pub y: i32,
@@ -741,11 +741,11 @@ fn centre_spare(span: i16, icon: i32) -> i32 {
 /// Place a centred icon. `icon` is the stored icon size. A marked state
 /// passes the scale bits of 1, and bit 0x40 inside the band 0x60 adds one
 /// to the height. Any other state picks an ink and does not pass that scale.
-/// The style's top three bits turn the icon.
+/// Bit 0x40000000 mirrors the icon.
 pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
     let x = i32::from(place.x).wrapping_add(centre_spare(place.w, icon));
     let y = i32::from(place.y).wrapping_add(centre_spare(place.h, icon));
-    let turn = ((place.mode & ICON_TURN) >> 28) as u8;
+    let mirrored = (place.mode & 0x4000_0000) != 0;
     if (place.state & 0xf_0000) == ICON_MARK {
         let nudged = if (place.state & ICON_BAND) == ICON_NUDGE {
             y.wrapping_add(1)
@@ -755,38 +755,38 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
         return CentredIcon {
             own: place.own,
             marked: true,
-            turn,
+            mirrored,
+            outlined: true,
             ink: 0,
+            alpha_boost: false,
             id: place.id,
             x,
             y: nudged,
             scale_bits: ICON_SCALE,
         };
     }
-    // The styled icon tests the focus bit alone, the plain one bits 0x11.
-    let focus = if (place.mode & ICON_STYLE) == 0 {
-        place.state & ICON_FOCUS != 0
-    } else {
-        (place.state & SLIDER_PRESSED) == SLIDER_PRESSED
-    };
-    let ink = if focus {
-        0
-    } else if (place.mode & ICON_STYLE) == 0 {
-        if (place.state & ICON_NUDGE) == ICON_NUDGE {
-            1
+    // The plain icon tests the focus bit; a set high flag word moves the
+    // raised and focus inks, and the raised ink lifts its alpha.
+    let (ink, alpha_boost) = if (place.state & 0x10) != 0 {
+        (0, false)
+    } else if (place.mode & 0x8000_0000) == 0 {
+        if (place.state & 0x40) == 0x40 {
+            (1, false)
         } else {
-            2
+            (0, false)
         }
-    } else if (place.state & ICON_NUDGE) == ICON_NUDGE {
-        3
+    } else if (place.state & 0x40) == 0x40 {
+        (3, true)
     } else {
-        4
+        (2, false)
     };
     CentredIcon {
         own: place.own,
         marked: false,
-        turn,
+        mirrored,
+        outlined: false,
         ink,
+        alpha_boost,
         id: place.id,
         x,
         y,
@@ -2626,7 +2626,6 @@ pub struct LineRail {
     pub bind_calls: u32,
     pub binds: [[u32; 8]; 4],
     pub quads: [[(f32, f32); 4]; 4],
-    pub placed: [[(f32, f32); 4]; 4],
     pub track_ink: [u8; 4],
     pub thumb_ink: [u8; 4],
     pub colour_writes: u32,
@@ -2634,8 +2633,9 @@ pub struct LineRail {
 }
 
 /// Draws the rail. Bit 0x10 selects the first ink; mode 0x10000 gives the
-/// thumb the third ink with alpha 255.
-pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3], view: SpanView) -> LineRail {
+/// thumb the third ink with alpha 255. The caps sit two units outside the
+/// widget's ends and the thumb hangs just left of its left edge.
+pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3]) -> LineRail {
     let x = i64::from(place.x);
     let y = i64::from(place.y);
     let w = i64::from(place.w);
@@ -2643,43 +2643,35 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3], view: Spa
     let doubled = i64::from(unit.wrapping_shl(1));
     let quadrupled = i64::from(unit.wrapping_shl(2));
     let triple = i64::from(unit.wrapping_mul(3));
+    let six = i64::from(unit.wrapping_mul(6));
     let bottom = y + h - triple;
     let right = x + w;
-    let left_out = x - doubled;
-    let left_in = x + quadrupled;
-    let right_out = right - doubled;
-    let right_in = right - quadrupled;
-    let top_thumb = y + doubled;
-    let bottom_thumb = y + quadrupled;
-    let thumb_right = right - i64::from(unit);
-    let thumb_left = right - triple;
     let quads = [
         [
-            (left_out as f32, bottom as f32),
-            (left_out as f32, (bottom + quadrupled) as f32),
-            (left_in as f32, (bottom + quadrupled) as f32),
-            (left_in as f32, bottom as f32),
+            ((x - doubled) as f32, bottom as f32),
+            ((x - doubled) as f32, (bottom + quadrupled) as f32),
+            ((x + quadrupled) as f32, (bottom + quadrupled) as f32),
+            ((x + quadrupled) as f32, bottom as f32),
         ],
         [
-            (right_out as f32, bottom as f32),
-            (right_out as f32, (bottom + quadrupled) as f32),
-            (right_in as f32, (bottom + quadrupled) as f32),
-            (right_in as f32, bottom as f32),
+            ((right + doubled) as f32, bottom as f32),
+            ((right + doubled) as f32, (bottom + quadrupled) as f32),
+            ((right - quadrupled) as f32, (bottom + quadrupled) as f32),
+            ((right - quadrupled) as f32, bottom as f32),
         ],
         [
-            (left_in as f32, (bottom + doubled) as f32),
-            (left_in as f32, (bottom + quadrupled) as f32),
-            (right_in as f32, (bottom + quadrupled) as f32),
-            (right_in as f32, (bottom + doubled) as f32),
+            ((x + quadrupled) as f32, (bottom + doubled) as f32),
+            ((x + quadrupled) as f32, (bottom + quadrupled) as f32),
+            ((right - quadrupled) as f32, (bottom + quadrupled) as f32),
+            ((right - quadrupled) as f32, (bottom + doubled) as f32),
         ],
         [
-            (thumb_right as f32, top_thumb as f32),
-            (thumb_right as f32, bottom_thumb as f32),
-            (thumb_left as f32, bottom_thumb as f32),
-            (thumb_left as f32, top_thumb as f32),
+            ((triple - quadrupled) as f32, (y + doubled) as f32),
+            ((triple - quadrupled) as f32, (y + quadrupled) as f32),
+            ((triple - six) as f32, (y + quadrupled) as f32),
+            ((triple - six) as f32, (y + doubled) as f32),
         ],
     ];
-    let placed = quads.map(|quad| quad.map(|(x, y)| place_corner(x, y, view)));
     let track_ink = if (place.state & 0x10) > 0 {
         inks[0]
     } else {
@@ -2700,7 +2692,6 @@ pub fn draw_line_rail(unit: i32, place: RailPlace, inks: [[u8; 4]; 3], view: Spa
         bind_calls: 4,
         binds: [SPAN_END, SPAN_END, SPAN_BAR, LINE_RAIL],
         quads,
-        placed,
         track_ink,
         thumb_ink,
         colour_writes: 16,
@@ -7050,7 +7041,7 @@ mod tests {
         assert_eq!(plain.span_b, 5);
         assert_eq!(plain.span_c, 10);
         assert_eq!(plain.span_d, 10);
-        assert_eq!(plain.span_e, 20);
+        assert_eq!(plain.span_e, 0);
         assert_eq!(
             [plain.pad_a, plain.pad_b, plain.pad_c, plain.pad_d],
             [8, 4, 8, 8]
@@ -7450,8 +7441,9 @@ mod tests {
         );
         assert!(!plain.own);
         assert!(!plain.marked);
-        assert_eq!(plain.turn, 0);
-        assert_eq!(plain.ink, 2);
+        assert!(!plain.mirrored);
+        assert_eq!(plain.ink, 0);
+        assert!(!plain.alpha_boost);
         assert_eq!(plain.id, 7);
         assert_eq!((plain.x, plain.y), (52, 52));
         assert_eq!(plain.scale_bits, 0);
@@ -7487,7 +7479,7 @@ mod tests {
                 own: false,
             },
         );
-        assert_eq!(nudged.turn, 4);
+        assert!(nudged.mirrored);
         assert_eq!((nudged.x, nudged.y), (52, 53));
 
         let both = draw_centred_icon(
@@ -7555,7 +7547,7 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x0100_0000,
+                mode: 0x8000_0000,
                 state: 0x40,
                 id: 1,
                 own: false,
@@ -7569,13 +7561,13 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x0100_0000,
+                mode: 0x8000_0000,
                 state: 0,
                 id: 1,
                 own: false,
             },
         );
-        assert_eq!(dim.ink, 4);
+        assert_eq!(dim.ink, 2);
     }
 
     fn place(
@@ -9754,7 +9746,6 @@ mod tests {
                 state: 0,
             },
             inks,
-            SPAN_VIEW_UNSET,
         );
         assert_eq!(rail.mode_calls, 1);
         assert_eq!(rail.mode, 2);
@@ -9768,9 +9759,9 @@ mod tests {
         assert_eq!(rail.thumb_ink, [5, 6, 7, 8]);
         let expect: [[(f32, f32); 4]; 4] = [
             [(0.0, 85.0), (0.0, 105.0), (30.0, 105.0), (30.0, 85.0)],
-            [(100.0, 85.0), (100.0, 105.0), (90.0, 105.0), (90.0, 85.0)],
+            [(120.0, 85.0), (120.0, 105.0), (90.0, 105.0), (90.0, 85.0)],
             [(30.0, 95.0), (30.0, 105.0), (90.0, 105.0), (90.0, 95.0)],
-            [(105.0, 30.0), (105.0, 40.0), (95.0, 40.0), (95.0, 30.0)],
+            [(-5.0, 30.0), (-5.0, 40.0), (-15.0, 40.0), (-15.0, 30.0)],
         ];
         for (quad, want) in rail.quads.iter().zip(expect) {
             for ((gx, gy), (wx, wy)) in quad.iter().zip(want) {
@@ -9789,7 +9780,6 @@ mod tests {
                 state: 0x10,
             },
             inks,
-            SPAN_VIEW_UNSET,
         );
         assert_eq!(first.track_ink, [1, 2, 3, 4]);
 
@@ -9803,7 +9793,6 @@ mod tests {
                 state: 0x1_0000,
             },
             inks,
-            SPAN_VIEW_UNSET,
         );
         assert_eq!(mode.track_ink, [5, 6, 7, 8]);
         assert_eq!(mode.thumb_ink, [9, 10, 11, 255]);
