@@ -15,6 +15,8 @@ pub const BEAST_ABILITY: u32 = 50_000;
 pub const SPAWN_HEALTH: f32 = 100.0;
 /// The damage seed a generated fighter starts with.
 pub const SPAWN_DAMAGE: f32 = -100.0;
+/// The profession word a beast's body starts with.
+pub const BEAST_PROFESSION: u32 = 0x300;
 /// The hostile role word every spawned opponent receives.
 pub const HOSTILE_ROLE: u32 = 0x12;
 /// The opponent team.
@@ -57,6 +59,25 @@ pub const MANAGER_ROLE: u32 = 0x11;
 pub const PLAYER_TEAM: u32 = 1;
 /// The lift a spawn spot takes above the floor.
 pub const SPAWN_LIFT: f32 = 5.0;
+/// How far above the profile height the floor probe starts.
+pub const FLOOR_PROBE_RISE: f32 = 1000.0;
+/// How far down the floor probe reaches.
+pub const FLOOR_PROBE_REACH: f32 = 3000.0;
+
+/// Settle a spawn position on the floor.
+///
+/// The original probes straight down from [`FLOOR_PROBE_RISE`] above the
+/// given point; `probe_start` is that start point's x and y. When the probe
+/// finds the floor, the position takes the probe's x and y (its z is kept)
+/// and is lifted by [`SPAWN_LIFT`]; when it finds nothing, the position is
+/// left as it was, without the lift.
+#[must_use]
+pub fn settle_on_floor(position: [f32; 3], floor_hit: Option<[f32; 2]>) -> [f32; 3] {
+    match floor_hit {
+        Some([x, y]) => [x, y + SPAWN_LIFT, position[2]],
+        None => position,
+    }
+}
 
 /// A manager body's configured values.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,19 +86,20 @@ pub struct ManagerPlan {
     pub damage: f32,
     pub role: u32,
     pub team: u32,
-    /// The profile position with the spawn lift added to its y.
+    /// The profile position after the floor probe, see [`settle_on_floor`].
     pub position: [f32; 3],
 }
 
-/// The manager's body plan from its profile position.
+/// The manager's body plan from its profile position and the floor probe's
+/// hit.
 #[must_use]
-pub fn manager_plan(position: [f32; 3]) -> ManagerPlan {
+pub fn manager_plan(position: [f32; 3], floor_hit: Option<[f32; 2]>) -> ManagerPlan {
     ManagerPlan {
         health: SPAWN_HEALTH,
         damage: SPAWN_HEALTH,
         role: MANAGER_ROLE,
         team: PLAYER_TEAM,
-        position: [position[0], position[1] + SPAWN_LIFT, position[2]],
+        position: settle_on_floor(position, floor_hit),
     }
 }
 
@@ -98,8 +120,13 @@ pub fn player_participant(roles: &[u32], index: usize) -> Option<usize> {
 /// A beast's tier items and stats.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BeastPlan {
-    /// The body item and its tier equipment.
-    pub items: Vec<u32>,
+    /// The body item. Tiers three to five replace the base body with their
+    /// own.
+    pub body: u32,
+    /// The tier's extra equipment items, added in this order.
+    pub equipment: Vec<u32>,
+    /// The profession word the body starts with.
+    pub profession: u32,
     pub ability: u32,
     pub health: f32,
     pub damage: f32,
@@ -111,24 +138,26 @@ pub struct BeastPlan {
 
 /// The beast at `tier` (1 through 5), from the smooth look draw.
 ///
-/// Tiers above one add the tier's four equipment items. Every tier gives
-/// the same 50000 ability and experience. An unknown tier keeps the base
-/// body only.
+/// Tiers three to five swap the base body for the tier's own body item and
+/// add four equipment items. Every tier gives the same 50000 ability and
+/// experience. Tiers one and two, and any unknown tier, keep the base body
+/// only. The scale is computed in double precision and narrowed once.
 #[must_use]
 pub fn beast_plan(tier: u32, smooth: f32) -> BeastPlan {
-    let mut items = vec![0x44];
-    match tier {
-        3 => items.extend_from_slice(&[0x1f6, 0x1fc, 0x1f9, 0x1fb, 0x1fa]),
-        4 => items.extend_from_slice(&[0x207, 0x210, 0x20e, 0x20f, 0x213]),
-        5 => items.extend_from_slice(&[0x21e, 0x214, 0x1f7, 0x216, 0x215]),
-        _ => {}
-    }
+    let (body, equipment): (u32, &[u32]) = match tier {
+        3 => (0x1f6, &[0x1fc, 0x1f9, 0x1fb, 0x1fa]),
+        4 => (0x207, &[0x210, 0x20e, 0x20f, 0x213]),
+        5 => (0x21e, &[0x214, 0x1f7, 0x216, 0x215]),
+        _ => (0x44, &[]),
+    };
     BeastPlan {
-        items,
+        body,
+        equipment: equipment.to_vec(),
+        profession: BEAST_PROFESSION,
         ability: BEAST_ABILITY,
         health: SPAWN_HEALTH,
         damage: SPAWN_DAMAGE,
-        scale: smooth * 0.17 + 0.9,
+        scale: (f64::from(smooth) * 0.17 + 0.9) as f32,
         team: OPPONENT_TEAM,
         role: HOSTILE_ROLE,
     }
@@ -141,14 +170,10 @@ pub struct GenericPlan {
     pub level: i32,
     /// The outfit generator's level.
     pub outfit_level: i32,
-    /// The outfit warmth, `level · 0.05`.
+    /// The outfit warmth, `level · 0.05` computed in double precision.
     pub warmth: f32,
     pub health: f32,
     pub damage: f32,
-    /// The profession word the body starts with.
-    pub profession: u32,
-    /// The experience passed to the skill generator.
-    pub experience: u32,
 }
 
 /// A generic opponent at `level`, dressed by `outfit_level`.
@@ -157,11 +182,9 @@ pub fn generic_plan(level: i32, outfit_level: i32) -> GenericPlan {
     GenericPlan {
         level,
         outfit_level,
-        warmth: level as f32 * 0.05,
+        warmth: (f64::from(level) * 0.05) as f32,
         health: SPAWN_HEALTH,
         damage: SPAWN_DAMAGE,
-        profession: 0x300,
-        experience: 0,
     }
 }
 
@@ -213,7 +236,7 @@ pub struct HirePlan {
     pub outfit: OutfitProfile,
     /// A weapon variant is drawn from the current event's row.
     pub draw_weapon: bool,
-    /// The event's weapon row index, when drawn.
+    /// The zero-based weapon row to draw from, when drawn.
     pub weapon_row: Option<u32>,
 }
 
@@ -221,10 +244,11 @@ pub struct HirePlan {
 ///
 /// The profile starts `[3, team, 100, 10, 10, 0, 0, 0]`. A forced outfit
 /// (1 through 19) sets flags to `0x0b` and copies that company's three
-/// appearance bytes. A tournament event with a weapon row adds flag 4 and
-/// asks for a variant draw.
+/// appearance bytes. When the event's weapon field (a signed count of the
+/// one-based row) is positive, flag 4 is added and the variant is drawn from
+/// the zero-based row one below it; see [`pick_weapon_slot`].
 #[must_use]
-pub fn hire_plan(team: u8, forced_outfit: i32, weapon_row: Option<u32>) -> HirePlan {
+pub fn hire_plan(team: u8, forced_outfit: i32, event_weapon: i32) -> HirePlan {
     let mut outfit = [3, team, 100, 10, 10, 0, 0, 0];
     if let Some(index) = usize::try_from(forced_outfit)
         .ok()
@@ -233,8 +257,7 @@ pub fn hire_plan(team: u8, forced_outfit: i32, weapon_row: Option<u32>) -> HireP
         outfit[0] = 0x0b;
         outfit[5..8].copy_from_slice(&COMPANY_OUTFITS[index - 1]);
     }
-    let draw_weapon = weapon_row.is_some_and(|row| row > 0);
-    if !draw_weapon {
+    if event_weapon <= 0 {
         return HirePlan {
             stat_level: 6,
             outfit: OutfitProfile(outfit),
@@ -247,8 +270,21 @@ pub fn hire_plan(team: u8, forced_outfit: i32, weapon_row: Option<u32>) -> HireP
         stat_level: 6,
         outfit: OutfitProfile(outfit),
         draw_weapon: true,
-        weapon_row,
+        weapon_row: Some(event_weapon as u32 - 1),
     }
+}
+
+/// The weapon slot a hire-list opponent draws from an event row's three
+/// slots.
+///
+/// The original counts the slots that are set (the second counts only when
+/// set, the third likewise, without checking that the earlier ones were),
+/// steps the roll once and takes the slot at `(count · roll) >> 32`. With no
+/// slot set the first slot (zero) is returned.
+#[must_use]
+pub fn pick_weapon_slot(slots: [u32; 3], roll: u32) -> u32 {
+    let count = u64::from(slots[0] != 0) + u64::from(slots[1] != 0) + u64::from(slots[2] != 0);
+    slots[((count * u64::from(roll)) >> 32) as usize]
 }
 
 #[cfg(test)]
@@ -258,18 +294,24 @@ mod tests {
     #[test]
     fn a_beast_takes_its_tier_items_and_scale() {
         let base = beast_plan(2, 0.0);
-        assert_eq!(base.items, [0x44]);
+        assert_eq!(base.body, 0x44);
+        assert!(base.equipment.is_empty());
+        assert_eq!(base.profession, 0x300);
         assert_eq!(base.scale, 0.9);
         assert_eq!(base.ability, 50_000);
         let third = beast_plan(3, 0.5);
-        assert_eq!(third.items, [0x44, 0x1f6, 0x1fc, 0x1f9, 0x1fb, 0x1fa]);
+        assert_eq!(third.body, 0x1f6);
+        assert_eq!(third.equipment, [0x1fc, 0x1f9, 0x1fb, 0x1fa]);
         assert!((third.scale - 0.985).abs() < 1e-6);
         let fourth = beast_plan(4, 0.0);
-        assert_eq!(fourth.items[1..], [0x207, 0x210, 0x20e, 0x20f, 0x213]);
+        assert_eq!(fourth.body, 0x207);
+        assert_eq!(fourth.equipment, [0x210, 0x20e, 0x20f, 0x213]);
         let fifth = beast_plan(5, 0.0);
-        assert_eq!(fifth.items[1..], [0x21e, 0x214, 0x1f7, 0x216, 0x215]);
+        assert_eq!(fifth.body, 0x21e);
+        assert_eq!(fifth.equipment, [0x214, 0x1f7, 0x216, 0x215]);
         // An unknown tier keeps the base body only.
-        assert_eq!(beast_plan(9, 0.0).items, [0x44]);
+        assert_eq!(beast_plan(9, 0.0).body, 0x44);
+        assert!(beast_plan(1, 0.0).equipment.is_empty());
         assert_eq!(base.team, 2);
         assert_eq!(base.role, 0x12);
     }
@@ -279,28 +321,38 @@ mod tests {
         let plan = generic_plan(3, 1);
         assert_eq!(plan.level, 3);
         assert_eq!(plan.outfit_level, 1);
-        assert_eq!(plan.warmth, 0.15);
+        assert_eq!(plan.warmth, (3.0f64 * 0.05) as f32);
         assert_eq!(plan.health, 100.0);
         assert_eq!(plan.damage, -100.0);
     }
 
     #[test]
     fn a_forced_hire_takes_the_company_appearance() {
-        let plain = hire_plan(4, 0, None);
+        let plain = hire_plan(4, 0, 0);
         assert_eq!(plain.outfit.0, [3, 4, 100, 10, 10, 0, 0, 0]);
         assert_eq!(plain.stat_level, 6);
-        let forced = hire_plan(4, 2, None);
+        let forced = hire_plan(4, 2, 0);
         assert_eq!(forced.outfit.0, [0x0b, 4, 100, 10, 10, 66, 140, 1]);
         // Out-of-range companies are ignored.
-        assert_eq!(hire_plan(1, 20, None).outfit.flags(), 3);
-        assert_eq!(hire_plan(1, -1, None).outfit.flags(), 3);
+        assert_eq!(hire_plan(1, 20, 0).outfit.flags(), 3);
+        assert_eq!(hire_plan(1, -1, 0).outfit.flags(), 3);
         // An event weapon row adds flag 4 and asks for a draw.
-        let armed = hire_plan(2, 3, Some(5));
+        let armed = hire_plan(2, 3, 5);
         assert_eq!(armed.outfit.flags(), 0x0f);
         assert!(armed.draw_weapon);
-        assert_eq!(armed.weapon_row, Some(5));
-        assert!(!hire_plan(2, 3, Some(0)).draw_weapon);
-        assert!(hire_plan(2, 3, Some(0x20)).draw_weapon);
+        assert_eq!(armed.weapon_row, Some(4));
+        assert!(!hire_plan(2, 3, 0).draw_weapon);
+        assert!(!hire_plan(2, 3, -4).draw_weapon);
+        assert!(hire_plan(2, 3, 0x20).draw_weapon);
+    }
+
+    #[test]
+    fn a_weapon_slot_is_drawn_among_the_set_ones() {
+        assert_eq!(pick_weapon_slot([7, 8, 9], 0), 7);
+        assert_eq!(pick_weapon_slot([7, 8, 9], 0x5555_5556), 8);
+        assert_eq!(pick_weapon_slot([7, 8, 9], u32::MAX), 9);
+        assert_eq!(pick_weapon_slot([7, 8, 0], u32::MAX), 8);
+        assert_eq!(pick_weapon_slot([0, 0, 0], u32::MAX), 0);
     }
 
     #[test]
@@ -334,8 +386,13 @@ mod tests {
 
     #[test]
     fn a_manager_plan_lifts_the_profile_and_numbers_team_one() {
-        let plan = manager_plan([1.0, 2.0, 3.0]);
-        assert_eq!(plan.position, [1.0, 7.0, 3.0]);
+        let plan = manager_plan([1.0, 2.0, 3.0], Some([1.5, 2.5]));
+        assert_eq!(plan.position, [1.5, 7.5, 3.0]);
+        // Without a floor hit the profile position is kept.
+        assert_eq!(
+            manager_plan([1.0, 2.0, 3.0], None).position,
+            [1.0, 2.0, 3.0]
+        );
         assert_eq!(plan.health, 100.0);
         assert_eq!(plan.damage, 100.0);
         assert_eq!(plan.role, 0x11);
