@@ -10,8 +10,9 @@
 //!   record's practice count and keeps the rest; the lesson decays by
 //!   0.995 a tick, the fatigue always by 0.9998.
 //! - **Leaving.** A fighter that is down resets its turn and leaves the
-//!   tick; a dead foe is dropped, and with no foe and no focus the fighter
-//!   leaves combat for its activity (a look in 3 s, the next try in 0.5 s).
+//!   tick; a foe clears the focus, so a dead foe is dropped and the
+//!   fighter leaves combat for its activity (a look in 3 s, the next try in
+//!   0.5 s), as it does with no foe and no focus.
 //! - **The estimate.** With probability `(0.8·k² + 0.2)²` (k the skill) the
 //!   foe's position is estimated again and blended back toward the old one
 //!   by `0.6 − 0.6·k²`; the direction to it and its distance (at least 1,
@@ -65,7 +66,10 @@
 //! of each contact, the ground cost, the line walk, the sight test, the
 //! chase route, the follow check and the cast choice belong to other parts
 //! and come in through [`Field`]. A heading wrap compares in double with
-//! the f32 full turn, as the original does.
+//! the f32 full turn, as the original does. The original keeps body points
+//! relative to each body's scene node and adds the node's origin to the
+//! points it weighs and to the foe's estimate (less its own); Exarust keeps
+//! one world frame, so those origins are zero here.
 
 use bevy::math::Vec3;
 use exa_combat::attack::AttackMotion;
@@ -592,24 +596,27 @@ pub fn foe_estimate(foe: &Foe, skill: f32) -> Vec3 {
 /// What the estimate update leaves on the body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bearing {
-    /// The direction to the estimate (a unit when farther than 1 cm).
+    /// The direction to the estimate: a unit when farther than 1 cm, else
+    /// the direction the last estimate left.
     pub to_target: Vec3,
     pub distance_cm: f32,
 }
 
-/// The direction and distance from `from` to `estimate`.
-fn bearing_to(estimate: Vec3, from: Vec3, chest_y: f32) -> Bearing {
+/// The direction and distance from `from` to `estimate`; within 1 cm (or
+/// with a distance that is not a number) the distance is 1 and `previous`
+/// stays the direction, as the original leaves it unwritten.
+fn bearing_to(estimate: Vec3, from: Vec3, chest_y: f32, previous: Vec3) -> Bearing {
     let raw = estimate - from;
     let d = flat_length(raw);
-    let mut out = if d <= 1.0 {
-        Bearing {
-            to_target: raw,
-            distance_cm: 1.0,
-        }
-    } else {
+    let mut out = if d > 1.0 {
         Bearing {
             to_target: raw * (1.0 / d),
             distance_cm: d,
+        }
+    } else {
+        Bearing {
+            to_target: previous,
+            distance_cm: 1.0,
         }
     };
     if (chest_y - estimate.y).abs() > 300.0 {
@@ -637,7 +644,7 @@ pub fn refresh_estimate(
     let t = (0.6 - f64::from(k2) * 0.6) as f32;
     mind.estimate = fresh + (old - fresh) * t;
     let from = if me.stepping { me.step_goal } else { me.chest };
-    Some(bearing_to(mind.estimate, from, me.chest.y))
+    Some(bearing_to(mind.estimate, from, me.chest.y, me.to_target))
 }
 
 /// The weapon draw before a fight: fists or a one-handed class with
@@ -988,36 +995,43 @@ pub fn keep_off(me_chest: Vec3, foe_chest: Vec3, foe_scale: f32, offset: &mut Ve
     let d = (me_chest.x - foe_chest.x, me_chest.z - foe_chest.z);
     let r = 60.0 * foe_scale;
     let d2 = d.0 * d.0 + d.1 * d.1;
-    if d2 > r * r {
-        let c = d2 - r * r;
-        let a = v.0 * v.0 + v.1 * v.1;
-        let b = (d.0 * v.0 + d.1 * v.1) * 2.0;
-        let disc = b * b - 4.0 * a * c;
-        if disc < 0.0 {
-            return;
+    if d2 <= r * r {
+        if r > d2 {
+            let inv = 1.0 / d2.sqrt();
+            offset.x = d.0 * r * inv;
+            offset.z = d.1 * r * inv;
+        } else {
+            offset.x = 0.0;
+            offset.z = 0.0;
         }
-        let t = (-b - disc.sqrt()) / (2.0 * a);
-        if !(0.0..=1.0).contains(&t) {
-            return;
-        }
-        let cut = (v.0 * t, v.1 * t);
-        // The original builds this vector's x from z and reads its second
-        // component from uninitialised stack [?]; 0 stands in for it.
-        let w = (me_chest.z + cut.1 - foe_chest.z, 0.0f32);
-        let w2 = w.0 * w.0 + w.1 * w.1;
-        let cos = (w.0 * d.0 + w.1 * d.1) / (d2 * w2).sqrt();
-        if cos >= 0.75 {
-            offset.x = cut.0;
-            offset.z = cut.1;
-        }
-    } else if r > d2 {
-        let inv = 1.0 / d2.sqrt();
-        offset.x = d.0 * r * inv;
-        offset.z = d.1 * r * inv;
-    } else {
-        offset.x = 0.0;
-        offset.z = 0.0;
+        return;
     }
+    // Outside the circle (or a distance that is not a number, which the
+    // original's unordered compare also sends here).
+    let c = d2 - r * r;
+    let a = v.0 * v.0 + v.1 * v.1;
+    let b = (d.0 * v.0 + d.1 * v.1) * 2.0;
+    let disc = b * b - 4.0 * a * c;
+    if disc < 0.0 {
+        return;
+    }
+    let t = (-b - disc.sqrt()) / (2.0 * a);
+    if !(0.0..=1.0).contains(&t) {
+        return;
+    }
+    let cut = (v.0 * t, v.1 * t);
+    // The original builds this vector's x from z and reads its second
+    // component from uninitialised stack [?]; 0 stands in for it.
+    let w = (me_chest.z + cut.1 - foe_chest.z, 0.0f32);
+    let w2 = w.0 * w.0 + w.1 * w.1;
+    let cos = (w.0 * d.0 + w.1 * d.1) / (d2 * w2).sqrt();
+    // Only a cosine under 0.75 leaves the step: one that is not a number
+    // (a zero test vector) cuts it too, as the original's compare does.
+    if cos < 0.75 {
+        return;
+    }
+    offset.x = cut.0;
+    offset.z = cut.1;
 }
 
 /// The offset of footwork direction `dir` (1–8) by `step` cm.
@@ -1713,8 +1727,16 @@ pub fn tick(
         out.exit = Some(Exit::Down);
         return out;
     }
+    // A foe drops the focus; a dead foe is dropped and the fighter leaves
+    // even with a focus (the original cleared the focus when it took the
+    // foe). Without a foe, the focus keeps it in combat.
     let foe = world.foe.filter(|f| !f.dead);
-    if foe.is_none() && world.focus.is_none() {
+    let focus = if world.foe.is_some() {
+        None
+    } else {
+        world.focus
+    };
+    if foe.is_none() && focus.is_none() {
         mind.heading = 0.0;
         mind.aim = yaw(me.heading);
         out.exit = Some(Exit::Leave {
@@ -1723,7 +1745,7 @@ pub fn tick(
         });
         return out;
     }
-    let fresh = match (foe, world.focus) {
+    let fresh = match (foe, focus) {
         (Some(f), _) => foe_estimate(f, k),
         (None, Some(p)) => p,
         (None, None) => mind.estimate,

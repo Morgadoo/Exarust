@@ -584,7 +584,10 @@ fn duellist(
                 step_state: stepping.map_or(0, |s| s.state),
                 step_started_ms: stepping.map_or(0, |s| s.started_ms),
                 queue: ai.queue,
-                can_step: condition.0 & 0x82c1 == 0 && !ai.holds_ground,
+                // The original's can-act test also wants grip and
+                // awareness above 0.7 and no blocking state; the duellist
+                // has none of them, so only the condition mask gates it.
+                can_step: condition.0 & exa_physics::motile::ACTION_BLOCK == 0 && !ai.holds_ground,
                 rules: fighter.stats.rules.0,
                 thrust_pref: primary.map_or(0, |r| {
                     i32::from(exa_formats::weapon_record::thrust_preference(&r))

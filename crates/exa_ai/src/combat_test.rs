@@ -163,11 +163,23 @@ fn the_estimate_blends_back_by_skill() {
     let b = refresh_estimate(&mut mind, &me, Vec3::new(0.0, 400.0, 300.0), 1.0, &mut roll).unwrap();
     assert_eq!(mind.estimate, Vec3::new(0.0, 400.0, 300.0));
     assert_eq!(b.distance_cm, 800.0);
-    // Within 1 cm the distance is 1 and the direction is left as it is.
-    let b = refresh_estimate(&mut mind, &me, Vec3::new(0.5, 0.0, 0.0), 1.0, &mut roll).unwrap();
+    // Within 1 cm the distance is 1 and the direction the last estimate
+    // left is kept (the original does not write it).
+    let me_close = Body {
+        to_target: Vec3::new(-1.0, 0.0, 0.0),
+        ..Body::default()
+    };
+    let b = refresh_estimate(
+        &mut mind,
+        &me_close,
+        Vec3::new(0.5, 0.0, 0.0),
+        1.0,
+        &mut roll,
+    )
+    .unwrap();
     assert_eq!(
         (b.distance_cm, b.to_target),
-        (1.0, Vec3::new(0.5, 0.0, 0.0))
+        (1.0, Vec3::new(-1.0, 0.0, 0.0))
     );
     // A novice draw of 0.5 does not look again.
     let mut roll = (0..u32::MAX)
@@ -550,6 +562,11 @@ fn a_step_keeps_off_the_foe() {
     let mut v = Vec3::new(200.0, 0.0, 0.0);
     keep_off(Vec3::new(0.0, 0.0, 200.0), Vec3::ZERO, 1.0, &mut v);
     assert_eq!(v, Vec3::new(200.0, 0.0, 0.0));
+    // Along x the test vector is zero, its cosine not a number, and the
+    // original's unordered compare cuts the step at the circle (t = 0.7).
+    let mut v = Vec3::new(-200.0, 0.0, 0.0);
+    keep_off(Vec3::new(200.0, 0.0, 0.0), Vec3::ZERO, 1.0, &mut v);
+    assert_eq!(v, Vec3::new(-200.0 * (56_000.0f32 / 80_000.0), 0.0, 0.0));
 }
 
 #[test]
@@ -881,6 +898,32 @@ fn early_exits() {
         ..me
     };
     assert_eq!(run(&charging, Some(&foe), false), Some(Exit::Charge));
+    // A dead foe is left even with a focus: taking the foe cleared it.
+    let mut mind = CombatMind::default();
+    let mut contacts = [foe_contact(3)];
+    let mut field = Flat::new(foe.chest);
+    let mut roll = 0;
+    let t = tick(
+        &mut mind,
+        &me,
+        MASTER,
+        World {
+            foe: Some(&dead),
+            focus: Some(Vec3::new(0.0, 0.0, 100.0)),
+            contacts: &mut contacts,
+            around: &[],
+            field: &mut field,
+            leader_calls: false,
+        },
+        &mut roll,
+    );
+    assert_eq!(
+        t.exit,
+        Some(Exit::Leave {
+            look_ms: 8000,
+            next_ms: 5500
+        })
+    );
 }
 
 #[test]
