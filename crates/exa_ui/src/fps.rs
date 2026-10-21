@@ -95,8 +95,9 @@ fn update(
         }
         let fps = readout.frames as f32 / readout.seconds;
         *readout = FpsReadout::default();
-        debug!("{fps:.2} FPS");
-        let line = font.0.render(&format!("{fps:.2} FPS"));
+        let text = exa_formats::text::format_float(fps, 2, true);
+        debug!("{text} FPS");
+        let line = font.0.render(&format!("{text} FPS"));
         node.width = px(line.width as f32 * SCALE * unit);
         node.height = px(line.height as f32 * SCALE * unit);
         node.top = px(MARGIN_TOP * unit);

@@ -694,10 +694,7 @@ fn scale_mark(value: u8) -> u8 {
 }
 
 fn takes_an(text: &str) -> bool {
-    matches!(
-        text.as_bytes().first(),
-        Some(b'a' | b'e' | b'i' | b'o' | b'u')
-    )
+    exa_formats::text::takes_an(text)
 }
 
 /// Delete the 0x10 pair, then add an article when the first byte is at least Z.
