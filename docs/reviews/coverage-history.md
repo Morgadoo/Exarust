@@ -82,3 +82,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | 37ba13cd | clean | 25.5% | 5.7% | 21.6% | 27.3% | audio environment: TAudioEnvironment 15 -> 93 |
 | 2026-10-21 | cba047ba | clean | 26.1% | 5.7% | 22.1% | 27.3% | mechanism routines: doors, levers, plates, dispatch and relays |
 | 2026-10-21 | ed0310c9 | clean | 26.3% | 5.7% | 22.3% | 27.3% | scene environment: TSceneEnvironment 15->55, RFE_GridEnvs (unit routines) 45->50 |
+| 2026-10-21 | 9f6d8b46 | clean | 26.8% | 5.7% | 22.7% | 27.3% | small effect nodes |
