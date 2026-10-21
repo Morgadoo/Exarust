@@ -488,6 +488,32 @@ pub fn paint_blood(
     painted
 }
 
+/// Moves the previous particle positions toward `target` from their
+/// displacement `previous − current`, by `k` of the way, scaled by
+/// `weight`, plus `offset`, and returns the total displacement it added.
+///
+/// This is the original's blend that follows a moved owner: each previous
+/// position becomes
+/// `(d + (target − d)·k)·weight + offset + previous` with `d = previous −
+/// current`. It is not a pin: the step's pins pull toward fixed rest
+/// points; this pass preserves the displacement between the two buffers.
+pub fn pull_toward(
+    previous: &mut [Vec3],
+    current: &[Vec3],
+    target: Vec3,
+    offset: Vec3,
+    k: f32,
+    weight: f32,
+) -> Vec3 {
+    let mut sum = Vec3::ZERO;
+    for (at, now) in previous.iter_mut().zip(current) {
+        let d = *at - *now;
+        sum += d;
+        *at = (d + (target - d) * k) * weight + offset + *at;
+    }
+    sum
+}
+
 /// Advance one tick. Returns without changing non-finite input.
 pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
@@ -1943,5 +1969,23 @@ mod tests {
         assert_eq!(roll, 0x0808_8406);
         assert!((f64::from(first) - f64::from(0x0808_8406u32) * 2.328_306_4e-10).abs() < 1e-9);
         assert!((0.0..1.0).contains(&first));
+    }
+
+    #[test]
+    fn the_owner_move_blends_the_previous_positions() {
+        let mut previous = [Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0)];
+        let current = [Vec3::new(0.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 0.0)];
+        // d = (1,0,0) and (0,0,6); target 0, k 0.5, weight 0.5, offset 1.
+        let sum = pull_toward(
+            &mut previous,
+            &current,
+            Vec3::ZERO,
+            Vec3::splat(1.0),
+            0.5,
+            0.5,
+        );
+        assert_eq!(sum, Vec3::new(1.0, 0.0, 6.0));
+        let want = [Vec3::new(2.25, 3.0, 4.0), Vec3::new(5.0, 6.0, 8.5)];
+        assert_eq!(previous, want);
     }
 }
