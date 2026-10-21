@@ -7,16 +7,22 @@ body solver (`body`), its level contacts (`contact`), props and items as bodies 
 character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
 builders (`shape`), the shared intersection maths (`intersect`) and the engine's own maths unit (`engine_math`).
 
-`engine_math` is the one shared implementation of the engine's fast maths: the
-sign stub, the `MINSS`/`MAXSS`/clamp compares, the floor and ceiling
-conversions, the polynomial logarithm, exponential, sine and sine-cosine,
-the arctangent and octant atan2, arcsine and arccosine, the double-precision
-angle wrap, the small linear algebra (4×3 products, triple product, fast and
-exact barycentrics), quaternion product, axis-angle and matrix conversions,
-the yaw/pitch, X, axis and look-at turns, row scaling, Euler angles, the
-Gauss-Jordan 4×4 inverse and the OpenGL frustum, perspective (with the
-sub-pixel jitter) and pixel-rectangle matrices. The UI's `engine_math`
-forwards here, and the body's twist helpers are re-exported from it.
+`engine_math` is the one shared implementation of the engine's fast maths,
+checked against the original's instructions: the sign stub, the
+`MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
+rounding mode set and restored), the polynomial logarithm, exponential,
+sine and sine-cosine (the polynomials picked by mask arithmetic), the
+arctangent and octant atan2, arcsine and arccosine, the double-precision
+angle wrap, the 4×3 products, triple product, fast and exact barycentrics,
+quaternion product, axis-angle and matrix conversions, the pitch/yaw, X,
+axis and look-at turns (the look basis normalised with `RSQRTSS`),
+component-wise row scaling, Euler angles with the runtime library's
+arcsine and arctangent rules, the Gauss-Jordan 4×4 inverse (pivoting
+against the diagonal) and the OpenGL frustum, perspective (with the
+sub-pixel jitter) and pixel-rectangle matrices. The runtime library's own
+transcendentals are stood in for by the platform's double functions. The
+UI's `engine_math` forwards here, and the body's twist helpers are
+re-exported from it.
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the
