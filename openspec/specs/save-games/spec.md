@@ -115,11 +115,19 @@ An existing section that is not the last one and whose room up to the next entry
 - **THEN** both results equal the original bytes
 
 ### Requirement: Package opening
-Opening a package file SHALL create it when it is missing and SHALL write a fresh header (magic, count 1, sentinel) over the start of a file shorter than nine bytes or with another magic, without truncating it.
+Opening a package file SHALL create it empty when it is missing and SHALL read a file of eight bytes or fewer, or one with another magic, as a fresh package (the magic, count 1, the sentinel of offset 0 and size 16) without writing anything; the next section write SHALL put the header and directory over the file's start and leave the bytes after them.
 
 #### Scenario: A damaged slot file
 - **WHEN** a story scan meets a 7-byte file named Exanima007.rsg
-- **THEN** the file becomes a 32-byte empty package, is not listed and is not deleted
+- **THEN** the file keeps its 7 bytes, is not listed and is not deleted
+
+#### Scenario: A missing file
+- **WHEN** a new slot is created
+- **THEN** its save file exists and is empty
+
+#### Scenario: A later write
+- **WHEN** a section is written into a 100-byte file with another magic
+- **THEN** its first 56 bytes are the header and two directory entries and bytes 56 to 99 are as they were
 
 ### Requirement: Character placement
 The first chunk after the header SHALL be read as the player's placement: the record reference (bit 30 selects the world character database, the low 28 bits are the id), the position, the heading, the condition and sub-chunks. An old arena save SHALL put the position back to (0, 0, 300).
