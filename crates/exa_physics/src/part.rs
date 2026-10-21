@@ -302,16 +302,20 @@ pub fn ragdoll_mobility(own: f32) -> f32 {
     own
 }
 
-/// `a >= b`, false when either is NaN: the original's ordered compare.
-fn at_least(a: f32, b: f32) -> bool {
-    matches!(
-        a.partial_cmp(&b),
-        Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
-    )
+/// The original's float-to-integer convert: round half to even. A NaN or an
+/// out-of-range value comes back as the integer indefinite, whose low 32 bits
+/// are zero.
+fn convert(value: f32) -> i64 {
+    if value.is_nan() || value.abs() >= 9.0e18 {
+        i64::MIN
+    } else {
+        value.round_ties_even() as i64
+    }
 }
 
-/// Adds an impact to a recent-impact counter: two per call, at most forty
-/// (slot 38, the impact reaction, seen by slot 15's step).
+/// Adds an impact to a part's recent-impact counter: two per call, nothing
+/// once it reaches forty (so a counter the decay left odd climbs to forty-one
+/// at most).
 pub fn impact_added(counter: i32) -> i32 {
     if counter < 40 { counter + 2 } else { counter }
 }
@@ -322,61 +326,218 @@ pub fn impact_decayed(counter: i32) -> i32 {
     if counter > 1 { counter - 1 } else { counter }
 }
 
-/// The sound a limb plays on an impact: volume, pitch and the cooldown
-/// added after `now` once the random spread is drawn by the caller.
+/// The sound a limb or a weapon plays on an impact: volume, pitch and the
+/// cooldown after which the next one may play.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImpactSound {
+    /// The volume, 0 to 1 (before the source's own gain).
     pub volume: f32,
+    /// The pitch on the part's own sound source.
     pub pitch: f32,
-    /// Milliseconds after the impact: `220 + spread − round(170·volume)`.
+    /// The pitch on the character's shared source, which a limb uses once
+    /// more than two impacts are recent: `0.5·volume + 0.6`. A weapon always
+    /// plays on its own source.
+    pub crowded_pitch: f32,
+    /// The impact after the knock-down scale and the half, which the voice
+    /// request and the damage bookkeeping read.
+    pub scaled: f32,
+    /// Milliseconds after the impact until the next sound may play.
     pub cooldown_ms: u32,
 }
 
-/// A living limb's impact sound. The impact is scaled to a third unless the
-/// character is knocked down, then halved; under 0.5 it is silent. The
-/// rest is the original's: the volume is the impact times 0.05 (at most 1),
-/// the pitch 0.6 of that plus 0.5.
-pub fn limb_impact_sound(impact: f32, down: bool, spread: u32) -> Option<ImpactSound> {
-    let scaled = impact * if down { 1.0 } else { 0.33 };
-    let scaled = scaled * 0.5;
-    // The original's ordered `0.5 <= impact`: a NaN is silent.
-    if !at_least(scaled, 0.5) {
+impl ImpactSound {
+    /// The pitch for a character whose recent-impact counter is `counter`.
+    pub fn pitch_for(&self, counter: i32) -> f32 {
+        if counter > 2 {
+            self.crowded_pitch
+        } else {
+            self.pitch
+        }
+    }
+}
+
+/// A living limb's impact sound. The caller has already checked that the
+/// character's sound cooldown is over, and that the other body is not a
+/// striking limb. The impact is scaled to a third (in double precision)
+/// unless the character is down, then halved; a scaled impact under 0.5 is
+/// silent, a NaN is not (the original skips only on a below compare). The
+/// volume is the scaled impact times 0.05 (at most 1, a NaN giving 1), the
+/// pitch 0.6 of that plus 0.5. `spread` draws the 0 to 99 ms random spread
+/// of the cooldown, and is called only when a sound plays, as the original
+/// draws it then: `220 + spread − round(170·volume)`, the rounding half to
+/// even on the single-precision product.
+pub fn limb_impact_sound(
+    impact: f32,
+    down: bool,
+    spread: impl FnOnce() -> u32,
+) -> Option<ImpactSound> {
+    let mut scaled = impact;
+    if !down {
+        scaled = (f64::from(scaled) * 0.33) as f32;
+    }
+    scaled *= 0.5;
+    if scaled < 0.5 {
         return None;
     }
-    let volume = (f64::from(scaled) * 0.05).min(1.0) as f32;
-    let cooldown_ms = 220 + spread - (170.0 * f64::from(volume)).round() as u32;
+    let volume = ((f64::from(scaled) * 0.05) as f32).min(1.0);
+    let crowded_pitch = (f64::from(volume * 0.5) + 0.6) as f32;
+    let pitch = (f64::from(volume) * 0.6 + 0.5) as f32;
+    let cooldown_ms = (220 + i64::from(spread()) - convert(volume * 170.0)) as u32;
     Some(ImpactSound {
         volume,
-        pitch: (f64::from(volume) * 0.6 + 0.5) as f32,
+        pitch,
+        crowded_pitch,
+        scaled,
         cooldown_ms,
     })
 }
 
 /// A held weapon's impact sound: a steeper curve than a limb's, with a
-/// lower pitch and a shorter cooldown. Silent under 0.005.
-pub fn weapon_impact_sound(impact: f32, spread: u32) -> Option<ImpactSound> {
+/// lower pitch and a shorter cooldown, and no random spread. The caller has
+/// already checked that the part's own sound cooldown is over. The value is
+/// `0.005·impact + 0.3·(0.01·impact)²` in double precision, at most 1 (a
+/// NaN giving 1); under 0.005 (a double compare) it is silent. The cooldown
+/// is `200 − round(80·value)`, rounding half to even.
+pub fn weapon_impact_sound(impact: f32) -> Option<ImpactSound> {
     let linear = f64::from(impact) * 0.01;
-    let value = (f64::from(impact) * 0.005 + linear * linear * 0.3).min(1.0) as f32;
-    // The original's ordered `0.005 <= value`: a NaN is silent.
-    if !at_least(value, 0.005) {
+    let value = ((f64::from(impact) * 0.005 + linear * linear * 0.3) as f32).min(1.0);
+    if f64::from(value) < 0.005 {
         return None;
     }
-    let cooldown_ms = 220 + spread - (80.0 * f64::from(value)).round() as u32;
     Some(ImpactSound {
         volume: value,
         pitch: (f64::from(value) * 0.3 + 0.7) as f32,
-        cooldown_ms,
+        crowded_pitch: (f64::from(value) * 0.3 + 0.7) as f32,
+        scaled: impact,
+        cooldown_ms: (200 - convert(value * 80.0)) as u32,
     })
 }
 
-/// The camera-shake strength of a hard overhead landing `distance²` (cm²)
-/// from the camera: `(2000 − distance)·0.001`, used under 1800 cm.
-pub fn camera_shake(distance2: f32) -> Option<f32> {
-    if (distance2 as f64) < 3.24e6 {
-        Some(((2000.0 - f64::from(distance2).sqrt()) * 0.001) as f32)
+/// The voice line a hard limb impact asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImpactVoice {
+    /// The request's volume: half the sound's.
+    pub volume: f32,
+    /// The request's pitch: `0.3·volume + 0.7`.
+    pub pitch: f32,
+}
+
+/// The voice request a limb impact adds, when the scaled impact is above 15
+/// (a NaN is not) and the character is not in the state `0xa00` (dead and
+/// down). The caller has checked that the other body is not a limb. The
+/// request is a grunt (`voice::Voice::request`, line 1) made on every such
+/// impact; the voice's own spacing gates it. Separately, the original keeps a
+/// one-second spacing after which a down character also gets a script
+/// message; that is the caller's.
+pub fn limb_impact_voice(sound: &ImpactSound, character_state: u32) -> Option<ImpactVoice> {
+    if sound.scaled > 15.0 && character_state != 0xa00 {
+        Some(ImpactVoice {
+            volume: sound.volume * 0.5,
+            pitch: (f64::from(sound.volume) * 0.3 + 0.7) as f32,
+        })
     } else {
         None
     }
+}
+
+/// New damage a limb impact deals past what the character already took.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hurt {
+    /// The excess over what was already taken (positive). The original hands
+    /// half of it to two of the dynamics' routines and three times it to the
+    /// opponent's combat state; those are the callers'.
+    pub amount: f32,
+    /// The new total of impact damage taken (`taken + amount`).
+    pub total: f32,
+    /// Whether the total is past 0.6, the dynamics' stagger flag.
+    pub staggers: bool,
+}
+
+/// What a hard limb impact does to the character's damage bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LimbDamage {
+    /// The volume is above 0.3 (a double compare): the character's
+    /// heavy-hit callback runs, if it has one.
+    pub heavy: bool,
+    /// A hard hit on a held weapon that is mid-swing (attack motion 12 on a
+    /// striking part): the damage is dropped and the original returns before
+    /// the sound's cooldown and the voice request.
+    pub dropped: bool,
+    /// The new damage, when there is any.
+    pub hurt: Option<Hurt>,
+}
+
+/// The damage bookkeeping of a limb impact: `(volume − 0.25)·scale`, amplified
+/// by `1 − resist` when the character's resistance is negative, minus what it
+/// already took; only the excess counts, so one big hit hurts once. `scale` is
+/// the character's impact damage scale, `resist` its impact resistance,
+/// `taken` the impact damage so far; `swinging_weapon` is the attack motion
+/// 12 on a striking part. A volume of 0.25 or less (or a NaN) does nothing.
+pub fn limb_impact_damage(
+    volume: f32,
+    scale: f32,
+    resist: f32,
+    taken: f32,
+    swinging_weapon: bool,
+) -> LimbDamage {
+    let none = LimbDamage {
+        heavy: false,
+        dropped: false,
+        hurt: None,
+    };
+    if volume <= 0.25 || volume.is_nan() {
+        return none;
+    }
+    let heavy = f64::from(volume) > 0.3;
+    let mut amount = (volume - 0.25) * scale;
+    if resist < 0.0 {
+        amount *= 1.0 - resist;
+    }
+    amount -= taken;
+    if swinging_weapon {
+        return LimbDamage {
+            heavy,
+            dropped: true,
+            hurt: None,
+        };
+    }
+    let hurt = if amount > 0.0 {
+        let total = taken + amount;
+        Some(Hurt {
+            amount,
+            total,
+            staggers: f64::from(total) > 0.6,
+        })
+    } else {
+        None
+    };
+    LimbDamage {
+        heavy,
+        dropped: false,
+        hurt,
+    }
+}
+
+/// The camera-shake strength of a hard overhead landing `distance²` (cm²)
+/// from the camera: `(2000 − distance)·0.001` in single precision, used
+/// under 1800 cm (`distance² < 3 240 000`; a NaN is not).
+pub fn camera_shake(distance2: f32) -> Option<f32> {
+    if distance2 < 3_240_000.0 {
+        Some((2000.0 - distance2.sqrt()) * 0.001)
+    } else {
+        None
+    }
+}
+
+/// Whether a weapon hit shakes the camera: a big wielder (scale above 1.3,
+/// a double compare), an overhead swing (attack motion 12) with an impact
+/// above 60 past 0.6 of its clip, not yet struck (state bit 4 clear).
+pub fn shakes_camera(hit: &HardImpact, scale: f32) -> bool {
+    f64::from(scale) > 1.3
+        && hit.motion == 0x0C
+        && hit.impact > 60.0
+        && f64::from(hit.clock) > 0.6
+        && hit.flags & 0x4 == 0
 }
 
 /// What an impact reaction writes on the striking character when its weapon
@@ -385,11 +546,12 @@ pub fn camera_shake(distance2: f32) -> Option<f32> {
 pub struct ImpactReaction {
     /// The attack state word after the write (bits 2, 4 and 6).
     pub flags: u32,
-    /// The stall strength (`+0xea0`): 1 when a swing is interrupted.
-    pub strength: f32,
-    /// The game clock at which the stance returns (`+0xea4`).
+    /// The swing was interrupted: the stall strength is 1 and its progress 0.
+    /// Both writes also happen on a stab, which leaves the strength alone.
+    pub interrupted: bool,
+    /// The game clock at which the stance returns.
     pub stall_end_ms: u32,
-    /// A stab's or overhead's recorded impact strength (`+0xe98`),
+    /// A stab's or overhead's recorded impact strength,
     /// `round(5√impact)`.
     pub strike_strength: Option<u32>,
     /// The part loses its strike-chain bit (the original clears `0x10000`).
@@ -399,8 +561,8 @@ pub struct ImpactReaction {
 /// What a weapon hit brings to the impact reaction.
 #[derive(Debug, Clone, Copy)]
 pub struct HardImpact {
-    /// The attacker's attack state word (`+0x1018`); only an active
-    /// striker (`flags & 0x10005 == 1`) reacts.
+    /// The attacker's attack state word; only an active striker
+    /// (`flags & 0x10005 == 1`) reacts.
     pub flags: u32,
     /// The attack motion number (5–12).
     pub motion: i32,
@@ -408,49 +570,59 @@ pub struct HardImpact {
     pub clock: f32,
     /// The impact strength the contact reported.
     pub impact: f32,
-    /// Whether the chain's root is the character's primary weapon.
+    /// Whether the struck part has child bodies.
+    pub has_children: bool,
+    /// Whether the top of the part's striking chain is the character's
+    /// primary weapon.
     pub root_is_primary: bool,
-    /// Whether an immediate counter already started (the caller's
-    /// `part::immediate_counter` check).
+    /// Whether an immediate counter already started: the caller runs the
+    /// counter (`immediate_counter`) only for a weapon class that fights with
+    /// two hands past 0.4 of the clip, and passes whether it started.
     pub counter_taken: bool,
     /// The game clock, ms.
     pub now_ms: u32,
-    /// The clock the stab's timer adds. The original adds the simulation's
-    /// tick count there; the caller supplies it (a guess: the value's
-    /// source was not traced).
+    /// The time the stab's stall adds to the clock: a field of the
+    /// simulation's shared state whose meaning was not traced, so the caller
+    /// supplies it.
     pub link_ticks: u32,
 }
 
 /// The impact reaction of a weapon body on a hard hit, in the original's
-/// order: the swing is interrupted with a 600 ms recoil when it is an
-/// active side strike past 0.6 of its clip and its chain is the primary
-/// one (unless a counter already started); a stab or an overhead past it
-/// records `round(5√impact)` as its strength and clears the strike chain.
+/// order. The caller has checked that the part is striking. A swing is
+/// interrupted with a 600 ms recoil when it is an active side strike (bit 2
+/// clear) past 0.6 of its clip, the part has children and its chain is the
+/// primary one (unless a counter already started). An overhead or a stab
+/// (attack motion 11 or 12) not yet struck records `round(5√impact)` in
+/// single precision (rounding half to even; a NaN gives 0) as its strength
+/// and clears the strike chain.
 pub fn hard_impact(hit: &HardImpact) -> Option<ImpactReaction> {
     if hit.flags & 0x1_0005 != 1 {
         return None;
     }
     let mut out = hit.flags;
-    let mut strength = 0.0;
+    let mut interrupted = false;
     let mut stall_end_ms = 0;
-    if hit.flags & 0x2 == 0 && hit.root_is_primary && (hit.clock as f64) > 0.6 && !hit.counter_taken
+    if hit.flags & 0x2 == 0
+        && hit.has_children
+        && hit.root_is_primary
+        && f64::from(hit.clock) > 0.6
+        && !hit.counter_taken
     {
         out |= 0x2;
-        strength = 1.0;
+        interrupted = true;
         stall_end_ms = hit.now_ms.wrapping_add(600);
     }
     let mut strike_strength = None;
     let mut clears_strike_chain = false;
     if (hit.motion == 0x0B || hit.motion == 0x0C) && hit.flags & 0x4 == 0 {
-        let value = (f64::from(hit.impact).max(0.0).sqrt() * 5.0).round() as u32;
-        strike_strength = Some(value);
+        strike_strength = Some(convert(hit.impact.sqrt() * 5.0) as u32);
         out |= 0x6;
         clears_strike_chain = true;
         stall_end_ms = hit.link_ticks.wrapping_add(hit.now_ms);
     }
     Some(ImpactReaction {
         flags: out,
-        strength,
+        interrupted,
         stall_end_ms,
         strike_strength,
         clears_strike_chain,
@@ -658,54 +830,140 @@ mod tests {
 
     #[test]
     fn a_limbs_impact_sound() {
-        // Not knocked down: 20 → 6.6 → 3.3, volume 0.165.
-        let sound = limb_impact_sound(20.0, false, 50).unwrap();
+        // Not knocked down: 20 → 6.6 (the third in double precision, so
+        // exactly the single-precision 6.6) → 3.3, volume 0.165.
+        let sound = limb_impact_sound(20.0, false, || 50).unwrap();
+        assert_eq!(sound.scaled, 6.6_f32 * 0.5);
         assert!((sound.volume - 0.165).abs() < 1e-6);
         assert!((sound.pitch - 0.599).abs() < 1e-6);
+        assert!((sound.crowded_pitch - (0.165 * 0.5 + 0.6)).abs() < 1e-6);
         assert_eq!(sound.cooldown_ms, 220 + 50 - 28);
-        // Knocked down: 20 → 10 → 0.5, at the cap of 1: volume 0.5.
-        let sound = limb_impact_sound(20.0, true, 0).unwrap();
+        // Knocked down: 20 → 10 → 5, volume 0.25 at the 0.05 scale.
+        let sound = limb_impact_sound(20.0, true, || 0).unwrap();
         assert!((sound.volume - 0.5).abs() < 1e-6);
         assert!((sound.pitch - 0.8).abs() < 1e-6);
         assert_eq!(sound.cooldown_ms, 220 - 85);
-        // Under half the scaled impact: silent; so is a NaN (the ordered
-        // compare).
-        assert_eq!(limb_impact_sound(3.0, false, 0), None);
-        assert_eq!(limb_impact_sound(0.9, true, 0), None);
-        assert_eq!(limb_impact_sound(f32::NAN, true, 0), None);
+        // The cooldown rounds half to even: 0.25 · 170 = 42.5 gives 42.
+        let sound = limb_impact_sound(10.0, true, || 0).unwrap();
+        assert_eq!(sound.volume, 0.25);
+        assert_eq!(sound.cooldown_ms, 220 - 42);
+        // The volume caps at 1.
+        let sound = limb_impact_sound(1000.0, true, || 0).unwrap();
+        assert_eq!(sound.volume, 1.0);
+        assert_eq!(sound.cooldown_ms, 220 - 170);
+        // Under half the scaled impact: silent, and no spread is drawn.
+        assert_eq!(limb_impact_sound(3.0, false, || panic!("drew")), None);
+        assert_eq!(limb_impact_sound(0.9, true, || panic!("drew")), None);
+        // A NaN is not below the threshold: the original rings at full
+        // volume (its minimum takes the second operand).
+        let sound = limb_impact_sound(f32::NAN, true, || 7).unwrap();
+        assert_eq!(sound.volume, 1.0);
+        assert_eq!(sound.cooldown_ms, 220 + 7 - 170);
+    }
+
+    #[test]
+    fn a_crowded_limb_uses_the_shared_pitch() {
+        let sound = limb_impact_sound(20.0, true, || 0).unwrap();
+        assert_eq!(sound.pitch_for(2), sound.pitch);
+        assert_eq!(sound.pitch_for(3), sound.crowded_pitch);
+    }
+
+    #[test]
+    fn a_hard_limb_impact_asks_for_a_grunt() {
+        let sound = limb_impact_sound(100.0, true, || 0).unwrap();
+        // 100 → 50 scaled, volume 1.
+        let voice = limb_impact_voice(&sound, 0).unwrap();
+        assert_eq!(voice.volume, 0.5);
+        assert_eq!(voice.pitch, 1.0);
+        // Dead and down is silent, and so is an impact of 15 or less.
+        assert_eq!(limb_impact_voice(&sound, 0xa00), None);
+        let soft = limb_impact_sound(30.0, true, || 0).unwrap();
+        assert_eq!(soft.scaled, 15.0);
+        assert_eq!(limb_impact_voice(&soft, 0), None);
+        let nan = limb_impact_sound(f32::NAN, true, || 0).unwrap();
+        assert_eq!(limb_impact_voice(&nan, 0), None);
+    }
+
+    #[test]
+    fn a_limb_impact_hurts_once_for_its_excess() {
+        // Quiet: nothing.
+        let quiet = limb_impact_damage(0.25, 4.0, 0.0, 0.0, false);
+        assert_eq!(quiet.hurt, None);
+        assert!(!quiet.heavy);
+        // 0.5: (0.5 − 0.25) · 4 = 1, nothing taken: 1 of damage and a stagger.
+        let hit = limb_impact_damage(0.5, 4.0, 0.0, 0.0, false);
+        assert!(hit.heavy);
+        let hurt = hit.hurt.unwrap();
+        assert_eq!(hurt.amount, 1.0);
+        assert_eq!(hurt.total, 1.0);
+        assert!(hurt.staggers);
+        // The same hit again, with 1 already taken: nothing new.
+        assert_eq!(limb_impact_damage(0.5, 4.0, 0.0, 1.0, false).hurt, None);
+        // A negative resistance amplifies by 1 − resist: 1 · 1.5 − 0.25.
+        let weak = limb_impact_damage(0.5, 4.0, -0.5, 0.25, false);
+        assert_eq!(weak.hurt.unwrap().amount, 1.25);
+        // A positive one is ignored.
+        let strong = limb_impact_damage(0.5, 4.0, 0.5, 0.0, false);
+        assert_eq!(strong.hurt.unwrap().amount, 1.0);
+        // The single 0.3 is above the double 0.3 the original compares with, so
+        // it is heavy; a volume under it is not.
+        assert!(!limb_impact_damage(0.29, 4.0, 0.0, 0.0, false).heavy);
+        assert!(limb_impact_damage(0.3, 4.0, 0.0, 0.0, false).heavy);
+        // A swinging weapon drops the damage whatever it was.
+        let dropped = limb_impact_damage(0.5, 4.0, 0.0, 0.0, true);
+        assert!(dropped.dropped);
+        assert_eq!(dropped.hurt, None);
+        // A small total does not stagger.
+        let light = limb_impact_damage(0.3, 4.0, 0.0, 0.0, false);
+        assert!(!light.hurt.unwrap().staggers);
+        // A NaN volume does nothing.
+        assert_eq!(
+            limb_impact_damage(f32::NAN, 4.0, 0.0, 0.0, false).hurt,
+            None
+        );
     }
 
     #[test]
     fn a_weapons_impact_sound() {
-        // 100 · 0.005 + (100 · 0.01)² · 0.3 = 0.8, at most 1.
-        let sound = weapon_impact_sound(100.0, 10).unwrap();
+        // 100 · 0.005 + (100 · 0.01)² · 0.3 = 0.8, at most 1; the cooldown is
+        // 200 − 64 with no spread.
+        let sound = weapon_impact_sound(100.0).unwrap();
         assert!((sound.volume - 0.8).abs() < 1e-5);
         assert!((sound.pitch - 0.94).abs() < 1e-6);
-        assert_eq!(sound.cooldown_ms, 220 + 10 - 64);
-        assert_eq!(weapon_impact_sound(0.5, 0), None);
+        assert_eq!(sound.cooldown_ms, 200 - 64);
+        assert_eq!(weapon_impact_sound(0.5), None);
         // The original clamps before the threshold test, and its minimum
         // takes the second operand on a NaN: a NaN impact rings at full
         // volume.
-        assert_eq!(
-            weapon_impact_sound(f32::NAN, 0),
-            Some(ImpactSound {
-                volume: 1.0,
-                pitch: 1.0,
-                cooldown_ms: 140,
-            })
-        );
+        let nan = weapon_impact_sound(f32::NAN).unwrap();
+        assert_eq!(nan.volume, 1.0);
+        assert_eq!(nan.pitch, 1.0);
+        assert_eq!(nan.cooldown_ms, 200 - 80);
         // 2 · 0.005 + (2 · 0.01)² · 0.3 = 0.01012.
-        let sound = weapon_impact_sound(2.0, 0).unwrap();
+        let sound = weapon_impact_sound(2.0).unwrap();
         assert!((sound.volume - 0.01012).abs() < 1e-8);
         assert!((sound.pitch - (0.01012f32 * 0.3 + 0.7)).abs() < 1e-6);
-        assert_eq!(sound.cooldown_ms, 219);
+        assert_eq!(sound.cooldown_ms, 199);
+    }
+
+    #[test]
+    fn a_weapons_threshold_compares_in_double() {
+        // The value rounds to the single 0.005, which is under the double
+        // 0.005 the original compares it with: silent, though the double sum
+        // is above 0.005 for the second impact. The next float up rings.
+        assert_eq!(weapon_impact_sound(0.994_070_88), None);
+        assert_eq!(weapon_impact_sound(0.994_070_95), None);
+        assert!(weapon_impact_sound(0.994_071_0).is_some());
     }
 
     #[test]
     fn the_camera_shake() {
         assert_eq!(camera_shake(0.0), Some(2.0));
         let near = camera_shake(1_000_000.0).unwrap();
-        assert!((near - 1.0).abs() < 1e-6);
+        assert_eq!(near, 1.0);
+        // In single precision: 1500 · 0.001f32 is 1.5000001, not 1.5.
+        assert_eq!(camera_shake(250_000.0), Some(1500.0_f32 * 0.001_f32));
+        assert_ne!(camera_shake(250_000.0), Some(1.5));
         assert_eq!(camera_shake(3_240_000.0), None);
         assert_eq!(camera_shake(f32::NAN), None);
     }
@@ -716,6 +974,7 @@ mod tests {
             motion,
             clock,
             impact: 30.0,
+            has_children: true,
             root_is_primary: true,
             counter_taken: false,
             now_ms: 1000,
@@ -724,31 +983,84 @@ mod tests {
     }
 
     #[test]
+    fn a_big_overhead_shakes_the_camera() {
+        let mut hit = impact(0x1, 0x0C, 0.7);
+        hit.impact = 61.0;
+        assert!(shakes_camera(&hit, 1.31));
+        assert!(!shakes_camera(&hit, 1.3));
+        assert!(!shakes_camera(
+            &HardImpact {
+                impact: 60.0,
+                ..hit
+            },
+            1.31
+        ));
+        assert!(!shakes_camera(&HardImpact { clock: 0.59, ..hit }, 1.31));
+        // The single 0.6 is above the double 0.6 the original compares with.
+        assert!(shakes_camera(&HardImpact { clock: 0.6, ..hit }, 1.31));
+        assert!(!shakes_camera(&HardImpact { motion: 5, ..hit }, 1.31));
+        assert!(!shakes_camera(&HardImpact { flags: 0x5, ..hit }, 1.31));
+        assert!(!shakes_camera(
+            &HardImpact {
+                impact: f32::NAN,
+                ..hit
+            },
+            1.31
+        ));
+    }
+
+    #[test]
     fn hard_hits_interrupt_a_swing() {
         // A side strike at 0.7 with no flags: the 600 ms recoil.
         let r = hard_impact(&impact(0x1, 5, 0.7)).unwrap();
         assert_eq!(r.flags, 0x3);
-        assert_eq!(r.strength, 1.0);
+        assert!(r.interrupted);
         assert_eq!(r.stall_end_ms, 1600);
         assert_eq!(r.strike_strength, None);
-        // Not the primary chain, or an earlier counter: no recoil.
+        // Not the primary chain, an earlier counter, or no children: no
+        // recoil.
         let mut off = impact(0x1, 5, 0.7);
         off.root_is_primary = false;
         assert_eq!(hard_impact(&off).unwrap().flags, 0x1);
         let mut countered = impact(0x1, 5, 0.7);
         countered.counter_taken = true;
         assert_eq!(hard_impact(&countered).unwrap().flags, 0x1);
+        let mut bare = impact(0x1, 5, 0.7);
+        bare.has_children = false;
+        assert!(!hard_impact(&bare).unwrap().interrupted);
         // A stab records round(5√impact) and holds the strike for 6.
         let r = hard_impact(&impact(0x1, 0x0B, 0.5)).unwrap();
         assert_eq!(r.flags, 0x7);
         assert_eq!(r.strike_strength, Some(27));
         assert_eq!(r.stall_end_ms, 1007);
         assert!(r.clears_strike_chain);
+        assert!(!r.interrupted);
+        // Both at once: the stab's timer wins, the interrupt stays.
+        let r = hard_impact(&impact(0x1, 0x0B, 0.7)).unwrap();
+        assert!(r.interrupted);
+        assert_eq!(r.stall_end_ms, 1007);
         // Cleaving (bit 2) is refused before anything else.
         assert_eq!(hard_impact(&impact(0x5, 0x0B, 0.5)), None);
         // Not an active striker.
         assert_eq!(hard_impact(&impact(0x0, 5, 0.7)), None);
         assert_eq!(hard_impact(&impact(0x4, 5, 0.7)), None);
+    }
+
+    #[test]
+    fn a_stab_strength_rounds_half_to_even_and_a_nan_is_zero() {
+        // 5√6.25 = 12.5 → 12 (the convert rounds half to even).
+        let mut hit = impact(0x1, 0x0B, 0.5);
+        hit.impact = 6.25;
+        assert_eq!(hard_impact(&hit).unwrap().strike_strength, Some(12));
+        // 5√56.25 = 37.5 → 38.
+        hit.impact = 56.25;
+        assert_eq!(hard_impact(&hit).unwrap().strike_strength, Some(38));
+        // A NaN (or negative) impact converts to the indefinite, whose low
+        // bits are zero.
+        hit.impact = f32::NAN;
+        assert_eq!(hard_impact(&hit).unwrap().strike_strength, Some(0));
+        hit.impact = -4.0;
+        assert_eq!(hard_impact(&hit).unwrap().strike_strength, Some(0));
     }
 
     #[test]
