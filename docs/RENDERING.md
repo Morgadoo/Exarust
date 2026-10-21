@@ -284,10 +284,11 @@ program.
   menu floor's 0.9 becomes a matte roughness of about 0.8.
 - The specular colour is zero unless the flags carry `0x4`. It is tripled
   only for PBR materials (type 1) with a specular map.
-- Dirt maps only act through vertex colours, which level materials do not
-  use (many level meshes store a colour stream, uploaded since the mesh
-  unit's second pass, but their programs ignore it). Dirt mode 4 is wound
-  blood ([Blood](#blood)).
+- Dirt maps only act through vertex colours. Many prop and level meshes
+  store a colour stream (859 of them draw a material with a dirt mode,
+  `exa-tool corpus colours`); Exarust keeps it in `Mesh::colors` but does
+  not upload it, as it shades no dirt mode but 4, wound blood
+  ([Blood](#blood)), whose stream the blood system makes itself.
 - Tangents are generated from the UVs, and the original's bitangent runs
   along −v (its tangent sign is the opposite of MikkTSpace's). Exarust's
   `exa_assets::tangents` reproduces the original's splitter: per-face
@@ -539,10 +540,8 @@ lowered around each wound and never raised, and a shader mode, **dirt
 mode 4**, that reads it against a shared tiling speckle texture.
 
 **Channel** (`exa_character::blood`): Exarust stores it as the colour
-stream in bytes (Unorm8x4, white, the blood in alpha); a shipped model's
-stored colour stream is uploaded as f32 colours instead (`exa_assets`), and
-the blood copy gives its target a byte stream. A mesh without one counts as
-white. A model's meshes are shared by every character wearing
+stream in bytes (Unorm8x4, white, the blood in alpha). A mesh without one
+counts as white. A model's meshes are shared by every character wearing
 it; the first wound that lowers a value of one gives the struck character
 its own copy (`Bloodied`), which later wounds paint in place. A whole
 human body in braies costs 278 KiB (20 meshes, 2 989 vertices), the

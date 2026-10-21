@@ -1906,24 +1906,12 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
         let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     }
-    // The vertex-colour stream goes to the GPU, as the original copies a
-    // group's colour channel. The stored bytes are normalised the way the
-    // processor's unorm conversion does; Bevy's colour attribute is f32
-    // (the original's shader reads the same normalised values). A group
-    // without a colour channel gets white where the original fills one;
-    // here the attribute is simply absent.
-    if let Some(colours) = &mesh.colors
-        && colours.len() == mesh.positions.len()
-    {
-        let colour: Vec<[f32; 4]> = used
-            .iter()
-            .map(|&i| colours[i].map(|c| f32::from(c) / 255.0))
-            .collect();
-        m.insert_attribute(
-            Mesh::ATTRIBUTE_COLOR,
-            bevy::mesh::VertexAttributeValues::Float32x4(colour),
-        );
-    }
+    // The stored colour stream (`RfcMesh::colors`) is not uploaded: only the
+    // dirt modes read it, and Exarust shades none but the blood mode, whose
+    // meshes get their own byte stream when a wound lands. Uploading it for
+    // every coloured prop would cost 16 bytes a vertex and a pipeline
+    // variant for no change in the picture (`exa-tool corpus colours` counts
+    // the meshes); the dirt modes 1-3 will need it.
     if let Some(tangents) = tangents {
         m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     }
@@ -2225,46 +2213,6 @@ mod tests {
         ] {
             assert!(!takes_race_blood(other), "{other}");
         }
-    }
-
-    /// A shipped prop whose mesh stores a vertex-colour stream reaches the
-    /// GPU with that attribute (skipped without the game). `barrel a`'s
-    /// models carry the stream on their level meshes.
-    #[test]
-    fn shipped_meshes_upload_vertex_colours() {
-        let Some(dir) = crate::locate_install(None) else {
-            return;
-        };
-        let game = GameData::open(dir).unwrap();
-        let mut cache = ModelCache::default();
-        let mut meshes = Assets::<Mesh>::default();
-        let mut materials = Assets::<ExaMaterial>::default();
-        let mut images = Assets::<Image>::default();
-        let model = {
-            let mut loader = ModelLoader {
-                game: &game,
-                cache: &mut cache,
-                meshes: &mut meshes,
-                materials: &mut materials,
-                images: &mut images,
-                bc_supported: false,
-            };
-            loader.model(PackKind::Objlib, "barrel a").unwrap()
-        };
-        let mut parts = 0;
-        let mut coloured = 0;
-        for node in &model.nodes {
-            for (handle, _) in &node.parts {
-                parts += 1;
-                if meshes
-                    .get(handle)
-                    .is_some_and(|m| m.attribute(Mesh::ATTRIBUTE_COLOR).is_some())
-                {
-                    coloured += 1;
-                }
-            }
-        }
-        assert!(parts > 0 && coloured > 0, "{coloured} of {parts} parts");
     }
 
     /// What the shipped rigid bodies' mobility is divided by (skipped
@@ -2666,11 +2614,12 @@ mod tests {
         assert_eq!(group_indices(255, vec![7, 9]), Indices::U16(vec![7, 9]));
     }
 
-    /// The original's vertex buffers carry the mesh's RGBA8 colour stream
-    /// (4 bytes a vertex, normalised by the pipeline). The colours follow
-    /// the vertices a group uses.
+    /// The stored colour stream is not uploaded: only the dirt modes read a
+    /// vertex colour and Exarust shades none of them from the stream, so the
+    /// attribute would cost 16 bytes a vertex for nothing. The group's other
+    /// streams are built as before.
     #[test]
-    fn a_group_uploads_the_vertex_colours() {
+    fn a_group_leaves_the_stored_colours_off_the_gpu() {
         let mesh = RfcMesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
@@ -2692,20 +2641,8 @@ mod tests {
             ..Default::default()
         };
         let built = group_mesh(&mesh, &[2, 0, 1], None).expect("a group");
-        let bevy::mesh::VertexAttributeValues::Float32x4(colours) =
-            built.attribute(Mesh::ATTRIBUTE_COLOR).expect("colours")
-        else {
-            panic!("colours are not f32 RGBA");
-        };
-        // The group's order follows its indices; bytes become unorm floats.
-        let expect = |c: [u8; 4]| c.map(|v| f32::from(v) / 255.0);
-        assert_eq!(
-            colours,
-            &vec![
-                expect([70, 80, 90, 0]),
-                expect([10, 20, 30, 255]),
-                expect([40, 50, 60, 128])
-            ]
-        );
+        assert!(built.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+        assert_eq!(built.count_vertices(), 3);
+        assert!(built.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
     }
 }

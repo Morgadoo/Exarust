@@ -190,9 +190,7 @@ See [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Editable meshes)
 and [`docs/RENDERING.md`](../../docs/RENDERING.md) (Effect shells).
 
 Model meshes are built per material group with the original's vertex
-attributes: positions, normals, UV_0, the RGBA8 colour stream when the mesh
-has one (bytes normalised to f32; Bevy's colour attribute has no byte
-form), split tangents (`tangents::split_tangents`: a per-face unweighted
+attributes: positions, normals, UV_0, split tangents (`tangents::split_tangents`: a per-face unweighted
 tangent and bitangent accumulated per vertex, the determinant floor, the
 tangent made perpendicular to the surface normal, and the inverted
 handedness sign) and skin weights, with the smallest index type that fits

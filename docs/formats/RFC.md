@@ -245,13 +245,18 @@ Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
 
 **Vertex colours.** 2 708 meshes of the installed packs carry the RGBA8
-colour stream (2 431 358 vertices). Exarust keeps it in `Mesh::colors` and
-`exa_assets` uploads it as the Bevy vertex-colour attribute, each byte
-normalised to 0…1 (`Float32x4`; Bevy has no byte colour attribute). The
-original stores the stream as bytes and its vertex shader reads the same
-normalised values. A group whose colour channel the original has to make
-(a mesh without the stream) is filled white there; Exarust leaves the
-attribute off that group.
+colour stream (2 431 358 vertices): none in the character packs, 298 in
+`Objects`, 2 044 in `Objlib` and 366 in `Resource` (`exa-tool corpus
+colours`). The original's GPU build copies a group's colour channel into its
+vertex buffer when the group's flag asks for it, and fills white where the
+group has none. Only the dirt modes of a material read the stream (mode 4
+is wound blood, [RENDERING.md](../RENDERING.md), Blood; modes 1–3 are not
+shaded yet). The meshes with a stream that draw a material with a dirt mode
+number 859 (166 in `Objects`, 596 in `Objlib`, 97 in `Resource`; none with
+mode 4), so Exarust keeps
+the stream in `Mesh::colors` and does not upload it: it would cost 16 bytes
+a vertex (`Float32x4`; Bevy has no byte colour attribute) and a pipeline
+variant for no change in the picture. Dirt modes 1–3 will need the upload.
 
 **Per-mesh render state.** Besides the shadow-bias level, the render word's
 bit `0x800` selects which faces the shadow depth pass culls (REA on the
@@ -283,16 +288,29 @@ mesh indexes each corner through a reference list (`element = channel[refs[
 corner]]`) before the incidence is built; Exarust's decoded meshes store the
 element directly, and the indirect builder is kept for a generic import.
 
-**Assembly.** The original appends one mesh to another (`RF_Mesh`'s merge):
-triangles whose material the destination already has join that group (a new
-group is made otherwise), the appended part's vertices are transformed from
-its node into the destination's, and the editable channels, face flags, edge
-bits and the per-group face ranges grow with it. `Mesh::merge` reproduces
-this on the render form: vertices and triangles are appended, attribute
-streams follow, missing streams are filled (white colours, zero texture
-coordinates and weights, face flags 0, edge bits 7), and the result is
-regrouped by material. Smoothing keys are shifted apart because the render
-form's keys are group numbers, not the editable form's bit masks. The
+**Assembly.** The original appends one mesh to another (`RF_Mesh`'s merge;
+REA, read against the disassembly): triangles whose material the destination
+already has (the shared material record) join that group, a new group is made
+otherwise, and the appended triangles take the next face numbers with the
+group each belongs to. The part's positions are transformed by its node's
+matrix times the destination's inverse. Each channel of the part is joined
+to the destination's channel of the same format word, made when the
+destination lacks it, and an index map's entries are offset by the
+destination channel's element count. A made channel's earlier elements are
+white for the colour stream (format `0x02B4…`) and zero otherwise; the
+destination's earlier triangles then index element 0. A channel the part
+lacks gets index 0 for the part's triangles in the texture-coordinate map
+(element 0 of the joined stream); the colour and skin streams share the
+position map, so a part without them leaves the destination's channel short.
+Face flags missing on a side join as 1 (smoothing group 1 only), edge bits
+as 7; the face smoothing bits are copied unchanged and the smoothing channel
+(key `0x2`) is left to be rebuilt from them. `Mesh::merge` reproduces this
+on the render form: vertices and triangles are appended and regrouped by
+material, texture coordinates join as above, the part's missing colours and
+weights are filled white and zero (a render-form choice where the original
+reads past the channel), and the smoothing keys are shifted apart because
+the render form's keys name a position's normal group, not the editable
+form's bit masks. GI points belong to the node and are not merged. The
 original uses the merge to draw a factory weapon or a grid room from one
 buffer; Exarust keeps its parts as separate Bevy meshes, which Bevy's
 batching draws together, so the merge is a library rule with tests rather
