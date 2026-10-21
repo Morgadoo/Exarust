@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use bevy::camera::primitives::{Aabb, Frustum};
+use bevy::camera::primitives::Frustum;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -564,15 +564,24 @@ fn publish_sector_lights(
 }
 
 /// Whether a box centred at `centre` with `half` extents meets the view's
-/// volume (the original tests the sector's 300 cm × half-span × 300 cm box
-/// against the camera's convex volume).
+/// volume: the original tests the sector's 300 cm × half-span × 300 cm box
+/// against the camera's convex volume, rejecting a plane only when the
+/// whole box lies beyond it. The half extents are used as the original
+/// passes them, sign included (an unbuilt sector's span is negative).
 fn frustum_intersects(frustum: &Frustum, centre: Vec3, half: Vec3) -> bool {
-    frustum.intersects_obb(
-        &Aabb::from_min_max(centre - half, centre + half),
-        &Affine3A::IDENTITY,
-        true,
-        true,
-    )
+    let point = centre.extend(1.0);
+    for plane in &frustum.half_spaces {
+        // Bevy's planes point inwards: a positive distance is inside.
+        let distance = plane.normal_d().dot(point);
+        if distance < 0.0 {
+            let n = plane.normal();
+            let reach = n.x.abs() * half.x + n.y.abs() * half.y + n.z.abs() * half.z;
+            if reach < -distance {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// The sectors the manager draws this frame: cells within six of the focus
