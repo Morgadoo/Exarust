@@ -14,7 +14,7 @@
 
 use bevy::prelude::*;
 
-use crate::texture::ColorSpace;
+use crate::texture::{ColorSpace, TextureSettings, placeholder_image};
 use crate::texture_cache::TextureKey;
 
 /// Every ring grows by this many entries, as the texture loader's does.
@@ -275,6 +275,7 @@ pub struct TextureStream {
     paused: bool,
     awake: bool,
     completion: Option<UploadCallback>,
+    settings: TextureSettings,
 }
 
 impl TextureStream {
@@ -328,6 +329,14 @@ impl TextureStream {
         false
     }
 
+    pub fn settings(&self) -> &TextureSettings {
+        &self.settings
+    }
+
+    pub fn set_settings(&mut self, settings: TextureSettings) {
+        self.settings = settings;
+    }
+
     /// The next request to decode, taken off the queue (the loader's side).
     pub fn next_request(&mut self) -> Option<TextureRequest> {
         self.requests.as_mut().and_then(RingQueue::pop)
@@ -344,12 +353,14 @@ impl TextureStream {
         let Some(request) = self.next_request() else {
             return false;
         };
-        let Some((image, alpha)) = decode(&request) else {
-            // A failed decode leaves nothing to upload; the record keeps its
-            // placeholder (or stays empty).
-            self.in_flight = self.in_flight.saturating_sub(1);
-            return true;
-        };
+        // A failed decode uploads the original's 1x1 grey placeholder, as the
+        // synchronous image loader does.
+        let (image, alpha) = decode(&request).unwrap_or_else(|| {
+            (
+                placeholder_image(request.space, request.flags, &self.settings),
+                false,
+            )
+        });
         self.uploads.push(TextureUpload {
             key: request.key,
             image,
@@ -566,6 +577,25 @@ mod tests {
     }
 
     #[test]
+    fn removal_works_across_the_ring_wrap() {
+        let mut queue = RingQueue::new(4, 8);
+        for name in ["a", "b", "c"] {
+            queue.push(request(name));
+        }
+        assert_eq!(queue.pop().unwrap().key, key("a"));
+        queue.push(request("d"));
+        assert_eq!(names(&queue), ["b", "c", "d"]);
+        // The last entry is at index 3 (the ring has wrapped).
+        assert_eq!(queue.remove(|r| r.key == key("d")).unwrap().key, key("d"));
+        assert_eq!(names(&queue), ["b", "c"]);
+        assert_eq!(queue.remove(|r| r.key == key("b")).unwrap().key, key("b"));
+        assert_eq!(names(&queue), ["c"]);
+        queue.push(request("e"));
+        queue.push(request("f"));
+        assert_eq!(names(&queue), ["c", "e", "f"]);
+    }
+
+    #[test]
     fn a_pass_uploads_only_the_entries_ready_when_it_started() {
         let mut stream = TextureStream::new();
         for name in ["a", "b", "c"] {
@@ -614,6 +644,27 @@ mod tests {
         stream.resume();
         assert!(stream.take_wake());
         assert_eq!(stream.queued(), 2);
+    }
+
+    #[test]
+    fn a_failed_decode_uploads_the_placeholder() {
+        let mut stream = TextureStream::new();
+        stream.request(request("missing"));
+        assert!(stream.decode_next(|_| None));
+        assert_eq!(stream.pending_uploads(), 1);
+        let mut format = None;
+        stream.pump_uploads(1, |item| {
+            format = Some(item.image.texture_descriptor.format);
+            assert_eq!(
+                item.image.data.as_deref(),
+                Some(&[0x40, 0x40, 0x40, 0xff][..])
+            );
+        });
+        assert_eq!(
+            format,
+            Some(bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb)
+        );
+        assert!(stream.is_idle());
     }
 
     #[test]
