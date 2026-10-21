@@ -2517,7 +2517,7 @@ mod tests {
         assert_eq!(&out[32..], &[9u8; 68]);
         package.put_section(&name("a"), &[1; 4]);
         let out = package.to_bytes();
-        assert_eq!(&out[8 + 2 * 24..100], &[9u8; 52], "the old bytes stay");
+        assert_eq!(&out[8 + 2 * 24..100], &[9u8; 44], "the old bytes stay");
         assert_eq!(&out[0x2000..0x2004], &[1; 4]);
         // A wrong magic is reset too; the right one reads the directory.
         let mut wrong = bytes_of_magic(0x1234_5678);
