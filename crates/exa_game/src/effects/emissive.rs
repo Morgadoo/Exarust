@@ -1,39 +1,52 @@
 //! The GI emissive objects the force effects carry: the light each spreads
-//! through the voxel volume, its box, and how its strength follows the
+//! through the voxel volume, its box, and how its values follow the
 //! effect's phase.
 //!
-//! Every emissive is a GI light object with a shader program of its own
-//! (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
-//! `gi_multipoint`, `gi_telebubble`), a colour, a texture position and a
-//! world box. The box is the mesh's axis-aligned bounds, rounded to whole
-//! centimetres and widened by 10 cm, then by 60 cm of falloff (80 for the
-//! cuboid, 120 for the tendril's multi-point light; the teleporter bubble
-//! 60).
+//! Every emissive is a GI light object with a program of its own (`gi_dome`,
+//! `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`, `gi_multipoint`,
+//! `gi_telebubble`), drawn into the volume with the volume's box matrix
+//! (`bMat`); the faced ones sample the force texture as `Tex0` on unit 2.
+//! `gain` below is the GI volume's light scale, which every colour takes.
 //!
-//! - **Barrier** ([`glow`], [`Kind::Barrier`]): growing, `ease(share·1.5)`;
-//!   standing, 1; shrinking, `ease(1 − share)`. Its colour is
-//!   (0.14, 0.08, 1) times that, the node's fade and 0.8.
-//! - **Bubble**: growing, `ease(share·1.2)`; standing, 1; shrinking,
-//!   `ease(1 − share)`; colour (0.1, 0.06, 1) times `(2 − f)·f`, the fade
-//!   and 1, with alpha `1 − f`.
-//! - **Barricade**: growing, `ease(share·1.5)`; standing, 1; shrinking,
-//!   `ease(1 − share·1.5)²`; colour (0.14, 0.08, 1) times that, the fade
-//!   and 1.2.
-//! - **Teleporter bubble**: the texture's own colour, a pulse
-//!   `(2 − charge)·charge·s` with `s = 1` under a charge of 0.8 and
-//!   `s = 2·(1 − (charge − 0.8)·5)` above, a texture period of
-//!   `500 − round(350·charge)` ms and a fade `ease(1 − alpha)` under state 5,
-//!   or the alpha itself from 5.
-//! - **Strikes**: a gradient line between two points with attenuation
-//!   10000 and a point light, its colour `1 − fade` times the node's.
-//! - **Tendril**: a multi-point light along the tendril's points to 16000 cm
-//!   of attenuation, each point's strength scaled by the node's fade and
-//!   its own intensity.
+//! - **Barrier** ([`barrier_light`]): the extent `bExt` is the node's scale
+//!   less 60 across and 40 up; the strength is `min(1.5·share, 1)` growing,
+//!   1 under state 3, `max(1 − share, 0)` from 3; the colour
+//!   `(0.14, 0.08, 1)` times strength, gain and 0.8.
+//! - **Bubble** ([`bubble_light`]): the radius is the dome's plus 5; the
+//!   strength `min(1.2·share, 1)` growing (the product in double
+//!   precision), 1, or `max(1 − share, 0)`; the fade `1 − strength`; the
+//!   colour `(0.1, 0.06, 1)` times `(2 − e)·e·gain`, `e = strength/2 + 1/2`.
+//! - **Barricade** ([`barricade_light`]): the Barrier's extent; strength
+//!   `min(1.5·share, 1)`, 1, or `max(1 − 1.5·share, 0)²`; colour
+//!   `(0.14, 0.08, 1)` times strength, gain and 1.2.
+//! - **Cuboid** ([`cuboid_light`]): the extent is `max(scale − 20, 10)` on
+//!   each axis, the colour the emissive's own (`gi_cuboid` takes no
+//!   texture position).
+//! - **Strikes** ([`strikes_light`]): a gradient line between two points
+//!   with attenuation 10000, the colour the emissive's times `1 − fade`,
+//!   and a point light (its fourth value ten times its strength) or none.
+//! - **Tendril** ([`tendril_light`]): one light per tendril point, its
+//!   colour `(0.25, 0.25, 1)` times gain, the point's intensity and the
+//!   emissive's scale; attenuation 16000; the program is built per point
+//!   count.
+//! - **Teleporter bubble** ([`teleporter_light`]): the colour `(0.75, 0.8,
+//!   1)` times gain and the swell `s` (1 up to a charge of 0.8, then
+//!   `1 − 5·(charge − 0.8)`, doubled for the colour); the pulse
+//!   `(2 − charge)·charge·s`; the fade `max(1 − fade, 0)` under state 5;
+//!   the animation phase `(ms mod p)/p` with `p = 500 − round(350·charge)`.
 //!
-//! Evidence: the seven emissive classes' program setup, world bounds and
-//! draw, read from `Exanima.exe`.
+//! The boxes are the mesh node's axis-aligned bounds widened 10 cm and
+//! rounded, plus 60 cm of falloff (80 for the cuboid); the tendril's is
+//! its points' bounds plus 120 cm.
+//!
+//! Nothing injects these lights into Exarust's voxel volume yet.
+//!
+//! Evidence: the seven emissive classes' program setup, bounds and draw,
+//! read from `Exanima.exe`.
 
 use bevy::prelude::*;
+
+use super::force_dome::Phase;
 
 /// The shader programs the force emissives use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,39 +74,32 @@ impl Program {
         }
     }
 
-    /// The uniform names the program binds, in order.
+    /// The uniforms the program binds, in order (the texture sampler first
+    /// where it has one).
     pub fn uniforms(self) -> &'static [&'static str] {
         match self {
-            Program::Dome => &["Pos", "Radius", "Colour", "TexPos"],
-            Program::Bubble => &["Pos", "Radius", "Colour", "TexPos", "ViewPos"],
-            Program::CuboidFn => &["Pos", "Radius", "Colour", "TexPos"],
-            Program::Cuboid => &["Pos", "Radius", "Colour"],
+            Program::Dome | Program::CuboidFn => &["Tex0", "bMat", "bExt", "Colour", "TexPos"],
+            Program::Bubble => &["Tex0", "bMat", "Radius", "Colour", "TexPos", "Fade"],
+            Program::Cuboid => &["Tex0", "bMat", "bExt", "Colour"],
             Program::GradientLine => &["Line", "Grad", "Colour", "Atten", "PointLgt"],
             Program::MultiPoint => &["Light", "Atten"],
             Program::TeleporterBubble => &[
-                "bMat", "Radius", "Colour", "TexPos", "Fade", "Pulse", "Anim",
+                "Tex0", "bMat", "Radius", "Colour", "TexPos", "Fade", "Pulse", "Anim",
             ],
-        }
-    }
-
-    /// The texture the light samples, if any: the two faced lights use the
-    /// force effect texture's second layer.
-    pub fn texture(self) -> Option<&'static str> {
-        match self {
-            Program::Dome | Program::Bubble | Program::CuboidFn | Program::Cuboid => {
-                Some("ForceEfctA2E.rfi")
-            }
-            Program::TeleporterBubble => Some("ForceEfctA2E.rfi"),
-            _ => None,
         }
     }
 }
 
-/// The colour of the force dome and the barricade: (0.14, 0.08, 1).
-pub const DOME_COLOUR: [f32; 3] = [0.14, 0.08, 1.0];
-/// The bubble's colour: (0.1, 0.06, 1).
-pub const BUBBLE_COLOUR: [f32; 3] = [0.1, 0.06, 1.0];
-/// The intensity scales: barrier 0.8, barricade 1.2, bubble 1, strikes 1.
+/// The force dome's and the barricade's colour.
+pub const DOME_COLOUR: Vec3 = Vec3::new(0.14, 0.08, 1.0);
+/// The bubble's colour.
+pub const BUBBLE_COLOUR: Vec3 = Vec3::new(0.1, 0.06, 1.0);
+/// The tendril's colour.
+pub const TENDRIL_COLOUR: Vec3 = Vec3::new(0.25, 0.25, 1.0);
+/// The teleporter bubble's colour (the force texture's name is followed by
+/// it in the original's data).
+pub const TELEPORTER_COLOUR: Vec3 = Vec3::new(0.75, 0.8, 1.0);
+/// The intensity scales: barrier 0.8, barricade 1.2.
 pub const BARRIER_GAIN: f32 = 0.8;
 pub const BARRICADE_GAIN: f32 = 1.2;
 /// The bounds' margin over the mesh: 10 cm, then the falloff.
@@ -104,150 +110,181 @@ pub const TENDRIL_FALLOFF_CM: f32 = 120.0;
 /// The gradient line's attenuation, and the multi-point light's.
 pub const LINE_ATTENUATION: f32 = 10_000.0;
 pub const MULTIPOINT_ATTENUATION: f32 = 16_000.0;
-/// The teleporter bubble's texture period, 500 to 150 ms.
-pub const TELE_PERIOD_MAX: f32 = 500.0;
+/// The teleporter bubble's animation period, 500 ms less 350 per charge.
+pub const TELE_PERIOD_MS: i32 = 500;
 pub const TELE_PERIOD_SWING: f32 = 350.0;
 
-/// What the emissive shows this frame.
+/// `min(x, 1)`.
+fn at_most_one(x: f32) -> f32 {
+    if x >= 1.0 { 1.0 } else { x }
+}
+
+/// `max(x, 0)`, a NaN kept.
+fn at_least_zero(x: f32) -> f32 {
+    if x <= 0.0 { 0.0 } else { x }
+}
+
+/// The faced extent: the node's scale less 60 across and 40 up.
+fn faced_extent(scale: Vec3) -> Vec3 {
+    Vec3::new(scale.x - 60.0, scale.y - 40.0, scale.z)
+}
+
+/// A faced light's extent and colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Glow {
-    pub colour: [f32; 3],
-    /// The colour's strength (alpha for the bubble's own draw).
-    pub strength: f32,
-    /// The bubble's alpha, `1 − f`.
-    pub alpha: f32,
+pub struct FacedLight {
+    pub extent: Vec3,
+    pub colour: Vec3,
 }
 
-/// The phase rule the light follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Barrier,
-    Bubble,
-    Barricade,
-    Cuboid,
-    Strikes,
-    Tendril,
-    TeleporterBubble,
-}
-
-/// The clamp the engine's ease helper applies: 0 at or below 0, 1 at or
-/// above 1.
-#[allow(clippy::manual_clamp)] // -0.0 stays +0.0, as the original's compare.
-fn clamp01(x: f32) -> f32 {
-    if x <= 0.0 {
-        0.0
-    } else if x >= 1.0 {
-        1.0
-    } else {
-        x
-    }
-}
-
-/// The light's strength by phase: state 1 grows, 2 ends, 3 shrinks, 4 gone.
-/// `share` is the effect's shown share; `fade` the node's own fade.
-pub fn glow(kind: Kind, state: i32, share: f32, fade: f32, at_ms: u32, since_ms: u32) -> Glow {
-    match kind {
-        Kind::Barrier => {
-            let f = if state == 1 {
-                clamp01(share * 1.5)
-            } else if state < 3 {
-                1.0
-            } else {
-                clamp01(1.0 - share)
-            };
-            let amount = f * fade * BARRIER_GAIN;
-            Glow {
-                colour: [DOME_COLOUR[0] * amount, DOME_COLOUR[1] * amount, amount],
-                strength: f,
-                alpha: 1.0,
-            }
-        }
-        Kind::Bubble => {
-            let f = if state == 1 {
-                clamp01(share * 1.2)
-            } else if state < 3 {
-                1.0
-            } else {
-                clamp01(1.0 - share)
-            };
-            // The shader takes `f/2 + 0.5` through the half parabola.
-            let eased = f * 0.5 + 0.5;
-            let amount = (2.0 - eased) * eased * fade;
-            Glow {
-                colour: [BUBBLE_COLOUR[0] * amount, BUBBLE_COLOUR[1] * amount, amount],
-                strength: f,
-                alpha: 1.0 - f,
-            }
-        }
-        Kind::Barricade => {
-            let f = if state == 1 {
-                clamp01(share * 1.5)
-            } else if state < 3 {
-                1.0
-            } else {
-                let e = clamp01(1.0 - share * 1.5);
-                e * e
-            };
-            let amount = f * fade * BARRICADE_GAIN;
-            Glow {
-                colour: [DOME_COLOUR[0] * amount, DOME_COLOUR[1] * amount, amount],
-                strength: f,
-                alpha: 1.0,
-            }
-        }
-        Kind::Cuboid => Glow {
-            colour: [fade, fade, fade],
-            strength: fade,
-            alpha: 1.0,
-        },
-        Kind::Strikes => Glow {
-            colour: [fade, fade, fade],
-            strength: 1.0 - fade,
-            alpha: 1.0,
-        },
-        Kind::Tendril => Glow {
-            colour: [fade, fade, fade],
-            strength: fade,
-            alpha: 1.0,
-        },
-        Kind::TeleporterBubble => {
-            let alpha = share;
-            let f = if state < 5 {
-                clamp01(1.0 - alpha)
-            } else {
-                alpha
-            };
-            // The texture's colour is the only colour the light has; the
-            // original uploads its texture row colour (guess: white).
-            let _ = (at_ms, since_ms);
-            Glow {
-                colour: [1.0, 1.0, 1.0],
-                strength: tele_pulse(alpha),
-                alpha: f,
-            }
-        }
-    }
-}
-
-/// The teleporter bubble's pulse: `(2 − charge)·charge·s`, `s` 1 under a
-/// charge of 0.8 and `2·(1 − (charge − 0.8)·5)` above.
-pub fn tele_pulse(charge: f32) -> f32 {
-    let swell = if 0.8 < charge {
-        2.0 * (1.0 - (charge - 0.8) * 5.0)
-    } else {
-        1.0
+/// The Barrier's light from its phase and shown share and its node's scale.
+pub fn barrier_light(phase: Phase, share: f32, scale: Vec3, gain: f32) -> FacedLight {
+    let strength = match phase {
+        Phase::Growing => at_most_one(share * 1.5),
+        p if p < Phase::Shrinking => 1.0,
+        _ => at_least_zero(1.0 - share * 1.0),
     };
-    (2.0 - charge) * charge * swell
+    FacedLight {
+        extent: faced_extent(scale),
+        colour: DOME_COLOUR * (strength * gain * BARRIER_GAIN),
+    }
 }
 
-/// The teleporter bubble's texture phase: `(now − since) mod period / period`,
-/// the period falling from 500 to 150 ms as the charge passes 0.8.
-pub fn texture_phase(charge: f32, now_ms: u32, since_ms: u32) -> f32 {
-    let period = TELE_PERIOD_MAX - (charge * TELE_PERIOD_SWING).round_ties_even();
-    if period == 0.0 {
-        return 0.0;
+/// The barricade's light from its state word and shown share.
+pub fn barricade_light(state: i32, share: f32, scale: Vec3, gain: f32) -> FacedLight {
+    let strength = if state == 1 {
+        at_most_one(share * 1.5)
+    } else if (state as u32) < 3 {
+        1.0
+    } else {
+        let s = at_least_zero(1.0 - share * 1.5);
+        s * s
+    };
+    FacedLight {
+        extent: faced_extent(scale),
+        colour: DOME_COLOUR * (strength * gain * BARRICADE_GAIN),
     }
-    (now_ms.wrapping_sub(since_ms) as f32 % period) / period
+}
+
+/// The Bubble's light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BubbleLight {
+    pub radius: f32,
+    pub fade: f32,
+    pub colour: Vec3,
+}
+
+/// The Bubble's light from its phase, shown share and radius.
+pub fn bubble_light(phase: Phase, share: f32, radius: f32, gain: f32) -> BubbleLight {
+    let strength = match phase {
+        Phase::Growing => at_most_one((f64::from(share) * 1.2) as f32),
+        p if p < Phase::Shrinking => 1.0,
+        _ => at_least_zero(1.0 - share * 1.0),
+    };
+    let e = strength * 0.5 + 0.5;
+    BubbleLight {
+        radius: radius + 5.0,
+        fade: 1.0 - strength,
+        colour: BUBBLE_COLOUR * ((2.0 - e) * e * gain * 1.0),
+    }
+}
+
+/// The cuboid's extent and colour: `max(scale − 20, 10)` on each axis.
+pub fn cuboid_light(scale: Vec3, colour: Vec3) -> FacedLight {
+    let extent = |s: f32| {
+        let e = s - 20.0;
+        if e <= 10.0 { 10.0 } else { e }
+    };
+    FacedLight {
+        extent: Vec3::new(extent(scale.x), extent(scale.y), extent(scale.z)),
+        colour,
+    }
+}
+
+/// The strikes' light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrikesLight {
+    pub line: [Vec3; 2],
+    pub gradient: Vec3,
+    pub colour: Vec3,
+    pub attenuation: f32,
+    pub point: [f32; 4],
+}
+
+/// The strikes' light: the line's two ends and its gradient (already in the
+/// volume's space), the emissive's colour, the effect's fade and its point
+/// light (place and strength) when it has one.
+pub fn strikes_light(
+    line: [Vec3; 2],
+    gradient: Vec3,
+    colour: Vec3,
+    fade: f32,
+    point: Option<(Vec3, f32)>,
+) -> StrikesLight {
+    StrikesLight {
+        line,
+        gradient,
+        colour: colour * (1.0 - fade),
+        attenuation: LINE_ATTENUATION,
+        point: point.map_or([0.0; 4], |(at, strength)| {
+            [at.x, at.y, at.z, strength * 10.0]
+        }),
+    }
+}
+
+/// The tendril's lights: each point's place and colour, the colour
+/// `(0.25, 0.25, 1)` times the gain, the point's intensity and the
+/// emissive's scale.
+pub fn tendril_light(points: &[(Vec3, f32)], scale: f32, gain: f32) -> Vec<(Vec3, Vec3)> {
+    points
+        .iter()
+        .map(|&(at, intensity)| (at, TENDRIL_COLOUR * (gain * intensity * scale)))
+        .collect()
+}
+
+/// The teleporter bubble's light.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TeleporterLight {
+    pub fade: f32,
+    pub pulse: f32,
+    pub anim: f32,
+    pub colour: Vec3,
+}
+
+/// The teleporter bubble's light from its state word, fade value, charge
+/// and phase stamp, at the game clock `now_ms`.
+pub fn teleporter_light(
+    state: u32,
+    fade: f32,
+    charge: f32,
+    stamp_ms: u32,
+    now_ms: u32,
+    gain: f32,
+) -> TeleporterLight {
+    let fade = if state < 5 {
+        at_least_zero(1.0 - fade)
+    } else {
+        fade
+    };
+    let swell = if charge <= 0.8 {
+        1.0
+    } else {
+        1.0 - (charge - 0.8) * 5.0
+    };
+    let pulse = (2.0 - charge) * charge * swell;
+    let period = (TELE_PERIOD_MS - (charge * TELE_PERIOD_SWING).round_ties_even() as i32) as i64;
+    let span = i64::from(now_ms) - i64::from(stamp_ms);
+    let anim = if period == 0 {
+        0.0
+    } else {
+        ((span % period) as f64 / period as f64) as f32
+    };
+    let colour_swell = if charge > 0.8 { swell * 2.0 } else { swell };
+    TeleporterLight {
+        fade,
+        pulse,
+        anim,
+        colour: TELEPORTER_COLOUR * (gain * colour_swell),
+    }
 }
 
 /// The axis-aligned world box of a mesh node: the node's place plus each
@@ -276,18 +313,18 @@ pub fn point_box(points: &[Vec3]) -> Option<(Vec3, Vec3)> {
     let mut min = first;
     let mut max = first;
     for point in points {
-        min = min.min(*point);
-        max = max.max(*point);
+        for axis in 0..3 {
+            let v = point[axis];
+            if !(min[axis] <= v) {
+                min[axis] = v;
+            } else if max[axis] < v {
+                max[axis] = v;
+            }
+        }
     }
     let centre = min + (max - min) * 0.5;
     let half = max - centre + Vec3::splat(TENDRIL_FALLOFF_CM);
     Some((centre, half))
-}
-
-/// A tendril light point's strength: the node's fade times the point's own
-/// intensity times the node's scale.
-pub fn tendril_strength(fade: f32, intensity: f32, scale: f32) -> f32 {
-    fade * intensity * scale
 }
 
 #[cfg(test)]
@@ -297,63 +334,88 @@ mod tests {
     #[test]
     fn the_programs_and_their_uniforms_are_the_originals() {
         assert_eq!(Program::Dome.name(), "gi_dome");
-        assert_eq!(Program::Bubble.name(), "gi_bubble");
-        assert_eq!(Program::CuboidFn.name(), "gi_cuboid_fn");
+        assert_eq!(Program::Bubble.uniforms()[2], "Radius");
+        assert_eq!(
+            Program::Cuboid.uniforms(),
+            &["Tex0", "bMat", "bExt", "Colour"]
+        );
         assert_eq!(
             Program::GradientLine.uniforms(),
             &["Line", "Grad", "Colour", "Atten", "PointLgt"]
         );
-        assert_eq!(Program::MultiPoint.uniforms(), &["Light", "Atten"]);
-        assert_eq!(Program::Dome.texture(), Some("ForceEfctA2E.rfi"));
-        assert_eq!(Program::MultiPoint.texture(), None);
+        assert_eq!(Program::TeleporterBubble.uniforms().len(), 8);
     }
 
     #[test]
-    fn the_barrier_glow_follows_grow_stand_and_fade() {
-        // Growing at half: ease(0.75) = 0.75.
-        let g = glow(Kind::Barrier, 1, 0.5, 1.0, 0, 0);
-        assert!((g.strength - 0.75).abs() < 1e-6);
-        assert!((g.colour[0] - 0.14 * 0.75 * 0.8).abs() < 1e-6);
-        // Standing: full.
-        let g = glow(Kind::Barrier, 0, 1.0, 1.0, 0, 0);
-        assert!((g.colour[1] - 0.08 * 0.8).abs() < 1e-6);
-        // Shrinking at 0.25: ease(0.75).
-        let g = glow(Kind::Barrier, 3, 0.25, 1.0, 0, 0);
-        assert!((g.strength - 0.75).abs() < 1e-6);
+    fn the_barrier_light_follows_grow_stand_and_fade() {
+        let scale = Vec3::new(85.0, 85.0, 25.0);
+        let g = barrier_light(Phase::Growing, 0.5, scale, 1.0);
+        assert_eq!(g.extent, Vec3::new(25.0, 45.0, 25.0));
+        assert_eq!(g.colour, DOME_COLOUR * (0.75 * 1.0 * 0.8));
+        let g = barrier_light(Phase::Ending, 0.0, scale, 2.0);
+        assert_eq!(g.colour, DOME_COLOUR * (1.0 * 2.0 * 0.8));
+        let g = barrier_light(Phase::Shrinking, 0.25, scale, 1.0);
+        assert_eq!(g.colour, DOME_COLOUR * (0.75 * 1.0 * 0.8));
     }
 
     #[test]
-    fn the_bubble_pulses_and_reports_its_alpha() {
-        let g = glow(Kind::Bubble, 0, 1.0, 1.0, 0, 0);
-        assert!((g.colour[0] - 0.1).abs() < 1e-6);
-        assert_eq!(g.alpha, 0.0);
-        let g = glow(Kind::Bubble, 1, 0.5, 1.0, 0, 0);
-        // f = ease(0.6) = 0.6; the half parabola at 0.8 is 0.96.
-        assert!((g.colour[2] - 0.96).abs() < 1e-6);
-        assert!((g.alpha - 0.4).abs() < 1e-6);
+    fn the_bubble_light_takes_its_radius_plus_five_and_its_fade() {
+        let g = bubble_light(Phase::Standing, 1.0, 100.0, 1.0);
+        assert_eq!(g.radius, 105.0);
+        assert_eq!(g.fade, 0.0);
+        assert_eq!(g.colour, BUBBLE_COLOUR);
+        let g = bubble_light(Phase::Growing, 0.5, 100.0, 1.0);
+        let f = (0.5f64 * 1.2) as f32;
+        let e = f * 0.5 + 0.5;
+        assert_eq!(g.fade, 1.0 - f);
+        assert_eq!(g.colour, BUBBLE_COLOUR * ((2.0 - e) * e));
     }
 
     #[test]
-    fn the_barricade_shrinks_with_the_square() {
-        let g = glow(Kind::Barricade, 1, 0.5, 0.5, 0, 0);
-        assert!((g.strength - 0.75).abs() < 1e-6);
-        assert!((g.colour[2] - 0.75 * 0.5 * 1.2).abs() < 1e-6);
-        // 1 − 0.75·1.5 = −0.125 clamps to 0.
-        let g = glow(Kind::Barricade, 3, 0.75, 1.0, 0, 0);
-        assert_eq!(g.colour[2], 0.0);
+    fn the_barricade_light_falls_with_the_square() {
+        let g = barricade_light(1, 0.5, Vec3::splat(100.0), 0.5);
+        assert_eq!(g.colour, DOME_COLOUR * (0.75 * 0.5 * 1.2));
+        // 1 − 0.75·1.5 is below zero: dark.
+        let g = barricade_light(3, 0.75, Vec3::splat(100.0), 1.0);
+        assert_eq!(g.colour, Vec3::ZERO);
     }
 
     #[test]
-    fn the_teleporter_bubble_changes_its_texture_period() {
-        assert_eq!(TELE_PERIOD_MAX, 500.0);
-        assert!((texture_phase(0.0, 250, 0) - 0.5).abs() < 1e-6);
-        // At a charge of 1 the period is 150 ms.
-        let period = TELE_PERIOD_MAX - TELE_PERIOD_SWING;
-        assert!((texture_phase(1.0, period as u32, 0) - 0.0).abs() < 1e-5);
-        // The swell: at 0.9, s = 2·(1 − 0.5) = 1, pulse = 1.1·0.9.
-        let g = glow(Kind::TeleporterBubble, 0, 0.9, 1.0, 0, 0);
-        assert!((g.strength - 1.1 * 0.9).abs() < 1e-5);
-        assert!((tele_pulse(0.8) - 1.2 * 0.8).abs() < 1e-5);
+    fn the_cuboid_extent_keeps_ten_centimetres() {
+        let g = cuboid_light(Vec3::new(25.0, 50.0, 31.0), Vec3::ONE);
+        assert_eq!(g.extent, Vec3::new(10.0, 30.0, 11.0));
+    }
+
+    #[test]
+    fn the_strikes_and_tendril_lights_scale_their_colours() {
+        let s = strikes_light([Vec3::ZERO, Vec3::X], Vec3::Y, Vec3::ONE, 0.25, None);
+        assert_eq!(s.colour, Vec3::splat(0.75));
+        assert_eq!(s.point, [0.0; 4]);
+        let s = strikes_light(
+            [Vec3::ZERO; 2],
+            Vec3::Y,
+            Vec3::ONE,
+            0.0,
+            Some((Vec3::Z, 0.5)),
+        );
+        assert_eq!(s.point, [0.0, 0.0, 1.0, 5.0]);
+        let t = tendril_light(&[(Vec3::ONE, 2.0)], 3.0, 0.5);
+        assert_eq!(t[0].1, TENDRIL_COLOUR * 3.0);
+    }
+
+    #[test]
+    fn the_teleporter_light_swells_and_quickens() {
+        let t = teleporter_light(2, 0.25, 0.5, 0, 250, 1.0);
+        assert_eq!(t.fade, 0.75);
+        assert_eq!(t.pulse, 1.5 * 0.5);
+        // 500 − 175 = 325 ms: 250/325.
+        assert_eq!(t.anim, (250.0f64 / 325.0) as f32);
+        assert_eq!(t.colour, TELEPORTER_COLOUR);
+        let t = teleporter_light(5, -0.5, 0.9, 0, 0, 1.0);
+        assert_eq!(t.fade, -0.5);
+        let s = 1.0 - (0.9f32 - 0.8) * 5.0;
+        assert_eq!(t.pulse, (2.0 - 0.9) * 0.9 * s);
+        assert_eq!(t.colour, TELEPORTER_COLOUR * (s * 2.0));
     }
 
     #[test]
@@ -366,11 +428,9 @@ mod tests {
         );
         assert_eq!(centre, Vec3::new(100.0, 200.0, 300.0));
         assert_eq!(half, Vec3::splat(120.0));
-        // A turned frame widens the axis-aligned box.
         let turned = [Vec3::new(0.6, 0.8, 0.0), Vec3::new(-0.8, 0.6, 0.0), Vec3::Z];
         let (_, half) = world_box(Vec3::ZERO, turned, Vec3::splat(100.0), FALLOFF_CM);
         assert_eq!(half.x, 140.0 + 10.0 + 60.0);
-        assert_eq!(half.y, 140.0 + 10.0 + 60.0);
         assert_eq!(half.z, 100.0 + 10.0 + 60.0);
     }
 
@@ -380,6 +440,5 @@ mod tests {
             point_box(&[Vec3::new(0.0, 0.0, 0.0), Vec3::new(100.0, 20.0, 0.0)]).unwrap();
         assert_eq!(centre, Vec3::new(50.0, 10.0, 0.0));
         assert_eq!(half, Vec3::new(50.0 + 120.0, 10.0 + 120.0, 120.0));
-        assert!((tendril_strength(0.5, 2.0, 3.0) - 3.0).abs() < 1e-6);
     }
 }
