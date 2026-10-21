@@ -1954,107 +1954,68 @@ mod adopt_tests {
     }
 }
 
-/// The number a morph part's name begins with: its leading decimal digits,
-/// parsed as the engine's text-to-integer conversion. A name with no leading
-/// digit is 0, which sorts it before the numbered parts (the original's
-/// registration compares with an initial 100).
-pub fn part_number(name: &[u8]) -> i32 {
+/// The ordinal a numbered morph target sorts by ([`BakePart::ordinal`]):
+/// the name (at most 15 characters, to its NUL) is cut to its second and
+/// third characters and read as the engine's text-to-integer conversion
+/// does: an optional `-`, then the leading digits, 0 without any. A name
+/// such as `M05Chest` gives 5, `Hair` gives 0.
+pub fn morph_part_ordinal(name: &[u8]) -> i32 {
+    let end = name
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(name.len())
+        .min(15);
+    let cut = name.get(1..end.clamp(1, 3)).unwrap_or(&[]);
+    let (negative, digits) = match cut.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        _ => (false, cut),
+    };
     let mut value: i64 = 0;
-    let mut digits = 0;
-    for &c in name {
+    for &c in digits {
         if !c.is_ascii_digit() {
             break;
         }
-        value = value.saturating_mul(10).saturating_add(i64::from(c - b'0'));
-        digits += 1;
-        if digits >= 9 {
-            break;
-        }
+        value = value * 10 + i64::from(c - b'0');
     }
-    value as i32
+    (if negative { -value } else { value }) as i32
 }
 
-/// The order a morph controller registers its parts in: ascending by the
-/// number their names begin with, as the original's selection sort swaps
-/// each next slot with the smallest remaining part (a later equal part does
-/// not displace the current best).
-pub fn order_morph_parts(names: &[&[u8]]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..names.len()).collect();
-    let numbers: Vec<i32> = names.iter().map(|n| part_number(n)).collect();
-    for slot in 0..order.len() {
-        let mut best = slot;
-        for i in slot + 1..order.len() {
-            if numbers[order[i]] < numbers[order[best]] {
-                best = i;
-            }
-        }
-        order.swap(slot, best);
-    }
-    order
-}
-
-/// Applies an apparel piece's morph blob to the vertices its target list
-/// names: each selected vertex gets the blob's base point plus every part's
-/// delta at its weight (a weight under the epsilon is skipped), in part
-/// order. Returns the base point and one position per selected vertex, in
-/// the selection's order.
-pub fn apply_morph_targets(
-    data: &MorphData,
-    weights: &[f32],
-    selected: &[usize],
-) -> ([f32; 3], Vec<[f32; 3]>) {
-    let base = morph_weighted_base(data, weights);
-    let positions = selected
-        .iter()
-        .map(|&vertex| {
-            let mut p = data.rest.get(vertex).copied().unwrap_or([0.0; 3]);
-            for (part, &weight) in data.parts.iter().zip(weights) {
-                if weight.abs() < MORPH_EPSILON {
-                    continue;
-                }
-                if let Some(delta) = part.deltas.get(vertex) {
-                    for (axis, value) in p.iter_mut().enumerate() {
-                        *value += delta[axis] * weight;
-                    }
-                }
-            }
-            p
-        })
-        .collect();
-    (base, positions)
-}
-
-/// Whether all three points of a morph control sit within the original's
-/// squared-distance epsilon (1e-8) of the base vertex: such a control has
-/// no area to bind the vertex to and the start skips it.
-pub fn degenerate_control(points: [[f32; 3]; 3], base: [f32; 3], epsilon: f32) -> bool {
-    points.iter().all(|p| {
-        let d = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
-        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= epsilon
+/// Whether control triangle `points` (two-component points), read from
+/// corner `rotation` on (`rotation`, the next, the one after), matches
+/// `reference` corner for corner: each squared distance, widened to double,
+/// at most 1e-8 (a NaN distance counts as a match: the compare is
+/// unordered).
+pub fn control_matches(points: [[f32; 2]; 3], rotation: usize, reference: [[f32; 2]; 3]) -> bool {
+    (0..3).all(|k| {
+        let p = points[(rotation + k) % 3];
+        let r = reference[k];
+        let dx = r[0] - p[0];
+        let dy = r[1] - p[1];
+        let d = f64::from(dx * dx + dy * dy);
+        !(d > 1e-8)
     })
 }
 
-/// The nearest control point for every owner point, or `None` where the
-/// nearest is farther than `limit` (the squared distance compared with
-/// it). The per-vertex auxiliary records of the old morph layout are copied
-/// from the nearest control point's record this way; the records' contents
-/// are not interpreted.
-pub fn nearest_controls(
-    points: &[[f32; 3]],
-    controls: &[[f32; 3]],
-    limit: f32,
-) -> Vec<Option<usize>> {
+/// The search bound of the nearest-point scans (3.4e38).
+const NEAREST_BOUND: f32 = f32::from_bits(0x7f7f_c99e);
+
+/// For every base point, the index of the nearest candidate (squared
+/// distance, `(dx² + dy²) + dz²`, strictly less than the best so far,
+/// starting from 3.4e38), or 0 when none is nearer: the controller copies
+/// each base point's 32-byte record from that candidate (the records'
+/// contents are not interpreted here).
+pub fn nearest_records(points: &[[f32; 3]], candidates: &[[f32; 3]]) -> Vec<usize> {
     points
         .iter()
         .map(|p| {
-            let mut best = None;
-            let mut best_distance = limit;
-            for (i, c) in controls.iter().enumerate() {
+            let mut best = 0;
+            let mut best_distance = NEAREST_BOUND;
+            for (i, c) in candidates.iter().enumerate() {
                 let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
                 let distance = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
                 if distance < best_distance {
                     best_distance = distance;
-                    best = Some(i);
+                    best = i;
                 }
             }
             best
@@ -2062,25 +2023,17 @@ pub fn nearest_controls(
         .collect()
 }
 
-/// One numbered target node's part of a morph set: the target's vertex
-/// positions become deltas from the base mesh's positions, and its origin
-/// (in the base's frame) is the part's pivot. A target whose vertex count
-/// differs from the base's is refused.
-pub fn numbered_target_part(
-    base: &[[f32; 3]],
-    target: &[[f32; 3]],
-    pivot: [f32; 3],
-) -> Option<MorphPartData> {
-    if base.len() != target.len() {
-        return None;
-    }
-    Some(MorphPartData {
-        pivot,
-        deltas: base
-            .iter()
+/// A numbered target node's deltas: its points less the base mesh's,
+/// point by point, refused when the counts differ. The controller first
+/// matches the target's point order to the base ([`start_morph`]); the
+/// part's pivot comes later, from the gathered children
+/// ([`gather_morph_children`]).
+pub fn numbered_target_deltas(base: &[[f32; 3]], target: &[[f32; 3]]) -> Option<Vec<[f32; 3]>> {
+    (base.len() == target.len()).then(|| {
+        base.iter()
             .zip(target)
             .map(|(b, t)| [t[0] - b[0], t[1] - b[1], t[2] - b[2]])
-            .collect(),
+            .collect()
     })
 }
 
@@ -2089,94 +2042,80 @@ mod registration_tests {
     use super::*;
 
     #[test]
-    fn part_numbers_are_the_leading_digits() {
-        assert_eq!(part_number(b"01Pelvis"), 1);
-        assert_eq!(part_number(b"17RHand"), 17);
-        assert_eq!(part_number(b"HumanHair"), 0);
-        assert_eq!(part_number(b""), 0);
-        assert_eq!(part_number(b"000000012"), 12);
-        assert_eq!(part_number(b"9999999999"), 999_999_999);
+    fn ordinals_are_the_second_and_third_characters() {
+        assert_eq!(morph_part_ordinal(b"M05Chest"), 5);
+        assert_eq!(morph_part_ordinal(b"x17"), 17);
+        assert_eq!(morph_part_ordinal(b"01Pelvis"), 1);
+        assert_eq!(morph_part_ordinal(b"Hair"), 0);
+        assert_eq!(morph_part_ordinal(b"x-3"), -3);
+        assert_eq!(morph_part_ordinal(b"x9a"), 9);
+        assert_eq!(morph_part_ordinal(b"x"), 0);
+        assert_eq!(morph_part_ordinal(b""), 0);
+        assert_eq!(morph_part_ordinal(b"x\x004"), 0);
+        // With the bake's selection sort (best starting at 100).
+        let parts = [b"M03".as_slice(), b"M01", b"Hair"]
+            .iter()
+            .map(|n| BakePart {
+                ordinal: morph_part_ordinal(n),
+                vertices: vec![],
+                positions: vec![],
+                deltas: vec![],
+            })
+            .collect();
+        let order: Vec<i32> = bake_morph_parts(&[], parts)
+            .iter()
+            .map(|p| p.ordinal)
+            .collect();
+        assert_eq!(order, [0, 1, 3]);
     }
 
-    /// Ascending by number, ties stable: 5, 1, 3, 2 becomes 1, 2, 3, 5.
-    /// A control whose three points all sit on the vertex has no area; one
-    /// point away breaks it. The epsilon is the original's 1e-8.
+    /// A control matches its reference from the rotation on, within the
+    /// 1e-8 squared distance.
     #[test]
-    fn a_degenerate_control_has_no_area() {
-        let p = [1.0, 2.0, 3.0];
-        assert!(degenerate_control([p, p, p], p, 1e-8));
-        let mut away = p;
-        away[0] += 1e-3;
-        assert!(!degenerate_control([p, p, away], p, 1e-8));
-        let mut near = p;
-        near[1] += 2e-4;
-        assert!(!degenerate_control([p, p, p], near, 1e-8));
-        let mut close = p;
-        close[1] += 5e-5;
-        assert!(degenerate_control([p, close, p], p, 1e-8));
+    fn a_control_matches_its_rotated_reference() {
+        let tri = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        assert!(control_matches(tri, 0, tri));
+        assert!(control_matches(
+            tri,
+            1,
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]
+        ));
+        assert!(!control_matches(tri, 1, tri));
+        let mut near = tri;
+        near[2][1] += 5e-5;
+        assert!(control_matches(near, 0, tri));
+        near[2][1] += 1e-3;
+        assert!(!control_matches(near, 0, tri));
+        let mut nan = tri;
+        nan[0][0] = f32::NAN;
+        assert!(control_matches(nan, 0, tri));
     }
 
-    /// The old layout's per-vertex records: every point takes the nearest
-    /// control within the limit, and none past it.
+    /// Every point takes its nearest candidate, the first on a tie, and 0
+    /// with none.
     #[test]
-    fn the_nearest_controls_are_copied_within_the_limit() {
-        let controls = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
-        let points = [[0.1, 0.0, 0.0], [0.9, 0.0, 0.0], [3.0, 0.0, 0.0]];
-        assert_eq!(
-            nearest_controls(&points, &controls, 5.0),
-            [Some(0), Some(1), Some(1)]
-        );
-        assert_eq!(
-            nearest_controls(&points, &controls, 1.0),
-            [Some(0), Some(1), None]
-        );
-        assert!(nearest_controls(&[], &controls, 5.0).is_empty());
+    fn the_nearest_records_default_to_the_first() {
+        let candidates = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        let points = [
+            [0.1, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ];
+        assert_eq!(nearest_records(&points, &candidates), [0, 1, 1, 0]);
+        assert_eq!(nearest_records(&[[f32::NAN; 3]], &candidates), [0]);
+        assert_eq!(nearest_records(&points[..1], &[]), [0]);
     }
 
-    /// A numbered target becomes a part: its positions less the base's,
-    /// with the node origin as the pivot; a mismatched count is refused.
+    /// A numbered target's deltas are its points less the base's.
     #[test]
-    fn a_numbered_target_becomes_a_morph_part() {
+    fn a_numbered_target_gives_its_deltas() {
         let base = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let target = [[0.0, 1.0, 0.0], [1.0, 2.0, 0.0]];
-        let part = numbered_target_part(&base, &target, [0.0, 0.0, 3.0]).unwrap();
-        assert_eq!(part.pivot, [0.0, 0.0, 3.0]);
-        assert_eq!(part.deltas, [[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]]);
-        assert_eq!(numbered_target_part(&base, &target[..1], [0.0; 3]), None);
-    }
-
-    #[test]
-    fn parts_are_ordered_by_their_numbers() {
-        let names: [&[u8]; 5] = [b"05Chest", b"01Pelvis", b"Hair", b"03Leg", b"02Foot"];
-        assert_eq!(order_morph_parts(&names), [2, 1, 4, 3, 0]);
-        let ties: [&[u8]; 3] = [b"02b", b"02a", b"01"];
-        assert_eq!(order_morph_parts(&ties), [2, 1, 0]);
-        assert!(order_morph_parts(&[]).is_empty());
-    }
-
-    /// An apparel blob applies only the named vertices, with the weighted
-    /// base and the parts' deltas.
-    #[test]
-    fn an_apparel_blob_paints_its_selected_vertices() {
-        let data = build_morph_data(
-            [1.0, 0.0, 0.0],
-            &[[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
-            vec![MorphPartData {
-                pivot: [2.0, 0.0, 0.0],
-                deltas: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            }],
+        assert_eq!(
+            numbered_target_deltas(&base, &target),
+            Some(vec![[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]])
         );
-        let (base, points) = apply_morph_targets(&data, &[0.5], &[2, 0, 1]);
-        assert_eq!(base, [2.0, 0.0, 0.0]);
-        assert_eq!(points[0], [2.0, 0.0, 0.5]);
-        assert_eq!(points[1], [0.5, 0.0, 0.0]);
-        assert_eq!(points[2], [1.0, 0.5, 0.0]);
-        // A sub-epsilon weight leaves the base points alone.
-        let (base, points) = apply_morph_targets(&data, &[1e-8], &[1]);
-        assert_eq!(base, [1.0, 0.0, 0.0]);
-        assert_eq!(points[0], [1.0, 0.0, 0.0]);
-        // A vertex past the rest list contributes nothing.
-        let (_, points) = apply_morph_targets(&data, &[0.5], &[9]);
-        assert_eq!(points[0], [0.0, 0.0, 0.0]);
+        assert_eq!(numbered_target_deltas(&base, &target[..1]), None);
     }
 }
