@@ -1,12 +1,16 @@
 //! A thaumaturgy power tree.
 //!
 //! The file's first word is the power magic. The node count is the word at
-//! byte 52. Each node is a power id, two more words, an x, a y, a link count,
-//! and that many 16-byte links. A link count below 1 stores none. Every node
-//! after the first subtracts the first node's x and y. A short file or a
-//! negative count is an error. A following text chunk stores each string as a
-//! length word and that many bytes. A length below 1 is empty. No chunk
-//! leaves the texts empty. A chunk that ends early is an error.
+//! byte 52. Each node is a power id, the index of its name and the index of
+//! its description in the text table, an x, a y, a link count, and that
+//! many 16-byte links. A link count below 1 stores none. Every node after
+//! the first subtracts the first node's x and y. A short file or a negative
+//! count is an error. A following text chunk's count is its last string's
+//! index, so it holds one more string than the count. Each string is a
+//! length word and that many bytes. A length below 1 is empty. An offset
+//! outside the chunk's text leaves that string empty: the retail Force tree
+//! holds offsets that point past its text. No chunk leaves the texts empty.
+//! A chunk that ends early is an error.
 //!
 //! A drawn node sits at ten times its place times the zoom, plus the pan, and
 //! rounds to the nearest even integer unless the view is dragged. A factor
@@ -51,11 +55,16 @@ const SMALL_REACH: f64 = 0.295;
 const REACH_SHRINK: f64 = 0.003;
 
 /// One node, with its place already relative to the first node.
+///
+/// A node's two words after the power are the indices of its name and its
+/// description in the tree's text table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerNode {
     pub power: u32,
-    pub extra: u32,
-    pub flags: u32,
+    /// The node's name in [`PowerTree::texts`].
+    pub name_text: u32,
+    /// The node's description in [`PowerTree::texts`].
+    pub description_text: u32,
     pub x: f32,
     pub y: f32,
     pub links: Vec<[u8; LINK]>,
@@ -94,8 +103,8 @@ pub fn read_power_tree(bytes: &[u8]) -> Result<PowerTree> {
     let mut nodes = Vec::with_capacity(count);
     for _ in 0..count {
         let power = take_u32(bytes, &mut offset)?;
-        let extra = take_u32(bytes, &mut offset)?;
-        let flags = take_u32(bytes, &mut offset)?;
+        let name_text = take_u32(bytes, &mut offset)?;
+        let description_text = take_u32(bytes, &mut offset)?;
         let x = take_f32(bytes, &mut offset)?;
         let y = take_f32(bytes, &mut offset)?;
         let links_n = take_u32(bytes, &mut offset)? as i32;
@@ -117,8 +126,8 @@ pub fn read_power_tree(bytes: &[u8]) -> Result<PowerTree> {
         }
         nodes.push(PowerNode {
             power,
-            extra,
-            flags,
+            name_text,
+            description_text,
             x,
             y,
             links,
@@ -158,16 +167,18 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
             len: bytes.len().saturating_sub(offset),
         });
     }
-    let count = i32::from_le_bytes(
+    let last = i32::from_le_bytes(
         bytes[offset + 12..offset + 16]
             .try_into()
             .expect("16 bytes"),
     );
     offset += 16;
-    if count < 0 {
+    if last < 0 {
         return Err(Error::Malformed("negative text count".into()));
     }
-    let count = count as usize;
+    // The header's count is the last string's index: the table holds one
+    // more string than the count.
+    let count = (last as usize).saturating_add(1);
     let table = count.saturating_add(1).saturating_mul(4);
     if table > bytes.len().saturating_sub(offset) {
         return Err(Error::Truncated {
@@ -192,11 +203,8 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
     let mut texts = Vec::with_capacity(count);
     for at in offsets.iter().take(count).map(|at| *at as usize) {
         if blob.len().saturating_sub(at) < 4 {
-            return Err(Error::Truncated {
-                offset: at,
-                needed: 4,
-                len: blob.len().saturating_sub(at),
-            });
+            texts.push(Vec::new());
+            continue;
         }
         let len = i32::from_le_bytes(blob[at..at + 4].try_into().expect("4 bytes"));
         if len < 1 {
@@ -206,11 +214,8 @@ fn read_texts(bytes: &[u8], mut offset: usize) -> Result<Vec<Vec<u8>>> {
         let len = len as usize;
         let start = at + 4;
         if blob.len().saturating_sub(start) < len {
-            return Err(Error::Truncated {
-                offset: start,
-                needed: len,
-                len: blob.len().saturating_sub(start),
-            });
+            texts.push(Vec::new());
+            continue;
         }
         texts.push(blob[start..start + len].to_vec());
     }
@@ -673,7 +678,8 @@ mod tests {
         put_u32(&mut bytes, 0);
         put_u32(&mut bytes, 0);
         bytes.extend_from_slice(&[0; 12]);
-        put_u32(&mut bytes, 2);
+        // The last string's index, one less than the number of strings.
+        put_u32(&mut bytes, 1);
         put_u32(&mut bytes, 0);
         put_u32(&mut bytes, 9);
         put_u32(&mut bytes, 13);
@@ -772,8 +778,8 @@ mod tests {
     fn node(power: u32, links: Vec<[u8; 16]>) -> PowerNode {
         PowerNode {
             power,
-            extra: 0,
-            flags: 0,
+            name_text: 0,
+            description_text: 0,
             x: 0.0,
             y: 0.0,
             links,

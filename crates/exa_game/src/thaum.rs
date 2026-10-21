@@ -41,6 +41,7 @@ pub mod engine;
 pub mod force;
 pub mod live;
 pub mod power;
+pub mod tree;
 pub mod wisps;
 
 /// The four domains that have a cast.
