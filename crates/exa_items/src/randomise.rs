@@ -22,13 +22,16 @@ use crate::refresh::{made_condition, write_condition};
 use exa_formats::containers::{self, RandomTable, RowCondition, TableEntry, entry};
 use exa_formats::objdb::Item;
 
-/// Section tags the row application writes.
+/// Section tags the grade, the row application and the walk read.
+const NAME: u32 = 0x1000_0000;
 const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
 /// The appearance block's offset inside the item body.
 const APPEARANCE: usize = 0x1B0;
-/// The paint-seed byte the original adjusts by a row's wealth.
-const PAINT_SEED: usize = 0x1A9;
+/// The item body's palette byte, which a row's wealth rewrites.
+const PALETTE: usize = 0x1A9;
+/// The item body's byte the world-load walk tests before refreshing.
+const WALK_BYTE: usize = 0x1A8;
 
 /// The dirt every graded weapon starts with.
 pub const GRADE_DIRT: u8 = 0x35;
@@ -479,57 +482,70 @@ pub fn section_range(payload: &[u8], tag: u32) -> Option<std::ops::Range<usize>>
     None
 }
 
-/// The paint seed the original adjusts when a table row with `wealth` is
-/// picked: the byte's low two bits take the rounded wealth difference, and
-/// a negative difference marks the byte's high bit.
+/// The palette byte a picked apparel copy takes from a row's `wealth`, as
+/// the original writes it: the difference `wealth − (byte & 3)` (the low
+/// two bits are the byte's own wealth), its magnitude times 31 rounded to
+/// nearest even into bits 2 and up over the kept low bits, and the top bit
+/// set when the difference is negative.
 pub fn adjust_paint_seed(byte: u8, wealth: f32) -> u8 {
-    let old = i32::from(byte & 3);
-    let delta = wealth.round_ties_even() as i32;
-    let low = (old + delta) & 3;
-    let mut out = (byte & !3) | low as u8;
-    if wealth < 0.0 {
+    let difference = wealth - f32::from(byte & 3);
+    let magnitude = (difference * 31.0).abs().round_ties_even();
+    // `CVTSS2SI` to 64 bits: NaN or out of range is the integer indefinite.
+    let magnitude = if magnitude.is_nan() || magnitude >= 9.223_372e18 {
+        i64::MIN
+    } else {
+        magnitude as i64
+    };
+    let mut out = (i64::from(byte & 3) | magnitude.wrapping_shl(2)) as u8;
+    if difference < 0.0 {
         out |= 0x80;
     }
     out
 }
 
-/// Applies a table row's condition to a copy's payload, as the original's
-/// row application does: a weapon body gets rounded damage and dirt bytes
-/// and their spread codes; an apparel body gets the same in its appearance
-/// block and its paint seed shifted by the row's wealth. Returns whether a
-/// section was written.
+/// Applies a table row's condition to a picked copy's payload, as the
+/// original's row application does: an item body (checked first) gets the
+/// rounded damage and dirt bytes and their spread codes in its appearance
+/// block and its palette byte rewritten from the row's wealth; otherwise a
+/// weapon section gets the damage, dirt and spreads in its condition
+/// block. Returns whether a section was written. (The original runs the
+/// weapon branch only for a copy in the world or local tier, which every
+/// pick is.)
 pub fn apply_row(payload: &mut [u8], word: u32) -> bool {
     let row = RowCondition::of(word);
-    if let Some(range) = section_range(payload, WEAPON) {
+    let byte = |share: f32| (share * 255.0).round_ties_even() as i64 as u8;
+    if let Some(range) = section_range(payload, BODY) {
         let body = &mut payload[range];
-        if body.len() < 0x10 {
+        if body.len() <= APPEARANCE + 3 {
             return false;
         }
-        body[0xD] = (row.damage * 255.0).round_ties_even() as u8;
-        body[0xE] = (row.dirt * 255.0).round_ties_even() as u8;
-        let mut spreads = Spreads(body[0xF]);
+        body[PALETTE] = adjust_paint_seed(body[PALETTE], row.wealth);
+        let appearance = &mut body[APPEARANCE..];
+        appearance[1] = byte(row.damage);
+        let mut spreads = Spreads(appearance[3]);
         spreads.set_damage(row.damage_spread);
+        appearance[3] = spreads.0;
+        appearance[2] = byte(row.dirt);
+        let mut spreads = Spreads(appearance[3]);
         spreads.set_dirt(row.dirt_spread);
-        body[0xF] = spreads.0;
+        appearance[3] = spreads.0;
         return true;
     }
-    let Some(range) = section_range(payload, BODY) else {
+    let Some(range) = section_range(payload, WEAPON) else {
         return false;
     };
     let body = &mut payload[range];
-    if body.len() <= APPEARANCE + 3 {
+    if body.len() < 0x10 {
         return false;
     }
-    let appearance = &mut body[APPEARANCE..];
-    appearance[1] = (row.damage * 255.0).round_ties_even() as u8;
-    appearance[2] = (row.dirt * 255.0).round_ties_even() as u8;
-    let mut spreads = Spreads(appearance[3]);
+    body[0xD] = byte(row.damage);
+    let mut spreads = Spreads(body[0xF]);
     spreads.set_damage(row.damage_spread);
+    body[0xF] = spreads.0;
+    body[0xE] = byte(row.dirt);
+    let mut spreads = Spreads(body[0xF]);
     spreads.set_dirt(row.dirt_spread);
-    appearance[3] = spreads.0;
-    if body.len() > PAINT_SEED {
-        body[PAINT_SEED] = adjust_paint_seed(body[PAINT_SEED], row.wealth);
-    }
+    body[0xF] = spreads.0;
     true
 }
 
@@ -543,8 +559,8 @@ pub trait PickStore {
 
 /// Writes a container's children from the rows a fill gave them, as the
 /// original's world load does: a picked child keeps its place and takes
-/// the copy's id with zero flags; an empty slot gets id 0 and flags
-/// `0x100`. `given` pairs the child's index with its row.
+/// the copy's id with zero flags; an empty slot, or a row of id 0, gets id
+/// 0 and flags `0x100`. `given` pairs the child's index with its row.
 pub fn fill_children(
     body: &mut [u8],
     given: &[(usize, Option<TableEntry>)],
@@ -558,7 +574,7 @@ pub fn fill_children(
         if at + containers::CHILD_LEN > body.len() {
             return false;
         }
-        match row {
+        match row.filter(|row| row.id != 0) {
             Some(row) => {
                 let Some(id) = store.pick(row.id, row.condition) else {
                     continue;
@@ -576,10 +592,10 @@ pub fn fill_children(
 }
 
 /// The original's grade routine over an object database: an object whose
-/// model is a factory weapon (`@…`) and whose model flags carry the
-/// condition-scaled bit is copied into the local tier and its copy takes
-/// the grade's condition. Returns the copy's id, or the id itself when the
-/// object is not graded.
+/// name section's flag word has bit 0 set and whose model is a factory
+/// weapon (`@…`) is copied into the local tier and its copy takes the
+/// grade's condition. Returns the copy's id, the id itself when the object
+/// is not graded, or 0 when it cannot be read or has no name section.
 pub trait GradeSource {
     /// The record and its payload.
     fn read(&mut self, id: u32) -> Option<(Item, Vec<u8>)>;
@@ -592,15 +608,20 @@ pub trait GradeSource {
 }
 
 /// Copies a factory object and grades it, as the arena, the trade system and
-/// the electricity effects ask. The factory check is the model's `@` and
-/// the model flags' condition-scaled bit; the copy must have a weapon
-/// section, whose condition block takes the grade.
+/// the character generator ask. The check is the name section's flag bit 0,
+/// then the model's `@`; the copy must have a weapon section, whose
+/// condition block takes the grade.
 pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
-    let Some((item, _)) = source.read(id) else {
-        return id;
+    let Some((item, payload)) = source.read(id) else {
+        return 0;
     };
-    if item.model_flags & exa_formats::objdb::CONDITION_SCALED == 0 || !item.model.starts_with('@')
-    {
+    let Some(name) = section_range(&payload, NAME) else {
+        return 0;
+    };
+    let graded = payload
+        .get(name.start + 16..name.start + 20)
+        .is_some_and(|w| u32::from_le_bytes(w.try_into().expect("4 bytes")) & 1 != 0);
+    if !graded || !item.model.starts_with('@') {
         return id;
     }
     let copy = source.instantiate(id);
@@ -621,31 +642,29 @@ pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
 }
 
 /// What the world-load pass reads of the object database: each record's
-/// section tags, an apparel record's appearance condition, and the refresh
-/// it runs.
+/// section tags, an item body's byte, and the refresh it runs.
 pub trait WorldSource {
     /// Every record id, in the database's order.
     fn ids(&self) -> Vec<u32>;
     /// The section tags of a record's payload, in order.
     fn sections(&self, id: u32) -> Vec<u32>;
-    /// An apparel record's appearance quality, damage and dirt bytes.
-    fn appearance(&self, id: u32) -> Option<[u8; 3]>;
+    /// The byte at `offset` of a record's item body.
+    fn body_byte(&self, id: u32, offset: usize) -> Option<u8>;
     /// Refreshes a record's description and stats.
     fn refresh(&mut self, id: u32);
 }
 
-/// The world-load pass's walk over the database: an apparel record whose
-/// appearance quality is not zero is refreshed; a weapon or table record is
-/// not (the original refreshes weapons later, when a copy is made); any
-/// record with a factory weapon section is refreshed. Returns how many
-/// records were refreshed. The fill of the tables the records name is
-/// [`Fill::run`], as the original runs it after the walk.
+/// The world-load pass's walk over the database: a record with an item
+/// body is refreshed when its body's byte at `0x1A8` is not zero; else a
+/// weapon record is refreshed; the others (container records) feed the
+/// fill, [`Fill::run`], which the original runs after the walk. Returns how
+/// many records were refreshed.
 pub fn world_load(source: &mut dyn WorldSource) -> usize {
     let mut refreshed = 0;
     for id in source.ids() {
         let tags = source.sections(id);
         if tags.contains(&BODY) {
-            if source.appearance(id).is_some_and(|a| a[0] != 0) {
+            if source.body_byte(id, WALK_BYTE).is_some_and(|b| b != 0) {
                 source.refresh(id);
                 refreshed += 1;
             }
@@ -847,6 +866,11 @@ mod tests {
 
     #[test]
     fn a_weapon_row_writes_damage_dirt_and_spreads() {
+        // A body section wins over a weapon section.
+        let mut both = section_bytes(0x4000, &[0u8; 0x20]);
+        both.extend(section_bytes(0x1000, &[0u8; 0x1C0]));
+        assert!(apply_row(&mut both, 0x5284));
+        assert_eq!(both[8 + 0xD], 0, "the weapon section is left alone");
         let mut payload = section_bytes(0x4000, &[0u8; 0x20]);
         assert!(apply_row(&mut payload, 0x5284));
         let body = &payload[8..];
@@ -869,10 +893,16 @@ mod tests {
         assert_eq!(body[0x1B0], 200, "quality is the copy's");
         assert_eq!((body[0x1B1], body[0x1B2]), (128, 128));
         assert_eq!(body[0x1B3], 0x90);
-        assert_eq!(body[0x1A9], 2);
-        assert_eq!(adjust_paint_seed(0, -1.0), 0x83);
-        assert_eq!(adjust_paint_seed(0x80, 1.0), 0x81);
-        assert_eq!(adjust_paint_seed(7, 0.0), 7);
+        // Wealth 1 (word 0x5284, low nibble 4 × 0.25) over own wealth 1:
+        // no difference, the low bits kept.
+        assert_eq!(body[0x1A9], 1);
+        // Wealth 0 over 1: |−1 × 31| = 31 in bits 2–6, the sign bit set.
+        assert_eq!(adjust_paint_seed(1, 0.0), 0x80 | (31 << 2) | 1);
+        // Wealth 0.25 over 0: 7.75 rounds to 8.
+        assert_eq!(adjust_paint_seed(0x7C, 0.25), 8 << 2);
+        // Wealth 2 over 3: 31 again, negative.
+        assert_eq!(adjust_paint_seed(3, 2.0), 0x80 | (31 << 2) | 3);
+        assert_eq!(adjust_paint_seed(0, f32::NAN), 0);
     }
 
     struct Picks(Vec<u32>);
@@ -925,35 +955,32 @@ mod tests {
     }
 
     fn factory_item() -> Item {
-        Item {
-            id: 1,
-            name: "sword".into(),
-            model: "@ub05ssworda".into(),
-            model_flags: exa_formats::objdb::CONDITION_SCALED,
-            worn_model: String::new(),
-            appearance: None,
-            slot_layers: [0; exa_formats::objdb::SLOTS],
-            occupancy: [0; exa_formats::objdb::OCCUPANCY_BONES],
-            weapon: None,
-            armour: None,
-            shield: None,
-            door: None,
-            operative: None,
-            burden: None,
-            equip_lock: 0,
-        }
+        let mut item = Item::parse(1, &[]).unwrap();
+        item.name = "sword".into();
+        item.model = "@ub05ssworda".into();
+        item
+    }
+
+    /// A name section with the given flag word after the 16-byte name.
+    fn name_section(flags: u32) -> Vec<u8> {
+        let mut body = b"sword".to_vec();
+        body.resize(16, 0);
+        body.extend_from_slice(&flags.to_le_bytes());
+        section_bytes(0x1000_0000, &body)
     }
 
     #[test]
     fn a_grade_copies_the_factory_object_and_sets_its_condition() {
         let item = factory_item();
-        let payload = section_bytes(0x4000, &[0u8; 0x20]);
+        let weapon = section_bytes(0x4000, &[0u8; 0x20]);
+        let mut source = name_section(1);
+        source.extend_from_slice(&weapon);
         let mut store = Graded(
-            std::collections::HashMap::from([(1, (item.clone(), payload.clone()))]),
+            std::collections::HashMap::from([(1, (item.clone(), source))]),
             Vec::new(),
         );
         // The copy keeps the weapon section.
-        store.0.insert(2, (item.clone(), payload));
+        store.0.insert(2, (item.clone(), weapon));
         assert_eq!(grade_object(&mut store, 1, 1), 2);
         assert_eq!(store.1, [2]);
         let (_, copy) = store.0.get(&2).unwrap();
@@ -963,17 +990,21 @@ mod tests {
         assert_eq!(body[0xF] & 7, 0, "quality spread cleared");
         assert_eq!((body[0xF] >> 3) & 7, 5, "damage spread a whole");
         assert_eq!((body[0xF] >> 6) & 3, 3, "dirt spread a whole");
-        // A non-factory or unscaled item is returned unchanged.
+        // A non-factory item, or one without the name flag, is returned
+        // unchanged; one without a name section, or unreadable, gives 0.
         let mut plain = store;
         plain.0.get_mut(&1).unwrap().0.model = "chair".into();
         assert_eq!(grade_object(&mut plain, 1, 1), 1);
         plain.0.get_mut(&1).unwrap().0.model = "@ub05ssworda".into();
-        plain.0.get_mut(&1).unwrap().0.model_flags = 0;
+        plain.0.get_mut(&1).unwrap().1 = name_section(0);
         assert_eq!(grade_object(&mut plain, 1, 1), 1);
+        plain.0.get_mut(&1).unwrap().1 = Vec::new();
+        assert_eq!(grade_object(&mut plain, 1, 1), 0);
+        assert_eq!(grade_object(&mut plain, 9, 1), 0);
     }
 
     struct World {
-        records: Vec<(u32, Vec<u32>, Option<[u8; 3]>)>,
+        records: Vec<(u32, Vec<u32>, Option<u8>)>,
         refreshed: Vec<u32>,
     }
 
@@ -988,7 +1019,8 @@ mod tests {
                 .map(|r| r.1.clone())
                 .unwrap_or_default()
         }
-        fn appearance(&self, id: u32) -> Option<[u8; 3]> {
+        fn body_byte(&self, id: u32, offset: usize) -> Option<u8> {
+            assert_eq!(offset, 0x1A8);
             self.records.iter().find(|r| r.0 == id).and_then(|r| r.2)
         }
         fn refresh(&mut self, id: u32) {
@@ -1000,8 +1032,8 @@ mod tests {
     fn the_world_load_walks_apparel_and_weapon_records() {
         let mut world = World {
             records: vec![
-                (1, vec![0x1000], Some([1, 2, 3])),
-                (2, vec![0x1000], Some([0, 2, 3])),
+                (1, vec![0x1000], Some(1)),
+                (2, vec![0x1000], Some(0)),
                 (3, vec![0x4000], None),
                 (4, vec![0x200], None),
                 (5, vec![0x1000], None),
