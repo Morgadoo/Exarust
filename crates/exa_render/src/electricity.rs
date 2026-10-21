@@ -510,7 +510,6 @@ impl Arc {
         };
         let direction = (end - start).normalize_or(spec.direction);
         let (_, right, up) = orthonormal(direction);
-        let width = spec.width();
         let mut tendrils = Vec::with_capacity(n);
         for t in 0..n {
             let mut points = Vec::with_capacity(s);
@@ -523,7 +522,10 @@ impl Arc {
                 let f = k as f32 / (s - 1) as f32;
                 let base = from.lerp(end, f);
                 let bulge = (std::f32::consts::PI * f).sin();
-                let amplitude = spec.jitter * width * bulge;
+                // [guess] The record's jitter is a per-tick step in the
+                // original's tendril; over a tendril's life it grows to a
+                // few segment sizes. Lay it out at that scale.
+                let amplitude = spec.jitter * spec.size * 12.0 * bulge;
                 let offset = if k == 0 || k + 1 == s || amplitude == 0.0 {
                     Vec3::ZERO
                 } else {
