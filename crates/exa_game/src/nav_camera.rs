@@ -10,11 +10,14 @@
 
 use bevy::math::Vec3;
 use exa_ai::search::quick_asin;
-use exa_combat::aim::head_atan2_xz;
 
-/// Orbit and camera-look sensitivity: 4.8 rad across a screen 1920 pixels
-/// wide, as the original sets it from the window width (rad per pixel).
+use crate::thaum::engine::normalize;
+
+/// Orbit and camera-look sensitivity on a screen 1920 pixels wide (rad per
+/// pixel); [`orbit_per_pixel`] gives it for any width.
 pub const ORBIT_PER_PIXEL: f32 = 0.0025;
+/// The orbit's turn across the whole screen width (rad).
+pub const ORBIT_PER_SCREEN: f64 = 4.8;
 /// The camera's tick (s) and how many a frame may run.
 pub const TICK: f32 = 0.017;
 pub const MAX_TICKS: u32 = 9;
@@ -27,40 +30,101 @@ pub const PITCH_ZOOM_BASE: f32 = 1000.0;
 pub const PITCH_CAP: f32 = 1.5;
 /// The original's "a distance this small is not a distance": 2^-23.
 pub const DISTANCE_EPSILON: f32 = 1.192_089_982_282_595_9e-7;
-/// A free zoom moves by this share of the current value per wheel step.
-pub const ZOOM_RATE: f32 = 0.002;
+/// A free zoom moves by this share of the current value per wheel unit
+/// (the original's double 0.002).
+pub const ZOOM_RATE_PER_UNIT: f64 = 0.002;
 /// A free zoom's smallest step: this share of the whole range.
 pub const ZOOM_STEP_SHARE: f32 = 0.005;
 /// A kick larger than this (squared) is normalised to its size.
 const KICK_EPSILON: f32 = 1.192_089_982_282_595_9e-7;
+/// A kick direction shorter than this (squared, compared in double
+/// precision) is replaced by the camera's right axis.
+const KICK_DEGENERATE: f64 = 0.1;
 
-/// Keeps a camera yaw within half a turn of a body's yaw, as the original's
-/// align-behind routine does: `camera + 2π` when it lies more than π behind
-/// the body, `camera − 2π` when it lies more than π ahead. The sums are
-/// done in double precision, as the original converts to `f64` for the
-/// comparisons and the turn. A NaN yaw is left alone.
-pub fn align_behind(camera_yaw: f32, body_yaw: f32) -> f32 {
-    let behind = body_yaw - camera_yaw;
-    if f64::from(behind) > std::f64::consts::PI {
-        (f64::from(camera_yaw) + std::f64::consts::TAU) as f32
-    } else if f64::from(camera_yaw - body_yaw) > std::f64::consts::PI {
-        (f64::from(camera_yaw) - std::f64::consts::TAU) as f32
+/// The orbit sensitivity for a screen `width` pixels wide: 4.8 rad over the
+/// width, divided in double precision and stored as a single, as the
+/// original's preset sets it.
+pub fn orbit_per_pixel(width: f32) -> f32 {
+    (ORBIT_PER_SCREEN / f64::from(width)) as f32
+}
+
+/// The engine's yaw of a vector about the vertical, as the original's
+/// planar-angle routine takes it: zero when the horizontal length squared
+/// (`z² + x²`) is under 1e-8, otherwise the engine's arc cosine of `z` over
+/// that length (π at or below −1, zero above 1), negated for a negative x.
+/// A NaN length or cosine falls through to the arc cosine, as the
+/// unordered compares do.
+pub fn planar_yaw(v: Vec3) -> f32 {
+    let length_squared = v.z * v.z + v.x * v.x;
+    if length_squared < 1e-8 {
+        return 0.0;
+    }
+    let cosine = v.z / length_squared.sqrt();
+    let angle = if cosine <= -1.0 {
+        std::f32::consts::PI
+    } else if cosine > 1.0 {
+        0.0
     } else {
-        camera_yaw
+        fast_acos(cosine)
+    };
+    if v.x < 0.0 { -angle } else { angle }
+}
+
+/// The engine's arc cosine: `π − (π/2 + 0.2075·x + 0.0535·x²)·√(1 + x)`
+/// below zero (the subtraction in double precision) and
+/// `(π/2 − 0.2075·x + 0.0535·x²)·√(1 − x)` from zero up, both in single
+/// precision with the original's bit-exact coefficients. A NaN takes the
+/// second form.
+fn fast_acos(x: f32) -> f32 {
+    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
+    const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
+    const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);
+    if x < 0.0 {
+        let poly = x * x * SQUARE + (x * LINEAR + HALF_PI);
+        (std::f64::consts::PI - f64::from(poly * (1.0 + x).sqrt())) as f32
+    } else {
+        let poly = x * x * SQUARE + (HALF_PI - x * LINEAR);
+        poly * (1.0 - x).sqrt()
+    }
+}
+
+/// The yaw a camera turns to so that it looks along a direction whose yaw
+/// is `target_yaw`, as the original's align routine sets it: the target is
+/// kept within half a turn of the camera's present yaw (`camera_yaw`, the
+/// yaw of its backward vector), `target + 2π` when the camera lies more
+/// than π beyond it and `target − 2π` when it lies more than π short, so
+/// the orbit spring turns the short way. The differences are single
+/// precision, compared and turned in double precision, as the original
+/// does. A NaN yaw is left alone.
+pub fn align_behind(target_yaw: f32, camera_yaw: f32) -> f32 {
+    if f64::from(camera_yaw - target_yaw) > std::f64::consts::PI {
+        (f64::from(target_yaw) + std::f64::consts::TAU) as f32
+    } else if f64::from(target_yaw - camera_yaw) > std::f64::consts::PI {
+        (f64::from(target_yaw) - std::f64::consts::TAU) as f32
+    } else {
+        target_yaw
     }
 }
 
 /// The pitch the zoom asks for: 0.8 rad below the horizon under zoom 1000,
-/// then 0.000125 rad steeper per unit. The sum is a double, as the
-/// original's is; an unordered compare takes the steep branch too, so a NaN
-/// zoom gives a NaN floor.
+/// then 0.000125 rad steeper per unit. The zoom less 1000 is a single, the
+/// product and the sum with 0.8 are doubles, as the original's are; an
+/// unordered compare takes the steep branch too, so a NaN zoom gives a NaN
+/// floor.
 pub fn pitch_floor(zoom: f32) -> f32 {
     if zoom < PITCH_ZOOM_BASE {
         PITCH_BASE
     } else {
-        ((f64::from(zoom) - f64::from(PITCH_ZOOM_BASE)) * PITCH_PER_ZOOM + f64::from(PITCH_BASE))
-            as f32
+        (f64::from(zoom - PITCH_ZOOM_BASE) * PITCH_PER_ZOOM + 0.8) as f32
     }
+}
+
+/// The pitch the camera holds: the asked-for pitch, or the zoom's floor
+/// when the floor is steeper. The original keeps the asked-for pitch apart,
+/// so it comes back when the floor drops again; a NaN floor takes the asked
+/// pitch, as its unordered compare does.
+pub fn pitch_held(asked: f32, floor: f32) -> f32 {
+    if floor > asked { floor } else { asked }
 }
 
 /// Holds a pitch between the floor `low` and the cap `high`, with the
@@ -97,17 +161,21 @@ pub fn orbit_pitch(pitch: f32, dy: f32, per_pixel: f32, low: f32, high: f32) -> 
     if low > held { low } else { held }
 }
 
-/// A free zoom after wheel `steps`: 0.2 % of the current value a step, but
-/// never less than 0.5 % of the whole range, subtracted from the zoom and
-/// held in `[min, max]`. The original scales the sign of a step that is
-/// too small, so a zero step stays zero.
-pub fn zoom_steps(zoom: f32, steps: f32, min: f32, max: f32) -> f32 {
-    let mut delta = steps * zoom * ZOOM_RATE;
+/// A free zoom after a wheel turn of `wheel` units (120 to a notch): 0.2 %
+/// of the current value per unit (24 % a notch), worked in double precision
+/// and stored as a single, but never less than 0.5 % of the whole range,
+/// subtracted from the zoom and held in `[min, max]` by the processor's
+/// max-then-min (a NaN passes through). The original scales the sign of a
+/// step that is too small, so a zero step stays zero.
+pub fn zoom_steps(zoom: f32, wheel: i32, min: f32, max: f32) -> f32 {
+    let mut delta = (f64::from(wheel) * (f64::from(zoom) * ZOOM_RATE_PER_UNIT)) as f32;
     let least = (max - min) * ZOOM_STEP_SHARE;
-    if delta.abs() < least {
+    if least > delta.abs() {
         delta = least * sign_or_zero(delta);
     }
-    (zoom - delta).clamp(min, max)
+    let raised = zoom - delta;
+    let held = if min > raised { min } else { raised };
+    if max < held { max } else { held }
 }
 
 /// The sign of a value as the original's bit trick gives it: −1, 0 or 1. A
@@ -154,44 +222,50 @@ pub struct Placement {
     pub back: Vec3,
     pub distance: f32,
     pub yaw: f32,
-    /// Radians below the horizon, the sign the controller stores.
+    /// The controller's pitch: minus the engine's arc sine of the backward
+    /// vector's height, so negative with the eye above the point.
     pub pitch: f32,
 }
 
-/// Places the camera at `at` (height-clamped) looking along `back`, with
-/// the eye `distance` away when one is given; without one the distance is
-/// how far `eye` lies from the point and the backward vector is that
-/// direction normalised. The yaw is the engine's cheap atan2 of the
-/// vector's x and z, and the pitch the engine's cheap arcsine.
-pub fn place(at: Vec3, back: Vec3, distance: Option<f32>, limits: HeightLimits) -> Placement {
-    let at = limits.apply(at);
+/// Places the camera at `at` (height-clamped) looking along `eye_or_back`.
+/// With a `distance` of at least 2⁻²³ (or a NaN one, as the unordered
+/// compare falls) the second point is taken as the backward vector, as it
+/// is. Without one it is the eye: the backward vector runs to it from the
+/// point *before* the height clamp (the original subtracts its unclamped
+/// copy), the distance is its length (x² + z², then y²) and the vector is
+/// scaled by the reciprocal of that length, with no guard for a zero
+/// length. The yaw is the engine's planar yaw of the vector
+/// ([`planar_yaw`]) and the pitch minus the engine's arc sine of its height.
+pub fn place(
+    at: Vec3,
+    eye_or_back: Vec3,
+    distance: Option<f32>,
+    limits: HeightLimits,
+) -> Placement {
+    let clamped = limits.apply(at);
     let (back, distance) = match distance {
-        // The original takes a given direction as it is; a caller that
-        // gives a distance gives a unit vector (guess: no normalisation
-        // there). A NaN distance takes this branch too, as its unordered
-        // compare does.
-        Some(distance) if distance.is_nan() || distance >= DISTANCE_EPSILON => (back, distance),
+        Some(distance) if distance.is_nan() || distance >= DISTANCE_EPSILON => {
+            (eye_or_back, distance)
+        }
         _ => {
-            let vector = back - at;
-            let distance = vector.length();
-            if distance >= DISTANCE_EPSILON {
-                (vector / distance, distance)
-            } else {
-                (Vec3::Z, 0.0)
-            }
+            let vector = eye_or_back - at;
+            let distance =
+                ((vector.x * vector.x + vector.z * vector.z) + vector.y * vector.y).sqrt();
+            (vector * (1.0 / distance), distance)
         }
     };
     Placement {
-        at,
+        at: clamped,
         back,
         distance,
-        yaw: head_atan2_xz(back.x, back.z),
+        yaw: planar_yaw(back),
         pitch: -quick_asin(back.y),
     }
 }
 
-/// The distance after the fixed-distance camera takes its first value: at
-/// least `min` (10 by default) and at most `max` (the zoom range's top).
+/// The zoom a stepped camera starts from after a placement: the distance,
+/// raised to `min` (10 by default) and, on the stepped camera, lowered to
+/// `max` (the zoom range's top).
 pub fn clamp_distance(distance: f32, min: f32, max: f32) -> f32 {
     if distance < min {
         min
@@ -202,8 +276,9 @@ pub fn clamp_distance(distance: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-/// Pulls a pitch into the limits the fixed-distance camera keeps: the
-/// original stores `−pitch` and holds it between `−cap` and `−floor`.
+/// Pulls a placement's pitch below the horizon into the limits the stepped
+/// camera keeps: at least the held pitch `floor`, at most `cap`. The
+/// original stores the negated value; a NaN takes neither side.
 pub fn clamp_fixed_pitch(pitch: f32, floor: f32, cap: f32) -> f32 {
     if floor > pitch {
         floor
@@ -232,7 +307,7 @@ pub fn frame_step(ahead: &mut f32, dt: f32) -> (u32, f32) {
 
 /// The constant the camera's preset divides several values by: 59². It is
 /// the original's fixed base of the field of view (its 2000 zoom is 45°),
-/// and the same divisor scales the preset's angles.
+/// and the same divisor scales the preset's view and size.
 pub const PRESET_SCALE: f32 = 59.0 * 59.0;
 
 /// A camera preset's raw fields, in the order the original's record keeps
@@ -240,14 +315,19 @@ pub const PRESET_SCALE: f32 = 59.0 * 59.0;
 /// where a field only feeds an editor): a zero asks for the default.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PresetFields {
-    /// Flags word. `0x200` installs the wheel's stop easing, `0x200000`
-    /// the fixed-distance camera, `0x100000` the editor's drag, `0x400000`
-    /// the editor's target scan.
+    /// Flags word. `0x200` installs the wheel's zoom handler, `0x200000`
+    /// makes the stepped camera (zoom stops of a fifth of the range, the
+    /// zoom's pitch floor and the cut-away probe every frame), `0x100000`
+    /// installs the editor's drag, `0x400000` runs the editor's target
+    /// scan.
     pub flags: u32,
     /// Field of view scale (default 280).
     pub view: f32,
-    /// Angle whose 59th root scales with the zoom (default 4719934.5).
-    pub angle: f32,
+    /// A share kept per second whose 59th root is kept per 17 ms tick
+    /// (default the double 3.94e-13, whose root is 0.6162: the chase
+    /// camera's orbit retention; guess for the field's reader, which is
+    /// outside this unit).
+    pub retention: f32,
     /// Drag sensitivity (default 1).
     pub sensitivity: f32,
     /// Lower pitch bound (default −1.5).
@@ -278,7 +358,7 @@ impl Default for PresetFields {
         Self {
             flags: 0,
             view: 0.0,
-            angle: 0.0,
+            retention: 0.0,
             sensitivity: 0.0,
             pitch_low: 0.0,
             pitch_high: 0.0,
@@ -300,7 +380,7 @@ impl Default for PresetFields {
 pub struct Preset {
     pub flags: u32,
     pub view: f32,
-    pub angle: f32,
+    pub retention: f32,
     pub sensitivity: f32,
     pub pitch_low: f32,
     pub pitch_high: f32,
@@ -313,8 +393,7 @@ pub struct Preset {
     pub min_height: f32,
     pub max_height: f32,
     pub extra: f32,
-    /// The pitch speed and the zoom speed the preset sets (fields 0x17C and
-    /// 0x154 in the original).
+    /// The pitch speed and the zoom ease per tick the preset sets.
     pub pitch_speed: f32,
     pub zoom_speed: f32,
 }
@@ -324,11 +403,14 @@ pub fn fov_scale(value: f32) -> f32 {
     value / PRESET_SCALE
 }
 
+/// The default per-second retention: the original keeps it as a double.
+pub const DEFAULT_RETENTION: f64 = 3.94e-13;
+
 /// `exp(ln(value) / 59)`: the preset's 59th-root scaling, as the original
 /// does it with the runtime library's logarithm and exponential in double
 /// precision.
-fn root59(value: f32) -> f32 {
-    (f64::from(value).ln() / 59.0).exp() as f32
+fn root59(value: f64) -> f32 {
+    (value.ln() / 59.0).exp() as f32
 }
 
 /// Applies a preset as the original's routine does. The GUI callbacks and
@@ -340,7 +422,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         fields.size
     };
     let extent = size / PRESET_SCALE;
-    let fixed = fields.flags & 0x20_0000 != 0;
+    let stepped = fields.flags & 0x20_0000 != 0;
     let min_distance = if fields.min_distance > 0.0 {
         fields.min_distance
     } else {
@@ -352,16 +434,16 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         10000.0
     };
     let rate = if fields.rate > 0.0 {
-        root59(fields.rate)
+        root59(f64::from(fields.rate))
     } else {
         1.0
     };
-    let pitch_speed = if fixed {
+    let pitch_speed = if stepped {
         5.0
     } else {
         max_distance * 15.0 / PRESET_SCALE
     };
-    let zoom_speed = if fixed {
+    let zoom_speed = if stepped {
         (5.0 / 59.0) as f32
     } else {
         (6.6 / 59.0) as f32
@@ -373,10 +455,10 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         } else {
             fields.view
         }),
-        angle: root59(if fields.angle == 0.0 {
-            4719934.5
+        retention: root59(if fields.retention == 0.0 {
+            DEFAULT_RETENTION
         } else {
-            fields.angle
+            f64::from(fields.retention)
         }),
         sensitivity: if fields.sensitivity == 0.0 {
             1.0
@@ -407,32 +489,46 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     }
 }
 
-/// The segment the camera's cut-away detector casts: it starts two camera
-/// distances behind the looked-at point, along the backward vector, and
-/// runs back along it for `2·distance − 1 m`, stopping a metre short of the
-/// point. Returns the start, the (unit) direction and the length.
-pub fn cut_away_segment(focus: Vec3, back: Vec3, distance: f32) -> (Vec3, Vec3, f32) {
-    let start = focus - back * (2.0 * distance);
-    (start, back, 2.0 * distance - 1.0)
+/// The segment the camera's cut-away driver casts: it starts twice the
+/// camera's largest distance out along the backward vector from the
+/// looked-at point (past the eye) and runs back towards the point for
+/// twice that distance less a metre, so it stops a metre short of the
+/// point. The original scales the reversed vector by minus twice the
+/// distance. Returns the start, the (unit) direction and the length.
+pub fn cut_away_segment(focus: Vec3, back: Vec3, max_distance: f32) -> (Vec3, Vec3, f32) {
+    let toward = -back;
+    let start = focus + toward * (-max_distance * 2.0);
+    (start, toward, max_distance * 2.0 - 1.0)
 }
 
 /// The offset one kick puts on the eye, before the chase camera's shake
-/// carries it: a small random offset plus the camera's right axis, jittered
-/// vertically, normalised to `size`. The three random draws are the
-/// original's order; two more are taken only when the right axis is
-/// degenerate.
+/// carries it. Three draws make a small random offset (x and z in ±0.5, y
+/// in 0–0.15, the last scaled in double precision). The kick's
+/// `direction` is the basis; one shorter than √0.1 is replaced by the
+/// camera's `right` axis times the sign of a fourth draw less a half, with
+/// a fifth draw's `(d − 0.5)·4` added to its height. A basis longer than
+/// 2⁻²³ (squared) is normalised by the processor's approximate reciprocal
+/// square root, added to the offset, and the sum is scaled to `size`.
 ///
 /// [guess: the original draws from the engine's global generator; Exarust
 /// passes its own so a replay keeps its stream]
-pub fn kick_offset(right: Vec3, size: f32, draw: &mut impl FnMut() -> f32) -> Vec3 {
+pub fn kick_offset(
+    direction: Vec3,
+    right: Vec3,
+    size: f32,
+    draw: &mut impl FnMut() -> f32,
+) -> Vec3 {
     let first = draw() - 0.5;
     let second = (f64::from(draw()) * 0.15) as f32;
     let third = draw() - 0.5;
     let mut offset = Vec3::new(first, second, third);
-    let mut basis = right * sign_or_zero(first);
-    if basis.length_squared() < 0.1 {
+    let mut basis = direction;
+    if f64::from(basis.length_squared()) < KICK_DEGENERATE {
         basis = right * sign_or_zero(draw() - 0.5);
         basis.y += (draw() - 0.5) * 4.0;
+    }
+    if basis.length_squared() > KICK_EPSILON {
+        basis = normalize(basis);
     }
     offset += basis;
     let length_squared = offset.length_squared();
@@ -445,29 +541,61 @@ pub fn kick_offset(right: Vec3, size: f32, draw: &mut impl FnMut() -> f32) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::f32::consts::{PI, TAU};
+    use std::f32::consts::PI;
 
     #[test]
-    fn a_camera_yaw_stays_within_half_a_turn_of_the_body() {
-        // Already behind the body: unchanged, also just inside the turn.
+    fn a_target_yaw_stays_within_half_a_turn_of_the_camera() {
+        // Within half a turn of the camera: unchanged.
         assert_eq!(align_behind(0.0, 0.0), 0.0);
         assert_eq!(align_behind(0.5, 0.0), 0.5);
         assert_eq!(align_behind(-0.5, 0.0), -0.5);
-        // More than π behind: one turn forward, within the half turn.
+        // The camera more than π beyond the target: one turn forward.
         let wrapped = align_behind(-3.0, 3.0);
-        assert!((wrapped - (-3.0 + TAU)).abs() < 1e-6, "{wrapped}");
-        // More than π ahead: one turn back.
+        assert_eq!(wrapped, (f64::from(-3.0f32) + std::f64::consts::TAU) as f32);
+        // The camera more than π short of it: one turn back.
         let wrapped = align_behind(3.0, -3.0);
-        assert!((wrapped - (3.0 - TAU)).abs() < 1e-6, "{wrapped}");
-        // The f32 π itself is already a hair more than the f64 π, so an
-        // exact ±π pair wraps by a whole turn (the original's compare is in
-        // f64 over the f32 difference).
+        assert_eq!(wrapped, (f64::from(3.0f32) - std::f64::consts::TAU) as f32);
+        // The f32 π is a hair more than the f64 π, so an exact ±π pair
+        // wraps by a whole turn (the compare is in f64 over the f32
+        // difference).
         let wrapped = align_behind(-PI, 0.0);
         assert!((wrapped - PI).abs() < 1e-6, "{wrapped}");
         let wrapped = align_behind(PI, 0.0);
         assert!((wrapped + PI).abs() < 1e-6, "{wrapped}");
+        // A camera that has orbited past a turn pulls the target along.
+        let wrapped = align_behind(0.25, 7.0);
+        assert_eq!(wrapped, (f64::from(0.25f32) + std::f64::consts::TAU) as f32);
         // A NaN takes neither branch.
         assert!(align_behind(f32::NAN, 0.0).is_nan());
+    }
+
+    #[test]
+    fn the_planar_yaw_is_the_engine_arc_cosine_of_z() {
+        // Straight along +z, +x and −z.
+        assert_eq!(planar_yaw(Vec3::Z), 0.0);
+        assert_eq!(planar_yaw(-Vec3::Z), PI);
+        // x = z = 1: cos 0.70710677 takes the upper form.
+        let c = 1.0f32 / 2.0f32.sqrt();
+        let upper =
+            (c * c * 0.0535 + (std::f32::consts::FRAC_PI_2 - c * 0.2075)) * (1.0 - c).sqrt();
+        assert_eq!(planar_yaw(Vec3::new(1.0, 5.0, 1.0)), upper);
+        assert_eq!(planar_yaw(Vec3::new(-1.0, 0.0, 1.0)), -upper);
+        // Behind (z < 0): π less the lower form, in double precision.
+        let lower =
+            (c * c * 0.0535 + (-c * 0.2075 + std::f32::consts::FRAC_PI_2)) * (1.0 - c).sqrt();
+        let behind = (std::f64::consts::PI - f64::from(lower)) as f32;
+        assert_eq!(planar_yaw(Vec3::new(1.0, 0.0, -1.0)), behind);
+        // Under 1e-8 of horizontal length squared: zero.
+        assert_eq!(planar_yaw(Vec3::new(1e-5, 3.0, 0.0)), 0.0);
+        // A NaN falls through to the arc cosine.
+        assert!(planar_yaw(Vec3::new(f32::NAN, 0.0, 1.0)).is_nan());
+    }
+
+    #[test]
+    fn the_orbit_rate_is_4_8_rad_over_the_screen_in_double() {
+        assert_eq!(orbit_per_pixel(1920.0), (4.8f64 / 1920.0) as f32);
+        assert_eq!(orbit_per_pixel(1920.0), ORBIT_PER_PIXEL);
+        assert_eq!(orbit_per_pixel(2560.0), (4.8f64 / 2560.0) as f32);
     }
 
     #[test]
@@ -477,10 +605,27 @@ mod tests {
         assert_eq!(pitch_floor(1000.0), 0.8);
         assert!((pitch_floor(2000.0) - 0.925).abs() < 1e-6);
         assert!((pitch_floor(1300.0) - 0.8375).abs() < 1e-6);
-        // The original adds in double precision.
-        assert_eq!(pitch_floor(1000.5), 0.8 + 0.5 * 0.000125);
+        // The zoom less 1000 is a single, then 0.000125 and 0.8 are doubles.
+        assert_eq!(pitch_floor(1000.5), (0.5f64 * 0.000125 + 0.8) as f32);
+        assert_eq!(pitch_floor(1000.5), 0.800_062_5);
+        let zoom = 9000.3f32;
+        assert_eq!(
+            pitch_floor(zoom),
+            (f64::from(zoom - 1000.0) * 0.000125 + 0.8) as f32
+        );
         // An unordered compare takes the steep branch: the floor is NaN.
         assert!(pitch_floor(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn the_held_pitch_is_the_asked_one_or_the_steeper_floor() {
+        assert_eq!(pitch_held(0.5, 0.8), 0.8);
+        assert_eq!(pitch_held(1.2, 0.8), 1.2);
+        // No cap here: the drag's clamp holds the asked pitch.
+        assert_eq!(pitch_held(2.0, 0.8), 2.0);
+        // A NaN floor is unordered: the asked pitch stays.
+        assert_eq!(pitch_held(1.0, f32::NAN), 1.0);
+        assert!(pitch_held(f32::NAN, 0.8).is_nan());
     }
 
     #[test]
@@ -511,19 +656,28 @@ mod tests {
     }
 
     #[test]
-    fn a_free_zoom_steps_by_a_fifth_of_a_percent_or_its_least_step() {
-        // 0.2 % of 1000 is 2, below the 6 of a 1200-wide range.
-        assert_eq!(zoom_steps(1000.0, 1.0, 800.0, 2000.0), 994.0);
-        assert_eq!(zoom_steps(1000.0, -1.0, 800.0, 2000.0), 1006.0);
+    fn a_free_zoom_steps_by_a_fifth_of_a_percent_a_unit_or_its_least_step() {
+        // One wheel unit: 0.2 % of 1000 is 2, below the 6 of a 1200 range.
+        assert_eq!(zoom_steps(1000.0, 1, 800.0, 2000.0), 994.0);
+        assert_eq!(zoom_steps(1000.0, -1, 800.0, 2000.0), 1006.0);
         // A zero step stays zero.
-        assert_eq!(zoom_steps(1000.0, 0.0, 800.0, 2000.0), 1000.0);
-        // A large value's 0.2 % is the step: 2000 × 0.002 = 4 < 6, too.
-        assert_eq!(zoom_steps(2000.0, 1.0, 800.0, 2000.0), 1994.0);
-        // A wide range still takes 0.5 % of it.
-        assert_eq!(zoom_steps(5000.0, 1.0, 10.0, 10000.0), 4950.05);
+        assert_eq!(zoom_steps(1000.0, 0, 800.0, 2000.0), 1000.0);
+        // 2000 × 0.002 = 4 < 6, too.
+        assert_eq!(zoom_steps(2000.0, 1, 800.0, 2000.0), 1994.0);
+        // A notch is 120 units: 24 % of 5000 in a 10–10000 range.
+        assert_eq!(zoom_steps(5000.0, 120, 10.0, 10000.0), 3800.0);
+        assert_eq!(zoom_steps(5000.0, -120, 10.0, 10000.0), 6200.0);
+        // A wide range still takes 0.5 % of it (49.95 as a single).
+        assert_eq!(
+            zoom_steps(5000.0, 1, 10.0, 10000.0),
+            5000.0 - 9990.0f32 * 0.005
+        );
         // The result stays in the range.
-        assert_eq!(zoom_steps(800.0, 1.0, 800.0, 2000.0), 800.0);
-        assert_eq!(zoom_steps(2000.0, -1.0, 800.0, 2000.0), 2000.0);
+        assert_eq!(zoom_steps(800.0, 1, 800.0, 2000.0), 800.0);
+        assert_eq!(zoom_steps(2000.0, -1, 800.0, 2000.0), 2000.0);
+        assert_eq!(zoom_steps(1000.0, 120, 800.0, 2000.0), 800.0);
+        // A NaN zoom passes the max-then-min through.
+        assert!(zoom_steps(f32::NAN, 1, 800.0, 2000.0).is_nan());
     }
 
     #[test]
@@ -539,11 +693,18 @@ mod tests {
             limits,
         );
         assert_eq!(placed.at, Vec3::new(1.0, 10.0, 2.0));
-        assert!((placed.distance - Vec3::new(0.0, 10.0, 5.0).length()).abs() < 1e-5);
+        // The vector runs from the unclamped point: (0, 15, 5).
+        let length = (25.0f32 + 225.0).sqrt();
+        assert_eq!(placed.distance, length);
+        assert_eq!(placed.back, Vec3::new(0.0, 15.0, 5.0) * (1.0 / length));
         // Straight behind: yaw 0, pitch negative (the eye above).
-        assert!(placed.back.z > 0.0);
         assert!(placed.pitch < 0.0);
+        assert_eq!(placed.pitch, -quick_asin(placed.back.y));
         assert_eq!(placed.yaw, 0.0);
+        // The eye on the point: no guard, the vector is NaN.
+        let same = place(Vec3::ZERO, Vec3::ZERO, None, limits);
+        assert_eq!(same.distance, 0.0);
+        assert!(same.back.x.is_nan());
         // A given distance keeps the direction as given.
         let placed = place(Vec3::ZERO, Vec3::new(0.0, 1.0, 0.0), Some(2000.0), limits);
         assert_eq!(placed.distance, 2000.0);
@@ -557,7 +718,7 @@ mod tests {
 
     #[test]
     fn a_placement_yaw_is_the_engine_yaw_of_the_back_vector() {
-        // Behind +X: the engine's atan2(x, z) gives +π/2.
+        // Behind +X: the engine's planar yaw gives its arc cosine of 0.
         let placed = place(
             Vec3::ZERO,
             Vec3::X,
@@ -567,7 +728,7 @@ mod tests {
                 max: 1e9,
             },
         );
-        assert!((placed.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(placed.yaw, std::f32::consts::FRAC_PI_2);
         // Behind −Z: half a turn.
         let placed = place(
             Vec3::ZERO,
@@ -618,10 +779,13 @@ mod tests {
             "{}",
             preset.view
         );
+        // The default retention is the double 3.94e-13: its 59th root is
+        // the chase camera's 0.616 orbit retention.
+        assert_eq!(preset.retention, (3.94e-13f64.ln() / 59.0).exp() as f32);
         assert!(
-            (preset.angle - 1.297_530_5).abs() < 1e-6,
+            (preset.retention - 0.616_246_1).abs() < 1e-6,
             "{}",
-            preset.angle
+            preset.retention
         );
         assert!((preset.extent - 4.596_380_4).abs() < 1e-6);
         assert!((preset.extent_step - 0.004_596_380_4).abs() < 1e-9);
@@ -633,7 +797,7 @@ mod tests {
         assert_eq!((preset.min_distance, preset.max_distance), (10.0, 10000.0));
         assert!((preset.pitch_speed - 43.091_064).abs() < 1e-4);
         assert!((preset.zoom_speed - 0.111_864_41).abs() < 1e-6);
-        // The fixed-distance camera swaps in its own speeds.
+        // The stepped camera swaps in its own speeds.
         let fixed = apply_preset(PresetFields {
             flags: 0x20_0000,
             ..PresetFields::default()
@@ -647,7 +811,7 @@ mod tests {
         let preset = apply_preset(PresetFields {
             flags: 0x200,
             view: 100.0,
-            angle: 8.0,
+            retention: 8.0,
             sensitivity: 2.0,
             pitch_low: -0.5,
             pitch_high: 0.75,
@@ -661,7 +825,7 @@ mod tests {
             extra: 3.0,
         });
         assert!((preset.view - 100.0 / 3481.0).abs() < 1e-6);
-        assert!((preset.angle - 8f32.powf(1.0 / 59.0)).abs() < 1e-5);
+        assert_eq!(preset.retention, (8f64.ln() / 59.0).exp() as f32);
         assert_eq!(preset.sensitivity, 2.0);
         assert_eq!((preset.pitch_low, preset.pitch_high), (-0.5, 0.75));
         assert_eq!(preset.extent, 1.0);
@@ -682,12 +846,15 @@ mod tests {
     }
 
     #[test]
-    fn the_cut_away_segment_starts_behind_the_eye_and_stops_short() {
+    fn the_cut_away_segment_starts_beyond_the_eye_and_stops_short() {
+        // The eye is 20 m out along +Z; the segment starts 40 m out and
+        // runs back towards the point for 39 m.
         let (start, direction, length) =
             cut_away_segment(Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 20.0);
-        assert_eq!(start, Vec3::new(0.0, 10.0, -40.0));
-        assert_eq!(direction, Vec3::Z);
+        assert_eq!(start, Vec3::new(0.0, 10.0, 40.0));
+        assert_eq!(direction, -Vec3::Z);
         assert_eq!(length, 39.0);
+        assert_eq!(start + direction * length, Vec3::new(0.0, 10.0, 1.0));
         // A small distance can make a negative length; the detector's
         // segment then runs the other way, as the original's does.
         let (_, _, length) = cut_away_segment(Vec3::ZERO, Vec3::Z, 0.4);
@@ -695,17 +862,26 @@ mod tests {
     }
 
     #[test]
-    fn a_kick_is_a_normalised_random_offset_from_the_camera_right() {
-        // Draws: 0.75 (first), 0.5 (second), 0.5 (third).
+    fn a_kick_is_its_direction_plus_a_random_offset_scaled_to_its_size() {
+        // Draws 0.75, 0.5, 0.5: the offset (0.25, 0.075, 0). A unit
+        // direction along −Z (the approximate reciprocal square root of 1
+        // is near 1) is added and the sum scaled to 2 m.
         let mut draws = [0.75, 0.5, 0.5].into_iter();
-        let offset = kick_offset(Vec3::X, 2.0, &mut || draws.next().unwrap());
-        // The right axis (+1) plus (0.25, 0.075, 0): normalised to 2 m.
-        let want = Vec3::new(1.25, 0.075, 0.0).normalize() * 2.0;
-        assert!((offset - want).length() < 1e-6, "{offset:?} {want:?}");
-        // The first draw's sign flips the basis: −X plus the offset.
-        let mut draws = [0.25, 0.5, 0.5].into_iter();
-        let offset = kick_offset(Vec3::X, 2.0, &mut || draws.next().unwrap());
-        let want = Vec3::new(-1.25, 0.075, 0.0).normalize() * 2.0;
-        assert!((offset - want).length() < 1e-6, "{offset:?} {want:?}");
+        let offset = kick_offset(-Vec3::Z, Vec3::X, 2.0, &mut || draws.next().unwrap());
+        let basis = normalize(-Vec3::Z);
+        let sum = Vec3::new(0.25, (0.5f64 * 0.15) as f32, 0.0) + basis;
+        assert_eq!(offset, sum * (2.0 / sum.length_squared().sqrt()));
+        assert!(draws.next().is_none(), "three draws only");
+        // A long direction is normalised first.
+        let mut draws = [0.5, 0.0, 0.5].into_iter();
+        let offset = kick_offset(Vec3::Y * 10.0, Vec3::X, 1.0, &mut || draws.next().unwrap());
+        assert!((offset - Vec3::Y).length() < 1e-3, "{offset:?}");
+        // A degenerate direction takes the right axis by a fourth draw's
+        // sign and a fifth draw's height: 0.25 → −X, 0.75 → +1 up.
+        let mut draws = [0.5, 0.0, 0.5, 0.25, 0.75].into_iter();
+        let offset = kick_offset(Vec3::ZERO, Vec3::X, 3.0, &mut || draws.next().unwrap());
+        let basis = normalize(Vec3::new(-1.0, 1.0, 0.0));
+        assert_eq!(offset, basis * (3.0 / basis.length_squared().sqrt()));
+        assert!(draws.next().is_none());
     }
 }

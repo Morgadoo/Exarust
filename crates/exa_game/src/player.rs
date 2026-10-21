@@ -36,7 +36,8 @@ use exa_ui::CursorCapture;
 
 use crate::bindings::{Action, Bindings};
 use crate::nav_camera::{
-    align_behind, clamp_pitch, frame_step, orbit_pitch, orbit_yaw, pitch_floor,
+    align_behind, clamp_pitch, frame_step, orbit_per_pixel, orbit_pitch, orbit_yaw, pitch_floor,
+    pitch_held,
 };
 
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
@@ -411,8 +412,10 @@ fn cursor_look(
             }
             if let Some(yaw) = yaw {
                 for mut camera in &mut cameras {
-                    // Behind the new facing, kept within half a turn of it.
-                    camera.yaw = align_behind(yaw + std::f32::consts::PI, yaw);
+                    // Behind the new facing, kept within half a turn of
+                    // the camera's present yaw.
+                    let shown = camera.shown_yaw;
+                    camera.yaw = align_behind(yaw + std::f32::consts::PI, shown);
                 }
             }
         }
@@ -1147,8 +1150,6 @@ const ORBIT_STIFFNESS: f32 = 0.0718;
 const ORBIT_RETENTION: f32 = 0.616;
 /// The yaw leads the shown yaw by at most this per tick (rad).
 const MAX_YAW_LEAD: f32 = std::f32::consts::FRAC_PI_4;
-/// Orbit drag (middle mouse), rad per screen width.
-const ORBIT_DRAG: f32 = 4.8;
 /// Zoom stops: 800 + 240·level, in the original's units (2000 = 45°).
 const ZOOM_STOPS: usize = 6;
 const ZOOM_START: f32 = 1300.0;
@@ -1236,12 +1237,18 @@ impl ChaseCamera {
         self.shake_before -= by;
     }
 
-    /// A random kick from the original's routine: a small random offset
-    /// plus the camera's right axis, jittered vertically and normalised to
-    /// `size` (m). The draws come from the game's generator, in the
-    /// original's order.
-    pub fn kick_random(&mut self, right: Vec3, size: f32, draw: &mut impl FnMut() -> f32) {
-        let offset = crate::nav_camera::kick_offset(right, size, draw);
+    /// A kick from the original's routine: the kick's direction (the
+    /// camera's right axis, jittered, when it is too short) plus a small
+    /// random offset, scaled to `size` (m). The draws come from the game's
+    /// generator, in the original's order.
+    pub fn kick_random(
+        &mut self,
+        direction: Vec3,
+        right: Vec3,
+        size: f32,
+        draw: &mut impl FnMut() -> f32,
+    ) {
+        let offset = crate::nav_camera::kick_offset(direction, right, size, draw);
         self.kick(offset);
     }
 
@@ -1261,7 +1268,7 @@ impl ChaseCamera {
         let lead = turn_between(self.shown_yaw, self.yaw).clamp(-MAX_YAW_LEAD, MAX_YAW_LEAD);
         self.yaw_speed = ORBIT_RETENTION * (self.yaw_speed + ORBIT_STIFFNESS * lead);
         self.shown_yaw += self.yaw_speed;
-        let target_pitch = clamp_pitch(self.user_pitch, pitch_floor(self.shown_zoom), MAX_PITCH);
+        let target_pitch = pitch_held(self.user_pitch, pitch_floor(self.shown_zoom));
         self.pitch += (target_pitch - self.pitch) * 0.1;
         let ease = 5.0 / 59.0;
         self.shown_zoom += (self.zoom - self.shown_zoom) * ease;
@@ -1342,7 +1349,7 @@ pub(crate) fn chase_camera(
     });
     for (mut cam, mut t, mut projection) in &mut cameras {
         if bindings.mouse_pressed(&buttons, Action::Orbit) {
-            let per_pixel = ORBIT_DRAG / width;
+            let per_pixel = orbit_per_pixel(width);
             cam.yaw = orbit_yaw(cam.yaw, motion.delta.x, per_pixel);
             cam.user_pitch = orbit_pitch(
                 cam.user_pitch,
