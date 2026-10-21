@@ -838,7 +838,7 @@ pub(crate) mod tests {
             return;
         };
         let data = Arc::new(exa_assets::GameData::open(&dir).unwrap());
-        let motions = Motions::load(&exa_assets::Game(data.clone())).expect("humanoid.rsq");
+        let motions = Motions::load(&exa_assets::Game(data.clone()));
         let bytes = data
             .pack(exa_assets::PackKind::Resource)
             .and_then(|p| p.get(exa_assets::model::BODY_MODEL))
@@ -1013,7 +1013,7 @@ pub(crate) mod tests {
             return;
         };
         let data = Arc::new(exa_assets::GameData::open(&dir).unwrap());
-        let motions = Motions::load(&exa_assets::Game(data)).expect("humanoid.rsq");
+        let motions = Motions::load(&exa_assets::Game(data));
         for bone in [13, 16] {
             let ((lo, hi), stretch) = hinge_range(&motions.1[&bone].links);
             assert!(

@@ -360,8 +360,7 @@ mod tests {
             return;
         };
         let data = std::sync::Arc::new(exa_assets::GameData::open(&dir).unwrap());
-        let motions =
-            exa_anim::Motions::load(&exa_assets::Game(data.clone())).expect("humanoid.rsq");
+        let motions = exa_anim::Motions::load(&exa_assets::Game(data.clone()));
         let set = &motions.0;
         let bytes = data
             .pack(PackKind::Resource)

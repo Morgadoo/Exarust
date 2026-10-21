@@ -153,10 +153,7 @@ fn setup(
             let (moveset, action) = motion
                 .split_once('/')
                 .unwrap_or(("Default", motion.as_str()));
-            match exa_anim::Motions::load(&game) {
-                Some(m) => commands.insert_resource(m),
-                None => error!("humanoid.rsq could not be loaded"),
-            }
+            commands.insert_resource(exa_anim::Motions::load(&game));
             let race = options.race.and_then(|r| {
                 let races = game
                     .0
@@ -244,10 +241,7 @@ fn setup(
             fov = CREATION_FOV;
         }
         View::Play(name) => {
-            match exa_anim::Motions::load(&game) {
-                Some(m) => commands.insert_resource(m),
-                None => error!("humanoid.rsq could not be loaded"),
-            }
+            commands.insert_resource(exa_anim::Motions::load(&game));
             let camera = spawn_chase_camera(&mut commands, &options);
             commands.insert_resource(PlayCamera(camera));
             commands.insert_resource(exa_world::room_view::RoomView {

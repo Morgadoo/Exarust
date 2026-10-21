@@ -223,7 +223,7 @@ fn the_installed_posture_clips() {
     };
     let data = exa_assets::GameData::open(&dir).unwrap();
     let game = exa_assets::Game(Arc::new(data));
-    let motions = Motions::load(&game).unwrap();
+    let motions = Motions::load(&game);
     let at = |name: &str| motions.0.action_index(name);
     let clip = |name: &str| {
         motions

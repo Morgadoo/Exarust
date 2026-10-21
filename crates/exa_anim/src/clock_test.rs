@@ -534,7 +534,7 @@ fn the_installed_clips_loop_and_lead_in_as_the_original() {
         return;
     };
     let data = std::sync::Arc::new(exa_assets::GameData::open(&dir).unwrap());
-    let motions = crate::Motions::load(&exa_assets::Game(data)).expect("humanoid.rsq");
+    let motions = crate::Motions::load(&exa_assets::Game(data));
     let clip_of = |action: &str| {
         motions
             .clip(&Animator::new("Default", action), action)

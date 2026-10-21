@@ -25,6 +25,10 @@ owed to the next frame), 0.6 × the race's base a tick
 ## Scope
 
 - Parse `humanoid.rsq`: bone hierarchy (18 bones for humans) and motion sequences.
+  Without the file (or when it does not parse) the library is the
+  original's fallback: one bone, one unnamed action and one empty
+  `Default` moveset, so characters play nothing instead of failing to
+  load (`Motions::fallback`).
 - Clip tables: an `Animator` names its base moveset (the race's own,
   `Default` for a human) and the held items' `MovesetConfig`;
   `Motions::clip` looks every clip up in the table the original assembles

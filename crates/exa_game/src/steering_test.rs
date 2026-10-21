@@ -493,7 +493,7 @@ fn the_installed_walks_are_keyed_every_10_frames() {
         return;
     };
     let data = std::sync::Arc::new(exa_assets::GameData::open(&dir).unwrap());
-    let motions = Motions::load(&exa_assets::Game(data)).expect("humanoid.rsq");
+    let motions = Motions::load(&exa_assets::Game(data));
     let walk: Vec<f32> = (1..=8).map(|k| 10.0 * k as f32).collect();
     for moveset in ["Default", "Torch"] {
         for action in ["Walk", "Run", "Backpedal"] {

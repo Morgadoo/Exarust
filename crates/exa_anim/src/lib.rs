@@ -113,8 +113,20 @@ impl Motions {
         self.0.table_clip(&table, action)
     }
 
-    pub fn load(game: &Game) -> Option<Self> {
-        let bytes = game.0.pack(PackKind::Resource)?.get("humanoid.rsq")?;
+    /// The motion library: `humanoid.rsq` parsed with the human body's leg
+    /// length and each bone's physical body. Without the file (or when it
+    /// does not parse) the original falls back on one `Default` moveset
+    /// with one bone and one unnamed action and no clips: every character
+    /// then plays nothing rather than the game failing to load.
+    pub fn load(game: &Game) -> Self {
+        let Some(bytes) = game
+            .0
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get("humanoid.rsq"))
+        else {
+            warn!("humanoid.rsq missing: the Default moveset alone");
+            return Self::fallback();
+        };
         match Sequences::parse(bytes) {
             Ok(seq) => {
                 let leg = human_leg(game).unwrap_or(0.0);
@@ -125,13 +137,31 @@ impl Motions {
                     .zip(seq.bodies)
                     .filter_map(|(n, b)| Some((bone_index(&n.name)?, b)))
                     .collect();
-                Some(Self::new(Arc::new(seq.motions), Arc::new(bodies), leg))
+                Self::new(Arc::new(seq.motions), Arc::new(bodies), leg)
             }
             Err(e) => {
-                error!("humanoid.rsq: {e}");
-                None
+                error!("humanoid.rsq: {e}; the Default moveset alone");
+                Self::fallback()
             }
         }
+    }
+
+    /// The original's fallback motion library: one bone, one unnamed action
+    /// and one empty `Default` moveset.
+    pub fn fallback() -> Self {
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![exa_formats::rsq::Action {
+                name: String::new(),
+                params: [0, 0],
+            }],
+            movesets: vec![exa_formats::rsq::Moveset {
+                name: DEFAULT_MOVESET.into(),
+                parent: String::new(),
+                clips: vec![None],
+            }],
+        };
+        Self::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
     }
 }
 
@@ -490,7 +520,23 @@ fn play_clips(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exa_formats::rsq::Key;
+    use exa_formats::rsq::{Key, MovesetConfig};
+
+    /// Without `humanoid.rsq` the library is one empty `Default` moveset
+    /// with one bone and one unnamed action: no character has a clip.
+    #[test]
+    fn the_fallback_library_is_one_empty_default_moveset() {
+        let motions = Motions::fallback();
+        assert_eq!(motions.0.bone_count, 1);
+        assert_eq!(motions.0.actions.len(), 1);
+        assert_eq!(motions.0.movesets.len(), 1);
+        assert_eq!(motions.0.movesets[0].name, DEFAULT_MOVESET);
+        assert!(motions.0.movesets[0].parent.is_empty());
+        assert_eq!(motions.0.movesets[0].clips, [None]);
+        let animator = Animator::new(DEFAULT_MOVESET, "Idle");
+        assert!(motions.clip(&animator, "Idle").is_none());
+        assert!(motions.table("Other", MovesetConfig::NONE).is_none());
+    }
 
     fn key(time: f32, angle: f32, y: f32) -> Key {
         let q = Quat::from_rotation_y(angle);
