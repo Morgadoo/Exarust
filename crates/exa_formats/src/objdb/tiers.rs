@@ -633,6 +633,31 @@ impl ObjectDb {
         changed
     }
 
+    /// What using an object gives, by its operative section, as the
+    /// original's item-use test returns it (the codes' meanings in the item
+    /// screen are not established): 0 without an operative section, for
+    /// classes 2, 4 and 8, and for class 0, except that class 0 of kind
+    /// `0x11` gives 2 when bits 16–23 of `word` (the caller's word) are
+    /// clear; 1 for class 1 of kind 8, 9, 10 or 14 with those bits set; 2
+    /// otherwise. For class 0 of another kind the original first runs its
+    /// use action (kind 7 hands the header name to a registered reader,
+    /// kind 5 opens a form), which is the caller's here.
+    pub fn use_kind(&self, id: u32, word: u32) -> u8 {
+        let Some(op) = self.section(id, OPERATIVE) else {
+            return 0;
+        };
+        let class = op.first().copied().unwrap_or(0);
+        let kind = op.get(1).copied().unwrap_or(0);
+        let condition = word & 0xFF_0000 != 0;
+        match class {
+            2 | 4 | 8 => 0,
+            0 if kind == 0x11 && !condition => 2,
+            0 => 0,
+            1 if matches!(kind, 8 | 9 | 10 | 14) && condition => 1,
+            _ => 2,
+        }
+    }
+
     /// The original's guarded removal ("Remove DB reference"): a local or
     /// world object is deleted from its tier after releasing, in that
     /// tier's library, every model string id whose low 31 bits are not
@@ -1088,6 +1113,42 @@ mod tests {
         assert_eq!(u32_at(db.section(LOCAL | 4, DOOR).unwrap(), 4), LOCAL | 2);
         // The pass turned the table off and emptied it.
         assert_eq!(db.apply_link_remaps(), 0);
+    }
+
+    #[test]
+    fn use_kinds() {
+        let mut db = ObjectDb::default();
+        for (id, class, kind) in [
+            (1, 0, 0x11),
+            (2, 0, 7),
+            (3, 1, 9),
+            (4, 1, 3),
+            (5, 4, 0),
+            (6, 3, 1),
+        ] {
+            let mut op = vec![0u8; 0x3C];
+            op[0] = class;
+            op[1] = kind;
+            put(
+                &mut db.base,
+                id,
+                NAME | OPERATIVE,
+                &payload(&[(NAME, header("U", 0, 0)), (OPERATIVE, op)]),
+            );
+        }
+        put(
+            &mut db.base,
+            7,
+            NAME,
+            &payload(&[(NAME, header("N", 0, 0))]),
+        );
+        let set = 0x0001_0000;
+        assert_eq!((db.use_kind(1, 0), db.use_kind(1, set)), (2, 0));
+        assert_eq!((db.use_kind(2, 0), db.use_kind(2, set)), (0, 0));
+        assert_eq!((db.use_kind(3, 0), db.use_kind(3, set)), (2, 1));
+        assert_eq!((db.use_kind(4, 0), db.use_kind(4, set)), (2, 2));
+        assert_eq!((db.use_kind(5, set), db.use_kind(6, 0)), (0, 2));
+        assert_eq!((db.use_kind(7, 0), db.use_kind(99, 0)), (0, 0));
     }
 
     #[test]
