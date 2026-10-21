@@ -1391,21 +1391,28 @@ pub fn resume_creation() -> CreationResume {
     }
 }
 
-/// The skills a freely created character starts with.
+/// Writes the three starting skill slots into `skills`.
 ///
-/// Close Combat, Armour and Shields each stand at five levels (25000
-/// points) and have their first techniques chosen; Ranged Combat, Insight
-/// and Concentration are empty. The freely created character also starts
-/// with the two default option entries (see [`creation_defaults`]).
-pub fn starting_skills() -> [Skill; SKILLS] {
-    let mut skills = [Skill::default(); SKILLS];
+/// Close Combat, Armour and Shields are set to five levels (25000 points)
+/// and their first five techniques. Only those three slots' points and
+/// first five technique bytes are written: Ranged Combat, Insight,
+/// Concentration and each slot's sixth technique keep what they held. The
+/// free creator does this when it opens and every time it builds the
+/// equipment page of a mode without its own kit rules.
+pub fn apply_starting_skills(skills: &mut [Skill; SKILLS]) {
     for (slot, skill) in [(CLOSE_COMBAT, 0), (ARMOUR, 1), (SHIELDS, 2)] {
         let bytes = creation_slot_defaults()[skill];
-        let points = u16::from_le_bytes([bytes[0], bytes[1]]);
-        let mut techniques = [0; TECHNIQUE_SLOTS];
-        techniques.copy_from_slice(&bytes[2..8]);
-        skills[slot] = Skill { points, techniques };
+        let target = &mut skills[slot];
+        target.points = u16::from_le_bytes([bytes[0], bytes[1]]);
+        target.techniques[..5].copy_from_slice(&bytes[2..7]);
     }
+}
+
+/// The skills a new, empty record has once the starting slots are written
+/// (see [`apply_starting_skills`]); the other three skills are empty.
+pub fn starting_skills() -> [Skill; SKILLS] {
+    let mut skills = [Skill::default(); SKILLS];
+    apply_starting_skills(&mut skills);
     skills
 }
 
@@ -1648,10 +1655,12 @@ pub struct BackgroundPreset {
     pub keys: PresetKeys,
 }
 
-/// The first preset key (the unknown background).
+/// The first preset key (the unknown background); the arena's career
+/// character is kept one below it and each named background one above.
 const PRESET_KEY_BASE: u32 = 0x6431_bc02;
-/// The character chunk key beside it.
-const PRESET_CHARACTER_BASE: u32 = 0x6431_cc02;
+/// The character key under every preset: the same for the arena and all
+/// four backgrounds.
+const PRESET_CHARACTER_KEY: u32 = 0x6431_cc01;
 
 /// The preset of a story background, or `None` past the three templates.
 pub fn background_preset(background: i32) -> Option<BackgroundPreset> {
@@ -1674,7 +1683,7 @@ pub fn background_preset(background: i32) -> Option<BackgroundPreset> {
         name,
         keys: PresetKeys {
             root: PRESET_KEY_BASE + offset,
-            character: PRESET_CHARACTER_BASE + offset,
+            character: PRESET_CHARACTER_KEY,
         },
     })
 }
@@ -1688,7 +1697,7 @@ pub fn preset_save_keys(game_mode: i32, background: i32) -> Option<PresetKeys> {
         4 => background_preset(background).map(|preset| preset.keys),
         8 => Some(PresetKeys {
             root: PRESET_KEY_BASE - 1,
-            character: PRESET_CHARACTER_BASE - 1,
+            character: PRESET_CHARACTER_KEY,
         }),
         _ => None,
     }
@@ -1710,9 +1719,8 @@ pub enum PresetSource {
 pub enum BackgroundGear {
     /// The unknown background clears the hands and lists.
     Reset,
-    /// The preset's gear moves into the record.
-    Preset,
-    /// The background's template gear is adopted.
+    /// A named background always wears its template's gear: moved into the
+    /// loaded preset, or with the whole template when no preset was saved.
     Template,
 }
 
@@ -1722,44 +1730,36 @@ pub struct BackgroundPlan {
     pub preset: BackgroundPreset,
     pub source: PresetSource,
     pub gear: BackgroundGear,
-    /// The unknown background resets the record to the creator defaults.
+    /// The unknown background starts the thaumaturge's powers (see
+    /// [`creation_defaults`]).
     pub creation_defaults: bool,
 }
 
 /// Plans the record for a story background from whether its preset loaded.
 ///
-/// Guess: a named background whose preset is missing uses its template
-/// record; the template is supplied by the caller and not by this unit.
+/// The unknown background takes its saved preset or a new default record,
+/// clears its gear and starts its powers. A named background reads its
+/// template record by name first; a saved preset then keeps its own body
+/// and skills but takes the template's gear, and without a preset the
+/// template becomes the record. The template itself is supplied by the
+/// caller.
 pub fn plan_background(background: i32, preset_loaded: bool) -> Option<BackgroundPlan> {
     let preset = background_preset(background)?;
-    let (source, creation_defaults) = match background {
-        0 => (
-            if preset_loaded {
-                PresetSource::Saved
-            } else {
-                PresetSource::NewDefault
-            },
-            true,
-        ),
-        _ => (
-            if preset_loaded {
-                PresetSource::Saved
-            } else {
-                PresetSource::Template
-            },
-            false,
-        ),
+    let source = match (background, preset_loaded) {
+        (_, true) => PresetSource::Saved,
+        (0, false) => PresetSource::NewDefault,
+        (_, false) => PresetSource::Template,
     };
-    let gear = match (background, source) {
-        (0, _) => BackgroundGear::Reset,
-        (_, PresetSource::Template) => BackgroundGear::Template,
-        _ => BackgroundGear::Preset,
-    };
+    let unknown = background == 0;
     Some(BackgroundPlan {
         preset,
         source,
-        gear,
-        creation_defaults,
+        gear: if unknown {
+            BackgroundGear::Reset
+        } else {
+            BackgroundGear::Template
+        },
+        creation_defaults: unknown,
     })
 }
 
@@ -1778,7 +1778,8 @@ pub enum FreeCreateSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FreeCreatePlan {
     pub source: FreeCreateSource,
-    /// The skills are set to [`starting_skills`] whatever the record held.
+    /// The three starting skill slots are written (see
+    /// [`apply_starting_skills`]), into the kept record or the new one.
     pub reset_skills: bool,
     /// A loaded preset's gear is cleared so the player picks a kit.
     pub reset_gear: bool,
@@ -1790,7 +1791,7 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
         return FreeCreatePlan {
             source: FreeCreateSource::Preset(PresetKeys {
                 root: PRESET_KEY_BASE,
-                character: PRESET_CHARACTER_BASE,
+                character: PRESET_CHARACTER_KEY,
             }),
             reset_skills: false,
             reset_gear: true,
@@ -1800,7 +1801,7 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
         return FreeCreatePlan {
             source: FreeCreateSource::Preset(PresetKeys {
                 root: PRESET_KEY_BASE - 1,
-                character: PRESET_CHARACTER_BASE - 1,
+                character: PRESET_CHARACTER_KEY,
             }),
             reset_skills: false,
             reset_gear: true,
@@ -1857,10 +1858,15 @@ impl CreationEntryError {
 /// Where the creator's record comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntrySource {
+    /// A new default record (recruiting, or nothing else was found).
     NewDefault,
+    /// The chosen story background's preset (see [`plan_background`]).
     Background(i32),
+    /// Continuing: the record the screen already had, or a new default one.
     ContinueSave,
+    /// The free creator's preset or default (see [`plan_free_create`]).
     FreeCreate,
+    /// The record the screen already had.
     Existing,
 }
 
@@ -1872,18 +1878,26 @@ pub struct EntryPlan {
     /// The game mode (story 4, arena 8, versus 0x1010, …).
     pub game_mode: i32,
     pub source: EntrySource,
-    /// Non-continued records get the mode filter and full health.
+    /// The mode's gear filter ([`filter_creation_gear`]) runs.
     pub filter: bool,
+    /// The four health and focus words are set full.
     pub full_health: bool,
+    /// The story record's experience word is cleared.
+    pub clear_experience: bool,
     pub background: i32,
 }
 
 /// Plans the record a character screen entry edits.
 ///
-/// Continue mode first lists the saves; an invalid save list falls back to
-/// the free creator. Recruit mode makes a new record; story mode loads the
-/// chosen background's preset; other modes keep the record they had or
-/// create a free one.
+/// Continue mode needs the save manager and first lists the saves; an
+/// invalid list falls back to the free creator. A valid one keeps the
+/// screen's record (or a new default one) unfiltered and untouched.
+/// Recruiting makes a new default record that is not filtered. Story mode
+/// loads the chosen background's preset, clears its experience and
+/// filters it. Other modes keep the record they had, or run the free
+/// creator; when that finds no record (story or arena with no saved
+/// preset, `preset_loaded` false) a new default record is made and not
+/// filtered. Every record but a continued one is set to full health.
 pub fn plan_creation_entry(
     screen_mode: i32,
     game_mode: i32,
@@ -1891,6 +1905,7 @@ pub fn plan_creation_entry(
     record_present: bool,
     save_manager_present: bool,
     saves_valid: bool,
+    preset_loaded: bool,
 ) -> Result<EntryPlan, CreationEntryError> {
     let mut mode = CreationScreenMode::from_code(screen_mode);
     if mode == CreationScreenMode::Continue {
@@ -1904,23 +1919,27 @@ pub fn plan_creation_entry(
                 source: EntrySource::ContinueSave,
                 filter: false,
                 full_health: false,
+                clear_experience: false,
                 background,
             });
         }
         mode = CreationScreenMode::Free;
     }
-    let source = match mode {
-        CreationScreenMode::Recruit => EntrySource::NewDefault,
-        CreationScreenMode::Story => EntrySource::Background(background),
-        _ if record_present => EntrySource::Existing,
-        _ => EntrySource::FreeCreate,
+    let (source, filter) = match mode {
+        CreationScreenMode::Recruit => (EntrySource::NewDefault, false),
+        CreationScreenMode::Story => (EntrySource::Background(background), true),
+        _ if record_present => (EntrySource::Existing, true),
+        // The free creator leaves no record only where it reads a preset.
+        _ if matches!(game_mode, 4 | 8) && !preset_loaded => (EntrySource::NewDefault, false),
+        _ => (EntrySource::FreeCreate, true),
     };
     Ok(EntryPlan {
         mode,
         game_mode,
         source,
-        filter: true,
+        filter,
         full_health: true,
+        clear_experience: mode == CreationScreenMode::Story,
         background,
     })
 }
@@ -2940,6 +2959,7 @@ pub fn draw_voice_variant(rng: &mut Lcg, count: usize, history: &mut VoiceHistor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::characters::RANGED_COMBAT;
 
     #[test]
     fn a_character_record_moves_its_gear() {
@@ -3930,6 +3950,16 @@ mod tests {
         assert_eq!(skills[SHIELDS], skill(25000, [1, 2, 3, 4, 6, 0]));
         assert_eq!(skills[4], Skill::default());
         assert_eq!(skills[5], Skill::default());
+
+        // Written into a used record, the other slots and every sixth
+        // technique stay as they were.
+        let mut used = [skill(7000, [9, 9, 9, 9, 9, 9]); SKILLS];
+        apply_starting_skills(&mut used);
+        assert_eq!(used[CLOSE_COMBAT], skill(25000, [1, 2, 3, 4, 8, 9]));
+        assert_eq!(used[RANGED_COMBAT], skill(7000, [9, 9, 9, 9, 9, 9]));
+        assert_eq!(used[ARMOUR], skill(25000, [1, 2, 3, 4, 5, 9]));
+        assert_eq!(used[SHIELDS], skill(25000, [1, 2, 3, 4, 6, 9]));
+        assert_eq!(used[5], skill(7000, [9, 9, 9, 9, 9, 9]));
     }
 
     #[test]
@@ -4038,14 +4068,15 @@ mod tests {
             unknown.keys,
             PresetKeys {
                 root: 0x6431_bc02,
-                character: 0x6431_cc02
+                character: 0x6431_cc01
             }
         );
 
         let knight = background_preset(1).unwrap();
         assert_eq!(knight.name, Some("knight"));
         assert_eq!(knight.keys.root, 0x6431_bc03);
-        assert_eq!(knight.keys.character, 0x6431_cc03);
+        // Every preset keeps its character under the same second key.
+        assert_eq!(knight.keys.character, 0x6431_cc01);
         assert_eq!(background_preset(2).unwrap().name, Some("proctor"));
         assert_eq!(background_preset(3).unwrap().name, Some("villager"));
         assert_eq!(background_preset(4), None);
@@ -4054,7 +4085,8 @@ mod tests {
     #[test]
     fn the_preset_save_keys_follow_the_mode() {
         assert_eq!(preset_save_keys(4, 0).unwrap().root, 0x6431_bc02);
-        assert_eq!(preset_save_keys(4, 3).unwrap().character, 0x6431_cc05);
+        assert_eq!(preset_save_keys(4, 3).unwrap().root, 0x6431_bc05);
+        assert_eq!(preset_save_keys(4, 3).unwrap().character, 0x6431_cc01);
         assert_eq!(
             preset_save_keys(8, 0).unwrap(),
             PresetKeys {
@@ -4080,7 +4112,8 @@ mod tests {
 
         let saved = plan_background(2, true).unwrap();
         assert_eq!(saved.source, PresetSource::Saved);
-        assert_eq!(saved.gear, BackgroundGear::Preset);
+        // The saved proctor still wears the proctor template's gear.
+        assert_eq!(saved.gear, BackgroundGear::Template);
         assert!(!saved.creation_defaults);
         assert_eq!(plan_background(4, true), None);
     }
@@ -4092,7 +4125,7 @@ mod tests {
             story.source,
             FreeCreateSource::Preset(PresetKeys {
                 root: 0x6431_bc02,
-                character: 0x6431_cc02
+                character: 0x6431_cc01
             })
         );
         assert!(!story.reset_skills);
@@ -4119,30 +4152,44 @@ mod tests {
     #[test]
     fn the_entry_plan_loads_the_record_each_mode_edits() {
         assert_eq!(
-            plan_creation_entry(12, 4, 0, false, false, true),
+            plan_creation_entry(12, 4, 0, false, false, true, true),
             Err(CreationEntryError::SaveManagerMissing)
         );
 
-        let continued = plan_creation_entry(12, 4, 0, false, true, true).unwrap();
+        let continued = plan_creation_entry(12, 4, 0, false, true, true, true).unwrap();
         assert_eq!(continued.source, EntrySource::ContinueSave);
         assert!(!continued.filter);
         assert!(!continued.full_health);
 
-        let invalid = plan_creation_entry(12, 4, 0, false, true, false).unwrap();
+        let invalid = plan_creation_entry(12, 4, 0, false, true, false, true).unwrap();
         assert_eq!(invalid.mode, CreationScreenMode::Free);
         assert_eq!(invalid.source, EntrySource::FreeCreate);
         assert!(invalid.filter);
         assert!(invalid.full_health);
 
-        let recruit = plan_creation_entry(10, 8, 0, false, true, true).unwrap();
+        // Recruiting skips the gear filter but still fills the pools.
+        let recruit = plan_creation_entry(10, 8, 0, false, true, true, true).unwrap();
         assert_eq!(recruit.source, EntrySource::NewDefault);
-        assert!(recruit.filter);
+        assert!(!recruit.filter);
+        assert!(recruit.full_health);
 
-        let story = plan_creation_entry(4, 4, 2, false, true, true).unwrap();
+        let story = plan_creation_entry(4, 4, 2, false, true, true, false).unwrap();
         assert_eq!(story.source, EntrySource::Background(2));
+        assert!(story.filter);
+        assert!(story.clear_experience);
 
-        let existing = plan_creation_entry(0, 8, 0, true, true, true).unwrap();
+        let existing = plan_creation_entry(0, 8, 0, true, true, true, false).unwrap();
         assert_eq!(existing.source, EntrySource::Existing);
+        assert!(!existing.clear_experience);
+
+        // The free story creator with no saved preset makes a plain record.
+        let unsaved = plan_creation_entry(0, 4, 0, false, true, true, false).unwrap();
+        assert_eq!(unsaved.source, EntrySource::NewDefault);
+        assert!(!unsaved.filter);
+        assert!(unsaved.full_health);
+        let free = plan_creation_entry(0, 0x1010, 0, false, true, true, false).unwrap();
+        assert_eq!(free.source, EntrySource::FreeCreate);
+        assert!(free.filter);
     }
 
     #[test]
