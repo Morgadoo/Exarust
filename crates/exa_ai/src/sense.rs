@@ -55,6 +55,10 @@ pub struct Mind {
     pub frenzy: bool,
     /// The other is in the motion state that drops it from the visible pass.
     pub other_unconscious: bool,
+    /// The observer already flees this contact: any alarm keeps the flight,
+    /// raised to the alarm it fled at.
+    pub fleeing: bool,
+    pub fled_alarm: f32,
 }
 
 impl Mind {
@@ -79,6 +83,8 @@ impl Mind {
             light: 1.0,
             frenzy: false,
             other_unconscious: false,
+            fleeing: false,
+            fled_alarm: 0.0,
         }
     }
 
@@ -128,31 +134,32 @@ pub fn tick(mind: &mut Mind) {
     }
 }
 
-/// Notice, watch, engage or flee.
+/// Notice, watch, engage or flee: the contact classifier
+/// ([`crate::contacts::classify`]) on this rating, its stress already
+/// summed.
 pub fn decide(mind: &Mind) -> Decision {
-    let b = mind.tolerance / 100.0;
-    let threshold = if b == 0.0 { 2.0 } else { 7.0 * b * b + b + 2.0 };
-    let stress = if mind.stress.is_finite() {
-        mind.stress.max(0.0)
-    } else {
-        0.0
+    let mut record = crate::contacts::ContactRecord {
+        concern: mind.concern,
+        hostility: mind.hostility,
+        tolerance: mind.tolerance / 100.0,
+        alarm: mind.alarm,
+        ..crate::contacts::ContactRecord::default()
     };
-    let concern = mind.concern;
-    let hostility = mind.hostility;
-    let alarm = mind.alarm;
-    let flee = mind.flee_route
-        && ((stress > 3.0 && alarm > 0.75) || (concern > 1.0 && concern > 8.0 - stress));
-    if flee {
-        return Decision::Flee;
+    let mut morale = crate::contacts::Morale {
+        base: mind.stress,
+        fled_alarm: mind.fled_alarm,
+        ..crate::contacts::Morale::default()
+    };
+    let at = crate::contacts::Standing {
+        level: if mind.fleeing { 4 } else { 0 },
+        is_focus: mind.fleeing,
+    };
+    match crate::contacts::classify(&mut record, &mut morale, at, || mind.flee_route).0 {
+        4 => Decision::Flee,
+        2 | 3 => Decision::Engage,
+        1 => Decision::Watch,
+        _ => Decision::Notice,
     }
-    let heat = concern + hostility;
-    if heat > threshold + stress || (heat > threshold && alarm > 1.5) {
-        return Decision::Engage;
-    }
-    if concern > 1.0 {
-        return Decision::Watch;
-    }
-    Decision::Notice
 }
 
 /// How noticeable the other is. `gaze` and `forward` are dots of the other's

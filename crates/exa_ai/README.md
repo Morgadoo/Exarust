@@ -38,6 +38,8 @@ notice drops the sleep role and wakes.
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
+| `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the target pass's choice, the alarm mean and the sleeper's waking |
+| `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path search and following, steering orders |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
@@ -72,6 +74,19 @@ order and its double-precision comparisons. The position score's ground
 cost, line walk, sight test and nav snap have defaults (no navigation
 queries in the running game), and the chase route, the follow check and
 casting are hooks with no answer yet.
+
+**Contacts and flight.** A contact flees first when the stress
+(base + stress − courage) passes 3 with an alarm above 0.75 and a way out;
+then it engages past `7b² + (2 + b)` (`2 + b` for b ≤ 0) plus the
+stress; then a concern above 1 flees past 8 less the stress, or watches;
+else it is noticed. A flight halves the courage and adds 2 to the stress;
+a cornered fighter fights on with its courage doubled. The way out is the
+open exit most opposite the threat (cosine under 0.2), and fled rooms are
+remembered (eight). A combatant's contact is classified through
+`ContactRecord::of`; the combatant's own list still drops its oldest
+contact when full, where the original's admission (`contacts::admit`)
+replaces the lightest. The running game has no room graph yet, so no
+flight starts there.
 
 Not in yet: a script engine (encounter, dialogue and condition scripts are
 found, not run; only the init assignments run), the brain feeding the
