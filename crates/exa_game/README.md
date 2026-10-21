@@ -239,7 +239,7 @@ turned by the torso twist (the lumbar half) and lowered by the run lean
 the exertion makes, the head turned toward the look (a behaviour's look
 target while its deadline is past, else the cursor) by its ramping weight
 (its anchors then on the physical thorax), with
-identity slots for the femur posture, the IK chain and the foot pitch; the
+the femur posture (the thighs' combat turn) and identity slots for the IK chain and the foot pitch; the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character
 frame, and its lift, its controller told to follow the frame (carry); a body asked to go limp keeps its motion unless given a

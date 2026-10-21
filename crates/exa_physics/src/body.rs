@@ -50,7 +50,7 @@ mod balance;
 pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
-pub use bend::foot_pitch_turn;
+pub use bend::{FemurPosture, femur_posture_turn};
 #[path = "body_feet.rs"]
 mod feet;
 #[path = "body_stagger.rs"]

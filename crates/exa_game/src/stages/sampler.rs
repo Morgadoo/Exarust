@@ -38,7 +38,7 @@ use exa_formats::rsq::Clip;
 use exa_physics::body::locomotion::{
     Locomotion, Locomotor, flags, forward, head_look, twist_spine,
 };
-use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
+use exa_physics::body::{FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, world_with};
 
 use crate::limp::{Pace, clip_pose, clip_tick, physical_turns, run_overlay};
 
@@ -147,6 +147,15 @@ pub(crate) fn sample_clip(
     let mut look = locomotion
         .as_mut()
         .and_then(|(req, l)| look_of(&body, req, l, looks));
+    // The thighs are posed only in the combat behaviour's conditions (the
+    // splay flag has no known writer).
+    let posture = if matches!(state, Condition::ATTACKING | Condition::COMBAT_IDLE) {
+        FemurPosture::Combat {
+            height: fighter.map_or(0.0, |f| f.stats.height),
+        }
+    } else {
+        FemurPosture::Level
+    };
     sampled.0 = sample_parts(
         &mut anim,
         clip,
@@ -158,7 +167,7 @@ pub(crate) fn sample_clip(
         look.as_mut(),
         &body,
         root,
-        fighter.map_or(0.0, |f| f.stats.height),
+        posture,
         &parents,
         &nodes,
     );
@@ -242,7 +251,7 @@ pub(crate) fn sample_parts(
     look: Option<&mut Look>,
     body: &Ragdoll,
     root: Entity,
-    record_height: f32,
+    posture: FemurPosture,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) -> Option<Vec<Affine3A>> {
@@ -251,12 +260,12 @@ pub(crate) fn sample_parts(
     overlay(&mut pose, gait, &bracket);
     let held = hold_toward(&mut pose, hold);
     anim.keep(&pose, held);
-    let pose = femur_posture(pose.scaled(stature));
+    let pose = femur_posture(pose.scaled(stature), body, posture);
     let chain = clip_chain(body, root, &pose, parents, nodes);
     let mut parts = ik_chain(chain);
     twist_spine(&mut parts, &spine(body, nodes), twist);
     look_with_head(&mut parts, body, look);
-    Some(foot_pitch(parts, body, record_height))
+    Some(foot_pitch(parts))
 }
 
 /// Step 2, the gait overlay: a moving body's walk is slerped toward its
@@ -268,11 +277,23 @@ fn overlay(pose: &mut ClipPose, gait: Option<(&Clip, f32)>, bracket: &Bracket) {
     }
 }
 
-/// Step 4, the femur posture: the thighs' turns are multiplied by a small
-/// turn about the femur axis (±5°, or ±1.5° by the record's height). Until
-/// C13 lands the correction is the identity: the pose is returned as it
-/// is.
-fn femur_posture(pose: ClipPose) -> ClipPose {
+/// Step 4, the femur posture: each thigh's clip turn is multiplied by a
+/// small turn about the femur axis (`exa_physics::body::femur_posture_turn`,
+/// the legs in the body's order); the turn stays in the clip chain.
+fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> ClipPose {
+    for (leg, joint) in body.legs().iter().enumerate() {
+        let Some(thigh) = body.parts.get(joint.shin).and_then(|p| p.parent) else {
+            continue;
+        };
+        let Some(turn) = body.parts[thigh]
+            .bone
+            .checked_sub(1)
+            .and_then(|i| pose.rotations.get_mut(i))
+        else {
+            continue;
+        };
+        *turn *= femur_posture_turn(posture, leg);
+    }
     pose
 }
 
@@ -351,15 +372,7 @@ fn look_with_head(parts: &mut [Affine3A], body: &Ragdoll, look: Option<&mut Look
 /// Step 8, the foot pitch: a standing foot is pitched to the ground under
 /// it by the smoothed angle. Until C13 lands the feet keep the clip: the
 /// parts are returned as they are.
-fn foot_pitch(mut parts: Vec<Affine3A>, body: &Ragdoll, record_height: f32) -> Vec<Affine3A> {
-    for (leg, joint) in body.legs().iter().enumerate() {
-        if let Some(foot) = joint.foot
-            && let Some(part) = parts.get_mut(foot)
-        {
-            let turn = exa_physics::body::foot_pitch_turn(false, record_height, leg);
-            part.matrix3 *= bevy::math::Mat3A::from_quat(turn);
-        }
-    }
+fn foot_pitch(parts: Vec<Affine3A>) -> Vec<Affine3A> {
     parts
 }
 

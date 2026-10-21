@@ -374,45 +374,54 @@ fn fold_pose(targets: &mut [Affine3A], thigh: usize, shin: usize, leg: &Leg) {
 #[path = "body_bend_test.rs"]
 mod tests;
 
-/// The pitch turn the original gives each foot: about the axis
-/// normalized((0, 0, 1) lerped 0.2 toward (−1, 0, 0)), ±5° alternating by
-/// leg in the one mode, or (1 − record height)·−1.5° alternating in the
-/// other. `height` is the record's +0x34; leg 0 is positive, leg 1
-/// negative, and so on. The original writes the turn to the thigh part's
-/// `+0x5fc`, which its sampler folds into the foot's pose.
-pub fn foot_pitch_turn(dead_mode: bool, height: f32, leg: usize) -> Quat {
+/// How the thighs are posed over the clip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FemurPosture {
+    /// The clip's turns are kept.
+    Level,
+    /// The thighs splay: 5° about the posture axis, the first leg positive
+    /// and the others alternating (a body with the splay flag).
+    Splayed,
+    /// A body in combat behaviour out of the walking and helpless
+    /// conditions: (1 − `height`)·−1.5° (the race record's height), the
+    /// first leg negative and the others alternating.
+    Combat { height: f32 },
+}
+
+/// The turn the original multiplies into leg `leg`'s thigh over the clip's
+/// (after the clip's turn, `clip * turn`): about the axis
+/// normalized((0, 0, 1) lerped 0.4 toward (−1, 0, 0)), the angle by
+/// `posture`, its sign alternating by leg.
+pub fn femur_posture_turn(posture: FemurPosture, leg: usize) -> Quat {
     const DEGREE: f32 = 0.017_453_292;
-    let axis = Vec3::new(0.0, 0.0, 1.0).lerp(Vec3::new(-1.0, 0.0, 0.0), 0.2);
-    let angle = if dead_mode {
-        5.0 * DEGREE
-    } else {
-        (1.0 - height) * -1.5 * DEGREE
+    let angle = match posture {
+        FemurPosture::Level => return Quat::IDENTITY,
+        FemurPosture::Splayed => 5.0 * DEGREE,
+        FemurPosture::Combat { height } => (1.0 - height) * -1.5 * DEGREE,
     };
+    let axis = Vec3::new(0.0, 0.0, 1.0).lerp(Vec3::new(-1.0, 0.0, 0.0), 0.4);
     let sign = if leg.is_multiple_of(2) { 1.0 } else { -1.0 };
     Quat::from_axis_angle(axis.normalize(), sign * angle)
 }
 
 #[cfg(test)]
-mod pitch_tests {
+mod posture_tests {
     use super::*;
 
-    /// 5° in the first mode, (1 − height)·−1.5° in the second, alternating
-    /// sign by leg about the same axis.
+    /// 5° splayed, (1 − height)·−1.5° in combat, none level, alternating
+    /// sign by leg about the axis 0.4 of the way from forward to left.
     #[test]
-    fn the_foot_pitch_is_the_originals() {
-        let a = foot_pitch_turn(true, 0.0, 0);
-        let b = foot_pitch_turn(true, 0.0, 1);
-        let (axis, angle) = a.to_axis_angle();
+    fn the_femur_posture_is_the_originals() {
+        let axis = Vec3::new(-0.4, 0.0, 0.6).normalize();
+        let a = femur_posture_turn(FemurPosture::Splayed, 0);
+        let b = femur_posture_turn(FemurPosture::Splayed, 1);
+        let (got, angle) = a.to_axis_angle();
         assert!((angle - 5.0 * 0.017_453_292).abs() < 1e-6);
-        assert!((axis - Vec3::new(-0.2, 0.0, 0.8).normalize()).length() < 1e-6);
+        assert!((got - axis).length() < 1e-6);
         assert!(b.abs_diff_eq(a.conjugate(), 1e-6));
-        let c = foot_pitch_turn(false, 0.5, 0);
-        let expected =
-            Quat::from_axis_angle(Vec3::new(-0.2, 0.0, 0.8).normalize(), -0.75 * 0.017_453_292);
+        let c = femur_posture_turn(FemurPosture::Combat { height: 0.5 }, 0);
+        let expected = Quat::from_axis_angle(axis, -0.75 * 0.017_453_292);
         assert!(c.abs_diff_eq(expected, 1e-6));
-        assert_eq!(
-            foot_pitch_turn(true, 0.0, 0).to_axis_angle().1,
-            a.to_axis_angle().1
-        );
+        assert_eq!(femur_posture_turn(FemurPosture::Level, 0), Quat::IDENTITY);
     }
 }
