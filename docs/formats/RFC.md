@@ -137,7 +137,12 @@ the keyframe tracks (`Node::key_tracks`) after any kind's body, and a
 mesh's morph set (`Node::morph`, below); the others are skipped for now.
 The header's instance word is kept as `Node::instance`; it names the node
 whose data an instance node reuses (the original links instanced nodes to
-that owner when it finishes the file). Unknown root chunks and unknown
+that owner when it finishes the file). An instance stores no body of its
+own: it draws its owner's mesh (or light, or emitter) at its own transform
+and parent. 1 301 such nodes ship, for example exanima02's tied beams and
+exanima08's fireplaces; `Scene::mesh_of` resolves a chain of instances to
+the first stored mesh, and the model builder copies the owner's parts, GI
+points, lights and emitters onto the instance's node. Unknown root chunks and unknown
 sub-chunk tags are kept as tags (`Scene::unknown_chunks`,
 `Node::unknown_sub_chunks`): the original hands them to callbacks and skips
 them. Shipped, by node kind: on meshes 10 729 GI point

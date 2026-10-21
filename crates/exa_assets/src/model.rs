@@ -360,22 +360,25 @@ impl ModelLoader<'_> {
         }
         let mut nodes = Vec::with_capacity(scene.nodes.len());
         for (node, built) in scene.nodes.iter().zip(built_nodes) {
+            let mesh = match &node.body {
+                NodeBody::Mesh(mesh) => Some(mesh.as_ref()),
+                _ => None,
+            };
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
             // A node marked as level geometry never registers its body.
-            let rigid =
-                node.rigid()
-                    .filter(|_| !node.is_static())
-                    .map(|body| NodeRigidBody {
-                        body: Arc::new(body.clone()),
-                        mobility_divisor: match &node.body {
-                            NodeBody::Mesh(mesh) => mesh.groups.first().map_or(1.0, |g| {
-                                self.mobility_divisor(&entry, &scene, &g.material)
-                            }),
-                            _ => 1.0,
-                        },
-                    });
-            let (parts, part_materials) = match &node.body {
-                NodeBody::Mesh(mesh) => built
+            let rigid = node
+                .rigid()
+                .filter(|_| !node.is_static())
+                .map(|body| NodeRigidBody {
+                    body: Arc::new(body.clone()),
+                    mobility_divisor: mesh.map_or(1.0, |mesh| {
+                        mesh.groups
+                            .first()
+                            .map_or(1.0, |g| self.mobility_divisor(&entry, &scene, &g.material))
+                    }),
+                });
+            let (parts, part_materials) = match mesh {
+                Some(mesh) => built
                     .meshes
                     .into_iter()
                     .map(|(group, bevy_mesh)| {
@@ -384,7 +387,7 @@ impl ModelLoader<'_> {
                         ((self.meshes.add(bevy_mesh), material), name.clone())
                     })
                     .unzip(),
-                _ => (Vec::new(), Vec::new()),
+                None => (Vec::new(), Vec::new()),
             };
             let is_skin = match &node.body {
                 NodeBody::Mesh(mesh) => mesh
@@ -405,8 +408,8 @@ impl ModelLoader<'_> {
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
-                gi_points: Arc::new(match &node.body {
-                    NodeBody::Mesh(mesh) if skin_bone.is_none() => {
+                gi_points: Arc::new(match mesh {
+                    Some(mesh) if skin_bone.is_none() => {
                         mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect()
                     }
                     _ => Vec::new(),
@@ -433,16 +436,50 @@ impl ModelLoader<'_> {
                 },
                 rigid,
                 tracks: node.tracks().cloned().collect(),
-                shadow_bias: match &node.body {
+                shadow_bias: match mesh {
                     // The inflated variant (both sides × (1 + 0.005·v)) is
                     // not reproduced: such a mesh keeps level 0.
-                    NodeBody::Mesh(mesh) if !mesh.shadow_bias_inflated() => {
-                        mesh.shadow_bias_level()
-                    }
+                    Some(mesh) if !mesh.shadow_bias_inflated() => mesh.shadow_bias_level(),
                     _ => 0,
                 },
                 is_skin,
             });
+        }
+        // An instance node shares the node it names (1-based): the original
+        // links it to that node's object, so it draws the same geometry,
+        // light or emitter at its own transform and parent.
+        for i in 0..nodes.len() {
+            if scene.nodes[i].instance.is_none() {
+                continue;
+            }
+            let Some(owner) = instance_root(&scene, i) else {
+                continue;
+            };
+            if owner == i || owner >= nodes.len() {
+                continue;
+            }
+            let (parts, part_materials, gi_points, shadow_bias, light, voxel_light, fire, portal) = {
+                let src = &nodes[owner];
+                (
+                    src.parts.clone(),
+                    src.part_materials.clone(),
+                    src.gi_points.clone(),
+                    src.shadow_bias,
+                    src.light,
+                    src.voxel_light,
+                    src.fire,
+                    src.portal,
+                )
+            };
+            let dst = &mut nodes[i];
+            dst.parts = parts;
+            dst.part_materials = part_materials;
+            dst.gi_points = gi_points;
+            dst.shadow_bias = shadow_bias;
+            dst.light = light;
+            dst.voxel_light = voxel_light;
+            dst.fire = fire;
+            dst.portal = portal;
         }
         Model { nodes }
     }
@@ -1161,6 +1198,25 @@ impl ModelJob {
             morph,
         }
     }
+}
+
+/// The node whose data an instance node shares: follow the instance chain to
+/// the first node that stores a body of its own (the owner words are 1-based
+/// node indices).
+fn instance_root(scene: &Scene, index: usize) -> Option<usize> {
+    let mut at = index;
+    for _ in 0..=scene.nodes.len() {
+        let node = scene.nodes.get(at)?;
+        if node.instance.is_none() {
+            return Some(at);
+        }
+        let owner = node.instance?.checked_sub(1)?;
+        if owner >= scene.nodes.len() || owner == at {
+            return None;
+        }
+        at = owner;
+    }
+    None
 }
 
 /// Smooths a mesh node in place and refits its bounds; a mesh that cannot

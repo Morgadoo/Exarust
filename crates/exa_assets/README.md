@@ -186,3 +186,11 @@ refitted from its positions as the original does (`exa_formats`'
 farthest vertex's radius), and its triangles can be regrouped by material
 (`Mesh::regroup_by_material`), the render-form equivalent of the
 original's face regrouping.
+
+## Placement instances
+
+An instance node in a `.rfc` stores no body: it draws the geometry, light or
+emitter of the node its instance word names (1-based), at its own transform
+and parent. `ModelLoader` follows instance chains to the first stored node
+and copies its parts, GI points, light, emitters and shadow bias onto the
+instance's model node (`instance_root`).

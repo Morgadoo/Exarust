@@ -742,10 +742,32 @@ impl Scene {
     }
 
     pub fn meshes(&self) -> impl Iterator<Item = (&Node, &Mesh)> {
-        self.nodes.iter().filter_map(|n| match &n.body {
-            NodeBody::Mesh(m) => Some((n, m.as_ref())),
-            _ => None,
-        })
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, node)| self.mesh_of(i).map(|m| (node, m)))
+    }
+
+    /// The mesh a node draws: its own, or for an instance node the mesh of
+    /// the node its `instance` word names (1-based), following instance
+    /// chains. The original's instance node shares its owner's geometry and
+    /// has no body of its own.
+    pub fn mesh_of(&self, index: usize) -> Option<&Mesh> {
+        let mut at = index;
+        for _ in 0..=self.nodes.len() {
+            match &self.nodes.get(at)?.body {
+                NodeBody::Mesh(m) => return Some(m.as_ref()),
+                NodeBody::Instance(_) => {
+                    let owner = self.nodes[at].instance?.checked_sub(1)?;
+                    if owner >= self.nodes.len() || owner == at {
+                        return None;
+                    }
+                    at = owner;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 }
 
@@ -1923,6 +1945,37 @@ mod tests {
         assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
         assert!(db.items.is_empty() && db.placed_objects.is_empty());
         assert!(Scene::parse_database(b"not an rfc").is_err());
+    }
+
+    /// An instance node draws its owner's mesh, as the original shares the
+    /// owner's object with it.
+    #[test]
+    fn instance_nodes_share_their_owners_mesh() {
+        let mut child = node_with("Copy", 0, &[]);
+        let at = name("Copy").len() + 8;
+        child[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        let file = file_of_nodes(&[(NODE_MESH, quad_body(None)), (NODE_MESH, child.clone())]);
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.meshes().count(), 2);
+        assert_eq!(
+            scene.mesh_of(1).unwrap().positions,
+            scene.mesh_of(0).unwrap().positions
+        );
+        assert!(matches!(scene.nodes[1].body, NodeBody::Instance(1)));
+        // A chain and a self-reference resolve to the first stored body.
+        let mut later = node_with("Later", 0, &[]);
+        later[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
+        let file = file_of_nodes(&[
+            (NODE_MESH, quad_body(None)),
+            (NODE_MESH, child.clone()),
+            (NODE_MESH, later),
+        ]);
+        let scene = Scene::parse(&file).unwrap();
+        assert!(scene.mesh_of(2).is_some());
+        let mut own = node_with("Self", 0, &[]);
+        own[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        let scene = Scene::parse(&file_of_nodes(&[(NODE_MESH, own)])).unwrap();
+        assert!(scene.mesh_of(0).is_none());
     }
 
     /// A level's placed objects carry the same node overrides as props.
