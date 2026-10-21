@@ -451,12 +451,14 @@ pub fn draw_wrapped_at(
         ..Default::default()
     };
     let line_height = font.line_height;
+    // The block's bottom is fixed at the start; the check is against the
+    // current line's top, as the original keeps its first sum.
+    let bottom = round_i32(f64::from(y + height as f32 - line_height as f32));
     let mut pen_y = y;
     let mut start = 0usize;
     let mut line = 0i32;
     loop {
-        let bottom = round_i32(f64::from((pen_y + height as f32) - line_height as f32));
-        if text.len() <= start || (bottom as f32) < y {
+        if text.len() <= start || (bottom as f32) < pen_y {
             return out;
         }
         let (end, rest) = scan_line(text, start, width, font);
@@ -825,7 +827,10 @@ mod tests {
         assert_eq!(d.quads.first().map(|q| q.rect[0]), Some(0));
         let d = draw_wrapped_at(&f, b"ab cd ef", 0.0, 0.0, 30, 40, 1, false);
         assert_eq!(d.quads[0].rect[1], -16);
-        assert!(d.lines >= 2);
+        assert!(d.lines >= 2 && d.lines < 10);
+        // A many-line text stops at the fixed bottom.
+        let long = b"a b c d e f g h i j k l m n o p q r s t";
+        assert!(draw_wrapped_at(&f, long, 0.0, 0.0, 10, 40, 0, false).lines <= 3);
         // Centring moves the line right by half its rest.
         let d = draw_wrapped(&f, b"ab", 0, 0, 30, 100, 0, true);
         assert_eq!(d.quads[0].rect[0], 5);
