@@ -243,22 +243,39 @@ fn migrate_appearance(body: &mut [u8], template: &[u8]) {
     }
 }
 
+/// The armour variants 1–8 an apparel copy can be rolled with (body byte
+/// `0x1AA`), as the original's per-variant handlers apply them after the
+/// condition refresh: each scales the padding, slash, crush and pierce
+/// bytes and the encumbrance (the bytes wrap; no cap). Variants 7 and 8
+/// change nothing.
+pub fn variant_scales(variant: u8) -> Option<([f64; 4], f64)> {
+    match variant {
+        1 => Some(([0.9; 4], 0.8)),
+        2 => Some(([1.1; 4], 1.16)),
+        3 => Some(([1.2; 4], 1.1)),
+        4 => Some(([1.0, 1.35, 1.0, 1.35], 1.06)),
+        5 => Some(([1.4, 1.0, 1.2, 1.0], 1.06)),
+        6 => Some(([1.3, 1.1, 1.3, 1.1], 1.16)),
+        7 | 8 => Some(([1.0; 4], 1.0)),
+        _ => None,
+    }
+}
+
 /// Recomputes an instance body's protection bytes from its template's by
 /// its condition, and scales the model's value, as the original's
 /// condition refresh does. With quality q and damage d the body's bytes at
-/// `0x1B0`/`0x1B1`:
+/// `0x1B0`/`0x1B1` and the condition factor k = (1 − d·0.4/255)·(q/510 +
+/// 0.8) ([`crate::weapon_stats::condition_factor`]):
 ///
-/// - k = (1 − d·(0.4/255)) · (q/510 + 0.8);
 /// - `0x1A0`–`0x1A3` = round(template · k), capped at 160;
 /// - `0x1A4` = round((0.3·k + 0.7) · template);
 /// - `0x1A5` = round(template / ((1 − d·(0.15/255)) · (q·(0.3/255) + 0.85)));
+/// - the armour variant at `0x1AA` then scales them ([`variant_scales`]);
 /// - the model's value word `0x1E` (compact amount) becomes
 ///   value / (2·tq² + 0.5) · (2·q'² + 0.5) · (2·(1 − d')² + 0.5) · 0.5,
 ///   with tq the template's quality and q', d' the instance's, all /255.
 ///
 /// The precision of each step follows the original (single or double).
-/// The special handlers it runs for body byte `0x1AA` in 1..=8 are not
-/// reproduced; every shipped body has 0 or 255 there.
 fn refresh_condition(
     payload: &mut [u8],
     body: std::ops::Range<usize>,
@@ -271,10 +288,7 @@ fn refresh_condition(
     }
     let q = b[0x1B0];
     let d = b[0x1B1];
-    let damage_step = f64::from_bits(0x3F59_B34C_E680_19B4); // 0.4 / 255
-    let quality_step = f32::from_bits(0x3B00_8081); // 1 / 510
-    let k = ((1.0 - f64::from(d) * damage_step) * (f64::from(f32::from(q) * quality_step) + 0.8))
-        as f32;
+    let k = crate::weapon_stats::condition_factor(q, d);
     b[0x1A4] = round_f64((f64::from(k) * 0.3 + 0.7) * f64::from(template[0x1A4])) as u8;
     for at in 0x1A0..0x1A4 {
         b[at] = round_f32(f32::from(template[at]) * k) as u8;
@@ -287,6 +301,14 @@ fn refresh_condition(
     let k2 = ((f64::from(q) * quality_step + 0.85) * (1.0 - f64::from(d) * damage_step)) as f32;
     let inverse = 1.0f32 / k2;
     b[0x1A5] = round_f32(f32::from(template[0x1A5]) * inverse) as u8;
+    if let Some((scales, encumbrance)) = variant_scales(b[0x1AA]) {
+        b[0x1A5] = round_f64(f64::from(b[0x1A5]) * encumbrance) as u8;
+        for (at, scale) in (0x1A0..0x1A4).zip(scales) {
+            if scale != 1.0 {
+                b[at] = round_f64(f64::from(b[at]) * scale) as u8;
+            }
+        }
+    }
     let Some(model) = model else {
         return;
     };
@@ -363,7 +385,7 @@ mod tests {
         // k = 1 · (255/510 + 0.8) = 1.3 (in single precision after the
         // double product): 100 → 130, 200 → 260 → its low byte 4, which
         // the cap leaves alone; 50 → 65.
-        let k = (f64::from(255.0 * f32::from_bits(0x3B00_8081)) + 0.8) as f32;
+        let k = crate::weapon_stats::condition_factor(255, 0);
         assert_eq!(payload[0x1A0], (100.0 * k).round() as u8);
         assert_eq!(payload[0x1A0], 130);
         assert_eq!(payload[0x1A1], 4);
@@ -384,6 +406,14 @@ mod tests {
         assert_eq!(&payload[0x1A0..0x1A3], &[48, 96, 24]);
         // Value: 1000 / 2.5 · 0.5 · 0.5 · 0.5 = 50.
         assert_eq!(u16_at(&payload[0x224..], 0x1E), 50);
+        // Variant 4 at best condition: slash and pierce ×1.35 after the
+        // condition (200 → 260 → 4, then 5.4 → 5), the encumbrance ×1.06
+        // (9 → 9.54 → 10).
+        let mut payload = body();
+        payload[0x1B0] = 255;
+        payload[0x1AA] = 4;
+        refresh_condition(&mut payload, 0..0x224, &t, None);
+        assert_eq!(&payload[0x1A0..0x1A6], &[130, 5, 65, 0, 87, 10]);
     }
 
     fn template_and_instance(t_header: u32, i_header: u32) -> ObjectDb {

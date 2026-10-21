@@ -139,8 +139,7 @@ instancing, duplication, promotion, removal, template migration with the
 condition refresh, the item-use test, and the packed fields and amounts
 (`exa_formats::objdb`, `exa_formats::objstrings`). Not reproduced: the body
 converter of the oldest layout (`0xDBAC0D06`, not shipped), the item factory's
-regeneration of `@` weapons during migration, the condition refresh's special
-handlers (body byte `0x1AA` 1–8, not shipped), the editor's palette
+regeneration of `@` weapons during migration, the editor's palette
 randomiser, and the scene walks of the entity lookup and entity-id rewrite
 (the id rule itself is `ObjectDb::remap_entity_id`). The item fields
 themselves, their apparel meaning and their readers are in
@@ -393,7 +392,8 @@ of `0x1000` or more that the template also has is then refreshed:
   string ids set to inherit; else the name, the flags word and the bytes
   `0x1C`–`0x1F` (class, rarity, value).
 - **Body**: with the class changed, the appearance layers first (below).
-  Then, when the template's word at `0x1AC` is `0xFFFFFFFF` (no appearance):
+  Then, when the template's paint seed (the word at `0x1AC`) is
+  `0xFFFFFFFF` (take the template's):
   the instance's becomes so too, bytes `0x1B0`/`0x1B1` copy, each of the
   eight layers' byte `+7` (`0x1BB` + 12i) becomes `0x88` for a layer
   material (`+4`) of 1–25 and 0 otherwise, and each of the four power bytes
@@ -401,7 +401,8 @@ of `0x1000` or more that the template also has is then refreshed:
   `0x80`, else becomes 0. Else, when the instance's `0x1AC` word is
   `0xFFFFFFFF`, it takes the template's first `0x224` bytes. Then the bytes
   `0x00`–`0x0F`, `0x10`–`0x19F`, `0x1A6`–`0x1A8` and the word `0x220` copy,
-  and the condition refresh runs (below).
+  and the condition refresh runs (below). An instance seed of `0xFFFFFFFF`
+  marks a copy not yet made from its template.
 - **Weapon**: when the template's word at `+4` is `0xFFFFFFFF`, the
   instance's words `+4` and `+8` become so and `+0xC` copies; the flags take
   the template's low 28 bits; when the instance's words `+4` and `+8` are
@@ -428,9 +429,10 @@ from the template's bytes): k = (1 − d·0.4/255)·(q/510 + 0.8) (single
 precision after a double product); protection bytes `0x1A0`–`0x1A3` =
 round(t·k), capped at 160 (the low byte of the rounded value is stored
 first); `0x1A4` = round((0.3k + 0.7)·t); `0x1A5` = round(t / ((1 −
-d·0.15/255)(q·0.3/255 + 0.85))); bodies whose byte `0x1AA` is 1–8 then run a
-special handler (every shipped body has 0 or 255 there; not reproduced); and
-the model's value word (compact form) becomes v / (2tq² + 0.5) · (2q'² +
+d·0.15/255)(q·0.3/255 + 0.85))); then the armour variant (byte `0x1AA`,
+1–8) runs its handler, scaling the four resistances and the encumbrance in
+double precision, uncapped (`objdb::variant_scales`; shipped templates have 0
+or 255 there, rolled copies a variant); and the model's value word (compact form) becomes v / (2tq² + 0.5) · (2q'² +
 0.5)(2(1 − d')² + 0.5) · 0.5, with tq the template's quality and q', d' the
 instance's, each /255. Rounding is to nearest, ties to even.
 
@@ -526,7 +528,9 @@ constants), the two old-section converters, the packed-field accessors and
 the amount helpers (the float ones by their assembly). The conversions are
 the processor's round-to-nearest-even (`cvtss2si`/`cvtsd2si`), whose NaN or
 out-of-range result is the integer indefinite; the precision of each step
-(single or double) follows the assembly. Counts are from the installed
+(single or double) follows the assembly; the armour variants' scales are
+those the item-copy work established for the same handlers (`exa_items`,
+now shared from `objdb::variant_scales`). Counts are from the installed
 databases (`objdb::shipped`, `objstrings::tests`).
 
 ## Object database items and apparel painting

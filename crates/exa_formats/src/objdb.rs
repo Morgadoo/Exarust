@@ -650,7 +650,7 @@ mod store;
 mod tiers;
 mod upgrade;
 
-pub use migrate::material_set;
+pub use migrate::{material_set, variant_scales};
 pub use packed::{
     FractionWord, Quantised, amount_add, amount_bytes, amount_compact, amount_expand, amount_sub,
     amount_total, amount_units,

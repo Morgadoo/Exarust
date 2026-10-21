@@ -132,19 +132,9 @@ pub fn apparel_condition(
 
 /// The armour variants 1–8 an apparel copy can be rolled with: each scales
 /// the padding, slash, crush and pierce bytes and the encumbrance after the
-/// condition (the bytes wrap; no cap). Variants 7 and 8 change nothing.
-pub fn variant_scales(variant: u8) -> Option<([f64; 4], f64)> {
-    match variant {
-        1 => Some(([0.9; 4], 0.8)),
-        2 => Some(([1.1; 4], 1.16)),
-        3 => Some(([1.2; 4], 1.1)),
-        4 => Some(([1.0, 1.35, 1.0, 1.35], 1.06)),
-        5 => Some(([1.4, 1.0, 1.2, 1.0], 1.06)),
-        6 => Some(([1.3, 1.1, 1.3, 1.1], 1.16)),
-        7 | 8 => Some(([1.0; 4], 1.0)),
-        _ => None,
-    }
-}
+/// condition (the bytes wrap; no cap). Variants 7 and 8 change nothing. The
+/// object database's condition refresh applies the same table.
+pub use exa_formats::objdb::variant_scales;
 
 /// The compact price word of a copy at quality `quality` and damage
 /// `damage`, from the template's price word and quality.

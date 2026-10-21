@@ -231,31 +231,16 @@ pub fn amount_total(a: &[u8], b: &[u8]) -> [u8; 4] {
 }
 
 /// The 16-bit compact form of an amount: the top two bits scale the low 14
-/// by 12, 144 or 1440, the first scale whose range holds the amount.
+/// by 12, 144 or 1440, the first scale whose range holds the amount (the
+/// same packing as a model's price word, [`crate::containers::price_of`]).
 pub fn amount_compact(units: u32) -> u16 {
-    if units < 0x4000 {
-        units as u16
-    } else if units < 0x2_FFF5 {
-        ((units / 12) as u16) | 0x4000
-    } else if units < 0x23_FF70 {
-        ((units / 144) as u16) | 0x8000
-    } else {
-        ((units / 1440) as u16) | 0xC000
-    }
+    crate::containers::price_of(units)
 }
 
-/// Expands the 16-bit compact form back to units.
+/// Expands the 16-bit compact form back to units
+/// ([`crate::containers::coins_of`]).
 pub fn amount_expand(compact: u16) -> u32 {
-    let value = u32::from(compact & 0x3FFF);
-    if compact & 0xC000 == 0xC000 {
-        value * 1440
-    } else if compact & 0x8000 != 0 {
-        value * 144
-    } else if compact & 0x4000 != 0 {
-        value * 12
-    } else {
-        value
-    }
+    crate::containers::coins_of(compact)
 }
 
 #[cfg(test)]
