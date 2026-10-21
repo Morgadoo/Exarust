@@ -180,9 +180,10 @@ The arena reader takes its signature **exactly**; anything else shows
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb` starts with
   the object-database magic `0xDBAC0D06`.
-* The world object database section is chunk `0xDBDB` whose payload is an
-  RDB; its magic is the version tag above. The character database section
-  is chunk `0xCECDDB00`.
+* The world object database section is a chunk `0xDBDB` holding the object
+  database export whose payload starts with an RDB whose magic is the
+  version tag above, then a `0xDBCD` chunk with the data manager's table.
+  The character database section is one chunk `0xCECDDB00`.
 * The settings chunk (`0xECADCA01`) is written into the level section by
   the story's exporter only; see the settings rules in
   [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`].
@@ -233,6 +234,19 @@ under its locale name (a full level export). Exarust writes only
 `#playerdata` until it has a world to export; its `#playerdata` leaves out
 the character placement when it has no character, which the original never
 does.
+
+### Level transitions
+
+* A level is available when the save has a section with the locale's name;
+  otherwise the game loads `<locale>.rfc` from the archive.
+* Moving to a level the save already holds, while the save also has an
+  `exanima04` section (a story in progress), flushes the scene, saves, and
+  **copies the save over the checkpoint**, so the checkpoint follows the
+  player across levels. This is separate from the once-only checkpoint
+  write.
+* When the saved transition state (`0xD000C003`) is 2, the story loader
+  forces the locale to `exanima05`; the load path then places the player at
+  the portal node and sets the state to 1.
 
 ## Practice
 

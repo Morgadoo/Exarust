@@ -230,9 +230,16 @@ impl Slots {
         let _ = self.store_order(&numbers);
     }
 
-    /// Writes a session to a slot's save file.
+    /// Writes a session to a slot's save file, keeping the sections that are
+    /// already there (the original updates the package in place).
     pub fn save(&self, number: u32, session: &Session) -> io::Result<()> {
-        fs::write(self.file(number, SlotKind::Save), session::write(session))
+        let path = self.file(number, SlotKind::Save);
+        let mut package = match fs::read(&path) {
+            Ok(bytes) => PackageImage::read(&bytes).unwrap_or_default(),
+            Err(_) => PackageImage::new(),
+        };
+        package.put_section(PLAYER_DATA, &session::player_section(session));
+        fs::write(path, package.to_bytes())
     }
 
     /// Creates a slot: the lowest free number, at the front of the list,
@@ -288,6 +295,51 @@ impl Slots {
             Mode::Story => save_package::STORY_SIGNATURE,
             Mode::Arena => save_package::ARENA_SIGNATURE,
         }
+    }
+
+    /// Whether the folder has at least one valid slot.
+    pub fn any(&self) -> io::Result<bool> {
+        Ok(!self.list()?.is_empty())
+    }
+
+    /// Whether a slot's save holds a section for this locale, i.e. the level
+    /// was visited. The original falls back to the game archive's
+    /// `<locale>.rfc` when it is not.
+    pub fn has_saved_level(&self, number: u32, locale: &str) -> bool {
+        let Ok(bytes) = fs::read(self.file(number, SlotKind::Save)) else {
+            return false;
+        };
+        let Ok(package) = PackageImage::read(&bytes) else {
+            return false;
+        };
+        package.has_section(&save_package::name(locale))
+    }
+
+    /// The transition save: when the save has a story in progress (an
+    /// `exanima04` section) and already holds the target locale, save the
+    /// session and copy it over the checkpoint, which is refreshed. Returns
+    /// whether it saved.
+    pub fn transition_save(
+        &self,
+        number: u32,
+        locale: &str,
+        session: &Session,
+    ) -> io::Result<bool> {
+        let path = self.file(number, SlotKind::Save);
+        let Ok(bytes) = fs::read(&path) else {
+            return Ok(false);
+        };
+        let Ok(package) = PackageImage::read(&bytes) else {
+            return Ok(false);
+        };
+        if !package.has_section(&save_package::name("exanima04"))
+            || !package.has_section(&save_package::name(locale))
+        {
+            return Ok(false);
+        }
+        self.save(number, session)?;
+        fs::copy(&path, self.file(number, SlotKind::Checkpoint))?;
+        Ok(true)
     }
 
     /// The start-up legacy pass: every `.rsg` whose player data signature is
@@ -460,6 +512,42 @@ mod tests {
         assert!(slots.file(current, SlotKind::Save).exists());
         assert!(!slots.file(older, SlotKind::Save).exists());
         assert!(slots.file(older, SlotKind::Checkpoint).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transition_save_refreshes_the_checkpoint_when_the_level_is_saved() {
+        let dir = folder("transition");
+        let slots = Slots::story(&dir);
+        let session = Session::story();
+        let number = slots.create(&session).unwrap();
+        // A fresh save has no level sections.
+        assert!(!slots.has_saved_level(number, "exanima02"));
+        assert!(
+            !slots
+                .transition_save(number, "exanima02", &session)
+                .unwrap()
+        );
+        // Add the story marker and the target level as an empty package
+        // section would be.
+        let mut package =
+            PackageImage::read(&fs::read(slots.file(number, SlotKind::Save)).unwrap()).unwrap();
+        package.put_section(&save_package::name("exanima04"), &[]);
+        package.put_section(&save_package::name("exanima02"), &[]);
+        fs::write(slots.file(number, SlotKind::Save), package.to_bytes()).unwrap();
+        assert!(slots.has_saved_level(number, "exanima02"));
+        let mut later = session;
+        later.clock = 55;
+        assert!(slots.transition_save(number, "exanima02", &later).unwrap());
+        assert!(slots.has_checkpoint(number));
+        let (loaded, kind) = slots.load(number, true).unwrap();
+        assert_eq!(kind, SlotKind::Checkpoint);
+        assert_eq!(loaded.clock, 55);
+        // Without the progress marker nothing is written.
+        let mut bare = PackageImage::new();
+        bare.put_section(&save_package::name("exanima02"), &[]);
+        fs::write(slots.file(number, SlotKind::Save), bare.to_bytes()).unwrap();
+        assert!(!slots.transition_save(number, "exanima02", &later).unwrap());
         let _ = fs::remove_dir_all(&dir);
     }
 

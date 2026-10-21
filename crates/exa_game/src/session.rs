@@ -140,12 +140,18 @@ pub fn player_data(session: &Session) -> PlayerData {
     data
 }
 
-/// The package a session writes.
-pub fn package(session: &Session) -> Vec<u8> {
+/// The `#playerdata` section a session writes: the mode's header, the
+/// journal and the Exarust chunk with everything else.
+pub fn player_section(session: &Session) -> Vec<u8> {
     let mut data = player_data(session);
     data.set_chunk(EXARUST_CHUNK, write_body(session));
+    data.write()
+}
+
+/// The package a session writes into an empty file.
+pub fn package(session: &Session) -> Vec<u8> {
     let mut package = PackageImage::new();
-    package.put_section(PLAYER_DATA, &data.write());
+    package.put_section(PLAYER_DATA, &player_section(session));
     package.to_bytes()
 }
 

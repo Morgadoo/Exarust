@@ -47,6 +47,15 @@ pub const WORLD_OBJECT_DB: &[u8; NAME_LEN] = b"#worldobjdb\0\0\0\0\0";
 /// The section holding the world character database.
 pub const WORLD_CHARACTER_DB: &[u8; NAME_LEN] = b"#worldchrdb\0\0\0\0\0";
 
+/// The chunk that opens the world object database export.
+pub const WORLD_OBJECTS_CHUNK: u32 = 0xDBDB;
+
+/// The chunk that follows it with the data manager's own table.
+pub const DATA_MANAGER_CHUNK: u32 = 0xDBCD;
+
+/// The chunk that opens the world character database export.
+pub const WORLD_CHARACTERS_CHUNK: u32 = 0xCECD_DB00;
+
 /// The world object database's RDB magic, the tag the compatibility check
 /// compares.
 pub const WORLD_OBJECT_DB_MAGIC: u32 = 0xDBAC_0D06;
@@ -857,6 +866,26 @@ pub fn write_journal(records: &[JournalRecord]) -> Vec<u8> {
     out
 }
 
+/// Writes a `#worldobjdb` section: the object database export chunk, then
+/// the data manager's chunk. Each is written only when it has bytes.
+pub fn world_object_db(objects: &[u8], data_manager: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    if !objects.is_empty() {
+        write_chunk(&mut out, WORLD_OBJECTS_CHUNK, objects);
+    }
+    if !data_manager.is_empty() {
+        write_chunk(&mut out, DATA_MANAGER_CHUNK, data_manager);
+    }
+    out
+}
+
+/// Writes a `#worldchrdb` section: one character database export chunk.
+pub fn world_character_db(characters: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    write_chunk(&mut out, WORLD_CHARACTERS_CHUNK, characters);
+    out
+}
+
 /// Reads a journal chunk. Strings are length-prefixed byte runs; invalid
 /// UTF-8 is replaced rather than refused, as the original stores raw text.
 pub fn parse_journal(bytes: &[u8]) -> Result<Vec<JournalRecord>, PlayerDataError> {
@@ -1205,6 +1234,23 @@ mod tests {
             PlayerData::parse(&[1, 2, 3], Flavour::Story),
             Err(PlayerDataError::Truncated)
         );
+    }
+
+    #[test]
+    fn the_world_database_sections_are_chunk_containers() {
+        let objects = world_object_db(&WORLD_OBJECT_DB_MAGIC.to_le_bytes(), &[4, 5]);
+        let chunks = parse_chunks(&objects).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].id, WORLD_OBJECTS_CHUNK);
+        assert_eq!(chunks[0].payload, &WORLD_OBJECT_DB_MAGIC.to_le_bytes());
+        assert_eq!(chunks[1].id, DATA_MANAGER_CHUNK);
+        assert_eq!(chunks[1].payload, &[4, 5]);
+        assert!(world_object_db(&[], &[]).is_empty());
+        let characters = world_character_db(&[1, 2, 3]);
+        let chunks = parse_chunks(&characters).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id, WORLD_CHARACTERS_CHUNK);
+        assert_eq!(chunks[0].payload, &[1, 2, 3]);
     }
 
     #[test]
