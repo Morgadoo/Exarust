@@ -1,7 +1,9 @@
 # frame-loop Specification
 
 ## Purpose
-TBD - created by archiving change reproduce-the-frame-loop. Update Purpose after archive.
+The original's platform and frame layers as Exarust keeps them: the frame
+tick's pacing, clocks, idle wait, timers, deferred calls and log presentation,
+and the window's display modes, full screen, limits, toggle and focus rules.
 
 ## Requirements
 
