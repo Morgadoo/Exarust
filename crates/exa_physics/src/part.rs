@@ -1186,21 +1186,22 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_struck_part_sounds_again_300_ms_minus_the_draw() {
         assert_eq!(part_sound_ready(1_000, 0), 1_300);
         assert_eq!(part_sound_ready(1_000, 149), 1_151);
         assert_eq!(part_sound_ready(u32::MAX, 0), 299);
-        // Seed 0 stepped once, then a draw below 150: the state is
-        // 0x08088406 and the high half of that times 150 is 18.
+        // Seed 0 stepped twice (the armour roll, then the draw): the state
+        // is 0x08088406 and the high half of that times 150 is 4.
         let mut seed = 0u32;
         seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
         seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
         let spread = ((u64::from(seed) * u64::from(PART_SOUND_SPREAD_MS)) >> 32) as u32;
-        assert_eq!(spread, 18);
-        assert_eq!(part_sound_ready(0, spread), 282);
+        assert_eq!(seed, 0x0808_8406);
+        assert_eq!(spread, 4);
+        assert_eq!(part_sound_ready(0, spread), 296);
     }
 
+    #[test]
     fn a_sound_cooldown_stamps_the_first_chain_and_weapon_parents() {
         // 0 (striking weapon) ← 1 (striking) ← 2, with first children
         // 0→3→4.

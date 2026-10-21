@@ -1708,18 +1708,18 @@ mod tests {
 
     /// A blow on flesh stamps the struck part's sound clock: the game clock
     /// plus 300 ms, less the draw below 150 that follows the armour roll.
-    /// Seed 0, stepped once and then drawn below 150, is 18, so at clock 0
-    /// the part is ready at 282. A turned blow stamps the same clock. A
-    /// shield's first ring draws before any armour roll (spread 0, ready at
-    /// 300) and a second block of that swing leaves the clock. A bone with
-    /// no part leaves the body as it is.
+    /// Seed 0, stepped for the armour roll and then drawn below 150, is 4,
+    /// so at clock 0 the part is ready at 296. A turned blow stamps the
+    /// same clock. A shield's first ring draws before any armour roll
+    /// (spread 0, ready at 300) and a second block of that swing leaves
+    /// the clock. A bone with no part leaves the body as it is.
     #[test]
     fn a_blow_stamps_the_struck_parts_sound_clock() {
         let mut roll = Roll::default();
         let _ = roll.next();
         let spread = roll.below(PART_SOUND_SPREAD_MS);
-        assert_eq!(spread, 18);
-        assert_eq!(part_sound_ready(0, spread), 282);
+        assert_eq!(spread, 4);
+        assert_eq!(part_sound_ready(0, spread), 296);
 
         let mut app = reactions();
         app.insert_resource(BodyTicks(100));
@@ -1734,7 +1734,7 @@ mod tests {
             .id();
         swung(&mut app, attacker, blade, victim, cut());
         assert_eq!(part_clock(&app, victim, 9), part_sound_ready(1_200, spread));
-        assert_eq!(part_clock(&app, victim, 9), 1_482);
+        assert_eq!(part_clock(&app, victim, 9), 1_496);
 
         let mut app = reactions();
         let (attacker, blade) = swordsman(&mut app);
@@ -1748,7 +1748,7 @@ mod tests {
             ))
             .id();
         swung(&mut app, attacker, blade, victim, cut());
-        assert_eq!(part_clock(&app, victim, 9), 282);
+        assert_eq!(part_clock(&app, victim, 9), 296);
         assert_eq!(
             app.world().get::<Fighter>(victim).unwrap().health.yellow,
             Fighter::default().health.yellow
