@@ -34,13 +34,9 @@ impl RaceRuntime {
     /// per-tick factors ([`GaitRow::scaled`]), the backpedal's thrust and
     /// clock negated.
     pub fn of(race: &Race) -> Self {
-        let rows = std::array::from_fn(|i| {
-            let g = race.body.gaits[i];
-            GaitRow::scaled(i, g.thrust, g.push_scale, g.clip_rate, g.boost_below)
-        });
         Self {
             id: race.id,
-            rows,
+            rows: rows_of(&race.body),
             voice: race.voice.clone(),
         }
     }
@@ -56,6 +52,14 @@ impl RaceRuntime {
     ) -> VoiceNames {
         self.voice.names(index, female, slot, exists)
     }
+}
+
+/// The four per-tick gait rows of a race's body parameters.
+pub fn rows_of(body: &exa_formats::races::RaceBody) -> [GaitRow; 4] {
+    std::array::from_fn(|i| {
+        let g = body.gaits[i];
+        GaitRow::scaled(i, g.thrust, g.push_scale, g.clip_rate, g.boost_below)
+    })
 }
 
 /// The race runtimes, built once per race id (the original's cache).

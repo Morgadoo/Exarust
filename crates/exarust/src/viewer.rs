@@ -7,7 +7,6 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::character_stats::{CharacterStats, Spawn};
-use exa_physics::body::locomotion::GaitRow;
 use exa_physics::body::{BodyStats, RaceMuscles};
 
 use crate::{Options, View};
@@ -1400,10 +1399,7 @@ fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
         arm_relaxation: body.arm_relaxation,
         balance_bonus: body.balance_bonus,
         clip_rate: body.clip_rate,
-        gaits: std::array::from_fn(|i| {
-            let g = &body.gaits[i];
-            GaitRow::scaled(i, g.thrust, g.push_scale, g.clip_rate, g.boost_below)
-        }),
+        gaits: exa_physics::race_runtime::rows_of(body),
     }
 }
 
