@@ -1,5 +1,5 @@
 use super::super::tests::floor_quad;
-use super::super::{PartSetup, SolverStage};
+use super::super::{CM, PartSetup, SolverStage, limp_retention};
 use super::*;
 use crate::contact::Level;
 
@@ -425,8 +425,9 @@ fn deep_sleepers_are_not_redrawn() {
 }
 
 /// The settling state: for its ticks the body takes a tick's gravity with
-/// no inertia (the same 0.142352 cm each tick), then falls with its
-/// velocity again.
+/// no inertia (the same 0.142352 cm each tick); the tick after, its
+/// velocity is the last tick's move alone (one tick of gravity, kept by
+/// the retention of that speed) and gravity adds to it.
 #[test]
 fn a_settling_body_falls_without_inertia() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
@@ -434,6 +435,7 @@ fn a_settling_body_falls_without_inertia() {
     body.settle_for(3);
     assert_eq!(body.settling(), 3);
     let mut last = body.parts[0].positions[0];
+    let mut step = 0.0;
     for tick in 0..3 {
         body.tick(NONE);
         let drop = last.y - body.parts[0].positions[0].y;
@@ -444,37 +446,52 @@ fn a_settling_body_falls_without_inertia() {
         );
         assert_eq!(body.settling(), 2 - tick);
         last = body.parts[0].positions[0];
+        step = drop;
     }
-    // With the settling over, the velocity the last gravity step left is
-    // kept (the fast retention at this speed) and grows.
     body.tick(NONE);
     let drop = last.y - body.parts[0].positions[0].y;
-    assert!(drop > 0.0015, "dropped {drop:.8} m");
+    let keep = limp_retention(step * CM);
+    assert!(
+        (drop - (step * keep + step)).abs() < 2e-7,
+        "dropped {drop:.8} m, kept {keep}"
+    );
 }
 
-/// A translate moves every particle and, past 0.1 cm of moves since the
-/// edges were last restored, restores the six edge lengths.
+/// A translate moves each particle by the offset times its weight and,
+/// with the restore flag, adds the offset's length to the strain: past
+/// 0.1 cm the six edge lengths are restored. Without the flag the strain
+/// is left alone.
 #[test]
 fn a_translate_restores_the_edges_past_a_tenth_of_a_centimetre() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
     body.wake();
+    let before = body.parts[0].positions;
+    body.translate(Vec3::new(0.0, 0.0004, 0.0), [1.0, 0.5, 0.0, 2.0], false);
+    let after = body.parts[0].positions;
+    for (i, w) in [1.0f32, 0.5, 0.0, 2.0].into_iter().enumerate() {
+        assert_eq!(after[i].y, before[i].y + w * 0.0004);
+    }
+    assert_eq!(body.parts[0].strain, 0.0);
+    // A whole-body move keeps the edges, so their restore moves nothing.
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.wake();
     let x = body.parts[0].positions[0].x;
-    body.translate(Vec3::new(0.01, 0.0, 0.0), true);
+    body.translate(Vec3::new(0.01, 0.0, 0.0), [1.0; 4], true);
     assert_eq!(body.parts[0].positions[0].x, x + 0.01);
     // 1 cm is past the 0.1 cm budget: the edges were restored and the
     // strain reset.
     assert_eq!(body.parts[0].strain, 0.0);
-    body.translate(Vec3::new(0.0005, 0.0, 0.0), true);
+    body.translate(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
     assert!((body.parts[0].strain - 0.0005).abs() < 1e-9);
-    body.translate(Vec3::new(0.0005, 0.0, 0.0), true);
+    body.translate(Vec3::new(0.0005, 0.0, 0.0), [1.0; 4], true);
     // Exactly the 0.1 cm budget is not past it.
     assert!((body.parts[0].strain - 0.001).abs() < 1e-9);
-    body.translate(Vec3::new(0.0001, 0.0, 0.0), true);
+    body.translate(Vec3::new(0.0001, 0.0, 0.0), [1.0; 4], true);
     assert_eq!(body.parts[0].strain, 0.0);
 }
 
 /// Placing a body at a matrix puts its particles at the matrix times its
-/// rest points, at rest, and drops its level contacts.
+/// rest points, at rest; its contacts are left for the next tick.
 #[test]
 fn placing_a_body_sets_it_at_rest() {
     let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
@@ -486,7 +503,6 @@ fn placing_a_body_sets_it_at_rest() {
     assert_eq!(p.positions, p.rest.map(|r| at.transform_point3(r)));
     assert_eq!(p.previous, p.positions);
     assert_eq!(p.start, p.positions);
-    assert!(p.contacts.is_empty());
     let placed = p.positions;
     body.tick(NONE);
     // No velocity is left over: the next tick only adds gravity.

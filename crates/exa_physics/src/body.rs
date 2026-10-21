@@ -93,7 +93,6 @@ const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 const HUMAN_LIMB_DAMPING: f32 = 1.0;
 const LINK_ITERATIONS: usize = 20;
 const FRICTION_PASSES: usize = 8;
-/// The fastest a particle may move (m/s): well above any blow or fall.
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -1437,37 +1436,42 @@ impl Ragdoll {
         self.settle
     }
 
-    /// Moves every particle by `offset` (the original's translate): the
-    /// world contact gives way, and once the moves since the last edge
-    /// restore add up to over 0.1 cm the six edge lengths are restored
-    /// (when `restore` is set, as the original's caller asks).
-    pub fn translate(&mut self, offset: Vec3, restore: bool) {
-        let length = offset.length();
+    /// Moves each part's particles by `offset`, particle `i` by `offset ·
+    /// weights[i]` (the original's translate of a body, which moves only
+    /// the current points, so the move is also a velocity). With `restore`
+    /// the offset's length is added to the part's strain, and past 0.1 cm
+    /// the six edge lengths are restored (which starts the strain afresh);
+    /// without it neither happens.
+    pub fn translate(&mut self, offset: Vec3, weights: [f32; 4], restore: bool) {
+        // The length as the original's vector length sums it: (x² + z²) + y².
+        let length = ((offset.x * offset.x + offset.z * offset.z) + offset.y * offset.y).sqrt();
         for p in &mut self.parts {
-            for x in &mut p.positions {
-                *x += offset;
+            for (x, w) in p.positions.iter_mut().zip(weights) {
+                *x = Vec3::new(x.x + w * offset.x, x.y + w * offset.y, x.z + w * offset.z);
             }
-            p.strain += length;
-            if restore && p.strain > TRANSLATE_STRAIN {
-                keep_rigid(p);
+            if restore {
+                p.strain += length;
+                if p.strain > TRANSLATE_STRAIN {
+                    keep_rigid(p);
+                }
             }
         }
     }
 
     /// Places every part at a node's world transform, as the original's
     /// place-at-matrix does: its particles at the matrix times its rest
-    /// points, at rest (current, previous and the last tick's start all
-    /// there), its level contacts dropped. The sleep countdown is left as
-    /// it is, as the original leaves it; a caller that re-places a body
-    /// wakes it.
+    /// points (summed `(x·X + y·Y) + (z·Z + T)` as the original's point
+    /// transform does), with the previous and the tick's start points there
+    /// too so it is at rest, and its drawn transforms there. Its contacts,
+    /// strain and sleep countdown are left as they are, as the original
+    /// leaves them; a caller that re-places a body wakes it.
     pub fn place_at(&mut self, worlds: &[Affine3A]) {
         for (p, world) in self.parts.iter_mut().zip(worlds) {
-            p.positions = p.rest.map(|r| world.transform_point3(r));
+            let [x, y, z] = [world.x_axis, world.y_axis, world.z_axis].map(Vec3::from);
+            let t = Vec3::from(world.translation);
+            p.positions = p.rest.map(|r| (x * r.x + y * r.y) + (z * r.z + t));
             p.previous = p.positions;
             p.start = p.positions;
-            p.moved = [Vec3::ZERO; 4];
-            p.contacts.clear();
-            p.strain = 0.0;
             p.settled = p.transform();
             p.shown = (p.settled, p.settled);
         }
@@ -1913,8 +1917,11 @@ impl Ragdoll {
                 })
                 .unwrap_or(gravity);
             if settling {
+                // No velocity is carried or recorded: the next tick's
+                // velocity is this tick's move.
                 p.moved = [Vec3::ZERO; 4];
                 for i in 0..4 {
+                    p.previous[i] = p.positions[i];
                     p.positions[i] += pull * p.gravity[i];
                 }
                 continue;
