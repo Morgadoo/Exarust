@@ -1769,8 +1769,10 @@ mod tests {
 
         let mut app = reactions();
         let (attacker, blade) = swordsman(&mut app);
-        let mut shielded = Fighter::default();
-        shielded.guard = damage::Guard::Shield(damage::ShieldGuard::default());
+        let shielded = Fighter {
+            guard: damage::Guard::Shield(damage::ShieldGuard::default()),
+            ..Fighter::default()
+        };
         let victim = app
             .world_mut()
             .spawn((shielded, Animator::new("Default", "Idle"), one_part(9)))
