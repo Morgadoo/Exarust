@@ -33,59 +33,87 @@ const STORAGE_PACKED: u32 = 0x5000_0000;
 pub const FLAG_MIP_CHAIN: u32 = 0x0008_0000;
 /// The header flags that make an image a cube map of six faces. Each face
 /// stores its own complete mip chain, face after face: `genref01r` is six
-/// 256² RGB8 chains in one file.
+/// 256² RGB8 chains in one file. The header's `data_size` is one face's.
 pub const FLAG_CUBE: u32 = 0x4000_0000;
-/// The mask over the cube bits of the header flags (bits 30–31).
+/// The mask the cube test applies to the header flags: the image is a cube
+/// when the masked bits read exactly [`FLAG_CUBE`].
 pub const FLAG_CUBE_MASK: u32 = 0x7000_0000;
+/// The format-word bits two words must share to be the same pixel layout
+/// for the image conversion (the flag and data-kind bits are left out).
+const LAYOUT_MASK: u32 = 0x8F0C_FFFF;
 
-/// The number of bytes one level of an image whose stored format word is
-/// `word` takes, as the original computes it from the word's fields:
+/// The number of bytes one level of `w` × `h` takes in the format `word`,
+/// as the original computes it from the word's fields:
 ///
 /// - bit 31: block compression. The block's bytes are 1 + bits 19–23
 ///   (`0x8` for BC1/BC4, `0x10` for BC3/BC5); the block side is 1 + bits
 ///   16–18 (4), and a level is whole blocks across and down.
 /// - bit 18: bit-packed (uncompressed). The bits per pixel are bits 6–12
 ///   plus bits 0–5 (24 for RGB8), and a level is `ceil(w·h·bits / 8)`.
-/// - otherwise one byte-per-channel pixel: `w·h·ceil(bits / 8)`.
-///
-/// A word whose cube bits (30–31) read `01` multiplies the answer by six.
-/// The shipped cubes carry that bit in the header flags instead, so this
-/// branch is unreachable from the data but kept as the original has it.
+/// - otherwise byte-aligned pixels: `w·h·ceil(bits / 8)`.
 pub fn format_level_size(word: u32, w: u32, h: u32) -> Option<usize> {
     let bits = ((word >> 6) & 0x7F) + (word & 0x3F);
-    let mut size = if word & 0x8000_0000 != 0 {
-        let block = (((word & 0x00F8_0000) >> 19) + 1) as usize;
-        let side = (((word & 0x0007_0000) >> 16) + 1) as u64;
+    let size = if word & 0x8000_0000 != 0 {
+        let block = u64::from(((word & 0x00F8_0000) >> 19) + 1);
+        let side = u64::from(((word & 0x0007_0000) >> 16) + 1);
         let across = u64::from(w).div_ceil(side);
         let down = u64::from(h).div_ceil(side);
-        (block as u64).checked_mul(across)?.checked_mul(down)? as usize
+        block.checked_mul(across)?.checked_mul(down)?
     } else if word & 0x0004_0000 != 0 {
-        let bits = u64::from(bits);
-        let total = bits.checked_mul(u64::from(w))?.checked_mul(u64::from(h))?;
-        ((total + 7) >> 3) as usize
+        let total = u64::from(bits)
+            .checked_mul(u64::from(w))?
+            .checked_mul(u64::from(h))?;
+        (total + 7) >> 3
     } else {
-        let bytes = (bits as u64).div_ceil(8);
-        bytes.checked_mul(u64::from(w))?.checked_mul(u64::from(h))? as usize
+        let bytes = u64::from(bits).div_ceil(8);
+        bytes.checked_mul(u64::from(w))?.checked_mul(u64::from(h))?
     };
-    if word & FLAG_CUBE_MASK == FLAG_CUBE {
-        size = size.checked_mul(6)?;
-    }
-    Some(size)
+    usize::try_from(size).ok()
 }
 
-/// The pixel count of an image's full mip chain (base level first), as the
-/// original's data-size helper counts it: the base `w·h` plus every halved
-/// level while `w + h > 2`, dimensions never dropping below one.
-pub fn mip_chain_pixels(mut w: u32, mut h: u32) -> u64 {
-    let mut pixels = u64::from(w) * u64::from(h);
-    while u64::from(w) + u64::from(h) > 2 {
+/// The halved sides of each level after the base: while `w + h > 2`, each
+/// side above one halves. The original's chain loops all walk it.
+fn chain_levels(mut w: u32, mut h: u32) -> impl Iterator<Item = (u32, u32)> {
+    std::iter::from_fn(move || {
+        if u64::from(w) + u64::from(h) <= 2 {
+            return None;
+        }
         if w > 1 {
             w >>= 1;
         }
         if h > 1 {
             h >>= 1;
         }
-        pixels += u64::from(w) * u64::from(h);
+        Some((w, h))
+    })
+}
+
+/// The bytes one face of an image takes, as the original's size routine
+/// computes it: the base level in `word` ([`format_level_size`]), plus every
+/// halved level when `flags` carries [`FLAG_MIP_CHAIN`]. A cube's faces are
+/// not counted (its callers multiply by six).
+pub fn image_size(word: u32, flags: u32, w: u32, h: u32) -> Option<usize> {
+    let mut total = format_level_size(word, w, h)?;
+    if flags & FLAG_MIP_CHAIN != 0 {
+        for (lw, lh) in chain_levels(w, h) {
+            total = total.checked_add(format_level_size(word, lw, lh)?)?;
+        }
+    }
+    Some(total)
+}
+
+/// The pixel count an image's converters walk: the base `w·h`, plus every
+/// halved level when `flags` carries [`FLAG_MIP_CHAIN`], times six for a
+/// cube ([`FLAG_CUBE`]).
+pub fn image_pixels(flags: u32, w: u32, h: u32) -> u64 {
+    let mut pixels = u64::from(w) * u64::from(h);
+    if flags & FLAG_MIP_CHAIN != 0 {
+        for (lw, lh) in chain_levels(w, h) {
+            pixels += u64::from(lw) * u64::from(lh);
+        }
+    }
+    if flags & FLAG_CUBE_MASK == FLAG_CUBE {
+        pixels *= 6;
     }
     pixels
 }
@@ -197,36 +225,18 @@ impl RfiHeader {
     }
 
     /// Bytes of one level of this image's format word, from the word's own
-    /// fields ([`format_level_size`]); a cube's six faces are not included.
-    /// A hand-built header without a format word falls back on the decoded
-    /// [`PixelFormat`].
+    /// fields ([`format_level_size`]). A hand-built header without a format
+    /// word falls back on the decoded [`PixelFormat`].
     pub fn level_size(&self, w: u32, h: u32) -> Option<usize> {
         format_level_size(self.format_word, w, h)
             .filter(|&size| size > 0)
             .or_else(|| PixelFormat::from_word(self.format_word).level_size(w, h))
     }
 
-    /// Bytes of the base level of one face.
-    pub fn face_base_size(&self) -> Option<usize> {
-        self.level_size(self.width, self.height)
-    }
-
-    /// Bytes of every stored level of one face.
-    pub fn face_chain_size(&self) -> Option<usize> {
-        let (mut w, mut h) = (self.width, self.height);
-        let mut total = self.level_size(w, h)?;
-        if self.has_mip_chain() {
-            while w + h > 2 {
-                if w > 1 {
-                    w >>= 1;
-                }
-                if h > 1 {
-                    h >>= 1;
-                }
-                total = total.checked_add(self.level_size(w, h)?)?;
-            }
-        }
-        Some(total)
+    /// Bytes of one face as the original sizes it ([`image_size`]): the
+    /// base level, and the chain when the header says it is stored.
+    pub fn image_size(&self) -> Option<usize> {
+        image_size(self.format_word, self.flags, self.width, self.height)
     }
 
     /// The texture's detail class (0–3), which decides how many leading mip
@@ -352,7 +362,9 @@ impl<'a> Rfi<'a> {
         self.header.storage == STORAGE_PACKED
     }
 
-    /// The full pixel stream as stored (or unpacked), all faces and levels.
+    /// The pixel stream as stored, or unpacked. A packed stream unpacks to
+    /// `data_size` bytes, as the original's decoder does (one face's worth;
+    /// no shipped cube is packed).
     pub fn pixels(&self) -> Result<Cow<'a, [u8]>> {
         if !self.is_packed() {
             return Ok(Cow::Borrowed(self.data));
@@ -361,8 +373,7 @@ impl<'a> Rfi<'a> {
             .format
             .bytes_per_pixel()
             .ok_or_else(|| Error::Unsupported(format!("packed {:?}", self.format)))?;
-        let len = self.header.data_size as usize * self.header.faces() as usize;
-        unpack(self.data, bpp, len).map(Cow::Owned)
+        unpack(self.data, bpp, self.header.data_size as usize).map(Cow::Owned)
     }
 
     /// Bytes of mip level `level` within `pixels` (from [`Rfi::pixels`]).
@@ -417,10 +428,11 @@ impl<'a> Rfi<'a> {
     }
 
     /// The raw (unpacked) bytes of one face's mip chain. A cube stores its
-    /// six faces back to back, each its own chain.
+    /// six faces back to back, one `data_size` apart (the stride the
+    /// original's image copy steps by).
     pub fn face_chain(&self, face: u32) -> Result<Cow<'a, [u8]>> {
         let face_len = self.face_chain_len()?;
-        let start = face as usize * face_len;
+        let start = face as usize * self.header.data_size as usize;
         let end = start + face_len;
         let pixels = self.pixels()?;
         match &pixels {
@@ -579,7 +591,7 @@ impl<'a> Rfi<'a> {
 
 /// An image whose pixels are owned: the original's image copies and the
 /// blank images its icon renderer and noise generators create. The header
-/// keeps a cube's per-face `data_size`; `pixels` holds all faces.
+/// keeps a cube's per-face `data_size`; `pixels` holds every face.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageData {
     pub header: RfiHeader,
@@ -587,37 +599,60 @@ pub struct ImageData {
     pub pixels: Vec<u8>,
 }
 
+/// Storage word of an image whose pixels follow its header in one block.
+const STORAGE_INLINE: u32 = 0x1000_0000;
+/// Storage word of an image whose pixels are a separate allocation.
+const STORAGE_SEPARATE: u32 = 0x2000_0000;
+/// The detail class a render target gets when its flags name none (2).
+const TARGET_DETAIL_CLASS: u32 = 0x0080_0000;
+
 impl ImageData {
-    /// A copy of an image's pixel stream, unpacking it first when it is
-    /// run-length encoded (the original logs "Source image is run length
-    /// encoded." and decodes). The whole stream is copied: every face and
-    /// every stored mip level.
+    /// A copy of an image, as the original's image copy makes it with its
+    /// keep-chain argument set: a run-length encoded source is unpacked
+    /// first (the original logs "Source image is run length encoded."), and
+    /// `data_size` bytes of each face are copied, one `data_size` apart.
     pub fn copy_of(image: &Rfi<'_>) -> Result<Self> {
+        let face = image.header.data_size as usize;
+        let faces = image.header.faces() as usize;
+        let source = image.pixels()?;
+        let len = face
+            .checked_mul(faces)
+            .ok_or_else(|| Error::Unsupported(format!("image size {face}")))?;
+        let pixels = source.get(..len).ok_or(Error::Truncated {
+            offset: HEADER_LEN,
+            needed: len,
+            len: HEADER_LEN + source.len(),
+        })?;
         Ok(Self {
-            header: image.header,
+            header: RfiHeader {
+                storage: STORAGE_INLINE,
+                ..image.header
+            },
             format: image.format,
-            pixels: image.pixels()?.into_owned(),
+            pixels: pixels.to_vec(),
         })
     }
 
-    /// A copy of an image's base level only: the original's copy with its
-    /// chain flag cleared (`FUN_100046770` with the flag off sizes the base
-    /// level).
+    /// A copy of an image's base level only, as the original's image copy
+    /// makes it with its keep-chain argument clear: the copy's chain flag is
+    /// cleared, its `data_size` is the base level's ([`image_size`] without
+    /// the chain), and each face's base is taken from the source one source
+    /// `data_size` apart.
     pub fn copy_base(image: &Rfi<'_>) -> Result<Self> {
-        let face_len = image.face_chain_len()?;
-        let base = image
-            .header
-            .level_size(image.header.width, image.header.height)
-            .or_else(|| {
-                image
-                    .format
-                    .level_size(image.header.width, image.header.height)
-            })
-            .ok_or_else(|| Error::Unsupported(format!("{:?}", image.format)))?;
+        let mut header = RfiHeader {
+            storage: STORAGE_INLINE,
+            ..image.header
+        };
+        header.flags &= !FLAG_MIP_CHAIN;
+        let base = header.image_size().ok_or_else(|| {
+            Error::Unsupported(format!("rfi format word {:#010x}", header.format_word))
+        })?;
+        let stride = image.header.data_size as usize;
         let source = image.pixels()?;
-        let mut pixels = Vec::with_capacity(base * image.header.faces() as usize);
-        for face in 0..image.header.faces() as usize {
-            let start = face * face_len;
+        let faces = image.header.faces() as usize;
+        let mut pixels = Vec::with_capacity(base.saturating_mul(faces));
+        for face in 0..faces {
+            let start = face * stride;
             let slice = source.get(start..start + base).ok_or(Error::Truncated {
                 offset: HEADER_LEN + start,
                 needed: base,
@@ -625,9 +660,8 @@ impl ImageData {
             })?;
             pixels.extend_from_slice(slice);
         }
-        let mut header = image.header;
-        header.flags &= !FLAG_MIP_CHAIN;
-        header.data_size = base as u32;
+        header.data_size =
+            u32::try_from(base).map_err(|_| Error::Unsupported(format!("image size {base}")))?;
         Ok(Self {
             header,
             format: image.format,
@@ -635,59 +669,65 @@ impl ImageData {
         })
     }
 
-    /// A blank image of `width` × `height` in `format_word`, as the
-    /// original's create call does: the format's own size, no mip chain.
-    pub fn blank(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
-        let format = PixelFormat::from_word(format_word);
-        let size = format_level_size(format_word, u32::from(width), u32::from(height))
-            .ok_or_else(|| Error::Unsupported(format!("rfi format word {format_word:#010x}")))?;
+    /// An image of zeroes, `data_size` per face ([`image_size`], so a
+    /// chain flag in `flags` sizes the chain), six faces for a cube.
+    fn zeroed(header: RfiHeader) -> Result<Self> {
+        let size = header.image_size().ok_or_else(|| {
+            Error::Unsupported(format!("rfi format word {:#010x}", header.format_word))
+        })?;
+        let len = size
+            .checked_mul(header.faces() as usize)
+            .ok_or_else(|| Error::Unsupported(format!("image size {size}")))?;
         Ok(Self {
             header: RfiHeader {
-                width: u32::from(width),
-                height: u32::from(height),
-                depth: 1,
-                format_word,
-                flags,
-                storage: 0x1000_0000,
-                data_size: size as u32,
+                data_size: u32::try_from(size)
+                    .map_err(|_| Error::Unsupported(format!("image size {size}")))?,
+                ..header
             },
-            format,
-            pixels: vec![0; size],
+            format: PixelFormat::from_word(header.format_word),
+            pixels: vec![0; len],
         })
     }
 
-    /// The blank image of the original's icon target: a mip chain flag and
-    /// detail class 2, with room for the full chain.
-    pub fn render_target(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
-        let mut data = Self::blank(width, height, format_word, flags)?;
-        let flags = if data.header.flags & 0x00C0_0000 == 0 {
-            data.header.flags | 0x0080_0000
-        } else {
-            data.header.flags
-        };
-        data.header.flags = flags | FLAG_MIP_CHAIN;
-        let chain = {
-            let (mut w, mut h) = (data.header.width, data.header.height);
-            let mut total = format_level_size(format_word, w, h).unwrap_or(0);
-            while w + h > 2 {
-                if w > 1 {
-                    w >>= 1;
-                }
-                if h > 1 {
-                    h >>= 1;
-                }
-                total += format_level_size(format_word, w, h).unwrap_or(0);
-            }
-            total
-        };
-        data.header.data_size = (chain / data.header.faces() as usize) as u32;
-        data.pixels = vec![0; chain];
-        Ok(data)
+    /// A blank image, as the original's create call makes it: depth 1, the
+    /// flags and format word as given, `data_size` from the size routine
+    /// (the chain included when `flags` carries it) and a separately
+    /// allocated pixel store of six faces for a cube.
+    pub fn blank(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
+        Self::zeroed(RfiHeader {
+            width: u32::from(width),
+            height: u32::from(height),
+            depth: 1,
+            format_word,
+            flags,
+            storage: STORAGE_SEPARATE,
+            data_size: 0,
+        })
     }
 
-    /// Resizes the pixel store (the original's `FUN_100046c70`): the header
-    /// keeps the requested size, times six for a cube. Existing bytes stay,
-    /// new ones are zero; shrinking drops the tail.
+    /// The blank image the original makes for a render target (its icon
+    /// renderer's): as [`ImageData::blank`], but flags with no detail class
+    /// get class 2, and the pixels follow the header in one block.
+    pub fn render_target(width: u16, height: u16, format_word: u32, flags: u32) -> Result<Self> {
+        let flags = if flags & FLAG_DETAIL_CLASS == 0 {
+            flags | TARGET_DETAIL_CLASS
+        } else {
+            flags
+        };
+        Self::zeroed(RfiHeader {
+            width: u32::from(width),
+            height: u32::from(height),
+            depth: 1,
+            format_word,
+            flags,
+            storage: STORAGE_INLINE,
+            data_size: 0,
+        })
+    }
+
+    /// Resizes the pixel store, as the original's resize does: `data_size`
+    /// becomes `size`, and the store holds six times that for a cube.
+    /// Existing bytes stay, new ones are zero; shrinking drops the tail.
     pub fn resize(&mut self, size: usize) -> Result<()> {
         self.header.data_size =
             u32::try_from(size).map_err(|_| Error::Unsupported(format!("image size {size}")))?;
@@ -698,71 +738,69 @@ impl ImageData {
         Ok(())
     }
 
-    /// Frees the pixel store (the original's `FUN_100046c00`).
+    /// Frees the pixel store; the header (its `data_size` too) stays, as
+    /// the original's release leaves it.
     pub fn release(&mut self) {
         self.pixels = Vec::new();
-        self.header.data_size = 0;
     }
 
-    /// Converts the image to another format word through the registered
-    /// converter table, as the original's conversion routine does: the same
-    /// word or layout changes the word only; otherwise the table's target
-    /// is converted face by face on the base level, the chain flag clears
-    /// and the pixel store holds one base level per face. Returns `false`
-    /// when no converter fits.
-    pub fn convert(
-        &mut self,
-        requested: Option<u32>,
-        table: &crate::pixel::ConverterRegistry,
-    ) -> Result<bool> {
-        let old = self.header.format_word;
-        if requested == Some(old) {
+    /// Converts the image to the format word `requested` (0: the source
+    /// format's registered fallback), as the original's conversion does:
+    ///
+    /// - the same word: nothing to do;
+    /// - a requested word with bit 20 set and bit 31 clear whose layout
+    ///   (under `0x8F0C_FFFF`) is the image's: the word changes, the pixels
+    ///   do not;
+    /// - otherwise the first registered format whose id is the image's word
+    ///   ([`pixel::lookup`]) converts it: a zero request takes that format's
+    ///   fallback; an image word with bit 20 set and bit 31 clear and the
+    ///   target's layout only changes its word; else the converter writes
+    ///   every pixel of every face and stored level ([`image_pixels`]) in
+    ///   the target word, and `data_size` becomes the target's
+    ///   [`image_size`]. The chain flag stays.
+    ///
+    /// Returns `false` when the image's word is not a registered format or
+    /// its converter declines the target. Exarust's table holds the 14
+    /// eight-bit and 6 float formats; the original also registers the
+    /// block-compressed ones, which do not convert here.
+    pub fn convert(&mut self, requested: u32) -> Result<bool> {
+        let word = self.header.format_word;
+        if requested == word {
             return Ok(true);
         }
-        let new = match requested {
-            Some(w) if w & crate::pixel::LAYOUT_MASK == old & crate::pixel::LAYOUT_MASK => w,
-            _ => match table.target_for(old, requested) {
-                Some(w) => w,
-                None => return Ok(false),
-            },
+        let same_layout = |a: u32, b: u32| a & LAYOUT_MASK == b & LAYOUT_MASK;
+        let plain = |w: u32| w & 0x8010_0000 == 0x0010_0000;
+        if plain(requested) && same_layout(word, requested) {
+            self.header.format_word = requested;
+            return Ok(true);
+        }
+        let Some(source) = pixel::lookup(word) else {
+            return Ok(false);
         };
-        if new & crate::pixel::LAYOUT_MASK == old & crate::pixel::LAYOUT_MASK {
-            self.header.format_word = new;
+        let target = if requested == 0 {
+            source.fallback
+        } else {
+            requested
+        };
+        if plain(word) && same_layout(word, target) {
+            self.header.format_word = target;
             return Ok(true);
         }
-        let w = self.header.width;
-        let h = self.header.height;
-        let old_base = self
-            .header
-            .level_size(w, h)
-            .ok_or_else(|| Error::Unsupported(format!("rfi format word {old:#010x}")))?;
-        let new_base = format_level_size(new, w, h)
-            .filter(|&size| size > 0)
-            .ok_or_else(|| Error::Unsupported(format!("rfi format word {new:#010x}")))?;
-        let image = self.as_rfi();
-        let old_face = image.face_chain_len()?;
-        let source = image.pixels()?.into_owned();
-        let mut out = Vec::with_capacity(new_base * self.header.faces() as usize);
-        for face in 0..self.header.faces() as usize {
-            let start = face * old_face;
-            let src = source
-                .get(start..start + old_base)
-                .ok_or(Error::Truncated {
-                    offset: HEADER_LEN + start,
-                    needed: old_base,
-                    len: HEADER_LEN + source.len(),
-                })?;
-            let mut dst = vec![0u8; new_base];
-            if !table.convert(old, new, src, (w * h) as usize, &mut dst)? {
-                return Ok(false);
-            }
-            out.extend_from_slice(&dst);
+        let (w, h, flags) = (self.header.width, self.header.height, self.header.flags);
+        let size = image_size(target, flags, w, h)
+            .ok_or_else(|| Error::Unsupported(format!("rfi format word {target:#010x}")))?;
+        let faces = self.header.faces() as usize;
+        let mut out = vec![0u8; size.saturating_mul(faces)];
+        let count = usize::try_from(image_pixels(flags, w, h))
+            .map_err(|_| Error::Unsupported(format!("image of {w} x {h}")))?;
+        if !pixel::convert(word, target, &self.pixels, count, &mut out)? {
+            return Ok(false);
         }
-        self.header.format_word = new;
-        self.header.data_size = new_base as u32;
-        self.header.flags &= !FLAG_MIP_CHAIN;
+        self.header.format_word = target;
+        self.header.data_size =
+            u32::try_from(size).map_err(|_| Error::Unsupported(format!("image size {size}")))?;
         self.pixels = out;
-        self.format = PixelFormat::from_word(new);
+        self.format = PixelFormat::from_word(target);
         Ok(true)
     }
 
@@ -787,14 +825,7 @@ pub fn level_dims(w: u32, h: u32, level: u32) -> (u32, u32) {
     ((w >> level).max(1), (h >> level).max(1))
 }
 
-/// The stored format word without its cube bits: one face's levels carry no
-/// face count.
-fn face_word(word: u32) -> u32 {
-    word & !FLAG_CUBE_MASK
-}
-
 fn mip_count_for(format: PixelFormat, word: u32, w: u32, h: u32, data_size: u32) -> u32 {
-    let word = face_word(word);
     let mut total = 0usize;
     let mut level = 0;
     loop {
@@ -808,20 +839,6 @@ fn mip_count_for(format: PixelFormat, word: u32, w: u32, h: u32, data_size: u32)
         if total >= data_size as usize || (lw == 1 && lh == 1) {
             return level;
         }
-    }
-}
-
-/// The registry key of the Rayform Image reader (Exarust's; the original's
-/// numeric key is not stored in any file).
-pub const TAG: u32 = RFI_MAGIC;
-
-/// The loader-registry entry of the Rayform Image reader.
-pub fn format() -> crate::image_registry::ImageFormat {
-    crate::image_registry::ImageFormat {
-        tag: TAG,
-        extension: "rfi",
-        description: "Rayform Image",
-        loader: crate::image_registry::load_rfi,
     }
 }
 
@@ -1081,16 +1098,35 @@ mod tests {
         assert_eq!(format_level_size(0x817B_E608, 1024, 1024), Some(1_048_576));
         assert_eq!(format_level_size(0x927B_8400, 1024, 1024), Some(1_048_576));
         assert_eq!(format_level_size(0x813B_C600, 6, 5), Some(8 * 2 * 2));
-        // A cube word multiplies by six (the original's branch; the shipped
-        // cubes carry the bit in the header flags instead).
-        assert_eq!(format_level_size(0x4000_C600, 2, 2), Some(6 * 12));
     }
 
     #[test]
-    fn the_mip_chain_pixel_count_is_the_base_plus_every_halving() {
-        assert_eq!(mip_chain_pixels(256, 256), 87_381);
-        assert_eq!(mip_chain_pixels(4, 4), 16 + 4 + 1);
-        assert_eq!(mip_chain_pixels(1, 1), 1);
+    fn an_image_is_sized_with_its_chain_only_when_the_flag_says_so() {
+        // 1024² BC1: 524 288 bytes for the base, 699 064 with the chain
+        // (every level down to 1 × 1, whole 4 × 4 blocks).
+        assert_eq!(image_size(0x813B_C600, 0, 1024, 1024), Some(524_288));
+        assert_eq!(
+            image_size(0x813B_C600, FLAG_MIP_CHAIN, 1024, 1024),
+            Some(699_064)
+        );
+        // 4 × 4 RGBA8: 64 + 16 + 4.
+        assert_eq!(image_size(0x0100_E608, FLAG_MIP_CHAIN, 4, 4), Some(84));
+        // A cube is sized per face: the flag does not multiply.
+        assert_eq!(image_size(0x0100_C600, FLAG_CUBE, 2, 2), Some(12));
+    }
+
+    #[test]
+    fn the_converters_pixel_count_takes_the_chain_and_six_faces() {
+        assert_eq!(image_pixels(FLAG_MIP_CHAIN, 256, 256), 87_381);
+        assert_eq!(
+            image_pixels(FLAG_MIP_CHAIN | FLAG_CUBE, 256, 256),
+            6 * 87_381
+        );
+        assert_eq!(image_pixels(0, 4, 4), 16);
+        assert_eq!(image_pixels(FLAG_MIP_CHAIN, 4, 4), 16 + 4 + 1);
+        assert_eq!(image_pixels(FLAG_MIP_CHAIN, 1, 1), 1);
+        // Only the exact cube bits count: bit 28 set as well is not a cube.
+        assert_eq!(image_pixels(0x5000_0000, 2, 2), 4);
     }
 
     #[test]
@@ -1100,14 +1136,12 @@ mod tests {
         for face in 0..6u8 {
             body.extend_from_slice(&[face, 10, 20, face, 30, 40, face, 50, 60, face, 70, 80]);
         }
-        let flags = FLAG_CUBE;
-        let raw = image(2, 2, 0x0100_C600, 0x1000_0000, 12, &body);
-        let mut raw = raw;
-        raw[20..24].copy_from_slice(&flags.to_le_bytes());
+        let mut raw = image(2, 2, 0x0100_C600, 0x1000_0000, 12, &body);
+        raw[20..24].copy_from_slice(&FLAG_CUBE.to_le_bytes());
         let rfi = Rfi::parse(&raw).unwrap();
         assert!(rfi.header.is_cube());
         assert_eq!(rfi.header.faces(), 6);
-        assert_eq!(rfi.header.face_chain_size(), Some(12));
+        assert_eq!(rfi.header.image_size(), Some(12));
         assert_eq!(rfi.mip_count, 1);
         let faces = rfi.decode_faces_rgba8().unwrap();
         assert_eq!(faces.len(), 6);
@@ -1124,7 +1158,29 @@ mod tests {
         assert_eq!(copy.pixels, body);
         let base = ImageData::copy_base(&rfi).unwrap();
         assert_eq!(base.header.flags & FLAG_MIP_CHAIN, 0);
-        assert_eq!(base.pixels.len(), 12 * 6);
+        assert_eq!(base.header.data_size, 12);
+        assert_eq!(base.pixels, body);
+    }
+
+    #[test]
+    fn a_base_copy_steps_through_the_faces_by_the_source_data_size() {
+        // Two-level 2×2 RGB8 cube faces: 12 + 3 bytes a face.
+        let mut body = Vec::new();
+        for face in 0..6u8 {
+            body.extend_from_slice(&[face; 12]);
+            body.extend_from_slice(&[100 + face; 3]);
+        }
+        let mut raw = image(2, 2, 0x0100_C600, 0x1000_0000, 15, &body);
+        raw[20..24].copy_from_slice(&(FLAG_CUBE | FLAG_MIP_CHAIN).to_le_bytes());
+        let rfi = Rfi::parse(&raw).unwrap();
+        assert_eq!(rfi.mip_count, 2);
+        let base = ImageData::copy_base(&rfi).unwrap();
+        assert_eq!(base.header.data_size, 12);
+        assert_eq!(base.pixels.len(), 72);
+        assert_eq!(&base.pixels[12..24], &[1; 12]);
+        assert_eq!(&base.pixels[60..72], &[5; 12]);
+        let copy = ImageData::copy_of(&rfi).unwrap();
+        assert_eq!(copy.pixels, body);
     }
 
     #[test]
@@ -1132,41 +1188,72 @@ mod tests {
         let mut blank = ImageData::blank(2, 2, 0x0100_C600, 0).unwrap();
         assert_eq!(blank.header.data_size, 12);
         assert_eq!(blank.pixels.len(), 12);
+        assert_eq!(blank.header.depth, 1);
         blank.resize(3).unwrap();
         assert_eq!((blank.header.data_size, blank.pixels.len()), (3, 3));
+        // A release frees the store and leaves the header.
         blank.release();
-        assert_eq!((blank.header.data_size, blank.pixels.len()), (0, 0));
-        // A cube's resize stores six faces.
+        assert_eq!((blank.header.data_size, blank.pixels.len()), (3, 0));
+        // A cube's store holds six faces of the per-face size.
         let mut cube = ImageData::blank(2, 2, 0x0100_C600, FLAG_CUBE).unwrap();
-        cube.resize(12).unwrap();
-        assert_eq!(cube.header.data_size, 12);
-        assert_eq!(cube.pixels.len(), 72);
-        // The icon target carries a chain flag and class 2.
+        assert_eq!((cube.header.data_size, cube.pixels.len()), (12, 72));
+        cube.resize(6).unwrap();
+        assert_eq!((cube.header.data_size, cube.pixels.len()), (6, 36));
+        // A chain flag sizes the chain.
+        let chained = ImageData::blank(4, 4, 0x0100_E608, FLAG_MIP_CHAIN).unwrap();
+        assert_eq!(chained.header.data_size, 84);
+        // A render target without a detail class gets class 2, and no
+        // chain unless asked.
         let target = ImageData::render_target(4, 4, 0x0100_E608, 0).unwrap();
-        assert!(target.header.has_mip_chain());
+        assert!(!target.header.has_mip_chain());
         assert_eq!(target.header.detail_class(), 2);
-        assert_eq!(target.header.data_size, 4 * 4 * 4 + 2 * 2 * 4 + 4);
-        assert!(ImageData::blank(2, 2, 0x0100_C600, 0).is_ok());
+        assert_eq!(target.header.data_size, 64);
+        let classed = ImageData::render_target(4, 4, 0x0100_E608, 0x0040_0000).unwrap();
+        assert_eq!(classed.header.detail_class(), 1);
     }
 
     #[test]
-    fn an_image_converts_through_the_registered_table() {
-        let table = crate::pixel::ConverterRegistry::standard();
+    fn an_image_converts_through_its_formats_converter() {
         let raw = image(2, 1, 0x0100_C600, 0x1000_0000, 6, &[10, 20, 30, 40, 50, 60]);
         let rfi = Rfi::parse(&raw).unwrap();
         let mut data = ImageData::copy_of(&rfi).unwrap();
-        assert!(data.convert(Some(0x0100_E608), &table).unwrap());
+        assert!(data.convert(0x0100_E608).unwrap());
         assert_eq!(data.header.format_word, 0x0100_E608);
         assert_eq!(data.header.data_size, 8);
         assert_eq!(data.pixels, [10, 20, 30, 255, 40, 50, 60, 255]);
-        // The same layout changes the word only.
-        assert!(data.convert(Some(0x0101_E608), &table).unwrap());
-        assert_eq!(data.header.format_word, 0x0101_E608);
-        assert_eq!(data.pixels.len(), 8);
-        // No converter for this pair.
+        // A requested word with bit 20 and the image's layout changes the
+        // word only.
+        assert!(data.convert(0x0111_E608).unwrap());
+        assert_eq!(data.header.format_word, 0x0111_E608);
+        assert_eq!(data.pixels, [10, 20, 30, 255, 40, 50, 60, 255]);
+        // No converter for this pair: nothing changes.
         let mut other = ImageData::copy_of(&rfi).unwrap();
-        assert!(!other.convert(Some(0x0104_4040), &table).unwrap());
+        assert!(!other.convert(0x0104_4040).unwrap());
         assert_eq!(other.header.format_word, 0x0100_C600);
+        assert_eq!(other.pixels, [10, 20, 30, 40, 50, 60]);
+        // A zero request takes the fallback: grey to RGB.
+        let grey = image(2, 1, 0x0100_4200, 0x1000_0000, 2, &[7, 9]);
+        let mut grey = ImageData::copy_of(&Rfi::parse(&grey).unwrap()).unwrap();
+        assert!(grey.convert(0).unwrap());
+        assert_eq!(grey.header.format_word, 0x0100_C600);
+        assert_eq!(grey.pixels, [7, 7, 7, 9, 9, 9]);
+        // A block-compressed word has no converter here.
+        let bc1 = image(4, 4, 0x813B_C600, 0x1000_0000, 8, &[0; 8]);
+        let mut bc1 = ImageData::copy_of(&Rfi::parse(&bc1).unwrap()).unwrap();
+        assert!(!bc1.convert(0x0100_E608).unwrap());
+    }
+
+    #[test]
+    fn a_chained_image_converts_every_level() {
+        // 2×2 RGB8 with its 1×1 level: five pixels.
+        let body: Vec<u8> = (0..15).collect();
+        let mut raw = image(2, 2, 0x0100_C600, 0x1000_0000, 15, &body);
+        raw[20..24].copy_from_slice(&FLAG_MIP_CHAIN.to_le_bytes());
+        let mut data = ImageData::copy_of(&Rfi::parse(&raw).unwrap()).unwrap();
+        assert!(data.convert(0x0100_E608).unwrap());
+        assert_eq!(data.header.data_size, 20);
+        assert!(data.header.has_mip_chain());
+        assert_eq!(&data.pixels[16..20], &[12, 13, 14, 255]);
     }
 
     /// A shipped environment cube: six 256² RGB8 faces, each nine levels,
@@ -1190,7 +1277,7 @@ mod tests {
         assert_eq!(rfi.header.faces(), 6);
         assert_eq!(rfi.mip_count, 9);
         assert_eq!(rfi.header.data_size, 262_143);
-        assert_eq!(rfi.header.face_chain_size(), Some(262_143));
+        assert_eq!(rfi.header.image_size(), Some(262_143));
         let faces = rfi.decode_faces_rgba8().unwrap();
         assert_eq!(faces.len(), 6);
         assert_eq!(faces[0].len(), 256 * 256 * 4);
