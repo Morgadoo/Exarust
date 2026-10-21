@@ -18,6 +18,7 @@ use bevy::math::{Affine3A, Mat3A, Vec3A};
 use bevy::prelude::*;
 
 use super::{Locomotor, forward};
+pub use crate::engine_math::{acos_approx, asin_approx, euler_of, from_euler, look_rotation, sign};
 
 /// The twist holds below this tone (single precision, its compare).
 const TWIST_TONE: f32 = 0.85;
@@ -83,42 +84,11 @@ pub fn heading_of(d: Vec3) -> f32 {
     if d.x < 0.0 { -yaw } else { yaw }
 }
 
-/// The original's arc cosine, a polynomial (within about 4e-4 rad):
-/// (π/2 − 0.2075·x + 0.0535·x²)·√(1 − x) for x ≥ 0 (or NaN), and π less
-/// the same of −x (in double precision) below 0.
-pub fn acos_approx(x: f32) -> f32 {
-    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
-    const LINEAR: f32 = 0.2075;
-    const SQUARE: f32 = 0.0535;
-    if !(x < 0.0) {
-        let a = HALF_PI - x * LINEAR;
-        (x * x * SQUARE + a) * (1.0 - x).sqrt()
-    } else {
-        let a = x * LINEAR + HALF_PI;
-        let r = (x * x * SQUARE + a) * (1.0 + x).sqrt();
-        (std::f64::consts::PI - f64::from(r)) as f32
-    }
-}
-
-/// The original's sign: 1 or −1 by the sign bit, 0 for zero.
-fn sign(x: f32) -> f32 {
-    if x == 0.0 { 0.0 } else { 1.0_f32.copysign(x) }
-}
-
 /// `v` less its component along the unit `n` (the dot product summed x
 /// and z, then y, as the original's).
 fn without(v: Vec3A, n: Vec3A) -> Vec3A {
     let d = v.x * n.x + v.z * n.z + v.y * n.y;
     v - n * d
-}
-
-/// The look rotation along `dir` (unit): its forward (z) is `dir`, its up
-/// the vertical less its part along `dir`, its side their cross product.
-pub fn look_rotation(dir: Vec3) -> Mat3A {
-    let z = Vec3A::from(dir);
-    let y = without(Vec3A::Y, z).normalize_or_zero();
-    let x = y.cross(z).normalize_or_zero();
-    Mat3A::from_cols(x, y, z)
 }
 
 /// One tick of the torso twist (`body.twist_yaw` the yaw it follows,
@@ -190,59 +160,6 @@ pub fn twist_spine(parts: &mut [Affine3A], spine: &[(usize, bool)], twist: Quat)
         }
         p.matrix3 = m;
     }
-}
-
-/// The original's arc sine, the same polynomial: π/2 − (π/2 − (0.2075 −
-/// 0.0535·x)·x)·√(1 − x) for x ≥ 0 (or NaN), ((0.0535·x + 0.2075)·x +
-/// π/2)·√(1 + x) − π/2 below 0.
-pub fn asin_approx(x: f32) -> f32 {
-    const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
-    const LINEAR: f32 = 0.2075;
-    const SQUARE: f32 = 0.0535;
-    if !(x < 0.0) {
-        let a = HALF_PI - (LINEAR - x * SQUARE) * x;
-        HALF_PI - a * (1.0 - x).sqrt()
-    } else {
-        ((SQUARE * x + LINEAR) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
-    }
-}
-
-/// The original's angles of a turn ([`from_euler`] composes them back):
-/// the roll z = asin(x axis's y), and with |cos z| over 0.005 (double) the
-/// pitch x = atan2(−z axis's y, y axis's y) and the yaw y = atan2(−x axis's
-/// z, x axis's x), each over cos z; otherwise no pitch and the yaw
-/// atan2(z axis's x, z axis's z). Double-precision functions, as the
-/// original's.
-pub fn euler_of(m: &Mat3A) -> Vec3 {
-    let roll = f64::from(m.x_axis.y).asin() as f32;
-    let c = f64::from(roll).cos() as f32;
-    if f64::from(c.abs()) > ROLL_LIMIT {
-        let pitch = f64::from(-m.z_axis.y / c).atan2(f64::from(m.y_axis.y / c)) as f32;
-        let yaw = f64::from(-m.x_axis.z / c).atan2(f64::from(m.x_axis.x / c)) as f32;
-        Vec3::new(pitch, yaw, roll)
-    } else {
-        let yaw = f64::from(m.z_axis.x).atan2(f64::from(m.z_axis.z)) as f32;
-        Vec3::new(0.0, yaw, roll)
-    }
-}
-
-/// Above this |cos roll| (double) the pitch and the yaw are told apart.
-const ROLL_LIMIT: f64 = 0.005;
-
-/// The turn of the original's angles (x pitch, y yaw, z roll): its x axis
-/// (cz·cy, sz, −cz·sy), y axis (sx·sy − cx·sz·cy, cx·cz, sx·cy + cx·sz·sy),
-/// z axis (cx·sy + sx·sz·cy, −sx·cz, cx·cy − sx·sz·sy).
-pub fn from_euler(e: Vec3) -> Mat3A {
-    let (sx, cx) = e.x.sin_cos();
-    let (sy, cy) = e.y.sin_cos();
-    let (sz, cz) = e.z.sin_cos();
-    let cxsz = cx * sz;
-    let sxsz = sx * sz;
-    Mat3A::from_cols(
-        Vec3A::new(cz * cy, sz, -cz * sy),
-        Vec3A::new(sx * sy + -cxsz * cy, cx * cz, sx * cy + cxsz * sy),
-        Vec3A::new(cx * sy + sxsz * cy, -sx * cz, cx * cy + -sxsz * sy),
-    )
 }
 
 /// The head's look yaw is clamped to this (rad, double), × 0.8, and

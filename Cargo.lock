@@ -2578,6 +2578,7 @@ dependencies = [
  "exa_assets",
  "exa_character",
  "exa_formats",
+ "exa_physics",
 ]
 
 [[package]]
