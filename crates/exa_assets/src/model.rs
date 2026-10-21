@@ -1098,7 +1098,7 @@ fn smooth_node(node: &mut Node, flags: &[u32]) {
 }
 
 /// The skin weights of every node of a scene, when it is skinned at all.
-fn scene_skins(
+pub(crate) fn scene_skins(
     scene: &Scene,
     skinned: bool,
     pack: PackKind,

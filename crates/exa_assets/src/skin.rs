@@ -3,83 +3,103 @@
 //!
 //! Body parts are authored as separate meshes in their bone's space. Each
 //! carries invisible seam triangles (`_null`) whose per-triangle flags hold a
-//! seam class in the high byte and, in byte 2, markers for the triangle's
-//! boundary edges. The loop where seam triangles meet the visible skin is
-//! shared, position for position, with the neighbouring part. Weighting that
-//! loop half to each bone, and blending towards the neighbour with distance
-//! from the loop, makes the skinned body watertight. Apparel meshes carry the
-//! same markers, but their seam triangles are found from the boundary-edge
-//! bits alone and their edges from the per-triangle corner bytes. Evidence:
-//! the decompiled builder and `docs/formats/RSQ.md` (Skinning).
+//! seam class in the high byte and, in byte 2, boundary markers whose class
+//! sets how far the blend reaches. The loop where seam triangles meet the
+//! visible skin is shared, position for position, with the neighbouring
+//! part. Weighting that loop towards the neighbour's bone, and blending
+//! towards it with distance from the loop, makes the skinned body watertight.
+//! Apparel meshes are built the same way and then also from their marked
+//! triangles alone, with edges from the per-triangle corner bytes. Evidence:
+//! the original's builder, read instruction by instruction, and
+//! `docs/formats/RSQ.md` (Skinning).
 //!
 //! The rules, in the original's order:
 //!
 //! 1. Seams of class `0xC0` (bits 31 and 30) seed groups, grown over every
-//!    triangle of that class sharing a position. Their boundary edges are the
-//!    edges of those triangles that are shared with a triangle of another
-//!    class. The group's box is the box of those edges, or the first corner
-//!    when it has none. The group grows twice more, over the coarser and then
-//!    every seam class, adding position ids.
+//!    triangle of that class sharing a position. An edge from a corner to the
+//!    corner two along is a boundary edge when a triangle of another class,
+//!    whose combined flags carry a byte-2 marker, runs along it the other
+//!    way. The marker class sets the edge's falloff. The group's box follows
+//!    the quirky order of the trace (below); with no edge it is the box of
+//!    every position. The group then grows over the coarse and then every
+//!    seam class.
 //! 2. Leftover seams of class `0x30` seed a second set of groups, grown over
 //!    every seam class; their box is the box of their positions, unless a
-//!    vertex with more than ten neighbours stops it at that vertex.
-//! 3. Apparel: triangles with a boundary-edge marker seed groups, grown over
-//!    the same markers; an edge is a boundary one when no other triangle
-//!    around its first corner shares it. The corners named by the
-//!    per-triangle byte's bits 3–5 are left out.
-//! 4. Joints: the parent at the part's origin and each child at its
-//!    translation. On a body, every joint takes the nearest free group, and
-//!    a taken group is only given up when the summed distances improve. On
-//!    apparel each group takes its nearest joint.
-//! 5. A vertex in a matched group's grown set is split between its own bone
-//!    and the group's: 0.5 on class `0xC0`, 0.25 on `0x30`, 0.125 on `0x0C`.
-//!    Later groups overwrite earlier ones.
-//! 6. Every other vertex blends towards up to three matched groups: for each,
-//!    m is the least distance² × falloff over the group's edges. With
-//!    m < 0.999 the group's weight is 1 − √m, damped so the weights never sum
-//!    past one; each neighbour receives 0.5 × its weight and the own bone the
-//!    rest.
+//!    position with more than ten triangles stops it at that position.
+//! 3. Apparel adds groups seeded by the triangles with a byte-2 marker, grown
+//!    over the same markers. An edge is a boundary one when no triangle runs
+//!    along it the other way; the corners named by the per-triangle byte's
+//!    bits 3–5 are left out. Their box follows the busy-position rule.
+//! 4. A position belongs to the first group that reaches it: the builder's
+//!    position marks are shared by every group of a mesh.
+//! 5. Joints: the parent at the part's origin and each child at its
+//!    translation. On a body, every joint takes the nearest group; a taken
+//!    group goes to whichever of the two joints scores better against a
+//!    spare group, picked by the original's spare-group search with its
+//!    stale threshold. On apparel each group takes its nearest joint.
+//! 6. A position in a matched group is split between its own bone and the
+//!    group's: 0.5 on class `0xC0`, 0.25 on `0x30`, 0.125 on `0x0C`, the
+//!    widest class of the triangles around it. Later groups overwrite
+//!    earlier ones.
+//! 7. Every other position blends towards up to three matched groups: for
+//!    each, m is the least distance² × falloff over the group's edges. With
+//!    m < 0.999 (a double comparison) the group's weight is 1 − √m, damped
+//!    so the weights never sum past one; each neighbour receives 0.5 × its
+//!    weight and the own bone the rest.
 //!
 //! Weights are per position id: vertices split by texture or normal seams
 //! share them, as the original's per-position stream does.
 
-use std::collections::HashSet;
-
 use bevy::math::Vec3;
 use exa_formats::rfc::Mesh;
 
-/// Seam classes in the triangle flags' high byte, as the builder tests them,
-/// with the multiplier on squared distance (cm²) that reaches 1 at the
-/// falloff radius (20, 15 and 10 cm; every other seam class 5 cm).
-const SEAM_CLASSES: [(u32, f32); 3] = [
-    (0xC000_0000, 0.0025),
-    (0x3000_0000, 0.004_444_444_6),
-    (0x0C00_0000, 0.01),
+/// Seam classes in the triangle flags' high byte, with the share of a seam
+/// position that goes to the neighbouring bone.
+const SEAM_SHARES: [(u32, f32); 3] = [
+    (0xC000_0000, 0.5),
+    (0x3000_0000, 0.25),
+    (0x0C00_0000, 0.125),
 ];
-/// Falloff of a seam whose class is none of [`SEAM_CLASSES`] (5 cm).
+/// Boundary-marker classes in the triangle flags' byte 2, with the
+/// multiplier on squared distance (cm²) that reaches 1 at the falloff
+/// radius (20, 15 and 10 cm).
+const EDGE_FALLOFFS: [(u32, f32); 3] = [
+    (0x00C0_0000, 0.0025),
+    (0x0030_0000, 0.004_444_444_6),
+    (0x000C_0000, 0.01),
+];
+/// Falloff of an edge whose marker is none of [`EDGE_FALLOFFS`] (5 cm).
 const OTHER_FALLOFF: f32 = 0.04;
 /// The class that seeds the first set of groups.
 const WIDE_SEAM: u32 = 0xC000_0000;
 /// The class that seeds the second set.
 const FINE_SEAM: u32 = 0x3000_0000;
-/// Every seam class, including the narrowest (growth of the first set).
+/// The classes the first set grows over, then every seam class.
 const COARSE_SEAMS: u32 = 0xF000_0000;
 const ALL_SEAMS: u32 = 0xFC00_0000;
-/// Boundary-edge markers in the triangle flags' byte 2.
+/// Boundary markers in the triangle flags' byte 2.
 const EDGE_MARKERS: u32 = 0x00FF_0000;
-/// Corner `i` pairs with corner `(i + 2) % 3` in the builder's edge loop.
-const NEXT_CORNER: [usize; 3] = [2, 0, 1];
-/// Position ids a vertex blends towards, at most.
+/// Corner `i`'s edge runs to corner `(i + 2) % 3` in the builder's loops.
+const EDGE_END: [usize; 3] = [2, 0, 1];
+/// The corner after corner `i`: a neighbour runs along an edge the other way
+/// when the edge's end follows its start there.
+const NEXT_CORNER: [usize; 3] = [1, 2, 0];
+/// Groups a position blends towards, at most.
 const MAX_GROUPS: usize = 3;
-/// A group whose nearest edge is farther than this (in falloff units) does
-/// not influence a vertex.
-const REACH: f32 = 0.999;
-/// Weights at or below this are left out of the four slots.
+/// A group whose nearest edge is this far (in falloff units) or farther does
+/// not influence a position; the original compares in double precision.
+const REACH: f64 = 0.999;
+/// Normalised distances at or below this count as on the edge, and weights
+/// below it are left out of the four slots.
 const MIN_WEIGHT: f32 = 1e-6;
-/// A vertex with more than this many adjacent triangles stops the second
-/// group set's box at that vertex.
-const BUSY_VERTEX: usize = 10;
+/// A position with more than this many triangles stops a box at itself.
+const BUSY_POSITION: usize = 10;
+/// The joint matching's "no distance yet" (not `f32::MAX`).
+const FAR: f32 = 3.4e38;
 const CM_PER_METRE: f32 = 100.0;
+/// Position marks: a group holds the position, the position widened a box.
+const MEMBER: u8 = 1;
+const BOXED: u8 = 2;
 
 /// A joint the part shares with a neighbouring bone, at `pivot` in the
 /// part's space (metres): the part's origin for its parent, a child's
@@ -93,38 +113,61 @@ pub struct Joint {
 /// Up to four (bone, weight) pairs per vertex, weights summing to 1.
 pub type VertexSkin = [(u16, f32); 4];
 
-/// How a mesh's seams are found: the body builder answers a joint with each
-/// seam group, the apparel builder gives its groups the nearest joint.
+/// How a mesh's seams are found and matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seams {
-    /// A body part: wide seams seed [`WIDE_SEAM`] groups, then the finer
-    /// classes, and each joint takes a group.
+    /// A body part: wide then fine seam groups, and each joint takes a
+    /// group.
     Body,
-    /// A garment: boundary-marked triangles seed groups whose boundary edges
-    /// come from the markers, and each group takes a joint.
+    /// A garment: the body's groups and then groups of the marked
+    /// triangles, and each group takes its nearest joint.
     Apparel,
 }
 
-/// The falloff multiplier of a seam class.
+/// The falloff multiplier of an edge's combined flags (byte-2 markers).
 fn falloff(flags: u32) -> f32 {
-    SEAM_CLASSES
+    EDGE_FALLOFFS
         .iter()
         .find(|(mask, _)| flags & mask != 0)
         .map_or(OTHER_FALLOFF, |&(_, f)| f)
 }
 
-/// The share of a seam vertex that goes to the neighbouring bone.
+/// The share of a seam position that goes to the neighbouring bone (seam
+/// classes in the high byte).
 fn seam_share(flags: u32) -> f32 {
-    SEAM_CLASSES
+    SEAM_SHARES
         .iter()
-        .enumerate()
-        .find(|(_, (mask, _))| flags & mask != 0)
-        .map_or(0.0, |(i, _)| [0.5, 0.25, 0.125][i])
+        .find(|(mask, _)| flags & mask != 0)
+        .map_or(0.0, |&(_, s)| s)
+}
+
+/// `MINPS`: the second operand unless the first is less.
+fn min_ps(a: Vec3, b: Vec3) -> Vec3 {
+    let m = |a: f32, b: f32| if a < b { a } else { b };
+    Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
+}
+
+/// `MAXPS`: the second operand unless the first is greater.
+fn max_ps(a: Vec3, b: Vec3) -> Vec3 {
+    let m = |a: f32, b: f32| if a > b { a } else { b };
+    Vec3::new(m(a.x, b.x), m(a.y, b.y), m(a.z, b.z))
+}
+
+/// Squared distance, summed x, y then z as the engine's helper does.
+fn distance_squared(a: Vec3, b: Vec3) -> f32 {
+    let d = a - b;
+    d.x * d.x + d.y * d.y + d.z * d.z
+}
+
+/// Distance as the engine's other helper sums it: (x² + z²) + y².
+fn distance(a: Vec3, b: Vec3) -> f32 {
+    let d = a - b;
+    ((d.x * d.x + d.z * d.z) + d.y * d.y).sqrt()
 }
 
 /// An edge of a group's boundary loop, as the builder stores it: its start,
 /// the direction towards its end (cm), the inverse of the direction's squared
-/// length and the class falloff.
+/// length and the marker's falloff.
 #[derive(Debug, Clone, Copy)]
 struct Edge {
     start: Vec3,
@@ -134,21 +177,26 @@ struct Edge {
 }
 
 impl Edge {
-    /// The least `distance² × falloff` from `p` (cm) to this edge.
+    fn new(start: Vec3, end: Vec3, falloff: f32) -> Self {
+        let direction = end - start;
+        Self {
+            start,
+            direction,
+            inverse_length_squared: 1.0 / distance_squared(direction, Vec3::ZERO),
+            falloff,
+        }
+    }
+
+    /// The `distance² × falloff` from `p` (cm) to this edge. A zero-length
+    /// edge gives NaN, which never lowers a minimum: the original's clamp
+    /// lets a NaN parameter through.
     fn reach(&self, p: Vec3) -> f32 {
         let to_p = p - self.start;
-        let t = to_p.dot(self.direction) * self.inverse_length_squared;
-        // The original turns NaN into 0: `0 <= t` is false for it.
-        let t = if t < 0.0 {
-            0.0
-        } else if t > 1.0 {
-            1.0
-        } else if t.is_nan() {
-            0.0
-        } else {
-            t
-        };
-        (self.start + self.direction * t).distance_squared(p) * self.falloff
+        let d = self.direction;
+        let t = (d.x * to_p.x + d.y * to_p.y + d.z * to_p.z) * self.inverse_length_squared;
+        // `clamp` keeps a NaN, as the original's two ordered compares do.
+        let t = t.clamp(0.0, 1.0);
+        distance_squared(p, self.start + self.direction * t) * self.falloff
     }
 }
 
@@ -159,46 +207,26 @@ struct Group {
     low: Vec3,
     high: Vec3,
     centre: Vec3,
-    /// Position ids of the region (grown after its box was taken).
+    /// Position ids of the region, in the order it reached them.
     positions: Vec<u32>,
-    marked: HashSet<u32>,
-    /// Position ids that have widened the box built from the edges.
-    boxed: HashSet<u32>,
     /// The joint index the group took, when one did.
     joint: Option<usize>,
 }
 
 impl Group {
-    fn add(&mut self, position: u32) -> bool {
-        self.marked.insert(position) && {
-            self.positions.push(position);
-            true
-        }
+    fn extend(&mut self, p: Vec3) {
+        self.low = min_ps(self.low, p);
+        self.high = max_ps(self.high, p);
     }
 
-    fn add_edge(&mut self, edge: Edge, from: u32, to: u32) {
-        if self.edges.is_empty() {
-            self.low = edge.start;
-            self.high = edge.start;
-        } else if self.boxed.insert(from) {
-            self.low = self.low.min(edge.start);
-            self.high = self.high.max(edge.start);
-        }
-        if self.boxed.insert(to) {
-            let end = edge.start + edge.direction;
-            self.low = self.low.min(end);
-            self.high = self.high.max(end);
-        }
-        self.edges.push(edge);
-    }
-
-    /// The centre of the group's box as the builder keeps it.
+    /// The centre of the group's box as the builder takes it:
+    /// low + (high − low) × 0.5.
     fn centre(&mut self) {
-        self.centre = (self.low + self.high) * 0.5;
+        self.centre = self.low + (self.high - self.low) * 0.5;
     }
 }
 
-/// A candidate group for a vertex, with its reach.
+/// A candidate group for a position, with its reach.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Candidate {
     group: usize,
@@ -223,16 +251,19 @@ fn insert_candidate(list: &mut Vec<Candidate>, candidate: Candidate) {
 fn group_factors(m: &[f32]) -> Vec<f32> {
     let mut w: Vec<f32> = m
         .iter()
-        .map(|&m| if m <= MIN_WEIGHT { 1.0 } else { 1.0 - m.sqrt() })
+        .map(|&m| if m > MIN_WEIGHT { 1.0 - m.sqrt() } else { 1.0 })
         .collect();
-    let s: f32 = w.iter().sum();
-    let q: f32 = w.iter().map(|w| w * w).sum();
-    if q <= 0.0 {
-        return w;
+    let (mut s, mut q) = (0.0f32, 0.0f32);
+    for &w in &w {
+        s += w;
+        q += w * w;
     }
-    let k = if s <= 1.0 { s / q } else { 1.0 / q };
+    let k = if s > 1.0 { 1.0 / q } else { s / q };
     for w in &mut w {
-        *w = w.min(*w * *w * k);
+        let damped = *w * *w * k;
+        if damped < *w {
+            *w = damped;
+        }
     }
     w
 }
@@ -251,6 +282,9 @@ struct Builder<'a> {
     used: Vec<bool>,
     /// Triangles already claimed by a group.
     claimed: Vec<bool>,
+    /// [`MEMBER`] and [`BOXED`] marks per position id, shared by every
+    /// group of the mesh.
+    marks: Vec<u8>,
 }
 
 impl<'a> Builder<'a> {
@@ -264,7 +298,7 @@ impl<'a> Builder<'a> {
         if mesh
             .indices
             .iter()
-            .any(|&i| i as usize >= mesh.positions.len())
+            .any(|&i| i as usize >= mesh.positions.len() || i as usize >= mesh.position_ids.len())
         {
             return None;
         }
@@ -279,8 +313,10 @@ impl<'a> Builder<'a> {
         let mut used = vec![false; most];
         for (v, &p) in mesh.position_ids.iter().enumerate() {
             let p = p as usize;
-            position[p] = Vec3::from(mesh.positions[v]) * CM_PER_METRE;
-            used[p] = true;
+            if let Some(at) = mesh.positions.get(v) {
+                position[p] = Vec3::from(*at) * CM_PER_METRE;
+                used[p] = true;
+            }
         }
         let mut around = vec![Vec::new(); most];
         for t in 0..triangles {
@@ -298,6 +334,7 @@ impl<'a> Builder<'a> {
             position,
             used,
             claimed: vec![false; triangles],
+            marks: vec![0; most],
         })
     }
 
@@ -306,9 +343,10 @@ impl<'a> Builder<'a> {
         self.mesh.position_ids[self.mesh.indices[triangle * 3 + corner] as usize]
     }
 
-    /// Whether triangle `triangle` has `position` among its corners.
-    fn holds(&self, triangle: usize, position: u32) -> bool {
-        (0..3).any(|k| self.corner(triangle, k) == position)
+    /// Whether the triangle around `from` (entry `(other, its corner)`) runs
+    /// from `from` to `to`.
+    fn runs_to(&self, (other, corner): (u32, u8), to: u32) -> bool {
+        self.corner(other as usize, NEXT_CORNER[corner as usize]) == to
     }
 
     /// The per-triangle byte, 0 when the file has none.
@@ -316,49 +354,79 @@ impl<'a> Builder<'a> {
         self.kinds.get(triangle).copied().unwrap_or(0)
     }
 
+    fn p(&self, position: u32) -> Vec3 {
+        self.position[position as usize]
+    }
+
+    /// Adds `position` to the group when no group holds it yet.
+    fn take(&mut self, group: &mut Group, position: u32) -> bool {
+        let mark = &mut self.marks[position as usize];
+        if *mark == 0 {
+            *mark = MEMBER;
+            group.positions.push(position);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Grows the group over every triangle of `mask` sharing a position with
-    /// it, recording the boundary edges it shares with other classes. The
-    /// queue is left holding every triangle it walked.
+    /// it, recording the boundary edges and the box as the original's trace
+    /// does. The queue is left holding every triangle it walked.
     fn trace_seams(&mut self, group: &mut Group, queue: &mut Vec<u32>, mask: u32) {
         let mut next = 0;
         while next < queue.len() {
             let triangle = queue[next] as usize;
             next += 1;
-            for (corner, &next) in NEXT_CORNER.iter().enumerate() {
+            for (corner, &end) in EDGE_END.iter().enumerate() {
                 let from = self.corner(triangle, corner);
-                let to = self.corner(triangle, next);
-                group.add(from);
+                let to = self.corner(triangle, end);
+                if self.marks[from as usize] & MEMBER == 0 {
+                    self.marks[from as usize] |= MEMBER;
+                    group.positions.push(from);
+                }
                 for i in 0..self.around[from as usize].len() {
-                    let (other, _) = self.around[from as usize][i];
-                    let other = other as usize;
-                    if self.flags[other] & mask == 0 {
-                        let classes = self.flags[other] | self.flags[triangle];
-                        if classes & EDGE_MARKERS != 0 && self.holds(other, to) {
-                            let start = self.position[from as usize];
-                            let direction = self.position[to as usize] - start;
-                            group.add_edge(
-                                Edge {
-                                    start,
-                                    direction,
-                                    inverse_length_squared: 1.0 / direction.length_squared(),
-                                    falloff: falloff(classes),
-                                },
-                                from,
-                                to,
-                            );
+                    let entry = self.around[from as usize][i];
+                    let other = entry.0 as usize;
+                    if self.flags[other] & mask != 0 {
+                        if !self.claimed[other] {
+                            self.claimed[other] = true;
+                            queue.push(other as u32);
                         }
-                    } else if !self.claimed[other] {
-                        self.claimed[other] = true;
-                        queue.push(other as u32);
+                        continue;
+                    }
+                    let classes = self.flags[other] | self.flags[triangle];
+                    if classes & EDGE_MARKERS == 0 {
+                        continue;
+                    }
+                    if self.runs_to(entry, to) {
+                        group
+                            .edges
+                            .push(Edge::new(self.p(from), self.p(to), falloff(classes)));
+                    }
+                    // The box: reset to the start while the group has one
+                    // edge, widened by positions not yet boxed otherwise,
+                    // whether or not this neighbour gave an edge.
+                    if group.edges.len() == 1 {
+                        group.low = self.p(from);
+                        group.high = group.low;
+                        self.marks[from as usize] |= BOXED;
+                    } else if self.marks[from as usize] < BOXED {
+                        group.extend(self.p(from));
+                        self.marks[from as usize] |= BOXED;
+                    }
+                    if self.marks[to as usize] < BOXED {
+                        group.extend(self.p(to));
+                        self.marks[to as usize] |= BOXED;
                     }
                 }
             }
         }
     }
 
-    /// Grows the group over every triangle of `mask` adjacent to its
-    /// positions. With `skip_marked`, positions already in the group do not
-    /// add their triangles (the original's second pass does not).
+    /// Grows the group over every triangle of `mask` around its corners,
+    /// from the start of the queue. With `skip_marked`, a corner some group
+    /// already holds does not add its triangles.
     fn grow(&mut self, group: &mut Group, queue: &mut Vec<u32>, mask: u32, skip_marked: bool) {
         let mut next = 0;
         while next < queue.len() {
@@ -366,8 +434,7 @@ impl<'a> Builder<'a> {
             next += 1;
             for corner in 0..3 {
                 let position = self.corner(triangle, corner);
-                let fresh = group.add(position);
-                if !fresh && skip_marked {
+                if !self.take(group, position) && skip_marked {
                     continue;
                 }
                 for i in 0..self.around[position as usize].len() {
@@ -381,9 +448,36 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The box of the group's positions, stopped at the first position with
+    /// more than ten triangles; nothing when the group has no position.
+    fn busy_box(&self, group: &mut Group) -> bool {
+        let Some(&first) = group.positions.first() else {
+            return false;
+        };
+        group.low = self.p(first);
+        group.high = group.low;
+        for i in 0..group.positions.len() {
+            let position = group.positions[i];
+            let p = self.p(position);
+            if self.around[position as usize].len() > BUSY_POSITION {
+                group.low = p;
+                group.high = p;
+                break;
+            }
+            let (low, high) = (&mut group.low, &mut group.high);
+            for axis in 0..3 {
+                if p[axis] < low[axis] {
+                    low[axis] = p[axis];
+                } else if p[axis] > high[axis] {
+                    high[axis] = p[axis];
+                }
+            }
+        }
+        true
+    }
+
     /// The body's two sets of seam groups.
-    fn body_groups(&mut self) -> Vec<Group> {
-        let mut groups = Vec::new();
+    fn body_groups(&mut self, groups: &mut Vec<Group>) {
         for triangle in 0..self.triangles {
             if self.flags[triangle] & WIDE_SEAM == 0 || self.claimed[triangle] {
                 continue;
@@ -392,10 +486,15 @@ impl<'a> Builder<'a> {
             let mut group = Group::default();
             let mut queue = vec![triangle as u32];
             self.trace_seams(&mut group, &mut queue, WIDE_SEAM);
-            if group.edges.is_empty() {
-                let first = group.positions[0];
-                group.low = self.position[first as usize];
+            if group.edges.is_empty()
+                && let Some(&first) = group.positions.first()
+            {
+                group.low = self.p(first);
                 group.high = group.low;
+                for i in 1..group.positions.len() {
+                    let p = self.p(group.positions[i]);
+                    group.extend(p);
+                }
             }
             group.centre();
             self.grow(&mut group, &mut queue, COARSE_SEAMS, false);
@@ -410,39 +509,17 @@ impl<'a> Builder<'a> {
             let mut group = Group::default();
             let mut queue = vec![triangle as u32];
             self.grow(&mut group, &mut queue, ALL_SEAMS, true);
-            let mut first = true;
-            for &position in &group.positions {
-                let p = self.position[position as usize];
-                if self.around[position as usize].len() > BUSY_VERTEX {
-                    group.low = p;
-                    group.high = p;
-                    break;
-                }
-                if first {
-                    group.low = p;
-                    group.high = p;
-                    first = false;
-                } else {
-                    group.low = group.low.min(p);
-                    group.high = group.high.max(p);
-                }
-            }
-            if first {
-                // No positions: no box to match a joint with.
-                group.low = Vec3::ZERO;
-                group.high = Vec3::ZERO;
-            }
+            self.busy_box(&mut group);
             group.centre();
             self.grow(&mut group, &mut queue, ALL_SEAMS, false);
             groups.push(group);
         }
-        groups
     }
 
-    /// The apparel's seam groups: boundary-marked triangles, edges wherever
-    /// no other triangle shares them and the corner bytes allow them.
-    fn apparel_groups(&mut self) -> Vec<Group> {
-        let mut groups = Vec::new();
+    /// The apparel's own seam groups, after the body's: marked triangles,
+    /// edges wherever no triangle runs along them the other way and the
+    /// corner bytes allow them.
+    fn apparel_groups(&mut self, groups: &mut Vec<Group>) {
         for triangle in 0..self.triangles {
             if self.flags[triangle] & EDGE_MARKERS == 0 || self.claimed[triangle] {
                 continue;
@@ -455,55 +532,38 @@ impl<'a> Builder<'a> {
                 let current = queue[next] as usize;
                 next += 1;
                 let kind = self.kind(current);
-                for (corner, &next) in NEXT_CORNER.iter().enumerate() {
+                for (corner, &end) in EDGE_END.iter().enumerate() {
                     if kind & (8 << corner) != 0 {
                         continue;
                     }
                     let from = self.corner(current, corner);
-                    let to = self.corner(current, next);
-                    let mut shared = false;
+                    let to = self.corner(current, end);
+                    let mut boundary = true;
                     for i in 0..self.around[from as usize].len() {
-                        let other = self.around[from as usize][i].0 as usize;
-                        // The triangle itself always holds the edge; only
-                        // another marked triangle makes it an inner one.
-                        if other != current && self.holds(other, to) {
-                            shared = true;
+                        let entry = self.around[from as usize][i];
+                        let other = entry.0 as usize;
+                        if self.runs_to(entry, to) {
+                            boundary = false;
                         }
                         if self.flags[other] & EDGE_MARKERS != 0 && !self.claimed[other] {
                             self.claimed[other] = true;
                             queue.push(other as u32);
                         }
                     }
-                    if shared {
+                    if !boundary {
                         continue;
                     }
-                    let start = self.position[from as usize];
-                    let direction = self.position[to as usize] - start;
-                    let edge = Edge {
-                        start,
-                        direction,
-                        inverse_length_squared: 1.0 / direction.length_squared(),
-                        falloff: falloff(self.flags[current]),
-                    };
-                    group.add(from);
-                    group.add(to);
+                    let edge = Edge::new(self.p(from), self.p(to), falloff(self.flags[current]));
                     group.edges.push(edge);
+                    self.take(&mut group, from);
+                    self.take(&mut group, to);
                 }
             }
-            for (i, &position) in group.positions.iter().enumerate() {
-                let p = self.position[position as usize];
-                if i == 0 {
-                    group.low = p;
-                    group.high = p;
-                } else {
-                    group.low = group.low.min(p);
-                    group.high = group.high.max(p);
-                }
+            if self.busy_box(&mut group) {
+                group.centre();
             }
-            group.centre();
             groups.push(group);
         }
-        groups
     }
 
     /// Weights of every position id: the own bone on its own, a group's fixed
@@ -512,59 +572,60 @@ impl<'a> Builder<'a> {
     fn weights(&self, groups: &[Group], joints: &[Joint], own: u16) -> Vec<VertexSkin> {
         let rigid = [(own, 1.0), (own, 0.0), (own, 0.0), (own, 0.0)];
         let mut skin = vec![rigid; self.position.len()];
-        if groups.iter().any(|g| g.joint.is_some()) {
-            for (position, _) in self.used.iter().enumerate().filter(|(_, used)| **used) {
-                let p = self.position[position];
-                let mut candidates = Vec::with_capacity(MAX_GROUPS);
-                for (index, group) in groups.iter().enumerate() {
-                    if group.joint.is_none() {
-                        continue;
-                    }
-                    let reach = group
-                        .edges
-                        .iter()
-                        .map(|e| e.reach(p))
-                        .fold(f32::MAX, f32::min);
-                    if reach < REACH {
-                        insert_candidate(
-                            &mut candidates,
-                            Candidate {
-                                group: index,
-                                reach,
-                            },
-                        );
-                    }
-                }
-                if candidates.is_empty() {
+        if groups.iter().all(|g| g.joint.is_none()) {
+            return skin;
+        }
+        for (position, _) in self.used.iter().enumerate().filter(|(_, used)| **used) {
+            let p = self.position[position];
+            let mut candidates = Vec::with_capacity(MAX_GROUPS);
+            for (index, group) in groups.iter().enumerate() {
+                if group.joint.is_none() {
                     continue;
                 }
-                let factors =
-                    group_factors(&candidates.iter().map(|c| c.reach).collect::<Vec<_>>());
-                let mut slots = [(0, 0.0); 4];
-                let mut own_weight = 1.0;
-                let mut used = 1;
-                for (candidate, factor) in candidates.iter().zip(&factors) {
-                    if *factor < MIN_WEIGHT {
-                        continue;
+                let mut reach = 1.0f32;
+                for edge in &group.edges {
+                    let r = edge.reach(p);
+                    if r < reach {
+                        reach = r;
                     }
-                    let bone = groups[candidate.group].bone(joints);
-                    own_weight -= factor * 0.5;
-                    slots[used] = (bone, factor * 0.5);
-                    used += 1;
                 }
-                slots[0] = (own, own_weight);
-                skin[position] = slots;
+                if f64::from(reach) < REACH {
+                    insert_candidate(
+                        &mut candidates,
+                        Candidate {
+                            group: index,
+                            reach,
+                        },
+                    );
+                }
             }
-            // A vertex of a matched group's grown region is split between
-            // its own bone and the group's, whichever group comes last.
-            for group in groups {
-                let Some(joint) = group.joint else { continue };
-                let bone = joints[joint].bone;
-                for &position in &group.positions {
-                    let share = self.share(position);
-                    skin[position as usize] =
-                        [(own, 1.0 - share), (bone, share), (0, 0.0), (0, 0.0)];
+            if candidates.is_empty() {
+                continue;
+            }
+            let factors = group_factors(&candidates.iter().map(|c| c.reach).collect::<Vec<_>>());
+            let mut slots = [(0, 0.0); 4];
+            let mut own_weight = 1.0;
+            let mut used = 1;
+            for (candidate, factor) in candidates.iter().zip(&factors) {
+                // A NaN factor is kept, as the original's compare lets it.
+                if *factor < MIN_WEIGHT {
+                    continue;
                 }
+                own_weight -= factor * 0.5;
+                slots[used] = (groups[candidate.group].bone(joints), factor * 0.5);
+                used += 1;
+            }
+            slots[0] = (own, own_weight);
+            skin[position] = slots;
+        }
+        // A position of a matched group is split between its own bone and
+        // the group's, whichever group comes last.
+        for group in groups {
+            let Some(joint) = group.joint else { continue };
+            let bone = joints[joint].bone;
+            for &position in &group.positions {
+                let share = self.share(position);
+                skin[position as usize] = [(own, 1.0 - share), (bone, share), (0, 0.0), (0, 0.0)];
             }
         }
         skin
@@ -587,49 +648,67 @@ impl Group {
     }
 }
 
-/// The body's joint matching: in joint order, the nearest group is taken; a
-/// group already taken is exchanged when the summed distances of the two
-/// joints and their new groups improve. The original's helper for the spare
-/// group returns the first free one rather than the nearest, so it is taken
-/// as such here.
+/// The original's spare-group search for `joint`: the first free group
+/// closer than [`FAR`] is taken, and after it the threshold becomes `stale`
+/// (a value the caller last stored, not the distance found), so a later free
+/// group replaces it when it is closer than `stale`.
+fn spare_group(groups: &[Group], pivot: Vec3, stale: f32) -> Option<usize> {
+    let mut threshold = FAR;
+    let mut spare = None;
+    for (index, group) in groups.iter().enumerate() {
+        if group.joint.is_none() && distance_squared(group.centre, pivot) < threshold {
+            spare = Some(index);
+            threshold = stale;
+        }
+    }
+    spare
+}
+
+/// The body's joint matching: in joint order, each joint finds its nearest
+/// group. A free group is taken. A taken group stays with its holder when
+/// keeping it (holder there, the joint on its spare group) scores less than
+/// swapping (the joint there, the holder on its spare group); otherwise they
+/// swap. Scores add distances; the spare searches use the original's stale
+/// thresholds.
 fn match_body(groups: &mut [Group], joints: &[Joint]) {
     let pivots: Vec<Vec3> = joints.iter().map(|j| j.pivot * CM_PER_METRE).collect();
-    let first_free = |groups: &[Group]| groups.iter().position(|g| g.joint.is_none());
     for (joint, &pivot) in pivots.iter().enumerate() {
+        let mut best = FAR;
         let mut nearest = None;
-        let mut distance = f32::MAX;
+        // The value the original last stored in the slot its spare search
+        // reads.
+        let mut slot = 0.0f32;
         for (index, group) in groups.iter().enumerate() {
-            let d = group.centre.distance_squared(pivot);
-            if d < distance {
-                distance = d;
+            slot = distance_squared(group.centre, pivot);
+            if slot < best {
+                best = slot;
                 nearest = Some(index);
             }
         }
         let Some(group) = nearest else { continue };
-        match groups[group].joint {
-            None => groups[group].joint = Some(joint),
-            Some(holder) => {
-                let to_group =
-                    |joint: usize, group: usize| pivots[joint].distance(groups[group].centre);
-                let spare_new = first_free(groups);
-                let stale = to_group(joint, group);
-                let score_new = match spare_new {
-                    None => stale,
-                    Some(free) => to_group(free, group) + stale,
-                };
-                let spare_old = first_free(groups);
-                let score_old = match spare_old {
-                    None => stale,
-                    Some(free) => to_group(holder, free) + stale,
-                };
-                if score_old <= score_new {
-                    groups[group].joint = Some(joint);
-                    if let Some(free) = spare_old {
-                        groups[free].joint = Some(holder);
-                    }
-                } else if let Some(free) = spare_new {
-                    groups[free].joint = Some(joint);
-                }
+        let Some(holder) = groups[group].joint else {
+            groups[group].joint = Some(joint);
+            continue;
+        };
+        let centre = groups[group].centre;
+        let spare_new = spare_group(groups, pivot, slot);
+        let keep = match spare_new {
+            Some(spare) => distance(pivots[holder], centre) + distance(pivot, groups[spare].centre),
+            None => distance(pivots[holder], centre),
+        };
+        let spare_old = spare_group(groups, pivots[holder], keep);
+        let swap = match spare_old {
+            Some(spare) => distance(pivots[holder], groups[spare].centre) + distance(pivot, centre),
+            None => distance(pivot, centre),
+        };
+        if swap > keep {
+            if let Some(spare) = spare_new {
+                groups[spare].joint = Some(joint);
+            }
+        } else {
+            groups[group].joint = Some(joint);
+            if let Some(spare) = spare_old {
+                groups[spare].joint = Some(holder);
             }
         }
     }
@@ -644,11 +723,11 @@ fn match_apparel(groups: &mut [Group], joints: &[Joint]) {
     let pivots: Vec<Vec3> = joints.iter().map(|j| j.pivot * CM_PER_METRE).collect();
     for group in groups {
         let mut nearest = 0;
-        let mut distance = group.centre.distance_squared(pivots[0]);
+        let mut best = distance_squared(group.centre, pivots[0]);
         for (index, &pivot) in pivots.iter().enumerate().skip(1) {
-            let d = group.centre.distance_squared(pivot);
-            if d < distance {
-                distance = d;
+            let d = distance_squared(group.centre, pivot);
+            if d < best {
+                best = d;
                 nearest = index;
             }
         }
@@ -683,10 +762,11 @@ pub fn auto_skin(mesh: &Mesh, own: u16, joints: &[Joint], seams: Seams) -> Vec<V
     let Some(mut builder) = Builder::new(mesh) else {
         return vec![rigid; mesh.positions.len()];
     };
-    let mut groups = match seams {
-        Seams::Body => builder.body_groups(),
-        Seams::Apparel => builder.apparel_groups(),
-    };
+    let mut groups = Vec::new();
+    builder.body_groups(&mut groups);
+    if seams == Seams::Apparel {
+        builder.apparel_groups(&mut groups);
+    }
     if groups.is_empty() {
         return vec![rigid; mesh.positions.len()];
     }
@@ -726,7 +806,7 @@ mod tests {
     }
 
     /// A strip of quads along +X from 0 to 30 cm; the last quad is a wide
-    /// seam marked with its inner boundary edge.
+    /// seam whose 20 cm boundary marker gives its inner edge.
     fn strip() -> Mesh {
         let xs = [0.0f32, 0.1, 0.2, 0.3];
         let mut positions = Vec::new();
@@ -739,7 +819,7 @@ mod tests {
         for q in 0..3u32 {
             let (a, b, c, d) = (q * 2, q * 2 + 1, q * 2 + 2, q * 2 + 3);
             indices.extend([a, c, b, b, c, d]);
-            let f = if q == 2 { 0x8001_0000 } else { 1 };
+            let f = if q == 2 { 0x8080_0000 } else { 1 };
             flags.extend([f, f]);
         }
         mesh(positions, indices, flags)
@@ -755,10 +835,12 @@ mod tests {
 
     #[test]
     fn seam_classes_pin_their_constants() {
-        assert_eq!(falloff(0x8000_0000).to_bits(), 0x3b23_d70a);
-        assert_eq!(falloff(0x2000_0000).to_bits(), 0x3b91_a2b4);
-        assert_eq!(falloff(0x0800_0000).to_bits(), 0x3c23_d70a);
-        assert_eq!(falloff(0x0200_0000).to_bits(), 0x3d23_d70a);
+        // The falloff follows the byte-2 marker, not the seam class.
+        assert_eq!(falloff(0x0080_0000).to_bits(), 0x3b23_d70a);
+        assert_eq!(falloff(0x0020_0000).to_bits(), 0x3b91_a2b4);
+        assert_eq!(falloff(0x0008_0000).to_bits(), 0x3c23_d70a);
+        assert_eq!(falloff(0x0002_0000).to_bits(), 0x3d23_d70a);
+        assert_eq!(falloff(0x8000_0000).to_bits(), 0x3d23_d70a);
         assert_eq!(seam_share(0x8000_0000), 0.5);
         assert_eq!(seam_share(0x2000_0000), 0.25);
         assert_eq!(seam_share(0x0800_0000), 0.125);
@@ -834,9 +916,9 @@ mod tests {
         }
     }
 
-    /// An apparel patch's edges come from the boundary markers: the first
-    /// triangle's shared edge is not a boundary one, and a corner byte bit
-    /// leaves its edge out.
+    /// An apparel patch's edges come from the boundary markers: an edge no
+    /// triangle runs along the other way is a boundary one, and a corner
+    /// byte bit leaves its edge out.
     #[test]
     fn apparel_keeps_only_boundary_edges() {
         let positions = vec![
@@ -850,7 +932,9 @@ mod tests {
             [-0.02, 0.06, 0.0],
         ];
         let indices = vec![0, 1, 2, 3, 4, 5];
-        let mut m = mesh(positions, indices, vec![0x8080_0001, 0]);
+        // The narrowest seam class (a 0.125 share) and a 20 cm marker: no
+        // body group takes it, so the apparel pass does.
+        let mut m = mesh(positions, indices, vec![0x0C80_0001, 0]);
         m.triangle_edges = Some(vec![0, 0]);
         let skin = auto_skin(
             &m,
@@ -861,15 +945,15 @@ mod tests {
             }],
             Seams::Apparel,
         );
-        // The marked triangle's corners split half and half.
+        // The marked triangle's corners take the class's 0.125 share.
         for vertex in 0..3 {
-            assert!((weight(&skin, vertex, 8) - 0.5).abs() < 1e-6, "{vertex}");
+            assert!((weight(&skin, vertex, 8) - 0.125).abs() < 1e-6, "{vertex}");
         }
         // The free vertex sits a millimetre off the marked A–C edge: its
         // neighbour gets nearly the full 0.5 share.
         assert!((weight(&skin, 3, 8) - 0.4975).abs() < 1e-3);
-        // Corner bit 3 drops the A–C edge; the vertex now reaches only the
-        // A–B and B–C edges, about 5 cm away (1 − √0.0625 = 0.75).
+        // Corner bit 3 drops the A–C edge; the nearest is now B–C, 5.1/√2 cm
+        // away: m = 13.005 × 0.0025, 1 − √m = 0.8197, halved 0.4098.
         m.triangle_edges = Some(vec![8, 0]);
         let skin = auto_skin(
             &m,
@@ -881,7 +965,140 @@ mod tests {
             Seams::Apparel,
         );
         let dropped = weight(&skin, 3, 8);
-        assert!(dropped < 0.45 && dropped > 0.3, "{dropped}");
+        assert!((dropped - 0.409_84).abs() < 1e-4, "{dropped}");
+    }
+
+    /// Apparel runs the body's builder first: a marked triangle of a wide
+    /// seam class becomes a body group, whose edges need a neighbour of
+    /// another class, so the free vertex does not blend.
+    #[test]
+    fn apparel_takes_the_body_groups_first() {
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [-0.001, 0.05, 0.0],
+            [-0.02, 0.04, 0.0],
+            [-0.02, 0.06, 0.0],
+        ];
+        let m = mesh(positions, vec![0, 1, 2, 3, 4, 5], vec![0x8080_0001, 0]);
+        let skin = auto_skin(
+            &m,
+            7,
+            &[Joint {
+                bone: 8,
+                pivot: Vec3::new(0.0, 0.05, 0.0),
+            }],
+            Seams::Apparel,
+        );
+        for vertex in 0..3 {
+            assert!((weight(&skin, vertex, 8) - 0.5).abs() < 1e-6, "{vertex}");
+        }
+        assert!(weight(&skin, 3, 8) < 1e-6);
+    }
+
+    /// The trace's box: while the group has one edge every marked visit
+    /// resets it to the edge's start, and a position boxed once never widens
+    /// it again. On the strip the box ends as the 20–30 cm top edge.
+    #[test]
+    fn the_trace_box_follows_the_original_order() {
+        let m = strip();
+        let mut builder = Builder::new(&m).unwrap();
+        let mut groups = Vec::new();
+        builder.body_groups(&mut groups);
+        assert_eq!(groups.len(), 1);
+        let g = &groups[0];
+        assert_eq!(g.edges.len(), 1);
+        assert_eq!(g.low, builder.p(5));
+        assert_eq!(g.high, builder.p(7));
+        assert_eq!(g.centre, g.low + (g.high - g.low) * 0.5);
+        assert_eq!(g.positions, [4, 6, 5, 7]);
+    }
+
+    /// A position belongs to the first group that reaches it: the marks are
+    /// shared, so a later apparel group does not take a body group's corner.
+    #[test]
+    fn positions_belong_to_the_first_group() {
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+            [0.0, 0.1, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.2, 0.1, 0.0],
+        ];
+        // A wide seam, then a marked triangle sharing its corner 1.
+        let m = mesh(
+            positions,
+            vec![0, 1, 2, 1, 3, 4],
+            vec![0xC000_0000, 0x0080_0000],
+        );
+        let joints = [
+            Joint {
+                bone: 8,
+                pivot: Vec3::new(0.05, 0.05, 0.0),
+            },
+            Joint {
+                bone: 9,
+                pivot: Vec3::new(0.2, 0.05, 0.0),
+            },
+        ];
+        let skin = auto_skin(&m, 7, &joints, Seams::Apparel);
+        assert!((weight(&skin, 1, 8) - 0.5).abs() < 1e-6);
+        assert_eq!(weight(&skin, 1, 9), 0.0);
+        // The marked triangle's own corners joined the second group, which
+        // took the nearer joint (no seam class: no share).
+        assert_eq!(skin[3][1].0, 9);
+    }
+
+    /// The spare-group search takes the first free group, then any later one
+    /// closer than the stale value it was handed.
+    #[test]
+    fn spare_groups_use_the_stale_threshold() {
+        let group = |x: f32| Group {
+            centre: Vec3::new(x, 0.0, 0.0),
+            ..Group::default()
+        };
+        // Squared distances 50, 10 and 30 from the origin.
+        let groups = [
+            group(50f32.sqrt()),
+            group(10f32.sqrt()),
+            group(30f32.sqrt()),
+        ];
+        assert_eq!(spare_group(&groups, Vec3::ZERO, 20.0), Some(1));
+        assert_eq!(spare_group(&groups, Vec3::ZERO, 5.0), Some(0));
+        assert_eq!(spare_group(&groups, Vec3::ZERO, 40.0), Some(2));
+    }
+
+    /// A joint whose nearest group is taken swaps with the holder when the
+    /// swapped pair is no longer than the kept one: 90 + 1 cm against
+    /// 10 + 99 cm.
+    #[test]
+    fn a_taken_group_goes_to_the_better_pair() {
+        let group = |x: f32| Group {
+            centre: Vec3::new(x, 0.0, 0.0),
+            ..Group::default()
+        };
+        let mut groups = [group(0.0), group(100.0)];
+        let joints = [
+            Joint {
+                bone: 1,
+                pivot: Vec3::new(0.1, 0.0, 0.0),
+            },
+            Joint {
+                bone: 2,
+                pivot: Vec3::new(0.01, 0.0, 0.0),
+            },
+        ];
+        match_body(&mut groups, &joints);
+        assert_eq!(groups[0].joint, Some(1));
+        assert_eq!(groups[1].joint, Some(0));
+    }
+
+    /// A zero-length edge gives NaN, which never lowers a group's reach.
+    #[test]
+    fn zero_length_edges_never_reach() {
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        assert!(Edge::new(p, p, 0.0025).reach(Vec3::ZERO).is_nan());
     }
 
     /// A body seam without a boundary marker gets no loop edges: its
@@ -891,7 +1108,7 @@ mod tests {
         let mut m = strip();
         if let Some(flags) = &mut m.triangle_flags {
             for f in flags.iter_mut() {
-                if *f == 0x8001_0000 {
+                if *f == 0x8080_0000 {
                     *f = 0x8000_0001;
                 }
             }
@@ -1067,6 +1284,110 @@ mod tests {
                     "the trouser crotch reaches no leg"
                 );
             }
+        }
+    }
+
+    /// Vertices of different parts that share a rest position (to 0.01 mm)
+    /// and how many of those pairs weigh their bones differently: a pair
+    /// that differs tears open when the body moves.
+    fn torn_pairs(
+        scene: &exa_formats::rfc::Scene,
+        skins: &[Option<(u16, Vec<VertexSkin>)>],
+    ) -> (usize, Vec<String>) {
+        use bevy::math::{Mat4, Vec4};
+        use exa_formats::rfc::NodeBody;
+        use std::collections::HashMap;
+        let local = |t: &[[f32; 3]; 4]| {
+            Mat4::from_cols(
+                Vec3::from(t[0]).extend(0.0),
+                Vec3::from(t[1]).extend(0.0),
+                Vec3::from(t[2]).extend(0.0),
+                Vec4::from((Vec3::from(t[3]), 1.0)),
+            )
+        };
+        let world = |mut i: usize| {
+            let mut m = local(&scene.nodes[i].transform);
+            while let Some(p) = scene.nodes[i].parent.and_then(|p| p.checked_sub(1)) {
+                m = local(&scene.nodes[p].transform) * m;
+                i = p;
+            }
+            m
+        };
+        let mut at: HashMap<[i64; 3], Vec<(usize, VertexSkin)>> = HashMap::new();
+        for (i, node) in scene.nodes.iter().enumerate() {
+            let (NodeBody::Mesh(mesh), Some(Some((_, skin)))) = (&node.body, skins.get(i)) else {
+                continue;
+            };
+            let m = world(i);
+            for (p, w) in mesh.positions.iter().zip(skin) {
+                let p = m.transform_point3(Vec3::from(*p)) * 1e5;
+                let key = [p.x.round() as i64, p.y.round() as i64, p.z.round() as i64];
+                at.entry(key).or_default().push((i, *w));
+            }
+        }
+        let weights = |w: &VertexSkin| {
+            let mut out: Vec<(u16, f32)> = Vec::new();
+            for &(b, x) in w.iter().filter(|(_, x)| *x > 0.0) {
+                match out.iter_mut().find(|(o, _)| *o == b) {
+                    Some(o) => o.1 += x,
+                    None => out.push((b, x)),
+                }
+            }
+            out.sort_by_key(|(b, _)| *b);
+            out
+        };
+        let (mut pairs, mut torn) = (0, Vec::new());
+        for list in at.values() {
+            for (a, (na, wa)) in list.iter().enumerate() {
+                for (nb, wb) in &list[a + 1..] {
+                    if na == nb {
+                        continue;
+                    }
+                    pairs += 1;
+                    let (x, y) = (weights(wa), weights(wb));
+                    let same = x.len() == y.len()
+                        && x.iter()
+                            .zip(&y)
+                            .all(|(p, q)| p.0 == q.0 && (p.1 - q.1).abs() < 1e-4);
+                    if !same {
+                        torn.push(format!(
+                            "{} {x:?} / {} {y:?}",
+                            scene.nodes[*na].name, scene.nodes[*nb].name
+                        ));
+                    }
+                }
+            }
+        }
+        (pairs, torn)
+    }
+
+    /// The shipped bodies' parts meet without tearing (skipped without the
+    /// game): every pair of vertices of different parts at one rest
+    /// position weighs its bones alike (3818 pairs on the human body, 1668
+    /// on the ogre's; the builder before the instruction-level review tore
+    /// 533 and 517 of them).
+    #[test]
+    fn shipped_seams_do_not_tear() {
+        use crate::PackKind;
+        use exa_formats::rfc::Scene;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        for (entry, shared) in [("humanbase.rfc", 3818), ("ogrebase.rfc", 1668)] {
+            let bytes = game
+                .pack(PackKind::Resource)
+                .and_then(|p| p.get(entry))
+                .unwrap();
+            let scene = Scene::parse(bytes).unwrap();
+            let skins = crate::model::scene_skins(&scene, true, PackKind::Resource);
+            let (pairs, torn) = torn_pairs(&scene, &skins);
+            assert_eq!(pairs, shared, "{entry}");
+            assert!(
+                torn.is_empty(),
+                "{entry}: {:#?}",
+                &torn[..torn.len().min(10)]
+            );
         }
     }
 
