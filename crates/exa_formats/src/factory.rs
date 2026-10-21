@@ -1435,7 +1435,7 @@ mod tests {
     #[test]
     fn taper_scales_the_other_axes() {
         let d = deform(3, 2, 0, 1.0, 0.0, 1.0);
-        // value 1: x = (1 + 1)·−0.05 = −0.1, f = 1/(1 − (−0.1)) = 1.1111.
+        // value 1: x = (1 + 1)·−0.05 = −0.1 (in double), f = 1/(1 + 0.1) ≈ 0.909.
         let mut p = vec![[1.0, 2.0, 1.0]];
         deform_positions(&mut p, &d, 1.0);
         let delta = 2.0;
