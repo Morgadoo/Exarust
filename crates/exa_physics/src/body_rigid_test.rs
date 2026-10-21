@@ -775,7 +775,6 @@ fn class_grab_and_state_words_reach_their_parts() {
             foot: None,
             pins: Vec::new(),
             spheres: None,
-        spheres: None,
         })
         .collect();
     let mut body = Ragdoll::new(&setup);
