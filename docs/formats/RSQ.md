@@ -31,14 +31,15 @@ named with the same indices (`01Pelvis`, `09Chest`, `17RHand`).
 ## Physical body (`0x3DD0B100`)
 
 Each bone node carries a body chunk. The node header is 112 bytes. The
-chunk's first word is the body's class (`0x10000000` on every shipped
-character part); the fixed header runs to `0x5C`. The two per-part mass
-factors at the original's `+0xB4` and `+0x54` are written as 1.0 by the
-loader, not read. Its nested sub-chunks start at offset `0x5C`:
+chunk's first word is the body's class: `0x12400000` with `0x8` on some
+parts, `0x12408000` with `0x8` on the feet and `0x12408008` on the head
+and feet of `humanoid.rsq`; the fixed header runs to `0x5C`. The two
+per-part mass factors at the original's `+0xB4` and `+0x54` are written as
+1.0 by the loader, not read. Its nested sub-chunks start at offset `0x5C`:
 
 | chunk | content |
 |---|---|
-| `0xCD00` | collision spheres: u32 skipped, u32 n, then n × {vec3 centre, f32 radius} cm |
+| `0xCD00` | collision spheres: u32 skipped, u32 n, then n × {vec3 centre, f32 radius} cm. `humanoid.rsq` stores none on its 18 character parts (the body builder fits them to each part's box); other body chunks can |
 | `0xDDB0` | links to the parent part: u32 n, then n × {u32 flags, vec3 point on the part, vec3 point on the parent, f32 slack, f32 stiffness, f32 smoothing, vec3 axis if flags & 4} |
 | `0xDDBC` | foot contact points (each lower leg: one, at (±0.16, −48.97, 2.4) cm; the original stands the leg on its foot part's origin instead, below) |
 | `0xDDBB` | thorax pins (two shoulder points at (±10.4, 9.65, 1.25) cm) |

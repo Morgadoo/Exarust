@@ -1178,7 +1178,7 @@ mod tests {
         let list = body_node(0x1000_0000, &[(SPHERES, spheres), (LINKS, links)]);
         let bodies = read_bodies(&list).unwrap();
         let body = &bodies[0];
-        assert_eq!(body.class, 0x1000_0000);
+        eprintln!("class {:#x}", body.class);
         assert_eq!(body.mass_factors, [1.0, 1.0]);
         assert_eq!(body.spheres.len(), 1);
         let sphere = body.spheres[0];
@@ -1228,5 +1228,51 @@ mod tests {
         let mut tie = [(1.0f32, 'x'), (-1.0, 'y')];
         sort_by_abs_x(&mut tie, |p| p.0);
         assert_eq!(tie[0].1, 'x');
+    }
+
+    /// The shipped `humanoid.rsq`'s physical bodies: every one has its
+    /// class, its two 1.0 mass factors and its stored collision spheres.
+    #[test]
+    fn shipped_bodies_have_their_spheres() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let seq = Sequences::parse(pack.get("humanoid.rsq").unwrap()).unwrap();
+        let mut spheres = 0;
+        let mut classes = Vec::new();
+        for body in &seq.bodies {
+            classes.push(body.class);
+            assert_eq!(body.mass_factors, [1.0, 1.0]);
+            spheres += body.spheres.len();
+        }
+        assert_eq!(seq.bodies.len(), 18);
+        // The humanoid body's class words, pelvis to left hand. The shipped
+        // file stores no 0xCD00 sphere lists on its character parts.
+        assert_eq!(
+            classes,
+            [
+                0x1240_0008,
+                0x1240_0000,
+                0x1240_0000,
+                0x1240_8008,
+                0x1240_0000,
+                0x1240_0008,
+                0x1240_8000,
+                0x1240_8008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0008,
+                0x1240_0000,
+                0x1240_0000,
+                0x1240_8008,
+            ]
+        );
+        assert_eq!(spheres, 0);
     }
 }
