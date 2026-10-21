@@ -610,6 +610,7 @@ pub fn light_bundle(
 ) -> (
     PointLight,
     exa_render::gi::GiMultiplier,
+    exa_render::gi::GiRadius,
     shadow_links::ShadowReach,
     exa_render::lights::LightShaping,
 ) {
@@ -636,6 +637,7 @@ pub fn light_bundle(
     (
         point,
         exa_render::gi::GiMultiplier(light.multiplier),
+        exa_render::gi::GiRadius(light.radius),
         shadow_links::ShadowReach {
             ranged: light.ranged,
             shaped: light.spot.map(|_| y),

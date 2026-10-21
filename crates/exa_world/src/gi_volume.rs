@@ -490,10 +490,7 @@ fn publish_sector_lights(
     pending: Option<Res<exa_render::gi::GiPendingTextures>>,
     walls: Option<Res<LevelWalls>>,
     cameras: Query<(&GlobalTransform, &Frustum), exa_render::supersample::SceneCamera>,
-    point_lights: Query<(
-        &exa_render::lights::LightId,
-        Option<&crate::shadow_links::ShadowReach>,
-    )>,
+    point_lights: Query<&exa_render::lights::LightId>,
 ) {
     let Some(source) = source else { return };
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
@@ -537,14 +534,10 @@ fn publish_sector_lights(
         drawn: marks,
         ..Default::default()
     };
-    // A level without a wall grid lists every ranged light in every sector:
-    // the original's non-grid path uses one group of the scene's lights.
+    // A level without a wall grid lists every light in every sector: the
+    // original's non-grid path uses one group of the scene's lights.
     let all: Vec<u32> = if walls.is_none() {
-        let mut ids: Vec<u32> = point_lights
-            .iter()
-            .filter(|(_, reach)| reach.is_none_or(|r| r.ranged))
-            .map(|(id, _)| id.0)
-            .collect();
+        let mut ids: Vec<u32> = point_lights.iter().map(|id| id.0).collect();
         ids.sort_unstable();
         ids
     } else {

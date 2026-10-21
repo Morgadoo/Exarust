@@ -714,14 +714,17 @@ For each updated voxel, with occ normalised:
 - each light adds lin(colour)·intensity·multiplier·0.15·0.01 · (1 − d/R)⁴
   · open · shaping;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
-  lights whose flood windows reached it (only ranged lights, up to 12), and
-  the original joins sectors whose lists match and whose floors lie within
-  two slices into a group, then merges groups that share a light while their
-  union stays within 12 lights. Each group takes its lowest floor and its
-  own light list; a sector sees no other light, so light does not cross a
-  wall into another room's injection. A level without a wall grid lists
-  every ranged light in every sector (the original's non-grid path uses one
-  group of the scene's lights).
+  lights whose flood windows reached it (up to 12), and the original joins
+  sectors whose lists match and whose floors lie within two slices into a
+  group, then merges groups that share a light while their union stays
+  within 12 lights. Each group takes its lowest floor and its own light
+  list; a sector sees no other light, so light does not cross a wall into
+  another room's injection. A light without the range flag floods with the
+  original's unlimited reach (walls and the flood's stack limit stop it) and
+  still injects over its stored radius: the injection reads the record's
+  radius whatever the flag. A level without a wall grid lists every light in
+  every sector (the original's non-grid path uses one group of the scene's
+  lights).
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in

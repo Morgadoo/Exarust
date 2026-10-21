@@ -208,6 +208,12 @@ pub struct GiPendingTextures(pub GiTextures);
 #[derive(Component, Clone, Copy, Debug)]
 pub struct GiMultiplier(pub f32);
 
+/// The radius the GI injection falls off over: the light record's stored
+/// radius, whatever its range flag. The injection reads it directly, so an
+/// unranged light still injects over that radius.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiRadius(pub f32);
+
 /// A voxel light (the original's `0x3D0C` node: a salve's, a power
 /// crystal's or embers' glow). Every step it adds its colour straight into
 /// the voxels around it; it never lights a surface directly.
@@ -675,6 +681,7 @@ type GiLightQuery<'w, 's> = Query<
         &'static GlobalTransform,
         &'static crate::lights::LightId,
         Option<&'static GiMultiplier>,
+        Option<&'static GiRadius>,
         Option<&'static crate::lights::LightShaping>,
     ),
 >;
@@ -699,14 +706,14 @@ fn gather_lights(
     gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights.iter());
     // The lights the cells record, by their shader id.
     let mut sources: HashMap<u32, LightSource> = HashMap::default();
-    for (light, at, id, share, shaping) in &lights {
+    for (light, at, id, share, radius, shaping) in &lights {
         let c = light.color.to_linear();
         sources.insert(
             id.0,
             LightSource {
                 colour: Vec3::new(c.red, c.green, c.blue),
                 intensity: light.intensity / LUMENS_PER_INTENSITY,
-                radius: light.range / REACH,
+                radius: radius.map_or(light.range / REACH, |r| r.0),
                 position: at.translation(),
                 multiplier: share.map_or(1.0, |m| m.0),
                 shaping: shaping.map_or(Vec2::ONE, |s| s.0),

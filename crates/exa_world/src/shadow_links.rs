@@ -137,6 +137,9 @@ pub struct Unwalled;
 const LUMA: Vec3 = Vec3::new(0.299, 0.587, 0.114);
 /// A link below this weight is dropped.
 const LINK_WEIGHT: f32 = 0.01;
+/// The flood's reach for a light without the range flag: the original's
+/// largest float, so only walls and the stack's limit stop the walk.
+const UNLIMITED_REACH: f32 = 3.4e38;
 /// The first render layer given to a light: 0 is the world's, and the
 /// layers up to the supersampling resolve layer are taken.
 pub const FIRST_LIGHT_LAYER: usize = exa_render::supersample::RESOLVE_LAYER + 1;
@@ -260,7 +263,14 @@ fn track_lights(
     if table.next_layer == 0 {
         table.next_layer = FIRST_LIGHT_LAYER;
     }
-    // Lights gone: drop them (their layers stay retired).
+    // Lights gone: drop them (their layers stay retired), and take them out
+    // of the cells they flooded.
+    let gone: Vec<u32> = table
+        .lights
+        .iter()
+        .filter(|l| !lights.contains(l.entity))
+        .map(|l| l.id)
+        .collect();
     table.lights.retain(|l| lights.contains(l.entity));
     for (entity, light, transform, reach, parent, layer, id) in &lights {
         // Lights without shadow maps are linked too: links also choose the
@@ -304,6 +314,9 @@ fn track_lights(
         table.moved.push(index);
     }
     let Some(mut walls) = walls else { return };
+    for id in gone {
+        walls.cells.remove(id);
+    }
     if walls.is_added() {
         table.moved = (0..table.lights.len()).collect();
     }
@@ -316,16 +329,18 @@ fn track_lights(
     let walls = &mut *walls;
     for &i in &table.moved {
         let l = &table.lights[i];
-        if l.reach.ranged {
-            let light = FloodLight {
-                position: l.position,
-                radius: l.reach.radius,
-                shaped: l.reach.shaped,
-            };
-            walls.cells.flood(&walls.grid, l.id, &light);
-        } else {
-            walls.cells.remove(l.id);
-        }
+        let light = FloodLight {
+            position: l.position,
+            // An unranged light still floods: the original's reach is the
+            // largest float, so only walls and the stack's limit stop it.
+            radius: if l.reach.ranged {
+                l.reach.radius
+            } else {
+                UNLIMITED_REACH
+            },
+            shaped: l.reach.shaped,
+        };
+        walls.cells.flood(&walls.grid, l.id, &light);
     }
 }
 
