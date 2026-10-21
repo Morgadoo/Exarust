@@ -174,6 +174,8 @@ impl NavCell {
 #[derive(Debug, Clone, Default)]
 struct LayerBytes {
     floor: Vec<u8>,
+    /// The floors as the build left them, before any mover raised one.
+    built: Vec<u8>,
     underside: Vec<u8>,
     roughness: Vec<u8>,
     blurred: Vec<u8>,
@@ -185,6 +187,7 @@ impl LayerBytes {
     fn new(cells: usize) -> Self {
         Self {
             floor: vec![0; cells],
+            built: vec![0; cells],
             underside: vec![0; cells],
             roughness: vec![0; cells],
             blurred: vec![0; cells],
@@ -457,6 +460,7 @@ impl NavGrid {
                 let put = |grid: &mut Self, layer: Layer, s: Span| {
                     let l = &mut grid.layers[layer as usize];
                     l.floor[i] = s.floor;
+                    l.built[i] = s.floor;
                     l.underside[i] = s.underside;
                 };
                 match spans.as_slice() {
@@ -506,7 +510,8 @@ impl NavGrid {
         )
     }
 
-    /// Writes what cell (`x`, `z`) holds on `layer`. Outside the grid, nothing.
+    /// Writes what cell (`x`, `z`) holds on `layer`, its floor as built
+    /// too. Outside the grid, nothing.
     pub fn set_cell(&mut self, x: usize, z: usize, layer: Layer, cell: NavCell) {
         if x >= self.width || z >= self.depth {
             return;
@@ -514,11 +519,33 @@ impl NavGrid {
         let i = z * self.width + x;
         let l = &mut self.layers[layer as usize];
         l.floor[i] = cell.floor;
+        l.built[i] = cell.floor;
         l.underside[i] = cell.underside;
         l.roughness[i] = cell.roughness;
         l.blurred[i] = cell.blurred;
         l.clearance[i] = cell.clearance;
         l.penalty[i] = cell.penalty;
+    }
+
+    /// The floor of cell (`x`, `z`) on `layer` as the build left it (0
+    /// outside the grid); movers raise the current floor over it.
+    pub fn built_floor(&self, x: usize, z: usize, layer: Layer) -> u8 {
+        if x >= self.width || z >= self.depth {
+            return 0;
+        }
+        self.layers[layer as usize].built[z * self.width + x]
+    }
+
+    /// Writes the current floor of cell (`x`, `z`) on `layer`, leaving the
+    /// built one. True when it changed.
+    pub(crate) fn set_floor(&mut self, x: usize, z: usize, layer: Layer, floor: u8) -> bool {
+        if x >= self.width || z >= self.depth {
+            return false;
+        }
+        let at = &mut self.layers[layer as usize].floor[z * self.width + x];
+        let changed = *at != floor;
+        *at = floor;
+        changed
     }
 
     /// What cell (`x`, `z`) holds on `layer` (nothing outside the grid).

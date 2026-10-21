@@ -417,7 +417,7 @@ fn search(
     let (start_at, goal_at) = (place(start), place(goal));
     let grid_of = |at: (i32, i32)| (corner.0 + i64::from(at.0), corner.1 + i64::from(at.1));
     let (sx, sz) = grid_of(start_at);
-    let Some((start_lower, start_upper)) = cells(grid, sx, sz) else {
+    let Some((_, start_upper)) = cells(grid, sx, sz) else {
         return Path::none();
     };
     let goal_height = planner_height(to.y, grid.base());

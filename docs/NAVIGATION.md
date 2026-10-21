@@ -24,12 +24,17 @@ that footprint and stamps it again. A dirty
 rectangle joins another when the padded union is smaller; a ring of sixteen
 holds objects as they move, overwrites its oldest slot and never merges.
 A refresh drains the ring into the merged list, grows each side by three
-cells and raises floors from the samples: a missing floor takes any higher
-sample, a sample within fifteen above the working floor takes it, and a
-sample fifteen or more above, or at or under the cell's floor, raises the
-upper floor when that is missing or more than fifteen below the sample.
-A scene-wide countdown holds both queues for its frames, then hands the
-whole grid less its twenty-cell rim in as one rectangle. With no grid there
+cells, starts each rectangle's working floors from the floors as built and
+raises them from the samples (a mover's vertices, voxel
+`y·0.1 + ½ − base·0.1` rounded): a missing floor takes any higher sample, a
+sample less than fifteen above the working floor takes it, and a sample
+fifteen or more above, or at or under the lower slab's underside, raises
+the upper floor when that is missing or less than fifteen below the
+sample; where a working floor differs from the grid's, the floors are
+written and the cost passes run again, so a mover that has gone leaves its
+floor as built. A scene-wide countdown holds the merge and the refresh (the
+ring still fills) for its frames, then hands the whole grid less its
+twenty-cell rim in as one rectangle. With no grid there
 is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
@@ -215,7 +220,8 @@ cell's lower and upper floor and underside):
   passes the last free cell's centre (the start when the first cell
   blocks), keeping the asked end's height.
 - **Straight walk** (`nav::straight_walk`, a walker without feet): from the
-  floor under the start, 5 up and 15 under, following the floors down too.
+  floor under the start, 5 up and 15 under, following the floors down too;
+  it reads the floors as built, not those movers raised.
 - **Obstacle** (`nav::obstacle`): none on lines of 40 cm or less; longer,
   a floor more than 7 up with less than 15 under it, or, before the
   line's last two cells, a penalty over 60.

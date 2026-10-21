@@ -5,19 +5,23 @@
 //! joins an existing one when the union padded by six on each side is
 //! strictly smaller than the two padded rectangles, else it is appended.
 //! A ring of sixteen rectangles queues objects as they move and never
-//! merges; a refresh drains it into the pending list, grows each side by
-//! three cells and raises floors from the samples the caller supplies.
-//! A sample above the working floor takes it when the floor is missing or
-//! the sample is less than fifteen above; a much higher sample or one at
-//! or under the floor raises the upper floor when the upper is missing or
-//! the sample is less than fifteen above it. A changed floor is written and
-//! the cost passes run again. A scene-wide countdown holds both queues and
-//! then hands the whole grid in as one rectangle. Evidence: the movement
-//! notes' planner and movers.
+//! merges; a refresh drains it into the pending list and grows each side by
+//! three cells. Each rectangle's working floors start from the floors as
+//! built; the samples the caller supplies (a mover's vertices, voxel
+//! `y·0.1 + ½ − base·0.1` rounded) raise them: a missing floor takes any
+//! higher sample, one less than fifteen above takes it, and one fifteen or
+//! more above, or at or under the lower slab's underside, raises the upper
+//! floor when that is missing or the sample less than fifteen above it.
+//! Where a working floor differs from the grid's, the rectangle's floors
+//! are written and the cost passes run again. A scene-wide countdown holds
+//! the merge (not the ring) and the refresh, and then hands the whole grid
+//! less its twenty-cell rim in as one rectangle. Evidence: the movement
+//! notes' planner and movers, and the refresh read instruction by
+//! instruction.
 
 use bevy::math::Vec3;
 
-use super::query::{axis, voxels};
+use super::query::axis;
 use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
 
 /// Ring slots.
@@ -106,10 +110,9 @@ pub fn queued_moves(movers: &Movers) -> &[CellRect] {
 
 /// Queue one moved object in the sixteen-slot ring, clamping it to the
 /// grid's three-cell border. The oldest slot is overwritten; nothing merges.
+/// Unlike the merge, the ring takes rectangles during the scene-wide
+/// countdown, and the refresh drains them into the whole-grid pass.
 pub fn ring_moved(movers: &mut Movers, grid: &NavGrid, rect: CellRect) {
-    if movers.countdown >= 1 {
-        return;
-    }
     let (width, depth) = grid.size();
     let rect = rect.normalized();
     let rect = CellRect {
@@ -247,30 +250,32 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
         let mut lower = vec![0u8; span_x * span_z];
         let mut upper = vec![0u8; span_x * span_z];
         let at = |x: i32, z: i32| ((z - z0) as usize) * span_x + (x - x0) as usize;
+        // The working floors start from the floors as built, so a mover
+        // that has gone leaves its cells as they were.
         for z in z0..=z1 {
             for x in x0..=x1 {
                 let i = at(x, z);
-                lower[i] = grid.cell(x as usize, z as usize, Layer::Lower).floor;
-                upper[i] = grid.cell(x as usize, z as usize, Layer::Upper).floor;
+                lower[i] = grid.built_floor(x as usize, z as usize, Layer::Lower);
+                upper[i] = grid.built_floor(x as usize, z as usize, Layer::Upper);
             }
         }
         for sample in samples {
             let sx = axis(sample.x, width).round_ties_even() as i32;
             let sz = axis(sample.z, depth).round_ties_even() as i32;
-            let v = voxels(sample.y, grid.base());
+            let v = sample_voxel(sample.y, grid.base());
             if !(1..255).contains(&v) || sx < x0 || sz < z0 || sx > x1 || sz > z1 {
                 continue;
             }
             let i = at(sx, sz);
-            let floor = grid.cell(sx as usize, sz as usize, Layer::Lower).floor;
-            raise_static(&mut lower[i], &mut upper[i], floor, v as u8);
+            let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
+            raise_static(&mut lower[i], &mut upper[i], underside, v as u8);
         }
         let mut changed = false;
         for z in z0..=z1 {
             for x in x0..=x1 {
                 let i = at(x, z);
-                changed |= write_floor(grid, x as usize, z as usize, Layer::Lower, lower[i]);
-                changed |= write_floor(grid, x as usize, z as usize, Layer::Upper, upper[i]);
+                changed |= grid.set_floor(x as usize, z as usize, Layer::Lower, lower[i]);
+                changed |= grid.set_floor(x as usize, z as usize, Layer::Upper, upper[i]);
             }
         }
         if changed {
@@ -279,24 +284,22 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
     }
 }
 
-fn write_floor(grid: &mut NavGrid, x: usize, z: usize, layer: Layer, floor: u8) -> bool {
-    let mut cell = grid.cell(x, z, layer);
-    if cell.floor == floor {
-        return false;
-    }
-    cell.floor = floor;
-    grid.set_cell(x, z, layer, cell);
-    true
+/// A sample's voxel as the refresh rounds a mover's vertex:
+/// `y · 0.1 + ½ − base · 0.1` (centimetres, single precision), ties to even.
+fn sample_voxel(y: f32, base: f32) -> i32 {
+    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    ((cm(y) * 0.1 + 0.5) - cm(base) * 0.1).round_ties_even() as i32
 }
 
 /// Raise a working floor from a sample voxel, as the refresh does.
 ///
-/// A missing floor takes any sample above it; otherwise a sample up to
-/// fifteen above it takes it, and one fifteen or more above goes on to the
-/// upper floor. A sample at or under the working floor also goes on to the
-/// upper floor. The upper floor takes a higher sample when it is missing or
-/// the sample is less than fifteen above it.
-fn raise_static(lower: &mut u8, upper: &mut u8, floor: u8, sample: u8) {
+/// A missing working floor takes any sample above it; otherwise a sample
+/// less than fifteen above it takes it, and one fifteen or more above goes
+/// on to the upper floor. A sample at or under the working floor goes on to
+/// the upper floor when it is at or under the lower slab's underside. The
+/// upper floor takes a higher sample when it is missing or the sample is
+/// less than fifteen above it.
+fn raise_static(lower: &mut u8, upper: &mut u8, underside: u8, sample: u8) {
     let stood = i32::from(*lower);
     let height = i32::from(sample);
     let mut upper_check = false;
@@ -308,7 +311,7 @@ fn raise_static(lower: &mut u8, upper: &mut u8, floor: u8, sample: u8) {
         } else {
             *lower = sample;
         }
-    } else if height <= i32::from(floor) {
+    } else if height <= i32::from(underside) {
         upper_check = true;
     }
     if upper_check {
@@ -681,16 +684,51 @@ mod tests {
                 z1: 12,
             },
         );
+        // The merge holds; the ring does not.
         assert!(queued_moves(&movers).is_empty());
-        assert!(ring_contents(&movers).is_empty());
+        assert_eq!(ring_contents(&movers).len(), 1);
 
         refresh_movers(&mut grid, &mut movers, &[]);
         assert_eq!(movers.countdown, 1);
         assert!(queued_moves(&movers).is_empty());
+        assert_eq!(ring_contents(&movers).len(), 1);
 
         refresh_movers(&mut grid, &mut movers, &[]);
         assert_eq!(movers.countdown, 0);
         assert!(queued_moves(&movers).is_empty());
         assert!(ring_contents(&movers).is_empty());
+    }
+
+    /// A refresh starts from the floors as built: once the mover is gone,
+    /// the next refresh lowers the floor it raised.
+    #[test]
+    fn a_gone_mover_leaves_the_built_floor() {
+        let mut grid = yard();
+        let mut movers = Movers::default();
+        let rect = CellRect {
+            x0: 12,
+            z0: 12,
+            x1: 12,
+            z1: 12,
+        };
+        queue_moved(&mut movers, rect);
+        let sample = at(&grid, 12, 12, 2.0);
+        refresh_movers(&mut grid, &mut movers, &[sample]);
+        assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 20);
+        assert_eq!(grid.built_floor(12, 12, Layer::Lower), 10);
+        queue_moved(&mut movers, rect);
+        refresh_movers(&mut grid, &mut movers, &[]);
+        assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 10);
+        assert_eq!(grid.cell(12, 12, Layer::Lower).roughness, 0);
+    }
+
+    /// The sample's voxel is `y·0.1 + ½` rounded ties to even: 2.0 m is the
+    /// tie 20.5 (20), 2.04 m already reads 21 and 1.96 m 20.
+    #[test]
+    fn a_sample_rounds_half_a_voxel_up() {
+        assert_eq!(sample_voxel(2.0, 0.0), 20);
+        assert_eq!(sample_voxel(2.04, 0.0), 21);
+        assert_eq!(sample_voxel(1.96, 0.0), 20);
+        assert_eq!(sample_voxel(2.16, 0.1), 21);
     }
 }

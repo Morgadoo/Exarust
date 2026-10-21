@@ -143,6 +143,20 @@ fn step_cell(grid: &NavGrid, x: i32, z: i32, height: i32, mut offered: i32) -> S
     }
 }
 
+/// The floors as built (before any mover raised one) with the current
+/// undersides: what the straight walk reads.
+fn built_floors(grid: &NavGrid, x: i32, z: i32) -> ((u8, u8), (u8, u8)) {
+    let ((_, lower), (_, upper)) = floors(grid, x, z);
+    if x < 0 || z < 0 {
+        return ((0, lower), (0, upper));
+    }
+    let (x, z) = (x as usize, z as usize);
+    (
+        (grid.built_floor(x, z, Layer::Lower), lower),
+        (grid.built_floor(x, z, Layer::Upper), upper),
+    )
+}
+
 fn floors(grid: &NavGrid, x: i32, z: i32) -> ((u8, u8), (u8, u8)) {
     let (width, depth) = grid.size();
     if x < 0 || z < 0 || x as usize >= width || z as usize >= depth {
@@ -217,7 +231,8 @@ fn raster(grid: &NavGrid, start: Vec3, end: Vec3, sign_bit: bool) -> Option<Rast
 }
 
 /// Walk a straight line. A rise of five stays walkable. The height becomes
-/// the floor just stood on, so a later rise is measured from there.
+/// the floor just stood on, so a later rise is measured from there. It reads
+/// the floors as built, as the original's does, not those movers raised.
 pub fn straight_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
     let Some(mut walk) = raster(grid, start, end, true) else {
         return LineHit {
@@ -306,7 +321,7 @@ fn straight_height(grid: &NavGrid, start: Vec3) -> i32 {
     let x = axis(start.x, width).round_ties_even() as i32;
     let z = axis(start.z, depth).round_ties_even() as i32;
     let h0 = voxels(start.y, grid.base());
-    let (lower, upper) = floors(grid, x, z);
+    let (lower, upper) = built_floors(grid, x, z);
     if upper.0 != 0 {
         let underside = i32::from(upper.1);
         let floor = i32::from(upper.0);
@@ -318,7 +333,7 @@ fn straight_height(grid: &NavGrid, start: Vec3) -> i32 {
 }
 
 fn straight_cell(grid: &NavGrid, x: i32, z: i32, height: i32) -> Step {
-    let (lower, upper) = floors(grid, x, z);
+    let (lower, upper) = built_floors(grid, x, z);
     if lower.0 == 0 {
         return Step::Next;
     }
