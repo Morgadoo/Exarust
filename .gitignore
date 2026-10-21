@@ -16,3 +16,6 @@
 /context/
 make-check.log
 .claude/settings.local.json
+
+# Process core dumps.
+core.[0-9]*
