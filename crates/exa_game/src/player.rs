@@ -167,10 +167,27 @@ impl PlayerBody {
         self
     }
 
+    /// A movement request is held (a key or the right button, or a released
+    /// walk finishing its stride): the original's `0x96c` latch.
+    pub(crate) fn walk_requested(&self) -> bool {
+        self.steering.requested
+    }
+
+    /// The walk to the cursor is asked (not the keys' walk): the cursor
+    /// shows its chevrons and the reach waits.
+    pub(crate) fn walking_to_cursor(&self) -> bool {
+        self.steering.requested && self.steering.mode != crate::steering::CursorMode::Other
+    }
+
     /// The cursor's last direction (a yaw) and distance (m) as the
     /// behaviour read it, once it was 50 cm or more away.
     pub(crate) fn cursor(&self) -> Option<(f32, f32)> {
         self.steering.raw
+    }
+
+    /// Asks the body to walk to a clicked point (m), until it is reached.
+    pub(crate) fn walk_to(&mut self, goal: Vec3) {
+        self.steering.walk_to = Some(goal);
     }
 
     /// The left button starts or stops holding an object
@@ -305,6 +322,14 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 #[derive(Resource, Default)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
+/// The gamepad aim's eased cursor point in the world: the stick's direction
+/// places the point `250·|aim| + 50` cm out, and it eases toward it by
+/// `(0.4·AimSpeed + 0.1)²` a frame (the original eases the screen cursor;
+/// Exarust eases the world point the camera projects, a guess at the
+/// projection step).
+#[derive(Resource, Default)]
+pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
+
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -323,11 +348,49 @@ impl Plugin for PlayerPlugin {
                 FixedPreUpdate,
                 (request_attacks, steer_player, take_player_stance).chain(),
             )
+            .add_systems(Update, (begin_play_session, end_play_session))
             .add_systems(
                 Update,
-                (cursor_look, cursor_ground, player_combat, chase_camera).chain(),
+                (
+                    cursor_look,
+                    cursor_ground,
+                    pad_aim_cursor,
+                    player_combat,
+                    chase_camera,
+                )
+                    .chain(),
             );
     }
+}
+
+/// The start of play: the controls run, the AI's activation centre is the
+/// player and its radius 40 m, and the camera starts at its preset. The
+/// player is spawned by the viewer; the first frame it exists is the start.
+fn begin_play_session(
+    mut session: ResMut<crate::player_controls::PlaySession>,
+    players: Query<&Transform, Added<Player>>,
+) {
+    let Some(at) = players.iter().next() else {
+        return;
+    };
+    session.begin(at.translation);
+    info!(
+        "start of play: activation radius 40 m, camera at {:.0}",
+        session.zoom
+    );
+}
+
+/// The end of play: the controls stop, the activation centre goes back to the
+/// origin with its 200 m radius.
+fn end_play_session(
+    mut session: ResMut<crate::player_controls::PlaySession>,
+    mut removed: RemovedComponents<Player>,
+) {
+    if removed.read().next().is_none() || !session.playing {
+        return;
+    }
+    session.end();
+    info!("end of play: activation radius 200 m");
 }
 
 /// One tick of the crouch: it falls by 0.02 while above 0 (the body
@@ -607,17 +670,35 @@ pub(crate) fn steer_player(
                     step,
                     line: &line,
                 };
-                combat_steps(
-                    &input,
-                    &mut req,
-                    &mut steering,
-                    &mut pb,
-                    &mut anim,
-                    stance,
-                    body.moving(),
-                    &footing,
-                    dt,
-                );
+                // The right button walks toward the cursor in combat mode
+                // too; the keys then keep the footwork.
+                let walked = if input.mouse
+                    && let Some(to) = to_cursor
+                {
+                    steering.combat_walk(&mut req, body, standing, to, &line)
+                } else {
+                    false
+                };
+                if walked {
+                    pb.held = 0.0;
+                    pb.walk_from = None;
+                    if anim.looping {
+                        let gait = gait_of(body, &req, &anim.action);
+                        explore_clip(&mut anim, gait);
+                    }
+                } else {
+                    combat_steps(
+                        &input,
+                        &mut req,
+                        &mut steering,
+                        &mut pb,
+                        &mut anim,
+                        stance,
+                        body.moving(),
+                        &footing,
+                        dt,
+                    );
+                }
                 pb.steering = steering;
                 continue;
             }
@@ -881,13 +962,47 @@ fn take_player_stance(
     }
 }
 
+/// The gamepad aim's eased cursor, each frame while a stick asks for it:
+/// its direction and distance place a point, which eases toward the new one
+/// by the AimSpeed factor. With no stick the resource is cleared and the
+/// mouse's point is used.
+fn pad_aim_cursor(
+    config: Option<Res<crate::hw_config::HardwareConfig>>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    status: Option<Res<crate::gamepad::PadStatus>>,
+    players: Query<&GlobalTransform, With<Player>>,
+    mut aim: ResMut<AimCursor>,
+) {
+    let active = status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
+    let Some(player) = players.iter().next() else {
+        aim.0 = None;
+        return;
+    };
+    let stick = active
+        .then(|| pad.as_deref().map(|p| p.frame().aim_world))
+        .flatten()
+        .filter(|aim| crate::gamepad::aim_engaged(*aim));
+    let Some(stick) = stick else {
+        aim.0 = None;
+        return;
+    };
+    let magnitude = (stick.x * stick.x + stick.z * stick.z).sqrt();
+    let want = player.translation()
+        + stick.normalize_or_zero() * crate::player_behaviour::aim_distance(magnitude);
+    let speed = config.map_or(0.29, |c| c.live.aim_speed);
+    let current = aim.0.unwrap_or(want);
+    aim.0 = Some(crate::player_behaviour::aim_point_step(
+        current, want, speed,
+    ));
+}
+
 /// Combat mode (Tab), each frame: the cursor's direction is the aim, and
 /// the heading turns to it once it is more than 30° off, or follows it
 /// while an attack is requested.
 pub(crate) fn player_combat(
     cursor: Res<CursorGround>,
+    aim_cursor: Res<AimCursor>,
     look: Res<CursorLook>,
-    pad: Option<Res<crate::gamepad::PlayPad>>,
     pad_status: Option<Res<crate::gamepad::PadStatus>>,
     players: Query<&GlobalTransform, With<Player>>,
     mut bodies: Query<(
@@ -908,10 +1023,11 @@ pub(crate) fn player_combat(
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        let pad_aim = pad_active
-            .then(|| pad.as_deref().map(|p| p.frame().aim_world))
-            .flatten()
-            .filter(|aim| crate::gamepad::aim_engaged(*aim))
+        // The eased aim cursor's direction, once a stick asks for it.
+        let pad_aim = aim_cursor
+            .0
+            .map(|point| point - player.translation())
+            .filter(|to| to.xz().length() > 0.2)
             .map(yaw_of);
         let aim = pad_aim.or_else(|| {
             cursor
@@ -1725,6 +1841,8 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
+            .init_resource::<AimCursor>()
+            .init_resource::<crate::player_controls::PlaySession>()
             .init_resource::<Physics>()
             .add_plugins(exa_combat::stance::StancePlugin)
             .add_systems(FixedPreUpdate, (steer_player, take_player_stance).chain())

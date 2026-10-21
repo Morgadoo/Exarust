@@ -236,6 +236,8 @@ pub(crate) struct Steering {
     pub(crate) ticks: u8,
     /// The last line walk on the grid (the navigation overlay draws it).
     pub(crate) line: Option<LineAsked>,
+    /// A click's auto-walk goal on the ground (m), until it is reached.
+    pub(crate) walk_to: Option<Vec3>,
 }
 
 impl Steering {
@@ -374,7 +376,33 @@ impl Steering {
         req.slow_turn = true;
         req.stepping = None;
         if condition.has(NO_STEERING) {
+            self.walk_to = None;
             return;
+        }
+        // A click's auto-walk comes first: the body walks to its goal and
+        // stops there, without the cursor's steering.
+        if let Some(goal) = self.walk_to {
+            let flat = (goal - standing).with_y(0.0);
+            if flat.length() < 0.25 {
+                self.walk_to = None;
+            } else {
+                req.heading = yaw_of(flat);
+                req.look = req.heading;
+                req.flags = (req.flags | MOVE) & !(BACK | TURN_ABOUT | BRAKE | STOPPING | KEYS);
+                if !req.has(SPRINT) {
+                    req.flags &= !RUN;
+                }
+                req.moving = true;
+                req.slow_turn = false;
+                req.free_walk = false;
+                req.goal = goal;
+                self.requested = true;
+                let asked = ask(line, Asked::LookAhead, standing, goal);
+                self.line = Some(asked);
+                req.goal = asked.end;
+                req.free_walk = false;
+                return;
+            }
         }
         let facing = body.facing();
         let cursor = forward(req.cursor);
@@ -470,6 +498,53 @@ impl Steering {
         if !keeps_brake && !req.has(TURN_ABOUT) {
             req.flags &= !BRAKE;
         }
+    }
+
+    /// The right button's walk in combat mode: the body walks toward the
+    /// cursor's point like the exploration walk, but keeps the combat
+    /// stance's fast turn and runs beyond 3 m (the original's own combat
+    /// walk is not fully traced; the run is Exarust's guess, as the
+    /// exploration walk's rule). The footwork then gives way to the walk.
+    /// Returns whether the walk is asked.
+    pub(crate) fn combat_walk(
+        &mut self,
+        req: &mut Locomotion,
+        body: &Locomotor,
+        standing: Vec3,
+        to: Vec3,
+        line: LineWalk,
+    ) -> bool {
+        use flags::*;
+        let flat = to.with_y(0.0);
+        if flat.length() < CURSOR_MIN {
+            return false;
+        }
+        req.heading = yaw_of(flat);
+        req.look = req.heading;
+        req.flags |= MOVE;
+        req.flags &= !(BACK | TURN_ABOUT | BRAKE | STOPPING | KEYS);
+        req.flags = if flat.length() > CURSOR_RUN_FROM {
+            req.flags | RUN
+        } else if !req.has(SPRINT) {
+            req.flags & !RUN
+        } else {
+            (req.flags & !SPRINT) | RUN
+        };
+        req.slow_turn = false;
+        req.stepping = None;
+        req.moving = true;
+        self.requested = true;
+        let reach = look_ahead_reach(body.speed, false, true);
+        let asked = ask(
+            line,
+            Asked::LookAhead,
+            standing,
+            standing + flat.normalize_or_zero() * (reach / CM),
+        );
+        self.line = Some(asked);
+        req.goal = asked.end;
+        req.free_walk = !asked.blocked;
+        true
     }
 
     /// The combat branch's part in the locomotion until the combat

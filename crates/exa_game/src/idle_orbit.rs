@@ -76,6 +76,14 @@ pub struct Frame {
     pub holding: bool,
     /// A mouse button is held.
     pub buttons: bool,
+    /// A blocked screen (the death screen, the in-game menu): it turns the
+    /// camera without the idle test.
+    pub blocked: bool,
+    /// A modal form (a dialogue, the power bar) stops the turn.
+    pub modal: bool,
+    /// An open window consumes the input and stops the turn, restamping the
+    /// idle clock.
+    pub window_open: bool,
 }
 
 /// Whether the pointer stayed within 2 pixels of `was` on both axes.
@@ -98,9 +106,12 @@ pub fn turned(yaw: f32, now: u32, last: u32) -> f32 {
 }
 
 impl IdleWatch {
-    /// One frame of the watch: the camera's yaw after it, from `yaw`.
+    /// One frame of the watch: the camera's yaw after it, from `yaw`. A
+    /// blocked screen or a dead player is idle whatever the pointer does;
+    /// a modal form, an open window or a held button keeps the camera and
+    /// restamps the idle clock.
     pub fn frame(&mut self, f: Frame, yaw: f32) -> f32 {
-        let still = if f.condition.is_dead() {
+        let still = if f.condition.is_dead() || f.blocked {
             true
         } else {
             f.pointer.is_none_or(|p| pointer_still(self.pointer, p))
@@ -108,7 +119,8 @@ impl IdleWatch {
                 && !f.stepping
                 && !f.holding
         };
-        if !f.buttons && still {
+        let free = !f.buttons && !f.modal && !f.window_open;
+        if free && still {
             let mut yaw = yaw;
             if i64::from(self.stamp) + IDLE_MS < i64::from(f.now) {
                 self.follows_cursor = false;
@@ -148,6 +160,7 @@ fn watch_idle(
     buttons: Res<ButtonInput<MouseButton>>,
     scripted: Res<ScriptedPointer>,
     hand: Option<Res<Hand>>,
+    menu: Option<Res<crate::menu_screen::MenuScreen>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     players: Query<(Option<&Condition>, Option<&Ragdoll>), With<PlayerBody>>,
     mut cameras: Query<&mut ChaseCamera>,
@@ -170,6 +183,11 @@ fn watch_idle(
             .is_some_and(|d| d.stepping()),
         holding: hand.is_some_and(|h| h.holding != Holding::Nothing),
         buttons: buttons.get_pressed().next().is_some(),
+        // The in-game menu blocks the controls and its form consumes the
+        // input, so the camera waits; the death screen only blocks.
+        blocked: menu.as_ref().is_some_and(|m| m.open) || condition.is_some_and(|c| c.is_dead()),
+        modal: false,
+        window_open: menu.as_ref().is_some_and(|m| m.open),
     };
     for mut cam in &mut cameras {
         let yaw = watch.frame(frame, cam.yaw);
@@ -191,6 +209,9 @@ mod tests {
             stepping: false,
             holding: false,
             buttons: false,
+            blocked: false,
+            modal: false,
+            window_open: false,
         }
     }
 
@@ -265,6 +286,40 @@ mod tests {
         assert_eq!((w.stamp, w.pointer), (12_002, IVec2::new(103, 100)));
         assert!(w.follows_cursor);
         assert_eq!(w.frame(idle(13_000), yaw), yaw);
+    }
+
+    /// A blocked screen turns without the idle test; a modal form or an open
+    /// window stops it; the death screen's block lets it turn.
+    #[test]
+    fn a_blocked_screen_turns_and_a_modal_form_waits() {
+        let moving = Frame {
+            pointer: Some(IVec2::new(900, 900)),
+            blocked: true,
+            ..idle(20_000)
+        };
+        let mut w = IdleWatch::default();
+        let yaw = w.frame(moving, 1.0);
+        assert!((yaw - 3.0).abs() < 1e-6, "{yaw}");
+        let mut w = IdleWatch::default();
+        let modal = Frame {
+            modal: true,
+            ..moving
+        };
+        assert_eq!(w.frame(modal, 1.0), 1.0);
+        assert_eq!(w.stamp, 20_000);
+        let mut w = IdleWatch::default();
+        let window = Frame {
+            window_open: true,
+            ..moving
+        };
+        assert_eq!(w.frame(window, 1.0), 1.0);
+        assert_eq!(w.stamp, 20_000);
+        // The in-game menu is both blocked and a window: it waits.
+        let menu = Frame {
+            window_open: true,
+            ..moving
+        };
+        assert_eq!(IdleWatch::default().frame(menu, 1.0), 1.0);
     }
 
     /// Walking (word 1), a stepping foot, a hold or a button keep the camera

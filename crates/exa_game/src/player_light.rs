@@ -20,9 +20,11 @@
 //! head through the level (not the props) puts it where the ball first
 //! meets the ceiling. Not while the game is paused.
 //!
-//! Not in Exarust: the second off rule (a held weapon section of kind 3
-//! whose held part is lit), the Mind power that forces the light on, and
-//! the spectating view's own light.
+//! The second off rule is a held item whose weapon section is kind 3 and
+//! whose held part is lit. Exarust's item records do not expose that lit
+//! bit yet, so the running switch passes it off; the rule is here and
+//! tested. Not in Exarust: the Mind power that forces the light on, and the
+//! spectating view's own light.
 //!
 //! Evidence: the controls' light maker, frame and switch and the
 //! equipment's switch, read in the instructions
@@ -62,16 +64,26 @@ const PROBE_RADIUS_CM: f32 = 10.0;
 /// The head's bone.
 const HEAD: usize = 10;
 
+/// Whether a held item's weapon section puts the light out: kind 3, with
+/// its held part lit.
+pub fn weapon_puts_out(weapon_kind: Option<u8>, held_part_lit: bool) -> bool {
+    weapon_kind == Some(3) && held_part_lit
+}
+
 /// Whether the player light burns: a worn item that sees in the dark, put
-/// out by a light in either hand.
-pub fn switched_on(worn_sees: impl IntoIterator<Item = bool>, hands_light: [bool; 2]) -> bool {
+/// out by a light in either hand or by a lit held weapon.
+pub fn switched_on(
+    worn_sees: impl IntoIterator<Item = bool>,
+    hands_light: [bool; 2],
+    weapon_lit: bool,
+) -> bool {
     let mut on = false;
     for sees in worn_sees {
         if sees {
             on = true;
         }
     }
-    if hands_light.iter().any(|&l| l) {
+    if hands_light.iter().any(|&l| l) || weapon_lit {
         on = false;
     }
     on
@@ -160,7 +172,9 @@ fn switch_player_light(
     if torch && hands.is_some_and(|h| h.main.is_some_and(|m| m.light) || h.off_light) {
         hands_light[0] = true;
     }
-    let on = switched_on(worn, hands_light);
+    // No item record exposes the held part's lit bit yet, so the weapon's
+    // second off rule is passed off here.
+    let on = switched_on(worn, hands_light, false);
     let made = lights.iter().next();
     match (on, made) {
         (true, None) => {
@@ -227,10 +241,16 @@ mod tests {
     /// and nothing worn leaves it off.
     #[test]
     fn the_switch() {
-        assert!(switched_on([false, true, false], [false, false]));
-        assert!(!switched_on([false, true], [false, true]));
-        assert!(!switched_on([true], [true, false]));
-        assert!(!switched_on([], [false, false]));
+        assert!(switched_on([false, true, false], [false, false], false));
+        assert!(!switched_on([false, true], [false, true], false));
+        assert!(!switched_on([true], [true, false], false));
+        assert!(!switched_on([], [false, false], false));
+        // A weapon of kind 3 with a lit held part puts it out too.
+        assert!(weapon_puts_out(Some(3), true));
+        assert!(!weapon_puts_out(Some(3), false));
+        assert!(!weapon_puts_out(Some(2), true));
+        assert!(!weapon_puts_out(None, true));
+        assert!(!switched_on([true], [false, false], true));
     }
 
     /// From 0.01 it gains 0.0005 per millisecond, so a 16 ms frame adds

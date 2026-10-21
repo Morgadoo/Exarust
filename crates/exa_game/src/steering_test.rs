@@ -582,3 +582,52 @@ fn a_step_target_is_clamped_and_taken_beyond_20_cm() {
     );
     assert_eq!(s.line.unwrap().asked, Asked::Step);
 }
+
+/// A click's auto-walk holds the body to its goal without the cursor's
+/// steering, with the slow turn off, and lets go within 25 cm. The combat
+/// right-button walk goes toward the cursor with the fast turn and the run
+/// beyond 3 m.
+#[test]
+fn a_click_walks_to_its_goal_and_combat_walks_to_the_cursor() {
+    let (mut s, mut req, body) = standing();
+    s.walk_to = Some(Vec3::new(0.0, 0.0, 2.0));
+    req.cursor = FRAC_PI_2;
+    s.explore(
+        &mut req,
+        &body,
+        &keys(""),
+        0,
+        Vec3::ZERO,
+        Condition::NORMAL,
+        &open,
+    );
+    assert!(req.moving && !req.free_walk && !req.slow_turn);
+    assert_eq!(req.heading, 0.0);
+    assert!((req.goal.z - 2.0).abs() < 1e-6);
+    // Within 25 cm it arrives and the steering returns to the cursor.
+    s.explore(
+        &mut req,
+        &body,
+        &keys(""),
+        0,
+        Vec3::new(0.0, 0.0, 1.8),
+        Condition::NORMAL,
+        &open,
+    );
+    assert!(s.walk_to.is_none());
+    // Combat: toward the cursor across the ground, walking within 3 m and
+    // running beyond, with the fast turn.
+    let (mut s, mut req, body) = standing();
+    req.slow_turn = true;
+    assert!(s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(0.0, 0.0, 2.0), &open));
+    assert!(req.moving && !req.has(flags::RUN) && !req.slow_turn);
+    assert_eq!(req.heading, 0.0);
+    let (mut s, mut req, body) = standing();
+    s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0), &open);
+    assert!(req.has(flags::RUN));
+    assert!((req.heading - FRAC_PI_2).abs() < 1e-6);
+    // A cursor within 50 cm is no walk.
+    let (mut s, mut req, body) = standing();
+    assert!(!s.combat_walk(&mut req, &body, Vec3::ZERO, Vec3::new(0.0, 0.0, 0.2), &open));
+    assert!(!req.moving);
+}

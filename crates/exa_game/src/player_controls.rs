@@ -34,6 +34,7 @@
 //! (`context/re/player-control-hand.md`).
 
 use bevy::math::Vec3;
+use bevy::prelude::Resource;
 
 use crate::pick::Pick;
 
@@ -328,6 +329,25 @@ pub struct ItemState {
     pub rating: u8,
 }
 
+/// Where a click's auto-walk stops: `point` is the clicked point and `at`
+/// the player's feet (m). A point farther than the walk's stop (245 cm, or
+/// 350 cm for a door) leaves a goal that far short of it; a nearer one needs
+/// no walk. (The stop distances are the original's 245–350 cm range.)
+pub fn walk_stop(at: Vec3, point: Vec3, door: bool) -> Option<Vec3> {
+    let flat = (point - at).with_y(0.0);
+    let distance = flat.length() * 100.0;
+    let stop = if door {
+        DOOR_ACROSS_CM
+    } else {
+        REACH_HEIGHT_CM
+    };
+    if distance > stop && distance > 0.0 {
+        Some(at + flat.normalize_or_zero() * ((distance - stop) / 100.0))
+    } else {
+        None
+    }
+}
+
 /// The timed list: entries applied to an item each frame, removed when they
 /// arrive. The original holds them in an array, takes a finished entry out
 /// by moving the last into its place, and counts its entries with a length.
@@ -484,7 +504,7 @@ pub const DEBUG_SECOND: f32 = 600.0;
 
 /// The session state the start and end of play set: the AI activation
 /// centre and radius, and whether the player's controls are in play.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct PlaySession {
     pub activation_centre: Vec3,
     pub activation_radius2: f32,
@@ -925,6 +945,19 @@ mod tests {
         };
         assert!(!turns_when_blocked(free, false));
         assert!(turns_when_blocked(free, true));
+    }
+
+    /// A click farther than the stop leaves a goal short of the point; 245 cm
+    /// (350 for a door) away or nearer needs no walk.
+    #[test]
+    fn a_click_walks_to_its_stop() {
+        let at = Vec3::ZERO;
+        let goal = walk_stop(at, Vec3::new(0.0, 0.0, 5.0), false).unwrap();
+        assert!((goal.z - 2.55).abs() < 1e-5, "{goal}");
+        let goal = walk_stop(at, Vec3::new(0.0, 0.0, 5.0), true).unwrap();
+        assert!((goal.z - 1.5).abs() < 1e-5, "{goal}");
+        assert_eq!(walk_stop(at, Vec3::new(0.0, 0.0, 2.45), false), None);
+        assert_eq!(walk_stop(at, Vec3::new(0.0, 0.0, 2.0), false), None);
     }
 
     #[test]

@@ -16,7 +16,6 @@
 
 use bevy::math::{Vec2, Vec3};
 
-
 /// The engine's single-precision epsilon, the floor under its "is it zero"
 /// energy tests.
 pub const EPSILON: f32 = 1.192_089_9e-7;
@@ -201,12 +200,21 @@ pub fn aim_distance(m: f32) -> f32 {
     m * AIM_REACH + AIM_MARGIN
 }
 
+/// The aim cursor's ease factor: `(0.4·AimSpeed + 0.1)²`, worked in double
+/// precision, then single.
+pub fn aim_factor(aim_speed: f32) -> f32 {
+    (f64::from(aim_speed) * AIM_EASE + AIM_EASE_MARGIN).powi(2) as f32
+}
+
 /// The screen cursor after one tick of the gamepad ease: the point moves
-/// `(0.4·AimSpeed + 0.1)²` of the way toward the asked screen point. The
-/// factor is worked in double precision, then single.
+/// [`aim_factor`] of the way toward the asked screen point.
 pub fn aim_cursor_step(current: Vec2, want: Vec2, aim_speed: f32) -> Vec2 {
-    let factor = (f64::from(aim_speed) * AIM_EASE + AIM_EASE_MARGIN).powi(2) as f32;
-    current + (want - current) * factor
+    current + (want - current) * aim_factor(aim_speed)
+}
+
+/// The aim point in the world after one tick of the gamepad ease.
+pub fn aim_point_step(current: Vec3, want: Vec3, aim_speed: f32) -> Vec3 {
+    current + (want - current) * aim_factor(aim_speed)
 }
 
 /// The aim point's height when an opponent's bone shows within reach of the
@@ -348,10 +356,7 @@ pub fn strongest_engaged(
             continue;
         }
         let dot = delta.dot(look);
-        if dot < 0.0
-            || dot.is_nan()
-            || d2.sqrt() * ENGAGED_COSINE >= dot
-        {
+        if dot < 0.0 || dot.is_nan() || d2.sqrt() * ENGAGED_COSINE >= dot {
             continue;
         }
         if !contact_list
@@ -544,9 +549,12 @@ mod tests {
         // At AimSpeed 0 it is still a tenth squared.
         let slow = aim_cursor_step(Vec2::ZERO, want, 0.0);
         assert!((slow.x - 1.0).abs() < 1e-6);
-        // A full ease arrives at once.
+        // A full ease arrives at once (the factor is over one).
         let fast = aim_cursor_step(Vec2::ZERO, want, 2.25);
         assert!((fast - want).length() < 1e-4);
+        // The world point eases by the same factor.
+        let p = aim_point_step(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), 0.29);
+        assert!((p.x - 4.6656).abs() < 1e-4, "{p}");
     }
 
     /// The aim point is 250·|aim| + 50 cm out; under 0.01 squared it is not

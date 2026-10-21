@@ -111,7 +111,6 @@ impl Plugin for CursorPlugin {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_cursor(
     keys: Res<ButtonInput<KeyCode>>,
-    buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     ground: Res<CursorGround>,
     hand: Option<Res<Hand>>,
@@ -137,14 +136,12 @@ pub(crate) fn pick_cursor(
     };
     let condition = Condition::of(word.copied().unwrap_or_default());
     let aim = feet + Vec3::Y * AIM_HEIGHT;
-    // Exarust walks to the cursor only outside combat mode for now; the
-    // original also does in combat mode, and the chevrons follow it there.
-    // The original shows them while the button is held, however near the
-    // point is.
+    // The chevrons follow the walk to the cursor's latch: held after the
+    // button's release until the stride ends, and in combat mode too.
     let walking_to = ground
         .0
         .map(|c| (c - aim).xz().length())
-        .filter(|_| !pb.combat && buttons.pressed(MouseButton::Right));
+        .filter(|_| pb.walking_to_cursor());
     let in_reach = !pb.combat && hand.as_ref().is_some_and(|h| !h.out_of_reach);
     let state = CursorState {
         combat: pb.combat,
