@@ -232,7 +232,12 @@ fn tick_arcs(
                 };
                 let hit = live.arcs.strike_limb(
                     &limb,
-                    |a, b| spheres.iter().any(|&(c, r)| segment_meets(a, b, c, r)),
+                    |origin, dir, len| {
+                        let end = origin + dir * len;
+                        spheres
+                            .iter()
+                            .any(|&(c, r)| segment_meets(origin, end, c, r))
+                    },
                     &mut draws.0,
                 );
                 if let Some(shock) = hit {
@@ -525,8 +530,18 @@ const WALL_TINT: Vec4 = Vec4::new(0.45, 0.33, 0.95, 0.25);
 const WISP_TINT: Vec4 = Vec4::new(1.0, 1.0, 1.0, 0.6);
 
 fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
-    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
     let uvs = vec![[0.0, 0.0]; positions.len()];
+    mesh_of_uv(positions, uvs, colours, indices)
+}
+
+/// A mesh with its texture coordinates (the arcs' ribbon scrolls them).
+fn mesh_of_uv(
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colours: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+) -> Mesh {
+    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
@@ -597,6 +612,7 @@ fn draw_arcs(
         }
         let r = &frame.ribbon;
         let positions = r.positions.iter().map(|p| (*p / CM).to_array()).collect();
+        let uvs = r.uvs.to_vec();
         let [red, green, blue] = ARC_COLOUR.map(|c| f32::from(c) / 255.0);
         let colours = r
             .alphas
@@ -604,7 +620,7 @@ fn draw_arcs(
             .map(|&a| [red, green, blue, f32::from(a) / 255.0])
             .collect();
         let indices = r.drawn().iter().map(|&i| u32::from(i)).collect();
-        let mesh = mesh_of(positions, colours, indices);
+        let mesh = mesh_of_uv(positions, uvs, colours, indices);
         show(
             &mut commands,
             entity,
