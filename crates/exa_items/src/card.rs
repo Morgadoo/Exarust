@@ -304,6 +304,66 @@ pub fn shield_points(show: bool, skill: u8) -> Option<f32> {
     }
 }
 
+/// The pronoun kinds an item description's template can name.
+pub const PRONOUN_SUBJECT: u32 = 5;
+pub const PRONOUN_OBJECT: u32 = 6;
+pub const PRONOUN_POSSESSIVE: u32 = 7;
+
+/// The word for a pronoun kind, by the owner's sex bit (bit 0 of its body
+/// word at `+0x54`).
+pub fn pronoun(kind: u32, female: bool) -> Option<&'static str> {
+    Some(match (kind, female) {
+        (PRONOUN_SUBJECT, false) => "he",
+        (PRONOUN_SUBJECT, true) => "she",
+        (PRONOUN_OBJECT, false) => "him",
+        (PRONOUN_OBJECT, true) => "her",
+        (PRONOUN_POSSESSIVE, false) => "his",
+        (PRONOUN_POSSESSIVE, true) => "her",
+        _ => return None,
+    })
+}
+
+/// Replaces the pronoun markers in a card's text. A marker is
+/// `{` `0xAE` fields separated by dots `}`, and its last field is the
+/// decimal pronoun kind (the byte is written as UTF-8 here, so the two
+/// bytes are `0xC2 0xAE`). An unknown kind is removed. The replacement is
+/// capitalised when the marker starts the text or follows a dot two bytes
+/// before it, matching the original's byte positions.
+pub fn expand_pronouns(text: &str, female: bool) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{'
+            && bytes.get(i + 1) == Some(&0xC2)
+            && bytes.get(i + 2) == Some(&0xAE)
+            && let Some(close) = bytes[i + 3..].iter().position(|b| *b == b'}')
+        {
+            let close = i + 3 + close;
+            let fields = &text[i + 3..close];
+            let last = fields.rsplit('.').next().unwrap_or("");
+            let kind = last.trim().parse::<u32>().ok();
+            let word = kind.and_then(|kind| pronoun(kind, female)).unwrap_or("");
+            let capitalize = i < 2 || (i >= 2 && bytes[i - 2] == b'.');
+            if capitalize {
+                let mut chars = word.chars();
+                if let Some(first) = chars.next() {
+                    out.push(first.to_ascii_uppercase());
+                    out.push_str(chars.as_str());
+                }
+            } else {
+                out.push_str(word);
+            }
+            i = close + 1;
+            continue;
+        }
+        let ch = text[i..].chars().next().unwrap_or('\u{FFFD}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// The number of rows of each phrase table the sentence builders read. The
 /// original stores longer tables but stops at these counts.
 pub const MADE_ROWS: usize = 15;
@@ -1309,6 +1369,18 @@ mod tests {
         tables: &PhraseTables<'_>,
     ) -> ApparelSentence {
         apparel_sentence(state, name, fixed, line, tables)
+    }
+
+    #[test]
+    fn pronoun_markers_follow_the_owner_and_the_sentence_start() {
+        assert_eq!(expand_pronouns("{®5}", false), "He");
+        assert_eq!(expand_pronouns("x. {®5}", true), "x. She");
+        assert_eq!(expand_pronouns("x {®5}", true), "x she");
+        assert_eq!(expand_pronouns("x {®6.a}", true), "x ");
+        assert_eq!(expand_pronouns("x {®9}", true), "x ");
+        assert_eq!(expand_pronouns("x{®5}", false), "xHe");
+        assert_eq!(pronoun(PRONOUN_SUBJECT, true), Some("she"));
+        assert_eq!(pronoun(8, true), None);
     }
 
     #[test]

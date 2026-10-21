@@ -1712,25 +1712,6 @@ mod entry_tests {
     }
 }
 
-/// The pronoun kinds an item description's template can name.
-pub const PRONOUN_SUBJECT: u32 = 5;
-pub const PRONOUN_OBJECT: u32 = 6;
-pub const PRONOUN_POSSESSIVE: u32 = 7;
-
-/// The word for a pronoun kind, by the owner's sex bit (bit 0 of its body
-/// word at `+0x54`).
-pub fn pronoun(kind: u32, female: bool) -> Option<&'static str> {
-    Some(match (kind, female) {
-        (PRONOUN_SUBJECT, false) => "he",
-        (PRONOUN_SUBJECT, true) => "she",
-        (PRONOUN_OBJECT, false) => "him",
-        (PRONOUN_OBJECT, true) => "her",
-        (PRONOUN_POSSESSIVE, false) => "his",
-        (PRONOUN_POSSESSIVE, true) => "her",
-        _ => return None,
-    })
-}
-
 /// The card builder's text box: the title's height above it (`0xb4`), the
 /// box's own vertical inset (`0xa0`), and the two-unit text margin.
 pub const CARD_TEXT_TITLE: i32 = 0xb4;
@@ -1818,11 +1799,23 @@ mod container_tests {
 
     #[test]
     fn pronouns_follow_the_owner_sex_bit() {
-        assert_eq!(pronoun(PRONOUN_SUBJECT, false), Some("he"));
-        assert_eq!(pronoun(PRONOUN_SUBJECT, true), Some("she"));
-        assert_eq!(pronoun(PRONOUN_OBJECT, true), Some("her"));
-        assert_eq!(pronoun(PRONOUN_POSSESSIVE, false), Some("his"));
-        assert_eq!(pronoun(8, true), None);
+        assert_eq!(
+            exa_items::card::pronoun(exa_items::card::PRONOUN_SUBJECT, false),
+            Some("he")
+        );
+        assert_eq!(
+            exa_items::card::pronoun(exa_items::card::PRONOUN_SUBJECT, true),
+            Some("she")
+        );
+        assert_eq!(
+            exa_items::card::pronoun(exa_items::card::PRONOUN_OBJECT, true),
+            Some("her")
+        );
+        assert_eq!(
+            exa_items::card::pronoun(exa_items::card::PRONOUN_POSSESSIVE, false),
+            Some("his")
+        );
+        assert_eq!(exa_items::card::pronoun(8, true), None);
         assert_eq!(card_text_width(228, 8), 204);
         assert_eq!(card_action(true, None, true), CardAction::Toggle);
         assert_eq!(
