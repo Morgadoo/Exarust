@@ -18,7 +18,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease, Motions};
-use exa_physics::body::{BODY_HZ, BodyTicks, Ragdoll, TickedCharacter};
+use exa_physics::body::{AttackArmTune, BODY_HZ, BodyTicks, Ragdoll, TickedCharacter};
 
 use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
@@ -740,9 +740,12 @@ fn chained_side(motion: AttackMotion) -> Side {
 /// attack's clip playing, on its balance): the last attack tick stamped,
 /// then the swing routine ([`SwingState::tick`]) with its strikers' tip
 /// velocities; a Remise chain starts the other side's attack, a stall's
-/// end its stance as it is now. Off its balance (under 0.6, double
-/// precision) the falls branch runs instead, also for an attack started
-/// there under another condition, and the clip runs 1.25 × base.
+/// end its stance as it is now. The stage clears the body's attack arms
+/// first, and an attack tick that plays sets them from this tick's
+/// strength and the clip's progress, for the muscle tune. Off its balance
+/// (under 0.6, double precision) the falls branch runs instead, also for
+/// an attack started there under another condition, and the clip runs
+/// 1.25 × base.
 #[allow(clippy::type_complexity)]
 pub(crate) fn run_swings(
     mut commands: Commands,
@@ -763,7 +766,6 @@ pub(crate) fn run_swings(
         Option<&Stance>,
     )>,
 ) {
-    let Some(motions) = motions else { return };
     let now = ticks.millis();
     let entity = ticked.body;
     let Ok((
@@ -781,6 +783,11 @@ pub(crate) fn run_swings(
     else {
         return;
     };
+    // A tick that is not an attack leaves the eased arm stiffness.
+    if let Some(body) = body.as_deref_mut() {
+        body.set_attack_arms(None);
+    }
+    let Some(motions) = motions else { return };
     if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
         return;
     }
@@ -817,9 +824,11 @@ pub(crate) fn run_swings(
         strikers[blade.slot.index()] = Some(blade.tip_velocity * CM / BODY_HZ);
     }
     let facing = gt.rotation() * Vec3::Z;
+    let motion = attacking.motion;
+    let progress = at.progress;
     let t = SwingTick {
         at,
-        motion: attacking.motion,
+        motion,
         feral: fighter.stats.feral,
         energy,
         weapon_class: attacking.weapon_class,
@@ -861,6 +870,32 @@ pub(crate) fn run_swings(
                 rest.map_or("", |_| ", recoil")
             );
         }
+    }
+    // P is this tick's, after the stall drain. The progress is the clip's
+    // as this stage read it. The motion is the one that played, so a chain
+    // does not change the arms. A shield's off arm is 0.4 while a parry is
+    // up: the original reads a partner index, and a parry in progress
+    // stands in for one.
+    let arm = attacker
+        .primary_record(entity, blades.iter())
+        .map(|r| r.arm_stiffness)
+        .unwrap_or(0.5 / fighter.stats.size);
+    let huge = f64::from(fighter.stats.size) > 1.4 && attacking.weapon_class & 0x30 == 0;
+    if let Some(arms) = attack_arm_stiffness(
+        progress,
+        state.strength,
+        huge,
+        arm,
+        attacker.stance_class,
+        fighter.parry.active,
+        matches!(motion, AttackMotion::Other(_)),
+        motion == AttackMotion::Stab && !fighter.stats.quadruped,
+    ) && let Some(body) = body.as_deref_mut()
+    {
+        body.set_attack_arms(Some(AttackArmTune {
+            stiffness: arms.stiffness,
+            drive: arms.drive,
+        }));
     }
 }
 

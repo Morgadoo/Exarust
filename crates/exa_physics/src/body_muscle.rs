@@ -432,6 +432,52 @@ pub(super) fn arm_relax_cap(x: f32) -> f32 {
     ARM_CAP_TOP - (x - ARM_CAP_FROM) * ARM_CAP_SLOPE
 }
 
+/// One attack tick's two arms, right then left, as the swing hands them to
+/// the muscle tune.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackArmTune {
+    /// Each arm's stiffness before the turn floor.
+    pub stiffness: (f32, f32),
+    /// Each arm's drive, which sets that side's saturation.
+    pub drive: (f32, f32),
+}
+
+/// The attack setter's floor of a stiffness: 0.4·|turn| stored as a float
+/// and capped at 0.4. It replaces the stiffness only when the floor
+/// compares above it, so a NaN on either side leaves the stiffness.
+pub(super) fn attack_stiffness_floor(stiffness: f32, turn: f32) -> f32 {
+    let mut floor = (f64::from(turn.abs()) * 0.4) as f32;
+    if f64::from(floor) > 0.4 {
+        floor = 0.4;
+    }
+    if floor.partial_cmp(&stiffness) == Some(std::cmp::Ordering::Greater) {
+        floor
+    } else {
+        stiffness
+    }
+}
+
+/// An attacking arm's anchor relaxation cap: 0.6 − (stiffness − 0.1)·0.8,
+/// the stiffness widened and the rest in double.
+pub(super) fn attack_relax_cap(stiffness: f32) -> f32 {
+    (0.6 - (f64::from(stiffness) - 0.1) * 0.8) as f32
+}
+
+/// An attacking arm's saturation: 0.1 − 0.08·drive, the drive widened.
+pub(super) fn attack_saturation(drive: f32) -> f32 {
+    (0.1 - f64::from(drive) * 0.08) as f32
+}
+
+/// Which attack arm a bone takes: 0 the right, 1 the left. The right side
+/// is the negative-x arm (shoulder, upper arm, forearm, hand).
+fn attack_side(bone: usize) -> Option<usize> {
+    match bone {
+        11 | 12 | 13 | 17 => Some(0),
+        14 | 15 | 16 | 18 => Some(1),
+        _ => None,
+    }
+}
+
 /// A relaxation `lambda` after one tick toward `target`: it rises by `rise`
 /// and falls to the target at once; a negative target leaves it.
 pub(super) fn relax(lambda: f32, target: f32, rise: f32) -> f32 {
@@ -592,10 +638,29 @@ impl Ragdoll {
                     }
                 }
                 Role::Arm => {
+                    let bone = parts[i].bone;
                     let p = &mut parts[i];
-                    p.factor = drive.arm * limbs;
-                    p.relax_cap = arm_relax_cap(drive.arm);
-                    p.saturation = SATURATION;
+                    // An attack tick's arms replace the eased stiffness on
+                    // every bone of that side. The idle tune already drives
+                    // those bones together; the swing's pair is what this
+                    // tick's muscles pull with.
+                    if let Some(tune) = drive.attack_arms
+                        && let Some(side) = attack_side(bone)
+                    {
+                        let (stiff, drv) = if side == 0 {
+                            (tune.stiffness.0, tune.drive.0)
+                        } else {
+                            (tune.stiffness.1, tune.drive.1)
+                        };
+                        let stiff = attack_stiffness_floor(stiff, drive.bearing.turn);
+                        p.factor = stiff * limbs;
+                        p.relax_cap = attack_relax_cap(stiff);
+                        p.saturation = attack_saturation(drv);
+                    } else {
+                        p.factor = drive.arm * limbs;
+                        p.relax_cap = arm_relax_cap(drive.arm);
+                        p.saturation = SATURATION;
+                    }
                 }
                 _ => {}
             }
@@ -736,12 +801,10 @@ pub fn attack_arms(
             (f64::from(add) + f64::from(next.1) * EASE) as f32,
         )
     };
-    let mut floor = (f64::from(turn.abs()) * 0.4) as f32;
-    if f64::from(floor) > 0.4 {
-        floor = 0.4;
-    }
-    let raised = |x: f32| if floor > x { floor } else { x };
-    (raised(right), raised(left))
+    (
+        attack_stiffness_floor(right, turn),
+        attack_stiffness_floor(left, turn),
+    )
 }
 
 #[cfg(test)]

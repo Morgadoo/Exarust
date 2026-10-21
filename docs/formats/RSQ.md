@@ -1354,8 +1354,20 @@ and down. h is the heading.
   attack stage after the swing routine (`exa_combat::parry`); a blow's
   stagger is the swing's stall, which the swing routine already drains
   (`exa_combat::swing`); the body-side stagger helpers
-  (`exa_physics::body::stagger`) are not called. Not run yet: the
-  weapon-in-hand gate, the attack arms' stiffness, the swing sound, the
+  (`exa_physics::body::stagger`) are not called. An attack tick sets the
+  two arms' stiffness (W20·L(p) by stance class) on the body, and the
+  muscle tune writes it on every bone of that side: factor stiffness ×
+  1.25 × scale, saturation 0.1 − 0.08·drive in double, and the relaxation
+  cap 0.6 − (stiffness − 0.1)·0.8 in double. The turn floors a stiffness
+  at 0.4·|turn| (capped at 0.4) only when that floor compares above it.
+  A character size over 1.4 whose weapon class has neither the two-handed
+  nor the polearm bits skips the clock square; a stab by a fighter that
+  is not a quadruped scales the length by 0.3 and drives nothing. A
+  shield's off arm is 0.4 while a parry is up (the original reads a
+  partner index; a parry in progress stands in for one) and 0.6
+  otherwise. The stage clears the pair at the start of every tick, so a
+  tick that is not an attack keeps the eased stiffness. Not run yet: the
+  weapon-in-hand gate, the swing sound, the
   fatigue ramp, the aim nudges (fist, edge, overhead, homing), the two-hand
   group bit, Break Tangle and the clinch clear (`exa_combat::swing`,
   `strike_body`) and the held weapon's handling pushes (`weapon`).

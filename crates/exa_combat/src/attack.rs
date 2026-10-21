@@ -360,7 +360,7 @@ pub fn execute(request: Request, at: Busy) -> Option<Start> {
 }
 
 /// A fighter's executor state (on the body model root).
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attacker {
     /// The game clock (ms) of the last tick an attack played; `None` before
     /// its first.
@@ -376,6 +376,23 @@ pub struct Attacker {
     /// Each side's last pick, 0 until the first (as the original's zeroed
     /// fields, so a side's first pick is never its first clip).
     last_picks: [usize; 2],
+    /// Stance class 1–6, copied from the held moveset when the hands
+    /// change. 5 (unarmed) until then, so a swing before the first equip
+    /// still sets both arms.
+    pub stance_class: u8,
+}
+
+impl Default for Attacker {
+    fn default() -> Self {
+        Self {
+            last_tick_ms: None,
+            primary: None,
+            side_started_ms: None,
+            seed: 0,
+            last_picks: [0; 2],
+            stance_class: 5,
+        }
+    }
 }
 
 impl Attacker {
@@ -468,6 +485,12 @@ pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Empty hands are stance class 5 until a held moveset copies its own.
+    #[test]
+    fn a_new_attacker_is_unarmed() {
+        assert_eq!(Attacker::default().stance_class, 5);
+    }
 
     /// The main-side start's sound: the first draw sets the pitch, the
     /// second the gain, in double precision.

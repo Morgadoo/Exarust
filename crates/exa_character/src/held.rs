@@ -11,6 +11,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, MovesetConfig};
+use exa_combat::attack::Attacker;
 
 /// The human race's own moveset, which every other moveset falls back to.
 pub const DEFAULT_MOVESET: &str = exa_anim::DEFAULT_MOVESET;
@@ -194,11 +195,21 @@ pub fn choose(hands: &Hands, claws: bool) -> HeldMoveset {
 
 /// Picks the moveset config of every body whose hands changed, and switches
 /// its clips to it: the body keeps its race's own moveset as the base, and
-/// the clip playing goes on in the new table.
+/// the clip playing goes on in the new table. The stance class is copied
+/// onto the attacker, which the swing reads when it sets the arms.
+#[allow(clippy::type_complexity)]
 pub(crate) fn choose_held_movesets(
-    mut bodies: Query<(&Hands, &mut HeldMoveset, Option<&mut Animator>), Changed<Hands>>,
+    mut bodies: Query<
+        (
+            &Hands,
+            &mut HeldMoveset,
+            Option<&mut Animator>,
+            Option<&mut Attacker>,
+        ),
+        Changed<Hands>,
+    >,
 ) {
-    for (hands, mut held, anim) in &mut bodies {
+    for (hands, mut held, anim, attacker) in &mut bodies {
         let chosen = choose(hands, false);
         if let Some(mut anim) = anim
             && anim.config != chosen.config
@@ -206,6 +217,9 @@ pub(crate) fn choose_held_movesets(
             anim.config = chosen.config;
         }
         held.set_if_neq(chosen);
+        if let Some(mut attacker) = attacker {
+            attacker.stance_class = chosen.stance as u8;
+        }
     }
 }
 
@@ -328,9 +342,16 @@ mod tests {
         app.add_systems(Update, choose_held_movesets);
         let mut ogre = Animator::new("Ogre", "Cmbt - Idle");
         ogre.config = C::POLEARM;
-        let body = app.world_mut().spawn((Hands::default(), ogre)).id();
+        let body = app
+            .world_mut()
+            .spawn((Hands::default(), ogre, Attacker::default()))
+            .id();
         app.update();
         let anim = app.world().get::<Animator>(body).unwrap();
+        assert_eq!(
+            app.world().get::<Attacker>(body).unwrap().stance_class,
+            StanceClass::Unarmed as u8
+        );
         // The race's own moveset stays the base.
         assert_eq!(
             (anim.moveset.as_str(), anim.config, anim.action.as_str()),
@@ -348,6 +369,10 @@ mod tests {
         assert_eq!(
             (held.stance, held.weapon_class),
             (StanceClass::OneWeapon, 0x10)
+        );
+        assert_eq!(
+            world.get::<Attacker>(body).unwrap().stance_class,
+            StanceClass::OneWeapon as u8
         );
     }
 

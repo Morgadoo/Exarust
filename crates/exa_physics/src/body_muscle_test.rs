@@ -738,3 +738,80 @@ fn the_golem_suit_and_a_stepping_foot_change_the_leg_gains() {
     body.aim(Affine3A::IDENTITY, pose.clone());
     assert!((body.links[limit].strength - (before * 0.8 + 0.04)).abs() < 1e-6);
 }
+
+/// A right upper arm, its forearm, and a left forearm.
+fn both_arms() -> Ragdoll {
+    let bones = [12usize, 13, 16];
+    let parents = [None, Some(0usize), None];
+    let setup: Vec<PartSetup> = bones
+        .into_iter()
+        .zip(parents)
+        .map(|(bone, parent)| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            origin: if parent.is_some() {
+                elbow()
+            } else {
+                Vec3::ZERO
+            },
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        })
+        .collect();
+    Ragdoll::new(&setup).with_drive()
+}
+
+/// An attack tick writes each side's stiffness, in double for the cap and
+/// the saturation, and the turn floor raises a stiffness only when it
+/// compares above it. A tick with no attack arms keeps the eased stiffness.
+#[test]
+fn an_attack_writes_each_arms_stiffness() {
+    let mut body = both_arms();
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    let pose = vec![Affine3A::IDENTITY; 3];
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let limbs = 1.25;
+    // Right upper arm and forearm share the first stiffness.
+    assert_eq!(body.parts[0].factor, 0.8 * limbs);
+    assert_eq!(body.parts[1].factor, 0.8 * limbs);
+    assert_eq!(body.parts[0].relax_cap, attack_relax_cap(0.8));
+    assert_eq!(body.parts[0].saturation, attack_saturation(1.0));
+    // The left forearm takes the second.
+    assert_eq!(body.parts[2].factor, 0.2 * limbs);
+    assert_eq!(body.parts[2].saturation, attack_saturation(0.0));
+    assert_eq!(body.parts[2].relax_cap, attack_relax_cap(0.2));
+    // The double cap is not the idle path's single-precision one.
+    assert_ne!(attack_relax_cap(0.8), arm_relax_cap(0.8));
+
+    // Two radians of turn floors a 0.1 stiffness to 0.4: 0.4 × 1.25 = 0.5.
+    body.set_bearing(Bearing {
+        turn: 2.0,
+        ..Bearing::default()
+    });
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.1, 0.1),
+        drive: (0.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.parts[0].factor, 0.4 * limbs);
+    assert_eq!(body.parts[2].factor, 0.4 * limbs);
+    // A NaN stiffness is left, and a NaN turn does not raise one.
+    assert!(attack_stiffness_floor(f32::NAN, 2.0).is_nan());
+    assert_eq!(attack_stiffness_floor(0.8, f32::NAN), 0.8);
+
+    body.set_bearing(Bearing::default());
+    body.set_attack_arms(None);
+    body.aim(Affine3A::IDENTITY, pose);
+    let eased = body.arm_stiffness().unwrap();
+    assert_eq!(body.parts[0].factor, eased * limbs);
+    assert_eq!(body.parts[0].saturation, SATURATION);
+}

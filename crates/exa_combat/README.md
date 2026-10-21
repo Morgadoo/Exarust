@@ -331,8 +331,11 @@ it off the second item and its grandparent), Break Tangle's counter and the
 clinch clear (grip links assigned the disabled flag, arm bit 8 cleared,
 countered motion reset, parry ended into the 0x28 stance blend unless the
 condition holds the clip still). Grip link bodies are another lane's
-(`exa_physics::grip`); only the drop/clinch logic is here. None of these is
-called by the running game yet: its weapons are bone-attached meshes.
+(`exa_physics::grip`); only the drop/clinch logic is here. The attack
+arms' stiffness is applied while an attack tick plays: the swing stage
+stores the pair and the muscle tune writes each side's arm bones. The
+gate, the sound, the fatigue ramp and the aim nudges are not called by
+the running game yet.
 
 `parry` adds the trigger (`parry_trigger`): a helpless body, the
 break-tangle motion or yellow under 0.01 end a parry; otherwise the attacker

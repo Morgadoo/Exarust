@@ -770,7 +770,10 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 - Perks come from the character's record (placed characters); the player
   and the duellist are new records, with none (`--perks` gives the player
   some, [DEBUGGING.md](DEBUGGING.md)).
-- Not yet: the swinging arm's stiffness (W20·L(p)), swing sounds, the
+- The swinging arm's stiffness (W20·L(p)) runs in the muscle tune while
+  an attack plays: each side's shoulder, upper arm, forearm and hand
+  take that arm's stiffness, and the turn floors it. Not yet: swing
+  sounds, the
   AI's own release and attack choice (L11), recoil and the
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).

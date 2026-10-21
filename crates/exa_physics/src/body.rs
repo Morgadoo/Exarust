@@ -43,7 +43,7 @@ use crate::part::PartState;
 
 #[path = "body_muscle.rs"]
 mod muscle;
-pub use muscle::{Bearing, BodyStats, RaceMuscles, attack_arms};
+pub use muscle::{AttackArmTune, Bearing, BodyStats, RaceMuscles, attack_arms};
 
 #[path = "body_balance.rs"]
 mod balance;
@@ -1271,6 +1271,10 @@ pub struct Drive {
     /// A dormant statue or golem. Its limbs keep [`DORMANT_KEEP`] of the
     /// living retention, and its sleep countdown runs.
     pub dormant: bool,
+    /// This tick's attack arms, when a swing is playing: the muscle tune
+    /// writes each side's arm parts from it. Absent, the eased stiffness
+    /// stands. The swing stage clears it at the start of every tick.
+    attack_arms: Option<muscle::AttackArmTune>,
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -1316,6 +1320,7 @@ impl Default for Drive {
             steps: steps::Steps::default(),
             posture_rate: RaceMuscles::HUMAN.clip_rate,
             dormant: false,
+            attack_arms: None,
         }
     }
 }
@@ -1710,6 +1715,15 @@ impl Ragdoll {
     /// the recoil's rest).
     pub fn arm_stiffness(&self) -> Option<f32> {
         self.drive.as_ref().map(|d| d.arm)
+    }
+
+    /// Sets this tick's attack arms, or clears them. The muscle tune writes
+    /// each side's shoulder, upper arm, forearm and hand from the pair;
+    /// absent, those parts keep the eased stiffness.
+    pub fn set_attack_arms(&mut self, tune: Option<AttackArmTune>) {
+        if let Some(d) = self.drive.as_mut() {
+            d.attack_arms = tune;
+        }
     }
 
     /// Marks the part `root`'s chain as striking, or clears it: the
