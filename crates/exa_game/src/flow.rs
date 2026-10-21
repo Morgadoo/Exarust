@@ -2161,7 +2161,7 @@ pub fn gui_scale(height: i32) -> f32 {
 /// times 0.4 plus 0.8 in double precision, kept in single (0.8 to 1.2). The
 /// sound is the one stored on the menu form.
 pub fn hover_sound(has_sound: bool, draw: f64) -> Option<f32> {
-    has_sound.then(|| (draw * 0.4 + 0.8) as f32)
+    has_sound.then_some((draw * 0.4 + 0.8) as f32)
 }
 
 /// The volume the end menu's click sound plays at.
