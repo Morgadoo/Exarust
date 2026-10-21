@@ -57,7 +57,12 @@ impl Plugin for AiPlugin {
         app.add_systems(
             Update,
             (
-                (brain::apply_new_roles, brain::rate_the_player).chain(),
+                (
+                    brain::apply_new_roles,
+                    brain::rate_the_player,
+                    brain::run_target_passes,
+                )
+                    .chain(),
                 duellist,
             )
                 .chain(),
@@ -114,6 +119,22 @@ struct Stepping {
 }
 
 impl Duellist {
+    /// Enters combat at the next tick.
+    pub fn engage(&mut self) {
+        self.engaged = true;
+    }
+
+    /// It is in the combat state.
+    pub fn fighting(&self) -> bool {
+        self.in_combat
+    }
+
+    /// Leaves combat for the idle state.
+    pub fn leave(&mut self) {
+        self.engaged = false;
+        self.in_combat = false;
+    }
+
     /// A duellist of `target`, waiting for the fight to start.
     pub fn new(target: Entity) -> Self {
         Self {
@@ -206,7 +227,7 @@ impl combat::Field for DuelField {
             fight: level == 3,
             ..self.spot
         };
-        let s = place::score_place(d, spot);
+        let s = place::search_score(level, d, spot);
         let away = point - self.foe;
         let ahead = if d > 0.0 {
             1.0 - (away.x * self.heading.x + away.z * self.heading.z) / d
@@ -585,6 +606,11 @@ fn duellist(
             in_attack: *condition == Condition::ATTACKING,
             presses: false,
             other_skill: 0.0,
+            lunge_band_cm: if ai.mind.lunging {
+                ai.mind.lunge_reach_cm + ai.mind.overshoot + ai.mind.overshoot_mean
+            } else {
+                0.0
+            },
         };
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
@@ -642,8 +668,12 @@ fn duellist(
                 heading: me.heading,
                 spot,
             };
+            let brain_level = brains
+                .get(entity)
+                .ok()
+                .map_or(3, |b| b.pass.level.clamp(1, 3));
             let mut contacts = [combat::Contact {
-                level: 3,
+                level: brain_level,
                 is_foe: true,
                 character: true,
                 concern: combatant.contacts[index].concern,
@@ -725,8 +755,7 @@ fn duellist(
                         ai.route = planned.route.points;
                     }
                     if outcome.end == chase::End::Left {
-                        ai.engaged = false;
-                        ai.in_combat = false;
+                        ai.leave();
                         combatant.in_combat = false;
                         continue;
                     }
