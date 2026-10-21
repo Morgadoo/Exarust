@@ -45,7 +45,7 @@ pub use mover::{
     queue_moved, queued_moves, rect_around, refresh_movers, ring_contents, ring_moved,
     start_full_refresh,
 };
-pub use path::{Look, Path, find_path, look_ahead};
+pub use path::{Look, Path, disturbance, find_path, find_path_with, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};

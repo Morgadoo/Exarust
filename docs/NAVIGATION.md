@@ -189,6 +189,8 @@ cell's lower and upper floor and underside):
   collapsed through runs of one direction and layer, then each kept point
   is offered to the budget line walk. Points sit on cell centres at the
   node's layer floor. A search that finds only the start has no points.
+- **Disturbance** (`nav::disturbance`): the original's sampler is a stub
+  that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
   footwork targets): one cell a step along the line's longer axis; a floor
   more than 4 above the running height blocks when less than 10 lie under

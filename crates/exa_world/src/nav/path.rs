@@ -60,6 +60,12 @@ pub fn find_path(grid: &NavGrid, from: Vec3, to: Vec3, size: u8) -> Path {
     find_path_with(grid, from, to, size, 0.0, 0)
 }
 
+/// The pathfinder's disturbance sampler: the original's stub always
+/// answers 0.0.
+pub fn disturbance() -> f32 {
+    0.0
+}
+
 /// Searches with an accept distance (tenths of a cell in the original's
 /// heuristic units; 0 never accepts early) and the penalty byte's shift.
 pub fn find_path_with(
@@ -653,6 +659,12 @@ mod tests {
         assert!((look_ahead(2.0, Look::Walk) - 0.99).abs() < 1e-6);
         assert!((look_ahead(2.0, Look::Combat) - 0.69).abs() < 1e-6);
         assert!((look_ahead(9.0, Look::Back) + 0.70).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_disturbance_sampler_is_a_stub() {
+        assert_eq!(disturbance(), 0.0);
+        assert_eq!(disturbance().to_bits(), 0.0f32.to_bits());
     }
 
     #[test]
