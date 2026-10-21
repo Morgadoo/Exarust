@@ -477,6 +477,11 @@ alpha/fade pair whose byte is `round(alpha · 255)`), the `guiskin.rfi`
 atlas at 40 by 20 units with the textured frame's inset samples, the
 texture-bind `TexCol` rule and the five GUI shader sources.
 
-`blend::ui_blend` is the GUI blend-state switch: the masked word `0x100`
-turns blending off and every other word selects a source and destination
-factor from the recorded eight-entry table.
+`blend::UiBlendCache` is the GUI blend-state switch with the original's
+one-word cache: a word equal to the last does nothing; the word `0x100`
+under the mask `0x3f0f` turns blending off; any other word turns it on (when
+the last word was the disabling one) and sets the source factor from bits
+8 to 11 and the destination from bits 0 to 3 of the recorded ten-entry
+table. Nibbles past the table read zero, and nibble 12 reads the cache's
+own last word, as the original's table lookup runs on into the data after
+it. Nothing in the running UI calls it; Bevy's blend states replace it.

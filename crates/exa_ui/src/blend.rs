@@ -7,40 +7,87 @@
 //! the result's opacity is remapped per pixel so that Bevy's linear blend
 //! gives the original's colour over a reference floor ([`linear_opacity`]).
 //!
-//! [`ui_blend`] is the GUI's blend-state switch: the word `0x100` turns
-//! blending off, any other word selects a source and destination factor
-//! from the original's eight-entry table.
+//! [`UiBlendCache`] is the GUI's cached blend-state switch: the word `0x100`
+//! (under the mask `0x3f0f`) turns blending off, any other word selects a
+//! source and destination factor from the original's table.
 
 /// The GUI's blend-factor table, indexed by a word nibble: GL_ZERO,
 /// GL_ONE, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_COLOR,
-/// GL_ONE_MINUS_SRC_COLOR, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA.
-pub const UI_BLEND_FACTORS: [u32; 8] = [0, 1, 0x0302, 0x0303, 0x0300, 0x0301, 0x0304, 0x0305];
+/// GL_ONE_MINUS_SRC_COLOR, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA,
+/// GL_DST_COLOR and GL_ONE_MINUS_DST_COLOR. Nibbles 10, 11 and 13 to 15 read
+/// zero (GL_ZERO) from the data that follows the table; nibble 12 reads the
+/// cache's own last word.
+pub const UI_BLEND_FACTORS: [u32; 10] = [
+    0, 1, 0x0302, 0x0303, 0x0300, 0x0301, 0x0304, 0x0305, 0x0306, 0x0307,
+];
 
-/// The blend state a GUI word asks for.
+/// The word that stands for "blending off" once masked with
+/// [`UI_BLEND_MASK`], and the cache's starting word.
+pub const UI_BLEND_OFF: u32 = 0x100;
+/// The bits of a word that decide between blending off and on.
+pub const UI_BLEND_MASK: u32 = 0x3f0f;
+
+/// The GL calls one word change asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UiBlend {
-    pub enabled: bool,
-    /// The source and destination factors, when blending is on and the two
-    /// nibbles index the table.
+pub struct UiBlendOps {
+    /// `Some(false)` disables blending, `Some(true)` enables it.
+    pub blend: Option<bool>,
+    /// The source and destination factors to set (not set when disabling).
     pub factors: Option<(u32, u32)>,
 }
 
-/// The UI blend state for `word`: the mask `0x3f0f` equal to `0x100` is the
-/// one word that turns blending off; every other word enables it with the
-/// source factor from bits 8–11 and the destination from bits 0–3. A nibble
-/// past the table's seven leaves the factors unchanged (`None`).
-pub fn ui_blend(word: u32) -> UiBlend {
-    if word & 0x3f0f == 0x100 {
-        return UiBlend {
-            enabled: false,
-            factors: None,
-        };
+/// The GUI's blend state as the original caches it: one remembered word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiBlendCache {
+    last: u32,
+}
+
+impl Default for UiBlendCache {
+    /// The start state: the word `0x100` (blending off).
+    fn default() -> Self {
+        Self { last: UI_BLEND_OFF }
     }
-    let source = UI_BLEND_FACTORS.get(((word >> 8) & 0xF) as usize).copied();
-    let destination = UI_BLEND_FACTORS.get((word & 0xF) as usize).copied();
-    UiBlend {
-        enabled: true,
-        factors: source.zip(destination),
+}
+
+impl UiBlendCache {
+    /// Resets the remembered word to all ones, so the next ordinary word
+    /// always applies (and a blending word issues no enable).
+    pub fn invalidate(&mut self) {
+        self.last = u32::MAX;
+    }
+
+    /// The word the cache remembers.
+    pub fn last(&self) -> u32 {
+        self.last
+    }
+
+    /// Applies `word`. The same word as the last one asks for nothing.
+    /// Otherwise a disabling word turns blending off, and any other word
+    /// turns it on when the previous word was a disabling one and sets the
+    /// factors: the source from bits 8 to 11, the destination from bits 0
+    /// to 3.
+    pub fn apply(&mut self, word: u32) -> Option<UiBlendOps> {
+        if self.last == word {
+            return None;
+        }
+        let ops = if word & UI_BLEND_MASK == UI_BLEND_OFF {
+            UiBlendOps {
+                blend: Some(false),
+                factors: None,
+            }
+        } else {
+            let was_off = self.last & UI_BLEND_MASK == UI_BLEND_OFF;
+            let factor = |nibble: u32| match nibble {
+                12 => self.last,
+                n => UI_BLEND_FACTORS.get(n as usize).copied().unwrap_or(0),
+            };
+            UiBlendOps {
+                blend: was_off.then_some(true),
+                factors: Some((factor((word >> 8) & 0xF), factor(word & 0xF))),
+            }
+        };
+        self.last = word;
+        Some(ops)
     }
 }
 
@@ -223,34 +270,57 @@ mod tests {
     }
 
     #[test]
-    fn the_ui_blend_word_picks_factors_or_turns_blending_off() {
-        // The one disabling word is the masked 0x100.
+    fn the_ui_blend_cache_switches_and_sets_factors() {
+        let mut cache = UiBlendCache::default();
+        let off = UiBlendOps {
+            blend: Some(false),
+            factors: None,
+        };
+        // The start word is the disabling one: nothing to do.
+        assert_eq!(cache.apply(0x100), None);
+        // The mask keeps 0x3f0f, so 0x1f0 is another disabling word; being a
+        // different word it disables again.
+        assert_eq!(cache.apply(0x1f0), Some(off));
+        // SRC_ALPHA / ONE_MINUS_SRC_ALPHA turns blending on and sets both.
         assert_eq!(
-            ui_blend(0x100),
-            UiBlend {
-                enabled: false,
-                factors: None
-            }
+            cache.apply(0x0203),
+            Some(UiBlendOps {
+                blend: Some(true),
+                factors: Some((0x0302, 0x0303)),
+            })
         );
+        assert_eq!(cache.apply(0x0203), None);
+        // Another blending word only changes the factors (ONE, ZERO; bit 12
+        // keeps the word from being the disabling one).
         assert_eq!(
-            ui_blend(0x1f0),
-            UiBlend {
-                enabled: false,
-                factors: None
-            }
+            cache.apply(0x1100),
+            Some(UiBlendOps {
+                blend: None,
+                factors: Some((1, 0)),
+            })
         );
-        // SRC_ALPHA / ONE_MINUS_SRC_ALPHA is the common interface blend.
+        assert_eq!(cache.apply(0x100), Some(off));
+        assert_eq!(cache.last(), 0x100);
+    }
+
+    #[test]
+    fn nibbles_past_the_table_read_what_follows_it() {
+        let mut cache = UiBlendCache::default();
+        // Nibbles 8 and 9 are the destination colour factors.
+        assert_eq!(cache.apply(0x0809).unwrap().factors, Some((0x0306, 0x0307)));
+        // Nibbles 10 and 11 read zero.
+        assert_eq!(cache.apply(0x0a0b).unwrap().factors, Some((0, 0)));
+        // Nibble 12 reads the cache's last word.
+        assert_eq!(cache.apply(0x000c).unwrap().factors, Some((0, 0x0a0b)));
+        // After an invalidation no word is remembered: the first blending
+        // word issues no enable, and nibble 12 reads all ones.
+        cache.invalidate();
         assert_eq!(
-            ui_blend(0x0203),
-            UiBlend {
-                enabled: true,
-                factors: Some((0x0302, 0x0303))
-            }
+            cache.apply(0x0c02),
+            Some(UiBlendOps {
+                blend: None,
+                factors: Some((u32::MAX, 0x0302)),
+            })
         );
-        // ONE / ZERO cannot be expressed: that word is the disabled one.
-        // SRC_ALPHA / ZERO is a plain opaque-ish draw.
-        assert_eq!(ui_blend(0x0200).factors, Some((0x0302, 0)));
-        // A nibble past the table leaves the factors alone.
-        assert_eq!(ui_blend(0x0F00).factors, None);
     }
 }
