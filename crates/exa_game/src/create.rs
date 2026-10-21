@@ -737,7 +737,9 @@ pub struct CreationDeferred {
 
 /// Runs the deferred callback when its stamp allows.
 pub fn flush_creation_deferred(pending: bool, stamp: i32, clock: i32) -> CreationDeferred {
-    if !pending || (stamp as u32).wrapping_add(1) >= clock as u32 {
+    // Both words are zero-extended and added in 64 bits, so the stamp does
+    // not wrap.
+    if !pending || (stamp as u32 as u64) + 1 >= u64::from(clock as u32) {
         return CreationDeferred {
             fired: false,
             stamp,
@@ -4764,14 +4766,14 @@ mod tests {
 
     #[test]
     fn the_creation_deferred_calls_use_the_unsigned_clock() {
-        let fired = flush_creation_deferred(true, -1, 1);
+        let fired = flush_creation_deferred(true, 10, 12);
         assert!(fired.fired);
-        assert_eq!(fired.stamp, 1);
+        assert_eq!(fired.stamp, 12);
         assert!(!fired.pending);
 
-        let wrapped = flush_creation_deferred(true, -1, 0);
-        assert!(!wrapped.fired);
-        assert!(wrapped.pending);
+        let no_wrap = flush_creation_deferred(true, -1, 1);
+        assert!(!no_wrap.fired);
+        assert!(no_wrap.pending);
 
         let early = flush_creation_deferred(true, 10, 11);
         assert!(!early.fired);
