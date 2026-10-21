@@ -23,9 +23,9 @@ pub const MASKED: u32 = 0x0001_0000;
 pub const CONFUSED: u32 = 0x0004_0000;
 /// The bit an enraged mind carries.
 pub const ENRAGED: u32 = 0x0008_0000;
-/// The status word's "vanished" bit, which also hides a raised body's
-/// effect from its target.
-pub const GONE: u32 = 0x0000_0800;
+/// The condition bit of a collapsing body: Loyalty will not bind one and a
+/// binding Control Mind lets one go.
+pub const GONE: u32 = super::super::casting::COLLAPSING;
 
 /// The overlay word meaning "off": the Sense Minds overlay's word.
 pub const OVERLAY_OFF: i32 = 2;
@@ -56,6 +56,8 @@ pub const MASK_SECOND_SCALE: f64 = 0.8;
 pub const BIND_MS: u32 = 2_000;
 /// The focus one binding tick spends.
 pub const BIND_TICK: f32 = 0.002;
+/// The double the binding's countdown falls by each tick.
+pub const BIND_STEP: f64 = 0.002;
 /// How long Command Dead and Loyalty keep their status, in milliseconds
 /// beside the body's own flags.
 pub const MIN_STRENGTH: f32 = 10.0;
@@ -67,7 +69,7 @@ pub const LOYALTY_SETTLE_TICKS: u32 = 800;
 pub const LOYALTY_RELATION_SCALE: f64 = 0.005;
 /// How much of the old loyalty strength each tick keeps.
 pub const LOYALTY_RETAIN: f64 = 0.95;
-/// The extra reach a masked caster's loyalty gains.
+/// The extra limit a loyal body with technique bit `0x1_0000` gains.
 pub const LOYALTY_MASK_BONUS: f32 = 10.0;
 /// The relation's weight in the loyalty's own limit.
 pub const LOYALTY_RELATION_WEIGHT: f64 = 0.1;
@@ -177,7 +179,8 @@ impl MindSenseInstant {
             self.state |= 1;
             return 4;
         }
-        if self.end.wrapping_add(SENSE_FADE_MS) < now {
+        // The end and the fade are added in 64 bits, so no sum wraps.
+        if u64::from(self.end) + u64::from(SENSE_FADE_MS) < u64::from(now) {
             2
         } else {
             0
@@ -275,6 +278,22 @@ impl MindMaskInstant {
         Self { state: 0, stamp }
     }
 
+    /// The HUD word: the timed row once the inner mask's fade has started
+    /// (10 s on the body's scene clock), carrying its end on the real clock
+    /// (`real − scene + stamp + 10 s`, 32-bit) and the 5 s fade; the active
+    /// row before.
+    pub fn hud(&self, scene_clock: u32, real_clock: u32) -> super::HudState {
+        if scene_clock.wrapping_sub(self.stamp) > MASK_FULL_MS + MASK_OUT_MS {
+            let end = real_clock
+                .wrapping_sub(scene_clock)
+                .wrapping_add(self.stamp)
+                .wrapping_add(MASK_FULL_MS + MASK_OUT_MS);
+            super::HudState::timed(end, MASK_OUT_MS)
+        } else {
+            super::HudState::active()
+        }
+    }
+
     /// Steps the mask: keeps the body's bit and publishes the two
     /// intensities.
     pub fn step(&mut self, now: u32, body: &mut CastBody) -> MaskShown {
@@ -352,13 +371,12 @@ impl TimedBitPower {
     }
 
     /// One control tick: clears the bit and answers 2 once its length has
-    /// passed or it is ending.
-    pub fn control(&mut self, now: u32, flags: u32) -> BitStep {
+    /// passed (the 32-bit elapsed time, unsigned) or it is ending. The
+    /// original leaves the state word alone: an expired bit answers 2 on
+    /// every later tick because the elapsed time only grows.
+    pub fn control(&self, now: u32, flags: u32) -> BitStep {
         let elapsed = now.wrapping_sub(self.start);
-        if elapsed > self.length {
-            self.state = 2;
-        }
-        if self.state == 2 {
+        if elapsed > self.length || self.state == 2 {
             BitStep {
                 flags: flags & !self.bit,
                 result: 2,
@@ -411,21 +429,6 @@ pub struct BitStep {
     pub flags: u32,
     /// 2 once the bit has expired, else 0.
     pub result: i32,
-}
-
-/// Steps a timed status bit (Confusion, Enrage): after its length, or once
-/// its power is ending, the bit clears and the answer is 2. The original
-/// keeps answering 2 on every later tick.
-pub fn expire_bit(bit: u32, start: u32, now: u32, state: i32, flags: u32) -> BitStep {
-    let elapsed = now.wrapping_sub(start);
-    if elapsed > CONFUSION_MS || state == 2 {
-        BitStep {
-            flags: flags & !bit,
-            result: 2,
-        }
-    } else {
-        BitStep { flags, result: 0 }
-    }
 }
 
 /// Steps Trust or Suspicion: after 20 s the effect is marked ending, and
@@ -565,18 +568,25 @@ impl LoyaltyTarget {
     }
 
     /// One control tick. `relation` is the two characters' real relation,
-    /// self to caster. Answers 2 when the effect ends.
-    pub fn control(&mut self, event: i32, relation: f32, _caster_masked: bool) -> i32 {
+    /// self to caster. Answers 2 when the effect ends; on that tick the
+    /// caller ends the caster's Loyalty, runs the body's experience hook,
+    /// re-arms its behaviour and plays [`LOYALTY_END_SOUND`] at
+    /// [`LOYALTY_END_VOLUME`].
+    pub fn control(&mut self, event: i32, relation: f32) -> i32 {
         if event == 2 {
             self.state = super::ENDING;
         }
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks >= LOYALTY_SETTLE_TICKS {
-            let scaled = (f64::from(relation + 100.0) * LOYALTY_RELATION_SCALE) as f32;
-            let square = (f64::from(scaled) * f64::from(scaled) * 100.0) as f32;
+            // The relation plus 100 is a single, the rest double until the
+            // square times 100 is narrowed; the blend is double again.
+            let scaled = f64::from(relation + 100.0) * LOYALTY_RELATION_SCALE;
+            let square = (scaled * scaled * 100.0) as f32;
             self.strength =
                 (f64::from(square) * 0.05 + f64::from(self.strength) * LOYALTY_RETAIN) as f32;
         }
+        // The original stores the step itself, not a sum: the trust sits
+        // near a thousandth while it is below 10.
         if self.trust < MIN_STRENGTH {
             self.trust = ((f64::from(MIN_STRENGTH - self.trust)) * TRUST_STEP) as f32;
         }
@@ -585,12 +595,13 @@ impl LoyaltyTarget {
 
     /// The loyalty's own limit test: the target's trust grows by `amount`
     /// and the original answers whether the relation's limit (a tenth of
-    /// the negated relation, ten more for a masked caster) is below it.
-    pub fn adjust(&mut self, amount: f32, relation: f32, caster_masked: bool) -> bool {
+    /// the negated relation, ten more when the loyal body itself has the
+    /// learnt technique bit `0x1_0000`) is below it.
+    pub fn adjust(&mut self, amount: f32, relation: f32, own_technique: bool) -> bool {
         self.trust += amount;
-        let negated = f32::from_bits(relation.to_bits() ^ 0x8000_0000);
+        let negated = -relation;
         let mut limit = (f64::from(negated) * LOYALTY_RELATION_WEIGHT) as f32;
-        if caster_masked {
+        if own_technique {
             limit += LOYALTY_MASK_BONUS;
         }
         limit < self.trust
@@ -795,7 +806,9 @@ impl ControlMindCaster {
         }
         if self.state == super::READY {
             if 0.0 < self.drain {
-                self.drain -= BIND_TICK;
+                // The countdown steps in double by the double 0.002; the
+                // focus taken is the single 0.002.
+                self.drain = (f64::from(self.drain) - BIND_STEP) as f32;
                 let mut base = PowerBase {
                     id: CONTROL_MIND,
                     state: self.state,
@@ -933,13 +946,12 @@ impl SpiritPower {
             self.state = super::ENDING;
         }
         let mut focus = focus - self.drain;
-        if focus < 0.001 || self.state == super::ENDING {
-            // The original's compare is written `<= 0 and != 0`, which also
-            // leaves a NaN or a negative zero alone; `< 0` is the same set.
+        // The focus is widened to double for the 0.001 floor; a NaN fails
+        // it and falls to the state test.
+        if f64::from(focus) < 0.001 || self.state == super::ENDING {
             if focus < 0.0 {
                 focus = 0.0;
             }
-            self.state = super::ENDING;
             SpiritStep {
                 result: 2,
                 focus,
@@ -1033,27 +1045,42 @@ mod tests {
     }
 
     #[test]
+    fn the_instant_mask_hud_turns_timed_for_the_last_fade() {
+        let mask = MindMaskInstant::new(1000);
+        assert_eq!(mask.hud(11_000, 50_000), super::super::HudState::active());
+        // The scene clock runs 40 s behind the real one: the row ends at the
+        // real 51 s and fades over 5 s.
+        assert_eq!(
+            mask.hud(11_001, 51_001),
+            super::super::HudState::timed(51_000, 5_000)
+        );
+    }
+
+    #[test]
     fn confusion_and_enrage_clear_their_bits_after_fifteen_seconds() {
-        let held = expire_bit(CONFUSED, 100, 15_100, 0, CONFUSED);
+        let confusion = TimedBitPower::confusion(100);
+        let held = confusion.control(15_100, CONFUSED);
         assert_eq!(held.flags, CONFUSED);
         assert_eq!(held.result, 0);
-        let step = expire_bit(CONFUSED, 100, 15_101, 0, CONFUSED | MASKED);
+        let step = confusion.control(15_101, CONFUSED | MASKED);
         assert_eq!(step.flags, MASKED);
         assert_eq!(step.result, 2);
-        let ending = expire_bit(ENRAGED, 0, 1, 2, ENRAGED);
+        let mut enrage = TimedBitPower::enrage(0);
+        enrage.state = 2;
+        let ending = enrage.control(1, ENRAGED);
         assert_eq!(ending.flags, 0);
         assert_eq!(ending.result, 2);
     }
 
     #[test]
     fn the_timed_powers_own_their_clock() {
-        let mut confusion = TimedBitPower::confusion(100);
+        let confusion = TimedBitPower::confusion(100);
         assert_eq!(confusion.control(15_100, CONFUSED).result, 0);
         assert_eq!(confusion.control(15_101, CONFUSED).flags, 0);
-        assert_eq!(confusion.state, 2);
-        let mut enrage = TimedBitPower::enrage(0);
-        enrage.state = 2;
-        assert_eq!(enrage.control(1, ENRAGED).result, 2);
+        // The expiry does not write the state word; a 32-bit wrap of the
+        // clock past the start is still an expiry.
+        assert_eq!(confusion.state, 0);
+        assert_eq!(confusion.control(99, CONFUSED).result, 2);
         let mut trust = TimedEffect::trust(1000);
         assert_eq!(trust.control(21_000), 0);
         assert_eq!(trust.control(21_001), 2);
@@ -1121,13 +1148,19 @@ mod tests {
         let mut target = LoyaltyTarget::new(1);
         target.strength = 50.0;
         for _ in 0..799 {
-            target.control(0, 0.0, false);
+            target.control(0, 0.0);
         }
         assert_eq!(target.strength, 50.0);
-        target.control(0, 0.0, false);
+        target.control(0, 0.0);
         // ((0 + 100) * 0.005) = 0.5; 0.5² * 100 = 25; 25 * 0.05 + 50 * 0.95
         assert!((target.strength - 48.75).abs() < 1e-5);
         assert!((target.trust - 0.0009999).abs() < 1e-5);
+        // The square stays double until it is narrowed: relation −98.15
+        // gives the bits below, one ulp under a single-precision square.
+        let mut close = LoyaltyTarget::new(1);
+        close.ticks = LOYALTY_SETTLE_TICKS;
+        close.control(0, -98.15);
+        assert_eq!(close.strength.to_bits(), 971_000_813);
     }
 
     #[test]
@@ -1137,7 +1170,7 @@ mod tests {
         assert!(target.adjust(0.0, 50.0, false));
         // relation -100: the limit is 10, above the trust.
         assert!(!target.adjust(0.0, -100.0, false));
-        // A masked caster's limit is ten higher.
+        // The technique bit makes the limit ten higher.
         assert!(!target.adjust(0.0, -100.0, true));
         // Enough trust passes the limit.
         assert!(target.adjust(11.0, -100.0, false));
@@ -1171,7 +1204,7 @@ mod tests {
         let mut power = ControlMindCaster::new(0.35, 1000);
         let early = power.control(0, 1500, false, &mut body);
         assert!(!early.swap);
-        assert!(power.drain < 0.35);
+        assert_eq!(power.drain, (f64::from(0.35f32) - 0.002) as f32);
         assert_eq!(body.spent, BIND_TICK);
         let swap = power.control(0, 3001, false, &mut body);
         assert!(swap.swap);
