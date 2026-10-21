@@ -245,9 +245,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         n = -geom;
         sn = n;
     }
-} else if back_face {
-    n = -geom;
-    sn = n;
+}
+@else {
+    if back_face {
+        n = -geom;
+        sn = n;
+    }
 }
     let shadow_normal = select(geom, -geom, back_face);
     var s: Surface;
