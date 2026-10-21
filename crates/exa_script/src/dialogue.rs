@@ -1242,10 +1242,12 @@ impl Engine {
     }
 
     /// `{…}` substitution with conversation `id`'s actors. As in the
-    /// original, a substituted expression counts as the conversation whose
-    /// script last ran (`EndDialogue` inside it closes that one).
+    /// original, a line with a `{` counts as the conversation whose script
+    /// last ran (`EndDialogue` inside it closes that one).
     fn substitute(&mut self, scene: &mut Scene<'_>, id: usize, text: &[u8]) -> Vec<u8> {
-        self.last_run = Some(id);
+        if text.contains(&b'{') {
+            self.last_run = Some(id);
+        }
         let Some(conv) = self.conversations.get_mut(id).and_then(Option::as_mut) else {
             return text.to_vec();
         };
