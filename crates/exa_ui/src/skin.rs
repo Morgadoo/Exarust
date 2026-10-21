@@ -114,8 +114,6 @@ const FORM_BAND_ON: u32 = 0x80;
 const FORM_MARK: u32 = 0x40;
 const FORM_TAB: u32 = 0x200;
 const TAB_SCALE: u64 = 0x3fc3_3333_3333_3333;
-/// The double 0.15 that slants the close-edge tint.
-const CLOSE_SLANT: u64 = 0x3fc3_3333_3333_3333;
 
 /// Corner sample after the child walk: 0, 0, 0, 0.3.
 pub const FORM_CORNER: [u32; 4] = [0, 0, 0, 0x3e99_999a];
