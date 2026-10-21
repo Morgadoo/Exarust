@@ -93,16 +93,20 @@ physique values and the body morphs they select remain the body's concern
 ## Layers, looks and hair
 
 - `layers` models the builder's eighteen body slots (pelvis, belly, chest,
-  head, the two arm and leg chains and the hands), the four-digit node names
-  that place a garment part in one (`0900Chest`: chest, layer 0), the
-  original's layer score against a garment's own coverage word, and the
-  coverage pass that hides the body parts a worn set covers. The words are
-  the eight layer bytes of the item body's `0xA8` table; a layer's `0x80`
-  hides its slot and `0x40` the slots its mask names, and the union decides
-  which body parts the merged mesh keeps. `equip_outfits` uses the union to
-  hide covered body parts (alongside the first bytes the placement already
-  carries). Real-data tests read `objdb.rdb` (`EXANIMA_DIR`) and check a
-  helm on the head, boots on the feet and braies that hide nothing.
+  head, the two arm and leg chains and the hands, each with its parent and
+  children), the four-digit node names that place a garment part in one
+  (`0906Chest`: chest, sub-part bits `0b110`), and the builder's per-garment
+  passes: the coverage pass (the garment's occupancy bytes against the worn
+  set's union of the item body's `0xA8` words, giving the cover its node
+  bits are scored against and the garment's visible mask), the slot
+  assembler (best groups per slot, child slots pruned under the group's
+  parent-slot node, the same-bits fallback, the first group chosen where
+  the slot's select mask meets the visible mask), the cull bits and the
+  body mask (the union's innermost byte). These are tested rules; the
+  running game still hides whole body-part meshes by the first byte
+  (`Item::hidden_slots`), which the body mask agrees with. Real-data tests
+  read `objdb.rdb` (`EXANIMA_DIR`) and check a helm on the head, boots on
+  the feet and braies that hide nothing.
 - `look` reads the race's look word (`races.rdb` `0x14`): the skin texture
   set (men's or women's), the six beards and their `bearda0N d/n` maps, the
   normal-map layers and their 0.01 thresholds, the age darkening and the
@@ -133,8 +137,8 @@ physique values and the body morphs they select remain the body's concern
   darkening, the beard and the normal-layer blend, plus the first apparel
   texture the job carries. `exa_assets::human_skin` draws the parts it can.
 - `rebuild` keeps the rebuild paths: saving frames before a body, look or
-  texture rebuild; the dressed-mesh plan (chosen slots, visible body slots,
-  merge order); a texture-only rebuild; and the hair cut/root rules. The
+  texture rebuild; the dressed-mesh plan (per garment: chosen slots,
+  visible mask, merge order; the body's mask and merged slots); a texture-only rebuild; and the hair cut/root rules. The
   background dispatcher runs a rebuild inline or through an installed
   worker.
 - `spawn` plans what the spawn writes: the stance and motion (saved attack
