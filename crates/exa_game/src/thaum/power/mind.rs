@@ -11,8 +11,8 @@
 //!
 //! Evidence: the control handlers and the target-side markers of the Mind
 //! classes, read from `Exanima.exe`; the status bits are the body's
-//! status word (0x1_0000 masked, 0x4_0000 confused, 0x8_0000 enraged,
-//! 0x20_0000 ... ).
+//! status word (0x10000 masked, 0x40000 confused, 0x80000 enraged,
+//! 0x200000 ... ).
 
 use super::PowerBase;
 use crate::thaum::casting::{CastBody, code, release_reserve};
@@ -69,7 +69,7 @@ pub const LOYALTY_SETTLE_TICKS: u32 = 800;
 pub const LOYALTY_RELATION_SCALE: f64 = 0.005;
 /// How much of the old loyalty strength each tick keeps.
 pub const LOYALTY_RETAIN: f64 = 0.95;
-/// The extra limit a loyal body with technique bit `0x1_0000` gains.
+/// The extra limit a loyal body with technique bit `0x10000` gains.
 pub const LOYALTY_MASK_BONUS: f32 = 10.0;
 /// The relation's weight in the loyalty's own limit.
 pub const LOYALTY_RELATION_WEIGHT: f64 = 0.1;
@@ -596,7 +596,7 @@ impl LoyaltyTarget {
     /// The loyalty's own limit test: the target's trust grows by `amount`
     /// and the original answers whether the relation's limit (a tenth of
     /// the negated relation, ten more when the loyal body itself has the
-    /// learnt technique bit `0x1_0000`) is below it.
+    /// learnt technique bit `0x10000`) is below it.
     pub fn adjust(&mut self, amount: f32, relation: f32, own_technique: bool) -> bool {
         self.trust += amount;
         let negated = -relation;

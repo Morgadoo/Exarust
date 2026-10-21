@@ -69,7 +69,7 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   one power and none of that domain.
 - **Mind**: Sense Minds (continuous, overlay on while it runs; instant,
   end stamp plus a 2 s fade added in 64 bits) and Mask Mind (continuous,
-  status bit 0x1_0000; instant, 15 s with an intensity that fades between
+  status bit 0x10000; instant, 15 s with an intensity that fades between
   5 and 15 s over a 10 s square curve and a second that fades between 10
   and 15 s, at 0.9 and 0.8, and a HUD row that turns timed for the last
   5 s, ending on the real clock). Confusion and Enrage clear status bits
@@ -79,7 +79,7 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   trust is set to a ten-thousandth of its gap to 10 each tick while below
   10, and after 800 ticks its strength blends `((relation + 100)·0.005)²·100`
   (double until narrowed) at 0.05 with 0.95 of the old; its limit test
-  adds 10 when the loyal body has technique bit 0x1_0000; ending one half
+  adds 10 when the loyal body has technique bit 0x10000; ending one half
   ends the other, and the target's end runs the experience hook and plays
   `ThmMnd_E01` at 0.15. Command Dead (0x2010D) does the same with marker
   0x10010D. Control Mind (0x2010C) counts its binding down by the double
