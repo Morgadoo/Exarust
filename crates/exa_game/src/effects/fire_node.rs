@@ -1,10 +1,13 @@
 //! The fire node: the flame material's geometry with a fire row and the
 //! light and loop sound a burning held item carries.
 //!
-//! The node is `_FlameMat01` in the object's own material library, one
-//! sub-object, and a [`super::fire_row::FlameRow`] bound to it. Its light
-//! is warm white (1, 0.68, 0.43), 800 cm across, softness 4, intensity
-//! 0.01 to start and 5 at full; the sound is `FireS02` looping.
+//! The node is a geometry node with one sub-object (kind 35044) drawn with
+//! the object's `_FlameMat01` (registered from a default material record
+//! when the library lacks it), and a [`super::fire_row::FlameRow`] bound to
+//! it. Its light is a point light (kind 3, flags 0x14_0100, emitter flags
+//! 0x9000), warm white (1, 0.68, 0.43), 800 cm, softness 4, size 1,
+//! intensity 0.01 to start and 5 at full, attached to the node and
+//! handed to the row; the row's sound is `FireS02`.
 //!
 //! Evidence: the node builder and its light-and-sound pass, read from
 //! `Exanima.exe`. The row's own simulation is [`super::fire_row`].
@@ -13,16 +16,13 @@ use super::fire_row;
 
 /// The flame geometry's material.
 pub const MATERIAL: &str = "_FlameMat01";
-/// The fallback material block the original registers when the object's
-/// library has no `_FlameMat01` (0xf0 bytes of default material record; its
-/// contents are not part of this group, so only the name is kept).
-pub const FALLBACK_MATERIAL: &str = "_FlameMat01";
-/// The node's row-kind offset: the fire row is the node's effect record.
-pub const ROW: bool = true;
+/// The node's sub-object kind word.
+pub const SUB_OBJECT_KIND: i32 = 35_044;
 /// The light's kind word: a point light.
 pub const LIGHT_KIND: i32 = fire_row::LIGHT_KIND;
 /// The light's flags and extra words, as the node sets them.
 pub const LIGHT_FLAGS: u32 = fire_row::LIGHT_FLAGS;
+pub const LIGHT_EMITTER_FLAGS: u32 = fire_row::LIGHT_EMITTER_FLAGS;
 pub const LIGHT_EXTRA_ONE: bool = fire_row::LIGHT_EXTRA_ONE;
 pub const LIGHT_EXTRA_TWO: u32 = fire_row::LIGHT_EXTRA_TWO;
 /// The light's colour, its radius in cm, its softness, its start and full
@@ -46,6 +46,8 @@ pub struct FireLight {
     pub intensity: f32,
     pub kind: i32,
     pub flags: u32,
+    pub emitter_flags: u32,
+    pub size: f32,
 }
 
 /// The flame node's light, as the node creates it: intensity 0.01, 800 cm,
@@ -58,12 +60,9 @@ pub fn flame_light() -> FireLight {
         intensity: LIGHT_START_INTENSITY,
         kind: LIGHT_KIND,
         flags: LIGHT_FLAGS,
+        emitter_flags: LIGHT_EMITTER_FLAGS,
+        size: LIGHT_SIZE,
     }
-}
-
-/// The flame node's material name, and whether its row rides the node.
-pub fn flame_node() -> (&'static str, bool) {
-    (MATERIAL, ROW)
 }
 
 #[cfg(test)]
@@ -71,9 +70,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_flame_node_is_the_flame_material_with_a_row() {
-        assert_eq!(flame_node(), ("_FlameMat01", true));
-        assert_eq!(FALLBACK_MATERIAL, MATERIAL);
+    fn the_flame_node_is_the_flame_material() {
+        assert_eq!(MATERIAL, "_FlameMat01");
+        assert_eq!(SUB_OBJECT_KIND, 35_044);
     }
 
     #[test]
@@ -85,6 +84,8 @@ mod tests {
         assert_eq!(light.intensity, 0.01);
         assert_eq!(light.kind, 3);
         assert_eq!(light.flags, 0x0014_0100);
+        assert_eq!(light.emitter_flags, 0x9000);
+        assert_eq!(light.size, 1.0);
         // 0.68 and 0.43 are the original's float literals.
         assert_eq!(light.colour[1], f32::from_bits(0x3f2e_147b));
         assert_eq!(light.colour[2], f32::from_bits(0x3edc_28f6));

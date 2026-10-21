@@ -2,10 +2,11 @@
 //! uniforms it binds, the flags its geometry carries, and the per-instance
 //! texture row and fade the shared effect renderer computes.
 //!
-//! Every force geometry is a `TGeometry` with one sub-object, built with
-//! flags `0x0400_1000` and extra `0x400`; the shared effect renderer gives a
-//! node four texture layers and fills each instance's matrix and light row
-//! from the node's light radius.
+//! Every force geometry is a geometry node with one sub-object (kind
+//! 35044), built with flags `0x0400_1000` and extra `0x400`; the shared
+//! effect renderer reports four texture layers and, for each supersample
+//! pass, offsets the texture row by the node's level of detail
+//! ([`effect_row`]) before it draws the pass.
 //!
 //! The classes and their programs:
 //!
@@ -19,11 +20,12 @@
 //! | tendril | `effectforce_v` | `effectsmoke_f` |
 //! | effect (generic) | — | — |
 //!
-//! The barrier, bubble and barricade binds `ObjMat`, `ViewPos`, `TexPos`,
-//! `ColPt` and `EmiTex`; the bubble and barricade add `TexOfs`; the
-//! barricade adds its `BExt`; the strikes add `LclMat`, `FdPln`,
-//! `ColourInt`, `TexScale` and `Gradient`; the tendril binds only `ObjMat`,
-//! `TexOfs` and `EmiTex`.
+//! The barrier, bubble and barricade bind `ObjMat`, `ViewPos`, `Fade`,
+//! `TexPos`, `ColPt` and `EmiTex`; the bubble and barricade add `TexOfs`
+//! (the barrier has none); the barricade adds its `BExt`; the strikes add
+//! `LclMat`, `FdPln`, `ColourInt`, `TexScale` and `Gradient`; the tendril
+//! binds only `ObjMat`, `TexOfs` and `EmiTex`, its offset `(0, a, b)` from
+//! its effect.
 //!
 //! Evidence: the classes' geometry constructors and program setups and the
 //! shared effect renderer's instance loop, read from `Exanima.exe`.
@@ -32,11 +34,13 @@
 pub const NODE_FLAGS: u32 = 0x0400_1000;
 /// The extra word a force geometry's sub-object carries.
 pub const SUB_OBJECT_EXTRA: u32 = 0x400;
-/// The textures the shared effect renderer gives each node.
+/// The texture layers the shared effect renderer reports.
 pub const LAYERS: i32 = 4;
-/// The texture height the row blend divides by (one, as the renderer
-/// stores it).
-pub const TEXTURE_ROWS: f32 = 1.0;
+/// The sub-object's kind word.
+pub const SUB_OBJECT_KIND: i32 = 35_044;
+/// The pass count the row step divides by (1 in the original's data; a
+/// renderer setting may change it at run time).
+pub const ROW_PASSES: f32 = 1.0;
 /// The tendril's row step, 0.002.
 pub const TENDRIL_ROW_STEP: f32 = 0.002;
 
@@ -79,18 +83,20 @@ impl Class {
             Class::Barrier => Geometry {
                 vertex: Some("effectbarrier_v"),
                 fragment: Some("effectbarrier_f"),
-                uniforms: &["ObjMat", "ViewPos", "TexPos", "ColPt", "EmiTex"],
+                uniforms: &["ObjMat", "ViewPos", "Fade", "TexPos", "ColPt", "EmiTex"],
             },
             Class::Bubble => Geometry {
                 vertex: Some("effectbarrier_v"),
                 fragment: Some("effectbubble_f"),
-                uniforms: &["ObjMat", "TexOfs", "ViewPos", "TexPos", "ColPt", "EmiTex"],
+                uniforms: &[
+                    "ObjMat", "TexOfs", "ViewPos", "Fade", "TexPos", "ColPt", "EmiTex",
+                ],
             },
             Class::Barricade => Geometry {
                 vertex: Some("effectfbrcd_v"),
                 fragment: Some("effectfbrcd_f"),
                 uniforms: &[
-                    "ObjMat", "TexOfs", "ViewPos", "BExt", "TexPos", "ColPt", "EmiTex",
+                    "ObjMat", "TexOfs", "ViewPos", "BExt", "Fade", "TexPos", "ColPt", "EmiTex",
                 ],
             },
             Class::Strikes => Geometry {
@@ -101,6 +107,7 @@ impl Class {
                     "LclMat",
                     "TexOfs",
                     "ViewPos",
+                    "Fade",
                     "TexPos",
                     "ColPt",
                     "FdPln",
@@ -119,36 +126,43 @@ impl Class {
     }
 }
 
-/// The per-instance texture row: `((index + base + 0.5)·step)/rows + start −
-/// step/2`.
-pub fn instance_row(index: i32, base: f32, start: f32, step: f32) -> f32 {
-    ((index as f32 + base + 0.5) * step) / TEXTURE_ROWS + start - step * 0.5
+/// A supersample pass's texture row: `((pass + frame + 0.5)·step)/passes +
+/// start − step/2`, the pass and frame counters added as integers.
+pub fn instance_row(pass: i32, frame: i32, start: f32, step: f32) -> f32 {
+    (((i64::from(pass) + i64::from(frame)) as f32 + 0.5) * step) / ROW_PASSES + start - step * 0.5
 }
 
-/// The shared renderer's instance row for an effect: the node's light
-/// radius is the step and the stored row its start.
-pub fn effect_row(index: i32, base: f32, start: f32, light_radius: f32) -> f32 {
-    instance_row(index, base, start, light_radius)
+/// The shared renderer's pass row: the node's level of detail is the step.
+pub fn effect_row(pass: i32, frame: i32, start: f32, lod: f32) -> f32 {
+    instance_row(pass, frame, start, lod)
 }
 
-/// The tendril's instance row, step 0.002.
-pub fn tendril_row(index: i32, base: f32, start: f32) -> f32 {
-    instance_row(index, base, start, TENDRIL_ROW_STEP)
+/// The tendril's pass row, step 0.002 (its half, 0.001, as the original's
+/// literal).
+pub fn tendril_row(pass: i32, frame: i32, start: f32) -> f32 {
+    (((i64::from(pass) + i64::from(frame)) as f32 + 0.5) * TENDRIL_ROW_STEP) / ROW_PASSES + start
+        - 0.001
 }
 
-/// The fade a dome geometry draws at: `1 − alpha` while the effect is under
-/// state 3, the alpha itself from 3 on.
+/// The `Fade` a dome geometry draws at: `max(1 − alpha, 0)` while the
+/// effect is under state 3, the alpha itself from 3 on.
 pub fn dome_fade(state: u32, alpha: f32) -> f32 {
-    if state < 3 { 1.0 - alpha } else { alpha }
+    if state < 3 {
+        let left = 1.0 - alpha;
+        if left <= 0.0 { 0.0 } else { left }
+    } else {
+        alpha
+    }
 }
 
 /// The barricade's draw alpha: growing, `(1 − share)²`; standing, 0;
 /// shrinking, `share²`; all squared again by the draw.
 pub fn barricade_alpha(state: i32, share: f32) -> f32 {
     let f = if state == 1 {
-        let e = (1.0 - share).clamp(0.0, 1.0);
+        let e = 1.0 - share;
+        let e = if e <= 0.0 { 0.0 } else { e };
         e * e
-    } else if state < 3 {
+    } else if (state as u32) < 3 {
         0.0
     } else {
         share * share
@@ -156,7 +170,7 @@ pub fn barricade_alpha(state: i32, share: f32) -> f32 {
     f * f
 }
 
-/// The strikes' draw alpha: `1 − fade`.
+/// The strikes' `Fade`: `1 − fade`.
 pub fn strikes_alpha(fade: f32) -> f32 {
     1.0 - fade
 }
@@ -191,15 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn the_instance_rows_step_by_the_light_radius() {
+    fn the_pass_rows_step_by_the_level_of_detail() {
         // Step 1, base 0: rows 0.0, 1.0, 2.0.
-        assert_eq!(effect_row(0, 0.0, 0.0, 1.0), 0.0);
-        assert_eq!(effect_row(1, 0.0, 0.0, 1.0), 1.0);
-        // Step 0.5, base 10, start 0.25: ((11 + 0.5)·0.5) + 0.25 − 0.25.
-        assert_eq!(effect_row(1, 10.0, 0.25, 0.5), 5.75);
+        assert_eq!(effect_row(0, 0, 0.0, 1.0), 0.0);
+        assert_eq!(effect_row(1, 0, 0.0, 1.0), 1.0);
+        // Step 0.5, frame 10, start 0.25: ((11 + 0.5)·0.5) + 0.25 − 0.25.
+        assert_eq!(effect_row(1, 10, 0.25, 0.5), 5.75);
         // The tendril's 0.002 step: rows 0 and 0.002.
-        assert!(tendril_row(0, 0.0, 0.0).abs() < 1e-7);
-        assert!((tendril_row(1, 0.0, 0.0) - 0.002).abs() < 1e-7);
+        assert!(tendril_row(0, 0, 0.0).abs() < 1e-7);
+        assert!((tendril_row(1, 0, 0.0) - 0.002).abs() < 1e-7);
     }
 
     #[test]
@@ -208,6 +222,7 @@ mod tests {
         assert_eq!(dome_fade(2, 0.25), 0.75);
         assert_eq!(dome_fade(3, 0.25), 0.25);
         assert_eq!(dome_fade(4, 0.25), 0.25);
+        assert_eq!(dome_fade(1, 1.5), 0.0);
     }
 
     #[test]
