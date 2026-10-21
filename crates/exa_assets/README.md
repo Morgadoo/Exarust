@@ -113,10 +113,13 @@ render-target texture calls (selecting a unit, binding, creating an empty
 texture for a framebuffer attachment) have no Exarust item: Bevy owns render
 targets and binds per draw.
 
-`TextureUnitCache` is the original's per-unit bind cache: a texture already
-on its unit is not bound again, a new one makes the unit active, binds its
-shared sampler when that changed, binds the object and sets the global LOD
-bias unless the word has bit `0x200`; unbinding clears the sampler.
+`TextureUnitCache` is the original's per-unit bind cache: the texture object
+already on a unit (compared by identity, not by GL name) is not bound again; a
+different one makes its unit active when it is not (the active unit starts at
+0), binds its target and name, and sets the target's LOD bias parameter to
+zero unless the word has bit `0x200`. Binding nothing, or an object with no
+GL name, only clears the unit's entry. The original has no sampler object
+here, and the cache is not wired: Bevy binds per draw.
 
 `TextureDetail` keeps the first uploaded level at
 `max(0, class − detail + 1)`, raised while a side exceeds the device's limit;

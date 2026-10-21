@@ -327,8 +327,8 @@ pub const COMPATIBLE_MASK: u32 = 0x800C_FFFF;
 /// Exarust treats it as having no sRGB variant (its pixels stay linear).
 pub fn has_srgb_format(format_word: u32) -> bool {
     let key = format_word & COMPATIBLE_MASK;
-    // The two blue-first words are registered in their own table with the
-    // same RGB8/RGBA8 and SRGB8/SRGB8_ALPHA8 internal formats.
+    // The two blue-first words convert to RGB8 and RGBA8 (their registered
+    // fallbacks), which have sRGB internal formats.
     if matches!(key, 0x0200_C600 | 0x0200_E608) {
         return true;
     }
@@ -649,43 +649,56 @@ pub fn f32_to_hundredths(value: f32) -> i16 {
     exa_formats::pixel::round_f32(value * 100.0) as i16
 }
 
-/// One texture as the unit cache sees it: its GL object, its shared sampler
-/// object and its word.
+/// One texture as the unit cache sees it: the identity the cache compares,
+/// its GL target, its GL name and its word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureBinding {
-    pub texture: u32,
-    pub sampler: u32,
+    /// What the cache compares: the texture object itself, not its GL name,
+    /// so a texture whose name changed is not rebound until another texture
+    /// has used the unit.
+    pub object: u64,
+    /// The GL target (`TEXTURE_2D`, ...), kept per unit.
+    pub target: u32,
+    /// The GL name; 0 means the object has no GL texture, which clears the
+    /// unit like binding nothing.
+    pub name: u32,
     pub flags: u32,
 }
 
-/// What a bind changed. `None` fields are GL calls the bind skipped.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// What a bind did. `None` fields are GL calls the bind skipped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BindOps {
+    /// The unit made active.
     pub active_unit: Option<u32>,
-    pub sampler: Option<u32>,
-    pub texture: Option<u32>,
-    pub lod_bias: Option<f32>,
+    /// `(target, name)` of the texture bound.
+    pub texture: Option<(u32, u32)>,
+    /// The target whose LOD bias was set to zero.
+    pub lod_bias_reset: Option<u32>,
 }
 
 impl BindOps {
     pub fn is_empty(&self) -> bool {
-        self.active_unit.is_none()
-            && self.sampler.is_none()
-            && self.texture.is_none()
-            && self.lod_bias.is_none()
+        self.active_unit.is_none() && self.texture.is_none() && self.lod_bias_reset.is_none()
     }
 }
 
-/// The per-unit texture bind cache: the active unit, each unit's texture and
-/// sampler, and the global LOD bias. A bind of the texture already on the
-/// unit does nothing; a different texture makes the unit active, binds its
-/// sampler when that changed, binds the texture and sets the bias unless the
-/// texture word asks to skip it (`0x200`). Binding nothing clears the
-/// sampler.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The per-unit texture bind cache. Each unit remembers the texture object
+/// last bound and its target; the cache also remembers the active unit,
+/// which starts at 0. Binding the object already on the unit does nothing.
+/// Otherwise the unit is made active when it is not already, then a texture
+/// with a GL name is bound (target and name) and its LOD bias parameter is
+/// set to zero unless the word has bit `0x200`; a missing texture, or one
+/// without a GL name, only clears the unit's entry, with no GL call. There is
+/// no sampler object: the filters and wraps are texture parameters set when
+/// the texture was created.
+///
+/// The original has a second path for a negative unit (enabling and
+/// disabling the fixed-function target); callers never pass one, so it is
+/// not modelled.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TextureUnitCache {
-    active: Option<u32>,
-    units: Vec<Option<TextureBinding>>,
+    active: u32,
+    units: Vec<Option<(u64, u32)>>,
 }
 
 impl TextureUnitCache {
@@ -693,50 +706,42 @@ impl TextureUnitCache {
         Self::default()
     }
 
-    /// The texture currently bound to `unit`.
-    pub fn bound(&self, unit: u32) -> Option<TextureBinding> {
+    /// The unit last made active.
+    pub fn active_unit(&self) -> u32 {
+        self.active
+    }
+
+    /// The texture object and target remembered for `unit`.
+    pub fn bound(&self, unit: u32) -> Option<(u64, u32)> {
         self.units.get(unit as usize).copied().flatten()
     }
 
-    /// Binds `texture` (or nothing) to `unit`, applying the global
-    /// `lod_bias`.
-    pub fn bind(&mut self, unit: u32, texture: Option<TextureBinding>, lod_bias: f32) -> BindOps {
+    /// Binds `texture` (or nothing) to `unit`.
+    pub fn bind(&mut self, unit: u32, texture: Option<TextureBinding>) -> BindOps {
         let slot = unit as usize;
         if self.units.len() <= slot {
             self.units.resize(slot + 1, None);
         }
-        if self.units[slot] == texture {
+        // A missing texture compares equal to an empty unit.
+        if self.units[slot].map(|(object, _)| object) == texture.map(|t| t.object) {
             return BindOps::default();
         }
         let mut ops = BindOps::default();
-        if self.active != Some(unit) {
-            self.active = Some(unit);
+        if self.active != unit {
+            self.active = unit;
             ops.active_unit = Some(unit);
         }
         match texture {
-            None => {
-                if self.units[slot].is_some_and(|bound| bound.sampler != 0) {
-                    ops.sampler = Some(0);
-                }
-                self.units[slot] = None;
-            }
-            Some(binding) => {
-                if self.units[slot].map(|bound| bound.sampler) != Some(binding.sampler) {
-                    ops.sampler = Some(binding.sampler);
-                }
-                ops.texture = Some(binding.texture);
+            Some(binding) if binding.name != 0 => {
+                ops.texture = Some((binding.target, binding.name));
                 if binding.flags & flags::NO_LOD_BIAS == 0 {
-                    ops.lod_bias = Some(lod_bias);
+                    ops.lod_bias_reset = Some(binding.target);
                 }
-                self.units[slot] = Some(binding);
+                self.units[slot] = Some((binding.object, binding.target));
             }
+            _ => self.units[slot] = None,
         }
         ops
-    }
-
-    /// Whether a bind of `texture` on `unit` would bind the object again.
-    pub fn binds_again(&self, unit: u32, texture: u32) -> bool {
-        self.bound(unit).map(|bound| bound.texture) != Some(texture)
     }
 }
 
@@ -968,45 +973,63 @@ mod sampler_tests {
 mod unit_cache_tests {
     use super::*;
 
-    fn binding(texture: u32, sampler: u32, flags: u32) -> TextureBinding {
+    fn binding(object: u64, name: u32, flags: u32) -> TextureBinding {
         TextureBinding {
-            texture,
-            sampler,
+            object,
+            target: 0x0DE1,
+            name,
             flags,
         }
     }
 
     #[test]
-    fn a_bind_skips_the_texture_already_on_the_unit() {
+    fn a_bind_skips_the_object_already_on_the_unit() {
         let mut cache = TextureUnitCache::new();
-        let first = cache.bind(2, Some(binding(7, 3, 0)), -0.75);
-        assert_eq!(first.active_unit, Some(2));
-        assert_eq!(first.sampler, Some(3));
-        assert_eq!(first.texture, Some(7));
-        assert_eq!(first.lod_bias, Some(-0.75));
-        // The same texture and word: no GL calls at all.
-        assert!(cache.bind(2, Some(binding(7, 3, 0)), -0.75).is_empty());
-        assert!(!cache.binds_again(2, 7));
+        // The active unit starts at 0, so unit 0 needs no selection.
+        let first = cache.bind(0, Some(binding(1, 10, 0)));
+        assert_eq!(first.active_unit, None);
+        assert_eq!(first.texture, Some((0x0DE1, 10)));
+        assert_eq!(first.lod_bias_reset, Some(0x0DE1));
+        assert!(cache.bind(0, Some(binding(1, 10, 0))).is_empty());
+        // The comparison is the object: a changed GL name is not rebound.
+        assert!(cache.bind(0, Some(binding(1, 11, 0))).is_empty());
+        // Another unit is selected once, then stays active.
+        let second = cache.bind(2, Some(binding(7, 12, 0)));
+        assert_eq!(second.active_unit, Some(2));
+        assert_eq!(cache.active_unit(), 2);
+        let third = cache.bind(2, Some(binding(8, 13, 0)));
+        assert_eq!(third.active_unit, None);
+        assert_eq!(third.texture, Some((0x0DE1, 13)));
+        // Going back selects the unit again.
+        assert_eq!(cache.bind(0, Some(binding(9, 14, 0))).active_unit, Some(0));
     }
 
     #[test]
-    fn a_new_texture_binds_its_sampler_and_bias_unless_it_opts_out() {
+    fn the_skip_bias_word_suppresses_only_the_bias_call() {
         let mut cache = TextureUnitCache::new();
-        cache.bind(0, Some(binding(1, 5, 0)), -0.5);
-        // A different texture with the same sampler only binds the texture.
-        let ops = cache.bind(0, Some(binding(2, 5, 0)), -0.5);
-        assert_eq!((ops.sampler, ops.texture), (None, Some(2)));
-        assert_eq!(ops.lod_bias, Some(-0.5));
-        // The skip-bias flag suppresses the bias call.
-        let ops = cache.bind(0, Some(binding(3, 6, flags::NO_LOD_BIAS)), -0.5);
-        assert_eq!(ops.sampler, Some(6));
-        assert_eq!(ops.lod_bias, None);
-        // Unbinding clears the sampler, not the texture.
-        let ops = cache.bind(0, None, -0.5);
-        assert_eq!(ops.sampler, Some(0));
-        assert_eq!(ops.texture, None);
+        let ops = cache.bind(0, Some(binding(3, 6, flags::NO_LOD_BIAS)));
+        assert_eq!(ops.texture, Some((0x0DE1, 6)));
+        assert_eq!(ops.lod_bias_reset, None);
         assert!(!ops.is_empty());
-        assert!(cache.bind(0, None, -0.5).is_empty());
+    }
+
+    #[test]
+    fn nothing_and_a_nameless_texture_only_clear_the_unit() {
+        let mut cache = TextureUnitCache::new();
+        cache.bind(1, Some(binding(4, 8, 0)));
+        // Clearing makes no GL bind.
+        let ops = cache.bind(1, None);
+        assert_eq!((ops.texture, ops.lod_bias_reset), (None, None));
+        assert_eq!(cache.bound(1), None);
+        assert!(cache.bind(1, None).is_empty());
+        // A texture object with no GL name clears just the same.
+        cache.bind(1, Some(binding(5, 9, 0)));
+        let ops = cache.bind(1, Some(binding(6, 0, 0)));
+        assert_eq!(ops.texture, None);
+        assert_eq!(cache.bound(1), None);
+        // Clearing an empty unit made active by nothing else does nothing.
+        assert!(cache.bind(5, None).is_empty());
+        assert_eq!(cache.active_unit(), 1);
     }
 
     #[test]
