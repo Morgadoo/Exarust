@@ -168,30 +168,46 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
     Some(out)
 }
 
-/// The generator's occlusion alpha for a merged mesh.
+/// The next and previous corner of a triangle corner, as the generator's
+/// two corner tables give them.
+const NEXT_CORNER: [usize; 3] = [1, 2, 0];
+const PREV_CORNER: [usize; 3] = [2, 0, 1];
+
+/// The generator's occlusion alpha for a merged mesh: the alpha byte of
+/// each vertex colour.
 ///
-/// **Guess:** the class the original compares is the mesh part's material
-/// group; the caller passes the class per vertex.
-///
-/// `part` names the body part each vertex came from (0 when it is not a
-/// body part), `class` the material group the vertex belongs to, and
-/// `indices` the mesh's triangles. Every marked vertex starts opaque; a
-/// marked vertex in a triangle with another marked vertex of a different
-/// class is cleared, so seams between parts and material groups never show
-/// the transparent skin underneath. Unmarked vertices keep their value.
-pub fn occlusion_alpha(part: &[u32], class: &[u32], indices: &[u32]) -> Vec<u8> {
-    let mut alpha = vec![255u8; part.len()];
-    for tri in indices.as_chunks::<3>().0 {
-        let marked: Vec<usize> = tri
-            .iter()
-            .map(|&v| v as usize)
-            .filter(|&v| v < part.len() && part[v] != 0)
-            .collect();
-        for &v in &marked {
-            if marked
+/// `marked[t]` says whether triangle `t` belongs to a mesh part whose
+/// material carries the occlusion mark; `position_ids` maps each vertex to
+/// its shared position. Every vertex starts opaque. A vertex is cleared
+/// when one of its marked triangles has, at that vertex, an outgoing edge
+/// (to the triangle's next corner) that no marked triangle at the same
+/// vertex closes with its incoming edge (from its previous corner, by
+/// position): the vertices on the border of the marked region fade.
+pub fn occlusion_alpha(
+    vertex_count: usize,
+    indices: &[u32],
+    position_ids: &[u32],
+    marked: &[bool],
+) -> Vec<u8> {
+    let tris = indices.as_chunks::<3>().0;
+    let mut incident: Vec<Vec<(usize, usize)>> = vec![Vec::new(); vertex_count];
+    for (t, tri) in tris.iter().enumerate() {
+        for (c, &v) in tri.iter().enumerate() {
+            if let Some(list) = incident.get_mut(v as usize) {
+                list.push((t, c));
+            }
+        }
+    }
+    let pos = |v: u32| position_ids.get(v as usize).copied().unwrap_or(v);
+    let is_marked = |t: usize| marked.get(t).copied().unwrap_or(false);
+    let mut alpha = vec![255u8; vertex_count];
+    for (v, list) in incident.iter().enumerate() {
+        for &(t1, c1) in list.iter().filter(|(t, _)| is_marked(*t)) {
+            let out = pos(tris[t1][NEXT_CORNER[c1]]);
+            let closed = list
                 .iter()
-                .any(|&w| w != v && class.get(w).copied() != class.get(v).copied())
-            {
+                .any(|&(t2, c2)| is_marked(t2) && pos(tris[t2][PREV_CORNER[c2]]) == out);
+            if !closed {
                 alpha[v] = 0;
             }
         }
@@ -360,13 +376,22 @@ mod tests {
     /// A triangle whose marked vertices belong to two parts loses their
     /// alpha; an unmarked vertex keeps the opaque value.
     #[test]
-    fn the_occlusion_alpha_clears_part_seams() {
-        let part = [1, 1, 0, 2, 2];
-        let class = [0, 0, 0, 1, 2];
-        let alpha = occlusion_alpha(&part, &class, &[0, 1, 2]);
-        assert_eq!(alpha, [255, 255, 255, 255, 255]);
-        let alpha = occlusion_alpha(&part, &class, &[0, 1, 2, 3, 4, 3]);
-        assert_eq!(alpha, [255, 255, 255, 0, 0]);
+    /// A closed fan of three marked triangles around vertex 0: the centre
+    /// keeps its alpha, the rim (the marked region's border) fades. An
+    /// unmarked fan stays opaque.
+    fn the_occlusion_alpha_fades_the_marked_border() {
+        let fan = [0, 1, 2, 0, 2, 3, 0, 3, 1];
+        let ids = [0, 1, 2, 3];
+        let alpha = occlusion_alpha(4, &fan, &ids, &[true; 3]);
+        assert_eq!(alpha, [255, 0, 0, 0]);
+        assert_eq!(occlusion_alpha(4, &fan, &ids, &[false; 3]), [255; 4]);
+        // One triangle unmarked opens the fan at the centre.
+        assert_eq!(occlusion_alpha(4, &fan, &ids, &[true, true, false])[0], 0);
+        // Each vertex has its own triangles: a centre split in two at a
+        // seam has two open fans, and both halves fade.
+        let split = [0, 1, 2, 0, 2, 3, 4, 3, 1];
+        let alpha = occlusion_alpha(5, &split, &[0, 1, 2, 3, 0], &[true; 3]);
+        assert_eq!((alpha[0], alpha[4]), (0, 0));
     }
 
     #[test]
