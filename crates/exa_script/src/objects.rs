@@ -2,15 +2,16 @@
 //! pulse, the raise-dead revelation, and the drain of charged power
 //! crystals.
 //!
-//! Using an object goes by its record's type byte: 3 runs its script (with
-//! `Actor[0]` the player, at most once per 2.4 s across all such objects),
+//! Using an object goes by its record's type byte: 3 runs its script (one
+//! actor slot, the player; at most once per 2.4 s across all such objects),
 //! pulses its glow (1.2 s up, 1.2 s down) and plays the sound named in the
 //! record at volume 0.3; 4 raises its event; 0x0F and 0x12 are teleporter
-//! pedestals and devices; object 588 runs a once-per-session hook. The
-//! revelation (event 0xDA0115, story mode only) teaches power 0x10F if the
-//! player lacks it and narrates `RVL_RaiseDead_S` or `RVL_RaiseDead_F` after
-//! a second. Charged crystals (item 499) lose 2 charge per game second;
-//! a source with nothing left to drain leaves the list.
+//! pedestals and devices; object 588 (0x24C) runs a once-per-session hook.
+//! The revelation (event 0xDA0115, story mode only) teaches power 0x10F if
+//! the player lacks it and narrates `RVL_RaiseDead_S` or `RVL_RaiseDead_F`
+//! after a second. Charged crystals (item 499) lose 2 charge per game
+//! second; a source stays in the list while its socket still carries the
+//! charge flag, and leaves it when the socket or the flag is gone.
 //!
 //! Evidence: the object-use, script-run, glow-task, revelation and crystal
 //! routines of the game unit and the drain constant (REA on `Exanima.exe`
@@ -54,6 +55,12 @@ pub enum Use {
     Plain,
     /// Refused (the hook already ran).
     Refused,
+}
+
+/// A used device of type 0x12 plays its power-up sound (the teleporter
+/// device handler does it).
+pub fn device_power_up(kind: u8) -> bool {
+    kind == 0x12
 }
 
 /// The scripted-object state of a session.
@@ -125,22 +132,50 @@ pub fn revelation(story: bool, event: u32, has_power: bool, taught: bool) -> Opt
     })
 }
 
-/// One drain of a charge: what is left, `None` when it ran out (set to 0).
-pub fn drain(charge: u8) -> Option<u8> {
-    (charge > DRAIN).then(|| charge - DRAIN)
+/// One drain of a charge: what is left, clamped at 0. The source is not
+/// dropped for reaching 0; the original keeps it while the socket's charge
+/// flag is still set.
+pub fn drain(charge: u8) -> u8 {
+    charge.saturating_sub(DRAIN)
+}
+
+/// The actor slots a scripted object's script runs with: one slot, the
+/// player (the object itself is the interpreter's owner).
+pub fn script_actors(player: u32) -> Vec<Option<u32>> {
+    vec![Some(player)]
 }
 
 /// Where a charge sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// Crystals in the level's containers.
+    /// Crystals in the level's containers (the original's kind 1).
     Containers,
-    /// Crystals in one container record.
+    /// Crystals in one container record (kind 2, the record's id).
     Container(u32),
-    /// Crystals in the player's inventory.
+    /// Crystals in the player's inventory (kind 3).
     Inventory,
-    /// A socketed weapon or apparel item.
+    /// A socketed weapon or apparel item (kind 4, the item's id).
     Socketed(u32),
+}
+
+impl Source {
+    /// The kind word the original's source list stores beside the id.
+    pub fn code(self) -> u8 {
+        match self {
+            Source::Containers => 1,
+            Source::Container(_) => 2,
+            Source::Inventory => 3,
+            Source::Socketed(_) => 4,
+        }
+    }
+
+    /// The id the source list stores (0 where the kind is enough).
+    pub fn id(self) -> u32 {
+        match self {
+            Source::Containers | Source::Inventory => 0,
+            Source::Container(id) | Source::Socketed(id) => id,
+        }
+    }
 }
 
 /// The charge sources being drained.
@@ -158,8 +193,9 @@ impl Drain {
     }
 
     /// One game second: drain every source with `drain_source` (which
-    /// reports whether anything was left to drain); a spent source is
-    /// replaced by the last one, as the original swaps it out.
+    /// reports whether the socket still has a charge flag to drain); a
+    /// source whose probe answers false is replaced by the last one, as
+    /// the original swaps it out.
     pub fn tick(&mut self, mut drain_source: impl FnMut(Source) -> bool) {
         let mut i = 0;
         while i < self.sources.len() {
@@ -223,9 +259,18 @@ mod tests {
 
     #[test]
     fn crystals_drain_two_a_second() {
-        assert_eq!(drain(10), Some(8));
-        assert_eq!(drain(3), Some(1));
-        assert_eq!(drain(2), None);
+        assert_eq!(drain(10), 8);
+        assert_eq!(drain(3), 1);
+        assert_eq!(drain(2), 0);
+        assert_eq!(drain(1), 0);
+        assert_eq!(script_actors(7), [Some(7)]);
+        assert_eq!(Source::Containers.code(), 1);
+        assert_eq!(Source::Container(9).code(), 2);
+        assert_eq!(Source::Container(9).id(), 9);
+        assert_eq!(Source::Inventory.code(), 3);
+        assert_eq!(Source::Socketed(5).code(), 4);
+        assert!(device_power_up(0x12));
+        assert!(!device_power_up(0x0F));
         let mut d = Drain::default();
         d.add(Source::Inventory);
         d.add(Source::Socketed(5));

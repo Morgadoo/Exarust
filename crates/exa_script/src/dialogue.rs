@@ -1038,7 +1038,10 @@ pub fn witness_activate(
         for &q in &b_roles {
             if let Some(g) = library.aimed(r, q) {
                 let target = library.graph(g).map_or(0, |d| d.target);
-                if try_one(scene, g, r, block_of(target, r)) {
+                // The stored role-list word picks the block, as in the
+                // dialogue search.
+                let key = scene.cast.get(witness).map_or(0, |c| c.role_list_word(i));
+                if try_one(scene, g, r, block_of(target, key)) {
                     return true;
                 }
             }
@@ -1197,6 +1200,19 @@ impl Engine {
         self.run_start_requests(scene, requests);
         self.settle(scene);
         r
+    }
+
+    /// Use a scripted world object: its script runs with the player as the
+    /// one actor slot and the record's role as the running role (the object
+    /// itself is the interpreter's owner).
+    pub fn use_script(
+        &mut self,
+        scene: &mut Scene<'_>,
+        player: u32,
+        role: u32,
+        script: &[u8],
+    ) -> i32 {
+        self.run_script(scene, crate::objects::script_actors(player), role, script)
     }
 
     /// Run a script of conversation `id`; returns `result`.
