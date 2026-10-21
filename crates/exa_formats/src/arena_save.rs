@@ -741,6 +741,7 @@ mod tests {
     #[test]
     fn hireables_use_the_character_codec_for_their_boundaries() {
         // A synthetic export: a 16-bit byte count and that many bytes.
+        #[allow(clippy::ptr_arg)]
         fn write_character(character: &Vec<u8>, out: &mut Vec<u8>) {
             out.extend_from_slice(&(character.len() as u16).to_le_bytes());
             out.extend_from_slice(character);
