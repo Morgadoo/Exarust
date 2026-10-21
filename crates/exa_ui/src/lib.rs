@@ -16,7 +16,10 @@
 //! layout metrics, immediate-mode batches, flat control parts, form chrome,
 //! background, page order and labels. The arena match board's tabs, match
 //! and event tables, tournament and season rows, fighter assignment, layout
-//! and drawing order live in [`match_board`].
+//! and drawing order live in [`match_board`]. The in-game unit's screens,
+//! journal, open-container registry, power-slot and counter controls, HUD
+//! extras and close/save scopes live in [`game_gui`]; the form base class's
+//! ordering, fade, traversal, scroll and hit rules in [`form`].
 
 pub mod blend;
 pub mod character_view;
@@ -31,6 +34,7 @@ pub mod fade;
 pub mod font;
 pub mod form;
 pub mod fps;
+pub mod game_gui;
 pub mod gui_controls;
 pub mod gui_core;
 pub mod gui_font;
@@ -88,6 +92,24 @@ pub use emblem_form::{
     select_design,
 };
 pub use fade::DeathFade;
+pub use form::{
+    ControlTab, FADE_TICKS, FormFade, FormRect, HitControl, HitNode, SnapForm, TreeHit, UNPLACED,
+    VerticalScroll, attribute, caret_blink, hit_test_tree, is_active, is_close_edge, place_unset,
+    raise_child, raise_index, repeat_scroll, resize_cursor, set_scroll_y, show_place, snap_slots,
+    state as form_state, style as form_style, tab_target, topmost_child, vertical_scroll_metrics,
+    wheel_control, wheel_scroll,
+};
+pub use game_gui::{
+    CHARACTER_SCREEN, COMPASS, CONTAINER_MASK, CONTAINER_SCREEN, CONTAINER_TAG, CURSORS,
+    CharacterScreenInput, Counter, GUITEX, GUITEX_TEXTURE_SLOT, HudSpan, JOURNAL_SCREEN,
+    JOURNAL_SIZE, JOURNAL_TEXT, JOURNAL_TITLE, Journal, JournalAction, JournalEntry, JournalInput,
+    LOOT_SCREEN, MENU_CURSOR, NEW_ENTRY, OPEN_CONTAINERS, OpenContainers, POWER_SLOT_SIZE,
+    POWER_TREE_MASK, PowerSlot, SaveAction, ScreenAction, SlotAnswer, character_screen, close_mask,
+    closes_character_screen, compass_anchors, compass_extent, forms_with_tag, hud_span,
+    inventory_place, journal_screen, level_curtain, loot_allowed, ready_place, save_action,
+    selector_place, status_marker, status_place, status_pulse, tagged_container,
+};
+
 pub use fps::ShowFps;
 pub use gui_controls::{
     CheckLabelInk, ClassRegistry, LabelDraw, LabelFront, LayoutClient, append_records,
