@@ -763,7 +763,8 @@ fn normalized(v: Vec2) -> (Vec2, f32) {
 /// skipped.
 pub fn pick_control(cursor: Vec2, origin: IVec2, targets: &[PickTarget], unit: i32) -> Option<i32> {
     let (dir, _) = normalized(cursor);
-    let vertical = !(dir.y.abs() < dir.x.abs());
+    let horizontal = dir.y.abs() < dir.x.abs();
+    let vertical = !horizontal;
     let least = unit as f32;
     let reach = i64::from(unit) * PICK_REACH_UNITS;
     let mut best_x = 100_000_i64;
