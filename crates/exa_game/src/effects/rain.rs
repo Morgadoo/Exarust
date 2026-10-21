@@ -332,7 +332,8 @@ mod tests {
     #[test]
     fn a_drop_below_the_ground_wraps_with_the_effects_own_words() {
         let mut rain = rain();
-        rain.set_intensity(1.0);
+        // One drop drawn, so only it moves.
+        rain.set_intensity(1.0 / 4096.0);
         rain.drops[0].head = Vec3::new(0.0, 5.0, 0.0);
         rain.seed = 0x1234_5678;
         let mut rng = Mt19937::new(7);
