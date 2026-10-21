@@ -1351,8 +1351,8 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   at the top shadow detail). The allocator picks the class by the light's
   kind (2 directional, else cube) and the size by the shadow detail plus the
   light's quality offset (clamped to index 6): directional 256/512/1024/
-  2048/4096/8192 at indices 1–6, cube half of 64/128/256/512/1024/2048/4096;
-  cubes then shift right by the light's reduction level and both by the
+  2048/4096/8192 at indices 1–6, cube 64/128/256/512/1024/2048 halved to
+  32/64/128/256/512/1024; cubes then shift right by the light's reduction level and both by the
   hardware maximum. A cube light's fade distance is 0.005·quality (0.025
   above index 5). The caster programs are the plain depth pass, the
   distance writer, and each with an alpha test and a dithered fade; the
