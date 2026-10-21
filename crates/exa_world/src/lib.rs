@@ -13,8 +13,10 @@ pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod light_flood;
+pub mod light_source;
 pub mod mechanisms;
 pub mod nav;
+pub mod node_life;
 pub mod particles;
 pub mod room_view;
 pub mod rooms;
@@ -45,6 +47,8 @@ impl Plugin for WorldPlugin {
             gi_volume::GiVolumePlugin,
             nav::NavPlugin,
             shadow_links::ShadowLinksPlugin,
+            light_source::LightSourcePlugin,
+            node_life::NodeLifePlugin,
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
         ));
@@ -651,9 +655,16 @@ pub fn spawn_model_nodes(
             }
             parts.push(part);
         }
+        if !parts.is_empty() {
+            commands
+                .entity(e)
+                .insert(node_life::NodeParts::new(parts.clone()));
+        }
         parts_of.push(parts);
         if let Some(light) = &node.light {
-            commands.entity(e).insert(light_bundle(light));
+            commands
+                .entity(e)
+                .insert((light_bundle(light), light_source::LightSource::of(light)));
         }
         if let Some(light) = &node.voxel_light {
             commands.entity(e).insert(exa_render::gi::VoxelLight::new(
