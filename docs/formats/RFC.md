@@ -294,9 +294,10 @@ element directly, and the indirect builder is kept for a generic import.
   with their faces.
 - **Welding.** Each stream that owns its channel sorts its elements by the
   first component (middle-pivot quicksort) and merges a later element into
-  an earlier live one when their values are within 0.01 cm (positions) or
-  0.001 (texture coordinates) on that axis and their squared distance is
-  under 0.0001 cm² or 1e-9. The merged element's ring is spliced after the
+  an earlier live one when their squared distance is under 0.0001 cm²
+  (positions) or 1e-9 (texture coordinates); the scan for one element
+  stops at the first later element out of reach whose key passes its own
+  by 0.01 cm or 0.001. The merged element's ring is spliced after the
   survivor's ring, its corners become the survivor's, and the survivors
   renumber from zero in their old order. Streams sharing the channel take
   the new count, their element values moving to the new numbers; the
