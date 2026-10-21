@@ -459,3 +459,24 @@ title-cased, a page's text without its last byte) and the one-time tips
 (single bits 0–30 of the settings mask, the 504-pixel popup measured with
 markup, "Continue" and "Don't show again", the nine titles and their
 presets).
+## Table, skin and blend details
+
+`table_view` now keeps the column choice list that a press opens (its
+entries, width, anchor, height and picked entry) and routes every key that
+is not Enter, Escape or the empty-edit Delete through `text_edit` (typing,
+Backspace/Delete, arrows, Home/End, Ctrl+C/X/V, horizontal scroll), so an
+edited cell behaves like the original's field. The draw reports the
+header separators, the owner-drawn cells from the first visible row, the
+open field's text state and the shadow under the last row; the table's
+default selection is the first row and its centre is each side's
+difference halved.
+
+`skin` carries the abstract base's five empty hooks (`SkinHooks`), the GUI
+globals (lazily made default skin, active skin prepared once per skin, the
+alpha/fade pair whose byte is `round(alpha · 255)`), the `guiskin.rfi`
+atlas at 40 by 20 units with the textured frame's inset samples, the
+texture-bind `TexCol` rule and the five GUI shader sources.
+
+`blend::ui_blend` is the GUI blend-state switch: the masked word `0x100`
+turns blending off and every other word selects a source and destination
+factor from the recorded eight-entry table.
