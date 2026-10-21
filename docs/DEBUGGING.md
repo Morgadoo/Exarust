@@ -93,6 +93,7 @@ shift+S: cshd; msm
 | `--debug-arcs` | in play mode, the Shock power's arcs on the player's right hand, kept while the run lasts: they end at the level and shock other fighters ([THAUMATURGY.md](THAUMATURGY.md), In the game) |
 | `--debug-barricade` | in play mode, a force barricade raised 2 m in front of the player once its body is up: it rises, ripples, shoves and knocks back bodies, and falls once the player is 20 m away ([THAUMATURGY.md](THAUMATURGY.md)) |
 | `--debug-wisps` | in play mode, the constant displacement's wisps on the player's body parts ([THAUMATURGY.md](THAUMATURGY.md)) |
+| `--powers id,id,...` | in play mode, the powers the player knows (ids in hex or decimal, e.g. `0x20206,0x401`), filling the bar's slots in that order: C opens the bar, a digit picks and Q casts through the real front ends ([THAUMATURGY.md](THAUMATURGY.md), In the game) |
 | `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |
 
 ## Movement

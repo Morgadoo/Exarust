@@ -20,9 +20,10 @@
 //! clears), R (with the player's condition word and the lift counting as a
 //! drag) and F (the record's light flag); I and J send a
 //! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
-//! journal on the window manager. The skills screen's opening is not in
-//! Exarust, the power tree and power bar need powers, which the game has
-//! none of yet, and there is no dialogue.
+//! journal on the window manager; C, the digits, Q and the arrows send the
+//! power bar's commands to [`crate::thaum::cast`]. The skills screen's
+//! opening is not in Exarust, the power tree has its own key reader, and
+//! there is no dialogue.
 //!
 //! Evidence: the controls' key handler, the combat toggle and the swap and
 //! light requests, read in the instructions

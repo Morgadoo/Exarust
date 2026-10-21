@@ -122,11 +122,23 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   The summon brings in `demon a01` with role 0x21 and a 300 relation both
   ways, waits 2 s, fades the caster over 3 s and finishes 1 s later.
 
-The classes are plain functions with tests; nothing in the running game
-calls them yet (the player has no power bar), and the combat factors they
-publish are not read by `exa_combat`'s hit formula. The player swap, the
-spirit body's character generation, the kinesis aim sweep and the effect
-meshes are descriptions here, not spawned entities.
+`thaum::cast` (the cast plugin) creates the classes from the player's
+power bar: `C` opens and stores the bar, a digit picks a slot, the arrows
+step the choice and `Q` hands the picked slot to the bar's cast entry,
+which finds the power among the caster's known powers, runs its domain's
+front end by the word's domain byte (Force, Energy or Displacement; a Mind
+id is refused until the Mind target pick is wired) and makes the class the
+cast's creator makes. Each body tick walks the active list in the
+original's order, passes control event 0 (event 2 once a power is told to
+end), releases the focus a finished power held and takes it out with the
+last entry in its place. The live arcs, barricades and wisps are spawned
+with their powers and removed as they end; the other effects have no
+entity yet, so their classes keep running. A cast motion is played through
+the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
+combat factors the classes publish are still not read by `exa_combat`'s
+hit formula, and the player swap, the spirit body's character generation,
+the kinesis aim sweep and the effect meshes are descriptions here, not
+spawned entities.
 
 ## Force
 

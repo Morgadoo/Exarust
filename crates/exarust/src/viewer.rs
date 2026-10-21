@@ -818,10 +818,14 @@ fn spawn_players(
             Transform::from_rotation(Quat::from_rotation_y(yaw)),
             exa_anim::Animator::new("Default", "Idle"),
             exa_game::player::PlayerBody::new(yaw),
+            exa_game::thaum::cast::PowerCaster::new(&options.powers),
             exa_physics::body::locomotion::Locomotion::facing(yaw),
             exa_character::Outfit::of_models(&options.outfit),
             ChildOf(player),
         ));
+        if !options.powers.is_empty() {
+            info!("player knows powers: {:x?}", options.powers);
+        }
         // A new story character is Player, Human and the unknown background
         // (Exarust has no background choice); the practice and arena
         // fighters are unaligned [inf: the arena start clears the roles and

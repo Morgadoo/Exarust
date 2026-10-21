@@ -270,9 +270,12 @@ while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
 when it gives light and the body is not switching weapons (0x10000).
 
-Wired in Exarust: Tab, R and F. Not yet: the windows, the dialogue and the
-power bar the other keys open; the extinguished light itself (the record's
-flag changes, the torch burns on); the original's cancel of a lift or drag
+Wired in Exarust: Tab, R and F, and C with the digits, Q and the arrows:
+the hotkey handler sends the cast plugin the bar's commands, so C opens and
+closes the bar, a digit picks, Q uses the picked slot and the arrows step
+(the bar's slots are the player's known powers). Not yet: the windows and
+the dialogue the other keys open; the extinguished light itself (the
+record's flag changes, the torch burns on); the original's cancel of a lift or drag
 on entering combat, which puts a lifted item back where its lift saved it
 and leaves a drag's link in place (Exarust's lift does not move the item,
 and it lets go of the drag rather than leave a link no release would end);

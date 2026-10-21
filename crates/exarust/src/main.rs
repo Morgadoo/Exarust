@@ -75,6 +75,7 @@
 //!          --debug-arcs               play mode: the Shock power's arcs on the player's right hand
 //!          --debug-barricade          play mode: a force barricade raised 2 m in front of the player
 //!          --debug-wisps              play mode: the constant displacement's wisps on the player's body
+//!          --powers <id,id,...>       play mode: the powers the player knows (hex or decimal), for the power bar
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
@@ -258,6 +259,8 @@ pub struct Options {
     pub undying: bool,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
+    /// Play mode: powers the player knows (`--powers`, hex or decimal).
+    pub powers: Vec<u32>,
 }
 
 /// What a `--press` entry presses.
@@ -575,6 +578,16 @@ fn main() -> AppExit {
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
+            "--powers" => {
+                let list = args.next().unwrap_or_default();
+                match exa_game::thaum::cast::parse_power_list(&list) {
+                    Some(powers) => options.powers = powers,
+                    None => {
+                        eprintln!("--powers: cannot read {list:?} (id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--feral" => {
                 options.feral = args
                     .next()
