@@ -13,20 +13,25 @@
 //!   tick; the next tick releases what it held and answers 2. A persistent
 //!   power (id bit `0x2_0000`) publishes a HUD state: 2 while it runs, 12
 //!   with the clock and a 200 ms fade once it ends.
-//! - **Walking the list** ([`power_index`], [`end_power`]): the index of a
-//!   power id in a body's list (−1 when absent) and the order to end one by
-//!   id (state 2).
+//! - **Walking the lists** ([`power_index`], [`end_power`]): the index of a
+//!   power id in a record's list of known powers (−1 when absent) and the
+//!   order to end the first running power with an id in a body's list
+//!   (state 2).
 //! - **Domain dispatch** ([`evaluate_domain`]): an id's domain byte
 //!   (bits 8–15) sends an AI evaluation to Force, Energy or Displacement;
 //!   every other domain answers 0x400_0000 (the "cannot use" word).
 //! - **Loading** ([`restore_persistent`]): a save's `(id, size)` pairs are
 //!   rebuilt into running powers, Mind by its own module and Force by
-//!   [`super::force::restore_force_power`]; a body with the reserve
-//!   technique has each rebuilt power's held cost multiplied by 0.75.
+//!   [`super::force::restore_force_power`] (which reserves three quarters
+//!   with the technique); a body with the reserve technique then has each
+//!   rebuilt power's held focus multiplied by 0.75 once more.
 //! - **Power Glean** ([`glean`]): a shaper that dies within 20 m teaches
 //!   the player the highest of its domains, Displacement first (Vanish
 //!   0x10601) and then Energy (Shock 0x401), unless the player already
 //!   knows one of that domain; the message `Power_Glean` follows for 3 s.
+//!   The player must know at least one power, and a distance that is not a
+//!   number passes the range test (the original only refuses one above
+//!   20 m).
 //! - **Spirit body** ([`spirit_body`]): the record the original builds for
 //!   the spirit the player controls in Spirit Form — race 0xE00, status
 //!   bits 0x220000, the copied record fields and power list rebound to the
@@ -38,8 +43,9 @@ pub mod force;
 pub mod mind;
 
 use super::casting::{
-    AiView, CastBody, ID_MASK, PERSISTENT, code, release_reserve, reserve, spend_tick,
+    AiView, CastBody, PERSISTENT, RESERVE_TECHNIQUE, code, release_reserve, reserve, spend_tick,
 };
+use super::engine::dist_sq;
 use super::force::restore_force_power;
 
 /// The original's power states: a power starts ready, runs, and ends.
@@ -199,9 +205,10 @@ pub fn drain(body: &mut CastBody, cost: f32) {
     spend_tick(body, cost);
 }
 
-/// The index of a power id in a body's list, or `None` when it is absent.
-pub fn power_index(body: &CastBody, id: u32) -> Option<usize> {
-    body.powers.iter().position(|power| power.id == id)
+/// The index of a power id in a record's list of known powers, or `None`
+/// when it is absent.
+pub fn power_index(known: &[KnownPower], id: u32) -> Option<usize> {
+    known.iter().position(|power| power.id == id)
 }
 
 /// Ends the first power with this id: its state becomes [`ENDING`]. Returns
@@ -233,22 +240,39 @@ pub struct SavedPower {
     pub size: u32,
 }
 
+/// A power the load rebuilt: its id and the focus it holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RestoredPower {
+    pub id: u32,
+    pub held: f32,
+}
+
 /// Rebuilds saved persistent powers on a body. Force powers are rebuilt by
-/// its own routine; a Mind power is left for the Mind module, which this
-/// lane does not own. Returns the powers added, in the save's order.
-pub fn restore_persistent(body: &mut CastBody, saved: &[SavedPower]) -> Vec<u32> {
+/// their own routine, which reserves the row's cost (three quarters with
+/// the reserve technique); the load then multiplies the held focus by 0.75
+/// once more for a body with the technique, so such a power holds
+/// `0.5625 × cost` against a reserve of `0.75 × cost`. A Mind power is
+/// left for the Mind module, which this lane does not own. Returns the
+/// powers added, in the save's order.
+pub fn restore_persistent(body: &mut CastBody, saved: &[SavedPower]) -> Vec<RestoredPower> {
     let mut added = Vec::new();
     for entry in saved {
-        let id = entry.id & ID_MASK;
-        // The Mind module rebuilds 0x100-domain powers; this lane does not
-        // own it, so only Force powers come back here. The Force routine
-        // takes the row's cost back into the reserve, three quarters with
-        // the technique.
-        if entry.id & DOMAIN_MASK == DOMAIN_FORCE && restore_force_power(id, body).is_some() {
-            body.powers
-                .push(super::casting::ActivePower { id, state: READY });
-            added.push(id);
+        if entry.id & DOMAIN_MASK != DOMAIN_FORCE {
+            continue;
         }
+        let Some(cost) = restore_force_power(entry.id, body) else {
+            continue;
+        };
+        let technique = body.techniques & RESERVE_TECHNIQUE != 0;
+        let mut held = if technique { cost * 0.75 } else { cost };
+        if technique {
+            held *= 0.75;
+        }
+        body.powers.push(super::casting::ActivePower {
+            id: entry.id,
+            state: READY,
+        });
+        added.push(RestoredPower { id: entry.id, held });
     }
     added
 }
@@ -303,17 +327,9 @@ pub fn glean(
     if !player_present || player.is_empty() {
         return none;
     }
-    let delta = [
-        dead_at[0] - player_at[0],
-        dead_at[1] - player_at[1],
-        dead_at[2] - player_at[2],
-    ];
-    let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-    // The original's ordered compare fails for a NaN distance.
-    if !matches!(
-        dist_sq.partial_cmp(&GLEAN_RANGE_SQ),
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-    ) {
+    // Only a distance above 20 m refuses: the unordered compare of a
+    // distance that is not a number passes.
+    if dist_sq(dead_at.into(), player_at.into()) > GLEAN_RANGE_SQ {
         return none;
     }
     let mut energy = false;
@@ -444,7 +460,7 @@ pub const STARTED: i32 = code::STARTED;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thaum::casting::{ActivePower, RESERVE_TECHNIQUE};
+    use crate::thaum::casting::ActivePower;
 
     #[test]
     fn the_base_power_holds_its_cost_and_returns_it() {
@@ -502,6 +518,18 @@ mod tests {
 
     #[test]
     fn powers_are_found_and_ended_by_id() {
+        let known = [
+            KnownPower {
+                id: 0x201,
+                word: KNOWN_WORD,
+            },
+            KnownPower {
+                id: 0x10209,
+                word: KNOWN_WORD,
+            },
+        ];
+        assert_eq!(power_index(&known, 0x10209), Some(1));
+        assert_eq!(power_index(&known, 0x401), None);
         let mut body = CastBody {
             powers: vec![
                 ActivePower {
@@ -515,8 +543,6 @@ mod tests {
             ],
             ..CastBody::default()
         };
-        assert_eq!(power_index(&body, 0x10209), Some(1));
-        assert_eq!(power_index(&body, 0x401), None);
         assert!(end_power(&mut body, 0x10209));
         assert_eq!(body.powers[1].state, ENDING);
         assert!(!end_power(&mut body, 0x401));
@@ -546,7 +572,13 @@ mod tests {
             id: 0x20208,
             size: 0,
         }];
-        assert_eq!(restore_persistent(&mut body, &saved), vec![0x20208]);
+        assert_eq!(
+            restore_persistent(&mut body, &saved),
+            vec![RestoredPower {
+                id: 0x20208,
+                held: 0.35
+            }]
+        );
         assert_eq!(body.powers.len(), 1);
         assert_eq!(body.powers[0].id, 0x20208);
         let mind = [SavedPower {
@@ -554,6 +586,15 @@ mod tests {
             size: 0,
         }];
         assert!(restore_persistent(&mut body, &mind).is_empty());
+        // With the technique the reserve takes three quarters and the held
+        // focus three quarters of that.
+        let mut reserving = CastBody {
+            techniques: RESERVE_TECHNIQUE,
+            ..CastBody::default()
+        };
+        let back = restore_persistent(&mut reserving, &saved);
+        assert_eq!(back[0].held, 0.35 * 0.75 * 0.75);
+        assert_eq!(reserving.reserved, 0.35 * 0.75);
     }
 
     #[test]
@@ -582,6 +623,19 @@ mod tests {
         let again = glean(&dead, [0.0; 3], &mut player, [0.0; 3], true);
         assert_eq!(again.learned, None);
         assert_eq!(player.len(), before);
+
+        // A distance that is not a number passes the range test.
+        let mut fresh = vec![KnownPower {
+            id: 0x201,
+            word: KNOWN_WORD,
+        }];
+        let lost = glean(&dead, [f32::NAN, 0.0, 0.0], &mut fresh, [0.0; 3], true);
+        assert_eq!(lost.learned.unwrap().id, 0x10601);
+        // A player who knows no power learns nothing.
+        assert_eq!(
+            glean(&dead, [0.0; 3], &mut Vec::new(), [0.0; 3], true).learned,
+            None
+        );
 
         // Out of range, or no player, teaches nothing.
         let far = glean(&dead, [0.0; 3], &mut player, [2001.0, 0.0, 0.0], true);
