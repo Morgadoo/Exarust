@@ -62,10 +62,11 @@ threads: a ring with a head, a tail, one kept-free slot and growth; requests
 in order; a promotion that moves one request to the front (the original's
 "Priority item"); removal; and an upload pass that takes only what was ready
 and honours a budget. `TextureStream` is the texture loader's queue:
-`request`, `promote`, `cancel`, one `decode_next` per pass on whatever
-executor the caller uses, the loader's yield while uploads wait, and
-`pump_uploads(budget, upload)` on the main thread with a per-upload completion
-callback. The original drains every ready upload each pass; the budget is
+`request` (a duplicate of a queued name is refused), `promote`, `cancel`,
+one `decode_next` per pass on whatever executor the caller uses, the loader's
+yield while uploads wait, `load_now` for the priority path (promote, decode
+and upload one name), and `pump_uploads(budget, upload)` on the main thread
+with a per-upload completion callback. The original drains every ready upload each pass; the budget is
 Exarust's addition for memory-bounded loaders (unbounded when omitted).
 
 `content_stream` is the stream thread's scheduler: placed level objects first,

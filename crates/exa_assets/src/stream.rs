@@ -250,14 +250,13 @@ pub struct TextureUpload {
     pub alpha: bool,
 }
 
-/// What a request's outcome is, for cancellations.
+/// What queueing a request did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoadState {
+pub enum RequestOutcome {
+    /// The request was appended.
     Queued,
-    Decoding,
-    Uploading,
-    Done,
-    Cancelled,
+    /// The same texture was already queued; the first request is kept.
+    AlreadyQueued,
 }
 
 /// The texture loader's request queue and its pending-upload list.
@@ -288,7 +287,7 @@ impl TextureStream {
 
     /// Queues a load. The original also wakes the loader unless the stream is
     /// paused; [`TextureStream::take_wake`] reports that.
-    pub fn request(&mut self, request: TextureRequest, state: &mut LoadState) -> bool {
+    pub fn request(&mut self, request: TextureRequest) -> RequestOutcome {
         let queue = self
             .requests
             .get_or_insert_with(|| RingQueue::new(16, RING_GROWTH));
@@ -297,14 +296,12 @@ impl TextureStream {
         // stale caller can. Keep the first, as the file loader's registry
         // does.
         if queue.iter().any(|queued| queued.key == request.key) {
-            *state = LoadState::Queued;
-            return false;
+            return RequestOutcome::AlreadyQueued;
         }
         queue.push(request);
-        *state = LoadState::Queued;
         self.in_flight += 1;
         self.wake();
-        true
+        RequestOutcome::Queued
     }
 
     /// Moves a queued request to the front: the original's "priority item".
@@ -425,6 +422,44 @@ impl TextureStream {
         self.uploads.len()
     }
 
+    /// Whether `key` is still queued or waiting to upload.
+    pub fn is_pending(&self, key: &TextureKey) -> bool {
+        self.requests
+            .as_ref()
+            .is_some_and(|queue| queue.iter().any(|request| &request.key == key))
+            || self.uploads.iter().any(|upload| &upload.key == key)
+    }
+
+    /// Loads one texture to completion: promotes its request to the front,
+    /// then decodes and uploads until it is no longer pending. The original's
+    /// "priority item" path. Returns `false` when the request was not queued.
+    pub fn load_now(
+        &mut self,
+        key: &TextureKey,
+        budget: usize,
+        mut decode: impl FnMut(&TextureRequest) -> Option<(Image, bool)>,
+        mut upload: impl FnMut(TextureUpload),
+    ) -> bool {
+        if !self.promote(key) {
+            return false;
+        }
+        while self.is_pending(key) {
+            if !self.decode_next(&mut decode) {
+                break;
+            }
+            self.pump_uploads(budget, &mut upload);
+        }
+        // Uploads can still trail behind if the budget stopped a pass short;
+        // keep draining while this key is among them.
+        while self.uploads.iter().any(|upload| &upload.key == key) {
+            self.pump_uploads(budget, &mut upload);
+            if budget == 0 {
+                break;
+            }
+        }
+        true
+    }
+
     /// The uploads finished since the last call, in upload order.
     pub fn take_finished(&mut self) -> Vec<TextureKey> {
         std::mem::take(&mut self.finished)
@@ -533,10 +568,10 @@ mod tests {
     #[test]
     fn a_pass_uploads_only_the_entries_ready_when_it_started() {
         let mut stream = TextureStream::new();
-        let mut state = LoadState::Queued;
         for name in ["a", "b", "c"] {
-            let _ = stream.request(request(name), &mut state);
+            assert_eq!(stream.request(request(name)), RequestOutcome::Queued);
         }
+        assert_eq!(stream.request(request("b")), RequestOutcome::AlreadyQueued);
         let mut decoded = 0;
         while stream.decode_next(|_| {
             decoded += 1;
@@ -562,10 +597,10 @@ mod tests {
     #[test]
     fn promotion_cancellation_pause_and_wakes_follow_the_loader() {
         let mut stream = TextureStream::new();
-        let mut state = LoadState::Queued;
         for name in ["a", "b", "c"] {
-            let _ = stream.request(request(name), &mut state);
+            assert_eq!(stream.request(request(name)), RequestOutcome::Queued);
         }
+        assert_eq!(stream.request(request("b")), RequestOutcome::AlreadyQueued);
         assert!(stream.take_wake());
         assert!(stream.promote(&key("c")));
         assert!(!stream.promote(&key("zz")));
@@ -574,7 +609,7 @@ mod tests {
         assert!(!stream.cancel(&key("a")));
         assert_eq!(stream.queued(), 1);
         stream.pause();
-        let _ = stream.request(request("d"), &mut state);
+        let _ = stream.request(request("d"));
         assert!(!stream.take_wake());
         stream.resume();
         assert!(stream.take_wake());
@@ -582,10 +617,36 @@ mod tests {
     }
 
     #[test]
+    fn a_priority_load_promotes_and_runs_to_upload() {
+        let mut stream = TextureStream::new();
+        for name in ["a", "b", "c"] {
+            stream.request(request(name));
+        }
+        let mut uploaded = Vec::new();
+        let mut order = Vec::new();
+        let done = stream.load_now(
+            &key("c"),
+            usize::MAX,
+            |request| {
+                order.push(request.key.name.as_str().to_string());
+                Some((Image::default(), false))
+            },
+            |item| uploaded.push(item.key.name.as_str().to_string()),
+        );
+        assert!(done);
+        // Only the promoted request is decoded; the rest stay queued, as the
+        // original's priority path waits for this one texture alone.
+        assert_eq!(order, ["c"]);
+        assert_eq!(uploaded, ["c"]);
+        assert_eq!(stream.queued(), 2);
+        assert!(!stream.is_idle());
+        assert!(!stream.load_now(&key("zz"), 1, |_| None, |_| {}));
+    }
+
+    #[test]
     fn the_loader_yields_while_uploads_are_waiting() {
         let mut stream = TextureStream::new();
-        let mut state = LoadState::Queued;
-        stream.request(request("a"), &mut state);
+        stream.request(request("a"));
         assert!(!stream.wants_to_yield());
         stream.decode_next(|_| Some((Image::default(), false)));
         assert!(stream.wants_to_yield());
