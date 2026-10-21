@@ -446,9 +446,25 @@ mod tests {
 
     #[test]
     fn a_plan_lifts_its_footprint_and_stamps_it_again() {
-        let mut grid = yard();
-        let standing = at(&grid, 8, 8, 1.0);
-        let goal = at(&grid, 12, 8, 1.0);
+        // The planner keeps ten cells off the grid's half size, and a start
+        // under voxel 15 would take the empty upper layer: a 48-cell grid at
+        // floor 100.
+        let mut grid = NavGrid::empty(48, 48, 0.0);
+        for z in 0..48 {
+            for x in 0..48 {
+                grid.set_cell(
+                    x,
+                    z,
+                    Layer::Lower,
+                    NavCell {
+                        floor: 100,
+                        ..NavCell::default()
+                    },
+                );
+            }
+        }
+        let standing = at(&grid, 20, 20, 10.0);
+        let goal = at(&grid, 24, 20, 10.0);
         assert!(stamp_footprint(&mut grid, standing));
         let with_foot = find_path(&grid, standing, goal, 0);
         let planned = plan_around(&mut grid, standing, goal, 0);
@@ -460,8 +476,8 @@ mod tests {
             planned.cost,
             with_foot.cost
         );
-        assert_eq!(grid.cell(8, 8, Layer::Lower).penalty, 63);
-        assert_eq!(grid.cell(8, 7, Layer::Lower).penalty, 32);
+        assert_eq!(grid.cell(20, 20, Layer::Lower).penalty, 63);
+        assert_eq!(grid.cell(20, 19, Layer::Lower).penalty, 32);
     }
 
     #[test]

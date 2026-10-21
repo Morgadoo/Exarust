@@ -166,33 +166,44 @@ Besides planning, the pathfinder answers point and line questions on the
 grid (heights in voxels, `h` the start's, `fl`/`ul` and `fu`/`uu` a
 cell's lower and upper floor and underside):
 
-- **Planning** (`nav::find_path`; `nav::find_path_with` adds the accept
+- **Planning** (`nav::find_path`; `nav::find_path_with` takes the accept
   distance and the penalty shift): the start and goal become cells by
-  rounding `world_cm/30 + 0.5` ties to even; both must lie in the grid's
-  ten-cell margin and within 253 cells of each other. A 256 × 256 window
-  is centred between them. The start takes the upper layer when its height
-  (truncated `(y − base)/10`) is above the upper underside less 3 and below
-  its floor plus 15, otherwise the lower one; every step reads the lower
-  floor of the cell it leaves. Neighbours go north-west, north, north-east,
-  west, east, south-west, south, south-east; a step may rise at most four
-  floor units and fall less than 21 and needs a lower floor. The lower
-  layer is the candidate when its floor is within four of the current one;
-  a floor more than four above is refused unless its slab leaves ten of
-  room, and then leaves the choice open. The upper layer replaces it when
-  its floor is within four and higher; an upper floor more than four above
-  passes when its slab leaves ten of room (an empty underside with a floor
-  not below the lower one also passes) and keeps the lower candidate;
-  anything else is refused. The step pays `10·Δ² + 5 or 7 + 2·clearance + (penalty
-  << shift)`, refused when the shifted penalty is 601 or more. The
-  clearance test is `180/(size + 1)`. The open list is LIFO, popped by the
-  smallest f with the newest winning a tie; a relaxed node keeps its place
-  and a node already closed is not reopened. The heuristic is ten times
-  the 3-D cell distance, its vertical leg from the start height, truncated.
-  The search stops under the accept distance, with an empty open list, or
-  at 4096 nodes, and answers the closest node. The parent chain is
-  collapsed through runs of one direction and layer, then each kept point
-  is offered to the budget line walk. Points sit on cell centres at the
-  node's layer floor. A search that finds only the start has no points.
+  rounding `cm · (1/30) + ½` ties to even; both must lie within the grid's
+  half size less ten and within 253 cells of each other. A 256 × 256
+  window is centred between them; its border is never entered. Heights
+  are `round((y − base) · 0.1)`, ties to even. The start takes the upper
+  layer when its height is above the upper underside less 3 and below its
+  floor plus 15, otherwise the lower one; every step reads the floor of the
+  node it leaves, on that node's layer. Neighbours go north-west, north,
+  north-east, west, east, south-west, south, south-east; a step needs a
+  lower floor, may rise at most four floor units and fall less than 21. A
+  lower floor more than four above is refused unless its slab leaves ten
+  of room, and then only the upper floor can take the step; an upper floor
+  more than four above passes when its slab leaves ten of room (an empty
+  underside with a floor not below the lower one also passes) and keeps
+  the lower floor; an upper floor within four and above the lower one is
+  entered. The step pays `10·Δ² + 5 or 7 + 2·clearance + (penalty << shift)`,
+  refused when the shifted penalty is over 600 or the clearance over
+  `180/(size + 1)`. The open list is LIFO, popped by the smallest total
+  (compared unsigned) with the newest winning a tie; a node met again more
+  cheaply keeps its place and a node already taken is not put back. The
+  heuristic is `round(10 · √(Δx² + Δz² + Δh²))`, its height leg from the
+  node's floor to the goal's height. The search stops once the closest
+  node's heuristic is under the accept distance (`nav::find_path` uses 10,
+  the goal's cell), with an empty open list, or at the 4096th node (the
+  accept test still runs), and answers the closest node. A search that did
+  not reach the goal counts as reached when that node's centre lies within
+  100 cm of the goal; otherwise the path stops at the parent of the rough
+  node (clearance over `64/(size + 1)`) nearest the start. The parent chain
+  keeps the last node of each run of one direction and layer; from the
+  start, each corner after the next is offered to the budget line walk
+  back to the last kept point, and the corner before it is kept when the
+  line is blocked. The line walk holds the far corner's floor, steps every
+  cell of the longer axis to the kept point and is blocked by a refused
+  cell or a cost (the penalty shifted once more) over what the search paid
+  between the two plus ten. Points sit on cell centres at the node's layer
+  floor; fewer than two corners give no points. Each thread keeps one set
+  of window buffers, and a search clears only the window's interior.
 - **Disturbance** (`nav::disturbance`): the original's sampler is a stub
   that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
