@@ -337,10 +337,12 @@ journal has no ids and writes the page index.
 journal (when it has entries), the global experience (always), the memory
 flags and the transition state (each when non-zero). The arena writes the
 placement, the journal (when it has entries), the arsenal (always), the
-stash and the shop stock (each when not empty), then the arena tables the
-arena's own routines write; the observed arena save holds, after the
+stash and the shop stock (each when not empty), then the company record
+`0xA0DC0000`, the extra record `0xA0D10000`, the employees `0xA0400000`
+(when not empty), the merchant `0xA0500000`, the hireables `0x00010000`
+and the tournament `0xA0600000`; the observed arena save holds, after the
 placement, `0xA0100000`, `0xA0300000`, `0xA0DC0000`, `0xA0D10000`,
-`0xA0500000`, `0x00010000`, `0xA0600000`.
+`0xA0500000`, `0x00010000`, `0xA0600000` (no employees yet).
 
 A loader passes a **mask**: the reader ands each chunk id with it, ignores
 a result of `0xF` or less and dispatches the rest on the **masked** id

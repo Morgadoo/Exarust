@@ -764,19 +764,20 @@ pub const STORY_CHUNK_ORDER: [u32; 5] = [
 ];
 
 /// The order the arena's writer emits the chunks it knows: the placement
-/// first, then the journal, the arsenal, the stash, the shop stock and the
-/// arena tables. The observed retail arena save holds the arsenal, the shop
-/// stock, the company record, the day record, the merchant, the hireables
-/// and the tournament in that order; the employees' place among the tables
-/// is not observed and follows their id here.
+/// first, then the journal, the arsenal, the stash, the shop stock, the
+/// company record, the extra record, the employees, the merchant, the
+/// hireables and the tournament. The observed retail arena save holds the
+/// arsenal, the shop stock, the company record, the extra record, the
+/// merchant, the hireables and the tournament in that order; the employees
+/// sit between the extra record and the merchant in the writer.
 pub const ARENA_CHUNK_ORDER: [u32; 10] = [
     JOURNAL_CHUNK,
     ARSENAL_CHUNK,
     HUB_STASH_CHUNK,
     SHOP_STOCK_CHUNK,
-    EMPLOYEES_CHUNK,
     COMPANY_CHUNK,
     ARENA_EXTRA_CHUNK,
+    EMPLOYEES_CHUNK,
     MERCHANT_CHUNK,
     HIREABLES_CHUNK,
     TOURNAMENT_CHUNK,
@@ -1705,9 +1706,9 @@ mod tests {
                 ARSENAL_CHUNK,
                 HUB_STASH_CHUNK,
                 SHOP_STOCK_CHUNK,
-                EMPLOYEES_CHUNK,
                 COMPANY_CHUNK,
                 ARENA_EXTRA_CHUNK,
+                EMPLOYEES_CHUNK,
                 MERCHANT_CHUNK,
                 HIREABLES_CHUNK,
                 TOURNAMENT_CHUNK
