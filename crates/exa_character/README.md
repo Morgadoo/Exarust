@@ -110,8 +110,9 @@ physique values and the body morphs they select remain the body's concern
   (`search_seed`; a zero word is replaced from the engine's generator). It
   also gives the per-limb leg scale: a thigh or shin over its 55/54 cm
   stretch limit keeps the mean of the required and the body's scale.
-- `hair` builds a placed character's `CharExt` style under its head part,
-  keeping the `?` roots only under a covered head; `exa_assets::hair` gives
+- `hair` builds a placed character's `CharExt` style under its head part
+  (2 ms of styles a frame, so a crowd loads over several frames), keeping
+  the `?` roots only under a covered head; `exa_assets::hair` gives
   the record's colour, specular, gloss and opacity. The builder's refresh
   cut (keep, cover, replace) is `look::hair_refresh`.
 

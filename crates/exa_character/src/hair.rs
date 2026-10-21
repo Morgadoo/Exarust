@@ -36,6 +36,10 @@ pub struct HairAttached;
 /// The head's bone in the body model.
 pub const HEAD: usize = 10;
 
+/// How long one frame spends building hair, so a crowd's styles load over
+/// several frames.
+const HAIR_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
+
 /// Builds the hair of every body that has not got it yet.
 ///
 /// A style shows nothing when its entry is missing or when the outfit covers
@@ -46,7 +50,7 @@ pub const HEAD: usize = 10;
 pub fn attach_hair(
     mut commands: Commands,
     game: Option<Res<Game>>,
-    mut cache: ResMut<ModelCache>,
+    cache: Option<ResMut<ModelCache>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -55,7 +59,9 @@ pub fn attach_hair(
     children: Query<&Children>,
     parts: Query<&BodyPart>,
 ) {
-    let Some(game) = game else { return };
+    let (Some(game), Some(mut cache)) = (game, cache) else {
+        return;
+    };
     if bodies.is_empty() {
         return;
     }
@@ -78,7 +84,11 @@ pub fn attach_hair(
                 .collect()
         })
         .unwrap_or_default();
+    let started = std::time::Instant::now();
     for (body, hair, outfit) in &bodies {
+        if started.elapsed() >= HAIR_BUDGET {
+            break;
+        }
         let Some(head) = children
             .iter_descendants(body)
             .find(|&e| parts.get(e).is_ok_and(|p| p.bone == HEAD))
@@ -156,6 +166,51 @@ mod tests {
     #[test]
     fn the_hair_hangs_on_the_heads_bone() {
         assert_eq!(HEAD, 10);
+    }
+
+    /// A style's model hangs under the head part, with the head's bone.
+    #[test]
+    fn a_style_hangs_under_the_head() {
+        use std::sync::Arc;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<exa_render::material::ExaMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<ModelCache>()
+            .insert_resource(Game(Arc::new(game)))
+            .add_systems(Update, attach_hair);
+        let body = app
+            .world_mut()
+            .spawn((
+                Hair {
+                    style: 1,
+                    colour: [40, 80, 40],
+                    feral: 0.0,
+                    light_variant: false,
+                },
+                Outfit::default(),
+            ))
+            .id();
+        let head = app
+            .world_mut()
+            .spawn((
+                BodyPart {
+                    bone: HEAD,
+                    rest: Transform::IDENTITY,
+                },
+                ChildOf(body),
+            ))
+            .id();
+        app.update();
+        let world = app.world();
+        assert!(world.get::<HairAttached>(body).is_some());
+        let children = world.get::<Children>(head).unwrap();
+        assert!(!children.is_empty(), "the hair style spawned no root");
     }
 
     /// The colour and covered-head rules are the pure look module's.

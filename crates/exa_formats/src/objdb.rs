@@ -124,6 +124,11 @@ pub struct Item {
     pub equip_lock: u8,
 }
 
+/// All eight layer bytes of a coverage word or-ed together.
+fn union_bytes(word: u64) -> u64 {
+    (0..8).fold(0u64, |all, i| all | ((word >> (8 * i)) & 0xFF))
+}
+
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
 /// be displaced by a new one.
 pub const EQUIP_LOCK_LIMIT: u8 = 50;
@@ -494,12 +499,18 @@ impl Item {
         self.slot_words.get(slot).copied().unwrap_or(0)
     }
 
-    /// Body slots (bone indices) this item hides, as a bit mask.
+    /// Body slots (bone indices) this item hides, as a bit mask: a slot
+    /// whose first layer byte or any of whose eight layer bytes has the
+    /// body-hide bit. The first byte is the one the fit uses; the union is
+    /// the pass the character builder runs over all layers.
     pub fn hidden_slots(&self) -> u32 {
         self.slot_layers
             .iter()
+            .zip(&self.slot_words)
             .enumerate()
-            .filter(|(_, b)| **b & HIDES_BODY != 0)
+            .filter(|(_, (b, w))| {
+                **b & HIDES_BODY != 0 || union_bytes(**w) & u64::from(HIDES_BODY) != 0
+            })
             .fold(0, |m, (s, _)| m | 1 << s)
     }
 
