@@ -48,36 +48,9 @@ pub fn dot_zyx(a: Vec3, b: Vec3) -> f32 {
     (a.z * b.z + a.y * b.y) + a.x * b.x
 }
 
-/// The engine's sine and cosine: the angle reduced by the nearest even
-/// multiple of π/4 (one Cody–Waite step), then the single-precision
-/// polynomials of the reduced angle, each octant picking and signing them.
-pub fn sin_cos(x: f32) -> (f32, f32) {
-    let sign_sin = x.to_bits() & 0x8000_0000;
-    let x = f32::from_bits(x.to_bits() & 0x7fff_ffff);
-    let j = ((x * 1.273_239_5).round_ties_even() as i32).wrapping_add(1) & !1;
-    let y = j as f32;
-    let first = j & 2 == 0;
-    let sign_sin = sign_sin ^ (((j & 4) as u32) << 29);
-    let sign_cos = ((!(j.wrapping_sub(2)) & 4) as u32) << 29;
-    let x = x - y * 0.785_398_2;
-    let z = x * x;
-    let mut c = 2.443_315_7e-5 * z + -1.388_731_6e-3;
-    c = c * z + 4.166_664_6e-2;
-    c *= z;
-    c *= z;
-    c -= 0.5 * z;
-    c += 1.0;
-    let mut s = -1.951_529_6e-4 * z + 8.332_161e-3;
-    s = s * z + -1.666_665_5e-1;
-    s *= z;
-    s *= x;
-    s += x;
-    let (sin, cos) = if first { (s, c) } else { (c, s) };
-    (
-        f32::from_bits(sin.to_bits() ^ sign_sin),
-        f32::from_bits(cos.to_bits() ^ sign_cos),
-    )
-}
+/// The engine's sine and cosine, the one implementation in
+/// [`exa_physics::engine_math`] (NaN past the saturating reduction).
+pub use exa_physics::engine_math::sin_cos;
 
 /// A vector turned about a unit `axis` by `angle`, by the engine's
 /// axis-angle matrix.

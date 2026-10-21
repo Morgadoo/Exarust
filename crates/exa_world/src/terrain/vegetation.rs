@@ -10,6 +10,7 @@
 use std::sync::OnceLock;
 
 use bevy::math::{Vec2, Vec3};
+use exa_physics::engine_math::sin_cos;
 
 /// Point-set seed, radius (in 20 cm vertex steps) and attempts per point.
 const POINT_SEED: u32 = 0x1797_2D3E;
@@ -108,39 +109,6 @@ fn poisson_disc() -> Vec<Vec2> {
         active.swap_remove(pick);
     }
     points
-}
-
-/// The engine's sine and cosine, as the scatter takes them: the angle
-/// reduced by the nearest even multiple of π/4 (one Cody–Waite step), then
-/// the single-precision polynomials of the reduced angle, each octant
-/// picking and signing them (the same routine as
-/// `exa_game::thaum::engine::sin_cos`).
-fn sin_cos(x: f32) -> (f32, f32) {
-    let sign_sin = x.to_bits() & 0x8000_0000;
-    let x = f32::from_bits(x.to_bits() & 0x7fff_ffff);
-    let j = ((x * 1.273_239_5).round_ties_even() as i32).wrapping_add(1) & !1;
-    let y = j as f32;
-    let first = j & 2 == 0;
-    let sign_sin = sign_sin ^ (((j & 4) as u32) << 29);
-    let sign_cos = ((!(j.wrapping_sub(2)) & 4) as u32) << 29;
-    let x = x - y * 0.785_398_2;
-    let z = x * x;
-    let mut c = 2.443_315_7e-5 * z + -1.388_731_6e-3;
-    c = c * z + 4.166_664_6e-2;
-    c *= z;
-    c *= z;
-    c -= 0.5 * z;
-    c += 1.0;
-    let mut s = -1.951_529_6e-4 * z + 8.332_161e-3;
-    s = s * z + -1.666_665_5e-1;
-    s *= z;
-    s *= x;
-    s += x;
-    let (sin, cos) = if first { (s, c) } else { (c, s) };
-    (
-        f32::from_bits(sin.to_bits() ^ sign_sin),
-        f32::from_bits(cos.to_bits() ^ sign_cos),
-    )
 }
 
 /// Splits points into chunks by partitioning in place: rows first, then
