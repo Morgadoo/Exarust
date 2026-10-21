@@ -123,7 +123,8 @@ its movement request):
 |---|---|---|
 | right button held (walking to the cursor), however near | one chevron, two beyond 300 cm | the same |
 | Ctrl (interact) held | the arrowhead | — |
-| standing | the ring | the arrowhead over a point within 3 m of the player, else the cross |
+| standing | the ring | the arrowhead over a point within reach (`docs/PLAYER.md`, The reach), else the cross |
+| a press of the left button refused (`docs/PLAYER.md`, The hand), until its release | — | the cross |
 | down after a fall | the ring | the cross |
 | collapsing from a lethal wound | the ring | the cross |
 | dead | the arrowhead | the cross |
@@ -147,10 +148,10 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
   outline's exactly over any background, the sprite's exactly over black
   and closely over the dark floors (over bright ground it comes out a
   little fainter; see Compositing below);
-- the reach test casts the pointer's ray at the level and measures the
-  point from the player's aim point, 80 cm up (the original measures from
-  the character's position at pelvis height; 3 m across and 3 m up or
-  down); the original's test also has a 245 cm term not yet understood;
+- the reach is the hand's (`exa_game::hand`): the pointer's ray at the
+  level, the props and the characters, the hit at most 245 cm high in the
+  world, and its offset from the player's hip within 300 cm up or down and
+  300 cm across;
 - Exarust's player walks to the cursor only outside combat mode for now, so
   chevrons show in combat mode only once it does there as the original;
 - the state comes from the player's condition word

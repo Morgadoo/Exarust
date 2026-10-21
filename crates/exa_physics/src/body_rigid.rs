@@ -219,6 +219,8 @@ impl Ragdoll {
             sleep: Sleep::Deep,
             simulated: false,
             fell_out: false,
+            grabs: Vec::new(),
+            pass: 0,
         }
     }
 }

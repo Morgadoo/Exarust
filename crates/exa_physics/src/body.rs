@@ -75,8 +75,11 @@ pub mod locomotion;
 #[path = "body_pairs.rs"]
 pub mod pairs;
 pub use pairs::{Pairing, Pairs, Touch};
+#[path = "body_drag.rs"]
+mod drag;
 #[path = "body_rigid.rs"]
 mod rigid;
+pub use drag::{Grab, drag_pull};
 pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
 
 /// Simulation rate of the body.
@@ -877,6 +880,11 @@ pub struct Ragdoll {
     /// Its root part fell below [`FALL_OUT_HEIGHT`], where the original
     /// removes a body's node.
     fell_out: bool,
+    /// The hand's grabs on its parts ([`Ragdoll::grab`]).
+    grabs: Vec<Grab>,
+    /// The iteration pass this tick is in, from 0: a grab with a last pass
+    /// reads it.
+    pass: u32,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1341,6 +1349,8 @@ impl Ragdoll {
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
+            grabs: Vec::new(),
+            pass: 0,
         }
     }
 
@@ -1804,6 +1814,7 @@ impl Ragdoll {
     /// where the tick began.
     fn step(&mut self) {
         self.simulated = true;
+        self.pass = 0;
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
@@ -1992,6 +2003,10 @@ impl Ragdoll {
                 self.parts[l.part].push(&l.on_part, c * l.shares.0);
                 self.parts[l.parent].push(&l.on_parent, -c * l.shares.1);
             }
+            // The hand's grabs come last among a limp part's links.
+            if gains.is_none() && !self.grabs.is_empty() {
+                self.pull_grabs(i);
+            }
             // A lower leg's foot contact, then a foot's sole.
             if let Some(fd) = &feet {
                 for leg in &mut self.legs {
@@ -2014,6 +2029,7 @@ impl Ragdoll {
                 d.balance.land();
             }
         }
+        self.pass += 1;
     }
 
     /// Tests every sphere against the level: swept from where the last tick

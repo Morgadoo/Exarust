@@ -167,6 +167,13 @@ impl PlayerBody {
         self
     }
 
+    /// The left button starts or stops holding an object
+    /// ([`crate::hand`]): while it holds one, the standing quarter turns
+    /// wait.
+    pub(crate) fn hold_object(&mut self, holds: bool) {
+        self.steering.holds_object = holds;
+    }
+
     /// Turns combat mode on or off, as Tab does.
     pub fn toggle_combat(&mut self) {
         self.set_combat(!self.combat);
@@ -483,6 +490,7 @@ pub(crate) fn steer_player(
     physics: Res<Physics>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
     motions: Option<Res<Motions>>,
+    hand: Option<Res<crate::hand::Hand>>,
     mut players: Query<(&CharacterBody, &mut Transform, &Children), With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
@@ -593,7 +601,10 @@ pub(crate) fn steer_player(
                 .as_deref()
                 .filter(|_| GAITS.contains(&anim.action.as_str()))
                 .and_then(|m| key_segment(&anim, m));
-            steering.request(&mut req, body, &input, segment, state);
+            // A refused press or a lift leaves the request as it was.
+            if !hand.as_ref().is_some_and(|h| h.keeps_the_request()) {
+                steering.request(&mut req, body, &input, segment, state);
+            }
             steering.aim(&mut req, to_cursor, state.off_feet());
             steering.explore(&mut req, body, &input, now, standing, state, &line);
             pb.steering = steering;

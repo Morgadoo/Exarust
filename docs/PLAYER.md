@@ -21,8 +21,7 @@ decides from it each tick (below). Outside combat:
   design. Standing still, A or D turns a quarter (90°) once more than a
   second of the game clock has passed since **any** turn key (a quarter
   turn, or A or D steering a walk); A and D together cancel but count. An
-  object held by the left button would block it (the original's
-  interaction drag; Exarust has none yet).
+  object held by the left button blocks it (The hand, below).
 - **Releasing W** does not stop at once: the request holds until the
   playing walk reaches key segment 0 or 4 (its keys run every 10 frames
   from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
@@ -228,7 +227,86 @@ does not yet follow these three rules.
 
 ## Using what the cursor is over
 
-A click names the object. A free hinge is a door or a lever, and a blocked one is left alone. A dead character is a corpse and a living one a person. A loose prop lighter than 0.08 is ignored. A heavy prop is ignored when strength is under 0.9. A usable item on a prop stays usable; with no body it is nothing. A point farther than 70 cm is turned toward before it is used. It is already within reach at 245 cm of height and 300 cm away, or 300 cm high and 350 cm away when it is a door. A drag pulls along the cursor direction by the nearest accepted hit, and that reach starts at 1000 cm. The grabbed box is refused when any placed corner is higher than 280 cm or lower than 1000 cm.
+A click names the object. A free hinge is a door or a lever, and a
+blocked one is left alone. A dead character is a corpse and a living one a
+person. A loose prop whose mobility is under 0.08 is too heavy to move
+unless it is tagged bulky, and one tagged as needing strength is refused
+under strength 0.9. A usable item on a prop stays usable; with no body it is
+nothing. A point farther than 70 cm is turned toward before it is used. A
+drag pulls along the cursor direction by the nearest accepted hit, and that
+reach starts at 1000 cm. The grabbed box is refused when any placed corner
+is higher than 280 cm or lower than 1000 cm.
+
+### The reach
+
+A point is within reach when the point the pick hit is at most 245 cm high
+in the world (the level's floors are near height 0), and its offset from the
+player's hip is at most 300 cm up or down and 300 cm across the ground. A
+door is measured from the door's own place with 300 cm of height and 350 cm
+across; a wheel from its own place with the plain limits. A comparison with
+a NaN passes, as the original's unordered compares do. The reach is measured
+each frame while the right button is not walking to the cursor (in combat
+mode only with Ctrl held or something held); a drag in hand is always within
+reach. Outside combat mode the cursor shows the pointer within reach and the
+cross beyond it. The player down, collapsing or dead lets go of everything
+and is out of reach. Not in Exarust: the original's further test that the
+point lies in the player's navigation region with nothing between.
+
+### The hand
+
+A press of the left button does nothing while combat mode keeps the button
+for attacks (unless Ctrl is held or something is already held), while the
+point under the cursor is out of reach, or while the player is down. Each
+press starts from nothing held. The pick then names what is under the
+cursor:
+
+- **A prop or item the hand can move**, while the player does not
+  locomote: the object's hold begins (the standing quarter turns wait), and
+  with **Ctrl** held it is dragged: a grab on the part the pick hit, at the
+  hit point, strength 1, in the first two of the tick's 20 passes. Without
+  Ctrl the original lifts it onto the cursor as an inventory item; Exarust
+  has no item cursor yet, so that press only holds until the release, whose
+  end also ends the object's hold.
+- **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
+  pass, with or without Ctrl.
+- A door, a wheel or a sim object (cloth) start their own drags in the
+  original; in Exarust they are level geometry, so the hand does not take
+  them yet.
+- **Anything else** (a person, the level, a heavy prop) is refused until the
+  release: the cursor shows the cross and the frame's movement request is
+  left as it was.
+
+The drag's release does not end the object's hold: in the original only the
+lift's release clears it, so after a drag the standing quarter turns wait
+until the next lift is released (kept as the original has it).
+
+Each frame of a drag the grabbed point is let go once it is farther than
+330 cm from the player's hip (the squared distance compared in double
+precision), or when the body is a character that lives again. Otherwise,
+while the point under the cursor is within reach, the anchor moves to where
+the cursor's ray meets the level plane at the grab's height, kept within
+200 cm of the hip across the ground (and then at the grab's height), and the
+body is woken to 256; out of reach the anchor stays on the grabbed point.
+Releasing the button lets go.
+
+The grab is a world link of the body solver (`exa_physics::body::Grab`):
+in each pass it runs in, after the part's own links, the gap from the point
+to its anchor is taken across the ground only; under 1.19209e-7 cm² it does
+nothing; otherwise it pulls twice the strength times the gap, the gap
+counted at most 3·√mobility cm and never more than 5 cm, less the point's
+motion since the tick began that already heads toward the anchor, spread
+over the part's particles by the point's weights and taken by the part
+alone. A limb's
+mobility is its per-bone mass value, a prop's its registered mobility. In
+the solver's test a 40 cm crate of mobility 0.5, held by its middle, crosses
+1 m in about 30 ticks (0.36 s) and tips onto its side as the floor holds its
+bottom back.
+
+The pick looks 40 m along the cursor's ray: at the level and the props'
+meshes (their stand-ins), and at the characters' collision spheres (the
+original tests every object's meshes, through spheres padded by 5 cm for
+interactive objects); the nearest hit wins. The hip is the player's pelvis
+(the original's reference point the swing whoosh also plays at).
 
 The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`, and `0x4000000` skips it), its layer against the view's, the segment against its bounding sphere and then its box, and each mesh asked for its nearest face within the best distance so far, which then shortens the segment. With no hit the pick records where the ray meets the ground plane. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles. The kinesis variant also needs the node's `0x200000` option bit, looks 40 m, grows each sphere by the caller's height and asks the mesh from where the ray crosses that sphere's top.
 

@@ -219,6 +219,12 @@ the character capsules, which bodies skip: a prop body meets the level, and
 characters' parts, corpses and other props through the pairs, by its
 mobility and the group masks of its tree (`Part::rigid`'s pairing,
 `pairs::mask_groups`); a body below −50 m is removed. Only awake bodies are redrawn between ticks.
+The hand's grab (`body::Grab`, `Ragdoll::grab`) is the original's horizontal
+drag link: a limp part's point pulled across the ground toward a world
+anchor in the passes it runs in, twice the strength times the gap counted at
+most 3·√mobility (≤ 5) cm, less the motion already heading there.
+`Physics::fixed_pick` and `prop::StandIns::owner_of` name the prop a ray
+meets.
 
 The level's mechanisms are in `door`, `lever`, `plate`, `relay`, `signal`
 and `mechanism`. Their rules follow the original's instruction listings,

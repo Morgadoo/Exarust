@@ -230,8 +230,7 @@ pub(crate) struct Steering {
     /// What the cursor asks this tick.
     pub(crate) mode: CursorMode,
     /// The left button holds an object (a lever, a door, a dragged item):
-    /// no quarter turns meanwhile. Nothing sets it until the player can
-    /// handle the world's objects.
+    /// no quarter turns meanwhile. The hand sets it ([`crate::hand`]).
     pub(crate) holds_object: bool,
     /// Behaviour ticks counted toward the spawn snap.
     pub(crate) ticks: u8,

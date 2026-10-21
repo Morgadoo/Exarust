@@ -19,6 +19,7 @@ pub mod experience;
 pub mod fall;
 pub mod footprints;
 pub mod frame;
+pub mod hand;
 pub mod hud;
 pub mod hw_config;
 pub mod item_container;
@@ -78,6 +79,7 @@ impl Plugin for GamePlugin {
             fall::FallPlugin,
             footprints::FootprintPlugin,
             cursor::CursorPlugin,
+            hand::HandPlugin,
             hud::HudPlugin,
             torch::TorchPlugin,
             trace::TracePlugin,

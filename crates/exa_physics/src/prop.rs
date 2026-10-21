@@ -81,6 +81,17 @@ pub struct PendingProp(pub Vec<RigidPart>);
 #[derive(Resource, Debug, Default)]
 pub struct StandIns(pub HashMap<Entity, Vec<(ColliderHandle, usize)>>);
 
+impl StandIns {
+    /// The body (its root node) and the part a stand-in collider follows.
+    pub fn owner_of(&self, handle: ColliderHandle) -> Option<(Entity, usize)> {
+        self.0.iter().find_map(|(&body, list)| {
+            list.iter()
+                .find(|&&(h, _)| h == handle)
+                .map(|&(_, part)| (body, part))
+        })
+    }
+}
+
 /// Builds the bodies of props spawned this frame, at their nodes' world
 /// transforms, asleep.
 fn register_props(
@@ -254,6 +265,40 @@ mod tests {
         assert!(app.world().get_entity(node).is_err(), "never removed");
     }
 
+    /// A ray picks the nearest fixed collider, and a stand-in names its body
+    /// and part.
+    #[test]
+    fn a_pick_names_the_stand_ins_body() {
+        use rapier3d::prelude::{ColliderBuilder, PhysicsWorld};
+        let mut world = PhysicsWorld::new();
+        let near = world.insert_collider(
+            ColliderBuilder::ball(0.5)
+                .translation(Vec3::new(0.0, 0.0, 5.0))
+                .user_data(STAND_IN)
+                .build(),
+            None,
+        );
+        world.insert_collider(
+            ColliderBuilder::ball(0.5)
+                .translation(Vec3::new(0.0, 0.0, 9.0))
+                .build(),
+            None,
+        );
+        world.step();
+        let physics = Physics(world);
+        let body = Entity::from_raw_u32(7).unwrap();
+        let stand_ins = StandIns(HashMap::from([(body, vec![(near, 2)])]));
+        let (handle, t) = physics.fixed_pick(Vec3::ZERO, Vec3::Z, 40.0).unwrap();
+        assert_eq!(handle, near);
+        assert!((t - 4.5).abs() < 1e-4, "{t}");
+        assert_eq!(stand_ins.owner_of(handle), Some((body, 2)));
+        assert_eq!(physics.fixed_pick(Vec3::ZERO, Vec3::Z, 4.0), None);
+        let (far, _) = physics
+            .fixed_pick(Vec3::new(0.0, 0.0, 6.0), Vec3::Z, 40.0)
+            .unwrap();
+        assert_eq!(stand_ins.owner_of(far), None);
+    }
+
     /// A stand-in follows its body's part from where it was registered.
     #[test]
     fn stand_ins_follow_their_bodies() {
@@ -277,6 +322,9 @@ mod tests {
             .resource_mut::<StandIns>()
             .0
             .insert(node, vec![(handle, 0)]);
+        let owners = app.world().resource::<StandIns>();
+        assert_eq!(owners.owner_of(handle), Some((node, 0)));
+        assert_eq!(owners.owner_of(ColliderHandle::invalid()), None);
         // The body moves 1 m along x.
         let mut e = app.world_mut().entity_mut(node);
         let mut body = e.get_mut::<Ragdoll>().unwrap();

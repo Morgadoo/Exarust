@@ -2,17 +2,24 @@
 //!
 //! A hinge that is not blocked is a door or a lever. A fitting of kind 3 is
 //! a wheel, and kind 5 is a crank unless it is held. A dead character is a
-//! corpse and a living one a person. A loose prop lighter than 0.08 is
-//! ignored, unless it is tagged bulky. A heavy prop is ignored when strength
-//! is under 0.9. A usable item on a prop stays usable. No body at all is
-//! nothing, even when the item was usable.
+//! corpse and a living one a person. A loose prop whose mobility is under
+//! 0.08 is too heavy to move, unless it is tagged bulky. A prop tagged as
+//! needing strength is refused when the player's strength is under 0.9. A
+//! usable item on a prop stays usable. No body at all is nothing, even when
+//! the item was usable.
 //!
-//! A point farther than 70 cm is turned toward before it is used. It is
-//! within reach when its height is at most 245 cm, the vertical gap is at
-//! most 300 cm and the horizontal distance is at most 300 cm. A door raises
-//! the height cap to 300 cm and the horizontal reach to 350 cm.
+//! A point farther than 70 cm is turned toward before it is used. A point is
+//! within reach when the point the pick hit is at most 245 cm high (the
+//! world's height), and its offset from the player's hip is at most 300 cm
+//! up or down and 300 cm across the ground. On a door the offset is the
+//! door's and the limits are 300 cm high and 350 cm across; a wheel takes
+//! its own offset too, with the plain limits. A comparison the original
+//! makes with a NaN passes.
 //!
-//! Evidence: the cursor classification and the walk-to-use checks.
+//! Evidence: the cursor classification and the reach test of the walk-to-use
+//! checks, read in the instructions (`context/re/player-control-hand.md`).
+
+use bevy::math::Vec3;
 
 /// What the click will do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +33,14 @@ pub enum Pick {
     Wheel,
     Crank,
     Scene,
+}
+
+impl Pick {
+    /// A prop or item the hand can move: the original's class bit 1 (a
+    /// loose prop, or a usable item on a body).
+    pub fn movable(self) -> bool {
+        matches!(self, Pick::Loose | Pick::Usable)
+    }
 }
 
 /// A hinge on the object. Blocked hinges are left alone.
@@ -61,10 +76,11 @@ pub struct Target {
     pub fitting: Option<Fitting>,
     pub usable: bool,
     pub body: Option<Body>,
-    pub mass: f32,
-    /// Skips the refusal of a prop lighter than 0.08.
+    /// The prop's mobility (larger moves more).
+    pub mobility: f32,
+    /// Skips the refusal of a prop whose mobility is under 0.08.
     pub bulky: bool,
-    /// The prop is heavy: strength under 0.9 refuses it.
+    /// The prop needs strength: under 0.9 refuses it.
     pub heavy: bool,
     pub strength: f32,
 }
@@ -77,7 +93,7 @@ impl Default for Target {
             fitting: None,
             usable: false,
             body: None,
-            mass: 1.0,
+            mobility: 1.0,
             bulky: false,
             heavy: false,
             strength: 1.0,
@@ -120,7 +136,7 @@ pub fn classify(target: &Target) -> Pick {
                 if target.strength < 0.9 {
                     return Pick::Nothing;
                 }
-            } else if !target.bulky && target.mass < 0.08 {
+            } else if !target.bulky && target.mobility < 0.08 {
                 return Pick::Nothing;
             }
             if kind == Pick::Nothing {
@@ -137,39 +153,52 @@ pub fn turns_before_use(distance_cm: f32) -> bool {
     distance_cm.is_finite() && distance_cm > 70.0
 }
 
-/// Whether the point is close enough to use without walking closer.
-pub fn within_reach(
-    height_cm: f32,
-    vertical_delta_cm: f32,
-    horizontal_cm: f32,
-    hinge: bool,
-) -> bool {
-    if !height_cm.is_finite() || !vertical_delta_cm.is_finite() || !horizontal_cm.is_finite() {
+/// What the reach is measured to: the point the pick hit, a door, or a
+/// wheel (the last two by their own place).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReachTo {
+    Point,
+    Door,
+    Wheel,
+}
+
+/// Whether the point the pick hit, `hit_height_cm` high in the world, is
+/// close enough to use without walking closer, its offset (or the door's,
+/// or the wheel's) from the player's hip being `offset_cm`.
+pub fn within_reach(hit_height_cm: f32, offset_cm: Vec3, to: ReachTo) -> bool {
+    let (height_cap, across) = match to {
+        ReachTo::Door => (300.0_f32, 350.0_f32),
+        ReachTo::Point | ReachTo::Wheel => (245.0, 300.0),
+    };
+    // Each test fails only on an ordered comparison: NaN passes.
+    if height_cap < hit_height_cm {
         return false;
     }
-    let (height_cap, reach) = if hinge {
-        (300.0, 350.0)
-    } else {
-        (245.0, 300.0)
-    };
-    height_cm <= height_cap && vertical_delta_cm.abs() <= 300.0 && horizontal_cm <= reach
+    if offset_cm.y.abs() > 300.0 {
+        return false;
+    }
+    // The offset's height is zeroed before its squared length is taken.
+    let flat = Vec3::new(offset_cm.x, 0.0, offset_cm.z);
+    let across2 = flat.x * flat.x + flat.y * flat.y + flat.z * flat.z;
+    let beyond = across2 > across * across;
+    !beyond
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn prop(mass: f32) -> Target {
+    fn prop(mobility: f32) -> Target {
         Target {
             has_record: true,
             body: Some(Body::Prop),
-            mass,
+            mobility,
             ..Target::default()
         }
     }
 
     #[test]
-    fn a_click_names_the_thing_and_whether_it_is_in_reach() {
+    fn a_click_names_the_thing() {
         let mut door = Target {
             has_record: true,
             hinge: Some(Hinge { blocked: false }),
@@ -203,6 +232,9 @@ mod tests {
 
         assert_eq!(classify(&prop(0.07)), Pick::Nothing);
         assert_eq!(classify(&prop(0.08)), Pick::Loose);
+        let mut bulky = prop(0.07);
+        bulky.bulky = true;
+        assert_eq!(classify(&bulky), Pick::Loose);
         let mut heavy = prop(2.0);
         heavy.heavy = true;
         heavy.strength = 0.89;
@@ -213,6 +245,8 @@ mod tests {
         let mut vial = prop(0.2);
         vial.usable = true;
         assert_eq!(classify(&vial), Pick::Usable);
+        assert!(Pick::Usable.movable() && Pick::Loose.movable());
+        assert!(!Pick::Corpse.movable());
         vial.body = None;
         assert_eq!(classify(&vial), Pick::Nothing);
 
@@ -221,13 +255,38 @@ mod tests {
             ..Target::default()
         };
         assert_eq!(classify(&scene), Pick::Scene);
-
         assert!(!turns_before_use(70.0));
         assert!(turns_before_use(70.1));
-        assert!(within_reach(245.0, 0.0, 300.0, false));
-        assert!(!within_reach(245.1, 0.0, 300.0, false));
-        assert!(!within_reach(200.0, 0.0, 300.1, false));
-        assert!(within_reach(300.0, 0.0, 350.0, true));
-        assert!(!within_reach(300.0, 300.1, 100.0, true));
+    }
+
+    /// 245 cm high and 300 cm across hold; a hair beyond either does not; a
+    /// door holds to 300 cm high and 350 cm across; NaN passes every test.
+    #[test]
+    fn the_reach_measures_the_hit_height_and_the_offset() {
+        let across = |x: f32| Vec3::new(x, 0.0, 0.0);
+        assert!(within_reach(245.0, across(300.0), ReachTo::Point));
+        assert!(!within_reach(245.1, across(300.0), ReachTo::Point));
+        assert!(!within_reach(200.0, across(300.1), ReachTo::Point));
+        assert!(!within_reach(
+            200.0,
+            Vec3::new(0.0, -300.1, 0.0),
+            ReachTo::Point
+        ));
+        assert!(within_reach(
+            200.0,
+            Vec3::new(180.0, 300.0, 240.0),
+            ReachTo::Point
+        ));
+        assert!(!within_reach(
+            200.0,
+            Vec3::new(180.0, 0.0, 240.1),
+            ReachTo::Point
+        ));
+        assert!(within_reach(300.0, across(350.0), ReachTo::Door));
+        assert!(!within_reach(300.1, across(10.0), ReachTo::Door));
+        assert!(!within_reach(250.0, across(10.0), ReachTo::Wheel));
+        assert!(within_reach(f32::NAN, across(f32::NAN), ReachTo::Point));
+        // The height is the world's, not the offset's.
+        assert!(!within_reach(500.0, across(0.0), ReachTo::Point));
     }
 }

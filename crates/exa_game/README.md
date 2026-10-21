@@ -194,7 +194,10 @@ falls to death and the kill plane (`fall`: the fall check of a living
 body in the falls branch, in its posture stage, its scream and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below
 −50 m taken once, the player's kept),
-the world cursor's shape from the player's condition word (`cursor`), the health
+the world cursor's shape from the player's condition word (`cursor`), the
+hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
+and of corpses through the solver's grab, the reach under the cursor and the
+refusal that keeps the movement request; `docs/PLAYER.md`, The hand), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the

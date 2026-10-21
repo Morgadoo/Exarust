@@ -509,3 +509,44 @@ fn placing_a_body_sets_it_at_rest() {
     assert!(body.parts[0].positions[0].y < placed[0].y + 1e-9);
     assert!((placed[0].y - body.parts[0].positions[0].y - 0.001_423_5).abs() < 2e-6);
 }
+
+/// The hand's drag of a resting crate (mobility 0.5, strength 1, the
+/// tick's first two passes) toward an anchor 1 m away across the floor,
+/// held by its middle: the floor holds its bottom back, so it tips onto its
+/// side as it goes, never more than 10 cm a tick (two passes of at most
+/// twice the 2.12 cm cap), and stops with the held point by the anchor,
+/// still on the floor; let go, it settles and sleeps.
+#[test]
+fn a_grabbed_crate_slides_to_its_anchor() {
+    let floor = floor_quad(0.0, 5.0);
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::new(0.0, 0.0, 0.0))]);
+    body.wake();
+    while body.sleep != Sleep::Deep {
+        body.tick(floor.as_slice());
+    }
+    let at = body.parts[0]
+        .transform()
+        .transform_point3(Vec3::new(0.0, 0.2, 0.0));
+    assert!(body.grab(0, at, 1.0, Some(1)));
+    let anchor = at + Vec3::new(1.0, 0.0, 0.0);
+    body.pull_grab_to(anchor);
+    let mut last = body.grab_point().unwrap();
+    let mut fastest: f32 = 0.0;
+    for _ in 0..300 {
+        body.wake_to(256);
+        body.tick(floor.as_slice());
+        let now = body.grab_point().unwrap();
+        fastest = fastest.max((now - last).xz().length());
+        last = now;
+    }
+    assert!(fastest > 0.005 && fastest < 0.1, "{fastest} m a tick");
+    assert!((last - anchor).xz().length() < 0.05, "stopped at {last}");
+    assert!(lowest(&body).abs() < 0.02, "lifted {}", lowest(&body));
+    assert!(body.release_grab());
+    assert_eq!(body.grab_point(), None);
+    for _ in 0..600 {
+        body.tick(floor.as_slice());
+    }
+    assert!(body.asleep());
+    assert!(lowest(&body).abs() < 0.02, "rests at {}", lowest(&body));
+}

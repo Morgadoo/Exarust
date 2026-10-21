@@ -4,22 +4,13 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_physics::Physics;
-use exa_ui::{CursorShape, ScriptedPointer, WorldCursor};
+use exa_ui::{CursorShape, WorldCursor};
 
 use crate::bindings::{Action, Bindings};
-use crate::nav_pick::{Candidate, PhysicsMesh, Ray, nearest_hit};
+use crate::hand::Hand;
 use crate::player::{
     AIM_HEIGHT, CURSOR_RUN_FROM, ChaseCamera, CursorGround, Player, PlayerBody, window_point,
-    window_ray,
 };
-
-/// Outside combat mode, a point under the cursor within this distance of
-/// the player, horizontally and vertically (m), is within reach: the
-/// pointer shows instead of the cross.
-const REACH: f32 = 3.0;
-/// How far the pointer's ray looks for the scene under it (m).
-const PICK_RANGE: f32 = 200.0;
 
 /// The player's state as the cursor sees it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,8 +51,11 @@ pub struct CursorState {
     pub walking_to: Option<f32>,
     /// Ctrl (interact) is held.
     pub interact: bool,
-    /// The scene point under the cursor is within reach of the player.
+    /// The scene point under the cursor is within reach of the player
+    /// (the hand's reach, `crate::hand`).
     pub in_reach: bool,
+    /// The left button's press was refused: the cross until its release.
+    pub refused: bool,
 }
 
 /// The cursor's shape, as the original picks it.
@@ -69,8 +63,9 @@ pub struct CursorState {
 /// In combat mode: chevrons while walking to the cursor (two beyond 3 m),
 /// else the pointer while Ctrl is held, else the ring, also while down or
 /// collapsing; the pointer once dead. Outside it: the cross while down,
-/// collapsing or dead, chevrons while walking to the cursor, else the
-/// pointer over a point within reach and the cross over one beyond it.
+/// collapsing or dead, or while a press of the left button is refused,
+/// chevrons while walking to the cursor, else the pointer over a point
+/// within reach and the cross over one beyond it.
 pub fn shape(state: CursorState) -> CursorShape {
     let chevrons = |d: f32| {
         if d > CURSOR_RUN_FROM {
@@ -92,17 +87,12 @@ pub fn shape(state: CursorState) -> CursorShape {
         }
     } else {
         match (state.condition, walking) {
+            _ if state.refused => CursorShape::Cross,
             (Condition::Standing, Some(d)) => chevrons(d),
             (Condition::Standing, None) if state.in_reach => CursorShape::Pointer,
             _ => CursorShape::Cross,
         }
     }
-}
-
-/// Whether a scene point is within reach of the player's aim point.
-pub fn within_reach(point: Vec3, aim: Vec3) -> bool {
-    let d = point - aim;
-    d.xz().length() <= REACH && d.y.abs() <= REACH
 }
 
 pub struct CursorPlugin;
@@ -119,13 +109,12 @@ impl Plugin for CursorPlugin {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pick_cursor(
+pub(crate) fn pick_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     ground: Res<CursorGround>,
-    scripted: Res<ScriptedPointer>,
-    physics: Res<Physics>,
+    hand: Option<Res<Hand>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     players: Query<(&GlobalTransform, &Children), With<Player>>,
@@ -156,31 +145,14 @@ fn pick_cursor(
         .0
         .map(|c| (c - aim).xz().length())
         .filter(|_| !pb.combat && buttons.pressed(MouseButton::Right));
-    let pointer = scripted.position(window);
-    let in_reach = !pb.combat
-        && pointer
-            .and_then(|p| window_ray(camera, eye, window, p))
-            .and_then(|ray| {
-                let level = PhysicsMesh {
-                    physics: &physics,
-                    far: PICK_RANGE,
-                };
-                let node = Candidate::enclosing(ray.origin, *ray.direction * PICK_RANGE, &level);
-                nearest_hit(
-                    Ray::new(ray.origin, *ray.direction),
-                    PICK_RANGE,
-                    u32::MAX,
-                    std::slice::from_ref(&node),
-                )
-                .map(|hit| hit.point)
-            })
-            .is_some_and(|point| within_reach(point, aim));
+    let in_reach = !pb.combat && hand.as_ref().is_some_and(|h| !h.out_of_reach);
     let state = CursorState {
         combat: pb.combat,
         condition,
         walking_to,
         interact: bindings.pressed(&keys, Action::Interact),
         in_reach,
+        refused: hand.as_ref().is_some_and(|h| h.refused()),
     };
     let next = WorldCursor {
         active: true,
@@ -296,13 +268,17 @@ mod tests {
         }
     }
 
+    /// A refused press shows the cross outside combat mode, even over a
+    /// point within reach and while walking to the cursor.
     #[test]
-    fn reach_is_three_metres() {
-        let aim = Vec3::new(1.0, 0.8, 2.0);
-        assert!(within_reach(Vec3::new(1.0, 0.0, 5.0), aim));
-        assert!(!within_reach(Vec3::new(1.0, 0.0, 5.1), aim));
-        assert!(within_reach(Vec3::new(-1.0, 3.8, 2.0), aim));
-        assert!(!within_reach(Vec3::new(1.0, -2.3, 2.0), aim));
+    fn a_refused_press_shows_the_cross() {
+        let refused = CursorState {
+            in_reach: true,
+            walking_to: Some(1.0),
+            refused: true,
+            ..default()
+        };
+        assert_eq!(shape(refused), CursorShape::Cross);
     }
 
     #[test]

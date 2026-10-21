@@ -91,6 +91,19 @@ impl Physics {
             .cast_ray(&ray, max, true, QueryFilter::only_fixed())
             .map(|(_, toi)| toi)
     }
+
+    /// The first fixed collider along `direction` (unit) from `origin`
+    /// within `max` metres, and how far along it lies: a prop's stand-in
+    /// ([`prop::StandIns::owner_of`] names its body) or the level.
+    pub fn fixed_pick(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+    ) -> Option<(ColliderHandle, f32)> {
+        let ray = Ray::new(origin, direction);
+        self.0.cast_ray(&ray, max, true, QueryFilter::only_fixed())
+    }
 }
 
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
