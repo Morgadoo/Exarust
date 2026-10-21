@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(ScanState::of(8), ScanState::Waiting);
         assert_eq!(ScanState::of(99), ScanState::Waiting);
         assert_eq!(COPY_INTERVAL_MS, 100);
-        assert_eq!(SIZE_MS, 800);
+        assert_eq!(SIZE_MS, 800.0);
         assert_eq!(UNUSED, 0.015);
         assert_eq!(MATERIAL, "ScanAura01");
     }
