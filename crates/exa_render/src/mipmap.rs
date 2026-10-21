@@ -735,17 +735,9 @@ fn build_chain_from_floats(
     };
     let mut count = if first_level == 0 { 1u32 } else { 0u32 };
     let bank = kaiser_bank();
-    for level in 1..=last_level.min(KAISER_MAX_LEVEL) {
+    for level in first..=last_level.min(KAISER_MAX_LEVEL) {
         let dst_width = (width >> level).max(1);
         let dst_height = (height >> level).max(1);
-        if level < first {
-            // A level skipped as the base still ends the chain: the original
-            // filters a level and stops only once it has made a 1x1 one.
-            if dst_width + dst_height <= 2 {
-                break;
-            }
-            continue;
-        }
         let weights = &bank[level as usize - 1];
         let mut horizontal = vec![0.0f32; dst_width * height * 4];
         let threads = std::thread::available_parallelism()
@@ -1038,8 +1030,13 @@ mod rgba_chain_tests {
         assert_eq!(out.len(), 2 * 2 * 4 + 4);
         assert!(out.iter().all(|&value| value == 51));
 
-        // Past the end of the chain there is nothing to upload.
+        // A first level past the chain's own 1x1 still makes a 1x1 level:
+        // the sides floor at one and the original filters from there.
         let (out, count) = build_mip_chain_rgba8_from(&base, 8, 8, 4, true, MipConversion::Linear);
+        assert_eq!(count, 1);
+        assert_eq!(out.len(), 4);
+        // Past the last table there is nothing to upload.
+        let (out, count) = build_mip_chain_rgba8_from(&base, 8, 8, 14, true, MipConversion::Linear);
         assert_eq!(count, 0);
         assert!(out.is_empty());
         // Which image stores which level is a format question.
