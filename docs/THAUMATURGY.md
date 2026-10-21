@@ -584,8 +584,8 @@ the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
 The force blast and torrent are not drawn: their ribbon vertex builds
-are not ported, and nothing spawns them (Exarust has no power bar and the
-AI does not cast). Their geometry classes (`effectforce_v` with
+are not ported, and the bar's casts create no blast or torrent entity yet
+(the AI does not cast). Their geometry classes (`effectforce_v` with
 `effectforce_f` or `effecttorrent_f`) are in `effects::effect_geometry` and
 their multi-point lights in `effects::emissive`. The mind-sight overlay's
 sphere and its animated noise are not drawn either; its pick, tracker,
