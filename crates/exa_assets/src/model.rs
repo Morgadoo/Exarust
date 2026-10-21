@@ -1649,7 +1649,9 @@ fn emissive(m: &Material, key: u32) -> Vec4 {
 /// Which of Exarust's texture maps the original's material factory would
 /// bind for a record. Every map needs the layer and the feature bit its
 /// type's plug-in keeps; the normal map also needs a surface the factory
-/// shades (`0x100807`), and the height map needs the normal layer loaded.
+/// shades (`0x100807`), and the height map needs the normal layer loaded. The
+/// colour slot binds only a lit record's diffuse map (`key & 3`); an unlit
+/// record's diffuse layer is left unbound.
 /// A type-2 record keeps only `MatEmi`, two-sided and the colour/opacity
 /// slot, so nothing but `opacity` can be set for it.
 struct FactoryMaps {
@@ -1666,7 +1668,9 @@ struct FactoryMaps {
 /// material word `material_word` (see [`FactoryMaps`]).
 fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
     FactoryMaps {
-        diffuse: key & 0x2_0000 != 0 && m.texture(TextureSlot::Diffuse).is_some(),
+        diffuse: key & 0x2_0000 != 0
+            && key & material_flags::LIT != 0
+            && m.texture(TextureSlot::Diffuse).is_some(),
         opacity: key & OPACITY_FLAG != 0 && m.texture(TextureSlot::Opacity).is_some(),
         emissive: key & 0x8_0000 != 0
             && key & 0x8 != 0
@@ -1685,46 +1689,54 @@ fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
 }
 
 /// The blend word after the material loader's late opaque rewrite: a
-/// record whose destination nibble is 3 (the transparent class) becomes
-/// source ONE / destination ZERO when it is in refraction mode (flags
-/// `0x300` = `0x200`), or when its opacity is above 0.99 in double
-/// precision, its fall-off amount below 0.01 and its opacity flag
-/// (`0x400000`) is clear. NaN fails both comparisons, as the original's
-/// COMISD branches do. The comparisons widen the stored f32 to f64: the
-/// original compares them with the f64 constants, so `0.99` stored as f32
-/// is above the bound and `0.01` is below it.
+/// record whose loaded destination nibble is 3 (the transparent class)
+/// becomes source ONE / destination ZERO when it is in refraction mode
+/// (loaded flags `0x300` = `0x200`, whatever its type), or when its opacity
+/// is above 0.99 in double precision, its fall-off amount below 0.01 and its
+/// loaded flags lack the opacity layer (`0x400000`, which a record's own
+/// flag or a loaded opacity layer sets). The rewrite starts from the class
+/// the alpha-test rewrite left ([`exa_render::shader_program::loaded_class`])
+/// and NaN fails both comparisons, as the original's COMISD branches do. The
+/// comparisons widen the stored f32 to f64: `0.99` stored as f32 is above
+/// the bound and `0.01` is below it.
 fn blended_class(m: &Material) -> u32 {
-    let mut class = m.class;
+    let mut class = exa_render::shader_program::loaded_class(m);
+    let flags = exa_render::shader_program::loaded_flags(m);
     if class & 0xF == 3
-        && (m.flags & MODE_MASK == REFRACTION_MODE
+        && (flags & MODE_MASK == REFRACTION_MODE
             || ((m.opacity as f64) > LATE_OPAQUE_OPACITY
                 && (m.falloff_amount as f64) < LATE_OPAQUE_FALLOFF
-                && m.flags & OPACITY_FLAG == 0))
+                && flags & OPACITY_FLAG == 0))
     {
         class = class & 0xFFFF_C0F0 | 0x100;
     }
     class
 }
 
-/// Whether the record casts shadows: refraction mode always does (before
-/// extra flag `0x4` clears it), else an opacity above 0.8 in double
-/// precision and a destination nibble other than ONE (3, ONE_MINUS_SRC_ALPHA,
-/// also casts); NaN casts none.
+/// Whether the record casts shadows: refraction mode (loaded flags) always
+/// does, else an opacity above 0.8 in double precision and a loaded
+/// destination nibble other than ONE (3, ONE_MINUS_SRC_ALPHA, also casts;
+/// an alpha-tested word has become ONE/ZERO, destination nibble 0, and casts); NaN casts none. The
+/// record's no-shadow flag (extra `0x4`) clears either.
 fn casts_shadow(m: &Material) -> bool {
-    let casts = if m.flags & MODE_MASK == REFRACTION_MODE {
+    let flags = exa_render::shader_program::loaded_flags(m);
+    let casts = if flags & MODE_MASK == REFRACTION_MODE {
         true
     } else {
-        (m.opacity as f64) > SHADOW_OPACITY && m.class & 0xF != 1
+        (m.opacity as f64) > SHADOW_OPACITY
+            && exa_render::shader_program::loaded_class(m) & 0xF != 1
     };
     casts && m.extra & NO_SHADOWS == 0
 }
 
 /// Whether the diffuse colour is pre-scaled by the opacity: every lit
 /// record whose blend source nibble is ONE, except in refraction mode. The
-/// class is the one after the late rewrite.
+/// class is the one after the late rewrite; the mode bits are the type's
+/// plug-in-masked ones (`key`), so only a type-1 record is ever in
+/// refraction mode here.
 fn premultiplies(m: &Material, key: u32) -> bool {
     key & material_flags::LIT != 0
-        && m.flags & MODE_MASK != REFRACTION_MODE
+        && key & MODE_MASK != REFRACTION_MODE
         && (blended_class(m) >> 8) & 0xF == 1
 }
 
@@ -2543,6 +2555,16 @@ mod tests {
         m.falloff_amount = 0.0;
         m.flags = OPACITY_FLAG;
         assert_eq!(blended_class(&m), 0x0203);
+        // So does a loaded opacity layer, which sets the flag at load.
+        let mut layered = with_layers(0, 0, &[TextureSlot::Opacity]);
+        layered.class = 0x0203;
+        layered.opacity = 1.0;
+        assert_eq!(blended_class(&layered), 0x0203);
+        // The rewrite starts from the alpha-test rewrite's class: an
+        // alpha-tested word loses its destination nibble first, so it is
+        // not a destination THREE any more.
+        assert_eq!(blended_class(&record(0x4203, 0, 1.0)), 0x4100);
+        assert_eq!(blended_class(&record(0x4203, REFRACTION_MODE, 1.0)), 0x4100);
         // Refraction rewrites whatever the opacity and fall-off.
         let glass = record(0x0203, REFRACTION_MODE, 0.2);
         assert_eq!(blended_class(&glass), 0x100);
@@ -2579,12 +2601,23 @@ mod tests {
         // Source ONE with destination ONE does.
         m.class = 0x0101;
         assert!(premultiplies(&m, key));
-        // Refraction mode never premultiplies.
+        // Refraction mode never premultiplies: it needs a type whose
+        // plug-in keeps the mode bits (type 1).
         m.class = 0x0103;
+        m.kind = 1;
         m.flags = material_flags::LIT | REFRACTION_MODE;
         let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(key & MODE_MASK, REFRACTION_MODE);
         assert!(!premultiplies(&m, key));
-        assert!((shaded_diffuse(&m, key).x - linear_half_scale).abs() < 1e-6);
+        // Only type 0 brightens its diffuse by 1.5.
+        assert!((shaded_diffuse(&m, key).x - linear(0.5)).abs() < 1e-6);
+        // A type whose plug-in drops the mode bits still premultiplies,
+        // though the loader rewrote its blend word on the raw flags.
+        m.kind = 0;
+        let key = exa_render::shader_program::feature_key(&m);
+        assert_eq!(key & MODE_MASK, 0);
+        assert!(premultiplies(&m, key));
+        m.kind = 1;
         // An unlit record has no diffuse colour at all.
         m.flags = 0;
         let key = exa_render::shader_program::feature_key(&m);
@@ -2639,7 +2672,11 @@ mod tests {
         assert!(!casts_shadow(&record(0x0203, 0, 0.799_999_9)));
         assert!(!casts_shadow(&record(0x0201, 0, 1.0)));
         assert!(!casts_shadow(&record(0x0203, 0, f32::NAN)));
-        // Refraction wins over destination ONE; extra flag 4 clears either.
+        // The loader's alpha-test rewrite clears the destination nibble
+        // first, so an alpha-tested destination ONE casts.
+        assert!(casts_shadow(&record(0x4201, 0, 1.0)));
+        // Refraction wins over destination ONE (read from the loaded flags,
+        // whatever the type); extra flag 4 clears either.
         assert!(casts_shadow(&record(0x0201, REFRACTION_MODE, 0.0)));
         assert!(!casts_shadow(&Material {
             extra: NO_SHADOWS,
@@ -2657,6 +2694,11 @@ mod tests {
             let word = state_words(m, SHADING_QUALITY).map_or(0, |(mat, _)| mat);
             factory_maps(m, key, word)
         };
+        // The colour slot binds a diffuse map only for a lit record.
+        let mut m = with_layers(0x8, 0, &[TextureSlot::Diffuse]);
+        assert!(!maps(&m).diffuse);
+        m.flags = 0x1;
+        assert!(maps(&m).diffuse);
         // Emissive needs the layer bit and `key & 8`.
         let mut m = with_layers(0x8_0003, 0, &[TextureSlot::Emissive]);
         assert!(!maps(&m).emissive);
