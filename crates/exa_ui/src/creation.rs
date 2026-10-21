@@ -105,11 +105,12 @@ pub fn continue_label(kind: i32) -> &'static str {
     }
 }
 
-/// The preview background the form paints before the 3D view: opaque
-/// black.
+/// The colour of the quad the creation preview's paint draws: the bytes
+/// 0, 0, 0, 255 (opaque black).
 pub const PREVIEW_COLOUR: [u8; 4] = [0, 0, 0, 255];
-/// The texture unit the preview view's image is bound to.
-pub const PREVIEW_TEXTURE_UNIT: u32 = 0x10;
+/// The word the paint passes to the renderer before the quad (its
+/// meaning is not established).
+pub const PREVIEW_STATE: u32 = 0x10;
 
 /// One corner of the preview quad: window position and texture
 /// coordinates (0..1).
@@ -119,11 +120,10 @@ pub struct PreviewVertex {
     pub uv: [f32; 2],
 }
 
-/// The quad the creation form draws under its preview: a black rectangle
-/// over the form's frame (0, 0) to (width, height), textured from the
-/// viewport, its corners in the original's order: top left, bottom left,
-/// bottom right, top right. The colour and the texture unit are
-/// [`PREVIEW_COLOUR`] and [`PREVIEW_TEXTURE_UNIT`].
+/// The quad the creation preview's paint draws before the base paint:
+/// (0, 0) to its own width and height, with texture coordinates 0..1, the
+/// corners in the original's order (top left, bottom left, bottom right,
+/// top right), in [`PREVIEW_COLOUR`] after [`PREVIEW_STATE`].
 pub fn preview_quad(width: f32, height: f32) -> [PreviewVertex; 4] {
     [
         PreviewVertex {
@@ -197,12 +197,12 @@ mod tests {
         assert_eq!(continue_label(0), "Continue from checkpoint");
     }
 
-    /// The preview quad covers the frame from the top left, textured from
-    /// the viewport in the original's order, opaque black behind it.
+    /// The preview quad covers the frame from the top left, its corners in
+    /// the original's order.
     #[test]
     fn the_preview_quad_covers_the_form() {
         assert_eq!(PREVIEW_COLOUR, [0, 0, 0, 255]);
-        assert_eq!(PREVIEW_TEXTURE_UNIT, 0x10);
+        assert_eq!(PREVIEW_STATE, 0x10);
         let q = preview_quad(180.0, 24.0);
         assert_eq!(q[0].position, [0.0, 0.0]);
         assert_eq!(q[1].position, [0.0, 24.0]);

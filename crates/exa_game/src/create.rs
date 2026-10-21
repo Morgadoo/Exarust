@@ -3151,39 +3151,27 @@ pub fn draw_voice_variant(
     Some(index)
 }
 
-/// The character creation form's width and height (the original's form is
-/// 1024 × 768), and the parent option word it asks for.
+/// The character creation form's size and style word, as its constructor
+/// sets them.
 pub const CREATION_FORM_WIDTH: i32 = 1024;
 pub const CREATION_FORM_HEIGHT: i32 = 768;
-pub const CREATION_PARENT_OPTION: i32 = 0x32;
-/// The form style: a resizable form with the creation screen's bits.
 pub const CREATION_FORM_STYLE: u32 = 0x80_0020;
-/// The save screen mode whose form is the full editor; every other mode
-/// opens the preview only.
-pub const FULL_EDITOR_MODE: i32 = 0xc;
-/// The preview viewport's height above its parent, and the width the full
-/// editor takes from the parent: the preview keeps parent − 360.
+/// The form mode whose layout has ten elements and no editor sub-forms;
+/// every other mode has seven and the two editors.
+pub const TEN_ELEMENT_MODE: i32 = 0xc;
+/// The preview viewport's left and top in its parent, the width it leaves
+/// to the parent's other controls, and the height the form trims off it.
+pub const PREVIEW_LEFT: i32 = 180;
 pub const PREVIEW_TOP: i32 = 24;
-pub const PREVIEW_WIDTH_USED: i32 = 360;
-/// The preview's smallest width and height, and the four pixels the
-/// viewport loses below the form's buttons.
-pub const PREVIEW_MIN_WIDTH: i32 = 180;
-pub const PREVIEW_MIN_HEIGHT: i32 = 24;
+pub const PREVIEW_WIDTH_LEFT: i32 = 360;
 pub const PREVIEW_HEIGHT_TRIM: i32 = 4;
-/// The preview camera's eye and target in cm (the body faces the eye from
-/// 4 m), its 50° field of view, and its fog: a start 400 cm out whose
-/// surfaces reach black at 2 m (density 0.34), and no sun with a black
-/// ambient.
-pub const PREVIEW_EYE_CM: [f32; 3] = [-200.0, 210.0, 360.0];
-pub const PREVIEW_TARGET_CM: [f32; 3] = [0.0, 60.0, 0.0];
-pub const PREVIEW_FOV: f32 = 50.0;
-pub const PREVIEW_DISTANCE: f32 = 4.0;
+/// Two values the preview sets on its view (400.0 and 0.34), read here as
+/// the fog's start and density [guess: the fields are not named].
 pub const PREVIEW_FOG_FROM: f32 = 400.0;
 pub const PREVIEW_FOG_DENSITY: f32 = 0.34;
-/// The creation scene.
-pub const CREATION_SCENE: &str = "sgccflr01.rfc";
 
-/// The preview viewport's frame: x, y, width and height in parent units.
+/// The preview viewport's frame: left, top, width and height in parent
+/// units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewFrame {
     pub x: i32,
@@ -3192,179 +3180,111 @@ pub struct PreviewFrame {
     pub height: i32,
 }
 
-/// The preview viewport of a form whose parent is `parent` units: 12
-/// units in, 24 down, the full editor's width less 360 (at least 180),
-/// and the parent's height less 24. The view's own height loses four more
-/// pixels.
+/// The preview viewport in a form whose parent is `parent` units: 180 in,
+/// 24 down, the parent's width less 360 and its height less 24, then 4
+/// more off the height. Nothing clamps a small parent.
 pub fn preview_frame(parent: (i32, i32)) -> PreviewFrame {
     PreviewFrame {
-        x: 12,
+        x: PREVIEW_LEFT,
         y: PREVIEW_TOP,
-        width: (parent.0 - PREVIEW_WIDTH_USED).max(PREVIEW_MIN_WIDTH),
-        height: (parent.1 - PREVIEW_TOP).max(PREVIEW_MIN_HEIGHT),
+        width: parent.0 - PREVIEW_WIDTH_LEFT,
+        height: parent.1 - PREVIEW_TOP - PREVIEW_HEIGHT_TRIM,
     }
 }
 
-/// What the creation form builds for a save screen mode.
+/// What the creation form builds in a form mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreationLayout {
-    /// The 3D preview.
-    pub preview: bool,
-    /// The body editor (TCharBaseForm).
-    pub body_editor: bool,
-    /// The hair editor (THairEditForm).
-    pub hair_editor: bool,
-    /// The apparel and weapon containers.
-    pub equipment: bool,
-    /// The layout's element count: the full editor's ten, the preview
-    /// only's seven.
+    /// The layout table's element count.
     pub elements: usize,
+    /// The two editor sub-forms (both report changes to the form; the
+    /// second sits at the parent's width less 176, 32 down).
+    pub editors: bool,
 }
 
-/// The layout of a creation form: mode 12 is the full editor (preview,
-/// body and hair editors, equipment); every other mode shows the preview
-/// alone (the continue screen).
-pub fn creation_layout(screen_mode: i32) -> CreationLayout {
-    if screen_mode == FULL_EDITOR_MODE {
+/// The layout of the creation form in `form_mode`: mode 12 takes the
+/// ten-element table and no editors, every other mode the seven-element
+/// table and both editors.
+pub fn creation_layout(form_mode: i32) -> CreationLayout {
+    if form_mode == TEN_ELEMENT_MODE {
         CreationLayout {
-            preview: true,
-            body_editor: true,
-            hair_editor: true,
-            equipment: true,
             elements: 10,
+            editors: false,
         }
     } else {
         CreationLayout {
-            preview: true,
-            body_editor: false,
-            hair_editor: false,
-            equipment: false,
             elements: 7,
+            editors: true,
         }
     }
 }
 
-/// A creation equipment container.
+/// The list a drop onto the creation preview goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EquipContainer {
-    /// The apparel list (item class `0x1000`).
+pub enum DropList {
+    /// The mode's own item list, when the form has one.
+    Mode,
+    /// The apparel list.
     Apparel,
-    /// The weapon list (item class `0x4000`).
+    /// The weapon list.
     Weapons,
-    /// The mode's own equipment list.
-    Other,
-    /// No container: the item is refused.
-    None,
+    /// Game mode `0x1010`: the drop is passed to its hook, when set.
+    Hook,
 }
 
-/// Where an item dropped on the preview goes. The mode-8 arena's own
-/// container takes everything; the versus mode routes through its script;
-/// otherwise the item's class picks the list, and a full list drops its
-/// last entry to make room (the original adds, then removes the final
-/// slot).
+/// Where a dropped item goes, and whether the list then places the new
+/// entry (a random spot in the list's area, nudged clear of the others).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EquipDrop {
-    pub container: EquipContainer,
-    /// The list was full: its last slot goes.
-    pub replaced_last: bool,
+    pub list: DropList,
+    pub place: bool,
 }
 
-/// Routes a dropped `item_class` to its container for a creation
-/// `screen_mode`. `special`: the mode's own equipment container is present
-/// (it takes the drop first). The arena mode (8) puts a drop in its
-/// apparel list; the versus mode's script handles it. Otherwise class
-/// `0x1000` is apparel, `0x4000` weapons, and `0x8000` the same weapon
-/// list without displacing a full list's last entry.
-pub fn equip_drop(screen_mode: i32, item_class: u32, special: bool, full: bool) -> EquipDrop {
-    if special {
-        return EquipDrop {
-            container: EquipContainer::Other,
-            replaced_last: full,
-        };
+/// The game mode whose drops all go to the apparel list, and the one whose
+/// drops go to its hook.
+pub const APPAREL_GAME_MODE: i32 = 8;
+pub const HOOK_GAME_MODE: i32 = 0x1010;
+/// The item kinds the routing asks the dropped item's record for, in
+/// order.
+pub const APPAREL_KIND: u32 = 0x1000;
+pub const WEAPON_KIND: u32 = 0x4000;
+pub const OTHER_KIND: u32 = 0x8000;
+
+/// Routes an `item` dropped on the creation preview. Item 8 is ignored.
+/// With a mode list the drop goes there; in game mode 8 to the apparel
+/// list; in game mode `0x1010` to its hook; otherwise the item's record
+/// (`kinds`: `None` when it has none) is asked for the apparel kind, then
+/// the weapon kind, then `0x8000`, which also goes to the weapon list but
+/// without the placing step. Each list placing happens only when the item
+/// was added.
+pub fn equip_drop(
+    item: u32,
+    game_mode: i32,
+    mode_list: bool,
+    kinds: Option<&dyn Fn(u32) -> bool>,
+) -> Option<EquipDrop> {
+    let to = |list, place| Some(EquipDrop { list, place });
+    if item == 8 {
+        return None;
     }
-    match screen_mode {
-        8 => EquipDrop {
-            container: EquipContainer::Apparel,
-            replaced_last: full,
-        },
-        0x1010 => EquipDrop {
-            container: EquipContainer::None,
-            replaced_last: false,
-        },
-        _ => match item_class & 0xF000 {
-            0x1000 => EquipDrop {
-                container: EquipContainer::Apparel,
-                replaced_last: full,
-            },
-            0x4000 => EquipDrop {
-                container: EquipContainer::Weapons,
-                replaced_last: full,
-            },
-            0x8000 => EquipDrop {
-                container: EquipContainer::Weapons,
-                replaced_last: false,
-            },
-            _ => EquipDrop {
-                container: EquipContainer::None,
-                replaced_last: false,
-            },
-        },
+    if mode_list {
+        return to(DropList::Mode, true);
     }
-}
-
-/// What a body or hair editor change does: the shared change counter
-/// advances, the body's skin and material textures are regenerated, the
-/// preview's body link is refreshed, and the texture and procedural
-/// material caches are invalidated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PreviewChange {
-    pub counter: u32,
-    pub regenerate_skin: bool,
-    pub refresh_body_link: bool,
-    pub invalidate_textures: bool,
-    pub invalidate_materials: bool,
-}
-
-/// The change callback of both editor sub-forms: the counter advances
-/// (and falls back on returning), the skin and materials are regenerated,
-/// the preview's body is refreshed when it has one, and the texture and
-/// procedural-material caches are cleared.
-pub fn preview_change(counter: u32, has_body_link: bool) -> PreviewChange {
-    PreviewChange {
-        counter: counter.wrapping_add(1),
-        regenerate_skin: true,
-        refresh_body_link: has_body_link,
-        invalidate_textures: true,
-        invalidate_materials: true,
-    }
-}
-
-/// Whether the preview's body link is refreshed, and the callback it runs
-/// after a change: only when the preview has a body link (`Some(1)` when
-/// it does, `None` when it does not).
-pub fn refresh_preview_body(has_link: bool) -> Option<bool> {
-    has_link.then_some(true)
-}
-
-/// What closing the creation form does: the edited character's equipment
-/// is refreshed, its held objects released, the 3D view detached, the
-/// subdivision flag cleared and the base form closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CreationCloseOutcome {
-    /// The held objects the equipment container releases.
-    pub released: usize,
-    pub detach_view: bool,
-    pub subdivision: bool,
-}
-
-/// Closes the creation form: the equipment container's held objects are
-/// released, the view is detached, and mesh subdivision (on while the form
-/// edits) goes off.
-pub fn creation_close(held: usize) -> CreationCloseOutcome {
-    CreationCloseOutcome {
-        released: held,
-        detach_view: true,
-        subdivision: false,
+    match game_mode {
+        APPAREL_GAME_MODE => to(DropList::Apparel, true),
+        HOOK_GAME_MODE => to(DropList::Hook, false),
+        _ => {
+            let has = kinds?;
+            if has(APPAREL_KIND) {
+                to(DropList::Apparel, true)
+            } else if has(WEAPON_KIND) {
+                to(DropList::Weapons, true)
+            } else if has(OTHER_KIND) {
+                to(DropList::Weapons, false)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -5390,103 +5310,73 @@ mod tests {
         assert!(!refresh_creation_label(299, 0, false).ran);
     }
 
-    /// The preview frame: 12 in, 24 down, 360 narrower than the parent
-    /// (at least 180) and 24 shorter (at least 24).
+    /// The preview frame: 180 in, 24 down, the parent less 360 wide and
+    /// 28 short, unclamped.
     #[test]
-    fn the_preview_frame_is_the_form_less_its_margins() {
+    fn the_preview_frame_is_the_parent_less_its_margins() {
         assert_eq!(
             preview_frame((1024, 768)),
             PreviewFrame {
-                x: 12,
+                x: 180,
                 y: 24,
                 width: 664,
-                height: 744
+                height: 740
             }
         );
-        assert_eq!(preview_frame((400, 40)).width, 180);
-        assert_eq!(preview_frame((400, 20)).height, 24);
-        assert_eq!(PREVIEW_EYE_CM, [-200.0, 210.0, 360.0]);
-        assert_eq!(PREVIEW_TARGET_CM, [0.0, 60.0, 0.0]);
-        assert_eq!(PREVIEW_FOV, 50.0);
-        assert_eq!(PREVIEW_DISTANCE, 4.0);
+        assert_eq!(preview_frame((300, 20)).width, -60);
+        assert_eq!(preview_frame((300, 20)).height, -8);
     }
 
-    /// Mode 12 opens the full editor; the others only the preview.
+    /// Mode 12 takes the ten-element table without editors; the others
+    /// seven elements and the editors.
     #[test]
-    fn the_creation_layout_has_two_forms() {
-        let full = creation_layout(0xc);
-        assert!(full.body_editor && full.hair_editor && full.equipment);
-        assert_eq!(full.elements, 10);
-        let preview = creation_layout(3);
-        assert!(preview.preview);
-        assert!(!preview.body_editor && !preview.hair_editor);
-        assert_eq!(preview.elements, 7);
-        assert_eq!(creation_layout(0).elements, 7);
-    }
-
-    /// The drop routes clothing, weapons and the rest to their lists; a
-    /// full list gives up its last slot; the arena's own container takes
-    /// everything; the versus script and the arena without a container
-    /// take nothing here.
-    #[test]
-    fn drops_route_by_item_class() {
+    fn the_creation_layout_has_two_tables() {
         assert_eq!(
-            equip_drop(0, 0x1000, false, false),
-            EquipDrop {
-                container: EquipContainer::Apparel,
-                replaced_last: false
+            creation_layout(0xc),
+            CreationLayout {
+                elements: 10,
+                editors: false
             }
         );
         assert_eq!(
-            equip_drop(0, 0x4000, false, true),
-            EquipDrop {
-                container: EquipContainer::Weapons,
-                replaced_last: true
+            creation_layout(3),
+            CreationLayout {
+                elements: 7,
+                editors: true
             }
-        );
-        assert_eq!(
-            equip_drop(0, 0x8000, false, true).container,
-            EquipContainer::Weapons
-        );
-        assert!(!equip_drop(0, 0x8000, false, true).replaced_last);
-        assert_eq!(
-            equip_drop(0, 0x2000, false, false).container,
-            EquipContainer::None
-        );
-        assert_eq!(
-            equip_drop(3, 0x2000, true, true).container,
-            EquipContainer::Other
-        );
-        assert!(equip_drop(3, 0x2000, true, true).replaced_last);
-        assert_eq!(
-            equip_drop(8, 0x1000, false, false).container,
-            EquipContainer::Apparel
-        );
-        assert_eq!(
-            equip_drop(0x1010, 0x1000, false, false).container,
-            EquipContainer::None
         );
     }
 
-    /// A change advances the counter and invalidates the skin, textures
-    /// and materials; the body link refreshes only when it has one.
+    /// The drop: the mode list first, then game modes 8 and 0x1010, then
+    /// the item's kinds in order; 0x8000 is not placed; item 8 and items
+    /// without a record are refused.
     #[test]
-    fn an_editor_change_regenerates_the_textures() {
-        let change = preview_change(7, true);
-        assert_eq!(change.counter, 8);
-        assert!(change.regenerate_skin);
-        assert!(change.refresh_body_link);
-        assert!(change.invalidate_textures && change.invalidate_materials);
-        assert!(!preview_change(0, false).refresh_body_link);
-        assert_eq!(refresh_preview_body(true), Some(true));
-        assert_eq!(refresh_preview_body(false), None);
+    fn drops_route_by_mode_and_kind() {
+        let apparel = |k: u32| k == APPAREL_KIND || k == OTHER_KIND;
+        let weapon = |k: u32| k == WEAPON_KIND || k == OTHER_KIND;
+        let other = |k: u32| k == OTHER_KIND;
+        let nothing = |_: u32| false;
+        let at = |list, place| Some(EquipDrop { list, place });
         assert_eq!(
-            creation_close(3),
-            CreationCloseOutcome {
-                released: 3,
-                detach_view: true,
-                subdivision: false
-            }
+            equip_drop(5, 0, false, Some(&apparel)),
+            at(DropList::Apparel, true)
         );
+        assert_eq!(
+            equip_drop(5, 0, false, Some(&weapon)),
+            at(DropList::Weapons, true)
+        );
+        assert_eq!(
+            equip_drop(5, 0, false, Some(&other)),
+            at(DropList::Weapons, false)
+        );
+        assert_eq!(equip_drop(5, 0, false, Some(&nothing)), None);
+        assert_eq!(equip_drop(5, 0, false, None), None);
+        assert_eq!(equip_drop(5, 8, false, None), at(DropList::Apparel, true));
+        assert_eq!(
+            equip_drop(5, 0x1010, false, None),
+            at(DropList::Hook, false)
+        );
+        assert_eq!(equip_drop(5, 8, true, None), at(DropList::Mode, true));
+        assert_eq!(equip_drop(8, 0, true, Some(&apparel)), None);
     }
 }
