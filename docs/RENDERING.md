@@ -366,8 +366,8 @@ program.
 **Textures** are sampled with the original's settings at its top texture
 quality (`TextureQuality = 5`) and 4× supersampling:
 - anisotropic filtering 2^(4 − mode), so 16× for ordinary textures;
-- a LOD bias of (base · g(supersample)) · ⅓, in single precision left to
-  right, with base −0.75 at quality 5 (−0.5 at 4, 0 below) and g = ss below
+- a LOD bias of base · (g(supersample) · ⅓), in single precision with
+  the product g · ⅓ taken first, with base −0.75 at quality 5 (−0.5 at 4, 0 below) and g = ss below
   2 and ss − 1 above. That gives −0.75. It applies
   to colour textures (diffuse, emissive, opacity, legacy specular), not to
   normal, gloss or packed specular maps; a diffuse whose record carries a

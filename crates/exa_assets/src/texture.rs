@@ -192,15 +192,16 @@ pub struct TextureSampler {
 }
 
 /// The LOD bias of a supersampling setting: the setting (or one less from 2
-/// up) times the base, then times the f32 third, in the original's order
-/// (the pseudo-code's left-to-right `base · f · 0.33333334`).
+/// up) times the f32 third, then the base times that, in the order of the
+/// original's instructions (its pseudo-code reads `base · f · ⅓`, which
+/// rounds differently).
 pub fn lod_bias(base: f32, supersample: i32) -> f32 {
     let factor = if supersample < 2 {
         supersample as f32
     } else {
         (supersample as i64 - 1) as f32
     };
-    base * factor * 0.333_333_34
+    base * (factor * 0.333_333_34)
 }
 
 impl TextureSampler {
@@ -626,7 +627,7 @@ mod sampler_tests {
 
     #[test]
     fn the_lod_bias_follows_the_supersampling_setting() {
-        // (base · f) · ⅓ in f32, the original's left-to-right order, with
+        // base · (f · ⅓) in f32, the original's instruction order, with
         // f = ss below 2 and ss - 1 from 2 up.
         assert_eq!(lod_bias(-0.75, 0), 0.0);
         assert_eq!(lod_bias(-0.75, 1), -0.25);
@@ -635,11 +636,10 @@ mod sampler_tests {
         assert_eq!(lod_bias(-0.75, 4), -0.75);
         assert_eq!(lod_bias(-0.5, 4), -0.5);
         // The order is visible where the product is not exactly one:
-        // (-0.007 · 3) · ⅓ is -0.0070000006, where -0.007 · (3 · ⅓) is
-        // exactly -0.007 (3 · ⅓ rounds to 1).
-        assert_eq!(lod_bias(-0.007, 4), -0.007f32 * 3.0 * 0.333_333_34);
+        // -0.007 · (3 · ⅓) is exactly -0.007 (3 · ⅓ rounds to 1), where
+        // (-0.007 · 3) · ⅓ is -0.0070000006.
+        assert_eq!(lod_bias(-0.007, 4), -0.007);
         assert_ne!(-0.007f32 * 3.0 * 0.333_333_34, -0.007);
-        assert_eq!(-0.007f32 * (3.0 * 0.333_333_34), -0.007);
     }
 
     #[test]

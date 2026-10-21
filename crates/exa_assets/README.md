@@ -55,8 +55,9 @@ magnification, `0x40` samples the mip chain and `0x80` blends between levels;
 the wrap bits pick repeat or clamp per axis; anisotropy is
 `2^(quality level − mode)` while the mode is below the level and not 3, else
 1 (and 1 unless every filter is linear, which wgpu requires). The LOD bias is
-`(base · f(ss)) · ⅓` in f32, left to right, with `f(ss) = ss` below 2 and
-`ss − 1` from 2 up. A BC4 image is uploaded as `Bc4RUnorm`, the original's
+`base · (f(ss) · ⅓)` in f32 (the product with the third first, as the
+original's instructions order it), with `f(ss) = ss` below 2 and `ss − 1`
+from 2 up. A BC4 image is uploaded as `Bc4RUnorm`, the original's
 luminance LATC format: one grey channel with no sRGB variant, whose red the
 shader repeats over rgb (`material::flags::GREY_DIFFUSE`), so the value is
 never decoded. Other BC images keep their formats (BC1 and BC3 with an sRGB
