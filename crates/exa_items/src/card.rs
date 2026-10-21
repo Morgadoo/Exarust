@@ -364,6 +364,82 @@ pub fn expand_pronouns(text: &str, female: bool) -> String {
     out
 }
 
+/// Picks a card text's condition block, as the card's template expansion
+/// does before its pronoun markers. A block starts at an `@`, carries its
+/// two-digit limit five and six bytes after it (`00` is 100) and its text
+/// from eight bytes after it to three bytes before the next `@` (or the
+/// rest of the text). The first block whose limit is at least the
+/// condition's percentage, `round(condition · 100 / 255)` rounded half to
+/// even, replaces everything from the first `@` on. The original searches
+/// each next `@` over a remaining length it shortens by the block's
+/// absolute place, and stops once that length is under 8; a text no block
+/// fits is left as it is. Bytes past the end read as 0.
+pub fn select_condition_text(text: &str, condition: u8) -> String {
+    let s = text.as_bytes();
+    let byte = |at: i32| {
+        usize::try_from(at)
+            .ok()
+            .and_then(|at| s.get(at))
+            .map_or(0, |b| *b)
+    };
+    // The run-time library's byte search: the 0-based index within `count`
+    // bytes from 1-based `from`, or −1.
+    let find = |from: i32, count: i32| -> i32 {
+        let start = (from - 1).max(0) as usize;
+        let end = start.saturating_add(count.max(0) as usize).min(s.len());
+        s.get(start..end)
+            .and_then(|span| span.iter().position(|b| *b == b'@'))
+            .map_or(-1, |at| at as i32)
+    };
+    // The run-time library's copy of `count` bytes from 1-based `from`.
+    let copy = |from: i32, count: i32| -> &[u8] {
+        if count <= 0 || from < 1 || from as usize > s.len() {
+            return &[];
+        }
+        let start = from as usize - 1;
+        &s[start..(start + count as usize).min(s.len())]
+    };
+    let mut len = s.len() as i32;
+    let mut p = find(1, len) + 1;
+    if p <= 0 {
+        return text.to_string();
+    }
+    let percent =
+        (f64::from(u32::from(condition) * 100) * 0.003_921_568_627_450_98).round_ties_even() as i32;
+    let first = p;
+    loop {
+        let tens = i32::from(byte(p + 4)) - 0x30;
+        let mut limit = tens * 10 + i32::from(byte(p + 5)) - 0x30;
+        if limit == 0 {
+            limit = 100;
+        }
+        p += 8;
+        let found = find(p, len);
+        let next = if found < 1 { len + p + 3 } else { found + p };
+        if limit >= percent {
+            let mut out = if first > 1 {
+                copy(1, first - 1).to_vec()
+            } else {
+                Vec::new()
+            };
+            out.extend_from_slice(copy(p, next - p - 3));
+            return String::from_utf8_lossy(&out).into_owned();
+        }
+        len = len - p + 8;
+        p = next;
+        if len < 8 {
+            return text.to_string();
+        }
+    }
+}
+
+/// A card's description as its template expansion builds it: the
+/// condition block for the item flags' condition byte (bits 16–23), then
+/// the pronoun markers.
+pub fn expand_card_text(text: &str, flags: u32, female: bool) -> String {
+    expand_pronouns(&select_condition_text(text, (flags >> 16) as u8), female)
+}
+
 /// The number of rows of each phrase table the sentence builders read. The
 /// original stores longer tables but stops at these counts.
 pub const MADE_ROWS: usize = 15;
@@ -1380,6 +1456,24 @@ mod tests {
         assert_eq!(pronoun("HisHer", true), Some("her"));
         assert_eq!(pronoun("HisHers", false), Some("his"));
         assert_eq!(pronoun("He", true), None);
+    }
+
+    #[test]
+    fn a_card_text_takes_the_first_block_its_condition_reaches() {
+        let text = "Rust@cond50:half done###@cond00:all###";
+        // 128 · 100 / 255 = 50.2 → 50: the first block's limit reaches it;
+        // its text stops three bytes before the next block.
+        assert_eq!(select_condition_text(text, 128), "Rusthalf done");
+        // 255 → 100: only the last block (00 is 100) reaches it, and its
+        // text runs to the end.
+        assert_eq!(select_condition_text(text, 255), "Rustall###");
+        assert_eq!(select_condition_text("no blocks", 9), "no blocks");
+        // A block at the start keeps no prefix.
+        assert_eq!(select_condition_text("@cond99:ok!!!@", 0), "ok");
+        assert_eq!(
+            expand_card_text("@cond99:{®HeShe} is ok", 0, true),
+            "She is ok"
+        );
     }
 
     #[test]
