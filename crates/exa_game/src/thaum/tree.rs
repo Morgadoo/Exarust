@@ -1178,6 +1178,11 @@ impl TreeScreen {
                         end: end as u32,
                     };
                     self.links[node].push(link);
+                    let mut raw = [0u8; 16];
+                    raw[0..4].copy_from_slice(&link.out_turn.to_le_bytes());
+                    raw[4..8].copy_from_slice(&link.in_turn.to_le_bytes());
+                    raw[8..12].copy_from_slice(&link.end.to_le_bytes());
+                    self.nodes[node].links.push(raw);
                     added = true;
                 }
             }
@@ -2870,6 +2875,26 @@ mod tests {
         assert!(out.back);
         // CREATE mode does not open the tree from a wheel.
         assert!(!screen.wheel(0x300, 0.0, 0.0, 10).open);
+    }
+
+    #[test]
+    fn a_dragged_link_is_added_to_the_node_and_its_curve() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![]), node(0x102, vec![])],
+        );
+        screen.node_under = 1;
+        screen.drag = DragState::Link;
+        screen.link_turn = 0.0;
+        screen.zoom.value = 1.0;
+        screen.nodes[1].x = 100.0;
+        screen.nodes[1].y = 0.0;
+        let added = screen.release_drag(100.0, 0.0);
+        assert!(added);
+        assert_eq!(screen.nodes[0].links.len(), 1);
+        assert_eq!(screen.links[0].len(), 1);
+        assert_eq!(screen.links[0][0].end, 2);
     }
 
     #[test]
