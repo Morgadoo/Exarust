@@ -43,6 +43,8 @@ pub const BEAST: i32 = 11;
 pub const MATCHES_PER_DAY: u32 = 3;
 /// A match does not tick before this much game time has passed, in ms.
 pub const FIRST_TICK_MS: u64 = 1000;
+/// The team-id field's value for the player's team.
+pub const PLAYER_TEAM: i32 = 1;
 /// Indoor arenas come first in the table, outdoor arenas after them.
 pub const INDOOR_ARENAS: i32 = 7;
 pub const OUTDOOR_ARENAS: i32 = 5;
@@ -452,16 +454,33 @@ pub fn tick_due(started_ms: u32, now_ms: u32) -> bool {
 }
 
 /// One fighter in the scene, as a match tick reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneFighter {
-    /// On the player's team.
-    pub ours: bool,
-    /// Its condition word is dead.
+    /// The team-id field; [`PLAYER_TEAM`] is the player's team.
+    pub team: i32,
+    /// Its condition word is dead (0xA00).
     pub dead: bool,
-    /// A company fighter.
+    /// A company fighter: its record carries the match-participant flag.
     pub company: bool,
-    /// Its fall was already resolved.
+    /// Its fall was already resolved (the record's flag was set).
     pub resolved: bool,
+    /// Its red health.
+    pub health: f32,
+    /// Its maximum health.
+    pub max: f32,
+    /// The record's low byte; 0 is the manager.
+    pub id: u8,
+    /// A company fighter's name's sixteen bytes, for a death log.
+    pub name: Option<[u8; 16]>,
+    /// This fighter is the manager (the original's player pointer).
+    pub manager: bool,
+}
+
+impl SceneFighter {
+    /// On the player's team, judged by the team-id field.
+    pub fn ours(&self) -> bool {
+        self.team == PLAYER_TEAM
+    }
 }
 
 /// What one tick counted.
@@ -498,7 +517,7 @@ impl Tally {
 pub fn tally(fighters: &mut [SceneFighter]) -> Tally {
     let mut tally = Tally::default();
     for (index, fighter) in fighters.iter_mut().enumerate() {
-        if fighter.ours {
+        if fighter.ours() {
             tally.ours += 1;
         }
         if fighter.dead {
@@ -506,7 +525,7 @@ pub fn tally(fighters: &mut [SceneFighter]) -> Tally {
                 tally.fallen.push(index);
                 fighter.resolved = true;
             }
-        } else if fighter.ours {
+        } else if fighter.ours() {
             tally.ours_standing += 1;
         } else {
             tally.theirs_standing += 1;
@@ -584,6 +603,114 @@ pub fn log_fall(
             true
         }
         Fall::ManagerDied | Fall::Survived => false,
+    }
+}
+
+/// What a round's end set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoundEnd {
+    /// The player's team won.
+    pub won: bool,
+    /// The state the round's end set ([`MatchRounds::finish_round`]).
+    pub state: MatchState,
+}
+
+/// The manager's fall, as one tick found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ManagerDown {
+    /// The fall was fatal: the career's saves are wiped (permadeath).
+    pub fatal: bool,
+    /// The end screen the original schedules: 3 when fatal, else 2.
+    pub screen: u32,
+    /// How many of the player's team still stand. Above 0 the original
+    /// also hands the camera back to the next fighter.
+    pub ours_standing: i32,
+    /// The round's end this tick also made, if any.
+    pub round: Option<RoundEnd>,
+}
+
+/// What one match tick did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchTick {
+    /// The first second has not passed; nothing was counted.
+    NotDue,
+    /// The tick counted the teams, but neither a round nor the manager
+    /// ended.
+    Nothing,
+    /// The round ended and set the match's state.
+    RoundEnded(RoundEnd),
+    /// The manager went down; a round may also have ended this tick. The
+    /// manager branch runs after the round's, as in the original.
+    ManagerDown(ManagerDown),
+}
+
+/// One match tick: the common arena tick.
+///
+/// Once the first second has passed, it walks the scene in order, counts
+/// each fighter by its team-id field ([`PLAYER_TEAM`] is the player's
+/// team), and resolves each newly dead company fighter's fall (logging a
+/// death or a save, counting a death and calling `remove` for a fighter on
+/// the company's books). It then ends the round when the player's team has
+/// nobody standing but has fighters, else when nobody else stands. Last,
+/// once, it handles a dead manager: its fall is resolved if the scene did
+/// not already resolve it, `manager_handled` is set, and the end screen is
+/// 3 for a fatal fall (the permadeath branch) or 2 otherwise.
+///
+/// `remove` is the original's employee-removal call: it takes the scene
+/// index and the record id of a company fighter who died.
+#[allow(clippy::too_many_arguments)]
+pub fn match_tick(
+    fighters: &mut [SceneFighter],
+    rounds: &mut MatchRounds,
+    state: &mut MatchState,
+    manager_handled: &mut bool,
+    physician: bool,
+    log: &mut ArenaLog,
+    deaths: &mut u32,
+    mut remove: impl FnMut(usize, u8),
+    started_ms: u32,
+    now_ms: u32,
+) -> MatchTick {
+    if !tick_due(started_ms, now_ms) {
+        return MatchTick::NotDue;
+    }
+    let counted = tally(fighters);
+    for &index in &counted.fallen {
+        let fallen = fighters[index];
+        let fall = resolve_fall(fallen.health, fallen.max, physician, fallen.id);
+        if log_fall(log, fall, fallen.id, fallen.name, deaths) && fall == Fall::Died {
+            remove(index, fallen.id);
+        }
+    }
+    let round = counted.round_end().map(|won| {
+        let next = rounds.finish_round(won);
+        *state = next;
+        RoundEnd { won, state: next }
+    });
+    let manager = fighters.iter().position(|fighter| fighter.manager);
+    if let Some(index) = manager {
+        let fallen = fighters[index];
+        if fallen.dead && !*manager_handled {
+            *manager_handled = true;
+            // The counting pass resolves the manager too when it is on the
+            // company's books; the record's flag makes this a no-op then.
+            if !fallen.resolved {
+                let fall = resolve_fall(fallen.health, fallen.max, physician, fallen.id);
+                log_fall(log, fall, fallen.id, fallen.name, deaths);
+                fighters[index].resolved = true;
+            }
+            let fatal = fatal(fallen.health, fallen.max, physician);
+            return MatchTick::ManagerDown(ManagerDown {
+                fatal,
+                screen: if fatal { 3 } else { 2 },
+                ours_standing: counted.ours_standing,
+                round,
+            });
+        }
+    }
+    match round {
+        Some(round) => MatchTick::RoundEnded(round),
+        None => MatchTick::Nothing,
     }
 }
 
@@ -915,61 +1042,73 @@ fn tick_arena_match(
     let (Some(mut arena), Some(clock)) = (arena, clock) else {
         return;
     };
+    let arena = &mut *arena;
     if arena.state != MatchState::Fighting {
         return;
     }
     let now = clock.now_ms;
     let started = *arena.started_ms.get_or_insert(now);
-    if !tick_due(started, now) {
-        return;
-    }
     let mut entities = Vec::new();
     let mut scene = Vec::new();
-    for (entity, _, condition, player) in &fighters {
+    let mut index = 0u8;
+    for (entity, fighter, condition, player) in &fighters {
         entities.push(entity);
         scene.push(SceneFighter {
-            ours: player,
+            team: if player { PLAYER_TEAM } else { 0 },
             dead: *condition == Condition::DEAD,
             company: player,
             resolved: arena.resolved.contains(&entity),
+            health: fighter.health.red,
+            max: fighter.health.max,
+            // The player is the manager, id 0. No other company fighter is
+            // spawned here, so the other ids are only placeholders for the
+            // non-company fighters, whose falls are not resolved.
+            id: if player { 0 } else { index.wrapping_add(1) },
+            name: None,
+            manager: player,
         });
+        index = index.wrapping_add(1);
     }
-    let counted = tally(&mut scene);
-    let physician = arena.physician;
-    // The player is the manager, id 0, and the only company fighter here.
-    for &index in &counted.fallen {
-        let entity = entities[index];
-        arena.resolved.push(entity);
-        if let Ok((_, fighter, _, _)) = fighters.get(entity) {
-            let health = fighter.health;
-            let fall = resolve_fall(health.red, health.max, physician, 0);
-            let arena = &mut *arena;
-            log_fall(&mut arena.log, fall, 0, None, &mut arena.deaths);
-            info!("arena match: the manager fell ({fall:?})");
+    let mut handled = arena.manager_screen.is_some();
+    let result = match_tick(
+        &mut scene,
+        &mut arena.rounds,
+        &mut arena.state,
+        &mut handled,
+        arena.physician,
+        &mut arena.log,
+        &mut arena.deaths,
+        |_, id| info!("arena match: company fighter {id} died"),
+        started,
+        now,
+    );
+    for (index, entity) in entities.iter().enumerate() {
+        if scene[index].resolved && !arena.resolved.contains(entity) {
+            arena.resolved.push(*entity);
         }
     }
-    if let Some(won) = counted.round_end() {
-        let state = arena.rounds.finish_round(won);
-        arena.state = state;
-        info!(
+    match result {
+        MatchTick::NotDue | MatchTick::Nothing => {}
+        MatchTick::RoundEnded(round) => info!(
             "arena match: round {} {} -> state {}",
             arena.rounds.round,
-            if won { "won" } else { "lost" },
-            state.word()
-        );
-    }
-    if arena.manager_screen.is_none() {
-        let manager = fighters
-            .iter()
-            .find(|(_, _, condition, player)| *player && **condition == Condition::DEAD);
-        if let Some((_, fighter, _, _)) = manager {
-            let health = fighter.health;
-            let screen = if fatal(health.red, health.max, physician) {
-                3
-            } else {
-                2
-            };
-            arena.manager_screen = Some(screen);
+            if round.won { "won" } else { "lost" },
+            round.state.word()
+        ),
+        MatchTick::ManagerDown(down) => {
+            if let Some(round) = down.round {
+                info!(
+                    "arena match: round {} {} -> state {}",
+                    arena.rounds.round,
+                    if round.won { "won" } else { "lost" },
+                    round.state.word()
+                );
+            }
+            arena.manager_screen = Some(down.screen);
+            info!(
+                "arena match: the manager fell (screen {}, fatal {})",
+                down.screen, down.fatal
+            );
         }
     }
 }
@@ -1201,11 +1340,89 @@ mod tests {
 
     fn fighter(ours: bool, dead: bool) -> SceneFighter {
         SceneFighter {
-            ours,
+            team: if ours { PLAYER_TEAM } else { 0 },
             dead,
             company: ours,
             resolved: false,
+            health: if dead { 0.0 } else { 0.25 },
+            max: 0.25,
+            id: if ours { 2 } else { 3 },
+            name: None,
+            manager: false,
         }
+    }
+
+    fn teammate(dead: bool, health: f32) -> SceneFighter {
+        SceneFighter {
+            team: PLAYER_TEAM,
+            dead,
+            company: false,
+            resolved: false,
+            health,
+            max: 0.25,
+            id: 4,
+            name: None,
+            manager: false,
+        }
+    }
+
+    fn manager(dead: bool, health: f32) -> SceneFighter {
+        SceneFighter {
+            team: PLAYER_TEAM,
+            dead,
+            company: true,
+            resolved: false,
+            health,
+            max: 0.25,
+            id: 0,
+            name: None,
+            manager: true,
+        }
+    }
+
+    fn company(id: u8, name: &[u8], dead: bool, health: f32) -> SceneFighter {
+        let mut bytes = [0u8; 16];
+        let len = name.len().min(bytes.len());
+        bytes[..len].copy_from_slice(&name[..len]);
+        SceneFighter {
+            team: PLAYER_TEAM,
+            dead,
+            company: true,
+            resolved: false,
+            health,
+            max: 0.25,
+            id,
+            name: Some(bytes),
+            manager: false,
+        }
+    }
+
+    /// Call [`match_tick`] with the tests' clock and a collecting `remove`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_tick(
+        scene: &mut [SceneFighter],
+        rounds: &mut MatchRounds,
+        state: &mut MatchState,
+        handled: &mut bool,
+        physician: bool,
+        log: &mut ArenaLog,
+        deaths: &mut u32,
+        removed: &mut Vec<(usize, u8)>,
+        started: u32,
+        now: u32,
+    ) -> MatchTick {
+        match_tick(
+            scene,
+            rounds,
+            state,
+            handled,
+            physician,
+            log,
+            deaths,
+            |index, id| removed.push((index, id)),
+            started,
+            now,
+        )
     }
 
     #[test]
@@ -1234,6 +1451,412 @@ mod tests {
         assert_eq!(tally(&mut []).round_end(), Some(true));
         let mut theirs = [fighter(false, false)];
         assert_eq!(tally(&mut theirs).round_end(), None);
+    }
+
+    #[test]
+    fn a_match_tick_waits_for_the_first_second() {
+        let mut scene = [company(2, b"Ash", true, 0.0)];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            500,
+            1499,
+        );
+        assert_eq!(result, MatchTick::NotDue);
+        assert_eq!(state, MatchState::Fighting);
+        assert!(log.records.is_empty());
+        assert!(removed.is_empty());
+        assert!(!scene[0].resolved);
+        // One millisecond later the same scene is counted and lost.
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            500,
+            1500,
+        );
+        assert_eq!(
+            result,
+            MatchTick::RoundEnded(RoundEnd {
+                won: false,
+                state: MatchState::Lost,
+            })
+        );
+        assert_eq!(removed, vec![(0, 2)]);
+        assert_eq!(deaths, 1);
+    }
+
+    #[test]
+    fn a_tick_counts_three_against_two_by_team_id() {
+        let mut scene = [
+            manager(false, 0.25),
+            company(2, b"Ash", true, 0.0),
+            teammate(false, 0.25),
+            fighter(false, true),
+            fighter(false, false),
+        ];
+        let counted = tally(&mut scene.clone());
+        assert_eq!(
+            (counted.ours, counted.ours_standing, counted.theirs_standing),
+            (3, 2, 1)
+        );
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            1000,
+            2000,
+        );
+        assert_eq!(result, MatchTick::Nothing);
+        assert_eq!(
+            (state, rounds.round, rounds.losses),
+            (MatchState::Fighting, 0, 0)
+        );
+        // The KO was still resolved even though it did not end the round.
+        assert_eq!(removed, vec![(1, 2)]);
+        assert_eq!(deaths, 1);
+        assert_eq!(
+            (log.records[0].id, log.records[0].words[0]),
+            (LOG_DIED, 0x0068_7341)
+        );
+    }
+
+    #[test]
+    fn a_newly_ko_company_fighter_is_resolved_once() {
+        let mut scene = [
+            manager(false, 0.25),
+            company(2, b"Ash", true, 0.0),
+            fighter(false, false),
+        ];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        assert_eq!(
+            run_tick(
+                &mut scene,
+                &mut rounds,
+                &mut state,
+                &mut handled,
+                false,
+                &mut log,
+                &mut deaths,
+                &mut removed,
+                1000,
+                2000,
+            ),
+            MatchTick::Nothing
+        );
+        assert_eq!(removed, vec![(1, 2)]);
+        assert!(scene[1].resolved);
+        assert_eq!((deaths, log.records.len()), (1, 1));
+        // The record's resolved flag keeps the next tick from resolving it
+        // or removing the employee a second time.
+        assert_eq!(
+            run_tick(
+                &mut scene,
+                &mut rounds,
+                &mut state,
+                &mut handled,
+                false,
+                &mut log,
+                &mut deaths,
+                &mut removed,
+                1000,
+                2000,
+            ),
+            MatchTick::Nothing
+        );
+        assert_eq!((deaths, log.records.len(), removed.len()), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_physician_saves_a_company_fighter_from_a_lethal_injury() {
+        let mut scene = [
+            company(2, b"Ash", true, -0.03),
+            teammate(false, 0.25),
+            fighter(false, false),
+        ];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            true,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            1000,
+            2000,
+        );
+        assert_eq!(result, MatchTick::Nothing);
+        assert!(removed.is_empty());
+        assert_eq!(deaths, 0);
+        assert_eq!((log.records[0].id, log.records[0].words[0]), (LOG_SAVED, 2));
+        assert!(scene[0].resolved);
+    }
+
+    #[test]
+    fn a_tick_loses_the_round_when_no_one_of_ours_stands() {
+        let mut scene = [company(2, b"Ash", true, 0.0), fighter(false, false)];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::RoundEnded(RoundEnd {
+                won: false,
+                state: MatchState::Lost,
+            })
+        );
+        assert_eq!(state, MatchState::Lost);
+        assert_eq!(rounds.losses, 1);
+        assert_eq!(removed, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn a_tick_wins_the_round_when_nobody_else_stands() {
+        let mut scene = [manager(false, 0.25), fighter(false, true)];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |_, _| {},
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::RoundEnded(RoundEnd {
+                won: true,
+                state: MatchState::Won,
+            })
+        );
+        assert_eq!(state, MatchState::Won);
+        assert!(log.records.is_empty());
+    }
+
+    #[test]
+    fn a_won_round_of_elimination_continues() {
+        let mut scene = [manager(false, 0.25), fighter(false, true)];
+        let mut rounds = MatchRounds::elimination();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |_, _| {},
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::RoundEnded(RoundEnd {
+                won: true,
+                state: MatchState::NextFight,
+            })
+        );
+        assert_eq!(state, MatchState::NextFight);
+        assert_eq!(
+            continue_match(&mut rounds, state, false),
+            Continue::NextRound
+        );
+    }
+
+    #[test]
+    fn a_fatal_manager_fall_loses_the_round_and_shows_screen_three() {
+        let mut scene = [manager(true, 0.0), fighter(false, false)];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let mut removed = Vec::new();
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |index, id| removed.push((index, id)),
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::ManagerDown(ManagerDown {
+                fatal: true,
+                screen: 3,
+                ours_standing: 0,
+                round: Some(RoundEnd {
+                    won: false,
+                    state: MatchState::Lost,
+                }),
+            })
+        );
+        assert!(handled);
+        assert_eq!(state, MatchState::Lost);
+        assert!(scene[0].resolved);
+        // The manager's death wipes the career: nothing is logged for it.
+        assert!(log.records.is_empty());
+        assert_eq!(deaths, 0);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn a_saved_manager_shows_screen_two() {
+        let mut scene = [manager(true, -0.03), fighter(false, false)];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            true,
+            &mut log,
+            &mut deaths,
+            |_, _| {},
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::ManagerDown(ManagerDown {
+                fatal: false,
+                screen: 2,
+                ours_standing: 0,
+                round: Some(RoundEnd {
+                    won: false,
+                    state: MatchState::Lost,
+                }),
+            })
+        );
+        // A manager below 0.01 but above the physician's line was saved.
+        assert_eq!((log.records[0].id, log.records[0].words[0]), (LOG_SAVED, 0));
+    }
+
+    #[test]
+    fn a_manager_down_leaves_the_round_alone_while_a_teammate_stands() {
+        let mut scene = [
+            manager(true, 0.0),
+            teammate(false, 0.25),
+            fighter(false, false),
+        ];
+        let mut rounds = MatchRounds::default();
+        let mut state = MatchState::Fighting;
+        let mut handled = false;
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let result = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |_, _| {},
+            1000,
+            2000,
+        );
+        assert_eq!(
+            result,
+            MatchTick::ManagerDown(ManagerDown {
+                fatal: true,
+                screen: 3,
+                ours_standing: 1,
+                round: None,
+            })
+        );
+        assert_eq!((state, rounds.losses), (MatchState::Fighting, 0));
+        // The end screen is handled once; the dead manager is not shown
+        // again on the next tick.
+        let again = match_tick(
+            &mut scene,
+            &mut rounds,
+            &mut state,
+            &mut handled,
+            false,
+            &mut log,
+            &mut deaths,
+            |_, _| {},
+            1000,
+            2100,
+        );
+        assert_eq!(again, MatchTick::Nothing);
     }
 
     #[test]
