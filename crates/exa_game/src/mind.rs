@@ -1725,7 +1725,11 @@ pub fn mind_confusion(caster: &mut MindState, target: &mut MindState, cost: f32)
     slot.level2 = 1.0;
     slot.target = Some(owner);
     target.aggression += 50.0;
-    target.concerns.clear();
+    for concern in &mut target.concerns {
+        concern.value = 0.0;
+        concern.decay_a = 0.0;
+        concern.decay_b = 0.0;
+    }
     target.effect_flags |= MIND_CONFUSED;
     outcome
 }
@@ -1791,7 +1795,6 @@ pub fn mind_suspicion(caster: &mut MindState, target: &mut MindState, cost: f32)
     let slot = target.effect_or_insert(masked);
     slot.state = 1;
     slot.target = Some(owner);
-    target.effect_flags |= MIND_SUSPICIOUS;
     MindOutcome::silent(MIND_APPLIED)
         .with(SOUND_S01)
         .spending(caster, cost)
@@ -2580,7 +2583,7 @@ mod cast_tests {
         });
         let outcome = mind_confusion(&mut caster, &mut target, 0.17);
         assert_eq!(outcome.code, MIND_APPLIED);
-        assert!(target.concerns.is_empty());
+        assert_eq!(target.concerns[0].value, 0.0);
         assert_eq!(target.aggression, 50.0);
         assert_eq!(target.effect_flags, MIND_CONFUSED);
     }
@@ -2592,7 +2595,7 @@ mod cast_tests {
         let outcome = mind_suspicion(&mut caster, &mut target, 0.19);
         assert_eq!(outcome.code, MIND_APPLIED);
         assert!(target.effect(0x10B | MIND_SUSPICIOUS).is_some());
-        assert_eq!(target.effect_flags, MIND_SUSPICIOUS);
+        assert_eq!(target.effect_flags, 0);
     }
 
     #[test]
@@ -2833,5 +2836,301 @@ mod cast_tests {
         assert!((sight.nodes[0].fade - 0.5).abs() < 1e-6);
         assert!(step_mind_sight(&mut sight, &[body], 4501));
         assert!(sight.nodes.is_empty());
+    }
+}
+
+/// Starts the mind-sight overlay: a fresh start registers its frame callback
+/// and sets the shown state; a later one extends its end.
+pub fn start_mind_overlay(overlay: &mut MindOverlay, now_ms: u32, duration_ms: u32) -> bool {
+    let registered = overlay.phase == MindPhase::Idle;
+    if overlay.phase as u32 & 1 == 0 {
+        overlay.phase = MindPhase::FadingIn;
+        overlay.end_ms = now_ms.wrapping_add(duration_ms);
+    } else {
+        overlay.end_ms = overlay.end_ms.wrapping_add(duration_ms);
+    }
+    if overlay.phase as u32 & 2 == 0 {
+        overlay.alpha = 0.0;
+    }
+    if duration_ms == 0 {
+        overlay.end_ms = u32::MAX;
+    }
+    overlay.stamp_ms = now_ms;
+    registered
+}
+
+/// Clears the mind sight: the overlay, its end and every body's entries.
+pub fn reset_mind_sight(overlay: &mut MindOverlay, sight: &mut MindSight) {
+    *overlay = MindOverlay {
+        phase: MindPhase::Idle,
+        alpha: 0.0,
+        stamp_ms: 0,
+        end_ms: 0,
+    };
+    *sight = MindSight::default();
+}
+
+/// A mind glow's birth: it starts at full strength and stamps its clock on
+/// its first tick.
+pub fn mind_glow_add() -> MindGlow {
+    MindGlow {
+        start_ms: None,
+        alpha: 1.0,
+    }
+}
+
+/// One body offered to the mind-target picker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindCandidate {
+    pub id: u32,
+    /// The body's own class word; only class 1 is a character mind-target.
+    pub body_type: i32,
+    /// The body's effect flags (`0x10` keeps it out of the pick).
+    pub effect_flags: u32,
+    pub dead: bool,
+    /// Whether the player's view can see it; Sense Minds bypasses this.
+    pub visible: bool,
+    /// The projected centre and its depth, as the view reports them.
+    pub screen: [f32; 3],
+    /// The node's scale, multiplied into the pick radius.
+    pub scale: f32,
+}
+
+/// The viewport's side used by the pick radius: `n · scale · 0.5 · 40 /
+/// depth`.
+pub const PICK_VIEW: f32 = 40.0;
+
+/// Picks the nearest character on screen, within a cone that widens with
+/// the field of view and shrinks with depth. `include_dead` lets the dead
+/// powers pick a corpse; `sense_active` looks through walls.
+pub fn pick_mind_candidate(
+    candidates: &[MindCandidate],
+    screen_x: f32,
+    screen_y: f32,
+    n: f32,
+    include_dead: bool,
+    sense_active: bool,
+) -> Option<usize> {
+    let mut best: Option<(f32, usize)> = None;
+    let mut threshold = 1.0f32;
+    for (index, candidate) in candidates.iter().enumerate() {
+        if candidate.body_type != 1
+            || candidate.effect_flags & 0x10 != 0
+            || (candidate.dead && !include_dead)
+            || (!sense_active && !candidate.visible)
+        {
+            continue;
+        }
+        let radius = n * candidate.scale * 0.5 * PICK_VIEW / candidate.screen[2];
+        let dx = candidate.screen[0] - screen_x;
+        let dy = candidate.screen[1] - screen_y;
+        let distance = (dy * dy + dx * dx).sqrt();
+        if distance <= radius {
+            let ratio = distance / radius;
+            if ratio < threshold {
+                best = Some((ratio, index));
+                threshold = ratio;
+            }
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
+/// The scene a mind cast reads: the body it picked and the relation the
+/// loyalty power uses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindScene {
+    pub now_ms: u32,
+    /// The caster's relation to the picked body, for the loyalty powers.
+    pub relation: f32,
+    /// The caster's own word the mask stores.
+    pub caster_word: u32,
+}
+
+/// Casts a mind row: the target-requiring casts get the picked body, the
+/// self casts ignore it.
+pub fn mind_cast(
+    caster: &mut MindState,
+    target: Option<&mut MindState>,
+    row: &MindPowerRow,
+    cost: f32,
+    scene: MindScene,
+) -> MindOutcome {
+    match row.cast {
+        MindCast::Sense => mind_sense(caster, cost, scene.now_ms),
+        MindCast::SensePersistent => mind_sense_persistent(caster, cost),
+        MindCast::Mask => mind_mask(caster, cost, scene.caster_word),
+        MindCast::MaskPersistent => mind_mask_persistent(caster, cost),
+        MindCast::SpiritForm => mind_spirit_form(caster, cost),
+        MindCast::Calm => match target {
+            Some(target) => mind_calm(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Enrage => match target {
+            Some(target) => mind_enrage(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Confusion => match target {
+            Some(target) => mind_confusion(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::LoyaltyEnd => match target {
+            Some(target) => mind_loyalty_end(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::LoyaltyStart => match target {
+            Some(target) => mind_loyalty_start(caster, target, cost, scene.relation),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Suspicion => match target {
+            Some(target) => mind_suspicion(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Possession => match target {
+            Some(target) => mind_possession(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::CommandDead => match target {
+            Some(target) => mind_command_dead(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Fear => match target {
+            Some(target) => mind_fear(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::Embolden => match target {
+            Some(target) => mind_embolden(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+        MindCast::RaiseDead => match target {
+            Some(target) => mind_raise_dead(caster, target, cost),
+            None => MindOutcome::refused(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod cast_dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn the_screen_overlay_starts_and_extends() {
+        let mut overlay = MindOverlay {
+            phase: MindPhase::Idle,
+            alpha: 0.0,
+            stamp_ms: 0,
+            end_ms: 0,
+        };
+        assert!(start_mind_overlay(&mut overlay, 1000, 4000));
+        assert_eq!(overlay.phase, MindPhase::FadingIn);
+        assert_eq!(overlay.end_ms, 5000);
+        assert_eq!(overlay.alpha, 0.0);
+        assert!(!start_mind_overlay(&mut overlay, 2000, 4000));
+        assert_eq!(overlay.end_ms, 9000);
+        assert_eq!(overlay.stamp_ms, 2000);
+        let mut forever = MindOverlay {
+            phase: MindPhase::Idle,
+            alpha: 0.0,
+            stamp_ms: 0,
+            end_ms: 0,
+        };
+        start_mind_overlay(&mut forever, 0, 0);
+        assert_eq!(forever.end_ms, u32::MAX);
+    }
+
+    #[test]
+    fn the_mind_pick_takes_the_nearest_visible_character() {
+        let candidates = [
+            MindCandidate {
+                id: 4,
+                body_type: 1,
+                effect_flags: 0,
+                dead: false,
+                visible: false,
+                screen: [4.5, 0.0, 10.0],
+                scale: 1.0,
+            },
+            MindCandidate {
+                id: 5,
+                body_type: 1,
+                effect_flags: 0,
+                dead: false,
+                visible: true,
+                screen: [6.0, 0.0, 10.0],
+                scale: 1.0,
+            },
+            MindCandidate {
+                id: 6,
+                body_type: 2,
+                effect_flags: 0,
+                dead: false,
+                visible: true,
+                screen: [0.0, 0.0, 10.0],
+                scale: 1.0,
+            },
+        ];
+        assert_eq!(
+            pick_mind_candidate(&candidates, 5.0, 0.0, 1.0, false, false),
+            Some(1)
+        );
+        assert_eq!(
+            pick_mind_candidate(&candidates, 5.0, 0.0, 1.0, false, true),
+            Some(0)
+        );
+        assert_eq!(
+            pick_mind_candidate(&candidates, 15.0, 0.0, 1.0, false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn the_dead_pick_takes_a_corpse_and_the_pick_ignores_ghosts() {
+        let corpse = MindCandidate {
+            id: 7,
+            body_type: 1,
+            effect_flags: 0,
+            dead: true,
+            visible: true,
+            screen: [0.0, 0.0, 10.0],
+            scale: 1.0,
+        };
+        assert_eq!(
+            pick_mind_candidate(&[corpse], 0.0, 0.0, 1.0, false, false),
+            None
+        );
+        assert_eq!(
+            pick_mind_candidate(&[corpse], 0.0, 0.0, 1.0, true, false),
+            Some(0)
+        );
+        let hidden = MindCandidate {
+            effect_flags: 0x10,
+            ..corpse
+        };
+        assert_eq!(
+            pick_mind_candidate(&[hidden], 0.0, 0.0, 1.0, true, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_row_casts_on_its_target_or_on_the_caster() {
+        let mut caster = MindState::new(1, 1.0, 0);
+        caster.power_count = 1;
+        let mut target = MindState::new(7, 1.0, 2);
+        let row = mind_row(0x104).expect("enrage");
+        let scene = MindScene {
+            now_ms: 0,
+            relation: 0.0,
+            caster_word: 0,
+        };
+        let outcome = mind_cast(&mut caster, Some(&mut target), row, row.cost, scene);
+        assert_eq!(outcome.code, MIND_APPLIED);
+        assert_eq!(target.aggression, 50.0);
+        let sense = mind_row(0x101).expect("sense");
+        let outcome = mind_cast(&mut caster, None, sense, sense.cost, scene);
+        assert_eq!(outcome.code, MIND_APPLIED);
+        assert!(outcome.overlay_ms.is_some());
+        let refused = mind_cast(&mut caster, None, row, row.cost, scene);
+        assert_eq!(refused.code, MIND_REFUSED);
     }
 }

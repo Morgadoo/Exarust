@@ -72,6 +72,12 @@ pub const LIGHT_RELEASE_FLOOR: f32 = 5000.0;
 pub const LIGHT_RADIUS: f32 = 120.0;
 /// The light's tint.
 pub const LIGHT_TINT: [f32; 3] = [0.16, 0.08, 0.0];
+/// The cast motion the start asks for.
+pub const BLAST_MOTION: u32 = 0x22;
+/// The event a release raises.
+pub const POWER_USED: &str = "PowerUsed";
+/// The geometry's texture offset, as the draw sets it.
+pub const TEXTURE_OFFSET: [f32; 3] = [0.0, 0.0, 1.0];
 
 /// A setup's chunk tuning, as the constructors leave it: the share of the
 /// speed a chunk keeps, the light and the push.
@@ -464,6 +470,50 @@ pub struct BlastLight {
     pub slot: usize,
 }
 
+/// The blast's whole GI light: one point light fed by every chunk's colour
+/// block, at the mean of the chunks 120 cm on each axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlastLightSet {
+    pub position: Vec3,
+    /// The light's radius uniform: 5000 while charging, 1000 or less once
+    /// released.
+    pub radius: f32,
+    /// One colour block a chunk.
+    pub blocks: Vec<[f32; 3]>,
+}
+
+impl Blast {
+    /// The blast's GI light one frame.
+    pub fn light_set(&self) -> BlastLightSet {
+        if self.chunks.is_empty() {
+            return BlastLightSet {
+                position: self.hand,
+                radius: LIGHT_CHARGE_STRENGTH,
+                blocks: Vec::new(),
+            };
+        }
+        let mut sum = Vec3::ZERO;
+        let mut radius = LIGHT_CHARGE_STRENGTH;
+        let mut blocks = Vec::with_capacity(self.chunks.len());
+        for (slot, chunk) in self.chunks.iter().enumerate() {
+            let light = self.light(chunk, slot);
+            sum += chunk.at;
+            radius = light.radius;
+            blocks.push(light.colour);
+        }
+        BlastLightSet {
+            position: sum / self.chunks.len() as f32 + Vec3::splat(LIGHT_RADIUS),
+            radius,
+            blocks,
+        }
+    }
+
+    /// The draw's texture offset.
+    pub fn texture_offset(&self) -> [f32; 3] {
+        TEXTURE_OFFSET
+    }
+}
+
 /// Pushes every pair of chunks apart when they are closer than twice the
 /// first chunk's reach. A zero distance leaves them where they are.
 pub fn separate_all(chunks: &mut [Chunk]) {
@@ -797,6 +847,18 @@ mod tests {
         separate_all(&mut list);
         assert!(list[0].at.x < 0.0);
         assert!(list[1].at.x > 15.0);
+    }
+
+    #[test]
+    fn the_light_set_feeds_every_chunk() {
+        let mut blast = blast();
+        blast.charge = 0.4;
+        let set = blast.light_set();
+        assert_eq!(set.blocks.len(), blast.chunk_count());
+        assert_eq!(set.radius, 5000.0);
+        let mean = blast.chunks.iter().map(|c| c.at).sum::<Vec3>() / blast.chunks.len() as f32;
+        assert!((set.position - (mean + Vec3::splat(120.0))).length() < 1e-5);
+        assert_eq!(blast.texture_offset(), [0.0, 0.0, 1.0]);
     }
 
     #[test]

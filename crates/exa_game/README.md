@@ -122,6 +122,33 @@ company's coins (`Company::restock`, `Company::settle`). The shop window,
 an apparel copy's description phrase and the weapon variant roll are not
 in.
 
+The force blast and torrent (`effects::{blast, torrent}`) are rule models, on
+the original's 83 Hz tick: the blast's charge (five sixths of the tick), its
+release alert, its chunks' 0.4 cm reach and `(speed·0.7 + 3)·0.0006` drawn
+growth a tick, their 0.96 retention and pairwise separation, the body push
+and character limb impulse (30 doubled, a stun up to 0.08 s, 0.01 anger),
+its 12-point trails and 8-sample ribbons, its tints and charge/release
+colours, and its GI light (tint 0.16 0.08 0.0, radius 5000 and 1000, strength
+blocks); the torrent's sixteen 16 cm births, `0.4·(2 − charge)·charge` level,
+15 cm stream step, 66-tick stream life and 8-less-a-draw spawn delay, its two
+hit channels (0.005 and 0.01, the second up to 1.8), its 1 % push, 12-quad
+ribbons and 120 cm, 2000-strength GI light. `effects::ribbon_mesh` builds the
+glow material's mesh from either ribbon. The power bar that would cast them
+and the AI's cast are not in, so no system spawns them yet.
+
+The Mind domain's rules (`mind`) are in: the sixteen-row table, the
+focus/record/corpse gates, calm, enrage, confusion, fear, embolden,
+suspicion, the loyalty bind and release, sense and mask (instant and
+persistent, with the mask slots and body flag 0x10000), spirit form,
+possession (the 0x10000 resistance bit and the half-cost failures), raise
+dead and command over the dead (revival to condition 8, strength 0.2, slow
+tick 19), the price and restore rules (repeat, sustain, reserve), the
+screen-space mind-target pick, the sight's 4 ms tick, 3000/5000 ms dwell,
+weights, entry kinds and colours, the overlay's two-second fades, the
+three-second mind glow and the effect markers (0x10010A, 0x100109, 0x10010D).
+The sight sphere and its animated noise, the screen effects' GL passes and
+the casting AI are not in.
+
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter
 node, `_PortalPrt` in `uwportal01`) gets the soft blue 0.75 light of
@@ -147,6 +174,9 @@ grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
 Light, Displacement) clockwise from the top of a 76 px ring, with a
 20.8 px hit, its hover, label, open ease, choice flash and confirm rules.
+Rules of the mind powers and the two force effects:
+[`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind, Force blast and
+torrent).
 The reconstruction device starts the scan (`teleporters`); nothing
 starts the shell, bubble or wheel yet: their callers (the displacement
 powers, the portal screen's journey and the power tree) are not in. Drawing the flame ribbon's vertices, the shell and scan

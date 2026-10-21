@@ -1,12 +1,13 @@
 # Thaumaturgy
 
 The original's powers as Exarust runs them: how a cast is let through and
-priced, what each Force, Energy and Displacement power makes, and the
-effects (electric arcs, the force barricade, displacement wisps) that run as
-simulations in the game. The Mind domain, the power tree and the
-spirit form are in `exa_game::thaum` and `exa_game::mind`. Lengths are in
-cm, as the original's effects keep them; the effects run at the 83 Hz body
-tick.
+priced, what each Force, Energy, Displacement and Mind power makes, and the
+effects (electric arcs, the force barricade, displacement wisps, the force
+blast and torrent) that run as simulations in the game. The Mind domain's
+rules are in `exa_game::mind`; the force blast and torrent rules and their
+draw geometry and lights are in `exa_game::effects::blast` and
+`exa_game::effects::torrent`. Lengths are in cm, as the original's effects
+keep them; the effects run at the 83 Hz body tick.
 
 Evidence: the decompiled cast tables, front ends, gates, casts, creators,
 AI evaluators and effect classes of `Exanima.exe`; research notes in
@@ -144,6 +145,94 @@ radius 100 and 120. The AI casts blast (focus, facing within 1, 6 m),
 barrier (facing 1 or more, 3 m), shell and strikes (cost within half the
 focus, facing within 0.5, a free slot).
 
+## Mind
+
+`exa_game::mind`. The table has sixteen rows: sense 0x101 (0.13) and its
+persistent form 0x20101 (0.27), mask 0x102 (0.12) and 0x20102 (0.24),
+spirit form 0x10106 (0.025), calm 0x103 (0.14), enrage 0x104 (0.16),
+confusion 0x105 (0.17), the loyalty release 0x109 (0.19) and bind 0x2010A
+(0.29), suspicion 0x10B (0.19), possession 0x2010C (0.35), command over the
+dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
+0x10F (0.30).
+
+- **Gates**: most casts need focus of 0.3 times the cost, compared in double
+  precision with an unordered compare that lets a NaN through. Record types
+  1 to 3 are living and 4 and 5 undead; a cast on an undead body spends the
+  cost and does nothing. Suspicion and possession need the whole cost;
+  possession and raise dead also refuse the undead bit 0x10 on the target's
+  status word and the character bit 0x40.
+- **Calm**: a concern with a decay of 10 or less becomes four times itself
+  with its decay cleared; a larger one loses 10 and gains 30. Aggression
+  loses 10, the fear value 50 and the courage 1, each floored at zero (a
+  NaN is left), and the calm factor is set to 1.
+- **Enrage** adds 50 to the target's aggression and its 0x104 effect;
+  **confusion** zeroes the concerns and adds 50 of aggression with the 0x105
+  effect; **fear** adds 20 of the fear value up to 40; **embolden** adds 50
+  of courage up to 80; **suspicion** makes the 0x10010B effect. The effects'
+  sounds are `ThmMnd_R01`, `C02`, `T01`, `S01`, `F01`, `C03`, `C01` and
+  `A01` at volumes 0.1 to 0.3.
+- **Loyalty**: a bind needs a living target, no other bind of the caster's
+  and a free power; it makes the 0x10010A effect with a relation level
+  `(((r + 100)·0.005)²·100)`, sets the relation to 30 and gives the target
+  the 0x2010A power. A second cast on the bound target ends the bind. The
+  release (0x100109) halves the relation weights and sets the relation to
+  30 again.
+- **Sense and mask** are cast on the caster. Sense runs 4000 ms, or the
+  focus's share of it; a persistent sense ends a running one. Mask needs a
+  free mask slot and sets body flag 0x10000; its persistent form ends a
+  running one. The overlay fades over 2 s, the sight nodes are picked every
+  4 ms, and a grace window of 5000 ms (a corpse) or 3000 ms (another tracked
+  body) keeps a node alive.
+- **Possession** needs a living body without the resistance bit 0x10000 and
+  a free power; it makes the 0x2010C effect on the caster (the success
+  spends nothing; a resist or an undead target spends half and plays
+  `ThmMnd_E02`). **Spirit form** needs focus above 0.05, makes the 0x10106
+  effect and the 0x1000000 body flag, and ends on a second cast.
+- **Raise dead** and **command over the dead** need a corpse (body flags
+  0xA00). The revival sets the raised status bit, the condition word 8, the
+  speed `1 − 0.1·strength`, the slow tick
+  `round((1 − 0.25·strength)·1660/83)` (19 at strength 0.2) and the strength
+  scale `1.25 − 0.25·strength²`. Raise dead binds nothing; command makes the
+  0x10010D effect on the corpse and the 0x2010D power on the caster.
+- **Target picking** takes a character of body class 1 without effect flag
+  0x10, alive unless the dead powers ask, seen by the view unless Sense
+  Minds runs, and within `n·scale·0.5·40/depth` of the screen centre. The
+  nearest ratio below 1 wins.
+- **Prices and restore**: an instant power repeated with the repeat
+  technique costs half; a sustained one costs the tick times its table cost
+  over 1000, half again with the sustain technique; a persistent one keeps
+  its cost. A restored persistent sense or mask holds three quarters with
+  the reserve technique.
+
+## Force blast and torrent
+
+`exa_game::effects::blast` and `exa_game::effects::torrent`.
+
+- **Blast** (0x201, and the bolt and wave through their tuning): charge
+  rises by five sixths of the tick in seconds; past 1 it releases with an
+  alert 1800 cm around it, and the chunks fly at 0.96 of their motion a
+  tick. Each chunk's collision reach grows 0.4 cm and its drawn radius
+  `(speed·0.7 + 3)·0.0006` cm a tick. Two chunks closer than twice the reach
+  push apart by half the overlap. A hit body takes `(1 − d²/r²)` of the
+  push, a character's limb an impulse of at most 30 doubled, a stun of
+  `0.08·(1 − share)` between 0.008 and 0.08 s, and 0.01 of anger toward the
+  caster. Its light is tint (0.16, 0.08, 0) at the chunks' mean 120 cm on
+  each axis, radius 5000 while charging (1000, or down to
+  `5000 − 13333·fade`, once released), each block `light·strength`.
+  A chunk's ribbon runs through 12 trail points with 8 samples, in the
+  chunk's two random tints; the draw's texture offset is (0, 0, 1).
+- **Torrent**: sixteen streams are born 16 cm out, their height 1.5 times
+  the direction less 30 cm, with a spawn delay of 8 less a random 0 to 2
+  ticks and a 66-tick life. The level is `0.4·(2 − charge)·charge` while
+  charging; past 1 the streams push 15 cm along the aim a tick. A fade
+  drops the level 0.01 a tick and stops below 0.02. A hit point takes 1 % of
+  its overshoot as a push, and raises the stream's channels 0.005 and 0.01
+  (the second up to 1.8). Its light is tint (0.12, 0.06, 0) at the stream
+  heads' mean 120 cm on each axis, strength 2000 and each block
+  `light·level·0.25·(2 − charge)·charge·1.2`. A stream's ribbon has 12 quads
+  through 16 history points. The cast plays `thmfrc_cu01` and
+  `thmfrc_trntdr`, motion 0x26 and the `PowerUsed` event.
+
 ## Energy
 
 `exa_game::thaum::energy`. Shock 0x401 (0.10) starts cast motion 0x27;
@@ -277,3 +366,9 @@ are not drawn yet (nothing starts them); the GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
+The force blast and torrent carry
+ribbon vertices (`blast::ribbon`, `torrent::ribbon`) and
+`effects::ribbon_mesh` turns them into the glow material's mesh; no system
+spawns them yet, because Exarust has no power bar and the AI does not cast.
+The mind-sight overlay's sphere and its animated noise are not drawn either;
+its per-entry colours, weights, fade and dwell are in `exa_game::mind`.

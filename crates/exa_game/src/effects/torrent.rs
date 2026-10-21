@@ -61,6 +61,14 @@ pub const LIGHT_UNIFORM: f32 = 2000.0;
 /// The light's charge curve terms.
 pub const LIGHT_CURVE: f32 = 0.25;
 pub const LIGHT_CHARGE: f32 = 1.2;
+/// The cast motion the start asks for and the two loop sounds.
+pub const TORRENT_MOTION: u32 = 0x26;
+pub const CHARGE_SOUND: &str = "thmfrc_cu01";
+pub const LOOP_SOUND: &str = "thmfrc_trntdr";
+/// The event a release raises.
+pub const POWER_USED: &str = "PowerUsed";
+/// The draw's texture offset, as the geometry sets it.
+pub const TEXTURE_OFFSET: [f32; 3] = [0.0, 0.0, 0.0];
 
 /// The torrent's phase word.
 pub const CHARGING: i32 = 0;
@@ -346,6 +354,32 @@ impl Torrent {
         self.light * stream.level * LIGHT_CURVE * (2.0 - self.charge) * self.charge * LIGHT_CHARGE
     }
 
+    /// The draw's texture offset.
+    pub fn texture_offset(&self) -> [f32; 3] {
+        TEXTURE_OFFSET
+    }
+
+    /// The light's whole set: its position, its 2000 strength uniform and
+    /// one colour block a stream.
+    pub fn light_set(&self) -> TorrentLightSet {
+        let mut blocks = Vec::with_capacity(self.streams.len());
+        for stream in &self.streams {
+            blocks.push([LIGHT_TINT[0], LIGHT_TINT[1], LIGHT_TINT[2]].map(|c| {
+                c * self.light
+                    * stream.level
+                    * LIGHT_CURVE
+                    * (2.0 - self.charge)
+                    * self.charge
+                    * LIGHT_CHARGE
+            }));
+        }
+        TorrentLightSet {
+            position: self.light_position(),
+            strength: LIGHT_UNIFORM,
+            blocks,
+        }
+    }
+
     /// The light's position: the mean of the stream heads, 120 cm on each
     /// axis.
     pub fn light_position(&self) -> Vec3 {
@@ -382,6 +416,15 @@ impl Torrent {
         }
         out
     }
+}
+
+/// The torrent's GI light: one light fed by every stream's colour block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TorrentLightSet {
+    pub position: Vec3,
+    /// The light's strength uniform, 2000.
+    pub strength: f32,
+    pub blocks: Vec<[f32; 3]>,
 }
 
 /// Advances one stream's history: the newest point is pushed toward the
@@ -486,6 +529,21 @@ mod tests {
         assert!((strength - 1.0 * 0.3 * 0.25 * 1.5 * 0.5 * 1.2).abs() < 1e-6);
         let at = torrent.light_position();
         assert!((at - Vec3::new(121.0, 120.0, 90.0)).length() < 1e-4);
+    }
+
+    #[test]
+    fn the_light_set_feeds_every_stream() {
+        let mut torrent = torrent();
+        torrent.charge = 0.5;
+        for stream in &mut torrent.streams {
+            stream.level = 0.5;
+        }
+        let set = torrent.light_set();
+        assert_eq!(set.strength, 2000.0);
+        assert_eq!(set.blocks.len(), 16);
+        let expected = 0.12 * 1.0 * 0.5 * 0.25 * 1.5 * 0.5 * 1.2;
+        assert!((set.blocks[0][0] - expected).abs() < 1e-6);
+        assert_eq!(torrent.texture_offset(), [0.0, 0.0, 0.0]);
     }
 
     #[test]
