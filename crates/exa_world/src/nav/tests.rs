@@ -582,6 +582,43 @@ fn shipped_levels() {
             let (x, z) = g.cell_at(p).unwrap();
             r.iter().any(|&(rx, rz, _)| (rx, rz) == (x, z))
         };
+        // A long plan, as an NPC's: to the reached cell farthest from the
+        // start within the planner's 253 cells, timed (it must stay cheap
+        // enough for one a tick).
+        let (sx, sz) = g.cell_at(start).unwrap();
+        let far = r
+            .iter()
+            .filter(|&&(x, z, _)| x.abs_diff(sx) <= 240 && z.abs_diff(sz) <= 240)
+            .max_by_key(|&&(x, z, _)| (x.abs_diff(sx).pow(2) + z.abs_diff(sz).pow(2), x, z))
+            .copied()
+            .unwrap();
+        let layer = if far.2 == 0 {
+            Layer::Lower
+        } else {
+            Layer::Upper
+        };
+        let centre = g.cell_centre(far.0, far.1);
+        let goal = Vec3::new(
+            centre.x,
+            g.floor_height(g.cell(far.0, far.1, layer).floor),
+            centre.y,
+        );
+        let clock = std::time::Instant::now();
+        let plan = super::find_path_with(&g, start, goal, 3, super::ACCEPT_GOAL_CELL, 1);
+        let took = clock.elapsed();
+        eprintln!(
+            "{name}: plan of {:.1} m: {} points, cost {}, reached {}, {:?}",
+            start.distance(goal),
+            plan.points.len(),
+            plan.cost,
+            plan.reached,
+            took
+        );
+        assert!(plan.points.len() >= 2, "{name}: {plan:?}");
+        assert!(
+            took < std::time::Duration::from_millis(250),
+            "{name}: {took:?}"
+        );
         match name {
             "arena" => assert!(reaches(Vec3::new(0.0, 0.0, -5.0))),
             "exanima01" => {
