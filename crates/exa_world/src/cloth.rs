@@ -73,6 +73,13 @@ pub fn cloth_of(vertices: &[Vec3], triangles: &[[usize; 3]], pins: &[(usize, f32
     cloth
 }
 
+/// Cloth nodes still waiting for their cloth: not built, not given up on.
+type PendingCloth = (
+    With<ClothNode>,
+    Without<ClothInstance>,
+    Without<ClothSkipped>,
+);
+
 /// Gives each cloth node its cloth, once its mesh is in place (a skinned
 /// part gets its mesh when it is bound to its skeleton, after it spawns).
 ///
@@ -81,14 +88,7 @@ pub fn cloth_of(vertices: &[Vec3], triangles: &[[usize; 3]], pins: &[(usize, f32
 /// node alone.
 fn build_cloth_nodes(
     mut commands: Commands,
-    nodes: Query<
-        (Entity, &Mesh3d),
-        (
-            With<ClothNode>,
-            Without<ClothInstance>,
-            Without<ClothSkipped>,
-        ),
-    >,
+    nodes: Query<(Entity, &Mesh3d), PendingCloth>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     for (entity, mesh) in &nodes {

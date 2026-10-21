@@ -156,8 +156,8 @@ pub struct MorphWeights {
 /// at rest and the ends reach −½ and +½.
 pub fn centred_slider_weight(position: f32) -> f32 {
     // Not `0.5 − position`: the middle gives −0, as the original's
-    // multiplication by −1 does.
-    (position - 0.5) * -1.0
+    // multiplication by −1 does (a negation is the same bit for bit).
+    -(position - 0.5)
 }
 
 /// The weight a slider sets, centred or direct, before its morph is applied.
