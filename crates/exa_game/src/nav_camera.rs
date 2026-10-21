@@ -348,8 +348,8 @@ pub struct PresetFields {
     pub min_height: f32,
     /// Largest looked-at height.
     pub max_height: f32,
-    /// A free field the original copies to the controller (0xD; its role
-    /// was not established).
+    /// The record's last field, which the original copies to the
+    /// controller as it is (its role was not established).
     pub extra: f32,
 }
 
