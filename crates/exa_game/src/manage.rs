@@ -38,6 +38,26 @@ use crate::report::{self, RANKS, ReportFighter, ReportLine};
 
 /// The manage window's title.
 pub const MANAGE_TITLE: &str = "Manage Company";
+/// The manage window's class size and its close slot's work.
+pub const MANAGE_FORM_SIZE: i32 = 0x178;
+
+/// What closing Manage Company does: clears the hub-busy flag, releases
+/// the window registry's pointer and runs the base close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManageClose {
+    pub hub_busy: bool,
+    pub window: Option<u64>,
+    pub base: bool,
+}
+
+/// The close slot's state after it ran.
+pub fn close_manage() -> ManageClose {
+    ManageClose {
+        hub_busy: false,
+        window: None,
+        base: true,
+    }
+}
 /// The manage window's labels and buttons, in its table's order.
 pub const MANAGE_CONTROLS: [&str; 11] = [
     "Roster",
@@ -1635,6 +1655,11 @@ mod tests {
         };
         let refresh = manage_refresh(day, &manager, &[master], &[], &[], |_| None);
         assert_eq!(refresh.roster[1].rank.text, "Master+");
+        let close = close_manage();
+        assert!(!close.hub_busy);
+        assert_eq!(close.window, None);
+        assert!(close.base);
+        assert_eq!(MANAGE_FORM_SIZE, 0x178);
         let texts: Vec<&str> = refresh.report.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,

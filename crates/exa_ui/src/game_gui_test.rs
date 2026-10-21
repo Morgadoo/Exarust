@@ -465,3 +465,14 @@ fn the_preview_bars_and_journal_flag() {
         (0, 1)
     );
 }
+
+#[test]
+fn the_journal_keeps_its_text_and_place_when_it_closes() {
+    let mut journal = Journal::default();
+    journal.close((120, 40), "a note");
+    assert_eq!(journal.place, Some((120, 40)));
+    assert_eq!(journal.entries[0].text, "a note");
+    journal.store_only("another");
+    assert_eq!(journal.entries[0].text, "another");
+    assert_eq!(journal.place, Some((120, 40)));
+}

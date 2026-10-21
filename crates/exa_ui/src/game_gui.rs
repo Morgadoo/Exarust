@@ -404,6 +404,19 @@ impl Journal {
         }
     }
 
+    /// The close: remembers the window's position and stores the text
+    /// box's `text` into the selected entry (the original's two steps).
+    pub fn close(&mut self, position: (i32, i32), text: &str) {
+        self.place = Some(position);
+        self.store_text(text);
+    }
+
+    /// Stores the text without moving the window (the snapshot the game
+    /// takes while the journal is open).
+    pub fn store_only(&mut self, text: &str) {
+        self.store_text(text);
+    }
+
     /// The titles in list order, as the original copies them for the list.
     pub fn titles(&self) -> Vec<&str> {
         self.entries.iter().map(|e| e.title.as_str()).collect()

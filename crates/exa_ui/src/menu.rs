@@ -272,6 +272,26 @@ pub enum EndSessionAction {
     Registered(u64),
 }
 
+/// The end-session menu's own constructor values: the main menu's base at
+/// scale 0.9, two flags clear, and the view mode 1.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EndSessionForm {
+    pub scale: f32,
+    pub resume_flag: bool,
+    pub final_round: bool,
+    pub action: i32,
+}
+
+/// The constructor's values.
+pub fn end_session_form() -> EndSessionForm {
+    EndSessionForm {
+        scale: 0.9,
+        resume_flag: false,
+        final_round: false,
+        action: 0,
+    }
+}
+
 /// The end-session dispatch's inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndSessionInput {
@@ -1616,6 +1636,14 @@ mod tests {
 
         let page_one = skill_selector_key(3, 1, 4, 0, || 7);
         assert!(page_one.closed);
+    }
+
+    #[test]
+    fn the_end_session_form_keeps_its_constructor_values() {
+        let f = end_session_form();
+        assert_eq!(f.scale, 0.9);
+        assert!(!f.resume_flag && !f.final_round);
+        assert_eq!(f.action, 0);
     }
 
     #[test]

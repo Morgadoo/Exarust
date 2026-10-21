@@ -62,6 +62,94 @@ pub fn save_to(company: &mut crate::career::Company, editor: &exa_ui::EmblemEdit
     company.emblem = editor.record();
 }
 
+/// The library the emblem editor opens and its pack extension.
+pub const EMBLEMS_LIBRARY: &str = "Emblems";
+pub const EMBLEMS_PACK: &str = "Emblems.rpk";
+/// The new-career dialog's labels.
+pub const COMPANY_NAME_TITLE: &str = "Company Name";
+pub const COMPANY_NAME_PROMPT: &str = "Please name your company";
+/// The message box's icon id the prompt uses.
+pub const COMPANY_NAME_ICON: u32 = 0xc1;
+/// The company-create form's colour (opaque black).
+pub const COMPANY_FORM_COLOUR: [u8; 4] = [0, 0, 0, 255];
+/// The action set the company dialog switches to.
+pub const COMPANY_ACTION_SET: i32 = 2;
+
+/// What confirming the company name does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompanyConfirm {
+    /// The name is empty: show the message box and change nothing.
+    MissingName,
+    /// The name is taken: store it and the emblem, and open the
+    /// character screen.
+    Named { name: String, layers: [u8; 4] },
+}
+
+/// Confirms a company name (the name's bytes are kept whole).
+pub fn confirm_company(name: &str, editor: &exa_ui::EmblemEditor) -> CompanyConfirm {
+    if name.is_empty() {
+        CompanyConfirm::MissingName
+    } else {
+        CompanyConfirm::Named {
+            name: name.to_string(),
+            layers: editor.record().layers.to_le_bytes(),
+        }
+    }
+}
+
+/// Where the company dialog is centred: screen width over two, and the
+/// 370-scaled line down from the 1024 frame.
+pub fn company_place(screen: (i32, i32)) -> [i32; 2] {
+    let scale = (f64::from(screen.1) / 135.0).round_ties_even() * 0.125;
+    let top = (f64::from(screen.1) - (scale as f32) as f64 * 1024.0).round_ties_even() as i32 / 2;
+    [screen.0 / 2, (scale * 370.0).round_ties_even() as i32 + top]
+}
+
+/// The emblem form's "remove layer" callback: takes the last layer off
+/// and disables the button when none is left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerRemove {
+    pub removed: bool,
+    pub disabled: bool,
+}
+
+pub fn remove_layer(count: &mut i32) -> LayerRemove {
+    if *count > 0 {
+        *count -= 1;
+    }
+    LayerRemove {
+        removed: *count >= 0 && *count < i32::MAX,
+        disabled: *count < 1,
+    }
+}
+
+/// The emblem form's mask callback: sets or clears a record word's bits.
+pub fn toggle_mask(word: &mut u32, value: u32, set: bool) {
+    if set {
+        *word |= value;
+    } else {
+        *word &= !value;
+    }
+}
+
+/// The four layer bytes the "klean" preset stores, and its pictures.
+pub const KLEAN_LAYERS: [u8; 4] = [7, 0, 0, 6];
+pub const KLEAN_BACKGROUND: u32 = 52;
+pub const KLEAN_DESIGN: u32 = 81;
+
+/// Applies the preset to an editor when the typed name is exactly `klean`.
+pub fn apply_klean(name: &str, editor: &mut exa_ui::EmblemEditor) -> bool {
+    if name != "klean" {
+        return false;
+    }
+    editor.record.background = KLEAN_BACKGROUND;
+    editor.record.design = KLEAN_DESIGN;
+    editor.record.layers = u32::from_le_bytes(KLEAN_LAYERS);
+    editor.set_background(KLEAN_BACKGROUND as i32);
+    editor.set_design(KLEAN_DESIGN as i32);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

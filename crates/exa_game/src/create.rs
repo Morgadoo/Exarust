@@ -202,6 +202,160 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     Some(first)
 }
 
+/// The character-edit page's record fields, as the page's update reads
+/// them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageSource {
+    pub female: bool,
+    /// −1…1, positive shorter.
+    pub height: f32,
+    /// 0…1.
+    pub age: f32,
+    /// The two physique values.
+    pub physique: [f32; 2],
+    /// The two skin-colour words.
+    pub skin: [u16; 2],
+    /// The skin-tone value the slider shows.
+    pub skin_tone: f32,
+    /// The voice number.
+    pub voice: i32,
+    pub voice_pitch: f32,
+    /// The hair-style list index.
+    pub hair_style: i32,
+    pub hair_colour: [u8; 4],
+    /// The record word whose bit 0x10000 is the hair flag and whose bits
+    /// 20–23 are the appearance variant plus one.
+    pub word: u32,
+}
+
+/// The values the character-edit page's update pushes into its controls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditPageState {
+    pub female: bool,
+    /// The height slider: 0.5 − height × 0.5.
+    pub height_slider: f32,
+    pub age_slider: f32,
+    pub voice_pitch: f32,
+    pub voice: i32,
+    pub hair_style: i32,
+    pub skin_words: [u16; 2],
+    pub skin_slider: f32,
+    /// The hair colour picker's three channels, 0…1.
+    pub hair_colour: [f32; 3],
+    pub hair_visible: bool,
+    /// The appearance variant's letter, or None for a dash.
+    pub variant_letter: Option<u8>,
+}
+
+/// The character-edit page's update.
+pub fn edit_page(src: &PageSource) -> EditPageState {
+    let variant = (src.word >> 20) & 0xf;
+    let letter = if (variant as i32) - 1 < 0 {
+        None
+    } else {
+        Some((variant as u8).wrapping_add(0x40))
+    };
+    EditPageState {
+        female: src.female,
+        height_slider: 0.5 - src.height * 0.5,
+        age_slider: src.age,
+        voice_pitch: src.voice_pitch,
+        voice: src.voice,
+        hair_style: src.hair_style,
+        skin_words: src.skin,
+        skin_slider: (src.skin_tone - 0.9) * 5.88235294117647,
+        hair_colour: [
+            f32::from(src.hair_colour[0]) * 0.00392156862745098,
+            f32::from(src.hair_colour[1]) * 0.00392156862745098,
+            f32::from(src.hair_colour[2]) * 0.00392156862745098,
+        ],
+        hair_visible: src.word & 0x10000 != 0,
+        variant_letter: letter,
+    }
+}
+
+/// A picker change's rebuild flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditChange {
+    /// The generator regenerates its body mesh and skin texture.
+    pub rebuild: bool,
+    /// The preview redraws.
+    pub redraw: bool,
+    /// The change was taken at all.
+    pub changed: bool,
+}
+
+const NO_CHANGE: EditChange = EditChange {
+    rebuild: false,
+    redraw: false,
+    changed: false,
+};
+
+/// The physique picker's change: copies its point to the target, then
+/// regenerates the body.
+pub fn physique_changed(target: &mut [f32; 2], point: [f32; 2]) -> EditChange {
+    *target = point;
+    EditChange {
+        rebuild: true,
+        redraw: true,
+        changed: true,
+    }
+}
+
+/// The skin-tone picker's change: its two coordinates scale to the
+/// record's two 16-bit colour words.
+pub fn skin_changed(src: &mut PageSource, point: [f32; 2]) -> EditChange {
+    src.skin = appearance_words(point);
+    EditChange {
+        rebuild: true,
+        redraw: true,
+        changed: true,
+    }
+}
+
+/// The hair-colour picker's change: its three coordinates scale to the
+/// record's colour bytes, rounded half to even.
+pub fn hair_colour_changed(src: &mut PageSource, point: [f32; 3]) -> EditChange {
+    for (i, v) in point.iter().enumerate() {
+        src.hair_colour[i] = (v * 255.0).round_ties_even() as i64 as u8;
+    }
+    EditChange {
+        rebuild: true,
+        redraw: true,
+        changed: true,
+    }
+}
+
+/// The hair-style list's change: a positive selection one below the
+/// record's style (the list is one-based) updates it and regenerates the
+/// hair.
+pub fn hair_style_changed(src: &mut PageSource, selection: i32) -> EditChange {
+    if selection <= 0 || selection - 1 == src.hair_style {
+        return NO_CHANGE;
+    }
+    src.hair_style = selection - 1;
+    EditChange {
+        rebuild: true,
+        redraw: true,
+        changed: true,
+    }
+}
+
+/// The edit form's close: detaches the child editors and runs the base
+/// close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditClose {
+    pub detach: bool,
+    pub base: bool,
+}
+
+pub fn close_edit_form(has_child: bool) -> EditClose {
+    EditClose {
+        detach: has_child,
+        base: true,
+    }
+}
+
 /// What settling the creation appearance did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CreationSettle {
@@ -3584,6 +3738,50 @@ mod tests {
         assert_eq!(no_widget.word, 0x0030_0000);
         assert_eq!(no_widget.caption, None);
         assert!(no_widget.refreshed);
+    }
+
+    #[test]
+    fn the_edit_page_pushes_the_record_into_its_controls() {
+        let src = PageSource {
+            female: true,
+            height: 0.5,
+            age: 0.25,
+            physique: [0.5, 0.5],
+            skin: [0x2000, 0x4000],
+            skin_tone: 1.0,
+            voice: 3,
+            voice_pitch: 0.9,
+            hair_style: 2,
+            hair_colour: [255, 128, 0, 255],
+            word: 0x0011_0000,
+        };
+        let page = edit_page(&src);
+        assert!(page.female);
+        assert_eq!(page.height_slider, 0.25);
+        assert_eq!(page.age_slider, 0.25);
+        assert_eq!(page.voice, 3);
+        assert_eq!(page.hair_style, 2);
+        assert_eq!(page.skin_words, [0x2000, 0x4000]);
+        assert!((page.skin_slider - 0.5882353).abs() < 1e-6);
+        assert_eq!(page.hair_colour, [1.0, 0.5019608, 0.0]);
+        assert!(page.hair_visible);
+        assert_eq!(page.variant_letter, Some(b'A'));
+        let mut src = src;
+        let change = hair_style_changed(&mut src, 4);
+        assert!(change.changed && change.rebuild);
+        assert_eq!(src.hair_style, 3);
+        assert!(!hair_style_changed(&mut src, 0).changed);
+        let change = hair_colour_changed(&mut src, [0.0, 0.5, 1.0]);
+        assert!(change.redraw);
+        assert_eq!(&src.hair_colour[..3], &[0, 128, 255]);
+        let change = skin_changed(&mut src, [0.5, 0.25]);
+        assert!(change.rebuild);
+        assert_eq!(src.skin, [32768, 16384]);
+        let mut physique = [0.0; 2];
+        assert!(physique_changed(&mut physique, [0.25, 0.75]).changed);
+        assert_eq!(physique, [0.25, 0.75]);
+        assert!(close_edit_form(true).detach);
+        assert!(close_edit_form(false).base);
     }
 
     #[test]

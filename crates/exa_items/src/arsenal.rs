@@ -193,6 +193,186 @@ pub fn store_slot(set: u32, column: usize) -> usize {
     set as usize * COLUMNS + column
 }
 
+/// The arsenal window's size, place and tags.
+pub const FORM_TAG: u32 = 0xce1c_2024;
+pub const FORM_WIDTH: i32 = 0x3cc;
+pub const FORM_HEIGHT: i32 = 0x284;
+pub const FORM_HEIGHT_COMPACT: i32 = 0x234;
+pub const FORM_X: i32 = 0x108;
+pub const FORM_Y: i32 = 0x30;
+/// The number of form controls the constructor builds.
+pub const FORM_CONTROLS: usize = 7;
+/// The inventory's extra flag and dock.
+pub const INVENTORY_FLAGS: u32 = 0x10;
+pub const INVENTORY_DOCK: i32 = 0x30;
+/// The pack panel's drop mask.
+pub const PACK_DROP_MASK: u32 = 0x200;
+/// The frame's fixed width share.
+pub const FRAME_EDGE: i32 = 3;
+/// The template arrow controls' widths and the control row spacing.
+pub const ARROW_WIDTH_UNITS: i32 = 6;
+pub const TEMPLATE_STEP_UNITS: i32 = 30;
+
+/// The arsenal's constructor data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArsenalForm {
+    pub width: i32,
+    pub height: i32,
+    pub x: i32,
+    pub y: i32,
+    pub form_controls: usize,
+    pub inventory_shown: bool,
+    pub compact: bool,
+}
+
+/// The constructor's values: 972 wide, 644 (or 564 compact) tall at
+/// 264, 48, with seven form controls and the inventory shown.
+pub fn arsenal_form(compact: bool) -> ArsenalForm {
+    ArsenalForm {
+        width: FORM_WIDTH,
+        height: if compact {
+            FORM_HEIGHT_COMPACT
+        } else {
+            FORM_HEIGHT
+        },
+        x: FORM_X,
+        y: FORM_Y,
+        form_controls: FORM_CONTROLS,
+        inventory_shown: true,
+        compact,
+    }
+}
+
+/// One column control's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnPlace {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub green: u32,
+    pub yellow: u32,
+}
+
+/// The five columns as the constructor places them: 236 by 628 (548
+/// compact), 60 units apart, the first at zero.
+pub fn column_places(compact: bool, unit: i32) -> [ColumnPlace; COLUMNS] {
+    std::array::from_fn(|i| ColumnPlace {
+        x: unit.wrapping_mul(COLUMN_STEP).wrapping_mul(i as i32),
+        y: 0,
+        width: COLUMN_WIDTH,
+        height: if compact {
+            COLUMN_HEIGHT_COMPACT
+        } else {
+            COLUMN_HEIGHT
+        },
+        green: HIGHLIGHT_GREEN,
+        yellow: HIGHLIGHT_YELLOW,
+    })
+}
+
+/// The arrows' and template controls' places the layout routine sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArsenalControls {
+    /// The left arrow's control point.
+    pub left_arrow: [i32; 2],
+    /// The right arrow's control point.
+    pub right_arrow: [i32; 2],
+    /// The template rows: extra controls between the arrows.
+    pub template: Vec<[i32; 2]>,
+}
+
+/// The control points for a laid-out arsenal.
+pub fn arsenal_controls(
+    layout: &Layout,
+    client_width: i32,
+    unit: i32,
+    form_controls: usize,
+) -> ArsenalControls {
+    let _ = client_width;
+    let top = layout.frame.1;
+    // The frame's left is the inventory's left plus four units; the
+    // inventory's share shows in the distance between them.
+    let inventory_shown = layout.frame.0.wrapping_sub(layout.inventory.0) != unit.wrapping_mul(4);
+    let left_x = layout
+        .frame
+        .0
+        .wrapping_sub(unit.wrapping_mul(2))
+        .wrapping_add(if inventory_shown {
+            0
+        } else {
+            unit.wrapping_mul(5)
+        });
+    let visible_span = layout.visible.wrapping_mul(COLUMN_STEP);
+    let right_x = visible_span
+        .wrapping_sub(ARROW_WIDTH_UNITS)
+        .wrapping_mul(unit)
+        .wrapping_add(layout.frame.0);
+    let row_shift = unit
+        .wrapping_mul(visible_span.wrapping_add(FRAME_EDGE) / 2)
+        .wrapping_sub(unit.wrapping_mul(5));
+    let mut template = Vec::new();
+    if form_controls > 2 {
+        for i in 1..form_controls - 1 {
+            let x = (i as i32 - 3)
+                .wrapping_mul(unit.wrapping_mul(TEMPLATE_STEP_UNITS))
+                .wrapping_add(layout.frame.0)
+                .wrapping_add(row_shift);
+            template.push([x, top]);
+        }
+    }
+    ArsenalControls {
+        left_arrow: [left_x, top],
+        right_arrow: [right_x, top],
+        template,
+    }
+}
+
+/// What closing the arsenal does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArsenalClose {
+    /// The five columns are written into the set's save words.
+    pub save_columns: bool,
+    /// The player controller is told.
+    pub notify: bool,
+    /// The arena window is closed and the mode set to 3.
+    pub arena_mode: Option<i32>,
+}
+
+pub fn arsenal_close(set: i32, arena_present: bool) -> ArsenalClose {
+    let _ = set;
+    ArsenalClose {
+        save_columns: true,
+        notify: true,
+        arena_mode: arena_present.then_some(3),
+    }
+}
+
+/// The plain frame's only method: close its parent arsenal.
+pub fn cont_frame_close(parent: u64) -> u64 {
+    parent
+}
+
+/// The toggle's control flags: the inventory shown sets `0x60`.
+pub fn toggle_flags(flags: u32, shown: bool) -> u32 {
+    if shown { flags | 0x60 } else { flags & !0x60 }
+}
+
+/// A drag out of a column: only the arsenal's own inventory lets an item
+/// go without the checked-out mark.
+pub fn column_drag_out(
+    source_is_inventory: bool,
+    flags: &mut u32,
+    add_ref: &mut dyn FnMut(),
+) -> bool {
+    if source_is_inventory {
+        return true;
+    }
+    *flags |= CHECKED_OUT;
+    add_ref();
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +441,51 @@ mod tests {
         // The current set's item without a marked copy simply lands.
         let d = drop_in(false, true, Some(1), 1, 0, |_| None, false);
         assert!(!d.consumed && !d.return_to_owner);
+    }
+
+    #[test]
+    fn the_constructor_values_and_column_places() {
+        let f = arsenal_form(false);
+        assert_eq!((f.width, f.height, f.x, f.y), (972, 644, 264, 48));
+        assert_eq!(arsenal_form(true).height, 564);
+        assert_eq!(f.form_controls, 7);
+        assert!(f.inventory_shown);
+        let cols = column_places(false, 4);
+        assert_eq!(cols[0].x, 0);
+        assert_eq!(cols[4].x, 960);
+        assert_eq!((cols[0].width, cols[0].height), (236, 628));
+        assert_eq!(column_places(true, 4)[0].height, 548);
+        assert_eq!((cols[0].green, cols[0].yellow), (0x400, 0x200));
+    }
+
+    #[test]
+    fn the_layout_places_the_arrows_and_template_rows() {
+        let l = layout(1280, 900, 1280, 590, 4, true, 3);
+        let c = arsenal_controls(&l, 1280, 4, FORM_CONTROLS);
+        assert_eq!(c.left_arrow, [268, l.frame.1]);
+        assert_eq!(c.right_arrow, [1212, l.frame.1]);
+        assert_eq!(c.template.len(), 5);
+        assert_eq!(c.template[0], [500, l.frame.1]);
+        // The hidden inventory moves the left arrow five units right.
+        let hidden = layout(1280, 900, 1280, 590, 4, false, 3);
+        let c = arsenal_controls(&hidden, 1280, 4, FORM_CONTROLS);
+        assert_eq!(c.left_arrow[0], hidden.frame.0 - 8 + 20);
+    }
+
+    #[test]
+    fn closing_and_toggling() {
+        let c = arsenal_close(2, true);
+        assert!(c.save_columns && c.notify);
+        assert_eq!(c.arena_mode, Some(3));
+        assert_eq!(arsenal_close(0, false).arena_mode, None);
+        assert_eq!(toggle_flags(0, true), 0x60);
+        assert_eq!(toggle_flags(0x60, false), 0);
+        let mut flags = 0;
+        let mut refs = 0;
+        assert!(!column_drag_out(false, &mut flags, &mut || refs += 1));
+        assert_eq!((flags, refs), (CHECKED_OUT, 1));
+        assert!(column_drag_out(true, &mut flags, &mut || refs += 1));
+        assert_eq!(refs, 1);
+        assert_eq!(cont_frame_close(9), 9);
     }
 }

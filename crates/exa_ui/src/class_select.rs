@@ -133,7 +133,7 @@ pub fn class_select_draw(
         });
     }
     let pick = chosen - 1;
-    let (name, art) = if pick >= 0 && pick < 4 {
+    let (name, art) = if (0..4).contains(&pick) {
         (
             Some([
                 screen.0 / 2,

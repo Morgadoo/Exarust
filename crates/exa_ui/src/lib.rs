@@ -29,6 +29,7 @@ pub mod character_view;
 pub mod col_swatch;
 pub mod colour_picker;
 pub mod class_select;
+pub mod colour_swatch;
 pub mod compact_skill;
 pub mod controls;
 pub mod creation;

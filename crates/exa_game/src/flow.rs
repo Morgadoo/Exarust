@@ -1041,6 +1041,92 @@ pub const SAVE_MANAGERS: [SaveManager; 2] = [
     },
 ];
 
+/// One save family's mode callbacks (the `#playerdata` reader, writer and
+/// after-load hook).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveCallbacks {
+    pub load: Option<u64>,
+    pub save: Option<u64>,
+    pub after_load: Option<u64>,
+}
+
+/// A save family (`TSaveGameManager`): the story's or the arena's files.
+///
+/// The constructor keeps the family's file prefix, the settings key that
+/// orders its slots, the callbacks and the package magic; the slot count
+/// starts at −1 ("not scanned yet") and the current slot at −1.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveFamily {
+    pub prefix: String,
+    pub settings_key: String,
+    /// The slot count, −1 before the folder is scanned.
+    pub slot_count: i32,
+    pub slot_ids: Vec<i32>,
+    pub slot_names: Vec<String>,
+    /// The current slot, −1 for none.
+    pub current_slot: i32,
+    pub callbacks: SaveCallbacks,
+    pub package_magic: u32,
+}
+
+impl SaveFamily {
+    /// The constructor: the prefix, settings key, callbacks and magic.
+    pub fn new(
+        prefix: &str,
+        settings_key: &str,
+        callbacks: SaveCallbacks,
+        package_magic: u32,
+    ) -> Self {
+        let prefix = prefix.chars().take(15).collect();
+        let settings_key = settings_key.chars().take(15).collect();
+        Self {
+            prefix,
+            settings_key,
+            slot_count: -1,
+            slot_ids: Vec::new(),
+            slot_names: Vec::new(),
+            current_slot: -1,
+            callbacks,
+            package_magic,
+        }
+    }
+
+    /// Records a scan's result: the count, the ids and names.
+    pub fn scanned(&mut self, ids: Vec<i32>, names: Vec<String>) {
+        self.slot_count = ids.len() as i32;
+        self.slot_ids = ids;
+        self.slot_names = names;
+    }
+}
+
+/// The story family's prefix and settings key.
+pub const STORY_PREFIX: &str = "Exanima";
+pub const STORY_SAVE_KEY: &str = "Exanima";
+/// The arena family's prefix and settings key.
+pub const ARENA_PREFIX: &str = "Arena";
+pub const ARENA_SAVE_KEY: &str = "Arena";
+
+/// The story's save family. [The two settings keys are the prefixes; the
+/// key's name is not in the pack.]
+pub fn story_family(callbacks: SaveCallbacks) -> SaveFamily {
+    SaveFamily::new(
+        STORY_PREFIX,
+        STORY_SAVE_KEY,
+        callbacks,
+        save_package::PACKAGE_MAGIC,
+    )
+}
+
+/// The arena's save family.
+pub fn arena_family(callbacks: SaveCallbacks) -> SaveFamily {
+    SaveFamily::new(
+        ARENA_PREFIX,
+        ARENA_SAVE_KEY,
+        callbacks,
+        save_package::PACKAGE_MAGIC,
+    )
+}
+
 /// A player's body state, as the flow reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerReading {
@@ -3420,6 +3506,19 @@ mod tests {
         assert_eq!(SAVE_MANAGERS[1].signature, save_package::ARENA_SIGNATURE);
         assert_eq!(SAVE_MANAGERS[1].data_version, Some(9));
         assert_eq!(SAVE_MANAGERS[0].package_magic, 0xDA7A_EA02);
+        let mut story = story_family(SaveCallbacks {
+            load: Some(1),
+            save: Some(2),
+            after_load: Some(3),
+        });
+        assert_eq!(story.prefix, "Exanima");
+        assert_eq!(story.slot_count, -1);
+        assert_eq!(story.current_slot, -1);
+        assert_eq!(story.package_magic, 0xDA7A_EA02);
+        story.scanned(vec![1, 4], vec!["Ash".into(), "Bram".into()]);
+        assert_eq!(story.slot_count, 2);
+        assert_eq!(story.slot_ids, vec![1, 4]);
+        assert_eq!(arena_family(SaveCallbacks::default()).prefix, "Arena");
         assert_eq!(hover_sound(false, 0.5), None);
         // A half draw: 0.5·0.4 + 0.8 = 1.0; the ends are 0.8 and 1.2.
         assert_eq!(hover_sound(true, 0.5), Some(1.0));

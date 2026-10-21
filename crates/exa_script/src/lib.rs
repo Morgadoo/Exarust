@@ -15,6 +15,7 @@ pub mod cast;
 pub mod dialogue;
 pub mod interp;
 pub mod objects;
+pub mod script_class;
 pub mod story;
 pub mod topics;
 

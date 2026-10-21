@@ -146,10 +146,10 @@ impl TransitionScreen {
                 if self.flags.fade_audio && self.music_saved.is_none() {
                     self.music_saved = Some(self.music);
                 }
-                if let Some(saved) = self.music_saved {
-                    if self.flags.fade_audio {
-                        self.music = (1.0 - t) * saved;
-                    }
+                if let Some(saved) = self.music_saved
+                    && self.flags.fade_audio
+                {
+                    self.music = (1.0 - t) * saved;
                 }
                 if t > 1.0 {
                     if self.flags.fade_audio {
@@ -360,7 +360,7 @@ mod tests {
         let s = t.step(2000);
         assert!(s.continued);
         assert_eq!(t.overlay, 128);
-        let s = t.step(3000);
+        let _s = t.step(3000);
         // (2000 × 0.0005) = 1, capped at 0.6 → 153.
         assert_eq!(t.overlay, 153);
         let s = t.step(7001);
