@@ -1336,6 +1336,37 @@ impl Simulation {
         }
     }
 
+    /// Creates the simulation's sector for a scene (the original's
+    /// sector-creation slot): a scene of its own appends a sector with the
+    /// scene's node; a shared scene reuses the first sector. Every new
+    /// sector uses the simulation's grids.
+    pub fn add_sector(&mut self, scene: u32, node: Option<usize>, shared: bool) -> usize {
+        if shared && let Some(first) = self.sectors.first_mut() {
+            first.scene = scene;
+            first.node = node;
+            return 0;
+        }
+        let mut sector = Sector::new(scene);
+        sector.node = node;
+        sector.uses_grid = true;
+        self.sectors.push(sector);
+        self.sectors.len() - 1
+    }
+
+    /// The scene's node-added hook: a batch of sector nodes becomes sectors
+    /// (one when the scene is shared); the batch's other nodes are left to
+    /// the caller's hook. Returns how many sectors now stand for the batch.
+    pub fn add_sector_nodes(&mut self, scene: u32, nodes: &[Option<usize>], shared: bool) -> usize {
+        if shared {
+            self.add_sector(scene, nodes.first().copied().flatten(), true);
+            return 1;
+        }
+        for &node in nodes {
+            self.add_sector(scene, node, false);
+        }
+        nodes.len()
+    }
+
     /// Adds a body to the watch list, last.
     pub fn watch_add(&mut self, body: usize) {
         self.watch.push(body);

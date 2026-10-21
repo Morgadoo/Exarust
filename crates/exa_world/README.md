@@ -90,3 +90,6 @@ and the grid's rooms; portal clipping is next (see
 - `grid` marks a fully transparent part's vertices in the added channel
   (alpha below 0.01 writes the zero mark), skips a piece's `#` children, and
   defines the piece flags and the 20 cm child subdivision extent.
+  The manager also keeps a tile's Sobel normals (apron index
+  `(j+1)·244 + (i+1)`), its finalise (normals, pending clear), the static
+  terrain's attach and its stop-and-wait shutdown.

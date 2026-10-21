@@ -852,6 +852,9 @@ pub struct TerrainKdTree {
     pub cells: usize,
     /// The cell size (0.2 m).
     pub spacing: f32,
+    /// The block's cached bounds, recomputed by [`Self::attach`].
+    pub min: Vec3,
+    pub max: Vec3,
 }
 
 /// Cells along a terrain block's side.
@@ -872,11 +875,14 @@ impl TerrainKdTree {
     /// metres. A node's four cell bounds are bytes packed in the second
     /// word: min x, max x, min z, max z.
     pub fn build(cells: usize, spacing: f32) -> Self {
+        let half = cells as f32 * spacing * 0.5;
         let mut tree = Self {
             nodes: Vec::new(),
             triangles: Vec::new(),
             cells,
             spacing,
+            min: Vec3::splat(-half),
+            max: Vec3::splat(half),
         };
         if cells == 0 {
             return tree;
@@ -946,13 +952,16 @@ impl TerrainKdTree {
     }
 
     /// Translates every internal node's split plane by `offset`: the
-    /// original's shared-tree clone for a block.
+    /// original's shared-tree clone for a block. The cached bounds move
+    /// with the block.
     pub fn translate(&mut self, offset: Vec3) {
         for node in &mut self.nodes {
             if !node.is_leaf() {
                 node.value += offset[node.axis()];
             }
         }
+        self.min += offset;
+        self.max += offset;
     }
 
     /// A translated copy (the original shares the arrays and moves the
@@ -961,6 +970,13 @@ impl TerrainKdTree {
         let mut tree = self.clone();
         tree.translate(offset);
         tree
+    }
+
+    /// Caches the bounds of the mesh the tree was attached to (the
+    /// original's attach slot). The cell ranges and triangles do not move.
+    pub fn attach(&mut self, min: Vec3, max: Vec3) {
+        self.min = min;
+        self.max = max;
     }
 
     /// The triangles of a cell: two per cell, index `(i + n·j)·2`.

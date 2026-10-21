@@ -713,3 +713,25 @@ fn the_constructor_constants() {
     assert_eq!(DEFAULT_STEP_MS, 12);
     assert_eq!(DEFAULT_ENVIRONMENTS, 5);
 }
+
+/// A scene of its own appends a sector per sector node; a shared scene
+/// reuses the first one.
+#[test]
+fn a_simulation_adds_or_reuses_scene_sectors() {
+    let mut sim = Simulation::new(
+        STEP_MS,
+        GridSize {
+            width: 1,
+            height: 1,
+        },
+    );
+    assert_eq!(sim.add_sector_nodes(4, &[Some(10), Some(11)], false), 2);
+    assert_eq!(sim.sectors.len(), 2);
+    assert_eq!(sim.sectors[0].scene, 4);
+    assert_eq!(sim.sectors[0].node, Some(10));
+    assert!(sim.sectors[0].uses_grid);
+    assert_eq!(sim.add_sector_nodes(9, &[Some(20)], true), 1);
+    assert_eq!(sim.sectors.len(), 2);
+    assert_eq!(sim.sectors[0].scene, 9);
+    assert_eq!(sim.sectors[0].node, Some(20));
+}

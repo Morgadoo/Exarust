@@ -152,6 +152,26 @@ impl StaticTerrain {
     pub fn config(&self) -> Option<&ManagerConfig> {
         self.config.as_ref()
     }
+
+    /// Attaches the manager to a scene: the extension is registered, the
+    /// scene keeps it as its terrain and it is activated. False when there
+    /// is no manager yet.
+    pub fn attach(&mut self, scene: u32, extensions: &mut TerrainExtensions) -> bool {
+        if self.config.is_none() {
+            return false;
+        }
+        self.scene = Some(scene);
+        extensions.activate();
+        true
+    }
+
+    /// The manager's destroy: the stop flag is set, the worker is woken and
+    /// waited for, and the configuration drops.
+    pub fn shutdown(&mut self) -> bool {
+        let was_running = self.config.is_some();
+        self.config = None;
+        was_running
+    }
 }
 
 /// The block trees a static terrain keeps, one per 6 m block (the shared
@@ -209,6 +229,18 @@ mod tests {
         assert_eq!(second.receivers.len(), 64);
         assert_eq!(terrain.scene, Some(8));
         assert_eq!(terrain.palette_scale, 2.0);
+    }
+
+    #[test]
+    fn the_manager_attaches_and_shuts_down() {
+        let mut terrain = StaticTerrain::default();
+        let mut extensions = TerrainExtensions::new();
+        assert!(!terrain.attach(3, &mut extensions));
+        terrain.bring_up(ManagerConfig::new(0, 0.0), 3, 0, false);
+        assert!(terrain.attach(3, &mut extensions));
+        assert_eq!(terrain.scene, Some(3));
+        assert!(terrain.shutdown());
+        assert!(!terrain.shutdown());
     }
 
     #[test]

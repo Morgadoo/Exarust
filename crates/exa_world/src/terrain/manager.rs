@@ -179,9 +179,40 @@ impl TileRecord {
     }
 
     /// Clears the tile's pending flag and wakes the worker (the original's
-    /// finalise wake).
+    /// finalise wake: slot 24).
     pub fn clear_pending(&mut self) {
         self.pending = false;
+    }
+
+    /// The per-vertex normals over the 241 × 241 grid, from the 3 × 3 Sobel
+    /// filter on the apron heights. Vertex (i, j) reads the height at
+    /// `(j + 1)·244 + (i + 1)`. A flat tile's normals are (0, 1, 0).
+    pub fn normals(&self, spacing: f32) -> Vec<Vec3> {
+        let h = |i: i32, j: i32| {
+            let row = (j + 1).clamp(0, TILE_APRON as i32 - 1) as usize;
+            let col = (i + 1).clamp(0, TILE_APRON as i32 - 1) as usize;
+            self.heights[row * TILE_APRON + col]
+        };
+        let scale = 1.0 / (8.0 * spacing);
+        let mut out = Vec::with_capacity(TILE_VERTICES * TILE_VERTICES);
+        for j in 0..TILE_VERTICES as i32 {
+            for i in 0..TILE_VERTICES as i32 {
+                let gx = (h(i + 1, j - 1) + 2.0 * h(i + 1, j) + h(i + 1, j + 1))
+                    - (h(i - 1, j - 1) + 2.0 * h(i - 1, j) + h(i - 1, j + 1));
+                let gz = (h(i - 1, j + 1) + 2.0 * h(i, j + 1) + h(i + 1, j + 1))
+                    - (h(i - 1, j - 1) + 2.0 * h(i, j - 1) + h(i + 1, j - 1));
+                out.push(Vec3::new(-gx * scale, 1.0, -gz * scale).normalize());
+            }
+        }
+        out
+    }
+
+    /// Finalises a loaded tile: its normals are computed, the pending flag
+    /// is cleared and the tile is ready (the original's slot 23).
+    pub fn finalise(&mut self, spacing: f32) -> Vec<Vec3> {
+        let normals = self.normals(spacing);
+        self.clear_pending();
+        normals
     }
 }
 
@@ -365,6 +396,26 @@ mod tests {
             Vec3::new(2400.0, 0.0, 2400.0)
         );
         assert_eq!(tile.state, 7);
+    }
+
+    #[test]
+    fn a_flat_tile_has_up_normals_and_a_slope_tilts_them() {
+        let config = ManagerConfig::new(0, 0.0);
+        let mut tile = TileRecord::allocate(&config, false);
+        let normals = tile.finalise(20.0);
+        assert_eq!(normals.len(), 241 * 241);
+        assert_eq!(normals[0], Vec3::Y);
+        assert_eq!(normals[241 * 120 + 120], Vec3::Y);
+        // A one-centimetre step per vertex along +x: the normal leans to
+        // -x.
+        for row in 0..244 {
+            for col in 0..244 {
+                tile.heights[row * 244 + col] = col as f32;
+            }
+        }
+        let normals = tile.normals(20.0);
+        let n = normals[241 * 120 + 120];
+        assert!(n.x < 0.0 && n.y > 0.9, "{n:?}");
     }
 
     #[test]

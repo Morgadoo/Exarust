@@ -157,6 +157,10 @@ fn terrain_tree_translates_only_split_planes() {
     assert_eq!(moved.nodes[0].axis(), tree.nodes[0].axis());
     assert_eq!(moved.nodes[0].value, tree.nodes[0].value + 6.0);
     assert_eq!(moved.triangles, tree.triangles);
+    assert_eq!(moved.min, tree.min + Vec3::new(6.0, 0.0, 6.0));
+    let mut attached = moved.clone();
+    attached.attach(Vec3::splat(-24.0), Vec3::splat(-18.0));
+    assert_eq!(attached.min, Vec3::splat(-24.0));
     let (x, z) = terrain_cell(Vec3::new(0.21, 0.0, 0.0), 0.2);
     assert_eq!((x, z), (1, 0));
 }
