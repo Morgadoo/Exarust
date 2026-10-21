@@ -1,7 +1,8 @@
 //! Electric arcs in the Bevy world: a thin layer over
 //! [`exa_render::electricity`]'s rules. An arc is a ribbon per tendril,
 //! rebuilt each frame from its jittered segments and drawn with the
-//! `_ElecMat01` material; its light is spawned with it.
+//! `_ElecMat01` material; its light is spawned with it: a voxel light for
+//! the weapon and spark presets, a point light for a level device.
 //! Rules: `docs/RENDERING.md` (Electricity).
 
 use bevy::asset::RenderAssetUsages;
@@ -61,22 +62,37 @@ pub fn spawn_arc(
         e.insert(ChildOf(parent));
     }
     let id = e.id();
-    if let Some(glow) = glow {
-        let light = exa_formats::rfc::Light {
-            flags: 0,
-            color: glow.colour,
-            multiplier: glow.point.map_or(1.0, |p| p.multiplier),
-            intensity: glow.intensity,
-            radius: glow.point.map_or(glow.radius, |p| p.radius) / 100.0,
-            softness: glow.point.map_or(1.0, |p| p.softness),
-            spot: None,
-            ranged: true,
-        };
-        commands.spawn((
-            Name::new("_ElecLight"),
-            crate::light_bundle(&light),
-            ChildOf(id),
-        ));
+    match glow {
+        Some(
+            glow @ exa_render::electricity::Glow {
+                point: Some(point), ..
+            },
+        ) => {
+            let light = exa_formats::rfc::Light {
+                flags: 0,
+                color: glow.colour,
+                multiplier: point.multiplier,
+                intensity: glow.intensity,
+                radius: glow.radius / 100.0,
+                softness: point.softness,
+                spot: None,
+                ranged: true,
+            };
+            commands.spawn((
+                Name::new("_ElecLight"),
+                crate::light_bundle(&light),
+                ChildOf(id),
+            ));
+        }
+        Some(glow) => {
+            commands.spawn((
+                Name::new("_ElecGlow"),
+                Transform::IDENTITY,
+                exa_render::gi::VoxelLight::new(glow.colour, glow.intensity),
+                ChildOf(id),
+            ));
+        }
+        None => {}
     }
     id
 }
@@ -134,7 +150,8 @@ fn tick_arcs(time: Res<Time>, mut commands: Commands, mut arcs: Query<(Entity, &
     for (e, mut effect) in &mut arcs {
         effect.accumulator += time.delta_secs();
         let mut steps = 0;
-        while effect.accumulator >= dt && steps < 8 {
+        // At most four catch-up ticks, as the other fixed-step systems.
+        while effect.accumulator >= dt && steps < 4 {
             if !effect.arc.tick() {
                 commands.entity(e).despawn();
                 break;
