@@ -34,21 +34,33 @@ winit's event loop replaces. Rules:
 
 The save game (`session`, `slots`) writes `ExanimaNNN.rsg` or
 `ArenaNNN.rsg` packages in the original's container: `#playerdata` with
-the story or arena header, the journal chunk and an Exarust chunk holding
-the session (mode, level, journal, used topics, company, roster, focus,
-clock, seed, start background); saving over a save of the same mode keeps
-its character placement, its other sections and the chunks Exarust does
-not produce. Listing a folder opens each file as the original does
-(resetting a bad header), lists a number once, deletes only story slots
-with an older signature, orders the rest by the `Exanima.set` key and
-moves a loaded slot to the front; a load opens the first file that exists;
-a new slot takes the lowest free number at the front; deleting removes
-both files. A checkpoint (`.rcp`) is written once per slot by copying the
-save, and a manual or transition save refreshes it; a death deletes the
-save and drops the slot unless a checkpoint exists, which the next load
-copies back. The original's world databases, character placement export,
-discovery and level sections are not written yet, so a save made from
-nothing is not loadable by the original.
+the story or arena header, the journal, the story's always-written
+discovery and global-experience chunks (an old save's chunks are kept and
+put in the writer's order) and an Exarust chunk holding the session (mode,
+level, journal, used topics, company, roster, focus, clock, seed, start
+background, discovery, global experience worth, memory flags, transition
+state); saving over a save of the same mode keeps its character placement,
+its other sections and the chunks Exarust does not produce. `save_full`
+writes every section in the original's order (world character database,
+player data, world object database, level) and a "saving disabled" flag
+skips the save before the death check. Listing a folder opens each file as
+the original does (resetting a bad header), lists a number once with the
+**first** file deciding its fate, deletes only story slots with an older
+signature, shows the placed character's name from `#worldchrdb`, orders
+the rest by the `Exanima.set` key and moves a loaded slot to the front; a
+load opens the first file that exists, converts an old arena save (drops
+`arenahub`, resets the placement, removes the skipped chunks, writes the
+package back), forces `exanima05` for a mid-transition story save and
+reports whether the level section is present; the character screen's load
+prefers the save, takes the checkpoint only when asked or when the save is
+missing, and reads with mask `0x100010`. A new slot takes the lowest free
+number at the front and is an empty package (`create_empty`; `create`
+writes the session too); deleting removes both files. A checkpoint (`.rcp`)
+is written once per slot by copying the save, and a manual or transition
+save refreshes it; a death deletes the save and drops the slot unless a
+checkpoint exists, which the next load copies back. The original's world
+databases, character placement export and level sections are not exported
+yet, so a save made from nothing is not loadable by the original.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

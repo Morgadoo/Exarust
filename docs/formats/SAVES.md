@@ -50,7 +50,9 @@ payloads               at their offsets, each at the 0x2000 boundary after
   bytes, or one whose first word is not the magic, is reset to a fresh
   package: the magic, count 1 and the sentinel, written over the start.
   The file is not truncated. (The slot scan and the legacy pass open every
-  matching file, so they reset a damaged one.)
+  matching file, so they reset a damaged one.) A file with the magic keeps
+  its directory count as stored; a count of zero (no sentinel) reads as an
+  empty package, as the original's reader simply loops over no entries.
 * **Writing a section** ([`exa_formats::save_package::PackageImage`]):
   * the **gap scan** walks every pair of consecutive entries, the sentinel
     included; a pair's room is the next offset minus this offset minus this
@@ -73,10 +75,12 @@ payloads               at their offsets, each at the 0x2000 boundary after
 * **Deleting a section** removes its directory entry, shifts the entries
   after it down and rewrites the directory. The payload stays.
 * Copying a package to its checkpoint (or back) is a plain file copy.
-* A package's own bytes, as Exarust writes them, are the header, the
-  directory and each payload at its offset with zeroes in the gaps. Both
-  retail saves observed have exactly this shape (zeroed gaps, the file
-  ending at the last payload).
+* A package's own bytes, when Exarust writes one, are the header and
+  directory written over the file as it was read, then each payload at its
+  offset. Bytes no entry covers — a gap, a deleted section's payload, an
+  old tail — stay as they were, and the file never shrinks. Both retail
+  saves observed have zeroed gaps and end at their last payload. A package
+  built from nothing has zeroes in its gaps.
 
 ## Slot files
 
@@ -93,9 +97,10 @@ extension are compared ignoring ASCII case; the file name must be exactly
 `prefix + 3 + 4` characters long (`.rsg`/`.rcp`).
 
 The number formatter writes `000` for zero, otherwise the decimal digits
-left-padded to three. A negative number would come out as `00` in the
-original (the padding runs without any digits); Exarust returns `000` for
-it, a value the scanner never produces.
+left-padded to three. A negative number comes out as `00` in the original
+(its digit loop does not run, so only the two-character pad is added);
+Exarust reproduces that, though the scanner never produces such a number.
+The name builder copies at most the first fifteen bytes of the prefix.
 
 The **scanner** walks the folder with `FindNextFile` in directory order
 (the very first entry the search returns, normally `.`, is skipped), skips
@@ -109,15 +114,23 @@ directories, and for each matching name whose number is not already listed:
    lists the slot with the player's name; zero leaves the slot out and its
    files alone.
 
+The **first file for a number decides that number's fate**, even when the
+answer is zero: the number is put in the list before the reader runs, so a
+later `.rcp` of the same number is skipped. A negative answer deletes both
+files and removes the number again.
+
 The **story** reader answers negative only for a `#playerdata` whose
 signature is below `0x6F5AEA14`, and reads any higher signature, the
 arena's included, as a story. The **arena** reader takes its signature
 exactly and answers zero otherwise (with the message "Save game format no
 longer supported."), so an arena scan never deletes. Either answers zero
 when the section is missing or the character's record is not found. The
-player's name comes from that record; the record lookup belongs to the
-character databases. The count of found slots starts at `−1`, meaning "not
-scanned yet".
+player's name comes from that record: the placement's reference bit 30
+selects the world character database, the low 28 bits its record id, and
+the record's name field is what the list shows
+([`exa_game::session::player_name`](../../crates/exa_game/src/session.rs)).
+The count of found slots starts at `−1`, meaning "not scanned yet";
+Exarust rescans on every list.
 
 **Ordering.** The list keeps the slots in most-recently-used order. The
 order is stored in `Exanima.set` under a one-tag path per mode (story
@@ -142,20 +155,26 @@ first of its files that **exists**: the `.rsg` and then the `.rcp`, or the
 `.rcp` first when the caller asks for the checkpoint. A file that exists
 but does not read is a failed load; the other file is not tried. The full
 load reads `#worldobjdb`, `#worldchrdb`, the player data with every chunk,
-and the locale's section (or `<locale>.rfc` from the game archive). Once
-that succeeded from a `.rcp`, the checkpoint is copied over the `.rsg`, and
-the package switches back to the `.rsg` name. The character screen's load
-prefers the `.rcp` only when asked or when the `.rsg` is missing, and reads
-the player data with mask `0x100010`.
+and the locale's section (or `<locale>.rfc` from the game archive). An old
+arena save is converted first: its `arenahub` section is deleted from the
+package and the package is written back. The story loader forces the
+locale to `exanima05` when the transition state is 2. Once that succeeded
+from a `.rcp`, the checkpoint is copied over the `.rsg`, and the package
+switches back to the `.rsg` name. The character screen's load prefers the
+`.rsg`; it takes the `.rcp` only when asked or when the `.rsg` is missing,
+and reads the player data with mask `0x100010` (the journal and the global
+experience only). It does not move the slot in the order.
 
-**Saving.** A save is skipped while a "saving disabled" flag is set. A
-save that checks the player (the death and arena paths) does not write
-when the player is dead and runs the permadeath rule instead; the menu,
-checkpoint and transition saves do not check. A save writes, in order:
-`#worldchrdb` (when the world character database has records), the mode's
-`#playerdata`, `#worldobjdb` (when the object database has records), then
-the current level under its locale name (a full level export; the story's
-exporter adds the settings chunk).
+**Saving.** A save is skipped while a "saving disabled" flag is set; the
+flag is checked before the health. A save that checks the player (the
+death and arena paths) does not write when the player is dead and runs the
+permadeath rule instead; the menu, checkpoint and transition saves do not
+check. A save writes, in order: `#worldchrdb` (when the world character
+database has records), the mode's `#playerdata`, `#worldobjdb` (when the
+object database has records), then the current level under its locale name
+(a full level export; the story's exporter adds the settings chunk).
+Sections already in the package that are not written this time are left
+alone; nothing is deleted.
 
 **Permadeath.** The player is dead when the health, widened to double, is
 below the double `0.01` (so the single-precision `0.01`, which is
@@ -197,13 +216,18 @@ single. Both modes share the first 36 bytes.
 
 The story reader accepts **any signature at or above** `0x6F5AEA14` (a
 newer save still loads); a lower one makes the slot legacy. It reads the
-camera target and zoom into scratch and does not restore them. The flag
-byte at bits 16–23 is the "started" byte (the writer always sets it to 1).
-When the start background is 0 and the player record's word at its own
-offset 0x180 is 0, the reader sets that word to `0x510000`. Before the
-chunks it resets the journal to one "New Entry" page, the global
-experience to its default, the memory flags and the transition state to
-zero, so an absent chunk means the default.
+camera target and zoom into scratch and does not restore them, and it
+skips the reserved word. The flag byte at bits 16–23 is the "started" byte
+(the writer always sets it to 1). When the start background is 0 and the
+player record's word at its own offset 0x180 is 0, the reader sets that
+word to `0x510000`. Before the chunks it resets the journal to one "New
+Entry" page, the global experience to the default worth (zero), the memory
+flags and the transition state to zero, so an absent chunk means the
+default. Exarust exposes those defaults through `journal_or_default`,
+`global_experience`, `memory_flags` and `transition_state`. The first chunk
+after the header is the character whatever its id; Exarust's own saves omit
+the placement, so its reader only takes a chunk tagged `0xCAC0CA00` as the
+character (`parse_retail` follows the original's rule).
 
 ### Arena header
 
@@ -253,7 +277,11 @@ zero: the slot is neither listed nor loaded.
   puts the player's saved position back to `(0, 0, 300)`, skips the
   hireables and shop-stock chunks, regenerates the hireables when the
   mask keeps them, repairs the player record's item ids and compacts the
-  hub stash.
+  hub stash. Exarust's load does the section drop, the position and the
+  chunk removal, and carries the pure compaction passes
+  (`arena_save::retain_plain_items`, `retain_plain_records`,
+  `remove_duplicate_item_ids`); regeneration, the record repair and the
+  object-database id passes are not modelled.
 * Story start compatibility (the character creator, while the started byte
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb`'s **third
@@ -280,7 +308,7 @@ skipped by size.
 |---|---|---|
 | `0x00000010` | both | journal: `i32 n`, then per entry `i32 id`, string title, string text |
 | `0x00000100` | story | discovery: the experience system's own format ([`exa_game::experience`](../../crates/exa_game/src/experience.rs)) |
-| `0x00100000` | story | global experience snapshot, u32 |
+| `0x00100000` | story | global experience **worth**, u32 (zero by default; the writer always emits it) |
 | `0xD000C001` | story | memory-fragment flags, u32 |
 | `0xD000C003` | story | portal/respawn state, 16 bytes; state 2 forces the level to `exanima05` after loading |
 | `0x00010000` | arena | hireable characters |
@@ -345,26 +373,37 @@ fight started from the arena therefore writes `ArenaNNN.rsg`.
 ## Exarust mapping
 
 [`exa_formats::save_package`](../../crates/exa_formats/src/save_package.rs)
-holds the container, the slot file names, the player data and the
-character placement;
+holds the container, the slot file names, the player data (including the
+writer's chunk order and the reader's defaults), the character placement
+and the world database sections;
 [`exa_formats::save_chunk`](../../crates/exa_formats/src/save_chunk.rs)
 holds the settings chunk, the save number format and the slot, death,
-checkpoint and clock rules; [`exa_game::session`](../../crates/exa_game/src/session.rs)
-writes and reads a session in this shape, and
+checkpoint and clock rules;
+[`exa_formats::arena_save`](../../crates/exa_formats/src/arena_save.rs)
+holds the arena table payloads and the load's list compactions;
+[`exa_game::session`](../../crates/exa_game/src/session.rs)
+writes and reads a session in this shape (the mode, level, journal, used
+topics, company, roster, focus, clock, seed, start background, discovery,
+global experience worth, memory flags and transition state), and
 [`exa_game::slots`](../../crates/exa_game/src/slots.rs) does the folder
-work (open, scan, load, save, checked save, checkpoint, death, delete,
-legacy removal, transition save). Exarust's `create` writes the session
-into the new slot straight away, where the original creates the empty
-package and saves later.
+work: open, scan, load (`load_package`, with the arena conversion and the
+forced transition locale), the character screen's load
+(`load_character_screen`), save (`save_full` in the writer's section
+order), checked save, checkpoint, death, delete, legacy removal and
+transition save. `create_empty` is the original's new-slot path (an empty
+package); `create` also writes a session into it.
 
 **Compatibility.** A package Exarust writes is laid out as the original's
 writer lays it out, and a retail save read and written back is unchanged.
-Exarust's `#playerdata` carries the mode's header, the journal and its own
-chunk. It has no world to export yet, so a save Exarust writes **from
-nothing** has no character placement: the original's reader would take
-its first chunk as the character, fail the record lookup, and leave the
-slot out of its list (without deleting it). A session saved **over** a
-retail save of the same mode keeps the save's placement, its other
-sections and the chunks Exarust does not produce, so the original still
-loads it; the Exarust chunk is an id it skips. Exarust lists its own saves
-without the record lookup.
+Exarust's `#playerdata` carries the mode's header, the journal, the
+story's always-written discovery and global-experience chunks (an old
+save's chunks are kept and reordered, never lost) and its own chunk. It
+has no world to export yet, so a save Exarust writes **from nothing** has
+no character placement: the original's reader would take its first chunk
+(the empty discovery chunk) as the character, fail the record lookup, and
+leave the slot out of its list (without deleting it). A session saved
+**over** a retail save of the same mode keeps the save's placement, its
+other sections and the chunks Exarust does not produce, so the original
+still loads it; the Exarust chunk is an id it skips. Exarust lists its own
+saves without the record lookup, and shows the player's name when the
+placed record is in the save's `#worldchrdb`.

@@ -267,6 +267,10 @@ pub struct PackageImage {
     /// The sentinel entry's offset, size and name, kept as read.
     sentinel: (u32, u32, [u8; NAME_LEN]),
     entries: Vec<Entry>,
+    /// The file as read, kept so that bytes no entry covers (gaps, a
+    /// deleted section's payload, an old tail) survive a write, as the
+    /// original leaves them and never truncates.
+    original: Vec<u8>,
 }
 
 impl PackageImage {
@@ -276,6 +280,7 @@ impl PackageImage {
             magic: PACKAGE_MAGIC,
             sentinel: (0, SENTINEL_SIZE, [0; NAME_LEN]),
             entries: Vec::new(),
+            original: Vec::new(),
         }
     }
 
@@ -311,6 +316,7 @@ impl PackageImage {
             magic: package.magic,
             sentinel,
             entries,
+            original: bytes.to_vec(),
         })
     }
 
@@ -430,28 +436,33 @@ impl PackageImage {
         }
     }
 
-    /// The package's bytes: the header, the directory and every payload at
-    /// its offset, with zeroes where nothing was written.
+    /// The package's bytes: the header and directory written over the file
+    /// as read, then every payload at its offset. Bytes no entry covers stay
+    /// as they were and the file never shrinks below the bytes read, as the
+    /// original's writer leaves gaps, deleted payloads and an old tail in
+    /// place. A fresh image has zeroes in its gaps.
     pub fn to_bytes(&self) -> Vec<u8> {
         let count = self.entries.len() as u32 + 1;
-        let mut out = Vec::new();
-        out.extend_from_slice(&self.magic.to_le_bytes());
-        out.extend_from_slice(&count.to_le_bytes());
-        out.extend_from_slice(&self.sentinel.0.to_le_bytes());
-        out.extend_from_slice(&self.sentinel.1.to_le_bytes());
-        out.extend_from_slice(&self.sentinel.2);
-        for entry in &self.entries {
-            out.extend_from_slice(&entry.offset.to_le_bytes());
-            out.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
-            out.extend_from_slice(&entry.name);
-        }
+        let header_len = 8 + (self.entries.len() + 1) * 24;
         let end = self
             .entries
             .iter()
             .map(|entry| entry.offset as usize + entry.data.len())
             .max()
             .unwrap_or(0);
-        out.resize(out.len().max(end), 0);
+        let mut out = self.original.clone();
+        out.resize(out.len().max(header_len).max(end), 0);
+        out[0..4].copy_from_slice(&self.magic.to_le_bytes());
+        out[4..8].copy_from_slice(&count.to_le_bytes());
+        out[8..12].copy_from_slice(&self.sentinel.0.to_le_bytes());
+        out[12..16].copy_from_slice(&self.sentinel.1.to_le_bytes());
+        out[16..32].copy_from_slice(&self.sentinel.2);
+        for (index, entry) in self.entries.iter().enumerate() {
+            let at = 8 + (index + 1) * 24;
+            out[at..at + 4].copy_from_slice(&entry.offset.to_le_bytes());
+            out[at + 4..at + 8].copy_from_slice(&(entry.data.len() as u32).to_le_bytes());
+            out[at + 8..at + 24].copy_from_slice(&entry.name);
+        }
         for entry in &self.entries {
             let at = entry.offset as usize;
             out[at..at + entry.data.len()].copy_from_slice(&entry.data);
@@ -2199,6 +2210,30 @@ mod tests {
             out.extend_from_slice(payload);
         }
         out
+    }
+
+    #[test]
+    fn a_rewrite_keeps_gaps_deleted_payloads_and_the_old_tail() {
+        let mut bytes = write_package(
+            PACKAGE_MAGIC,
+            &[(&name("a"), &[1u8; 0x10]), (&name("b"), &[2u8; 0x10])],
+        );
+        bytes.resize(0x4020, 0);
+        bytes[0x3000] = 0x77;
+        bytes[0x4010..0x4020].fill(0xAA);
+        let mut image = PackageImage::read(&bytes).unwrap();
+        assert!(image.remove_section(&name("b")));
+        image.put_section(&name("a"), &[3u8; 8]);
+        let out = image.to_bytes();
+        assert_eq!(out.len(), 0x4020, "the file never shrinks");
+        assert_eq!(out[0x3000], 0x77, "a gap keeps its byte");
+        assert_eq!(
+            &out[0x4000..0x4010],
+            &[2u8; 0x10],
+            "a deleted payload stays"
+        );
+        assert_eq!(&out[0x4010..0x4020], &[0xAAu8; 0x10], "the old tail stays");
+        assert_eq!(&out[0x2000..0x2008], &[3u8; 8]);
     }
 
     #[test]

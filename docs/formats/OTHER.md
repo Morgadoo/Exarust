@@ -950,7 +950,12 @@ count and its bytes.
 
 On loading, a special match is copied from the special table by its id (an
 id the table lacks takes its last row) and rolled again for its slot; a
-tournament event takes the tournament table's row of its id.
+tournament event takes the tournament table's row of its id. An old save's
+item lists are compacted: entries whose first word has the top bit
+(`0x80000000`) set are dropped, and a special entry (either top bit of
+`0xC0000000` set) removes the later twelve-byte records that repeat its
+first word (`retain_plain_items`, `retain_plain_records`,
+`remove_duplicate_item_ids`).
 
 ## Terrain (`.rft` and `.ftb`)
 
