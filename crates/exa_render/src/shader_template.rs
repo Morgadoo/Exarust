@@ -595,7 +595,9 @@ fn loop_start(
         {
             p += 1;
         }
-        let mut value = context.number(&source[name_start..p]).unwrap_or(0);
+        let mut value = context
+            .number(source.get(name_start..p).unwrap_or(&[]))
+            .unwrap_or(0);
         if source.get(p) == Some(&b'-') {
             p += 1;
             value -= i64::from(source.get(p).copied().unwrap_or(b'0').saturating_sub(b'0'));
@@ -1396,6 +1398,17 @@ mod tests {
         });
         let text = expand(&library, "p", &c).unwrap();
         assert_eq!(text, "#version 150\r\na b 0c");
+    }
+
+    #[test]
+    fn malformed_markers_do_not_panic() {
+        let c = context();
+        for source in [
+            "{%", "{%LOOP", "{?Mat", "{?", "{$", "{%LOOP x", "{%1/", "{?ELSE",
+        ] {
+            let library = lib(&[("p", source)]);
+            let _ = expand(&library, "p", &c);
+        }
     }
 
     #[test]
