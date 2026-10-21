@@ -186,6 +186,27 @@ pub fn hit(screen: (i32, i32), available: u32, point: (i32, i32), unit: i32) -> 
     None
 }
 
+/// The picker's close: hides the picker, resets the generator, releases
+/// the textures and the procedural materials, and returns to mode 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassClose {
+    pub close_form: bool,
+    pub reset_generator: bool,
+    pub release_textures: bool,
+    pub release_materials: bool,
+    pub mode: i32,
+}
+
+pub fn class_select_closed(has_form: bool) -> ClassClose {
+    ClassClose {
+        close_form: has_form,
+        reset_generator: true,
+        release_textures: true,
+        release_materials: true,
+        mode: 2,
+    }
+}
+
 /// The picker's hover update: the index stored, the sound flag when both
 /// it and the global are positive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +309,9 @@ mod tests {
         assert_eq!(hit(screen, 0b11, (1000, 20), 4), None);
         assert_eq!(class_choose(2).background, Some(1));
         assert_eq!(class_choose(0).result, 0x40);
+        let c = class_select_closed(true);
+        assert!(c.close_form && c.reset_generator && c.release_textures);
+        assert_eq!(c.mode, 2);
         assert!(class_hover(2, true).sound);
         assert!(!class_hover(0, true).sound);
     }

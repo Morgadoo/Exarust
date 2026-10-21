@@ -107,6 +107,22 @@ where
     p.carried.iter().any(|c| usable(c.id) == Some(COMPASS))
 }
 
+/// The pack-change callback's two duties: save the doll's pack when its
+/// view is visible, and, for the player's own pack, update the compass
+/// flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackChanged {
+    pub save_pack: bool,
+    pub compass: bool,
+}
+
+pub fn pack_changed(view_visible: bool, is_player: bool) -> PackChanged {
+    PackChanged {
+        save_pack: view_visible,
+        compass: is_player,
+    }
+}
+
 /// The pack's used capacity once bound to a character: the bulk of every
 /// listed item, held ones too, plus that of everything it wears.
 pub fn used_capacity<F>(p: &Possessions, bulk: F) -> u32
@@ -557,5 +573,13 @@ mod tests {
         let d = build_doll(true);
         assert_eq!(d.sleep_ms, 14);
         assert!(d.detach_old && d.generate && d.attach);
+        assert_eq!(
+            pack_changed(true, false),
+            PackChanged {
+                save_pack: true,
+                compass: false
+            }
+        );
+        assert!(pack_changed(false, true).compass);
     }
 }

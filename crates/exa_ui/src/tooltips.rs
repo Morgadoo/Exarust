@@ -13,6 +13,44 @@
 //! animate and hide routines and the skill tooltip's show and draw
 //! (`docs/UI.md`, tooltips).
 
+/// The tooltip window's constructor values: the base form, the two flag
+/// words and the cleared input flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolTipForm {
+    /// The form's own flags.
+    pub form_flags: u32,
+    /// The form's `100` flags.
+    pub flags: u32,
+    /// The input flag byte.
+    pub input: u8,
+}
+
+/// The tooltip window's constructor values.
+pub fn tooltip_form() -> ToolTipForm {
+    ToolTipForm {
+        form_flags: 0x12,
+        flags: 0x1040,
+        input: 0,
+    }
+}
+
+/// The global hide: the tooltip manager's current form and its request are
+/// cleared, and the form fades out when it is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalHide {
+    pub cleared_form: bool,
+    pub cleared_request: bool,
+    pub fade: bool,
+}
+
+pub fn hide_global(showing: bool) -> GlobalHide {
+    GlobalHide {
+        cleared_form: true,
+        cleared_request: true,
+        fade: showing,
+    }
+}
+
 /// One GUI unit in pixels, the original's fixed design unit.
 pub const UNIT: i32 = 4;
 /// The fade's length, clock units.

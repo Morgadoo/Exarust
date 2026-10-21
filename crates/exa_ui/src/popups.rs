@@ -23,6 +23,29 @@ pub const DESC_DIGIT: i32 = 0xc;
 /// The card fades over this many clock units.
 pub const POPUP_FADE: u32 = 256;
 
+/// The item card's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescForm {
+    pub tag: u32,
+    pub width: i32,
+    pub height: i32,
+    pub flags: u32,
+    pub extra_flags: u32,
+    pub digit: i32,
+}
+
+/// The item card's constructor values.
+pub fn desc_form() -> DescForm {
+    DescForm {
+        tag: DESC_TAG,
+        width: DESC_WIDTH,
+        height: DESC_HEIGHT,
+        flags: DESC_FLAGS,
+        extra_flags: DESC_EXTRA_FLAGS,
+        digit: DESC_DIGIT,
+    }
+}
+
 /// The item icon's size, the same as the icon renderer's.
 pub const ICON_SIZE: i32 = 160;
 
@@ -249,6 +272,34 @@ pub fn container_close(closing: bool) -> ContainerClose {
     }
 }
 
+/// The item card's close: it releases the icon it held.
+pub fn desc_close(has_icon: bool) -> bool {
+    has_icon
+}
+
+/// The container popup's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerForm {
+    pub tag: u32,
+    pub flags: u32,
+    pub digit: i32,
+    pub layout: u32,
+    /// The inner panel's first inset and step.
+    pub inset: i32,
+    pub step: i32,
+}
+
+pub fn container_form() -> ContainerForm {
+    ContainerForm {
+        tag: CONTAINER_TAG,
+        flags: CONTAINER_FLAGS,
+        digit: CONTAINER_DIGIT,
+        layout: CONTAINER_PANEL,
+        inset: CONTAINER_INSET,
+        step: CONTAINER_STEP,
+    }
+}
+
 /// The container's right-click: a release carrying `0x2000` closes it.
 pub fn container_right_click(mask: u16) -> Option<bool> {
     if mask & 2 == 0 {
@@ -275,6 +326,63 @@ pub fn parchment_size(width: u16, height: u16, unit: i32) -> (i32, i32) {
         (f32::from(width) * scale).round_ties_even() as i32,
         (f32::from(height) * scale).round_ties_even() as i32,
     )
+}
+
+/// The parchment popup's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParchmentForm {
+    pub tag: u32,
+    pub flags: u32,
+    pub visible: bool,
+}
+
+pub fn parchment_form() -> ParchmentForm {
+    ParchmentForm {
+        tag: PARCHMENT_TAG,
+        flags: PARCHMENT_FLAGS,
+        visible: false,
+    }
+}
+
+/// The parchment's mouse: a right release hides it and answers 3; any
+/// other event runs the base handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParchmentMouse {
+    Hide,
+    Base,
+}
+
+pub fn parchment_mouse(mask: u16) -> ParchmentMouse {
+    if mask & 2 != 0 {
+        ParchmentMouse::Hide
+    } else {
+        ParchmentMouse::Base
+    }
+}
+
+/// The parchment's hit test: the texture point is the click times six over
+/// the unit; a sample at or above 0xF0 hits with the control's id.
+pub fn parchment_hit(click: (i32, i32), unit: i32, sample: u8, control: i32) -> Option<i32> {
+    let _ = (
+        (click.0 as f32 * (PARCHMENT_SCALE / unit as f32)) as i32,
+        (click.1 as f32 * (PARCHMENT_SCALE / unit as f32)) as i32,
+    );
+    parchment_hits(sample).then_some(control)
+}
+
+/// The parchment's draw quad, in its own pixels.
+pub fn parchment_quad(width: i32, height: i32) -> [[f32; 2]; 4] {
+    [
+        [0.0, 0.0],
+        [0.0, height as f32],
+        [width as f32, height as f32],
+        [width as f32, 0.0],
+    ]
+}
+
+/// The parchment's destroy releases its image.
+pub fn parchment_destroy() -> (bool, bool) {
+    (true, true)
 }
 
 /// A text sample hits the parchment at or above [`PARCHMENT_ALPHA`].
@@ -333,6 +441,28 @@ mod tests {
         assert!(desc_leave(-1, true, true, 0, 0, 900, &mut f));
         assert_eq!((f.state, f.fade_at), (2, 900 + 256));
         assert!(!desc_leave(-1, true, true, 2, 0, 900, &mut f));
+    }
+
+    #[test]
+    fn the_forms_and_parchment_helpers() {
+        let d = desc_form();
+        assert_eq!((d.tag, d.width, d.height), (DESC_TAG, 268, 260));
+        assert!(desc_close(true));
+        assert!(!desc_close(false));
+        let c = container_form();
+        assert_eq!(
+            (c.tag, c.flags, c.digit),
+            (CONTAINER_TAG, CONTAINER_FLAGS, 0x100)
+        );
+        assert_eq!((c.layout, c.inset, c.step), (544, 0, 4));
+        let p = parchment_form();
+        assert_eq!((p.tag, p.flags, p.visible), (PARCHMENT_TAG, 0x80000, false));
+        assert_eq!(parchment_mouse(2), ParchmentMouse::Hide);
+        assert_eq!(parchment_mouse(0), ParchmentMouse::Base);
+        assert_eq!(parchment_hit((4, 4), 4, 0xf0, 7), Some(7));
+        assert_eq!(parchment_hit((4, 4), 4, 0xef, 7), None);
+        assert_eq!(parchment_quad(10, 20)[2], [10.0, 20.0]);
+        assert_eq!(parchment_destroy(), (true, true));
     }
 
     #[test]

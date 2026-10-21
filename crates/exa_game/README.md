@@ -612,3 +612,14 @@ over `Scene::release_node`. Not modelled: the tick's copy of the camera pose
 into the listener, the weather option calls, and five option bytes whose
 callees were not identified. The actual camera, level and listener stay in
 `exarust::viewer` and `crate::player`.
+
+## The remaining screens' game side
+
+`flow::SaveFamily` is the story or arena save family: its prefix, its
+settings key, its slot count (−1 before a scan), ids, names, current slot,
+the three mode callbacks and the package magic. `manage::close_manage` is
+Manage Company's close. `emblem` now also holds the company-name confirm,
+the dialog's centre, the layer-removal and mask callbacks and the `klean`
+preset applied through the editor. `create` maps a creation record into
+the edit page's controls (`edit_page`) and back through the physique, skin,
+hair-colour and hair-style callbacks.

@@ -28,6 +28,35 @@ pub const OVERLAY_ALPHA: f32 = 255.0;
 /// The transition screen's string, as the original's bytes run.
 pub const TRANSITION_TEXT: &str = "TO BE CONTINUED";
 
+/// The transition form's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransitionForm {
+    pub flags: u32,
+    pub form_flags: u32,
+    pub digit: i32,
+    /// The colour the screen clears to (opaque black).
+    pub colour: u32,
+}
+
+pub fn transition_form() -> TransitionForm {
+    TransitionForm {
+        flags: 0x1020,
+        form_flags: 0x0f0000,
+        digit: 0,
+        colour: 0xff00_0000,
+    }
+}
+
+/// The transition's hit test misses and answers −1.
+pub fn transition_hit() -> i32 {
+    -1
+}
+
+/// The text's string slot is released at the end of its draw.
+pub fn transition_release() -> bool {
+    true
+}
+
 /// The mode flags the transition is opened with. The names come from the
 /// branches; the caller's argument table is not in the pack [guess].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -260,6 +289,15 @@ mod tests {
 
     fn flags() -> TransitionFlags {
         TransitionFlags::default()
+    }
+
+    #[test]
+    fn the_form_and_helpers() {
+        let f = transition_form();
+        assert_eq!((f.flags, f.form_flags, f.digit), (0x1020, 0xf0000, 0));
+        assert_eq!(f.colour, 0xff000000);
+        assert_eq!(transition_hit(), -1);
+        assert!(transition_release());
     }
 
     #[test]

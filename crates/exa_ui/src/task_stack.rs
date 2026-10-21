@@ -92,7 +92,7 @@ pub struct TaskEntry {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ActiveTask {
     pub interface: u64,
-    /// The task's view object (its `+0x170` field).
+    /// The task's view object.
     pub view: u64,
     pub form: u64,
 }

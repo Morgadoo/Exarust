@@ -1091,6 +1091,14 @@ impl SaveFamily {
         }
     }
 
+    /// The string-release helper the destructor calls.
+    pub fn release(&mut self) {
+        self.prefix.clear();
+        self.settings_key.clear();
+        self.slot_ids.clear();
+        self.slot_names.clear();
+    }
+
     /// Records a scan's result: the count, the ids and names.
     pub fn scanned(&mut self, ids: Vec<i32>, names: Vec<String>) {
         self.slot_count = ids.len() as i32;
@@ -3519,6 +3527,8 @@ mod tests {
         assert_eq!(story.slot_count, 2);
         assert_eq!(story.slot_ids, vec![1, 4]);
         assert_eq!(arena_family(SaveCallbacks::default()).prefix, "Arena");
+        story.release();
+        assert!(story.prefix.is_empty() && story.slot_ids.is_empty());
         assert_eq!(hover_sound(false, 0.5), None);
         // A half draw: 0.5·0.4 + 0.8 = 1.0; the ends are 0.8 and 1.2.
         assert_eq!(hover_sound(true, 0.5), Some(1.0));

@@ -202,6 +202,119 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
     Some(first)
 }
 
+/// The character-edit form's constructor values: 172 wide, 592 tall (540
+/// in the compact layout), eleven layout elements and the label at
+/// 1.0 scale. `DAT_10049a230` picks the compact heights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditFormData {
+    pub width: i32,
+    pub height: i32,
+    pub layout: usize,
+    pub label_scale_bits: u32,
+}
+
+pub fn edit_form(compact: bool) -> EditFormData {
+    EditFormData {
+        width: 0xac,
+        height: if compact { 0x21c } else { 0x250 },
+        layout: 0xb,
+        label_scale_bits: 1.0f32.to_bits(),
+    }
+}
+
+/// The body form's constructor: the physique picker at 8, 64 and the tone
+/// picker at 8, 320 by 160 (112 compact), with eight and 20 layout
+/// elements in all. `DAT_10049a230` picks the compact heights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaseFormData {
+    pub height: i32,
+    pub physique: [i32; 4],
+    pub tone: [i32; 4],
+}
+
+pub fn base_form(compact: bool) -> BaseFormData {
+    BaseFormData {
+        height: if compact { 0x21c } else { 0x250 },
+        physique: [8, 0x40, 0, 0],
+        tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
+    }
+}
+
+/// The hair form's constructor: 172 by 612 (548 compact), six layout
+/// elements and the hair picker at 4, 24.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HairFormData {
+    pub width: i32,
+    pub height: i32,
+    pub layout: usize,
+    pub picker: [i32; 2],
+    pub digit: i32,
+}
+
+pub fn hair_form(compact: bool) -> HairFormData {
+    HairFormData {
+        width: 0xac,
+        height: if compact { 0x224 } else { 0x264 },
+        layout: 6,
+        picker: [4, 0x18],
+        digit: 0x100,
+    }
+}
+
+/// The physique sync: the body form copies the picker's point to its
+/// target and debounces a regeneration by two clock units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysiqueSync {
+    pub copied: bool,
+    pub pending: bool,
+    pub last: i32,
+}
+
+pub fn sync_physique(
+    target: &mut [f32; 2],
+    point: [f32; 2],
+    last: i32,
+    clock: i32,
+) -> PhysiqueSync {
+    *target = point;
+    if u64::from(last as u32) + 2 > u64::from(clock as u32) {
+        PhysiqueSync {
+            copied: true,
+            pending: true,
+            last,
+        }
+    } else {
+        PhysiqueSync {
+            copied: true,
+            pending: false,
+            last: clock,
+        }
+    }
+}
+
+/// The hair list's refresh: takes the icon view's cell height to twelve
+/// units and its scroll step to the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HairIconRefresh {
+    pub cell: i32,
+    pub step: i32,
+    pub regenerate: bool,
+}
+
+pub fn hair_icon_refresh(unit: i32, has_texture: bool) -> HairIconRefresh {
+    HairIconRefresh {
+        cell: unit * 0xc,
+        step: unit * 0xc,
+        regenerate: has_texture,
+    }
+}
+
+/// The edit form's release helpers free the callback binding and the
+/// label's string slot.
+pub fn release_edit_form() -> (bool, bool) {
+    (true, true)
+}
+
 /// The character-edit page's record fields, as the page's update reads
 /// them.
 #[derive(Debug, Clone, PartialEq)]
@@ -3782,6 +3895,21 @@ mod tests {
         assert_eq!(physique, [0.25, 0.75]);
         assert!(close_edit_form(true).detach);
         assert!(close_edit_form(false).base);
+        assert_eq!(edit_form(false).height, 0x250);
+        assert_eq!(edit_form(true).width, 172);
+        assert_eq!(base_form(false).tone, [8, 0x148, 0xa0, 0xa0]);
+        assert_eq!(base_form(true).tone[3], 0x70);
+        assert_eq!(hair_form(false).height, 0x264);
+        let mut t = [0.0; 2];
+        let sync = sync_physique(&mut t, [0.4, 0.6], 100, 101);
+        assert!(sync.copied && sync.pending && sync.last == 100);
+        assert_eq!(t, [0.4, 0.6]);
+        let sync = sync_physique(&mut t, [0.5, 0.5], 100, 102);
+        assert!(!sync.pending && sync.last == 102);
+        let h = hair_icon_refresh(4, true);
+        assert_eq!((h.cell, h.step), (48, 48));
+        assert!(h.regenerate);
+        assert_eq!(release_edit_form(), (true, true));
     }
 
     #[test]

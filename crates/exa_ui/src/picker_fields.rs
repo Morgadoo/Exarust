@@ -106,6 +106,17 @@ impl Picker {
     }
 }
 
+/// The physique picker's constructor values: the generator's body-shape
+/// pointer and the field's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysiquePicker {
+    pub has_generator: bool,
+}
+
+pub fn physique_picker(has_generator: bool) -> PhysiquePicker {
+    PhysiquePicker { has_generator }
+}
+
 /// The physique field's body-shape weights from its point.
 ///
 /// The first coordinate above the middle sets the third weight from the
@@ -222,5 +233,6 @@ mod tests {
         assert_eq!(d[2], [0.0, 40.25]);
         assert_eq!(DIAMOND_COLOUR, [0xb4, 0xb4, 0xb4, 0x28]);
         assert_eq!(physique_release().answer, 5);
+        assert!(physique_picker(true).has_generator);
     }
 }

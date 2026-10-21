@@ -40,6 +40,26 @@ pub struct Entry {
     pub lines: i32,
 }
 
+/// The panel's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChoicesForm {
+    pub width: i32,
+    pub height: i32,
+    pub form_flags: u32,
+    pub visible: bool,
+    pub input: bool,
+}
+
+pub fn choices_form() -> ChoicesForm {
+    ChoicesForm {
+        width: PANEL_WIDTH,
+        height: PANEL_HEIGHT,
+        form_flags: 0x80800,
+        visible: true,
+        input: false,
+    }
+}
+
 /// The panel's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChoicesView {
@@ -194,6 +214,13 @@ impl ChoicesView {
     }
 }
 
+impl ChoicesView {
+    /// The cleanup releases the two strings the draw builds.
+    pub fn cleanup(&self) -> (bool, bool) {
+        (true, true)
+    }
+}
+
 /// One drawn choice row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChoiceRow {
@@ -245,6 +272,10 @@ mod tests {
         assert_eq!(v.hit((10, 24), None, 4), 3);
         assert_eq!(v.hit((10, 61), None, 4), -1);
         assert_eq!(v.hit((10, 8), Some(7), 4), 7);
+        let f = choices_form();
+        assert_eq!((f.width, f.height, f.form_flags), (400, 120, 0x80800));
+        assert!(f.visible && !f.input);
+        assert_eq!(v.cleanup(), (true, true));
     }
 
     #[test]

@@ -504,3 +504,24 @@ the last word was the disabling one) and sets the source factor from bits
 table. Nibbles past the table read zero, and nibble 12 reads the cache's
 own last word, as the original's table lookup runs on into the data after
 it. Nothing in the running UI calls it; Bevy's blend states replace it.
+
+## Retail screens and popups
+
+The remaining retail forms are modelled from their own routines.
+`tooltips` holds the delayed show (256-unit fade, 2500-unit auto-hide),
+the box sizing and placement (text plus four units, two units taller than
+a line, kept on the screen, 153 alpha) and the skill tooltip's 50-unit
+field. `modal_screens` holds the message box, the shader warm-up screen's
+three phases and its 200-unit fades, and the key-capture screen's warning
+and binding table. `transition` is the state machine between game states
+(600/800/300/2000-unit fades, the switch, the hold and the fade back).
+`class_select` lays out and paints the four story portraits and their
+chosen card. `dialogue_choices` is the reply list's hit test, pick and
+height animation. `pickers` has the creator's marker fields and the
+physique point's body-shape weights. `popups` has the item card, the
+container popup and the parchment. `dialogs` has the colour window's six
+strips and the confirmation dialogs. `help_screen`, `task_stack`,
+`game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample
+and cursor-action list) and the journal close in `game_gui` complete the
+unit. The draw records are plain data; no new form is painted by the
+running app yet.

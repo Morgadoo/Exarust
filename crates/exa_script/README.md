@@ -39,3 +39,10 @@ Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrd
   role-apply step; saving topic memory and relations with the character;
   the journal window; loading-screen tips (no routine of this packet
   produces them).
+
+## Script classes
+
+`script_class` models the base class's name, tables and flags, the
+default instance and variable setter, the `Role` bind/load/commit cycle
+with its role-list reallocation, the cached `Role` instance, and the
+`Actor` setter for Activity and IdleActivity.

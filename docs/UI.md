@@ -1824,6 +1824,82 @@ drawn yet: the rules wait for the forms that will show them.
   its apparel section (refreshing the player's abilities), and an AR
   crystal fires the game's fourth function.
 
+## Retail screens and popups
+
+The remaining forms are modelled from the original's own routines, as
+plain draw and input records.
+
+- **Tooltips** (`exa_ui::tooltips`): a shown tooltip fades in over 256
+  clock units, stays 2500 and fades out over 256; showing one while it
+  fades out reverses the fade. The box is its text plus four units wide
+  and two units taller than a line, centred on the pointer, right-aligned
+  two pixels in near the right edge, and above the pointer when 32 pixels
+  plus the box would leave the screen. Its background alpha is 153; the
+  text sits two units in and one up from the bottom. The skill tooltip is
+  50 units wide (plus a pixel at an odd unit), 18 units tall (24 compact),
+  nine units below its anchor, with its title at 2, 5 units and its body
+  box at 2, 6.
+- **Modal screens** (`exa_ui::modal_screens`): the message box confirms
+  on Enter or Space and cancels on Escape with result −1; a click with
+  `0x100` confirms, `0x600` cancels. The shader warm-up screen fades in
+  over 200 units, steps one cache entry a frame and fades out when the
+  cache is warm; the key-capture screen fades the same way, warns
+  "ALREADY IN USE" for 1000 units and captures keys, mouse buttons 4, 8
+  and 16 (`0x8004`, `0x8005`, `0x8006`) and pad scans.
+- **Transition** (`exa_ui::transition`): the fade to black takes 600
+  units, or 800/300/2000 by the mode flags, with the music faded
+  alongside; then the switch callback, two hold frames, a 300/500/1000
+  hold and a 600-unit fade back. The "TO BE CONTINUED" hold raises its
+  text overlay to 0.6.
+- **Story background picker** (`exa_ui::class_select`): the four
+  portraits of `startcharsxa.rfi` at a scale of the screen height
+  quantised to 1/135 and scaled by 1/8, 256 by 512 cards 288 apart,
+  centred, only the unlocked ones, the chosen card cream; the chosen
+  portrait and name sit below.
+- **Reply choices** (`exa_ui::dialogue_choices`): a 400 by 120 panel
+  eight units above its parent's bottom; each entry starts one unit down
+  and is its wrapped line count times four units plus one tall; the
+  height eases over 500 units; a left click carrying `0x2000` picks the
+  hovered entry and the panel becomes the player's dialogue.
+- **Pickers** (`exa_ui::pickers`): the marker is the normalised point
+  times the field's size less one; a stick moves it by hundredths and
+  clamps it (an unordered value becomes 0). The physique diamond maps a
+  point above the middle to the third body-shape weight and one below to
+  the first two, with the product as the fourth.
+- **Popups** (`exa_ui::popups`): the item card is 268 by 260, its fade a
+  256-unit squared curve; its icon is centred, or on the stats card
+  thirteen units in and one down, pushed by any icon height over eleven
+  units. The container popup holds a 544-byte panel at eight units and
+  saves it on close; the parchment is sized to its texture in six-unit
+  steps and hit-tested through its alpha (0xF0).
+- **Dialogs and colour** (`exa_ui::dialogs`): the colour window is 402 by
+  282 with sixteen controls and the strips black, red, green, blue, red
+  and white. The four confirmations are 392 by 112 and close with `0x40`
+  when nothing is selected.
+- **Help and task stack** (`exa_ui::help_screen`, `exa_ui::task_stack`):
+  a help window is 23 units plus its text tall, keeps the "don't show"
+  bit only from a control in state `0x60`, and its two-pane variant
+  pages the second box between one and its last page. A GUI task's menu
+  items become `0x68`-byte records (the first loses its `0x8009` id);
+  focusing a task moves it to the top, and removing the active layer
+  clears the published task.
+- **Tip banner** (`exa_ui::game_tips`): a translucent box at eight units,
+  four units tall, 160 alpha, sized to the tip plus two units, no input;
+  the tip is among the least-shown of eighteen or from the contextual
+  table.
+- **Journal** (`exa_ui::game_gui`): closing remembers the window position
+  and stores the text box into the selected entry.
+- **Colour swatch** (`exa_ui::colour_swatch`): an eight-column grid of
+  three-unit cells at the current colour's cell, from the screen's
+  bottom-right or the button's anchor, in the `0x6000` action set.
+- **Item renderer** (`exa_items::item_renderer`): a 160-pixel icon
+  rendered at 320 into colour and depth buffers, with the full and final
+  RGBA images and the private scene and camera.
+- **Body loot** (`exa_items::char_loot`): 244 by 440, a 228-wide pack 180
+  tall at the bottom and the equipment panel four units above it; a
+  held weapon is dropped, other items unequipped (apparel rebuilt), and
+  Power Crystal AL (500) runs the body's "Activate" script.
+
 ## Character view
 
 The character screen's 3D panel (`exa_ui::character_view`; the item

@@ -132,6 +132,147 @@ pub fn toggle_mask(word: &mut u32, value: u32, set: bool) {
     }
 }
 
+/// The emblem texture loader's flags and its name/flags pair.
+pub const EMBLEM_TEXTURE_FLAGS: u32 = 0x70133;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmblemTexture {
+    pub name: String,
+    pub flags: u32,
+}
+
+/// The loader's name and flags: `emblembkg0NN` or `emblemdes0NN`.
+pub fn emblem_texture_request(kind: EmblemKind, index: u32) -> EmblemTexture {
+    EmblemTexture {
+        name: emblem_texture(kind, index),
+        flags: EMBLEM_TEXTURE_FLAGS,
+    }
+}
+
+/// A callback's value write: the form's per-index word and the shared
+/// emblem record's word both take `value`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerWrite {
+    pub form_word: i32,
+    pub record_word: i32,
+}
+
+pub fn write_layer_value(index: usize, value: i32) -> LayerWrite {
+    let _ = index;
+    LayerWrite {
+        form_word: value,
+        record_word: value,
+    }
+}
+
+/// The layer list's label: the one-based layer number.
+pub fn layer_label(index: i32) -> String {
+    format!("{}", index.wrapping_add(1))
+}
+
+/// A picture picker's selected index: the label's text parsed, one below
+/// the one-based control.
+pub fn picture_index(text: i32) -> i32 {
+    text.wrapping_sub(1)
+}
+
+/// The layer picker's index: the control's number plus the form's own
+/// offset.
+pub fn layer_index(control: i32, form_offset: i32) -> i32 {
+    control.wrapping_add(form_offset)
+}
+
+/// The colour control's value: the form's base plus the control's delta.
+pub fn colour_value(base: i32, delta: i32) -> i32 {
+    base.wrapping_add(delta)
+}
+
+/// The new-career dialog's close: hides the dialog and returns to the
+/// main menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompanyClose {
+    pub close_dialog: bool,
+    pub main_menu: bool,
+}
+
+pub fn close_company_to_menu(has_dialog: bool) -> CompanyClose {
+    CompanyClose {
+        close_dialog: has_dialog,
+        main_menu: true,
+    }
+}
+
+/// The close after the company is named: closes the dialog, resets the
+/// generator, releases the textures and the procedural materials, and
+/// returns to mode 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompanyDone {
+    pub close_dialog: bool,
+    pub reset_generator: bool,
+    pub release_textures: bool,
+    pub release_materials: bool,
+    pub mode: i32,
+}
+
+pub fn company_named() -> CompanyDone {
+    CompanyDone {
+        close_dialog: true,
+        reset_generator: true,
+        release_textures: true,
+        release_materials: true,
+        mode: 2,
+    }
+}
+
+/// The fade wrapper the named company runs behind: the transition calls
+/// the named-company step.
+pub fn named_company_step() -> CompanyDone {
+    company_named()
+}
+
+/// The company-create dialog's constructor values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompanyCreate {
+    pub colour: [u8; 4],
+    pub layout: usize,
+    pub emblem_flags: u32,
+}
+
+pub fn company_create() -> CompanyCreate {
+    CompanyCreate {
+        colour: COMPANY_FORM_COLOUR,
+        layout: 1,
+        emblem_flags: 0x8800,
+    }
+}
+
+/// The dialog's paint: a black quad over the whole form before the base
+/// paint.
+pub fn company_paint(width: i32, height: i32) -> [[f32; 2]; 4] {
+    [
+        [0.0, 0.0],
+        [0.0, height as f32],
+        [width as f32, height as f32],
+        [width as f32, 0.0],
+    ]
+}
+
+/// The emblem unit's init is empty and its finaliser releases the stored
+/// name and the shader's tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmblemGlobals {
+    pub name: String,
+    pub shader_record: bool,
+    pub layout: bool,
+}
+
+pub fn emblem_finalise(mut globals: EmblemGlobals) -> EmblemGlobals {
+    globals.name.clear();
+    globals.shader_record = false;
+    globals.layout = false;
+    globals
+}
+
 /// The four layer bytes the "klean" preset stores, and its pictures.
 pub const KLEAN_LAYERS: [u8; 4] = [7, 0, 0, 6];
 pub const KLEAN_BACKGROUND: u32 = 52;
@@ -142,11 +283,11 @@ pub fn apply_klean(name: &str, editor: &mut exa_ui::EmblemEditor) -> bool {
     if name != "klean" {
         return false;
     }
+    // The preset stores the two pictures directly; the selector's clamps
+    // do not apply to it.
     editor.record.background = KLEAN_BACKGROUND;
     editor.record.design = KLEAN_DESIGN;
     editor.record.layers = u32::from_le_bytes(KLEAN_LAYERS);
-    editor.set_background(KLEAN_BACKGROUND as i32);
-    editor.set_design(KLEAN_DESIGN as i32);
     true
 }
 
@@ -185,5 +326,63 @@ mod tests {
         );
         assert!(preset_emblem("Klean").is_none());
         assert!(preset_emblem("").is_none());
+        assert_eq!(
+            emblem_texture_request(EmblemKind::Design, 81),
+            EmblemTexture {
+                name: "emblemdes081".into(),
+                flags: 0x70133
+            }
+        );
+        assert_eq!(write_layer_value(2, 5).record_word, 5);
+        assert_eq!(layer_label(0), "1");
+        assert_eq!(picture_index(4), 3);
+        assert_eq!(layer_index(2, 5), 7);
+        assert_eq!(colour_value(10, 2), 12);
+        assert!(close_company_to_menu(true).main_menu);
+        assert_eq!(company_named().mode, 2);
+        assert!(named_company_step().reset_generator);
+        assert_eq!(company_create().emblem_flags, 0x8800);
+        assert_eq!(company_paint(10, 20)[2], [10.0, 20.0]);
+        assert_eq!(
+            emblem_finalise(EmblemGlobals {
+                name: "x".into(),
+                shader_record: true,
+                layout: true
+            })
+            .name,
+            ""
+        );
+
+        // The company name and the dialog's place.
+        let mut editor = exa_ui::EmblemEditor::new();
+        assert!(apply_klean("klean", &mut editor));
+        assert_eq!(editor.record().background, 52);
+        assert_eq!(editor.record().layers, u32::from_le_bytes(KLEAN_LAYERS));
+        assert!(!apply_klean("other", &mut editor));
+        assert_eq!(confirm_company("", &editor), CompanyConfirm::MissingName);
+        assert_eq!(
+            confirm_company("Ash", &editor),
+            CompanyConfirm::Named {
+                name: "Ash".into(),
+                layers: KLEAN_LAYERS
+            }
+        );
+        let mut count = 2;
+        assert_eq!(
+            remove_layer(&mut count),
+            LayerRemove {
+                removed: true,
+                disabled: false
+            }
+        );
+        count = 0;
+        assert!(remove_layer(&mut count).disabled);
+        let mut word = 0;
+        toggle_mask(&mut word, 0x10, true);
+        toggle_mask(&mut word, 0x4, true);
+        assert_eq!(word, 0x14);
+        toggle_mask(&mut word, 0x10, false);
+        assert_eq!(word, 0x4);
+        assert_eq!(company_place((1920, 1080)), [960, 370 + 28]);
     }
 }
