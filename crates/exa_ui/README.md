@@ -238,6 +238,14 @@ box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
 
+## Character view
+
+`character_view` holds the character screen's 3D panel: the `_Inventory`
+scene's camera (410 cm, 30°), its super-sampling choice and background
+wash, the follow, the drag-over acceptance, the drop/equip classification,
+the hover and release decisions, the owner lookup and the insight check.
+The panel itself is not built yet.
+
 ## Arena match board
 
 `match_board` models the arena's "Matches" form beyond the base-form close

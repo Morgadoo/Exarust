@@ -1309,6 +1309,40 @@ drawn yet: the rules wait for the forms that will show them.
   no random draws) over the middle half of the panel and relaxes them in
   four rounds (overlap ÷ 6, 5, 4, 3, twice each). A map opens as a
   parchment of its texture's size in sixths of a unit.
+- **Panel state** (`exa_game::item_container::Container`): a panel keeps
+  its entries, used bulk, capacity, item limit, container id, linked
+  panel, owner, masks, vertical scale and client area. A list load stores
+  positions in sixteenths of a unit, a record load in eightieths, and
+  both clamp every resolved icon; the saves invert the same codecs. An
+  add at the centre refuses an item with no icon (the original's user-item
+  error). A drop from the panel or its linked one only moves the entry and
+  clears its held mark; any other drop appends it and adds its bulk
+  unless the item is already shown held. Item 499 fires game function 2
+  with the container id, or 3 for a character-owned panel. A drag released
+  elsewhere snaps back with the payload's flags when drag-out is refused,
+  leaves without charging bulk for the linked panel, and otherwise leaves
+  and loses its bulk. A UI-scale change rescales positions by
+  `round(unit · place / old)`.
+- **Container records** (`ContainerRecord`, `ListChild`): the panel reads
+  size `+8`/`+0xa`, capacity `+0x10`, item limit `+0x12` and a 12-byte
+  child array from `+0x20`; the character list is an array of 12-byte
+  `{id, flags, x, y}`. Both parsers are total and both writers round-trip
+  the fields the panel uses.
+- **Item resolution** (`exa_items::item_gui`): an id is looked up as an
+  object record first and then as an icon; a missing record or icon
+  produces "Unable to resolve item: XXXXXXXX". A popup container's inner
+  panel is its record's size times the unit plus twice its border.
+- **Cards** (`exa_items::card`, `exa_game::item_container`): a card action
+  is a plain show, a show that first runs the game's type-2 use, a toggle
+  of the same item's card, a container open, or nothing. The card opens
+  after two frames. The weapon page shows weight `w·0.01`, balance
+  `b·0.05` and the derived handling
+  `((g − 127)·0.01 + f·0.96153843)·5`, where `f` is
+  `(1 − b·0.01)·0.6 + w·0.004 + 0.1` below a balance byte of 101 and
+  `w·0.004 + 0.1` otherwise; a weapon flagged `0x6000000` shows weight 1,
+  handling 5 and balance 0. Strike rows show above 5 and scale by 0.05;
+  apparel rows above 0.25; coverage always. Description pronouns are
+  `he/she`, `him/her` and `his/her` by the owner's sex bit.
 - **Inventory** (`exa_items::inventory_window`): 244 × 644 units (628
   compact, 590 inside the arsenal), the doll above a 228 × 180 pack of
   capacity 400 and items up to 50; worn items count against the pack.
@@ -1323,7 +1357,43 @@ drawn yet: the rules wait for the forms that will show them.
   (the highlighted one also lifts green). Cards show rating dots (whole
   up to the value less a quarter, then a half dot), a slider, coin groups
   and crystal sockets; a popup opens centred on the cursor, its bottom 8
-  units below it.
+  units below it. The four socket sheets (`dotrating.rfi`,
+  `coinicons.rfi`, `wpnflpgrpico.rfi`, `crystalicons.rfi`) keep their
+  three, three, three and six cells. A socket row hovers by fifths of a
+  unit, takes only crystals 431, 451, 452 and 499, shows a crystal's card
+  on a right click and starts its drag on a drag, and hands the previous
+  crystal back when one replaces it. Committing the row writes the
+  sockets into a weapon (refreshing its electric effect) or apparel
+  (refreshing the player's abilities), and an AR crystal fires the game's
+  fourth function.
+
+## Character view
+
+The character screen's 3D panel (`exa_ui::character_view`; the item
+window rules above are its drop targets). The figure stands at
+(0, 100, 0); the camera looks from 410 cm along (200, −60, −360) with a
+30° field of view. The first super-sampling level is 1 when the setting
+is at most 0, two more than the setting for 1–3, and 4 above. The scene
+is `_Inventory`. Its background is a wash of the scheme colour: the
+scheme's green over 240 (optionally × 1.4) gives red 0.38 and green 0.4,
+and blue over 240 (× 1.4) gives blue 0.45, rounded to even; the brighter
+copy uses 280. The camera follows a target by `rate · 0.003 · step`,
+never past it.
+
+A drag over the figure is accepted only when its item section allows it:
+apparel needs a body whose race flags carry bit 2 and a view that is not
+frozen; a withheld weapon or shield needs the matching body permission
+(`0x10000`, or `0x20000` for a weapon's second bit); a body that takes
+the AL crystal accepts item 500 while nothing is shown. A drop wears
+apparel, takes a weapon into a hand, takes a shield into the off hand, or
+takes the body's core crystal. A hover shows the item under the pointer
+and its icon, and clears the shown item when the icon cannot be resolved.
+A release takes off the worn item under the pointer (1-based), takes off
+the shown item, or gives the item back to the pack. The view's owner
+lookup follows the first visible form of its class; the insight check
+looks for technique 8 in the mind skill and blocks on the right half of
+the figure.
+
 
 ## Settings options
 

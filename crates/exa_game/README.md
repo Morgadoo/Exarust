@@ -295,6 +295,14 @@ and `global_xp_for_worth`) as `ExperienceRates`. No play mode opens the
 screen yet; the character creator and the in-game menu still show only
 stand-ins.
 
+Item windows (`item_container`): the free-form panel's entry array with
+its tint, clamps and layouts; the container record and character-list
+codecs, both total and round-tripping; loads, saves, drops, drag ends,
+rescaling, painting and the icon-alpha hit test; add-at-centre, replace,
+held marks and the torn-out AR crystal trigger; the item card's action,
+timer, pronouns and text metrics. The panel is not drawn or bound to an
+input form yet; the running game has no inventory screen to host it.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).

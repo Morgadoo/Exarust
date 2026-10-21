@@ -146,68 +146,102 @@ pub fn grid_layout(
 
 /// Pushes one pair apart by their overlap divided by `pass` (the original's
 /// idiv truncation); slack is 2 when the second is to the right, else 1.
+/// Both axes move only when both overlaps are positive, as the original's
+/// single `if` does.
 fn relax_pair(pos: &mut [[i32; 2]], halves: &[[i32; 2]], i: usize, j: usize, pass: i32) {
+    let mut push = [0i32; 2];
     for axis in 0..2 {
         let hi = halves[i][axis];
         let hj = halves[j][axis];
-        let push = if pos[j][axis] > pos[i][axis] {
-            (pos[i][axis] + hi) - (pos[j][axis] - hj) + 2
+        push[axis] = if pos[i][axis] < pos[j][axis] {
+            let overlap = (pos[i][axis] + hi) - (pos[j][axis] - hj) + 2;
+            if overlap > 0 { overlap / pass } else { 0 }
         } else {
-            (pos[j][axis] + hj) - (pos[i][axis] - hi) + 1
+            let overlap = (pos[j][axis] + hj) - (pos[i][axis] - hi) + 1;
+            if overlap > 0 { -(overlap / pass) } else { 0 }
         };
-        if push <= pass {
-            continue;
-        }
-        let p = if pos[j][axis] > pos[i][axis] {
-            push / pass
-        } else {
-            -(push / pass)
-        };
-        pos[i][axis] -= p;
-        pos[j][axis] += p;
+    }
+    if push[0] != 0 && push[1] != 0 {
+        pos[i][0] -= push[0];
+        pos[i][1] -= push[1];
+        pos[j][0] += push[0];
+        pos[j][1] += push[1];
     }
 }
 
-/// Pushes `target` out of every other entry over five passes, then clamps.
-/// `pos` holds centres.
+/// Places one new entry at a random spot in the middle half of the panel
+/// and pushes it out of the others over six passes (two inner rounds each),
+/// clamping after every round; both axes move only when both overlap. The
+/// caller's `state` advances. `pos` and the result hold centres.
+pub fn place_new(
+    pos: &mut [[i32; 2]],
+    halves: &[[i32; 2]],
+    target: usize,
+    usable_w: i32,
+    usable_h: i32,
+    state: &mut u32,
+) {
+    let count = pos.len();
+    if target >= count {
+        return;
+    }
+    let mut rng = Rng(*state);
+    let half_w = usable_w >> 1;
+    let half_h = usable_h >> 1;
+    pos[target][0] = rng.below(half_w as u32) as i32 + half_w / 2;
+    pos[target][1] = rng.below(half_h as u32) as i32 + half_h / 2;
+    *state = rng.0;
+    for pass in 1..=6 {
+        for _ in 0..2 {
+            for other in 0..count {
+                if other == target {
+                    continue;
+                }
+                let mut push = [0i32; 2];
+                for axis in 0..2 {
+                    let ht = halves[target][axis];
+                    let ho = halves[other][axis];
+                    push[axis] = if pos[target][axis] < pos[other][axis] {
+                        let overlap = (pos[target][axis] + ht) - (pos[other][axis] - ho) + 2;
+                        if pass < overlap.unsigned_abs() as i32 {
+                            -(overlap / pass)
+                        } else {
+                            0
+                        }
+                    } else {
+                        let overlap = (pos[other][axis] + ho) - (pos[target][axis] - ht) + 2;
+                        if pass < overlap.unsigned_abs() as i32 {
+                            overlap / pass
+                        } else {
+                            0
+                        }
+                    };
+                }
+                if push[0] != 0 && push[1] != 0 {
+                    pos[target][0] += push[0];
+                    pos[target][1] += push[1];
+                }
+            }
+            clamp_centres(
+                &mut pos[target..target + 1],
+                &halves[target..target + 1],
+                usable_w,
+                usable_h,
+            );
+        }
+    }
+}
+
+/// Keeps one entry's centre inside the panel.
 pub fn relax_one(
     pos: &mut [[i32; 2]],
     halves: &[[i32; 2]],
     target: usize,
     usable_w: i32,
     usable_h: i32,
+    state: &mut u32,
 ) {
-    let count = pos.len();
-    if target >= count {
-        return;
-    }
-    for pass in 1..=5 {
-        for other in 0..count {
-            if other == target {
-                continue;
-            }
-            let ht = halves[target];
-            let ho = halves[other];
-            for axis in 0..2 {
-                let push = if pos[other][axis] > pos[target][axis] {
-                    (pos[target][axis] + ht[axis]) - (pos[other][axis] - ho[axis]) + 2
-                } else {
-                    (pos[other][axis] + ho[axis]) - (pos[target][axis] - ht[axis]) + 1
-                };
-                if push <= pass {
-                    continue;
-                }
-                let p = if pos[other][axis] > pos[target][axis] {
-                    -(push / pass)
-                } else {
-                    push / pass
-                };
-                pos[target][axis] += p;
-                pos[other][axis] -= p;
-            }
-        }
-    }
-    clamp_centres(pos, halves, usable_w, usable_h);
+    place_new(pos, halves, target, usable_w, usable_h, state);
 }
 
 /// Scatters every entry from `seed` and resolves every pair. `pos` holds
@@ -229,36 +263,36 @@ pub fn scatter_all(
         p[0] = rng.below(half_w as u32) as i32 + half_w / 2;
         p[1] = rng.below(half_h as u32) as i32 + half_h / 2;
     }
-    for pass in 4..=8 {
+    for pass in 2..=7 {
         let q = pass / 2;
         for i in 0..pos.len() {
             for k in i + 1..pos.len() {
+                let mut push = [0i32; 2];
                 for axis in 0..2 {
                     let hi = halves[i][axis];
                     let hk = halves[k][axis];
-                    let push = if pos[k][axis] > pos[i][axis] {
-                        (pos[i][axis] + hi) - (pos[k][axis] - hk) + 2
+                    push[axis] = if pos[i][axis] < pos[k][axis] {
+                        let overlap = (pos[i][axis] + hi) - (pos[k][axis] - hk) + 2;
+                        if overlap > 0 { overlap / q } else { 0 }
                     } else {
-                        (pos[k][axis] + hk) - (pos[i][axis] - hi) + 1
+                        let overlap = (pos[k][axis] + hk) - (pos[i][axis] - hi) + 1;
+                        if overlap > 0 { -(overlap / q) } else { 0 }
                     };
-                    if push <= 0 {
-                        continue;
-                    }
-                    let p = if pos[k][axis] > pos[i][axis] {
-                        push / q
-                    } else {
-                        -(push / q)
-                    };
-                    pos[i][axis] -= p;
-                    pos[k][axis] += p;
+                }
+                if push[0] != 0 && push[1] != 0 {
+                    pos[i][0] -= push[0];
+                    pos[i][1] -= push[1];
+                    pos[k][0] += push[0];
+                    pos[k][1] += push[1];
                 }
             }
         }
+        clamp_centres(pos, halves, usable_w, usable_h);
     }
-    clamp_centres(pos, halves, usable_w, usable_h);
 }
 
-/// Keeps each centre inside `[half, usable − half]`, max first then min.
+/// Keeps each centre inside `[half, usable − half]`: across right then
+/// left, down top then bottom, as the original clamps.
 fn clamp_centres(pos: &mut [[i32; 2]], halves: &[[i32; 2]], usable_w: i32, usable_h: i32) {
     for (p, h) in pos.iter_mut().zip(halves) {
         if p[0] > usable_w - h[0] {
@@ -267,11 +301,11 @@ fn clamp_centres(pos: &mut [[i32; 2]], halves: &[[i32; 2]], usable_w: i32, usabl
         if p[0] < h[0] {
             p[0] = h[0];
         }
-        if p[1] > usable_h - h[1] {
-            p[1] = usable_h - h[1];
-        }
         if p[1] < h[1] {
             p[1] = h[1];
+        }
+        if p[1] > usable_h - h[1] {
+            p[1] = usable_h - h[1];
         }
     }
 }
@@ -473,9 +507,11 @@ mod tests {
     #[test]
     fn one_entry_relaxes_away_from_another() {
         let mut pos = [[150, 100], [100, 100]];
-        relax_one(&mut pos, &[[80, 80], [80, 80]], 0, 400, 400);
-        assert_eq!(pos[0], [261, 261]);
-        assert_eq!(pos[1], [80, 80]);
+        let mut state = 0;
+        relax_one(&mut pos, &[[80, 80], [80, 80]], 0, 400, 400, &mut state);
+        assert_eq!(pos[0], [262, 262]);
+        assert_eq!(pos[1], [100, 100]);
+        assert_eq!(state, 0x0808_8406);
     }
 
     #[test]
@@ -939,8 +975,8 @@ pub fn worn_layout(
             continue;
         };
         let mut rng = Rng(*state);
-        let x = (hw as u32 >> 1) as i32 + rng.below(hw as u32) as i32;
-        let y = (hh as u32 >> 1) as i32 + rng.below(hh as u32) as i32;
+        let x = hw + rng.below(client.0.max(0) as u32) as i32;
+        let y = hh + rng.below(client.1.max(0) as u32) as i32;
         *state = rng.0;
         pos.push([x, y]);
         half.push([a, b]);
