@@ -144,14 +144,16 @@ impl Bindings {
         mouse_button(self.key(action))
     }
 
-    /// The name the Controls page shows for `action`'s key. The shipped
-    /// table's mouse codes are its own (1, 2 and 4); every other code is
-    /// named by the original's rule.
+    /// The name the Controls page shows for `action`'s key. The primary
+    /// and secondary buttons (1 and 2), which the original's page never
+    /// names, are Exarust's "Left mouse" and "Right mouse"; the middle and
+    /// extra buttons are named from their saved rows ("Mouse 3" to "Mouse
+    /// 5"), and every other code by the original's rule.
     pub fn key_name(&self, action: Action) -> String {
         match self.key(action) {
             0x01 => "Left mouse".into(),
             0x02 => "Right mouse".into(),
-            0x04 => "Middle mouse".into(),
+            code @ 0x04..=0x06 => exa_formats::hw_config::key_name(row_code(code)),
             code => exa_formats::hw_config::key_name(code),
         }
     }
@@ -449,12 +451,16 @@ pub fn key_code(code: u32) -> Option<KeyCode> {
     })
 }
 
-/// The Bevy mouse button for a Windows virtual-key code in the table.
+/// The Bevy mouse button for a Windows virtual-key code in the table: the
+/// primary, secondary and middle buttons (1, 2 and 4) and the two extra
+/// buttons (5 and 6).
 pub fn mouse_button(code: u32) -> Option<MouseButton> {
     Some(match code {
         0x01 => MouseButton::Left,
         0x02 => MouseButton::Right,
         0x04 => MouseButton::Middle,
+        0x05 => MouseButton::Back,
+        0x06 => MouseButton::Forward,
         _ => return None,
     })
 }
@@ -752,19 +758,23 @@ pub fn virtual_key(code: KeyCode) -> Option<u32> {
     })
 }
 
-/// The settings-table code for a mouse button: the primary, secondary and
-/// middle buttons are 1, 2 and 4; the back and forward buttons are the
-/// fourth and fifth (the mouse flag `0x8000` with 4 or 5); other buttons are
-/// the sixth (with 6).
-pub fn mouse_code(button: MouseButton) -> u32 {
-    match button {
+/// The slot code the Controls page stores for a mouse button: its Windows
+/// virtual-key code. The original's window procedure gives the middle
+/// button bit 4 and the two extra buttons bits 8 and 0x10, and its
+/// rebinding maps those to the saved rows `0x8004`, `0x8005` and `0x8006`
+/// (the mouse flag over the button's virtual-key code, named "Mouse 3",
+/// "Mouse 4" and "Mouse 5"), which [`slot_code`] reads back as 4, 5 and 6.
+/// The primary and secondary buttons keep the shipped table's codes 1 and 2
+/// (the original's rebinding ignores them). Other buttons have no code.
+pub fn mouse_code(button: MouseButton) -> Option<u32> {
+    Some(match button {
         MouseButton::Left => 0x01,
         MouseButton::Right => 0x02,
         MouseButton::Middle => 0x04,
-        MouseButton::Back => 0x8004,
-        MouseButton::Forward => 0x8005,
-        MouseButton::Other(_) => 0x8006,
-    }
+        MouseButton::Back => 0x05,
+        MouseButton::Forward => 0x06,
+        MouseButton::Other(_) => return None,
+    })
 }
 
 #[cfg(test)]
@@ -784,12 +794,43 @@ mod rebind_tests {
 
     #[test]
     fn the_mouse_codes() {
-        assert_eq!(mouse_code(MouseButton::Left), 0x01);
-        assert_eq!(mouse_code(MouseButton::Right), 0x02);
-        assert_eq!(mouse_code(MouseButton::Middle), 0x04);
-        assert_eq!(mouse_code(MouseButton::Back), 0x8004);
-        assert_eq!(mouse_code(MouseButton::Forward), 0x8005);
-        assert_eq!(mouse_code(MouseButton::Other(9)), 0x8006);
+        assert_eq!(mouse_code(MouseButton::Left), Some(0x01));
+        assert_eq!(mouse_code(MouseButton::Right), Some(0x02));
+        assert_eq!(mouse_code(MouseButton::Middle), Some(0x04));
+        assert_eq!(mouse_code(MouseButton::Back), Some(0x05));
+        assert_eq!(mouse_code(MouseButton::Forward), Some(0x06));
+        assert_eq!(mouse_code(MouseButton::Other(9)), None);
+        // Saved as the original's rebinding stores them.
+        assert_eq!(row_code(0x04), 0x8004);
+        assert_eq!(row_code(0x05), 0x8005);
+        assert_eq!(row_code(0x06), 0x8006);
+    }
+
+    #[test]
+    fn a_captured_mouse_code_comes_back_to_its_button() {
+        for button in [
+            MouseButton::Left,
+            MouseButton::Right,
+            MouseButton::Middle,
+            MouseButton::Back,
+            MouseButton::Forward,
+        ] {
+            let code = mouse_code(button).unwrap();
+            assert_eq!(mouse_button(code), Some(button));
+            assert_eq!(mouse_button(slot_code(row_code(code))), Some(button));
+        }
+        assert_eq!(mouse_button(0x07), None);
+    }
+
+    #[test]
+    fn the_middle_button_is_mouse_3() {
+        let mut bindings = Bindings::default();
+        bindings.set_key(Action::Orbit, mouse_code(MouseButton::Middle).unwrap());
+        assert_eq!(bindings.key_name(Action::Orbit), "Mouse 3");
+        bindings.set_key(Action::Orbit, mouse_code(MouseButton::Back).unwrap());
+        assert_eq!(bindings.key_name(Action::Orbit), "Mouse 4");
+        bindings.set_key(Action::Orbit, mouse_code(MouseButton::Forward).unwrap());
+        assert_eq!(bindings.key_name(Action::Orbit), "Mouse 5");
     }
 
     #[test]

@@ -509,8 +509,10 @@ pub fn rebind_keys(
         MouseButton::Back,
         MouseButton::Forward,
     ] {
-        if buttons.just_pressed(button) {
-            editor.key(bindings::mouse_code(button), bindings);
+        if buttons.just_pressed(button)
+            && let Some(code) = bindings::mouse_code(button)
+        {
+            editor.key(code, bindings);
             return;
         }
     }
@@ -1096,7 +1098,7 @@ mod tests {
         assert_eq!(rows[0], ("Forward", "W".into()));
         assert_eq!(rows[1], ("Back", "S".into()));
         assert_eq!(rows[2], ("Left", "A".into()));
-        assert_eq!(rows[6], ("Orbit Camera", "Middle mouse".into()));
+        assert_eq!(rows[6], ("Orbit Camera", "Mouse 3".into()));
         assert_eq!(rows[8], ("Toggle Combat", "Tab".into()));
         assert_eq!(rows[17], ("Use Power", "Q".into()));
         assert_eq!(rows[18], ("Power Bar", "C".into()));

@@ -1632,8 +1632,14 @@ Exarust applies:
   the system's key name in title case. The original's codes are scan codes
   (its extended-key fix-up compares the shifted value and never fires);
   Exarust's table holds virtual-key codes, named from a table that gives the
-  same names. Exarust's own mouse codes 1, 2 and 4 are shown as "Left
-  mouse", "Right mouse" and "Middle mouse".
+  same names. The middle and extra buttons are named from their saved rows,
+  so the middle button is "Mouse 3"; the primary and secondary buttons,
+  which the original's page never names, are Exarust's "Left mouse" and
+  "Right mouse". A rebinding stores the middle button and the two extra
+  buttons as the original does: its window procedure gives them bits 4, 8
+  and 0x10, which become the rows `0x8004` ("Mouse 3"), `0x8005` and
+  `0x8006` (the slots 4, 5 and 6); the primary and secondary buttons keep 1
+  and 2.
 
 Texture quality and texture detail, with the super-sampling level, are
 pushed into the texture loader's settings (`exa_assets::texture::
