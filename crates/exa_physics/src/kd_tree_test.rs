@@ -11,68 +11,9 @@ fn quad() -> Vec<Triangle> {
     vec![Triangle::new(a, b, c), Triangle::new(b, d, c)]
 }
 
-#[test]
-fn nearest_ray_hits_front_face() {
-    let tree = KdTree::build(&quad(), false);
-    // From below, along +y: the quad's normal points down, so it is a
-    // front face.
-    let hit = tree
-        .ray(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 10.0)
-        .expect("hit");
-    assert_eq!(hit.triangle, 0);
-    assert_eq!(hit.distance, 5.0);
-    // From above the winding is a back face: no hit.
-    assert!(
-        tree.ray(Vec3::new(0.25, 5.0, 0.25), Vec3::NEG_Y, 10.0)
-            .is_none()
-    );
-    assert!(tree.ray(Vec3::new(5.0, 5.0, 5.0), Vec3::Y, 10.0).is_none());
-}
-
-#[test]
-fn segment_includes_far_end() {
-    let tree = KdTree::build(&quad(), false);
-    let hit = tree
-        .segment(Vec3::new(0.25, 5.0, 0.25), Vec3::new(0.0, -5.0, 0.0), 1.0)
-        .expect("hit");
-    assert_eq!(hit.triangle, 0);
-    assert_eq!(hit.distance, 1.0);
-    assert!(
-        tree.segment(Vec3::new(0.25, 5.0, 0.25), Vec3::new(0.0, -4.0, 0.0), 1.0)
-            .is_none()
-    );
-}
-
-#[test]
-fn any_ray_uses_first_face() {
-    let tree = KdTree::build(&quad(), false);
-    assert_eq!(
-        tree.ray_any(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 10.0),
-        Some(0)
-    );
-    assert_eq!(
-        tree.ray_any(Vec3::new(0.25, 5.0, 0.25), Vec3::NEG_Y, 10.0),
-        None
-    );
-}
-
-#[test]
-fn point_queries_use_the_radius() {
-    let tree = KdTree::build(&quad(), false);
-    let p = Vec3::new(0.25, 0.5, 0.25);
-    assert_eq!(tree.sphere_overlap(p, 0.5, 100.0), Some(0));
-    assert_eq!(tree.sphere_overlap(p, 0.49, 100.0), None);
-    let hit = tree.closest(p, 10.0, 100.0).expect("closest");
-    assert_eq!(hit.triangle, 0);
-    assert_eq!(hit.distance, 0.5);
-    assert_eq!(
-        tree.capsule_overlap(Vec3::new(0.25, -1.0, 0.25), Vec3::new(0.25, 1.0, 0.25), 0.1),
-        Some(0)
-    );
-}
-
-#[test]
-fn build_puts_every_triangle_in_one_leaf() {
+/// 30 x 20 unit triangles in the y = 0 plane, three metres apart. Each is
+/// front-facing for a ray travelling along +y.
+fn grid() -> Vec<Triangle> {
     let mut mesh = Vec::new();
     for j in 0..20 {
         for i in 0..30 {
@@ -85,36 +26,229 @@ fn build_puts_every_triangle_in_one_leaf() {
             ));
         }
     }
-    let tree = KdTree::build(&mesh, false);
-    assert!(!tree.nodes[0].is_leaf(), "600 triangles split");
-    let mut seen = vec![0u32; mesh.len()];
-    for node in &tree.nodes {
-        if node.is_leaf() {
-            let start = node.triangle_start();
-            for &tri in &tree.triangles[start..start + node.triangle_count() as usize] {
-                seen[tri as usize] += 1;
-            }
-        }
-    }
-    assert_eq!(seen, vec![1; mesh.len()]);
-    // The split plane is inside the root bounds and on the split axis.
+    mesh
+}
+
+/// The point a third of the way along both legs of grid triangle `id`.
+fn centroid(id: usize) -> Vec3 {
+    let x = (id % 30) as f32 * 3.0 + 1.0 / 3.0;
+    let z = (id / 30) as f32 * 3.0 + 1.0 / 3.0;
+    Vec3::new(x, 0.0, z)
+}
+
+/// Sixteen unit triangles stacked in y, three metres apart.
+fn stack() -> Vec<Triangle> {
+    (0..16)
+        .map(|i| {
+            let y = i as f32 * 3.0;
+            Triangle::new(
+                Vec3::new(0.0, y, 0.0),
+                Vec3::new(1.0, y, 0.0),
+                Vec3::new(0.0, y, 1.0),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn node_words_keep_the_original_layout() {
+    let leaf = Node::leaf(3, 7);
+    assert!(leaf.is_leaf());
+    assert_eq!(leaf.triangle_count(), 3);
+    assert_eq!(leaf.triangle_start(), 7);
+    // The second word of a leaf is an integer, not a float.
+    assert_eq!(leaf.value.to_bits(), 7);
+    let split = Node::split(1, 3, 2.5);
+    assert!(!split.is_leaf());
+    assert_eq!(split.word, 24 | 1);
+    assert_eq!(split.axis(), 1);
+    assert_eq!(split.child_offset(), 24);
+    assert_eq!(split.value, 2.5);
+}
+
+#[test]
+fn triangle_bounds_fold_from_the_first_vertex() {
+    let t = Triangle::new(
+        Vec3::new(1.0, 5.0, -1.0),
+        Vec3::new(-2.0, 6.0, 0.0),
+        Vec3::new(0.0, 4.0, 3.0),
+    );
+    let (min, max) = t.bounds();
+    assert_eq!(min, Vec3::new(-2.0, 4.0, -1.0));
+    assert_eq!(max, Vec3::new(1.0, 6.0, 3.0));
+}
+
+#[test]
+fn root_cell_is_the_mesh_box_plus_padding() {
+    let tree = KdTree::build(&quad(), false);
+    assert_eq!(tree.min, Vec3::splat(-BOX_PADDING));
+    assert_eq!(
+        tree.max,
+        Vec3::new(2.0, 0.0, 2.0) + Vec3::splat(BOX_PADDING)
+    );
+    // Two triangles never beat the cost of keeping them in one leaf.
+    assert_eq!(tree.nodes.len(), 1);
+    assert!(tree.nodes[0].is_leaf());
+    assert_eq!(tree.nodes[0].triangle_count(), 2);
+    assert_eq!(tree.triangles, vec![0, 1]);
+}
+
+#[test]
+fn empty_mesh_gives_an_empty_tree() {
+    let tree = KdTree::build(&[], false);
+    assert!(tree.nodes.is_empty());
+    assert!(tree.ray(Vec3::ZERO, Vec3::Y, 1.0).is_none());
+    assert!(tree.segment(Vec3::ZERO, Vec3::Y, 1.0).is_none());
+    assert!(tree.ray_any(Vec3::ZERO, Vec3::Y, 1.0).is_none());
+}
+
+#[test]
+fn nearest_ray_hits_front_face() {
+    let tree = KdTree::build(&quad(), false);
+    // From below, along +y: the winding faces the ray.
+    let hit = tree
+        .ray(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 10.0)
+        .expect("hit");
+    assert_eq!(hit.triangle, 0);
+    assert_eq!(hit.distance, 5.0);
+    // From above the winding is a back face: no hit.
+    assert!(
+        tree.ray(Vec3::new(0.25, 5.0, 0.25), Vec3::NEG_Y, 10.0)
+            .is_none()
+    );
+    // Beside the box the ray misses before any triangle is tested.
+    assert!(tree.ray(Vec3::new(5.0, 5.0, 5.0), Vec3::Y, 10.0).is_none());
+    // The hit must lie strictly inside the limit.
+    assert!(
+        tree.ray(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 5.0)
+            .is_none()
+    );
+}
+
+#[test]
+fn segment_hits_both_faces_and_includes_the_far_end() {
+    let tree = KdTree::build(&quad(), false);
+    let down = tree
+        .segment(Vec3::new(0.25, 5.0, 0.25), Vec3::new(0.0, -5.0, 0.0), 1.0)
+        .expect("hit");
+    assert_eq!(down.triangle, 0);
+    assert_eq!(down.distance, 1.0);
+    let up = tree
+        .segment(Vec3::new(0.25, -5.0, 0.25), Vec3::new(0.0, 5.0, 0.0), 1.0)
+        .expect("hit");
+    assert_eq!(up.triangle, 0);
+    assert_eq!(up.distance, 1.0);
+    assert!(
+        tree.segment(Vec3::new(0.25, 5.0, 0.25), Vec3::new(0.0, -4.0, 0.0), 1.0)
+            .is_none()
+    );
+}
+
+#[test]
+fn any_ray_projects_onto_the_dominant_plane() {
+    let tree = KdTree::build(&quad(), false);
+    assert_eq!(
+        tree.ray_any(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 10.0),
+        Some(0)
+    );
+    // The second triangle covers the far corner.
+    assert_eq!(
+        tree.ray_any(Vec3::new(1.75, -5.0, 1.75), Vec3::Y, 10.0),
+        Some(1)
+    );
+    // A back-facing approach, a miss beside the quad and a short limit.
+    assert_eq!(
+        tree.ray_any(Vec3::new(0.25, 5.0, 0.25), Vec3::NEG_Y, 10.0),
+        None
+    );
+    assert_eq!(
+        tree.ray_any(Vec3::new(3.0, -5.0, 0.25), Vec3::Y, 10.0),
+        None
+    );
+    assert_eq!(
+        tree.ray_any(Vec3::new(0.25, -5.0, 0.25), Vec3::Y, 4.0),
+        None
+    );
+}
+
+#[test]
+fn clip_plane_keeps_vertices_on_the_plane() {
+    let tri = [
+        Vec3::ZERO,
+        Vec3::new(2.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 2.0),
+    ];
+    let mut out = [Vec3::ZERO; 16];
+    // Everything is at or inside x in [0, 2]: nothing is added or dropped.
+    assert_eq!(clip_plane(&tri, &mut out, 0, 0.0, true), 3);
+    assert_eq!(clip_plane(&tri, &mut out, 0, 2.0, false), 3);
+    // Cutting at x = 1 adds the two edge crossings and drops the far vertex.
+    let n = clip_plane(&tri, &mut out, 0, 1.0, false);
+    assert_eq!(n, 4);
+    assert_eq!(out[0], Vec3::ZERO);
+    assert_eq!(out[1], Vec3::new(1.0, 0.0, 0.0));
+    assert_eq!(out[2], Vec3::new(1.0, 0.0, 1.0));
+    assert_eq!(out[3], Vec3::new(0.0, 0.0, 2.0));
+}
+
+#[test]
+fn clipped_bounds_follow_the_polygon() {
+    let tri = [
+        Vec3::ZERO,
+        Vec3::new(4.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 4.0),
+    ];
+    // The cell cuts the hypotenuse: the polygon is (0,0), (2,0), (2,2),
+    // (0,4), whose box is the cell's x range and the full z range.
+    let (min, max) = clipped_bounds(&tri, Vec3::new(0.0, -1.0, 0.0), Vec3::new(2.0, 1.0, 4.0));
+    assert_eq!(min, Vec3::ZERO);
+    assert_eq!(max, Vec3::new(2.0, 0.0, 4.0));
+}
+
+#[test]
+fn a_fully_clipped_triangle_keeps_its_first_vertex() {
+    let tri = [
+        Vec3::new(10.0, 0.0, 0.0),
+        Vec3::new(12.0, 0.0, 0.0),
+        Vec3::new(10.0, 0.0, 2.0),
+    ];
+    let cell = (Vec3::new(0.0, -1.0, -1.0), Vec3::new(2.0, 1.0, 3.0));
+    let (min, max) = clipped_bounds(&tri, cell.0, cell.1);
+    assert_eq!((min, max), (tri[0], tri[0]));
+    let below = [
+        Vec3::new(-3.0, 0.0, 0.0),
+        Vec3::new(-2.0, 0.0, 0.0),
+        Vec3::new(-3.0, 0.0, 2.0),
+    ];
+    let (min, max) = clipped_bounds(&below, cell.0, cell.1);
+    assert_eq!((min, max), (below[0], below[0]));
+}
+
+#[test]
+fn stacked_triangles_split_on_y_at_the_middle_cost() {
+    let tree = KdTree::build(&stack(), false);
+    // 8 + 8 triangles: both children go straight to leaves, the left one
+    // first, so the leaf array is in id order.
+    assert_eq!(tree.nodes.len(), 3);
     let root = tree.nodes[0];
-    assert!(root.axis() < 3);
-    assert!(root.value >= tree.min[root.axis()] && root.value <= tree.max[root.axis()]);
+    assert_eq!(root.axis(), 1);
+    assert_eq!(root.child_offset(), 8);
+    assert!((root.value - 22.5).abs() < 1.0e-4, "{}", root.value);
+    assert_eq!(tree.nodes[1].triangle_count(), 8);
+    assert_eq!(tree.nodes[1].triangle_start(), 0);
+    assert_eq!(tree.nodes[2].triangle_count(), 8);
+    assert_eq!(tree.nodes[2].triangle_start(), 8);
+    assert_eq!(tree.triangles, (0..16).collect::<Vec<u32>>());
 }
 
 #[test]
 fn flat_trees_never_split_y() {
-    let mut mesh = Vec::new();
-    for i in 0..16 {
-        let y = i as f32 * 3.0;
-        mesh.push(Triangle::new(
-            Vec3::new(0.0, y, 0.0),
-            Vec3::new(1.0, y, 0.0),
-            Vec3::new(0.0, y, 1.0),
-        ));
-    }
-    let tree = KdTree::build(&mesh, true);
+    // Without the y axis nothing separates the stack, so it stays one leaf.
+    let tree = KdTree::build(&stack(), true);
+    assert_eq!(tree.nodes.len(), 1);
+    assert!(tree.nodes[0].is_leaf());
+    assert_eq!(tree.nodes[0].triangle_count(), 16);
+    let tree = KdTree::build(&grid(), true);
     for node in &tree.nodes {
         if !node.is_leaf() {
             assert_ne!(node.axis(), 1);
@@ -123,52 +257,208 @@ fn flat_trees_never_split_y() {
 }
 
 #[test]
-fn terrain_tree_covers_the_block_once() {
-    let tree = TerrainKdTree::build(30, 0.2);
-    assert!(!tree.nodes[0].is_leaf());
-    // 30 cells along z, 30 along x: equal extents split along x at cell 15.
-    assert_eq!(tree.nodes[0].axis(), 0);
-    assert_eq!(tree.nodes[0].value, 0.0);
-    assert_eq!(tree.triangles.len(), 30 * 30 * 2);
-    let mut seen = vec![0u8; 30 * 30];
+fn big_lists_split_at_the_middle_of_the_longest_axis() {
+    let tree = KdTree::build(&grid(), false);
+    let root = tree.nodes[0];
+    assert!(!root.is_leaf());
+    // x spans 88 m and z 58 m.
+    assert_eq!(root.axis(), 0);
+    assert!((root.value - 44.0).abs() < 1.0e-3, "{}", root.value);
+    // Every triangle is in at least one leaf; the leaf array only holds
+    // final leaves.
+    let mut seen = vec![0u32; tree.mesh.len()];
+    let mut listed = 0;
     for node in &tree.nodes {
-        if !node.is_leaf() {
-            continue;
-        }
-        // A leaf lists two triangles per cell, contiguous in row-major
-        // order; every leaf covers at most 3 × 3 cells.
-        assert!(node.triangle_count() <= 18, "{node:?}");
-        let start = node.triangle_start();
-        for &tri in &tree.triangles[start..start + node.triangle_count() as usize] {
-            let cell = (tri / 2) as usize;
-            assert!(cell < 900);
-            if tri % 2 == 0 {
-                seen[cell] += 1;
+        if node.is_leaf() {
+            listed += node.triangle_count() as usize;
+            for &tri in &tree.triangles[node.triangle_start()..][..node.triangle_count() as usize] {
+                seen[tri as usize] += 1;
             }
         }
     }
-    assert!(seen.iter().all(|&c| c == 1), "{seen:?}");
+    assert!(seen.iter().all(|&c| c >= 1));
+    assert_eq!(listed, tree.triangles.len());
 }
 
 #[test]
-fn terrain_tree_translates_only_split_planes() {
+fn queries_find_every_grid_triangle() {
+    let mesh = grid();
+    let tree = KdTree::build(&mesh, false);
+    for id in 0..mesh.len() {
+        let c = centroid(id);
+        let hit = tree.ray(c - Vec3::Y * 5.0, Vec3::Y, 10.0).expect("ray hit");
+        assert_eq!(hit.triangle as usize, id);
+        assert_eq!(hit.distance, 5.0);
+        assert_eq!(
+            tree.ray_any(c - Vec3::Y * 5.0, Vec3::Y, 10.0),
+            Some(id as u32)
+        );
+        let seg = tree
+            .segment(c + Vec3::Y * 5.0, Vec3::NEG_Y * 10.0, 1.0)
+            .expect("segment hit");
+        assert_eq!(seg.triangle as usize, id);
+        assert!((seg.distance - 0.5).abs() < 1.0e-6);
+    }
+    // Outside the padded box the entry clip rejects the ray.
+    assert!(
+        tree.ray(Vec3::new(-1.0, -5.0, -1.0), Vec3::Y, 10.0)
+            .is_none()
+    );
+}
+
+#[test]
+fn sweep_inverse_uses_the_far_value_for_a_tiny_direction() {
+    let dir = Vec3::new(0.0, -1.0e-9, 2.0);
+    assert_eq!(sweep_inverse(dir, true), Vec3::new(FAR, -FAR, 0.5));
+    assert_eq!(sweep_inverse(dir, false), Vec3::new(FAR, FAR, 0.5));
+}
+
+#[test]
+fn sweeps_visit_the_leaf_under_the_path() {
+    let mesh = grid();
+    let tree = KdTree::build(&mesh, false);
+    for id in [0usize, 29, 217, 599] {
+        let c = centroid(id);
+        let sweep = Sweep {
+            origin: c - Vec3::Y * 5.0,
+            direction: Vec3::Y,
+            radius: 0.25,
+        };
+        let target = id as u32;
+        let hit = tree.sweep(&sweep, 10.0, |_, leaf, tmax| {
+            if leaf.contains(&target) {
+                *tmax = 4.75;
+                true
+            } else {
+                false
+            }
+        });
+        assert_eq!(hit, Some(4.75));
+        let nearest = tree.sweep_nearest(&sweep, 10.0, |_, leaf, tmax| {
+            leaf.contains(&target).then(|| {
+                *tmax = 4.75;
+                target
+            })
+        });
+        assert_eq!(
+            nearest,
+            Some(Hit {
+                triangle: target,
+                distance: 4.75
+            })
+        );
+        // A leaf test that never hits gives nothing.
+        assert_eq!(tree.sweep(&sweep, 10.0, |_, _, _| false), None);
+        assert_eq!(tree.sweep_nearest(&sweep, 10.0, |_, _, _| None), None);
+    }
+}
+
+#[test]
+fn the_sphere_radius_widens_the_visited_leaves() {
+    let tree = KdTree::build(&stack(), false);
+    // The root splits on y at 22.5; the sweep runs along +y through both
+    // halves, so it reaches both leaves, lower first.
+    let sweep = Sweep {
+        origin: Vec3::new(0.25, -5.0, 0.25),
+        direction: Vec3::Y,
+        radius: 0.1,
+    };
+    let mut visited = Vec::new();
+    tree.sweep(&sweep, 100.0, |_, leaf, _| {
+        visited.push(leaf.to_vec());
+        false
+    });
+    assert_eq!(visited.len(), 2);
+    assert_eq!(visited[0], (0..8).collect::<Vec<u32>>());
+    assert_eq!(visited[1], (8..16).collect::<Vec<u32>>());
+    // A sweep across the split sees only the leaf its extent reaches,
+    // widened by the radius.
+    let across = Sweep {
+        origin: Vec3::new(0.25, 30.0, -5.0),
+        direction: Vec3::Z,
+        radius: 0.1,
+    };
+    let mut visited = Vec::new();
+    tree.sweep(&across, 100.0, |_, leaf, _| {
+        visited.push(leaf.to_vec());
+        false
+    });
+    assert_eq!(visited, vec![(8..16).collect::<Vec<u32>>()]);
+    let wide = Sweep {
+        radius: 10.0,
+        ..across
+    };
+    let mut count = 0;
+    tree.sweep(&wide, 100.0, |_, _, _| {
+        count += 1;
+        false
+    });
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn terrain_tree_covers_the_block_once() {
+    for cells in [30usize, 31] {
+        let tree = TerrainKdTree::build(cells, 0.2);
+        assert!(!tree.nodes[0].is_leaf());
+        let mut seen = vec![0u8; cells * cells];
+        let mut listed = 0;
+        for node in &tree.nodes {
+            if !node.is_leaf() {
+                continue;
+            }
+            // Every leaf covers fewer than 4 x 4 cells, two triangles each.
+            assert!(node.triangle_count() <= 18, "{node:?}");
+            let start = node.triangle_start();
+            listed += node.triangle_count() as usize;
+            for &tri in &tree.triangles[start..start + node.triangle_count() as usize] {
+                let cell = (tri / 2) as usize;
+                assert!(cell < cells * cells);
+                if tri % 2 == 0 {
+                    seen[cell] += 1;
+                }
+            }
+        }
+        assert_eq!(listed, tree.triangles.len());
+        assert_eq!(tree.triangles.len(), cells * cells * 2);
+        assert!(seen.iter().all(|&c| c == 1), "{seen:?}");
+    }
+}
+
+#[test]
+fn terrain_root_plane_uses_the_integer_half() {
+    // Equal sides split along x at the middle cell: (15 - 15) * 0.2.
+    let even = TerrainKdTree::build(30, 0.2);
+    assert_eq!(even.nodes[0].axis(), 0);
+    assert_eq!(even.nodes[0].value, 0.0);
+    // 31 cells: the middle is cell 15 and the half is the integer 15, so
+    // the plane is 0 (not (15 - 15.5) * spacing).
+    let odd = TerrainKdTree::build(31, 2.0);
+    assert_eq!(odd.nodes[0].value, 0.0);
+    // The right child of a 31-cell root starts at cell 15.
+    let first = odd.nodes[0].child_offset() / 8;
+    let right = odd.nodes[first + 1];
+    assert!(!right.is_leaf(), "a 16 x 31 range keeps splitting");
+}
+
+#[test]
+fn terrain_translate_moves_only_the_split_planes() {
     let tree = TerrainKdTree::build(30, 0.2);
-    let moved = tree.translated(Vec3::new(6.0, 0.0, 6.0));
+    let mut attached = tree.clone();
+    attached.attach(Vec3::new(1.0, 2.0, 3.0), Vec3::splat(0.5));
+    assert_eq!(attached.min, Vec3::new(0.5, 1.5, 2.5));
+    assert_eq!(attached.max, Vec3::new(1.5, 2.5, 3.5));
+    let moved = attached.translated(Vec3::new(6.0, 0.0, 6.0));
     assert_eq!(moved.nodes[0].axis(), tree.nodes[0].axis());
     assert_eq!(moved.nodes[0].value, tree.nodes[0].value + 6.0);
     assert_eq!(moved.triangles, tree.triangles);
-    assert_eq!(moved.min, tree.min + Vec3::new(6.0, 0.0, 6.0));
-    let mut attached = moved.clone();
-    attached.attach(Vec3::splat(-24.0), Vec3::splat(-18.0));
-    assert_eq!(attached.min, Vec3::splat(-24.0));
-    let (x, z) = terrain_cell(Vec3::new(0.21, 0.0, 0.0), 0.2);
-    assert_eq!((x, z), (1, 0));
-}
-
-#[test]
-fn point_triangle_distance_regions() {
-    let t = Triangle::new(Vec3::ZERO, Vec3::X, Vec3::Z);
-    assert_eq!(point_triangle_distance(Vec3::new(0.25, 0.0, 0.25), t), 0.0);
-    assert_eq!(point_triangle_distance(Vec3::new(0.0, 2.0, 0.0), t), 2.0);
-    assert_eq!(point_triangle_distance(Vec3::new(2.0, 0.0, 0.0), t), 1.0);
+    // The cached bounds stay where attach put them.
+    assert_eq!(moved.min, attached.min);
+    assert_eq!(moved.max, attached.max);
+    // Leaves are untouched.
+    for (a, b) in moved.nodes.iter().zip(&tree.nodes) {
+        if a.is_leaf() {
+            assert_eq!(a, b);
+        }
+    }
 }

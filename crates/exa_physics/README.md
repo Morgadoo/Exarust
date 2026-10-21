@@ -553,16 +553,26 @@ thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init
 original's resets.
 
 `kd_tree` is the original's triangle kd-tree (`TkdTree`) and its terrain
-block subclass (`TTErrainkdTree`) as a pure model: the 8-byte node layout
-(axis plus child offset, or the leaf marker with a triangle count), the
-split choice (the 15 planes at 1/16 of each axis with the original's cost
-estimate, the middle split above 512 triangles, leaves at 8 triangles or a
-10 cm extent), nearest front-face ray casts, both-face segment casts with
-the far end included, the boolean ray query, radius-expanded sphere and
-capsule overlap, closest-point projection, and the 30 × 30 cell block tree
-whose leaves list two triangles per cell and whose split planes move with
-a block's translation. The game still takes the level's collision from
-rapier's trimesh BVH; this module has tests of its own and no game path yet.
+block subclass (`TTErrainkdTree`) as a pure model. The node is the
+original's 8 bytes (a leaf flag plus triangle count, or the axis plus the
+child byte offset, and an f32 plane or an integer start into a separate
+leaf-index array). The build walks a work stack: the root is bounded by the
+mesh box padded by 0.01, each cell's triangles are clipped to it
+(Sutherland-Hodgman) before their bounds are taken, the split plane is the
+cheapest of the 15 steps at 1/16 of the axis by the surface-area estimate
+(or the middle of the longest axis above 512 triangles), and a child becomes
+a leaf at 8 triangles or a 10 cm extent. Queries are the box-clipped
+nearest front-face ray (`ray`), the both-face segment with the far end
+included (`segment`), the boolean ray that projects onto the dominant plane
+(`ray_any`), and the swept-sphere traversals (`sweep`, `sweep_nearest`),
+which take the mesh-side leaf test as a closure because the original
+keeps it outside the tree. `TerrainKdTree` is the 30 x 30 cell block tree:
+leaves list two triangles per cell, the range is packed in the root word,
+and a block's translation moves only the split planes. Assumptions (the
+stored triangle normal's orientation and the standalone root box) are in
+the module docs. The game still takes the level's collision from rapier's
+trimesh BVH; this module has tests of its own and no game path yet, apart
+from the terrain manager's block trees.
 
 `controller` and `sim_object` are the original's two abstract bases: the
 physics controller (kind word, attached node, flag reset that clears bits 0
