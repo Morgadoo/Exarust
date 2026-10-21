@@ -1,30 +1,34 @@
 //! The arena's item ids across a save and a load, and the fighter-rank
 //! helper the board and the company share.
 //!
-//! Before saving, every item the arena owns is given its saved id: the
-//! arsenal's five shelves of five boxes, the hub stash, the manager's
-//! record and each employee's record and own item list. After a load the
-//! saved ids are mapped back. An arsenal entry flagged `0x400` remaps the
-//! employees' records and own lists; one flagged `0x200` remaps the
-//! characters' hands, carried items and loadouts. The arsenal entry itself
-//! then takes the new id.
+//! Before saving, every item the arena owns is given its saved id, in this
+//! order: the manager's record, the hub stash, the arsenal's five shelves
+//! of five boxes, then each employee's record and own item list. A record
+//! is prepared hands (all four), worn items, loadouts (each one's four
+//! hands, then its worn items), and last the carried items.
 //!
-//! A character's loadouts are remapped first. Each loadout's first two hand
-//! slots are checked (a match on the first ends the slots' search) and then
-//! its worn list, where a match ends that loadout. The manager's loadouts
-//! are the end of the first pass: the staff is reached only when he has
-//! none. The employees' pass walks their own item lists first, and on a
-//! match remaps that employee's loadouts and stops walking the staff.
+//! After a load the saved ids are mapped back, entry by entry through the
+//! arsenal. An entry flagged `0x400` remaps the stash and the loadouts of
+//! the character holding it; one flagged `0x200` remaps the hands and the
+//! carried items. The arsenal entry itself then takes the new id.
 //!
-//! The personal pass checks the character's two own hand slots, then his
-//! carried items, then his loadouts; the same order repeats per employee
-//! and a match ends the whole pass.
+//! The `0x400` pass replaces the first stash item that matches and then
+//! remaps the manager's loadouts, ending there. With no stash match it
+//! walks the staff: the first employee whose own list holds the id has it
+//! replaced and that employee's loadouts remapped, and the walk stops. A
+//! loadout's first two hand slots are searched (the first match ends that
+//! search), then its worn list (the first match ends that too).
+//!
+//! The `0x200` pass checks a record's first hand pair, its second hand pair
+//! (each pair stops at its first match, and neither ends the pass), then its
+//! carried items, where the first match ends the whole pass. The manager
+//! comes first, then each employee. Loadouts are not touched.
 //!
 //! Evidence: the arena's save-id preparation and the two post-load remap
 //! routines, read from `Exanima.exe` 0.9.5.
 
 use exa_formats::arena_save::ItemEntry;
-use exa_formats::characters::{CharacterRecord, ItemRef};
+use exa_formats::characters::CharacterRecord;
 
 use crate::arsenal::{Arsenal, ArsenalEntry};
 use crate::career::SKILL_STEP;
@@ -54,9 +58,9 @@ pub fn fighter_rank(skill_xp: &[u16; 6]) -> u32 {
 }
 
 /// Give every arena item its saved id. `prepare_item` is the object
-/// database's id preparation; it is called once per arsenal entry, once per
-/// stash item and once per character item reference, in the original's
-/// order: arsenal, stash, manager, staff.
+/// database's id preparation; it is called once per hand, worn item,
+/// loadout item, carried item, stash item and arsenal entry, in the
+/// original's order: manager, stash, arsenal, staff.
 pub fn prepare_ids(
     arsenal: &mut Arsenal,
     stash: &mut [u32],
@@ -64,6 +68,10 @@ pub fn prepare_ids(
     employees: &mut [EmployeeRefs],
     mut prepare_item: impl FnMut(u32) -> u32,
 ) {
+    prepare_character(manager, &mut prepare_item);
+    for item in stash {
+        *item = prepare_item(*item);
+    }
     for shelf in &mut arsenal.shelves {
         for entries in shelf {
             for entry in entries {
@@ -71,10 +79,6 @@ pub fn prepare_ids(
             }
         }
     }
-    for item in stash {
-        *item = prepare_item(*item);
-    }
-    prepare_character(manager, &mut prepare_item);
     for employee in employees {
         prepare_character(&mut employee.record, &mut prepare_item);
         for item in &mut employee.items {
@@ -83,13 +87,14 @@ pub fn prepare_ids(
     }
 }
 
-/// Prepare one character record: its hands, carried items and loadouts.
+/// Prepare one character record: its hands, worn items, loadouts, then
+/// its carried items.
 fn prepare_character(character: &mut CharacterRecord, prepare_item: &mut impl FnMut(u32) -> u32) {
     for hand in &mut character.hands {
         hand.id = prepare_item(hand.id);
     }
-    for item in &mut character.inventory {
-        item.item = prepare_item(item.item);
+    for worn in &mut character.worn {
+        worn.id = prepare_item(worn.id);
     }
     for loadout in &mut character.loadouts {
         for hand in &mut loadout.hands {
@@ -98,6 +103,9 @@ fn prepare_character(character: &mut CharacterRecord, prepare_item: &mut impl Fn
         for worn in &mut loadout.worn {
             worn.id = prepare_item(worn.id);
         }
+    }
+    for item in &mut character.inventory {
+        item.item = prepare_item(item.item);
     }
 }
 
@@ -141,8 +149,10 @@ fn remap_entry(
     entry.item = new;
 }
 
-/// The `0x400` pass: the stash and the manager's loadouts, then each
-/// employee's own list and, on a match, that employee's loadouts.
+/// The `0x400` pass: the first matching stash item is replaced and the
+/// manager's loadouts remapped, ending the pass. With no stash match, the
+/// first employee whose own list holds the id has it replaced and their
+/// loadouts remapped.
 pub fn remap_employee_refs(
     old: u32,
     new: u32,
@@ -150,31 +160,23 @@ pub fn remap_employee_refs(
     manager: &mut CharacterRecord,
     employees: &mut [EmployeeRefs],
 ) {
-    for item in stash.iter_mut() {
-        if *item == old {
-            *item = new;
-        }
-    }
-    remap_loadouts(old, new, manager);
-    if !manager.loadouts.is_empty() {
+    if let Some(item) = stash.iter_mut().find(|item| **item == old) {
+        *item = new;
+        remap_loadouts(old, new, manager);
         return;
     }
     for employee in employees {
-        let mut found = false;
         if let Some(item) = employee.items.iter_mut().find(|item| item.id == old) {
             item.id = new;
-            found = true;
-        }
-        if found {
             remap_loadouts(old, new, &mut employee.record);
-            break;
+            return;
         }
     }
 }
 
 /// Remap the first two hand slots and the worn items of every loadout.
-/// A hand match ends that loadout's hand search; a worn match ends the
-/// loadout.
+/// A hand match ends that loadout's hand search; a worn match ends its
+/// worn search.
 pub fn remap_loadouts(old: u32, new: u32, character: &mut CharacterRecord) -> bool {
     let mut any = false;
     for loadout in &mut character.loadouts {
@@ -193,9 +195,8 @@ pub fn remap_loadouts(old: u32, new: u32, character: &mut CharacterRecord) -> bo
     any
 }
 
-/// The `0x200` pass: the manager's own hands and carried items, his
-/// loadouts, then each employee's in the same order. A match ends the
-/// pass.
+/// The `0x200` pass: the manager's two hand pairs and carried items, then
+/// each employee's in the same order. A carried match ends the pass.
 pub fn remap_character_refs(
     old: u32,
     new: u32,
@@ -212,39 +213,27 @@ pub fn remap_character_refs(
     }
 }
 
-/// The two own hand slots, the carried items, then the loadouts.
+/// One record's `0x200` search: the first match in each hand pair is
+/// replaced (neither stops the search), then the first matching carried
+/// item is replaced and reported.
 pub fn remap_personal(old: u32, new: u32, character: &mut CharacterRecord) -> bool {
-    for hand in character.hands.iter_mut().take(2) {
-        if hand.id == old {
+    for pair in character.hands.chunks_mut(2) {
+        if let Some(hand) = pair.iter_mut().find(|hand| hand.id == old) {
             hand.id = new;
-            return true;
         }
     }
     if let Some(item) = character.inventory.iter_mut().find(|item| item.item == old) {
         item.item = new;
         return true;
     }
-    remap_loadouts(old, new, character)
-}
-
-/// The two own hand slots remapped in place, without stopping at the first
-/// match (the record pass's helper, kept for callers that hold both slots).
-pub fn remap_hand_slots(hands: &mut [ItemRef], old: u32, new: u32) -> bool {
-    let mut any = false;
-    for hand in hands.iter_mut().take(2) {
-        if hand.id == old {
-            hand.id = new;
-            any = true;
-        }
-    }
-    any
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::arsenal::{ARMOUR, WEAPONS};
-    use exa_formats::characters::Loadout;
+    use exa_formats::characters::{ItemRef, Loadout};
 
     fn character(
         hands: [u32; 2],
@@ -301,12 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn preparation_walks_arsenal_stash_manager_and_staff() {
+    fn preparation_walks_manager_stash_arsenal_and_staff() {
         let mut arsenal = Arsenal::default();
         arsenal.shelves[WEAPONS][0].push(entry(10, CHARACTER_REF));
         arsenal.shelves[ARMOUR][1].push(entry(20, EMPLOYEE_REF));
         let mut stash = vec![30];
         let mut manager = character([40, 0], &[50], &[([60, 0], &[70])]);
+        manager.worn = vec![ItemRef::new(45, 0)];
         let mut staff = vec![EmployeeRefs {
             record: character([80, 0], &[90], &[]),
             items: vec![ItemEntry {
@@ -320,16 +310,19 @@ mod tests {
             seen.push(id);
             id + 1
         });
+        // A record: four hands, worn items, each loadout's four hands and
+        // its worn items, then the carried items.
         assert_eq!(
             seen,
             vec![
-                10, 20, 30, 40, 0, 0, 0, 50, 60, 0, 0, 0, 70, 80, 0, 0, 0, 90, 100
+                40, 0, 0, 0, 45, 60, 0, 0, 0, 70, 50, 30, 10, 20, 80, 0, 0, 0, 90, 100
             ]
         );
         assert_eq!(arsenal.shelves[WEAPONS][0][0].item, 11);
         assert_eq!(arsenal.shelves[ARMOUR][1][0].item, 21);
         assert_eq!(stash, vec![31]);
         assert_eq!(manager.hands[0].id, 41);
+        assert_eq!(manager.worn[0].id, 46);
         assert_eq!(manager.inventory[0].item, 51);
         assert_eq!(manager.loadouts[0].hands[0].id, 61);
         assert_eq!(manager.loadouts[0].worn[0].id, 71);
@@ -337,58 +330,51 @@ mod tests {
     }
 
     #[test]
-    fn the_character_pass_checks_hands_carried_and_loadouts_in_order() {
+    fn the_character_pass_checks_both_hand_pairs_then_carried_items() {
         let mut manager = character([1, 2], &[3], &[([4, 0], &[5])]);
+        manager.hands[2] = ItemRef::new(1, 0);
         remap_character_refs(1, 9, &mut manager, &mut []);
+        // Each hand pair replaces its first match; neither ends the pass.
         assert_eq!(manager.hands[0].id, 9);
-        // A hand match ended the pass; the carried item is untouched.
-        assert_eq!(manager.inventory[0].item, 3);
+        assert_eq!(manager.hands[2].id, 9);
+        manager.hands[1] = ItemRef::new(9, 0);
+        manager.hands[0] = ItemRef::new(9, 0);
+        remap_character_refs(9, 7, &mut manager, &mut []);
+        // Only the first match of the pair goes.
+        assert_eq!(manager.hands[0].id, 7);
+        assert_eq!(manager.hands[1].id, 9);
         remap_character_refs(3, 8, &mut manager, &mut []);
         assert_eq!(manager.inventory[0].item, 8);
-        remap_character_refs(4, 7, &mut manager, &mut []);
-        assert_eq!(manager.loadouts[0].hands[0].id, 7);
+        // The loadouts are not part of this pass.
+        remap_character_refs(4, 6, &mut manager, &mut []);
         remap_character_refs(5, 6, &mut manager, &mut []);
-        assert_eq!(manager.loadouts[0].worn[0].id, 6);
+        assert_eq!(manager.loadouts[0].hands[0].id, 4);
+        assert_eq!(manager.loadouts[0].worn[0].id, 5);
     }
 
     #[test]
-    fn the_employee_pass_reaches_staff_only_without_manager_loadouts() {
-        let mut stash = vec![1];
-        let mut manager = character([0, 0], &[], &[]);
-        let mut staff = vec![
-            EmployeeRefs {
-                record: character([7, 0], &[], &[]),
-                items: vec![ItemEntry {
-                    id: 2,
-                    flags: 0,
-                    extra: 0,
-                }],
-            },
-            EmployeeRefs {
-                record: character([7, 0], &[], &[]),
-                items: vec![ItemEntry {
-                    id: 1,
-                    flags: 0,
-                    extra: 0,
-                }],
-            },
-        ];
-        remap_employee_refs(1, 5, &mut stash, &mut manager, &mut staff);
-        assert_eq!(stash, vec![5]);
-        assert_eq!(staff[0].items[0].id, 2);
-        assert_eq!(staff[1].items[0].id, 5);
-        // The first employee had no match; the second's own list matches,
-        // its loadouts are remapped, and the pass stops there.
-        assert_eq!(staff[0].record.hands[0].id, 7);
-        assert_eq!(staff[1].record.hands[0].id, 7);
-    }
-
-    #[test]
-    fn a_manager_with_loadouts_ends_the_employee_pass() {
-        let mut stash = vec![1];
-        let mut manager = character([0, 0], &[], &[([1, 0], &[])]);
+    fn a_carried_match_ends_the_character_pass_before_the_staff() {
+        let mut manager = character([0, 0], &[3], &[]);
         let mut staff = vec![EmployeeRefs {
-            record: character([1, 0], &[], &[]),
+            record: character([3, 0], &[3], &[]),
+            items: vec![],
+        }];
+        remap_character_refs(3, 8, &mut manager, &mut staff);
+        assert_eq!(manager.inventory[0].item, 8);
+        assert_eq!(staff[0].record.hands[0].id, 3);
+        assert_eq!(staff[0].record.inventory[0].item, 3);
+        // Without a manager match the staff is searched in turn.
+        remap_character_refs(3, 4, &mut manager, &mut staff);
+        assert_eq!(staff[0].record.hands[0].id, 4);
+        assert_eq!(staff[0].record.inventory[0].item, 4);
+    }
+
+    #[test]
+    fn the_employee_pass_replaces_one_stash_item_and_the_managers_loadouts() {
+        let mut stash = vec![1, 1];
+        let mut manager = character([0, 0], &[], &[([1, 1], &[1, 1])]);
+        let mut staff = vec![EmployeeRefs {
+            record: character([0, 0], &[], &[([1, 0], &[])]),
             items: vec![ItemEntry {
                 id: 1,
                 flags: 0,
@@ -396,9 +382,52 @@ mod tests {
             }],
         }];
         remap_employee_refs(1, 5, &mut stash, &mut manager, &mut staff);
+        // Only the first stash item goes, then the manager's loadouts (the
+        // first hand match and the first worn match), and the pass ends
+        // without reaching the staff.
+        assert_eq!(stash, vec![5, 1]);
         assert_eq!(manager.loadouts[0].hands[0].id, 5);
-        assert_eq!(staff[0].record.hands[0].id, 1);
+        assert_eq!(manager.loadouts[0].hands[1].id, 1);
+        assert_eq!(manager.loadouts[0].worn[0].id, 5);
+        assert_eq!(manager.loadouts[0].worn[1].id, 1);
         assert_eq!(staff[0].items[0].id, 1);
+        assert_eq!(staff[0].record.loadouts[0].hands[0].id, 1);
+    }
+
+    #[test]
+    fn the_employee_pass_reaches_the_staff_without_a_stash_match() {
+        let mut stash = vec![2];
+        let mut manager = character([0, 0], &[], &[([1, 0], &[])]);
+        let entry_with = |id| ItemEntry {
+            id,
+            flags: 0,
+            extra: 0,
+        };
+        let mut staff = vec![
+            EmployeeRefs {
+                record: character([0, 0], &[], &[([1, 0], &[])]),
+                items: vec![entry_with(3)],
+            },
+            EmployeeRefs {
+                record: character([0, 0], &[], &[([1, 0], &[1])]),
+                items: vec![entry_with(1), entry_with(1)],
+            },
+            EmployeeRefs {
+                record: character([0, 0], &[], &[([1, 0], &[])]),
+                items: vec![entry_with(1)],
+            },
+        ];
+        remap_employee_refs(1, 5, &mut stash, &mut manager, &mut staff);
+        // The manager is not touched; the second employee's first listed
+        // match and their loadouts change; the walk then stops.
+        assert_eq!(manager.loadouts[0].hands[0].id, 1);
+        assert_eq!(staff[0].record.loadouts[0].hands[0].id, 1);
+        assert_eq!(staff[1].items[0].id, 5);
+        assert_eq!(staff[1].items[1].id, 1);
+        assert_eq!(staff[1].record.loadouts[0].hands[0].id, 5);
+        assert_eq!(staff[1].record.loadouts[0].worn[0].id, 5);
+        assert_eq!(staff[2].items[0].id, 1);
+        assert_eq!(staff[2].record.loadouts[0].hands[0].id, 1);
     }
 
     #[test]
@@ -427,8 +456,9 @@ mod tests {
         assert_eq!(arsenal.shelves[WEAPONS][1][0].item, 130);
         assert_eq!(manager.hands[0].id, 110);
         assert_eq!(stash, vec![120]);
-        assert_eq!(staff[0].items[0].id, 120);
-        // The character pass stopped at the manager's own hand match.
+        // The stash match ended the employee pass before the staff.
+        assert_eq!(staff[0].items[0].id, 20);
+        // That pass leaves hands alone.
         assert_eq!(staff[0].record.hands[0].id, 20);
     }
 }
