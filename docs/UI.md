@@ -1636,11 +1636,16 @@ Exarust applies:
   same names. Exarust's own mouse codes 1, 2 and 4 are shown as "Left
   mouse", "Right mouse" and "Middle mouse".
 
+Texture quality and texture detail, with the super-sampling level, are
+pushed into the texture loader's settings (`exa_assets::texture::
+TextureSettings`) whenever the live options change: the quality's filter
+mask, anisotropy level and LOD bias base, the detail of the first uploaded
+level, and the level the LOD bias follows. Textures decoded afterwards take
+them; those already decoded keep theirs (whether the original reloads them
+was not traced).
+
 Not reproduced, for lack of the matching feature: shading quality (Exarust
-has one shader), texture quality and texture detail (the texture loader's
-`exa_assets::texture::TextureSettings` follows both rules but keeps the
-retail user's values; the live options are not pushed into it yet), shadow
-detail (no per-detail shadow path), vertex-buffer,
+has one shader), shadow detail (no per-detail shadow path), vertex-buffer,
 mipmap, swap-copy and GI-precision switches (the GI is already the
 original's 8-bit low-precision format), the video-device and video-memory
 readouts, and the shader-cache progress screen (Bevy compiles shaders as

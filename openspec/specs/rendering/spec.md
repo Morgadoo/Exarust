@@ -90,11 +90,15 @@ The system SHALL draw fires' flames as the original's particles. A small fire's 
 - **THEN** the particle's position and previous position are equal
 
 ### Requirement: Texture sampling
-The system SHALL sample material textures as the original does at its top texture quality with 4× supersampling. Filtering is 16× anisotropic. Colour textures get a −0.75 LOD bias; normal, gloss and packed specular maps get none.
+The system SHALL sample material textures as the original does at the live texture quality, texture detail and super-sampling options, which at the retail user's settings (quality 5, detail 3, 4× super-sampling) give 16× anisotropic filtering, a −0.75 LOD bias for colour textures and none for normal, gloss and packed specular maps. A change of those options SHALL apply to textures decoded afterwards.
 
 #### Scenario: Floor at a grazing angle
 - **WHEN** a floor is seen at a grazing angle
 - **THEN** its texture keeps fine detail instead of blurring to a low mip level
+
+#### Scenario: Lower texture quality
+- **WHEN** the live texture quality is 4 and the detail 2
+- **THEN** textures decoded afterwards take the quality's mask, anisotropy level and −0.5 bias base, and detail 2
 
 ### Requirement: Parallax
 The system SHALL displace the texture coordinates of materials that have a height map and a normal map, as the original does. The depth is a fixed number of height-map texels set by the height layer's amount. The shift follows the tangent-space view, in four accumulating steps.

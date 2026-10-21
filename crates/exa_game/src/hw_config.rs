@@ -5,8 +5,8 @@
 //! The pure rules are [`exa_formats::hw_config`]; the row behaviour is
 //! [`exa_ui::settings`]. This module wires them to the running game: the
 //! options become [`exa_render::quality`] resources, the scene's
-//! super-sampling switch, the audio buses and the window's mode, size and
-//! present mode. Rules: `docs/UI.md` (Settings options, Controls) and
+//! super-sampling switch, the texture loader's settings, the audio buses
+//! and the window's mode, size and present mode. Rules: `docs/UI.md` (Settings options, Controls) and
 //! `docs/formats/SETTINGS.md`.
 
 use std::path::PathBuf;
@@ -15,6 +15,8 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow, WindowMode};
+use exa_assets::ModelCache;
+use exa_assets::texture::TextureSettings;
 use exa_audio::{AudioEnvironment, MusicSetting};
 use exa_formats::file_ref::{read_whole_file, write_whole_file};
 use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
@@ -520,9 +522,25 @@ pub fn rebind_keys(
     }
 }
 
-/// Pushes changed live options into the renderer, the audio and the window.
+/// The texture settings the live options give: `base` (its driver limits)
+/// with the texture quality's filter mask, anisotropy and LOD bias base,
+/// the texture detail and the super-sampling level the LOD bias follows, the
+/// globals the original's handlers write. A texture decoded afterwards takes
+/// them; one already decoded keeps its own.
+pub fn texture_settings(base: TextureSettings, live: &Options) -> TextureSettings {
+    TextureSettings {
+        texture_detail: live.texture_detail.max(0) as u32,
+        supersample: live.supersample,
+        ..base.with_quality(live.texture_quality)
+    }
+}
+
+/// Pushes changed live options into the renderer, the texture loader, the
+/// audio and the window.
+#[allow(clippy::too_many_arguments)]
 fn apply_options(
     config: Option<Res<HardwareConfig>>,
+    mut models: Option<ResMut<ModelCache>>,
     mut sampling: ResMut<SuperSampling>,
     mut shadow: ResMut<ShadowQuality>,
     mut multisample: ResMut<MultisampleSetting>,
@@ -540,6 +558,12 @@ fn apply_options(
     let sampling_on = live.supersample > 0;
     if sampling.0 != sampling_on {
         sampling.0 = sampling_on;
+    }
+    if let Some(models) = models.as_mut() {
+        let textures = texture_settings(*models.textures.settings(), &live);
+        if *models.textures.settings() != textures {
+            models.textures.set_settings(textures);
+        }
     }
     if shadow.0 != live.shadow_quality {
         shadow.0 = live.shadow_quality;
@@ -812,6 +836,31 @@ mod tests {
             std::fs::write(&path, text).unwrap();
         }
         path
+    }
+
+    #[test]
+    fn the_live_texture_options_become_the_texture_settings() {
+        let base = TextureSettings::default();
+        let mut live = Options {
+            texture_quality: 4,
+            texture_detail: 2,
+            supersample: 3,
+            ..HardwareConfig::default().live
+        };
+        let settings = texture_settings(base, &live);
+        assert_eq!(settings.quality_mask, 0xF0);
+        assert_eq!(settings.anisotropy_level, 2);
+        assert_eq!(settings.lod_bias_base, -0.5);
+        assert_eq!(settings.texture_detail, 2);
+        assert_eq!(settings.supersample, 3);
+        // The driver limits stay the base's.
+        assert_eq!(settings.max_texture_size, base.max_texture_size);
+        assert_eq!(settings.max_units, base.max_units);
+        // The retail user's options give the retail settings.
+        live.texture_quality = 5;
+        live.texture_detail = 3;
+        live.supersample = 4;
+        assert_eq!(texture_settings(base, &live), base);
     }
 
     #[test]
