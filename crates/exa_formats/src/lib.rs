@@ -6,6 +6,7 @@
 //! read; see `docs/formats/` for what is known about each.
 
 pub mod arena_save;
+pub mod character_db;
 pub mod character_stats;
 pub mod characters;
 pub mod chunk;
