@@ -39,6 +39,7 @@ pub mod nav_pick;
 pub mod pair_trace;
 pub mod pick;
 pub mod player;
+pub mod player_light;
 pub mod practice;
 pub mod session;
 pub mod shell_draw;
@@ -84,6 +85,7 @@ impl Plugin for GamePlugin {
             hand::HandPlugin,
             idle_orbit::IdleOrbitPlugin,
             hotkeys::HotkeyPlugin,
+            player_light::PlayerLightPlugin,
             hud::HudPlugin,
             torch::TorchPlugin,
             trace::TracePlugin,

@@ -104,6 +104,25 @@ impl Physics {
         let ray = Ray::new(origin, direction);
         self.0.cast_ray(&ray, max, true, QueryFilter::only_fixed())
     }
+
+    /// How far along `direction` (unit) from `origin` a ball of `radius`
+    /// first meets the level (fixed colliders but the props' stand-ins),
+    /// within `max` metres.
+    pub fn level_sweep(&self, origin: Vec3, direction: Vec3, max: f32, radius: f32) -> Option<f32> {
+        let ball = Ball::new(radius);
+        let at = Pose::from_translation(origin);
+        let not_props = |_: ColliderHandle, c: &Collider| c.user_data != prop::STAND_IN;
+        let filter = QueryFilter::only_fixed().predicate(&not_props);
+        self.0
+            .cast_shape(
+                &at,
+                direction,
+                &ball,
+                rapier3d::parry::query::ShapeCastOptions::with_max_time_of_impact(max),
+                filter,
+            )
+            .map(|(_, hit)| hit.time_of_impact)
+    }
 }
 
 /// Marks a subtree whose meshes become static triangle-mesh colliders once
@@ -590,6 +609,32 @@ fn step_world(mut physics: ResMut<Physics>, mut pending: ResMut<PendingKinematic
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ball swept up meets a level ceiling a radius short of it, passes
+    /// through a prop's stand-in, and meets nothing beyond its reach.
+    #[test]
+    fn a_swept_ball_meets_the_level_but_not_the_props() {
+        let mut world = PhysicsWorld::new();
+        world.insert_collider(
+            ColliderBuilder::cuboid(5.0, 0.1, 5.0)
+                .translation(Vec3::new(0.0, 2.1, 0.0))
+                .build(),
+            None,
+        );
+        world.insert_collider(
+            ColliderBuilder::cuboid(0.2, 0.2, 0.2)
+                .translation(Vec3::new(0.0, 1.0, 0.0))
+                .user_data(prop::STAND_IN)
+                .build(),
+            None,
+        );
+        world.step();
+        let physics = Physics(world);
+        let t = physics.level_sweep(Vec3::ZERO, Vec3::Y, 3.0, 0.1).unwrap();
+        assert!((t - 1.9).abs() < 1e-3, "{t}");
+        assert_eq!(physics.level_sweep(Vec3::ZERO, Vec3::Y, 1.5, 0.1), None);
+        assert!(physics.fixed_hit(Vec3::ZERO, Vec3::Y, 3.0).unwrap() < 1.0);
+    }
 
     /// A mirrored placement of a level mesh keeps its faces' front where
     /// the mesh's own winding puts it.

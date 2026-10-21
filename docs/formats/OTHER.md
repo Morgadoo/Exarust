@@ -1424,8 +1424,13 @@ Apparel item body (`0x1000`) fields:
   "unknown" fourth byte of the appearance block: quality in bits 0–2,
   damage in 3–5, dirt in 6–7; codes 0 and 1 are eighths, the others
   quarters less one; non-zero means the copy still rolls);
-- `0x214`: special kind (4 the golem suit, 6 gauntlets that lighten a held
-  shield; 1, 2, 3, 5, 7 other item effects);
+- `0x214`: special kind (1 sees in the dark: the player's own light turns
+  on while one is worn, the three night-vision helms "UW Helm NV", "UCA
+  Helm A" and "UGA Helm FB" of the shipped database, established by REA on
+  the light switch, which reads this byte, and a corpus scan; 4 the golem
+  suit, 6 gauntlets that lighten a held shield; 2, 3, 5, 7 other item
+  effects: the strength bracelet, the healing mask, the null helm and the
+  spirit necklace carry them);
 - `0x218` bit 0 and `0x219`: a power crystal is in and its charge (0xFF
   spent): the special item is powered;
 - `0x220`: the articulated set a piece belongs to, the item id of the set's

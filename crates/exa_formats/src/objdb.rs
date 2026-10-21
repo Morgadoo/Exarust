@@ -147,6 +147,9 @@ pub struct Burden {
 }
 
 impl Burden {
+    /// A helm worn to see in the dark: it turns the player's own light on
+    /// (the three night-vision helms of the shipped database).
+    pub const SEES_IN_THE_DARK: u8 = 1;
     /// The golem suit: unpowered, it adds 2 to its wearer's encumbrance.
     pub const GOLEM_SUIT: u8 = 4;
     /// Gauntlets that make a held shield weightless while powered.
@@ -170,6 +173,12 @@ impl Burden {
             powered: byte(POWER_FLAGS_OFFSET) & POWERED != 0 && byte(CHARGE_OFFSET) != SPENT,
         }
     }
+}
+
+/// The special kind byte of an item body ([`Burden::special`]); 0 when the
+/// body is too short to hold it.
+pub fn special_kind(body: &[u8]) -> u8 {
+    body.get(SPECIAL_OFFSET).copied().unwrap_or(0)
 }
 
 /// Door flags (the door section's first word).
@@ -839,6 +848,37 @@ mod tests {
         assert!(!suit(0x80, 0).powered);
         assert!(suit(0x81, 0x40).powered);
         assert!(!suit(0x81, 0xFF).powered);
+    }
+
+    /// The special kind byte at 0x214 of an item body; 0 past a short body.
+    #[test]
+    fn the_special_kind_byte() {
+        let mut body = vec![0u8; SET_OFFSET + 4];
+        body[SPECIAL_OFFSET] = Burden::SEES_IN_THE_DARK;
+        assert_eq!(special_kind(&body), 1);
+        assert_eq!(special_kind(&body[..SPECIAL_OFFSET]), 0);
+    }
+
+    /// The installed game's items of special kind 1 (they see in the dark)
+    /// are the three night-vision helms (skipped without the game).
+    #[test]
+    fn the_installed_night_vision_helms() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let db = Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let mut seeing: Vec<String> = items(&db)
+            .into_iter()
+            .filter(|i| {
+                i.burden
+                    .is_some_and(|b| b.special == Burden::SEES_IN_THE_DARK)
+            })
+            .map(|i| i.name)
+            .collect();
+        seeing.sort();
+        assert_eq!(seeing, ["UCA Helm A", "UGA Helm FB", "UW Helm NV"]);
     }
 
     /// An apparel body worn as `worn`, with per-bone occupancy entries

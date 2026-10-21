@@ -12,6 +12,7 @@ use exa_formats::characters::ID_MASK;
 use exa_formats::containers::{CONTAINER, Container, LIGHT, section};
 use exa_formats::rdb::Database;
 
+const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
 const SHIELD: u32 = 0x8000;
 
@@ -39,6 +40,8 @@ impl ItemCatalogue {
                     weapon,
                     shield: section(payload, SHIELD).is_some(),
                     light: section(payload, LIGHT).is_some(),
+                    sight: section(payload, BODY).map(exa_formats::objdb::special_kind)
+                        == Some(exa_formats::objdb::Burden::SEES_IN_THE_DARK),
                 },
             );
             if let Some(c) = section(payload, CONTAINER).and_then(Container::parse) {

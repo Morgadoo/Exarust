@@ -924,10 +924,35 @@ character body's possession routines; addresses are in the research notes.
   it off its holder: the original has no owner test in its light selection,
   and only the torch's own mesh stays out of the torch's shadow map.
 - The original adds no separate glow around the player, except with
-  night-vision headgear or one Mind power.
+  night-vision headgear or one Mind power (The player light, below).
 - `exarust character Torch/Idle` (or any "Torch" or "1H & Torch" action)
   shows the body holding the lit torch in the hand that moveset raises: the
   right for "Torch", the left for "1H & Torch".
+
+## The player light
+
+The player's own light burns only while the player wears an item whose
+body has special kind 1 (it sees in the dark: the three night-vision helms
+"UW Helm NV", "UCA Helm A" and "UGA Helm FB"), and goes out while either
+hand of the record's out set holds an item with a held light's section (a
+torch; in Exarust also the torch the body carries). The switch is read
+whenever what the player wears or holds changes (the original reads it at
+the start of play, after a respawn and on every change of equipment).
+
+The light is an omni light, colour (1, 1, 1), radius 1200 cm, multiplier
+2, softness 4, falling off with distance. It is made at 245 cm with the
+intensity 0.01 and rises toward 0.4: each frame while it is under 0.4 less
+the single-precision epsilon it gains 0.0005 per millisecond of the frame
+(in double precision, then single), clamped to 0.4, so it reaches 0.4 in
+about 0.78 s. Each frame it hangs 80 cm above the player's head; when that
+is more than 1 cm up, a 10 cm ball swept up from the head through the level
+(not the props) puts it where the ball first meets the ceiling. Nothing
+moves while the game is paused.
+
+Not in Exarust: the second rule that puts it out (a held weapon section of
+kind 3 whose held part is lit), the Mind power that forces it on, and the
+spectating view's light. A normal start wears no such helm, so the light
+stays off, as in the original.
 
 ## Unattended runs
 

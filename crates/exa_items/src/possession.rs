@@ -93,6 +93,8 @@ pub struct ItemKind {
     pub shield: bool,
     /// It has a held light's section (the torch).
     pub light: bool,
+    /// Worn, it sees in the dark (its body's special kind 1).
+    pub sight: bool,
 }
 
 impl ItemKind {
