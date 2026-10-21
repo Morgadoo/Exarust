@@ -141,7 +141,7 @@ pub fn settle_first_undecided(winners: &mut [u32; 6], field: &[u32], roll: &mut 
         }
         *roll = roll.wrapping_mul(STEP).wrapping_add(1);
         *winner = ((u64::from(*roll) * 8) >> 32) as u32 + 7;
-        if let Some(&id) = field.iter().find(|&&id| id > 0) {
+        if let Some(&id) = field.iter().find(|&&id| (id as i32) > 0) {
             *winner = id;
         }
         return;

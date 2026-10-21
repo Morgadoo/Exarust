@@ -165,9 +165,9 @@ pub struct Staff {
 }
 
 /// Number the manager and the staff as the arena does before a match. The
-/// manager is fighter 1 and carries the leader bit; an employee is the next
-/// number in list order and also carries it when its class's low bit is
-/// set. A combatant or recruit (the low two class bits) counts as a fighter,
+/// manager's id word is just the control flag; an employee's is its place
+/// in the list plus one ([`Staff::id_word`]), with the flag too when its
+/// class's low bit (a recruit) is set. A combatant or recruit (the low two class bits) counts as a fighter,
 /// so the count starts at the manager.
 pub fn number_fighters(classes: &[u8]) -> (u32, Vec<u32>) {
     let mut count = 1;
@@ -177,7 +177,7 @@ pub fn number_fighters(classes: &[u8]) -> (u32, Vec<u32>) {
         if class & 3 != 0 {
             count += 1;
         }
-        let mut role = index as u32 + 2;
+        let mut role = index as u32 + 1;
         if class & 1 != 0 {
             role |= CONTROLLED;
         }
@@ -957,9 +957,9 @@ mod tests {
     fn fighters_are_numbered_from_the_manager_and_leaders_carry_the_bit() {
         let (count, roles) = number_fighters(&[COMBATANT, MERCHANT, TRAINER | RECRUIT, 0]);
         assert_eq!(count, 3);
-        assert_eq!(roles, vec![CONTROLLED, 2, 3, 4 | CONTROLLED, 5]);
+        assert_eq!(roles, vec![CONTROLLED, 1, 2, 3 | CONTROLLED, 4]);
         assert_eq!(number_fighters(&[]), (1, vec![CONTROLLED]));
-        assert_eq!(number_fighters(&[PHYSICIAN]), (1, vec![CONTROLLED, 2]));
+        assert_eq!(number_fighters(&[PHYSICIAN]), (1, vec![CONTROLLED, 1]));
     }
 
     #[test]
