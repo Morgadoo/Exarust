@@ -680,3 +680,54 @@ mod tests {
         assert_eq!(body.twist, Quat::IDENTITY);
     }
 }
+
+#[cfg(test)]
+mod carry_tests {
+    use super::*;
+
+    /// A body with muscles walks by its carry: the capsule is asked for no
+    /// velocity and the movement stage hands the drive and its push gain to
+    /// the physics; the controller only follows the frame.
+    #[test]
+    fn a_body_with_muscles_walks_by_its_carry() {
+        let mut app = App::new();
+        app.add_systems(Update, decide_movement);
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), Transform::default()))
+            .id();
+        let ragdoll = Ragdoll::new(&[]).with_drive();
+        let model = app
+            .world_mut()
+            .spawn((
+                Locomotion::facing(0.0),
+                ragdoll,
+                Transform::default(),
+                ChildOf(root),
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: model,
+            character: Some(root),
+        });
+        {
+            let mut req = app.world_mut().get_mut::<Locomotion>(model).unwrap();
+            req.moving = true;
+            req.free_walk = true;
+            req.flags = flags::MOVE | flags::KEYS;
+        }
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<CharacterBody>(root)
+                .unwrap()
+                .desired_velocity,
+            Vec3::ZERO
+        );
+        let body = app.world().get::<Ragdoll>(model).unwrap();
+        let d = body.drive.as_ref().unwrap();
+        assert!(d.bearing.moving, "the decision did not move the body");
+        assert!(d.bearing.push.length() > 0.0);
+        assert!(d.bearing.push_gain > 0.0);
+    }
+}
