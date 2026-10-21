@@ -314,3 +314,37 @@ fn an_active_second_wind_heals_yellow() {
     assert_eq!(tick(252, false, false), (0x3d00_0000, false));
     assert_eq!(tick(1, true, true), (0x3d00_0000, true));
 }
+
+/// A shield arm refills from empty: the rate rises 2e-6 a tick to 0.001,
+/// the stamina rises by the rate. After 500 ticks the rate is full and the
+/// stamina 0.2505; 1250 ticks fill it (about 15 s), and a block restarts the
+/// rate.
+#[test]
+fn a_shield_arm_refills() {
+    let mut arm = ShieldStamina::default();
+    arm.tick();
+    assert_eq!(arm.rate.to_bits(), 2e-6f32.to_bits());
+    assert_eq!(arm.stamina.to_bits(), 2e-6f32.to_bits());
+    for _ in 1..500 {
+        arm.tick();
+    }
+    assert_eq!(arm.rate, ShieldStamina::RATE_CAP);
+    assert!((arm.stamina - 0.2505).abs() < 1e-5);
+    for _ in 500..1249 {
+        arm.tick();
+    }
+    assert!(arm.stamina < 1.0);
+    arm.tick();
+    assert_eq!((arm.stamina, arm.rate), (1.0, 0.0));
+    arm.tick();
+    assert_eq!((arm.stamina, arm.rate), (1.0, 0.0));
+    // A block empties the rate; a full arm ignores it until it is spent.
+    let mut arm = ShieldStamina {
+        stamina: 0.5,
+        rate: 0.001,
+    };
+    arm.blocked();
+    arm.tick();
+    assert_eq!(arm.rate.to_bits(), 2e-6f32.to_bits());
+    assert!((arm.stamina - 0.500002).abs() < 1e-6);
+}

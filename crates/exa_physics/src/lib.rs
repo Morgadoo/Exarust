@@ -13,6 +13,7 @@ pub mod intersect;
 pub mod lever;
 pub mod mechanism;
 pub mod motile;
+pub mod part;
 pub mod plate;
 pub mod prop;
 pub mod relay;

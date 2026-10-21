@@ -159,6 +159,29 @@ original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
 under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
 and is woken by a blow, by going limp or by a contact with an awake body;
 a living body never sleeps.
+Each part also keeps its state word and the part's own impact and wound
+bookkeeping (`part`): the class bits this crate reads (`part::PartState`:
+the strike window and chain, a held item, an arm, a muscled limb, a sole,
+level contacts, the living limb family), a strike marking the whole chain
+under its root (`part::set_striking`, `body::Ragdoll::set_striking`), and
+a limp part keeping its muscle mark and getting its own contact mobility
+back (`part::ragdoll_state`, `part::ragdoll_mobility`,
+`body::Ragdoll::go_limp`). The impact rules are the original's slot 38's:
+the recent-impact counter (+2 a call to 40, one off a tick,
+`part::impact_added`/`impact_decayed`), a limb's and a held weapon's sound
+volume, pitch and cooldown (`part::limb_impact_sound`,
+`part::weapon_impact_sound`: the impact a third unless knocked down then
+halved, the volume 0.05 of it at most 1, the pitch 0.6 of the volume plus
+0.5), the hard-landing camera shake under 1800 cm, and a weapon hit that
+interrupts a swing (a 600 ms recoil when the striker's chain is its
+primary, or a stab's or overhead's recorded `round(5√impact)` with the
+strike chain cleared; `part::hard_impact`), and the immediate counter a
+clash may start (`part::immediate_counter`: the basic attack for motions
+5–7, the combo for 8–10). A striking part's contact is classified as the
+damage routine's kind 1, 2 or 3 (`part::classify`: a muscled limb, a
+weapon, a shield, with its pending-hit, arm, once-a-swing, parrying and
+countering guards), and a boned limb's wound adds its size to the
+character's bleeding tally (`part::WoundTally`).
 A dazed or unsteady body's targets give way to the pose it holds by the
 original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its

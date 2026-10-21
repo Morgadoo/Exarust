@@ -987,4 +987,44 @@ fn a_turned_blow_recoils_the_striker() {
     assert_eq!((s.strength, s.stall), (0.5, 0.5));
     assert_eq!(s.flags, flags::WINDOW_OPENED | 0x26);
     assert_eq!(s.open, [false, false]);
+    // The rest waits for the stance, then leaves.
+    assert_eq!(s.recoil, Some(rest));
+    assert_eq!(s.take_recoil(), Some(rest));
+    assert_eq!(s.take_recoil(), None);
+}
+
+/// A recoil's rest starts the stance that ends its stall: the rest's blend
+/// (40) and both arms' stiffness (0.2), and the rest is spent.
+#[test]
+fn a_recoils_rest_starts_the_stance() {
+    use exa_physics::body::Ragdoll;
+
+    let state = SwingState {
+        flags: flags::STALLING,
+        strength: 0.5,
+        stall: 20.0,
+        end_ms: 1000,
+        recoil: Some(RecoilRest {
+            end_ms: 1000,
+            blend: 40,
+            stiffness: 0.2,
+            held: 1.0,
+        }),
+        ..SwingState::default()
+    };
+    let (mut app, fighter) = attacking(50.0, state);
+    app.world_mut()
+        .entity_mut(fighter)
+        .insert(Ragdoll::new(&[]).with_drive());
+    app.update();
+    let w = app.world();
+    let anim = w.get::<Animator>(fighter).unwrap();
+    assert_eq!(anim.action, "Cmbt - Idle");
+    assert_eq!(anim.blend, 40.0);
+    assert_eq!(w.get::<SwingState>(fighter).unwrap().recoil, None);
+    assert_eq!(
+        w.get::<Ragdoll>(fighter).unwrap().arm_stiffness(),
+        Some(0.2)
+    );
+    assert!(w.get::<Attacking>(fighter).is_none());
 }

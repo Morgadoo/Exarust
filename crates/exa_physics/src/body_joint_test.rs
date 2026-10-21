@@ -528,3 +528,31 @@ fn a_limp_swing_inside_its_range_is_damped() {
         "a free hip kept {free:?}"
     );
 }
+
+/// The part state word follows the body: a drive marks the limbs muscled,
+/// a strike marks the chain under its root, going limp restores the mark
+/// and the arm stiffness is readable.
+#[test]
+fn a_body_keeps_its_part_states() {
+    let mut body = pelvis_and_femur();
+    assert!(body.parts[0].state.is_limb());
+    for p in &body.parts {
+        assert!(!p.state.has(crate::part::PartState::MUSCLED));
+    }
+    body = body.with_drive();
+    for p in &body.parts {
+        assert!(p.state.has(crate::part::PartState::MUSCLED));
+    }
+    body.set_striking(0, true);
+    for p in &body.parts {
+        assert!(p.state.strikes());
+    }
+    body.set_striking(1, false);
+    assert!(body.parts[0].state.strikes());
+    assert!(!body.parts[1].state.strikes());
+    body.set_arm_stiffness(0.2);
+    assert_eq!(body.arm_stiffness(), Some(0.2));
+    body.go_limp();
+    assert_eq!(body.arm_stiffness(), None);
+    assert!(body.parts[0].state.has(crate::part::PartState::MUSCLED));
+}

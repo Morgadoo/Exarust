@@ -238,6 +238,110 @@ fn wrap_pi(yaw: f32) -> f32 {
     if turn > PI { turn - PI * 2.0 } else { turn }
 }
 
+/// A parry in progress on the defender: the original's parrying flag
+/// (`+0x12f3`) and the attack motion it counters (`+0xf5c`).
+///
+/// Exarust raises a guard only in tests, so a fighter whose guard is a parry
+/// is parrying until the parry ends; a counter-parry ends it and leaves the
+/// motion it countered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParryState {
+    /// It is parrying (`+0x12f3`).
+    pub active: bool,
+    /// The attack motion it counters (`+0xf5c`), as the original's motion
+    /// number, or none.
+    pub counter_motion: Option<usize>,
+}
+
+impl Default for ParryState {
+    fn default() -> Self {
+        Self {
+            active: true,
+            counter_motion: None,
+        }
+    }
+}
+
+impl ParryState {
+    /// Ends the parry (`0x100162e80`): it counters no motion and is no
+    /// longer parrying. The original also disables the grip links of every
+    /// held item and relaxes both hands; Exarust has no grip links to
+    /// disable yet.
+    pub fn end(&mut self) {
+        self.active = false;
+        self.counter_motion = None;
+    }
+}
+
+/// The branch a weapon's clash takes on the victim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Clash {
+    /// The victim parries: the attacker recoils, the victim is kept from
+    /// attacking 600 ms unless it has Riposte, and its stance sags.
+    Parrying,
+    /// The victim counters this very motion with a weapon that is not its
+    /// primary: the attacker recoils and the parry ends into its stance,
+    /// with no lock and no sag.
+    Countering,
+    /// Anything else: neither side changes.
+    Plain,
+}
+
+/// Which branch of a clash the victim takes: parrying first, then a counter
+/// of the attacker's own motion by a weapon other than the victim's
+/// primary, then nothing.
+pub fn clash_branch(parry: ParryState, attacker_motion: usize, primary_is_struck: bool) -> Clash {
+    if parry.active {
+        Clash::Parrying
+    } else if parry.counter_motion == Some(attacker_motion) && !primary_is_struck {
+        Clash::Countering
+    } else {
+        Clash::Plain
+    }
+}
+
+#[cfg(test)]
+mod clash_tests {
+    use super::*;
+
+    #[test]
+    fn the_clash_branches() {
+        let parrying = ParryState {
+            active: true,
+            counter_motion: Some(5),
+        };
+        assert_eq!(clash_branch(parrying, 5, false), Clash::Parrying);
+        let countering = ParryState {
+            active: false,
+            counter_motion: Some(5),
+        };
+        assert_eq!(clash_branch(countering, 5, false), Clash::Countering);
+        assert_eq!(clash_branch(countering, 6, false), Clash::Plain);
+        assert_eq!(clash_branch(countering, 5, true), Clash::Plain);
+        assert_eq!(
+            clash_branch(ParryState::default(), 5, false),
+            Clash::Parrying
+        );
+    }
+
+    #[test]
+    fn a_parry_ends() {
+        let mut parry = ParryState {
+            active: true,
+            counter_motion: Some(8),
+        };
+        parry.end();
+        assert_eq!(
+            parry,
+            ParryState {
+                active: false,
+                counter_motion: None,
+            }
+        );
+        assert_eq!(clash_branch(parry, 8, false), Clash::Plain);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

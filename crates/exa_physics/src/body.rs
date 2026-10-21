@@ -39,6 +39,7 @@ use bevy::prelude::*;
 
 use crate::Physics;
 use crate::contact::{CONTACT_SLOP, Level, LevelContact, evicted, rub, sphere_hit, swept_hit};
+use crate::part::PartState;
 
 #[path = "body_muscle.rs"]
 mod muscle;
@@ -288,6 +289,9 @@ pub struct Part {
     /// which the debug tools measure its joint from
     /// ([`Ragdoll::with_rest_turns`]).
     rest_turn: Quat,
+    /// The part's state word: whether it strikes, is a held item, an arm or
+    /// a muscled limb ([`PartState`]).
+    pub state: PartState,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -381,6 +385,7 @@ impl Part {
             relax: 0.0,
             relax_cap: muscle::RELAX_CAP,
             rest_turn: Quat::IDENTITY,
+            state: PartState::LIMB_FRESH,
         }
         .settle()
     }
@@ -1599,9 +1604,32 @@ impl Ragdoll {
     /// Gives the body muscles following its animation. A living body never
     /// sleeps: its countdown is held at 256.
     pub fn with_drive(mut self) -> Self {
+        for p in &mut self.parts {
+            p.state = crate::part::ragdoll_state(p.state);
+        }
         self.drive = Some(Drive::default());
         self.wake();
         self
+    }
+
+    /// Sets both arms' stiffness to `x`, as the original's recoil does when
+    /// its stance returns: the next character tick eases it back up.
+    pub fn set_arm_stiffness(&mut self, x: f32) {
+        if let Some(d) = self.drive.as_mut() {
+            d.arm = x;
+        }
+    }
+
+    /// The arms' stiffness, or none for a limp body (the debug readout and
+    /// the recoil's rest).
+    pub fn arm_stiffness(&self) -> Option<f32> {
+        self.drive.as_ref().map(|d| d.arm)
+    }
+
+    /// Marks the part `root`'s chain as striking, or clears it: the
+    /// original's strike flags on a weapon chain.
+    pub fn set_striking(&mut self, root: usize, on: bool) {
+        crate::part::set_striking(&mut self.parts, root, on);
     }
 
     /// Gives a living body its race's muscle factors.
@@ -1680,6 +1708,12 @@ impl Ragdoll {
             }
         }
         self.reset_link_lengths();
+        for p in &mut self.parts {
+            p.state = crate::part::ragdoll_state(p.state);
+            // The original gives every limp limb its own mobility back; the
+            // part already carries it, so the restore is the identity.
+            p.pairing.mobility = crate::part::ragdoll_mobility(p.pairing.mobility);
+        }
     }
 
     /// Whether the body sleeps (and is not simulated).

@@ -91,6 +91,20 @@ weapon and shield sounds once a swing (`strike_back`). Each contact's
 striker is dealt right after its struck side, as the original's routine
 runs per contact. The blow sag rides the `Shove` to the struck body.
 
+A clash on a weapon parry takes one of the original's three branches
+(`parry::clash_branch`): a raised parry clears the victim's attack state,
+locks it 600 ms unless it has Riposte and sags its stance by half the
+impact, as before; a parry that counters this very motion with a weapon
+other than its primary ends into its stance with no lock and no sag
+(`ParryState::end`); a spent parry changes nothing. A recoil keeps its
+rest on the swing (`SwingState::recoil`) until the stall ends, and the
+stance that ends it starts with the rest's blend (40 frames) and both
+arms' stiffness (0.2, `Ragdoll::set_arm_stiffness`), which the next
+character tick eases back up, instead of the stance's recovery blend. A
+wound on a boned limb adds its size to the struck fighter's bleeding tally
+(`Fighter::bleeding`, the part's slot 39), which the body tick turns into
+damage over time.
+
 ## Grips
 
 `grip`: the original's grip table (`GRIPS`, six entries by hand class:
@@ -201,6 +215,13 @@ rate above `RED_FLOOR`) and the clamps. Every hit on a fighter sets its
 rate to 0 in the hit reaction, and the collapse's death sets yellow to 0.
 Rules: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md)
 (Regeneration).
+
+A shield arm's stamina (`regen::ShieldStamina`, the original's `+0xd60`
+and `+0xd64`) refills on the body tick: while it is under 1 its rate rises
+2e-6 a tick to 0.001 and the stamina rises by the rate; at 1 the rate
+stops. A block restarts the rate at 0, about 6 s to full rate and 15 s
+from empty to full. The body tick that calls it is the kernel lane's
+(`TMotileDynamics`); the rule and its test live here.
 
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and

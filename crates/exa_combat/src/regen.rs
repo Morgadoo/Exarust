@@ -94,6 +94,42 @@ pub fn holds_regeneration(condition: Condition, motion: Option<usize>) -> bool {
     condition == Condition::ATTACKING || motion == Some(action::COMBAT_IDLE)
 }
 
+/// A shield arm's stamina and its regeneration rate: the original's
+/// `+0xd60` (0..=1) and `+0xd64`, ticked with the body.
+///
+/// While the stamina is under 1 the rate rises by [`RISE`] a tick to
+/// [`RATE_CAP`] and the stamina rises by the rate; at 1 the rate stops. A
+/// block restarts the rate at 0, so a tired arm takes about 6 s to reach
+/// full rate and about 15 s from empty to full.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ShieldStamina {
+    pub stamina: f32,
+    pub rate: f32,
+}
+
+impl ShieldStamina {
+    /// The rate's rise a tick.
+    pub const RISE: f32 = 2e-6;
+    /// The rate's cap: stamina a tick.
+    pub const RATE_CAP: f32 = 0.001;
+
+    /// One body tick of the regeneration.
+    pub fn tick(&mut self) {
+        if self.stamina < 1.0 {
+            self.rate = (self.rate + Self::RISE).min(Self::RATE_CAP);
+            self.stamina = (self.stamina + self.rate).min(1.0);
+            if self.stamina >= 1.0 {
+                self.rate = 0.0;
+            }
+        }
+    }
+
+    /// A block on the shield restarts the rate at zero.
+    pub fn blocked(&mut self) {
+        self.rate = 0.0;
+    }
+}
+
 /// The health bookkeeping of the fighters the character tick does not
 /// tick (the dead, and any without a living physical body), once a fixed
 /// tick after the posture work and before the character ticks

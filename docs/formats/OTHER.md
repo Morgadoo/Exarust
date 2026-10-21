@@ -1687,6 +1687,27 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   only to a striker under 1.4. A parrying body whose state flag 0x400 is
   set is checked before the parry: any striker recoils and the parrier
   takes nothing (no lock, no attack-state clear, no sag).
+- A weapon clash on a parrying victim has three branches, in this order:
+  the victim is parrying (`+0x12f3`) — clear its attack state, lock it
+  600 ms unless `+0xc40 & 8` (Exarust's Riposte perk), end the parry and
+  sag its stance by min(0.5·I, 1); else the victim counters this very motion
+  (`+0xf5c` equals the attacker's motion) with a weapon other than its
+  primary (`+0x988` is not the struck body) — end the parry with no lock
+  and no sag; else nothing on the victim. The striker recoils in the
+  first two branches (size under 1.4) and the weapon's sound rings once a
+  swing in all of them. Exarust has no weapon bodies to be struck, so the
+  primary test is always false; the branch is `parry::clash_branch`.
+- A recoil keeps its stance blend and arm stiffness (`RecoilRest`) on the
+  swing until its stall ends. The stance that returns then starts with
+  blend 40 and both arms' stiffness 0.2, which the next character tick
+  eases back up; a released swing, a wound or a new attack drops the
+  rest.
+- A wound on a boned limb (`bone > 0`) adds its size to the character's
+  bleeding tally (`+0x10d4`), which its body tick turns into damage over
+  time: each tick the tally × 0.03 raises a bleeding level at most 20,
+  yellow loses level × 4e-5 and, over 1, red loses (0.002·level)². The
+  tally is cleared each tick. Exarust keeps the tally on the fighter
+  (`Fighter::bleeding`); the bleeding tick is the kernel lane's.
 - A clash and a block set the swing's weapon-sound bit 0x1000 (the
   weapon's hit sound once a swing); a block sets the shield-sound bit
   0x200 once a swing (a wound's bits already hold it) and then draws the
@@ -1776,6 +1797,13 @@ executable; a retail trace; `exa_combat::regen`)
   (so yellow follows a red cut to the maximum a tick later); at the end
   of the tick yellow is at least 0. Death sets yellow to 0 (the collapse
   regenerates about 0.0006 of it over its 250 ticks).
+- A shield arm's stamina (`+0xd60`, 0..=1) and its rate (`+0xd64`) refill
+  with the body tick: while the stamina is under 1 the rate rises 2e-6 a
+  tick to 0.001 and the stamina rises by the rate; at 1 the rate stops. A
+  block sets the rate to 0 (and the block's stamp `+0xd68` to now), so an
+  empty arm reaches full rate in 500 ticks (6.0 s) and full stamina in
+  about 1,250 ticks (15.1 s). The rule is `exa_combat::regen::ShieldStamina`;
+  the body tick that calls it is the kernel lane's.
 - The retail trace of the player after a fight: yellow 0.085, held for
   7.5 s in Cmbt - Idle, then in Idle 0.086, 0.090, 0.100, 0.110 and 0.121
   at 5.0, 9.6, 16.2, 21.1 and 25.3 s, 0.202 at 45.8 s; the rule with red

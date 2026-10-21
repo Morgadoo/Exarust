@@ -459,8 +459,12 @@ enum StrikerReaction {
     Wounded(damage::Outcome),
     /// A weapon parried it (`turned`: the parrying body turns blows, and
     /// any striker recoils), a clash: the weapon's hit sound rings once a
-    /// swing.
-    Clashed { blow: damage::Outcome, turned: bool },
+    /// swing. `recoils` is false for a clash against a spent parry.
+    Clashed {
+        blow: damage::Outcome,
+        turned: bool,
+        recoils: bool,
+    },
     /// A shield took it: the weapon's and the shield's sounds ring once a
     /// swing, the shield's drawing its cooldown from the generator.
     Blocked(damage::Outcome),
@@ -565,30 +569,45 @@ fn react_to_hits(
                     break 'struck Some(StrikerReaction::Clashed {
                         blow: outcome,
                         turned: true,
+                        recoils: true,
                     });
                 }
                 damage::Guard::Parry => {
-                    // A weapon's parry deals nothing: the parrying fighter's
-                    // attack state clears, it is kept from attacking 600 ms
-                    // unless it has Riposte, and its stance sags by half the
-                    // impact.
-                    if let Some(mut state) = state {
-                        state.flags = 0;
-                        if !f.perks.has(Perk::Riposte) {
-                            state.end_ms = now + damage::PARRY_LOCK_MS;
+                    // A weapon's parry deals nothing. Which clash branch it
+                    // takes depends on the parry: a raised parry clears the
+                    // fighter's attack state, keeps it from attacking 600 ms
+                    // unless it has Riposte and sags its stance by half the
+                    // impact; a counter-parry ends into its stance with no
+                    // lock or sag; a spent parry changes nothing. Exarust
+                    // strikes limbs, never weapon bodies, so no clash hits
+                    // the victim's primary weapon.
+                    let motion = attacks.get(hit.attacker).map_or(0, |a| a.motion.index());
+                    let branch = parry::clash_branch(f.parry, motion, false);
+                    match branch {
+                        parry::Clash::Parrying => {
+                            if let Some(mut state) = state {
+                                state.flags = 0;
+                                if !f.perks.has(Perk::Riposte) {
+                                    state.end_ms = now + damage::PARRY_LOCK_MS;
+                                }
+                            }
+                            shoves.write(Shove {
+                                body: hit.target,
+                                bone: hit.bone,
+                                velocity: Vec3::ZERO,
+                                daze: 0.0,
+                                step: None,
+                                sag: Some(damage::parried(outcome.hit_impact)),
+                            });
+                            f.parry.end();
                         }
+                        parry::Clash::Countering => f.parry.end(),
+                        parry::Clash::Plain => {}
                     }
-                    shoves.write(Shove {
-                        body: hit.target,
-                        bone: hit.bone,
-                        velocity: Vec3::ZERO,
-                        daze: 0.0,
-                        step: None,
-                        sag: Some(damage::parried(outcome.hit_impact)),
-                    });
                     break 'struck Some(StrikerReaction::Clashed {
                         blow: outcome,
                         turned: false,
+                        recoils: branch != parry::Clash::Plain,
                     });
                 }
                 damage::Guard::Shield(shield) => {
@@ -685,6 +704,10 @@ fn react_to_hits(
                     fighter: hit.target,
                 });
             }
+            // The struck limb adds its bleeding to the character's tally of
+            // wounds (the part's slot 39); the body tick turns the tally
+            // into damage over time.
+            f.bleeding.add(hit.bone as i32, outcome.wound);
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -877,8 +900,12 @@ fn strike_back(
                 );
             }
         }
-        StrikerReaction::Clashed { blow, turned } => {
-            if turned || small {
+        StrikerReaction::Clashed {
+            blow,
+            turned,
+            recoils,
+        } => {
+            if recoils && (turned || small) {
                 state.recoil_from(blow.speed, hit.weapon.recoil, striker);
             }
             state.flags |= swing::flags::WEAPON_RUNG;
@@ -1247,6 +1274,24 @@ mod tests {
         assert_eq!(fighter.second_wind.ready_at, 180_012);
     }
 
+    /// A wound on a boned limb adds its size to the struck fighter's
+    /// bleeding tally; one on bone 0 (the original checks `bone > 0`) does
+    /// not.
+    #[test]
+    fn a_wound_adds_to_the_bleeding_tally() {
+        for (bone, added) in [(9usize, true), (0, false)] {
+            let mut app = reactions();
+            let id = app
+                .world_mut()
+                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+                .id();
+            strike(&mut app, id, bone);
+            let wound = outcome(bone).wound;
+            let tally = app.world().get::<Fighter>(id).unwrap().bleeding.get();
+            assert_eq!(tally.to_bits(), if added { wound.to_bits() } else { 0 });
+        }
+    }
+
     /// The same cut that wounds bare flesh deals nothing through a parry
     /// (the parrying fighter kept from attacking 600 ms, its stance sagging
     /// by half the impact) and only the shield's yellow leak when the
@@ -1276,6 +1321,75 @@ mod tests {
         assert_eq!(shoves(&app)[0].daze, 0.0);
         let striker = app.world().get::<SwingState>(attacker).unwrap();
         assert!(striker.has(swing::flags::RECOILED));
+
+        // A parry that counters this very motion (the main-side attack, its
+        // motion 5) with its other weapon ends into its stance: no lock, no
+        // sag, the struck fighter's swing untouched, and the striker still
+        // recoils.
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let countering = Fighter {
+            guard: damage::Guard::Parry,
+            parry: parry::ParryState {
+                active: false,
+                counter_motion: Some(5),
+            },
+            ..Fighter::default()
+        };
+        let id = app
+            .world_mut()
+            .spawn((
+                countering,
+                Animator::new("Default", "Idle"),
+                SwingState {
+                    end_ms: 1234,
+                    ..SwingState::default()
+                },
+            ))
+            .id();
+        swung(&mut app, attacker, blade, id, cut());
+        let health = app.world().get::<Fighter>(id).unwrap().health;
+        assert_eq!((health.yellow, health.red), (0.25, 0.25));
+        assert_eq!(app.world().get::<SwingState>(id).unwrap().end_ms, 1234);
+        assert!(shoves(&app).is_empty());
+        assert_eq!(
+            app.world().get::<Fighter>(id).unwrap().parry,
+            parry::ParryState {
+                active: false,
+                counter_motion: None,
+            }
+        );
+        let striker = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(striker.has(swing::flags::RECOILED));
+
+        // A spent parry that counters another motion takes the plain
+        // branch: nothing on either side, and the striker does not recoil.
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let spent = Fighter {
+            guard: damage::Guard::Parry,
+            parry: parry::ParryState {
+                active: false,
+                counter_motion: Some(6),
+            },
+            ..Fighter::default()
+        };
+        let id = app
+            .world_mut()
+            .spawn((spent, Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, id, cut());
+        assert!(shoves(&app).is_empty());
+        assert!(
+            !app.world()
+                .get::<SwingState>(attacker)
+                .unwrap()
+                .has(swing::flags::RECOILED)
+        );
+        assert_eq!(
+            app.world().get::<Fighter>(id).unwrap().parry.counter_motion,
+            Some(6)
+        );
 
         let mut app = reactions();
         let (attacker, blade) = swordsman(&mut app);

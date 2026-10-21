@@ -488,6 +488,9 @@ pub struct SwingState {
     pub open: [bool; 2],
     /// Each held slot's striker tracker.
     pub tracker: [Tracker; 2],
+    /// The recoil's rest, kept until the stance returns: its blend and the
+    /// arm stiffness the stance starts with.
+    pub recoil: Option<RecoilRest>,
 }
 
 impl Default for SwingState {
@@ -501,6 +504,7 @@ impl Default for SwingState {
             rate: 0.0,
             open: [false; 2],
             tracker: [Tracker::default(); 2],
+            recoil: None,
         }
     }
 }
@@ -514,6 +518,7 @@ impl SwingState {
         self.strength = 1.0;
         self.stall = 0.0;
         self.open = [false; 2];
+        self.recoil = None;
         for t in &mut self.tracker {
             t.reset();
         }
@@ -525,6 +530,7 @@ impl SwingState {
         self.flags |= flags::CONTINUATION;
         self.strength = 1.0;
         self.stall = 0.0;
+        self.recoil = None;
     }
 
     pub fn has(&self, mask: u32) -> bool {
@@ -549,6 +555,7 @@ impl SwingState {
     /// swing; Feint may renew it after [`Swing::renew_after_ms`].
     pub fn release(&mut self, swing: &Swing, t: &SwingAt) {
         self.strength = 1.0;
+        self.recoil = None;
         self.flags |= flags::STALLING | flags::RELEASED;
         self.stall = swing.release_stall(self.tracker[0].speed2);
         let lasts = whole(MS / (ASSUMED_HZ * self.stall));
@@ -574,6 +581,7 @@ impl SwingState {
         if self.strength < EPSILON {
             return None;
         }
+        self.recoil = None;
         let reach = ((f64::from(self.tracked2()) * DAZE_REACH) as f32).min(1.0);
         let r = daze * DAZE_STALL * factor.max(0.0) - (1.0 - daze) * (reach * swing.recoil);
         if f64::from(r) < DAZE_STALL_FROM {
@@ -737,7 +745,7 @@ pub(crate) fn run_swings(
         &Condition,
         &Fighter,
         Option<&Swing>,
-        Option<&Ragdoll>,
+        Option<&mut Ragdoll>,
         &GlobalTransform,
         Option<&Stance>,
     )>,
@@ -753,7 +761,7 @@ pub(crate) fn run_swings(
         condition,
         fighter,
         swing,
-        body,
+        mut body,
         gt,
         stance,
     )) = fighters.get_mut(entity)
@@ -763,13 +771,22 @@ pub(crate) fn run_swings(
     if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
         return;
     }
-    let drive = body.and_then(|b| b.drive.as_ref());
-    let base = drive.map_or(1.0, |d| d.race.clip_rate);
+    // The body's clip-rate base, the falls branch's rate and its energy, read
+    // before its frame is handed on.
+    let (base, off_balance, energy) = body.as_deref().map_or((1.0, None, 1.0), |b| {
+        let drive = b.drive.as_ref();
+        let base = drive.map_or(1.0, |d| d.race.clip_rate);
+        (
+            base,
+            drive.and_then(|d| off_balance_rate(d.balance().value, base)),
+            drive.map_or(1.0, |d| d.energy_share()),
+        )
+    });
     // The falls branch sets the clip's rate whatever the condition (an
     // attack started off balance is not attacking yet), so the clip never
     // runs at a rate left from an earlier swing.
     if falls_off_balance(*condition)
-        && let Some(rate) = drive.and_then(|d| off_balance_rate(d.balance().value, base))
+        && let Some(rate) = off_balance
     {
         state.rate = rate;
         return;
@@ -791,7 +808,7 @@ pub(crate) fn run_swings(
         at,
         motion: attacking.motion,
         feral: fighter.stats.feral,
-        energy: drive.map_or(1.0, |d| d.energy_share()),
+        energy,
         weapon_class: attacking.weapon_class,
         strikers,
         aim: facing.with_y(0.0).normalize_or_zero(),
@@ -814,11 +831,22 @@ pub(crate) fn run_swings(
             );
         }
         SwingEvent::Ends => {
-            // Its stance as it is now (the clip's follow-up without one).
+            // Its stance as it is now (the clip's follow-up without one). A
+            // recoil's rest starts it: its own blend and both arms' stiffness.
             let stance = stance.map_or_else(|| crate::stance_of(&anim), |s| s.action().to_string());
-            anim.start(&stance, true, None, 2 * swing.recovery, Ease::Smooth);
+            let rest = state.take_recoil();
+            let blend = rest.map_or(2 * swing.recovery, |r| r.blend);
+            anim.start(&stance, true, None, blend, Ease::Smooth);
+            if let Some(rest) = rest
+                && let Some(body) = body.as_deref_mut()
+            {
+                body.set_arm_stiffness(rest.stiffness);
+            }
             commands.entity(entity).remove::<Attacking>();
-            debug!("{entity:?} stall over at {now} ms: {stance}");
+            debug!(
+                "{entity:?} stall over at {now} ms: {stance} (blend {blend}{})",
+                rest.map_or("", |_| ", recoil")
+            );
         }
     }
 }
@@ -1085,10 +1113,17 @@ impl SwingState {
         self.strength = r.strength;
         self.stall = r.stall;
         self.flags = r.flags;
+        self.recoil = r.rest;
         if let Some(rest) = r.rest {
             self.end_ms = rest.end_ms.max(0) as u64;
         }
         r.rest
+    }
+
+    /// Takes the recoil's rest, leaving none: the stance that a stall's end
+    /// starts uses its blend and gives the arms its stiffness.
+    pub fn take_recoil(&mut self) -> Option<RecoilRest> {
+        self.recoil.take()
     }
 }
 

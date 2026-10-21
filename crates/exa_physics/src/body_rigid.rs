@@ -15,6 +15,7 @@
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
+use crate::part::PartState;
 use crate::sector::Bounds;
 
 use super::{
@@ -151,6 +152,8 @@ impl Part {
             relax: 0.0,
             relax_cap: 0.0,
             rest_turn: Quat::IDENTITY,
+            // A prop is not a living limb: no limb family.
+            state: PartState(0),
         }
         .settle()
     }

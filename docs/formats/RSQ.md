@@ -166,6 +166,27 @@ How the original simulates a body (`exa_physics::body`):
   and the rest basis, and each axis is re-formed as the cross of the other
   two when the dot product falls under 0.1; its particles are then put back
   on the rest tetrahedron under that matrix. Its velocity is left alone.
+- Each part keeps the original's state word (`exa_physics::part`): the
+  strike window and chain a weapon's whole chain sets and clears
+  (`PartState::STRIKE_FLAGS`, `part::set_striking`), the held-item and arm
+  bits the damage routine's contact kinds test, the muscled-limb mark a
+  living or limp limb keeps, the sole and level-contact bits, and the
+  living-limb family. A striking part classifies its contact as the damage
+  routine's kind 1 (a muscled limb), 2 (a weapon) or 3 (a shield), with its
+  guards: a pending hit, an arm, a clash's once-a-swing bit 0x100, a
+  victim parrying, or a victim countering this very motion with its other
+  weapon (`part::classify`). The part's impact reaction (slot 38) adds two
+  to a recent-impact counter (at most 40) that the step takes one off, and
+  gives a limb's impact sound a third of the impact (all of it lying
+  down) then half, silent under 0.5; a held weapon's sound uses its own
+  curve (silent under 0.005); a hard one interrupts a swing with a 600 ms
+  recoil when the chain is the primary, or records a stab's or overhead's
+  `round(5√impact)` with the strike chain cleared (`part::hard_impact`),
+  and a clash may run an immediate counter (the basic attack for motions
+  5–7, the combo for 8–10, `part::immediate_counter`). A wound on a boned
+  limb adds its size to the character's bleeding tally `+0x10d4`
+  (`part::WoundTally`), which the body tick turns into yellow and red loss
+  ([OTHER.md](OTHER.md), Damage).
 - After the iterations, every sphere collider is tested once against the
   level's triangles (`exa_physics::contact`):
   - A triangle pushes only from its front, the side its winding faces in

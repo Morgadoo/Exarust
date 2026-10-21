@@ -12,8 +12,10 @@ use crate::attack::Attacker;
 use crate::condition::{Condition, PostureBranch, StateFlags};
 use crate::damage::{self, Guard, Outcome, PartArmour};
 use crate::fall::FallDeath;
+use crate::parry::ParryState;
 use crate::swing::SwingState;
 use crate::wounds::WoundQueue;
+use exa_physics::part::WoundTally;
 
 /// A character that can fight and be hurt (on the body model root). It
 /// keeps the original's condition word and state flags beside it, the
@@ -47,6 +49,13 @@ pub struct Fighter {
     pub perks: Perks,
     /// How it meets a blow: open, a parry, or a shield block.
     pub guard: Guard,
+    /// The parry in progress: whether it parries and the motion it
+    /// counters, which decides the clash's branch.
+    pub parry: ParryState,
+    /// The bleeding the struck limbs added up since the body's last tick
+    /// (`+0x10d4`); a boned limb's wound adds its size, and the body tick
+    /// turns the tally into damage over time.
+    pub bleeding: WoundTally,
     /// The armour that grants a second wind, and when it may fire again.
     pub second_wind: SecondWind,
 }
@@ -79,6 +88,8 @@ impl Fighter {
             stats,
             perks: Perks::default(),
             guard: Guard::Open,
+            parry: ParryState::default(),
+            bleeding: WoundTally::default(),
             second_wind: SecondWind::default(),
         }
     }
