@@ -21,8 +21,8 @@
 //! promoted world objects) and their string libraries, resolves tagged
 //! ids, reads display names and descriptions through their string ids, and
 //! instantiates, duplicates, promotes, removes and migrates records between
-//! the tiers. [`Record`] exposes a payload's sections and their header,
-//! model and folder fields; [`objstrings::Library`](crate::objstrings::Library)
+//! the tiers. [`Record`] exposes a payload's sections and their header and
+//! model fields; [`objstrings::Library`](crate::objstrings::Library)
 //! is the string pool. Layout and evidence: `docs/formats/OTHER.md` (Object
 //! database).
 
@@ -656,8 +656,7 @@ pub use packed::{
     amount_total, amount_units,
 };
 pub use record::{
-    Folder, FolderEntry, Header, Model, Record, Section, Sections, append_section, remove_section,
-    resize_section,
+    Header, Model, Record, Section, Sections, append_section, remove_section, resize_section,
 };
 pub use store::{Store, TableEntry};
 pub use tiers::{ObjectDb, Tier};
@@ -676,8 +675,9 @@ pub const ID_MASK: u32 = 0x3FFF_FFFF;
 pub const INHERIT: u32 = 0x8000_0000;
 /// Header flag: the record is instantiated into the local tier when used.
 pub const INSTANCE_ON_USE: u32 = 1;
-/// The section of an object's folder (its editor contents).
-pub const FOLDER: u32 = 0x200;
+/// A random table's section (`crate::containers::RandomTable`): its rows
+/// carry the condition word [`FractionWord`] packs.
+pub const RANDOM_TABLE: u32 = 0x200;
 /// The map record's own section; its name follows a zeroed volume.
 pub const MAP: u32 = 0x8000_0B03;
 /// The torch's extra section; zero in the one shipped record, meaning not

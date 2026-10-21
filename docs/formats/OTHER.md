@@ -134,7 +134,7 @@ it [guess: the global those entries read is the current locale's id].
 
 Status: **verified** for the file framing and its writer, the upgrade of the
 `0xDBAC0D08` and `0xDBAC0D07` layouts, the record chain, the three tiers, the
-string library and its writer, the sections below, folder contents,
+string library and its writer, the sections below, the random-table condition word,
 instancing, duplication, promotion, removal, template migration with the
 condition refresh, the item-use test, and the packed fields and amounts
 (`exa_formats::objdb`, `exa_formats::objstrings`). Not reproduced: the body
@@ -227,9 +227,9 @@ routines read the header's words straight from payload `0x18` (flags) and
 | tag | section |
 |---|---|
 | `0x10000000` | header: display name[16], flags word at `0x10`, parent at `0x14` |
-| `0x00100000` | model: ground/icon model[16], flags at `0x10`, name string id at `0x14`, description string id at `0x18`, class byte `0x1C`, rarity `0x1D`, value word `0x1E` (compact amount), size words at `0x20`/`0x24` |
+| `0x00100000` | model: ground/icon model[16], flags at `0x10`, name string id at `0x14`, description string id at `0x18`, bulk byte `0x1C`, rarity `0x1D`, value word `0x1E` (compact amount), size words at `0x20`/`0x24` |
 | `0x1000` | item body (548 bytes; worn model, occupancy `0x10`, slots `0xA8`, coverage `0x150`, protection `0x1A0`, appearance `0x1B0`, special `0x214`, power `0x218`, set `0x220`) |
-| `0x200` | folder contents (see below) |
+| `0x200` | random table (see [Containers and random tables](#containers-and-random-tables); its rows' condition word below) |
 | `0x4000` | weapon (flags `0`, seeds `4`/`8`, quality/damage/dirt `0xC`–`0xE`, materials `0x10`, stored choices `0x50`, stats `0x30`–`0x42`) |
 | `0x8000` | shield (weight/block/bulk at body 4/5/6) |
 | `0x10000` | operative object (class `0`, kind `1`, flags `2`, value `4`, time `6`, target `8`, second/code `12`) |
@@ -363,13 +363,13 @@ resolve in their level's library.
   maps a scene entity's object id (`+0x180`) that is tagged exactly local
   through the id remap table.
 - **Removal** ("Remove DB reference"): only for local and world ids; an
-  object with a folder section is kept; otherwise each model string id whose
+  object with a random table section is kept; otherwise each model string id whose
   low 31 bits are not zero is released (with its top bit cleared) in the
   tier's library, and the record deleted. An unguarded deletion does the
-  same for any tier without the folder test (the base tier releasing in the
+  same for any tier without the random-table test (the base tier releasing in the
   shared library).
 - **Template helpers**: an object's template is its parent word (or the id
-  when it does not resolve); the model class byte (`0x1C`) is read from the
+  when it does not resolve); the bulk byte (model `0x1C`) is read from the
   template a tagged id's header names, and from an untagged id's own model.
 - **Item-use test**: by the operative section, 0 without one and for classes
   2, 4, 8 and 0 (class 0 kind `0x11` gives 2 when bits 16–23 of the caller's
@@ -390,7 +390,7 @@ of `0x1000` or more that the template also has is then refreshed:
 
 - **Model**: with the class changed, the template's first 40 bytes with both
   string ids set to inherit; else the name, the flags word and the bytes
-  `0x1C`–`0x1F` (class, rarity, value).
+  `0x1C`–`0x1F` (bulk, rarity, value).
 - **Body**: with the class changed, the appearance layers first (below).
   Then, when the template's paint seed (the word at `0x1AC`) is
   `0xFFFFFFFF` (take the template's):
@@ -436,35 +436,26 @@ or 255 there, rolled copies a variant); and the model's value word (compact form
 0.5)(2(1 − d')² + 0.5) · 0.5, with tq the template's quality and q', d' the
 instance's, each /255. Rounding is to nearest, ties to even.
 
-### Folder contents (`0x200`)
+### The condition word of random-table rows
 
-The editor's folders are records whose `0x200` section lists their items:
-`u32 count` at body `0x0C`, then 16-byte entries at `0x10` (every shipped
-folder's body is exactly `0x10 + 16n` bytes):
+A random table's rows (section `0x200`, see
+[Containers and random tables](#containers-and-random-tables)) carry a
+condition word; this unit holds its getters and setters (`FractionWord`).
+The setters OR the rounded value in without masking it, so an out-of-range
+value spills into the next field:
 
-| offset | field |
-|---|---|
-| 0 | item record id (0 for the folder's own header entry) |
-| 4, 6, 8 | three words; meanings not established |
-| 10 | five packed fractions, see below |
-| 12 | trailing word, zero in every shipped entry |
+| bits | field | getter | setter |
+|---|---|---|---|
+| 0–3 | wealth | value ×0.25 | round(v·4) |
+| 6–8 | damage | value ×0.25 | round(v·4) << 6 |
+| 9–10 | damage spread | value ×0.25, 0 reads 0.125 | below 0.1875 → 0; below 0.625 → round(v·4); else 3 |
+| 11–13 | dirt | value ×0.25 | round(v·4) << 11 |
+| 14–15 | dirt spread | value ×0.25, 0 reads 0.125 | below 0.2 (a double compare) → 0; else round(v·4) |
 
-The packed word's fields, from the original's getters/setters (the setters
-OR the rounded value in without masking it, so an out-of-range value spills
-into the next field):
-
-| bits | getter | setter |
-|---|---|---|
-| 0–3 | value ×0.25 | round(v·4) |
-| 6–8 | value ×0.25 | round(v·4) << 6 |
-| 9–10 | value ×0.25, 0 reads 0.125 | below 0.1875 → 0; below 0.625 → round(v·4); else 3 |
-| 11–13 | value ×0.25 | round(v·4) << 11 |
-| 14–15 | value ×0.25, 0 reads 0.125 | below 0.2 (a double compare) → 0; else round(v·4) |
-
-The old body converter's default word is `0x5284` (1.0, 0.5, 0.25, 0.5,
-0.25); the shipped folders use `0x5284` 406 times, `0x5484` 15, `0x9484` 15
-and `0x9486` 2 across 438 entries. The meanings of the five fractions are not
-established [`guess`: condition, finish and wear of a stock entry].
+The old body converter writes `0x5284` (wealth 1.0, damage 0.5 and spread
+0.25, dirt 0.5 and spread 0.25) into rows that lack one; the shipped tables
+use `0x5284` 406 times, `0x5484` 15, `0x9484` 15 and `0x9486` 2 across 438
+rows.
 
 ### Quantised item fields
 
@@ -494,12 +485,12 @@ amount_sub, amount_total, amount_compact, amount_expand}`.
 - `objdb.rdb`: 1424 table slots, 1423 records and the slot after them;
   368,966 blob bytes (payloads 368,886, holes 80).
 - Section counts: header 1423, model 1403, body 388, weapon 208, container
-  137, operative 49, door 47, folder 24, shield 22, torch extra 1, map tag 1.
+  137, operative 49, door 47, random table 24, shield 22, torch extra 1, map tag 1.
 - Distinct table flag words: 11 (`0x10100000` 529, `0x10101000` 387,
   `0x10104000` 207, `0x10120000` 137, `0x10110000` 49, `0x10140000` 47,
   `0x10100200` 24, `0x10108000` 22, `0x10000000` 19, `0x10001000` 1,
   `0x10104100` 1).
-- Folders: 24, 438 entries, every folder's first entry is its own id 0.
+- Random tables: 24, 438 rows, every table's first row the empty row (id 0).
 - 22 levels carry a local database (`0xDBC0` → `0xDBDB` records, `0xDBCD`
   library): 3812 records, 1283 containers, 119 own strings.
 - `actors.rpk`: 20 of the 21 actors carry a database, 17 of the `0D08`
@@ -519,7 +510,7 @@ string library's loader, writer, getter, allocator, setter, add-reference and
 release, the section finder, mask test and editing routines, the record view,
 the id resolver, binary search, first-free scan, sorted insertion, payload
 store and deletion, the string resolver, the template clone, instancer,
-instance-template and template helpers, model-class helper, dispatcher,
+instance-template and template helpers, bulk helper, dispatcher,
 duplicator, promoter (container recursion, string moves, remap tables), the
 remap switches, the link and entity rewrites, both removal routines, the
 item-use test, the migrator (by its assembly), the appearance refresh and

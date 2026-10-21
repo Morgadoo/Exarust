@@ -1,10 +1,9 @@
 //! A record payload of the object database: its chain of sections, the
-//! header, model and folder fields, and the original's section editing
+//! header and model fields, and the original's section editing
 //! routines. Layout and evidence: `docs/formats/OTHER.md` (Object
 //! database).
 
-use super::packed::FractionWord;
-use super::{BODY, FOLDER, Item, MODEL, NAME, WEAPON};
+use super::{BODY, Item, MODEL, NAME, WEAPON};
 use crate::Result;
 
 /// One section of a record payload: its tag and the bytes after the
@@ -191,27 +190,11 @@ impl<'a> Record<'a> {
             flags: u32_at(b, 0x10),
             name_id: u32_at(b, 0x14),
             description_id: u32_at(b, 0x18),
-            class: b.get(0x1C).copied().unwrap_or(0),
+            bulk: b.get(0x1C).copied().unwrap_or(0),
             rarity: b.get(0x1D).copied().unwrap_or(0),
             value: u16_at(b, 0x1E),
             size: [u32_at(b, 0x20), u32_at(b, 0x24)],
         })
-    }
-
-    /// The folder section: the items an editor folder lists.
-    pub fn folder(&self) -> Option<Folder> {
-        let b = self.section(FOLDER)?;
-        let count = u32_at(b, 0x0C) as usize;
-        let entries = (0..count)
-            .map_while(|i| b.get(0x10 + i * 16..0x10 + i * 16 + 16))
-            .map(|e| FolderEntry {
-                id: u32_at(e, 0),
-                words: [u16_at(e, 4), u16_at(e, 6), u16_at(e, 8)],
-                fractions: FractionWord(u16_at(e, 10)),
-                extra: u32_at(e, 12),
-            })
-            .collect();
-        Some(Folder { entries })
     }
 
     /// The number of weapon variants the record's section names: the low
@@ -277,9 +260,9 @@ pub struct Model {
     pub name_id: u32,
     /// The description's string id.
     pub description_id: u32,
-    /// The class byte the original's model-class helper returns; its
-    /// meaning is not established.
-    pub class: u8,
+    /// The item's bulk: what a container's capacity counts and a slot's
+    /// largest item limits (see `crate::containers`).
+    pub bulk: u8,
     /// Hundredths of rarity, the shop's weight.
     pub rarity: u8,
     /// The value in the compact amount form (`amount_expand`), which the
@@ -287,25 +270,6 @@ pub struct Model {
     pub value: u16,
     /// Two words a stocked item needs non-zero (`[guess]` the icon's size).
     pub size: [u32; 2],
-}
-
-/// A folder's item list (`0x200`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Folder {
-    pub entries: Vec<FolderEntry>,
-}
-
-/// One item an editor folder lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FolderEntry {
-    /// The item record's id.
-    pub id: u32,
-    /// The three words after the id; their meanings are not established.
-    pub words: [u16; 3],
-    /// Five fractions packed in one word, used by the item randomisers.
-    pub fractions: FractionWord,
-    /// A trailing word, zero in every shipped entry.
-    pub extra: u32,
 }
 
 /// Removes the first section with `tag` from a payload, as the original's
@@ -423,7 +387,7 @@ mod tests {
         let m = view.model().unwrap();
         assert_eq!(m.name, "SwordWorld");
         assert_eq!((m.flags, m.name_id, m.description_id), (0x11, 7, 8));
-        assert_eq!((m.class, m.rarity, m.value), (3, 40, 0x4123));
+        assert_eq!((m.bulk, m.rarity, m.value), (3, 40, 0x4123));
     }
 
     #[test]
@@ -441,31 +405,6 @@ mod tests {
         past.extend(100u32.to_le_bytes());
         assert_eq!(Record::new(1, NAME, &past).sections().count(), 0);
         assert_eq!(Record::new(1, NAME, &past).parent_word(), 0);
-    }
-
-    #[test]
-    fn folder_entries() {
-        let mut b = vec![0u8; 0x10 + 2 * 16];
-        b[0x0C..0x10].copy_from_slice(&2u32.to_le_bytes());
-        b[0x10..0x14].copy_from_slice(&7u32.to_le_bytes());
-        b[0x14..0x16].copy_from_slice(&0x640Au16.to_le_bytes());
-        b[0x18..0x1A].copy_from_slice(&0x80u16.to_le_bytes());
-        b[0x1A..0x1C].copy_from_slice(&0x5284u16.to_le_bytes());
-        b[0x20..0x24].copy_from_slice(&9u32.to_le_bytes());
-        let p = payload(&[(NAME, header("Folder", 0, 0)), (FOLDER, b.clone())]);
-        let folder = Record::new(1, NAME | FOLDER, &p).folder().unwrap();
-        assert_eq!(folder.entries.len(), 2);
-        let e = folder.entries[0];
-        assert_eq!((e.id, e.words, e.extra), (7, [0x640A, 0, 0x80], 0));
-        assert_eq!(e.fractions, FractionWord(0x5284));
-        assert_eq!(folder.entries[1].id, 9);
-        // A count past the body stops at the last whole entry.
-        b[0x0C..0x10].copy_from_slice(&100u32.to_le_bytes());
-        let p = section(FOLDER, &b);
-        assert_eq!(
-            Record::new(1, FOLDER, &p).folder().unwrap().entries.len(),
-            2
-        );
     }
 
     #[test]

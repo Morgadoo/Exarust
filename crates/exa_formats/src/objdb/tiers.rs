@@ -5,8 +5,8 @@
 
 use super::record::{section_range, set_section_u32, set_u32, u32_at};
 use super::{
-    CONTAINER, DOOR, FOLDER, ID_MASK, INHERIT, Item, LOCAL, MODEL, NAME, OPERATIVE, Record, Store,
-    TAG_MASK, WORLD,
+    CONTAINER, DOOR, ID_MASK, INHERIT, Item, LOCAL, MODEL, NAME, OPERATIVE, RANDOM_TABLE, Record,
+    Store, TAG_MASK, WORLD,
 };
 use crate::Result;
 use crate::objstrings::Library;
@@ -281,11 +281,11 @@ impl ObjectDb {
         if named { parent } else { id }
     }
 
-    /// The class byte of the model section of an object's template (`0x1C`;
-    /// its meaning is not established), as the original's helper reads it:
-    /// a tagged id goes through its header's parent word, an untagged one
-    /// reads its own model; 0 when there is none.
-    pub fn model_class(&self, id: u32) -> u8 {
+    /// The bulk byte (model `0x1C`) of an object's template, as the
+    /// original's helper reads it: a tagged id goes through its header's
+    /// parent word, an untagged one reads its own model; 0 when there is
+    /// none.
+    pub fn template_bulk(&self, id: u32) -> u8 {
         let source = if id & TAG_MASK != 0 {
             self.section(id, NAME).map_or(0, |h| u32_at(h, 0x14))
         } else {
@@ -661,7 +661,7 @@ impl ObjectDb {
     /// The original's guarded removal ("Remove DB reference"): a local or
     /// world object is deleted from its tier after releasing, in that
     /// tier's library, every model string id whose low 31 bits are not
-    /// zero; an object with a folder section is kept; an untagged id is
+    /// zero; an object with a random table section is kept; an untagged id is
     /// refused. Returns whether a record was deleted.
     pub fn remove(&mut self, id: u32) -> bool {
         let tier = if id & LOCAL != 0 {
@@ -675,7 +675,7 @@ impl ObjectDb {
             return false;
         };
         if let Some(record) = self.store(tier).view(at) {
-            if record.section(FOLDER).is_some() {
+            if record.section(RANDOM_TABLE).is_some() {
                 return false;
             }
             let ids = Self::model_string_ids(&record);
@@ -794,7 +794,7 @@ mod tests {
         tpl_body[0x10] = 7;
         tpl_body[0x1A6] = 9;
         let mut tpl = item("Tpl", 0, 0, 1, 2);
-        tpl[0x20 + 8 + 0x1C] = 6; // model class
+        tpl[0x20 + 8 + 0x1C] = 6; // bulk
         tpl.extend(section(BODY, &tpl_body));
         put(&mut db.base, 30, NAME | MODEL | BODY, &tpl);
         let mut marked = item("Marked", INSTANCE_ON_USE, 30, 1, 2);
@@ -1168,13 +1168,13 @@ mod tests {
         assert!(db.local.is_empty());
         assert_eq!((db.local_strings.refs(a), db.local_strings.refs(b)), (0, 0));
         assert!(!db.remove(LOCAL | 1));
-        // An untagged id is refused; a folder is kept.
+        // An untagged id is refused; a random table is kept.
         assert!(!db.remove(10));
         put(
             &mut db.world,
             1,
-            NAME | FOLDER,
-            &payload(&[(NAME, header("Folder", 0, 0)), (FOLDER, vec![0; 16])]),
+            NAME | RANDOM_TABLE,
+            &payload(&[(NAME, header("Table", 0, 0)), (RANDOM_TABLE, vec![0; 16])]),
         );
         assert!(!db.remove(WORLD | 1));
         assert!(db.find(WORLD | 1).is_some());
@@ -1200,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn template_helpers_and_model_class() {
+    fn template_helpers_and_bulk() {
         let mut db = db();
         put(
             &mut db.local,
@@ -1211,11 +1211,11 @@ mod tests {
         assert_eq!(db.template_of(LOCAL | 1), 30);
         assert_eq!(db.template_of(LOCAL | 2), LOCAL | 2);
         assert_eq!(db.template_of(20), 30);
-        // A local id reads its template's class, an untagged one its own.
-        assert_eq!(db.model_class(LOCAL | 1), 6);
-        assert_eq!(db.model_class(30), 6);
-        assert_eq!(db.model_class(10), 0);
-        assert_eq!(db.model_class(99), 0);
+        // A local id reads its template's bulk, an untagged one its own.
+        assert_eq!(db.template_bulk(LOCAL | 1), 6);
+        assert_eq!(db.template_bulk(30), 6);
+        assert_eq!(db.template_bulk(10), 0);
+        assert_eq!(db.template_bulk(99), 0);
         // The parent must be a base record with a named model.
         assert_eq!(db.instance_template(LOCAL | 1), 30);
         put(&mut db.local, 2, NAME | MODEL, &item("J", 0, 12, 0, 0));

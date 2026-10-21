@@ -29,7 +29,7 @@ databases ship in.
   the template clone, instancing, the instance template, the item
   dispatcher, local duplication, promotion with the id and link remap
   tables, the link and entity-id rewrites, both removal routines, the
-  template and model-class helpers and the item-use test.
+  template and bulk helpers and the item-use test.
 - Template migration by its assembly, with the appearance refresh over the
   procedural material sets and the condition refresh of protection, armour
   variant and value.

@@ -125,12 +125,19 @@ fn shipped_object_database() {
         assert_eq!(tags.get(&tag).copied(), Some(count), "tag {tag:#x}");
     }
     assert_eq!(check_containers("objdb", &db.base), 137);
-    for r in db.base.records() {
-        if let Some(folder) = r.folder() {
-            // The first entry is the folder's own header: id 0.
-            assert!(folder.entries.first().is_some_and(|e| e.id == 0));
-        }
-    }
+    let tables: Vec<_> = db
+        .base
+        .records()
+        .filter_map(|r| r.section(RANDOM_TABLE))
+        .map(|b| crate::containers::RandomTable::parse(b).unwrap())
+        .collect();
+    assert_eq!(tables.len(), 24);
+    // The first row of every table is the empty row, id 0.
+    assert!(
+        tables
+            .iter()
+            .all(|t| t.entries.first().is_some_and(|e| e.id == 0))
+    );
 }
 
 #[test]

@@ -98,7 +98,7 @@ A promotion SHALL record its pair in the id remap table and, for an operative ob
 - **THEN** the link rewrite changes the door's link to world 1 and a second pass changes nothing
 
 ### Requirement: Removal
-Removing a local or world object SHALL keep it when it has a folder section, and otherwise release in its tier's library each model id whose low 31 bits are not zero and delete it; removing an untagged id SHALL do nothing. Deleting SHALL do the same for any tier without the folder test. Clearing a tier SHALL leave its library.
+Removing a local or world object SHALL keep it when it has a random table section, and otherwise release in its tier's library each model id whose low 31 bits are not zero and delete it; removing an untagged id SHALL do nothing. Deleting SHALL do the same for any tier without the random-table test. Clearing a tier SHALL leave its library.
 
 #### Scenario: A plain id in a local record
 - **WHEN** a local record names own string 1 and plain id 2 and is removed

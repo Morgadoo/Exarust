@@ -45,8 +45,8 @@ callers depend on them.
 
 ## Open questions
 
-- The meanings of the item-use codes, the quantised fields' records, the
-  folder words and fractions, and the model class byte: named by position.
+- The meanings of the item-use codes and the quantised fields' records:
+  named by position.
   Answer with REA on their readers (item screen, trade, randomisers) when
   those are ported.
 - The body converter of the oldest layout (3014 bytes): REA when a file of

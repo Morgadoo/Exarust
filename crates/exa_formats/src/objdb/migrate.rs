@@ -472,7 +472,7 @@ mod tests {
         // · 2.5 · 2.5 · 0.5 = 1250.
         assert_eq!((m.name.as_str(), m.flags), ("Worn", 0x10));
         assert_eq!((m.name_id, m.description_id), (9, 9));
-        assert_eq!((m.class, m.rarity, m.value), (3, 40, 1250));
+        assert_eq!((m.bulk, m.rarity, m.value), (3, 40, 1250));
         let b = r.section(BODY).unwrap();
         assert_eq!(&b[0..6], b"Worn_A");
         assert_eq!(b[0x150], 50);

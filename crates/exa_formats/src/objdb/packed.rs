@@ -1,8 +1,8 @@
 //! The packed item fields and amount helpers of the object database unit:
 //! small getters and setters that item descriptions, the trade system, the
 //! arena, the item randomisers and the record converters share. Layout and
-//! evidence: `docs/formats/OTHER.md` (Object database, Folder contents and
-//! Quantised item fields).
+//! evidence: `docs/formats/OTHER.md` (Object database, The condition word
+//! and Quantised item fields).
 //!
 //! The setters are bit-exact ports: they round as the original's
 //! conversions do (to nearest, ties to even, an out-of-range or NaN value
@@ -28,43 +28,43 @@ pub(crate) fn round_f64(v: f64) -> i64 {
     v.round_ties_even() as i64
 }
 
-/// The five fractions of a folder entry's packed word (`FolderEntry`). The
-/// getters and setters are the original's; the field meanings are not
-/// established, so only the bit positions are named. A zero in the fields
-/// at bits 9 and 14 reads as 0.125.
+/// A random table row's condition word (`crate::containers::TableEntry`):
+/// wealth, damage and its spread, dirt and its spread, as the original's
+/// getters and setters pack them (the getters are those of
+/// `crate::containers::RowCondition`). A spread code of 0 reads as 0.125.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct FractionWord(pub u16);
 
 impl FractionWord {
     /// Bits 0–3, ×0.25.
-    pub fn level(self) -> f32 {
+    pub fn wealth(self) -> f32 {
         (self.0 & 0xF) as f32 * 0.25
     }
 
     /// `round(v·4)` ORed into bits 0–3 unmasked.
-    pub fn set_level(&mut self, v: f32) {
+    pub fn set_wealth(&mut self, v: f32) {
         self.0 = self.0 & 0xFFF0 | round_f32(v * 4.0) as u16;
     }
 
     /// Bits 6–8, ×0.25.
-    pub fn field_6(self) -> f32 {
+    pub fn damage(self) -> f32 {
         ((self.0 & 0x1C0) >> 6) as f32 * 0.25
     }
 
     /// `round(v·4) << 6` ORed into bits 6–8 unmasked.
-    pub fn set_field_6(&mut self, v: f32) {
+    pub fn set_damage(&mut self, v: f32) {
         self.0 = self.0 & 0xFE3F | (round_f32(v * 4.0) << 6) as u16;
     }
 
     /// Bits 9–10, ×0.25, a zero reading as 0.125.
-    pub fn field_9(self) -> f32 {
+    pub fn damage_spread(self) -> f32 {
         let n = (self.0 & 0x600) >> 9;
         if n == 0 { 0.125 } else { n as f32 * 0.25 }
     }
 
     /// Below 0.1875 clears the field, below 0.625 stores `round(v·4)`, and
     /// anything else (NaN too) stores 3.
-    pub fn set_field_9(&mut self, v: f32) {
+    pub fn set_damage_spread(&mut self, v: f32) {
         let kept = self.0 & 0xF9FF;
         self.0 = if v < 0.1875 {
             kept
@@ -76,24 +76,24 @@ impl FractionWord {
     }
 
     /// Bits 11–13, ×0.25.
-    pub fn field_11(self) -> f32 {
+    pub fn dirt(self) -> f32 {
         ((self.0 & 0x3800) >> 11) as f32 * 0.25
     }
 
     /// `round(v·4) << 11` ORed into bits 11–13 unmasked.
-    pub fn set_field_11(&mut self, v: f32) {
+    pub fn set_dirt(&mut self, v: f32) {
         self.0 = self.0 & 0xC7FF | (round_f32(v * 4.0) << 11) as u16;
     }
 
     /// Bits 14–15, ×0.25, a zero reading as 0.125.
-    pub fn field_14(self) -> f32 {
+    pub fn dirt_spread(self) -> f32 {
         let n = self.0 >> 14;
         if n == 0 { 0.125 } else { n as f32 * 0.25 }
     }
 
     /// At 0.2 or more (compared in double precision) stores `round(v·4)`,
     /// else clears the field.
-    pub fn set_field_14(&mut self, v: f32) {
+    pub fn set_dirt_spread(&mut self, v: f32) {
         let kept = self.0 & 0x3FFF;
         self.0 = if 0.2 <= f64::from(v) {
             kept | (round_f32(v * 4.0) << 14) as u16
@@ -251,39 +251,50 @@ mod tests {
     fn fraction_word_fields() {
         // 0x5284: bits 0-3 = 4, 6-8 = 2, 9-10 = 1, 11-13 = 2, 14-15 = 1.
         let w = FractionWord(0x5284);
-        assert_eq!(w.level(), 1.0);
-        assert_eq!(w.field_6(), 0.5);
-        assert_eq!(w.field_9(), 0.25);
-        assert_eq!(w.field_11(), 0.5);
-        assert_eq!(w.field_14(), 0.25);
-        assert_eq!(FractionWord(0).field_9(), 0.125);
-        assert_eq!(FractionWord(0).field_14(), 0.125);
+        let c = crate::containers::RowCondition::of(0x5284);
+        assert_eq!(
+            (c.wealth, c.damage, c.damage_spread, c.dirt, c.dirt_spread),
+            (
+                w.wealth(),
+                w.damage(),
+                w.damage_spread(),
+                w.dirt(),
+                w.dirt_spread()
+            )
+        );
+        assert_eq!(w.wealth(), 1.0);
+        assert_eq!(w.damage(), 0.5);
+        assert_eq!(w.damage_spread(), 0.25);
+        assert_eq!(w.dirt(), 0.5);
+        assert_eq!(w.dirt_spread(), 0.25);
+        assert_eq!(FractionWord(0).damage_spread(), 0.125);
+        assert_eq!(FractionWord(0).dirt_spread(), 0.125);
         let mut f = FractionWord(0);
-        f.set_level(0.75);
-        f.set_field_6(0.25);
-        f.set_field_9(0.5);
-        f.set_field_11(0.75);
-        f.set_field_14(0.5);
+        f.set_wealth(0.75);
+        f.set_damage(0.25);
+        f.set_damage_spread(0.5);
+        f.set_dirt(0.75);
+        f.set_dirt_spread(0.5);
         assert_eq!(f.0, 0x3 | 1 << 6 | 2 << 9 | 3 << 11 | 2 << 14);
-        f.set_field_9(0.125);
-        assert_eq!(f.field_9(), 0.125);
-        f.set_field_9(0.9);
+        f.set_damage_spread(0.125);
+        assert_eq!(f.damage_spread(), 0.125);
+        f.set_damage_spread(0.9);
         assert_eq!(f.0 & 0x600, 0x600);
-        f.set_field_14(0.125);
-        assert_eq!(f.field_14(), 0.125);
+        f.set_dirt_spread(0.125);
+        assert_eq!(f.dirt_spread(), 0.125);
         // 0.375·4 = 1.5 rounds to even: 2.
-        f.set_field_11(0.375);
-        assert_eq!(f.field_11(), 0.5);
+        f.set_dirt(0.375);
+        assert_eq!(f.dirt(), 0.5);
         // Out-of-range values spill unmasked, as the original's OR does:
         // 5.0·4 = 20 = 0x14 sets bit 4; −1 << 6 sets every bit from 6 up.
         let mut f = FractionWord(0);
-        f.set_level(5.0);
+        f.set_wealth(5.0);
         assert_eq!(f.0, 0x14);
         let mut f = FractionWord(0);
-        f.set_field_6(-0.25);
+        f.set_damage(-0.25);
         assert_eq!(f.0, 0xFFC0);
         let mut f = FractionWord(0);
-        f.set_field_11(2.0);
+        f.set_dirt(2.0);
         assert_eq!(f.0, 0x4000);
     }
 
