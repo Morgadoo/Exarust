@@ -13,6 +13,14 @@
 //! weapon's section and `0x8000` a shield's; `0x40000` a door's and
 //! `0x10000` an operative object's (levers, buttons, pressure plates, keys,
 //! signal jobs and relays).
+//!
+//! [`ObjectDb`] holds the three tiers the original keeps (base templates, a
+//! level's local objects and the promoted world objects), resolves tagged
+//! ids, reads display names and descriptions through their string ids, and
+//! instantiates, duplicates, promotes and migrates records between the tiers.
+//! [`Record`] exposes a payload's sections and their header, model and folder
+//! fields; [`objstrings::Library`](crate::objstrings::Library) is the string
+//! pool. Layout and evidence: `docs/formats/OTHER.md` (Object database).
 
 use crate::rdb::Database;
 use crate::weapon_record::ShieldRecord;
