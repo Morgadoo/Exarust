@@ -1229,6 +1229,25 @@ pub fn row_holds(entries: &[u32], current: u32) -> bool {
     false
 }
 
+/// The quality and wear bytes a fresh tournament-prize item copy gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrizeCopy {
+    /// The item's quality byte.
+    pub quality: u8,
+    /// The three wear/condition entries the copy clears.
+    pub wear: [u8; 3],
+}
+
+/// Make a fresh prize copy: an item of the prize's kind with full quality
+/// (255) and every wear entry cleared, then its description rebuilt.
+#[must_use]
+pub const fn prize_copy() -> PrizeCopy {
+    PrizeCopy {
+        quality: 0xff,
+        wear: [0; 3],
+    }
+}
+
 /// Whether the rank roll needs the MT19937 stream.
 pub fn needs_rank(template: &MatchTemplate) -> bool {
     template.preset_rank >= 0 && template.flags & 2 == 0
@@ -1903,5 +1922,11 @@ mod spawn_tests {
         assert!(row_holds(&[3, 7, 0], 7));
         assert!(!row_holds(&[3, 0, 7], 7));
         assert!(!row_holds(&[], 7));
+    }
+
+    #[test]
+    fn a_prize_copy_is_fresh() {
+        assert_eq!(prize_copy().quality, 255);
+        assert_eq!(prize_copy().wear, [0, 0, 0]);
     }
 }
