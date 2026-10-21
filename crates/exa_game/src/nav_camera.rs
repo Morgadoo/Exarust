@@ -228,6 +228,15 @@ pub fn frame_step(ahead: &mut f32, dt: f32) -> (u32, f32) {
     (ran, 1.0 - (f64::from(*ahead) / f64::from(TICK)) as f32)
 }
 
+/// The segment the camera's cut-away detector casts: it starts two camera
+/// distances behind the looked-at point, along the backward vector, and
+/// runs back along it for `2·distance − 1 m`, stopping a metre short of the
+/// point. Returns the start, the (unit) direction and the length.
+pub fn cut_away_segment(focus: Vec3, back: Vec3, distance: f32) -> (Vec3, Vec3, f32) {
+    let start = focus - back * (2.0 * distance);
+    (start, back, 2.0 * distance - 1.0)
+}
+
 /// The offset one kick puts on the eye, before the chase camera's shake
 /// carries it: a small random offset plus the camera's right axis, jittered
 /// vertically, normalised to `size`. The three random draws are the
@@ -418,6 +427,19 @@ mod tests {
         let (ran, t) = frame_step(&mut ahead, 1.0);
         assert_eq!((ran, t), (9, 1.0));
         assert_eq!(ahead, 0.0);
+    }
+
+    #[test]
+    fn the_cut_away_segment_starts_behind_the_eye_and_stops_short() {
+        let (start, direction, length) =
+            cut_away_segment(Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 20.0);
+        assert_eq!(start, Vec3::new(0.0, 10.0, -40.0));
+        assert_eq!(direction, Vec3::Z);
+        assert_eq!(length, 39.0);
+        // A small distance can make a negative length; the detector's
+        // segment then runs the other way, as the original's does.
+        let (_, _, length) = cut_away_segment(Vec3::ZERO, Vec3::Z, 0.4);
+        assert!(length < 0.0);
     }
 
     #[test]

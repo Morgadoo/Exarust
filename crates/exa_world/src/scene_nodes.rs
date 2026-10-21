@@ -29,8 +29,9 @@
 //!
 //! Meshes also carry the original's cut-away fade: an amount that moves
 //! towards its target at 0.003 per millisecond, turning a solid draw into a
-//! dithered or partial one. The detector that sets the target (geometry
-//! between the camera and the player) is outside this unit.
+//! dithered or partial one. [`Scene::detect_cut_away`] is the detector that
+//! sets the target: the camera's segment from behind the eye past the
+//! player marks the meshes it meets.
 //!
 //! Frames are kept as the original keeps them: a node directly under its
 //! sector has its local frame as its frame, so every node frame is in its
@@ -73,6 +74,10 @@ pub const WORLD_LIGHT: u32 = 0x2;
 /// Option word: a mesh that bounds its sector's first box; the others only
 /// widen the second.
 pub const BOUNDS_SPLIT: u32 = 0x1_0000;
+/// Option word: the camera's cut-away detector tests this mesh (the
+/// original tests class bit `0x0200_0000`; Exarust keeps it in the option
+/// word, as it keeps the other per-node flags).
+pub const CUT_AWAY_CANDIDATE: u32 = 0x0200_0000;
 
 /// Sector option word: registration into the sector is skipped. The unit's
 /// global `_World` sector carries it.
@@ -1227,6 +1232,42 @@ impl Scene {
         moved_seen
     }
 
+    /// The camera's cut-away detector: the segment from `from` along the
+    /// unit `direction` for `length` is the one the camera's navigation
+    /// unit casts from behind the eye towards the player, two camera
+    /// distances long and 100 cm short of the player. Every candidate mesh
+    /// ([`CUT_AWAY_CANDIDATE`]) whose box the segment meets is marked for
+    /// the fade; every other candidate is cleared. Returns how many meshes
+    /// changed their mark.
+    ///
+    /// The original tests the mesh's own ray callback after the box; with
+    /// no CPU triangles Exarust stops at the box (guess: the box is what
+    /// the callback's rejection volume surrounds).
+    pub fn detect_cut_away(&mut self, from: Vec3, direction: Vec3, length: f32) -> usize {
+        let nodes: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == NodeKind::Mesh && node.flags & CUT_AWAY_CANDIDATE != 0)
+            .map(|(index, _)| index)
+            .collect();
+        self.refresh_stale(&nodes);
+        let segment = direction * length;
+        let mut changed = 0;
+        for node in &mut self.nodes {
+            if node.kind != NodeKind::Mesh || node.flags & CUT_AWAY_CANDIDATE == 0 {
+                continue;
+            }
+            let (obb, _) = node.obb();
+            let cut = exa_physics::intersect::segment_obb_hit(from, segment, &obb);
+            if node.cut_away != cut {
+                node.cut_away = cut;
+                changed += 1;
+            }
+        }
+        changed
+    }
+
     fn refresh_stale(&mut self, nodes: &[usize]) {
         for &node in nodes {
             if self.nodes[node].stale {
@@ -2045,6 +2086,60 @@ mod tests {
         scene.nodes[node].inherited = INHERIT_FADE | INHERIT_HIDDEN;
         scene.update_visibility(100.0);
         assert_eq!(scene.nodes[node].mask, 0);
+    }
+
+    #[test]
+    fn the_camera_cuts_away_the_candidate_meshes_between_it_and_the_player() {
+        let mut scene = Scene::new((32, 40));
+        let on_line = scene.add_node(NodeKind::Mesh, None);
+        scene.nodes[on_line].flags |= CUT_AWAY_CANDIDATE;
+        scene.set_frame(
+            on_line,
+            Vec3::new(0.0, 0.0, 0.0),
+            Mat3::IDENTITY,
+            Vec3::splat(1.0),
+        );
+        let beside = scene.add_node(NodeKind::Mesh, None);
+        scene.nodes[beside].flags |= CUT_AWAY_CANDIDATE;
+        scene.set_frame(
+            beside,
+            Vec3::new(10.0, 0.0, 0.0),
+            Mat3::IDENTITY,
+            Vec3::splat(1.0),
+        );
+        let unflagged = scene.add_node(NodeKind::Mesh, None);
+        scene.set_frame(
+            unflagged,
+            Vec3::new(0.0, 0.0, 0.0),
+            Mat3::IDENTITY,
+            Vec3::splat(1.0),
+        );
+        // The camera's segment runs from behind it, two distances long.
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 100.0),
+            1
+        );
+        assert!(scene.nodes[on_line].cut_away);
+        assert!(!scene.nodes[beside].cut_away);
+        assert!(!scene.nodes[unflagged].cut_away);
+        // Without a change the count stays 0.
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 100.0),
+            0
+        );
+        // Looking the other way clears it for the fade back in.
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), Vec3::Z, 10.0),
+            1
+        );
+        assert!(!scene.nodes[on_line].cut_away);
+        // Casting through it again leaves the mark as it is.
+        scene.nodes[on_line].cut_away = true;
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), -Vec3::Z, 100.0),
+            0
+        );
+        assert!(scene.nodes[on_line].cut_away);
     }
 
     #[test]

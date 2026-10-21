@@ -638,19 +638,39 @@ character body's possession routines; addresses are in the research notes.
   offset one way and the last tick's the other; each tick then keeps 0.96
   of its change and 0.99 of the whole, a wobble of about a second that
   dies away, and drops it once both are tiny (change within 1e-7 cm²,
-  offset within 1e-4 cm², squared). Nothing kicks the camera yet.
+  offset within 1e-4 cm², squared). Exarust builds the original's random
+  kick offset (a small random vector plus the camera's right axis,
+  jittered vertically and normalised to the kick's size) in
+  `nav_camera::kick_offset`; nothing fires it yet, since the magnitudes
+  its impact callers pass are not traced (`ChaseCamera::kick_random`).
 - **Zoom is field of view**: fov = zoom / 2000 × 45° × √(1.6 / aspect),
   clamped to 10–100°. The wheel steps through six stops from 800 to 2000
   (18° to 45°); the game starts at 1300.
 - **Pitch**: 0.8 rad below the horizon under zoom 1000, then 0.000125 rad
   steeper per unit up to 0.925 rad at 2000. A vertical orbit drag can raise
   it to 1.5 rad. The pitch moves 10 % of the way per 17 ms camera tick.
+- **The target yaw stays within half a turn of the body**: the align-behind
+  routine compares the two in double precision and adds or subtracts a
+  whole turn, so Cursor Look's new facing leaves the camera behind it with
+  no wrap left for the spring. The unit also places a camera from an eye
+  and a looked-at point: the point's height is clamped to the preset's
+  limits, a fixed-distance camera keeps its distance between 10 and 10000
+  and its pitch between the zoom's floor and 1.5 rad, and a free zoom
+  moves 0.2 % a step but at least 0.5 % of its range. The chase camera
+  uses the shared pieces; the placement and free-zoom paths are modelled
+  (`exa_game::nav_camera`) with tests but have no Exarust caller yet.
 - **Middle mouse** orbits: 4.8 rad per screen width, through a near
   critically damped spring (stiffness 0.0718 and retention 0.616 per tick),
   leading by at most 45° per tick.
+- The camera's **cut-away detector** casts from two camera distances
+  behind the looked-at point along the backward vector, for two distances
+  less a metre, and marks every candidate mesh whose box the segment meets
+  (`exa_world::scene_nodes::Scene::detect_cut_away`); the model's fade then
+  moves that mesh toward dithered or partial drawing. The detector and the
+  fade are not on the draw path yet (`room_view` still draws from the room
+  states), and with no CPU triangles the test stops at the bounding box.
 - Not yet in Exarust: the original tilts 0.15 rad steeper per step (up to
-  4) when a wall blocks the view, and fades geometry between the camera and
-  the player.
+  4) when a wall blocks the view.
 
 ## Start outfit
 
