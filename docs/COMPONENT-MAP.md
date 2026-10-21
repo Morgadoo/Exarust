@@ -5,18 +5,18 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **44.1% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 38.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **46.9% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 41.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
 
 | section | functions | KB | components | reimplemented | by engine | largest missing |
 |---|---:|---:|---:|---:|---:|---|
-| Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
-| Core, math & threading | 282 | 37 | 11 | 60% | 1% |  |
+| Runtime & platform | 2,407 | 293 | 26 | 8% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
+| Core, math & threading | 282 | 37 | 11 | 64% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 56% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
-| Rendering & GPU | 823 | 334 | 63 | 58% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
+| Rendering & GPU | 823 | 334 | 63 | 59% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
 | World, levels & terrain | 454 | 174 | 31 | 52% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
 | Physics, bodies & cloth | 363 | 242 | 13 | 46% | 0% | RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 42% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
@@ -26,8 +26,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 61% | 0% | TDialogueChoices, TScriptRole, TGameTips |
-| Game modes, arena & session | 646 | 193 | 23 | 41% | 0% | TLoadoutForm, TDivCardForm, TCharCreation |
-| UI | 959 | 312 | 63 | 38% | 0% | TCharacterView, TCompactSkillUI, RF_GUI_Text_Edit |
+| Game modes, arena & session | 646 | 193 | 23 | 44% | 0% | TCharCreation, XA_Arena save and rank helpers (TMatchBoard by address), TShopWindow |
+| UI | 959 | 312 | 63 | 55% | 0% | TCharacterView, TSplashScreen, THairColPicker |
 | Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
 
 - **Runtime & platform.** The Free Pascal runtime, the Windows imports and the engine's thin platform layer: program entry, window and OpenGL context, the frame loop with its pacing, and Steam with Steam Input gamepads. Much of the linked runtime never runs. Rust std, winit, Bevy and wgpu cover most of what does run; Steam, gamepads, the custom cursor, fullscreen display modes and the error message box are missing.
@@ -57,27 +57,27 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
 | SG_GameMain | Game modes, arena & session | 59 | 20 | 5% |
-| RF_GUI_Controls_Ex | UI | 54 | 16 | 13% |
 | Steam Input action bindings | Runtime & platform | 29 | 11 | 0% |
 | TCharacterView | UI | 21 | 8 | 1% |
 | Rigid-body shape builders (RF_GUI_Controls_Ex by address) | Physics, bodies & cloth | 9 | 8 | 15% |
-| TLoadoutForm | Game modes, arena & session | 13 | 7 | 0% |
-| GUI support routines (unit before RF_GUI_Main) | UI | 21 | 7 | 6% |
-| T3DViewport | UI | 25 | 6 | 10% |
-| TCompactSkillUI | UI | 11 | 6 | 0% |
-| TDivCardForm | Game modes, arena & session | 9 | 5 | 0% |
-| RF_GUI_Text_Edit | UI | 17 | 5 | 1% |
 | TForceBarrierEffect | Thaumaturgy & effects | 7 | 5 | 9% |
-| TSelectionUI | UI | 18 | 5 | 0% |
-| TEmblemForm | UI | 18 | 4 | 0% |
 | TPwrForceKinesis_S | Thaumaturgy & effects | 9 | 4 | 10% |
-| TSkillSelector | UI | 8 | 3 | 0% |
 | TCharCreation | Game modes, arena & session | 12 | 3 | 3% |
 | XA_Arena save and rank helpers (TMatchBoard by address) | Game modes, arena & session | 9 | 3 | 0% |
 | RF_Env_Effects | Thaumaturgy & effects | 6 | 3 | 0% |
 | SG_Character_DBs | Data, assets & I/O | 15 | 3 | 10% |
 | TSplashScreen | UI | 7 | 3 | 4% |
 | FLX_IconRender | Rendering & GPU | 13 | 3 | 0% |
+| TForceBubbleEffect | Thaumaturgy & effects | 6 | 3 | 0% |
+| SG_Thaumaturgy | Thaumaturgy & effects | 10 | 3 | 0% |
+| THairColPicker | UI | 9 | 2 | 0% |
+| SG_GUI_Skills | UI | 8 | 2 | 0% |
+| TPwrDispSummonDemon_I | Thaumaturgy & effects | 4 | 2 | 0% |
+| TShopWindow | Game modes, arena & session | 8 | 2 | 0% |
+| Shading-mask GLSL snippets | Rendering & GPU | 6 | 2 | 0% |
+| SG_SaveWorld | Game modes, arena & session | 13 | 2 | 0% |
+| Scene content helpers (unit before RF_Dynamics) | World, levels & terrain | 11 | 2 | 10% |
+| TGUIColSwatch | UI | 12 | 2 | 0% |
 
 ## Best covered components
 
@@ -102,7 +102,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Skinning | Characters, motion & animation | 25 | 56% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 70% | exa_assets/src/mesh_edit.rs; exa_assets/src/vertex_cache.rs |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 14 | 90% | exa_physics/src/volume.rs; exa_physics/src/volume/tests.rs |
-| RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
+| TSkillUI | UI | 18 | 70% | exa_ui/src/skill.rs; exa_character/src/record.rs |
 
 ## Combat rules
 
