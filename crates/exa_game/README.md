@@ -366,7 +366,7 @@ save managers' signatures are pinned by tests. Rules: `docs/UI.md` (The
 game flow).
 
 `splash` is the start-up splash screen: the two BME logos, the one-second
-recording warm-up, the 600 ms fade-in, the two-second hold, the second logo
+renderer warm-up, the 600 ms fade-in, the two-second hold, the second logo
 with `BME Critters`, the 200 ms hold, the 300 ms fade-out, the hand-over, the
 one-second menu hold and the one-second fade to the game, with the logos
 centred at `round(H/135)·0.125`. `SplashPlugin` can run it; nothing starts it

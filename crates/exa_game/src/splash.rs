@@ -179,7 +179,8 @@ impl Splash {
             fade: 0.0,
             frame: 0,
             busy: 1,
-            theme_on_menu: false,
+            // The boot's creator asks for the menu theme on the hand-over.
+            theme_on_menu: true,
             logos,
         }
     }
@@ -619,8 +620,10 @@ mod tests {
         assert!(!frame.menu);
         assert_eq!(splash.phase(), State::MenuFade);
         assert_eq!(splash.busy, 0);
+        assert!(!frame.theme);
         let frame = splash.tick(6704, VIEW, true);
         assert!(frame.menu);
+        assert!(frame.theme);
         assert_eq!(splash.phase(), State::FadeToGame);
     }
 
