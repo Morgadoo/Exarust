@@ -95,8 +95,8 @@ pub struct Item {
     /// `0x80` hides the body part, `0x40` its partial variant.
     pub slot_layers: [u8; SLOTS],
     /// The whole eight-byte coverage word per body slot (layer L is byte
-    /// L): what the layer pass reads to find the outermost layer and the
-    /// slots a garment hides.
+    /// L): the character builder ors these over the worn set into the
+    /// union its coverage pass tests each garment's occupancy against.
     pub slot_words: [u64; SLOTS],
     /// Sub-parts occupied per bone 1..20 (index 0 is the pelvis): byte L of
     /// each entry is layer L, 0 the innermost. Items that overlap here are
@@ -122,11 +122,6 @@ pub struct Item {
     /// armour 100, so it reads as a weight class (a guess); 121 shipped
     /// items are over the limit, 7 of them apparel.
     pub equip_lock: u8,
-}
-
-/// All eight layer bytes of a coverage word or-ed together.
-fn union_bytes(word: u64) -> u64 {
-    (0..8).fold(0u64, |all, i| all | ((word >> (8 * i)) & 0xFF))
 }
 
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
@@ -500,17 +495,14 @@ impl Item {
     }
 
     /// Body slots (bone indices) this item hides, as a bit mask: a slot
-    /// whose first layer byte or any of whose eight layer bytes has the
-    /// body-hide bit. The first byte is the one the fit uses; the union is
-    /// the pass the character builder runs over all layers.
+    /// whose first (innermost) layer byte has the body-hide bit. The
+    /// character builder tests only that byte of the worn set's coverage
+    /// union when it decides which body parts to merge.
     pub fn hidden_slots(&self) -> u32 {
         self.slot_layers
             .iter()
-            .zip(&self.slot_words)
             .enumerate()
-            .filter(|(_, (b, w))| {
-                **b & HIDES_BODY != 0 || union_bytes(**w) & u64::from(HIDES_BODY) != 0
-            })
+            .filter(|(_, b)| **b & HIDES_BODY != 0)
             .fold(0, |m, (s, _)| m | 1 << s)
     }
 
