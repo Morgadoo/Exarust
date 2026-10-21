@@ -7,6 +7,9 @@ use crate::thaum::energy::SHOCK;
 use crate::thaum::force::BARRICADE;
 use crate::thaum::power::force::SHELL;
 
+/// A Displacement id for a slot the tree fills.
+const DISPLACEMENT_ID: u32 = CONSTANT;
+
 /// A one-part body at the origin with the right hand's bone.
 fn ragdoll() -> Ragdoll {
     Ragdoll::new(&[PartSetup {
@@ -265,6 +268,47 @@ fn pressing_vanish_again_releases_it() {
     assert_eq!(state.last_result, code::RELEASED);
     assert_eq!(state.active.len(), 1);
     assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
+}
+
+/// The screen's Escape closes the bar, and a tree session's record (a slot it
+/// moved, a power it learnt) reaches the caster when the tree closes.
+#[test]
+fn the_tree_screen_and_the_caster_share_one_record() {
+    use crate::power_screen::PowerScreen;
+    let mut app = new_app();
+    app.init_resource::<PowerScreen>();
+    let caster = caster(&mut app, &[BARRICADE, SHOCK]);
+    command(&mut app, caster, BarAction::Toggle);
+    app.update();
+    assert!(app.world().resource::<PowerScreen>().bar_open);
+    // Escape on the screen closes the bar.
+    app.world_mut().resource_mut::<PowerScreen>().bar_open = false;
+    app.update();
+    assert!(!app.world().get::<PowerCaster>(caster).unwrap().bar_open);
+    assert!(!app.world().resource::<PowerScreen>().bar_open);
+
+    // The tree opens, edits the record and closes.
+    app.world_mut().resource_mut::<PowerScreen>().open = true;
+    app.update();
+    {
+        let mut screen = app.world_mut().resource_mut::<PowerScreen>();
+        screen.record.slots[2] = DISPLACEMENT_ID;
+        screen.record.pairs.push(crate::thaum::tree::KnownPower {
+            power: DISPLACEMENT_ID,
+            flags: crate::thaum::tree::LEARNED,
+        });
+    }
+    app.update();
+    assert_eq!(
+        app.world().get::<PowerCaster>(caster).unwrap().record.slots[2],
+        0,
+        "the open tree owns the record"
+    );
+    app.world_mut().resource_mut::<PowerScreen>().open = false;
+    app.update();
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.record.slots[2], DISPLACEMENT_ID);
+    assert_eq!(state.known.len(), 3);
 }
 
 /// `--powers` reads decimal and hexadecimal ids.

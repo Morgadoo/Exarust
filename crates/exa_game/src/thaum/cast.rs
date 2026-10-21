@@ -175,23 +175,16 @@ impl PowerCaster {
     /// powers, the first chosen as a new character's bar slot is, and the
     /// body has one persistent slot (the debug grant's techniques).
     pub fn new(ids: &[u32]) -> Self {
-        let known: Vec<KnownPower> = ids
-            .iter()
-            .copied()
-            .map(|id| KnownPower {
-                id,
-                word: KNOWN_WORD,
-            })
-            .collect();
         let mut record = PowerRecord::empty(4.0);
         record.focus_item = true;
-        record.pairs = known
+        record.pairs = ids
             .iter()
-            .map(|power| super::tree::KnownPower {
-                power: power.id,
+            .map(|&power| super::tree::KnownPower {
+                power,
                 flags: super::tree::LEARNED,
             })
             .collect();
+        let known = known_from(&record);
         record.slots = [0; 10];
         for (slot, power) in record.slots.iter_mut().zip(&known) {
             *slot = power.id;
@@ -1169,20 +1162,39 @@ fn play_cast_motions(
     }
 }
 
-/// Keep the drawn bar on the caster's bar while the tree is closed.
+/// Keep the drawn bar and record on the caster's while the tree is closed.
+/// While the tree is open the screen owns them; when it closes (its key or
+/// Escape stored the bar into the record) the caster takes the screen's
+/// record and bar back, so a power the tree learnt or a slot it moved
+/// reaches the casts. The screen's Escape closing the bar wins over the
+/// caster's open bar.
 fn sync_screen_bar(
     mut screen: Option<ResMut<PowerScreen>>,
-    casters: Query<&PowerCaster, With<PlayerBody>>,
+    mut casters: Query<&mut PowerCaster, With<PlayerBody>>,
+    mut was_open: Local<bool>,
+    mut synced_bar: Local<bool>,
 ) {
     let Some(screen) = screen.as_deref_mut() else {
         return;
     };
-    let Some(caster) = casters.iter().next() else {
+    let Some(mut caster) = casters.iter_mut().next() else {
         return;
     };
     if screen.open {
+        *was_open = true;
         return;
     }
+    if *was_open {
+        *was_open = false;
+        caster.record = screen.record.clone();
+        caster.bar = screen.bar.clone();
+        caster.bar_open = screen.bar_open;
+        caster.known = known_from(&caster.record);
+    } else if screen.bar_open != *synced_bar && caster.bar_open == *synced_bar {
+        // The screen's Escape closed the bar.
+        caster.bar_open = screen.bar_open;
+    }
+    *synced_bar = caster.bar_open;
     if screen.bar != caster.bar
         || screen.bar_open != caster.bar_open
         || screen.record != caster.record
@@ -1192,6 +1204,19 @@ fn sync_screen_bar(
         screen.record = caster.record.clone();
         screen.dirty = true;
     }
+}
+
+/// The powers a record has learnt, in its order.
+fn known_from(record: &PowerRecord) -> Vec<KnownPower> {
+    record
+        .pairs
+        .iter()
+        .filter(|pair| pair.flags & super::tree::LEARNED != 0)
+        .map(|pair| KnownPower {
+            id: pair.power,
+            word: KNOWN_WORD,
+        })
+        .collect()
 }
 
 /// Put a caster's bar and record on the screen resource.
