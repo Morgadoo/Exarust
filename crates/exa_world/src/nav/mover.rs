@@ -27,7 +27,7 @@ use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
 /// Ring slots.
 const SLOTS: usize = 16;
 const PAD: i32 = 3;
-const BOX_PAD: f64 = 2.5;
+const BOX_PAD: f32 = 2.5;
 
 /// A rectangle of cells, both ends included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +67,18 @@ impl Default for Movers {
     }
 }
 
-/// The cell rectangle around an axis-aligned box, padded by two and a half
-/// cells and clamped to the margin of three.
+/// The cell rectangle around an axis-aligned box (centre and half extents,
+/// metres), as the original marks a moved object: on each axis
+/// `W/2 + round((c ∓ e) · (1/30) ∓ 2.5)` in centimetres (single precision,
+/// ties to even), the low side at least 3 and the high side at most
+/// `W − 4`.
 pub fn rect_around(grid: &NavGrid, centre: Vec3, half: Vec3) -> CellRect {
     let (width, depth) = grid.size();
-    let edge = |coord: f32, extent: f32, n: usize, sign: f64| {
-        let cells = f64::from(extent) / f64::from(super::CELL);
-        let at = f64::from(axis(coord, n)) + sign * (cells + BOX_PAD);
-        at.round_ties_even() as i32
+    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    let inverse = 1.0f32 / super::CELL_CM as f32;
+    let edge = |coord: f32, extent: f32, n: usize, sign: f32| {
+        let at = (cm(coord) + sign * cm(extent)) * inverse + sign * BOX_PAD;
+        (n / 2) as i32 + at.round_ties_even() as i32
     };
     let rect = CellRect {
         x0: edge(centre.x, half.x, width, -1.0).max(PAD),
@@ -491,6 +495,14 @@ mod tests {
         assert!(around.z0 <= 12 && around.z1 >= 12);
         assert!(around.x1 > around.x0, "the pad did not reach a neighbour");
         assert!(around.x0 >= 3 && around.x1 <= 20);
+        // Cell 12's centre is 15 cm: 12 + round(0.5 − 2.5) and
+        // 12 + round(0.5 + 2.5).
+        assert_eq!(
+            (around.x0, around.x1, around.z0, around.z1),
+            (10, 15, 10, 15)
+        );
+        let wide = rect_around(&grid, Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.6, 0.0, 9.0));
+        assert_eq!((wide.x0, wide.x1, wide.z0, wide.z1), (8, 16, 3, 20));
 
         let mut near = Movers::default();
         queue_moved(&mut near, one(10));
