@@ -87,9 +87,11 @@ pub struct BodyCounts {
     /// Body trees registered in the solver, and their bodies.
     pub registered: usize,
     pub parts: usize,
-    /// Trees left static: hung from the world, of a mechanism, of a prop
-    /// placed static, or with a flat rest tetrahedron.
+    /// Of the registered trees, those hung from the world by their root's
+    /// links.
     pub hung: usize,
+    /// Trees left static: of a mechanism, of a prop placed static, or with
+    /// a flat rest tetrahedron.
     pub mechanisms: usize,
     pub static_props: usize,
     pub flat: usize,

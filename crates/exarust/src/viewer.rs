@@ -383,7 +383,7 @@ fn continue_level(
     commands.remove_resource::<PendingLevel>();
     let name = pending.name.clone();
     info!(
-        "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, {} bodies asleep in the solver ({} parts; static: {} hung, {} mechanisms, {} of static props), grid {:?}, terrain {:?}, loaded in {:.1?}",
+        "level {name}: {} props ({} missing), {} placed objects ({} missing), {} lights, {} bodies asleep in the solver ({} parts, {} of them hung from the world by links; static: {} mechanisms, {} of static props), grid {:?}, terrain {:?}, loaded in {:.1?}",
         info.props,
         info.missing_props,
         info.placed_objects,
