@@ -126,6 +126,9 @@ pub struct CastBody {
     pub clip_rate: f32,
     /// The status bits beside the condition word.
     pub status_bits: u32,
+    /// The body's item-flag word: bit 0x10 refuses every power the bar
+    /// casts, bit 0x100 is the focus item's extra slot.
+    pub item_flags: u32,
     /// The focus pool.
     pub focus: f32,
     /// The focus spent since the pool was last settled.
@@ -177,6 +180,7 @@ impl Default for CastBody {
             clip_progress: 0.0,
             clip_rate: 1.0,
             status_bits: 0,
+            item_flags: 0,
             focus: 1.0,
             spent: 0.0,
             reserved: 0.0,

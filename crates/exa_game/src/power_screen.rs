@@ -209,6 +209,7 @@ fn load_screen(
 }
 
 fn hotkeys(
+    time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Option<Res<Bindings>>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -241,7 +242,7 @@ fn hotkeys(
         .is_some_and(|key| keys.just_pressed(key))
     {
         if *open {
-            tree.leave(bar, record, 0);
+            tree.leave(bar, record);
             *open = false;
             *bar_open = false;
         } else {
@@ -273,7 +274,7 @@ fn hotkeys(
         .is_some_and(|key| keys.just_pressed(key))
     {
         if *bar_open {
-            bar.store(record, 0);
+            bar.store(record, false);
             *bar_open = false;
         } else {
             bar.load(record);
@@ -288,7 +289,7 @@ fn hotkeys(
         .key_code(Action::UsePower)
         .is_some_and(|key| keys.just_pressed(key));
     if using {
-        let now = 0;
+        let now = time.elapsed().as_millis() as u32;
         let mut force_start = None;
         let mut displacement_start = None;
         let (domain_body, domain_aim) = (ForceWorld::default(), DisplacementAim::default());
@@ -388,7 +389,7 @@ fn hotkeys(
     }
     if keys.just_pressed(KeyCode::Escape) {
         if *open {
-            tree.leave(bar, record, 0);
+            tree.leave(bar, record);
             *open = false;
         }
         *bar_open = false;

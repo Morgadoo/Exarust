@@ -1479,7 +1479,11 @@ impl TreeScreen {
         }
     }
 
-    /// Marks each node from a bar slot with the same power.
+    /// Marks each node from a bar slot with the same power. The original has
+    /// no such pass: its callback hands a running power object the state of
+    /// the first slot holding exactly its id, and the tree's nodes take
+    /// their picked mark from the record's pairs. This keeps the two
+    /// views of the picked mark in step when the bar is opened.
     pub fn apply_bar_marks(&mut self, bar: &PowerBar) {
         for (index, node) in self.nodes.iter().enumerate() {
             for slot in &bar.slots {
@@ -1495,9 +1499,9 @@ impl TreeScreen {
 
     /// Opens or closes the quick bar: opening loads it from the record and
     /// re-marks the nodes; closing stores it. Returns whether it is open.
-    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) -> bool {
+    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord) -> bool {
         if self.bar_open {
-            bar.store(record, now);
+            bar.store(record, false);
         } else {
             bar.load(record);
             self.apply_bar_marks(bar);
@@ -1515,18 +1519,29 @@ impl TreeScreen {
 
     /// Leaves the screen: the open bar is stored back into the record
     /// first, and the overlay closes.
-    pub fn leave(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) {
+    pub fn leave(&mut self, bar: &mut PowerBar, record: &mut PowerRecord) {
         if self.bar_open {
-            bar.store(record, now);
+            bar.store(record, false);
         }
         self.close(record);
     }
 
-    /// The cast entry: reads the record's slot (or the chosen one when no
-    /// slot is named), refuses while the body's powers are blocked, and
-    /// hands the power to the domain's front end by calling `dispatch`
-    /// with the domain and the asked word. The bar is stored and the slot
-    /// flashed when the cast starts.
+    /// The cast entry. It takes the named slot (or the chosen one when
+    /// none is named) and hands its word to the domain's front end through
+    /// `dispatch` with the domain and the full word; the Body, Light and
+    /// unnamed domains answer −1, as does a body whose item flags refuse
+    /// powers. The caller picks the body: the controlled one while a
+    /// possession runs (status bit 0x40_0000), else the player's.
+    ///
+    /// - A body in control of another (status bit 0x20_0000) casts nothing:
+    ///   the answer asks the caller to end the control.
+    /// - "Not now" (−3) leaves the bar alone and queues the slot for the
+    ///   player controls.
+    /// - Any other answer stores the open bar (the chosen slot marked in
+    ///   the record) and closes it; a started power also rewrites the
+    ///   slot's flash from where it stood ([`PowerBar::cast_flash`]).
+    /// - A started instant power becomes the body's last instant power; a
+    ///   refused one plays the fail sound.
     pub fn cast_slot(
         &mut self,
         record: &mut PowerRecord,
@@ -1537,7 +1552,8 @@ impl TreeScreen {
         dispatch: impl FnOnce(u8, u32, &mut CastBody) -> i32,
     ) -> CastEntry {
         let mut out = CastEntry::default();
-        if body.status_bits & super::casting::POWERS_BLOCKED != 0 {
+        if body.status_bits & CONTROLLING != 0 {
+            out.end_control = true;
             return out;
         }
         let slot = match slot {
@@ -1558,23 +1574,22 @@ impl TreeScreen {
         if word & word::INDEX == 0 {
             return out;
         }
-        let result = if body.status_bits & 0x10 != 0 {
+        let result = if body.item_flags & ITEM_REFUSES_POWERS != 0 {
             super::casting::code::REFUSED
         } else {
             match domain_of(word) {
                 DOMAIN_MIND | DOMAIN_FORCE | DOMAIN_ENERGY | DOMAIN_DISPLACEMENT => {
-                    dispatch(domain_of(word), word & word::MATCH, body)
+                    dispatch(domain_of(word), word, body)
                 }
                 _ => super::casting::code::REFUSED,
             }
         };
         if result == super::casting::code::NOT_NOW {
-            out.result = -1;
-            out.stop_cast = true;
+            out.queued_slot = Some(slot);
             return out;
         }
         if self.bar_open {
-            bar.store(record, now);
+            bar.store(record, true);
             self.bar_open = false;
             if result > 0 {
                 bar.cast_flash(slot, now);
@@ -1594,20 +1609,29 @@ impl TreeScreen {
     }
 }
 
+/// The status bit of a body that controls another (a possession or the
+/// spirit form): it casts nothing from the bar.
+pub const CONTROLLING: u32 = 0x20_0000;
+/// The item-flag bit that refuses every power the bar casts.
+pub const ITEM_REFUSES_POWERS: u32 = 0x10;
+
 /// The cast entry's answer.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CastEntry {
-    /// 1 started, 0 released or refused, −1 "not now".
+    /// 1 when the power started, else 0.
     pub result: i32,
-    /// The running cast must be stopped.
-    pub stop_cast: bool,
+    /// The slot a "not now" answer queues for the player controls to
+    /// retry (they hold it one-based for half a second).
+    pub queued_slot: Option<usize>,
+    /// The body controls another: the caller ends the control.
+    pub end_control: bool,
     pub sound: Option<TreeSound>,
 }
 
 /// The sound a refused cast plays.
 pub const CAST_FAIL_SOUND: TreeSound = TreeSound {
     name: "ThaumFail01",
-    volume: 0.1,
+    volume: 0.05,
     pitch: 1.0,
 };
 
@@ -1980,24 +2004,26 @@ impl PowerBar {
         words
     }
 
-    /// Loads the bar from a record: the slots lose bits 20 to 23; the
-    /// chosen slot is the one with bit 20; each slot whose power is a picked
-    /// pair gains the picked mark. Returns the chosen slot (one-based).
+    /// Loads the bar from a record: each slot takes the record's word
+    /// without bits 23 and 24 and a clear state, keeping the stamp and the
+    /// duration it had; the chosen slot is the one with bit 20; each slot
+    /// whose power is a picked pair gains the picked mark. Returns the
+    /// chosen slot (one-based).
     pub fn load(&mut self, record: &PowerRecord) -> usize {
         self.chosen = 0;
         for index in 0..10 {
             let word = record.slots[index] & BAR_LOAD_MASK;
-            self.slots[index] = BarSlot {
-                word,
-                ..BarSlot::default()
-            };
+            let slot = &mut self.slots[index];
+            slot.word = word;
+            slot.state = 0;
             if word & word::CHOSEN != 0 {
                 self.chosen = index + 1;
             }
         }
-        // The original hands each running power object the matching slot's
-        // state through its mark method; an Exarust active power has no
-        // mark, so only the bar's own state is kept.
+        // The original also hands each power object the body runs the
+        // state of the first slot with its id, through the object's mark
+        // method; the active powers here carry no such method, so only the
+        // bar's own picked mark is set.
         for index in 0..10 {
             let word = self.slots[index].word;
             if word & word::BAR_MATCH == 0 {
@@ -2020,22 +2046,24 @@ impl PowerBar {
             .collect()
     }
 
-    /// Stores the bar into a record, with the chosen slot's bit 20, and
-    /// starts the bar's flourish.
-    pub fn store(&mut self, record: &mut PowerRecord, now: u32) {
-        for slot in &mut self.slots {
-            slot.state = (slot.state & bar_state::LIT) | bar_state::FLASH;
-            slot.stamp = now;
-        }
-        if self.chosen == 0 {
+    /// Stores the bar into a record. A cast (`cast`) clears bit 20 on every
+    /// slot and sets it on the chosen one; the bar's own close copies the
+    /// words as they are, which already carry the chosen bit. The slots'
+    /// display states are left alone.
+    pub fn store(&self, record: &mut PowerRecord, cast: bool) {
+        if !cast {
             record.slots = self.words();
-        } else {
-            for index in 0..10 {
-                record.slots[index] = self.slots[index].word & !word::CHOSEN;
-            }
-            if let Some(slot) = record.slots.get_mut(self.chosen - 1) {
-                *slot |= word::CHOSEN;
-            }
+            return;
+        }
+        for index in 0..10 {
+            record.slots[index] = self.slots[index].word & !word::CHOSEN;
+        }
+        if let Some(slot) = self
+            .chosen
+            .checked_sub(1)
+            .and_then(|chosen| record.slots.get_mut(chosen))
+        {
+            *slot |= word::CHOSEN;
         }
     }
 
@@ -2145,29 +2173,41 @@ impl PowerBar {
         }
     }
 
-    /// Flashes the slot of a cast: a lit or unlit slot flashes in from its
-    /// current brightness, a lit one fades out over 200 ms.
+    /// Rewrites the flash of a cast slot. A lit slot starts fading out at
+    /// once over 200 ms (state fade and mark). Any other flashes in again
+    /// from the brightness it showed: that brightness is the flash's
+    /// elapsed time times 0.005, or what is left of the fade, worked in
+    /// doubles and held in a single, or 0; the flash is back-dated by 200 ms
+    /// of it, rounded half to even (a value out of range or not a number
+    /// back-dates nothing), and the state gains flash and mark.
     pub fn cast_flash(&mut self, slot: usize, now: u32) {
         let Some(entry) = self.slots.get_mut(slot) else {
             return;
         };
-        if entry.state & bar_state::LIT == 0 {
-            let shown = if entry.state & bar_state::FLASH == 0 {
-                if entry.state & bar_state::FADE == 0 {
-                    0.0
-                } else {
-                    1.0 - now.wrapping_sub(entry.stamp) as f32 / entry.duration as f32
-                }
-            } else {
-                now.wrapping_sub(entry.stamp) as f32 * 0.005
-            };
-            entry.state |= bar_state::FLASH | bar_state::MARK;
-            entry.stamp = now.wrapping_sub((shown * 200.0).round_ties_even() as u32);
-        } else {
+        if entry.state & bar_state::LIT != 0 {
             entry.state = bar_state::FADE | bar_state::MARK;
             entry.stamp = now;
             entry.duration = 200;
+            return;
         }
+        let elapsed = f64::from(now) - f64::from(entry.stamp);
+        let shown = if entry.state & bar_state::FLASH != 0 {
+            (elapsed * 0.005) as f32
+        } else if entry.state & bar_state::FADE != 0 {
+            (1.0 - elapsed / f64::from(entry.duration)) as f32
+        } else {
+            0.0
+        };
+        entry.state |= bar_state::FLASH | bar_state::MARK;
+        let back = (shown * 200.0).round_ties_even();
+        // CVTSS2SI to 64 bits: out of range or not a number is the
+        // "integer indefinite" value, whose low half is zero.
+        let back = if back.is_finite() && back.abs() < 9.2e18 {
+            back as i64
+        } else {
+            i64::MIN
+        };
+        entry.stamp = (i64::from(now).wrapping_sub(back)) as u32;
     }
 }
 
@@ -3055,10 +3095,42 @@ mod tests {
         assert_eq!(bar.slots[0].state, PICKED);
         assert_eq!(bar.slots[1].state, 0);
         let mut target = PowerRecord::empty(4.0);
-        bar.store(&mut target, 500);
+        bar.store(&mut target, false);
         assert_eq!(target.slots[0], 0x100101);
         assert_eq!(target.slots[1], 0x201);
-        assert_eq!(bar.slots[0].state & bar_state::FLASH, bar_state::FLASH);
+        // Storing leaves the display states alone.
+        assert_eq!(bar.slots[0].state, PICKED);
+        // Loading keeps a slot's stamp and duration and clears its state.
+        bar.slots[1] = BarSlot {
+            word: 0,
+            state: bar_state::FLASH,
+            stamp: 5,
+            duration: 7,
+            ..BarSlot::default()
+        };
+        bar.load(&record);
+        assert_eq!((bar.slots[1].state, bar.slots[1].stamp), (0, 5));
+        assert_eq!(bar.slots[1].duration, 7);
+    }
+
+    #[test]
+    fn a_cast_store_moves_the_chosen_bit() {
+        let mut bar = PowerBar::default();
+        bar.slots[0].word = 0x100101;
+        bar.slots[1].word = 0x201;
+        bar.chosen = 2;
+        let mut record = PowerRecord::empty(4.0);
+        bar.store(&mut record, true);
+        assert_eq!(record.slots[0], 0x101);
+        assert_eq!(record.slots[1], 0x100201);
+        // The bar's own close copies the words as they are.
+        bar.store(&mut record, false);
+        assert_eq!(record.slots[0], 0x100101);
+        assert_eq!(record.slots[1], 0x201);
+        // A cast with nothing chosen clears every bit.
+        bar.chosen = 0;
+        bar.store(&mut record, true);
+        assert_eq!(record.slots[0], 0x101);
     }
 
     #[test]
@@ -3349,7 +3421,7 @@ mod tests {
             500,
             |domain, word, _body| {
                 assert_eq!(domain, DOMAIN_FORCE);
-                assert_eq!(word, 0x201);
+                assert_eq!(word, 0x100201);
                 1
             },
         );
@@ -3362,13 +3434,25 @@ mod tests {
         let out = screen.cast_slot(&mut record, &mut bar, Some(1), &mut body, 600, |_, _, _| 1);
         assert_eq!(out.result, 1);
         assert_eq!(body.last_instant, 0);
-        // Blocked powers refuse without dispatching.
-        body.status_bits = super::super::casting::POWERS_BLOCKED;
+        // A body in control of another casts nothing: the caller ends the
+        // control. The front ends' own block bit is theirs to answer.
+        body.status_bits = CONTROLLING;
         let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 700, |_, _, _| {
             panic!("no dispatch")
         });
         assert_eq!(out.result, 0);
+        assert!(out.end_control);
         body.status_bits = 0;
+        // A body whose item flags refuse powers answers −1 without
+        // dispatching: the fail sound plays at 0.05.
+        body.item_flags = ITEM_REFUSES_POWERS;
+        let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 750, |_, _, _| {
+            panic!("no dispatch")
+        });
+        assert_eq!(out.result, 0);
+        assert_eq!(out.sound, Some(CAST_FAIL_SOUND));
+        assert_eq!(CAST_FAIL_SOUND.volume, 0.05);
+        body.item_flags = 0;
         // Shadow/body domains are refused.
         record.slots[2] = 0x301;
         let out = screen.cast_slot(&mut record, &mut bar, Some(2), &mut body, 800, |_, _, _| {
@@ -3376,10 +3460,57 @@ mod tests {
         });
         assert_eq!(out.result, 0);
         assert_eq!(out.sound, Some(CAST_FAIL_SOUND));
-        // "Not now" stops the running cast.
+        // "Not now" queues the slot and leaves the bar alone.
+        screen.bar_open = true;
+        let before = bar.clone();
         let out = screen.cast_slot(&mut record, &mut bar, Some(0), &mut body, 900, |_, _, _| -3);
-        assert!(out.stop_cast);
-        assert_eq!(out.result, -1);
+        assert_eq!(out.queued_slot, Some(0));
+        assert_eq!(out.result, 0);
+        assert!(screen.bar_open);
+        assert_eq!(bar, before);
+    }
+
+    #[test]
+    fn a_cast_slot_flashes_from_where_it_stood() {
+        let slot = |state, stamp, duration| BarSlot {
+            word: 0x101,
+            state,
+            stamp,
+            duration,
+            ..BarSlot::default()
+        };
+        let mut bar = PowerBar::default();
+        // A lit slot fades out over 200 ms from now.
+        bar.slots[0] = slot(bar_state::LIT, 0, 0);
+        bar.cast_flash(0, 1000);
+        assert_eq!(
+            bar.slots[0],
+            slot(bar_state::FADE | bar_state::MARK, 1000, 200)
+        );
+        // A fading slot (a quarter gone of 400 ms) flashes in from the
+        // three quarters it still shows: back-dated by 0.75 × 200 = 150 ms.
+        bar.slots[1] = slot(bar_state::FADE, 2000, 400);
+        bar.cast_flash(1, 2100);
+        assert_eq!(
+            bar.slots[1].state,
+            bar_state::FADE | bar_state::FLASH | bar_state::MARK
+        );
+        assert_eq!(bar.slots[1].stamp, 1950);
+        // A flash 100 ms in shows 0.5 and keeps its start.
+        bar.slots[2] = slot(bar_state::FLASH, 3000, 0);
+        bar.cast_flash(2, 3100);
+        assert_eq!(bar.slots[2].stamp, 3000);
+        // A dark slot starts at once.
+        bar.slots[3] = slot(0, 7, 9);
+        bar.cast_flash(3, 4000);
+        assert_eq!(
+            bar.slots[3],
+            slot(bar_state::FLASH | bar_state::MARK, 4000, 9)
+        );
+        // A fade with no duration is not a number and back-dates nothing.
+        bar.slots[4] = slot(bar_state::FADE, 5000, 0);
+        bar.cast_flash(4, 5100);
+        assert_eq!(bar.slots[4].stamp, 5100);
     }
 
     #[test]
@@ -3410,12 +3541,12 @@ mod tests {
             flags: LEARNED | PICKED,
         }];
         let mut bar = PowerBar::default();
-        assert!(screen.toggle_bar(&mut bar, &mut record, 100));
+        assert!(screen.toggle_bar(&mut bar, &mut record));
         assert_eq!(bar.slots[0].word, 0x100101);
         assert_eq!(screen.marks[0], SHOWN | LEARNED | PICKED);
-        assert!(!screen.toggle_bar(&mut bar, &mut record, 200));
+        assert!(!screen.toggle_bar(&mut bar, &mut record));
         assert_eq!(record.slots[0], 0x100101);
-        screen.leave(&mut bar, &mut record, 300);
+        screen.leave(&mut bar, &mut record);
         assert!(!screen.bar_open);
         assert_eq!(
             record.pairs,
