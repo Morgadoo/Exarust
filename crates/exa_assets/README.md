@@ -189,17 +189,22 @@ sine, normals, texture coordinates, tangents and cross-strip indices.
 See [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Editable meshes)
 and [`docs/RENDERING.md`](../../docs/RENDERING.md) (Effect shells).
 
-Model meshes are built per material group with the original's split
-tangents (`tangents::split_tangents`: a per-face unweighted tangent and
-bitangent accumulated per vertex, the determinant floor, the tangent made
-perpendicular to the surface normal, and the inverted handedness sign) and
-the smallest index type that fits the group (u16 up to 65 535 vertices,
-then u32; Bevy has no u8 indices). A mesh's box and bounding sphere are
-refitted from its positions as the original does (`exa_formats`'
-`Mesh::bounds`: box centre, half extents floored at 0.001 cm and the
-farthest vertex's radius), and its triangles can be regrouped by material
-(`Mesh::regroup_by_material`), the render-form equivalent of the
-original's face regrouping.
+Model meshes are built per material group with the original's vertex
+attributes: positions, normals, UV_0, the RGBA8 colour stream when the mesh
+has one (bytes normalised to f32; Bevy's colour attribute has no byte
+form), split tangents (`tangents::split_tangents`: a per-face unweighted
+tangent and bitangent accumulated per vertex, the determinant floor, the
+tangent made perpendicular to the surface normal, and the inverted
+handedness sign) and skin weights, with the smallest index type that fits
+the group (u16 up to 65 535 vertices, then u32; Bevy has no u8 indices). A
+mesh's box and bounding sphere are refitted from its positions as the
+original does (`exa_formats`' `Mesh::bounds`: box centre, half extents
+floored at 0.001 cm and the farthest vertex's radius), its triangles can be
+regrouped by material (`Mesh::regroup_by_material`) and two meshes can be
+appended (`Mesh::merge`), the render-form equivalents of the original's face
+regrouping and assembly. A node whose mesh sets the cull-front render flag
+gets its own copies of the parts' materials with front faces culled
+([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Mesh body).
 
 ## Placement instances
 

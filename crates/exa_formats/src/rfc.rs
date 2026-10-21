@@ -336,6 +336,12 @@ impl Mesh {
         self.render_flags & 0x8_0000 != 0
     }
 
+    /// Render flag `0x800`: the mesh culls its front faces and draws the
+    /// back ones (the original's cull-front bit). No shipped mesh sets it.
+    pub fn cull_front(&self) -> bool {
+        self.render_flags & 0x800 != 0
+    }
+
     /// The node's box and bounding sphere from its vertices, as the original
     /// refits them: the component-wise minimum and maximum (`minps`/`maxps`,
     /// so a NaN coordinate yields the vertex's own value), the centre
@@ -457,6 +463,243 @@ impl Mesh {
         }
         self.indices = indices;
         self.groups = groups;
+        Ok(())
+    }
+
+    /// The triangle's material group, from the group ranges.
+    fn group_of(&self, triangle: usize) -> Option<usize> {
+        let at = (triangle * 3) as u32;
+        self.groups
+            .iter()
+            .position(|group| at >= group.first_index && at < group.first_index + group.index_count)
+    }
+
+    /// Appends `other` to this mesh, as the original assembles parts and
+    /// pieces into one mesh: vertices and triangles are appended, triangles
+    /// whose materials match join the existing group (a new group is made
+    /// for a material this mesh does not have yet), and the per-vertex
+    /// streams, the per-triangle flags and edges and the GI points follow.
+    /// The result is regrouped by material, as the original's regroup does
+    /// after an assembly.
+    ///
+    /// This is the render-form equivalent of the original's assembly: it
+    /// works on unified vertices and streams where the original appends the
+    /// editable channels and the per-group GPU buffers. Both meshes must be
+    /// in the same node space (the original transforms the appended part
+    /// from its node into the destination's, which a caller merging two
+    /// nodes must do before calling this). An attribute stream present on
+    /// only one side is filled on the other (white vertex colours, zero
+    /// texture coordinates and weights, triangle flags 0, edge bits 7), as
+    /// the original fills the joined channel. Smoothing keys are shifted so
+    /// the two meshes' groups stay apart; the original copies the editable
+    /// smoothing bits unchanged. The destination's render flags are kept.
+    ///
+    /// A malformed input (a triangle index or group range outside the
+    /// arrays, or an attribute array whose length does not match the
+    /// vertices) returns an error and leaves the mesh unchanged.
+    pub fn merge(&mut self, other: &Mesh) -> crate::Result<()> {
+        let malformed = |message: &str| crate::Error::Malformed(message.to_string());
+        self.validate()?;
+        other.validate()?;
+        if other.positions.is_empty() {
+            return Ok(());
+        }
+        if !self.indices.is_empty() && self.groups.is_empty() {
+            return Err(malformed(
+                "the destination triangles have no material group",
+            ));
+        }
+        if !other.indices.is_empty() && other.groups.is_empty() {
+            return Err(malformed("the appended triangles have no material group"));
+        }
+        if self.positions.is_empty() {
+            let mut merged = other.clone();
+            merged.render_flags = self.render_flags;
+            *self = merged;
+            return Ok(());
+        }
+
+        let base_vertex = self.positions.len() as u32;
+        let base_position = self.position_count.max(self.positions.len()) as u32;
+        let base_uv = self.uv_count.max(self.uvs.as_ref().map_or(0, Vec::len)) as u32;
+        let smoothing_shift = self.smoothing.iter().copied().max().map_or(0, |m| m + 1);
+
+        // Find or make the group each of the other mesh's groups joins.
+        let mut group_map = Vec::with_capacity(other.groups.len());
+        for group in &other.groups {
+            match self
+                .groups
+                .iter()
+                .position(|existing| existing.material == group.material)
+            {
+                Some(index) => group_map.push(index as u32),
+                None => {
+                    self.groups.push(MeshGroup {
+                        material: group.material.clone(),
+                        first_index: 0,
+                        index_count: 0,
+                    });
+                    group_map.push((self.groups.len() - 1) as u32);
+                }
+            }
+        }
+
+        // Per-triangle destination group, before the triangles move.
+        let triangles = self.indices.len() / 3;
+        let mut group_of_triangle: Vec<u32> = (0..triangles)
+            .map(|t| self.group_of(t).map(|g| g as u32).unwrap_or(0))
+            .collect();
+        for triangle in 0..other.indices.len() / 3 {
+            let source = other.group_of(triangle).unwrap_or(0);
+            group_of_triangle.push(group_map[source]);
+        }
+
+        self.positions.extend_from_slice(&other.positions);
+        self.normals.extend_from_slice(&other.normals);
+        self.indices
+            .extend(other.indices.iter().map(|&i| i + base_vertex));
+        self.position_ids
+            .extend(other.position_ids.iter().map(|&i| i + base_position));
+        self.position_count =
+            base_position as usize + other.position_count.max(other.positions.len());
+
+        match (&mut self.uvs, &other.uvs) {
+            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+            (None, Some(theirs)) => {
+                self.uvs = Some(vec![[0.0; 2]; self.positions.len() - other.positions.len()]);
+                self.uvs
+                    .as_mut()
+                    .expect("just set")
+                    .extend_from_slice(theirs);
+            }
+            (Some(mine), None) => mine.extend(std::iter::repeat_n([0.0; 2], other.positions.len())),
+            (None, None) => {}
+        }
+        if self.uvs.is_some() {
+            self.uv_ids
+                .extend(other.uv_ids.iter().map(|&i| i + base_uv));
+            self.uv_count = base_uv as usize + other.uv_count.max(other.uv_ids.len());
+        }
+
+        match (&mut self.colors, &other.colors) {
+            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+            (None, Some(theirs)) => {
+                self.colors = Some(vec![[255; 4]; self.positions.len() - other.positions.len()]);
+                self.colors
+                    .as_mut()
+                    .expect("just set")
+                    .extend_from_slice(theirs);
+            }
+            (Some(mine), None) => mine.extend(std::iter::repeat_n([255; 4], other.positions.len())),
+            (None, None) => {}
+        }
+
+        let zero_weights = SkinWeights {
+            bones: [0; 4],
+            weights: [0.0; 4],
+        };
+        match (&mut self.skin, &other.skin) {
+            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+            (None, Some(theirs)) => {
+                self.skin = Some(vec![
+                    zero_weights;
+                    self.positions.len() - other.positions.len()
+                ]);
+                self.skin
+                    .as_mut()
+                    .expect("just set")
+                    .extend_from_slice(theirs);
+            }
+            (Some(mine), None) => {
+                mine.extend(std::iter::repeat_n(zero_weights, other.positions.len()))
+            }
+            (None, None) => {}
+        }
+
+        self.smoothing
+            .extend(other.smoothing.iter().map(|&k| k + smoothing_shift));
+        match (&mut self.triangle_flags, &other.triangle_flags) {
+            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+            (None, Some(theirs)) => {
+                self.triangle_flags = Some(vec![0; triangles]);
+                self.triangle_flags
+                    .as_mut()
+                    .expect("just set")
+                    .extend_from_slice(theirs);
+            }
+            (Some(mine), None) => mine.extend(std::iter::repeat_n(0, other.indices.len() / 3)),
+            (None, None) => {}
+        }
+        match (&mut self.triangle_edges, &other.triangle_edges) {
+            (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+            (None, Some(theirs)) => {
+                self.triangle_edges = Some(vec![7; triangles]);
+                self.triangle_edges
+                    .as_mut()
+                    .expect("just set")
+                    .extend_from_slice(theirs);
+            }
+            (Some(mine), None) => mine.extend(std::iter::repeat_n(7, other.indices.len() / 3)),
+            (None, None) => {}
+        }
+        self.gi_points.extend_from_slice(&other.gi_points);
+        self.regroup_by_material(&group_of_triangle)
+    }
+
+    /// Checks the mesh's ranges and attribute arrays, as [`Mesh::merge`]
+    /// needs them.
+    fn validate(&self) -> crate::Result<()> {
+        let malformed = |message: &str| crate::Error::Malformed(message.to_string());
+        let vertices = self.positions.len();
+        if !self.indices.len().is_multiple_of(3) {
+            return Err(malformed("index count is not a multiple of 3"));
+        }
+        if self.normals.len() != vertices {
+            return Err(malformed("normals do not match the vertices"));
+        }
+        if self.position_ids.len() != vertices {
+            return Err(malformed("position ids do not match the vertices"));
+        }
+        if let Some(uvs) = &self.uvs
+            && (uvs.len() != vertices || self.uv_ids.len() != vertices)
+        {
+            return Err(malformed("texture coordinates do not match the vertices"));
+        }
+        if let Some(colors) = &self.colors
+            && colors.len() != vertices
+        {
+            return Err(malformed("vertex colours do not match the vertices"));
+        }
+        if let Some(skin) = &self.skin
+            && skin.len() != vertices
+        {
+            return Err(malformed("skin weights do not match the vertices"));
+        }
+        if !self.smoothing.is_empty() && self.smoothing.len() != vertices {
+            return Err(malformed("smoothing keys do not match the vertices"));
+        }
+        if let Some(&bad) = self.indices.iter().find(|&&i| i as usize >= vertices) {
+            return Err(malformed(&format!(
+                "triangle index {bad} out of {vertices} vertices"
+            )));
+        }
+        let triangles = self.indices.len() / 3;
+        if self.groups.iter().any(|g| {
+            g.first_index % 3 != 0
+                || u64::from(g.first_index) + u64::from(g.index_count) > self.indices.len() as u64
+        }) {
+            return Err(malformed("material group range is outside the triangles"));
+        }
+        if let Some(flags) = &self.triangle_flags
+            && flags.len() != triangles
+        {
+            return Err(malformed("triangle flags do not match the triangles"));
+        }
+        if let Some(edges) = &self.triangle_edges
+            && edges.len() != triangles
+        {
+            return Err(malformed("triangle edges do not match the triangles"));
+        }
         Ok(())
     }
 
@@ -2395,5 +2638,111 @@ mod tests {
     fn impossible_counts_are_rejected() {
         let mut c = Cursor::new(&[0xFF, 0xFF, 0xFF, 0x7F]);
         assert!(c.count_minus_one(4).is_err());
+    }
+
+    /// A one-triangle mesh in the node's space, with three vertices and
+    /// every attribute stream, for the assembly tests.
+    fn piece(material: &str, offset: f32, colour: [u8; 4], smoothing: u32) -> Mesh {
+        Mesh {
+            positions: vec![
+                [offset, 0.0, 0.0],
+                [offset + 1.0, 0.0, 0.0],
+                [offset, 1.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            colors: Some(vec![colour; 3]),
+            skin: None,
+            position_ids: vec![0, 1, 2],
+            indices: vec![0, 1, 2],
+            groups: vec![MeshGroup {
+                material: material.into(),
+                first_index: 0,
+                index_count: 3,
+            }],
+            triangle_flags: Some(vec![0x20]),
+            triangle_edges: Some(vec![1]),
+            gi_points: Vec::new(),
+            render_flags: 0,
+            position_count: 3,
+            smoothing: vec![smoothing; 3],
+            uv_ids: vec![0, 1, 2],
+            uv_count: 3,
+        }
+    }
+
+    #[test]
+    fn merging_appends_parts_by_material() {
+        let mut left = piece("mat", 0.0, [10, 20, 30, 255], 4);
+        let right = piece("mat", 10.0, [40, 50, 60, 128], 9);
+        left.merge(&right).unwrap();
+        assert_eq!(left.positions.len(), 6);
+        assert_eq!(left.positions[3], [10.0, 0.0, 0.0]);
+        assert_eq!(left.normals.len(), 6);
+        assert_eq!(left.indices, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(left.position_ids, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(left.position_count, 6);
+        assert_eq!(left.uv_ids, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(left.uv_count, 6);
+        assert_eq!(left.colors.as_deref().unwrap()[3], [40, 50, 60, 128]);
+        // Smoothing keys stay apart: the second part's 9 becomes 9 + 4 + 1.
+        assert_eq!(left.smoothing, [4, 4, 4, 14, 14, 14]);
+        assert_eq!(left.triangle_flags.as_deref(), Some(&[0x20, 0x20][..]));
+        assert_eq!(left.triangle_edges.as_deref(), Some(&[1u8, 1][..]));
+        // The triangles join one material group, its range extended.
+        assert_eq!(left.groups.len(), 1);
+        assert_eq!(
+            (left.groups[0].material.as_str(), left.groups[0].first_index),
+            ("mat", 0)
+        );
+        assert_eq!(left.groups[0].index_count, 6);
+    }
+
+    #[test]
+    fn merging_a_new_material_adds_a_group_and_fills_missing_streams() {
+        let mut left = piece("mat", 0.0, [10, 20, 30, 255], 0);
+        let mut other = piece("other", 10.0, [40, 50, 60, 128], 0);
+        other.uvs = None;
+        other.colors = None;
+        other.triangle_flags = None;
+        other.triangle_edges = None;
+        left.merge(&other).unwrap();
+        assert_eq!(left.groups.len(), 2);
+        assert_eq!(left.groups[1].material, "other");
+        assert_eq!(
+            (left.groups[1].first_index, left.groups[1].index_count),
+            (3, 3)
+        );
+        // The missing texture coordinates join as zero.
+        assert_eq!(left.uvs.as_deref().unwrap()[3], [0.0, 0.0]);
+        assert_eq!(left.uv_count, 6);
+        // The missing vertex colours join white.
+        assert_eq!(left.colors.as_deref().unwrap()[3], [255; 4]);
+        // Missing triangle flags join 0 and edge bits 7.
+        assert_eq!(left.triangle_flags.as_deref(), Some(&[0x20, 0][..]));
+        assert_eq!(left.triangle_edges.as_deref(), Some(&[1u8, 7][..]));
+        // A malformed part leaves the mesh as it was.
+        let before = left.clone();
+        let mut bad = piece("other", 20.0, [0; 4], 0);
+        bad.indices[2] = 7;
+        assert!(left.merge(&bad).is_err());
+        assert_eq!(left, before);
+    }
+
+    #[test]
+    fn merging_into_an_empty_mesh_takes_the_part() {
+        let mut empty = Mesh {
+            render_flags: 0x0002_0000,
+            ..Default::default()
+        };
+        let part = piece("mat", 0.0, [1, 2, 3, 4], 0);
+        empty.merge(&part).unwrap();
+        assert_eq!(empty.positions, part.positions);
+        assert_eq!(empty.indices, part.indices);
+        assert_eq!(empty.render_flags, 0x0002_0000);
+        // An empty part changes nothing.
+        let before = empty.clone();
+        empty.merge(&Mesh::default()).unwrap();
+        assert_eq!(empty, before);
     }
 }

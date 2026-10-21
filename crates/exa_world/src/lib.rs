@@ -1542,6 +1542,7 @@ mod tests {
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
+            cull_front: false,
             is_skin: false,
         }
     }

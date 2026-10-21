@@ -372,6 +372,10 @@ pub struct ExaMaterial {
     /// When set, this pass culls that face. Cloth submits one material per
     /// pass: front, then back.
     pub cloth_cull: Option<bevy::render::render_resource::Face>,
+    /// The mesh's own cull-front render flag (`0x800`): draw the back faces
+    /// and cull the front ones, as the original does for such a mesh. No
+    /// shipped mesh sets it.
+    pub cull_front: bool,
 }
 
 impl Default for ExaMaterial {
@@ -394,6 +398,7 @@ impl Default for ExaMaterial {
             no_shadows: false,
             cut_shadow: false,
             cloth_cull: None,
+            cull_front: false,
         }
     }
 }
@@ -481,6 +486,7 @@ impl From<Color> for ExaMaterial {
 pub struct ExaMaterialKey {
     two_sided: bool,
     cloth_cull: Option<bevy::render::render_resource::Face>,
+    cull_front: bool,
 }
 
 impl From<&ExaMaterial> for ExaMaterialKey {
@@ -488,6 +494,7 @@ impl From<&ExaMaterial> for ExaMaterialKey {
         Self {
             two_sided: m.params.flags & flags::TWO_SIDED != 0,
             cloth_cull: m.cloth_cull,
+            cull_front: m.cull_front,
         }
     }
 }
@@ -524,6 +531,8 @@ impl Material for ExaMaterial {
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(face) = key.bind_group_data.cloth_cull {
             descriptor.primitive.cull_mode = Some(face);
+        } else if key.bind_group_data.cull_front {
+            descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Front);
         } else if key.bind_group_data.two_sided {
             descriptor.primitive.cull_mode = None;
         }
@@ -690,5 +699,20 @@ mod tests {
                 .cloth_cull
                 .is_none()
         );
+    }
+
+    /// A mesh's cull-front flag is part of the pipeline key: the same
+    /// material drawn with the flag set is a different pipeline (front
+    /// faces culled), as the original's per-mesh render state is.
+    #[test]
+    fn the_mesh_cull_front_flag_selects_another_pipeline() {
+        let plain = ExaMaterial::default();
+        let culled = ExaMaterial {
+            cull_front: true,
+            ..plain.clone()
+        };
+        assert_ne!(ExaMaterialKey::from(&plain), ExaMaterialKey::from(&culled));
+        assert!(ExaMaterialKey::from(&culled).cull_front);
+        assert!(!ExaMaterialKey::from(&plain).cull_front);
     }
 }

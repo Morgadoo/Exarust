@@ -244,6 +244,22 @@ drawn nor built.
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.
 
+**Vertex colours.** 2 708 meshes of the installed packs carry the RGBA8
+colour stream (2 431 358 vertices). Exarust keeps it in `Mesh::colors` and
+`exa_assets` uploads it as the Bevy vertex-colour attribute, each byte
+normalised to 0…1 (`Float32x4`; Bevy has no byte colour attribute). The
+original stores the stream as bytes and its vertex shader reads the same
+normalised values. A group whose colour channel the original has to make
+(a mesh without the stream) is filled white there; Exarust leaves the
+attribute off that group.
+
+**Per-mesh render state.** Besides the shadow-bias level, the render word's
+bit `0x800` culls the mesh's front faces (it draws the back ones). No
+shipped mesh sets it; Exarust keeps it as `Mesh::cull_front` and gives such
+a node's parts a cull-front material. Bit `0x1000` (12 meshes at level 0,
+22 at level 1, 4 at level 2; mostly character body parts) has no identified
+meaning in this unit.
+
 ## Editable meshes
 
 Status: **verified** by REA on the original's mesh-smoothing unit, its mesh
@@ -264,6 +280,21 @@ and a channel key without them is subdivided by index only. A generic-format
 mesh indexes each corner through a reference list (`element = channel[refs[
 corner]]`) before the incidence is built; Exarust's decoded meshes store the
 element directly, and the indirect builder is kept for a generic import.
+
+**Assembly.** The original appends one mesh to another (`RF_Mesh`'s merge):
+triangles whose material the destination already has join that group (a new
+group is made otherwise), the appended part's vertices are transformed from
+its node into the destination's, and the editable channels, face flags, edge
+bits and the per-group face ranges grow with it. `Mesh::merge` reproduces
+this on the render form: vertices and triangles are appended, attribute
+streams follow, missing streams are filled (white colours, zero texture
+coordinates and weights, face flags 0, edge bits 7), and the result is
+regrouped by material. Smoothing keys are shifted apart because the render
+form's keys are group numbers, not the editable form's bit masks. The
+original uses the merge to draw a factory weapon or a grid room from one
+buffer; Exarust keeps its parts as separate Bevy meshes, which Bevy's
+batching draws together, so the merge is a library rule with tests rather
+than a load-time step.
 
 - **Incidence.** Each position element lists its corners, the last corner
   of the mesh first (the corners hang in a ring after the element's head).

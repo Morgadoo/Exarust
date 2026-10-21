@@ -56,6 +56,10 @@ prints a material's original GLSL for comparison. Rules and evidence:
   layer/opacity selection and the opaque list's grouping by material program
   key, with the Bevy phase each step maps to
   ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
+- `material`: `ExaMaterial`, the original's surface program, and the
+  pipeline key derived from it (two-sided, a cloth pass's culled face, and a
+  mesh's cull-front render flag; the last has no shipped mesh)
+  ([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Mesh body).
 - `view`: the 3D view's arithmetic: the perspective frustum's half extents,
   the super-sampling levels (1/2/3/4/8 sub-views, up to four a pass, their
   sub-pixel jitters and sharpen strengths), the separate render-scale mode,

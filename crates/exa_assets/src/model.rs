@@ -76,6 +76,9 @@ pub struct ModelNode {
     /// [`exa_formats::rfc::Mesh::shadow_bias_level`]); 0 for other nodes
     /// and for the inflated variant.
     pub shadow_bias: u32,
+    /// The mesh's cull-front render flag ([`exa_formats::rfc::Mesh::cull_front`]):
+    /// its parts draw their back faces. No shipped mesh sets it.
+    pub cull_front: bool,
     /// Whether a part of this node is the race's built-in skin (a body
     /// model's `skinhuman`), which a character's tone re-tints.
     pub is_skin: bool,
@@ -408,7 +411,16 @@ impl ModelLoader<'_> {
                     .into_iter()
                     .map(|(group, bevy_mesh)| {
                         let name = &mesh.groups[group].material;
-                        let material = self.material(&entry, &scene, name);
+                        let mut material = self.material(&entry, &scene, name);
+                        // A mesh's cull-front render flag applies to every
+                        // part of that node: give those parts their own
+                        // material, as no shipped mesh sets it.
+                        if mesh.cull_front()
+                            && let Some(mut own) = self.materials.get(&material).cloned()
+                        {
+                            own.cull_front = true;
+                            material = self.materials.add(own);
+                        }
                         ((self.meshes.add(bevy_mesh), material), name.clone())
                     })
                     .unzip(),
@@ -466,6 +478,10 @@ impl ModelLoader<'_> {
                     // not reproduced: such a mesh keeps level 0.
                     Some(mesh) if !mesh.shadow_bias_inflated() => mesh.shadow_bias_level(),
                     _ => 0,
+                },
+                cull_front: match &node.body {
+                    NodeBody::Mesh(mesh) => mesh.cull_front(),
+                    _ => false,
                 },
                 is_skin,
             });
@@ -1899,6 +1915,24 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
         let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     }
+    // The vertex-colour stream goes to the GPU, as the original copies a
+    // group's colour channel. The stored bytes are normalised the way the
+    // processor's unorm conversion does; Bevy's colour attribute is f32
+    // (the original's shader reads the same normalised values). A group
+    // without a colour channel gets white where the original fills one;
+    // here the attribute is simply absent.
+    if let Some(colours) = &mesh.colors
+        && colours.len() == mesh.positions.len()
+    {
+        let colour: Vec<[f32; 4]> = used
+            .iter()
+            .map(|&i| colours[i].map(|c| f32::from(c) / 255.0))
+            .collect();
+        m.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            bevy::mesh::VertexAttributeValues::Float32x4(colour),
+        );
+    }
     if let Some(tangents) = tangents {
         m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     }
@@ -2599,5 +2633,48 @@ mod tests {
         assert!(matches!(group_indices(65_535, vec![0, 1]), Indices::U16(_)));
         assert!(matches!(group_indices(65_536, vec![0, 1]), Indices::U32(_)));
         assert_eq!(group_indices(255, vec![7, 9]), Indices::U16(vec![7, 9]));
+    }
+
+    /// The original's vertex buffers carry the mesh's RGBA8 colour stream
+    /// (4 bytes a vertex, normalised by the pipeline). The colours follow
+    /// the vertices a group uses.
+    #[test]
+    fn a_group_uploads_the_vertex_colours() {
+        let mesh = RfcMesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            uvs: Some(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            colors: Some(vec![[10, 20, 30, 255], [40, 50, 60, 128], [70, 80, 90, 0]]),
+            position_ids: vec![0, 1, 2],
+            indices: vec![0, 1, 2],
+            groups: vec![exa_formats::rfc::MeshGroup {
+                material: "mat".into(),
+                first_index: 0,
+                index_count: 3,
+            }],
+            triangle_flags: Some(vec![0]),
+            triangle_edges: Some(vec![0]),
+            smoothing: vec![0; 3],
+            uv_ids: vec![0, 1, 2],
+            uv_count: 3,
+            position_count: 3,
+            ..Default::default()
+        };
+        let built = group_mesh(&mesh, &[2, 0, 1], None).expect("a group");
+        let bevy::mesh::VertexAttributeValues::Float32x4(colours) =
+            built.attribute(Mesh::ATTRIBUTE_COLOR).expect("colours")
+        else {
+            panic!("colours are not f32 RGBA");
+        };
+        // The group's order follows its indices; bytes become unorm floats.
+        let expect = |c: [u8; 4]| c.map(|v| f32::from(v) / 255.0);
+        assert_eq!(
+            colours,
+            &vec![
+                expect([70, 80, 90, 0]),
+                expect([10, 20, 30, 255]),
+                expect([40, 50, 60, 128])
+            ]
+        );
     }
 }
