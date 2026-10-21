@@ -1032,18 +1032,15 @@ pub fn witness_activate(
                 key: r,
             };
             topics::store(c, at, &words);
+            report_invalid(scene, "Broadcast Event", witness);
         }
-        report_invalid(scene, "Broadcast Event", witness);
         true
     };
     for (i, &r) in a_roles.iter().enumerate() {
         for &q in &b_roles {
             if let Some(g) = library.aimed(r, q) {
                 let target = library.graph(g).map_or(0, |d| d.target);
-                // The stored role-list word picks the block, as in the
-                // dialogue search.
-                let key = scene.cast.get(witness).map_or(0, |c| c.role_list_word(i));
-                if try_one(scene, g, r, block_of(target, key)) {
+                if try_one(scene, g, r, block_of(target, r)) {
                     return true;
                 }
             }
@@ -1351,11 +1348,10 @@ impl Engine {
                     continue;
                 };
                 let target = library.graph(g).map_or(0, |d| d.target);
-                // The memory block is looked up under the word the stored
-                // role list has at the role's slot (12 bytes per entry), as
-                // the original reads it.
-                let key = scene.cast.get(a).map_or(0, |c| c.role_list_word(i));
-                let block = block_of(target, key);
+                // This pass keys the block by the role itself (the walk
+                // steps over the role's values); only the relation-role
+                // pass below reads the list at 12 bytes per entry.
+                let block = block_of(target, r);
                 if self.open(scene, req, g, r, block.as_ref()) {
                     return true;
                 }

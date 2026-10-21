@@ -2041,10 +2041,11 @@ buffer's count word gets its own node count and the stored block is copied
 behind it from the block's count word on, as many words as the block holds
 (at most the node count): node 0 receives the stored count and node i the
 stored word i − 1, the rest zero. An equal count copies the block straight.
-The dialogue search looks a role-to-role block up under the word the stored
-role list has at the role's slot, reading that list as 12 bytes per entry
-even when a role's variable values follow it (a quirk kept from the
-original).
+The dialogue search (and a broadcast witness's walk) looks a role-to-role
+block up under the role itself, but a block of a relation role toward the
+partner under the word the stored role list has at the role's slot,
+reading that list as 12 bytes per entry even when a role's variable values
+follow it (a quirk kept from the original).
 
 ## Material libraries (`.rml`)
 
