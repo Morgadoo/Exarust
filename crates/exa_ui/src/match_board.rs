@@ -204,7 +204,9 @@ pub struct BoardLayout {
 pub const ROW_HEIGHT: i32 = 30;
 
 /// Builds the board's layout. `compact` shortens the form, the team table
-/// and the reward panel.
+/// and the reward panel. The tab strip, the button and label rectangles and
+/// the reward-slot rectangles are not in the board's own methods; they are
+/// placed from the form template's order and are guesses.
 pub fn layout(compact: bool) -> BoardLayout {
     let height = if compact { 636 } else { 656 };
     let team_height = if compact { 224 } else { 244 };
@@ -569,7 +571,8 @@ pub struct Fighter {
     /// Health for the roster table's health column.
     pub health: u16,
     /// The company record's class byte: 0 through 2 is a combatant and
-    /// bit 0 marks the leader.
+    /// bit 0 marks the leader. The bit's meaning is inferred from the
+    /// board's one-leader rule.
     pub class: u8,
     /// The entity's marked flag (the original's `0x10000000`). A marked
     /// fighter takes the place of an existing marked teammate.
@@ -612,7 +615,9 @@ pub fn rank_of(skills: &[u32]) -> u8 {
     ((sum / 2).min(5)) as u8
 }
 
-/// The rank's name, or a dash when out of range.
+/// The rank's name. A negative rank is the dash the original stores right
+/// after Master; ranks past Master are clamped to a dash too, since their
+/// in-memory neighbours are not rank names.
 pub fn rank_name(rank: i32) -> &'static str {
     if rank < 0 {
         NO_RANK
@@ -622,7 +627,8 @@ pub fn rank_name(rank: i32) -> &'static str {
 }
 
 /// The second rank column of a daily event. The merchant event shows a
-/// dash; a negative rank shows Inept.
+/// dash; a negative rank shows Inept. A rank past Master is clamped to
+/// Master, a guess for the original's unchecked table read.
 pub fn event_tier_name(event: &BoardEvent) -> &'static str {
     if event.kind == 8 {
         NO_RANK
@@ -1142,18 +1148,29 @@ impl Board {
                     .is_some_and(|fighter| fighter.marked)
             })
         {
+            // A drop on the marked fighter's own row keeps the drop target.
+            let target = if self.team[found] == slot {
+                target
+                    .filter(|&drop| drop < self.team.len())
+                    .or(Some(found))
+            } else {
+                Some(found)
+            };
+            let Some(drop) = target else {
+                return false;
+            };
             if unknown_rank
                 && self
                     .team
-                    .get(found)
+                    .get(drop)
                     .and_then(|&member| self.fighters.get(member))
                     .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
             {
                 return false;
             }
-            self.available[index] = self.team[found];
-            self.team[found] = slot;
-            slot_in_team = Some(found);
+            self.available[index] = self.team[drop];
+            self.team[drop] = slot;
+            slot_in_team = Some(drop);
         }
         if slot_in_team.is_none() {
             if let Some(drop) = target {
@@ -1168,6 +1185,15 @@ impl Board {
                         return false;
                     }
                 } else {
+                    if unknown_rank
+                        && self
+                            .team
+                            .get(drop)
+                            .and_then(|&member| self.fighters.get(member))
+                            .is_some_and(|fighter| fighter.rank as i32 >= self.rank_floor as i32)
+                    {
+                        return false;
+                    }
                     self.available[index] = self.team[drop];
                     self.team[drop] = slot;
                     slot_in_team = Some(drop);
@@ -1308,7 +1334,8 @@ impl Board {
     /// message is left as it is), `Some(false)` when this fighter is in the
     /// bracket, and `Some(true)` when the original shows its message.
     /// The original's message text is not decodable from the board's data,
-    /// so only the decision is modelled.
+    /// so only the decision is modelled; the key it compares (a participant
+    /// slot here) is a guess between the entry's slot and its record value.
     pub fn entrant_message(&self) -> Option<bool> {
         if !self.tournament_mode {
             return None;
@@ -1370,7 +1397,7 @@ impl Board {
         let season = season_index(self.day) as usize;
         let rewards = self.season_rewards.get(season).copied().unwrap_or([0; 4]);
         let ordered = season_reward_order(rewards);
-        self.season_items = ordered.map(Some);
+        self.season_items = ordered.map(|id| if id == 0 { None } else { Some(id) });
         self.controls[control::ENTER] = control::HIDDEN;
         for index in [
             control::SEASON_PICTURE,
@@ -1461,6 +1488,9 @@ impl Board {
         if let Some(old) = old {
             self.hide_tab(old);
             hidden[old.index()] = true;
+        }
+        if new != BoardTab::Tournament {
+            self.lineup_height_override = None;
         }
         self.tab = new;
         self.controls[new.index()] |= CONTROL_SELECTED;
@@ -2769,6 +2799,93 @@ mod tests {
     }
 
     #[test]
+    fn the_tournament_and_season_paint_orders_are_pinned() {
+        let mut board = board();
+        board.tab = BoardTab::Tournament;
+        board.tournament_mode = true;
+        board.tournament_reward = Some(1);
+        let paint = board.paint();
+        let table_slots: Vec<TableSlot> = paint
+            .iter()
+            .filter_map(|item| match item {
+                BoardPaint::Table { slot, .. } => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            table_slots,
+            vec![TableSlot::Winners, TableSlot::Roster, TableSlot::Lineup]
+        );
+        let widgets: Vec<Widget> = paint
+            .iter()
+            .filter_map(|item| match item {
+                BoardPaint::Frame { widget, .. } => Some(*widget),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(widgets[0], Widget::Form);
+        assert!(widgets.contains(&Widget::Picture));
+        assert!(widgets.contains(&Widget::RewardPanel));
+
+        let mut season = board;
+        season.tab = BoardTab::Season;
+        let paint = season.paint();
+        let table_slots: Vec<TableSlot> = paint
+            .iter()
+            .filter_map(|item| match item {
+                BoardPaint::Table { slot, .. } => Some(*slot),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(table_slots, vec![TableSlot::Season]);
+        assert!(paint.iter().any(|item| matches!(
+            item,
+            BoardPaint::Frame {
+                widget: Widget::Reward(3),
+                ..
+            }
+        )));
+        assert!(!paint.iter().any(|item| matches!(
+            item,
+            BoardPaint::Label {
+                widget: Widget::EnteredLabel,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn the_event_table_cells_run_left_to_right_by_row() {
+        let mut board = board();
+        board.tab = BoardTab::Events;
+        for (index, event) in board.events.iter_mut().enumerate() {
+            event.name = format!("E{}", index);
+        }
+        let cells: Vec<(usize, usize, i32)> = board
+            .paint()
+            .iter()
+            .filter_map(|item| match item {
+                BoardPaint::Cell {
+                    slot: TableSlot::Events,
+                    row,
+                    column,
+                    rect,
+                    ..
+                } => Some((*row, *column, rect.x)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cells.len(), 30);
+        assert_eq!(cells[0], (0, 0, 0));
+        assert_eq!(cells[1], (0, 1, 140));
+        assert_eq!(cells[2], (0, 2, 240));
+        assert_eq!(cells[3], (0, 3, 340));
+        assert_eq!(cells[4], (0, 4, 454));
+        assert_eq!(cells[5], (1, 0, 0));
+        assert_eq!(cells[9], (1, 4, 454,));
+    }
+
+    #[test]
     fn the_input_rules_are_pinned() {
         let mut board = board();
         board.team_size = 1;
@@ -2838,6 +2955,35 @@ mod tests {
         board.day = 6;
         board.tab = BoardTab::Tournament;
         assert!(!board.assignment_locked());
+    }
+
+    #[test]
+    fn a_marked_fighter_replaces_its_marked_teammate() {
+        let mut board = board();
+        board.match_type = 8;
+        board.rank_floor = 3;
+        board.team_size = 3;
+        board.fighters[0].marked = true;
+        board.fighters[2].marked = true;
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        // Two high-ranked members keep the rank known for all five.
+        board.fighters[1].rank = 4;
+        assert!(board.move_to_team(0, None));
+        assert_eq!(board.team[0], 0);
+        assert_eq!(board.available[0], 2);
+    }
+
+    #[test]
+    fn an_unknown_captain_rank_rejects_a_high_target() {
+        let mut board = board();
+        board.match_type = 8;
+        board.rank_floor = 3;
+        board.team_size = 3;
+        board.team = vec![2, 1, 4];
+        board.available = vec![0, 3, 5];
+        assert!(!board.move_to_team(0, Some(2)));
+        assert_eq!(board.team, vec![2, 1, 4]);
     }
 
     #[test]
