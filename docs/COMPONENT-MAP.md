@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **39.9% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 35.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **40.4% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 35.9% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **32.3%** reproduced.
 
 ## By section
@@ -21,7 +21,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Physics, bodies & cloth | 363 | 242 | 13 | 39% | 0% | RFE_Dynamics_Cloth, TSimObject |
 | Characters, motion & animation | 506 | 198 | 23 | 41% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
-| Items, materials & crafting | 341 | 140 | 40 | 43% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
+| Items, materials & crafting | 341 | 140 | 40 | 51% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
 | AI & behaviour | 437 | 206 | 17 | 40% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
 | Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
@@ -85,9 +85,10 @@ Ordered by code size; these are where most of the original still has no counterp
 |---|---|---:|---:|---|
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_world/src/cloth_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 75% | exa_world/src/nav/walkable.rs; exa_world/src/nav/query.rs |
+| FLX_ItemFactory | Items, materials & crafting | 24 | 87% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 75% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
+| TVXGIManager | Rendering & GPU | 29 | 60% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | SG_Character_Data | Characters, motion & animation | 20 | 83% | exa_formats/src/characters.rs; exa_character/src/record.rs |
-| TVXGIManager | Rendering & GPU | 29 | 55% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
 | TParticleSystem | Thaumaturgy & effects | 19 | 82% | exa_world/src/particles.rs; exa_world/src/flame.rs |
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 88% | exa_assets/src/mesh_smooth.rs; exa_assets/src/model.rs |
 | TMesh | Rendering & GPU | 25 | 60% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
@@ -95,12 +96,11 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_ObjectDB2 | Data, assets & I/O | 19 | 74% | exa_formats/src/objdb.rs; exa_formats/src/objdb/store.rs |
 | TCombatant | AI & behaviour | 17 | 85% | exa_ai/src/combatant.rs; exa_ai/src/place.rs |
 | TMatchBoard | Game modes, arena & session | 17 | 82% | exa_ui/src/match_board.rs; exa_game/src/arena_board.rs |
-| RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
+| RF_Skinning | Characters, motion & animation | 25 | 56% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 70% | exa_assets/src/mesh_edit.rs; exa_assets/src/vertex_cache.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
 | TAudioEnvironment | Audio | 13 | 93% | exa_audio/src/ambience.rs; exa_audio/src/bank.rs |
 | RFG_Dialogue | Script, dialogue & story | 18 | 65% | exa_script/src/dialogue.rs; exa_script/src/bubbles.rs |
-| FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
 | RF_Intersection | Physics, bodies & cloth | 14 | 85% | exa_physics/src/intersect.rs; exa_render/src/cube_shadows.rs |
 | RF_HW_Config | UI | 15 | 78% | exa_formats/src/hw_config.rs; exa_ui/src/settings.rs |
 
