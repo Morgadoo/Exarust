@@ -240,16 +240,22 @@ impl CellLights {
         }
     }
 
-    /// Puts a directional light in every cell, as the original does for the
-    /// lights that are not flooded ([`crate::scene_nodes`]'s cell update
-    /// gives it a zero window): a cell keeps at most
-    /// [`MAX_CELL_LIGHTS`] lights, and a repeated fill widens the window.
-    /// The original walks `width²` cells; a grid with more rows than columns
-    /// is walked to its end here instead of past it.
-    pub fn fill_directional(&mut self, key: u32) {
-        let cells = self.cells.len();
-        for cell in 0..cells {
-            self.insert(cell, key, 0.0, 0.0);
+    /// Puts a directional light (one that is not flooded) in every cell,
+    /// as the original does: a cell that does not list the light yet and
+    /// holds fewer than [`MAX_CELL_LIGHTS`] gets it with an empty window; a
+    /// cell that lists it keeps its window. The original walks `width²`
+    /// cells, so a grid with more rows than columns keeps its last rows
+    /// empty; one with fewer rows is walked to its end here instead of past
+    /// it.
+    pub fn fill_directional(&mut self, grid: &WallGrid, key: u32) {
+        let count = (grid.w * grid.w).min(self.cells.len());
+        for cell in 0..count {
+            let list = &mut self.cells[cell];
+            if list.iter().any(|e| e.0 == key) || list.len() >= MAX_CELL_LIGHTS {
+                continue;
+            }
+            list.push((key, 0.0, 0.0));
+            self.touched.entry(key).or_default().push(cell);
         }
     }
 
@@ -583,19 +589,28 @@ mod tests {
     fn a_directional_light_sits_in_every_cell() {
         let g = rooms(false);
         let mut cells = CellLights::new(&g);
-        cells.fill_directional(7);
-        for cell in 0..g.w * g.h {
+        // A cell that lists the light already keeps its window.
+        cells.insert(0, 7, 1.0, 2.0);
+        cells.fill_directional(&g, 7);
+        assert_eq!(cells.window(0, 7), Some((1.0, 2.0)));
+        for cell in 1..g.w * g.h {
             assert_eq!(cells.window(cell, 7), Some((0.0, 0.0)), "cell {cell}");
         }
         // The twelve-light cap holds for the fill too.
         for key in 0..13 {
-            cells.fill_directional(key);
+            cells.fill_directional(&g, key);
         }
-        assert_eq!(cells.lights(0).count(), MAX_CELL_LIGHTS);
+        assert_eq!(cells.lights(1).count(), MAX_CELL_LIGHTS);
         // Removing a filled light takes it out of every cell.
         cells.remove(7);
-        assert_eq!(cells.lights(0).count(), MAX_CELL_LIGHTS - 1);
-        assert!(cells.window(0, 7).is_none());
+        assert_eq!(cells.lights(1).count(), MAX_CELL_LIGHTS - 1);
+        assert!(cells.window(1, 7).is_none());
+        // A grid taller than wide is filled over width² cells only.
+        let tall = WallGrid::new(3, 5, vec![0; 15], vec![0; 15]).unwrap();
+        let mut cells = CellLights::new(&tall);
+        cells.fill_directional(&tall, 1);
+        assert_eq!(cells.window(8, 1), Some((0.0, 0.0)));
+        assert!(cells.window(9, 1).is_none());
     }
 
     #[test]
