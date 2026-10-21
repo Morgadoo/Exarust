@@ -5,8 +5,8 @@
 //! texture layer records. Of the block, the emissive, diffuse and specular
 //! colours, opacity, glossiness, specular level, render class, shading flags,
 //! material kind, extra flags, the displacement-shadow step and bias, the
-//! opacity fall-off, the physical divisor and the collision sound prefix are
-//! decoded; the rest (among it the subsurface colour and the refraction
+//! opacity fall-off, the subsurface colour, the physical divisor and the
+//! collision sound prefix are decoded; the rest (among it the refraction
 //! parameters) is not yet. Each layer names a texture and
 //! the slot it fills. Slot roles were assigned from the suffixes of the
 //! texture names that use them across the retail data (`d` diffuse, `n`
@@ -91,16 +91,21 @@ pub struct Material {
     pub specular_level: f32,
     /// Render class: low nibble 3 is transparent; bits 12..14 the blend mode.
     pub class: u32,
+    /// Dirt strength (`0x30`): the dirt modes' colour take, `2 − this` in the
+    /// material uniform's `MatDrt.w`.
+    pub dirt_amount: f32,
     /// Shading flags ([`flags`]) and the texture slots in use.
     pub flags: u32,
     /// 0: legacy (diffuse ×1.5); bit 0: the specular map is a packed
-    /// intensity/gloss/metal map.
+    /// intensity/gloss/metal map; bits 8–9 (`0x300`) hold the material mode,
+    /// `0x100` being the translucent program.
     pub kind: u32,
     /// Extra flags (`0x4C`): `0x100000` enables displacement shadows,
     /// `0x100` turns the opacity fall-off toward the silhouette around.
     pub extra: u32,
     /// Subsurface colour (`0x6C`): non-zero materials draw skin's scattered
-    /// light, and their diffuse texture skips the LOD bias.
+    /// light (the skin program at shading quality 3 and above), and their
+    /// diffuse texture skips the LOD bias.
     pub subsurface: [f32; 4],
     /// Displacement-shadow step and bias (`0x5C`, `0x60`), with a height map.
     pub displacement_step: f32,
@@ -189,6 +194,7 @@ impl Material {
             glossiness: f32_at(0x3C),
             specular_level: f32_at(0x40),
             class: u32_at(0x44),
+            dirt_amount: f32_at(0x30),
             flags: u32_at(0x48),
             kind: u32_at(0x50),
             extra: u32_at(0x4C),
@@ -238,6 +244,12 @@ impl Material {
             self.collision_sound.clone()
         };
         format!("{prefix}col")
+    }
+
+    /// Whether the record carries a subsurface colour, the original's test
+    /// for the skin program ([`Material::has_secondary_colour`]).
+    pub fn has_subsurface(&self) -> bool {
+        self.has_secondary_colour()
     }
 
     pub fn layer(&self, slot: TextureSlot) -> Option<&TextureLayer> {
@@ -326,6 +338,25 @@ mod tests {
         assert!(Material::parse(&p).unwrap().has_secondary_colour());
         p[0x6C..0x70].copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(!Material::parse(&p).unwrap().has_secondary_colour());
+    }
+
+    #[test]
+    fn reads_the_subsurface_colour() {
+        let mut p = vec![0u8; PARAMETER_BLOCK];
+        for (i, value) in [1.0f32, 0.8, 0.46, 1.0].iter().enumerate() {
+            p[0x6C + i * 4..0x70 + i * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let m = Material::parse(&p).unwrap();
+        assert_eq!(m.subsurface, [1.0, 0.8, 0.46, 1.0]);
+        assert!(m.has_subsurface());
+        let mut black = vec![0u8; PARAMETER_BLOCK];
+        black[0x78..0x7C].copy_from_slice(&1.0f32.to_le_bytes());
+        assert!(!Material::parse(&black).unwrap().has_subsurface());
+        assert!(
+            !Material::parse(&[0u8; PARAMETER_BLOCK])
+                .unwrap()
+                .has_subsurface()
+        );
     }
 
     #[test]

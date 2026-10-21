@@ -23,6 +23,7 @@
 //! exa-tool corpus tracks              every node keyframe track of every chunk tree
 //! exa-tool export-gltf Objlib afr_cornflag_a01 out.glb
 //! exa-tool nav exanima01 [--png nav.png]  the level's navigation grid
+//! exa-tool shader common.rml mtliron04   the original GLSL for a material
 //! ```
 
 mod bodies;
@@ -140,6 +141,65 @@ enum Cmd {
         entry: String,
         out: PathBuf,
     },
+    /// Print the original GLSL a material's program expands to, from
+    /// `Resource.rpk`'s `shading.flb`; with `--warmup`, the 29 warmed
+    /// variants, and with `--list`, the library's entries.
+    Shader {
+        /// Material library inside `Resource.rpk` (e.g. `common.rml`).
+        #[arg(default_value = "common.rml")]
+        library: String,
+        /// Material name in that library.
+        material: Option<String>,
+        /// Lights on the object, 0 through 6.
+        #[arg(long, default_value_t = 0)]
+        lights: u32,
+        /// Shading quality, 1 through 6.
+        #[arg(long, default_value_t = 5)]
+        quality: u32,
+        /// Shadow quality, 1 through 6 (the taps before supersampling).
+        #[arg(long, default_value_t = 4)]
+        shadow_quality: u32,
+        /// Supersampling level: 0 off, 1, or 3 for the original's 4x.
+        #[arg(long, default_value_t = 3)]
+        supersample: u32,
+        /// The mesh has a vertex-colour stream (`Obj.VrtCol`).
+        #[arg(long)]
+        vertex_colors: bool,
+        /// The mesh has deformed vertices (`Obj.VrtDlt`).
+        #[arg(long)]
+        vertex_delta: bool,
+        /// Fog mode: 0 off, 1 distance fog, 2 fade to black.
+        #[arg(long, default_value_t = 1)]
+        fog: u32,
+        #[arg(long)]
+        outdoor: bool,
+        #[arg(long)]
+        wet_floor: bool,
+        #[arg(long)]
+        vxgi_spec: bool,
+        #[arg(long)]
+        tone_map: bool,
+        #[arg(long)]
+        sharpen: bool,
+        /// Leave the voxel GI out (`Env.VxlGI` clear).
+        #[arg(long)]
+        no_gi: bool,
+        /// The first light is the sun, with its 2D shadow map.
+        #[arg(long)]
+        sun_first: bool,
+        /// Print only the vertex stage.
+        #[arg(long)]
+        vertex_only: bool,
+        /// Print only the fragment stage.
+        #[arg(long)]
+        fragment_only: bool,
+        /// List the warm-up variants for these settings.
+        #[arg(long)]
+        warmup: bool,
+        /// List the shader library's entries.
+        #[arg(long)]
+        list: bool,
+    },
     /// Write entries to a directory, with an extension guessed from the magic.
     Extract {
         pack: String,
@@ -175,6 +235,52 @@ fn main() -> Result<()> {
     let game = GameData::open(&root).with_context(|| format!("opening {}", root.display()))?;
     match cli.cmd {
         Cmd::Info => info(&game),
+        Cmd::Shader {
+            library,
+            material,
+            lights,
+            quality,
+            shadow_quality,
+            supersample,
+            vertex_colors,
+            vertex_delta,
+            fog,
+            outdoor,
+            wet_floor,
+            vxgi_spec,
+            tone_map,
+            sharpen,
+            no_gi,
+            sun_first,
+            vertex_only,
+            fragment_only,
+            warmup,
+            list,
+        } => shader(
+            &game,
+            &ShaderRequest {
+                library,
+                material,
+                lights,
+                quality,
+                shadow_quality,
+                supersample,
+                vertex_colors,
+                vertex_delta,
+                fog,
+                outdoor,
+                wet_floor,
+                vxgi_spec,
+                tone_map,
+                sharpen,
+                no_gi,
+                sun_first,
+                vertex_only,
+                fragment_only,
+                warmup,
+                list,
+            },
+        ),
         Cmd::Ls { pack, inner } => with_archive(&game, &pack, inner.as_deref(), |a| {
             for e in a.entries() {
                 let kind = FileKind::detect(a.bytes(e));
@@ -621,6 +727,131 @@ fn extract(a: &Archive<'_>, out: &Path, filter: Option<&str>) -> Result<()> {
         n += 1;
     }
     println!("extracted {n} entries to {}", out.display());
+    Ok(())
+}
+
+/// The `shader` command's arguments.
+struct ShaderRequest {
+    library: String,
+    material: Option<String>,
+    lights: u32,
+    quality: u32,
+    shadow_quality: u32,
+    supersample: u32,
+    vertex_colors: bool,
+    vertex_delta: bool,
+    fog: u32,
+    outdoor: bool,
+    wet_floor: bool,
+    vxgi_spec: bool,
+    tone_map: bool,
+    sharpen: bool,
+    no_gi: bool,
+    sun_first: bool,
+    vertex_only: bool,
+    fragment_only: bool,
+    warmup: bool,
+    list: bool,
+}
+
+fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
+    use exa_formats::flb::ShaderLibrary;
+    use exa_formats::material::Material;
+    use exa_render::shader_program::{
+        GeometryOptions, SceneOptions, SurfaceProgram, program_for_shader_word, program_keys,
+        warmup_keys,
+    };
+    use exa_render::shader_template::LightKind;
+
+    let bytes = game
+        .resource_file("shading.flb")
+        .ok_or_else(|| anyhow!("shading.flb is not installed"))?;
+    let shaders = ShaderLibrary::parse(bytes)?;
+    let scene = SceneOptions {
+        quality: request.quality,
+        shadow_quality: request.shadow_quality,
+        supersample_level: request.supersample,
+        fog_mode: request.fog,
+        voxel_gi: !request.no_gi,
+        voxel_gi_specular: request.vxgi_spec,
+        outdoor: request.outdoor,
+        wet_floor: request.wet_floor,
+        tone_map: request.tone_map,
+        sharpen: request.sharpen,
+    };
+
+    if request.list {
+        for entry in shaders.entries() {
+            println!("{}", entry.name);
+        }
+        return Ok(());
+    }
+    if request.warmup {
+        for key in warmup_keys(
+            request.quality,
+            request.shadow_quality,
+            request.supersample,
+            request.vxgi_spec,
+        ) {
+            let program = program_for_shader_word(key.key.flags.shader);
+            println!(
+                "row {:2} lights {} mat {:#010x} shd {:#010x} obj {:#010x} env {:#010x} {}_f",
+                key.row + 1,
+                key.key.numbers.lights,
+                key.key.flags.material,
+                key.key.flags.shader,
+                key.key.flags.object,
+                key.key.flags.environment,
+                program.set(),
+            );
+        }
+        return Ok(());
+    }
+
+    let name = request
+        .material
+        .as_deref()
+        .ok_or_else(|| anyhow!("name a material, or pass --list or --warmup"))?;
+    let library_bytes = game
+        .resource_file(&request.library)
+        .ok_or_else(|| anyhow!("{} is not installed", request.library))?;
+    let library = Archive::parse(library_bytes)?;
+    let payload = library
+        .get(name)
+        .ok_or_else(|| anyhow!("material {name:?} not found in {}", request.library))?;
+    let material = Material::parse(payload)?;
+    let geometry = GeometryOptions {
+        vertex_colors: request.vertex_colors,
+        vertex_delta: request.vertex_delta,
+    };
+    let keys = program_keys(&material, geometry, &scene);
+    let wanted = request.lights.min(6);
+    let mut key = keys
+        .into_iter()
+        .find(|key| key.numbers.lights == wanted)
+        .ok_or_else(|| anyhow!("no program variant for {wanted} lights"))?;
+    if request.sun_first && !key.lights.is_empty() {
+        key.lights[0] = LightKind::Directional;
+    }
+    let program: SurfaceProgram = program_for_shader_word(key.flags.shader);
+    let text = program.expand(&shaders, &key.context())?;
+    println!(
+        "// {name} from {}: {}_f, {} lights, SdwSmps {}, ShadeQual {}, DspSdws {}",
+        request.library,
+        program.set(),
+        key.numbers.lights,
+        key.numbers.shadow_samples,
+        key.numbers.shade_quality,
+        key.numbers.displacement_samples,
+    );
+    if !request.fragment_only {
+        println!("// ---- vertex: shading_v");
+        print!("{}", text.vertex);
+    }
+    if !request.vertex_only {
+        println!("// ---- fragment: {}_f", program.set());
+        print!("{}", text.fragment);
+    }
     Ok(())
 }
 

@@ -2512,7 +2512,9 @@ dependencies = [
  "bytemuck",
  "exa_formats",
  "exa_physics",
+ "exa_rpk",
  "naga",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2540,6 +2542,7 @@ dependencies = [
  "clap",
  "exa_assets",
  "exa_formats",
+ "exa_render",
  "exa_rpk",
  "exa_world",
  "png",
