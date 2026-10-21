@@ -4595,7 +4595,7 @@ pub fn fade_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: Ski
 pub fn faded_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk, alpha: f32) {
     let scaled = |ink: SkinInk| {
         let mut scaled = ink;
-        scaled[3] = rounded_byte(f32::from(ink[3]) * alpha);
+        scaled[3] = low_byte(f32::from(ink[3]) * alpha);
         scaled
     };
     let bottom = scaled(bottom);
@@ -4646,8 +4646,10 @@ pub fn stripe_bar(batch: &mut SkinBatch, rect: GuiRect, inks: &[SkinInk]) {
 }
 
 /// The translucent band a listing draws over a selected row: an outline
-/// whose middle is the highlight ink, then glow bands above and below.
-/// Selecting the row widens the glow by the unit.
+/// whose middle is the highlight ink, then glow fans that reach from the
+/// top and bottom edges into the row. Selecting the row widens the glow by
+/// the unit. The original reads `ink` from the highlight group's fourth or
+/// fifth shade and `highlight` from its seventh or eighth, by `selected`.
 pub fn selection_band(
     batch: &mut SkinBatch,
     rect: GuiRect,
@@ -4671,7 +4673,10 @@ pub fn selection_band(
     let right = rect.x1;
     let top_y = rect.y0;
     let bottom = rect.y1 - 1.0;
-    let centre = (rect.x0 + rect.x1) * 0.5;
+    // The outline's middle sits half of one pixel less than the width in;
+    // the glow's middle at half the width.
+    let line_centre = ((f64::from(rect.x1 - rect.x0) - 1.0) * 0.5 + f64::from(rect.x0)) as f32;
+    let centre = ((f64::from(rect.x1 - rect.x0)) * 0.5 + f64::from(rect.x0)) as f32;
     let low_y = rect.y0 + 1.0;
     let high_y = low_y + (rect.y1 - rect.y0 - 2.0);
     batch.blend = 0x201;
@@ -4679,14 +4684,14 @@ pub fn selection_band(
     batch.set_ink(edge);
     batch.vertex(left, top_y);
     batch.set_ink(low);
-    batch.vertex(centre, top_y);
-    batch.vertex(centre, top_y);
+    batch.vertex(line_centre, top_y);
+    batch.vertex(line_centre, top_y);
     batch.set_ink(edge);
     batch.vertex(right, top_y);
     batch.vertex(right, bottom);
     batch.set_ink(low);
-    batch.vertex(centre, bottom);
-    batch.vertex(centre, bottom);
+    batch.vertex(line_centre, bottom);
+    batch.vertex(line_centre, bottom);
     batch.set_ink(edge);
     batch.vertex(left, bottom);
     batch.end_lines();
@@ -4711,11 +4716,13 @@ pub fn selection_band(
     batch.vertex(right, low_y - corner);
     batch.set_ink(mid);
     batch.vertex(right, low_y);
+    // The lower fans reach up from the bottom edge: the reach and corner
+    // are negative, so they are added here and subtracted above.
     batch.vertex(left, high_y);
     batch.set_ink(clear);
-    batch.vertex(centre, high_y - reach);
-    batch.vertex(left, high_y - corner);
-    batch.vertex(centre, high_y - reach);
+    batch.vertex(centre, high_y + reach);
+    batch.vertex(left, high_y + corner);
+    batch.vertex(centre, high_y + reach);
     batch.set_ink(mid);
     batch.vertex(left, high_y);
     batch.set_ink(top);
@@ -4724,9 +4731,9 @@ pub fn selection_band(
     batch.set_ink(mid);
     batch.vertex(right, high_y);
     batch.set_ink(clear);
-    batch.vertex(centre, high_y - reach);
-    batch.vertex(right, high_y - corner);
-    batch.vertex(centre, high_y - reach);
+    batch.vertex(centre, high_y + reach);
+    batch.vertex(right, high_y + corner);
+    batch.vertex(centre, high_y + reach);
     batch.set_ink(mid);
     batch.vertex(right, high_y);
     batch.end_triangles();
@@ -4879,11 +4886,13 @@ pub fn edge_frame(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) {
     batch.end_lines();
 }
 
-/// Two line frames, the second one pixel inside the first.
+/// Two line frames, the second one pixel inside the first. Each top edge
+/// starts a pixel short of its right side and each right side runs half a
+/// pixel past its top.
 pub fn double_frame(batch: &mut SkinBatch, rect: GuiRect, outer: SkinInk, inner: SkinInk) {
     let frame = |batch: &mut SkinBatch, rect: GuiRect, ink: SkinInk| {
         batch.set_ink(ink);
-        batch.vertex(rect.x1 - 0.5, rect.y0 + 0.5);
+        batch.vertex(rect.x1 - 1.0, rect.y0 + 0.5);
         batch.vertex(rect.x0 + 0.5, rect.y0 + 0.5);
         batch.vertex(rect.x0 + 0.5, rect.y0 + 0.5);
         batch.vertex(rect.x0 + 0.5, rect.y1 - 0.5);
@@ -4909,6 +4918,7 @@ pub fn double_frame(batch: &mut SkinBatch, rect: GuiRect, outer: SkinInk, inner:
 
 /// A line frame whose left and right halves fade between three inks: the
 /// top and bottom inks and the 0.65 and 0.35 mixes towards the middle ink.
+/// The left side's mixes meet half a pixel lower than the right side's.
 pub fn gradient_frame(
     batch: &mut SkinBatch,
     rect: GuiRect,
@@ -4938,10 +4948,11 @@ pub fn gradient_frame(
     batch.vertex(x0, y1);
     batch.vertex(x1, y1);
     batch.vertex(x1, y1);
+    let right_middle = (y0 - y1) * 0.5 + y1;
     batch.set_ink(low);
-    batch.vertex(x1, middle_y);
+    batch.vertex(x1, right_middle);
     batch.set_ink(high);
-    batch.vertex(x1, middle_y);
+    batch.vertex(x1, right_middle);
     batch.set_ink(middle);
     batch.vertex(x1, y0 - 1.0);
     batch.end_lines();
@@ -5010,8 +5021,9 @@ pub fn four_stop_rect(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) 
     batch.end_quads();
 }
 
-/// The two-ink band: the top ink from half a pixel in, the bottom ink below
-/// the middle, inset half a pixel at each edge.
+/// Two horizontal lines: the top one in the first ink half a pixel below
+/// the top, ending half a pixel short of the right, the bottom one in the
+/// second ink half a pixel above the bottom.
 pub fn two_ink_band(batch: &mut SkinBatch, rect: GuiRect, top: SkinInk, bottom: SkinInk) {
     batch.begin();
     batch.set_ink(top);
@@ -5020,10 +5032,12 @@ pub fn two_ink_band(batch: &mut SkinBatch, rect: GuiRect, top: SkinInk, bottom: 
     batch.set_ink(bottom);
     batch.vertex(rect.x0, rect.y1 - 0.5);
     batch.vertex(rect.x1, rect.y1 - 0.5);
-    batch.end_quads();
+    batch.end_lines();
 }
 
-/// A four-sided line frame with one ink per side: top, left, right, bottom.
+/// A four-ink line frame: the top edge in the first ink, the left side
+/// fading from it to the second ink, the bottom edge in the fourth and the
+/// right side fading from the fourth to the third.
 pub fn four_ink_frame(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) {
     let x0 = rect.x0 + 0.5;
     let y0 = rect.y0 + 0.5;
@@ -5033,14 +5047,14 @@ pub fn four_ink_frame(batch: &mut SkinBatch, rect: GuiRect, inks: [SkinInk; 4]) 
     batch.set_ink(inks[0]);
     batch.vertex(x1 - 0.5, y0);
     batch.vertex(x0, y0);
-    batch.set_ink(inks[1]);
     batch.vertex(x0, y0);
+    batch.set_ink(inks[1]);
     batch.vertex(x0, y1);
     batch.set_ink(inks[3]);
     batch.vertex(x0, y1);
     batch.vertex(x1, y1);
-    batch.set_ink(inks[2]);
     batch.vertex(x1, y1);
+    batch.set_ink(inks[2]);
     batch.vertex(x1, y0 - 1.0);
     batch.end_lines();
 }
@@ -5052,12 +5066,14 @@ pub fn with_alpha(mut ink: SkinInk, alpha: u8) -> SkinInk {
 }
 
 /// The drop shadow ring: an outer edge at `alpha`, fading to clear at the
-/// inset, with the inset clamped to half the height.
+/// inset, with the inset clamped to half the height (the height shifted as
+/// an unsigned word, so a negative height clamps nothing).
 pub fn shadow_ring(batch: &mut SkinBatch, rect: GuiRect, inset: i32, alpha: u8) {
     let height = (rect.y1 - rect.y0) as i32;
+    let half = ((height as u32) >> 1) as i32;
     let mut inset = inset;
-    if height / 2 < inset {
-        inset = height / 2;
+    if half < inset {
+        inset = half;
     }
     let inset = inset as f32;
     let dark = [0, 0, 0, alpha];
@@ -5138,14 +5154,14 @@ pub fn vertical_gradient(
     let high = mix_ink(bottom, top, 0.65);
     let middle = mix_ink(bottom, top, 0.5);
     let low = mix_ink(bottom, top, 0.35);
-    let span = 2.0 * unit as f32;
+    let span = unit.wrapping_mul(2) as f32;
     let mid = (rect.y0 - rect.y1) * 0.5 + rect.y1;
-    let upper = if mid > rect.y0 + span {
-        rect.y0 + span
+    let upper = if span + rect.y0 < mid {
+        span + rect.y0
     } else {
         mid
     };
-    let lower = if mid < rect.y1 - span {
+    let lower = if rect.y1 - span > mid {
         rect.y1 - span
     } else {
         mid
@@ -5183,14 +5199,24 @@ pub fn vertical_gradient_frame(
     let high = mix_ink(bottom, top, 0.65);
     let middle = mix_ink(bottom, top, 0.5);
     let low = mix_ink(bottom, top, 0.35);
-    let span = 2.0 * unit as f32;
+    let span = unit.wrapping_mul(2) as f32;
+    // The bands are clamped against the rectangle before its lines move in
+    // by half a pixel.
+    let mid = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    let upper = if span + rect.y0 < mid {
+        span + rect.y0
+    } else {
+        mid
+    };
+    let lower = if rect.y1 - span > mid {
+        rect.y1 - span
+    } else {
+        mid
+    };
     let x0 = rect.x0 + 0.5;
     let y0 = rect.y0 + 0.5;
     let x1 = rect.x1 - 0.5;
     let y1 = rect.y1 - 0.5;
-    let mid = (y0 - y1) * 0.5 + y1;
-    let upper = if mid > y0 + span { y0 + span } else { mid };
-    let lower = if mid < y1 - span { y1 - span } else { mid };
     batch.begin();
     batch.set_ink(top);
     batch.vertex(x1, y0);
@@ -5220,66 +5246,129 @@ pub fn vertical_gradient_frame(
     batch.end_lines();
 }
 
+/// The ink an arrow's look names: the shade before the drawn one, whose
+/// colour and two thirds of whose alpha draw the faded copies. The
+/// original only names -1 (label shades 1 and 2), 0 (label shades 4 and 5)
+/// and 1 (highlight shades 8 and 9, drawn additively).
+fn arrow_inks(look: i32, palette: &SkinPalette) -> Option<(SkinInk, SkinInk)> {
+    let (group, index) = match look {
+        -1 => (&palette.text, 1),
+        0 => (&palette.text, 4),
+        1 => (&palette.highlight, 8),
+        _ => return None,
+    };
+    let base = group[index];
+    let faded = with_alpha(base, ((base[3] / 3) * 2) & 0xff);
+    Some((group[index + 1], faded))
+}
+
 /// The two scroll-arrow strokes: six line pairs whose first four vertices
-/// take the full ink and whose rest take two thirds of its alpha.
-fn arrow_strokes(batch: &mut SkinBatch, points: [(f32, f32); 12], ink: SkinInk) {
+/// take the drawn ink and whose rest take the faded one. The additive look
+/// switches the blend for the strokes and back after them.
+fn arrow_strokes(
+    batch: &mut SkinBatch,
+    points: [(f32, f32); 12],
+    look: i32,
+    palette: &SkinPalette,
+) {
+    let Some((ink, faded)) = arrow_inks(look, palette) else {
+        return;
+    };
+    if look == 1 {
+        batch.blend = 0x201;
+    }
+    batch.set_ink(ink);
+    batch.begin();
     for (index, (x, y)) in points.into_iter().enumerate() {
         if index == 4 {
-            batch.set_ink(with_alpha(ink, (ink[3] / 3) * 2));
+            batch.set_ink(faded);
         }
         batch.vertex(x, y);
     }
     batch.end_lines();
+    if look == 1 {
+        batch.blend = 0x203;
+    }
 }
 
-/// A horizontal scroll arrow: a stroke from the left point to the middle,
-/// then its faded lower copy.
-pub fn scroll_arrow_horizontal(batch: &mut SkinBatch, x: f32, y: f32, w: f32, ink: SkinInk) {
-    let mid = ((w as i32 + 1) as u32 >> 1) as f32;
-    batch.begin();
-    batch.set_ink(ink);
+/// Half the arrow's width, rounded up.
+fn arrow_middle(w: i32) -> i32 {
+    ((i64::from(w) + 1) as u64 >> 1) as i32
+}
+
+/// The arrow's centre: half the width past the left, in doubles.
+fn arrow_centre(x: i32, w: i32, nudge: f64) -> f32 {
+    (f64::from(w) * 0.5 + f64::from(x) + nudge) as f32
+}
+
+/// A horizontal scroll arrow: a chevron from the left point to the middle
+/// and on to the right, then its faded copies a pixel below and above.
+/// `look` picks the inks (see `arrow_inks`).
+pub fn scroll_arrow_horizontal(
+    batch: &mut SkinBatch,
+    x: i32,
+    y: i32,
+    w: i32,
+    look: i32,
+    palette: &SkinPalette,
+) {
+    let m = arrow_middle(w);
+    let fx = x as f32;
+    let fy = |offset: i32| (i64::from(y) + i64::from(offset)) as f32;
+    let right = (i64::from(x) + i64::from(w)) as f32;
     arrow_strokes(
         batch,
         [
-            (x, y + mid),
-            (x + w * 0.5 - 0.5, y + 1.0),
-            (x + w, y + mid),
-            (x + w * 0.5, y),
-            (x, y + mid + 1.0),
-            (x + w * 0.5 + 0.5, y + 1.0),
-            (x + w, y + mid + 1.0),
-            (x + w * 0.5 + 0.5, y + 2.0),
-            (x, y + mid - 1.0),
-            (x + w * 0.5 + 0.5, y - 1.0),
-            (x + w, y + mid - 1.0),
-            (x + w * 0.5 + 0.5, y),
+            (fx, fy(m)),
+            (arrow_centre(x, w, -0.5), fy(1)),
+            (right, fy(m)),
+            (arrow_centre(x, w, 0.0), fy(0)),
+            (fx, fy(m + 1)),
+            (arrow_centre(x, w, 0.5), fy(1)),
+            (right, fy(m + 1)),
+            (arrow_centre(x, w, 0.5), fy(2)),
+            (fx, fy(m - 1)),
+            (arrow_centre(x, w, 0.5), fy(-1)),
+            (right, fy(m - 1)),
+            (arrow_centre(x, w, 0.5), fy(0)),
         ],
-        ink,
+        look,
+        palette,
     );
 }
 
 /// A vertical scroll arrow, turned a quarter from the horizontal one.
-pub fn scroll_arrow_vertical(batch: &mut SkinBatch, x: f32, y: f32, w: f32, ink: SkinInk) {
-    let mid = ((w as i32 + 1) as u32 >> 1) as f32;
-    batch.begin();
-    batch.set_ink(ink);
+pub fn scroll_arrow_vertical(
+    batch: &mut SkinBatch,
+    x: i32,
+    y: i32,
+    w: i32,
+    look: i32,
+    palette: &SkinPalette,
+) {
+    let m = arrow_middle(w);
+    let fx = x as f32;
+    let fy = |offset: i32| (i64::from(y) + i64::from(offset)) as f32;
+    let tip = |offset: f32| (i64::from(y) + i64::from(m)) as f32 + offset;
+    let right = (i64::from(x) + i64::from(w)) as f32;
     arrow_strokes(
         batch,
         [
-            (x, y),
-            (x + w * 0.5, y + mid),
-            (x + w, y),
-            (x + w * 0.5 - 0.5, y + mid + 0.5),
-            (x, y + 1.0),
-            (x + w * 0.5, y + mid + 1.0),
-            (x + w, y + 1.0),
-            (x + w * 0.5 - 0.5, y + mid + 0.5),
-            (x, y - 1.0),
-            (x + w * 0.5, y + mid - 1.0),
-            (x + w, y - 1.0),
-            (x + w * 0.5 - 0.5, y + mid - 0.5),
+            (fx, fy(0)),
+            (arrow_centre(x, w, 0.0), fy(m)),
+            (right, fy(0)),
+            (arrow_centre(x, w, -0.5), tip(0.5)),
+            (fx, fy(1)),
+            (arrow_centre(x, w, 0.0), fy(m + 1)),
+            (right, fy(1)),
+            (arrow_centre(x, w, -0.5), tip(0.5)),
+            (fx, fy(-1)),
+            (arrow_centre(x, w, 0.0), fy(m - 1)),
+            (right, fy(-1)),
+            (arrow_centre(x, w, -0.5), tip(-0.5)),
         ],
-        ink,
+        look,
+        palette,
     );
 }
 
@@ -5666,7 +5755,8 @@ pub fn gradient_box(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: 
 
 /// The bevel form of a rectangle: two inks fading between each other across
 /// the left and right sides, with the top edge at the top ink and the bottom
-/// edge at the bottom ink.
+/// edge at the bottom ink. The left side's mixes meet half a pixel lower
+/// than the right side's, and the right side ends on the top edge.
 pub fn bevel_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk) {
     let high = mix_ink(bottom, top, 0.65);
     let low = mix_ink(bottom, top, 0.35);
@@ -5689,12 +5779,13 @@ pub fn bevel_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: Sk
     batch.vertex(x0, y1);
     batch.vertex(x1, y1);
     batch.vertex(x1, y1);
+    let right_middle = (y0 - y1) * 0.5 + y1;
     batch.set_ink(low);
-    batch.vertex(x1, middle);
+    batch.vertex(x1, right_middle);
     batch.set_ink(high);
-    batch.vertex(x1, middle);
+    batch.vertex(x1, right_middle);
     batch.set_ink(top);
-    batch.vertex(x1, y0 - 1.0);
+    batch.vertex(x1, y0);
     batch.end_lines();
 }
 
@@ -11021,6 +11112,8 @@ mod tests {
         assert_eq!((outline[0].x, outline[0].y), (10.0, 20.0));
         assert_eq!(outline[0].ink, [10, 20, 30, 25]);
         assert_eq!(outline[1].ink, [200, 100, 50, 200]);
+        // The outline's middle is half of the width less one in: 59.5.
+        assert_eq!((outline[1].x, outline[1].y), (59.5, 20.0));
         assert_eq!((outline[3].x, outline[3].y), (110.0, 20.0));
         let glow = &batch.vertices_of(&batch.primitives[1]);
         assert_eq!(batch.primitives[1].draw, GuiDraw::Triangles);
@@ -11029,8 +11122,12 @@ mod tests {
         assert_eq!(glow[0].ink, [10, 20, 30, 0]);
         assert_eq!((glow[1].x, glow[1].y), (60.0, 21.0));
         assert_eq!(glow[1].ink, [10, 20, 30, 100]);
-        assert_eq!((glow[13].x, glow[13].y), (60.0, 104.0));
-        assert_eq!((glow[14].x, glow[14].y), (10.0, 103.0));
+        // The lower fans reach up from the bottom line at 99: the reach is
+        // −5 (one unit and one) and the corner −4.
+        assert_eq!((glow[12].x, glow[12].y), (10.0, 99.0));
+        assert_eq!((glow[13].x, glow[13].y), (60.0, 94.0));
+        assert_eq!((glow[14].x, glow[14].y), (10.0, 95.0));
+        assert_eq!((glow[21].x, glow[21].y), (110.0, 95.0));
     }
 
     #[test]
@@ -11103,7 +11200,7 @@ mod tests {
                 batch.vertices_of(primitive)[0].x,
                 batch.vertices_of(primitive)[0].y
             ),
-            (109.5, 20.5)
+            (109.0, 20.5)
         );
         assert_eq!(
             (
@@ -11118,8 +11215,144 @@ mod tests {
                 batch.vertices_of(primitive)[8].x,
                 batch.vertices_of(primitive)[8].y
             ),
-            (108.5, 21.5)
+            (108.0, 21.5)
         );
+    }
+
+    #[test]
+    fn a_bevel_rect_meets_lower_on_the_left_and_ends_on_the_top() {
+        let mut batch = SkinBatch::new();
+        let (bottom, top) = ([0, 0, 0, 255], [200, 200, 200, 255]);
+        bevel_rect(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 30.0, 40.0),
+            bottom,
+            top,
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.draw, GuiDraw::Lines);
+        let points: Vec<(f32, f32)> = batch
+            .vertices_of(primitive)
+            .iter()
+            .map(|v| (v.x, v.y))
+            .collect();
+        // Lines run half a pixel in: 10.5 to 29.5 and 20.5 to 39.5, with
+        // the middle at 30; the left side's mixes meet at 30.5.
+        assert_eq!(
+            points,
+            [
+                (29.5, 20.5),
+                (10.5, 20.5),
+                (10.5, 20.5),
+                (10.5, 30.5),
+                (10.5, 30.5),
+                (10.5, 39.5),
+                (10.5, 39.5),
+                (29.5, 39.5),
+                (29.5, 39.5),
+                (29.5, 30.0),
+                (29.5, 30.0),
+                (29.5, 20.5),
+            ]
+        );
+        assert_eq!(batch.vertices_of(primitive)[11].ink, top);
+        assert_eq!(batch.vertices_of(primitive)[3].ink, [130, 130, 130, 255]);
+    }
+
+    #[test]
+    fn a_gradient_frame_meets_half_a_pixel_higher_on_the_right() {
+        let mut batch = SkinBatch::new();
+        gradient_frame(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 30.0, 40.0),
+            [1, 1, 1, 255],
+            [2, 2, 2, 255],
+            [3, 3, 3, 255],
+        );
+        let vertices = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((vertices[3].x, vertices[3].y), (10.5, 30.5));
+        assert_eq!((vertices[9].x, vertices[9].y), (29.5, 30.0));
+        assert_eq!((vertices[11].x, vertices[11].y), (29.5, 19.5));
+    }
+
+    #[test]
+    fn a_four_ink_frame_fades_its_sides_from_the_edges() {
+        let mut batch = SkinBatch::new();
+        let inks = [
+            [1, 0, 0, 255],
+            [2, 0, 0, 255],
+            [3, 0, 0, 255],
+            [4, 0, 0, 255],
+        ];
+        four_ink_frame(&mut batch, GuiRect::corners(0.0, 0.0, 10.0, 10.0), inks);
+        let vertices = batch.vertices_of(&batch.primitives[0]);
+        let order: Vec<u8> = vertices.iter().map(|v| v.ink[0]).collect();
+        assert_eq!(order, [1, 1, 1, 2, 4, 4, 4, 3]);
+    }
+
+    #[test]
+    fn a_two_ink_band_is_two_lines() {
+        let mut batch = SkinBatch::new();
+        two_ink_band(
+            &mut batch,
+            GuiRect::corners(2.0, 24.0, 98.0, 26.0),
+            [1, 1, 1, 255],
+            [2, 2, 2, 255],
+        );
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.draw, GuiDraw::Lines);
+        let points: Vec<(f32, f32)> = batch
+            .vertices_of(primitive)
+            .iter()
+            .map(|v| (v.x, v.y))
+            .collect();
+        assert_eq!(
+            points,
+            [(97.5, 24.5), (2.0, 24.5), (2.0, 25.5), (98.0, 25.5)]
+        );
+    }
+
+    #[test]
+    fn a_gradient_frame_clamps_its_bands_before_moving_in() {
+        let mut batch = SkinBatch::new();
+        vertical_gradient_frame(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            4,
+            [255, 255, 255, 255],
+            [0, 0, 0, 255],
+        );
+        let vertices = batch.vertices_of(&batch.primitives[0]);
+        // Two units below the top is 28 and above the bottom 92, measured
+        // on the rectangle itself; the lines then sit at x 10.5.
+        assert_eq!((vertices[3].x, vertices[3].y), (10.5, 28.0));
+        assert_eq!((vertices[5].x, vertices[5].y), (10.5, 92.0));
+        assert_eq!((vertices[15].x, vertices[15].y), (109.5, 20.5));
+    }
+
+    #[test]
+    fn a_faded_rect_keeps_the_low_byte_of_a_raised_alpha() {
+        let mut batch = SkinBatch::new();
+        faded_rect(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 10.0, 10.0),
+            [0, 0, 0, 200],
+            [0, 0, 0, 100],
+            1.5,
+        );
+        // 200 × 1.5 = 300 wraps to 44; 100 × 1.5 = 150.
+        let vertices = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!(vertices[0].ink[3], 150);
+        assert_eq!(vertices[7].ink[3], 44);
+    }
+
+    #[test]
+    fn a_shadow_of_negative_height_keeps_its_inset() {
+        let mut batch = SkinBatch::new();
+        shadow_ring(&mut batch, GuiRect::corners(0.0, 10.0, 20.0, 0.0), 4, 0x30);
+        // −10 shifted as an unsigned word is huge, so the inset stays 4.
+        let vertices = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((vertices[2].x, vertices[2].y), (4.0, -4.0));
     }
 
     #[test]
@@ -11157,18 +11390,62 @@ mod tests {
 
     #[test]
     fn a_scroll_arrow_is_a_line_list_with_a_faded_second_half() {
+        let mut palette = SkinPalette::filled([0, 0, 0, 0]);
+        palette.text[4] = [7, 8, 9, 200];
+        palette.text[5] = [1, 2, 3, 250];
         let mut batch = SkinBatch::new();
-        scroll_arrow_horizontal(&mut batch, 10.0, 20.0, 9.0, [1, 2, 3, 200]);
+        // Width 9: the middle is (9 + 1) / 2 = 5 and the centre 14.5.
+        scroll_arrow_horizontal(&mut batch, 10, 20, 9, 0, &palette);
         let primitive = &batch.primitives[0];
         assert_eq!(primitive.draw, GuiDraw::Lines);
-        assert_eq!(batch.vertices_of(primitive).len(), 12);
-        assert_eq!(batch.vertices_of(primitive)[0].x, 10.0);
-        assert_eq!(batch.vertices_of(primitive)[0].y, 25.0);
-        assert_eq!(batch.vertices_of(primitive)[1].x, 14.0);
-        assert_eq!(batch.vertices_of(primitive)[1].y, 21.0);
-        assert_eq!(batch.vertices_of(primitive)[3].ink, [1, 2, 3, 200]);
-        assert_eq!(batch.vertices_of(primitive)[4].ink, [1, 2, 3, 132]);
-        assert_eq!(batch.vertices_of(primitive)[11].ink, [1, 2, 3, 132]);
+        assert_eq!(primitive.blend, 0);
+        let vertices = batch.vertices_of(primitive);
+        let points: Vec<(f32, f32)> = vertices.iter().map(|v| (v.x, v.y)).collect();
+        assert_eq!(
+            points,
+            [
+                (10.0, 25.0),
+                (14.0, 21.0),
+                (19.0, 25.0),
+                (14.5, 20.0),
+                (10.0, 26.0),
+                (15.0, 21.0),
+                (19.0, 26.0),
+                (15.0, 22.0),
+                (10.0, 24.0),
+                (15.0, 19.0),
+                (19.0, 24.0),
+                (15.0, 20.0),
+            ]
+        );
+        // The drawn ink is the shade after the named one; the faded copies
+        // take the named shade at 200 / 3 × 2 = 132.
+        assert_eq!(vertices[3].ink, [1, 2, 3, 250]);
+        assert_eq!(vertices[4].ink, [7, 8, 9, 132]);
+        assert_eq!(vertices[11].ink, [7, 8, 9, 132]);
+    }
+
+    #[test]
+    fn a_hot_vertical_arrow_draws_additively() {
+        let mut palette = SkinPalette::filled([0, 0, 0, 0]);
+        palette.highlight[8] = [5, 5, 5, 100];
+        palette.highlight[9] = [6, 6, 6, 255];
+        let mut batch = SkinBatch::new();
+        batch.blend = 0x203;
+        scroll_arrow_vertical(&mut batch, 10, 20, 8, 1, &palette);
+        let primitive = &batch.primitives[0];
+        assert_eq!(primitive.blend, 0x201);
+        assert_eq!(batch.blend, 0x203);
+        let vertices = batch.vertices_of(primitive);
+        // Width 8: the middle is 4, the centre 14.
+        assert_eq!((vertices[1].x, vertices[1].y), (14.0, 24.0));
+        assert_eq!((vertices[3].x, vertices[3].y), (13.5, 24.5));
+        assert_eq!((vertices[11].x, vertices[11].y), (13.5, 23.5));
+        assert_eq!(vertices[0].ink, [6, 6, 6, 255]);
+        assert_eq!(vertices[4].ink, [5, 5, 5, 66]);
+        // A look the original does not name draws nothing.
+        scroll_arrow_vertical(&mut batch, 10, 20, 8, 2, &palette);
+        assert_eq!(batch.primitives.len(), 1);
     }
 
     fn palette_for_faces() -> SkinPalette {
@@ -11444,7 +11721,7 @@ mod tests {
         );
         assert_eq!(batch.primitives.len(), 2);
         assert_eq!(batch.vertices_of(&batch.primitives[0]).len(), 16);
-        assert_eq!(batch.vertices_of(&batch.primitives[1])[0].x, 98.5);
+        assert_eq!(batch.vertices_of(&batch.primitives[1])[0].x, 98.0);
         assert_eq!(
             batch.vertices_of(&batch.primitives[1])[0].ink,
             [20, 21, 22, 50]

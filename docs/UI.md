@@ -691,15 +691,22 @@ primitives below are the base class's.
   texture offset in 512ths shifts sampling; the scroll bars set it while
   their thumb or trough is drawn.
 - **Primitives.** Line rectangles inset half a pixel (`outline`), four-stop
-  vertical gradients (0.43/0.57 and 0.4/0.6 tones), alpha-scaled gradients,
-  striped bars that interpolate each stripe to the next colour, listing
-  selection bands (a faded outline plus glow bands above and below, wider
-  when selected), rounded fills and textured rounded frames through the
-  rounded shader, one- and two-ink rectangles, one- and two-pixel line
-  boxes, four-ink and four-stop bands, drop shadows and inverted `inset`
-  rings that fade towards the middle, fixed bevel rings, clamped vertical
-  gradients and their line form, and the two scroll arrows (six line
-  pairs, two thirds alpha after the fourth vertex).
+  vertical gradients (0.43/0.57 and 0.4/0.6 tones), alpha-scaled gradients
+  (the alphas keep their low byte), striped bars that interpolate each
+  stripe to the next colour, listing selection bands (an outline whose
+  middle is half the width less one in, then glow fans reaching into the
+  row from its top and bottom edges, wider when selected), rounded fills
+  and textured rounded frames through the rounded shader, one- and two-ink
+  rectangles, one- and two-pixel line boxes (each top edge a pixel short of
+  its right side), two-line bands, four-ink frames whose sides fade from
+  the edge inks, four-stop bands, drop shadows and inverted `inset` rings
+  that fade towards the middle, fixed bevel rings, clamped vertical
+  gradients and their line form (clamped before the lines move in), bevel
+  and gradient line boxes whose left mixes meet half a pixel below the
+  right ones, and the two scroll arrows: six line pairs in a look's inks.
+  Look −1 draws label shade 2, look 0 label shade 5 and look 1 highlight
+  shade 9 additively; the faded copies after the fourth vertex take the
+  shade before at two thirds of its alpha.
 - **Control parts.** A control face is a two-ink inner rectangle, a
   bordered one-pixel box and an outline, in the pressed, hot (the form
   group's copy) or idle inks; its gradient form swaps the first two for a
