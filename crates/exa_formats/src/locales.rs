@@ -36,10 +36,12 @@ impl LocaleDb {
 
     /// The first record whose name is `name`, as an id (0 when none).
     ///
-    /// The original lower-cases the stored 16-byte name and the query's
-    /// bytes and compares them; a name longer than 16 bytes is cut and a
-    /// shorter one is padded with NULs. A miss is 0, as record ids start at
-    /// 1.
+    /// The original lower-cases each stored 16-byte name and compares all
+    /// 16 bytes with the caller's 16-byte query as it is given (the callers
+    /// hand it a name already in lower case). Here the query is lower-cased
+    /// too, so a level name in any case finds its record; a name longer than
+    /// 16 bytes is cut and a shorter one is padded with NULs. A miss is 0,
+    /// as record ids start at 1.
     pub fn find(&self, name: &str) -> u32 {
         let mut query = [0u8; NAME_LEN];
         for (slot, byte) in query.iter_mut().zip(name.bytes()) {
@@ -72,11 +74,6 @@ impl LocaleDb {
             let end = b.iter().position(|&c| c == 0).unwrap_or(NAME_LEN);
             b[..end].iter().map(|&c| c as char).collect()
         })
-    }
-
-    /// The name of the first record, when there is one.
-    pub fn first_name(&self) -> Option<String> {
-        self.name_text(self.db.records().first()?.id)
     }
 }
 
@@ -127,7 +124,6 @@ mod tests {
         assert_eq!(db.name_text(7).as_deref(), Some("Arena"));
         assert_eq!(db.name(7).unwrap(), *b"Arena\0\0\0\0\0\0\0\0\0\0\0");
         assert_eq!(db.name_text(1).as_deref(), Some("Underworld0"));
-        assert_eq!(db.first_name().as_deref(), Some("Underworld0"));
         assert_eq!(db.name(9), None);
     }
 
@@ -135,7 +131,7 @@ mod tests {
     fn an_empty_or_bad_file_finds_nothing() {
         let db = LocaleDb::load(&locales(&[])).unwrap();
         assert_eq!(db.find("Arena"), 0);
-        assert_eq!(db.first_name(), None);
+        assert_eq!(db.name(1), None);
         assert!(LocaleDb::load(&[]).is_err());
         let mut bad = locales(&[(1, "Arena")]);
         bad[0] ^= 0xFF;

@@ -11,10 +11,11 @@
 //! clearing the table.
 //!
 //! The index is the original's separate sorted array of 8-byte entries: an
-//! id and an offset into its own blob. Each payload starts with a `u32`
-//! length; the entries stay sorted by id, a delete clears the payload and
-//! closes the entry up, and a payload of a new length moves the bytes after
-//! it and fixes the offsets.
+//! id and an offset into its own blob. Each block starts with a `u32` that
+//! is the block's own length in bytes, that word included; the entries stay
+//! sorted by id, a delete stores an empty block and closes the entry up, and
+//! a block of a new length moves the bytes after the old one and fixes the
+//! offsets.
 //!
 //! Layout evidence: `docs/formats/OTHER.md` (Object database, UID manager)
 //! and `docs/formats/RFC.md` (locales).
@@ -229,16 +230,18 @@ impl UidDatabase {
     }
 }
 
-/// One entry of the sorted id→offset index: the id and the payload's
-/// offset in the index's blob, or `-1` for an entry without a payload.
+/// One entry of the sorted id→offset index: the id and the block's offset
+/// in the index's blob, or `-1` for an entry without a block.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IndexEntry {
     pub id: i32,
     pub offset: i32,
 }
 
-/// The original's separate sorted id→offset index and its blob. Payloads
-/// start with a `u32` length, so the entry's offset points at that word.
+/// The original's separate sorted id→offset index and its blob. A block
+/// starts with a `u32` that is the block's length in bytes (itself
+/// included); the entry's offset points at that word. Nothing in Exarust
+/// reads such an index yet; the type reproduces the editing routines.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UidIndex {
     entries: Vec<IndexEntry>,
@@ -268,9 +271,9 @@ impl UidIndex {
         self.entries.is_empty()
     }
 
-    /// Inserts `id` at its sorted place, with no payload, as the original's
-    /// insertion does. `found` is the position of an id already present,
-    /// which is not inserted again.
+    /// Inserts `id` at its sorted place, with no block, as the original's
+    /// insertion does: `Ok(position)` when it was inserted, `Err(position)`
+    /// when the id was already there (nothing is inserted then).
     pub fn insert(&mut self, id: i32) -> std::result::Result<usize, usize> {
         match self.entries.binary_search_by_key(&id, |e| e.id) {
             Ok(pos) => Err(pos),
@@ -286,81 +289,80 @@ impl UidIndex {
         self.entries.binary_search_by_key(&id, |e| e.id).ok()
     }
 
-    /// The bytes at the entry's offset (its leading length word included),
-    /// or `None` for an entry without a payload.
-    pub fn bytes(&self, index: usize) -> Option<&[u8]> {
+    /// The length word of the block at `offset`, or 0 for no block.
+    fn block_len(&self, offset: i32) -> u32 {
+        if offset == -1 {
+            return 0;
+        }
+        self.data
+            .get(offset as usize..)
+            .and_then(|rest| read_u32(rest, 0).ok())
+            .unwrap_or(0)
+    }
+
+    /// The block of the entry at `index`, its length word included, or
+    /// `None` for an entry without one.
+    pub fn block(&self, index: usize) -> Option<&[u8]> {
         let offset = self.entries.get(index)?.offset;
         if offset < 0 {
             return None;
         }
         let start = offset as usize;
-        self.data.get(start..)
+        let len = self.block_len(offset) as usize;
+        self.data.get(start..start.checked_add(len)?)
     }
 
-    /// The `u32` length at the entry's offset.
-    pub fn payload_len(&self, index: usize) -> Option<u32> {
-        read_u32(self.bytes(index)?, 0).ok()
-    }
-
-    /// The payload after the entry's leading length word.
-    pub fn payload(&self, index: usize) -> Option<&[u8]> {
-        let bytes = self.bytes(index)?;
-        let len = read_u32(bytes, 0).ok()? as usize;
-        bytes.get(4..4 + len)
-    }
-
-    /// Deletes the entry at `index`: its payload is cleared, the entry is
+    /// Deletes the entry at `index`: an empty block is stored, the entry is
     /// removed and the entries after it move down.
     pub fn delete(&mut self, index: usize) {
         if index >= self.entries.len() {
             return;
         }
-        self.set_payload(index, &[]);
+        self.set_block(index, &0u32.to_le_bytes());
         self.entries.remove(index);
     }
 
-    /// Stores `payload` for the entry at `index`, as the original does: a
-    /// new length moves the bytes after the old payload, fixes every later
-    /// offset, appends the payload at the blob's end and writes its length;
-    /// the same length (and any non-empty payload) overwrites in place.
-    pub fn set_payload(&mut self, index: usize, payload: &[u8]) {
+    /// Stores `block` for the entry at `index`. The block's first word is
+    /// its length, and that many bytes are stored. As the original does, a
+    /// new length closes the old block's hole, moves every later offset
+    /// down by the old length (compared as unsigned numbers, so an entry
+    /// with no block, whose offset is all ones, moves too: the original's
+    /// quirk), and appends the new block at the blob's end; the same length
+    /// overwrites in place.
+    pub fn set_block(&mut self, index: usize, block: &[u8]) {
         let Some(entry) = self.entries.get(index).copied() else {
             return;
         };
-        let old_len = if entry.offset < 0 {
-            0
-        } else {
-            let at = entry.offset as usize;
-            self.data
-                .get(at..at + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")) as usize)
-                .unwrap_or(0)
-        };
-        let new_len = payload.len();
+        let old_len = self.block_len(entry.offset);
+        let new_len = read_u32(block, 0).unwrap_or(0);
         if old_len != new_len {
             if old_len != 0 {
-                let start = (entry.offset as usize).min(self.data.len());
-                let end = (start + old_len + 4).min(self.data.len());
+                let start = (entry.offset as u32 as usize).min(self.data.len());
+                let end = start.saturating_add(old_len as usize).min(self.data.len());
                 self.data.drain(start..end);
                 for e in &mut self.entries {
-                    if entry.offset >= 0 && entry.offset < e.offset {
-                        e.offset = e.offset.wrapping_sub((old_len + 4) as i32);
+                    if (entry.offset as u32) < (e.offset as u32) {
+                        e.offset = (e.offset as u32).wrapping_sub(old_len) as i32;
                     }
                 }
             }
             let at = self.data.len() as i32;
-            self.data.extend_from_slice(&(new_len as u32).to_le_bytes());
-            self.data.extend_from_slice(payload);
             self.entries[index].offset = at;
+            self.data.resize(self.data.len() + new_len as usize, 0);
+            self.copy_block(at, block, new_len);
             return;
         }
-        if old_len != 0 {
-            let start = entry.offset as usize + 4;
-            if let Some(dst) = self.data.get_mut(start..start + new_len) {
-                dst.copy_from_slice(payload);
-            }
-        } else if !payload.is_empty() {
-            // A same-length empty payload writes nothing.
+        if new_len != 0 {
+            self.copy_block(entry.offset, block, new_len);
+        }
+    }
+
+    fn copy_block(&mut self, at: i32, block: &[u8], len: u32) {
+        let start = at as usize;
+        let len = len as usize;
+        let n = len.min(block.len());
+        if let Some(dst) = self.data.get_mut(start..start + n) {
+            dst.copy_from_slice(&block[..n]);
         }
     }
 
@@ -485,6 +487,13 @@ mod tests {
         assert_eq!(db.len(), 1);
     }
 
+    /// A block: its own length word, then the bytes.
+    fn block(bytes: &[u8]) -> Vec<u8> {
+        let mut out = ((bytes.len() + 4) as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(bytes);
+        out
+    }
+
     #[test]
     fn the_sorted_index_inserts_finds_and_deletes() {
         let mut index = UidIndex::new();
@@ -494,28 +503,47 @@ mod tests {
         assert_eq!(index.insert(12), Err(1));
         assert_eq!(index.find(12), Some(1));
         assert_eq!(index.find(9), None);
-        index.set_payload(1, b"twelve");
-        assert_eq!(index.payload(1), Some(&b"twelve"[..]));
-        assert_eq!(index.payload_len(1), Some(6));
-        assert_eq!(index.payload(0), None);
-        // A longer payload appends and fixes later offsets.
-        index.set_payload(0, b"twenty");
-        assert_eq!(index.payload(0), Some(&b"twenty"[..]));
-        assert_eq!(index.payload(1), Some(&b"twelve"[..]));
-        assert_eq!(index.payload(2), None);
+        index.set_block(1, &block(b"twelve"));
+        assert_eq!(index.block(1), Some(&block(b"twelve")[..]));
+        assert_eq!(index.block(0), None);
+        // A longer block appends.
+        index.set_block(0, &block(b"twenty!"));
+        assert_eq!(index.block(0), Some(&block(b"twenty!")[..]));
+        assert_eq!(index.block(1), Some(&block(b"twelve")[..]));
+        assert_eq!(index.block(2), None);
         // The same length overwrites in place.
-        index.set_payload(1, b"TWELVE");
-        assert_eq!(index.payload(1), Some(&b"TWELVE"[..]));
-        // Deleting clears the payload and closes the entry up.
+        index.set_block(1, &block(b"TWELVE"));
+        assert_eq!(index.block(1), Some(&block(b"TWELVE")[..]));
+        assert_eq!(index.data().len(), 10 + 11);
+        // Deleting stores an empty block and closes the entry up: the bytes
+        // after the old block move down and their offset follows.
         index.delete(1);
         assert_eq!(
             index.entries().iter().map(|e| e.id).collect::<Vec<_>>(),
             [5, 20]
         );
-        assert_eq!(index.payload(0), Some(&b"twenty"[..]));
-        assert_eq!(index.payload(1), None);
+        assert_eq!(index.block(0), Some(&block(b"twenty!")[..]));
+        assert_eq!(index.entries()[0].offset, 0);
+        assert_eq!(index.block(1), None);
+        assert_eq!(index.data().len(), 11);
         index.delete(9);
         assert_eq!(index.len(), 2);
         assert!(UidIndex::new().insert(1).is_ok());
+    }
+
+    /// The offset fix-up compares unsigned, so an entry with no block (all
+    /// ones) moves down with the rest.
+    #[test]
+    fn an_entry_without_a_block_moves_with_the_fix_up_as_the_original_does() {
+        let mut index = UidIndex::new();
+        index.insert(1).unwrap();
+        index.insert(2).unwrap();
+        index.insert(3).unwrap();
+        index.set_block(0, &block(b"abcd"));
+        index.set_block(1, &block(b"ef"));
+        // Entry 2 has no block yet. Growing entry 0 closes its 8-byte hole.
+        index.set_block(0, &block(b"abcdef"));
+        assert_eq!(index.entries()[1].offset, 0);
+        assert_eq!(index.entries()[2].offset, -1 - 8);
     }
 }
