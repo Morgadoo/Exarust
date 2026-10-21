@@ -80,6 +80,27 @@ pub struct TextureSettings {
     pub max_units: u32,
 }
 
+impl TextureSettings {
+    /// Applies the two limits read once the context exists: the driver's
+    /// largest texture side, and its texture units clamped to 16 (the
+    /// original's cap).
+    pub fn apply_driver_limits(&mut self, max_texture_size: u32, max_units: u32) {
+        self.max_texture_size = max_texture_size;
+        self.max_units = max_units.min(16);
+    }
+
+    /// The fallback the original uses when no quality settings file could be
+    /// read: mask 3, detail 1, anisotropy level 0 (its anisotropy mode 3).
+    pub fn fallback() -> Self {
+        Self {
+            quality_mask: 3,
+            anisotropy_level: 0,
+            texture_detail: 1,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for TextureSettings {
     /// The retail user's settings: quality 5, detail 3, 4x supersampling.
     fn default() -> Self {
@@ -211,9 +232,41 @@ pub fn material_flags(record_flags: u32, settings: &TextureSettings) -> u32 {
     record_flags | settings.quality_mask
 }
 
-/// Whether the word asks for the sRGB formats.
-pub fn is_srgb(space: ColorSpace, flags: u32) -> bool {
-    space == ColorSpace::Srgb && flags & flags::DATA == 0
+/// Whether a stored format word names data rather than colour: the top byte
+/// is `0x82` (BC1 specular), `0x92` (BC5 normals) or `0x12` (uncompressed
+/// data). Those are never uploaded as sRGB, whatever the material asks for.
+pub fn word_is_data(format_word: u32) -> bool {
+    matches!(format_word >> 24, 0x82 | 0x92 | 0x12)
+}
+
+/// Whether the word asks for the sRGB formats: the request's data bit and
+/// the stored format's own class both have a say.
+pub fn is_srgb(space: ColorSpace, flags: u32, format_word: u32) -> bool {
+    space == ColorSpace::Srgb && flags & flags::DATA == 0 && !word_is_data(format_word)
+}
+
+/// The 1×1 grey placeholder the original uploads when an image cannot be
+/// read: RGB (64, 64, 64), opaque, with the requested sampler.
+pub fn placeholder_image(space: ColorSpace, flags: u32, settings: &TextureSettings) -> Image {
+    let srgb = is_srgb(space, flags, 0x0100_C600);
+    let sampler = TextureSampler::from_flags(flags, settings);
+    let mut image = Image::new_fill(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[0x40, 0x40, 0x40, 0xff],
+        if srgb {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::Descriptor(sampler.descriptor());
+    image
 }
 
 /// The image with the original's parameters, from the default texture word
@@ -258,9 +311,9 @@ pub fn rfi_to_texture(
     // The image's own header keeps the wrap, detail and target bits; the
     // request supplies the filtering and data bits.
     let word = flags | (rfi.header.flags & 0xfff8_0000);
-    let srgb = is_srgb(space, word);
+    let srgb = is_srgb(space, word, rfi.header.format_word);
     let sampler = TextureSampler::from_flags(word, settings);
-    let first = rfi
+    let mut first = rfi
         .header
         .first_mip_level(settings.texture_detail, settings.max_texture_size);
     let mipmapped = word & flags::MIPMAP != 0;
@@ -314,7 +367,10 @@ pub fn rfi_to_texture(
                 rfi.decode_rgba8()?
             };
             if !rfi.header.has_mip_chain() {
-                let last = if mipmapped { u32::MAX } else { first.max(1) };
+                // With mipmapping the chain runs to its end; without it only
+                // the chosen level is generated, or the base when the
+                // chosen level is 0.
+                let last = if mipmapped { u32::MAX } else { first };
                 let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_between(
                     &rgba,
                     w as usize,
@@ -327,6 +383,10 @@ pub fn rfi_to_texture(
                 if levels > 0 {
                     rgba = chain;
                     mip_count = levels;
+                } else {
+                    // A skip past the end of a tiny image: keep the stored
+                    // base (the retail data never asks for this).
+                    first = 0;
                 }
             }
             let mut image = Image::new_uninit(
@@ -471,11 +531,53 @@ mod sampler_tests {
     }
 
     #[test]
-    fn the_data_bit_beats_the_colour_space() {
-        assert!(is_srgb(ColorSpace::Srgb, 0));
-        assert!(!is_srgb(ColorSpace::Srgb, flags::DATA));
-        assert!(!is_srgb(ColorSpace::Linear, 0));
-        assert!(!is_srgb(ColorSpace::Linear, flags::DATA));
+    fn the_driver_limits_cap_the_texture_units() {
+        let mut settings = TextureSettings::default();
+        settings.apply_driver_limits(16_384, 32);
+        assert_eq!(settings.max_texture_size, 16_384);
+        assert_eq!(settings.max_units, 16);
+        settings.apply_driver_limits(8192, 8);
+        assert_eq!(settings.max_texture_size, 8192);
+        assert_eq!(settings.max_units, 8);
+        // The fallback's values, as the original sets them without a settings
+        // file.
+        let fallback = TextureSettings::fallback();
+        assert_eq!(fallback.quality_mask, 3);
+        assert_eq!(fallback.texture_detail, 1);
+        assert_eq!(fallback.anisotropy_level, 0);
+    }
+
+    #[test]
+    fn the_data_bit_and_the_format_word_beat_the_colour_space() {
+        let colour = 0x0100_C600;
+        assert!(is_srgb(ColorSpace::Srgb, 0, colour));
+        assert!(!is_srgb(ColorSpace::Srgb, flags::DATA, colour));
+        assert!(!is_srgb(ColorSpace::Linear, 0, colour));
+        assert!(!is_srgb(ColorSpace::Linear, flags::DATA, colour));
+        // A specular BC1, a normal BC5 and a data RGB word are data formats.
+        for word in [0x823B_C600, 0x927B_8400, 0x1201_C600] {
+            assert!(word_is_data(word), "{word:#010x}");
+            assert!(!is_srgb(ColorSpace::Srgb, 0, word), "{word:#010x}");
+        }
+        for word in [0x813B_C600, 0x817B_E608, 0x0100_E608, 0x0100_4200] {
+            assert!(!word_is_data(word), "{word:#010x}");
+            assert!(is_srgb(ColorSpace::Srgb, 0, word), "{word:#010x}");
+        }
+    }
+
+    #[test]
+    fn a_failed_image_gets_the_grey_placeholder() {
+        let settings = TextureSettings::default();
+        let image = placeholder_image(ColorSpace::Srgb, default_flags(), &settings);
+        assert_eq!(image.texture_descriptor.size.width, 1);
+        assert_eq!(image.texture_descriptor.size.height, 1);
+        assert_eq!(image.data.as_deref(), Some(&[0x40, 0x40, 0x40, 0xff][..]));
+        assert_eq!(
+            image.texture_descriptor.format,
+            TextureFormat::Rgba8UnormSrgb
+        );
+        let linear = placeholder_image(ColorSpace::Linear, default_flags(), &settings);
+        assert_eq!(linear.texture_descriptor.format, TextureFormat::Rgba8Unorm);
     }
 }
 
@@ -552,5 +654,73 @@ mod level_tests {
         .unwrap();
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         assert_eq!(image.data.as_ref().unwrap().len(), 2 * 2 * 4);
+    }
+
+    /// A single-level image gets the Kaiser chain only when the word asks
+    /// for mipmapping; otherwise it is uploaded as its base alone.
+    #[test]
+    fn mipmapping_decides_whether_a_chain_is_generated() {
+        let (data, header) = rgba_image(4, 4, 1, 0);
+        let mut bytes = Vec::new();
+        for v in [
+            exa_formats::rfi::RFI_MAGIC,
+            header.width,
+            header.height,
+            header.depth,
+            header.format_word,
+            header.flags,
+            header.storage,
+            header.data_size,
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&data);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        let settings = TextureSettings::default();
+        let plain = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags() & !flags::MIPMAP,
+            &settings,
+        )
+        .unwrap();
+        assert_eq!(plain.texture_descriptor.mip_level_count, 1);
+        assert_eq!(plain.data.as_ref().unwrap().len(), 4 * 4 * 4);
+        let chained =
+            rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
+        assert_eq!(chained.texture_descriptor.mip_level_count, 2);
+        assert_eq!(chained.data.as_ref().unwrap().len(), 4 * 4 * 4 + 2 * 2 * 4);
+    }
+
+    /// A detail skip past the end of a tiny image falls back to its base:
+    /// the retail data never asks for this, but the loader is total.
+    #[test]
+    fn a_skip_past_the_chain_falls_back_to_the_base() {
+        let (data, mut header) = rgba_image(2, 2, 1, 3 << 22);
+        header.flags |= 3 << 22;
+        let mut bytes = Vec::new();
+        for v in [
+            exa_formats::rfi::RFI_MAGIC,
+            header.width,
+            header.height,
+            header.depth,
+            header.format_word,
+            header.flags,
+            header.storage,
+            header.data_size,
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&data);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        let settings = TextureSettings {
+            texture_detail: 2,
+            ..TextureSettings::default()
+        };
+        let image =
+            rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
+        assert_eq!(image.texture_descriptor.size.width, 2);
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
     }
 }

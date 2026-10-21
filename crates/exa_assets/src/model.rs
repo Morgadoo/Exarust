@@ -956,8 +956,12 @@ impl ModelLoader<'_> {
                     self.cache.textures.finish(&key, handle, alpha);
                 }
                 Err(msg) => {
+                    // The original uploads a 1x1 grey placeholder when the
+                    // image cannot be read, and the record keeps it.
                     self.warn_once(msg);
-                    self.cache.textures.release(&key);
+                    let image = crate::texture::placeholder_image(space, flags, &settings);
+                    let handle = self.images.add(image);
+                    self.cache.textures.finish(&key, handle, false);
                 }
             }
         }
