@@ -45,9 +45,9 @@ pub const SUN_LUX: f32 = SUN_INTENSITY * LUX_PER_INTENSITY;
 /// The outdoor preset's fog reaches this far, metres (the level records'
 /// distance words give about this).
 const OUTDOOR_FOG_DISTANCE: f32 = 1000.0;
-/// Shadowed range of the sun, metres: how far the fitted orthographic map
-/// looks, and the single cascade's far bound.
-pub const SUN_SHADOW_RANGE: f32 = 60.0;
+/// Shadowed range of the sun's Bevy cascades, metres (levels without the
+/// fitted map).
+const SUN_SHADOW_RANGE: f32 = 60.0;
 
 pub struct EnvironmentPlugin;
 
@@ -245,11 +245,12 @@ pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Enti
                 shadow_maps_enabled: true,
                 ..default()
             },
-            // One map fitted to the visible region, as the original's sun:
-            // `sun_shadow` replaces this cascade's matrices each frame with
-            // the fitted ones. The bound is where the fit stops looking.
+            // Bevy's cascades. In a terrain level `sun_shadow` replaces them
+            // each frame with the original's one fitted map (and this
+            // configuration with its single bound); elsewhere they stand in
+            // for the original's whole-scene map.
             CascadeShadowConfigBuilder {
-                num_cascades: 1,
+                num_cascades: 2,
                 maximum_distance: SUN_SHADOW_RANGE,
                 ..default()
             }

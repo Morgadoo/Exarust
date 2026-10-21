@@ -1,56 +1,57 @@
 //! The fitted orthographic region of the original's single sun shadow map.
 //!
 //! The original keeps one orthographic depth map for the sun, not a cascade
-//! chain. Every frame its update copies the active view's convex volume, cuts
-//! it by up to three planes on the side the sun comes from, fits the smallest
+//! chain. In a level with a terrain its update fits that map every frame:
+//! it copies the camera's view volume, cuts it by up to three planes at the
+//! scene's bounds on the sides the camera looks towards, fits the smallest
 //! sphere around the surviving corners ([`crate::bound_sphere`]), converts
 //! that sphere to centimetres, quantises its radius to 200 cm steps with a
 //! hysteresis, snaps the centre to the shadow map's texel grid and gives the
 //! box a fixed ±8000 cm depth. The quantised radius carries over to the next
-//! frame, which is what the hysteresis compares against.
+//! frame, which is what the hysteresis compares against. Other levels use a
+//! whole-scene map instead, which is not reproduced here.
 //!
 //! The maths here is the original's, in the original's order:
 //!
+//! - The planes are chosen by the sign of each component of the camera's
+//!   backward axis (the third row of its frame): a negative component (the
+//!   camera looks towards +axis) keeps `axis ≤ high`, a positive one
+//!   `axis ≥ low`, a zero (or NaN) one adds no plane. On x and z, high and
+//!   low are the scene box's centre ± half extent. On y they are the level's
+//!   ceiling and floor when the level has an environment record, and
+//!   otherwise the box's *x* centre ± half extent, as the original reads
+//!   them ([`VerticalRange`]).
+//! - Each face keeps the part where `normal · p − w ≤ 0`; the cut is the
+//!   engine's convex-volume clip ([`exa_physics::intersect::ConvexVolume`]).
 //! - The corners are merged within 0.1 cm² and scaled by 0.01 (the
 //!   centimetre world into the metre units the sphere solver is tuned for),
 //!   and the fitted centre and radius are multiplied by 100 again.
 //! - The radius becomes `200·round(r/200 + 0.4)`; the conversion is the
-//!   processor's `cvtsd2si` (`round_ties_even`, the default rounding mode).
-//!   The engine's `floor`/`ceil` helpers are separate routines this path
-//!   never calls. A step is taken only when the new value differs *and* the
-//!   radius is more than 0.3 steps above (grow) or 0.1 steps below (shrink)
-//!   the current half extent.
+//!   processor's (nearest, ties to even; a NaN or an out-of-range value gives
+//!   the lowest integer, [`convert_nearest`]). A step is taken only when the
+//!   new value differs *and* the radius is more than 0.3 steps above (grow)
+//!   or 0.1 steps below (shrink) the current half extent.
 //! - The centre is rotated into the light's basis and its x and y are
 //!   snapped to the texel grid (`2·half_extent / map size`), again rounding
 //!   to nearest. The grid is anchored at the light-space origin, as the
 //!   original's is.
-//! - Fewer than two corners fit nothing: the previous frame's projection
-//!   stays, which [`SunFit::fit`] reports.
-//!
-//! The clipping follows the engine's convex-volume cut: each face keeps the
-//! part where `normal · p − w ≤ 0`, the cut segments are chained into a cap
-//! polygon from the first segment on (turned round when the first face's last
-//! vertex is inside), and faces left with fewer than three points are dropped.
-//! `exa_physics::intersect` ports the same routine for shadows and clipping
-//! in the simulation; this one keeps only the polygons, which is all the fit
-//! reads.
+//! - Fewer than two corners fit nothing: the original then leaves its map
+//!   and matrices as they were, which [`SunFit::fit`] reports.
 //!
 //! Not reproduced here: the softness the update writes into the sun's light
 //! (see [`sun_softness`]; Bevy's directional shadows have no such uniform
-//! without the PCSS feature) and the caster-side polygon offset and NDC
-//! depth nudge of the render routine. Rules: `docs/RENDERING.md` (Sun
-//! shadow fit).
+//! without the PCSS feature), the caster-side polygon offset and NDC depth
+//! nudge of the render routine, and the whole-scene mode. Rules:
+//! `docs/RENDERING.md` (Sun shadow fit).
 //!
 //! Evidence: the procedure listings and decompiler dump of the component, the
-//! vector helpers they call (distance, length, normalise, matrix row/point
-//! transforms, min/max, the float-to-int conversions and the engine's
-//! floor/ceil helpers), and the level loader that fills the scene box.
-
-// The original's branches take their else side on an unordered comparison, so
-// `!(d <= 0.0)` counts a NaN distance as outside. Kept as written.
-#![allow(clippy::neg_cmp_op_on_partial_ord)]
+//! vector helpers they call (squared distance, normalise, negate, scale,
+//! matrix point transform, the look-at basis), the camera view's fields
+//! (its camera node, whose frame rows are its axes) and the level loader
+//! that copies the environment record's floor and ceiling into the scene.
 
 use bevy::math::{Mat4, UVec2, Vec3, Vec4};
+use exa_physics::intersect::{ConvexVolume, Plane};
 
 use crate::bound_sphere::{Sphere, bounding_sphere};
 
@@ -72,28 +73,25 @@ pub const QUANTISE_BIAS: f64 = 0.4;
 pub const POINT_SCALE: f32 = 0.01;
 /// Corners this close (squared, cm²) are one corner (the original's `0.1`).
 pub const CORNER_MERGE2: f32 = 0.1;
-/// Chained cap ends this close (squared, cm², compared in double precision)
-/// close the cap.
-const CAP_CLOSED2: f64 = 1e-4;
-/// Two cut ends this close (squared, cm²) are the same point when a cap is
-/// chained.
-const CAP_SAME_POINT2: f32 = 5.0;
-/// The vertical centre of the fitted mode's scene box, cm: the original sets
-/// the scene box's vertical centre to 1.5 m before clipping.
-pub const SCENE_MIDDLE_CM: f32 = 150.0;
-/// The vertical half extent of the fitted mode's scene box, cm: with
-/// [`SCENE_MIDDLE_CM`] the sun's planes keep y inside −500…800 cm.
-pub const SCENE_HALF_HEIGHT_CM: f32 = 650.0;
+/// Past this |y| of the light's travel direction (compared in double
+/// precision) the light's frame is the fixed one.
+pub const FIXED_FRAME_Y: f64 = 0.9999;
+/// The far plane of the original camera's constructor, cm (25 000 × 0.5);
+/// its near plane is 100 cm. What the game later sets was not traced.
+pub const CAMERA_FAR_CM: f32 = 12_500.0;
 /// The softness the update writes when the computed one is below it (the
 /// original's `0.15`).
 pub const SOFTNESS_MIN: f32 = 0.15;
+/// The double constant the softness is compared with and divided into (the
+/// floor written is the single [`SOFTNESS_MIN`]).
+pub const SOFTNESS_FLOOR: f64 = 0.15;
 /// The softness is `(c + 1) · 400 / half extent` (the original's fixed 400 cm
 /// divided by the fitted half extent).
 pub const SOFTNESS_CM: f32 = 400.0;
 /// Centimetres in a metre.
 const CM_PER_METRE: f32 = 100.0;
 
-/// A half-space the visible region is clipped by: a point is kept when
+/// A half-space the view volume is clipped by: a point is kept when
 /// `normal · p − w ≤ 0`, and a NaN counts as outside, as the original's
 /// `comiss` does.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -107,16 +105,16 @@ impl ClipPlane {
         Self { normal, w }
     }
 
-    /// The signed distance: positive outside.
-    fn distance(&self, p: Vec3) -> f32 {
-        // The original multiplies and adds x, y, z in that order, then
-        // subtracts w.
-        self.normal.x * p.x + self.normal.y * p.y + self.normal.z * p.z - self.w
+    /// Cuts `volume` by this plane, keeping the inner side.
+    pub fn clip(&self, volume: &mut ConvexVolume) {
+        // The volume's plane is `normal · p + offset`; −w gives the same
+        // bits as the original's `normal · p − w`.
+        volume.clip_by_plane(self.normal, -self.w);
     }
 }
 
-/// The scene's axis-aligned bounds as the fitted mode clips the visible
-/// region by them, cm.
+/// The scene's axis-aligned bounds as the fitted mode clips the view volume
+/// by them, cm.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneBox {
     pub centre: Vec3,
@@ -132,41 +130,81 @@ impl SceneBox {
             extent: (max - min) * 0.5,
         }
     }
+
+    /// The high and low edges on `axis`: `centre + extent`, `centre −
+    /// extent`.
+    fn edges(&self, axis: usize) -> (f32, f32) {
+        (
+            self.centre[axis] + self.extent[axis],
+            self.centre[axis] - self.extent[axis],
+        )
+    }
 }
 
-/// The one plane per axis the fitted mode clips by: on an axis the sun
-/// travels along negatively the plane at the scene box's high edge is kept
-/// (`axis ≤ centre + extent`), along positively the one at its low edge
-/// (`axis ≥ centre − extent`), so the region behind the sun is cut away. A
-/// zero component adds no plane. The vertical axis uses the original's fixed
-/// box ([`SCENE_MIDDLE_CM`], [`SCENE_HALF_HEIGHT_CM`]) in place of the
-/// scene's own.
-pub fn direction_clip_planes(scene: SceneBox, dir: Vec3) -> Vec<ClipPlane> {
-    let centre = Vec3::new(scene.centre.x, SCENE_MIDDLE_CM, scene.centre.z);
-    let extent = Vec3::new(scene.extent.x, SCENE_HALF_HEIGHT_CM, scene.extent.z);
+/// The vertical limits the fitted mode clips by, cm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VerticalRange {
+    pub high: f32,
+    pub low: f32,
+}
+
+impl VerticalRange {
+    /// The original's limits: the level's ceiling and floor (whole cm, as the
+    /// environment record stores them) when the level has the record, and
+    /// otherwise the scene box's x edges. The original reads the x centre
+    /// and extent in that case, not the vertical ones; it also overwrites the
+    /// box's vertical centre and extent with 150 and 650 cm first, which
+    /// nothing in the fit reads.
+    pub fn of_level(scene: &SceneBox, floor_and_ceiling_cm: Option<(f32, f32)>) -> Self {
+        match floor_and_ceiling_cm {
+            Some((floor, ceiling)) => Self {
+                high: ceiling,
+                low: floor,
+            },
+            None => {
+                let (high, low) = scene.edges(0);
+                Self { high, low }
+            }
+        }
+    }
+}
+
+/// The fitted mode's clipping planes for a camera whose backward axis (its
+/// frame's third row, opposite the view direction) is `view_back`: per axis,
+/// a negative component keeps `axis ≤ high`, a positive one `axis ≥ low`,
+/// and a zero or NaN one adds none. x and z take the scene box's edges, y
+/// the [`VerticalRange`].
+pub fn view_clip_planes(
+    scene: &SceneBox,
+    vertical: VerticalRange,
+    view_back: Vec3,
+) -> Vec<ClipPlane> {
     let mut planes = Vec::with_capacity(3);
     for axis in 0..3 {
-        if dir[axis] < 0.0 {
-            let mut normal = Vec3::ZERO;
-            normal[axis] = 1.0;
-            planes.push(ClipPlane::new(normal, centre[axis] + extent[axis]));
-        } else if dir[axis] > 0.0 {
-            let mut normal = Vec3::ZERO;
-            normal[axis] = -1.0;
-            planes.push(ClipPlane::new(normal, extent[axis] - centre[axis]));
+        let (high, low) = if axis == 1 {
+            (vertical.high, vertical.low)
+        } else {
+            scene.edges(axis)
+        };
+        let mut normal = Vec3::ZERO;
+        normal[axis] = 1.0;
+        if view_back[axis] < 0.0 {
+            planes.push(ClipPlane::new(normal, high));
+        }
+        if view_back[axis] > 0.0 {
+            planes.push(ClipPlane::new(-normal, -low));
         }
     }
     planes
 }
 
-/// The two vertical planes of the original's other mode (a camera mode
-/// beyond the first two): `y ≤ high` and `y ≥ low`, cm. The level loader
-/// sets `low` and `high` from the room's floor and ceiling (0 and 340 cm in
-/// the shipped grid levels).
-pub fn slab_clip_planes(low_cm: f32, high_cm: f32) -> [ClipPlane; 2] {
+/// The two vertical planes of the original's other camera mode (one beyond
+/// the first two): `y ≤ high` and `y ≥ low`, from the same
+/// [`VerticalRange`]. Exarust has no such camera mode yet.
+pub fn slab_clip_planes(vertical: VerticalRange) -> [ClipPlane; 2] {
     [
-        ClipPlane::new(Vec3::Y, high_cm),
-        ClipPlane::new(Vec3::NEG_Y, -low_cm),
+        ClipPlane::new(Vec3::Y, vertical.high),
+        ClipPlane::new(Vec3::NEG_Y, -vertical.low),
     ]
 }
 
@@ -191,11 +229,11 @@ impl LightBasis {
 
     /// The frame of a unit travel direction.
     fn frame(dir: Vec3) -> Self {
-        // The engine's branch: past 0.9999 (and only then) it takes the fixed
-        // frame; a NaN |y| takes the regular path.
-        if dir.y.abs() > 0.9999 {
-            // The original's fixed frame for |dir.y| > 0.9999 (a sun
-            // straight above): right +X, up −Z, forward down.
+        // |y| is widened and compared with a double 0.9999; a NaN takes the
+        // regular path.
+        if f64::from(dir.y.abs()) > FIXED_FRAME_Y {
+            // The original's fixed frame (whichever way the light points):
+            // right +X, up −Z, forward down.
             return Self {
                 right: Vec3::X,
                 up: Vec3::NEG_Z,
@@ -231,238 +269,56 @@ fn normalised(v: Vec3) -> Vec3 {
     v * squared.sqrt().recip()
 }
 
-/// A convex region given by the vertex loops of its faces, cm.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Region {
-    faces: Vec<Vec<Vec3>>,
+/// The camera's view volume from its eight frustum corners, cm, in the order
+/// Bevy's projection gives them (near bottom right, top right, top left,
+/// bottom left, then the far ones): the near and far quads and the four
+/// sides, each face with its outward plane.
+pub fn frustum_volume(corners: [Vec3; 8]) -> ConvexVolume {
+    let [n0, n1, n2, n3, f0, f1, f2, f3] = corners;
+    let inside = corners.iter().copied().sum::<Vec3>() / 8.0;
+    let faces = [
+        [n0, n1, n2, n3],
+        [f0, f1, f2, f3],
+        [n0, n1, f1, f0],
+        [n1, n2, f2, f1],
+        [n2, n3, f3, f2],
+        [n3, n0, f0, f3],
+    ];
+    let planes = faces
+        .into_iter()
+        .map(|face| {
+            let mut normal = (face[1] - face[0])
+                .cross(face[3] - face[0])
+                .normalize_or_zero();
+            if normal.dot(inside - face[0]) > 0.0 {
+                normal = -normal;
+            }
+            Plane {
+                normal,
+                offset: -normal.dot(face[0]),
+                vertices: face.to_vec(),
+            }
+        })
+        .collect();
+    ConvexVolume { planes }
 }
 
-impl Region {
-    /// A region of the given face loops.
-    pub fn from_faces(faces: Vec<Vec<Vec3>>) -> Self {
-        Self { faces }
-    }
-
-    /// The camera's view volume: its near and far quads and four sides, from
-    /// the eight corners in the order the projection gives them (near bottom
-    /// right, top right, top left, bottom left, then the far ones).
-    pub fn frustum(corners: [Vec3; 8]) -> Self {
-        let [n0, n1, n2, n3, f0, f1, f2, f3] = corners;
-        Self::from_faces(vec![
-            vec![n0, n1, n2, n3],
-            vec![f0, f1, f2, f3],
-            vec![n0, n1, f1, f0],
-            vec![n1, n2, f2, f1],
-            vec![n2, n3, f3, f2],
-            vec![n3, n0, f0, f3],
-        ])
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.faces.is_empty()
-    }
-
-    /// Cuts the region by `plane`, keeping the inner side. Each face keeps
-    /// its vertices inside the plane and the crossing points, and is dropped
-    /// when fewer than three remain. The cut segments become the cap face,
-    /// chained from the first segment on: a cap whose ends meet is closed,
-    /// otherwise it is also chained from its start. The cap is appended last.
-    pub fn clip(&mut self, plane: ClipPlane) {
-        let distance = |p: Vec3| plane.distance(p);
-        let mut faces = Vec::with_capacity(self.faces.len() + 1);
-        let mut segments: Vec<[Vec3; 2]> = Vec::new();
-        let mut turn_first = false;
-        for (i, face) in self.faces.iter().enumerate() {
-            let cut = cut(face, distance);
-            if i == 0 && !face.is_empty() {
-                turn_first = cut.last_inside;
-            }
-            segments.extend(cut.segment);
-            if cut.points.len() >= 3 {
-                faces.push(cut.points);
+/// The volume's corners in the original's order: each face's vertices, in
+/// face order, keeping only those at least [`CORNER_MERGE2`] away (squared,
+/// summed `(x² + y²) + z²`) from every corner already kept.
+pub fn volume_corners(volume: &ConvexVolume) -> Vec<Vec3> {
+    let mut corners: Vec<Vec3> = Vec::new();
+    for face in &volume.planes {
+        for &p in &face.vertices {
+            let duplicate = corners
+                .iter()
+                .any(|&q| (p - q).length_squared() < CORNER_MERGE2);
+            if !duplicate {
+                corners.push(p);
             }
         }
-        if segments.len() >= 2 {
-            let [a, b] = segments[0];
-            let mut cap = if turn_first { vec![b, a] } else { vec![a, b] };
-            chain(&mut segments, &mut cap);
-            let ends = (cap[0] - cap[cap.len() - 1]).length_squared();
-            if f64::from(ends) < CAP_CLOSED2 {
-                cap.pop();
-            } else {
-                cap.reverse();
-                chain(&mut segments, &mut cap);
-                cap.reverse();
-            }
-            if cap.len() >= 3 {
-                faces.push(cap);
-            }
-        }
-        self.faces = faces;
     }
-
-    /// The region's corners in the original's order: each face's vertices,
-    /// in face order, keeping only those at least [`CORNER_MERGE2`] away
-    /// (squared) from every corner already kept.
-    pub fn corners(&self) -> Vec<Vec3> {
-        let mut corners: Vec<Vec3> = Vec::new();
-        for face in &self.faces {
-            for &p in face {
-                let duplicate = corners
-                    .iter()
-                    .any(|&q| (p - q).length_squared() < CORNER_MERGE2);
-                if !duplicate {
-                    corners.push(p);
-                }
-            }
-        }
-        corners
-    }
-}
-
-/// One polygon cut by a plane.
-struct Cut {
-    /// The part on the inner side, crossing points included.
-    points: Vec<Vec3>,
-    /// The two crossings: entry then exit when the polygon's last vertex is
-    /// outside, exit then entry when it is inside.
-    segment: Option<[Vec3; 2]>,
-    /// Whether the polygon's last vertex is inside.
-    last_inside: bool,
-}
-
-/// Cuts a convex polygon by `distance` (inside ≤ 0), walking it from the last
-/// vertex's side. A vertex on the plane is kept once and makes its crossing;
-/// a NaN distance is outside. An empty polygon gives nothing.
-fn cut(polygon: &[Vec3], distance: impl Fn(Vec3) -> f32) -> Cut {
-    let Some(&last) = polygon.last() else {
-        return Cut {
-            points: Vec::new(),
-            segment: None,
-            last_inside: false,
-        };
-    };
-    let crossing = |a: Vec3, b: Vec3, t: f32| a + (b - a) * t;
-    let n = polygon.len();
-    let mut points = Vec::with_capacity(n + 1);
-    let mut previous = n - 1;
-    let mut before = distance(last);
-    let last_inside = before <= 0.0;
-    let mut first = None;
-    let mut second = None;
-    if !last_inside {
-        // Outside to start: find the entry, keep the inner run, stop at the
-        // exit.
-        for (k, &vertex) in polygon.iter().enumerate() {
-            let d = distance(vertex);
-            if d <= 0.0 {
-                first = Some(if d < 0.0 {
-                    let p = crossing(polygon[previous], vertex, before / (before - d));
-                    points.push(p);
-                    p
-                } else {
-                    vertex
-                });
-                points.push(vertex);
-                previous = k;
-                before = d;
-                break;
-            }
-            previous = k;
-            before = d;
-        }
-        for (k, &vertex) in polygon.iter().enumerate().skip(previous + 1) {
-            let d = distance(vertex);
-            if !(d <= 0.0) {
-                second = Some(if before < 0.0 {
-                    let p = crossing(polygon[previous], vertex, before / (before - d));
-                    points.push(p);
-                    p
-                } else {
-                    polygon[previous]
-                });
-                break;
-            }
-            points.push(vertex);
-            previous = k;
-            before = d;
-        }
-    } else {
-        // Inside to start: keep the run up to the exit, skip the outer run,
-        // keep the rest from the entry.
-        for (k, &vertex) in polygon.iter().enumerate() {
-            let d = distance(vertex);
-            if !(d <= 0.0) {
-                first = Some(if before < 0.0 {
-                    let p = crossing(polygon[previous], vertex, before / (before - d));
-                    points.push(p);
-                    p
-                } else {
-                    polygon[previous]
-                });
-                previous = k;
-                before = d;
-                break;
-            }
-            points.push(vertex);
-            previous = k;
-            before = d;
-        }
-        for (k, &vertex) in polygon.iter().enumerate().skip(previous + 1) {
-            let d = distance(vertex);
-            if d <= 0.0 {
-                second = Some(if d < 0.0 {
-                    let p = crossing(polygon[k - 1], vertex, before / (before - d));
-                    points.push(p);
-                    p
-                } else {
-                    vertex
-                });
-                previous = k - 1;
-                break;
-            }
-            before = d;
-        }
-        points.extend_from_slice(&polygon[previous + 1..]);
-    }
-    let segment = match (first, second) {
-        (Some(a), Some(b)) => Some([a, b]),
-        _ => None,
-    };
-    Cut {
-        points,
-        segment,
-        last_inside,
-    }
-}
-
-/// Whether two cut ends are the same point for chaining.
-fn same_point(a: Vec3, b: Vec3) -> bool {
-    (a - b).length_squared() < CAP_SAME_POINT2
-}
-
-/// Chains the cut segments into the cap polygon, from the first segment on:
-/// each round takes the first remaining segment with an end at the chain's
-/// end, appends its other end and moves the last segment into its place.
-fn chain(segments: &mut Vec<[Vec3; 2]>, points: &mut Vec<Vec3>) {
-    let mut i = 1;
-    while i < segments.len() {
-        // A chain is seeded with two points and only grows; the guard keeps
-        // the helper total all the same.
-        let Some(&end) = points.last() else { break };
-        let [a, b] = segments[i];
-        let next = if same_point(a, end) {
-            b
-        } else if same_point(b, end) {
-            a
-        } else {
-            i += 1;
-            continue;
-        };
-        points.push(next);
-        segments.swap_remove(i);
-        i = 1;
-    }
+    corners
 }
 
 /// The fitted region's state across frames: the half extent (what the
@@ -489,22 +345,17 @@ impl Default for SunFit {
 }
 
 impl SunFit {
-    /// Fits the region: its corners (kept at least [`CORNER_MERGE2`] apart)
-    /// are scaled to metres, the smallest sphere is fitted in double
-    /// precision, and the result returns in centimetres, quantised and
-    /// snapped. Fewer than two corners change nothing and return `false`.
-    pub fn fit(&mut self, region: &Region, basis: &LightBasis, map_size: UVec2) -> bool {
-        let corners = region.corners();
-        if corners.len() < 2 {
-            return false;
-        }
-        let points: Vec<Vec3> = corners.iter().map(|p| *p * POINT_SCALE).collect();
-        let Some(sphere) = bounding_sphere(&points) else {
+    /// Fits the clipped view volume: its corners (kept at least
+    /// [`CORNER_MERGE2`] apart) are scaled to metres, the smallest sphere is
+    /// fitted in double precision, and the result returns in centimetres,
+    /// quantised and snapped. Fewer than two corners change nothing and
+    /// return `false`.
+    pub fn fit(&mut self, volume: &ConvexVolume, basis: &LightBasis, map_size: UVec2) -> bool {
+        let Some(sphere) = fitted_sphere(volume) else {
             return false;
         };
-        let radius_cm = sphere.radius * CM_PER_METRE;
-        self.half_extent_cm = next_half_extent(self.half_extent_cm, radius_cm);
-        let centre_cm = basis.to_light(sphere.centre * CM_PER_METRE);
+        self.half_extent_cm = next_half_extent(self.half_extent_cm, sphere.radius);
+        let centre_cm = basis.to_light(sphere.centre);
         self.centre_cm = snapped_centre(centre_cm, self.half_extent_cm, map_size);
         true
     }
@@ -568,13 +419,24 @@ pub struct SunMatrices {
     pub texel_size: f32,
 }
 
+/// The processor's float-to-integer conversion in its default mode: nearest,
+/// ties to even. A NaN or a value outside the 64-bit range gives the
+/// "integer indefinite", the lowest value.
+pub fn convert_nearest(x: f64) -> i64 {
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    let rounded = x.round_ties_even();
+    if rounded.is_nan() || rounded >= LIMIT || rounded < -LIMIT {
+        return i64::MIN;
+    }
+    rounded as i64
+}
+
 /// The radius quantised to [`STEP_CM`] steps: `200·round(r/200 + 0.4)`.
 /// The original divides in single precision, then rounds the widened
 /// quotient in double precision before narrowing the step count again.
 pub fn quantised_half_extent(radius_cm: f32) -> f32 {
-    let steps = f64::from(radius_cm / STEP_CM);
-    let rounded = (steps + QUANTISE_BIAS).round_ties_even() as i64;
-    (rounded as f32) * STEP_CM
+    let steps = f64::from(radius_cm / STEP_CM) + QUANTISE_BIAS;
+    (convert_nearest(steps) as f32) * STEP_CM
 }
 
 /// The half extent after `radius_cm`: the quantised value when it differs
@@ -587,7 +449,7 @@ pub fn next_half_extent(current_cm: f32, radius_cm: f32) -> f32 {
     let radius = f64::from(radius_cm);
     let current = f64::from(current_cm);
     if quantised > current_cm {
-        if current + f64::from(STEP_CM) * GROW_STEPS < radius {
+        if f64::from(STEP_CM) * GROW_STEPS + current < radius {
             return quantised;
         }
     } else if quantised < current_cm && current - f64::from(STEP_CM) * SHRINK_STEPS > radius {
@@ -597,32 +459,29 @@ pub fn next_half_extent(current_cm: f32, radius_cm: f32) -> f32 {
 }
 
 /// The centre snapped to the texel grid of a `map_size` shadow map: x and y
-/// each become `round(c / texel) · texel` with `texel = 2·half_extent / size`.
-/// A half extent of zero (or a non-finite centre) leaves the axis alone.
+/// each become `round(c / texel) · texel` with `texel = 2·half_extent / size`,
+/// in single precision with the processor's conversion (a zero texel gives
+/// −0, as the original's indefinite integer times zero does).
 pub fn snapped_centre(centre: Vec3, half_extent_cm: f32, map_size: UVec2) -> Vec3 {
     let mut out = centre;
     for (i, size) in [map_size.x, map_size.y].into_iter().enumerate() {
         let texel = (half_extent_cm * 2.0) / size as f32;
-        if texel.abs() <= 0.0 || !texel.is_finite() {
-            continue;
-        }
-        let steps = f64::from(out[i] / texel).round_ties_even();
-        if steps.is_finite() {
-            out[i] = (steps as f32) * texel;
-        }
+        let steps = convert_nearest(f64::from(out[i] / texel));
+        out[i] = (steps as f32) * texel;
     }
     out
 }
 
 /// The softness the update writes, and the `c'` the render routine's depth
 /// offset then uses. `c` is the sun light's own value (0 in the original's
-/// default): `(c + 1)·400 / half extent`, floored at [`SOFTNESS_MIN`], in
-/// which case `c' = 0.15 / (the unclamped softness)`.
+/// default): `(c + 1)·(400 / half extent)`, floored at [`SOFTNESS_MIN`]
+/// (compared in double precision), in which case `c' = 0.15 / (the
+/// unfloored softness)` in double precision.
 pub fn sun_softness(c: f32, half_extent_cm: f32) -> SunSoftness {
     let raw = (c + 1.0) * (SOFTNESS_CM / half_extent_cm);
-    if f64::from(raw) < f64::from(SOFTNESS_MIN) {
+    if f64::from(raw) < SOFTNESS_FLOOR {
         SunSoftness {
-            caster: (f64::from(SOFTNESS_MIN) / f64::from(raw)) as f32,
+            caster: (SOFTNESS_FLOOR / f64::from(raw)) as f32,
             value: SOFTNESS_MIN,
         }
     } else {
@@ -642,10 +501,10 @@ pub struct SunSoftness {
     pub value: f32,
 }
 
-/// The smallest sphere around the cameras' clipped corner sets, for callers
-/// that want the fit without the state (tests and tools).
-pub fn fitted_sphere(region: &Region) -> Option<Sphere> {
-    let corners = region.corners();
+/// The smallest sphere around a clipped view volume's corners, in
+/// centimetres; `None` below two corners.
+pub fn fitted_sphere(volume: &ConvexVolume) -> Option<Sphere> {
+    let corners = volume_corners(volume);
     if corners.len() < 2 {
         return None;
     }
@@ -665,6 +524,20 @@ mod tests {
         Vec3::new(x, y, z)
     }
 
+    /// An axis-aligned box of half side `h` around `c`, as a frustum.
+    fn cube(c: Vec3, h: f32) -> ConvexVolume {
+        frustum_volume([
+            c + v(-h, -h, -h),
+            c + v(h, -h, -h),
+            c + v(h, h, -h),
+            c + v(-h, h, -h),
+            c + v(-h, -h, h),
+            c + v(h, -h, h),
+            c + v(h, h, h),
+            c + v(-h, h, h),
+        ])
+    }
+
     #[test]
     fn the_sun_map_is_the_top_detail_size() {
         assert_eq!(crate::SUN_SHADOW_SIZE, 4096);
@@ -677,26 +550,47 @@ mod tests {
         assert_eq!(INITIAL_HALF_EXTENT_CM.to_bits(), 0x453b_8000);
         assert_eq!(DEPTH_CM.to_bits(), 0x45fa_0000);
         assert_eq!(POINT_SCALE.to_bits(), 0x3c23_d70a);
-        assert_eq!(SCENE_MIDDLE_CM.to_bits(), 0x4316_0000);
-        assert_eq!(SCENE_HALF_HEIGHT_CM.to_bits(), 0x4422_8000);
+        assert_eq!(CORNER_MERGE2.to_bits(), 0x3dcc_cccd);
         assert_eq!(SOFTNESS_MIN.to_bits(), 0x3e19_999a);
+        assert_eq!(SOFTNESS_FLOOR.to_bits(), 0x3fc3_3333_3333_3333);
         assert_eq!(SOFTNESS_CM.to_bits(), 0x43c8_0000);
         assert_eq!(GROW_STEPS.to_bits(), 0x3fd3_3333_3333_3333);
         assert_eq!(SHRINK_STEPS.to_bits(), 0x3fb9_9999_9999_999a);
         assert_eq!(QUANTISE_BIAS.to_bits(), 0x3fd9_9999_9999_999a);
+        assert_eq!(FIXED_FRAME_Y.to_bits(), 0x3fef_ff2e_48e8_a71e);
+        // 25 000 × 0.5.
+        assert_eq!(CAMERA_FAR_CM, 25_000.0 * 0.5);
+    }
+
+    #[test]
+    fn the_conversion_is_the_processors() {
+        assert_eq!(convert_nearest(2.5), 2);
+        assert_eq!(convert_nearest(3.5), 4);
+        assert_eq!(convert_nearest(-2.5), -2);
+        assert_eq!(convert_nearest(f64::NAN), i64::MIN);
+        assert_eq!(convert_nearest(f64::INFINITY), i64::MIN);
+        assert_eq!(convert_nearest(f64::NEG_INFINITY), i64::MIN);
+        assert_eq!(convert_nearest(1e19), i64::MIN);
     }
 
     #[test]
     fn the_radius_quantises_to_the_nearest_step_plus_0_4() {
-        // 200·round(r/200 + 0.4), ties to even.
+        // 200·round(r/200 + 0.4), ties to even. The f32 quotient of 2820/200
+        // is 14.100000381…, so 14.5000004 rounds up; 3020/200 likewise.
         assert_eq!(quantised_half_extent(0.0), 0.0); // 0.4 → 0
         assert_eq!(quantised_half_extent(3000.0), 3000.0); // 15.4 → 15
         assert_eq!(quantised_half_extent(3019.0), 3000.0); // 15.495 → 15
-        assert_eq!(quantised_half_extent(3020.0), 3200.0); // 15.500 → 16
+        assert_eq!(quantised_half_extent(3020.0), 3200.0); // 15.5000004 → 16
         assert_eq!(quantised_half_extent(2819.0), 2800.0); // 14.495 → 14
-        assert_eq!(quantised_half_extent(2820.0), 3000.0); // 14.100 + 0.4 → 15
+        assert_eq!(quantised_half_extent(2820.0), 3000.0); // 14.5000004 → 15
         assert_eq!(quantised_half_extent(2800.0), 2800.0); // 14.4 → 14
         assert_eq!(quantised_half_extent(866.0), 1000.0); // 4.73 → 5
+        // 20 cm is 0.1 steps; + 0.4 = 0.5000000015 (the f32 0.1 is a little
+        // over), which rounds to 1. 19 cm gives 0.495 → 0.
+        assert_eq!(quantised_half_extent(20.0), 200.0);
+        assert_eq!(quantised_half_extent(19.0), 0.0);
+        // A NaN radius converts to the lowest integer.
+        assert_eq!(quantised_half_extent(f32::NAN), (i64::MIN as f32) * STEP_CM);
     }
 
     #[test]
@@ -711,6 +605,8 @@ mod tests {
         assert_eq!(next_half_extent(3000.0, 2820.0), 3000.0);
         assert_eq!(next_half_extent(3000.0, 2819.0), 2800.0);
         assert_eq!(next_half_extent(3000.0, 1000.0), 1000.0);
+        // A NaN radius keeps the half extent (both comparisons fail).
+        assert_eq!(next_half_extent(3000.0, f32::NAN), 3000.0);
     }
 
     #[test]
@@ -719,11 +615,20 @@ mod tests {
         let map = UVec2::new(4096, 4096);
         let snapped = snapped_centre(v(10.0, -10.0, 500.0), 1000.0, map);
         let texel = 2000.0 / 4096.0;
+        // 10 / 0.48828125 = 20.48 → 20.
         assert_eq!(snapped.x, 20.0 * texel);
         assert_eq!(snapped.y, -20.0 * texel);
         assert_eq!(snapped.z, 500.0);
-        // A radius of zero leaves the centre alone instead of dividing by 0.
-        assert_eq!(snapped_centre(v(1.0, 2.0, 3.0), 0.0, map), v(1.0, 2.0, 3.0));
+        // A tie goes to even: 2.5 texels → 2, 3.5 → 4.
+        let snapped = snapped_centre(v(2.5 * texel, 3.5 * texel, 0.0), 1000.0, map);
+        assert_eq!(snapped.x, 2.0 * texel);
+        assert_eq!(snapped.y, 4.0 * texel);
+        // A half extent of zero divides by zero: the indefinite integer
+        // times a zero texel is −0.
+        let snapped = snapped_centre(v(1.0, -2.0, 3.0), 0.0, map);
+        assert_eq!(snapped.x.to_bits(), (-0.0f32).to_bits());
+        assert_eq!(snapped.y.to_bits(), (-0.0f32).to_bits());
+        assert_eq!(snapped.z, 3.0);
     }
 
     #[test]
@@ -733,6 +638,8 @@ mod tests {
         assert_eq!(basis.dir, Vec3::NEG_Y);
         assert_eq!(basis.right, Vec3::X);
         assert_eq!(basis.up, Vec3::NEG_Z);
+        // Straight below gives the same fixed frame.
+        assert_eq!(LightBasis::from_towards_sun(Vec3::NEG_Y), basis);
         // Towards (1, 1, 0): dir = (−1/√2, −1/√2, 0); right = dir × Y = −Z;
         // up = right × dir.
         let basis = LightBasis::from_towards_sun(v(1.0, 1.0, 0.0));
@@ -758,30 +665,56 @@ mod tests {
     }
 
     #[test]
-    fn the_direction_planes_keep_the_suns_side() {
+    fn the_planes_follow_the_cameras_view() {
         let scene = SceneBox::from_bounds(v(-1000.0, -200.0, -500.0), v(3000.0, 400.0, 1500.0));
-        // Sun rays travel down and towards −X and +Z.
-        let planes = direction_clip_planes(scene, v(-0.5, -1.0, 0.5));
-        assert_eq!(planes.len(), 3);
-        // x: rays go −X, so keep x ≤ the scene's high edge, 3000.
-        assert_eq!(planes[0], ClipPlane::new(Vec3::X, 3000.0));
-        // y uses the forced box: 150 ± 650, and rays go down: y ≤ 800.
-        assert_eq!(planes[1], ClipPlane::new(Vec3::Y, 800.0));
-        // z: rays go +Z, so keep −z ≤ extent − centre = 500, i.e. z ≥ −500.
-        assert_eq!(planes[2], ClipPlane::new(Vec3::NEG_Z, 500.0));
-        // A zero component adds no plane.
-        let planes = direction_clip_planes(scene, v(0.0, -1.0, 0.0));
-        assert_eq!(planes.len(), 1);
-        assert_eq!(planes[0], ClipPlane::new(Vec3::Y, 800.0));
+        let vertical = VerticalRange {
+            high: 340.0,
+            low: 0.0,
+        };
+        // A camera looking towards −X, down and towards +Z: its backward axis
+        // is (+, +, −).
+        let planes = view_clip_planes(&scene, vertical, v(0.5, 0.7, -0.5));
+        assert_eq!(
+            planes,
+            vec![
+                // Looking towards −X: keep x ≥ the box's low edge, −1000.
+                ClipPlane::new(Vec3::NEG_X, 1000.0),
+                // Looking down: keep y ≥ the floor.
+                ClipPlane::new(Vec3::NEG_Y, -0.0),
+                // Looking towards +Z: keep z ≤ the box's high edge, 1500.
+                ClipPlane::new(Vec3::Z, 1500.0),
+            ]
+        );
+        // A zero (or NaN) component adds no plane.
+        let planes = view_clip_planes(&scene, vertical, v(0.0, -1.0, f32::NAN));
+        assert_eq!(planes, vec![ClipPlane::new(Vec3::Y, 340.0)]);
     }
 
     #[test]
-    fn the_slab_planes_are_the_level_height() {
+    fn without_a_record_the_vertical_planes_are_the_boxs_x_edges() {
+        let scene = SceneBox::from_bounds(v(-1000.0, -200.0, -500.0), v(3000.0, 400.0, 1500.0));
         assert_eq!(
-            slab_clip_planes(0.0, 340.0),
+            VerticalRange::of_level(&scene, None),
+            VerticalRange {
+                high: 3000.0,
+                low: -1000.0
+            }
+        );
+        assert_eq!(
+            VerticalRange::of_level(&scene, Some((-500.0, 800.0))),
+            VerticalRange {
+                high: 800.0,
+                low: -500.0
+            }
+        );
+        assert_eq!(
+            slab_clip_planes(VerticalRange {
+                high: 340.0,
+                low: 0.0
+            }),
             [
                 ClipPlane::new(Vec3::Y, 340.0),
-                ClipPlane::new(Vec3::NEG_Y, 0.0),
+                ClipPlane::new(Vec3::NEG_Y, -0.0),
             ]
         );
     }
@@ -789,23 +722,14 @@ mod tests {
     #[test]
     fn a_box_clipped_by_a_middle_plane_keeps_its_corners() {
         // A 1000 cm cube around the origin cut by x ≥ −500 (its own face):
-        // the region is unchanged and still has eight corners.
-        let mut region = Region::frustum([
-            v(-500.0, -500.0, -500.0),
-            v(500.0, -500.0, -500.0),
-            v(500.0, 500.0, -500.0),
-            v(-500.0, 500.0, -500.0),
-            v(-500.0, -500.0, 500.0),
-            v(500.0, -500.0, 500.0),
-            v(500.0, 500.0, 500.0),
-            v(-500.0, 500.0, 500.0),
-        ]);
-        assert_eq!(region.corners().len(), 8);
-        region.clip(ClipPlane::new(Vec3::NEG_X, 500.0));
-        assert_eq!(region.corners().len(), 8);
+        // the volume is unchanged and still has eight corners.
+        let mut volume = cube(Vec3::ZERO, 500.0);
+        assert_eq!(volume_corners(&volume).len(), 8);
+        ClipPlane::new(Vec3::NEG_X, 500.0).clip(&mut volume);
+        assert_eq!(volume_corners(&volume).len(), 8);
         // Cutting through the middle leaves the eight corners of the half.
-        region.clip(ClipPlane::new(Vec3::X, 0.0));
-        let corners = region.corners();
+        ClipPlane::new(Vec3::X, 0.0).clip(&mut volume);
+        let corners = volume_corners(&volume);
         assert_eq!(corners.len(), 8);
         assert!(corners.iter().all(|p| p.x <= 0.0));
         // Four corners keep x = −500 and four sit on the cut at x = 0.
@@ -818,19 +742,20 @@ mod tests {
     }
 
     #[test]
+    fn the_frustum_planes_face_outward() {
+        let volume = cube(v(10.0, 20.0, 30.0), 500.0);
+        for plane in &volume.planes {
+            assert!(plane.distance(v(10.0, 20.0, 30.0)) < 0.0);
+            for &p in &plane.vertices {
+                assert!(plane.distance(p).abs() < 1e-3);
+            }
+        }
+    }
+
+    #[test]
     fn a_fit_of_a_cube_is_its_sphere() {
         // A 1000 cm cube's corners lie on a sphere of radius √3·500.
-        let region = Region::frustum([
-            v(-500.0, -500.0, -500.0),
-            v(500.0, -500.0, -500.0),
-            v(500.0, 500.0, -500.0),
-            v(-500.0, 500.0, -500.0),
-            v(-500.0, -500.0, 500.0),
-            v(500.0, -500.0, 500.0),
-            v(500.0, 500.0, 500.0),
-            v(-500.0, 500.0, 500.0),
-        ]);
-        let sphere = fitted_sphere(&region).unwrap();
+        let sphere = fitted_sphere(&cube(Vec3::ZERO, 500.0)).unwrap();
         assert!(sphere.centre.length() < 1e-4);
         let radius = 3f32.sqrt() * 500.0;
         assert!((sphere.radius - radius).abs() < 1e-3);
@@ -840,76 +765,65 @@ mod tests {
 
     #[test]
     fn fewer_than_two_corners_fit_nothing() {
-        let empty = Region::default();
+        let empty = ConvexVolume::default();
         let mut fit = SunFit::default();
-        assert!(!fit.fit(
-            &empty,
-            &LightBasis::from_towards_sun(Vec3::Y),
-            UVec2::splat(4096)
-        ));
-        assert_eq!(fit.half_extent_cm, INITIAL_HALF_EXTENT_CM);
-        // A region whose corners all merge into one point.
-        let point = Region::from_faces(vec![vec![v(10.0, 10.0, 10.0); 4]]);
-        assert!(!fit.fit(
-            &point,
-            &LightBasis::from_towards_sun(Vec3::Y),
-            UVec2::splat(4096)
-        ));
+        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        assert!(!fit.fit(&empty, &basis, UVec2::splat(4096)));
+        assert_eq!(fit, SunFit::default());
+        // A volume whose corners all merge into one point.
+        let point = ConvexVolume {
+            planes: vec![Plane {
+                normal: Vec3::Y,
+                offset: 0.0,
+                vertices: vec![v(10.0, 10.0, 10.0); 4],
+            }],
+        };
+        assert!(!fit.fit(&point, &basis, UVec2::splat(4096)));
+        assert_eq!(fit, SunFit::default());
     }
 
     #[test]
-    fn a_region_clipped_by_the_suns_planes_fits_its_sphere() {
-        // A 2000 cm cube at the origin and a sun straight up: the forced
-        // vertical box keeps y ≤ 800, so four corners stay at y = −1000 and
-        // four are cut in at y = 800.
-        let mut region = Region::frustum([
-            v(-1000.0, -1000.0, -1000.0),
-            v(1000.0, -1000.0, -1000.0),
-            v(1000.0, 1000.0, -1000.0),
-            v(-1000.0, 1000.0, -1000.0),
-            v(-1000.0, -1000.0, 1000.0),
-            v(1000.0, -1000.0, 1000.0),
-            v(1000.0, 1000.0, 1000.0),
-            v(-1000.0, 1000.0, 1000.0),
-        ]);
+    fn a_view_clipped_by_the_scene_fits_its_sphere() {
+        // A 2000 cm cube at the origin seen by a camera looking straight
+        // down (backward axis +Y), in a level whose floor is at 100 cm: the
+        // plane y ≥ 100 keeps four corners at y = 1000 and four cut in at
+        // y = 100.
+        let mut volume = cube(Vec3::ZERO, 1000.0);
         let scene = SceneBox {
-            centre: v(0.0, 5000.0, 0.0),
-            extent: Vec3::splat(100000.0),
+            centre: Vec3::ZERO,
+            extent: Vec3::splat(100_000.0),
         };
-        for plane in direction_clip_planes(scene, Vec3::NEG_Y) {
-            region.clip(plane);
+        let vertical = VerticalRange::of_level(&scene, Some((100.0, 340.0)));
+        for plane in view_clip_planes(&scene, vertical, Vec3::Y) {
+            plane.clip(&mut volume);
         }
-        let sphere = fitted_sphere(&region).unwrap();
-        // Centre (0, −100, 0) cm; r² = 1000² + 900² + 1000².
-        assert!((sphere.centre - v(0.0, -100.0, 0.0)).length() < 1e-2);
-        assert!((sphere.radius - 2.81f32.sqrt() * 1000.0).abs() < 1e-2);
-        // In the light's frame (right +X, up −Z, dir −Y) the centre is
-        // (0, 0, 100); 1676.3/200 + 0.4 = 8.78 → 9 steps.
+        let sphere = fitted_sphere(&volume).unwrap();
+        // Centre (0, 550, 0) cm; r² = 1000² + 450² + 1000².
+        assert!((sphere.centre - v(0.0, 550.0, 0.0)).length() < 1e-2);
+        let radius = (2.0f32 * 1000.0 * 1000.0 + 450.0 * 450.0).sqrt();
+        assert!((sphere.radius - radius).abs() < 1e-2);
+        // In the light's frame (sun overhead: right +X, up −Z, dir −Y) the
+        // centre is (0, 0, −550); 1484.1/200 + 0.4 = 7.82 → 8 steps, and
+        // from 3000 the shrink is taken (1484.1 < 2980).
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let mut fit = SunFit::default();
-        assert!(fit.fit(&region, &basis, UVec2::splat(4096)));
-        assert_eq!(fit.half_extent_cm, 1800.0);
-        assert_eq!(fit.centre_cm, v(0.0, 0.0, 100.0));
+        assert!(fit.fit(&volume, &basis, UVec2::splat(4096)));
+        assert_eq!(fit.half_extent_cm, 1600.0);
+        // x and y snap to the 0.78125 cm grid; the depth is not snapped.
+        assert_eq!(fit.centre_cm.x, 0.0);
+        assert_eq!(fit.centre_cm.y.abs(), 0.0);
+        assert!((fit.centre_cm.z + 550.0).abs() < 1e-2);
     }
 
     #[test]
-    fn a_region_wholly_outside_a_plane_fits_nothing() {
-        let mut region = Region::frustum([
-            v(-500.0, 900.0, -500.0),
-            v(500.0, 900.0, -500.0),
-            v(500.0, 1500.0, -500.0),
-            v(-500.0, 1500.0, -500.0),
-            v(-500.0, 900.0, 500.0),
-            v(500.0, 900.0, 500.0),
-            v(500.0, 1500.0, 500.0),
-            v(-500.0, 1500.0, 500.0),
-        ]);
-        region.clip(ClipPlane::new(Vec3::Y, 800.0));
-        assert!(region.is_empty());
-        assert!(region.corners().is_empty());
+    fn a_volume_wholly_outside_a_plane_fits_nothing() {
+        let mut volume = cube(v(0.0, 1200.0, 0.0), 300.0);
+        ClipPlane::new(Vec3::Y, 800.0).clip(&mut volume);
+        assert!(volume.planes.is_empty());
+        assert!(volume_corners(&volume).is_empty());
         let mut fit = SunFit::default();
         assert!(!fit.fit(
-            &region,
+            &volume,
             &LightBasis::from_towards_sun(Vec3::Y),
             UVec2::splat(4096)
         ));
@@ -918,23 +832,13 @@ mod tests {
 
     #[test]
     fn the_fit_quantises_and_snaps() {
-        let region = Region::frustum([
-            v(-500.0, -500.0, -500.0),
-            v(500.0, -500.0, -500.0),
-            v(500.0, 500.0, -500.0),
-            v(-500.0, 500.0, -500.0),
-            v(-500.0, -500.0, 500.0),
-            v(500.0, -500.0, 500.0),
-            v(500.0, 500.0, 500.0),
-            v(-500.0, 500.0, 500.0),
-        ]);
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let mut fit = SunFit::default();
-        assert!(fit.fit(&region, &basis, UVec2::splat(4096)));
+        assert!(fit.fit(&cube(Vec3::ZERO, 500.0), &basis, UVec2::splat(4096)));
         // (866.025)/200 + 0.4 = 4.73 → 5 steps.
         assert_eq!(fit.half_extent_cm, 1000.0);
         // The centre is the origin: already on the grid.
-        assert_eq!(fit.centre_cm, Vec3::ZERO);
+        assert_eq!(fit.centre_cm.abs(), Vec3::ZERO);
     }
 
     #[test]
@@ -966,6 +870,10 @@ mod tests {
         let near = clip(fit.centre_cm - v(0.0, 0.0, DEPTH_CM));
         assert!((near.z - 1.0).abs() < 1e-6);
         assert!((matrices.texel_size - 2000.0 / 100.0 / 4096.0).abs() < 1e-9);
+        // The world transform is the inverse of the view.
+        let view = matrices.clip_from_cascade.inverse() * matrices.clip_from_world;
+        let identity = view * matrices.world_from_cascade;
+        assert!(identity.abs_diff_eq(Mat4::IDENTITY, 1e-5));
     }
 
     #[test]

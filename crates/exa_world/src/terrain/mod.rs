@@ -659,6 +659,20 @@ impl TerrainBuild {
         })
     }
 
+    /// The low and high corners of the terrain's tiles on the X/Z plane,
+    /// metres (tile centres ± half a tile); `None` without tiles.
+    pub fn horizontal_extent(&self) -> Option<(Vec2, Vec2)> {
+        let half = self.terrain.spacing * (TILE_VERTICES - 1) as f32 * 0.5;
+        self.terrain.tiles.iter().fold(None, |extent, tile| {
+            let centre = Vec2::from(self.terrain.tile_centre(tile));
+            let (low, high) = (centre - half, centre + half);
+            Some(match extent {
+                Some((l, h)) => (low.min(l), high.max(h)),
+                None => (low, high),
+            })
+        })
+    }
+
     /// What the terrain spawned so far.
     pub fn stats(&self) -> &TerrainStats {
         &self.stats

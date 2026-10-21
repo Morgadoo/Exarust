@@ -13,6 +13,7 @@
 //!          --torch x,y,z              a burning torch fire here (metres), e.g. to stand in for a held one
 //!          --fov <degrees>            vertical field of view (default 45)
 //!          --no-shadows               lights cast no shadows (for software rendering)
+//!          --bevy-sun-cascades        the sun keeps Bevy's cascades instead of the original's fitted map
 //!          --no-gi                    no voxel GI (ambient from the environment cube)
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
@@ -120,6 +121,8 @@ pub struct Options {
     pub fov: Option<f32>,
     /// Lights cast no shadows.
     pub no_shadows: bool,
+    /// The sun keeps Bevy's cascades in terrain levels too.
+    pub bevy_sun_cascades: bool,
     /// The voxel GI settings.
     pub gi: exa_world::gi_volume::GiSettings,
     /// Draw at window resolution instead of 4× supersampling.
@@ -379,6 +382,7 @@ fn main() -> AppExit {
             "--limp" => options.limp = true,
             "--msm" => options.msm = true,
             "--no-shadows" => options.no_shadows = true,
+            "--bevy-sun-cascades" => options.bevy_sun_cascades = true,
             "--no-gi" => options.gi.enabled = false,
             "--no-supersample" => options.no_supersample = true,
             "--no-fps" => options.no_fps = true,
@@ -741,6 +745,9 @@ fn main() -> AppExit {
     .insert_resource(exa_ui::ShowFps(!options.no_fps))
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
+    .insert_resource(exa_world::sun_shadow::SunShadowFit(
+        !options.bevy_sun_cascades,
+    ))
     .insert_resource(exa_game::body_overlay::BodyOverlay {
         on: options.debug_bodies,
         ..default()

@@ -698,6 +698,8 @@ pub struct LevelLoad {
     grid_stats: Option<grid::GridStats>,
     terrain: Option<terrain::TerrainBuild>,
     terrain_stats: Option<terrain::TerrainStats>,
+    /// The terrain's tiles on the X/Z plane, metres: low and high corners.
+    terrain_extent: Option<(Vec2, Vec2)>,
     lights: usize,
     min: Vec3,
     max: Vec3,
@@ -755,6 +757,7 @@ impl LevelLoad {
             grid_stats: None,
             terrain: None,
             terrain_stats: None,
+            terrain_extent: None,
             lights: 0,
             min: Vec3::splat(f32::MAX),
             max: Vec3::splat(f32::MIN),
@@ -820,6 +823,10 @@ impl LevelLoad {
                         self.root,
                         self.scene.grid.as_ref().zip(rooms),
                     );
+                    self.terrain_extent = self
+                        .terrain
+                        .as_ref()
+                        .and_then(terrain::TerrainBuild::horizontal_extent);
                     self.stage = Stage::Terrain;
                 }
             }
@@ -975,6 +982,29 @@ impl LevelLoad {
         }
     }
 
+    /// The level's box and vertical limits for the sun's fitted map: the
+    /// props' origins `min..max` widened by the terrain's tiles, and the
+    /// environment record's floor and ceiling (whole centimetres in the
+    /// record). Fitted only when the level has a terrain, as in the original.
+    fn sun_shadow_region(&self, min: Vec3, max: Vec3) -> sun_shadow::SunShadowRegion {
+        let (mut min, mut max) = (min, max);
+        if let Some((low, high)) = self.terrain_extent {
+            min = min.min(Vec3::new(low.x, min.y, low.y));
+            max = max.max(Vec3::new(high.x, max.y, high.y));
+        }
+        let scene = exa_render::sun_fit::SceneBox::from_bounds(min * 100.0, max * 100.0);
+        let record = self
+            .scene
+            .environment
+            .as_ref()
+            .map(|e| ((e.floor * 100.0).round(), (e.ceiling * 100.0).round()));
+        sun_shadow::SunShadowRegion {
+            scene,
+            vertical: exa_render::sun_fit::VerticalRange::of_level(&scene, record),
+            fitted: self.terrain_stats.is_some(),
+        }
+    }
+
     /// Lighting and the GI request; the load's last step.
     fn finish(&mut self, commands: &mut Commands) -> LoadProgress {
         let lighting =
@@ -995,11 +1025,7 @@ impl LevelLoad {
         });
         let (width, depth) =
             nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
-        commands.insert_resource(sun_shadow::SunShadowRegion {
-            scene: exa_render::sun_fit::SceneBox::from_bounds(min * 100.0, max * 100.0),
-            floor_cm: env.floor * 100.0,
-            ceiling_cm: env.ceiling * 100.0,
-        });
+        commands.insert_resource(self.sun_shadow_region(min, max));
         commands.insert_resource(nav::PendingNav {
             root: self.root,
             width,
