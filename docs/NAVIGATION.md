@@ -258,6 +258,9 @@ each search with a fresh map.
   `NavSource` what it is built from, and `NavPlugin` builds it for each
   level when the load ends, from what is under the level root, on the
   async compute pool. The log gives the inputs and the counts.
+- The NPC chase route (`exa_ai::chase`, `exa_ai::route`) plans through
+  `nav::find_path`, one brain a frame (the original's plan turn), and is
+  followed when its ends lie more than 150 cm apart.
 - `exarust --debug-nav` (or F6) draws it ([DEBUGGING.md](DEBUGGING.md)).
 - `exa-tool nav <level> [--png file]` builds a level's grid without a
   window, prints its counts and draws its layers to a picture.

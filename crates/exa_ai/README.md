@@ -17,11 +17,11 @@ Defence stance when tired, and turns its heading 0.03 of the gap a tick
 swing on guard). Its eagerness drifts up at full energy and its press
 comes within 3 s, so it hesitates before it closes. Exarust walks a
 chosen step in its interim combat walk until it arrives; a guard lets go
-of a swing in progress, and a stuck fighter plans a chase route through
-the navigation grid when the level has one; it can be told to hold its
-ground (a debug aid). The fighter's skill and blend come from the record's
-personality (the arena opponent derives them from the creator's start
-record).
+of a swing in progress (once a swing), and a fighter stuck for 21 ticks
+runs the chase route through the navigation grid when the level has one,
+walking the route while the combat tick ends at the chase; it can be told
+to hold its ground (a debug aid). The fighter's skill and blend come from
+its brain's personality, else Exarust's default (skill 0, blend 1).
 
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
@@ -41,11 +41,11 @@ notice drops the sleep role and wakes.
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
-| `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (hostility calming, the concern rising toward its target, the noticed level following the noticeability, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m), the alarm mean and the sleeper's waking |
+| `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (hostility calming by the restraint, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
-| `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw that never reaches the last power, the 6 s rest after a light cast) and the downed caster's stop |
-| `chase` | the chase route: the bark, the fresh-target and moved-foe tests, the goal and the route through the navigation grid, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
-| `route` | the one-planner-a-frame turn (the longest waiter remembered), the route start (two points and 150 cm), and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
+| `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw, the 6 s rest written to the slot of the chosen power's table place) |
+| `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
+| `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
@@ -78,23 +78,28 @@ the way; a forward strike place gives way to where it stands; otherwise
 it steps only to a place cheaper by 1. Arithmetic keeps the original's
 order and its double-precision comparisons. The position score's ground
 cost, line walk, sight test and nav snap have defaults (no navigation
-queries in the running game); the search's per-place score adds the
-contact level's own close terms (a noticed contact's `800/(d + 4)`, an
-engaged one's band growth). A stuck fighter plans its chase route through
-the navigation grid when there is one (`chase`, `route`), the guard lets
-go of a swing in the running game, and the cast chooser runs at the first
-place with the power system's answer (`cast`); its downed stop faces the
-body's facing in the guard. The follow check is ported and not yet wired
-into the running game.
+queries in the running game). The per-place scorer's notice and band
+terms are overwritten by its close formula, so they are not kept. A stuck
+fighter runs its chase route through the navigation grid when there is
+one (`chase`, `route`; the duellists share one plan turn a frame); only
+while it follows the route does the combat tick end there. A running body
+stops its run before the drives (the step goal pulled to `8·speed + 20`
+cm along its facing). The cast chooser runs at the first place for a body
+not attacking with a foe, and a cast running past a second is torn down
+once the power system is done (`cast`; the running game has no power
+system, so nobody casts there). The follow check is ported and not yet
+wired into the running game.
 
-**Morale.** Each brain's tick drifts its morale (`combat::drift_morale`, in
-`brain::run_target_passes`): stress falls 0.01 a tick and the alarm by
-0.9999; a drop in the health ratio (`health/max`, scaled by
-`0.4 + 0.2·arousal` while down) lowers the courage; the courage drifts
-toward `max(2·(stress + alarm), 2·total, arousal + 0.5)` at
-`(h + 1)(arousal + 1.1)/2 × 0.0003` (0.00015 above 1); panic takes 0.001
-of the stress over the courage and decays by 0.995; the jitter walks a
-hundredth a tick and falls 0.003 while down, held in ±1.
+**Morale.** The AI tick's morale (`combat::drift_morale`): stress falls
+0.01 a tick and the alarm by 0.9999; a drop in the health ratio
+(`health/max`, scaled by `0.4 + 0.2·confidence` while down) lowers the
+courage; above `(h + 1)(confidence + 1.1)/2` it eases off, then drifts
+toward `max(2·(stress + alarm), 2·total, confidence + 0.5)` at that factor
+× 0.0003 (0.00015 from 1 up), or decays by 0.999 at or over it; panic
+takes 0.001 of the stress over the courage and decays by 0.995; the
+jitter walks a hundredth of a centred draw a tick and falls 0.003 while
+down, held in ±1. It runs in `brain::Npc::run_pass`, which is not
+scheduled yet.
 
 **Contacts and flight.** A contact flees first when the stress
 (base + stress − courage) passes 3 with an alarm above 0.75 and a way out;
@@ -109,12 +114,13 @@ contact when full, where the original's admission (`contacts::admit`)
 replaces the lightest. The running game has no room graph yet, so no
 flight starts there.
 
-The brain now runs the contact integration and the target pass each frame
-(`brain::run_target_passes`) for characters with a record: the target's
-noticeability, concern, threat and bad-route mark feed it, the pass
-decides whether the brain engages, leaves combat or attends, and the
-encounter and greeting are logged (Exarust has no dialogue engine). A
-brain's duellist fights at the pass's level rather than a fixed 3.
+`brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
+runs the target pass over one sighting, and reports the engagement, the
+leave, the encounter and the greeting (Exarust has no dialogue engine). It
+is not scheduled: the running game's perception does not yet fill the
+contact words the integration reads (the calming term, this tick's
+sighting, the concern target), and the mind's own rating decides the
+duellist's engagement.
 
 Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two
