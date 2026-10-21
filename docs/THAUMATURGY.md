@@ -190,41 +190,55 @@ interrupts an attack against it, and falls over 750 ms when its power ends
 ## The force domes, the wave and the vanish
 
 `exa_game::effects::{force_dome, force_wave, vanish, danger, emissive,
-effect_geometry, rain, portal_effect, fire_node}`.
+effect_geometry}`.
 
-- **The dome** (`force_dome::Dome`): a sphere of force with up to eight
-  ripples. A ripple struck again within the reach (30 cm plus 1.25 per
-  ripple) takes the strike; every tick it loses 0.05 of its strength, its
-  shown value moves toward it by at most 0.04, its place eases 0.05 toward
-  the strike's mean, and both under 0.07 removes it. The glow is
-  `sum(strength)·0.04` through `(2 − x)·x/2`.
-- **The Barrier** grows in over 800 ms (`share = elapsed·0.00125`), reports
-  `PowerUsed` at 1, and shrinks over 500 ms (`0.002`); its radius is the
-  caster's height above the floor plus 100, or its chest plus 10, whichever
-  is higher; its drawn cap is scaled 85 by 85 by 25 cm, pushed 75 cm along
-  the facing, and its bounding radius is `sqrt(85² + 85²)`. **The Bubble**
-  grows over 1200 ms and shrinks over 700, and
-  ends once its caster is 20 m away. Both keep bodies out: a part inside
-  the surface is pushed outward, a part within the radius plus its own
-  radius is pushed inward, and each touch opens or feeds a ripple.
-- **The Wave** (`force_wave::Wave`): 32 chunks on a 300 cm ring, 30 cm up,
-  ten slices and ten trail points each. Charging raises the caster's charge
-  by the setup's time over 1000; past 1 the front is released at 1200 cm,
-  the chunks grow 0.6 a tick and by 0.0006 of their travel, their slices
-  move out by `travel·0.07 + 1`, and chunks closer than twice the first
-  radius are pushed half the overlap apart. The front is a strip of two
-  triangles per slice gap in the original's 4.0157 grey.
-- **The vanish** (`vanish::Vanish`): a hidden body loses render bit 2 and
-  its show byte, its items' show bytes go to 0; a spent phase shows them
-  again. A body lent by a running constant displacement keeps flag 0x20
-  until it shows.
-- **What the AI sees** (`danger`): a blast or wave fills the danger words
-  within 12 m: `near = (2 − s)·s·36` (blast) or `·12` (wave), twice for a
-  released blast and wave; `fear = s²·rel·0.5` (blast) or `s²·rel` (wave),
-  `rel` three times while released; a released blast within 5 m gives a
-  step-away angle half a turn from its direction and a push
-  `(1 − d·0.002)·6`. The barricade scores `s·6`, thrice while rising, and
-  `s²·rel·0.1`, thrice with the instant flag.
+- **Ripples** (`force_dome::Ripples`): at most eight. A strike is capped at
+  5 and goes to the ripple whose target lies within the reach (30 cm plus
+  1.25 per ripple), summing its points and keeping the larger strength;
+  otherwise it opens a new ripple. Each tick a struck ripple's target
+  becomes the mean of its strikes (half way there once shown), its
+  strength loses 0.05, its shown value moves toward it by at most 0.04 and
+  its place eases 0.05 toward the target; a ripple with both values under
+  0.07 is replaced by the last. The Bubble's glow is
+  `x = sum(shown)·0.04` through `(2 − x)·x/2`, 0.5 above 1.
+- **The Barrier** (`force_dome::Barrier`): a cap at the caster's x and z,
+  its height a damped follow of the higher of the caster's height plus 10
+  and the ground plus 100. It drains the power's focus rate while growing
+  (half while standing). It grows at `0.00125` a ms only while under
+  800 ms have passed, so the tick never reaches 1; its drawn radius is
+  `(2 − s)·s·0.9·r`. Ending flips the share; it shrinks at 0.002 a ms with
+  a drawn radius `(1 − s²)·0.9·r`. Its cap is drawn 85 by 85 by 25 cm,
+  75 cm along the facing, bound `√(25² + 85²)`, its glow four times the
+  power's hit value. A body part (not the caster's) inside the radius plus
+  its own, above half the radius, within the drawn radius sideways and
+  outside the inner surface is pushed out and ripples by half the push.
+- **The Bubble** (`force_dome::Bubble`): grows over 1200 ms, breaks with a
+  sound at volume 0.3 and shrinks over 700 ms. Its caster's parts that
+  reach 10 cm inside the surface are pushed back in; other bodies' parts
+  that the growing shell covers are pushed out. A struck character is
+  shoved 40, plays a hit sound at most every 400 ms and loses balance.
+  (The 20 m range is the power's.)
+- **The Wave** (`force_wave::Wave`): 32 chunks 80 cm out and 30 cm up, each
+  trailing twelve slots. Charging keeps them at the caster, grows them
+  0.0015 a tick and eases their trails; past a charge of 1 the blast is
+  released at 1200 cm. Thrown, a chunk's reach grows 0.6, its radius by
+  0.0006 of its move, its trail by `0.07·move + 1`, and it moves by its
+  last move plus `2.4·(1 − charge)²` along its direction, times 0.96;
+  close chunks separate, and the effect ends when the chunks' 58-tick
+  lives run out.
+- **The vanish** (`vanish::Vanish`): hiding clears render bit 4 and the
+  shown amounts; showing sets them to 1. The phase hook shows the body
+  (phase 4) until the phase table ends, then hides it for good; a lent
+  body (from a running constant displacement) is flagged 0x20 and hidden
+  again with 0x30 cleared at the finish.
+- **What the AI sees** (`danger`): within 12 m the record gains flag 4, the
+  urge `min(1 − d/1200, 0.99)`, and from `s = (2 − u)·u` the near score
+  `36·s` (blast), `12·s` (wave) or `6·u` (barricade, from the nearest wall
+  point), doubled when released (tripled while rising) with the alarm
+  raised; the fear is `s²·k·0.5` (blast, `s²·k` above 12), `s²·k` (wave)
+  or `u²·k·0.1` (barricade), `k = 1 − relation/100`, tripled when
+  released; the face word mixes the viewer's look and facing. A released
+  blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`.
 
 ## Displacement wisps
 
@@ -256,10 +270,9 @@ The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's
 electricity program, `effectforce` and `effectfbrcd` (with the animated
 force noise) are not ported, nor are the lights, sounds, the navigation
-stamp or the AI's sight of a barricade. `effects::force_draw` draws a
-`EffectShell` (a barrier or bubble) once with that material;
-`effects::force_wave::Wave::front_mesh` and `effects::rain::Rain::mesh`
-give the wave's front and the rain the same way. The GI emissive objects
-behind the domes, the bubble, the barricade, the strikes and the tendril
-are modelled in `effects::emissive` (their programs, boxes and phase
-colours) but not yet injected into the voxel volume.
+stamp or the AI's sight of a barricade (its rules are `effects::danger`,
+which nothing registers yet). The domes, the wave and the rain
+are not drawn yet (nothing starts them); the GI emissive objects behind
+the domes, the bubble, the barricade, the strikes, the tendril and the
+teleporter bubble are modelled in `effects::emissive` (their programs,
+extents, colours and boxes) but not injected into the voxel volume.

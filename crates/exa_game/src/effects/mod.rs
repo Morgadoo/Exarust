@@ -2,10 +2,15 @@
 //!
 //! Each module reproduces one owner from the original: the level portal's
 //! sparks and the dissolve burst of a body stepping through one
-//! (`portal`), the flame drawn along a lit blade (`fire_row`), the
+//! (`portal`, and the portal's spray, `portal_effect`), the flame drawn
+//! along a lit blade (`fire_row`) and its node (`fire_node`), the
 //! displacement shell (`shell`), the teleport bubble (`bubble`), the
-//! teleporter scan (`scan`) and the domain wheel of the power screen
-//! (`wheel`).
+//! teleporter scan (`scan`), the domain wheel of the power screen
+//! (`wheel`), the rain (`rain`), the force domes (`force_dome`), the Force
+//! Wave (`force_wave`), the vanish (`vanish`), the GI emissives the force
+//! effects carry (`emissive`), the force geometries' programs and pass rows
+//! (`effect_geometry`) and what the AI sees of a blast, a wave or a
+//! barricade (`danger`).
 //!
 //! The rules are plain data and functions so they can be tested without a
 //! Bevy app. The Bevy systems step components that gameplay inserts, on
@@ -15,8 +20,8 @@
 //! device puts a scan on the player ([`crate::teleporters`]) and the
 //! destination screen's journey a bubble ([`crate::destination`]); the
 //! others wait for the systems that start them in the original (the
-//! displacement powers, the power tree and a burning item's ability
-//! record), which Exarust does not have yet.
+//! powers, the power tree, the scene's weather and a burning item's
+//! ability record), which Exarust does not have yet.
 
 pub mod bubble;
 pub mod danger;

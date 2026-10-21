@@ -1741,30 +1741,37 @@ every edge's midpoint pushed out to unit length, every face split into its
 three corner faces then its middle one (1 280 faces and 642 points for the
 bubble). The subdivided cap counts 4n − 6 points, more than it makes.
 `exa_assets::polyhedra` builds them. `exa_game::effects::force_dome`
-turns them into the bubble's closed sphere (1 280 faces) and the barrier's
-double-sided cap (both windings), and `effects::force_draw` draws a
-`EffectShell` once through the glow material. The force geometries'
-programs and uniform sets, their per-instance texture rows and their fades
-are in `effects::effect_geometry`; the original's `effectbarrier`,
-`effectbubble` and `effectfbrcd` programs themselves are not ported.
+turns them into the domes' meshes: both double-sided, every face reversed
+then every face as built, the points scaled to the radius (the Barrier's
+cap with y and z exchanged, its node then scaled 85 by 85 by 25 cm). The
+force geometries' programs and uniform sets, their per-pass texture rows
+(offset by the node's level of detail, 500 over the squared camera
+distance) and their fades are in `effects::effect_geometry`; the
+original's `effectbarrier`, `effectbubble` and `effectfbrcd` programs
+themselves are not ported and nothing draws the domes yet.
 `effects::emissive` models the seven GI lights the effects carry
 (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
-`gi_multipoint`, `gi_telebubble`) with their world boxes and phase
-colours; nothing injects them into the GI volume yet.
+`gi_multipoint`, `gi_telebubble`) with their extents, colours and world
+boxes; nothing injects them into the GI volume yet.
 
 ## Rain and the portal's spray
 
-`exa_game::effects::rain` is the original's rain: 4096 drops in a
-1200 × 1200 × 1200 cm box centred on the eye, the drawn count
-`round(4096·intensity)`, a gust walk in double precision, a fall of
-`12·(intensity + 1)·(dt⁴ + 0.2)` cm an update while the update is short
-enough, a wrap at the ground, and the eye's `(0.6 − 0.000667·d)⁴` fade.
-Its shader sources are kept as data; `Rain::mesh` draws the drops as lines
-with the existing glow material. `effects::portal_effect` spawns a portal's
-particles one at a time on an 80 × 115 cm ellipse in the portal's frame,
-with the original's 3- or 5-bit colour index draws. `effects::fire_node`
-builds the `_FlameMat01` node's warm 800 cm light and its `FireS02` loop;
-the row itself is `effects::fire_row`.
+`exa_game::effects::rain` is the original's rain: 4096 drops in a box
+300 cm to each side and 600 cm tall, centred 450 cm ahead of the eye; the
+drawn vertex count `round(4096·intensity)` (half as many drops); a gust
+walk in double precision; heads that fall `1.5·f` cm an update
+(`f = (0.4·intensity + 0.25)·ms`) and wrap at the ground with x and z from
+the effect's own generator words; tails a streak behind them that
+lengthens as the view tilts (`(y⁴ + 0.2)`, `y` the camera's backward-axis
+height); the colour the environment's times 2.2 and
+`0.075·intensity + 0.075`, its alpha `(0.5·intensity + 0.5)(|y| + 0.5)`;
+and the eye's `(0.6 − 0.000667·d)⁴` fade. Its shader sources are kept as
+data; the frame-buffer passes are not reproduced and nothing starts a
+rain set. `effects::portal_effect` spawns a portal's particles one at a
+time on an 80 × 115 cm ellipse at the node's place, each starting with an
+outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
+index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
+800 cm light; the row itself is `effects::fire_row`.
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both

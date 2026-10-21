@@ -418,7 +418,8 @@ impl Dome {
     /// The response of a character whose parts the dome pushed: `offset` is
     /// the character's place less the dome's, `scale` its size factor.
     /// `caster` when the character is the dome's caster (only the Bubble
-    /// tests it). A rag-doll only plays the hit sound when its flag 0x10000
+    /// tests it). A limp body (flag 1, a guess at its meaning) only plays the
+    /// hit sound, when its flag 0x10000
     /// is set.
     pub fn contact(&mut self, hit: &DomeHit, now_ms: u32, roll: &mut Roll) -> Option<Contact> {
         let volume = if f64::from(self.ripples.peak) > 0.15 {
@@ -428,8 +429,8 @@ impl Dome {
             0.0
         };
         let mut contact = Contact::default();
-        if hit.ragdoll {
-            if hit.loose && self.quiet_until_ms < now_ms && f64::from(volume) > 0.05 {
+        if hit.limp {
+            if hit.struck_flag && self.quiet_until_ms < now_ms && f64::from(volume) > 0.05 {
                 contact.sound = Some([volume, (f64::from(roll.unit()) * 0.6 + 0.6) as f32]);
                 self.quiet_until_ms = now_ms.wrapping_add(400);
             }
@@ -469,9 +470,11 @@ pub struct DomeHit {
     pub scale: f32,
     /// The character is the dome's caster.
     pub caster: bool,
-    /// The body is a rag-doll, and its loose flag (0x10000) is set.
-    pub ragdoll: bool,
-    pub loose: bool,
+    /// The body's flag 1 is set (guess: a limp body), in which case only
+    /// its flag 0x10000 (`struck_flag`) lets the hit sound play and the
+    /// character's own struck call run.
+    pub limp: bool,
+    pub struck_flag: bool,
 }
 
 /// What a contact asks of the character.
@@ -761,8 +764,8 @@ impl Barrier {
     pub fn contact(&mut self, hit: &DomeHit, now_ms: u32, roll: &mut Roll) -> Option<Contact> {
         let mut contact = Contact::default();
         let quiet = self.dome.quiet_until_ms < now_ms;
-        if hit.ragdoll {
-            if hit.loose && quiet {
+        if hit.limp {
+            if hit.struck_flag && quiet {
                 let pitch = (f64::from(roll.unit()) * 0.6 + 0.6) as f32;
                 let volume = (f64::from(roll.unit()) * 0.2 + 0.3) as f32;
                 contact.sound = Some([volume, pitch]);
@@ -1220,8 +1223,8 @@ mod tests {
             offset: Vec3::new(100.0, 50.0, 0.0),
             scale: 1.0,
             caster: false,
-            ragdoll: false,
-            loose: false,
+            limp: false,
+            struck_flag: false,
         };
         let mut roll = Roll(9);
         let c = bubble.dome.contact(&hit, 100, &mut roll).unwrap();

@@ -64,9 +64,9 @@ pub fn level_of_detail(camera: Vec3, at: Vec3) -> f32 {
 }
 
 /// The bubble registers a GI emissive light object, refreshed every step
-/// and freed with the bubble. Its own values live in that object's class,
-/// which is outside this group; only its existence is modelled (guess: the
-/// bubble carries no point light of its own).
+/// and freed with the bubble; its values are
+/// [`super::emissive::teleporter_light`] (guess: the bubble carries no
+/// point light of its own).
 pub const HAS_GI_LIGHT: bool = true;
 
 /// The phase the bubble is in.
