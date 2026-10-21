@@ -533,7 +533,9 @@ pub struct GlyphQuad {
 
 impl GlyphQuad {
     /// The glyph's atlas coordinate: the low nibble is the column and the
-    /// high nibble the row of the 16×16 sheet, each a sixteenth apart.
+    /// high nibble the row of the 16×16 sheet, each a sixteenth apart. The
+    /// original gives this to the bottom corners and adds the font's
+    /// texture height to `v` for the top corners.
     pub fn uv(&self) -> (f32, f32) {
         (
             f32::from(self.byte & 0x0f) * 0.0625,

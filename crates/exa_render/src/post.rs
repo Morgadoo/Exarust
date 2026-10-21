@@ -574,10 +574,10 @@ mod fade_tests {
         // inverted, so 2/3.
         let low = fade_values(1000, fade, 0.75);
         assert!((low.mask - 2.0 / 3.0).abs() < 1e-6);
-        // Past the end the ramp is 1 and the mask 1 - 0.75 * 1.333 inverted,
-        // not zero; the kind's bloom is gone.
+        // Past the end the ramp is 1, the mask 0.75 * 1.333 = 0.99975 and
+        // the pass receives its inverse; the kind's bloom is gone.
         let done = fade_values(3501, kind, 0.75);
-        assert!((done.mask - 0.999_75).abs() < 1e-6);
+        assert!((done.mask - 0.000_25).abs() < 1e-6);
         assert_eq!(
             (done.bloom, done.desaturation, done.weight),
             (0.0, 0.75, 1.0)
