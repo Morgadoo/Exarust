@@ -665,6 +665,18 @@ mod tests {
     }
 
     #[test]
+    fn a_bubbles_own_body_ripples_negatively_while_the_barrier_blocks_positively() {
+        let mut bubble = Dome::new(100.0, Vec3::ZERO);
+        let push = bubble.push_self(Vec3::new(50.0, 0.0, 0.0), 0.0).unwrap();
+        assert!((push - Vec3::new(0.08, 0.0, 0.0)).length() < 1e-6);
+        assert!((bubble.ripples[0].strength + 40.0).abs() < 1e-6);
+        let mut barrier = Dome::new(100.0, Vec3::ZERO);
+        let push = barrier.push_out(Vec3::new(50.0, 0.0, 0.0), 0.0).unwrap();
+        assert!((push - Vec3::new(0.08, 0.0, 0.0)).length() < 1e-6);
+        assert!((barrier.ripples[0].strength - 25.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn the_barrier_mesh_is_a_double_sided_cap() {
         let (points, faces) = barrier_mesh(100.0);
         assert!(!points.is_empty());
