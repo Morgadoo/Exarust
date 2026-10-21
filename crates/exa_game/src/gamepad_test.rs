@@ -455,20 +455,37 @@ fn the_move_stick_turns_into_the_camera_frame_and_runs_past_its_threshold() {
 }
 
 #[test]
-fn the_aim_stick_turns_into_the_camera_frame_or_stays_raw() {
+fn the_aim_stick_turns_into_the_camera_frame_or_stays_a_raw_pair() {
     let sample = pad().with_analog(Id::Aim, Vec2::new(0.0, 1.0));
     let mut play = primed_play();
     let frame = *play.update(4, &sample, play_ctx());
     assert_eq!(frame.aim_world, Vec3::Z);
     let ctx = PlayContext {
-        aim_in_world: true,
+        raw_aim: true,
         ..play_ctx()
     };
+    // The raw pair fills x and y and keeps the last z.
+    let sample = pad().with_analog(Id::Aim, Vec2::new(0.5, -0.25));
     let frame = *play.update(5, &sample, ctx);
-    assert_eq!(frame.aim_world, Vec3::Z);
-    let sample = pad().with_analog(Id::Aim, Vec2::new(1.0, 0.0));
-    let frame = *play.update(6, &sample, ctx);
-    assert_eq!(frame.aim_world, Vec3::X);
+    assert_eq!(frame.aim_world, Vec3::new(0.5, -0.25, 1.0));
+}
+
+#[test]
+fn a_step_mode_zeroes_the_move_and_keeps_the_run_flag() {
+    let mut play = primed_play();
+    let fast = pad().with_analog(Id::Move, Vec2::new(0.0, 1.0));
+    assert!(play.update(4, &fast, play_ctx()).move_fast);
+    let ctx = PlayContext {
+        modes: StepModes {
+            power_bar: false,
+            dialogue: true,
+        },
+        ..play_ctx()
+    };
+    let frame = *play.update(5, &pad(), ctx);
+    assert!(frame.move_fast);
+    assert_eq!(frame.move_world, Vec3::ZERO);
+    assert_eq!(frame.move_raw, Vec2::ZERO);
 }
 
 #[test]
@@ -525,12 +542,12 @@ fn the_attack_is_not_latched_while_the_set_primes() {
 }
 
 #[test]
-fn a_step_mode_steps_every_three_hundred_ms() {
+fn the_power_bar_step_mode_steps_every_three_hundred_ms() {
     let sample = pad().with_analog(Id::Move, Vec2::new(0.5, 0.0));
     let ctx = PlayContext {
         modes: StepModes {
-            across: true,
-            along: false,
+            power_bar: true,
+            dialogue: false,
         },
         ..play_ctx()
     };
@@ -545,28 +562,28 @@ fn a_step_mode_steps_every_three_hundred_ms() {
 }
 
 #[test]
-fn the_along_step_mode_reads_the_vertical_axis_with_its_signs() {
+fn the_dialogue_step_mode_reads_the_vertical_axis_with_its_signs() {
     let ctx = PlayContext {
         modes: StepModes {
-            across: false,
-            along: true,
+            power_bar: false,
+            dialogue: true,
         },
         ..play_ctx()
     };
     let mut play = primed_play();
     let frame = *play.update(4, &pad().with_analog(Id::Move, Vec2::new(0.0, 0.5)), ctx);
-    assert_eq!(frame.step, command::STEP_FORWARD);
+    assert_eq!(frame.step, command::STEP_UP);
     let frame = *play.update(5, &pad().with_analog(Id::Move, Vec2::new(0.0, -0.5)), ctx);
-    assert_eq!(frame.step, command::STEP_BACK);
+    assert_eq!(frame.step, command::STEP_DOWN);
     // The widened single-precision 0.1 is just over the double 0.1.
     let frame = *play.update(6, &pad().with_analog(Id::Move, Vec2::new(0.0, 0.1)), ctx);
-    assert_eq!(frame.step, command::STEP_FORWARD);
+    assert_eq!(frame.step, command::STEP_UP);
     let frame = *play.update(7, &pad().with_analog(Id::Move, Vec2::new(0.0, 0.099)), ctx);
     assert_eq!(frame.step, 0);
 }
 
 #[test]
-fn the_power_bar_adds_its_second_command_after_500_ms_held() {
+fn a_held_power_bar_asks_for_the_power_tree_after_500_ms() {
     let powers = pad().with_digital(Id::Powers, true);
     let mut play = primed_play();
     play.update(100, &powers, play_ctx());
@@ -574,8 +591,8 @@ fn the_power_bar_adds_its_second_command_after_500_ms_held() {
     assert_eq!(play.update(599, &powers, play_ctx()).pressed, 0);
     assert_eq!(play.update(600, &powers, play_ctx()).pressed, 0);
     assert_eq!(
-        play.update(601, &powers, play_ctx()).pressed & command::POWER_HOLD,
-        command::POWER_HOLD
+        play.update(601, &powers, play_ctx()).pressed & command::POWER_TREE,
+        command::POWER_TREE
     );
 }
 

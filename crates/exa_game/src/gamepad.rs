@@ -1052,17 +1052,18 @@ impl FocusStack {
     }
 }
 
-/// The gameplay stick's mode: the game's across-steps flag reads the move
-/// stick's horizontal axis as left/right steps, and its along-steps flag
-/// reads the vertical axis as forward/back steps; with neither set the stick
-/// is analog. Their owners are outside this component; Exarust leaves both
-/// off and uses the analog stick everywhere.
+/// The game states that turn the move stick into steps: while the power
+/// bar is open its horizontal axis steps left and right, and while a
+/// dialogue is open its vertical axis steps up and down (the power bar is
+/// checked first); with neither the stick is analog. Both are owned by the
+/// game's power bar and dialogue, outside this component; Exarust has
+/// neither yet and leaves both off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StepModes {
-    /// The horizontal axis steps left and right.
-    pub across: bool,
-    /// The vertical axis steps forward and back.
-    pub along: bool,
+    /// The power bar is open.
+    pub power_bar: bool,
+    /// A dialogue is open.
+    pub dialogue: bool,
 }
 
 /// The player command word's bits, as the original's player controls read
@@ -1072,14 +1073,14 @@ pub mod command {
     pub const ATTACK: u32 = 0x1;
     /// Switch equipped (`WepSwp`).
     pub const SWAP_WEAPON: u32 = 0x2;
-    /// Step left (the across mode's negative axis).
+    /// Step left: the power bar's horizontal axis under −0.1.
     pub const STEP_LEFT: u32 = 0x10;
-    /// Step right (the across mode's positive axis).
+    /// Step right: the power bar's horizontal axis over 0.1.
     pub const STEP_RIGHT: u32 = 0x20;
-    /// Step forward (the along mode's positive axis).
-    pub const STEP_FORWARD: u32 = 0x40;
-    /// Step back (the along mode's negative axis).
-    pub const STEP_BACK: u32 = 0x80;
+    /// Step up: a dialogue's vertical axis over 0.1.
+    pub const STEP_UP: u32 = 0x40;
+    /// Step down: a dialogue's vertical axis under −0.1.
+    pub const STEP_DOWN: u32 = 0x80;
     /// The inventory (`Inventory`, interact set only).
     pub const INVENTORY: u32 = 0x100;
     /// The skill screen (`Skills`, interact set only).
@@ -1088,8 +1089,9 @@ pub mod command {
     pub const USE_POWER: u32 = 0x1000;
     /// The power bar (`Powers`).
     pub const POWER_BAR: u32 = 0x2000;
-    /// The power bar's second command after 500 ms held.
-    pub const POWER_HOLD: u32 = 0x4000;
+    /// The power tree (`PowerTree`, which only primes it), also set by
+    /// `Powers` held for more than 500 ms.
+    pub const POWER_TREE: u32 = 0x4000;
     /// Use or select (`Select`).
     pub const USE: u32 = 0x10000;
     /// Talk (`Talk`).
@@ -1118,7 +1120,8 @@ pub struct PlayFrame {
     pub move_fast: bool,
     /// The aim stick's raw axes.
     pub aim_raw: Vec2,
-    /// The aim stick turned into the world by the camera's basis.
+    /// The aim stick turned into the world by the camera's basis (in the
+    /// raw-aim mode, the pair in `x` and `y` with the last `z` kept).
     pub aim_world: Vec3,
     /// The camera stick's look this frame ([`look_input`]): applied to the
     /// camera with [`look_turn`].
@@ -1253,9 +1256,11 @@ pub struct PlayContext {
     pub variant: Variant,
     /// The step modes.
     pub modes: StepModes,
-    /// The game's raw-aim mode: the aim stick is kept as a raw pair instead
-    /// of being turned into the camera's frame.
-    pub aim_in_world: bool,
+    /// The game's raw-aim mode: the aim stick's pair is stored as it is
+    /// instead of being turned into the camera's frame (the player
+    /// behaviour then turns the camera with it through [`look_input`]). Its
+    /// owner is outside this component; Exarust leaves it off.
+    pub raw_aim: bool,
     /// The camera's world right axis.
     pub camera_right: Vec3,
     /// The camera's world forward axis.
@@ -1267,7 +1272,7 @@ impl Default for PlayContext {
         Self {
             variant: Variant::Interact,
             modes: StepModes::default(),
-            aim_in_world: false,
+            raw_aim: false,
             camera_right: Vec3::X,
             camera_forward: Vec3::Z,
         }
@@ -1423,11 +1428,11 @@ impl PlayPad {
         let move_axes = sample.analog(Id::Move);
         let right = ctx.camera_right.normalize_or_zero();
         let forward = ctx.camera_forward.normalize_or_zero();
-        if ctx.modes.across || ctx.modes.along {
-            let (axes, bits) = if ctx.modes.across {
+        if ctx.modes.power_bar || ctx.modes.dialogue {
+            let (axes, bits) = if ctx.modes.power_bar {
                 (move_axes.x, (command::STEP_LEFT, command::STEP_RIGHT))
             } else {
-                (move_axes.y, (command::STEP_BACK, command::STEP_FORWARD))
+                (move_axes.y, (command::STEP_DOWN, command::STEP_UP))
             };
             let axes = f64::from(axes);
             // The original compares the widened axis with the double 0.1.
@@ -1448,6 +1453,9 @@ impl PlayPad {
             } else {
                 self.repeat_at = 0;
             }
+            // The move pair and vector are zeroed; the run flag is left as
+            // the last analog frame set it.
+            frame.move_fast = self.frame.move_fast;
         } else {
             frame.move_raw = move_axes;
             frame.move_fast =
@@ -1458,8 +1466,10 @@ impl PlayPad {
         frame.look = look_input(sample.analog(Id::Camera));
         let aim = sample.analog(Id::Aim);
         frame.aim_raw = aim;
-        frame.aim_world = if ctx.aim_in_world {
-            Vec3::new(aim.x, 0.0, aim.y)
+        frame.aim_world = if ctx.raw_aim {
+            // The pair overwrites the vector's first two parts as it is
+            // (the player behaviour then reads it as a camera look).
+            Vec3::new(aim.x, aim.y, self.frame.aim_world.z)
         } else {
             right * aim.x + forward * aim.y
         };
@@ -1491,7 +1501,7 @@ impl PlayPad {
             if previous & command::POWER_BAR == 0 {
                 self.powers_at = now_ms + POWERS_HOLD_MS;
             } else if self.powers_at < now_ms {
-                self.state = before | command::POWER_BAR | command::POWER_HOLD;
+                self.state = before | command::POWER_BAR | command::POWER_TREE;
             }
         }
         if sample.digital(Id::UsePower) {
@@ -1542,7 +1552,7 @@ impl PlayPad {
             (Id::Talk, command::TALK),
             (Id::Powers, command::POWER_BAR),
             (Id::UsePower, command::USE_POWER),
-            (Id::PowerTree, command::POWER_HOLD),
+            (Id::PowerTree, command::POWER_TREE),
             (Id::Select, command::USE),
             (Id::PauseMenu, command::PAUSE),
         ] {
