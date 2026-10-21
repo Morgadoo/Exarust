@@ -817,20 +817,20 @@ pub fn activate_near(
         return;
     };
     let flags = graph.node(n).map_or(0, |n| n.flags);
-    let relation = library
-        .roles
-        .get(target)
-        .is_some_and(|r| r.is_relation_role_byte());
+    let Some(aimed) = library.roles.get(target) else {
+        return;
+    };
+    let relation = aimed.is_relation_role_byte();
     for other in contacts {
-        // The actor must hold the aimed-at role (or, for a relation role,
-        // hold it toward the contact); the contact's roles do not matter.
+        // A relation role: the actor must hold it toward the contact;
+        // otherwise the contact must hold the aimed-at role.
         let ok = if relation {
             scene
                 .cast
                 .get(actor)
                 .is_some_and(|c| c.holds_toward(other, target))
         } else {
-            scene.cast.get(actor).is_some_and(|c| c.holds(target))
+            scene.cast.get(other).is_some_and(|c| c.holds(target))
         };
         if ok {
             let at = MemoryKey {

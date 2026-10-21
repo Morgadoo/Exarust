@@ -768,11 +768,11 @@ fn the_second_player_slot_is_a_player_too() {
     );
 }
 
-/// `ActivateTopicN` with a target role checks the actor holds the target
-/// (or, for a relation role, holds it toward the contact), not the
-/// contact; the word lands under entry target, key role.
+/// `ActivateTopicN` with a target role checks the contact holds the target
+/// (for a relation role, that the actor holds it toward the contact), not
+/// the actor; the word lands under entry target, key role.
 #[test]
-fn near_activation_checks_the_actor_and_files_the_word() {
+fn near_activation_checks_the_contact_and_files_the_word() {
     let memory = node(0x100, "Rumour", &[], vec![]);
     let db = RoleDb {
         roles: vec![
@@ -790,7 +790,14 @@ fn near_activation_checks_the_actor_and_files_the_word() {
         dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
     }
     assert!(topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).is_none());
+    // The actor holding the target does not count.
     cast.get_mut(PLAYER).unwrap().add_role(&db, 9);
+    {
+        let mut s = scene(&db, None, &mut cast, 0);
+        dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
+    }
+    assert!(topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).is_none());
+    cast.get_mut(GUARD).unwrap().add_role(&db, 9);
     {
         let mut s = scene(&db, None, &mut cast, 0);
         dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
