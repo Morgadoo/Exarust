@@ -289,6 +289,8 @@ pub struct CombatMind {
     pub estimate: Vec3,
     /// The foe changed this tick.
     pub fresh_target: bool,
+    /// A look timer the idle states clear when they take the guard [?].
+    pub look_timer: f32,
 }
 
 impl Default for CombatMind {
@@ -320,6 +322,7 @@ impl Default for CombatMind {
             alert: 0.0,
             estimate: Vec3::ZERO,
             fresh_target: false,
+            look_timer: 0.0,
         }
     }
 }
@@ -454,6 +457,9 @@ pub struct Body {
     pub health: f32,
     /// The attack executor would start a blow now (energy aside).
     pub can_attack: bool,
+    /// The pool powers are paid from, 0 through 1 [guess: the mana-like
+    /// pool the cast chooser scales by 200].
+    pub power_pool: f32,
 }
 
 impl Default for Body {
@@ -510,6 +516,7 @@ impl Default for Body {
             stance_blend: None,
             health: 1.0,
             can_attack: true,
+            power_pool: 0.0,
         }
     }
 }

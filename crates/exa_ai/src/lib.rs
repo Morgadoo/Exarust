@@ -25,6 +25,7 @@ use crate::combatant::{Attitude, Combatant, Observed, Observer, atan2_xz, percei
 
 pub mod activity;
 pub mod brain;
+pub mod cast;
 pub mod combat;
 pub mod combatant;
 pub mod contacts;
