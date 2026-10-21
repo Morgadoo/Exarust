@@ -373,6 +373,11 @@ fn a_segment_hits_an_obb_by_the_slab_test() {
     // into the exit fold. The fold then lands on the z lane's −∞ entry and
     // +∞ exit, so the segment hits.
     assert!(segment_obb_hit(Vec3::new(-10.0, 2.0, 0.0), along, &obb));
+    // Along the z = 2 face the NaN is the z lane's high side: it is the
+    // entry fold's last lane, so the entry is NaN, and the exit fold ends
+    // on it too. The clamped entry 0 is not before a NaN exit (an ordered
+    // compare): a miss.
+    assert!(!segment_obb_hit(Vec3::new(-10.0, 0.0, 2.0), along, &obb));
 }
 
 #[test]

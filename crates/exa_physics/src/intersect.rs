@@ -297,8 +297,12 @@ pub fn swept_sphere_aabb_hit(
 
 /// The slab test against an oriented box with the extents `extent`, in
 /// units of the travel: hits when the clamped entry is before the exit and
-/// the entry is before 1. The reciprocal of the travel is the original's
-/// approximate one.
+/// the entry is before 1. Both compares are ordered, as the original's
+/// oriented-box routines branch (unlike the sector's meet test, whose NaN
+/// entry goes on): a NaN misses. An entry can only be NaN when the exit is
+/// too (the NaN sits in the high lane, which both folds carry), so the
+/// order of the two compares does not change an answer. The reciprocal of
+/// the travel is the original's approximate one.
 fn slabs_hit(offset: Vec3, travel: Vec3, extent: Vec3) -> bool {
     let inverse = travel.recip();
     let low = (offset - extent) * inverse;
