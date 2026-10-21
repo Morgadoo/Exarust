@@ -301,8 +301,23 @@ fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<MenuScreen>) {
     }
 }
 
-fn canvas_node() -> impl Bundle {
-    (Name::new("MainMenu"), MenuCanvas, DrawnMenu::default())
+/// The menu canvas's entity: its image, full-window node and drawn state.
+fn canvas_bundle(image: Handle<Image>, logical: (f32, f32), drawn: DrawnMenu) -> impl Bundle {
+    (
+        Name::new("MainMenu"),
+        MenuCanvas,
+        ImageNode { image, ..default() },
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            width: Val::Px(logical.0),
+            height: Val::Px(logical.1),
+            ..default()
+        },
+        Visibility::Inherited,
+        drawn,
+    )
 }
 
 /// Reads the pointer and keys while the menu is open.
@@ -581,21 +596,9 @@ fn draw(
         spawned = true;
     }
     if !spawned {
-        commands.spawn((
-            canvas_node(),
-            ImageNode {
-                image: handle,
-                ..default()
-            },
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                top: Val::Px(0.0),
-                width: Val::Px(logical.0),
-                height: Val::Px(logical.1),
-                ..default()
-            },
-            Visibility::Inherited,
+        commands.spawn(canvas_bundle(
+            handle,
+            logical,
             DrawnMenu {
                 page: Some(menu.page),
                 selected: menu.selected,
@@ -696,6 +699,20 @@ mod tests {
         assert_eq!(menu.page, Page::Title);
         menu.apply(MenuCommand::Resume);
         assert!(!menu.open);
+    }
+
+    #[test]
+    fn the_canvas_spawns_with_each_component_once() {
+        let mut world = World::new();
+        let entity = world
+            .spawn(canvas_bundle(
+                Handle::default(),
+                (800.0, 600.0),
+                DrawnMenu::default(),
+            ))
+            .id();
+        assert!(world.get::<MenuCanvas>(entity).is_some());
+        assert!(world.get::<DrawnMenu>(entity).is_some());
     }
 
     #[test]
