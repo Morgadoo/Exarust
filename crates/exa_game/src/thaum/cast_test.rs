@@ -2,7 +2,7 @@ use bevy::math::Affine3A;
 use exa_physics::body::{PartSetup, Ragdoll};
 
 use super::*;
-use crate::thaum::displacement::CONSTANT;
+use crate::thaum::displacement::{CONSTANT, VANISH};
 use crate::thaum::energy::SHOCK;
 use crate::thaum::force::BARRICADE;
 use crate::thaum::power::force::SHELL;
@@ -208,6 +208,63 @@ fn the_bar_opens_picks_and_casts() {
     assert_eq!(after.last_result, code::STARTED);
     assert!(!after.bar_open, "a cast closes the bar");
     assert!(matches!(after.active[0].class, ActiveClass::Shock(_)));
+}
+
+/// The bar cast entry takes the slot's word as it stands: a power the tree
+/// added to the record after the bar was built is cast, not refused by a
+/// lookup the original does not make.
+#[test]
+fn a_slot_the_tree_filled_is_cast() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[BARRICADE]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .record
+        .slots[1] = SHOCK;
+    command(&mut app, caster, BarAction::Toggle);
+    app.update();
+    command(&mut app, caster, BarAction::Pick(1));
+    app.update();
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
+}
+
+/// The body tick passes event 0 to every running power: the body's release
+/// flag (set when a cast is pressed while one runs) does not end a shock.
+#[test]
+fn the_release_flag_does_not_end_a_running_power() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHOCK]);
+    cast(&mut app, caster);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .release = true;
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.active.len(), 1);
+    assert_eq!(count::<LiveArcs>(&mut app), 1);
+}
+
+/// Vanish pressed while it runs tells the running vanish to let go.
+#[test]
+fn pressing_vanish_again_releases_it() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[VANISH]);
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if !v.base.released));
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::RELEASED);
+    assert_eq!(state.active.len(), 1);
+    assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
 }
 
 /// `--powers` reads decimal and hexadecimal ids.

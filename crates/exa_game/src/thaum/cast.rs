@@ -6,8 +6,7 @@
 //!   bar from the caster's record, a digit picks a slot, the arrows step and
 //!   `Q` uses the picked slot. The record's slots are the caster's known
 //!   powers in the order they were learnt; its pairs are the known powers.
-//!   A use finds the slot's power among the known powers
-//!   ([`super::power::power_index`]), hands the word to the original's bar
+//!   A use hands the slot's word to the original's bar
 //!   cast entry (`TreeScreen::cast_slot`, which carries the item gate, the
 //!   "not now" queue, the close, flash and last-instant rules) and runs the
 //!   domain's front end by the word's domain byte: Force, Energy or
@@ -108,7 +107,7 @@ pub struct ActiveEntry {
     /// The id the body's power list holds (a vanish holds 0x601, as its
     /// creator registers it).
     pub id: u32,
-    /// The id its cast was asked for, which the release compares.
+    /// The id its cast was asked for, which the cast motion's end compares.
     pub cast_id: u32,
     pub state: i32,
     pub class: ActiveClass,
@@ -401,10 +400,6 @@ fn run_bar_commands(
                     continue;
                 }
                 let asked = word_value & ID_MASK;
-                if super::power::power_index(&caster.known, asked).is_none() {
-                    debug!("cast: power {asked:#x} is not known");
-                    continue;
-                }
                 let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
                 let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
                 tree.bar_open = caster.bar_open;
@@ -435,6 +430,18 @@ fn run_bar_commands(
                     debug!("cast queued on slot {queued}");
                 }
                 caster.take_states();
+                if matches!(
+                    start,
+                    Some(CastStart::Displacement(DisplacementStart::EndVanish))
+                ) {
+                    // Vanish pressed while it runs: the running power's hook
+                    // is told to end it.
+                    for running in &mut caster.active {
+                        if let ActiveClass::Vanish(power) = &mut running.class {
+                            power.release();
+                        }
+                    }
+                }
                 if entry.result > 0
                     && let Some(start) = start
                 {
@@ -1009,9 +1016,6 @@ fn tick_casters(
         );
         caster.take_states();
         let at = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO).to_array();
-        let cast_id_now = caster.body.casting;
-        let release = caster.body.release;
-        let mut released = false;
         let PowerCaster { body, active, .. } = caster;
         let mut index = 0;
         while index < active.len() {
@@ -1019,14 +1023,6 @@ fn tick_casters(
             let mut event = 0;
             if entry.state == ENDING {
                 event = 2;
-            }
-            // Exarust's reading: the body's release flag is the original's
-            // release event to the running cast. The body tick's exact event
-            // for it is not in the packs, so control's end event (2) stands
-            // in.
-            if release && cast_id_now == entry.cast_id {
-                event = 2;
-                released = true;
             }
             if let Some(entity) = entry.entity
                 && let Ok(live) = walls.get(entity)
@@ -1127,9 +1123,6 @@ fn tick_casters(
                 continue;
             }
             index += 1;
-        }
-        if released {
-            body.release = false;
         }
         caster.sync_body();
     }
