@@ -283,11 +283,8 @@ page; writes the settings file's lines; rebinds a Controls row of the page's
 copy of the bindings from the next key or mouse button; and drives the GPU
 benchmark (a 1024² target, a 512² texture and sixteen full-screen quads, the
 original's half-second warm-up and three runs). It pushes the live options into `exa_render::quality`
-(super-sampling on or off, shadow-map sizes, MSAA), the asset loader's
-texture settings (`TextureQuality`, `TextureDetail` and `Supersample` decide
-the filter mask, mip-level choice, anisotropy and LOD bias of textures and
-materials built after the change), the audio buses, the frame-rate readout
-and the window's mode, size and present mode
+(super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
+frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).
 
 The camera's navigation unit is `nav_camera`: the align routine's wrap

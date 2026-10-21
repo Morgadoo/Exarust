@@ -472,7 +472,6 @@ impl Plugin for HardwareConfigPlugin {
                 rebind_keys,
                 drive_benchmark,
                 apply_options,
-                apply_texture_settings,
                 apply_window,
                 start_benchmark_scene,
                 cleanup_benchmark,
@@ -588,28 +587,6 @@ fn apply_options(
         && show_fps.0 != live.show_fps
     {
         show_fps.0 = live.show_fps;
-    }
-}
-
-/// Pushes `TextureQuality`, `TextureDetail` and `Supersample` into the asset
-/// loader's texture settings. Records and materials already built keep the
-/// sampler and bias they were made with (the original re-binds each texture
-/// with the new bias; Exarust's materials carry it).
-fn apply_texture_settings(
-    config: Option<Res<HardwareConfig>>,
-    mut cache: Option<ResMut<exa_assets::ModelCache>>,
-) {
-    let (Some(config), Some(cache)) = (config, cache.as_mut()) else {
-        return;
-    };
-    if !config.is_changed() {
-        return;
-    }
-    let live = config.live;
-    let current = *cache.textures.settings();
-    let wanted = current.with_settings(live.texture_quality, live.texture_detail, live.supersample);
-    if wanted != current {
-        cache.textures.set_settings(wanted);
     }
 }
 
@@ -861,39 +838,6 @@ mod tests {
             std::fs::write(&path, text).unwrap();
         }
         path
-    }
-
-    /// The live texture quality, detail and super-sampling reach the
-    /// texture settings the loaders read.
-    #[test]
-    fn the_texture_settings_follow_the_live_options() {
-        use bevy::prelude::*;
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<exa_assets::ModelCache>()
-            .init_resource::<exa_render::supersample::SuperSampling>()
-            .init_resource::<exa_render::quality::ShadowQuality>()
-            .init_resource::<exa_render::quality::MultisampleSetting>()
-            .init_resource::<HardwareConfig>()
-            .add_systems(Update, (apply_options, apply_texture_settings));
-        {
-            let mut config = app.world_mut().resource_mut::<HardwareConfig>();
-            config.live.texture_quality = 4;
-            config.live.texture_detail = 2;
-            config.live.supersample = 4;
-        }
-        app.update();
-        let settings = *app
-            .world()
-            .resource::<exa_assets::ModelCache>()
-            .textures
-            .settings();
-        assert_eq!(settings.quality_mask, 0xF0);
-        assert_eq!(settings.anisotropy_level, 2);
-        assert_eq!(settings.texture_detail, 2);
-        assert_eq!(settings.supersample, 4);
-        // base −0.5 at quality 4, times (4 − 1)/3.
-        assert_eq!(settings.lod_bias(), -0.5);
     }
 
     #[test]
