@@ -2214,23 +2214,16 @@ pub fn node_stays(
     true
 }
 
-/// The original's exit-trigger nudge: if the player stands inside an exit
-/// trigger, it is pushed out along the nearer local axis by its penetration
-/// plus 75 cm.
-///
-/// The original measures the horizontal distance to the trigger's centre,
-/// checks it against the trigger's radius plus 50 cm and then the distance to
-/// its box against 50 cm, rotates the offset into the trigger's frame,
-/// chooses the axis with the smaller clearance, and moves the player out by
-/// `extent - offset + 75` along that axis (negated when the offset is not
-/// positive). Triggers whose object is not an exit marker are ignored.
+/// An exit trigger as the nudge reads it: its centre and bounding radius,
+/// its box's half extents and its turn (three rows; a local axis `i` is
+/// row `i`), and whether its object is an exit marker.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExitTrigger {
     pub centre: Vec3,
-    pub rotation: [[f32; 3]; 3],
-    pub extent: Vec3,
-    /// The trigger object's radius (the first distance check).
+    /// The trigger's bounding radius (the first reach check).
     pub radius: f32,
+    pub extent: Vec3,
+    pub rotation: [[f32; 3]; 3],
     /// The trigger's object is an exit marker (the object's 0x20 flag).
     pub exit_marker: bool,
 }
@@ -2239,76 +2232,84 @@ pub struct ExitTrigger {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExitNudge {
     pub position: Vec3,
-    /// The axis the player was pushed along (0 = x, 2 = z).
+    /// The local axis the player was pushed along (0 = x, 2 = z).
     pub axis: usize,
-    /// How far, in centimetres, with the sign of the offset.
+    /// How far along that axis's row, in centimetres.
     pub distance: f32,
 }
 
-/// The margin an exit trigger leaves between the player's centre and its
-/// edge.
+/// What the nudge adds past the trigger's edge.
 pub const EXIT_MARGIN: f32 = 75.0;
-/// The largest distance to a trigger's box that still counts.
+/// What the reach checks allow: added to the radius before it is squared,
+/// and the largest squared box distance that still counts.
 pub const EXIT_REACH: f32 = 50.0;
 
-/// The exit-trigger nudge of `player` for `trigger`, or `None` when the
-/// player is outside it or the trigger is not an exit marker.
+/// The original's exit-trigger nudge of the player at `player` (a continued
+/// story's player standing in a level exit is moved out of it), or `None`
+/// when the trigger does not hold the player.
+///
+/// The trigger holds the player when the squared distance to its centre
+/// (x² + y², then + z²) is at most `(radius + 50)²`, the squared distance to
+/// its box (each axis's overhang squared, summed from 0) is at most 50 — the
+/// original compares the squared value with the plain 50 — and its object is
+/// an exit marker; a NaN passes both reach checks. The offset from the
+/// centre, its height zeroed, is turned into the trigger's frame
+/// (`local_i = (x·r_i0 + y·r_i1) + z·r_i2`), and the axis with the smaller
+/// clearance (`extent − |local|`; z only when strictly smaller) is taken.
+/// The player moves along that axis's row by `(extent − local) + 75` when
+/// the local offset is positive, else by the negated amount: the original's
+/// arithmetic, which for a negative offset pushes `extent + |local| + 75`
+/// toward the negative side.
 pub fn exit_nudge(player: Vec3, trigger: ExitTrigger) -> Option<ExitNudge> {
+    let d = player - trigger.centre;
+    let squared = (d.x * d.x + d.y * d.y) + d.z * d.z;
+    let reach = trigger.radius + EXIT_REACH;
+    if reach * reach < squared {
+        return None;
+    }
+    if box_distance_squared(d, trigger.rotation, trigger.extent) > EXIT_REACH {
+        return None;
+    }
     if !trigger.exit_marker {
         return None;
     }
-    let offset = player - trigger.centre;
-    let horizontal = Vec3::new(offset.x, 0.0, offset.z);
-    let range = trigger.radius + EXIT_REACH;
-    if horizontal.length_squared() > range * range {
-        return None;
-    }
-    if box_distance(offset, trigger.rotation, trigger.extent) > EXIT_REACH {
-        return None;
-    }
-    let local = local_offset(offset, trigger.rotation);
+    let local = turn_into(Vec3::new(d.x, 0.0, d.z), trigger.rotation);
     let clearance_x = trigger.extent.x - local.x.abs();
     let clearance_z = trigger.extent.z - local.z.abs();
     let axis = if clearance_z < clearance_x { 2 } else { 0 };
-    let value = if axis == 0 { local.x } else { local.z };
-    let extent = if axis == 0 {
-        trigger.extent.x
-    } else {
-        trigger.extent.z
-    };
-    let distance = (extent - value) + EXIT_MARGIN;
-    let direction = if value > 0.0 { 1.0 } else { -1.0 };
-    let axis_vector = Vec3::new(
-        trigger.rotation[0][axis],
-        trigger.rotation[1][axis],
-        trigger.rotation[2][axis],
-    );
+    let value = local[axis];
+    let push = (trigger.extent[axis] - value) + EXIT_MARGIN;
+    let distance = if value > 0.0 { push } else { -push };
+    let row = Vec3::from_array(trigger.rotation[axis]);
     Some(ExitNudge {
-        position: player + axis_vector * (distance * direction),
+        position: player + row * distance,
         axis,
-        distance: distance * direction,
+        distance,
     })
 }
 
-/// The distance from a point to a trigger's box, in the trigger's frame.
-fn box_distance(offset: Vec3, rotation: [[f32; 3]; 3], extent: Vec3) -> f32 {
-    let local = local_offset(offset, rotation);
-    let dx = (local.x.abs() - extent.x).max(0.0);
-    let dy = (local.y.abs() - extent.y).max(0.0);
-    let dz = (local.z.abs() - extent.z).max(0.0);
-    (dx * dx + dy * dy + dz * dz).sqrt()
+/// The squared distance from an offset to a trigger's box: the offset turned
+/// into the box's frame, made absolute, and each axis whose bits exceed the
+/// half extent's (an integer compare, as the original's) adds its overhang
+/// squared, from 0 in x, y, z order. The same rule as
+/// [`exa_physics::sector::mesh_box_distance2`], on the trigger's row turn.
+fn box_distance_squared(offset: Vec3, rotation: [[f32; 3]; 3], extent: Vec3) -> f32 {
+    let local = turn_into(offset, rotation).abs();
+    let mut sum = 0.0;
+    for k in 0..3 {
+        if (extent[k].to_bits() as i32) < (local[k].to_bits() as i32) {
+            let over = local[k] - extent[k];
+            sum += over * over;
+        }
+    }
+    sum
 }
 
-/// The offset in a trigger's local frame. The engine's vector-by-matrix
-/// helper is outside this group; the offset is taken against the rotation
-/// (the inverse of the trigger's own frame) — a guess, exact for the
-/// identity and a half turn.
-fn local_offset(offset: Vec3, rotation: [[f32; 3]; 3]) -> Vec3 {
-    Vec3::new(
-        rotation[0][0] * offset.x + rotation[1][0] * offset.y + rotation[2][0] * offset.z,
-        rotation[0][1] * offset.x + rotation[1][1] * offset.y + rotation[2][1] * offset.z,
-        rotation[0][2] * offset.x + rotation[1][2] * offset.y + rotation[2][2] * offset.z,
-    )
+/// An offset in a trigger's frame: each local axis is the offset's dot
+/// product with that row, summed `(x + y) + z`.
+fn turn_into(offset: Vec3, rotation: [[f32; 3]; 3]) -> Vec3 {
+    let dot = |row: [f32; 3]| (offset.x * row[0] + offset.y * row[1]) + offset.z * row[2];
+    Vec3::new(dot(rotation[0]), dot(rotation[1]), dot(rotation[2]))
 }
 
 /// The flow's Bevy plugin: the flow runs on the game clock, follows the
@@ -2902,38 +2903,32 @@ mod tests {
     fn the_exit_trigger_nudges_the_player_out() {
         let trigger = ExitTrigger {
             centre: Vec3::ZERO,
-            rotation: NO_ROTATION,
-            extent: Vec3::new(100.0, 100.0, 50.0),
             radius: 200.0,
+            extent: Vec3::new(100.0, 100.0, 50.0),
+            rotation: NO_ROTATION,
             exit_marker: true,
         };
+        // Clearances 10 (x) and 50 (z): out along x by (100 − 90) + 75.
         let nudge = exit_nudge(Vec3::new(90.0, 10.0, 0.0), trigger).unwrap();
         assert_eq!(nudge.axis, 0);
         assert_eq!(nudge.distance, 85.0);
-        assert_eq!(nudge.position.x, 175.0);
+        assert_eq!(nudge.position, Vec3::new(175.0, 10.0, 0.0));
         // The negative branch takes the extent minus the signed offset and
-        // negates it: 100 + 90 + 75 = 265 cm (the original's arithmetic).
+        // negates it: −(100 + 90 + 75) = −265 cm (the original's arithmetic).
         let nudge = exit_nudge(Vec3::new(-90.0, 0.0, 0.0), trigger).unwrap();
         assert_eq!(nudge.distance, -265.0);
         assert_eq!(nudge.position.x, -355.0);
         let nudge = exit_nudge(Vec3::new(0.0, 0.0, 45.0), trigger).unwrap();
         assert_eq!(nudge.axis, 2);
         assert_eq!(nudge.distance, 80.0);
-        // 1 cm past the box still counts and is pushed out.
+        // 1 cm past the box: its squared overhang 1 is within 50.
         let nudge = exit_nudge(Vec3::new(0.0, 0.0, 51.0), trigger).unwrap();
         assert_eq!(nudge.axis, 2);
         assert_eq!(nudge.distance, 74.0);
-        // More than 50 cm past the box is out of reach.
-        assert_eq!(
-            exit_nudge(
-                Vec3::new(0.0, 0.0, 51.0),
-                ExitTrigger {
-                    extent: Vec3::new(100.0, 100.0, 0.0),
-                    ..trigger
-                }
-            ),
-            None
-        );
+        // The squared overhang is compared with the plain 50: 7 cm out
+        // (49) still counts, 8 cm out (64) does not.
+        assert!(exit_nudge(Vec3::new(0.0, 0.0, 57.0), trigger).is_some());
+        assert!(exit_nudge(Vec3::new(0.0, 0.0, 58.0), trigger).is_none());
         assert_eq!(
             exit_nudge(
                 Vec3::new(90.0, 0.0, 0.0),
@@ -2944,20 +2939,19 @@ mod tests {
             ),
             None
         );
-        // The radius check: 150 cm from the centre is outside a 100 cm
-        // radius plus the 50 cm reach.
-        assert!(exit_nudge(Vec3::new(151.0, 0.0, 0.0), trigger).is_none());
-        assert!(
-            exit_nudge(
-                Vec3::new(150.0, 0.0, 0.0),
-                ExitTrigger {
-                    radius: 100.0,
-                    ..trigger
-                }
-            )
-            .is_some()
-        );
-        // A half turn maps the offset to the opposite local x.
+        // The radius check is three-dimensional: a 100 cm radius plus the
+        // 50 cm reach holds a point 150 cm away, not 151 cm, and not 160 cm
+        // straight up.
+        let long = ExitTrigger {
+            radius: 100.0,
+            extent: Vec3::new(300.0, 200.0, 50.0),
+            ..trigger
+        };
+        assert!(exit_nudge(Vec3::new(150.0, 0.0, 0.0), long).is_some());
+        assert!(exit_nudge(Vec3::new(151.0, 0.0, 0.0), long).is_none());
+        assert!(exit_nudge(Vec3::new(0.0, 160.0, 0.0), long).is_none());
+        // A half turn: local x is −90, so the push is −265 along row 0,
+        // (−1, 0, 0): the player moves 265 cm toward +x.
         let nudge = exit_nudge(
             Vec3::new(90.0, 0.0, 0.0),
             ExitTrigger {
@@ -2966,10 +2960,22 @@ mod tests {
             },
         )
         .unwrap();
-        // The original's negative branch takes the extent minus the signed
-        // local offset, so a half-turned trigger pushes the whole span plus
-        // the margin (a quirk kept as it is).
         assert_eq!(nudge.distance, -265.0);
+        assert_eq!(nudge.position.x, 355.0);
+        // A quarter turn: row 0 is (0, 0, −1), so a player at z = −90 has
+        // local x = 90 and is pushed 85 cm along that row, to z = −175.
+        let nudge = exit_nudge(
+            Vec3::new(0.0, 0.0, -90.0),
+            ExitTrigger {
+                rotation: yaw(90.0),
+                ..trigger
+            },
+        )
+        .unwrap();
+        assert_eq!(nudge.axis, 0);
+        assert!((nudge.distance - 85.0).abs() < 1e-3);
+        assert!((nudge.position.z + 175.0).abs() < 1e-3);
+        assert!(nudge.position.x.abs() < 1e-3);
     }
 
     #[test]
