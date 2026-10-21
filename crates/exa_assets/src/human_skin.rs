@@ -426,7 +426,11 @@ mod tests {
             tone_linear(u, v).map(|c| srgb_encode(c) * TONE_GAIN),
             tone_colour(MIDDLE_TONE)
         );
-        assert!(tone_blend_target().iter().all(|c| c.is_finite() && *c > 0.0));
+        assert!(
+            tone_blend_target()
+                .iter()
+                .all(|c| c.is_finite() && *c > 0.0)
+        );
     }
 
     /// The tone pipeline bit for bit, against an independent single

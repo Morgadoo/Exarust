@@ -83,8 +83,8 @@ pub use character_view::{
     find_owner, held_index, insight_blocks, player_pack, show_item, supersample_level,
 };
 pub use col_swatch::{
-    BLOCK, CELL_UNITS, COLUMNS, ColourSwatch, FRAMELESS, GreyPalette, Palette, ROWS, SWATCH_STYLE,
-    SwatchForm, SwatchMetrics, SwatchPick,
+    COLUMNS, ColourSwatch, Heard as SwatchHeard, ROWS, SwatchCell, SwatchLabel, cell_at,
+    cells as swatch_cells, index_text as swatch_index_text, selection_frames,
 };
 pub use colour_picker::{
     COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
@@ -107,8 +107,9 @@ pub use div_card::{
     mouse as div_mouse, shadow_mesh, shadow_outline, turn, turn_share,
 };
 pub use drop_down::{
-    DropCommand, DropDownList, DropDownOwner, DropLayout, DropPress, DropRelease, LIST_STYLE,
-    MAX_ROWS, ROW_UNITS, RowDraw, SCROLL_BIT, layout as drop_down_layout,
+    DropCommand, DropDownList, DropDownOwner, DropLayout, DropPress, DropRelease, LIST_ATTRIBUTES,
+    LIST_BORDER, LIST_STYLE, MAX_ROWS, ROW_UNITS, RowDraw, SCROLL_BIT, SelectionBand,
+    layout as drop_down_layout,
 };
 pub use emblem_form::{
     BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
@@ -130,8 +131,9 @@ pub use gui_core::{
 };
 pub use gui_level::GuiLevelState;
 pub use gui_task::{
-    ACTIVE_ALPHA, INACTIVE_ALPHA, LAYER_STYLE, NO_SHORTCUT_KEY, OwnedForm, Shortcut, TaskFocus,
-    TaskLayer, modifier, modifier_score,
+    ACTIVE_ALPHA, CallbackList, INACTIVE_ALPHA, KeyOutcome, LAYER_ATTRIBUTES, LAYER_BORDER,
+    LAYER_STYLE, NO_SHORTCUT_KEY, OwnedForm, Shortcut, TaskFocus, TaskLayer, modifier,
+    modifier_score,
 };
 pub use gui_text::{
     ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
@@ -141,10 +143,11 @@ pub use gui_text::{
 };
 pub use heartbeat::Heartbeat;
 pub use help_system::{
-    MANUAL_CONTROLLER, MANUAL_KEYBOARD, MANUAL_LINE_STEP, MANUAL_LIST_INSET, MANUAL_LIST_WIDTH,
-    MANUAL_SIZE, MANUAL_STATE, MANUAL_STYLE, MANUAL_TITLE, Manual, ManualSource, TIP_EXTRA_HEIGHT,
-    TIP_STATE, TIP_STYLE, TIP_TEXT_INSET, TIP_WIDTH, TOPIC_INDEX, TOPIC_RECORD, TOPIC_TITLE, Tip,
-    TipPlan, TipStore, TopicRef, manual_file, parse_topics, show_tip, tip_index, tip_plan,
+    MANUAL_ATTRIBUTES, MANUAL_CONTROLLER, MANUAL_KEYBOARD, MANUAL_LIST_TOP, MANUAL_LIST_WIDTH,
+    MANUAL_OPTIONS, MANUAL_SIZE, MANUAL_TITLE, Manual, ManualSource, TIP_ATTRIBUTES, TIP_CONTROLS,
+    TIP_EXTRA_HEIGHT, TIP_OPTIONS, TIP_PRESET, TIP_TEXT_INSET, TIP_TITLES, TIP_WIDTH, TOPIC_INDEX,
+    TOPIC_RECORD, TOPIC_TITLE, Tip, TipPlan, TipStore, TopicRef, close_manual, manual_file,
+    parse_topics, show_tip, tip_index, tip_plan,
 };
 pub use hud::{DrawHud, HudBars};
 pub use line_skin::{
@@ -216,10 +219,9 @@ pub use skill::{
     spend_skill_experience, unlearn_skill_level,
 };
 pub use skill_gui::{
-    COMPACT_WORD_OFFSETS, CompactSkillPlan, ICON_CELL, ICON_SETS, ICON_UNITS, SINGLE_CELL,
-    SINGLE_ICON_ATLAS, SINGLE_ICONS, SKILL_GUI, SKILL_GUI_FLAGS, SKILL_GUI_UNITS, SKILL_ICON_ATLAS,
-    SkillIcons, SkillResources, SkillWindowPlan, WINDOW_GROUPS, WINDOW_SLOTS, WINDOW_TABLE_COUNT,
-    build_group_icons, build_single_icons, group_cells,
+    ICON_CELL, ICON_SETS, ICON_UNITS, SINGLE_CELL, SINGLE_ICON_ATLAS, SINGLE_ICONS, SKILL_GUI,
+    SKILL_GUI_FLAGS, SKILL_GUI_UNITS, SKILL_ICON_ATLAS, SkillIconHandles, SkillIcons,
+    SkillResources, build_group_icons, build_single_icons, group_cells,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan, CentredIcon,

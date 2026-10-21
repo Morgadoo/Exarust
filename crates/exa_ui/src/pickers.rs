@@ -66,11 +66,11 @@ pub const ATTACHED_HEIGHT: i32 = 0x28;
 /// The attached control's starting value (the hair routine's third input).
 pub const ATTACHED_VALUE: f32 = 0.25;
 
-/// The three form words the tone picker's constructor sets on top of the
-/// form's own (the hair picker inherits them).
-pub const PICKER_LAYOUT_BITS: u32 = 0x80;
-pub const PICKER_STATE_BITS: u32 = 0x40_0010;
-pub const PICKER_STYLE_BITS: u32 = 0x400;
+/// The bits the tone picker's constructor sets in the form's style,
+/// attribute and option words (the hair picker inherits them).
+pub const PICKER_STYLE_BITS: u32 = 0x80;
+pub const PICKER_ATTRIBUTE_BITS: u32 = 0x40_0010;
+pub const PICKER_OPTION_BITS: u32 = 0x400;
 
 /// The quarter-way blend the tone apply uses toward
 /// [`tone_blend_target`] on a material whose level is under 0.1.
@@ -154,9 +154,9 @@ pub struct TonePicker {
     pub point: PickPoint,
     /// The field's size in pixels.
     pub size: (i32, i32),
-    pub layout: u32,
-    pub state: u32,
     pub style: u32,
+    pub attributes: u32,
+    pub options: u32,
     /// The colour the last refresh produced, in linear light.
     pub colour: [f32; 3],
     /// Whether the owner set a colour callback.
@@ -170,9 +170,9 @@ impl TonePicker {
         Self {
             point: PickPoint { u: 0.5, v: 0.5 },
             size: (0xa0, 0xa0),
-            layout: PICKER_LAYOUT_BITS,
-            state: PICKER_STATE_BITS,
             style: PICKER_STYLE_BITS,
+            attributes: PICKER_ATTRIBUTE_BITS,
+            options: PICKER_OPTION_BITS,
             colour: [0.0; 3],
             callback: false,
         }
@@ -492,7 +492,7 @@ mod tests {
             ((160, 160), PickPoint { u: 0.5, v: 0.5 }, [0.0; 3])
         );
         assert_eq!(
-            (picker.layout, picker.state, picker.style),
+            (picker.style, picker.attributes, picker.options),
             (0x80, 0x40_0010, 0x400)
         );
         assert_eq!(picker.refresh(), ToneTarget::Skin);

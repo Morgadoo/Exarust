@@ -1,286 +1,300 @@
-//! The palette swatch popup (`TGUIColSwatch`): the 256 indexed palette
-//! colours as 32 columns of 8 cells of three units each, the pointer's cell
-//! and the selection framed, and a pick storing the index, showing it as two
-//! hex digits and calling the owner back.
+//! The palette swatch popup (`TGUIColSwatch`): the 256 dye palette colours
+//! as 32 columns of 8 cells, three units each, with the selection framed;
+//! hovering a cell selects it at once, a pick stores the index, shows it on
+//! the opener's label (its colour and its index in hex) and calls the owner
+//! back, and a cancel restores the index the popup opened with.
 //!
-//! The palette itself lives outside this component (the original asks its
-//! voxel-GI palette helper), so it is a trait here: [`Palette`] maps an
-//! index to its colour. Evidence: the popup's constructor, grid draw, frame
-//! draw, hit test, select, apply, command and set-value slots.
+//! The cell colours are the palette's lifted ramp as bytes
+//! ([`exa_formats::palette::lifted_bytes`]), the same the factory's area
+//! colours use. Evidence: the popup's constructor, cell and frame draws,
+//! hit test, hover, press, close, command, select and set-value slots, and
+//! the engine's hex formatter, read from their assembly.
 
-/// The swatch block (its constructor's field): its border share in pixels.
-pub const BLOCK: i32 = 8;
-/// The grid's columns.
+use exa_formats::palette::lifted_bytes;
+
+/// The popup's border after its constructor (it first writes 6, then 8).
+pub const BORDER: i32 = 8;
+/// The popup's fixed size: 384 × 96 pixels inside the border on each side.
+pub const WIDTH: i32 = BORDER * 2 + 0x180;
+pub const HEIGHT: i32 = BORDER * 2 + 0x60;
+/// The grid's columns and rows; index = column · 8 + row.
 pub const COLUMNS: i32 = 32;
-/// The grid's rows.
 pub const ROWS: i32 = 8;
 /// A cell is three units square.
 pub const CELL_UNITS: i32 = 3;
-/// The popup's style word.
-pub const SWATCH_STYLE: u32 = 0x800;
-/// The popup's state word bit: no frame.
-pub const FRAMELESS: u32 = 0x10;
+/// The grid's offset inside the client.
+pub const GRID_ORIGIN: i32 = 1;
+/// The popup's form words after its constructor: style bit 0x10, the
+/// attribute word and the option word.
+pub const SWATCH_STYLE_BITS: u32 = 0x10;
+pub const SWATCH_ATTRIBUTES: u32 = 0x42_1060;
+pub const SWATCH_OPTIONS: u32 = 0x800;
 
-/// A source of the 256 indexed palette colours.
-pub trait Palette {
-    /// The colour of an index, red green blue alpha.
-    fn colour(&self, index: u8) -> [u8; 4];
-}
+/// The answer a slot gives when it changed the selection.
+pub const CHANGED: u32 = 3;
 
-/// A palette of opaque greys, useful as a stand-in where a caller has no
-/// game palette: index `i` is `(i, i, i, 255)`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct GreyPalette;
-
-impl Palette for GreyPalette {
-    fn colour(&self, index: u8) -> [u8; 4] {
-        [index, index, index, 255]
+/// The engine's hex formatter at the swatch's two digits: 0 is `"0"` (the
+/// formatter's zero case skips the padding), one digit is padded with a
+/// leading 0, upper-case digits.
+pub fn index_text(index: u8) -> String {
+    if index == 0 {
+        "0".to_string()
+    } else {
+        format!("{index:02X}")
     }
 }
 
-/// The popup's geometry: the cell size, its size in pixels, the grid's
-/// origin and the selection's frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SwatchMetrics {
-    pub block: i32,
-    pub cell: i32,
-    pub width: i32,
-    pub height: i32,
-    /// The grid's first cell's corner (a pixel in).
-    pub origin: (i32, i32),
+/// A cell's colour: the palette's lifted ramp as bytes, alpha 255.
+pub fn cell_colour(index: u8) -> [u8; 4] {
+    let [r, g, b] = lifted_bytes(index);
+    [r, g, b, 255]
 }
 
-impl SwatchMetrics {
-    /// The constructor's size: an eight-pixel border, 32 cells across and 8
-    /// down, each three units.
-    pub fn new(unit: i32) -> Self {
-        let cell = CELL_UNITS * unit;
-        Self {
-            block: BLOCK,
-            cell,
-            width: BLOCK * 2 + COLUMNS * cell,
-            height: BLOCK * 2 + ROWS * cell,
-            origin: (1, 1),
+/// One drawn cell: its index, colour and corners (left, top, right,
+/// bottom). Cells are a pixel in from the grid origin on the left and top
+/// and end at the next cell's start, so neighbours keep a pixel apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SwatchCell {
+    pub index: u8,
+    pub colour: [u8; 4],
+    pub rect: [f32; 4],
+}
+
+/// The cells in the original's order, thirty-two columns of eight rows, at
+/// `unit` pixels per unit.
+pub fn cells(unit: i32) -> Vec<SwatchCell> {
+    let cell = (CELL_UNITS * unit) as f32;
+    let origin = GRID_ORIGIN as f32;
+    let mut out = Vec::with_capacity(256);
+    let mut x = 0.0f32;
+    for column in 0..COLUMNS {
+        let left = origin + x;
+        x += cell;
+        let mut y = 0.0f32;
+        for row in 0..ROWS {
+            let top = origin + y;
+            y += cell;
+            let index = (column * ROWS + row) as u8;
+            out.push(SwatchCell {
+                index,
+                colour: cell_colour(index),
+                rect: [left, top, x, y],
+            });
         }
     }
-
-    /// The cell's rectangle (x0, y0, x1, y1), the frame included.
-    pub fn cell_rect(&self, index: u8) -> [i32; 4] {
-        let column = i32::from(index) >> 3;
-        let row = i32::from(index) & 7;
-        let (x, y) = (
-            self.origin.0 + column * self.cell,
-            self.origin.1 + row * self.cell,
-        );
-        [x, y, x + self.cell, y + self.cell]
-    }
-
-    /// The selection's outer frame (white) and its inner frame (black), as
-    /// the draw places them: the outer a pixel past the cell on each side,
-    /// the inner the cell itself.
-    pub fn selection_rects(&self, index: u8) -> ([i32; 4], [i32; 4]) {
-        let [x0, y0, x1, y1] = self.cell_rect(index);
-        ([x0, y0, x1 + 1, y1 + 1], [x0 + 1, y0 + 1, x1, y1])
-    }
+    out
 }
 
-/// What a pick did.
+/// The selection's two frames (left, top, right, bottom), each in one of
+/// the skin's frame colours: the outer from the cell's grid corner to a
+/// pixel past its size, the inner a pixel in on the left and top.
+pub fn selection_frames(index: i32, unit: i32) -> ([i32; 4], [i32; 4]) {
+    let cell = CELL_UNITS * unit;
+    let x = (index >> 3) * unit * 3;
+    let y = (index % 8) * unit * 3;
+    (
+        [x, y, x + cell + 1, y + cell + 1],
+        [x + 1, y + 1, x + cell, y + cell],
+    )
+}
+
+/// The cell under a client point: `(x − 1)/cell` held to 0–31 and
+/// `(y − 1)/cell` held to 0–7 (truncating divisions).
+pub fn cell_at(x: i32, y: i32, unit: i32) -> u8 {
+    let cell = CELL_UNITS * unit;
+    let column = ((x - GRID_ORIGIN) / cell).clamp(0, COLUMNS - 1);
+    let row = ((y - GRID_ORIGIN) / cell).clamp(0, ROWS - 1);
+    (column * ROWS + row) as u8
+}
+
+/// The label the opener shows the pick on: its colour (alpha byte holds
+/// the index) and its text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwatchLabel {
+    pub colour: [u8; 4],
+    pub text: String,
+}
+
+/// Who heard a selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SwatchPick {
-    /// The index changed; the owner is called with it.
-    Changed(u8),
-    /// The index was already the one shown.
-    Same,
-}
-
-/// The popup's form size and styles after its constructor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SwatchForm {
-    pub metrics: SwatchMetrics,
-    /// The client's left inset (the constructor's 6, then 8).
-    pub inset: i32,
-    pub style: u32,
-    pub state: u32,
-}
-
-impl SwatchForm {
-    pub fn new(unit: i32) -> Self {
-        Self {
-            metrics: SwatchMetrics::new(unit),
-            inset: BLOCK,
-            style: SWATCH_STYLE,
-            state: FRAMELESS,
-        }
-    }
+pub enum Heard {
+    /// The popup's owner callback, with the index.
+    Owner(i32),
+    /// The label's own callback (no owner callback was set).
+    Label,
+    /// Nobody.
+    Nobody,
 }
 
 /// The palette swatch popup.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColourSwatch {
-    /// The index shown, 0-based (0–255).
-    pub index: u8,
-    /// The external value the set-value message applies (0-based).
-    pub value: u8,
-    /// The cell under the pointer, or 255 for none.
-    pub hover: Option<u8>,
-    /// The label's two hex digits.
-    pub text: String,
-    /// The label's colour, from the palette.
-    pub label: [u8; 4],
-    pub metrics: SwatchMetrics,
-    pub style: u32,
-    pub state: u32,
-    /// Whether a drag is in progress (the original's +0x70 not −1).
-    pub dragging: bool,
+    /// The selected index.
+    pub index: i32,
+    /// The index the popup opened with, restored on a cancel.
+    pub original: i32,
+    /// The opener's label, when there is one.
+    pub label: Option<SwatchLabel>,
+    /// Whether the owner and the label have callbacks.
+    pub owner_callback: bool,
+    pub label_callback: bool,
+    /// The form's hovered control code (0 for none).
+    pub hovered: i32,
+    /// Whether the form is closing (its state byte 2): hovering then does
+    /// nothing.
+    pub closing: bool,
+    /// Whether a press is captured (the form's capture is not −1).
+    pub captured: bool,
     pub shown: bool,
 }
 
 impl ColourSwatch {
-    /// A popup at `unit`: index 0, no hover, the label showing "00".
-    pub fn new(unit: i32) -> Self {
+    /// A popup: index 0, nothing hovered.
+    pub fn new() -> Self {
         Self {
             index: 0,
-            value: 0,
-            hover: None,
-            text: "00".to_string(),
-            label: [0, 0, 0, 255],
-            metrics: SwatchMetrics::new(unit),
-            style: SWATCH_STYLE,
-            state: FRAMELESS,
-            dragging: false,
-            shown: false,
+            original: 0,
+            label: None,
+            owner_callback: false,
+            label_callback: false,
+            hovered: 0,
+            closing: false,
+            captured: false,
+            shown: true,
         }
     }
 
-    /// The cell at a point in the popup's coordinates: `(x − 1) / cell`
-    /// held to 0–31 and `(y − 1) / cell` held to 0–7, combined as
-    /// `row * 8 + column`. A point outside the grid still clamps, as the
-    /// original's division and clamps do.
-    pub fn hit(&self, x: i32, y: i32) -> u8 {
-        let cell = self.metrics.cell;
-        let column = ((x - 1) / cell).clamp(0, COLUMNS - 1);
-        let row = ((y - 1) / cell).clamp(0, ROWS - 1);
-        (column * 8 + row) as u8
+    fn tell(&mut self) -> Heard {
+        let index = self.index;
+        if let Some(label) = self.label.as_mut() {
+            let [r, g, b, _] = cell_colour(index as u8);
+            label.colour = [r, g, b, index as u8];
+            label.text = index_text(index as u8);
+        }
+        if self.owner_callback {
+            Heard::Owner(self.index)
+        } else if self.label.is_some() && self.label_callback {
+            Heard::Label
+        } else {
+            Heard::Nobody
+        }
     }
 
-    /// The pointer moves: remembers the hovered cell.
-    pub fn move_to(&mut self, x: i32, y: i32) -> u8 {
-        let index = self.hit(x, y);
-        self.hover = Some(index);
-        index
-    }
-
-    /// The two hex digits of an index.
-    pub fn index_text(index: u8) -> String {
-        format!("{index:02X}")
-    }
-
-    /// Selects an index: the label's colour comes from the palette, its
-    /// byte and text follow, and the owner is called. Selecting the index
-    /// already shown does nothing.
-    pub fn select(&mut self, index: u8, palette: &impl Palette) -> SwatchPick {
+    /// The select slot: a new index is stored, shown on the label and
+    /// told; the same index does nothing (`None`).
+    pub fn select(&mut self, index: i32) -> Option<Heard> {
         if index == self.index {
-            return SwatchPick::Same;
-        }
-        self.index = index;
-        self.label = palette.colour(index);
-        self.text = Self::index_text(index);
-        SwatchPick::Changed(index)
-    }
-
-    /// The set-value slot: the index takes the caller's value masked to a
-    /// byte, the label follows and the owner hears the new index.
-    pub fn set_value(&mut self, value: u32, palette: &impl Palette) -> u8 {
-        self.index = (value & 0xff) as u8;
-        self.label = palette.colour(self.index);
-        self.text = Self::index_text(self.index);
-        self.index
-    }
-
-    /// A press at a point: with no drag in progress the cell under the
-    /// pointer is selected (3). A press while dragging is left to the form.
-    pub fn press(&mut self, x: i32, y: i32, palette: &impl Palette) -> Option<u8> {
-        if self.dragging {
             return None;
         }
-        let index = self.hit(x, y);
-        self.select(index, palette);
-        Some(3)
+        self.index = index;
+        Some(self.tell())
     }
 
-    /// The apply message: with no button bit, a value different from the
-    /// shown index is set first; the popup then closes (the owner's 3).
-    pub fn apply(&mut self, buttons: u32, palette: &impl Palette) -> u8 {
-        if buttons & 1 == 0 && self.value != self.index {
-            self.set_value(u32::from(self.value), palette);
+    /// The set-value slot: the value's low byte becomes the index, shown
+    /// and told even when unchanged.
+    pub fn set_value(&mut self, value: u32) -> Heard {
+        self.index = (value & 0xff) as i32;
+        self.tell()
+    }
+
+    /// The hit test over the grid: with no control under the point (the
+    /// base's −1) the cell's control code, its index plus 1.
+    pub fn hit(&self, base_code: i32, x: i32, y: i32, unit: i32) -> i32 {
+        if base_code != -1 {
+            return base_code;
+        }
+        i32::from(cell_at(x, y, unit)) + 1
+    }
+
+    /// The hover slot with the control code under the pointer: a cell
+    /// (code above 0) is selected at once (3 when it changed, else 0) and
+    /// becomes the hovered code; off the grid the base answers, with 3 when
+    /// a cell was hovered. A closing popup answers 0.
+    pub fn hover(&mut self, code: i32, base_answer: u32) -> u32 {
+        if self.closing {
+            return 0;
+        }
+        if code > 0 {
+            let answer = if self.select(code - 1).is_some() {
+                CHANGED
+            } else {
+                0
+            };
+            self.hovered = code;
+            return answer;
+        }
+        if self.hovered > 0 {
+            base_answer | CHANGED
+        } else {
+            base_answer
+        }
+    }
+
+    /// The press slot at a client point: unless a press is captured the
+    /// cell under it is selected (3 when it changed, else 0); a captured
+    /// press is the form's.
+    pub fn press(&mut self, x: i32, y: i32, unit: i32, base_answer: u32) -> u32 {
+        if self.captured {
+            return base_answer;
+        }
+        if self.select(i32::from(cell_at(x, y, unit))).is_some() {
+            CHANGED
+        } else {
+            0
+        }
+    }
+
+    /// The close slot: without the keep bit (bit 0 of the flags) a changed
+    /// index goes back to the original; the popup closes and answers 3.
+    pub fn close(&mut self, flags: u32) -> u32 {
+        if flags & 1 == 0 && self.index != self.original {
+            self.set_value(self.original as u32);
         }
         self.shown = false;
-        self.index
+        CHANGED
     }
 
-    /// A command word: 0x100 closes; 0x200 applies the value and closes;
-    /// 0x1000 and 0x2000 move by a column (eight indices) within 0–248;
-    /// 0x4000 and 0x8000 move by a row (one index) within the eight cells of
-    /// a column. The direction words need a low bit set, as the original's
-    /// words do.
-    pub fn command(&mut self, word: u32, palette: &impl Palette) -> Option<u8> {
+    /// A command word: 0x200 (cancel) restores the original index and
+    /// closes; 0x100 closes keeping the pick; a word with a low bit set
+    /// steps a column (0x1000 back, 0x2000 on, by eight within 0–255) or a
+    /// row (0x4000 up, 0x8000 down, within the column), answering 3 when
+    /// the selection changed. Anything else answers 1.
+    pub fn command(&mut self, word: u32) -> u32 {
         match word {
+            0x200 => {
+                if self.index != self.original {
+                    self.set_value(self.original as u32);
+                }
+                self.shown = false;
+                1
+            }
             0x100 => {
                 self.shown = false;
-                None
-            }
-            0x200 => {
-                let index = self.value;
-                let picked = self.select(index, palette);
-                self.shown = false;
-                match picked {
-                    SwatchPick::Changed(index) => Some(index),
-                    SwatchPick::Same => Some(index),
-                }
+                1
             }
             _ if word & 3 != 0 => {
-                let mut index = i32::from(self.index);
+                let mut index = self.index;
                 match word & 0xf000 {
-                    0x1000 => {
-                        if index > 7 {
-                            index -= 8;
-                        }
-                    }
-                    0x2000 => {
-                        if index < 0xf8 {
-                            index += 8;
-                        }
-                    }
-                    0x4000 => {
-                        if index & 7 != 0 {
-                            index -= 1;
-                        }
-                    }
-                    0x8000 => {
-                        index += i32::from(index & 7 < 7);
-                    }
+                    0x1000 if index > 7 => index -= 8,
+                    0x2000 if index < 0xf8 => index += 8,
+                    0x4000 if index & 7 > 0 => index -= 1,
+                    0x8000 if index & 7 < 7 => index += 1,
                     _ => {}
                 }
-                match self.select(index as u8, palette) {
-                    SwatchPick::Changed(index) => Some(index),
-                    SwatchPick::Same => None,
+                if self.select(index).is_some() {
+                    CHANGED
+                } else {
+                    1
                 }
             }
-            _ => None,
+            _ => 1,
         }
     }
+}
 
-    /// The cells to draw, in the original's order: thirty-two columns, each
-    /// eight rows, at the grid's origin.
-    pub fn cells(&self) -> Vec<(u8, [i32; 4])> {
-        let mut out = Vec::with_capacity(256);
-        for column in 0..COLUMNS {
-            for row in 0..ROWS {
-                let index = (column * 8 + row) as u8;
-                out.push((index, self.metrics.cell_rect(index)));
-            }
-        }
-        out
+impl Default for ColourSwatch {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -288,115 +302,99 @@ impl ColourSwatch {
 mod tests {
     use super::*;
 
-    fn palette() -> impl Palette {
-        struct P;
-        impl Palette for P {
-            fn colour(&self, index: u8) -> [u8; 4] {
-                [index, 255 - index, index / 2, 255]
-            }
-        }
-        P
-    }
-
     #[test]
     fn the_grid_is_thirty_two_columns_of_eight_cells() {
-        let metrics = SwatchMetrics::new(4);
-        assert_eq!(
-            (metrics.cell, metrics.width, metrics.height),
-            (12, 400, 112)
-        );
-        assert_eq!(metrics.cell_rect(0), [1, 1, 13, 13]);
-        assert_eq!(metrics.cell_rect(1), [1, 13, 13, 25]);
-        assert_eq!(metrics.cell_rect(7), [1, 85, 13, 97]);
-        assert_eq!(metrics.cell_rect(8), [13, 1, 25, 13]);
-        assert_eq!(metrics.cell_rect(255), [373, 85, 385, 97]);
-        assert_eq!(
-            metrics.selection_rects(9),
-            ([13, 13, 26, 26], [14, 14, 25, 25])
-        );
-        let swatch = ColourSwatch::new(4);
-        let cells = swatch.cells();
+        assert_eq!((WIDTH, HEIGHT), (400, 112));
+        let cells = cells(4);
         assert_eq!(cells.len(), 256);
-        assert_eq!(cells[0], (0, [1, 1, 13, 13]));
-        assert_eq!(cells[255], (255, [373, 85, 385, 97]));
-        let form = SwatchForm::new(4);
-        assert_eq!((form.inset, form.style, form.state), (8, 0x800, 0x10));
+        assert_eq!(cells[0].rect, [1.0, 1.0, 12.0, 12.0]);
+        assert_eq!(cells[1].rect, [1.0, 13.0, 12.0, 24.0]);
+        assert_eq!(cells[8].rect, [13.0, 1.0, 24.0, 12.0]);
+        assert_eq!(cells[255].rect, [373.0, 85.0, 384.0, 96.0]);
+        assert_eq!(cells[9].colour, cell_colour(9));
+        assert_eq!(cell_colour(0), [255, 255, 255, 255]);
+        assert_eq!(selection_frames(9, 4), ([12, 12, 25, 25], [13, 13, 24, 24]));
     }
 
     #[test]
-    fn a_point_hits_the_clamped_cell() {
-        let swatch = ColourSwatch::new(4);
-        // (1, 1) is index 0; a 12-pixel cell.
-        assert_eq!(swatch.hit(1, 1), 0);
-        assert_eq!(swatch.hit(5, 5), 0);
-        assert_eq!(swatch.hit(13, 1), 8);
-        assert_eq!(swatch.hit(1, 13), 1);
-        assert_eq!(swatch.hit(13, 13), 9);
-        // Clamps at both ends.
-        assert_eq!(swatch.hit(-5, -5), 0);
-        assert_eq!(swatch.hit(9999, 9999), ((31 * 8) + 7) as u8);
-        let mut swatch = swatch;
-        assert_eq!(swatch.move_to(20, 20), 9);
-        assert_eq!(swatch.hover, Some(9));
+    fn a_point_hits_the_clamped_cell_as_a_control_code() {
+        assert_eq!(cell_at(1, 1, 4), 0);
+        assert_eq!(cell_at(13, 1, 4), 8);
+        assert_eq!(cell_at(1, 13, 4), 1);
+        assert_eq!(cell_at(-5, -5, 4), 0);
+        assert_eq!(cell_at(9999, 9999, 4), 255);
+        let swatch = ColourSwatch::new();
+        assert_eq!(swatch.hit(-1, 13, 13, 4), 10);
+        assert_eq!(swatch.hit(4, 13, 13, 4), 4);
     }
 
     #[test]
-    fn a_pick_stores_the_index_and_shows_two_hex_digits() {
-        let mut swatch = ColourSwatch::new(4);
-        assert_eq!(swatch.text, "00");
-        assert_eq!(swatch.select(0, &palette()), SwatchPick::Same);
-        assert_eq!(swatch.select(0x2a, &palette()), SwatchPick::Changed(0x2a));
-        assert_eq!(swatch.text, "2A");
-        assert_eq!(swatch.label, [0x2a, 0xd5, 0x15, 255]);
-        assert_eq!(
-            swatch.press(1 + 12 * 8 + 3, 1 + 12 * 2 + 3, &palette()),
-            Some(3)
-        );
-        assert_eq!(swatch.index, 66);
-        assert_eq!(swatch.text, "42");
-        assert_eq!(swatch.set_value(0x1ff, &palette()), 0xff);
-        assert_eq!(swatch.text, "FF");
-        assert_eq!(swatch.label[0], 0xff);
-        // A press while dragging is left to the form.
-        swatch.dragging = true;
-        assert_eq!(swatch.press(1, 1, &palette()), None);
+    fn the_index_text_is_the_engine_hex() {
+        assert_eq!(index_text(0), "0");
+        assert_eq!(index_text(5), "05");
+        assert_eq!(index_text(0x2a), "2A");
+        assert_eq!(index_text(0xff), "FF");
     }
 
     #[test]
-    fn apply_and_the_command_words_move_and_close() {
-        let mut swatch = ColourSwatch::new(4);
-        swatch.shown = true;
-        swatch.value = 5;
-        assert_eq!(swatch.apply(0, &palette()), 5);
-        assert!(!swatch.shown);
-        assert_eq!(swatch.index, 5);
-        // A held button does not apply the value.
-        let mut swatch = ColourSwatch::new(4);
-        swatch.value = 9;
-        assert_eq!(swatch.apply(1, &palette()), 0);
-        assert_eq!(swatch.index, 0);
-        // One column is eight indices, one row one index.
-        let mut swatch = ColourSwatch::new(4);
+    fn hovering_and_pressing_select_and_tell() {
+        let mut swatch = ColourSwatch::new();
+        swatch.label = Some(SwatchLabel {
+            colour: [0; 4],
+            text: String::new(),
+        });
+        swatch.owner_callback = true;
+        assert_eq!(swatch.hover(0x2a + 1, 7), CHANGED);
+        assert_eq!(swatch.index, 0x2a);
+        let label = swatch.label.clone().unwrap();
+        assert_eq!(label.text, "2A");
+        assert_eq!(label.colour[3], 0x2a);
+        assert_eq!(&label.colour[..3], &cell_colour(0x2a)[..3]);
+        // The same cell again: no change; off the grid the base and 3.
+        assert_eq!(swatch.hover(0x2a + 1, 7), 0);
+        assert_eq!(swatch.hover(0, 4), 4 | CHANGED);
+        swatch.closing = true;
+        assert_eq!(swatch.hover(1, 4), 0);
+        swatch.closing = false;
+        assert_eq!(swatch.press(1, 1, 4, 9), CHANGED);
+        assert_eq!(swatch.press(1, 1, 4, 9), 0);
+        swatch.captured = true;
+        assert_eq!(swatch.press(13, 13, 4, 9), 9);
+        assert_eq!(swatch.set_value(0x1ff), Heard::Owner(0xff));
+        swatch.owner_callback = false;
+        swatch.label_callback = true;
+        assert_eq!(swatch.select(3), Some(Heard::Label));
+        assert_eq!(swatch.select(3), None);
+    }
+
+    #[test]
+    fn cancel_restores_and_the_command_words_step() {
+        let mut swatch = ColourSwatch::new();
+        swatch.original = 5;
         swatch.index = 9;
-        assert_eq!(swatch.command(0x2002, &palette()), Some(17));
-        assert_eq!(swatch.command(0x1002, &palette()), Some(9));
-        assert_eq!(swatch.command(0x8002, &palette()), Some(10));
-        assert_eq!(swatch.command(0x4002, &palette()), Some(9));
-        // At the top of a column up does nothing; at the bottom down does.
+        // The keep bit closes with the pick.
+        assert_eq!(swatch.close(1), CHANGED);
+        assert_eq!((swatch.index, swatch.shown), (9, false));
+        assert_eq!(swatch.close(0), CHANGED);
+        assert_eq!(swatch.index, 5);
+        swatch.index = 9;
+        assert_eq!(swatch.command(0x2002), CHANGED);
+        assert_eq!(swatch.index, 17);
+        assert_eq!(swatch.command(0x1002), CHANGED);
+        assert_eq!(swatch.command(0x8002), CHANGED);
+        assert_eq!(swatch.command(0x4002), CHANGED);
+        assert_eq!(swatch.index, 9);
         swatch.index = 8;
-        assert_eq!(swatch.command(0x4002, &palette()), None);
+        assert_eq!(swatch.command(0x4002), 1);
         swatch.index = 7;
-        assert_eq!(swatch.command(0x8002, &palette()), None);
-        swatch.index = 0;
-        assert_eq!(swatch.command(0x1002, &palette()), None);
+        assert_eq!(swatch.command(0x8002), 1);
         swatch.index = 0xf8;
-        assert_eq!(swatch.command(0x2002, &palette()), None);
-        // 0x200 applies the held value and closes; 0x100 just closes.
-        swatch.value = 0x12;
-        assert_eq!(swatch.command(0x200, &palette()), Some(0x12));
-        assert!(!swatch.shown);
+        assert_eq!(swatch.command(0x2002), 1);
+        assert_eq!(swatch.command(0x2000), 1);
+        assert_eq!(swatch.command(0x200), 1);
+        assert_eq!((swatch.index, swatch.shown), (5, false));
         swatch.shown = true;
-        assert_eq!(swatch.command(0x100, &palette()), None);
+        assert_eq!(swatch.command(0x100), 1);
         assert!(!swatch.shown);
     }
 }
