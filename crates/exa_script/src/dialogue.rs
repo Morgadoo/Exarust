@@ -1109,8 +1109,7 @@ fn activate_word(
 }
 
 /// Report the original's invalid-role-identifier message for `who` after an
-/// event store (a guess: the original's validator is not in the packet, so
-/// this checks every role against the database).
+/// event store.
 fn report_invalid(scene: &mut Scene<'_>, title: &str, who: u32) {
     if role_set_invalid(scene, who) {
         scene.effects.push(Effect::Report(
@@ -1120,9 +1119,11 @@ fn report_invalid(scene: &mut Scene<'_>, title: &str, who: u32) {
     }
 }
 
-/// Whether `who` holds a role the database does not have. The original's
-/// role-set validation reports a character whose roles cannot be resolved
-/// (a guess: the routine's exact test is not in the packet).
+/// Whether `who` holds a role the database does not have: the original's
+/// role-set validation looks every held role up in the database. It also
+/// looks up the relation roles of the record about the partner when that
+/// record's top flag bit is set; Exarust does not model that flag, so
+/// that half is not checked.
 fn role_set_invalid(scene: &Scene<'_>, who: u32) -> bool {
     scene.cast.get(who).is_none_or(|c| {
         c.roles
@@ -1932,7 +1933,6 @@ impl Engine {
         // The third slot is added to the conversation but not to the
         // interpreter, which keeps the two actors it was bound with.
         if let Some(c) = self.conv_mut(id) {
-            c.state = State::Speaking;
             c.actors.truncate(2);
             c.actors.push(third.map(Speaker::Character));
         }
@@ -1953,12 +1953,14 @@ impl Engine {
         }
         if let Some(c) = self.conv_mut(id) {
             c.actors.truncate(2);
-            c.state = State::Waiting;
         }
-        // The original validates both actors' role sets after the event and
-        // names the actor slot that is invalid.
-        let actors: Vec<Option<Speaker>> =
-            self.conv(id).map_or_else(Vec::new, |c| c.actors.clone());
+        // After a branch ran, the original validates both actors' role sets
+        // (each against the other) and names the actor slot that is invalid.
+        let actors: Vec<Option<Speaker>> = if handled {
+            self.conv(id).map_or_else(Vec::new, |c| c.actors.clone())
+        } else {
+            Vec::new()
+        };
         for (slot, actor) in actors.iter().take(2).enumerate() {
             if let Some(Speaker::Character(who)) = actor
                 && role_set_invalid(scene, *who)
@@ -2413,7 +2415,7 @@ impl Engine {
 
     /// `StartDialogue(topic)` for the pair `a`, `b`.
     pub fn start_dialogue(&mut self, scene: &mut Scene<'_>, a: u32, b: u32, topic: Name) -> bool {
-        if scene.cast.get(a).is_none_or(|c| c.arousal > START_AROUSAL) || self.engaged(a, false) {
+        if scene.cast.get(a).is_none_or(|c| c.arousal > START_AROUSAL) || self.engaged(a, true) {
             return false;
         }
         self.search(
