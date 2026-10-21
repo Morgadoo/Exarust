@@ -9,8 +9,9 @@
 //! swing yet.
 //!
 //! A level's living characters carry a brain ([`brain`]): their roles
-//! choose their idle activity and rate the player, and a human-framed one
-//! whose rating turns hostile engages as the duellist does.
+//! choose their idle activity, every frame their perception pass fills the
+//! contacts they can sense, and their AI tick's target pass decides whether
+//! they engage the player (or leave the fight) as the duellist does.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -428,7 +429,9 @@ fn duellist(
     children: Query<&Children>,
     blades: Query<&Blade>,
     brains: Query<&brain::Npc>,
-    mut minds: Query<&mut Mind>,
+    role_db: Option<Res<brain::RoleDatabase>>,
+    role_lists: Query<&crate::roles::Roles>,
+    ids: Query<&brain::CharacterId>,
     mut npcs: Query<(
         Entity,
         &mut Duellist,
@@ -494,24 +497,8 @@ fn duellist(
             ai.engage_at_ms = None;
             ai.engaged = true;
         }
-        if !ai.engaged
-            && let Ok(mut mind) = minds.get_mut(entity)
-        {
-            if let Ok(target) = targets.get(ai.target) {
-                let to = target.translation() - root_gt.translation();
-                let flat = Vec3::new(to.x, 0.0, to.z);
-                let vertical_cm = to.y.abs() * 100.0;
-                mind.distance_cm = if vertical_cm < 150.0 {
-                    flat.length() * 100.0
-                } else {
-                    to.length() * 100.0
-                };
-            }
-            tick(&mut mind);
-            if decide(&mind) == Decision::Engage {
-                ai.engaged = true;
-            }
-        }
+        // A brain decides the engagement in the AI tick's target pass; a
+        // duellist without one is started by the fight's own setup.
         if !ai.engaged {
             continue;
         }
@@ -604,31 +591,56 @@ fn duellist(
             resist_mind: false,
             target: Some(ai.target),
         };
-        // The role database is not wired into the duellist: its stored
-        // attitude toward the target stands in for the raw one, and the
-        // target's own contacts (none for the player) carry no trust.
         let index = combatant.contact_index(ai.target);
-        let raw = Attitude {
-            value: combatant.contacts[index].attitude,
-            tolerance: combatant.contacts[index].tolerance * 100.0,
-        };
-        let sight = perceive(
-            &observer,
-            &observed,
-            &[],
-            &mut combatant.contacts,
-            index,
-            raw,
-            &|_| 0.0,
-            &[],
-            now,
-        );
-        combatant.target = Some(ai.target);
-        if let Some(floor) = sight.alert_floor
-            && combatant.alert < floor
-        {
-            combatant.alert = floor;
+        if brains.get(entity).is_err() {
+            // A duellist without a brain (the practice opponent) perceives
+            // its target itself. The player carries no contacts, so the
+            // target's list and its trust are empty here; its raw attitude
+            // comes from the roles when the database has them.
+            let mut local = crate::roles::Relations::default();
+            let raw = match (
+                role_db.as_deref(),
+                role_lists.get(entity),
+                role_lists.get(ai.target),
+            ) {
+                (Some(db), Ok(theirs), Ok(targets)) => {
+                    let partner = crate::roles::Partner {
+                        id: ids.get(ai.target).map_or(0, |i| i.0),
+                        roles: targets,
+                        former: None,
+                    };
+                    let rating =
+                        crate::roles::attitude(&db.book, theirs, &mut local, &partner, db.locale);
+                    Attitude {
+                        value: rating.attitude,
+                        tolerance: rating.tolerance,
+                    }
+                }
+                _ => Attitude {
+                    value: combatant.contacts[index].attitude,
+                    tolerance: combatant.contacts[index].tolerance * 100.0,
+                },
+            };
+            let sight = perceive(
+                &observer,
+                &observed,
+                &[],
+                &mut combatant.contacts,
+                index,
+                raw,
+                &|_| 0.0,
+                &[],
+                now,
+            );
+            if let Some(floor) = sight.alert_floor
+                && combatant.alert < floor
+            {
+                combatant.alert = floor;
+            }
         }
+        // The brain's perception pass already saw the target this frame,
+        // with its own contacts and the relations' trust.
+        combatant.target = Some(ai.target);
         let contact = &mut combatant.contacts[index];
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
@@ -1156,10 +1168,11 @@ mod tests {
         );
     }
 
-    /// A contact it has grown hostile to is a fight: the same guard the
-    /// engaged duellist takes, reached from the perception tick.
+    /// A duellist without a brain waits: its own contact rating no longer
+    /// starts the fight; a brain's target pass does (the brain tests pin
+    /// it).
     #[test]
-    fn a_hostile_contact_makes_the_duellist_fight() {
+    fn a_duellist_without_a_brain_waits_for_its_fight() {
         let (mut app, foe, _) = duel(8.0, false);
         let mut mind = Mind::new(-100.0);
         for _ in 0..20_000 {
@@ -1168,7 +1181,7 @@ mod tests {
         assert_eq!(decide(&mind), Decision::Engage);
         app.world_mut().entity_mut(foe).insert(mind);
         app.update();
-        assert_eq!(state(&app, foe).0, Stance::Defence);
+        assert_eq!(state(&app, foe).0, Stance::Idle);
     }
 
     /// Fresh and at full energy, a human on guard stands in its combat idle

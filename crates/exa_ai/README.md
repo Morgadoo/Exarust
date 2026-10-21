@@ -26,8 +26,8 @@ its brain's personality, else Exarust's default (skill 0, blend 1).
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
 activity; every frame they rate the player from both sides' roles, which
-feeds the contact rating (`sense`), and a human-framed character whose
-rating engages duels the player. Every frame the brain's perception pass
+feeds the contact rating (`sense`), and the brain's target pass decides
+whether the character engages the player. Every frame the brain's perception pass
 looks at every character it can sense, with that character's own contacts,
 the role database's attitude and the relations' trust in its threat
 estimate, and writes the contact words the integration reads. A sleeper
@@ -131,8 +131,12 @@ dialogue engine). The AI tick (`brain::ai_tick`) runs it after the
 perception pass filled the contact words and before the duellist's combat
 state, keeps the report (level, attention, stress, cursor) on the brain,
 and feeds the report's stress and the integration's total back into the
-next morale drift. The mind's own rating still decides the duellist's
-engagement.
+next morale drift. The target pass starts the duel (the duellist enters
+combat on the next frame) and a calm pass leaves it; the mind's own rating
+no longer decides the engagement. A duellist without a brain, the practice
+opponent, is started by the fight's setup as before. The pass weighs the
+seen target only; the original also weighs every visible and nearby
+character.
 
 The golem guardians' rules are plain functions with tests; no level has a
 golem entity or an alarm zone yet.
@@ -216,12 +220,12 @@ skill scales, with the original's double-precision steps.
 the original combat state's candidate search) turns the terms into hold,
 approach, retreat or a circle out of a live swing, and the duellist runs
 the chosen footwork (a short hold timer stands in for the switching cost)
-before it takes its stance and strikes. The duellist perceives its target
-each frame through `perceive`, with its stored attitude standing in for
-the role database.
+before it takes its stance and strikes. A duellist with a brain is perceived
+by the AI tick (with the target's own contacts and the relations' trust);
+the practice opponent, which has none, perceives its target through
+`perceive` with the role database's attitude when it is loaded.
 
-Not yet: the role database feeding `perceive` (the brain's attitudes are
-not passed in), the encounter scripts and the familiarity write, the mind
+Not yet: the encounter scripts and the familiarity write, the mind
 power calls the pass and a hit make, the scene's forget broadcast on
 removal, the pathfinder's footprint insert, the full candidate footwork
 search, and the AI's own parry choice (the body's auto-parry runs in

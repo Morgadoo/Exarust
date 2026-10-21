@@ -11,11 +11,22 @@
 //!   ([`crate::roles::attitude`]) and kept in its contact rating, together
 //!   with its record's traits. A sleeper that rates the player above a
 //!   notice loses the sleep role and wakes, and its roles are applied again.
+//! - Every frame each brain perceives every character it can sense
+//!   ([`perceive_all`]): the combatant's perception pass writes the contact
+//!   words with the observed's own contacts, the role-derived attitude and
+//!   the relations' trust, and the brain's contact list takes them.
+//! - The AI tick ([`ai_tick`]) then drifts the morale
+//!   ([`combat::drift_morale`]), integrates the contacts
+//!   ([`contacts::integrate`]) and runs the target pass
+//!   ([`contacts::target_pass`]) over this tick's sighting of its target;
+//!   its report stays on the brain. A target pass that enters combat
+//!   engages the brain's duellist, and one that calms down leaves it.
 //!
 //! Exarust has no navigation grid in the running game yet, so the roam and
 //! patrol routines stand at their wait; the search is created but has no
 //! containers or corpses to search. The mind powers' attitude overrides and
-//! the group blend of the perception are not applied.
+//! their perception masks are not applied: the running game sets no mind
+//! effect yet.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -199,6 +210,15 @@ impl Npc {
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
         contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
+        // The target pass reads the contact after the integration has
+        // moved its hostility and concern; the sighting was taken before
+        // that, so it takes the integrated record for the same id.
+        let mut sighting = sighting;
+        if let Some(s) = sighting.as_mut()
+            && let Some(c) = self.contacts.iter().find(|c| c.id == s.contact.id)
+        {
+            s.contact = *c;
+        }
         // The integration's concern total feeds the next tick's courage
         // floor.
         self.morale.total = self.integration.total;
@@ -246,14 +266,15 @@ impl Npc {
     }
 
     /// Keeps the words a perception pass wrote for contact `record` without
-    /// disturbing the target pass's own level, marks and counters.
+    /// disturbing the integration's own hostility, concern, noticed level
+    /// and counters. The combatant's contact does not carry the
+    /// integration's values, so only the words the perception owns are
+    /// written; a dead or asleep character's concern and hostility are
+    /// cleared, as its perception pass does.
     fn absorb(&mut self, record: ContactRecord) {
         if let Some(c) = self.contacts.iter_mut().find(|c| c.id == record.id) {
             c.flags = record.flags;
-            c.noticed = record.noticed;
             c.sighting = record.sighting;
-            c.concern = record.concern;
-            c.hostility = record.hostility;
             c.tolerance = record.tolerance;
             c.alarm = record.alarm;
             c.threat = record.threat;
@@ -262,6 +283,10 @@ impl Npc {
             c.soothe = record.soothe;
             c.seen = record.seen;
             c.dead = record.dead;
+            if record.dead {
+                c.concern = record.concern;
+                c.hostility = record.hostility;
+            }
             return;
         }
         if self.contacts.len() < contacts::MOST_CONTACTS {
@@ -526,17 +551,20 @@ pub fn ai_tick(
         Entity,
         &mut Npc,
         &mut Combatant,
-        Option<&crate::Duellist>,
+        Option<&mut crate::Duellist>,
         Option<&Mind>,
         Option<&GlobalTransform>,
         &Fighter,
         &Condition,
+        Option<&Name>,
     )>,
 ) {
-    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let player = players.iter().next().map(|(entity, _)| entity);
-    for (_entity, mut npc, combatant, duellist, mind, gt, fighter, condition) in &mut npcs {
-        let target = duellist.map(|d| d.target).or(player);
+    for (_entity, mut npc, mut combatant, duellist, mind, gt, fighter, condition, name) in &mut npcs
+    {
+        let talking = name.map_or("character", |n| n.as_str());
+        let target = duellist.as_deref().map(|d| d.target).or(player);
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
             .and_then(|t| targets.get(t).ok())
@@ -569,7 +597,9 @@ pub fn ai_tick(
             foe_room: 0,
             focus: None,
         };
-        let in_combat = duellist.map_or(combatant.in_combat, |d| d.fighting());
+        let in_combat = duellist
+            .as_deref()
+            .map_or(combatant.in_combat, |d| d.fighting());
         let asleep = mind.is_some_and(|m| m.asleep);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
@@ -585,6 +615,37 @@ pub fn ai_tick(
             &mut roll,
         );
         npc.roll = roll;
+        // The original keeps one contact list: the combat state and the
+        // target pass read the same hostility and concern. Exarust keeps
+        // the integration's on the brain, so the combatant's copy follows
+        // it for the target the combat state weighs.
+        if let Some(t) = target
+            && let Some(c) = npc.contacts.iter().find(|c| c.id == t.to_bits())
+        {
+            let theirs = combatant.contact_mut(t);
+            theirs.concern = c.concern;
+            theirs.hostility = c.hostility;
+            theirs.concern_target = c.concern_target;
+            theirs.noticed = c.noticed;
+        }
+        // The target pass decides the engagement: an entry starts the
+        // duel, a calm pass while fighting leaves it. The mind's own
+        // rating no longer decides it.
+        if let Some(mut duellist) = duellist {
+            if let Some(level) = npc.pass.enter {
+                if !duellist.engaged {
+                    duellist.engage();
+                    info!(
+                        "{talking}: the target pass enters combat at level {level} on tick {}",
+                        ticks.as_ref().map_or(0, |t| t.0)
+                    );
+                }
+            } else if npc.pass.leave && duellist.engaged {
+                duellist.leave();
+                combatant.in_combat = false;
+                info!("{talking}: the target pass leaves combat");
+            }
+        }
     }
 }
 
@@ -689,9 +750,12 @@ mod tests {
     }
 
     /// Human, Undead, Skeleton (Human −100), Activity Patrol and Activity
-    /// Sleep, as shipped.
+    /// Sleep, as shipped, plus a role wholly hostile to Humans (role 8,
+    /// weight 100).
     fn db() -> RoleDatabase {
         let mut book = RoleDb::default();
+        let mut hostile = record(8, 0, 2, "", vec![hates(1)]);
+        hostile.weight = 100;
         for r in [
             record(1, 0, 0, "", vec![]),
             record(2, 0, 0, "", vec![]),
@@ -699,6 +763,7 @@ mod tests {
             record(9, INHERITS_PARENT, 2, "", vec![hates(1)]),
             record(43, 0, 0, "Actor.Activity = 7;", vec![]),
             record(44, 0, 0, "Actor.Activity = 3;", vec![]),
+            hostile,
         ] {
             book.roles.push(r);
         }
@@ -847,6 +912,12 @@ mod tests {
         // the next morale drift.
         assert_eq!(npc.morale.stress, npc.integration.stress);
         assert_eq!(npc.morale.total, npc.integration.total);
+        // The target pass reads the stored contact after integration, so a
+        // calm tick is one whose contact has cooled.
+        if let Some(c) = npc.contacts.iter_mut().find(|c| c.id == 1) {
+            c.hostility = 0.0;
+            c.concern = 0.0;
+        }
         let level = npc.run_pass(
             Some(sighting(0.0)),
             sight,
@@ -932,6 +1003,61 @@ mod tests {
         }
         app.update();
         assert_eq!(app.world().get::<Npc>(npc).unwrap().pass.level, 0);
+    }
+
+    /// A role that makes the player hostile engages through the brain's
+    /// target pass; a neutral one only notices.
+    #[test]
+    fn a_hostile_role_engages_and_a_neutral_one_only_notices() {
+        let mut app = App::new();
+        app.insert_resource(db()).add_systems(
+            Update,
+            (apply_new_roles, rate_the_player, perceive_all, ai_tick).chain(),
+        );
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+                Roles::new_character(&db().book, 0),
+                CharacterId(PLAYER_ID),
+            ))
+            .id();
+        let spawn = |app: &mut App, roles: Roles, at: Vec3| {
+            app.world_mut()
+                .spawn((
+                    roles,
+                    Relations::default(),
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    crate::Duellist::new(player),
+                    Mind::new(0.0),
+                    GlobalTransform::from_translation(at),
+                    Fighter::default(),
+                    Condition::NORMAL,
+                    CharacterId(2),
+                ))
+                .id()
+        };
+        let hostile = spawn(&mut app, held(&[8, 2]), Vec3::ZERO);
+        let neutral = spawn(&mut app, held(&[2]), Vec3::new(0.5, 0.0, 0.0));
+        for _ in 0..700 {
+            app.update();
+        }
+        let w = app.world();
+        assert!(
+            w.get::<crate::Duellist>(hostile).unwrap().engaged,
+            "the hostile brain engages"
+        );
+        assert!(w.get::<Npc>(hostile).unwrap().pass.enter.is_some());
+        let quiet = w.get::<Npc>(neutral).unwrap();
+        assert_eq!(quiet.pass.level, 0);
+        assert_eq!(quiet.pass.enter, None);
+        assert!(!w.get::<crate::Duellist>(neutral).unwrap().engaged);
+        // The combatant's contact follows the brain's integrated hostility.
+        let cb = w.get::<Combatant>(hostile).unwrap();
+        assert!(cb.contact(player).unwrap().hostility > 0.0);
     }
 
     /// An NPC brain and a player two metres apart, the brain's duellist
