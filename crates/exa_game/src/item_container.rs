@@ -5,7 +5,9 @@
 //! scatter the entries, relax their overlaps and clamp each cell's centre
 //! inside the panel. The numbers here are the original's: a 40-unit cell
 //! (160 px at the base unit of 4), a sixteenth-cell pad, an eighth-cell
-//! jitter and the engine's `0x8088405` linear congruential generator.
+//! jitter and the engine's `0x8088405` linear congruential generator (the
+//! shared one for the scatter, placement and worn passes, a seeded local
+//! one for the grid).
 
 /// The cell is 40 GUI units (160 px at the base unit of 4).
 pub const CELL_UNITS: i32 = 40;
@@ -17,9 +19,10 @@ pub const JITTER_DIV: i32 = 8;
 pub const LCG_MUL: u32 = 0x0808_8405;
 /// The engine's linear congruential addend.
 pub const LCG_ADD: u32 = 1;
-/// The seed the "scatter everything" pass uses.
+/// The run-time library's random seed the "scatter everything" pass
+/// stores (its own draws come from the engine's generator).
 pub const SCATTER_SEED: u32 = 0x0080_b71a;
-/// The seed the worn-equipment doll uses.
+/// The run-time library's random seed the worn-equipment panel stores.
 pub const DOLL_SEED: u32 = 0x0000_ba28;
 /// Units per saved character-list position.
 pub const LIST_UNITS: f64 = 16.0;
@@ -51,22 +54,32 @@ impl Cell {
     }
 }
 
-/// The grid's columns and rows: `cols = round(√(n·W/H))`, `rows = ceil(n/cols)`.
+/// The grid's columns and rows: `cols = round(√(n·(W/H)))` in single
+/// precision (the aspect divided in double precision, then narrowed), and
+/// `rows = ceil(n/cols)` with the quotient narrowed to single precision
+/// first. The original divides by zero for a panel so wide that `cols`
+/// rounds to 0; Exarust keeps at least one column.
 pub fn grid_shape(count: usize, usable_w: i32, usable_h: i32) -> (i32, i32) {
     if count == 0 {
         return (0, 0);
     }
-    let aspect = usable_w as f64 / usable_h as f64;
-    let cols = ((count as f32) * aspect as f32)
-        .sqrt()
-        .round_ties_even()
-        .max(1.0) as i32;
-    let rows = (count as f64 / cols as f64).ceil() as i32;
+    let aspect = (f64::from(usable_w) / f64::from(usable_h)) as f32;
+    let cols = ((count as f32) * aspect).sqrt().round_ties_even().max(1.0) as i32;
+    let rows = ((count as f64 / f64::from(cols)) as f32).ceil() as i32;
     (cols, rows)
 }
 
+/// One ideal centre coordinate of the grid: `round((slot + ½) · (span ÷
+/// div))`, the slot and its half added in single precision and the span
+/// divided in double precision, less the sixteenth-cell pad.
+fn grid_centre(slot: i32, span: i32, div: i32, pad: i32) -> i32 {
+    let at = f64::from(slot as f32 + 0.5) * (f64::from(span) / f64::from(div));
+    at.round_ties_even() as i32 - pad
+}
+
 /// The ideal slot for `index` (top-left), before jitter and relaxation.
-/// Entries fill backwards: the last entry sits in row 0, column 0.
+/// Entries fill backwards: the last entry sits in row 0, column 0; a row
+/// with fewer entries left than columns spreads them over the width.
 pub fn grid_cell(count: usize, usable_w: i32, usable_h: i32, cell: i32, index: usize) -> Cell {
     let (cols, rows) = grid_shape(count, usable_w, usable_h);
     if cols <= 0 || rows <= 0 || index >= count {
@@ -81,11 +94,8 @@ pub fn grid_cell(count: usize, usable_w: i32, usable_h: i32, cell: i32, index: u
                 break;
             }
             let div = cols.min(remaining);
-            let cx = (((col as f64) + 0.5) * usable_w as f64 / div as f64).round_ties_even() as i32
-                - pad;
-            let cy = (((row as f64) + 0.5) * usable_h as f64 / rows as f64).round_ties_even()
-                as i32
-                - pad;
+            let cx = grid_centre(col, usable_w, div, pad);
+            let cy = grid_centre(row, usable_h, rows, pad);
             if remaining as usize - 1 == index {
                 return Cell::new(cx - half, cy - half);
             }
@@ -95,8 +105,11 @@ pub fn grid_cell(count: usize, usable_w: i32, usable_h: i32, cell: i32, index: u
     Cell::default()
 }
 
-/// The full grid pass: ideal centres, jitter, five relax passes, clamp, then
-/// the centre-to-top-left shift.
+/// The full grid pass: ideal centres plus an eighth-cell jitter from the
+/// panel's own generator (`seed`; x then y), then five relax passes
+/// (overlap ÷ 4 … 8), each ending with every centre kept inside the
+/// panel, then the centre-to-top-left shift. `halves` are indexed by entry,
+/// and the first ideal slot goes to the last entry.
 pub fn grid_layout(
     count: usize,
     usable_w: i32,
@@ -112,7 +125,7 @@ pub fn grid_layout(
     let pad = cell / PAD_DIV;
     let jitter = cell / JITTER_DIV;
     let mut rng = Rng(seed);
-    let mut pos: Vec<[i32; 2]> = Vec::with_capacity(count);
+    let mut pos: Vec<[i32; 2]> = vec![[0, 0]; count];
     let mut remaining = count as i32;
     'outer: for row in 0..rows {
         for col in 0..cols {
@@ -120,15 +133,10 @@ pub fn grid_layout(
                 break 'outer;
             }
             let div = cols.min(remaining);
-            let cx = (((col as f64) + 0.5) * usable_w as f64 / div as f64).round_ties_even() as i32
-                - pad
-                + rng.below(jitter as u32) as i32;
-            let cy = (((row as f64) + 0.5) * usable_h as f64 / rows as f64).round_ties_even()
-                as i32
-                - pad
-                + rng.below(jitter as u32) as i32;
-            pos.push([cx, cy]);
             remaining -= 1;
+            let at = remaining as usize;
+            pos[at][0] = grid_centre(col, usable_w, div, pad) + rng.below(jitter as u32) as i32;
+            pos[at][1] = grid_centre(row, usable_h, rows, pad) + rng.below(jitter as u32) as i32;
         }
     }
     for pass in 4..=8 {
@@ -137,8 +145,8 @@ pub fn grid_layout(
                 relax_pair(&mut pos, halves, i, j, pass);
             }
         }
+        clamp_centres(&mut pos, halves, usable_w, usable_h);
     }
-    clamp_centres(&mut pos, halves, usable_w, usable_h);
     pos.into_iter()
         .map(|[x, y]| Cell::new(x - (cell >> 1), y - (cell >> 1)))
         .collect()
@@ -171,8 +179,11 @@ fn relax_pair(pos: &mut [[i32; 2]], halves: &[[i32; 2]], i: usize, j: usize, pas
 
 /// Places one new entry at a random spot in the middle half of the panel
 /// and pushes it out of the others over six passes (two inner rounds each),
-/// clamping after every round; both axes move only when both overlap. The
-/// caller's `state` advances. `pos` and the result hold centres.
+/// clamping after every round. An axis pushes only when its overlap (slack
+/// 2 on both sides) is above the pass number, a signed compare, and the
+/// entry moves only when both axes push. The draws come from the engine's
+/// shared generator, whose `state` advances. `pos` and the result hold
+/// centres.
 pub fn place_new(
     pos: &mut [[i32; 2]],
     halves: &[[i32; 2]],
@@ -203,18 +214,10 @@ pub fn place_new(
                     let ho = halves[other][axis];
                     push[axis] = if pos[target][axis] < pos[other][axis] {
                         let overlap = (pos[target][axis] + ht) - (pos[other][axis] - ho) + 2;
-                        if pass < overlap.unsigned_abs() as i32 {
-                            -(overlap / pass)
-                        } else {
-                            0
-                        }
+                        if pass < overlap { -(overlap / pass) } else { 0 }
                     } else {
                         let overlap = (pos[other][axis] + ho) - (pos[target][axis] - ht) + 2;
-                        if pass < overlap.unsigned_abs() as i32 {
-                            overlap / pass
-                        } else {
-                            0
-                        }
+                        if pass < overlap { overlap / pass } else { 0 }
                     };
                 }
                 if push[0] != 0 && push[1] != 0 {
@@ -232,7 +235,7 @@ pub fn place_new(
     }
 }
 
-/// Keeps one entry's centre inside the panel.
+/// The same pass as [`place_new`] under its older name.
 pub fn relax_one(
     pos: &mut [[i32; 2]],
     halves: &[[i32; 2]],
@@ -244,25 +247,32 @@ pub fn relax_one(
     place_new(pos, halves, target, usable_w, usable_h, state);
 }
 
-/// Scatters every entry from `seed` and resolves every pair. `pos` holds
-/// centres; both entries move.
+/// Scatters every entry over the middle half of the panel and resolves
+/// every pair over six passes (overlap ÷ 1, 1, 2, 2, 3, 3; slack 2 when the
+/// second entry is further along, else 1; both move, and only when both
+/// axes overlap), each pass ending with every centre kept inside the panel.
+/// The draws come from the engine's shared generator (`state`, x then y
+/// for each entry). The original also stores [`SCATTER_SEED`] as the
+/// run-time library's random seed, which this pass does not draw from.
+/// `pos` holds centres.
 pub fn scatter_all(
     pos: &mut [[i32; 2]],
     halves: &[[i32; 2]],
     usable_w: i32,
     usable_h: i32,
-    seed: u32,
+    state: &mut u32,
 ) {
     if pos.is_empty() {
         return;
     }
-    let mut rng = Rng(seed);
+    let mut rng = Rng(*state);
     let half_w = usable_w >> 1;
     let half_h = usable_h >> 1;
     for p in pos.iter_mut() {
         p[0] = rng.below(half_w as u32) as i32 + half_w / 2;
         p[1] = rng.below(half_h as u32) as i32 + half_h / 2;
     }
+    *state = rng.0;
     for pass in 2..=7 {
         let q = pass / 2;
         for i in 0..pos.len() {
@@ -441,29 +451,40 @@ where
     own_icon(d.icon)
 }
 
-/// A character-list position in sixteenths of a GUI unit.
-pub fn to_list_pos(px: i32, unit: i32, vscale: f32) -> (i16, i16) {
-    let x = (px as f64 / unit as f64 * LIST_UNITS).round() as i16;
-    let y = (px as f64 / unit as f64 * LIST_UNITS / vscale as f64).round() as i16;
-    (x, y)
+/// A character-list position in sixteenths of a GUI unit: `x` is
+/// `round(x / unit · 16)` and `y` is `round((1 / vscale) · (y / unit ·
+/// 16))`, the reciprocal taken in single precision and everything else in
+/// double, rounded half to even and kept as the low 16 bits.
+pub fn to_list_pos(cell: Cell, unit: i32, vscale: f32) -> (i16, i16) {
+    let inverse = 1.0f32 / vscale;
+    let x = f64::from(cell.x) / f64::from(unit) * LIST_UNITS;
+    let y = f64::from(inverse) * (f64::from(cell.y) / f64::from(unit) * LIST_UNITS);
+    (low_word(x), low_word(y))
 }
 
-/// The inverse of [`to_list_pos`].
+/// The inverse of [`to_list_pos`]: `x = round(unit · (v · 1/16))` and `y =
+/// round(vscale · (unit · (v · 1/16)))`, in double precision.
 pub fn from_list_pos(v: (i16, i16), unit: i32, vscale: f32) -> Cell {
-    Cell::new(
-        (v.0 as f64 / LIST_UNITS * unit as f64).round() as i32,
-        (v.1 as f64 / LIST_UNITS * unit as f64 * vscale as f64).round() as i32,
-    )
+    let x = f64::from(unit) * (f64::from(v.0) * 0.0625);
+    let y = f64::from(vscale) * (f64::from(unit) * (f64::from(v.1) * 0.0625));
+    Cell::new(x.round_ties_even() as i32, y.round_ties_even() as i32)
 }
 
-/// A DB-container position in eightieths of a GUI unit.
+/// A DB-container position in eightieths of a GUI unit:
+/// `round(px / unit · 80)`, kept as the low 16 bits.
 pub fn to_db_pos(px: i32, unit: i32) -> i16 {
-    (px as f64 / unit as f64 * DB_UNITS).round() as i16
+    low_word(f64::from(px) / f64::from(unit) * DB_UNITS)
 }
 
-/// The inverse of [`to_db_pos`].
+/// The inverse of [`to_db_pos`]: `round(unit · (v · 0.0125))`.
 pub fn from_db_pos(v: i16, unit: i32) -> i32 {
-    (v as f64 / DB_UNITS * unit as f64).round() as i32
+    (f64::from(unit) * (f64::from(v) * 0.0125)).round_ties_even() as i32
+}
+
+/// A rounded double stored as a 16-bit word: the processor's conversion
+/// (half to even) to a 64-bit integer, of which the low word is kept.
+fn low_word(v: f64) -> i16 {
+    v.round_ties_even() as i64 as i16
 }
 
 /// A popup container's inner panel from its record's size in cells.
@@ -515,6 +536,27 @@ mod tests {
     }
 
     #[test]
+    fn a_far_entry_is_not_pushed_by_a_negative_overlap() {
+        // State 0 places the new entry at (100, 106); the other one is far
+        // away, so both overlaps are negative and nothing moves.
+        let mut pos = [[0, 0], [390, 390]];
+        let mut state = 0;
+        place_new(&mut pos, &[[10, 10], [10, 10]], 0, 400, 400, &mut state);
+        assert_eq!(pos[0], [100, 106]);
+    }
+
+    #[test]
+    fn the_grid_gives_its_first_slot_to_the_last_entry() {
+        // Three entries in a 400 × 300 panel: 2 columns, 2 rows; no jitter
+        // with a 4-pixel cell (an eighth is 0) and no overlap with zero
+        // halves. The last entry takes row 0, column 0.
+        let cells = grid_layout(3, 400, 300, 4, &[[0, 0]; 3], 1);
+        assert_eq!(cells[2], Cell::new(100 - 2, 75 - 2));
+        assert_eq!(cells[1], Cell::new(300 - 2, 75 - 2));
+        assert_eq!(cells[0], Cell::new(200 - 2, 225 - 2));
+    }
+
+    #[test]
     fn the_grid_layout_is_deterministic_and_inside_the_panel() {
         let halves = [[80, 80]; 6];
         let a = grid_layout(6, 400, 400, 160, &halves, 7);
@@ -532,9 +574,16 @@ mod tests {
         let halves = [[80, 80]; 5];
         let mut a = vec![[0, 0]; 5];
         let mut b = vec![[0, 0]; 5];
-        scatter_all(&mut a, &halves, 400, 400, SCATTER_SEED);
-        scatter_all(&mut b, &halves, 400, 400, SCATTER_SEED);
+        let (mut sa, mut sb) = (SCATTER_SEED, SCATTER_SEED);
+        scatter_all(&mut a, &halves, 400, 400, &mut sa);
+        scatter_all(&mut b, &halves, 400, 400, &mut sb);
         assert_eq!(a, b);
+        // Ten draws, x then y for each entry.
+        let mut rng = Rng(SCATTER_SEED);
+        (0..10).for_each(|_| {
+            rng.below(1);
+        });
+        assert_eq!(sa, rng.0);
         for p in a {
             assert!((80..=320).contains(&p[0]));
             assert!((80..=320).contains(&p[1]));
@@ -621,11 +670,18 @@ mod tests {
 
     #[test]
     fn the_position_codecs_round_trip() {
-        assert_eq!(to_list_pos(140, 4, 1.0), (560, 560));
+        assert_eq!(to_list_pos(Cell::new(140, 140), 4, 1.0), (560, 560));
         assert_eq!(to_db_pos(140, 4), 2800);
         assert_eq!(from_list_pos((560, 560), 4, 1.0), Cell::new(140, 140));
         assert_eq!(from_db_pos(2800, 4), 140);
-        assert_eq!(to_list_pos(140, 4, 2.0).1, 280);
+        // y is saved from the entry's own y, scaled by 1 / vscale.
+        assert_eq!(to_list_pos(Cell::new(140, 20), 4, 2.0), (560, 40));
+        // Halves round to even: 2 sixteenths of 4 is 0.5 → 0, 6 → 1.5 → 2.
+        assert_eq!(from_list_pos((2, 6), 4, 1.0), Cell::new(0, 2));
+        // 10 eightieths of 4 is 0.5 → 0; 30 → 1.5 → 2.
+        assert_eq!((from_db_pos(10, 4), from_db_pos(30, 4)), (0, 2));
+        // A place past the word wraps as the original's store does.
+        assert_eq!(to_db_pos(1640, 4), (32800i32 - 65536) as i16);
     }
 
     #[test]
@@ -955,10 +1011,13 @@ pub fn bulk_of(
 /// The worn and shield panel of a body being looted: each worn item and
 /// each held shield whose icon the cache gives (`icon` returns its slot and
 /// half extents; an item without one is left out and draws no random
-/// numbers) is placed at a random spot in the middle half of the panel,
-/// then the entries push each other apart over four rounds (overlap
-/// divided by 6, 5, 4 and 3, twice each), each pass ending with every
-/// centre kept inside the panel; the centres then become cells.
+/// numbers) is placed at a random spot in the middle half of the panel
+/// (a quarter of the width plus a draw below half of it, from the engine's
+/// shared generator), then the entries push each other apart over four
+/// rounds (overlap divided by 6, 5, 4 and 3, twice each), each pass ending
+/// with every centre kept inside the panel; the centres then become cells.
+/// The push measures both axes with the icons' horizontal half extents, as
+/// the original's loop indexes them; the clamp uses both.
 pub fn worn_layout(
     items: &[(u32, u32)],
     icon: &mut dyn FnMut(u32) -> Option<(usize, (i32, i32))>,
@@ -975,8 +1034,8 @@ pub fn worn_layout(
             continue;
         };
         let mut rng = Rng(*state);
-        let x = hw + rng.below(client.0.max(0) as u32) as i32;
-        let y = hh + rng.below(client.1.max(0) as u32) as i32;
+        let x = (hw as u32 >> 1) as i32 + rng.below(hw as u32) as i32;
+        let y = (hh as u32 >> 1) as i32 + rng.below(hh as u32) as i32;
         *state = rng.0;
         pos.push([x, y]);
         half.push([a, b]);
@@ -997,16 +1056,14 @@ pub fn worn_layout(
                 for j in i + 1..n {
                     for axis in 0..2 {
                         if pos[i][axis] < pos[j][axis] {
-                            let o =
-                                (half[i][axis] + pos[i][axis]) - (pos[j][axis] - half[j][axis]) + 1;
+                            let o = (half[i][0] + pos[i][axis]) - (pos[j][axis] - half[j][0]) + 1;
                             if d < o {
                                 let p = o / d;
                                 pos[i][axis] -= p;
                                 pos[j][axis] += p;
                             }
                         } else {
-                            let o =
-                                (pos[j][axis] + half[j][axis]) - (pos[i][axis] - half[i][axis]) + 1;
+                            let o = (pos[j][axis] + half[j][0]) - (pos[i][axis] - half[i][0]) + 1;
                             if d < o {
                                 let p = o / d;
                                 pos[i][axis] += p;
@@ -1365,7 +1422,7 @@ impl Container {
         self.entries
             .iter()
             .map(|entry| {
-                let (x, y) = to_list_pos(entry.cell.x, unit, self.vscale);
+                let (x, y) = to_list_pos(entry.cell, unit, self.vscale);
                 ListChild {
                     id: entry.id,
                     flags: entry.flags,
@@ -1376,14 +1433,16 @@ impl Container {
             .collect()
     }
 
-    /// A container-record load: the size sets the client, the capacity and
-    /// item limit come from the record, and each resolved child takes its
-    /// place in eightieths of a unit.
-    pub fn load_record<F>(&mut self, record: &ContainerRecord, mut resolve: F) -> usize
+    /// A container-record load: the panel takes the container's id, the
+    /// capacity and item limit come from the record, and each resolved
+    /// child (resolved with its flags' low 28 bits, kept whole on the
+    /// entry) takes its place in eightieths of a unit. Unlike the list
+    /// load, nothing is clamped.
+    pub fn load_record<F>(&mut self, id: u32, record: &ContainerRecord, mut resolve: F) -> usize
     where
         F: FnMut(u32, u32) -> Option<(usize, i32)>,
     {
-        self.container_id = self.container_id.max(1);
+        self.container_id = id;
         self.capacity = i32::from(record.capacity);
         self.max_item = i32::from(record.max_item);
         self.entries.clear();
@@ -1406,14 +1465,19 @@ impl Container {
         self.entries.len()
     }
 
-    /// The inverse of [`Container::load_record`]. The size, capacity and
-    /// item limit come from what the panel loaded.
-    pub fn save_record(&self, size: (u16, u16)) -> ContainerRecord {
+    /// The inverse of [`Container::load_record`]: the stored record's
+    /// header fields (size, capacity, item limit) are kept and the children
+    /// are rewritten from the entries. Only a loaded panel whose container
+    /// is a database copy (either of the id's top two bits) is saved.
+    pub fn save_record(&self, stored: &ContainerRecord) -> Option<ContainerRecord> {
+        if !self.loaded || self.container_id & 0xC000_0000 == 0 {
+            return None;
+        }
         let unit = self.unit;
-        ContainerRecord {
-            size,
-            capacity: self.capacity as u16,
-            max_item: self.max_item as u16,
+        Some(ContainerRecord {
+            size: stored.size,
+            capacity: stored.capacity,
+            max_item: stored.max_item,
             children: self
                 .entries
                 .iter()
@@ -1424,7 +1488,7 @@ impl Container {
                     y: to_db_pos(entry.cell.y, unit),
                 })
                 .collect(),
-        }
+        })
     }
 
     /// Keeps every entry inside the panel, each by its icon's half extents.
@@ -1931,15 +1995,13 @@ mod container_tests {
         assert_eq!(panel.used, 0x10);
         // 560 / 16 × 4 = 140; the centre stays 40 inside each edge.
         assert_eq!(panel.entries[0].cell, Cell::new(108, 60));
-        assert_eq!(panel.save_list(), vec![child(5, 0x10, 432, 432)]);
+        // The save divides each axis back: 108 → 432, 60 → 240.
+        assert_eq!(panel.save_list(), vec![child(5, 0x10, 432, 240)]);
     }
 
     #[test]
     fn a_record_load_uses_eightieths_of_a_unit() {
-        let mut panel = Container {
-            container_id: 9,
-            ..Default::default()
-        };
+        let mut panel = Container::default();
         let record = ContainerRecord {
             size: (10, 6),
             capacity: 120,
@@ -1951,14 +2013,20 @@ mod container_tests {
                 y: -80,
             }],
         };
-        let loaded = panel.load_record(&record, |id, flags| {
+        let loaded = panel.load_record(9, &record, |id, flags| {
             (id == 12 && flags == 2).then_some((3, 7))
         });
         assert_eq!(loaded, 1);
+        assert_eq!(panel.container_id, 9);
         assert_eq!((panel.capacity, panel.max_item), (120, 30));
         assert_eq!(panel.entries[0].cell, Cell::new(140, -4));
+        // Container 9 is a template, not a database copy: nothing is saved.
+        assert_eq!(panel.save_record(&record), None);
+        panel.container_id = 0x8000_0009;
+        let saved = panel.save_record(&record).unwrap();
+        assert_eq!((saved.size, saved.capacity), ((10, 6), 120));
         assert_eq!(
-            panel.save_record((10, 6)).children,
+            saved.children,
             vec![ContainerChild {
                 id: 12,
                 flags: 2,
@@ -1966,6 +2034,8 @@ mod container_tests {
                 y: -80
             }]
         );
+        panel.loaded = false;
+        assert_eq!(panel.save_record(&record), None);
     }
 
     #[test]
