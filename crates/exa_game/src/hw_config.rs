@@ -88,11 +88,10 @@ impl HardwareConfig {
     }
 
     /// Opens the settings screen over the live options, or keeps it open.
-    pub fn open(&mut self) -> &Screen {
+    pub fn open(&mut self) {
         if self.screen.is_none() {
             self.screen = Some(Screen::open(&self.live));
         }
-        self.screen.as_ref().expect("just opened")
     }
 
     /// Closes the screen without applying (the original's page switch).
@@ -162,19 +161,11 @@ impl HardwareConfig {
         self.benchmark = None;
         self.live = Options::auto_detected(&self.live, perf_index, width, height);
         self.session_music = self.live.music;
-        if let Some(screen) = &mut self.screen {
-            screen.draft = Options::opened_from(&self.live);
-            screen.baseline = self.live;
-        }
     }
 
     /// The Deck's fixed preset, instead of a benchmark.
     pub fn deck_preset(&mut self) {
         self.live = Options::deck_preset(&self.live);
-        if let Some(screen) = &mut self.screen {
-            screen.draft = Options::opened_from(&self.live);
-            screen.baseline = self.live;
-        }
     }
 
     /// A slider step on the open screen. Aim speed is the extra row the
@@ -709,9 +700,10 @@ mod tests {
         assert_eq!(config.live.supersample, 3);
         assert_eq!(config.live.shading_quality, 5);
         assert_eq!(config.live.shadow_quality, 4);
+        // The original's Defaults does not refresh the open page.
         let screen = config.screen.as_ref().unwrap();
-        assert_eq!(screen.draft.supersample, 3);
-        assert_eq!(screen.baseline.supersample, 3);
+        assert_eq!(screen.draft.supersample, 0);
+        assert_eq!(screen.baseline.supersample, 0);
     }
 
     #[test]

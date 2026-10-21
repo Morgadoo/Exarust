@@ -616,12 +616,15 @@ impl QualityChange {
 /// performance index.
 ///
 /// The caller reports the performance counter after each drawn frame; the
-/// frame it was called for is counted even when it ends a phase. The actual
-/// quads are the renderer's; this type only measures.
+/// first frame starts the clock, and the frame it was called for is counted
+/// even when it ends a phase. The actual quads are the renderer's; this type
+/// only measures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Benchmark {
     half: u64,
     start: u64,
+    /// Set by the first frame, which starts the warm-up's clock.
+    started: bool,
     /// 0 is the warm-up, then 1 to [`BENCHMARK_RUNS`].
     run: i32,
     frames: i32,
@@ -636,6 +639,7 @@ impl Benchmark {
         Self {
             half: (frequency / 2).max(1),
             start: 0,
+            started: false,
             run: 0,
             frames: 0,
             best: 0,
@@ -655,6 +659,10 @@ impl Benchmark {
     /// Counts a frame ending at counter tick `now`. Gives the performance
     /// index when the last run just ended.
     pub fn frame(&mut self, now: u64) -> Option<f32> {
+        if !self.started {
+            self.started = true;
+            self.start = now;
+        }
         self.frames += 1;
         let Some(elapsed) = now.checked_sub(self.start) else {
             // The counter went backwards: start the phase again.

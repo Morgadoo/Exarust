@@ -440,27 +440,28 @@ fn the_benchmark_counts_half_second_runs_and_keeps_the_best() {
     assert_eq!(benchmark.half(), 500);
     assert!(!benchmark.running());
 
-    // Warm-up: five frames of 100 ticks.
-    for now in [100, 200, 300, 400, 500] {
+    // Warm-up: the first frame starts the clock and five more of 100 ticks
+    // close the half second.
+    for now in [100, 200, 300, 400, 500, 600] {
         assert_eq!(benchmark.frame(now), None);
     }
     assert!(benchmark.running());
 
     // Run 1: five frames.
-    for now in [600, 700, 800, 900, 1000] {
+    for now in [700, 800, 900, 1000, 1100] {
         assert_eq!(benchmark.frame(now), None);
     }
 
     // Run 2: ten frames of 50 ticks.
-    for now in [1050, 1100, 1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500] {
+    for now in [1150, 1200, 1250, 1300, 1350, 1400, 1450, 1500, 1550, 1600] {
         assert_eq!(benchmark.frame(now), None);
     }
 
     // Run 3: five frames, then the index from the best rate (10).
     let mut result = None;
-    for now in [1600, 1700, 1800, 1900, 2000] {
+    for now in [1700, 1800, 1900, 2000, 2100] {
         result = benchmark.frame(now);
-        if now < 2000 {
+        if now < 2100 {
             assert_eq!(result, None);
         }
     }
@@ -477,12 +478,12 @@ fn the_benchmark_rounds_its_rate_to_even_and_survives_a_zero_frequency() {
     // Half a tick per phase: every frame closes one.
     let mut benchmark = Benchmark::new(0);
     assert_eq!(benchmark.half(), 1);
-    assert_eq!(benchmark.frame(0), None); // still inside the warm-up tick
-    assert_eq!(benchmark.frame(1), None); // warm-up
-    assert_eq!(benchmark.frame(2), None); // run 1
-    assert_eq!(benchmark.frame(3), None); // run 2
+    assert_eq!(benchmark.frame(1), None); // starts the clock, still inside it
+    assert_eq!(benchmark.frame(2), None); // warm-up
+    assert_eq!(benchmark.frame(3), None); // run 1
+    assert_eq!(benchmark.frame(4), None); // run 2
     // Run 3: one frame in one tick, so a rate of 1; the best stays 1.
-    let perf = benchmark.frame(4).unwrap();
+    let perf = benchmark.frame(5).unwrap();
     assert_eq!(perf, 1.0 / 60.0);
 
     // A counter that goes backwards restarts the phase instead of panicking.
