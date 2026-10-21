@@ -2,7 +2,10 @@
 //! emitter runs the original's 83 Hz ticks from [`crate::particles`], and
 //! each frame its live particles become camera-facing diamonds with the
 //! fire's colour keys and atlas variants, drawn with the `_FirePrt`
-//! material. The flame's light values feed its [`crate::fire::Fire`].
+//! material. The flame's light values feed its [`crate::fire::Fire`]. A
+//! finished one-shot emitter (a large fire's) is removed with its node, as
+//! the original removes it; a hidden flame keeps ticking but builds no
+//! quads, as the original builds them only for a visible node.
 //! Rules: `docs/RENDERING.md` (Fires).
 
 use bevy::asset::RenderAssetUsages;
@@ -12,7 +15,7 @@ use bevy::prelude::*;
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader};
 use exa_render::flame::FlameMaterial;
 
-use crate::particles::{Emitter, NodeFrame, Rng, TICK_HZ, View};
+use crate::particles::{BodyMotion, Emitter, NodeFrame, Quad, Rng, TICK_HZ, View};
 
 pub struct FlamePlugin;
 
@@ -37,6 +40,17 @@ struct FlameAssets {
     large: Handle<FlameMaterial>,
 }
 
+/// Fixed ticks a slow frame catches up at most; the rest of the backlog is
+/// dropped, as the original drops it (`docs/PERFORMANCE.md`).
+const MAX_STEPS: u32 = 4;
+
+/// Marks a model whose fires ride a carried item, such as a torch in a
+/// hand. The original attaches such a fire's emitter to the item's physics
+/// body, which carries the live flame along by half its velocity; here the
+/// body's velocity at the emitter is the node's displacement over the tick.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct CarriedFire;
+
 /// A fire's particle emitter.
 #[derive(Component)]
 pub struct Flame {
@@ -47,6 +61,10 @@ pub struct Flame {
     texture: &'static str,
     rng: Rng,
     accumulator: f32,
+    /// Whether the flame rides a carried item, once looked up.
+    carried: Option<bool>,
+    /// The last frame's quads, kept to reuse their buffer.
+    quads: Vec<Quad>,
 }
 
 impl Flame {
@@ -58,6 +76,8 @@ impl Flame {
             texture,
             rng: Rng::new(seed | 1),
             accumulator: 0.0,
+            carried: None,
+            quads: Vec::new(),
         }
     }
 
@@ -130,70 +150,104 @@ fn attach_flames(
     }
 }
 
-/// Runs each flame's fixed ticks, then its light's frame.
+/// Runs each flame's fixed ticks, then its light's frame. A finished
+/// flame is removed.
 fn simulate(
     time: Res<Time>,
-    mut flames: Query<(&mut Flame, Option<&mut crate::fire::Fire>, &GlobalTransform)>,
+    mut commands: Commands,
+    mut flames: Query<(
+        Entity,
+        &mut Flame,
+        Option<&mut crate::fire::Fire>,
+        &GlobalTransform,
+    )>,
+    parents: Query<&ChildOf>,
+    carriers: Query<(), With<CarriedFire>>,
 ) {
     let dt = 1.0 / TICK_HZ;
-    for (mut flame, fire, at) in &mut flames {
+    for (entity, mut flame, fire, at) in &mut flames {
+        let carried = *flame.carried.get_or_insert_with(|| {
+            parents
+                .iter_ancestors(entity)
+                .any(|ancestor| carriers.contains(ancestor))
+        });
         flame.accumulator += time.delta_secs();
         let mut steps = 0;
-        while flame.accumulator >= dt && steps < 8 {
+        while flame.accumulator >= dt && steps < MAX_STEPS {
             let position = (at.translation() - Vec3::Y * (flame.lift / 100.0)) * 100.0;
             let rotation = Mat3::from_quat(at.rotation());
             let Flame { emitter, rng, .. } = &mut *flame;
+            if carried {
+                // Before the first tick the node has no last position.
+                let velocity = if emitter.ticks > 0 {
+                    position - emitter.node.position
+                } else {
+                    Vec3::ZERO
+                };
+                emitter.body = Some(BodyMotion {
+                    velocity,
+                    full_displacement: false,
+                });
+            }
             emitter.tick(NodeFrame { position, rotation }, rng);
             emitter.sound_frame(rng);
             flame.accumulator -= dt;
             steps += 1;
         }
         flame.accumulator = flame.accumulator.min(dt);
+        if flame.emitter.finished() {
+            commands.entity(entity).despawn();
+            continue;
+        }
         if let Some(mut fire) = fire {
             let (intensity, _) = flame.emitter.light.intensity();
             fire.intensity = intensity;
             fire.softness = flame.emitter.light.softness();
             fire.density = flame.emitter.light.density;
-            fire.ticks = fire.ticks.saturating_add(steps as u32);
+            fire.ticks = fire.ticks.saturating_add(steps);
         }
     }
 }
 
 fn build_meshes(
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
-    flames: Query<(&Flame, &Mesh3d, &GlobalTransform)>,
+    mut flames: Query<(
+        &mut Flame,
+        &Mesh3d,
+        &GlobalTransform,
+        Option<&InheritedVisibility>,
+    )>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(camera) = cameras.iter().next() else {
         return;
     };
     let view = View {
-        eye: camera.translation(),
+        eye: camera.translation() * 100.0,
         right: camera.right().as_vec3(),
         up: camera.up().as_vec3(),
         forward: camera.forward().as_vec3(),
     };
-    for (flame, mesh, at) in &flames {
+    for (mut flame, mesh, at, shown) in &mut flames {
+        if shown.is_some_and(|v| !v.get()) {
+            continue;
+        }
         let Some(mut mesh) = meshes.get_mut(&mesh.0) else {
             continue;
         };
         let alpha = (flame.accumulator * TICK_HZ).clamp(0.0, 1.0);
-        let quads = flame.emitter.quads(alpha, view);
-        // The particles are in world space; the mesh entity carries the
+        let Flame { emitter, quads, .. } = &mut *flame;
+        emitter.quads_into(alpha, view, quads);
+        // The particles are in world space (cm); the mesh entity carries the
         // fire node's transform, so take the vertices back into its space.
         let inverse = at.affine().inverse();
         let mut positions = Vec::with_capacity(quads.len() * 4);
         let mut uvs = Vec::with_capacity(quads.len() * 4);
         let mut colours = Vec::with_capacity(quads.len() * 4);
         let mut indices = Vec::with_capacity(quads.len() * 6);
-        for quad in &quads {
+        for quad in quads.iter() {
             let base = positions.len() as u32;
-            let colour = [
-                f32::from(quad.colour[0]) / 255.0,
-                f32::from(quad.colour[1]) / 255.0,
-                f32::from(quad.colour[2]) / 255.0,
-                f32::from(quad.colour[3]) / 255.0,
-            ];
+            let colour = quad.colour.map(|c| f32::from(c) / 255.0);
             for (corner, uv) in quad.corners.iter().zip(quad.uv.iter()) {
                 positions.push(inverse.transform_point3(*corner / 100.0).to_array());
                 uvs.push([uv.x, uv.y]);

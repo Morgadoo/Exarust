@@ -180,7 +180,9 @@ fn light_torches(
         );
         let grip = hand.grip().placement(&held_by, false);
         let root = exa_world::spawn_model(&mut commands, &torch, Some(grip));
-        commands.entity(root).insert((TorchRoot, ChildOf(holder)));
+        commands
+            .entity(root)
+            .insert((TorchRoot, exa_world::flame::CarriedFire, ChildOf(holder)));
     }
 }
 
