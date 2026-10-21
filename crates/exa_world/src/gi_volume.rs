@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use bevy::camera::primitives::{Aabb, Frustum};
+use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
@@ -38,6 +39,7 @@ impl Plugin for GiVolumePlugin {
                 (collect_source, follow_camera, publish_sector_lights)
                     .chain()
                     .after(TransformSystems::Propagate)
+                    .after(VisibilitySystems::UpdateFrusta)
                     .after(crate::shadow_links::LightCells)
                     .before(exa_render::gi::GiSystems),
             );
