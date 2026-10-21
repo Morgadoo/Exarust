@@ -1466,8 +1466,10 @@ Exarust applies:
   is off (1 is off and 2, 4, 8 their sample counts; Bevy has no 1×), read at
   start as the original reads it. Super sampling forces MSAA off, as the
   original disables the control.
-- **Window mode, size and vertical sync**: the window's mode, its size
-  (when windowed and a size was asked for) and its present mode.
+- **Window mode, size and vertical sync**: the window's mode (full screen
+  borderless, or exclusive for another listed `ScreenWidth`/`ScreenHeight`),
+  its size (when windowed and a size was asked for) and its present mode
+  (plain Fifo with vertical sync, the original's swap interval 1).
 - **Audio**: the master bus gain is the volume and the music switch mutes
   the music. The original's volume goes to OpenAL rather than to its own
   master gain, which its code never writes.
