@@ -15,6 +15,7 @@
 //! exa-tool clips Ogre 0x1             a character's clip table: base moveset, held-item config
 //! exa-tool races                      races with their flags, body parameters, stats, gaits
 //! exa-tool characters exanima01       a level's character records, read whole, and placements
+//! exa-tool saves Exanima001.rsg       a save's sections and chunks; read-only rebuild check
 //! exa-tool characters actors          the arena's actors in actors.rpk
 //! exa-tool bodies Objects "lever a01"  rigid bodies, links and cloth markers
 //! exa-tool mechanisms [exanima01]     door and operative records
@@ -32,6 +33,7 @@ mod corpus;
 mod gltf;
 mod morphs;
 mod nav;
+mod saves;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -110,6 +112,10 @@ enum Cmd {
     /// places them, or of the arena's actors (`actors`): looks, feral level,
     /// saved pools, skills with their techniques, perks, roles and powers.
     Characters { source: String },
+    /// Reads a save package (`Exanima001.rsg`, `Arena001.rsg`) without
+    /// writing anything: its sections, player-data chunks, and whether the
+    /// package and the player data rebuild unchanged. Needs no installation.
+    Saves { path: PathBuf },
     /// The rigid bodies (class, mobility, rest points, spheres, links,
     /// sound slots) and cloth markers of a chunk-tree entry's nodes.
     Bodies { pack: String, entry: String },
@@ -243,6 +249,9 @@ enum CorpusKind {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Cmd::Saves { path } = &cli.cmd {
+        return saves::saves(path);
+    }
     let root = locate(cli.game.as_deref())?;
     let game = GameData::open(&root).with_context(|| format!("opening {}", root.display()))?;
     match cli.cmd {
@@ -411,6 +420,7 @@ fn main() -> Result<()> {
         }
         Cmd::Races => races(&game),
         Cmd::Characters { source } => characters::characters(&game, &source),
+        Cmd::Saves { .. } => unreachable!("handled before the installation is opened"),
         Cmd::Bodies { pack, entry } => bodies::bodies(&game, &pack, &entry),
         Cmd::Mechanisms { level } => bodies::mechanisms(&game, level.as_deref()),
         Cmd::Morphs { records } => morphs::morphs(&game, records),
