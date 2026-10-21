@@ -65,7 +65,7 @@ impl GuiRect {
 
 /// The form callbacks the window manager uses. A form's own class supplies
 /// these; the manager never draws.
-pub trait FormHost {
+pub trait FormHost: Send + Sync {
     /// The parent in the form tree, if any.
     fn parent(&self) -> Option<FormId>;
     /// The form's absolute rectangle.
@@ -1380,8 +1380,7 @@ pub fn anchored(parent: i32, size: i32, axis_y: bool, anchor: Anchor) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> GuiRect {
         GuiRect::new(x, y, w, h)
@@ -1513,7 +1512,7 @@ mod tests {
         bounds: GuiRect,
         selected: i32,
         grants: bool,
-        log: Rc<RefCell<Log>>,
+        log: Arc<Mutex<Log>>,
     }
 
     impl FormHost for Recorder {
@@ -1537,12 +1536,13 @@ mod tests {
             self.selected
         }
         fn key(&mut self, word: u32) -> u32 {
-            self.log.borrow_mut().keys.push(word);
+            self.log.lock().unwrap().keys.push(word);
             3
         }
         fn pointer(&mut self, message: u32, param: u32, button: u16) -> u32 {
             self.log
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .messages
                 .push((message, param, button));
             if message == crate::gui_controls::message::PRESS {
@@ -1552,20 +1552,20 @@ mod tests {
             }
         }
         fn drag(&mut self, message: u32, _x: i32, _y: i32) -> u32 {
-            self.log.borrow_mut().drags.push(message);
+            self.log.lock().unwrap().drags.push(message);
             0
         }
     }
 
-    fn task_with_recorder() -> (GuiTask, FormId, Rc<RefCell<Log>>) {
+    fn task_with_recorder() -> (GuiTask, FormId, Arc<Mutex<Log>>) {
         let mut task = GuiTask::new((800, 600));
-        let log = Rc::new(RefCell::new(Log::default()));
+        let log = Arc::new(Mutex::new(Log::default()));
         let form = Recorder {
             parent: None,
             bounds: rect(0, 0, 800, 600),
             selected: -1,
             grants: true,
-            log: Rc::clone(&log),
+            log: Arc::clone(&log),
         };
         let id = task.add(Box::new(form));
         (task, id, log)
@@ -1615,7 +1615,7 @@ mod tests {
         assert_eq!(task.pointer.buttons, 1);
         task.pointer_release(20, 1);
         assert_eq!(task.pointer.buttons, 0);
-        let log = log.borrow();
+        let log = log.lock().unwrap();
         let presses = log
             .messages
             .iter()
@@ -1642,11 +1642,11 @@ mod tests {
                 .filter(|m| m.0 == crate::gui_controls::message::PRESS)
                 .count()
         };
-        assert_eq!(presses(&log.borrow()), 2);
+        assert_eq!(presses(&log.lock().unwrap()), 2);
         // A third press, after the window, is a single click again.
         task.pointer.buttons = 0;
         task.pointer_press(1000, 1);
-        assert_eq!(presses(&log.borrow()), 3);
+        assert_eq!(presses(&log.lock().unwrap()), 3);
     }
 
     #[test]
@@ -1706,7 +1706,7 @@ mod tests {
         let (mut task, id, log) = task_with_recorder();
         task.focus_set(Some(id), 1);
         assert_eq!(task.key(0x2001), 3);
-        assert_eq!(log.borrow().keys, vec![0x2001]);
+        assert_eq!(log.lock().unwrap().keys, vec![0x2001]);
     }
 
     #[test]

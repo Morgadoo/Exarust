@@ -7,6 +7,8 @@
 //! sheet's quads are wired (`docs/UI.md`, Forms); the row positions, widths,
 //! selection, commands and page flow are the original's.
 
+use std::sync::{Arc, Mutex};
+
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -14,12 +16,13 @@ use bevy::window::PrimaryWindow;
 use exa_assets::Game;
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont, Rendered};
+use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
 use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::menu::{back_main_menu, menu_row_scale};
 use exa_ui::scale::GuiScale;
 
 use crate::menu_pages::{
-    MenuCommand, MenuHit, MenuSession, Page, PageState, menu_command, menu_hit, page_origin,
+    MenuCommand, MenuHit, MenuSession, Page, PageState, Row, menu_command, menu_hit, page_origin,
     page_rows, paint, row_h,
 };
 
@@ -132,6 +135,97 @@ impl MenuScreen {
 #[derive(Resource)]
 struct MenuFontRes(Option<GameFont>);
 
+/// The geometry the menu's form hit tests against, shared with the GUI
+/// core's form record.
+#[derive(Debug, Clone, Default)]
+struct MenuGeometry {
+    bounds: GuiRect,
+    rows: Vec<RowGeometry>,
+    origin: f32,
+    row_h: f32,
+    ascent: i32,
+    origin_y: i32,
+    hidden: bool,
+    open: bool,
+}
+
+/// One row's hit geometry.
+#[derive(Debug, Clone, Copy, Default)]
+struct RowGeometry {
+    width: i32,
+    enabled: bool,
+}
+
+/// The menu's form in the GUI core: the rows are its controls (1-based).
+struct MenuForm {
+    geometry: Arc<Mutex<MenuGeometry>>,
+    selected: i32,
+}
+
+impl FormHost for MenuForm {
+    fn parent(&self) -> Option<FormId> {
+        None
+    }
+
+    fn bounds(&self) -> GuiRect {
+        self.geometry.lock().map(|g| g.bounds).unwrap_or_default()
+    }
+
+    fn is_visible(&self) -> bool {
+        self.geometry.lock().map(|g| g.open).unwrap_or(false)
+    }
+
+    fn hit_test(&self, x: i32, y: i32) -> i32 {
+        let Ok(geometry) = self.geometry.lock() else {
+            return -1;
+        };
+        let rows: Vec<Row> = geometry
+            .rows
+            .iter()
+            .map(|row| Row {
+                label: "",
+                kind: crate::menu_pages::RowKind::Begin,
+                enabled: row.enabled,
+            })
+            .collect();
+        let widths: Vec<i32> = geometry.rows.iter().map(|row| row.width).collect();
+        match menu_hit(
+            geometry.bounds.height(),
+            geometry.origin,
+            geometry.row_h,
+            geometry.ascent,
+            geometry.origin_y,
+            geometry.hidden,
+            geometry.open,
+            x - geometry.bounds.left,
+            y - geometry.bounds.top,
+            geometry.bounds.width(),
+            &rows,
+            &widths,
+        ) {
+            MenuHit::Row(row) => row as i32,
+            _ => -1,
+        }
+    }
+
+    fn focus_changed(&mut self, control: i32) -> u32 {
+        self.selected = control;
+        3
+    }
+
+    fn selected_control(&self) -> i32 {
+        self.selected
+    }
+}
+
+/// The GUI core task the menu routes through.
+#[derive(Resource)]
+struct MenuRouter {
+    task: GuiTask,
+    geometry: Arc<Mutex<MenuGeometry>>,
+    form: FormId,
+}
+
 #[derive(Component)]
 struct MenuCanvas;
 
@@ -149,7 +243,7 @@ pub struct MenuScreenPlugin;
 impl Plugin for MenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuScreen>()
-            .add_systems(Startup, load_font)
+            .add_systems(Startup, (load_font, setup_router))
             .add_systems(Update, (toggle, input, draw).chain());
     }
 }
@@ -161,6 +255,21 @@ fn load_font(mut commands: Commands, game: Option<Res<Game>>) {
         GameFont::from_rfi(&rfi)
     });
     commands.insert_resource(MenuFontRes(font));
+}
+
+/// Creates the menu's form in a GUI core task.
+fn setup_router(mut commands: Commands) {
+    let geometry = Arc::new(Mutex::new(MenuGeometry::default()));
+    let mut task = GuiTask::new((800, 600));
+    let form = task.add(Box::new(MenuForm {
+        geometry: Arc::clone(&geometry),
+        selected: -1,
+    }));
+    commands.insert_resource(MenuRouter {
+        task,
+        geometry,
+        form,
+    });
 }
 
 /// F1 opens and closes the menu.
@@ -186,6 +295,7 @@ fn input(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
+    mut router: ResMut<MenuRouter>,
 ) {
     if !menu.open {
         return;
@@ -219,28 +329,36 @@ fn input(
     let x = (cursor.x * scale) as i32;
     let y = (cursor.y * scale) as i32;
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
-    let hit = menu_hit(
-        height,
-        page_origin(menu.page, rows.len()),
-        row_h(height),
-        menu_font.ascent,
-        menu_font.origin.1,
-        menu.hidden,
-        menu.open,
-        x,
-        y,
-        width,
-        &rows,
-        &widths,
-    );
-    if let MenuHit::Row(row) = hit
+    let origin = page_origin(menu.page, rows.len());
+    if let Ok(mut geometry) = router.geometry.lock() {
+        geometry.bounds = GuiRect::new(0, 0, width, height);
+        geometry.rows = rows
+            .iter()
+            .zip(widths.iter())
+            .map(|(row, &width)| RowGeometry {
+                width,
+                enabled: row.enabled,
+            })
+            .collect();
+        geometry.origin = origin;
+        geometry.row_h = row_h(height);
+        geometry.ascent = menu_font.ascent;
+        geometry.origin_y = menu_font.origin.1;
+        geometry.hidden = menu.hidden;
+        geometry.open = menu.open;
+    }
+    let hit_row = {
+        let hit = router.task.hit_and_focus(x, y);
+        (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize)
+    };
+    if let Some(row) = hit_row
         && menu.hover != row - 1
     {
         menu.hover = row - 1;
         menu.dirty = true;
     }
     if mouse.just_pressed(MouseButton::Left)
-        && let MenuHit::Row(row) = hit
+        && let Some(row) = hit_row
     {
         let command = menu.command(row);
         menu.selected = row - 1;
@@ -582,5 +700,28 @@ mod tests {
         blit(&mut canvas, 4, 1, 0, 0, &text, 1.0, [255, 0, 0]);
         assert_eq!(&canvas[0..4], &[255, 0, 0, 255]);
         assert_eq!(&canvas[4..8], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_menu_form_hits_through_the_gui_core_geometry() {
+        let geometry = Arc::new(Mutex::new(MenuGeometry {
+            bounds: GuiRect::new(0, 0, 1600, 1080),
+            rows: vec![RowGeometry {
+                width: 100,
+                enabled: true,
+            }],
+            origin: 0.38,
+            row_h: 1.0,
+            ascent: 49,
+            origin_y: 16,
+            hidden: false,
+            open: true,
+        }));
+        let form = MenuForm {
+            geometry,
+            selected: -1,
+        };
+        assert_eq!(form.hit_test(800, 420), 1);
+        assert_eq!(form.hit_test(10, 420), -1);
     }
 }
