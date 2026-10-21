@@ -1432,6 +1432,7 @@ fn spawn_placed_characters(
                 exa_character::RaceWeaponry::of_race,
             ),
             morph,
+            exa_assets::SkinLook::of_entry(&model_name, c.record.skin),
             ChildOf(root),
         ));
         if let Some((model_name, weapon)) = &c.held {

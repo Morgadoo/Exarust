@@ -471,6 +471,9 @@ pub fn spawn_model_nodes(
                 }),
                 None => commands.entity(part).insert(Mesh3d(mesh.clone())),
             };
+            if node.is_skin {
+                commands.entity(part).insert(exa_assets::RaceSkinPart);
+            }
             // The level the mesh ships with. Builders that set their own
             // (grid sets, floors) replace it.
             if node.shadow_bias != 0 {
@@ -1377,6 +1380,7 @@ mod tests {
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
+            is_skin: false,
         }
     }
 

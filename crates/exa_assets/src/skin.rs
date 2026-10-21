@@ -954,6 +954,108 @@ mod tests {
         assert_eq!(skin[0], [(3, 0.75), (9, 0.25), (0, 0.0), (0, 0.0)]);
     }
 
+    /// The shipped body and garments skin as the builder reads them
+    /// (skipped without the game): every vertex gets weights that sum to
+    /// one, the braies stay rigid on the pelvis, and the trouser's pelvis
+    /// reaches both legs.
+    #[test]
+    fn shipped_bodies_and_garments_are_skinned() {
+        use crate::{GameData, ModelCache, ModelLoader, PackKind};
+        use bevy::asset::Assets;
+        use bevy::prelude::{Image, Mesh};
+        use exa_formats::rsq::bone_index;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let weights = |loader: &ModelLoader, handle: &bevy::prelude::Handle<Mesh>| {
+            let mesh = loader.meshes.get(handle).unwrap();
+            match mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT) {
+                Some(bevy::mesh::VertexAttributeValues::Float32x4(weights)) => {
+                    Some(weights.clone())
+                }
+                _ => None,
+            }
+        };
+        for (pack, entry) in [
+            (PackKind::Resource, "humanbase.rfc"),
+            (PackKind::Resource, "ogrebase.rfc"),
+            (PackKind::Characters, "braies_a"),
+            (PackKind::Characters, "trouser_a"),
+            (PackKind::Characters, "doublet_a"),
+            (PackKind::Characters, "armet_a"),
+        ] {
+            let model = loader.model(pack, entry).unwrap();
+            let mut skinned = 0;
+            for node in &model.nodes {
+                let Some(bone) = node.skin_bone else {
+                    continue;
+                };
+                if node.parts.is_empty() {
+                    continue;
+                }
+                skinned += 1;
+                for (handle, _) in &node.parts {
+                    let weights = weights(&loader, handle)
+                        .unwrap_or_else(|| panic!("{entry} bone {bone}: no weights"));
+                    for w in weights {
+                        let total: f32 = w.iter().sum();
+                        assert!(
+                            (total - 1.0).abs() < 1e-4,
+                            "{entry} bone {bone}: weights {w:?}"
+                        );
+                    }
+                }
+            }
+            if matches!(entry, "braies_a" | "armet_a") {
+                // A one-node garment has no joints: it hangs rigidly on
+                // its bone as a plain child.
+                assert_eq!(skinned, 0, "{entry}");
+                let node = model.nodes.iter().find(|n| !n.parts.is_empty()).unwrap();
+                assert_eq!(node.skin_bone, None);
+                assert!(weights(&loader, &node.parts[0].0).is_none());
+            } else {
+                assert!(skinned > 0, "{entry}");
+            }
+            if entry == "trouser_a" {
+                let node = model
+                    .nodes
+                    .iter()
+                    .find(|n| n.name.starts_with("0100 - pelvis") && n.skin_bone.is_some())
+                    .unwrap();
+                let mut bones = Vec::new();
+                for (handle, _) in &node.parts {
+                    let mesh = loader.meshes.get(handle).unwrap();
+                    if let Some(bevy::mesh::VertexAttributeValues::Uint16x4(index)) =
+                        mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX)
+                    {
+                        bones.extend(index.iter().flatten().copied());
+                    }
+                }
+                let legs = [
+                    bone_index("02RULeg").unwrap() as u16,
+                    bone_index("05LULeg").unwrap() as u16,
+                ];
+                assert!(
+                    legs.iter().any(|leg| bones.contains(leg)),
+                    "the trouser crotch reaches no leg"
+                );
+            }
+        }
+    }
+
     /// Compares with weights measured on the shipped body (run with
     /// `cargo test -p exa_assets -- --ignored` and the game installed).
     #[test]

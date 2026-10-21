@@ -85,6 +85,7 @@ impl ModelLoader<'_> {
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
+            is_skin: false,
         }];
         for placed in factory.place(&generated) {
             let part = &factory.parts[placed.part];
@@ -154,6 +155,7 @@ impl ModelLoader<'_> {
                 rigid: None,
                 tracks: Vec::new(),
                 shadow_bias: 0,
+                is_skin: false,
             });
         }
         Some(Model { nodes })

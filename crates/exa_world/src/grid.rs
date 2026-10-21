@@ -1086,6 +1086,7 @@ mod tests {
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
+            is_skin: false,
         }
     }
 

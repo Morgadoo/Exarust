@@ -50,6 +50,7 @@ impl Plugin for CharacterPlugin {
             .add_systems(
                 Update,
                 (
+                apply_skin_looks.run_if(resource_exists::<Game>),
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
@@ -259,6 +260,51 @@ fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems) -> bool {
     }
     outfit.0.insert(0, underwear.clone());
     true
+}
+
+/// Gives a body the skin tone of its [`exa_assets::SkinLook`]: its race
+/// skin parts are re-bound to the built-in skin material of that tone, made
+/// once per race and tone. A body without a look keeps the middle tone the
+/// model was built with.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn apply_skin_looks(
+    game: Option<Res<Game>>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+    looks: Query<
+        (Entity, &exa_assets::SkinLook),
+        Or<(Added<exa_assets::SkinLook>, Changed<exa_assets::SkinLook>)>,
+    >,
+    children: Query<&Children>,
+    skins: Query<(), With<exa_assets::RaceSkinPart>>,
+    mut parts: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
+) {
+    let Some(game) = game else { return };
+    if looks.is_empty() {
+        return;
+    }
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    for (root, look) in &looks {
+        let material = loader.skin_material_of(&look.entry(), look.tone);
+        for part in children.iter_descendants(root) {
+            if !skins.contains(part) {
+                continue;
+            }
+            if let Ok(mut bound) = parts.get_mut(part) {
+                bound.0 = material.clone();
+            }
+        }
+    }
 }
 
 /// Reads the underwear items once the game is open.

@@ -5,6 +5,10 @@
 //! subsurface program. Ancients wear the same skin with a paler scatter
 //! colour. Evidence and the open points: `docs/RENDERING.md` (Skin).
 //!
+//! - **Skin tone**: the creator's 3 × 3 tone grid, read from the record's
+//!   two 16-bit coordinates, scales the race's stored colour texels
+//!   (0.29–0.64 of them; the middle tone is 0.465). Exarust now carries the
+//!   record's tone; a body without a skin look keeps the middle tone.
 //! - **Textures**: the race's, named after its body model's stem:
 //!   `<stem>difm` (colour), `<stem>nrmm0` (normal) and `<stem>spcm` (gloss),
 //!   whatever the body's skin material names (the ancients' names a
@@ -16,8 +20,8 @@
 //!   the sRGB encoding off into an sRGB texture, so drawing the skin decodes
 //!   the tinted colour once: the texture's own skin colour, sRGB
 //!   (0.80, 0.65, 0.57), becomes linear (0.112, 0.076, 0.059) at the middle
-//!   tone. Exarust has no skin tones yet and uses the middle one for
-//!   everybody.
+//!   tone. [`tone_colour`] gives the multiplier for any tone; the shader
+//!   takes it as the material's diffuse tint (sRGB values, decoded once).
 //! - **Specular**: a generated packed map of full intensity, gloss 0.8 × the
 //!   race's gloss texture and no metal, so the roughness is 1 − 0.8·gloss and
 //!   F0 is 0.04.
@@ -40,6 +44,77 @@ pub const RACE_SKIN: &str = "skinhuman";
 /// The middle skin tone, the centre of the original's 3 × 3 tone grid: what
 /// the generated diffuse map multiplies the race's stored skin texels by.
 pub const MIDDLE_SKIN_TONE: [f32; 3] = [0.46, 0.47, 0.47];
+/// The middle tone's coordinates on the creator's grid (the record's two
+/// 16-bit words).
+pub const MIDDLE_TONE: [u16; 2] = [0x8000, 0x8000];
+/// The nine grid colours in linear light, rows `v` = 0, ½, 1 and columns
+/// `u` = 0, ½, 1. Recovered from the original's tone multipliers with
+/// `grid = (reference / 0.6) · sRGB⁻¹(tone / 1.4)`; the multipliers are
+/// known to two decimals, so the grid is good to about 0.001.
+const TONE_GRID: [[[f32; 3]; 3]; 3] = [
+    [
+        [0.101_122, 0.066_601, 0.042_322],
+        [0.119_097, 0.084_449, 0.061_387],
+        [0.119_097, 0.094_311, 0.084_699],
+    ],
+    [
+        [0.063_476, 0.042_180, 0.027_250],
+        [0.088_754, 0.058_591, 0.044_239],
+        [0.119_097, 0.075_217, 0.056_792],
+    ],
+    [
+        [0.035_600, 0.023_982, 0.016_976],
+        [0.063_476, 0.036_091, 0.025_810],
+        [0.096_895, 0.053_580, 0.036_868],
+    ],
+];
+/// The base skin texture's own colour in linear light: sRGB
+/// (0.8, 0.651, 0.573). The tone grid is divided by it.
+const TONE_REFERENCE: [f32; 3] = [0.603_827_34, 0.381_351_44, 0.287_936_84];
+/// The tone multiplier's scale before the sRGB encode, and after it.
+const TONE_DIVISOR: f32 = 0.6;
+const TONE_GAIN: f32 = 1.4;
+
+/// The linear-to-sRGB encode of one channel.
+fn srgb_encode(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        12.92 * c
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+/// One row of the grid at `u`: bilinear within the half it falls in, the
+/// middle column exactly at 0.5.
+fn row_at(row: &[[f32; 3]; 3], u: f32) -> [f32; 3] {
+    if u <= 0.5 {
+        mix(row[0], row[1], u * 2.0)
+    } else {
+        mix(row[1], row[2], (u - 0.5) * 2.0)
+    }
+}
+
+/// The skin tone multiplier of the creator's grid at (`u`, `v`), in sRGB
+/// values: the generated diffuse map multiplies the race's stored texels by
+/// it. The grid is interpolated in linear light and the tone encoded once.
+pub fn tone_colour(tone: [u16; 2]) -> [f32; 3] {
+    let u = f32::from(tone[0]) / 65535.0;
+    let v = f32::from(tone[1]) / 65535.0;
+    let rows = [0, 1, 2].map(|i| row_at(&TONE_GRID[i], u));
+    let grid = if v <= 0.5 {
+        mix(rows[0], rows[1], v * 2.0)
+    } else {
+        mix(rows[1], rows[2], (v - 0.5) * 2.0)
+    };
+    [0, 1, 2].map(|i| {
+        let linear = TONE_DIVISOR * grid[i] / TONE_REFERENCE[i];
+        (TONE_GAIN * srgb_encode(linear.max(0.0))).min(1.0)
+    })
+}
 /// The share of the diffuse colour that scatters under a human's skin (sRGB).
 pub const SCATTER: [f32; 3] = [1.0, 0.8, 0.46];
 /// The share that scatters under an ancient's skin (sRGB).
@@ -102,8 +177,13 @@ pub fn race_textures(stem: &str) -> [String; 3] {
 
 /// The built-in skin's shading parameters, without textures.
 pub fn skin_params(kind: SkinKind) -> ExaParams {
+    skin_params_of(kind, MIDDLE_SKIN_TONE)
+}
+
+/// The built-in skin's shading parameters for a skin tone multiplier.
+pub fn skin_params_of(kind: SkinKind, tone: [f32; 3]) -> ExaParams {
     ExaParams {
-        diffuse: Vec3::from_array(MIDDLE_SKIN_TONE).extend(1.0),
+        diffuse: Vec3::from_array(tone).extend(1.0),
         specular: Vec3::splat(F0).extend(GLOSS),
         flags: flags::LIT | flags::PACKED_SPECULAR | flags::SUBSURFACE | flags::TINT_AS_SRGB,
         subsurface: linear_rgb(kind.scatter()).extend(SCATTER_BLUR),
@@ -112,12 +192,18 @@ pub fn skin_params(kind: SkinKind) -> ExaParams {
 }
 
 /// The built-in skin of the race whose body model is `entry`, with the
-/// race's textures.
+/// race's textures, at the middle tone.
 pub fn skin_material(loader: &mut ModelLoader, entry: &str) -> ExaMaterial {
+    skin_material_of(loader, entry, MIDDLE_SKIN_TONE)
+}
+
+/// The built-in skin of the race whose body model is `entry` for a skin
+/// tone multiplier ([`tone_colour`]).
+pub fn skin_material_of(loader: &mut ModelLoader, entry: &str, tone: [f32; 3]) -> ExaMaterial {
     let stem = race_stem(entry);
     let kind = SkinKind::of_stem(&stem);
     let mut mat = ExaMaterial {
-        params: skin_params(kind),
+        params: skin_params_of(kind, tone),
         environment: loader.environment_map(),
         ..default()
     };
@@ -145,6 +231,38 @@ mod tests {
         assert!(is_race_skin("ancientbase.rfc", "skinhuman"));
         assert!(!is_race_skin("humanbase.rfc", "eyehuman"));
         assert!(!is_race_skin("torcha02", "skinhuman"));
+    }
+
+    #[test]
+    fn the_tone_grid_gives_the_published_multipliers() {
+        // The nine published values, rows v = 0, ½, 1 and columns
+        // u = 0, ½, 1.
+        let published = [
+            [[0.49, 0.50, 0.46], [0.53, 0.56, 0.55], [0.53, 0.59, 0.64]],
+            [[0.39, 0.40, 0.37], [0.46, 0.47, 0.47], [0.53, 0.53, 0.53]],
+            [[0.29, 0.30, 0.29], [0.39, 0.37, 0.36], [0.48, 0.45, 0.43]],
+        ];
+        let coordinate = [0u16, 0x8000, 0xFFFF];
+        for (v, row) in published.iter().enumerate() {
+            for (u, want) in row.iter().enumerate() {
+                let got = tone_colour([coordinate[u], coordinate[v]]);
+                for c in 0..3 {
+                    assert!(
+                        (got[c] - want[c]).abs() < 0.006,
+                        "u {u} v {v} c {c}: {} vs {}",
+                        got[c],
+                        want[c]
+                    );
+                }
+            }
+        }
+        let middle = tone_colour(MIDDLE_TONE);
+        for c in 0..3 {
+            assert!(
+                (middle[c] - MIDDLE_SKIN_TONE[c]).abs() < 0.006,
+                "{middle:?}"
+            );
+        }
     }
 
     #[test]

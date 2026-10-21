@@ -75,6 +75,9 @@ pub struct ModelNode {
     /// [`exa_formats::rfc::Mesh::shadow_bias_level`]); 0 for other nodes
     /// and for the inflated variant.
     pub shadow_bias: u32,
+    /// Whether a part of this node is the race's built-in skin (a body
+    /// model's `skinhuman`), which a character's tone re-tints.
+    pub is_skin: bool,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -138,6 +141,8 @@ pub struct ModelCache {
     texels: HashMap<String, Option<Arc<Texels>>>,
     /// Painted apparel materials by texture stem and appearance.
     painted: HashMap<(String, Appearance), Handle<ExaMaterial>>,
+    /// The built-in race skin by body model and tone ([`ModelLoader::skin_material_of`]).
+    skin_materials: HashMap<(String, [u16; 2]), Handle<ExaMaterial>>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
@@ -373,6 +378,13 @@ impl ModelLoader<'_> {
                     .unzip(),
                 _ => (Vec::new(), Vec::new()),
             };
+            let is_skin = match &node.body {
+                NodeBody::Mesh(mesh) => mesh
+                    .groups
+                    .iter()
+                    .any(|g| crate::human_skin::is_race_skin(&entry, &g.material)),
+                _ => false,
+            };
             nodes.push(ModelNode {
                 name: node.name.clone(),
                 parent: node
@@ -421,6 +433,7 @@ impl ModelLoader<'_> {
                     }
                     _ => 0,
                 },
+                is_skin,
             });
         }
         Model { nodes }
@@ -868,6 +881,20 @@ impl ModelLoader<'_> {
             .materials
             .add(mat.with_blood(BloodProgram::Cloth, spatter));
         self.cache.painted.insert(key, handle.clone());
+        handle
+    }
+
+    /// The built-in skin of a body model at a character's tone
+    /// ([`crate::human_skin::tone_colour`]), cached by model and tone.
+    pub fn skin_material_of(&mut self, entry: &str, tone: [u16; 2]) -> Handle<ExaMaterial> {
+        let key = (entry.to_ascii_lowercase(), tone);
+        if let Some(handle) = self.cache.skin_materials.get(&key) {
+            return handle.clone();
+        }
+        let colour = crate::human_skin::tone_colour(tone);
+        let material = crate::human_skin::skin_material_of(self, entry, colour);
+        let handle = self.materials.add(material);
+        self.cache.skin_materials.insert(key, handle.clone());
         handle
     }
 

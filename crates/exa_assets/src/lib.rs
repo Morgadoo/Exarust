@@ -43,6 +43,35 @@ pub struct SkinnedPart {
     pub mesh: Handle<Mesh>,
 }
 
+/// A part drawn with a race's built-in skin ([`human_skin`]), whose tone a
+/// character may change.
+#[derive(bevy::prelude::Component, Debug, Clone, Copy, Default)]
+pub struct RaceSkinPart;
+
+/// A character's skin: the race stem whose built-in skin it wears (a body
+/// model entry without its `base.rfc`) and its tone coordinates, so a body
+/// can be re-tinted after it is spawned. A body without it keeps the middle
+/// tone.
+#[derive(bevy::prelude::Component, Debug, Clone, PartialEq, Eq)]
+pub struct SkinLook {
+    pub stem: String,
+    pub tone: [u16; 2],
+}
+
+impl SkinLook {
+    /// The look of a body model entry (`humanbase.rfc` → `human`).
+    pub fn of_entry(entry: &str, tone: [u16; 2]) -> Self {
+        let lower = entry.to_ascii_lowercase();
+        let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
+        Self { stem, tone }
+    }
+
+    /// The body model entry whose skin this is.
+    pub fn entry(&self) -> String {
+        format!("{}base.rfc", self.stem)
+    }
+}
+
 pub struct AssetsPlugin;
 
 impl Plugin for AssetsPlugin {
