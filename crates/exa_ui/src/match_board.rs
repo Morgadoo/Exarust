@@ -1268,7 +1268,9 @@ impl Board {
     }
 
     /// Moves a lineup fighter back to the company table, inserting it in
-    /// slot order.
+    /// slot order. The original's two removal paths do not change the
+    /// lineup order, so a later rebuild can select the fighter again; this
+    /// keeps that behaviour rather than correcting it.
     pub fn move_to_available(&mut self, index: usize) -> bool {
         if self.assignment_locked() {
             return false;
@@ -2700,6 +2702,20 @@ mod tests {
         assert_eq!(board.team, vec![]);
         assert_eq!(board.available, vec![0, 1, 2, 3, 4]);
         assert!(!board.move_to_available(0));
+    }
+
+    #[test]
+    fn removal_keeps_the_lineup_order_and_can_return() {
+        let mut board = board();
+        board.team_size = 1;
+        board.rank_floor = 0;
+        board.rebuild_lineups();
+        assert_eq!(board.team, vec![1]);
+        assert!(board.move_to_available(0));
+        assert_eq!(board.team, vec![]);
+        assert_eq!(board.lineup, vec![1, 2, 3, 4, i32::MAX, 0]);
+        board.refresh_standard();
+        assert_eq!(board.team, vec![1]);
     }
 
     #[test]
