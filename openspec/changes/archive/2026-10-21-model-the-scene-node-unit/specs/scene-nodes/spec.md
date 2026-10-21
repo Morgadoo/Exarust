@@ -1,0 +1,140 @@
+# Spec Delta
+
+## ADDED Requirements
+
+### Requirement: Registration by kind
+The system SHALL register a node and its subtree in a sector as the original does: every node takes the sector as its owner; a mesh joins the sector's mesh list, a light that is not a world light its light list, an auxiliary node its auxiliary list, and geometry the scene's geometry list; only meshes, those lights and auxiliary nodes are marked in the scene; lists are appended to without a duplicate check. A registration into a locked sector SHALL do nothing.
+
+#### Scenario: A mixed subtree
+- **WHEN** a plain node holding a light, a mesh, a geometry node and an auxiliary node is registered in a room
+- **THEN** every node is owned by the room, the room lists the light, the mesh and the auxiliary node, the scene lists the geometry, and the plain node and the geometry are not marked in the scene
+- **WHEN** the same subtree is registered again
+- **THEN** the room lists the mesh twice
+
+#### Scenario: A world light
+- **WHEN** a world light is registered in a room
+- **THEN** it is owned by the room and the room's light list is unchanged
+
+### Requirement: Batch insertion
+The system SHALL append each leading sector of a batch to the scene's sectors, marked in the scene, with its children registered in it. The first entry that is not a sector SHALL register the whole batch in that entry's owner, or in the scene's own sector when it has none, and end the batch.
+
+#### Scenario: Two rooms, then two meshes
+- **WHEN** a batch of two rooms (the first holding a mesh) is inserted, then a batch of two ownerless meshes
+- **THEN** the scene has its own sector and the two rooms, the first room lists its mesh, and the scene's own sector lists both meshes in batch order
+
+### Requirement: Sector bounds
+The system SHALL bound a sector by its meshes as the original does: the running corners start at zero, or at the first split mesh's centre when there is one; each mesh's world-axis extents are capped at its radius; the split meshes give the first box, the other meshes carry the same corners on to the second box; box centres are `low + (high − low) · 0.5`; the union radius sums `(x² + y²) + z²` of the farther sides about the first box's world centre. A sector without meshes SHALL keep its bounds.
+
+#### Scenario: A split mesh and another
+- **WHEN** a room at the origin holds a split mesh at x = 5 m with 1 m extents and another mesh at x = 10 m with a 1 m x extent
+- **THEN** the first box is centred at x = 5 m with 1 m extents, the second runs 4…11 m in x and −1…1 m in y and z, and the union radius is √38 m
+
+#### Scenario: No split mesh
+- **WHEN** a room's only mesh is at x = 10 m with a 1 m x extent
+- **THEN** the first box is empty at the origin, the second is centred at 5.5 m with 5.5 m extent, and the union radius is 11 m
+
+#### Scenario: A moved room
+- **WHEN** a room at x = 100 m holds only a split mesh at x = 5 m with 1 m extents
+- **THEN** the first box's world centre is at 105 m and the union radius is √(101² + 1 + 1) m
+
+### Requirement: Scene bounds
+The system SHALL write the scene's bounds into its own sector: its first box starts as its own first box and grows by every other sector's first box about its world centre (extents capped at its radius); the union corners start as its own second box's centre and half extents taken as corners and grow by every other sector's second box; its second box is left unchanged.
+
+#### Scenario: One room
+- **WHEN** a scene with empty bounds has one room whose boxes are centred at x = 6 m with extents (3, 1, 1) m
+- **THEN** the scene box is centred at x = 4.5 m with extents (4.5, 1, 1) m and the union radius is √(4.5² + 1 + 1) m
+- **WHEN** the scene's own second box is centred at x = 1 m with a 20 m x extent
+- **THEN** the union radius is √(15.5² + 1 + 1) m
+
+### Requirement: Node cell
+The system SHALL give a node the 6 m grid cell of its box's centre as the original does: the centimetre coordinate times the single-precision 1/600, floored, plus half the grid's count, kept in one byte, with 0 raised to 1 and anything from count − 1 up lowered to count − 2.
+
+#### Scenario: Cells and the byte
+- **WHEN** a point sits at the origin of a 32 × 40 grid
+- **THEN** it is in cell (16, 20)
+- **WHEN** a point sits at x = −1599 m
+- **THEN** its column is 5 (the byte wraps)
+
+### Requirement: Cell spill
+The system SHALL mark a node's cell side as spilling low when its box reaches more than 1 cm below the cell's low edge, otherwise high when it reaches past 601 cm, extents taken along the world axes from the box's rotation.
+
+#### Scenario: Edges
+- **WHEN** a 25 cm box sits at the origin
+- **THEN** it spills low on both axes
+- **WHEN** a 4 m box sits in the middle of a cell
+- **THEN** only the low side spills
+
+### Requirement: Cell handler
+The system SHALL call the scene's cell handler only when a node's cell (not its spill) changes and the node hangs directly from its sector.
+
+#### Scenario: Handler
+- **WHEN** a node's box widens until it spills but stays in its cell, then moves to the next cell
+- **THEN** the handler is called only for the move
+
+### Requirement: Sector classification
+The system SHALL classify each sector every frame: a sector not in the scene or hidden gets no view bit and no doorways; the scene's own sector in any other state gets every view bit and the main views; an active sector gets bit j for each main view j that meets its world box and keeps those views moved into its space.
+
+#### Scenario: Active views
+- **WHEN** an active room's box at x = 5 m is met by the second of two main views only
+- **THEN** its view mask is 0b10 and it keeps that view moved by −5 m
+
+### Requirement: Doorway frusta
+The system SHALL give an adjacent sector its doorways to active sectors, clip each one whose plane faces the eye by at least 1e−6 (double precision) with the first main view into a frustum from the eye, and with any frustum set view bit 1 and a scissor bounding the projections of each face's first vertex, rounded to the nearest pixel with ties to even.
+
+#### Scenario: A doorway seen from the active room
+- **WHEN** the eye in an active room looks at a 2 m × 3 m doorway of the adjacent room whose corners project to x = ±10.5 and y = 0.5…30.5, with two main views, and a second doorway to the same room faces away
+- **THEN** the adjacent room lists both doorways, has one frustum and view bit 1, and its scissor is x −10…10, y 0…30
+
+### Requirement: Mesh visibility
+The system SHALL run the hidden pass for a sector with no view bit and no doorway to an active sector, where each mesh keeps only its top mask bit, and the visible pass otherwise, where a mesh starts with the scissor bit when the sector has a scissor and is drawn and seen when one of its sector's views meets it. A moved mesh SHALL have its cell updated in grid mode.
+
+#### Scenario: Hidden pass
+- **WHEN** an active room no main view meets holds a mesh with its top mask bit and the seen bit set
+- **THEN** the mesh keeps only the top bit
+
+### Requirement: Doorway test
+In the visible pass, a mesh in one of a listed doorway's two cells whose sphere comes within 20 cm of the doorway plane and whose box reaches at least 20 cm in front of it SHALL be tested against the sector beyond; when that sector sees it, it is drawn and seen without the scissor and marks its own sector seen.
+
+#### Scenario: Straddling a doorway
+- **WHEN** a 40 cm mesh of the adjacent room stands 10 cm in front of the doorway plane, in the doorway's cell
+- **THEN** it is drawn and seen without the scissor bit and its room is marked seen
+- **WHEN** it stands 2 m behind the plane in the doorway's other cell, inside the portal frustum
+- **THEN** it is drawn and seen with the scissor bit
+
+### Requirement: Inherited frame bits
+A mesh following a fading parent SHALL keep only the seen bit; following a faded-out parent it SHALL keep only the seen bit and skip the rest of the pass, its fade included; with both it SHALL lose every bit.
+
+#### Scenario: Parents
+- **WHEN** a seen, cut-away mesh follows a fading parent for 100 ms, then a faded-out parent for 100 ms, then both
+- **THEN** its mask is the seen bit with its amount at 0.3, then the seen bit with the amount unchanged, then empty
+
+### Requirement: Cut-away fade
+The system SHALL move a drawn or seen mesh's fade as the original does: not cut away, an amount above 0 drops by 0.003 per millisecond and ends at 0 at or below 0.001 (double precision), otherwise the mesh is drawn dithered; cut away, the amount rises by 0.003 per millisecond, below the target less 1.19209e−7 a drawn mesh is dithered, otherwise the amount snaps to the target and below 0.999 (double precision) a drawn mesh is drawn partially, else not drawn.
+
+#### Scenario: Out and back
+- **WHEN** a drawn mesh is cut away for 100 ms, then 300 ms
+- **THEN** its amount is 0.3 and it is dithered, then the amount is 1 and it is not drawn
+
+#### Scenario: Thresholds
+- **WHEN** a fading-in mesh holds exactly 0.001 for a frame of 0 ms
+- **THEN** it stays dithered at 0.001
+- **WHEN** a cut-away mesh holds exactly its target less the epsilon
+- **THEN** it snaps to the target
+
+### Requirement: Subtree moves and child validation
+The system SHALL move a subtree to another sector by adding the old sector's origin less the new one's to its local position, hanging it from the new sector, registering it there when it is in the scene and marking the old sector so that its lists drop the subtree at the next membership rebuild. Child validation SHALL fill an empty child slot with the last child.
+
+#### Scenario: Between rooms
+- **WHEN** a mesh at (1, 1, 1) m in a room at x = 10 m moves to a room at x = 100 m
+- **THEN** its local position is (−89, 1, 1) m, its place in the world stays at x = 11 m, and after the next frame the first room no longer lists it
+
+#### Scenario: Empty slot
+- **WHEN** a node's children are A, an empty slot, B, C
+- **THEN** after validation they are A, C, B
+
+### Requirement: Directional fill
+The light flood SHALL put a light that is not flooded in the first width² cells of the grid with an empty window, at most 12 lights per cell, leaving a cell that already lists the light unchanged.
+
+#### Scenario: A tall grid
+- **WHEN** a directional light fills a 3 × 5 grid
+- **THEN** cells 0 to 8 list it and the last two rows do not
