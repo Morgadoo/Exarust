@@ -11,13 +11,13 @@
 //!   trimmed by the level: a ray from the middle along each side, 40 cm
 //!   short of the reach, that meets the level leaves the reach 40 cm past
 //!   the hit. The line between the ends is stamped into the navigation grid
-//!   ([`NavStamp`], its cells from each line point).
+//!   ([`NavStamp`]; the stamp itself is `exa_world::nav::stamp_line`).
 //! - **In the world** ([`Barricade::add_to_world`]): starts cast motion
-//!   0x24 with the power 0x20206 and its end hook, creates the power object
-//!   and reserves the focus, and makes the AI entity that carries the wall
-//!   and the wall's navigation cell. [`Barricade::destroy`] gives the focus
-//!   back and frees the entity, the sound and the stamp; the running game
-//!   raises and lowers the stamp's cell penalties in `live`.
+//!   0x24 with the power 0x20206 (its end hook installed when the cast
+//!   starts), creates the power object and reserves the focus, starts the
+//!   hum and makes the AI entity that carries the wall and the 6 m sector it
+//!   stands in. [`Barricade::destroy`] stops the hum and frees the entity
+//!   and the stamp's patch; the stamp leaves the grid when the fall ends.
 //! - **Each tick** ([`Barricade::tick`]): the ripple reach is 30 + 1.25 per
 //!   ripple. A struck ripple's target moves to the mean of its hits (half
 //!   way there once it shows). Every ripple then loses 0.03 of strength,
@@ -136,24 +136,27 @@ pub struct BarricadeAdd {
     /// The cast motion started.
     pub motion: bool,
     pub entity: BarricadeEntity,
-    /// The impact sound's pitch at creation.
-    pub sound_pitch: f32,
+    /// The hum's pitch, when the barricade names a sound.
+    pub hum_pitch: Option<f32>,
 }
 
-/// The AI entity a barricade carries: the navigation cell it stands in and
-/// whether it is registered with the dynamics scene.
+/// The AI entity a barricade carries: the 6 m sector its middle stands in
+/// (the index whose cell number the scene's sector table gives) and whether
+/// it is registered with the scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BarricadeEntity {
-    pub cell: Option<i32>,
+    pub sector: Option<usize>,
     pub registered: bool,
 }
 
 /// What destroying a barricade frees.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarricadeTeardown {
-    pub held: f32,
+    /// The AI entity was freed.
     pub entity: bool,
-    pub sound: bool,
+    /// The hum was stopped.
+    pub voice: bool,
+    /// The stamp's patch was freed (the stamp left the grid at the fall).
     pub stamp: Option<NavStamp>,
 }
 
@@ -167,15 +170,21 @@ pub const THICKNESS: f32 = 5.0;
 /// The impact sound's spacing (ms).
 pub const SOUND_GAP: u32 = 400;
 
-/// The cells of the navigation grid a barricade blocks: the patch's middle
-/// and size (cells), the points along the wall's line and the cell of each
-/// point (the cells the grid manager closes).
+/// The navigation stamp of a barricade's line: the patch's middle and size
+/// (cells) and the points along the wall's line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NavStamp {
     pub centre: (i32, i32),
     pub size: (i32, i32),
     pub points: Vec<Vec3>,
-    pub cells: Vec<(i32, i32)>,
+}
+
+/// The ends of a wall's line from its frame and reaches.
+fn line_ends(frame: &WallFrame, reach: [f32; 2]) -> (Vec3, Vec3) {
+    (
+        frame.at + frame.x * reach[0],
+        frame.at + frame.x * -reach[1],
+    )
 }
 
 /// A navigation grid's frame: its size in cells and cells per cm.
@@ -223,15 +232,17 @@ pub fn nav_stamp(grid: &GridFrame, a: Vec3, b: Vec3) -> NavStamp {
     for k in 1..long {
         points.push(a + d * (k as f32 / (n as f32 - 1.0)));
     }
+    // The last point is the far end; with a single point it overwrites the
+    // first.
     if n > 1 {
         points.push(b);
+    } else {
+        points[0] = b;
     }
-    let cells = points.iter().map(|&p| grid.cell(p)).collect();
     NavStamp {
         centre,
         size: (w, h),
         points,
-        cells,
     }
 }
 
@@ -268,10 +279,12 @@ pub struct Barricade {
     /// The node's half size and height (the mesh's).
     pub node_half: Vec3,
     pub stamp: Option<NavStamp>,
-    /// The cast hook was installed (the power object runs).
+    /// The cast hook was installed (the cast motion started).
     pub spawned: bool,
     /// The AI entity the wall carries.
     pub entity: bool,
+    /// The hum is playing.
+    pub voice: bool,
     /// The focus the power object holds.
     pub held: f32,
 }
@@ -301,8 +314,7 @@ impl Barricade {
         }
         let texture = [draws.unit() as f32, draws.unit() as f32];
         let stamp = grid.map(|g| {
-            let a = frame.at + along * reach[0];
-            let b = frame.at + along * -reach[1];
+            let (a, b) = line_ends(&frame, reach);
             nav_stamp(g, a, b)
         });
         Self {
@@ -328,75 +340,65 @@ impl Barricade {
             stamp,
             spawned: false,
             entity: false,
+            voice: false,
             held: 0.0,
         }
     }
 
     /// Enters the world: starts the cast motion (0x24) with the power id
-    /// (0x20206) and installs its hook when the body accepts the cast,
-    /// creates the power object and reserves the barricade's focus, and
-    /// makes the AI entity that carries the wall and the navigation cell.
-    /// `sound_pitch` is the impact sound's base pitch times the draw the
-    /// original takes: 0.8 of the base at most.
+    /// (0x20206), installing its end hook when the cast starts; creates the
+    /// power object and reserves the barricade's focus; starts the hum when
+    /// `hum` names the sound's base pitch, at `base·0.8·draw` (in double, in
+    /// that order); and makes the AI entity with the 6 m sector of the
+    /// wall's middle in a sector grid of `sectors` (width, height).
     pub fn add_to_world(
         &mut self,
         body: &mut CastBody,
-        grid: Option<&GridFrame>,
-        sound_base: f32,
-        roll: f32,
+        sectors: Option<(i32, i32)>,
+        hum: Option<f32>,
+        roll: f64,
     ) -> BarricadeAdd {
         let motion = casting::start_cast(body, CAST_MOTION, POWER_ID);
-        let held = casting::reserve(body, self.cost);
         let power = ActivePower {
             id: POWER_ID,
             state: power::RUNNING,
         };
         body.powers.push(power);
-        self.spawned = true;
+        let held = casting::reserve(body, self.cost);
+        self.spawned = motion;
         self.entity = true;
         self.held = held;
-        let cell = grid.map(|g| {
-            let (x, z) = g.cell(self.frame.at);
-            z * g.width as i32 + x
-        });
+        let hum_pitch = hum.map(|base| ((f64::from(base) * 0.8) * roll) as f32);
+        self.voice = hum_pitch.is_some();
         BarricadeAdd {
             power,
             held,
             motion,
             entity: BarricadeEntity {
-                cell,
+                sector: sectors.and_then(|(w, h)| exa_ai::golem::sector_index(self.frame.at, w, h)),
                 registered: true,
             },
-            sound_pitch: sound_base * 0.8 * roll,
+            hum_pitch,
         }
     }
 
-    /// Leaves the world: the focus it held comes back, its power leaves the
-    /// body's list and its AI entity and sound are freed. Returns what the
-    /// teardown had.
-    pub fn destroy(&mut self, body: &mut CastBody) -> BarricadeTeardown {
-        casting::release_reserve(body, self.held);
-        body.powers.retain(|power| power.id != POWER_ID);
-        let stamp = self.stamp.clone();
+    /// Frees the barricade: its hum stops, and its AI entity and the stamp's
+    /// patch go. Returns what it had.
+    pub fn destroy(&mut self) -> BarricadeTeardown {
         let teardown = BarricadeTeardown {
-            held: self.held,
             entity: self.entity,
-            sound: self.cost > 0.0,
-            stamp,
+            voice: self.voice,
+            stamp: self.stamp.take(),
         };
-        self.held = 0.0;
         self.entity = false;
-        self.spawned = false;
-        self.stamp = None;
+        self.voice = false;
         teardown
     }
 
-    /// The navigation cells the wall closes.
-    pub fn stamp_cells(&self) -> Vec<(i32, i32)> {
-        self.stamp
-            .as_ref()
-            .map(|stamp| stamp.cells.clone())
-            .unwrap_or_default()
+    /// The ends of the wall's line: its middle plus and minus its axis by
+    /// the two reaches.
+    pub fn ends(&self) -> (Vec3, Vec3) {
+        line_ends(&self.frame, self.reach)
     }
 
     /// Its power ended: the wall falls from the next tick.
@@ -1110,7 +1112,7 @@ mod tests {
             scale: 0.04,
         };
         let frame = WallFrame {
-            at: Vec3::new(0.0, 100.0, 0.0),
+            at: Vec3::new(700.0, 100.0, -10.0),
             x: Vec3::NEG_Z,
             y: Vec3::Y,
             z: Vec3::X,
@@ -1118,32 +1120,31 @@ mod tests {
         let mut draws = Fixed::new(&[0.25, 0.75], &[0]);
         let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, Some(&grid), &mut draws);
         let mut body = CastBody::default();
-        let add = wall.add_to_world(&mut body, Some(&grid), 2.0, 0.5);
+        let add = wall.add_to_world(&mut body, Some((10, 8)), Some(2.0), 0.5);
         assert!(add.motion, "the cast motion starts");
         assert_eq!(add.power.id, POWER_ID);
         assert_eq!(add.power.state, power::RUNNING);
         assert_eq!(add.held, 0.25);
         assert_eq!(body.reserved, 0.25);
-        assert_eq!(body.spent, 0.25);
         assert_eq!(body.powers.len(), 1);
         assert_eq!(body.cast_motion, Some(CAST_MOTION));
-        // The cell of the wall's middle: 100 wide, 0 cm, round(−0.5) = 0.
-        assert_eq!(add.entity.cell, Some(50 * 100 + 50));
-        assert!(add.entity.registered);
-        assert!((add.sound_pitch - 0.8).abs() < 1e-6);
-        assert!(wall.spawned && wall.entity);
-        // 300 cm each way is 12 cells each way: 25 points/cells.
-        let cells = wall.stamp_cells();
-        assert_eq!(cells.len(), 25);
-        assert_eq!(cells[0], (50, 38));
-        assert_eq!(cells[24], (50, 62));
-        let teardown = wall.destroy(&mut body);
-        assert_eq!(teardown.held, 0.25);
-        assert!(teardown.entity && teardown.sound);
+        // Sector (1 + 5, −1 + 4) of a 10 × 8 grid.
+        assert_eq!(add.entity.sector, Some(3 * 10 + 6));
+        assert_eq!(add.hum_pitch, Some(((2.0f64 * 0.8) * 0.5) as f32));
+        assert!(wall.spawned && wall.entity && wall.voice);
+        let teardown = wall.destroy();
+        assert!(teardown.entity && teardown.voice);
         assert!(teardown.stamp.is_some());
-        assert_eq!(body.reserved, 0.0);
-        assert!(body.powers.is_empty());
-        assert!(!wall.spawned && wall.stamp.is_none());
+        assert!(wall.stamp.is_none() && !wall.voice);
+        // A running cast keeps the hook off; there is no hum without a sound.
+        let mut busy = CastBody {
+            cast_hook: Some(0),
+            ..CastBody::default()
+        };
+        let mut other = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
+        let add = other.add_to_world(&mut busy, None, None, 0.5);
+        assert!(!add.motion && !other.spawned);
+        assert_eq!((add.entity.sector, add.hum_pitch), (None, None));
     }
 
     #[test]

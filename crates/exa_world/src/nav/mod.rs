@@ -33,6 +33,7 @@ pub mod mover;
 pub mod path;
 pub mod query;
 pub mod source;
+pub mod stamp;
 pub mod view;
 pub mod walkable;
 
@@ -48,6 +49,7 @@ pub use mover::{
 pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_with, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
+pub use stamp::{NavPatch, stamp_line, unstamp_line};
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 
@@ -548,32 +550,25 @@ impl NavGrid {
         changed
     }
 
-    /// Adds `amount` to a cell's penalty on both layers, saturating. The
-    /// barricade's stamp closes its line here; a full byte is refused by the
-    /// planner once its shift pushes the penalty past its limit.
-    pub fn raise_penalty(&mut self, x: i32, z: i32, amount: u8) -> bool {
-        self.change_penalty(x, z, amount, true)
-    }
-
-    /// Takes `amount` back off a cell's penalty on both layers, saturating
-    /// at zero.
-    pub fn lower_penalty(&mut self, x: i32, z: i32, amount: u8) -> bool {
-        self.change_penalty(x, z, amount, false)
-    }
-
-    fn change_penalty(&mut self, x: i32, z: i32, amount: u8, raise: bool) -> bool {
-        if x < 0 || z < 0 || x >= self.width as i32 || z >= self.depth as i32 {
+    /// Adds `amount` to (or takes it from) cell (`x`, `z`)'s penalty on
+    /// `layer`, wrapping as the original's byte does. False outside the grid.
+    pub fn shift_penalty(
+        &mut self,
+        x: usize,
+        z: usize,
+        layer: Layer,
+        amount: u8,
+        add: bool,
+    ) -> bool {
+        if x >= self.width || z >= self.depth {
             return false;
         }
-        let i = z as usize * self.width + x as usize;
-        for layer in Layer::BOTH {
-            let at = &mut self.layers[layer as usize].penalty[i];
-            *at = if raise {
-                at.saturating_add(amount)
-            } else {
-                at.saturating_sub(amount)
-            };
-        }
+        let at = &mut self.layers[layer as usize].penalty[z * self.width + x];
+        *at = if add {
+            at.wrapping_add(amount)
+        } else {
+            at.wrapping_sub(amount)
+        };
         true
     }
 

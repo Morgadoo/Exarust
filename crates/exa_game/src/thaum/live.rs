@@ -17,7 +17,10 @@
 //!   knocks it back a step (doubled, at most its step length), sets its
 //!   instability counter to 100 and, while its energy is above 0.25,
 //!   lowers it, so a body struck by several parts loses that much for
-//!   each. Wisps follow their body parts.
+//!   each. While it stands its line is stamped on the navigation grid's
+//!   penalty (`exa_world::nav::stamp_line`, from the first tick a grid is
+//!   there) and taken back when its fall ends. Wisps follow their body
+//!   parts.
 //! - **Each frame**: the arcs' and wisps' ribbons and the barricade's slab
 //!   are drawn with [`exa_render::glow::GlowMaterial`], a stand-in for the
 //!   original's effect programs, which are not ported (the arcs' ribbon
@@ -29,8 +32,8 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: the hum and impact sounds, the lights, the navigation stamp
-//! and the AI's sight of a barricade, the attack a barricade interrupts.
+//! Not wired: the hum and impact sounds, the lights, the AI's sight of a
+//! barricade, the attack a barricade interrupts.
 //! Rules: `docs/THAUMATURGY.md`.
 
 use bevy::asset::RenderAssetUsages;
@@ -43,12 +46,12 @@ use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
 use exa_render::glow::GlowMaterial;
-use exa_world::nav::NavGrid;
+use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
 
 use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{
-    Barricade, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, power_ends,
-    slide_mesh,
+    Barricade, GridFrame, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, nav_stamp,
+    power_ends, slide_mesh,
 };
 use super::displacement::body_wisps;
 use super::engine::{Roll, normalize};
@@ -178,13 +181,10 @@ pub struct LiveWisps {
 #[derive(Component)]
 pub struct EffectMesh(pub Handle<Mesh>);
 
-/// The navigation cells a barricade has closed, so they can open when it
-/// goes. The planner's penalty byte is raised by all of it.
+/// The patch a barricade's line stamped on the navigation grid, taken back
+/// when its fall ends.
 #[derive(Component)]
-pub struct NavStamped(pub Vec<(i32, i32)>);
-
-/// The penalty a barricade's stamp writes into each cell it closes.
-pub const STAMP_PENALTY: u8 = 255;
+pub struct NavStamped(pub NavPatch);
 
 /// The world place (cm) of a point given in a part's space (cm).
 fn part_point(body: &Ragdoll, part: usize, local_cm: Vec3) -> Option<Vec3> {
@@ -406,22 +406,28 @@ fn tick_barricades(
             }
         }
         if live.wall.state == super::barricade::state::GONE {
-            if let (Some(marked), Some(grid)) = (stamped, nav.as_mut()) {
-                for &(x, z) in &marked.0 {
-                    grid.lower_penalty(x, z, STAMP_PENALTY);
-                }
+            // The finished fall takes the stamp back off the grid.
+            if let (Some(NavStamped(patch)), Some(grid)) = (stamped, nav.as_mut()) {
+                unstamp_line(grid, patch);
             }
             commands.entity(wall_entity).despawn();
         } else if stamped.is_none()
-            && live.wall.stamp.is_some()
             && let Some(grid) = nav.as_mut()
         {
-            // The wall's line closes its navigation cells while it stands.
-            let cells = live.wall.stamp_cells();
-            for &(x, z) in &cells {
-                grid.raise_penalty(x, z, STAMP_PENALTY);
-            }
-            commands.entity(wall_entity).insert(NavStamped(cells));
+            // The original stamps the wall's line as it enters the world; the
+            // running game does so on the first tick a grid is there.
+            let (width, depth) = grid.size();
+            let frame = GridFrame {
+                width: width as u32,
+                height: depth as u32,
+                scale: 1.0 / 30.0,
+            };
+            let (a, b) = live.wall.ends();
+            let line = nav_stamp(&frame, a, b);
+            let size = (line.size.0.max(0) as u32, line.size.1.max(0) as u32);
+            let patch = stamp_line(grid, line.centre, size, &line.points);
+            live.wall.stamp = Some(line);
+            commands.entity(wall_entity).insert(NavStamped(patch));
         }
     }
 }

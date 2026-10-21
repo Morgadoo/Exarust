@@ -672,19 +672,3 @@ fn the_footprint_extents_advance_and_clamp() {
     assert_eq!(extents.mins, [5, 5]);
     assert_eq!(extents.maxs, [6, 6]);
 }
-
-#[test]
-fn a_penalty_stamp_raises_and_lowers_both_layers() {
-    let mut grid = NavGrid::empty(6, 6, 0.0);
-    assert!(grid.raise_penalty(2, 3, 255));
-    for layer in Layer::BOTH {
-        assert_eq!(grid.cell(2, 3, layer).penalty, 255);
-    }
-    assert_eq!(grid.cell(2, 2, Layer::Lower).penalty, 0);
-    assert!(!grid.raise_penalty(-1, 0, 1));
-    assert!(!grid.raise_penalty(6, 0, 1));
-    assert!(grid.lower_penalty(2, 3, 10));
-    assert_eq!(grid.cell(2, 3, Layer::Upper).penalty, 245);
-    assert!(grid.lower_penalty(2, 3, 255));
-    assert_eq!(grid.cell(2, 3, Layer::Lower).penalty, 0);
-}
