@@ -77,6 +77,60 @@ fn a_welded_rings_corners_are_spliced_in_the_originals_order() {
 }
 
 #[test]
+fn welding_does_not_chain_through_a_middle_position() {
+    // 0–b and b–c are each 0.009 cm apart, but the original only compares a
+    // later element with the first live one it met: a and c are 0.018 cm
+    // apart, so c stays.
+    let mut m = edit(mesh(
+        vec![[0.0, 0.0, 0.0], [0.000_09, 0.0, 0.0], [0.000_18, 0.0, 0.0]],
+        vec![0, 1, 2],
+    ));
+    m.weld().unwrap();
+    assert_eq!(m.streams[0].data.len(), 2);
+}
+
+#[test]
+fn a_shared_influence_keeps_the_larger_weight_and_the_rest_fill_slots() {
+    let mut m = mesh(
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.00005, 0.0, 0.0]],
+        vec![0, 1, 2],
+    );
+    m.skin = Some(vec![
+        SkinWeights {
+            bones: [1, 0, 0, 0],
+            weights: [0.25, 0.0, 0.0, 0.0],
+        },
+        SkinWeights {
+            bones: [3, 0, 0, 0],
+            weights: [1.0, 0.0, 0.0, 0.0],
+        },
+        SkinWeights {
+            bones: [1, 2, 0, 0],
+            weights: [0.5, 0.2, 0.0, 0.0],
+        },
+    ]);
+    let mut edit = edit(m);
+    edit.weld_influences().unwrap();
+    let StreamData::Skin(weights) = &edit.streams[1].data else {
+        panic!("skin stream expected");
+    };
+    assert_eq!(weights[0].bones, [1, 2, 0, 0]);
+    assert!((weights[0].weights[0] - 0.5 / 0.7).abs() < 1e-6);
+    assert!((weights[0].weights[1] - 0.2 / 0.7).abs() < 1e-6);
+}
+
+#[test]
+fn a_fixed_stream_is_not_welded() {
+    let mut m = edit(mesh(
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.00005, 0.0, 0.0]],
+        vec![0, 1, 2],
+    ));
+    m.streams[0].format |= FIXED_STREAM;
+    m.weld().unwrap();
+    assert_eq!(m.streams[0].data.len(), 3);
+}
+
+#[test]
 fn texture_coordinates_weld_at_their_own_tolerance() {
     let mut m = mesh(vec![[0.0; 3], [1.0; 3], [2.0; 3]], vec![0, 1, 2]);
     m.uvs = Some(vec![[0.0, 0.0], [0.0, 0.0], [1.0, 0.0]]);
