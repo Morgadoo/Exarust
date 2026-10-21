@@ -163,6 +163,7 @@ fn a_queued_blow_wakes_a_sleeping_body() {
         velocity: Vec3::X,
         daze: 0.0,
         step: None,
+        sag: None,
     });
     for _ in 0..5 {
         app.update();

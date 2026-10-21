@@ -384,47 +384,59 @@ impl WeaponRecord {
     /// The holding pass, run at the build and again on every equip change
     /// with the holder's encumbrance and size: the held weight and balance,
     /// swing speed, recoil, swing shaping, blend, arm stiffness, reach and
-    /// the swing sound and AI turn factors.
+    /// the swing sound and AI turn factors, each in the precision the
+    /// original computes it (the constants 0.7, 0.4, 0.1, 0.6, 0.3, 0.15,
+    /// 1.05 and 1.2 in double).
     pub fn hold(&mut self, holder: &Holder) {
         let g = holder.encumbrance;
         let s = holder.size;
         let (mut w8, w9) = if holder.half_sword {
-            ((2.0 - self.weight) * self.weight, self.balance * 0.7)
+            (
+                (2.0 - self.weight) * self.weight,
+                (f64::from(self.balance) * 0.7) as f32,
+            )
         } else {
             (self.weight, self.balance)
         };
         w8 *= 1.0 - holder.weightless;
         self.held_weight = w8;
         self.held_balance = w9;
-        let h = if w9 <= 1.0 {
-            (1.0 - w9) * 0.6 + w8 * 0.4 + 0.1
+        // Over a balance of 1 the weight alone; else (a non-number too) with
+        // the balance's share.
+        let weighted = f64::from(w8) * 0.4 + 0.1;
+        let h = if 1.0 < w9 {
+            weighted as f32
         } else {
-            w8 * 0.4 + 0.1
+            (f64::from(1.0 - w9) * 0.6 + weighted) as f32
         };
         self.recoil = g * 0.5 + h;
         let k = ((1.0 - g) + w9) * 0.5 * g + w9 * (1.0 - g);
         self.swing_shaping = 1.0 - k;
         self.blend = ((w8 + 1.0 - k) * 10.0).round_ties_even() as i32;
         let hands = self.flags & flags::HANDS;
-        self.arm_stiffness = 0.7 - self.recoil * 0.3;
+        self.arm_stiffness = (0.7 - f64::from(self.recoil) * 0.3) as f32;
         if hands == flags::TWO_HANDED && !holder.half_sword {
-            self.arm_stiffness *= 0.7 - w9 * 0.2;
+            self.arm_stiffness =
+                ((0.7 - f64::from(w9) * 0.2) * f64::from(self.arm_stiffness)) as f32;
         }
         if self.flags & 0xFFFF == flags::GREATSWORD {
             self.arm_stiffness *= 1.5;
         }
-        self.swing_speed = (1.0 - w8) * 0.15 + 1.05;
+        self.swing_speed = (f64::from(1.0 - w8) * 0.15 + 1.05) as f32;
         if self.flags & flags::HAND_CLASS == 0 {
-            self.swing_speed *= 1.2;
+            self.swing_speed = (f64::from(self.swing_speed) * 1.2) as f32;
         }
-        self.swing_turn = (self.swing_shaping * 0.4 + w8 * 0.3 + 0.4).min(1.5);
+        let turn = (f64::from(self.swing_shaping) * 0.4 + (f64::from(w8) * 0.3 + 0.4)) as f32;
+        self.swing_turn = if 1.5 < turn { 1.5 } else { turn };
         let l = self.length;
-        if l <= 124.0 {
-            self.swing_volume = ((250.0 - l) * 0.004).sqrt() * 1.5;
-            self.swing_pitch = (250.0 - l) * 0.005_555_555_7;
-        } else {
+        // Over 124 cm the long weapon's factors; else (a non-number too)
+        // by the length.
+        if 124.0 < l {
             self.swing_volume = 1.0;
             self.swing_pitch = 0.7;
+        } else {
+            self.swing_volume = ((250.0 - l) * 0.004).sqrt() * 1.5;
+            self.swing_pitch = (250.0 - l) * 0.005_555_555_7;
         }
         let mut d = w9 - w8;
         if d < 0.0 {
@@ -432,8 +444,9 @@ impl WeaponRecord {
         }
         self.swing_pitch *= d * 0.5 + 1.0;
         if hands == 0 {
-            self.swing_volume *= holder.scale.sqrt() * 0.7;
-            self.swing_pitch = self.swing_pitch * 0.6 / holder.scale;
+            self.swing_volume =
+                (f64::from(holder.scale.sqrt()) * (f64::from(self.swing_volume) * 0.7)) as f32;
+            self.swing_pitch = (f64::from(self.swing_pitch) * 0.6 / f64::from(holder.scale)) as f32;
             self.swing_turn *= if self.flags & flags::HAND_CLASS == flags::CLAWS {
                 1.5
             } else {
@@ -1332,5 +1345,98 @@ mod tests {
         };
         let r = RaceWeapons::of_stats(&golem);
         assert_eq!((r.unarmed_reach, r.blend, r.claws), (100.0, 0.5, 0));
+    }
+
+    /// The holding pass in the original's precision (a reference model of
+    /// its listing gives these bits): a two-hander of weight 37 and balance
+    /// 63, 110 cm (sweet spot 80), held at encumbrance 0.3 by a holder of
+    /// size 1.1; then as a half-sword at 130 cm; and a fist held at 0.2 by
+    /// a body of scale 1.3.
+    #[test]
+    fn the_holding_pass_keeps_the_originals_precision() {
+        let mut stats = StatBytes::default();
+        stats.set(at::WEIGHT, 37);
+        stats.set(at::BALANCE, 63);
+        let mut w = WeaponRecord::of_one_part(0x22, &stats, false, 110.0);
+        w.sweet_spot = 80.0;
+        let holder = Holder {
+            encumbrance: 0.3,
+            size: 1.1,
+            scale: 1.05,
+            ..Holder::AVERAGE
+        };
+        w.hold(&holder);
+        let pin = |w: &WeaponRecord, b: [u32; 8], blend: i32| {
+            let got = [
+                w.recoil,
+                w.swing_shaping,
+                w.arm_stiffness,
+                w.swing_speed,
+                w.swing_turn,
+                w.swing_volume,
+                w.swing_pitch,
+                w.reach,
+            ];
+            for (g, b) in got.iter().zip(b) {
+                assert_eq!(g.to_bits(), b, "{g} {w:?}");
+            }
+            assert_eq!(w.blend, blend);
+        };
+        let two_hander = [
+            0x3f1e_b852,
+            0x3eb8_1064,
+            0x3e97_0ef5,
+            0x3f92_7efa,
+            0x3f27_a0f9,
+            0x3f8f_adfd,
+            0x3f60_fedd,
+            0x4312_0000,
+        ];
+        pin(&w, two_hander, 7);
+        w.length = 130.0;
+        w.hold(&Holder {
+            half_sword: true,
+            ..holder
+        });
+        let half_sword = [
+            0x3f53_9eae,
+            0x3f05_288d,
+            0x3ee7_6d98,
+            0x3f8e_053e,
+            0x3f49_fb40,
+            0x3f80_0000,
+            0x3f2b_f01b,
+            0x4312_0000,
+        ];
+        pin(&w, half_sword, 11);
+        let mut fist = WeaponRecord::build(
+            &Section::FISTS,
+            false,
+            Lengths::hand(8.0, 9.66),
+            &Holder::AVERAGE,
+        );
+        fist.length = 17.66;
+        fist.hold(&Holder {
+            encumbrance: 0.2,
+            scale: 1.3,
+            ..Holder::AVERAGE
+        });
+        let reach = fist.reach.to_bits();
+        pin(
+            &fist,
+            [
+                0x3e4c_cccd,
+                0x3ca3_d700,
+                0x3f00_0000,
+                0x3fb8_51ec,
+                0x3e50_e560,
+                0x3f93_ba61,
+                0x3f64_c3fc,
+                reach,
+            ],
+            0,
+        );
+        // A fist keeps its end byte as its reach.
+        assert_eq!(fist.reach, 80.0);
     }
 }

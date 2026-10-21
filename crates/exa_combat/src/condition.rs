@@ -164,6 +164,9 @@ impl StateFlags {
     pub const HELD: u32 = 0x40;
     /// The shock's stagger: Rebalance each tick.
     pub const SHOCK_STAGGER: u32 = 0x100;
+    /// Blows on it are turned: the striker recoils and nothing is dealt
+    /// (what sets it was not traced).
+    pub const TURNS_BLOWS: u32 = 0x400;
     /// A potion halves yellow damage until it expires.
     pub const POTION: u32 = 0x80_0000;
 

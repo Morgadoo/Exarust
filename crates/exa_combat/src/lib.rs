@@ -30,6 +30,7 @@ pub mod collapse;
 pub mod condition;
 pub mod damage;
 pub mod fall;
+pub mod fast_math;
 pub mod fighter;
 pub mod grip;
 pub mod parry;
@@ -47,6 +48,8 @@ use bevy::prelude::*;
 pub use condition::{Condition, StateFlags};
 use damage::{Strike, WeaponRecord};
 use exa_anim::{Animator, BodyPart, Ease, Motions};
+use exa_formats::character_stats::BodyRules;
+use exa_formats::characters::Perk;
 use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
@@ -198,6 +201,8 @@ pub struct Hit {
     pub strike: Strike,
 }
 
+/// The hands bits of a weapon class: none for fists and claws.
+const HANDS: u8 = 0x30;
 const PART_RADIUS: f32 = 0.16;
 const MIN_HIT_SPEED: f32 = 1.5;
 /// Horizontal knockback (m) when `impact` is over 0.5: 2·(20·strikes + 10)·impact
@@ -318,7 +323,7 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
 fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(Entity, &Blade, &GlobalTransform)>,
-    mut attackers: Query<(&Animator, &mut Attacking, &SwingState)>,
+    mut attackers: Query<(&Animator, &mut Attacking, &SwingState, Option<&Fighter>)>,
     fighters: Query<(Entity, &Condition), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
@@ -326,7 +331,7 @@ fn detect_hits(
 ) {
     let Some(motions) = motions else { return };
     for (striker, blade, gt) in &blades {
-        let Ok((anim, mut attack, swing)) = attackers.get_mut(blade.wielder) else {
+        let Ok((anim, mut attack, swing, wielder)) = attackers.get_mut(blade.wielder) else {
             continue;
         };
         // A striker whose window is open: the held items (the fists only
@@ -390,12 +395,16 @@ fn detect_hits(
                     along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
                 }
                 let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
+                // A quadruped's stab is resolved as a swing.
+                let quadruped = wielder.is_some_and(|f| f.stats.quadruped);
                 let strike = Strike {
                     speed: blade.tip_speed * share * CM_PER_M / BODY_HZ,
-                    stab: attack.motion == AttackMotion::Stab,
+                    stab: attack.motion == AttackMotion::Stab && !quadruped,
                     overhead: attack.motion == AttackMotion::Overhead,
                     clock: progress,
                     along,
+                    unarmed: attack.weapon_class & HANDS == 0,
+                    ..Strike::default()
                 };
                 hits.write(Hit {
                     attacker: blade.wielder,
@@ -424,6 +433,13 @@ impl Roll {
         self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
         (self.0 as f64 * 2f64.powi(-32)) as f32
     }
+
+    /// The next draw as a whole number below `n`: the high half of the
+    /// state times `n`.
+    pub fn below(&mut self, n: u32) -> u32 {
+        self.0 = self.0.wrapping_mul(0x0808_8405).wrapping_add(1);
+        ((u64::from(self.0) * u64::from(n)) >> 32) as u32
+    }
 }
 
 /// The looping stance a fighter returns to: the follow-up of the clip it is
@@ -436,6 +452,27 @@ pub(crate) fn stance_of(anim: &Animator) -> String {
     }
 }
 
+/// What a blow does to the striker's swing once the struck side is dealt.
+#[derive(Clone, Copy, Debug)]
+enum StrikerReaction {
+    /// It wounded: it cleaves on or follows the wound through.
+    Wounded(damage::Outcome),
+    /// A parry or a shield (`guarded`), or a body that turns blows, made
+    /// it recoil.
+    Recoils {
+        blow: damage::Outcome,
+        guarded: bool,
+    },
+}
+
+/// The original's damage routine on each weapon contact, the struck side
+/// first: the regeneration's ramp reset, the blow resolved against the
+/// part's armour (a guard's blow against none), the daze's stall of a
+/// struck attacker, the damage call, the low-health answer, the notice,
+/// the wound's spray, queue and the weapon's blood, the shove with the
+/// blow sag and the knockback step, and a killing blow's collapse; then
+/// the striker's swing: a wound cleaves on or bogs down, a guard or a body
+/// that turns blows (state flag `StateFlags::TURNS_BLOWS`) recoils it.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn react_to_hits(
     mut commands: Commands,
@@ -457,6 +494,8 @@ fn react_to_hits(
         Option<&mut SwingState>,
         Option<&Swing>,
     )>,
+    attacks: Query<&Attacking>,
+    slots: Query<&Blade>,
     strikers: Query<&GlobalTransform>,
     mut blades: Query<&mut BladeBlood>,
     ticks: Option<Res<BodyTicks>>,
@@ -467,6 +506,7 @@ fn react_to_hits(
     let tick = ticks.as_ref().map_or(0, |t| t.0);
     let now = ticks.as_ref().map_or(0, |t| t.millis());
     let story = story.is_some_and(|s| s.0);
+    let mut after: Vec<(&Hit, StrikerReaction)> = Vec::new();
     for hit in hits.read() {
         let Ok((
             _,
@@ -489,18 +529,45 @@ fn react_to_hits(
         let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
             continue;
         };
-        let Some(mut outcome) = damage::resolve(
-            &hit.weapon,
-            &hit.strike,
-            armour,
-            hit.bone,
-            f.health.max,
-            f.readiness,
-            roll.next(),
-        ) else {
+        let victim = damage::Victim {
+            steadfast: f.stats.rules.has(BodyRules::STEADFAST),
+            security: f.perks.has(Perk::Security),
+            potion: flags.has(StateFlags::POTION),
+            ..damage::Victim::new(f.health.max, f.readiness)
+        };
+        // A guarded blow meets a shield or a weapon: no armour, no roll.
+        let guarded = f.guard != damage::Guard::Open;
+        let layers = (!guarded).then(|| (armour, roll.next()));
+        let Some(mut outcome) =
+            damage::resolve(&hit.weapon, &hit.strike, layers, hit.bone, &victim)
+        else {
             continue;
         };
-        outcome = damage::guard_outcome(outcome, f.guard);
+        if guarded {
+            outcome = damage::guard_outcome(outcome, f.guard);
+            after.push((
+                hit,
+                StrikerReaction::Recoils {
+                    blow: outcome,
+                    guarded: true,
+                },
+            ));
+        } else {
+            // The struck part's sound cooldown draws from the generator.
+            let _ = roll.below(PART_SOUND_SPREAD_MS);
+            if flags.has(StateFlags::TURNS_BLOWS) {
+                // The blow is turned: the striker recoils, nothing is dealt.
+                after.push((
+                    hit,
+                    StrikerReaction::Recoils {
+                        blow: outcome,
+                        guarded: false,
+                    },
+                ));
+                continue;
+            }
+            after.push((hit, StrikerReaction::Wounded(outcome)));
+        }
         // A fighter struck mid-swing (attacking) has its swing stalled by
         // the daze, before the blow's damage as the original's daze runs
         // first: its stance returns when the stall ends.
@@ -514,8 +581,7 @@ fn react_to_hits(
             if let Some(at) = SwingAt::of(now, &anim, motions, base) {
                 let swing = swing.copied().unwrap_or(Swing::FISTS);
                 let daze = outcome.daze.min(MAX_DAZE);
-                let factor = swing::daze_factor(f.health.max, flags.has(StateFlags::POTION));
-                if let Some(r) = state.daze_stall(&swing, &at, daze, factor) {
+                if let Some(r) = state.daze_stall(&swing, &at, daze, outcome.daze_factor) {
                     info!(
                         "{:?} struck mid-swing at {:.2} of its clip: stall {r:.3} a tick \
                          (now {:.3}), strength {:.2}, stance at {} ms",
@@ -588,8 +654,8 @@ fn react_to_hits(
                 );
             }
         }
-        // The blow pushes the struck part, shoves the body when heavy, and
-        // dazes it.
+        // The blow pushes the struck part, shoves the body when heavy, sags
+        // its stance and dazes it.
         let along = hit.velocity.normalize_or_zero();
         let (fast, step_cm) = body
             .as_ref()
@@ -601,7 +667,13 @@ fn react_to_hits(
                 )
             })
             .unwrap_or((Vec3::ZERO, exa_physics::body::step_length(1.0, 1.0)));
-        let step = knockback_offset(outcome.impact, 0.0, hit.velocity, fast, step_cm);
+        let step = knockback_offset(
+            outcome.impact,
+            hit.strike.strikes,
+            hit.velocity,
+            fast,
+            step_cm,
+        );
         let push = if step.is_some() {
             0.0
         } else if outcome.impact > PUSH_FROM {
@@ -616,10 +688,12 @@ fn react_to_hits(
             velocity,
             daze: outcome.daze,
             step,
+            sag: outcome.sag,
         });
         info!(
-            "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2}, \
-             penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, red {:.3} of {:.2})",
+            "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2} \
+             ({:.2} at the hit), penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, \
+             red {:.3} of {:.2})",
             hit.target,
             hit.bone,
             if hit.weapon.armed() {
@@ -630,6 +704,7 @@ fn react_to_hits(
             hit.strike.along,
             hit.strike.speed,
             outcome.impact,
+            outcome.hit_impact,
             outcome.penetration,
             f.readiness,
             outcome.wound,
@@ -676,12 +751,54 @@ fn react_to_hits(
             commands.entity(hit.target).remove::<Attacking>();
         }
     }
+    // The striker's swing, once the struck side is dealt.
+    for (hit, reaction) in after {
+        let Ok((_, f, .., Some(mut state), _)) = fighters.get_mut(hit.attacker) else {
+            continue;
+        };
+        let striker = swing::Striker {
+            class_word: attacks
+                .get(hit.attacker)
+                .map_or(0, |a| u32::from(a.weapon_class)),
+            size: f.stats.size,
+            clock: hit.strike.clock,
+            slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
+            now_ms: now as i32,
+        };
+        match reaction {
+            StrikerReaction::Wounded(blow) => {
+                state.after_wound(&blow, hit.weapon.recoil, &striker);
+                debug!(
+                    "{:?} wounded: strength {:.3}, stall {:.3}, flags {:#x}, stance at {} ms",
+                    hit.attacker, state.strength, state.stall, state.flags, state.end_ms
+                );
+                if blow.bite > BITES_FROM && !hit.strike.unarmed {
+                    debug!(
+                        "{:?} would bite in by {:.3} (weapons are not bodies yet)",
+                        hit.attacker, blow.bite
+                    );
+                }
+            }
+            StrikerReaction::Recoils { blow, guarded } => {
+                // Only a striker under the large size recoils from a guard.
+                if !guarded || f64::from(striker.size) < swing::LARGE_STRIKER {
+                    state.recoil_from(blow.speed, hit.weapon.recoil, &striker);
+                }
+            }
+        }
+    }
     for (e, _, _, _, anim, attacking, ..) in &fighters {
         if attacking && anim.looping {
             commands.entity(e).remove::<Attacking>();
         }
     }
 }
+
+/// The struck part's sound cooldown spreads over this many ms (it draws
+/// from the generator once a blow on flesh).
+const PART_SOUND_SPREAD_MS: u32 = 150;
+/// An armed blow that bites in deeper sticks the weapon in the part.
+const BITES_FROM: f32 = 0.1;
 
 fn closest_on_segment(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
     let ab = b - a;
@@ -724,10 +841,9 @@ mod tests {
     fn cut() -> Strike {
         Strike {
             speed: 20.0,
-            stab: false,
-            overhead: false,
             clock: 0.8,
             along: 70.0,
+            ..Strike::default()
         }
     }
 
@@ -738,11 +854,9 @@ mod tests {
         damage::resolve(
             &damage::sword_a(),
             &cut(),
-            &PartArmour::default(),
+            Some((&PartArmour::default(), roll)),
             bone,
-            0.25,
-            0.0,
-            roll,
+            &damage::Victim::new(0.25, 0.0),
         )
         .unwrap()
     }
@@ -787,6 +901,128 @@ mod tests {
         assert!((capped.length() - 0.8).abs() < 1e-5, "{capped}");
         let light = knockback_offset(0.4, 0.0, Vec3::Z, Vec3::ZERO, 80.0);
         assert!(light.is_none());
+    }
+
+    /// A swordsman mid-swing and its blade, in the first held slot, its
+    /// window open.
+    fn swordsman(app: &mut App) -> (Entity, Entity) {
+        let attacker = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Cmbt - Idle"),
+                Attacking::new(AttackMotion::Main(0), 0x10),
+                SwingState {
+                    flags: swing::flags::WINDOW_OPENED,
+                    open: [true, false],
+                    ..SwingState::default()
+                },
+            ))
+            .id();
+        let blade = app
+            .world_mut()
+            .spawn(Blade::new(attacker, 0.9, damage::sword_a()))
+            .id();
+        (attacker, blade)
+    }
+
+    fn swung(app: &mut App, attacker: Entity, blade: Entity, target: Entity, strike: Strike) {
+        app.world_mut().write_message(Hit {
+            attacker,
+            striker: blade,
+            target,
+            bone: 9,
+            point: Vec3::ZERO,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike,
+        });
+        app.update();
+    }
+
+    /// A cut by the sword's body (40 of its 90 cm, so its body zone) bogs
+    /// the swing down: the wound bits, its window shut and the
+    /// follow-through at gain 1 − I/2 from the blow's impact; the struck
+    /// body's stance sags by twice the impact, at most 1. By the tip zone
+    /// (70 cm) it cleaves on.
+    #[test]
+    fn a_wound_bogs_the_striker_down() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let body = Strike {
+            along: 40.0,
+            ..cut()
+        };
+        swung(&mut app, attacker, blade, victim, body);
+        let blow = damage::resolve(
+            &damage::sword_a(),
+            &body,
+            Some((&PartArmour::default(), Roll::default().next())),
+            9,
+            &damage::Victim::new(0.25, 0.0),
+        )
+        .unwrap();
+        assert!(blow.central && blow.hit_impact < 2.0, "{blow:?}");
+        let mut expected = SwingState {
+            flags: swing::flags::WINDOW_OPENED,
+            open: [true, false],
+            ..SwingState::default()
+        };
+        expected.after_wound(
+            &blow,
+            damage::sword_a().recoil,
+            &swing::Striker {
+                class_word: 0x10,
+                size: Fighter::default().stats.size,
+                clock: 0.8,
+                slot: Slot::First,
+                now_ms: 0,
+            },
+        );
+        let state = app.world().get::<SwingState>(attacker).unwrap();
+        assert_eq!(state.flags, expected.flags);
+        assert!(state.has(swing::flags::STALLING) && state.has(swing::flags::WOUNDED));
+        assert!(state.strength < 1.0 && state.strength == expected.strength);
+        assert_eq!(state.open, [false, false]);
+        assert_eq!(shoves(&app)[0].sag, Some((blow.hit_impact * 2.0).min(1.0)));
+        // The tip zone cleaves on.
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        let state = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(state.has(swing::flags::CLEAVING) && !state.has(swing::flags::STALLING));
+        assert_eq!(state.strength, 1.0);
+    }
+
+    /// A body that turns blows takes nothing: no shove, its health whole,
+    /// and the striker recoils (strength 0.5, recoiled).
+    #[test]
+    fn a_turned_blow_deals_nothing() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                StateFlags(StateFlags::TURNS_BLOWS),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        let f = app.world().get::<Fighter>(victim).unwrap();
+        assert_eq!(f.health.yellow, Fighter::default().health.yellow);
+        assert!(shoves(&app).is_empty());
+        let state = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(state.has(swing::flags::RECOILED));
+        assert_eq!(state.strength, 0.5);
     }
 
     fn winds(app: &App) -> Vec<SecondWindFired> {
@@ -1319,11 +1555,9 @@ mod tests {
             let o = damage::resolve(
                 &damage::sword_a(),
                 &strike,
-                &PartArmour::default(),
+                Some((&PartArmour::default(), roll)),
                 17,
-                0.25,
-                0.0,
-                roll,
+                &damage::Victim::new(0.25, 0.0),
             )
             .unwrap();
             assert!((o.wound - size).abs() < 1e-4, "{o:?}");
@@ -1704,11 +1938,9 @@ mod tests {
             let o = damage::resolve(
                 &hit.weapon,
                 &hit.strike,
-                &PartArmour::default(),
+                Some((&PartArmour::default(), 0.5)),
                 hit.bone,
-                0.25,
-                0.0,
-                0.5,
+                &damage::Victim::new(0.25, 0.0),
             );
             assert!(o.is_some_and(|o| o.yellow > 0.0), "{o:?}");
         }

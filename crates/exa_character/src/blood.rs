@@ -1138,10 +1138,9 @@ mod tests {
             exa_combat::damage::WeaponRecord::of_one_part(0x11, &s, false, 90.0),
             exa_combat::damage::Strike {
                 speed: 20.0,
-                stab: false,
-                overhead: false,
                 clock: 0.8,
                 along: 70.0,
+                ..Default::default()
             },
         )
     }

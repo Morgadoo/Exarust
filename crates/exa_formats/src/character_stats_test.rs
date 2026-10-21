@@ -310,6 +310,20 @@ fn body_rule_bits() {
     assert!(!regenerates(0x170) && !regenerates(0x140) && !regenerates(0x12));
 }
 
+/// A race whose second flag word holds 0x8 (the harvester) walks on four
+/// limbs: its stab is resolved as a swing. The ogre's 0x7 does not.
+#[test]
+fn quadrupeds() {
+    let stats = |flags2: u32| {
+        let mut r = race(10, 4.0);
+        r.stats.flags2 = flags2;
+        CharacterStats::derive(&record(10, 0.0, 0.0), Some(&r), ALIVE).quadruped
+    };
+    assert!(stats(0x8));
+    assert!(!stats(0x7));
+    assert!(!CharacterStats::default().quadruped);
+}
+
 /// The voice: the record's pitch kept within 0.9…1.07 (the hulking ghoul
 /// 0.85), the volume the scale times the race's factor, the attack-voice
 /// step the race's voices less one.

@@ -526,10 +526,10 @@ mod tests {
             ),
             strike: exa_combat::damage::Strike {
                 speed: 3.0,
-                stab: false,
-                overhead: false,
                 clock: 0.5,
                 along: 17.0,
+                unarmed: true,
+                ..Default::default()
             },
         };
         for _ in 0..10 {

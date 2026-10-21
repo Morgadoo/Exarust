@@ -22,7 +22,7 @@ use exa_physics::body::{BODY_HZ, BodyTicks, Ragdoll, TickedCharacter};
 
 use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
-use crate::damage::WeaponRecord;
+use crate::damage::{Outcome, WeaponRecord};
 use crate::stance::Stance;
 use crate::{Attacking, Blade, Condition, Fighter};
 
@@ -146,6 +146,13 @@ pub mod flags {
     pub const KEPT_IDLE: u32 = 0x4_0030;
     /// The fighter lacks Remise: no chain.
     pub const NO_CHAIN: u32 = 0x8_0000;
+    /// What a wound sets on the striker's swing: cleaving and recoiled, with
+    /// the swing's clash (0x100), block (0x200) and wound (0x400) bits.
+    pub const WOUNDED: u32 = 0x724;
+    /// Held back after a wound by the edge: stalling, released, chained
+    /// past a quarter or without Remise; such a swing follows the wound
+    /// through instead of cleaving on.
+    pub const HOLDS_BACK: u32 = 0xA_0012;
     /// No release over a recoil, a landed blow or an earlier release.
     pub const NO_RELEASE: u32 = CLEAVING | RELEASED | RECOILED;
     /// No chain while released, stalling or chained, or without Remise.
@@ -980,6 +987,102 @@ fn follow_scale(gain: f32, recoil: f32, speed: f32) -> f32 {
     let shaped = f64::from(recoil) * speed_scaled;
     let scaled = (f64::from(gain) * shaped) as f32;
     if scaled < 0.0 { 0.0 } else { scaled }
+}
+
+/// A striker at least this large (character size, compared in double
+/// precision) neither recoils from a block nor bogs down in a body hit.
+pub const LARGE_STRIKER: f64 = 1.4;
+/// A body-of-the-weapon blow at least this hard cleaves through.
+const CLEAVES_FROM: f32 = 2.0;
+/// The follow-through gain of a large striker's body hit and of an edge
+/// hit held back.
+const HELD_GAIN: f32 = 0.5;
+
+/// The striker whose swing a blow met, as the damage routine reads it.
+#[derive(Clone, Copy, Debug)]
+pub struct Striker {
+    /// The attacker's weapon class word.
+    pub class_word: u32,
+    /// Its character size.
+    pub size: f32,
+    /// The swing clock at the blow.
+    pub clock: f32,
+    /// The held slot of the striker that dealt it.
+    pub slot: Slot,
+    /// The game clock, ms.
+    pub now_ms: i32,
+}
+
+impl SwingState {
+    /// The striker's swing after it wounded: the released bit cleared and
+    /// [`flags::WOUNDED`] set, the striker's window shut; then a striker
+    /// under [`LARGE_STRIKER`] follows a body-of-the-weapon blow through
+    /// with gain 1 − I/2 (cleaving on from an impact of 2), and an edge
+    /// blow at 0.5 when it is held back ([`flags::HOLDS_BACK`]), else
+    /// cleaves on; a larger one follows a body hit through at 0.5 and
+    /// cleaves on from the edge ([`follow_through`]).
+    pub fn after_wound(&mut self, blow: &Outcome, recoil: f32, striker: &Striker) {
+        self.flags = (self.flags & !flags::RELEASED) | flags::WOUNDED;
+        self.open[striker.slot.index()] = false;
+        let gain = if f64::from(striker.size) < LARGE_STRIKER {
+            if blow.central {
+                (CLEAVES_FROM > blow.hit_impact).then_some(1.0 - blow.hit_impact * 0.5)
+            } else {
+                (self.flags & flags::HOLDS_BACK != 0).then_some(HELD_GAIN)
+            }
+        } else {
+            blow.central.then_some(HELD_GAIN)
+        };
+        let Some(gain) = gain else {
+            self.flags |= flags::CLEAVING;
+            return;
+        };
+        if let Some(f) = follow_through(&FollowStrike {
+            class_word: striker.class_word,
+            flags: self.flags,
+            clock: striker.clock,
+            counter: false,
+            gain,
+            recoil,
+            speed: blow.speed,
+            zone: blow.zone,
+            edge: blow.edge,
+            now_ms: striker.now_ms,
+        }) {
+            self.strength = f.strength;
+            self.stall = f.stall;
+            self.flags = f.flags;
+            self.end_ms = f.end_ms.max(0) as u64;
+        }
+    }
+
+    /// The striker's swing recoiling from a blow at `speed` (cm a tick)
+    /// with a weapon of recoil W17 `weapon_recoil`: its window shut, then
+    /// [`recoil`] with the drive speed·W17. Returns the recoil's rest (its
+    /// stance blend and arm stiffness) when it takes one.
+    pub fn recoil_from(
+        &mut self,
+        speed: f32,
+        weapon_recoil: f32,
+        striker: &Striker,
+    ) -> Option<RecoilRest> {
+        self.open[striker.slot.index()] = false;
+        let r = recoil(&RecoilStrike {
+            class_word: striker.class_word,
+            flags: self.flags,
+            clock: striker.clock,
+            counter: false,
+            drive: speed * weapon_recoil,
+            now_ms: striker.now_ms,
+        });
+        self.strength = r.strength;
+        self.stall = r.stall;
+        self.flags = r.flags;
+        if let Some(rest) = r.rest {
+            self.end_ms = rest.end_ms.max(0) as u64;
+        }
+        r.rest
+    }
 }
 
 /// Gives each wielder the swing of its primary striker (once a frame; the

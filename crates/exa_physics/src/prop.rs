@@ -239,6 +239,7 @@ mod tests {
             velocity: Vec3::X,
             daze: 0.0,
             step: None,
+            sag: None,
         });
         for _ in 0..30 {
             app.update();

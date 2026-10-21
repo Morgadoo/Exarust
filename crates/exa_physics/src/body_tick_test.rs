@@ -58,6 +58,7 @@ fn run_at(fps: f32, ticks: usize) -> Vec<Vec<[Vec3; 4]>> {
         velocity: Vec3::new(1.0, 0.0, -1.5),
         daze: 0.3,
         step: None,
+        sag: None,
     });
     while app.world().resource::<History>().0.len() < ticks {
         app.update();
@@ -114,6 +115,19 @@ fn the_world_ticks_each_body_as_it_ticks_alone() {
     }
 }
 
+/// A blow's sag is written on a living body as it stands (0.7 here, its
+/// fade comes with the next step); a limp body has none to sag.
+#[test]
+fn a_blow_sets_the_sag() {
+    let (setup, _) = humanoid(Vec3::ZERO);
+    let mut living = Ragdoll::new(&setup).with_drive();
+    living.sag_from_blow(0.7);
+    assert_eq!(living.drive.as_ref().unwrap().sag, 0.7);
+    let mut limp = Ragdoll::new(&setup);
+    limp.sag_from_blow(0.7);
+    assert!(limp.drive.is_none());
+}
+
 /// A blow sent in a frame that runs no tick waits in the queue and is
 /// dealt by the next tick.
 #[test]
@@ -146,6 +160,7 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
         velocity: Vec3::X * 2.0,
         daze: 0.5,
         step: None,
+        sag: None,
     });
     app.update();
     assert_eq!(ticks(&app), before, "the frame ran a tick");

@@ -11,7 +11,7 @@
 //! centimetres, some of them in double precision as it computes them.
 
 use crate::characters::{CharacterRecord, FULL_POOL, ItemRef, Pools};
-use crate::races::{Gait, Race, RaceBody, RaceStats, SCALE_CAP};
+use crate::races::{Gait, QUADRUPED, Race, RaceBody, RaceStats, SCALE_CAP};
 use crate::weapon_record::{self, Holder};
 
 /// Per unit of the record's height (−1…1), the body scale and size shrink
@@ -196,6 +196,9 @@ pub struct CharacterStats {
     /// the spawn's armour pass sums after the init
     /// ([`CharacterStats::with_encumbrance`]); 0 until then.
     pub encumbrance: f32,
+    /// Its race walks on four limbs (the second flag word's
+    /// [`crate::races::QUADRUPED`]): its stab is resolved as a swing.
+    pub quadruped: bool,
 }
 
 impl Default for CharacterStats {
@@ -283,6 +286,7 @@ impl CharacterStats {
             rules: rules(byte, f, flags, stats.flags2, spawn.story, &record.worn),
             deflection: record.deflection(),
             encumbrance: 0.0,
+            quadruped: stats.flags2 & QUADRUPED != 0,
         }
     }
 

@@ -1506,7 +1506,9 @@ not landed is the identity and says which:
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
 w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
 its most), else (1 − S)·s, when w is over 1.19e-7 (S support, s blow sag,
-which fades 0.01 a tick and is 0 down; nothing sets it yet). The held pose
+which fades 0.01 a tick and is 0 down; a blow on a limb sets it to
+min(2·I, 1), I the blow's impact at the hit, [OTHER.md](OTHER.md),
+Damage). The held pose
 is the pelvis's and legs' current targets and every other bone's physical
 turn, taken each tick the body is dazed, has a sag, or its support is
 under 1. A dazed body standing on its feet holds its physical pose in
@@ -1686,10 +1688,10 @@ character has one and its look timer runs (Exarust gives the player no
 look target), and the head step's other relative frame for a clip from
 0x2C on.
 
-Not reproduced yet: the blow sag's writer, the swing's
-weapon-in-hand wait (weapons are bodies with M24), recoil and the
-follow-through (C21, M26); the attack arm stiffness; the twist in the
-captures and the run lean's exertion; the femur posture
+Not reproduced yet: the swing's weapon-in-hand wait (weapons are bodies
+with M24), the recoil's stance blend and arm stiffness (C21, M26); the
+attack arm stiffness; the twist in the captures and the run lean's
+exertion; the femur posture
 and the foot pitch (C13); the foot contacts' flag in the capture; the
 weak branch's rate kept from last tick (Exarust reads the base); the
 creature classes' own clock bases.

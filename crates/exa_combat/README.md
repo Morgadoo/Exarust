@@ -57,6 +57,33 @@ the zone times the scale plus the zone. Strength caps at 1. The stall is
 the widened one minus strength times 0.05. The end truncates the scale
 times 400.
 
+## Damage
+
+`damage::resolve` is the original's damage routine in its order and
+precision (constants multiplied in double where the original does): the
+speed capped at 30 and softened under 10 (then the overhead's 1.5), the
+swing's and the stab's impact, the hit point along the weapon, the zone
+(a stab's tip and lunge, a hanging striker's and the fists' shares in
+full, the haft, past the striking part, each kind's tip zone, the haft's
+crush bonus by its material), unarmed 0.6·√(3I), one coverage roll over
+the outer then the inner layer, the channels through padding and
+resistance raised by the engine's fast logarithm and exponential
+(`fast_math`), the shove, the readiness, the daze with its stall factor
+(`Victim`: Security, a potion, a steadfast body) and the bars. It
+returns an `Outcome` with what the rest of the hit reads: the impact at
+the hit, the blow sag (min(2·I, 1)), the zone and whether the edge or the
+weapon's body struck, the bite and its smoothing, the hit sound's volume,
+pitch and muffling and each layer's ringing (`hit_sounds`). A blow on a
+shield or a weapon (`Guard`) meets no layer and draws no roll. Rules and
+numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
+
+The hit reaction then runs the striker's side (`SwingState::after_wound`):
+the wound bits on its swing, its striker's window shut, and a cleave or a
+follow-through by its size, the blow's impact and where on the weapon it
+struck; a guard (for a striker under 1.4) or a body that turns blows
+(`StateFlags::TURNS_BLOWS`) recoils it (`SwingState::recoil_from`). The
+blow sag rides the `Shove` to the struck body.
+
 ## Grips
 
 `grip`: the original's grip table (`GRIPS`, six entries by hand class:

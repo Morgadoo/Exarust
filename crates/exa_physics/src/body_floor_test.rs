@@ -241,6 +241,7 @@ fn a_shoved_body_does_not_sink_through_a_trimesh_floor() {
                     velocity,
                     daze: 0.5,
                     step: None,
+                    sag: None,
                 });
             }
         }

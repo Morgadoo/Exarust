@@ -898,3 +898,90 @@ fn a_striker_recoils_and_follows_through() {
         .is_none()
     );
 }
+
+fn striker(size: f32) -> Striker {
+    Striker {
+        class_word: 0x10,
+        size,
+        clock: 0.5,
+        slot: Slot::First,
+        now_ms: 1000,
+    }
+}
+
+fn blow(central: bool, hit_impact: f32) -> Outcome {
+    Outcome {
+        central,
+        edge: !central,
+        hit_impact,
+        speed: 20.0,
+        zone: 0.8,
+        ..Outcome::default()
+    }
+}
+
+fn swinging() -> SwingState {
+    SwingState {
+        flags: flags::WINDOW_OPENED | flags::RELEASED,
+        open: [true, false],
+        ..SwingState::default()
+    }
+}
+
+/// A wound by the body of the weapon at impact 1 bogs the swing down with
+/// gain 1 − 1/2: the scale 0.5·0.5 (W17)·20·0.15 = 0.75, strength
+/// √0.8·0.75, stall (1 − P)·0.05, the stance 300 ms on; the released bit
+/// cleared, the wound bits and the window shut. At impact 2 it cleaves on.
+#[test]
+fn a_wound_bogs_down_or_cleaves() {
+    let mut s = swinging();
+    s.after_wound(&blow(true, 1.0), 0.5, &striker(1.0));
+    assert!(close(s.strength, 0.8f32.sqrt() * 0.75), "{s:?}");
+    assert!(close(s.stall, (1.0 - s.strength) * 0.05));
+    assert_eq!(s.end_ms, 1300);
+    assert_eq!(s.flags, flags::WINDOW_OPENED | flags::WOUNDED | 0x6);
+    assert_eq!(s.open, [false, false]);
+    let mut s = swinging();
+    s.after_wound(&blow(true, 2.0), 0.5, &striker(1.0));
+    assert_eq!((s.strength, s.stall), (1.0, 0.0));
+    assert_eq!(s.flags, flags::WINDOW_OPENED | flags::WOUNDED);
+    assert!(!s.has(flags::STALLING));
+}
+
+/// The edge cleaves on unless the swing is held back (here stalling):
+/// then gain 0.5, strength (1 − q)·k′ + q with q the tip zone 0.8 and
+/// k′ = 0.5·0.5·3 = 0.75. A striker of size 1.5 cleaves on from the edge
+/// and bogs down at 0.5 from the body, whatever the impact.
+#[test]
+fn the_edge_and_large_strikers() {
+    let mut s = swinging();
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0));
+    assert!(!s.has(flags::STALLING) && s.strength == 1.0);
+    let mut s = SwingState {
+        flags: flags::STALLING,
+        ..swinging()
+    };
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.0));
+    assert!(close(s.strength, 0.2 * 0.75 + 0.8), "{s:?}");
+    assert_eq!(s.end_ms, 1300);
+    let mut s = swinging();
+    s.after_wound(&blow(false, 0.5), 0.5, &striker(1.5));
+    assert!(!s.has(flags::STALLING));
+    let mut s = swinging();
+    s.after_wound(&blow(true, 5.0), 0.5, &striker(1.5));
+    assert!(close(s.strength, 0.8f32.sqrt() * 0.75), "{s:?}");
+}
+
+/// A recoil from a blow at 20 cm a tick with W17 0.5: drive 10, the stance
+/// 10·0.1·400 + 200 ms on; strength and stall 0.5, stalling, cleaving and
+/// recoiled, the released bit cleared, the window shut.
+#[test]
+fn a_turned_blow_recoils_the_striker() {
+    let mut s = swinging();
+    let rest = s.recoil_from(20.0, 0.5, &striker(1.0)).unwrap();
+    assert_eq!(rest.blend, 40);
+    assert_eq!(s.end_ms, 1600);
+    assert_eq!((s.strength, s.stall), (0.5, 0.5));
+    assert_eq!(s.flags, flags::WINDOW_OPENED | 0x26);
+    assert_eq!(s.open, [false, false]);
+}

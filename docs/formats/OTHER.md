@@ -1312,6 +1312,18 @@ flame nodes are not rigid), "Flail A" 84.4 cm and "Ogre Flail" 172.0 cm
 | W25, W26 swing volume and pitch | up to 124 cm 1.5·√((250 − L)·0.004) and (250 − L)/180, else 1 and 0.7; W26 × (1 + d/2), d = W9 − W8 halved when negative; unarmed W25 × 0.7·√scale, W26 × 0.6/scale |
 | W23 reach | armed: 60·s + W22 |
 
+Precision (REA, the pass's listing): the half-sword's 0.7·b, h (its
+0.4·W8 + 0.1, then (1 − W9)·0.6 added), W20 (0.7 − 0.3·W17 and the
+two-hander's factor), W15 (0.15 and 1.05, the fists' 1.2) and W27
+(0.4·W18 + (0.3·W8 + 0.4)) multiply in double and store a float; the
+unarmed W25 is √scale·(0.7·W25) and W26 0.6·W26/scale, both in double;
+over 124 cm (not a non-number) the long weapon's 1 and 0.7, and over a
+balance of 1 (not a non-number) h drops the balance term. W19 rounds to
+the nearest, ties to even. A two-hander of w 0.37, b 0.63, 110 cm (sweet
+spot 80) held at g 0.3, s 1.1 has W17 0.62, W18 0.3595, W19 7, W20
+0.29503599, W15 1.1445, W27 0.6548, W25 1.1224972, W26 0.87888891 and W23
+146 cm (bit-exact in `exa_formats::weapon_record`'s tests).
+
 Worked example, "- Sword A" (90 cm): W15 1.125, W17 0.42, W18 0.2, W19 7,
 W20 0.574, W22 57.6, W23 117.6, W25 1.2, W26 1.022, W27 0.63. With g 0.5:
 W17 0.67, W18 0.275, W19 8.
@@ -1515,45 +1527,139 @@ readers take it when they are ported.
 
 Implemented in `exa_combat::damage`.
 
-**Inputs**
-- Speed v of the struck point (cm/tick): capped at 30; below 10 it is
-  softened to 10(2 − v/10)(v/10)²; overhead swings ×1.5. u = 0.05v.
-- Swing impact I = (impact + 0.3)·1.1·u^(1 − impact/2), times the zone
-  factor along the weapon:
-  - past its tip there is no hit;
-  - below the striking part (the haft) the edge share fades;
-  - bladed weapons: impact peaks near the middle and falls towards the
-    tip, where the draw-cut share grows.
-- Stabs: energy T from the tip (full within 7 cm), weight and the lunge.
+The rules below are the original's damage routine, re-read in its listing
+(REA, Ghidra) with each step's precision: "double" marks a constant the
+routine multiplies in double precision before it stores a float. A Python
+model written from the listing gives the same numbers as `resolve` to a
+millionth on every case its tests pin (a cut on a bare and a plated chest,
+a slow overhead, a stab, a mace's haft and head, a punch, claws, the
+victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
+`0x33ffffd7`).
+
+**Speed and impact**
+- Speed v of the struck point (cm/tick): over 30 it is 30; under 10 it is
+  softened to 10·(2 − s)·s² with s = 0.1v (double); an overhead then
+  ×1.5. At ε or less the blow has u = 0, v = 0 and impact ε; else
+  u = 0.05v (double).
+- Swing impact I = (W10 + 0.3)·1.1·exp(ln u·(1 − W10/2)), in double; stab
+  impact (W10 + 0.5 + W6)·u·0.3 (the 0.3 double). Both × (Force Strikes
+  s/2 + 1) × (1 − Force Shell); neither power exists in Exarust, so ×1.
+- The hit point p = along/W21: under 0 it is 0, at or past 1 there is no
+  hit (a non-number goes on).
+
+**Zones** (what struck, in the routine's order)
+- A stab (the stab motion, unless the attacker's race walks on four
+  limbs, which resolves it as a swing): the tip factor 1 within 7 cm of
+  the tip, 1 − (t − 7)/7 to 14 cm, 0 beyond; the lunge
+  a = 1 − 2.8·(1.4 − 2·clock)² (double), at least 0, × the powers; the
+  stab energy T = tip·((0.3·W6 + 0.25)·(I + a)) in double, ×1.5 when the
+  weapon is two-handed or a polearm; the impact at the hit
+  (0.25·W10 + 0.75)·T. No slash or crush. A body hit, zone p, bite
+  smoothing 0.
+- A striker hanging from another striker of its weapon (a flail's link):
+  the record's slash, crush and pierce in full, the impact as it is, a
+  body hit, zone 0.2, smoothing 0.5. Exarust's weapons are one body.
+- Unarmed (the attacker's weapon class has no hands bits): the shares in
+  full, the impact as it is, not a body hit, zone 0, smoothing 0.5.
+- Armed: past the striking part's end (p > W5) the on-target share
+  z = max((20 − d)·0.05, 0) (the 0.05 double) with d = (p − W5)·W21 cm,
+  the tip zone q = (p − W5)/(1 − W5), ζ = 1 − 0.75q², the draw share
+  q·(1 − 10·(0.8 − clock)²) (double) when positive, an edge hit. Before
+  its start (p < W4) the haft: z by d = (W4 − p)·W21, ζ = 1 − (W4 − p)/W4,
+  a body hit. Else z = ζ = 1, a body hit. Then by kind: bladed, past 0.6
+  the tip zone q = (p − 0.6)/(1 − 0.6) (ζ 1 − 0.75q², draw q, an edge
+  hit), else r = (0.6 − p)/0.6, ζ = 1 − (2 − r)·r²; a stick likewise at
+  0.8 ((p − 0.8)·5 and (0.8 − p)·1.25 in double) and never a haft; any
+  other kind whose type code is 2 likewise at its sweet spot
+  W4 + 0.6·(W5 − W4) (double), ζ = 1 − (τ − p)/τ before it. Slash, crush
+  and pierce are the record's × z; crush gains (1 − z)·k (double) with
+  k = 0.15, or for a haft hit 0.1, 0.2 for a metal haft (flags 0x20000),
+  0.15 for the third kind (0x30000), whatever z. The haft's sound plays
+  only under z = 0.5. The impact at the hit is I·ζ.
+- Unarmed, the impact at the hit becomes 0.6·√(3·I) (the 0.6 double)
+  above ε.
+- The hit sound: volume (I + T)·0.6 + 0.025 (double), pitch 0.5·I + 0.5;
+  the weapon's sound at volume × (½ unarmed) × the attacker's body scale ×
+  (0.6·Rc + 0.7) (double) and pitch × the same, its haft's class sound
+  instead for a haft hit.
 
 **Armour**
-- One roll r per blow. A layer counts fully when r < coverage, partly
-  (1.75(c − ½)) above half coverage, otherwise not.
-- Padding A sums. Resistances combine multiplicatively; pierce resistance
-  is weighted by (½ + r/2).
+- A blow on a part draws one roll r from the generator (a blow on a shield
+  or a weapon draws none and meets no layer). The outer layer, then the
+  inner: weight 1 when its coverage is above r, 1.75·(c − ½) when above ½,
+  else the layer is skipped.
+- Padding A += pad·w; Rs += (1 − Rs)·(slash·w); Rc likewise; Rp +=
+  (½r + ½)·((1 − Rp)·(pierce·w)).
+- Layer sounds: the outer rings at its weight; the inner at none when its
+  class rings as the outer's, else at (1 − 0.8·outer) (double) × its
+  weight; each at 1.5·volume × weight × its class's loudness (flesh 0.5,
+  the rest 1), pitch 0.4·pitch + 0.7 (double), above ε.
+- A blow on a part sets the victim's blow sag to min(2·I, 1) (it fades
+  0.01 a tick, [RSQ.md](RSQ.md)).
 
 **Through the armour**
-- Impact: J = max(I − 0.2A, 0)/(A² + A + 1).
-- Crush: C·1.58·J^(2 − C), then reduced by crush resistance.
-- Slash: a mix of chop and draw by the draw share, each reduced by slash
-  resistance.
-- Pierce: P·1.58·J^(1 + P/2), less 0.75 of pierce resistance.
-- Penetration P = 0.5·max(J − 0.8, 0) + slash + crush + pierce.
+- τ = 1.25·I. J = I − 0.2A (double); if positive, J/((A² + 1) + A), else 0.
+  A stab's T /= ((A/2)² + 1) + A/2 when positive. The bite β = 0.1·I
+  (double).
+- Stab: pierce = W14·1.58·√T (double) under T = 2 (0 when J ≤ ε), else
+  W14·1.58·√2; β += max(2·pierce − Rp, 0).
+- Swing, crush C > 0: C·1.58·J^(2 − C) with the engine's fast power (0
+  when J ≤ ε); τ += 0.75C; β += max(0.5C − 0.25Rc, 0);
+  C = (1 − 0.75Rc)·(C − 0.1Rc) (double), at least 0.
+- Swing, slash S > 0: k = S/(10·S·Rs + 1); chop = ((0.8 − k)·I² +
+  2.5·I/(I + 1 − k))·k − 0.2Rs (double; 0 when I ≤ ε); β += max((1 −
+  draw)·chop, 0); drawn = ((1 − k)·u + √u)·k − 0.3Rs (0 when u ≤ ε);
+  β += max(½·drawn·draw, 0); S = draw·drawn + (1 − draw)·chop, at least 0;
+  τ += 0.75S.
+- Swing, pierce P > 0: P·1.58·J^(1 + P/2) by the fast power (J = 0 gives
+  0); β += max(P − 0.5Rp, 0). Then β ×= ½.
+- Both: J = J/((2J − 0.2)·A + 1) (double), at least 0; τ += 0.75P;
+  P −= 0.75Rp, at least 0.
+- The fast power x^y = exp(y·ln x) with the engine's fast logarithm and
+  exponential (`exa_combat::fast_math`): ln reads the exponent bits and a
+  mantissa polynomial (ln 0 = −∞), exp rebuilds float bits (exp −∞ = 0).
 
 **Outcome**
+- Penetration P = 0.5·max(J − 0.8, 0) + ((S + P) + C) (J − 0.8 double).
+- The shove takes J as it is: over ½ the knockback step
+  ([PLAYER.md](../PLAYER.md)).
+- Readiness g: P, J and T × (1 − 0.5g).
 - Part multipliers (damage/stun): head 1.6/1.4, thorax 1.2/1.2, lower legs
   0.6, feet 0.4, forearms 0.5/0.75, hands 0.3/0.6, others 1.
-- Red = 0.75·P/(P + 1)·m. Yellow = 0.75·(T/2 + (2(P − P/(P + 1)) + J)·m).
+- Daze: D = 0.75P + 1.25J; daze = √D · (stun·0.5·0.25/max health) above ε,
+  else 0. The daze's stall factor (which a struck attacker's swing takes)
+  is 0.25/max health, × (D/τ′)² with the Security perk (τ′ = (1 −
+  0.5g)·τ, 1 when τ′ ≤ ε), halved under a potion. A steadfast body (rule
+  bit 0x40: the big races and golems) is dazed a quarter as much and its
+  factor is 0.
+- Lasting = P/(1 + P); the wound R = lasting × the part's damage; red =
+  0.75·R; yellow = 0.75·(T/2 + ((P − lasting)·2 + J) × the part's damage).
 - Maximum health is 0.25 × the race's factor (`races.rdb` `0xE4`: human 1,
   ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
   the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
 - Applying a blow: see Applying damage below.
-- Daze = √(0.75P + 1.25J)·stun·0.5·0.25/max health.
-- Readiness: before the outcome, P, J and T are scaled by 1 − 0.5g, g the
-  victim's combat readiness (0..1; it rises 0.004 a tick while the victim
-  stands in its combat idle, [PLAYER.md](../PLAYER.md), The combat stance).
-  The knockback step takes J before it, so a ready fighter is shoved as
-  far but wounded half as much.
+- A blow on flesh draws one more number from the generator (the struck
+  part's sound cooldown, 300 − 0..150 ms; not kept in Exarust).
+- A body whose state flag 0x400 is set turns the blow: nothing is dealt
+  and the striker recoils (what sets the flag was not traced).
+
+**The striker after a wound** (`SwingState::after_wound`)
+- Its swing loses the released bit and takes 0x724 (cleaving, recoiled,
+  the clash, block and wound bits); its striker's window shuts.
+- A striker of character size under 1.4 (double): a body hit with an
+  impact at the hit under 2 follows through with gain 1 − I/2, a harder
+  one cleaves on; an edge hit follows through with gain 0.5 when its swing
+  is stalling, released, chained past a quarter or without Remise
+  (0xA0012), else cleaves on. A larger striker follows a body hit through
+  at 0.5 and cleaves on from the edge. The follow-through: strength
+  √zone·k′ (body; 0 at a zone ≤ ε) or (1 − q)·k′ + q (edge), k′ =
+  gain·W17·v·0.15, at most 1; the stall (1 − P)·0.05; the stance
+  400·k′ ms on.
+- A parried or shielded blow, or one a body turns, makes it recoil
+  (strength and stall ½, the stance 200 + 40·v·W17 ms on); a guard does so
+  only to a striker under 1.4.
+- An armed bite above 0.1 would stick the weapon (`exa_combat::bite`);
+  weapons are not bodies yet, so nothing sticks.
 
 **Applying damage** (REA on the damage call, its two callers and the
 low-health check, constants read from the executable; `Health::take` in
@@ -1696,8 +1802,10 @@ calls)
   its tip ([RENDERING.md](../RENDERING.md), Blood on weapons).
 
 A parry stops the blow. A shield that is not parrying lets through yellow
-0.05·(1 − stamina)·(0.4 + 0.4·impact)·(1 − block/2) and no lasting wound
-(`damage::guard_outcome`). An armed bite above 0.1 sticks the weapon
+0.05·(1 − stamina)·(0.4 + 0.4·I)·(1 − block/2), I the impact at the hit
+before any armour (a guarded blow meets no layer and draws no roll), and
+no lasting wound (`damage::guard_outcome`); either makes the striker
+recoil when it is smaller than 1.4. An armed bite above 0.1 sticks the weapon
 (`bite::stick`): the depth is capped at 1, flags are 0x11000 or 0x211000
 around the widened 0.4, strength is 12 times the depth, smoothing adds
 0.5, and the count is 3 times the truncated 83·unit·depth. The weapon

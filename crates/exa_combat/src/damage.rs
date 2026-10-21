@@ -6,6 +6,7 @@
 //!
 //! Units follow the original: lengths in cm, speeds in cm per body tick.
 
+use crate::fast_math::fast_pow;
 use exa_formats::objdb::Armour;
 use exa_formats::races::Natural;
 #[cfg(test)]
@@ -149,16 +150,60 @@ pub fn part_multipliers(bone: usize) -> (f32, f32) {
 }
 
 /// How a blow was dealt.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Strike {
-    /// Speed of the tracked weapon point, cm per body tick.
+    /// Speed of the tracked weapon point, cm per body tick (for a stab,
+    /// twice its velocity along the weapon).
     pub speed: f32,
+    /// The stab's rules: the stab motion, unless the attacker's race stabs
+    /// with both hands (the quadruped's stab is resolved as a swing).
     pub stab: bool,
     pub overhead: bool,
     /// Progress of the attack, 0..1.
     pub clock: f32,
     /// Where the weapon met the part, cm from the grip along the weapon.
     pub along: f32,
+    /// The attacker holds no weapon (its weapon class has no hands bits):
+    /// it strikes with fists or claws.
+    pub unarmed: bool,
+    /// The striking body hangs from another striker of the same weapon (a
+    /// flail's link); Exarust's weapons are one body, so never.
+    pub hanging: bool,
+    /// The attacker's Force Strikes strength (no powers in Exarust: 0).
+    pub strikes: f32,
+}
+
+/// What the struck character brings to a blow.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Victim {
+    pub max_health: f32,
+    /// Readiness g, 0..=1 ([`crate::Fighter::readiness`]): the wound's
+    /// penetration, impact and stab energy are taken 1 − 0.5·g.
+    pub readiness: f32,
+    /// Force Shell: 0.5 while the power holds (no powers in Exarust: 0).
+    pub shell: f32,
+    /// A blow dazes it a quarter as much and never stalls its swing (rule
+    /// bit `BodyRules::STEADFAST`).
+    pub steadfast: bool,
+    /// The Security perk: the daze's stall factor scales with the blow's
+    /// wound against its total.
+    pub security: bool,
+    /// A potion halves the daze's stall factor.
+    pub potion: bool,
+}
+
+impl Victim {
+    /// A plain victim of `max_health` at readiness `readiness`.
+    pub fn new(max_health: f32, readiness: f32) -> Self {
+        Self {
+            max_health,
+            readiness,
+            shell: 0.0,
+            steadfast: false,
+            security: false,
+            potion: false,
+        }
+    }
 }
 
 /// How the victim meets a blow. Open takes the flesh wound. A parry stops
@@ -177,7 +222,8 @@ pub enum Guard {
 
 /// The blow a guard lets through. A parry deals none. A shield that is not
 /// itself parrying deals yellow 0.05·Q and daze (0.3 − 0.2·stamina)·Q, with
-/// Q = (1 − stamina)·(0.4 + 0.4·impact)·leak, and no lasting wound.
+/// Q = (1 − stamina)·(0.4 + 0.4·I) from the blow's impact I at the hit,
+/// times `leak`, and no lasting wound.
 pub fn guard_outcome(blow: Outcome, guard: Guard) -> Outcome {
     match guard {
         Guard::Open => blow,
@@ -185,11 +231,13 @@ pub fn guard_outcome(blow: Outcome, guard: Guard) -> Outcome {
         Guard::Shield { leak, stamina } => {
             let leak = leak.clamp(0.0, 1.0);
             let stamina = stamina.clamp(0.0, 1.0);
-            let q = (1.0 - stamina) * (0.4 + 0.4 * blow.impact) * leak;
+            let q = (1.0 - stamina) * (0.4 + 0.4 * blow.hit_impact) * leak;
             Outcome {
                 yellow: 0.05 * q,
                 daze: (0.3 - 0.2 * stamina).max(0.0) * q,
                 material: blow.material,
+                hit_impact: blow.hit_impact,
+                speed: blow.speed,
                 ..Outcome::default()
             }
         }
@@ -218,16 +266,20 @@ pub fn notices_damage(lasting: f32) -> bool {
 /// What a blow does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Outcome {
-    /// Damage to the red (lasting) and yellow (current) bars, before their
-    /// weights.
+    /// Damage to the red (lasting) and yellow (current) bars, their 0.75
+    /// applied: what the damage call takes.
     pub red: f32,
     /// The lasting damage on the struck part, its multiplier applied, before
     /// the red bar's 0.75: the size R of the wound the blow leaves, which
     /// bleeds above 0.05 ([`crate::wounds`]).
     pub wound: f32,
     pub yellow: f32,
-    /// Share of the victim's wits taken.
+    /// Share of the victim's wits taken (before the daze's cap of 0.9).
     pub daze: f32,
+    /// The daze's second factor, which a struck attacker's stall takes
+    /// (0.25 over the most health; Security, a potion and a steadfast body
+    /// change it).
+    pub daze_factor: f32,
     /// Impact left after the armour: what shoves the victim, before its
     /// readiness lessens the wound.
     pub impact: f32,
@@ -235,230 +287,566 @@ pub struct Outcome {
     pub penetration: f32,
     /// How far the weapon bites in (it sticks above 0.1).
     pub bite: f32,
-    /// The armour layer's hit sound class.
+    /// The armour layer's hit sound class (the first layer met).
     pub material: u8,
+    /// The impact at the hit, before the armour: the blow sag (twice it, at
+    /// most 1), the shield's leak and the attacker's follow-through read it.
+    pub hit_impact: f32,
+    /// The strike's speed as the routine took it (capped at 30, softened
+    /// under 10, ×1.5 overhead), cm a tick: a recoil's drive and a
+    /// follow-through scale with it.
+    pub speed: f32,
+    /// The blow's total τ: 1.25·I plus three quarters of each channel.
+    pub total: f32,
+    /// Where on the weapon it struck, for the follow-through: the body zone
+    /// (or, `edge`, how far into the tip zone).
+    pub zone: f32,
+    /// It struck with the edge's tip zone.
+    pub edge: bool,
+    /// It struck with the body of the weapon (its haft, its mid-blade, a
+    /// stab's tip or a flail's link): a hard blow cleaves through.
+    pub central: bool,
+    /// The haft took it: the haft's material sound plays.
+    pub haft: bool,
+    /// The bite link's zone smoothing: 0.1 a swing, 0 a stab, 0.5 unarmed.
+    pub smoothing: f32,
+    /// The blow sag it sets on the victim's body, min(2·I, 1); none when it
+    /// met a shield or a weapon.
+    pub sag: Option<f32>,
+    /// The hit sound: (I + T)·0.6 + 0.025 and 0.5·I + 0.5, before the
+    /// armour's muffling.
+    pub volume: f32,
+    pub pitch: f32,
+    /// The weapon sound's share: 1 armed, 0.5 unarmed.
+    pub sound_share: f32,
+    /// The weapon sound's muffling by the crush resistance met:
+    /// 0.6·Rc + 0.7.
+    pub muffle: f32,
+    /// Each layer's (inner, outer) hit sound class and loudness: the outer
+    /// at its weight, the inner at none when it rings as the outer, else
+    /// (1 − 0.8·outer)·its weight.
+    pub layer_sounds: [(u8, f32); 2],
 }
 
-/// Resolves a blow of `weapon` on body part `bone` with its `armour`;
-/// `roll` is a uniform random number in 0..1 for the armour's coverage.
-/// `max_health` and `readiness` (0..=1, [`crate::Fighter::readiness`]) are
-/// the victim's: readiness g scales the wound's penetration, impact and
-/// stab energy by 1 − 0.5·g, after the shove's impact is taken. Returns
-/// `None` when the contact is past the weapon's tip.
-pub fn resolve(
-    weapon: &WeaponRecord,
-    strike: &Strike,
-    armour: &PartArmour,
-    bone: usize,
-    max_health: f32,
-    readiness: f32,
-    roll: f32,
-) -> Option<Outcome> {
-    let length = weapon.length.max(1.0);
-    let p = (strike.along / length).max(0.0);
-    if p >= 1.0 {
-        return None;
-    }
-    // Speed: capped, softened when slow.
-    let mut v = strike.speed.min(30.0);
-    if v < 10.0 {
-        let s = v / 10.0;
-        v = 10.0 * (2.0 - s) * s * s;
-    }
-    if strike.overhead {
-        v *= 1.5;
-    }
-    let u = 0.05 * v;
-    let w = weapon;
-    let swing_impact = (w.impact + 0.3) * 1.1 * u.powf(1.0 - 0.5 * w.impact);
+/// Under this a float counts as nothing (the damage model's epsilon, about
+/// 1.19e-7).
+const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+/// The speed cap and the speed under which a blow is softened, cm a tick.
+const SPEED_CAP: f32 = 30.0;
+const SOFT_BELOW: f32 = 10.0;
+/// The share of the bladed weapon's length after which its tip zone runs.
+const BLADE_TIP: f32 = 0.6;
+/// The stab's full tip range and its falloff end, cm from the tip.
+const TIP_FULL: f32 = 7.0;
+const TIP_NONE: f32 = 14.0;
+/// 1/7 as the routine stores it.
+const PER_TIP: f32 = f32::from_bits(0x3e12_4925);
+/// Material sound loudness by layer class (flesh, cloth, leather, mail,
+/// plate, Herath hide, golem).
+const MATERIAL_LOUDNESS: [f32; 7] = [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
-    let (mut slash, mut crush, mut pierce) = (0.0, 0.0, 0.0);
-    let mut draw = 0.0;
-    let (impact, mut stab_energy) = if strike.stab {
-        let tip = ((14.0 - (length - strike.along)) / 7.0).clamp(0.0, 1.0);
-        let lunge = (1.0 - 2.8 * (1.4 - 2.0 * strike.clock).powi(2)).max(0.0);
-        let stab_impact = 0.3 * u * (w.impact + 0.5 + w.weight);
-        let mut t = tip * (0.3 * w.weight + 0.25) * (stab_impact + lunge);
-        if w.flags & flags::TWO_HANDS != 0 {
-            t *= 1.5;
-        }
-        ((0.25 * w.impact + 0.75) * t, t)
-    } else {
-        let (z, zeta, haft) = zones(w, p, strike.clock, &mut draw);
-        slash = w.slash * z;
-        crush = w.crush * z;
-        pierce = w.pierce * z;
-        let haft_bonus = match w.flags >> flags::HAFT_SHIFT & 3 {
-            2 => 0.2,
-            3 => 0.15,
-            _ => 0.1,
-        };
-        crush += (1.0 - z) * if haft && z < 0.5 { haft_bonus } else { 0.15 };
-        let mut i = swing_impact * zeta;
-        if !w.armed() {
-            i = 0.6 * (3.0 * i).sqrt();
-        }
-        (i, 0.0)
-    };
-
-    // Armour: one roll decides how much of each layer the blow meets.
-    let (mut pad, mut rs, mut rc, mut rp) = (0.0, 0.0, 0.0, 0.0);
-    let mut material = 0;
-    for layer in armour.outer.iter().chain(std::iter::once(&armour.inner)) {
-        let weight = if roll < layer.coverage {
-            1.0
-        } else if layer.coverage > 0.5 {
-            1.75 * (layer.coverage - 0.5)
-        } else {
-            continue;
-        };
-        if material == 0 {
-            material = layer.material;
-        }
-        pad += weight * layer.padding;
-        rs += (1.0 - rs) * weight * layer.slash;
-        rc += (1.0 - rc) * weight * layer.crush;
-        rp += (1.0 - rp) * weight * layer.pierce * (0.5 + 0.5 * roll);
-    }
-
-    let mut total = 1.25 * impact;
-    let mut bite = 0.1 * impact;
-    let mut j = (impact - 0.2 * pad).max(0.0) / (pad * pad + pad + 1.0);
-    let tiny = 1e-6;
-    if strike.stab {
-        let half = pad / 2.0;
-        stab_energy /= half * half + half + 1.0;
-        slash = 0.0;
-        crush = 0.0;
-        pierce = if w.thrust > 0.0 {
-            if stab_energy < 2.0 {
-                if j < tiny {
-                    0.0
-                } else {
-                    w.thrust * 1.58 * stab_energy.sqrt()
-                }
-            } else {
-                w.thrust * 1.58 * 2f32.sqrt()
-            }
-        } else {
-            0.0
-        };
-        bite += (2.0 * pierce - rp).max(0.0);
-    } else {
-        if crush > 0.0 {
-            crush = if j < tiny {
-                0.0
-            } else {
-                crush * 1.58 * j.powf(2.0 - crush)
-            };
-            total += 0.75 * crush;
-            bite += (0.5 * crush - 0.25 * rc).max(0.0);
-            crush = ((1.0 - 0.75 * rc) * (crush - 0.1 * rc)).max(0.0);
-        }
-        if slash > 0.0 {
-            let k = slash / (10.0 * slash * rs + 1.0);
-            let chop = if impact < tiny {
-                0.0
-            } else {
-                ((0.8 - k) * impact * impact + 2.5 * impact / (impact + 1.0 - k)) * k - 0.2 * rs
-            };
-            bite += ((1.0 - draw) * chop).max(0.0);
-            let drawn = if u < tiny {
-                0.0
-            } else {
-                ((1.0 - k) * u + u.sqrt()) * k - 0.3 * rs
-            };
-            bite += (0.5 * draw * drawn).max(0.0);
-            slash = (draw * drawn + (1.0 - draw) * chop).max(0.0);
-            total += 0.75 * slash;
-        }
-        if pierce > 0.0 {
-            pierce *= 1.58 * j.powf(1.0 + pierce / 2.0);
-            bite += (pierce - 0.5 * rp).max(0.0);
-        }
-        bite *= 0.5;
-    }
-    j = (j / ((2.0 * j - 0.2) * pad + 1.0)).max(0.0);
-    total += 0.75 * pierce;
-    let _ = total;
-    pierce = (pierce - 0.75 * rp).max(0.0);
-
-    let shove = j;
-    // The victim's readiness lessens the wound, not the shove.
-    let defended = 1.0 - 0.5 * readiness.clamp(0.0, 1.0);
-    let penetration = (0.5 * (j - 0.8).max(0.0) + slash + pierce + crush) * defended;
-    let j = j * defended;
-    let stab_energy = stab_energy * defended;
-    let (mult, stun) = part_multipliers(bone);
-    let lasting = penetration / (penetration + 1.0);
-    let wound = lasting * mult;
-    let red = wound * 0.75;
-    let yellow = (0.5 * stab_energy + (2.0 * (penetration - lasting) + j) * mult) * 0.75;
-    let daze = (0.75 * penetration + 1.25 * j).sqrt() * stun * 0.5 * (0.25 / max_health.max(1e-3));
-    Some(Outcome {
-        red,
-        wound,
-        yellow,
-        daze,
-        impact: shove,
-        penetration,
-        bite,
-        material,
-    })
+/// MAXSS against 0: the value when positive, else 0 (a non-number too).
+fn pos(x: f32) -> f32 {
+    if x > 0.0 { x } else { 0.0 }
 }
 
-/// On-target share `z`, impact multiplier `ζ` and whether the haft took the
-/// blow, for a swing meeting the weapon at fraction `p` of its length; sets
-/// the draw-cut share.
-fn zones(w: &WeaponRecord, p: f32, clock: f32, draw: &mut f32) -> (f32, f32, bool) {
-    if !w.armed() {
-        return (1.0, 1.0, false);
-    }
+/// A float scaled in double precision: (x as f64)·k, back to a float.
+fn wide(x: f32, k: f64) -> f32 {
+    (f64::from(x) * k) as f32
+}
+
+/// The on-target falloff of a contact `d` cm past the striking part:
+/// max((20 − d)·0.05, 0), the 0.05 in double.
+fn falloff(d: f32) -> f32 {
+    pos(wide(20.0 - d, 0.05))
+}
+
+/// Where on the weapon a blow landed: the zone factors and flags.
+struct Zone {
+    /// Share of the record's slash, crush and pierce on target.
+    on_target: f32,
+    /// Impact factor ζ.
+    impact: f32,
+    /// Draw-cut share.
+    draw: f32,
+    zone: f32,
+    edge: bool,
+    central: bool,
+    haft: bool,
+}
+
+/// A swing's zone factors at fraction `p` of an armed weapon's length.
+fn swing_zone(w: &WeaponRecord, p: f32, clock: f32) -> Zone {
     let length = w.length;
-    let (mut z, mut zeta, mut haft) = (1.0, 1.0, false);
-    if p <= w.end {
-        if p < w.start {
-            let d = (w.start - p) * length;
-            z = ((20.0 - d) * 0.05).max(0.0);
-            zeta = p / w.start.max(1e-6);
-            haft = true;
+    let mut z = if w.end < p {
+        let q = (p - w.end) / (1.0 - w.end);
+        let c = (1.0 - (0.8 - f64::from(clock)).powi(2) * 10.0) as f32;
+        Zone {
+            on_target: falloff((p - w.end) * length),
+            impact: 1.0 - q * q * 0.75,
+            draw: if c > 0.0 { q * c } else { 0.0 },
+            zone: q,
+            edge: true,
+            central: false,
+            haft: false,
+        }
+    } else if w.start > p {
+        let impact = 1.0 - (w.start - p) / w.start;
+        Zone {
+            on_target: falloff((w.start - p) * length),
+            impact,
+            draw: 0.0,
+            zone: impact,
+            edge: false,
+            central: true,
+            haft: true,
         }
     } else {
-        z = ((20.0 - (p - w.end) * length) * 0.05).max(0.0);
-        let q = (p - w.end) / (1.0 - w.end).max(1e-6);
-        zeta = 1.0 - 0.75 * q * q;
-        *draw = q * (1.0 - 10.0 * (0.8 - clock).powi(2)).max(0.0);
-    }
-    let edge = |from: f32, near: f32, beyond: f32, draw: &mut f32| {
-        if p <= from {
-            let r = (from - p) * near;
-            *draw = 0.0;
-            1.0 - (2.0 - r) * r * r
-        } else {
-            let q = (p - from) * beyond;
-            *draw = q;
-            1.0 - 0.75 * q * q
+        Zone {
+            on_target: 1.0,
+            impact: 1.0,
+            draw: 0.0,
+            zone: 1.0,
+            edge: false,
+            central: true,
+            haft: false,
         }
+    };
+    // Past `from` the tip zone: q along it, an edge hit; before it the body
+    // zone 1 − (2 − r)·r² (the central flag as it was).
+    let tip = |z: &mut Zone, q: f32| {
+        z.draw = q;
+        z.impact = 1.0 - q * q * 0.75;
+        z.central = false;
+        z.zone = q;
+        z.edge = true;
+    };
+    let body = |z: &mut Zone, r: f32| {
+        z.impact = 1.0 - (2.0 - r) * (r * r);
+        z.draw = 0.0;
+        z.zone = z.impact;
+        z.edge = false;
     };
     match w.kind() {
-        flags::BLADED => zeta = edge(0.6, 1.0 / 0.6, 1.0 / 0.4, draw),
+        flags::BLADED => {
+            if p > BLADE_TIP {
+                tip(&mut z, (p - BLADE_TIP) / (1.0 - BLADE_TIP));
+            } else {
+                body(&mut z, (BLADE_TIP - p) / BLADE_TIP);
+            }
+        }
         flags::STICK => {
-            zeta = edge(0.8, 1.25, 5.0, draw);
-            haft = false;
+            z.haft = false;
+            if f64::from(p) > 0.8 {
+                tip(
+                    &mut z,
+                    ((f64::from(p) - 0.8) * 5.000_000_000_000_001) as f32,
+                );
+            } else {
+                body(&mut z, ((0.8 - f64::from(p)) * 1.25) as f32);
+            }
         }
         _ if w.code == 2 => {
-            let sweet = w.start + 0.6 * (w.end - w.start);
-            if p <= sweet {
-                zeta = 1.0 - (sweet - p) / sweet.max(1e-6);
+            let sweet = (f64::from(w.end - w.start) * 0.6 + f64::from(w.start)) as f32;
+            if p > sweet {
+                tip(&mut z, (p - sweet) / (1.0 - sweet));
             } else {
-                let q = (p - sweet) / (1.0 - sweet).max(1e-6);
-                zeta = 1.0 - 0.75 * q * q;
-                *draw = q;
+                z.impact = 1.0 - (sweet - p) / sweet;
+                z.draw = 0.0;
+                z.zone = z.impact;
+                z.edge = false;
             }
         }
         _ => {}
     }
-    (z, zeta, haft)
+    z
+}
+
+/// Resolves a blow of `weapon` on body part `bone` of `victim`. `layers` is
+/// the struck part's armour and a uniform draw in 0..1 for its coverage
+/// (one per blow on a part); `None` when the blow met a shield or a weapon,
+/// which no armour lessens and no roll is drawn for. Returns `None` when
+/// the contact is at or past the weapon's tip.
+///
+/// The original's damage routine, in its order and precision: the speed
+/// (capped, softened, overhead), the impact (a swing's (W10 + 0.3)·1.1·
+/// u^(1 − W10/2), a stab's 0.3·u·(W10 + 0.5 + W6)), the powers, the hit
+/// point p = along/W21, the zone factors (stab tip and lunge; a hanging
+/// striker's and the fists' shares in full; the haft, beyond the striking
+/// part and each kind's tip zone; the haft's crush bonus by its
+/// material), unarmed 0.6·√(3I), the coverage roll over the outer then
+/// the inner layer, the channels through padding and resistance (crush
+/// and pierce raised by the engine's fast power), the shove, the
+/// readiness, the daze with its stall factor and the bars.
+pub fn resolve(
+    weapon: &WeaponRecord,
+    strike: &Strike,
+    layers: Option<(&PartArmour, f32)>,
+    bone: usize,
+    victim: &Victim,
+) -> Option<Outcome> {
+    let w = weapon;
+    // Speed: capped, else softened when slow; then the overhead's 1.5.
+    let mut v = strike.speed;
+    if v > SPEED_CAP {
+        v = SPEED_CAP;
+    } else if SOFT_BELOW > v {
+        let s = wide(v, 0.1);
+        v = (2.0 - s) * (s * s) * 10.0;
+    }
+    if strike.overhead {
+        v *= 1.5;
+    }
+    let (u, mut impact) = if v > EPSILON {
+        let u = wide(v, 0.05);
+        let i = if strike.stab {
+            wide((0.5 + w.impact + w.weight) * u, 0.3)
+        } else {
+            let e = f64::from(1.0 - w.impact * 0.5);
+            ((f64::from(w.impact) + 0.3) * 1.1 * (f64::from(u).ln() * e).exp()) as f32
+        };
+        (u, i)
+    } else {
+        v = 0.0;
+        (0.0, EPSILON)
+    };
+    let strikes = strike.strikes * 0.5 + 1.0;
+    let shell = 1.0 - victim.shell;
+    impact = shell * (strikes * impact);
+
+    let p = strike.along / w.length;
+    // At or past the tip there is no hit; a non-number goes on.
+    let p = if 0.0 > p {
+        0.0
+    } else if 1.0 > p || p.is_nan() {
+        p
+    } else {
+        return None;
+    };
+
+    // The zone: what the weapon struck with.
+    let (mut hit, mut stab_energy, smoothing, zone, edge, central, haft, draw, shares) =
+        if strike.stab {
+            let t = w.length - strike.along;
+            let tip = if TIP_FULL > t {
+                1.0
+            } else if TIP_NONE < t {
+                0.0
+            } else {
+                1.0 - (t - TIP_FULL) * PER_TIP
+            };
+            let mut lunge = (1.0 - (1.4 - f64::from(strike.clock * 2.0)).powi(2) * 2.8) as f32;
+            if 0.0 > lunge {
+                lunge = 0.0;
+            }
+            lunge = shell * (strikes * lunge);
+            let mut energy = (f64::from(tip)
+                * ((f64::from(w.weight) * 0.3 + 0.25) * f64::from(impact + lunge)))
+                as f32;
+            if w.flags & flags::TWO_HANDS != 0 {
+                energy *= 1.5;
+            }
+            let hit = (w.impact * 0.25 + 0.75) * energy;
+            (
+                hit,
+                energy,
+                0.0,
+                p,
+                false,
+                true,
+                false,
+                0.0,
+                (0.0, 0.0, 0.0),
+            )
+        } else if strike.hanging {
+            let shares = (w.slash, w.crush, w.pierce);
+            (
+                impact,
+                0.0,
+                0.5,
+                HANGING_ZONE,
+                false,
+                true,
+                false,
+                0.0,
+                shares,
+            )
+        } else if strike.unarmed {
+            let shares = (w.slash, w.crush, w.pierce);
+            (impact, 0.0, 0.5, 0.0, false, false, false, 0.0, shares)
+        } else {
+            let z = swing_zone(w, p, strike.clock);
+            let bonus = if z.haft {
+                match w.flags & 0x30000 {
+                    0x20000 => 0.2,
+                    0x30000 => 0.15,
+                    _ => 0.1,
+                }
+            } else {
+                0.15
+            };
+            let crush = w.crush * z.on_target;
+            let shares = (
+                w.slash * z.on_target,
+                (f64::from(1.0 - z.on_target) * bonus + f64::from(crush)) as f32,
+                w.pierce * z.on_target,
+            );
+            let haft = z.haft && 0.5 > z.on_target;
+            let hit = impact * z.impact;
+            (
+                hit, 0.0, 0.1, z.zone, z.edge, z.central, haft, z.draw, shares,
+            )
+        };
+    let (mut slash, mut crush, mut pierce) = shares;
+    let sound_share = if strike.unarmed {
+        if hit > EPSILON {
+            hit = wide((hit * 3.0).sqrt(), 0.6);
+        }
+        0.5
+    } else {
+        1.0
+    };
+    let volume = (f64::from(impact + stab_energy) * 0.6 + 0.025) as f32;
+    let pitch = impact * 0.5 + 0.5;
+
+    // Armour: one roll decides how much of each layer the blow meets, the
+    // outer first.
+    let (mut pad, mut rs, mut rc, mut rp) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut material = 0;
+    let mut sounds = [(0u8, 0.0f32); 2];
+    let mut sag = None;
+    if let Some((armour, roll)) = layers {
+        for (i, layer) in [(1, armour.outer), (0, Some(armour.inner))] {
+            let Some(layer) = layer else { continue };
+            let weight = if layer.coverage > roll {
+                1.0
+            } else if 0.5 < layer.coverage {
+                (layer.coverage - 0.5) * 1.75
+            } else {
+                continue;
+            };
+            if material == 0 {
+                material = layer.material;
+            }
+            sounds[i].0 = layer.material;
+            if i == 0 {
+                if sounds[1].0 == sounds[0].0 {
+                    sounds[0].1 = 0.0;
+                    sounds[1].1 = (1.0 - weight) * sounds[1].1 + weight;
+                } else {
+                    sounds[0].1 = ((1.0 - f64::from(sounds[1].1) * 0.8) * f64::from(weight)) as f32;
+                }
+            } else {
+                sounds[1].1 = weight;
+            }
+            pad += layer.padding * weight;
+            rs += (1.0 - rs) * (layer.slash * weight);
+            rc += (1.0 - rc) * (layer.crush * weight);
+            rp += (roll * 0.5 + 0.5) * ((1.0 - rp) * (layer.pierce * weight));
+        }
+        let s = hit * 2.0;
+        sag = Some(if s > 1.0 { 1.0 } else { s });
+    }
+
+    let mut total = hit * 1.25;
+    let mut j = (f64::from(hit) - f64::from(pad) * 0.2) as f32;
+    j = if 0.0 < j {
+        j / (pad * pad + 1.0 + pad)
+    } else {
+        0.0
+    };
+    if 0.0 < stab_energy {
+        let half = pad * 0.5;
+        stab_energy /= half * half + 1.0 + half;
+    }
+    let mut bite = wide(hit, 0.1);
+    if strike.stab {
+        slash = 0.0;
+        crush = 0.0;
+        pierce = if w.thrust > 0.0 {
+            // From an energy of 2 (or a non-number) the thrust's √2.
+            if 2.0 > stab_energy {
+                if j > EPSILON {
+                    (f64::from(w.thrust) * 1.58 * f64::from(stab_energy.sqrt())) as f32
+                } else {
+                    0.0
+                }
+            } else {
+                (f64::from(w.thrust) * 1.58 * std::f64::consts::SQRT_2) as f32
+            }
+        } else {
+            0.0
+        };
+        bite += pos(pierce * 2.0 - rp);
+    } else {
+        if 0.0 < crush {
+            crush = if j > EPSILON {
+                (f64::from(crush) * 1.58 * f64::from(fast_pow(j, 2.0 - crush))) as f32
+            } else {
+                0.0
+            };
+            total += crush * 0.75;
+            bite += pos(crush * 0.5 - rc * 0.25);
+            crush = (f64::from(1.0 - rc * 0.75) * (f64::from(crush) - f64::from(rc) * 0.1)) as f32;
+            if 0.0 > crush {
+                crush = 0.0;
+            }
+        } else {
+            crush = 0.0;
+        }
+        if 0.0 < slash {
+            let k = slash / (slash * rs * 10.0 + 1.0);
+            let chop = if hit > EPSILON {
+                let q = hit / (hit + 1.0 - k) * 2.5;
+                (((0.8 - f64::from(k)) * f64::from(hit * hit) + f64::from(q)) * f64::from(k)
+                    - f64::from(rs) * 0.2) as f32
+            } else {
+                0.0
+            };
+            bite += pos((1.0 - draw) * chop);
+            let drawn = if u > EPSILON {
+                (f64::from(((1.0 - k) * u + u.sqrt()) * k) - f64::from(rs) * 0.3) as f32
+            } else {
+                0.0
+            };
+            bite += pos(drawn * 0.5 * draw);
+            slash = drawn * draw + (1.0 - draw) * chop;
+            if 0.0 > slash {
+                slash = 0.0;
+            }
+            total += slash * 0.75;
+        } else {
+            slash = 0.0;
+        }
+        if 0.0 < pierce {
+            pierce = (f64::from(pierce) * 1.58 * f64::from(fast_pow(j, pierce * 0.5 + 1.0))) as f32;
+            bite += pos(pierce - rp * 0.5);
+        }
+        bite *= 0.5;
+    }
+    j = (f64::from(j) / ((f64::from(j * 2.0) - 0.2) * f64::from(pad) + 1.0)) as f32;
+    if 0.0 > j {
+        j = 0.0;
+    }
+    total += pierce * 0.75;
+    pierce -= rp * 0.75;
+    if 0.0 > pierce {
+        pierce = 0.0;
+    }
+
+    // The flesh: the shove's impact, then the victim's readiness.
+    let shove = j;
+    let defended = 1.0 - victim.readiness * 0.5;
+    let penetration =
+        defended * (pos((f64::from(j) - 0.8) as f32) * 0.5 + (slash + pierce + crush));
+    let j = defended * j;
+    let stab_energy = defended * stab_energy;
+    let (mult, stun) = part_multipliers(bone);
+    let mut stun = stun * 0.5;
+    let shaken = penetration * 0.75 + j * 1.25;
+    let daze_factor = if victim.steadfast {
+        stun *= 0.25;
+        0.0
+    } else {
+        let mut m = if victim.security {
+            let whole = defended * total;
+            if whole > EPSILON {
+                let r = shaken / whole;
+                r * r
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        let health = DAZE_HEALTH / victim.max_health;
+        m *= health;
+        stun *= health;
+        if victim.potion {
+            m *= 0.5;
+        }
+        m
+    };
+    let daze = if shaken > EPSILON {
+        shaken.sqrt() * stun
+    } else {
+        0.0
+    };
+    let lasting = penetration / (1.0 + penetration);
+    let wound = lasting * mult;
+    let yellow = stab_energy * 0.5 + ((penetration - lasting) * 2.0 + j) * mult;
+    Some(Outcome {
+        red: wound * 0.75,
+        wound,
+        yellow: yellow * 0.75,
+        daze,
+        daze_factor,
+        impact: shove,
+        penetration,
+        bite,
+        material,
+        hit_impact: hit,
+        speed: v,
+        total,
+        zone,
+        edge,
+        central,
+        haft,
+        smoothing,
+        sag,
+        volume,
+        pitch,
+        sound_share,
+        muffle: (f64::from(rc) * 0.6 + 0.7) as f32,
+        layer_sounds: sounds,
+    })
+}
+
+/// The health the daze is measured against: 0.25 over the most health.
+const DAZE_HEALTH: f32 = 0.25;
+/// The zone a hanging striker's blow reports, 0.2.
+const HANGING_ZONE: f32 = 0.2;
+
+/// The hit's sounds: the weapon's (or its haft's) at the blow, and each
+/// armour layer's that rings.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HitSounds {
+    /// The weapon's hit sound: volume and pitch.
+    pub weapon: (f32, f32),
+    /// The haft's material sound class (1 wood, 2 metal, 3 the third)
+    /// replaces the weapon's.
+    pub haft: Option<u32>,
+    /// Each layer's (class, volume, pitch), inner then outer, when loud
+    /// enough to play.
+    pub layers: [Option<(u8, f32, f32)>; 2],
+}
+
+/// The sounds of a wound `blow` dealt by `weapon` from an attacker of body
+/// `scale`: the weapon's at volume·share·scale·muffle and pitch·muffle (its
+/// haft's when the haft took it), each layer above the epsilon at
+/// 1.5·volume·its loudness·its class's, pitch 0.4·pitch + 0.7.
+pub fn hit_sounds(blow: &Outcome, weapon: &WeaponRecord, scale: f32) -> HitSounds {
+    let haft_class = if blow.haft {
+        (weapon.flags & 0x30000) >> 16
+    } else {
+        0
+    };
+    let loud = blow.volume * blow.sound_share * scale * blow.muffle;
+    let layer = |(class, weight): (u8, f32)| {
+        let k = MATERIAL_LOUDNESS.get(usize::from(class))?;
+        (weight > EPSILON).then(|| {
+            (
+                class,
+                blow.volume * 1.5 * (weight * k),
+                (f64::from(blow.pitch) * 0.4 + 0.7) as f32,
+            )
+        })
+    };
+    HitSounds {
+        weapon: (loud, blow.pitch * blow.muffle),
+        haft: (haft_class > 0).then_some(haft_class),
+        layers: [layer(blow.layer_sounds[0]), layer(blow.layer_sounds[1])],
+    }
 }
 
 /// A one-handed sword's record, 90 cm long: the tests' worked example.
@@ -748,6 +1136,7 @@ pub fn replace_combat_target(input: CombatReplaceInput) -> CombatReplace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::weapon_record::{Holder, Section};
 
     #[test]
     fn sword_a_record() {
@@ -758,22 +1147,49 @@ mod tests {
         assert!((w.start - 0.1).abs() < 1e-6 && (w.end - 1.0).abs() < 1e-6);
     }
 
-    fn cut(armour: &PartArmour, roll: f32) -> Outcome {
-        let strike = Strike {
-            speed: 20.0,
-            stab: false,
-            overhead: false,
-            clock: 0.8,
-            along: 70.0,
-        };
-        resolve(&sword_a(), &strike, armour, 9, 0.25, 0.0, roll).unwrap()
+    /// A mace: weight 70, balance 40, impact 140, thrust 20, crush 90,
+    /// pierce 30, its head from 60 % to the end of its 100 cm, a metal haft.
+    fn mace() -> WeaponRecord {
+        let mut s = StatBytes::default();
+        for (off, v) in [
+            (at::WEIGHT, 70),
+            (at::BALANCE, 40),
+            (at::IMPACT, 140),
+            (at::THRUST, 20),
+            (at::START, 120),
+            (at::END, 200),
+            (at::CRUSH, 90),
+            (at::PIERCE, 30),
+        ] {
+            s.set(off, v);
+        }
+        WeaponRecord::of_one_part(0x20012, &s, false, 100.0)
     }
 
-    #[test]
-    fn armour_stops_the_edge() {
-        let bare = cut(&PartArmour::default(), 0.5);
-        assert!(bare.penetration > 0.3, "{bare:?}");
-        let plate = Armour {
+    /// A human's fist and a ghoul's claw across a hand 10 cm wide.
+    fn fist() -> WeaponRecord {
+        let lengths = exa_formats::weapon_record::Lengths::hand(0.0, 10.0);
+        WeaponRecord::build(&Section::FISTS, false, lengths, &Holder::AVERAGE)
+    }
+
+    fn claws() -> WeaponRecord {
+        let lengths = exa_formats::weapon_record::Lengths::hand(0.0, 10.0);
+        WeaponRecord::build(&Section::CLAWS, false, lengths, &Holder::AVERAGE)
+    }
+
+    /// Equal to the reference to a millionth (its own scale above 1).
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= 1e-6 * b.abs().max(1.0)
+    }
+
+    macro_rules! pin {
+        ($o:expr, $($field:ident = $v:expr),+ $(,)?) => {
+            $(assert!(near($o.$field, $v), "{} {} != {}", stringify!($field), $o.$field, $v);)+
+        };
+    }
+
+    fn plate() -> Armour {
+        Armour {
             coverage: [100; 18],
             padding: 60,
             slash: 140,
@@ -781,107 +1197,283 @@ mod tests {
             pierce: 80,
             encumbrance: 10,
             material: 4,
-        };
-        let layers = armour_layers(None, &[plate], false);
-        let armoured = cut(&layers[8], 0.5);
-        assert!(
-            armoured.penetration < bare.penetration * 0.3,
-            "{armoured:?}"
-        );
-        assert_eq!(armoured.material, 4);
+        }
     }
 
-    /// A slower blow penetrates less, and a resisting layer less than bare flesh.
+    fn swing(speed: f32, clock: f32, along: f32) -> Strike {
+        Strike {
+            speed,
+            clock,
+            along,
+            ..Strike::default()
+        }
+    }
+
+    fn on(
+        w: &WeaponRecord,
+        strike: &Strike,
+        armour: &PartArmour,
+        bone: usize,
+        victim: &Victim,
+        roll: f32,
+    ) -> Outcome {
+        resolve(w, strike, Some((armour, roll)), bone, victim).unwrap()
+    }
+
+    fn bare() -> PartArmour {
+        PartArmour::default()
+    }
+
+    fn human() -> Victim {
+        Victim::new(0.25, 0.0)
+    }
+
+    /// The sword's tip zone on a bare chest (bone 9: ×1.2 damage and
+    /// stun), 20 cm a tick at 0.8 of the swing, 70 of its 90 cm: the
+    /// numbers of the routine's own precision (a reference model of its
+    /// listing gives the same to a millionth).
     #[test]
-    fn speed_and_a_layer_change_the_wound() {
-        let bare = PartArmour::default();
-        let at = |speed: f32| {
-            resolve(
-                &sword_a(),
-                &Strike {
-                    speed,
-                    stab: false,
-                    overhead: false,
-                    clock: 0.8,
-                    along: 70.0,
-                },
-                &bare,
-                9,
-                0.25,
-                0.0,
-                0.5,
-            )
-            .unwrap()
-        };
-        let slow = at(5.0);
-        let fast = at(20.0);
-        assert!(slow.impact < fast.impact, "{slow:?} {fast:?}");
-        assert!(slow.penetration < fast.penetration, "{slow:?} {fast:?}");
-        let plate = armour_layers(
-            None,
-            &[Armour {
-                coverage: [100; 18],
-                padding: 60,
-                slash: 140,
-                crush: 60,
-                pierce: 80,
-                encumbrance: 10,
-                material: 4,
-            }],
-            false,
-        );
-        let armoured = resolve(
+    fn a_cut_on_a_bare_chest() {
+        let o = on(
             &sword_a(),
-            &Strike {
-                speed: 20.0,
-                stab: false,
-                overhead: false,
-                clock: 0.8,
-                along: 70.0,
-            },
-            &plate[8],
+            &swing(20.0, 0.8, 70.0),
+            &bare(),
             9,
-            0.25,
-            0.0,
+            &human(),
             0.5,
-        )
-        .unwrap();
-        assert!(armoured.penetration < fast.penetration, "{armoured:?}");
+        );
+        pin!(
+            o,
+            hit_impact = 0.674_666_7,
+            impact = 0.674_666_7,
+            penetration = 0.614_884_85,
+            wound = 0.456_912_96,
+            red = 0.342_684_7,
+            yellow = 1.028_623_3,
+            daze = 0.685_287_5,
+            daze_factor = 1.0,
+            bite = 0.270_427_38,
+            total = 1.304_497,
+            zone = 0.444_444_45,
+            speed = 20.0,
+            volume = 0.500_200_03,
+            pitch = 0.896_000_03,
+            muffle = 0.7,
+            smoothing = 0.1,
+        );
+        assert!(o.edge && !o.central && !o.haft);
+        assert_eq!(o.sag, Some(1.0));
+        // The flesh layer rings alone.
+        assert_eq!(o.layer_sounds, [(0, 0.0), (0, 1.0)]);
     }
 
-    /// Readiness 1 halves the wound (penetration, the red and yellow bars,
-    /// the daze's terms) but not the impact that shoves; 0.5 takes a
-    /// quarter off.
+    /// Plate over the chest stops the edge: no lasting wound, the impact
+    /// through 0.3 of padding, the plate ringing and the flesh at 0.2.
     #[test]
-    fn readiness_halves_the_wound() {
+    fn plate_stops_the_edge() {
+        let layers = armour_layers(None, &[plate()], false);
+        let o = on(
+            &sword_a(),
+            &swing(20.0, 0.8, 70.0),
+            &layers[8],
+            9,
+            &human(),
+            0.5,
+        );
+        pin!(
+            o,
+            hit_impact = 0.674_666_7,
+            impact = 0.366_877_56,
+            penetration = 0.0,
+            wound = 0.0,
+            yellow = 0.330_189_82,
+            daze = 0.406_318_75,
+            bite = 0.033_733_334,
+            total = 0.843_333_36,
+            muffle = 0.957_142_83,
+        );
+        assert_eq!(o.material, 4);
+        assert_eq!(o.layer_sounds[1], (4, 1.0));
+        assert_eq!(o.layer_sounds[0].0, 0);
+        assert!(near(o.layer_sounds[0].1, 0.2));
+    }
+
+    /// A slow overhead (5 cm a tick): softened to 10·(2 − 0.5)·0.25 =
+    /// 3.75, then ×1.5; it lands mid-blade (55 % of the sword), the body
+    /// zone 1 − (2 − r)·r².
+    #[test]
+    fn a_slow_overhead_is_softened_then_raised() {
         let strike = Strike {
-            speed: 20.0,
-            stab: false,
-            overhead: false,
-            clock: 0.8,
-            along: 70.0,
+            overhead: true,
+            ..swing(5.0, 0.8, 50.0)
         };
-        let bare = PartArmour::default();
-        let at = |g| resolve(&sword_a(), &strike, &bare, 9, 0.25, g, 0.5).unwrap();
-        let (open, ready, half) = (at(0.0), at(1.0), at(0.5));
-        assert!(open.penetration > 0.3, "{open:?}");
-        assert!((ready.penetration - 0.5 * open.penetration).abs() < 1e-5);
-        assert!((half.penetration - 0.75 * open.penetration).abs() < 1e-5);
-        assert_eq!(ready.impact, open.impact);
-        assert!(ready.red < open.red && ready.yellow < open.yellow);
-        assert!((ready.daze - open.daze * 0.5f32.sqrt()).abs() < 1e-5);
-        // A stab's energy too.
+        let o = on(&sword_a(), &strike, &bare(), 1, &human(), 0.5);
+        pin!(
+            o,
+            speed = 5.625,
+            hit_impact = 0.287_669_96,
+            penetration = 0.334_132_64,
+            wound = 0.250_449_33,
+            yellow = 0.341_277_42,
+            daze = 0.390_572_3,
+            zone = 0.989_432_5,
+        );
+        assert!(near(o.sag.unwrap(), 0.575_339_9));
+        assert!(o.central && !o.edge);
+    }
+
+    /// A stab 5 cm from the tip at the swing's middle: full tip, the lunge
+    /// 1 − 2.8·0.16, the thrust's √T; through plate only its energy.
+    #[test]
+    fn a_stab_pierces_flesh_not_plate() {
         let stab = Strike {
             stab: true,
-            clock: 0.5,
-            along: 85.0,
-            ..strike
+            ..swing(20.0, 0.5, 85.0)
         };
-        let s = |g| resolve(&sword_a(), &stab, &bare, 9, 0.25, g, 0.5).unwrap();
-        let (open, ready) = (s(0.0), s(1.0));
-        assert!(open.penetration > 0.0, "{open:?}");
-        assert!((ready.penetration - 0.5 * open.penetration).abs() < 1e-5);
-        assert!(ready.yellow < 0.75 * open.yellow, "{ready:?} {open:?}");
+        let o = on(&sword_a(), &stab, &bare(), 9, &human(), 0.5);
+        pin!(
+            o,
+            hit_impact = 0.334_476_02,
+            penetration = 0.320_997_9,
+            wound = 0.291_595_82,
+            yellow = 0.588_130_95,
+            daze = 0.487_015_04,
+            bite = 0.675_443_4,
+            total = 0.658_843_46,
+            zone = 0.944_444_4,
+            volume = 0.515_320_06,
+            smoothing = 0.0,
+        );
+        assert!(o.central && !o.edge);
+        let layers = armour_layers(None, &[plate()], false);
+        let o = on(&sword_a(), &stab, &layers[8], 9, &human(), 0.5);
+        pin!(
+            o,
+            penetration = 0.0,
+            yellow = 0.293_016_97,
+            impact = 0.186_555_22,
+            bite = 0.197_768_3,
+        );
+    }
+
+    /// A mace (crush 90, pierce 30, its head from 60 %, a metal haft) hit
+    /// 5 cm below its head: on target 0.75, the metal haft's crush bonus
+    /// 0.2·(1 − 0.75), not the head's 0.15; the haft's sound only under
+    /// 0.5 on target.
+    #[test]
+    fn the_haft_adds_its_materials_crush() {
+        let o = on(&mace(), &swing(20.0, 0.5, 55.0), &bare(), 1, &human(), 0.5);
+        pin!(
+            o,
+            hit_impact = 1.179_750_2,
+            penetration = 1.315_001_4,
+            wound = 0.568_034_77,
+            yellow = 2.005_262_6,
+            daze = 0.784_369,
+            bite = 0.416_512_16,
+            total = 2.318_532_5,
+            zone = 0.916_666_75,
+        );
+        assert!(o.central && !o.haft);
+        // Its head on plate, the roll 0.9.
+        let layers = armour_layers(None, &[plate()], false);
+        let o = on(
+            &mace(),
+            &swing(20.0, 0.5, 80.0),
+            &layers[1],
+            1,
+            &human(),
+            0.9,
+        );
+        pin!(
+            o,
+            hit_impact = 1.287_000_1,
+            impact = 0.600_646_14,
+            penetration = 0.382_082_64,
+            wound = 0.276_454_24,
+            yellow = 0.608_927_2,
+            bite = 0.174_655_71,
+            total = 2.285_359_6,
+        );
+    }
+
+    /// Fists: the record's shares in full, the impact 0.6·√(3I), the
+    /// sound at half; on the head (×1.6, stun 1.4).
+    #[test]
+    fn a_punch_takes_the_unarmed_rules() {
+        let punch = Strike {
+            unarmed: true,
+            ..swing(12.0, 0.5, 9.9)
+        };
+        let o = on(&fist(), &punch, &bare(), 10, &human(), 0.5);
+        pin!(
+            o,
+            hit_impact = 0.762_068_5,
+            penetration = 0.0,
+            yellow = 0.914_482_24,
+            daze = 0.683_203_46,
+            bite = 0.038_103_424,
+            volume = 0.347_638,
+            pitch = 0.768_865,
+            sound_share = 0.5,
+            smoothing = 0.5,
+            zone = 0.0,
+        );
+        assert!(!o.central && !o.edge);
+        // Claws cut.
+        let o = on(&claws(), &punch, &bare(), 1, &human(), 0.5);
+        pin!(
+            o,
+            hit_impact = 0.882_402_06,
+            penetration = 1.028_169_9,
+            wound = 0.506_944_66,
+            bite = 0.537_604_5,
+        );
+    }
+
+    /// Security scales the stall factor by (D/τ′)² (here with readiness
+    /// 0.5 and a potion's half); a steadfast body is dazed a quarter as
+    /// much and its stall factor is 0.
+    #[test]
+    fn the_victims_rules_change_the_daze() {
+        let cut = swing(20.0, 0.8, 70.0);
+        let secure = Victim {
+            security: true,
+            potion: true,
+            ..Victim::new(0.25, 0.5)
+        };
+        let o = on(&sword_a(), &cut, &bare(), 1, &secure, 0.5);
+        pin!(
+            o,
+            daze_factor = 0.500_000_1,
+            daze = 0.494_563_64,
+            penetration = 0.461_163_64,
+        );
+        let ogre = Victim {
+            steadfast: true,
+            ..Victim::new(1.5, 0.0)
+        };
+        let o = on(&sword_a(), &cut, &bare(), 1, &ogre, 0.5);
+        pin!(o, daze_factor = 0.0, daze = 0.142_768_22);
+    }
+
+    /// A blow on a shield or a weapon meets no armour and sets no sag.
+    #[test]
+    fn a_shield_meets_no_layer() {
+        let o = resolve(&sword_a(), &swing(20.0, 0.8, 70.0), None, 9, &human()).unwrap();
+        assert_eq!(o.sag, None);
+        pin!(o, hit_impact = 0.674_666_7, impact = 0.674_666_7);
+    }
+
+    /// The readiness halves the wound's terms but not the shove.
+    #[test]
+    fn readiness_halves_the_wound() {
+        let strike = swing(20.0, 0.8, 70.0);
+        let at = |g| on(&sword_a(), &strike, &bare(), 9, &Victim::new(0.25, g), 0.5);
+        let (open, ready) = (at(0.0), at(1.0));
+        assert!((ready.penetration - 0.5 * open.penetration).abs() < 1e-6);
+        assert_eq!(ready.impact, open.impact);
+        assert!(ready.red < open.red && ready.yellow < open.yellow);
     }
 
     /// The tests' sword, 90 cm striking from 10 % to the tip, in a human's
@@ -891,27 +1483,44 @@ mod tests {
         assert!((sword_a().reach_metres() - 1.176).abs() < 1e-5);
     }
 
+    /// At or past the tip there is no hit (90 of 90 cm).
     #[test]
     fn past_the_tip_is_no_hit() {
-        let strike = Strike {
-            speed: 20.0,
-            stab: false,
-            overhead: false,
-            clock: 0.5,
-            along: 95.0,
-        };
-        assert!(
-            resolve(
-                &sword_a(),
-                &strike,
-                &PartArmour::default(),
-                9,
-                0.25,
-                0.0,
-                0.5
-            )
-            .is_none()
+        let o = resolve(
+            &sword_a(),
+            &swing(20.0, 0.5, 90.0),
+            Some((&bare(), 0.5)),
+            9,
+            &human(),
         );
+        assert!(o.is_none());
+        assert!(resolve(&sword_a(), &swing(20.0, 0.5, 95.0), None, 9, &human()).is_none());
+    }
+
+    /// The sounds of the plate cut: the weapon's muffled by the plate's
+    /// crush resistance, the plate's at 1.5·volume, the flesh at 0.2 of
+    /// it and half its class's loudness.
+    #[test]
+    fn hit_sounds_ring_by_layer() {
+        let layers = armour_layers(None, &[plate()], false);
+        let o = on(
+            &sword_a(),
+            &swing(20.0, 0.8, 70.0),
+            &layers[8],
+            9,
+            &human(),
+            0.5,
+        );
+        let s = hit_sounds(&o, &sword_a(), 1.0);
+        assert!(near(s.weapon.0, 0.500_200_03 * 0.957_142_83));
+        assert_eq!(s.haft, None);
+        let (class, volume, pitch) = s.layers[1].unwrap();
+        assert_eq!(class, 4);
+        assert!(near(volume, 0.500_200_03 * 1.5));
+        assert!(near(pitch, (0.896_000_03f64 * 0.4 + 0.7) as f32));
+        let (class, volume, _) = s.layers[0].unwrap();
+        assert_eq!(class, 0);
+        assert!(near(volume, 0.500_200_03 * 1.5 * (0.2 * 0.5)));
     }
 
     #[test]

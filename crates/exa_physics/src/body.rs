@@ -934,9 +934,9 @@ pub struct Drive {
     /// twice it. 0 until the servo runs.
     lift_raw: f32,
     /// Blow sag s, 0..=1: how much an unsteady body's targets give way to
-    /// the pose it holds after a blow (the original's damage routine sets
-    /// it, which Exarust's does not yet); it fades 0.01 a tick, and is 0
-    /// while the body is down.
+    /// the pose it holds after a blow (the damage routine sets it through
+    /// [`Shove::sag`]); it fades 0.01 a tick, and is 0 while the body is
+    /// down.
     pub sag: f32,
     /// The support pins' gain factor (the 0.08 of the pins' gain
     /// S²·pin-gain·P·pin factor): it recovers toward 0.08 every tick while
@@ -1151,6 +1151,9 @@ pub struct Shove {
     /// Horizontal knockback from the chest (m), when the blow's impact is
     /// over one half. None keeps the velocity shove.
     pub step: Option<Vec3>,
+    /// The blow sag the blow sets on a living body (min(2·I, 1) for a blow
+    /// on a limb); none leaves it.
+    pub sag: Option<f32>,
 }
 
 /// Blows waiting for the next tick.
@@ -1731,6 +1734,14 @@ impl Ragdoll {
         }
     }
 
+    /// A blow on a limb sags a living body's stance by `sag` (the damage
+    /// routine's min(2·I, 1)); it fades 0.01 a tick from the next step.
+    pub fn sag_from_blow(&mut self, sag: f32) {
+        if let Some(d) = self.drive.as_mut() {
+            d.sag = sag;
+        }
+    }
+
     /// One footwork pass toward a collapse stagger's `target`. The feet
     /// keep the state they have. `spots` are the clip's ankles under
     /// `frame`. Returns the stance origin and where each foot is held.
@@ -2265,6 +2276,9 @@ pub fn step_bodies(
     for s in queue.0.drain(..) {
         if let Ok(mut body) = bodies.get_mut(s.body) {
             body.shove(s.bone, s.velocity, s.daze);
+            if let Some(sag) = s.sag {
+                body.sag_from_blow(sag);
+            }
             if let Some(offset) = s.step {
                 body.begin_knockback(offset);
             }
