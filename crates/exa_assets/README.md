@@ -226,9 +226,11 @@ before skinning; the body's parts are skinned on the morphed shape, a
 garment from the unmorphed body. Weights that change nothing, and races
 without a morph body, return the shared model. The controller's other
 registration helpers are `part_number` and `order_morph_parts` (parts
-sorted by their name's leading number) and `apply_morph_targets` (an
-apparel blob applied to its selected vertices only, with the weighted
-base). See
+sorted by their name's leading number), `apply_morph_targets` (an apparel
+blob applied to its selected vertices only, with the weighted base),
+`numbered_target_part` (a numbered old-style target node as base-relative
+deltas and a pivot), `nearest_controls` (per-vertex nearest control
+records) and `degenerate_control`. See
 [`docs/formats/RFC.md`](../../docs/formats/RFC.md) (Morph sets).
 
 Mesh editing (pure, no Bevy types): `mesh_edit::EditMesh` is a decoded
