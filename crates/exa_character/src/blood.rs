@@ -1265,6 +1265,7 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
             placeholder: false,
+            cloth: false,
         }
     }
 
