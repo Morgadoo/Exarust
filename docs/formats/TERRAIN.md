@@ -221,14 +221,22 @@ Painted layer weights descend through the rules. Weight the layers leave over
 (1 − Σ) goes to node 0, the first rule.
 
 The palette's rules and materials also build a **brush table**: one entry per
-name, sorted by its sixteen lower-case bytes, rules inserted before materials.
-A tile vertex evaluates at most **ten** painted brushes (the original reports
-"Maximum brushes exceeded." for the rest) plus the base rule tree. Material
-weights accumulate into one 256 × 256 byte channel each, each weight rounded
-to 0..=255 and saturated; the used materials are packed four per interleaved
-mask plane. A tile's texture pass also builds a Gaussian blur kernel: half of
-it on the negative side (zero included), mirrored, with sigma a third of the
-radius, normalised to one and widened to four equal floats an entry.
+name, sorted by its sixteen bytes with `A`–`Z` lowered (compared as raw
+bytes, so `_` sorts below letters), rules inserted before materials, each by
+binary search (an equal name met by the search is inserted before; lookups
+return the equal name the search meets first). A tile takes at most
+**eleven** painted brushes; at the next one found the original reports
+"Maximum brushes exceeded." and reads no further layers. The base rule tree
+follows them. Material weights accumulate into one 256 × 256 byte channel
+each (vertex row·256 + column of the 241 × 241 tile), each weight times 255
+rounded to nearest even and capped at 255. A tile whose flags have all of
+bits 0–2 merges the used materials (weight above 1/510, material 0 always),
+all but the first and the last, over the 241 × 241 corner, and packs them
+four per interleaved mask plane. Height rules (kind 0) can be rescaled:
+bound × scale + offset in single precision. The texture pass's Gaussian
+blur kernel has its negative half and zero computed (sigma a third of the
+radius, taken in double), mirrored, normalised by its sequential single sum
+and widened to four equal floats an entry.
 
 ### Composition
 

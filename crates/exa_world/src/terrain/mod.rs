@@ -310,7 +310,7 @@ pub struct TerrainStats {
     pub unresolved_layers: usize,
     /// Tiles that use more materials than the four a tile can show.
     pub truncated_tiles: usize,
-    /// Tiles whose painted brushes passed the original's ten-brush limit.
+    /// Tiles whose painted brushes passed the original's eleven-brush limit.
     pub brush_limit_tiles: usize,
     /// Grass tufts and plants grown.
     pub plants: usize,
@@ -1233,7 +1233,7 @@ struct BuiltTile {
     splat: Vec<u8>,
     unresolved: usize,
     truncated: bool,
-    /// Painted brushes past the original's ten-brush limit.
+    /// Painted brushes past the original's eleven-brush limit.
     brushes_exceeded: usize,
 }
 
@@ -1272,8 +1272,8 @@ fn build_tile(
         .map(|l| (RuleTree::node(palette, &l.name), l.weights.as_slice()))
         .collect();
     let unresolved = layers.iter().filter(|l| l.0.is_none()).count();
-    // The original evaluates at most ten painted brushes; the rest are
-    // reported as "Maximum brushes exceeded." and left out.
+    // The original keeps at most eleven painted brushes; at the next one
+    // it reports "Maximum brushes exceeded." and reads no further layers.
     let mut brushes = 0;
     let mut brushes_exceeded = 0;
     let mut keep = layers.len();

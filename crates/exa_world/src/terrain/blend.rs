@@ -19,12 +19,15 @@ const NOISE_OCTAVES: u32 = 4;
 const LEFTOVER_EPSILON: f32 = 0.001;
 /// Deeper rule chains are treated as cycles.
 const MAX_DEPTH: usize = 32;
-/// The most painted brushes a tile vertex evaluates; the original stops at
-/// ten and reports "Maximum brushes exceeded."
-pub const MAX_BRUSHES: usize = 10;
-/// One material channel's side: the original allocates 256 × 256 bytes per
-/// channel.
+/// The most painted brushes a tile evaluates: the original keeps eleven
+/// (its slot check is `count < 11`) and, at the next brush it finds,
+/// reports "Maximum brushes exceeded." and reads no further layers.
+pub const MAX_BRUSHES: usize = 11;
+/// One material channel's row stride: the original keeps 256 × 256 bytes
+/// per channel, of which a tile's 241 × 241 vertices use the corner.
 pub const CHANNEL_SIDE: usize = 256;
+/// A tile's vertices along a side.
+pub const TILE_VERTICES: usize = 241;
 
 /// Per-vertex values a rule can select by its kind.
 pub const INPUTS: usize = 9;
@@ -207,9 +210,9 @@ pub fn over_alphas(weights: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// One entry of the original's name-sorted brush table: a 16-byte
-/// lower-case name, the node it names and its tag (0 for a rule, the
-/// material index for a material).
+/// One entry of the original's name-sorted brush table: the name's 16
+/// bytes with `A`…`Z` lowered, the node it names and its tag (Exarust's:
+/// 0 for a rule, the material index for a material).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrushEntry {
     pub name: [u8; 16],
@@ -217,8 +220,35 @@ pub struct BrushEntry {
     pub tag: i32,
 }
 
+/// The original's brush key: the first sixteen bytes, `A`…`Z` lowered.
+fn brush_key(name: &str) -> [u8; 16] {
+    let mut key = [0u8; 16];
+    for (out, byte) in key.iter_mut().zip(name.as_bytes()) {
+        *out = byte.to_ascii_lowercase();
+    }
+    key
+}
+
+/// The original's binary search over the sorted names: the middle is
+/// `lo + (hi − lo) / 2` (truncated), an equal name stops it there, and
+/// otherwise it ends where the bounds cross, the middle then being `lo`.
+/// Returns the last middle and whether it was an equal name.
+fn search(entries: &[BrushEntry], key: &[u8; 16]) -> (usize, bool) {
+    let (mut lo, mut hi) = (0i64, entries.len() as i64 - 1);
+    let mut mid = lo + (hi - lo) / 2;
+    while lo <= hi {
+        match key.cmp(&entries[mid as usize].name) {
+            std::cmp::Ordering::Less => hi = mid - 1,
+            std::cmp::Ordering::Greater => lo = mid + 1,
+            std::cmp::Ordering::Equal => return (mid as usize, true),
+        }
+        mid = lo + (hi - lo) / 2;
+    }
+    (mid as usize, false)
+}
+
 /// The original's brush table: rules inserted first, then materials, each
-/// by binary search into a list sorted by the lower-case name.
+/// by binary search into a list sorted by the 16-byte lowered names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrushTable {
     entries: Vec<BrushEntry>,
@@ -227,8 +257,7 @@ pub struct BrushTable {
 impl BrushTable {
     /// Builds the table from a palette: its rules first (tag 0, the rule's
     /// index as the node), then its materials (tag the material index, the
-    /// node after the rules). The original first inserts every name into
-    /// its sorted list and then keeps the mapped record.
+    /// node after the rules).
     pub fn of(palette: &Palette) -> Self {
         let mut table = Self::default();
         for (at, rule) in palette.rules.iter().enumerate() {
@@ -240,31 +269,29 @@ impl BrushTable {
         table
     }
 
-    /// Inserts one entry before the first name not below it, shifting the
-    /// tail (the original's binary-search insertion).
+    /// Inserts one entry where the original's search ends: at an equal
+    /// name the search met, else where the bounds crossed.
     pub fn insert(&mut self, name: &str, node: usize, tag: i32) {
-        let mut key = [0u8; 16];
-        for (out, byte) in key.iter_mut().zip(name.as_bytes()) {
-            *out = byte.to_ascii_lowercase();
-        }
-        let entry = BrushEntry {
-            name: key,
-            node,
-            tag,
-        };
-        let at = self.entries.partition_point(|other| other.name < key);
-        self.entries.insert(at, entry);
+        let key = brush_key(name);
+        let (at, _) = search(&self.entries, &key);
+        self.entries.insert(
+            at,
+            BrushEntry {
+                name: key,
+                node,
+                tag,
+            },
+        );
     }
 
-    /// The entry named `name`, compared as the original's 16 lower-case
-    /// bytes; the last of duplicate names wins, as its later insertion
-    /// shadows the earlier one.
+    /// The entry named `name`, by the same search: with duplicate names,
+    /// whichever the search meets first.
     pub fn get(&self, name: &str) -> Option<&BrushEntry> {
-        let mut key = [0u8; 16];
-        for (out, byte) in key.iter_mut().zip(name.as_bytes()) {
-            *out = byte.to_ascii_lowercase();
+        let key = brush_key(name);
+        match search(&self.entries, &key) {
+            (at, true) => self.entries.get(at),
+            _ => None,
         }
-        self.entries.iter().rev().find(|entry| entry.name == key)
     }
 
     /// The entries in sorted order.
@@ -284,30 +311,31 @@ impl BrushTable {
 }
 
 /// A tile's painted brushes resolved against the table, with the base
-/// tree's node appended. The original allows at most [`MAX_BRUSHES`] and
-/// reports "Maximum brushes exceeded." for the rest.
+/// tree's node after them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Brushes {
     /// Painted nodes, in the tile's order.
     pub nodes: Vec<usize>,
     /// The base rule tree's node (`0`, the first rule).
     pub base: usize,
-    /// How many painted layers were past the limit.
-    pub exceeded: usize,
+    /// Whether a brush past [`MAX_BRUSHES`] was found, which stops the
+    /// layer walk ("Maximum brushes exceeded.").
+    pub exceeded: bool,
 }
 
-/// Resolves a tile's layer names into at most ten brushes plus the base
-/// tree. Unknown names are left out, as the original's failed lookup.
+/// Resolves a tile's layer names into at most [`MAX_BRUSHES`] brushes plus
+/// the base tree. Unknown names are left out, as the original's failed
+/// lookup; the first brush past the limit ends the walk.
 pub fn brushes<'a>(table: &BrushTable, layers: impl IntoIterator<Item = &'a str>) -> Brushes {
     let mut nodes = Vec::new();
-    let mut exceeded = 0;
+    let mut exceeded = false;
     for name in layers {
         let Some(entry) = table.get(name) else {
             continue;
         };
         if nodes.len() >= MAX_BRUSHES {
-            exceeded += 1;
-            continue;
+            exceeded = true;
+            break;
         }
         nodes.push(entry.node);
     }
@@ -318,13 +346,13 @@ pub fn brushes<'a>(table: &BrushTable, layers: impl IntoIterator<Item = &'a str>
     }
 }
 
-/// Scales the rule height bounds by `scale` and adds `offset`, in the
-/// original's truncating integer arithmetic. Only rules (tag 0) are
-/// touched; materials keep their bounds.
+/// Scales the height bounds of the rules of kind 0 (height) by `scale` and
+/// adds `offset`, in single precision (a product, then a sum); rules of
+/// other kinds keep their bounds.
 pub fn scale_rule_heights(rules: &mut [BlendRule], scale: f32, offset: f32) {
-    for rule in rules {
-        rule.lo = ((rule.lo * scale + offset) as i32) as f32;
-        rule.hi = ((rule.hi * scale + offset) as i32) as f32;
+    for rule in rules.iter_mut().filter(|rule| rule.kind == 0) {
+        rule.lo = rule.lo * scale + offset;
+        rule.hi = rule.hi * scale + offset;
     }
 }
 
@@ -368,22 +396,22 @@ pub fn pack_material_masks(
     out
 }
 
-/// A tile's material weights from the painted brushes and the leftover,
-/// before packing: one channel of 256 × 256 bytes per material, each byte
-/// accumulated the original's way. `weigh` is the per-vertex evaluator.
-pub fn channel_bytes(
-    materials: usize,
-    vertices: usize,
-    mut weigh: impl FnMut(usize) -> Vec<f32>,
-) -> Vec<u8> {
-    let mut out = vec![0u8; materials.saturating_mul(vertices)];
-    for vertex in 0..vertices {
-        for (material, weight) in weigh(vertex).into_iter().enumerate() {
-            if material >= materials {
-                break;
+/// A tile's material channels before packing: one 256 × 256 byte channel
+/// per material, of which vertex (row, column) of the 241 × 241 tile is
+/// byte `row·256 + column`, each accumulated the original's way.
+/// `weigh(row, column)` gives the vertex's weights by material.
+pub fn channel_bytes(materials: usize, mut weigh: impl FnMut(usize, usize) -> Vec<f32>) -> Vec<u8> {
+    let plane = CHANNEL_SIDE * CHANNEL_SIDE;
+    let mut out = vec![0u8; materials.saturating_mul(plane)];
+    for row in 0..TILE_VERTICES {
+        for column in 0..TILE_VERTICES {
+            for (material, weight) in weigh(row, column).into_iter().enumerate() {
+                if material >= materials {
+                    break;
+                }
+                let at = material * plane + row * CHANNEL_SIDE + column;
+                out[at] = accumulate(out[at], weight);
             }
-            let at = material * vertices + vertex;
-            out[at] = accumulate(out[at], weight);
         }
     }
     out
@@ -392,13 +420,13 @@ pub fn channel_bytes(
 /// The blur kernel the terrain texture pass builds: half the Gaussian on
 /// the negative side (zero included), mirrored to the positive side, then
 /// normalised to a sum of one. `radius` is the half-width; the kernel has
-/// `2·radius + 1` entries. The exponential is the library's double one, as
-/// the original's, with the sigma a third of the radius.
+/// `2·radius + 1` entries. The sigma is a third of the radius in double,
+/// rounded to single; the exponential is the runtime library's double one
+/// (here the platform's).
 pub fn gaussian_kernel(radius: i32) -> Vec<f32> {
     let count = (radius * 2 + 1).max(1) as usize;
     let mut kernel = vec![0.0f32; count];
-    let r = radius as f32;
-    let sigma = r * 0.333_333_34;
+    let sigma = (f64::from(radius) * (1.0 / 3.0)) as f32;
     let denominator = sigma * sigma * 2.0;
     let mut i = -radius;
     loop {
@@ -440,16 +468,30 @@ pub fn merge_into(weights: &mut [f32], mask: &mut [u8]) {
     }
 }
 
-/// The original's used-material merge: the weights start as the first
-/// material's bytes, then every material but the last merges into them.
-pub fn merge_material_masks(first: &[u8], rest: &mut [Vec<u8>], texels: usize) -> Vec<f32> {
-    let mut weights = vec![0.0f32; texels];
-    for (weight, byte) in weights.iter_mut().zip(first.iter().copied()) {
-        *weight = f32::from(byte);
+/// The original's used-material merge over the 241 × 241 corner of each
+/// 256-stride channel: the weights start as the first material's bytes,
+/// then every material but the first and the last merges into them, row by
+/// row. Returns the weights, 256 a row.
+pub fn merge_material_masks(first: &[u8], rest: &mut [Vec<u8>]) -> Vec<f32> {
+    let mut weights = vec![0.0f32; CHANNEL_SIDE * CHANNEL_SIDE];
+    for row in 0..TILE_VERTICES {
+        for column in 0..TILE_VERTICES {
+            let at = row * CHANNEL_SIDE + column;
+            weights[at] = first.get(at).copied().map_or(0.0, f32::from);
+        }
     }
     let last = rest.len().saturating_sub(1);
     for mask in rest.iter_mut().take(last) {
-        merge_into(&mut weights, mask);
+        for row in 0..TILE_VERTICES {
+            let start = row * CHANNEL_SIDE;
+            let end = (start + TILE_VERTICES).min(mask.len());
+            if start < end {
+                merge_into(
+                    &mut weights[start..start + (end - start)],
+                    &mut mask[start..end],
+                );
+            }
+        }
     }
     weights
 }
@@ -590,11 +632,32 @@ mod tests {
         let brushes = brushes(&table, ["coast", "missing", "INLAND"]);
         assert_eq!(brushes.nodes, [0, 1]);
         assert_eq!(brushes.base, 0);
-        assert_eq!(brushes.exceeded, 0);
+        assert!(!brushes.exceeded);
+        // Underscores sort below the lowered letters, as in the original.
+        let mut table = BrushTable::default();
+        for (at, name) in ["b", "_a", "a"].into_iter().enumerate() {
+            table.insert(name, at, 0);
+        }
+        let names: Vec<u8> = table.entries().iter().map(|e| e.name[0]).collect();
+        assert_eq!(names, b"_ab");
     }
 
     #[test]
-    fn only_ten_brushes_fit() {
+    fn a_duplicate_name_is_found_where_the_search_meets_it() {
+        let mut table = BrushTable::default();
+        table.insert("a", 0, 0);
+        table.insert("b", 1, 0);
+        table.insert("c", 2, 0);
+        // The search stops at the middle "b" and inserts there, before it.
+        table.insert("B", 3, 0);
+        let nodes: Vec<usize> = table.entries().iter().map(|e| e.node).collect();
+        assert_eq!(nodes, [0, 3, 1, 2]);
+        // Four entries: the first middle is 1, the new "b".
+        assert_eq!(table.get("b").map(|e| e.node), Some(3));
+    }
+
+    #[test]
+    fn eleven_brushes_fit_and_the_next_ends_the_walk() {
         let p = palette(
             (0..12)
                 .map(|i| rule(&format!("r{i}"), 0, "Sand", "Rock", 0.0, 1.0))
@@ -609,19 +672,21 @@ mod tests {
                 .iter()
                 .map(String::as_str),
         );
+        assert_eq!(MAX_BRUSHES, 11);
         assert_eq!(b.nodes.len(), MAX_BRUSHES);
-        assert_eq!(b.exceeded, 2);
+        assert!(b.exceeded);
     }
 
     #[test]
-    fn rule_heights_scale_with_truncation() {
+    fn only_height_rules_scale() {
         let mut rules = vec![
-            rule("a", 0, "Sand", "Rock", 0.25, 0.75),
+            rule("a", 0, "Sand", "Rock", 0.25, 0.755),
             rule("b", 1, "Rock", "Grass", -0.5, 1.5),
         ];
         scale_rule_heights(&mut rules, 100.0, 5.0);
-        assert_eq!((rules[0].lo, rules[0].hi), (30.0, 80.0));
-        assert_eq!((rules[1].lo, rules[1].hi), (-45.0, 155.0));
+        assert_eq!(rules[0].lo, 30.0);
+        assert_eq!(rules[0].hi, 0.755f32 * 100.0 + 5.0, "no truncation");
+        assert_eq!((rules[1].lo, rules[1].hi), (-0.5, 1.5));
     }
 
     #[test]
@@ -629,14 +694,17 @@ mod tests {
         assert_eq!(accumulate(0, 0.5), 128);
         assert_eq!(accumulate(200, 0.5), 255);
         assert_eq!(accumulate(10, 0.0), 10);
-        let channels = channel_bytes(2, 3, |v| vec![v as f32 / 3.0, 1.0 - v as f32 / 3.0]);
-        // Material-major channels: each material's whole channel first.
-        assert_eq!(channels[0], 0);
-        assert_eq!(channels[1], 85);
-        assert_eq!(channels[2], 170);
-        assert_eq!(channels[3], 255);
-        assert_eq!(channels[4], 170);
-        assert_eq!(channels[5], 85);
+        let channels = channel_bytes(2, |row, column| {
+            let v = (row * 3 + column) as f32 / 3.0;
+            vec![v.min(1.0), 1.0 - v.min(1.0)]
+        });
+        // One 256 × 256 channel per material; the tile uses its corner.
+        let plane = CHANNEL_SIDE * CHANNEL_SIDE;
+        assert_eq!(channels.len(), 2 * plane);
+        assert_eq!(&channels[..3], &[0, 85, 170]);
+        assert_eq!(channels[CHANNEL_SIDE], 255);
+        assert_eq!(channels[TILE_VERTICES], 0, "past the tile's columns");
+        assert_eq!(&channels[plane..plane + 3], &[255, 170, 85]);
         let packed = pack_material_masks(5, 2, |m, v| (m * 10 + v) as u8);
         // Group 0 holds materials 0..4 interleaved at texel·4+lane; group 1
         // starts at material 4's plane and holds one byte a texel.
@@ -667,13 +735,24 @@ mod tests {
         merge_into(&mut weights, &mut mask);
         assert_eq!(weights, [200.0, 255.0]);
         assert_eq!(mask, [128, 255]);
-        let first = [100u8, 50];
-        let mut rest = vec![vec![100u8, 50], vec![200u8, 0]];
-        let weights = merge_material_masks(&first, &mut rest, 2);
-        // The first material and the middle one merge; the last is skipped.
-        assert_eq!(weights, [200.0, 100.0]);
-        assert_eq!(rest[0], [128, 128]);
-        assert_eq!(rest[1], [200, 0]);
+        let plane = CHANNEL_SIDE * CHANNEL_SIDE;
+        let mut first = vec![0u8; plane];
+        first[0] = 100;
+        first[1] = 50;
+        first[TILE_VERTICES] = 7;
+        let mut middle = vec![0u8; plane];
+        middle[0] = 100;
+        middle[1] = 50;
+        middle[TILE_VERTICES] = 9;
+        let mut rest = vec![middle, vec![200u8; plane]];
+        let weights = merge_material_masks(&first, &mut rest);
+        // The first material and the middle one merge; the last is skipped,
+        // and so are the columns past the tile's 241.
+        assert_eq!(&weights[..2], &[200.0, 100.0]);
+        assert_eq!(&rest[0][..2], &[128, 128]);
+        assert_eq!(weights[TILE_VERTICES], 0.0);
+        assert_eq!(rest[0][TILE_VERTICES], 9);
+        assert_eq!(rest[1][0], 200);
     }
 
     #[test]

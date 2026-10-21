@@ -30,9 +30,11 @@ and the grid's rooms; portal clipping is next (see
 - `grid`: walls and floors from the wall and floor sets, and each room's occluder and lid merged from the pieces' `[…` and `+R…` strips and the ceiling slots (never spawned as pieces); ceiling caps. Special tile masks turn with the cell, a cell past the last piece of its type reuses it (and one with none of its type takes the set's first), a floor set named `Terrain` is not loaded, and pieces and characters look their room up by the cell they stand in.
 - `scene_env`: the original's scene environment as a pure model: the sun and moon on their 45° path and the daylight factor, the time-of-day records and their pick-and-blend, cloud dimming, the fog's span and per-frame near/far, the clear colour and sky gradient, the ambient scale, the automatic sunlight rule, the sun mode and sky switch, and rain and lightning with the original's generator. `environment` turns it into the level's `Lighting` (ambient, sun, linear fog, clear colour and sky) and Bevy resources; the weather tick and the time of day are modelled but nothing drives them yet.
 - `terrain`: tiles, blend rules, height pass and plants; the palette's
-  name-sorted brush table, the ten-brush limit, the byte channel
-  accumulation, the four-per-plane mask packing, the Gaussian blur kernel
-  and the used-material merge; the palette falls back to `default.ftb` as the original does; a tile's geometry
+  name-sorted brush table (the original's binary search), the
+  eleven-brush limit (wired: later layers are dropped), and, not wired,
+  the height-rule scaling, the byte channel accumulation, the
+  four-per-plane mask packing, the Gaussian blur kernel and the
+  used-material merge; the palette falls back to `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
   worker), one mesh per 6 m block (`terrain::patch` is the original's
   shared serpentine triangle list), each in its block's room, and in a grid
