@@ -116,7 +116,7 @@ impl ClientRect {
     }
 }
 
-/// The form's client rectangle (`0x10002be20`) from its size, border, the
+/// The form's client rectangle from its size, border, the
 /// style word (`+0x5c`, which picks the title and control spans) and the
 /// attribute word (`+0x64`, which picks the title, fill and scrollbars).
 /// `title_text` is the skin's title-bar text offset, `scroll_inset` the
@@ -233,7 +233,7 @@ pub fn styled_label(style: u32, text: &str) -> String {
     }
 }
 
-/// Finds a form by its type tag in a tree (`0x100029030`): the form itself
+/// Finds a form by its type tag in a tree: the form itself
 /// first, then its children in order.
 pub fn find_form_by_tag(node: &HitNode, tag: u32) -> Option<&HitNode> {
     if node.id == tag {
@@ -244,12 +244,12 @@ pub fn find_form_by_tag(node: &HitNode, tag: u32) -> Option<&HitNode> {
         .find_map(|child| find_form_by_tag(child, tag))
 }
 
-/// The index of the first form with a tag in a sibling list (`0x1000290c0`).
+/// The index of the first form with a tag in a sibling list.
 pub fn form_index_by_tag(tags: &[u32], tag: u32) -> Option<usize> {
     tags.iter().position(|candidate| *candidate == tag)
 }
 
-/// Applies a style and attribute word (`0x100029150`): a form whose parent
+/// Applies a style and attribute word: a form whose parent
 /// is not a task gets state bit 4; a maximised form (attribute 0x10000)
 /// clears 0x20000 when it is not a task's or adds style 0x10 and attributes
 /// 0x41 when it is; the state's layout bit is raised.
@@ -272,7 +272,7 @@ pub fn set_style(style: u32, attributes: u32, parent_is_task: bool) -> (u32, u32
     (style, attributes, state)
 }
 
-/// The destroy's work (`0x10002aae0`): free the children, the control array
+/// The destroy's work: free the children, the control array
 /// and the name, clear the active form if it is this one, and the final
 /// free when the caller owns it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -301,7 +301,7 @@ pub fn destroy_plan(
     }
 }
 
-/// The 1-based control code's index, when it names a control (`0x10002da50`).
+/// The 1-based control code's index, when it names a control.
 pub fn control_index(code: i32, last: i32) -> Option<usize> {
     let index = (code & 0xffff) - 1;
     if code <= 0 || index < 0 || last < index {
@@ -310,7 +310,7 @@ pub fn control_index(code: i32, last: i32) -> Option<usize> {
     Some(index as usize)
 }
 
-/// The first control with a record code (`0x10002dab0`): the form's own
+/// The first control with a record code: the form's own
 /// controls first, then the children's recursively.
 pub fn find_control(controls: &[i32], children: &[Vec<i32>], code: i32) -> Option<i32> {
     controls
@@ -324,13 +324,13 @@ pub fn find_control(controls: &[i32], children: &[Vec<i32>], code: i32) -> Optio
         })
 }
 
-/// The centre of a form's content (`0x10002d9f0`): each span over two,
+/// The centre of a form's content: each span over two,
 /// truncating.
 pub fn content_centre(width: i32, height: i32) -> (i32, i32) {
     (width / 2, height / 2)
 }
 
-/// A form's part of the local-to-screen chain (`0x10002cf20`): the form's
+/// A form's part of the local-to-screen chain: the form's
 /// place, client inset, content and scroll.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScreenOffset {
@@ -362,7 +362,7 @@ pub fn local_to_screen(mut point: (i32, i32), forms: &[ScreenOffset]) -> (i32, i
     point
 }
 
-/// A hover change (`0x10002d6d0`): the control hovered (0-based) and whether
+/// A hover change: the control hovered (0-based) and whether
 /// the form redraws. A code outside the controls clears the old hover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HoverChange {
@@ -385,7 +385,7 @@ pub fn hover_change(word: u32, last: i32) -> HoverChange {
     }
 }
 
-/// A focus change (`0x10002d840`): the new 0-based control, whether the
+/// A focus change: the new 0-based control, whether the
 /// focus moved and whether the form redraws. The original clears bit 0x400
 /// on the old record and sets it on the new, and clears the form's state bit
 /// 0x10 when no control takes it.
@@ -419,7 +419,7 @@ pub fn selected_nudge(unit: i32) -> i32 {
     unit / 3
 }
 
-/// The form class's shared ease `(3 − 2t)t²` (`0x100029000`).
+/// The form class's shared ease `(3 − 2t)t²`.
 pub fn ease(t: f32) -> f32 {
     (3.0 - 2.0 * t) * t * t
 }
@@ -508,7 +508,7 @@ pub struct ShowInput {
     pub unit_differs: bool,
 }
 
-/// The show's rule (`0x100029470`): attach, adopt the task's empty title,
+/// The show's rule: attach, adopt the task's empty title,
 /// give an unset y 36 (unless centred or bottom-placed), lay out and rescale,
 /// re-centre, rebuild the snap edges and redraw.
 pub fn show_plan(input: ShowInput) -> ShowPlan {
@@ -562,7 +562,7 @@ pub struct CloseInput {
     pub children: usize,
 }
 
-/// The close's rule (`0x10002c410`): a form already closing is left alone;
+/// The close's rule: a form already closing is left alone;
 /// the task's active child is unlinked with its owner told, every other form
 /// detaches, tells its dependants and children, hides and runs its callback.
 pub fn close_plan(input: CloseInput) -> ClosePlan {
@@ -605,7 +605,7 @@ pub struct VisibilityPlan {
     pub redraw: bool,
 }
 
-/// The visibility rule (`0x10002c8f0`): showing focuses the form (or its
+/// The visibility rule: showing focuses the form (or its
 /// parent when it is the task's active child); hiding hides the children and
 /// either the parent (when active) or the form itself.
 pub fn visibility_plan(visible: bool, is_active_child: bool, child_count: usize) -> VisibilityPlan {
@@ -646,7 +646,7 @@ pub struct FormRecord {
     pub unit: i32,
 }
 
-/// Maximises a form (`0x100029660`): the record saves its geometry and words,
+/// Maximises a form: the record saves its geometry and words,
 /// the place becomes 0, 0, the style keeps the bottom/right anchors and the
 /// size becomes the screen's. `already_free` is attribute bit 0x40000; a free
 /// form clears its 0x4f attributes and its spacing instead.
@@ -675,7 +675,7 @@ pub fn maximise(
     (saved, maximised)
 }
 
-/// Restores a maximised form (`0x100029780`): the unit is rescaled back from
+/// Restores a maximised form: the unit is rescaled back from
 /// the saved record's unit and the saved geometry goes to the screen-sized
 /// stored values. Returns the restored record.
 pub fn restore(saved: FormRecord, unit: i32) -> FormRecord {

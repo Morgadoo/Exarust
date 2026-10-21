@@ -143,10 +143,9 @@ pub struct CharacterScreenInput {
     pub allow_toggle: bool,
 }
 
-/// Whether the inventory screen can be opened for a character, and what the
-/// call does: `0x100139a50` refuses unless the controller is ready and the
-/// mode is not 0xa00; an open view is toggled when it is on top and focused
-/// otherwise.
+/// Whether the inventory screen can be opened for a character: it refuses
+/// unless the controller is ready and the mode is not 0xa00; an open view is
+/// toggled when it is on top and focused otherwise.
 pub fn character_screen(input: CharacterScreenInput) -> ScreenAction {
     if !input.ready || !input.mode_ok {
         return ScreenAction::Refused;
@@ -800,7 +799,7 @@ pub fn shutdown_skin(released: bool, hook: bool) -> (bool, bool) {
     (released, hook)
 }
 
-/// Sets the GUI unit the HUD skin and the second skin follow (`0x100132730`).
+/// Sets the GUI unit the HUD skin and the second skin follow.
 pub fn set_skin_unit(unit: i32, has_skin: bool, has_other: bool) -> SkinUnit {
     SkinUnit {
         unit,
@@ -817,13 +816,13 @@ pub struct SkinUnit {
     pub other_updated: bool,
 }
 
-/// The heartbeat's fade-out start (`0x10013d7a0`): only an active heartbeat
+/// The heartbeat's fade-out start: only an active heartbeat
 /// fades, and its clock is stamped.
 pub fn heartbeat_fade_start(active: bool, now: u32) -> Option<u32> {
     active.then_some(now)
 }
 
-/// The screen reset (`0x10013d7e0`): a completed curtain decrements the
+/// The screen reset: a completed curtain decrements the
 /// open-level count, the curtain state clears and the heartbeat fades.
 pub fn screen_reset(curtain_state: u8, level_holds: i32) -> (u8, i32, bool) {
     let level_holds = if curtain_state == 2 {
@@ -834,7 +833,7 @@ pub fn screen_reset(curtain_state: u8, level_holds: i32) -> (u8, i32, bool) {
     (0, level_holds, true)
 }
 
-/// The bar frame drawn around a bar (`0x10013c3d0`): the rectangle from
+/// The bar frame drawn around a bar: the rectangle from
 /// `x − 2, y` to `x + width + 2, y + 4·unit − 2`.
 pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> FormRect {
     FormRect {
@@ -845,7 +844,7 @@ pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> FormRect {
     }
 }
 
-/// The gauge frame (`0x10013c420`): a rectangle one pixel above the gauge
+/// The gauge frame: a rectangle one pixel above the gauge
 /// and `height + 4` tall, centred on the bar.
 pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> FormRect {
     FormRect {
@@ -873,19 +872,19 @@ pub fn preview_bar_frames(window_width: i32, window_height: i32, unit: i32) -> [
 }
 
 /// Whether the character view rescales when the form's style has either of
-/// the 0x60 bits (`0x100137ae0`).
+/// the 0x60 bits.
 pub fn rescales_view(style: u32) -> bool {
     style & 0x60 != 0
 }
 
-/// Whether a power-tree screen is open (`0x100139560`): any tag in the
+/// Whether a power-tree screen is open: any tag in the
 /// 0xce100000 family.
 pub fn has_power_tree(tags: &[u32]) -> bool {
     tags.iter()
         .any(|tag| tag & POWER_TREE_MASK == POWER_TREE_MASK)
 }
 
-/// The character screens to close (`0x10013f2e0`), back to front, when the
+/// The character screens to close, back to front, when the
 /// mode changed or the form's flags say so.
 pub fn character_screens_to_close(tags: &[u32], flags: u32, mode: u32) -> Vec<usize> {
     if !closes_character_screen(flags, mode) {
@@ -897,13 +896,13 @@ pub fn character_screens_to_close(tags: &[u32], flags: u32, mode: u32) -> Vec<us
         .collect()
 }
 
-/// The tooltip singleton's creation (`0x10013b660`): the same tooltip form
+/// The tooltip singleton's creation: the same tooltip form
 /// is made once.
 pub fn tooltip_singleton(exists: bool) -> bool {
     !exists
 }
 
-/// The compass's installation (`0x10013f220`): registers the world-cursor
+/// The compass's installation: registers the world-cursor
 /// callback, loads `compass.rfi` and installs the level-fade hook.
 pub fn compass_install(installed: bool) -> CompassInstall {
     CompassInstall {
@@ -923,14 +922,14 @@ pub struct CompassInstall {
     pub installed_hook: bool,
 }
 
-/// Whether the skill selector's rows are all locked (`0x10013b2e0`): when
+/// Whether the skill selector's rows are all locked: when
 /// the character's ability word is set and the control's required rank is no
 /// more than the skill's experience over 5000, every row starts at 0x10.
 pub fn selector_rows_locked(ability: u32, required_rank: u16, skill_xp: u32) -> bool {
     ability != 0 && u32::from(required_rank) <= skill_xp / 5000
 }
 
-/// The selector's requirement marks (`0x10013b2e0`): a table slot whose
+/// The selector's requirement marks: a table slot whose
 /// requirement is positive and which is not among the first `funded` written
 /// technique bytes is marked.
 pub fn selector_requirement_marks(requirements: &[i32], written: &[u8], funded: i32) -> Vec<bool> {
@@ -947,7 +946,7 @@ pub fn selector_requirement_marks(requirements: &[i32], written: &[u8], funded: 
         .collect()
 }
 
-/// The skill-ready alert's condition (`0x10013d920`): the character's
+/// The skill-ready alert's condition: the character's
 /// current experience is below 15 and no skill has a technique chosen past
 /// its funded levels.
 pub fn ready_alert(current_xp: i32, chosen_ahead: bool) -> bool {
@@ -967,7 +966,7 @@ pub struct BarsInput {
     pub interaction_until: u32,
 }
 
-/// Whether the health/focus bars ride up (`0x10013dd80`): yellow health
+/// Whether the health/focus bars ride up: yellow health
 /// changed, the focus capacity dropped, a power is being cast, the player is
 /// out of action or the interaction delay has not passed. The fade itself is
 /// [`crate::hud::Fade`].
@@ -979,13 +978,13 @@ pub fn bars_shown(input: BarsInput) -> bool {
         || input.now < input.interaction_until
 }
 
-/// Whether the block-stamina gauge rides up (`0x10013df60`): the character
+/// Whether the block-stamina gauge rides up: the character
 /// holds a shield item and is out of action.
 pub fn gauge_shown(shield_item: bool, out_of_action: bool) -> bool {
     shield_item && out_of_action
 }
 
-/// The HUD fade reset (`0x10013dd00`): opacity zero, the clock reset, and
+/// The HUD fade reset: opacity zero, the clock reset, and
 /// the last yellow health, focus capacity and interaction clock stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HudFadeReset {
@@ -1014,7 +1013,7 @@ pub fn reset_hud_fade(
     }
 }
 
-/// A form close deferred to the end of the frame (`0x10013f390`): the game
+/// A form close deferred to the end of the frame: the game
 /// queues the call and returns at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeferredClose {
