@@ -1021,14 +1021,16 @@ longer do. The bit-19 variant (one mesh) is not reproduced.
   per area, sound sets per material and event (impact, footstep, voice), and
   music. Its modules (`bank` with the one sound-set picker every event
   uses, `music`, `hits`, `footsteps`) take each lane's new sounds as their
-  own module; the original's set probing (01 to 16, no repeat) and its
-  audio environment are still to do.
+  own module; `environment`, `ambience`, `reverb` and `playback` carry the
+  original's audio environment, with set probing (01 to 16, no repeat).
 
 Done (change `fit-the-smallest-sphere`): `exa_render::bound_sphere` holds the original's smallest-enclosing-sphere solver (RFT_BoundSphere, move-to-front over 1–4 support points in f64) and its f32/f64 helpers, bit-exact against the assembly and a separate port on 600 point sets, but nothing calls it yet. Its only caller in the original is TShadowMapDirect's fitted sun map (at least 2 clipped corners, sphere ×100 to cm, radius in 200 cm steps with +0.3/−0.1 hysteresis, centre snapped to texels, ±8000 cm depth); that map and the RF_Intersection convex clipping are a separate lane. RFT_BoundSphere 80%.
 
 Done (change `match-the-noise-and-pixel-formats`, power effects part): the force and spirit powers' animated noise field is modelled as `exa_render::image_noise::NoiseField` (256×256, 4 octaves, amplitude 1, keep/add 0.5, period 0.8 s for the force) but not drawn; the three-plane weighted sum p2·w2 + (p1·w1 + p0·w0) of RF_WorkerThreads is inside it.
 
 Done (change `voxelise-cell-floors`): the original's mesh voxeliser is in `exa_physics::voxel`, checked against the assembly: the floor heightfield (ray plane distances in the original's lane order, cell edges snapped in whole 20 cm steps, the downsample's odd-row drift), the surface generator (0.2·p step and s·√2/2 near radius in double precision, near-cell clearing, greedy 40/4/0.4 cover) and the rigid-body voxel map's layout. The GI volume now merges each grid cell's floor meshes and runs the heightfield once per cell, in the cell's space, at level load; a flat 6 m cell still gives 900 points 10 cm under its floor. Not in: the node's kd-tree sphere query (closest-point stand-in), the generator's callers for floor-set props and character bodies, floor collision triangles.
+
+Done (change `mix-the-audio-environment`): exa_audio carries the original's audio environment: 512 virtual voices ranked by audibility onto 64 source slots with the original's scan, sort, bind, refresh and eviction; every source heard through the OpenAL model the original sets up (linear clamped, 4–30 m, rolloff 1); the listener 3 m along its up vector from the player + 50 cm; a name-keyed, reference-counted buffer cache with sound sets and the no-repeat picker; level music cut at level change, the main-menu crossfade, overlays with mirrored interruptions and the Music setting; area ambience beds and scheduled one-shots; the stored EAX reverb block and per-level decay offset, computed but not applied (rodio has no EFX). Still open: the in-game listener orientation writer, weather/time-of-day/story ambience callers, the menu theme alternatives, an options screen for Music, the remaining one-off sounds on the mixer. A `play exanima01` run on the RTX 3090 loaded the level (5900 props, 39 characters, loading screen 22.1 s) and exited 0 (`target/verify/gpu-launch-87.{log,png}`).
 
 **M5 "looks and sounds like Exanima":** reference shots taken from matching
 camera positions in the original and in Exarust are hard to tell apart.
