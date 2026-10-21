@@ -121,6 +121,7 @@ or the original does not do it).
 | Depth prepass / early Z | later | The surface shader is heavy: parallax, GI taps, six lights with 2 shadow taps each. A depth prepass would shade each pixel once in cluttered rooms. It is also what occlusion culling needs. |
 | Shader specialisation | later | Material features are runtime flags today. Shader variants per flag set would drop dead branches; the image is the same. |
 | Baked lighting | no | The original computes its voxel GI live (one propagation step per frame). |
+| GI sector marks | done | As in the original, each step propagates only the sectors the camera marks (in view, near the focus) and each voxel loops over its sector group's lights, twelve at most; the rest is cleared. The CPU side is a few hundred box tests and the grouping of 64 sectors a frame, without per-sector allocations, and the pass parameters (about 42 KiB) are rewritten in one buffer kept across frames. |
 | SSAO / SSR, VRS | no | Not in the original; VRS would lower shading detail. |
 
 ### Resolution and temporal reuse

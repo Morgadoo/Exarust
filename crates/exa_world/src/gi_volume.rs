@@ -23,7 +23,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
 use exa_physics::voxel::{self, Bounds};
-use exa_render::gi::{GiSector, GiSectorLights, GiSectors, GiVolume};
+use exa_render::gi::{GiSector, GiSectorLights, GiVolume};
 
 use crate::shadow_links::LevelWalls;
 
@@ -480,10 +480,10 @@ fn follow_camera(
 }
 
 /// Marks the block's sectors the camera needs and lists each sector's 6 m
-/// cell lights, as the original marks the sectors within six of the focus
-/// point (37 cells squared), inside the view and the level's built cells,
-/// then widens the marks by one sector; each block then draws a sector with
-/// the lights its cell's flood window lists.
+/// cell lights, as the original does every frame: the cells within six of
+/// the focus cell (and 37 cells squared), built in plane A, whose box meets
+/// the view, then every such cell next to a marked one; each block then
+/// draws a sector with the lights its cell's flood lists.
 #[allow(clippy::too_many_arguments)]
 fn publish_sector_lights(
     mut lights: ResMut<GiSectorLights>,
@@ -493,155 +493,176 @@ fn publish_sector_lights(
     walls: Option<Res<LevelWalls>>,
     cameras: Query<(&GlobalTransform, &Frustum), exa_render::supersample::SceneCamera>,
     point_lights: Query<&exa_render::lights::LightId>,
+    mut scene_lights: Local<Vec<u32>>,
 ) {
     let Some(source) = source else { return };
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let Some(textures) = textures else { return };
     let grid = &source.level.grid;
-    let camera = cameras.iter().next();
-    let focus = camera.map(|(at, _)| at.translation() + at.forward().as_vec3() * FOCUS_AHEAD);
-    let focus_cell = focus.map(|f| {
-        IVec2::new(
-            grid.width as i32 / 2 + (f.x / SECTOR_M).floor() as i32,
-            grid.height as i32 / 2 + (f.z / SECTOR_M).floor() as i32,
-        )
-    });
-    // Every built block fills the floors of its sectors; a sector of a block
-    // not resident here still has 255, as the manager starts them all.
+    let block = textures.sector;
+    // Every built block fills the floors of its sectors; a cell no built
+    // block covers keeps 255, as the manager starts them all.
     let floor = |x: i32, z: i32| {
-        let (bx, bz) = (x - textures.sector.x, z - textures.sector.y);
+        let (bx, bz) = (x - block.x, z - block.y);
         if (0..SECTORS as i32).contains(&bx) && (0..SECTORS as i32).contains(&bz) {
             textures.sector_floor(bx as usize, bz as usize)
         } else {
-            // A sector no built block has filled has no floor.
             u8::MAX
         }
     };
-    let depth = textures.dims().z as f32;
-    let marks = match (focus_cell, camera) {
-        (Some(focus), Some((_, frustum))) => sector_marks(
-            grid,
-            focus,
-            textures.sector,
-            textures.origin,
-            depth,
-            floor,
-            |centre, half| frustum_intersects(frustum, centre, half),
-        ),
+    let span = BlockSpan {
+        top: textures.dims().z as f32,
+        below: (-textures.origin.y / VOXEL).round(),
+    };
+    let marks = match cameras.iter().next() {
+        Some((at, frustum)) => {
+            let focus = at.translation() + at.forward().as_vec3() * FOCUS_AHEAD;
+            sector_marks(
+                grid,
+                focus_cell(grid, focus),
+                block,
+                span,
+                floor,
+                |centre, half| box_meets_view(frustum, centre, half),
+            )
+        }
         // No scene camera: light the whole block (loading screens and
         // headless views have no frustum).
-        _ => [true; SECTORS * SECTORS],
+        None => [true; SECTORS * SECTORS],
     };
-    let mut state = GiSectors {
-        drawn: marks,
-        ..Default::default()
-    };
-    // A level without a wall grid lists every light in every sector: the
-    // original's non-grid path uses one group of the scene's lights.
-    let all: Vec<u32> = if walls.is_none() {
-        let mut ids: Vec<u32> = point_lights.iter().map(|id| id.0).collect();
-        ids.sort_unstable();
-        ids
-    } else {
-        Vec::new()
-    };
-    for z in 0..SECTORS as i32 {
-        for x in 0..SECTORS as i32 {
-            let i = x as usize + z as usize * SECTORS;
-            let ids: Vec<u32> = match &walls {
-                Some(walls) => walls
-                    .lights(
-                        (textures.sector.x + x) as usize,
-                        (textures.sector.y + z) as usize,
-                    )
-                    .collect(),
-                None => all.clone(),
-            };
-            state.sectors[i] = GiSector::new(ids);
+    let state = Arc::make_mut(&mut lights.0);
+    state.block = block;
+    state.from_middle = block - IVec2::new((grid.width >> 1) as i32, (grid.height >> 1) as i32);
+    state.grid = walls.is_some();
+    state.drawn = marks;
+    match walls.as_deref() {
+        Some(walls) => {
+            for z in 0..SECTORS {
+                for x in 0..SECTORS {
+                    let cell = ((block.x + x as i32) as usize, (block.y + z as i32) as usize);
+                    state.sectors[x + z * SECTORS] = GiSector::new(walls.lights(cell.0, cell.1));
+                }
+            }
+        }
+        None => {
+            // A level without a wall grid draws the scene's lights in its
+            // one group. [guess: in their registration order, ascending ids]
+            scene_lights.clear();
+            scene_lights.extend(point_lights.iter().map(|id| id.0));
+            scene_lights.sort_unstable();
+            state.sectors = [GiSector::new(scene_lights.iter().copied()); SECTORS * SECTORS];
         }
     }
-    *lights = GiSectorLights(Arc::new(state));
 }
 
-/// Whether a box centred at `centre` with `half` extents meets the view's
-/// volume: the original tests the sector's 300 cm × half-span × 300 cm box
-/// against the camera's convex volume, rejecting a plane only when the
-/// whole box lies beyond it. The half extents are used as the original
-/// passes them, sign included (an unbuilt sector's span is negative).
-fn frustum_intersects(frustum: &Frustum, centre: Vec3, half: Vec3) -> bool {
-    let point = centre.extend(1.0);
-    for plane in &frustum.half_spaces {
-        // Bevy's planes point inwards: a positive distance is inside.
-        let distance = plane.normal_d().dot(point);
-        if distance < 0.0 {
-            let n = plane.normal();
-            let reach = n.x.abs() * half.x + n.y.abs() * half.y + n.z.abs() * half.z;
-            if reach < -distance {
+/// A block's height as the sector boxes read it: its top slice count and
+/// how many voxels its slice 0 sits below the world's zero.
+#[derive(Clone, Copy, Debug)]
+struct BlockSpan {
+    top: f32,
+    below: f32,
+}
+
+/// The level cell holding a world point (metres), as the original finds
+/// the focus's cell: its centimetres over 600, rounded down, counted from
+/// the grid's middle cell (the size halved, rounded down).
+fn focus_cell(grid: &GiGrid, at: Vec3) -> IVec2 {
+    let cell = |c: f32, n: u32| {
+        ((c * CM_PER_M * PER_CELL_CM).floor() as i32).saturating_add((n >> 1) as i32)
+    };
+    IVec2::new(cell(at.x, grid.width), cell(at.z, grid.height))
+}
+
+/// Whether a sector's box (centre and half extents, centimetres) meets the
+/// view, as the original tests it against the camera's convex volume, plane
+/// by plane: the box is out when its centre lies beyond a plane by more
+/// than the 6 m cell's diagonal, or by more than the box reaches
+/// towards the plane. Each half extent takes the plane normal's sign bit on
+/// top of its own, so a negative height (a cell without geometry, floor
+/// 255) reaches away from the plane instead.
+fn box_meets_view(frustum: &Frustum, centre: Vec3, half: Vec3) -> bool {
+    const SIGN: u32 = 0x8000_0000;
+    let signed = |h: f32, n: f32| f32::from_bits(h.to_bits() | (n.to_bits() & SIGN));
+    frustum.half_spaces.iter().all(|plane| {
+        // Bevy's planes face inwards and are in metres; the original's face
+        // outwards, in centimetres.
+        let n = -plane.normal();
+        let w = -plane.d() * CM_PER_M;
+        let d = ((centre.x * n.x + centre.y * n.y) + centre.z * n.z) + w;
+        if d > SECTOR_RADIUS_CM {
+            return false;
+        }
+        if d > 0.0 {
+            let reach =
+                (n.x * signed(half.x, n.x) + n.y * signed(half.y, n.y)) + n.z * signed(half.z, n.z);
+            if d > reach {
                 return false;
             }
         }
-    }
-    true
+        true
+    })
 }
 
-/// The sectors the manager draws this frame: cells within six of the focus
-/// cell and 37 cells squared of it, built in plane A, whose mid-height point
-/// the view sees; then widened by one sector. The original marks the
-/// sectors in two passes over the same window, the second adding a marked
-/// neighbour.
-#[allow(clippy::too_many_arguments)]
+/// The sectors of the block at `block` the manager draws this frame. The
+/// first pass marks a cell within six of the focus cell (and 1 to size − 2),
+/// within 37 cells squared of it and built in plane A, when its box meets
+/// the view: 300 cm either side of the cell's centre, from its floor slice
+/// to the block's top. The second pass, over the same cells and with the
+/// same window, reach and plane A tests, keeps a cell whose own mark or a
+/// neighbour's is set; the neighbours are read at the cell's index ± 1 and
+/// ± the grid's height (the original's stride: the row length only on a
+/// square grid).
 fn sector_marks(
     grid: &GiGrid,
     focus: IVec2,
     block: IVec2,
-    origin: Vec3,
-    depth: f32,
+    span: BlockSpan,
     floor: impl Fn(i32, i32) -> u8,
     meets_view: impl Fn(Vec3, Vec3) -> bool,
 ) -> [bool; SECTORS * SECTORS] {
     let (w, h) = (grid.width as i32, grid.height as i32);
-    let (focus_x, focus_z) = (focus.x, focus.y);
-    let (lo_x, hi_x) = ((focus_x - 6).max(1), (focus_x + 6).min(w - 2));
-    let (lo_z, hi_z) = ((focus_z - 6).max(1), (focus_z + 6).min(h - 2));
-    let first = |x: i32, z: i32| -> bool {
-        if x < lo_x || x > hi_x || z < lo_z || z > hi_z {
-            return false;
-        }
-        let (dx, dz) = (x - focus_x, z - focus_z);
-        if dx * dx + dz * dz >= 37 {
-            return false;
-        }
-        if !grid.open(i64::from(x), i64::from(z)) {
-            return false;
-        }
-        // The sector's box: its columns span half a 6 m cell either side of
-        // its centre, and its slices from the floor to the volume's top.
-        let floor = f32::from(floor(x, z));
-        let centre = Vec3::new(
-            origin.x + 4.6 + (x - block.x) as f32 * SECTOR_M,
-            origin.y + (floor + depth) * 0.5 * VOXEL,
-            origin.z + 4.6 + (z - block.y) as f32 * SECTOR_M,
-        );
-        let half = Vec3::new(
-            SECTOR_M * 0.5,
-            (depth - floor) * 0.5 * VOXEL,
-            SECTOR_M * 0.5,
-        );
-        meets_view(centre, half)
+    let (lo_x, hi_x) = (
+        focus.x.saturating_sub(6).max(1),
+        focus.x.saturating_add(6).min(w - 2),
+    );
+    let (lo_z, hi_z) = (
+        focus.y.saturating_sub(6).max(1),
+        focus.y.saturating_add(6).min(h - 2),
+    );
+    let candidate = |x: i32, z: i32| {
+        let (dx, dz) = (i64::from(x - focus.x), i64::from(z - focus.y));
+        (lo_x..=hi_x).contains(&x)
+            && (lo_z..=hi_z).contains(&z)
+            && grid.open(i64::from(x), i64::from(z))
+            && dz * dz + dx * dx <= 36
     };
+    let top = VOXEL_CM * (span.top - span.below);
+    let (middle_x, middle_z) = ((grid.width >> 1) as f32, (grid.height >> 1) as f32);
+    let first = |x: i32, z: i32| {
+        if !candidate(x, z) {
+            return false;
+        }
+        let bottom = VOXEL_CM * (f32::from(floor(x, z)) - span.below);
+        let half_y = (top - bottom) * 0.5;
+        let centre = Vec3::new(
+            ((x as f32 + 0.5) - middle_x) * CELL_CM,
+            bottom + half_y,
+            ((z as f32 + 0.5) - middle_z) * CELL_CM,
+        );
+        meets_view(centre, Vec3::new(HALF_CELL_CM, half_y, HALF_CELL_CM))
+    };
+    let (cells, row) = (i64::from(w) * i64::from(h), i64::from(w));
+    let first_at = |i: i64| (0..cells).contains(&i) && first((i % row) as i32, (i / row) as i32);
+    let stride = i64::from(h);
     let mut marks = [false; SECTORS * SECTORS];
     for z in 0..SECTORS as i32 {
         for x in 0..SECTORS as i32 {
             let (cx, cz) = (block.x + x, block.y + z);
-            // The second pass runs over the same window only: a sector on
-            // the grid's border is not drawn even if its neighbour is.
-            let in_window = cx >= lo_x && cx <= hi_x && cz >= lo_z && cz <= hi_z;
-            marks[(x + z * SECTORS as i32) as usize] = in_window
-                && (first(cx, cz)
-                    || first(cx - 1, cz)
-                    || first(cx + 1, cz)
-                    || first(cx, cz - 1)
-                    || first(cx, cz + 1));
+            let i = i64::from(cz) * row + i64::from(cx);
+            marks[(x + z * SECTORS as i32) as usize] = candidate(cx, cz)
+                && [-stride, -1, 0, 1, stride]
+                    .iter()
+                    .any(|&step| first_at(i + step));
         }
     }
     marks
@@ -702,6 +723,15 @@ const TERRAIN_SOLID: u8 = 20;
 const FLOOR_PARAMETER: f32 = 20.0;
 /// Centimetres to the metre.
 const CM_PER_M: f32 = 100.0;
+/// The original's reciprocal of a 6 m cell in centimetres (1/600 as f32).
+const PER_CELL_CM: f32 = 1.0 / 600.0;
+/// A 6 m cell, half of one and a voxel, in centimetres.
+const CELL_CM: f32 = 600.0;
+const HALF_CELL_CM: f32 = 300.0;
+const VOXEL_CM: f32 = 20.0;
+/// A sector box's bounding radius in the view test: 600·√2 cm (848.528 14),
+/// the 6 m cell's diagonal, as the original stores it.
+const SECTOR_RADIUS_CM: f32 = f32::from_bits(0x4454_21cd);
 
 /// The top of the terrain over the block, per whole column (X fastest).
 struct TerrainColumns {
@@ -840,11 +870,13 @@ impl Occupancy {
         // The focus's cell, then a block of eight centred on it, clamped
         // inside the grid as the original's blocks are.
         let (w, h) = (grid.0.max(8) as i32, grid.1.max(8) as i32);
-        let cell = |c: f32| (c / SECTOR_M).floor() as i32;
+        let cell = |c: f32| (c * CM_PER_M * PER_CELL_CM).floor() as i32;
         let sector_x = (w / 2 + cell(centre.x) - SECTORS as i32 / 2).clamp(0, w - SECTORS as i32);
         let sector_z = (h / 2 + cell(centre.z) - SECTORS as i32 / 2).clamp(0, h - SECTORS as i32);
-        let corner =
-            |s: i32, n: i32| (s as f32 - n as f32 * 0.5) * SECTOR_M - MARGIN as f32 * VOXEL;
+        // The block's first voxel column, counted in whole voxels from the
+        // grid's middle cell (the size halved, rounded down, as the
+        // original's integer division does), less the margin.
+        let corner = |s: i32, n: i32| ((s - n / 2) * SECTOR as i32 - MARGIN as i32) as f32 * VOXEL;
         let origin = Vec3::new(
             corner(sector_x, w),
             -(below as f32) * VOXEL,
@@ -1032,6 +1064,14 @@ mod tests {
         assert_eq!(a, b);
         assert!((a.x + 25.6).abs() < 1e-5);
         assert_eq!(synthetic.0.width, 8);
+        // An odd grid counts from its middle cell, the size halved and
+        // rounded down: on a 17-cell grid x = 10 m is cell 1 + 8 = 9, the
+        // block starts at cell 5, (5 − 8) × 30 − 8 = −98 voxels, so its
+        // sector 4 (cell 9) spans 6 to 12 m, the cell's own span.
+        let (origin, _, sector) =
+            Occupancy::placement(Vec3::new(10.0, 0.0, 0.0), 6.0, 0.0, (17, 17));
+        assert_eq!(sector.x, 5);
+        assert!((origin.x + 19.6).abs() < 1e-5);
     }
 
     #[test]
@@ -1189,44 +1229,35 @@ mod tests {
         assert_eq!(floors[2 + 20 * SIDE], 255);
     }
 
+    /// A block 64 slices high whose slice 0 sits at the world's zero.
+    const LOW_BLOCK: BlockSpan = BlockSpan {
+        top: 64.0,
+        below: 0.0,
+    };
+
     #[test]
-    fn a_sector_is_drawn_when_the_view_sees_its_mid_height_point() {
+    fn a_sector_is_drawn_when_the_view_meets_its_box() {
         let grid = open_grid(16);
         let block = IVec2::new(4, 4);
-        // Sector (4, 4) of the block stands at cells (10, 10), whose centre
-        // is at world (14.6, ·, 14.6) from this block's corner.
-        let origin = Vec3::new(-1.6, 0.0, -1.6);
-        let depth = 64.0;
         let floor = |_: i32, _: i32| 0u8;
-        // The point's height is the middle of the span from slice 0 to the
-        // top: (0 + 64) / 2 × 20 cm = 6.4 m.
-        let at = Vec3::new(origin.x + 4.6 + 6.0 * 6.0, 6.4, origin.z + 4.6 + 6.0 * 6.0);
-        let marks = sector_marks(
-            &grid,
-            IVec2::new(8, 8),
-            block,
-            origin,
-            depth,
-            floor,
-            |centre, half| {
-                (centre - at).length() < 0.01 && (half - Vec3::new(3.0, 6.4, 3.0)).length() < 1e-6
-            },
-        );
+        // Cell (10, 10) is centred (10.5 − 8) × 600 = 1500 cm out on both
+        // axes; its box runs from the floor (0) to the block's top
+        // (64 × 20 cm), so it is centred at 640 cm, 640 cm half high.
+        let at = Vec3::new(1500.0, 640.0, 1500.0);
+        let marks = sector_marks(&grid, IVec2::new(8, 8), block, LOW_BLOCK, floor, |c, h| {
+            c == at && h == Vec3::new(300.0, 640.0, 300.0)
+        });
         let drawn: Vec<usize> = (0..64).filter(|&i| marks[i]).collect();
-        // That sector and the four neighbours the original's second pass
-        // adds (the diagonal corners are two sectors out).
-        assert_eq!(drawn.len(), 5);
-        for i in [6 * 8 + 6, 5 * 8 + 6, 7 * 8 + 6, 6 * 8 + 5, 6 * 8 + 7] {
-            assert!(marks[i], "sector {i}");
-        }
-        // A cell outside the six-sector window is never marked, even when
-        // its point is in view.
+        // That sector (6, 6) of the block and the four neighbours the
+        // second pass adds (the diagonal ones are not neighbours).
+        assert_eq!(drawn, vec![46, 53, 54, 55, 62]);
+        // A cell outside the six-cell window (or on the grid's border) is
+        // never marked, even when the view sees it.
         let marks = sector_marks(
             &grid,
             IVec2::new(2, 2),
             IVec2::ZERO,
-            origin,
-            depth,
+            LOW_BLOCK,
             floor,
             |_, _| true,
         );
@@ -1235,43 +1266,131 @@ mod tests {
     }
 
     #[test]
-    fn sector_marks_skip_unbuilt_cells_and_keep_to_the_reach() {
+    fn sector_marks_need_the_reach_and_a_built_cell_in_both_passes() {
         let mut grid = open_grid(16);
         let block = IVec2::new(4, 4);
-        let origin = Vec3::new(-1.6, 0.0, -1.6);
-        // Focus on the block's own sector (4, 4): the reach (< 37 cells
-        // squared) covers the block's nearest corner but not its far one.
-        let marks = sector_marks(
-            &grid,
-            IVec2::new(8, 8),
-            block,
-            origin,
-            64.0,
-            |_, _| 0,
-            |_, _| true,
-        );
-        assert!(marks[0]);
-        assert!(marks[63]);
-        // Close the cell (4, 4); its neighbours still mark it by dilation,
-        // but closing all five leaves it dark.
+        let floor = |_: i32, _: i32| 0u8;
+        let seen = |_: Vec3, _: Vec3| true;
+        // From the focus cell (9, 9), cell (4, 4) is 25 + 25 = 50 cells
+        // squared away: past the reach. (5, 5) at 32 is within it.
+        let marks = sector_marks(&grid, IVec2::new(9, 9), block, LOW_BLOCK, floor, seen);
+        assert!(!marks[0]);
+        assert!(marks[1 + 8]);
+        // A cell not built in plane A is not marked, though its neighbours
+        // are.
         let mut edges = (*grid.edges).clone();
-        for (x, z) in [(4, 4), (5, 4), (3, 4), (4, 5), (4, 3)] {
-            edges[(z * 16 + x) as usize] = 0;
-        }
+        edges[4 * 16 + 4] = 0;
         grid.edges = Arc::new(edges);
+        let marks = sector_marks(&grid, IVec2::new(8, 8), block, LOW_BLOCK, floor, seen);
+        assert!(!marks[0]);
+        assert!(marks[1] && marks[8]);
+    }
+
+    #[test]
+    fn the_second_pass_steps_rows_by_the_grids_height() {
+        // A grid 16 cells wide and 12 deep: the original steps ± 12 cells
+        // through the row-major marks, not ± 16.
+        let grid = GiGrid {
+            width: 16,
+            height: 12,
+            edges: Arc::new(vec![OPEN; 16 * 12]),
+        };
+        let block = IVec2::new(4, 2);
+        // Only cell (10, 6), centred at (1500, ·, 300) cm, is in view.
         let marks = sector_marks(
             &grid,
-            IVec2::new(8, 8),
+            IVec2::new(8, 6),
             block,
-            origin,
-            64.0,
+            LOW_BLOCK,
             |_, _| 0,
-            |_, _| true,
+            |c, _| c.x == 1500.0 && c.z == 300.0,
         );
-        assert!(
-            !marks[0],
-            "the block's corner sector has no built neighbour"
+        let drawn: Vec<IVec2> = (0..64)
+            .filter(|&i| marks[i])
+            .map(|i| block + IVec2::new(i as i32 % 8, i as i32 / 8))
+            .collect();
+        // Index 106 ± 1 are its row neighbours and 106 + 12 is cell (6, 7);
+        // 106 − 12 is cell (14, 5), outside the block (and 37 cells squared
+        // from the focus). Cells (10, 5) and (10, 7) are not marked.
+        assert_eq!(
+            drawn,
+            vec![
+                IVec2::new(9, 6),
+                IVec2::new(10, 6),
+                IVec2::new(11, 6),
+                IVec2::new(6, 7)
+            ]
         );
-        assert!(marks[63]);
+    }
+
+    /// A view whose one real plane is `plane` (Bevy's: inward normal, metres)
+    /// and whose other planes are 1 km away.
+    fn view(plane: Vec4) -> Frustum {
+        use bevy::shape::{HalfSpace, ViewFrustum};
+        let far = |n: Vec3| HalfSpace::new(n.extend(1000.0));
+        Frustum(ViewFrustum {
+            half_spaces: [
+                HalfSpace::new(plane),
+                far(Vec3::X),
+                far(Vec3::NEG_X),
+                far(Vec3::Y),
+                far(Vec3::Z),
+                far(Vec3::NEG_Z),
+            ],
+        })
+    }
+
+    #[test]
+    fn a_box_is_cut_by_its_reach_and_its_radius() {
+        let half = Vec3::new(300.0, 640.0, 300.0);
+        // The view keeps x < 0: a box centred 500 cm past it reaches only
+        // 300 cm back; one 200 cm past it reaches in.
+        let x = view(Vec4::new(-1.0, 0.0, 0.0, 0.0));
+        assert!(!box_meets_view(&x, Vec3::new(500.0, 0.0, 0.0), half));
+        assert!(box_meets_view(&x, Vec3::new(200.0, 0.0, 0.0), half));
+        // The view keeps y < 0: a box centred 900 cm above reaches 640 cm
+        // down but its centre is past the 848.5 cm radius.
+        let y = view(Vec4::new(0.0, -1.0, 0.0, 0.0));
+        assert!(!box_meets_view(
+            &y,
+            Vec3::new(0.0, 900.0, 0.0),
+            Vec3::new(300.0, 1280.0, 300.0)
+        ));
+        assert!(box_meets_view(
+            &y,
+            Vec3::new(0.0, 800.0, 0.0),
+            Vec3::new(300.0, 1280.0, 300.0)
+        ));
+        // A negative half height keeps its sign: against an outward normal
+        // pointing down it reaches 500 cm; pointing up, −500 cm.
+        let up = view(Vec4::new(0.0, 1.0, 0.0, 0.0));
+        let low = Vec3::new(300.0, -500.0, 300.0);
+        assert!(box_meets_view(&up, Vec3::new(0.0, -100.0, 0.0), low));
+        assert!(!box_meets_view(&y, Vec3::new(0.0, 100.0, 0.0), low));
+        // A centre that is not a number is kept, as the unordered compares
+        // keep it.
+        assert!(box_meets_view(&x, Vec3::splat(f32::NAN), half));
+        assert!((SECTOR_RADIUS_CM - 600.0 * 2f32.sqrt()).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_focus_cell_is_the_floor_of_centimetres_over_600() {
+        assert_eq!(PER_CELL_CM.to_bits(), 0x3ada_740e);
+        let grid = open_grid(16);
+        assert_eq!(
+            focus_cell(&grid, Vec3::new(-0.01, 0.0, 5.99)),
+            IVec2::new(7, 8)
+        );
+        assert_eq!(
+            focus_cell(&grid, Vec3::new(6.0, 0.0, -6.0)),
+            IVec2::new(9, 7)
+        );
+        // An odd grid's middle cell is its size halved, rounded down.
+        let odd = GiGrid {
+            width: 17,
+            height: 17,
+            edges: Arc::new(vec![OPEN; 17 * 17]),
+        };
+        assert_eq!(focus_cell(&odd, Vec3::ZERO), IVec2::new(8, 8));
     }
 }

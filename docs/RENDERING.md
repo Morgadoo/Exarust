@@ -620,9 +620,12 @@ in world space there too):
 - One block of 256 × 256 voxels across: eight 6 m sectors of 30 columns
   plus an 8-voxel margin on each side. It is 64 voxels high (128 when the
   level's highest and lowest points are more than 12.8 m apart).
-- Sectors fall on world multiples of 6 m. The block's first cell is eight
-  sectors centred on the focus point's cell, slid inside the level's grid as
-  the original's blocks are; its top is the level record's highest point
+- Sectors fall on the level grid's 6 m cells: cell i is centred at
+  ((i + 0.5) − ⌊size/2⌋) × 6 m, the size halved and rounded down as the
+  original's integer division does (an odd grid's cells sit 3 m off a
+  multiple of 6 m). The block's first cell is eight sectors centred on the
+  focus point's cell (⌊x cm / 600⌋ + ⌊size/2⌋), slid inside the level's grid
+  as the original's blocks are; its top is the level record's highest point
   (`0x98`), truncated to whole voxels. A level without a sector grid gets
   the original's synthetic 8 × 8 grid of open cells, whose one block sits at
   the world origin.
@@ -690,18 +693,30 @@ rebuilt block warms behind the one on screen and is swapped in only when its
 warm-up is complete. The light is 8-bit sRGB RGB, with A = 1 − 5·occ.
 
 Only slices from a group's lowest sector floor up to the second-highest are
-updated. The manager marks the sectors of the block to draw each frame: the
-cells within six sectors of the focus point (the camera's position 20 m
-along its view), at most 37 sectors squared from it, built in plane A's
-open flag `0x80000`, whose box (300 cm across in X and Z, half its span
-from the floor slice to the top in Y, around the sector's mid-height
-centre) meets the camera's convex volume; the marks are then widened by
-one sector, as the original's second pass marks every cell next to a marked
-one. Sectors left unmarked, sectors with
-no points at all, the margins and the top slice are cleared to zero every
-step: they stay dark and absorb light that reaches them through open walls.
-Voxel lights still add into them, as the original's additive pass follows
-the clear.
+updated. The manager marks the level cells to draw each frame in two
+passes over the same window: cells 1 to size − 2 within six of the focus
+cell (the focus point is the camera's position 20 m along its view), at
+most 36 cells squared from it and built in plane A's open flag `0x80000`.
+The first pass marks such a cell when its box meets the camera's convex
+volume. The box is 300 cm either side of the cell's centre in X and Z and
+spans from the cell's floor slice to the block's top in Y (a cell without
+geometry, floor 255, gets a negative half height). The test runs plane by
+plane, in centimetres: the box is out when its centre lies more than
+848.53 cm (600·√2) beyond a plane, or when it lies beyond the plane by more
+than the box reaches towards it, Σ n·h with each half extent h taking the
+normal's sign bit on top of its own (so a negative height reaches away
+from the plane). The second pass keeps a cell of the window that passes
+the same reach and plane A tests when its own first mark or a neighbour's
+is set; the neighbours are read at the cell's row-major index ± 1 and
+± the grid's height (the original's stride, the row length only on a
+square grid). Sectors left unmarked, sectors with no points at all, the
+margins and the top slice are cleared to zero every step, as the original
+clears the scratch target and draws only the groups: they stay dark and
+absorb light that reaches them through open walls. Voxel lights still add
+into them, as the original's additive pass follows the clear. A level
+without a sector grid draws all 64 sectors as one group from slice 0 (the
+original does not set that group's floor; it is 0 until a grid level has
+run [inf]), whatever the marks.
 
 For each updated voxel, with occ normalised:
 - open = max(1 − 13·occ, 0);
@@ -716,17 +731,28 @@ For each updated voxel, with occ normalised:
 - each light adds lin(colour)·intensity·multiplier·0.15·0.01 · (1 − d/R)⁴
   · open · shaping;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
-  lights whose flood windows reached it (up to 12), and the original joins
-  sectors whose lists match and whose floors lie within two slices into a
-  group, then merges groups that share a light while their union stays
-  within 12 lights. Each group takes its lowest floor and its own light
+  lights whose flood windows reached it (up to 12). A spot-shaped light is
+  dropped from a sector when it no longer carries down to the middle of the
+  sector's floor slice: its horizontal offsets from the cell's centre count
+  as zero within 300 cm (or when not a number) and are pulled 300 cm in
+  beyond, c = dy / √(dy² + (dz² + dx²)), and it stays only while
+  c + (1 − c)·y > 1.19209e−7 (bits `0x33ffffd7`). A marked sector with
+  geometry joins the first group holding the same lights (as many, each
+  found, in any order) whose floor lies within two slices, and lowers the
+  group's floor; otherwise it starts one. Two passes then fold a later group
+  into an earlier one when they share a light (or both have none), their
+  union stays within 12 lights, and the merged group's fill estimate
+  (lights + 2) × sectors × ((depth − 1) − floor) + 80 is below the two
+  apart (32-bit sums). A merge appends the later group's new lights and
+  takes the lower floor. Each group draws its sectors with its own light
   list; a sector sees no other light, so light does not cross a wall into
-  another room's injection. A light without the range flag floods with the
-  original's unlimited reach (walls and the flood's stack limit stop it) and
-  still injects over its stored radius: the injection reads the record's
-  radius whatever the flag. A level without a wall grid lists every light in
-  every sector (the original's non-grid path uses one group of the scene's
-  lights).
+  another room's injection. Lights the injection does not know are dropped
+  after the grouping, as the original drops a light without its GI flag. A
+  light without the range flag floods with the original's unlimited reach
+  (walls and the flood's stack limit stop it) and still injects over its
+  stored radius: the injection reads the record's radius whatever the flag.
+  A level without a wall grid draws the scene's lights (the first twelve by
+  id [guess: the original's list order]) in its one group.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
