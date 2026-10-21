@@ -9,6 +9,7 @@
 
 use crate::form::ClientRect;
 use crate::gui_font::{GuiFont, round_i32};
+use crate::text_edit::EditView;
 
 /// Layout and behaviour flags.
 pub mod style {
@@ -128,10 +129,9 @@ pub struct ItemView {
     pub scroll: (f32, f32),
     pub step: (f32, f32),
     pub unit: i32,
-    /// The owner's allow-drag-start hook (no hook: allowed).
-    pub allow_drag: bool,
-    /// The owner's allow-drag-out hook (no hook: allowed).
-    pub allow_drag_out: bool,
+    /// The rename field's edit state (anchor, caret, window end, first
+    /// visible byte).
+    pub edit: EditView,
 }
 
 impl ItemView {
@@ -161,8 +161,7 @@ impl ItemView {
             scroll: (0.0, 0.0),
             step: (0.0, 0.0),
             unit,
-            allow_drag: true,
-            allow_drag_out: true,
+            edit: EditView::default(),
         }
     }
 
@@ -353,18 +352,11 @@ impl ItemView {
         }
     }
 
-    /// The pointer moves over entry `index` (from `entry_at`): an icons-only
-    /// view shows its name.
+    /// The pointer moves over entry `index` (from `entry_at`): the select
+    /// slot ([`ItemView::select`]) as events, an icons-only view showing
+    /// the entry's name.
     pub fn hover_entry(&mut self, index: i32) -> Vec<ViewEvent> {
-        if index < 1 {
-            return Vec::new();
-        }
-        self.hover = index;
-        if self.style & style::ICONS_ONLY != 0 {
-            let name = self.entries.get(index as usize - 1).map(|e| e.name.clone());
-            return name.map(ViewEvent::Tooltip).into_iter().collect();
-        }
-        Vec::new()
+        self.select(index).1.map(ViewEvent::Tooltip).into_iter().collect()
     }
 
     /// Empties the view: no rename, no selection (reported when there
@@ -411,11 +403,18 @@ impl ItemView {
         }
     }
 
-    /// Starts renaming the selected entry when the view allows it.
+    /// Starts renaming the selected entry when the view allows it: the
+    /// name is backed up and the edit's caret goes to its end (the byte
+    /// count's low byte) with the anchor and the first visible byte at 0.
+    /// The original then keeps the caret in view
+    /// ([`ItemView::scroll_rename`]).
     pub fn begin_rename(&mut self) {
         if self.style & style::RENAME != 0 && self.rename_from < self.selected {
             self.renaming = true;
             self.backup = self.entries[self.selected as usize - 1].name.clone();
+            self.edit.first = 0;
+            self.edit.anchor = 0;
+            self.edit.caret = self.backup.len() as u8;
         }
     }
 
@@ -673,31 +672,30 @@ impl ItemView {
 }
 
 impl ItemView {
-    /// The destructor: the entries and their names go (the original frees
-    /// every name, the entry array and the owner's drag label).
+    /// The destructor's own part: the entries and their names go. The
+    /// original first hands every entry to the owner's free hook (not
+    /// modelled), frees the asynchronous icon request and, when the view
+    /// owns it, the icon renderer; the rest is the form's destructor, which
+    /// Rust's drop covers.
     pub fn destroy(&mut self) {
         self.entries.clear();
-        self.renaming = false;
-        self.backup.clear();
-        self.typed.clear();
-        self.drag_kind = 0;
-        self.selected = 0;
-        self.hover = 0;
     }
 
-    /// The select slot: a positive entry becomes the selection; an
-    /// icons-only view also copies its name to the tooltip and answers
-    /// 0x303. A selection of nothing keeps the form's word (3 when an entry
-    /// was selected). The original calls the tooltip class directly; the
-    /// name is returned for the caller to show.
+    /// The form's select slot, which the item view gives the entry under
+    /// the pointer (`hover`, 1-based; the selection is not touched). The
+    /// original first hides a shown tooltip. A positive entry becomes the
+    /// hovered one and answers 3; an icons-only view also hands its name
+    /// over as the tooltip text and answers 0x303 (0x100 asks for the
+    /// tooltip, 0x200 at once). No entry (`index` below 1) goes through the
+    /// form's own select, which answers 0 for a view without control
+    /// records, and answers 3 when an entry was hovered before.
     pub fn select(&mut self, index: i32) -> (u32, Option<Vec<u8>>) {
         if index < 1 {
-            if self.selected < 1 {
-                return (0, None);
-            }
-            return (3, None);
+            let word = if self.hover > 0 { 3 } else { 0 };
+            self.hover = index;
+            return (word, None);
         }
-        self.selected = index;
+        self.hover = index;
         if self.style & style::ICONS_ONLY != 0 {
             let name = self
                 .entries
@@ -708,128 +706,160 @@ impl ItemView {
         (3, None)
     }
 
-    /// The drag centre: half the client's width and height, each truncated
-    /// toward zero as the original's sign-fix and shift does. The drag
-    /// payload's centre field uses it.
-    pub fn centre(&self) -> (i32, i32) {
-        (self.client.width() / 2, self.client.height() / 2)
+    /// The focus point slot: half the client's width and height, each
+    /// halved toward zero (the original's sign fix and shift), and the
+    /// selected entry.
+    pub fn centre(&self) -> ((i32, i32), i32) {
+        (
+            (self.client.width() / 2, self.client.height() / 2),
+            self.selected,
+        )
     }
 
-    /// The drop test: the payload's kind must be this view's drag kind, and
-    /// the style must not forbid drops (0x100000). A word of 1 (a view that
-    /// may take the drop), 0x201 with the high bit, and 0x301 with the
-    /// 0x40000000 bit; the focused form's own view refuses (0).
-    pub fn accepts_drop(&self, kind: i32, focused: bool) -> u32 {
-        if kind != self.drag_kind || self.style & 0x0010_0000 != 0 {
+    /// The drop-over slot for a payload of `kind`: 0 unless it is the
+    /// view's drag kind and the form's state allows drops (`drops_off` is
+    /// its 0x100000 state bit). A view whose style has the high bit answers
+    /// 0x201, or 0x301 with 0x40000000 too; any other answers 1, except to
+    /// a drag that started on this very view (`from_self`: the GUI's held
+    /// form is the view), which it refuses (0).
+    pub fn accepts_drop(&self, kind: i32, drops_off: bool, from_self: bool) -> u32 {
+        if kind != self.drag_kind || drops_off {
             return 0;
         }
-        let mut word = 1;
         if self.style & 0x8000_0000 == 0 {
-            return if focused { 0 } else { word };
+            return if from_self { 0 } else { 1 };
         }
-        word = 0x201;
         if self.style & 0x4000_0000 != 0 {
-            word |= 0x300;
+            return 0x201 | 0x100 | 0x200;
         }
-        word
+        0x201
     }
 
-    /// Whether a drag may start on the view (the owner's allow-start hook,
-    /// absent: allowed).
-    pub fn drag_start_allowed(&self) -> bool {
-        self.allow_drag
+    /// The drop slot: the owner's drop hook (handed the view; the original
+    /// also passes the payload and the drop word on) answers; a view
+    /// without one answers 0.
+    pub fn dropped(&self, hook: Option<&dyn Fn(&Self) -> u32>) -> u32 {
+        hook.map_or(0, |hook| hook(self))
     }
 
-    /// Whether a drag may leave the view (the owner's allow-out hook,
-    /// absent: allowed).
-    pub fn drag_out_allowed(&self) -> bool {
-        self.allow_drag_out
+    /// The drop-cancelled slot, on the drag's source: the owner's hook
+    /// answers; a view without one answers 0.
+    pub fn drop_cancelled(&self, hook: Option<&dyn Fn(&Self) -> u32>) -> u32 {
+        hook.map_or(0, |hook| hook(self))
     }
 
-    /// The caret an edit-field press puts in the renamed entry: the point
-    /// moved into the entry's text row (its column's pitch and the icon
-    /// width taken off, the row's own scroll included) and the text edit's
-    /// caret rule applied.
-    pub fn edit_caret_hit(&mut self, font: &GuiFont, x: i32, y: i32) -> u8 {
-        let per = if self.is(style::LIST) {
-            self.count().max(1)
-        } else {
-            self.per_line.max(1)
-        };
-        let index = (self.selected - 1).max(0);
-        let column = index / per;
-        let mut x = x - column * self.pitch - self.unit;
+    /// The rename field's caret from a pointer at `x` (client
+    /// coordinates; the original converts the screen point, and uses only
+    /// its x): the x less the selected entry's line times the pitch, a
+    /// unit and (unless names start without icon space) the icon, then
+    /// [`crate::text_edit::caret_from_x`] on the entry's name with the
+    /// view's edit state. The line divides by the entries per line in every
+    /// layout (the original divides by zero when there are none; 0 here).
+    /// Returns the caret; with no selected entry the edit is left as is.
+    pub fn edit_caret_hit(&mut self, font: &GuiFont, x: i32, _y: i32) -> u8 {
+        let line = (i64::from(self.selected) - 1)
+            .checked_div(i64::from(self.per_line))
+            .unwrap_or(0);
+        let mut x = (i64::from(x) - line * i64::from(self.pitch) - i64::from(self.unit)) as i32;
         if self.style & style::NO_ICON_SPACE == 0 {
-            x -= self.icon;
+            x = x.wrapping_sub(self.icon);
         }
-        let _ = y;
-        let len = self.entries[index as usize].name.len();
-        let mut view = crate::text_edit::EditView {
-            anchor: 0,
-            caret: 0,
-            length: len.min(255) as u8,
-            first: 0,
+        if self.selected < 1 {
+            return self.edit.caret;
+        }
+        let Some(entry) = self.entries.get(self.selected as usize - 1) else {
+            return self.edit.caret;
         };
-        crate::text_edit::scroll_view(
-            font,
-            &self.entries[index as usize].name,
-            &mut view,
-            self.pitch,
-        );
-        crate::text_edit::caret_from_x(font, &self.entries[index as usize].name, &mut view, x)
+        crate::text_edit::caret_from_x(font, &entry.name, &mut self.edit, x)
     }
 
-    /// The pointer moves over the renamed entry: the caret goes to the
-    /// pointer and the visible run is kept within the entry's pitch. The
-    /// original answers 3 while renaming, else the form's word.
-    pub fn rename_move(&mut self, font: &GuiFont, x: i32, y: i32) -> u32 {
-        if !self.renaming {
-            return 0;
+    /// Keeps the rename field's caret in view over the entry's pitch
+    /// ([`crate::text_edit::scroll_view`] on the selected entry's name).
+    /// The original's begin-rename runs it right after setting the edit
+    /// state; [`ItemView::begin_rename`] has no font, so its caller runs
+    /// this next.
+    pub fn scroll_rename(&mut self, font: &GuiFont) {
+        if self.selected < 1 {
+            return;
         }
-        let caret = self.edit_caret_hit(font, x, y);
-        let index = (self.selected - 1).max(0) as usize;
-        if let Some(entry) = self.entries.get_mut(index) {
-            let mut view = crate::text_edit::EditView {
-                anchor: caret,
-                caret,
-                length: entry.name.len().min(255) as u8,
-                first: 0,
-            };
-            crate::text_edit::scroll_view(font, &entry.name, &mut view, self.pitch);
+        if let Some(entry) = self.entries.get(self.selected as usize - 1) {
+            crate::text_edit::scroll_view(font, &entry.name, &mut self.edit, self.pitch);
         }
-        3
     }
 
-    /// The marker-only draw: every marked entry in view draws its marker
-    /// handle where its icon would sit (the style's markers-only path).
-    pub fn marker_draws(&self) -> Vec<(i32, (i32, i32))> {
-        self.draw_list(&crate::gui_font::RAYFORM_10)
-            .into_iter()
-            .filter(|draw| {
-                self.entries
-                    .get(draw.index as usize)
-                    .is_some_and(|entry| entry.flags & entry::MARKED != 0)
-            })
-            .filter_map(|draw| draw.icon.map(|(_, at)| (self.marker, at)))
-            .collect()
+    /// The pointer moves with a press held: while renaming the caret goes
+    /// to the pointer ([`ItemView::edit_caret_hit`], the anchor kept, so
+    /// the move selects) and is kept in view, answering 3; otherwise the
+    /// form's own move ([`ItemView::pointer_move`]).
+    pub fn rename_move(&mut self, font: &GuiFont, x: i32, y: i32) -> ViewReply {
+        if self.renaming {
+            self.edit_caret_hit(font, x, y);
+            self.scroll_rename(font);
+        }
+        self.pointer_move()
     }
 
-    /// The edit field's box: the selected entry's row and the text's room,
-    /// while a rename is in progress.
-    pub fn edit_box(&self) -> Option<[i32; 4]> {
-        if !self.renaming || self.selected < 1 {
-            return None;
+    /// The marker draws of a list or columns view with the markers style
+    /// and no icon renderer: every marked entry in view draws the marker
+    /// icon at the view's scroll offset in x (no unit) and a unit down from
+    /// the row's top, a pitch per column and a row per entry. The pointer's
+    /// entry (and the one being renamed) draws lit; the others in the
+    /// greyed or the normal ink.
+    pub fn marker_draws(&self) -> Vec<EntryDraw> {
+        if self.style & style::MARKERS == 0 || self.is(style::GRID) {
+            return Vec::new();
         }
-        let per = if self.is(style::LIST) {
-            self.count().max(1)
+        let u = self.unit;
+        let list = self.is(style::LIST);
+        let (columns, rows, y_px, x_px) = if list {
+            let h = self.client.height();
+            let px = round_i32(f64::from((self.content.1 - h) as f32 * self.scroll.1));
+            ((0, 0), self.rows_in_view(), px, 0)
         } else {
-            self.per_line.max(1)
+            let w = self.client.width();
+            let px = round_i32(f64::from((self.content.0 - w) as f32 * self.scroll.0));
+            (self.columns_in_view(), (0, 0), 0, px)
         };
-        let index = self.selected - 1;
-        let (column, row) = (index / per, index % per);
-        let (x, y) = (self.unit + column * self.pitch, self.unit + row * self.row);
-        let _ = column;
-        Some([x, y, x + self.pitch + 2, y + self.row - 1])
+        let mut out = Vec::new();
+        let mut x = x_px;
+        for column in columns.0..=columns.1 {
+            let (from, to) = if list {
+                rows
+            } else {
+                let from = column * self.per_line;
+                (from, (from + self.per_line - 1).min(self.count() - 1))
+            };
+            let mut y = u + y_px;
+            for i in from..=to {
+                let Some(e) = self.entries.get(i as usize) else {
+                    break;
+                };
+                if e.flags & entry::MARKED != 0 {
+                    out.push(EntryDraw {
+                        index: i,
+                        name: None,
+                        icon: Some((self.marker, (x, y))),
+                        lit: self.hover - 1 == i || (self.renaming && self.selected - 1 == i),
+                        selected: self.selected - 1 == i,
+                        greyed: e.flags & entry::DISABLED != 0,
+                    });
+                }
+                y += self.row;
+            }
+            x += self.pitch;
+        }
+        out
+    }
+
+    /// The fill inside a list or columns view's selection band
+    /// ([`ItemView::list_selection`], a pixel in on every side but the
+    /// bottom, which is two up from the row's end), and whether it takes
+    /// the rename inks (half-alpha) rather than the selection's
+    /// (quarter-alpha). An outline of the same box follows it.
+    pub fn selection_fill(&self, font: &GuiFont) -> Option<([i32; 4], bool)> {
+        let [x0, y0, x1, _] = self.list_selection(font)?;
+        let (x, y) = (x0 + 1, y0 + 1);
+        Some(([x, y, x1 - 1, y + self.row - 2], self.renaming))
     }
 }
 
@@ -1039,10 +1069,6 @@ mod tests {
         }
     }
 
-    fn view_of(style: u32, n: usize) -> ItemView {
-        view(style, n)
-    }
-
     fn view(style: u32, n: usize) -> ItemView {
         let mut v = ItemView::new(5, style, client(200, 120));
         for i in 0..n {
@@ -1245,66 +1271,109 @@ mod tests {
     }
 
     #[test]
-    fn the_extra_slots_select_centre_and_take_drops() {
-        let mut view = view(style::LIST, 3);
-        assert_eq!(view.select(0).0, 0);
-        assert_eq!(view.select(2), (3, None));
-        assert_eq!(view.selected, 2);
-        assert_eq!(view.select(0).0, 3);
-        // An icons-only view hands back the name and the tooltip word.
-        let mut icons = view_of(style::LIST | style::ICONS_ONLY, 2);
-        icons.select(1);
-        assert_eq!(icons.select(1).0, 0x303);
-        assert_eq!(icons.select(2).1, Some(b"Item1".to_vec()));
-        assert_eq!(view.centre(), (100, 60));
+    fn the_select_slot_moves_the_hover_not_the_selection() {
+        let mut v = view(style::LIST, 3);
+        assert_eq!(v.select(0), (0, None));
+        assert_eq!(v.select(2), (3, None));
+        assert_eq!((v.hover, v.selected), (2, 0));
+        // Leaving a hovered entry answers 3 and clears the hover.
+        assert_eq!(v.select(0), (3, None));
+        assert_eq!(v.hover, 0);
+        // An icons-only view hands the name over for the tooltip.
+        let mut icons = view(style::LIST | style::ICONS_ONLY, 2);
+        assert_eq!(icons.select(2), (0x303, Some(b"Item1".to_vec())));
+        assert_eq!(
+            icons.hover_entry(1),
+            vec![ViewEvent::Tooltip(b"Item0".to_vec())]
+        );
+        v.selected = 2;
+        // A 200 × 120 client: its middle, and the selection.
+        assert_eq!(v.centre(), ((100, 60), 2));
     }
 
     #[test]
     fn drops_need_the_view_s_kind_and_its_permission() {
-        let mut view = view(style::LIST, 2);
-        view.drag_kind = 4;
-        assert_eq!(view.accepts_drop(4, false), 1);
-        assert_eq!(view.accepts_drop(5, false), 0);
-        assert_eq!(view.accepts_drop(4, true), 0);
-        view.style |= 0x8000_0000;
-        assert_eq!(view.accepts_drop(4, true), 0x201);
-        view.style |= 0x4000_0000;
-        assert_eq!(view.accepts_drop(4, true), 0x301);
-        view.style |= 0x0010_0000;
-        assert_eq!(view.accepts_drop(4, false), 0);
-        assert!(view.drag_start_allowed() && view.drag_out_allowed());
-        view.allow_drag_out = false;
-        assert!(!view.drag_out_allowed());
-        view.destroy();
-        assert!(view.entries.is_empty());
-        assert_eq!((view.selected, view.hover, view.drag_kind), (0, 0, 0));
+        let mut v = view(style::LIST, 2);
+        v.drag_kind = 4;
+        assert_eq!(v.accepts_drop(4, false, false), 1);
+        assert_eq!(v.accepts_drop(5, false, false), 0);
+        assert_eq!(v.accepts_drop(4, true, false), 0);
+        // Its own drag comes back only with the style's high bit.
+        assert_eq!(v.accepts_drop(4, false, true), 0);
+        v.style |= 0x8000_0000;
+        assert_eq!(v.accepts_drop(4, false, true), 0x201);
+        v.style |= 0x4000_0000;
+        assert_eq!(v.accepts_drop(4, false, true), 0x301);
+        assert_eq!(v.accepts_drop(4, true, false), 0);
+        // The drop and cancel slots are the owner's hooks, 0 without.
+        assert_eq!(v.dropped(None), 0);
+        let hook: &dyn Fn(&ItemView) -> u32 = &|v| v.drag_kind as u32 + 1;
+        assert_eq!(v.dropped(Some(hook)), 5);
+        assert_eq!(v.drop_cancelled(None), 0);
+        assert_eq!(v.drop_cancelled(Some(hook)), 5);
+        v.destroy();
+        assert!(v.entries.is_empty());
     }
 
     #[test]
-    fn the_rename_caret_and_its_box() {
-        let mut view = view(style::LIST, 2);
-        view.selected = 1;
-        view.renaming = true;
-        // The text starts a unit and the icon in: x = 25 is the start.
-        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 25, 20), 0);
-        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 25 + 25, 20), 3);
-        assert_eq!(view.edit_caret_hit(&RAYFORM_10, 250, 20), 5);
-        assert_eq!(view.rename_move(&RAYFORM_10, 25, 20), 3);
-        assert_eq!(view.edit_box(), Some([5, 5, 197, 29]));
-        view.renaming = false;
-        assert_eq!(view.edit_box(), None);
-        assert_eq!(view.rename_move(&RAYFORM_10, 0, 0), 0);
+    fn the_rename_caret_follows_the_pointer() {
+        // Columns: unit 5, icon 20, pitch 30, four per column.
+        let mut v = view(style::RENAME, 9);
+        v.selected = 6;
+        v.begin_rename();
+        assert_eq!(v.edit, EditView { anchor: 0, caret: 5, length: 0, first: 0 });
+        v.scroll_rename(&RAYFORM_10);
+        // "Item5" in 30 pixels: 10 + 14 fit from the end, "e" does not.
+        assert_eq!(v.edit, EditView { anchor: 0, caret: 5, length: 5, first: 3 });
+        // Line 1: x less 30, a unit and the icon; the walk starts at the
+        // first visible byte, "m" (14, half 7).
+        assert_eq!(v.edit_caret_hit(&RAYFORM_10, 55, 0), 3);
+        assert_eq!(v.edit_caret_hit(&RAYFORM_10, 62, 0), 4);
+        assert_eq!(v.rename_move(&RAYFORM_10, 62, 0), ViewReply::Code(3));
+        assert_eq!(v.edit, EditView { anchor: 0, caret: 4, length: 5, first: 3 });
+        v.renaming = false;
+        assert_eq!(v.rename_move(&RAYFORM_10, 0, 0), ViewReply::Form);
+        assert_eq!(v.edit.caret, 4);
+        // A list: line 0, so the text starts at a unit and the icon (25):
+        // "I" 5, "t" 6, "e" 10, then "m" (half 7) is not reached.
+        let mut list = view(style::LIST | style::RENAME, 2);
+        list.selected = 1;
+        list.begin_rename();
+        list.scroll_rename(&RAYFORM_10);
+        assert_eq!(list.edit_caret_hit(&RAYFORM_10, 25, 0), 0);
+        assert_eq!(list.edit_caret_hit(&RAYFORM_10, 25 + 21, 0), 3);
+        assert_eq!(list.edit_caret_hit(&RAYFORM_10, 250, 0), 5);
     }
 
     #[test]
-    fn a_marked_entry_draws_its_marker() {
-        let mut view = view_of(style::LIST | style::MARKERS, 3);
-        view.entries[1].flags = entry::MARKED;
-        view.entries[2].flags = entry::MARKED;
-        let markers = view.marker_draws();
+    fn the_selection_fill_sits_inside_the_band() {
+        let mut v = view(style::LIST, 2);
+        v.selected = 1;
+        // The band reaches the name's end: 2 units, the icon, x and
+        // "Item0" (45) = 80.
+        assert_eq!(v.list_selection(&RAYFORM_10), Some([4, 4, 80, 29]));
+        assert_eq!(v.selection_fill(&RAYFORM_10), Some(([5, 5, 79, 28], false)));
+        v.renaming = true;
+        assert_eq!(v.selection_fill(&RAYFORM_10), Some(([5, 5, 79, 28], true)));
+        v.selected = 0;
+        assert_eq!(v.selection_fill(&RAYFORM_10), None);
+    }
+
+    #[test]
+    fn marked_entries_draw_the_marker() {
+        let mut v = view(style::LIST | style::MARKERS, 3);
+        v.entries[1].flags = entry::MARKED;
+        v.entries[2].flags = entry::MARKED | entry::DISABLED;
+        v.hover = 2;
+        let markers = v.marker_draws();
         assert_eq!(markers.len(), 2);
-        assert_eq!(markers[0].0, DEFAULT_MARKER);
-        assert_eq!(markers[0].1, (5, 5 + 1 + 1 + 25));
+        // At the scroll offset in x and a unit down, a row per entry.
+        assert_eq!(markers[0].icon, Some((DEFAULT_MARKER, (0, 5 + 25))));
+        assert!(markers[0].lit && !markers[0].greyed);
+        assert_eq!(markers[1].icon, Some((DEFAULT_MARKER, (0, 5 + 50))));
+        assert!(!markers[1].lit && markers[1].greyed);
+        v.style &= !style::MARKERS;
+        assert!(v.marker_draws().is_empty());
     }
 
     #[test]
