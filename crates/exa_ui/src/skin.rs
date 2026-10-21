@@ -92,8 +92,8 @@ const FRAME_HOT: u32 = 0x60;
 const ICON_MARK: u32 = 0x1_0000;
 const ICON_NUDGE: u32 = 0x40;
 const ICON_BAND: u32 = 0x60;
-const ICON_WIDE: u32 = 0x4000_0000;
-const ICON_DIM: u32 = 0x8000_0000;
+const ICON_STYLE: u32 = 0x0100_0000;
+const ICON_TURN: u32 = 0x7000_0000;
 const ICON_SCALE: u32 = 0x3f80_0000;
 const FORM_SHADE: u32 = 0x40;
 const FORM_BACK: u32 = 0x2_0000;
@@ -720,7 +720,8 @@ pub struct IconPlace {
 pub struct CentredIcon {
     pub own: bool,
     pub marked: bool,
-    pub wide: bool,
+    /// The icon-list turn, 0 when the icon is drawn upright.
+    pub turn: u8,
     pub ink: u8,
     pub id: u32,
     pub x: i32,
@@ -736,11 +737,12 @@ fn centre_spare(span: i16, icon: i32) -> i32 {
 /// Place a centred icon. `icon` is the stored icon size. A marked state
 /// passes the scale bits of 1, and bit 0x40 inside the band 0x60 adds one
 /// to the height. Any other state picks an ink and does not pass that scale.
+/// The style's top three bits turn the icon.
 pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
     let x = i32::from(place.x).wrapping_add(centre_spare(place.w, icon));
     let y = i32::from(place.y).wrapping_add(centre_spare(place.h, icon));
-    let wide = (place.mode & ICON_WIDE) != 0;
-    if (place.state & ICON_MARK) == ICON_MARK {
+    let turn = ((place.mode & ICON_TURN) >> 28) as u8;
+    if (place.state & 0xf_0000) == ICON_MARK {
         let nudged = if (place.state & ICON_BAND) == ICON_NUDGE {
             y.wrapping_add(1)
         } else {
@@ -749,7 +751,7 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
         return CentredIcon {
             own: place.own,
             marked: true,
-            wide,
+            turn,
             ink: 0,
             id: place.id,
             x,
@@ -759,7 +761,7 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
     }
     let ink = if (place.state & SLIDER_PRESSED) == SLIDER_PRESSED {
         0
-    } else if (place.mode & ICON_DIM) == 0 {
+    } else if (place.mode & ICON_STYLE) == 0 {
         if (place.state & ICON_NUDGE) == ICON_NUDGE {
             1
         } else {
@@ -773,7 +775,7 @@ pub fn draw_centred_icon(icon: i32, place: IconPlace) -> CentredIcon {
     CentredIcon {
         own: place.own,
         marked: false,
-        wide,
+        turn,
         ink,
         id: place.id,
         x,
@@ -3761,7 +3763,7 @@ pub fn prepare_skin_programs(already: bool) -> SkinPrograms {
                 uniforms: vec![mprj, scale],
             },
             SkinProgram {
-                kind: 5,
+                kind: 0x15,
                 source: SKIN_ROUNDED_SHADER,
                 uniforms: vec![mprj, tex, texcol],
             },
@@ -4001,6 +4003,283 @@ pub fn draw_skin_region(place: SkinRegionPlace, unit: i32) -> SkinRegion {
         line_end_calls,
         scissor_calls: 2,
     }
+}
+
+/// A GUI colour: red, green, blue and alpha, in the order the original
+/// stores them.
+pub type SkinInk = [u8; 4];
+
+/// The twelve shades one scheme colour expands into.
+pub type SkinGroup = [SkinInk; 12];
+
+/// The skin's five colour groups and the accent shades the scheme derives
+/// from its accent colour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkinPalette {
+    /// The form's own colours.
+    pub form: SkinGroup,
+    /// The controls' idle colours.
+    pub control: SkinGroup,
+    /// A copy of `form`, read by hot controls.
+    pub form_hot: SkinGroup,
+    /// The label inks.
+    pub text: SkinGroup,
+    /// The selection and highlight inks.
+    pub highlight: SkinGroup,
+    /// The accent at half strength.
+    pub accent_dim: SkinInk,
+    /// The accent at 1.9, then tuned by 0.8.
+    pub accent_bright: SkinInk,
+    /// The accent mixes at 0.4, 0.6, 0.5 and 0.9 towards the bright end.
+    pub accent_mix: [SkinInk; 4],
+    /// The two stored alpha bytes the ramp and the accent use.
+    pub first_alpha: u8,
+    pub second_alpha: u8,
+    /// The accent's two derived alpha bytes.
+    pub accent_alpha_a: u8,
+    pub accent_alpha_b: u8,
+}
+
+impl SkinPalette {
+    /// A palette whose twelve entries of every group hold `ink`. A freshly
+    /// allocated skin is zeroed; the base skin fills its palette before a
+    /// scheme is read, and that fill is outside this component (guess).
+    pub fn filled(ink: SkinInk) -> Self {
+        SkinPalette {
+            form: [ink; 12],
+            control: [ink; 12],
+            form_hot: [ink; 12],
+            text: [ink; 12],
+            highlight: [ink; 12],
+            accent_dim: ink,
+            accent_bright: ink,
+            accent_mix: [ink; 4],
+            first_alpha: 0,
+            second_alpha: 0,
+            accent_alpha_a: 0,
+            accent_alpha_b: 0,
+        }
+    }
+}
+
+/// A scheme record: four colours with the scale and tone each expands by,
+/// the accent and the two alpha bytes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkinScheme {
+    pub groups: [(SkinInk, f32, f32); 4],
+    pub accent: SkinInk,
+    pub accent_scale: f32,
+    pub first_alpha: u8,
+    pub second_alpha: u8,
+}
+
+/// `MINSS`'s operand order: the second operand comes back when either is NaN.
+fn min_ss(first: f32, second: f32) -> f32 {
+    if first.is_nan() || second.is_nan() || second < first {
+        second
+    } else {
+        first
+    }
+}
+
+/// One colour channel scaled by `factor` and saturated to a byte, as the
+/// original's packed conversion does. A result that does not fit the
+/// conversion's integer range stores zero.
+fn scaled_channel(channel: u8, factor: f32) -> u8 {
+    let value = f32::from(channel) * factor;
+    rounded_byte(value)
+}
+
+/// Rounds to nearest even and saturates to a byte; a non-finite or
+/// out-of-range input stores zero, as the original's conversion does.
+fn rounded_byte(value: f32) -> u8 {
+    if !value.is_finite() || value <= -2_147_483_648.0 || value >= 2_147_483_648.0 {
+        return 0;
+    }
+    let rounded = value.round_ties_even();
+    if rounded <= 0.0 {
+        0
+    } else if rounded >= 255.0 {
+        255
+    } else {
+        rounded as u8
+    }
+}
+
+/// Scales a colour's red, green and blue; the alpha is kept.
+fn scale_rgb(ink: &mut SkinInk, factor: f32) {
+    for channel in &mut ink[..3] {
+        *channel = scaled_channel(*channel, factor);
+    }
+}
+
+/// Blends a colour's red, green and blue towards its luminance by `amount`;
+/// the alpha is kept. The luminance is 0.299 red, 0.587 green, 0.114 blue,
+/// summed as the original sums it.
+fn tone_rgb(ink: &mut SkinInk, amount: f32) {
+    let red = f32::from(ink[0]);
+    let green = f32::from(ink[1]);
+    let blue = f32::from(ink[2]);
+    let luminance = red * 0.299 + (green * 0.587 + blue * 0.114);
+    for channel in &mut ink[..3] {
+        let value = f32::from(*channel);
+        *channel = rounded_byte((luminance - value) * amount + value);
+    }
+}
+
+/// Writes a colour's red, green and blue scaled by `factor`; the
+/// destination's alpha is kept, as the original's three-byte stores do.
+fn set_scaled_rgb(ink: &mut SkinInk, base: SkinInk, factor: f32) {
+    for channel in 0..3 {
+        ink[channel] = scaled_channel(base[channel], factor);
+    }
+}
+
+/// Expands one scheme colour into the twelve shades of a group. `scale`
+/// shrinks and grows the colour, `tone` pulls it towards its luminance.
+/// Entries 0 to 3 and 5 to 7 keep the destination's alpha, as the
+/// original's three-byte stores do.
+pub fn expand_group(group: &mut SkinGroup, base: SkinInk, scale: f32, tone: f32) {
+    let inverse = 1.0 / scale;
+    group[4] = base;
+    set_scaled_rgb(&mut group[5], base, scale);
+    set_scaled_rgb(&mut group[6], base, scale * scale);
+    let mut power = scale * scale * scale;
+    set_scaled_rgb(&mut group[7], base, power);
+    group[8] = base;
+    tone_rgb(&mut group[8], min_ss(1.0, tone * 1.75));
+    power *= scale;
+    scale_rgb(&mut group[8], power);
+    group[9] = base;
+    tone_rgb(&mut group[9], min_ss(1.0, tone * 2.0));
+    power *= scale;
+    scale_rgb(&mut group[9], power);
+    group[10] = base;
+    tone_rgb(&mut group[10], min_ss(1.0, tone * 2.25));
+    power *= scale;
+    scale_rgb(&mut group[10], power);
+    group[11] = base;
+    tone_rgb(&mut group[11], min_ss(1.0, tone * 2.5));
+    power *= scale;
+    scale_rgb(&mut group[11], power);
+
+    set_scaled_rgb(&mut group[3], base, inverse);
+    let square = inverse * inverse;
+    set_scaled_rgb(&mut group[2], base, square);
+    let cube = square * inverse * 0.909_090_94;
+    set_scaled_rgb(&mut group[1], base, cube);
+    let fourth = cube * inverse * 0.909_090_94;
+    set_scaled_rgb(&mut group[0], base, fourth);
+
+    tone_rgb(&mut group[8], tone * 0.5);
+    tone_rgb(&mut group[9], min_ss(1.0, tone));
+    tone_rgb(&mut group[10], min_ss(1.0, tone * 1.25));
+    tone_rgb(&mut group[11], min_ss(1.0, tone * 1.5));
+}
+
+/// Reads a scheme into the palette, as the skin's loader does. The first
+/// group becomes both the form and the hot-form group, the next three
+/// become the control, label and highlight groups, and the accent shades
+/// are mixed from the accent and the first group's third shade.
+pub fn load_scheme(palette: &mut SkinPalette, scheme: &SkinScheme) {
+    for (group, (base, scale, tone)) in [
+        &mut palette.form,
+        &mut palette.control,
+        &mut palette.text,
+        &mut palette.highlight,
+    ]
+    .into_iter()
+    .zip(scheme.groups)
+    {
+        expand_group(group, base, scale, tone);
+    }
+    palette.form_hot = palette.form;
+
+    let mut dim = scheme.accent;
+    scale_rgb(&mut dim, 0.5);
+    palette.accent_dim = dim;
+    let mut bright = scheme.accent;
+    scale_rgb(&mut bright, 1.9);
+    tone_rgb(&mut bright, 0.8);
+    palette.accent_bright = bright;
+    palette.accent_mix = [
+        mix_ink(dim, bright, 0.4),
+        mix_ink(dim, bright, 0.6),
+        mix_ink(dim, bright, 0.5),
+        mix_ink(dim, bright, 0.9),
+    ];
+    let amount = f32::from(scheme.second_alpha) * scheme.accent_scale * 0.003_921_569;
+    palette.accent_mix[2] = mix_ink(palette.form[3], palette.accent_mix[2], amount);
+    palette.accent_mix[3] = mix_ink(palette.form[3], palette.accent_mix[3], amount);
+    palette.first_alpha = scheme.first_alpha;
+    palette.second_alpha = scheme.second_alpha;
+    let gate = f32::from(scheme.second_alpha) * scheme.accent_scale;
+    palette.accent_alpha_a = (gate.round_ties_even() as i32) as u8;
+    palette.accent_alpha_b = palette.accent_alpha_a;
+}
+
+/// Scales the palette's alpha bytes: the form group and the two accent
+/// mixes take the first ramp, every other group takes the second. The
+/// highlight group's last entry keeps its alpha, as the original leaves it.
+pub fn scale_palette_alpha(palette: &mut SkinPalette, first_scale: f32, second_scale: f32) {
+    let first = low_byte(f32::from(palette.first_alpha) * first_scale);
+    let second = low_byte(f32::from(palette.second_alpha) * second_scale);
+    for ink in &mut palette.form {
+        ink[3] = first;
+    }
+    for group in [
+        &mut palette.control,
+        &mut palette.form_hot,
+        &mut palette.text,
+    ] {
+        for ink in group {
+            ink[3] = second;
+        }
+    }
+    for ink in &mut palette.highlight[..11] {
+        ink[3] = second;
+    }
+    palette.accent_mix[2][3] = first;
+    palette.accent_mix[3][3] = first;
+}
+
+/// The skin's layout metrics: the border, padding, title and row sizes the
+/// constructor stores, and the reach that follows the GUI unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkinLayout {
+    pub border: i32,
+    pub pad: i32,
+    pub title: i32,
+    pub reach: i32,
+    pub edge: i32,
+    pub gap: i32,
+    pub head: i32,
+    pub row: i32,
+}
+
+/// Sets the layout metrics from the GUI unit: border 2, pad 2, title 24,
+/// reach four units plus four.
+pub fn set_skin_metrics(layout: &mut SkinLayout, unit: i32) {
+    layout.border = 2;
+    layout.pad = 2;
+    layout.title = 24;
+    layout.reach = unit.wrapping_mul(4).wrapping_add(4);
+}
+
+/// A skin's constructor: the default sizes, then the metrics from the unit.
+pub fn skin_constructor(unit: i32) -> SkinLayout {
+    let mut layout = SkinLayout {
+        border: 2,
+        pad: 2,
+        title: 24,
+        reach: 0,
+        edge: 2,
+        gap: 2,
+        head: 24,
+        row: 20,
+    };
+    set_skin_metrics(&mut layout, unit);
+    layout
 }
 
 #[cfg(test)]
@@ -4414,7 +4693,7 @@ mod tests {
         );
         assert!(!plain.own);
         assert!(!plain.marked);
-        assert!(!plain.wide);
+        assert_eq!(plain.turn, 0);
         assert_eq!(plain.ink, 2);
         assert_eq!(plain.id, 7);
         assert_eq!((plain.x, plain.y), (52, 52));
@@ -4451,7 +4730,7 @@ mod tests {
                 own: false,
             },
         );
-        assert!(nudged.wide);
+        assert_eq!(nudged.turn, 4);
         assert_eq!((nudged.x, nudged.y), (52, 53));
 
         let both = draw_centred_icon(
@@ -4519,7 +4798,7 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x8000_0000,
+                mode: 0x0100_0000,
                 state: 0x40,
                 id: 1,
                 own: false,
@@ -4533,7 +4812,7 @@ mod tests {
                 y: 0,
                 w: 16,
                 h: 16,
-                mode: 0x8000_0000,
+                mode: 0x0100_0000,
                 state: 0,
                 id: 1,
                 own: false,
@@ -7423,7 +7702,7 @@ mod tests {
         assert_eq!(built.programs.len(), 3);
         assert_eq!(built.uniform_calls, 6);
         let kinds: Vec<u32> = built.programs.iter().map(|p| p.kind).collect();
-        assert_eq!(kinds, vec![5, 0x15, 5]);
+        assert_eq!(kinds, vec![5, 0x15, 0x15]);
 
         assert_eq!(
             built.programs[0].uniforms,
@@ -7591,5 +7870,119 @@ mod tests {
 
         let both = draw_skin_region(place(0, 0x10_0080, true), 5);
         assert_eq!((both.detail_mode, both.detail_offset), (0x30, 5));
+    }
+
+    #[test]
+    fn a_scheme_colour_expands_into_twelve_shades() {
+        let mut group = [[0u8, 0, 0, 100]; 12];
+        expand_group(&mut group, [100, 150, 200, 100], 2.0, 0.5);
+        assert_eq!(
+            group,
+            [
+                [5, 8, 10, 100],
+                [11, 17, 23, 100],
+                [25, 38, 50, 100],
+                [50, 75, 100, 100],
+                [100, 150, 200, 100],
+                [200, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+                [255, 255, 255, 100],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_scale_keeps_the_destination_alpha() {
+        let mut group = [[9u8, 9, 9, 77]; 12];
+        expand_group(&mut group, [40, 80, 120, 200], 1.5, 0.0);
+        assert_eq!(group[0][3], 77);
+        assert_eq!(group[5][3], 77);
+        assert_eq!(group[7][3], 77);
+        assert_eq!(group[4][3], 200);
+        assert_eq!(group[8][3], 200);
+        assert_eq!(group[11][3], 200);
+        assert_eq!(group[4][..3], [40, 80, 120]);
+    }
+
+    #[test]
+    fn the_accent_mixes_and_the_two_alpha_bytes() {
+        let mut palette = SkinPalette::filled([9, 9, 9, 77]);
+        let scheme = SkinScheme {
+            groups: [
+                ([100, 150, 200, 40], 2.0, 0.5),
+                ([80, 90, 100, 50], 1.5, 0.25),
+                ([200, 200, 200, 60], 1.2, 0.1),
+                ([180, 60, 30, 70], 1.1, 0.3),
+            ],
+            accent: [200, 100, 50, 180],
+            accent_scale: 1.5,
+            first_alpha: 120,
+            second_alpha: 200,
+        };
+        load_scheme(&mut palette, &scheme);
+        assert_eq!(palette.accent_dim, [100, 50, 25, 180]);
+        assert_eq!(palette.accent_bright, [210, 197, 178, 180]);
+        assert_eq!(
+            palette.accent_mix,
+            [
+                [144, 109, 86, 180],
+                [166, 138, 117, 180],
+                [174, 133, 102, 198],
+                [225, 201, 174, 198],
+            ]
+        );
+        assert_eq!(palette.form, palette.form_hot);
+        assert_eq!(palette.form[3], [50, 75, 100, 77]);
+        assert_eq!((palette.first_alpha, palette.second_alpha), (120, 200));
+        assert_eq!((palette.accent_alpha_a, palette.accent_alpha_b), (44, 44));
+    }
+
+    #[test]
+    fn the_palette_alpha_ramps_skip_the_last_highlight_entry() {
+        let mut palette = SkinPalette::filled([10, 20, 30, 200]);
+        palette.first_alpha = 100;
+        palette.second_alpha = 160;
+        scale_palette_alpha(&mut palette, 0.5, 0.25);
+        assert_eq!(palette.form[0][3], 50);
+        assert_eq!(palette.form[11][3], 50);
+        assert_eq!(palette.control[3][3], 40);
+        assert_eq!(palette.form_hot[0][3], 40);
+        assert_eq!(palette.text[11][3], 40);
+        assert_eq!(palette.highlight[10][3], 40);
+        assert_eq!(palette.highlight[11][3], 200);
+        assert_eq!(palette.accent_mix[2][3], 50);
+        assert_eq!(palette.accent_mix[3][3], 50);
+        assert_eq!(palette.accent_mix[0][3], 200);
+    }
+
+    #[test]
+    fn a_skin_layout_follows_the_unit() {
+        let layout = skin_constructor(5);
+        assert_eq!(
+            layout,
+            SkinLayout {
+                border: 2,
+                pad: 2,
+                title: 24,
+                reach: 24,
+                edge: 2,
+                gap: 2,
+                head: 24,
+                row: 20,
+            }
+        );
+        let wider = skin_constructor(12);
+        assert_eq!(wider.reach, 52);
+    }
+
+    #[test]
+    fn a_minimum_keeps_the_second_operand_on_nan() {
+        assert_eq!(min_ss(f32::NAN, 0.5), 0.5);
+        assert!(min_ss(0.5, f32::NAN).is_nan());
+        assert_eq!(min_ss(2.0, 1.0), 1.0);
     }
 }
