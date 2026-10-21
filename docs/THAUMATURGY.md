@@ -201,7 +201,9 @@ effect_geometry, rain, portal_effect, fire_node}`.
 - **The Barrier** grows in over 800 ms (`share = elapsed·0.00125`), reports
   `PowerUsed` at 1, and shrinks over 500 ms (`0.002`); its radius is the
   caster's height above the floor plus 100, or its chest plus 10, whichever
-  is higher. **The Bubble** grows over 1200 ms and shrinks over 700, and
+  is higher; its drawn cap is scaled 85 by 85 by 25 cm, pushed 75 cm along
+  the facing, and its bounding radius is `sqrt(85² + 85²)`. **The Bubble**
+  grows over 1200 ms and shrinks over 700, and
   ends once its caster is 20 m away. Both keep bodies out: a part inside
   the surface is pushed outward, a part within the radius plus its own
   radius is pushed inward, and each touch opens or feeds a ripple.

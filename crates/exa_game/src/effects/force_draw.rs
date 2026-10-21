@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use exa_assets::polyhedra::Polyhedron;
 use exa_render::glow::GlowMaterial;
 
-use super::force_dome::{barrier_mesh, bubble_mesh};
+use super::force_dome::{BARRIER_DRAW_SCALE, BARRIER_FORWARD_CM, barrier_mesh, bubble_mesh};
 
 /// The two dome shells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub fn shell_mesh(kind: ShellKind, radius: f32) -> (Mesh, Vec4) {
     );
     let (points, faces) = match kind {
         ShellKind::Barrier => {
-            let (points, faces) = barrier_mesh(radius);
+            let (points, faces) = barrier_mesh(1.0);
             (points, faces)
         }
         ShellKind::Bubble => {
@@ -77,7 +77,14 @@ pub fn draw_new_shells(
             ShellDrawn(handle.clone()),
             Mesh3d(handle),
             MeshMaterial3d(materials.add(GlowMaterial { tint })),
-            Transform::IDENTITY,
+            match shell.kind {
+                ShellKind::Barrier => Transform {
+                    translation: Vec3::new(0.0, 0.0, BARRIER_FORWARD_CM),
+                    scale: BARRIER_DRAW_SCALE,
+                    ..Transform::IDENTITY
+                },
+                ShellKind::Bubble => Transform::from_scale(Vec3::splat(shell.radius)),
+            },
             NoFrustumCulling,
             bevy::light::NotShadowCaster,
             bevy::light::NotShadowReceiver,
@@ -97,7 +104,7 @@ mod tests {
             bevy::mesh::PrimitiveTopology::TriangleList
         ));
         assert_eq!(tint.w, 0.5);
-        let (bubble, _) = shell_mesh(ShellKind::Bubble, 100.0);
-        assert_eq!(bubble.count_vertices(), bubble_mesh(100.0).points.len());
+        let (bubble, _) = shell_mesh(ShellKind::Bubble, 1.0);
+        assert_eq!(bubble.count_vertices(), bubble_mesh(1.0).points.len());
     }
 }

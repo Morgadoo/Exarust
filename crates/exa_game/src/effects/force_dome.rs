@@ -72,10 +72,12 @@ pub const BUBBLE_GROW_PER_MS: f64 = 0.000_833_333_333_333_333_4;
 pub const BUBBLE_SHRINK_PER_MS: f64 = 0.001_428_571_428_571_428_6;
 /// A bubble whose caster is further than this ends, cm.
 pub const BUBBLE_RANGE_CM: f32 = 2000.0;
-/// The Barrier's mesh is 300 by 220 by 75 cm; its hum and impact sounds.
-pub const BARRIER_HEIGHT_CM: f32 = 300.0;
-pub const BARRIER_HALF_WIDTH_CM: f32 = 110.0;
-pub const BARRIER_DEPTH_CM: f32 = 75.0;
+/// The Barrier's drawn cap is scaled 85 by 85 by 25 cm and pushed 75 cm
+/// along the facing; 120 cm is its bounding radius. Its hum and impact
+/// sounds follow.
+pub const BARRIER_DRAW_SCALE: Vec3 = Vec3::new(85.0, 85.0, 25.0);
+pub const BARRIER_FORWARD_CM: f32 = 75.0;
+pub const BARRIER_BOUND_RADIUS_CM: f32 = 120.208_15;
 pub const CAST_SOUND: &str = "thmfrc_bi";
 pub const BARRIER_HUM: &str = "thmfrc_bc02";
 pub const BARRIER_CAST_VOLUME: f32 = 0.2;
@@ -389,15 +391,30 @@ impl Barrier {
         }
     }
 
-    /// The centre from the tick's fraction: `current + (target − current)·t`
-    /// where `target` is the caster's place and the previous frame's probe
-    /// contributes `0.003`.
-    pub fn follow(&mut self, caster: Vec3, probe: Vec3) {
+    /// Take the caster's place at the start of a tick: the last two poses
+    /// are kept for the draw's interpolation.
+    pub fn advance(&mut self, caster: Vec3, probe: Vec3) {
         self.previous = self.base;
         self.base = caster;
         self.probe = probe;
-        let target = caster + probe;
-        self.dome.at += (target - self.dome.at) * 0.95 + probe * 0.003;
+    }
+
+    /// The place the draw shows at the tick's fraction `t`: between the
+    /// last two poses, the probe added at the current one.
+    pub fn place(&self, t: f32) -> Vec3 {
+        let current = self.base + self.probe;
+        self.previous + (current - self.previous) * t
+    }
+
+    /// The radius the draw shows: `(1 − share²)·radius·0.9` while the
+    /// effect is not standing, the full radius while it stands.
+    pub fn drawn_radius(&self) -> f32 {
+        if self.dome.phase == Phase::Standing {
+            self.dome.radius
+        } else {
+            let a = self.dome.share;
+            (1.0 - a * a) * self.dome.radius * 0.9
+        }
     }
 }
 
@@ -479,8 +496,10 @@ pub fn bubble_mesh(radius: f32) -> Polyhedron {
 
 /// The barrier's mesh: the icosahedron's top cap with y and z exchanged (the
 /// dome lies on its side, facing along z), subdivided three times, its
-/// points on the sphere scaled to `radius`, with both windings so it is
-/// drawn from either side. Returns the points and the triangles.
+/// points on the unit sphere scaled to `radius`, with both windings so it is
+/// drawn from either side. The draw scales it by [`BARRIER_DRAW_SCALE`] and
+/// pushes it by [`BARRIER_FORWARD_CM`] when `radius` is 1. Returns the
+/// points and the triangles.
 pub fn barrier_mesh(radius: f32) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
     let mut poly = Polyhedron::cap(1.0);
     // The original exchanges each point's y and z.
@@ -516,6 +535,8 @@ mod tests {
         assert_eq!(barrier.dome.phase, Phase::Growing);
         assert_eq!(barrier.dome.radius, 130.0);
         assert_eq!(barrier.dome.flags, 0x3_0000);
+        barrier.advance(Vec3::new(0.0, 120.0, 0.0), Vec3::ZERO);
+        assert_eq!(barrier.place(0.5), Vec3::new(0.0, 120.0, 0.0));
         barrier.tick(1400);
         assert!((barrier.dome.share - 0.5).abs() < 1e-6);
         // Exactly 1.0 still leaves the share short, as `1 < share` does.
@@ -632,6 +653,9 @@ mod tests {
         for p in &points {
             assert!(p[2] >= -1e-3);
         }
+        assert_eq!(BARRIER_DRAW_SCALE, Vec3::new(85.0, 85.0, 25.0));
+        assert_eq!(BARRIER_FORWARD_CM, 75.0);
+        assert!((BARRIER_BOUND_RADIUS_CM - (85.0f32 * 85.0 + 85.0 * 85.0).sqrt()).abs() < 0.01);
         assert!(faces.len() >= 5 * 2);
     }
 
