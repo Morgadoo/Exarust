@@ -428,9 +428,12 @@ pub fn hand_over(caster: &mut CastBody, target: &mut CastBody) {
     target.status_bits |= IN_CONTROL;
 }
 
-/// Takes control back.
+/// Takes control back. The original writes the caster's status word,
+/// less the control bits, over the released body's (so that body keeps
+/// the caster's other bits, the handover bit among them) before it clears
+/// the caster's handover bit.
 pub fn take_back(caster: &mut CastBody, target: &mut CastBody) {
-    target.status_bits &= !IN_CONTROL;
+    target.status_bits = caster.status_bits & !IN_CONTROL;
     caster.status_bits &= !HANDED_OVER;
 }
 
@@ -647,8 +650,10 @@ mod tests {
         hand_over(&mut caster, &mut target);
         assert_eq!(caster.status_bits & HANDED_OVER, HANDED_OVER);
         assert_eq!(target.status_bits & IN_CONTROL, IN_CONTROL);
+        caster.status_bits |= 0x10;
+        target.status_bits |= 0x8;
         take_back(&mut caster, &mut target);
-        assert_eq!(caster.status_bits & HANDED_OVER, 0);
-        assert_eq!(target.status_bits & IN_CONTROL, 0);
+        assert_eq!(caster.status_bits, 0x10);
+        assert_eq!(target.status_bits, HANDED_OVER | 0x10);
     }
 }

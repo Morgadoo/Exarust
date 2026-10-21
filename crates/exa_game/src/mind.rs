@@ -67,9 +67,10 @@ pub fn step_spirit_form(form: &mut SpiritForm, clock: i64, rate: f32) -> SpiritS
                 form.state = 1;
             }
         }
-        _ => {}
+        _ => active = false,
     }
-    form.stamp = clock;
+    // A fade that ends, or a form that has ended, publishes nothing and
+    // keeps its stamp.
     if !active {
         return SpiritStep {
             state: form.state,
@@ -81,6 +82,7 @@ pub fn step_spirit_form(form: &mut SpiritForm, clock: i64, rate: f32) -> SpiritS
             active: false,
         };
     }
+    form.stamp = clock;
     if form.state == 2 {
         return SpiritStep {
             state: form.state,
@@ -131,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fade_falls_over_thirty_seconds_and_ends() {
+    fn a_fade_falls_over_one_point_two_seconds_and_ends() {
         let mut fading = form(2, 1.0, 0);
         let half = step_spirit_form(&mut fading, 600, 100.0);
         assert_eq!(half.state, 2);
@@ -144,6 +146,11 @@ mod tests {
         assert!(!end.active);
         assert_eq!(end.state, 0);
         assert_eq!(end.value, 0.0);
+        // The ended form keeps the stamp of its last running step and
+        // publishes nothing after.
+        assert_eq!(gone.stamp, 0);
+        assert!(!step_spirit_form(&mut gone, 5_000, 100.0).active);
+        assert_eq!(gone.stamp, 0);
     }
 
     #[test]
