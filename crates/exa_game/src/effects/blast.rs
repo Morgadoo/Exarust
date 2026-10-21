@@ -25,7 +25,8 @@
 //!   (running out fizzles the blast) and the charge rises by the rate. Past
 //!   1 the nearby characters are alerted, the release directions are set
 //!   (each direction pushed `forward` along the frame's z, rotated into the
-//!   frame and normalised; its weight `0.1·z + 0.9` of the unpushed z), the
+//!   frame and normalised; its weight `0.1·z + 0.9` of the unpushed z, in
+//!   double precision), the
 //!   cast hook is cleared, the release sound plays at pitch
 //!   `0.9 + 0.2·random`, and "PowerUsed" is raised.
 //! - **Fizzle** (state −1): the chunks still follow the hand and grow
@@ -373,7 +374,7 @@ impl Blast {
     fn set_release_directions(&mut self) {
         let directions = chunk_directions();
         for (chunk, base) in self.chunks.iter_mut().zip(directions) {
-            chunk.weight = base.z * 0.1 + 0.9;
+            chunk.weight = (f64::from(base.z) * 0.1 + 0.9) as f32;
             let mut d = base;
             d.z += self.setup.forward;
             chunk.direction = normalize(self.frame.rotate(d));
