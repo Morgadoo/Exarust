@@ -22,10 +22,14 @@
 //!   count, then each employee's two unused words, profession word, a
 //!   custom-fighter flag (a flagged entry carries no character id), the
 //!   character id otherwise, an item list (a count and twelve-byte entries)
-//!   and four words.
-//! * hireables (`0x00010000`): written only while the hire list has
-//!   candidates: a count and, per candidate, an unused word then the
-//!   candidate's character export. The export's own codec delimits it.
+//!   and four words. When it loads a character, the original also resets
+//!   the profession word from the character's class (16, 4 or 8 for the
+//!   upper nibbles 3, 4 and 5); that step needs the character database and
+//!   is the caller's.
+//! * hireables (`0x00010000`): a count and, per candidate, an unused word
+//!   then the candidate's character export, written whenever the writer
+//!   runs (an empty list is just a zero count). The export's own codec
+//!   delimits it.
 //! * merchant (`0xA0500000`): written only while a merchant is employed:
 //!   the stock type, the specialisation word, two unused words, and the
 //!   stock's count and item ids. A loader that skips stock reads only the
