@@ -1942,8 +1942,11 @@ impl Flow {
         if self.phase == Phase::Playing {
             steps.push(Step::GameGui(false));
             match self.mode {
+                // A reconstructed player has already been stripped: the quit
+                // saves without the death rule. Every other story quit saves
+                // with it.
                 Mode::Story => steps.push(Step::Save {
-                    drop_on_low_health: true,
+                    drop_on_low_health: self.story.reconstruction != STRIPPED,
                 }),
                 Mode::Arena => match page {
                     Page::InGame => steps.push(Step::Save {
@@ -3291,6 +3294,20 @@ mod tests {
         };
         let steps = flow.quit_session(Page::InGame, 10);
         assert_eq!(steps.first(), Some(&Step::ArenaPaused));
+        // A stripped story player's quit saves without the death rule.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            story: StoryState {
+                reconstruction: STRIPPED,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let steps = flow.quit_session(Page::InGame, 10);
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
         // A practice quit writes no save.
         let mut flow = Flow {
             mode: Mode::Practice,
