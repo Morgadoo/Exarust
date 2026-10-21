@@ -5264,6 +5264,733 @@ pub fn scroll_arrow_vertical(batch: &mut SkinBatch, x: f32, y: f32, w: f32, ink:
     );
 }
 
+/// A control face's inks come from the palette's control group; a hot face
+/// uses the copy of the form group.
+pub fn draw_button_face(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    pressed: bool,
+    hot: bool,
+    palette: &SkinPalette,
+) {
+    let inner = GuiRect {
+        x0: rect.x0 + 2.0,
+        y0: rect.y0 + 2.0,
+        x1: rect.x1 - 2.0,
+        y1: rect.y1 - 2.0,
+    };
+    let border = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    if pressed {
+        pair_rect(batch, inner, palette.control[4], palette.control[1]);
+        bordered_rect(batch, border, palette.control[6], palette.control[4]);
+        batch.set_ink(palette.control[0]);
+    } else if hot {
+        pair_rect(batch, inner, palette.form_hot[1], palette.form_hot[6]);
+        bordered_rect(batch, border, palette.form_hot[4], palette.form_hot[6]);
+        batch.set_ink(palette.form_hot[0]);
+    } else {
+        pair_rect(batch, inner, palette.control[2], palette.control[4]);
+        bordered_rect(batch, border, palette.control[5], palette.control[7]);
+        batch.set_ink(palette.control[0]);
+    }
+    outline_rect(batch, rect);
+}
+
+/// The gradient form of the control face.
+pub fn draw_gradient_button_face(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    pressed: bool,
+    hot: bool,
+    palette: &SkinPalette,
+) {
+    let inner = GuiRect {
+        x0: rect.x0 + 2.0,
+        y0: rect.y0 + 2.0,
+        x1: rect.x1 - 2.0,
+        y1: rect.y1 - 2.0,
+    };
+    let border = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    if pressed {
+        gradient_box(batch, inner, palette.control[4], palette.control[0]);
+        bevel_rect(batch, border, palette.control[6], palette.control[4]);
+        batch.set_ink(palette.control[0]);
+    } else if hot {
+        gradient_box(batch, inner, palette.form_hot[2], palette.form_hot[4]);
+        bevel_rect(batch, border, palette.form_hot[5], palette.form_hot[4]);
+        batch.set_ink(palette.form_hot[0]);
+    } else {
+        gradient_box(batch, inner, palette.control[2], palette.control[5]);
+        bevel_rect(batch, border, palette.control[5], palette.control[6]);
+        batch.set_ink(palette.control[0]);
+    }
+    outline_rect(batch, rect);
+}
+
+/// The raised or sunken box a control's mark sits in.
+pub fn draw_button_box(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    pressed: bool,
+    hot: bool,
+    palette: &SkinPalette,
+) {
+    let inner = GuiRect {
+        x0: rect.x0 + 2.0,
+        y0: rect.y0 + 2.0,
+        x1: rect.x1 - 2.0,
+        y1: rect.y1 - 2.0,
+    };
+    let border = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    if pressed {
+        gradient_box(batch, inner, palette.control[4], palette.control[1]);
+        bevel_rect(batch, border, palette.control[6], palette.control[4]);
+        batch.set_ink(palette.control[0]);
+    } else if hot {
+        gradient_box(batch, inner, palette.form[3], palette.form[4]);
+        bevel_rect(batch, border, palette.form[4], palette.form[5]);
+        batch.set_ink(palette.form_hot[0]);
+    } else {
+        gradient_box(batch, inner, palette.control[2], palette.control[6]);
+        bevel_rect(batch, border, palette.control[5], palette.control[7]);
+        batch.set_ink(palette.control[0]);
+    }
+    outline_rect(batch, rect);
+}
+
+/// The scroll region's frame and the panel's inset bevel and shadow.
+pub fn draw_panel(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    inset: i32,
+    state: u32,
+    unit: i32,
+    palette: &SkinPalette,
+) {
+    let inset = inset as f32;
+    let inner = GuiRect {
+        x0: rect.x0 + inset,
+        y0: rect.y0 + inset,
+        x1: rect.x1 - inset,
+        y1: rect.y1 - inset,
+    };
+    if (state & 0x40) == 0x40 {
+        let box_rect = GuiRect {
+            x0: inner.x0 + 2.0,
+            y0: inner.y0 + 2.0,
+            x1: inner.x1 - 2.0,
+            y1: inner.y1 - 2.0,
+        };
+        pair_rect(batch, box_rect, palette.control[2], palette.control[5]);
+        let border = GuiRect {
+            x0: inner.x0 + 1.0,
+            y0: inner.y0 + 1.0,
+            x1: inner.x1 - 1.0,
+            y1: inner.y1 - 1.0,
+        };
+        bordered_rect(batch, border, palette.control[4], palette.control[6]);
+        batch.set_ink(palette.control[0]);
+        outline_rect(batch, inner);
+        shadow_ring(
+            batch,
+            GuiRect {
+                x0: inner.x0 + 1.0,
+                y0: inner.y0 + 1.0,
+                x1: inner.x1 - 1.0,
+                y1: inner.y1 - 1.0,
+            },
+            unit,
+            0xa0,
+        );
+    } else {
+        draw_frame_control(batch, inner, false, (state & 0x10) == 0x10, palette);
+    }
+}
+
+/// The frame slot's draw: a plain, hot or pressed box around the rectangle.
+pub fn draw_frame_control(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    pressed: bool,
+    hot: bool,
+    palette: &SkinPalette,
+) {
+    draw_button_face(batch, rect, pressed, hot, palette);
+}
+
+/// A control's background fill in its own colour, which arrives with its
+/// alpha forced opaque.
+pub fn draw_control_fill(batch: &mut SkinBatch, rect: GuiRect, ink: SkinInk) {
+    batch.select(1, 0, false);
+    batch.set_ink(with_alpha(ink, 0xff));
+    solid_rect(batch, rect);
+    batch.select(0x10, 0, false);
+}
+
+/// A control's frame and, when it is pressed, the fixed bevel ring inside.
+pub fn draw_control_box(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    inset: f32,
+    state: u32,
+    palette: &SkinPalette,
+) {
+    let inner = GuiRect {
+        x0: rect.x0 + inset,
+        y0: rect.y0 + inset,
+        x1: rect.x1 - inset,
+        y1: rect.y1 - inset,
+    };
+    draw_frame_control(
+        batch,
+        inner,
+        (state & 0x40) == 0x40,
+        (state & 0x10) == 0x10,
+        palette,
+    );
+    if (state & 0x40) == 0x40 {
+        bevel_ring(batch, inner);
+    }
+}
+
+/// The frame's style switch: each of the two style fields independently
+/// selects a double frame, the second one inset by a pixel.
+pub fn draw_style_frames(batch: &mut SkinBatch, rect: GuiRect, style: u32, palette: &SkinPalette) {
+    match style & 0x30 {
+        0x10 => double_frame(batch, rect, palette.form_hot[0], palette.control[7]),
+        0x20 => double_frame(batch, rect, palette.control[6], palette.form_hot[0]),
+        _ => {}
+    }
+    let inset = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    match style & 0xc0 {
+        0x40 => double_frame(batch, inset, palette.form_hot[0], palette.control[7]),
+        0x80 => double_frame(batch, inset, palette.control[6], palette.form_hot[0]),
+        _ => {}
+    }
+}
+
+/// The mark box when it is not selected: a bevel just outside the rect.
+pub fn draw_mark_plain(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette) {
+    bevel_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 - 1.0,
+            y0: rect.y0 - 1.0,
+            x1: rect.x1 + 1.0,
+            y1: rect.y1 + 1.0,
+        },
+        palette.control[6],
+        palette.control[5],
+    );
+    batch.set_ink(palette.control[0]);
+    outline_rect(batch, rect);
+}
+
+/// The mark box when it is selected: two bevelled rings and a faded face.
+pub fn draw_mark_pressed(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette) {
+    bevel_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 - 1.0,
+            y0: rect.y0 - 1.0,
+            x1: rect.x1 + 1.0,
+            y1: rect.y1 + 1.0,
+        },
+        palette.control[6],
+        palette.control[5],
+    );
+    bevel_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 + 1.0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1 - 1.0,
+            y1: rect.y1 - 1.0,
+        },
+        palette.control[7],
+        palette.control[6],
+    );
+    batch.set_ink(palette.control[0]);
+    outline_rect(batch, rect);
+    fade_rect(
+        batch,
+        GuiRect {
+            x0: rect.x0 + 1.0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1 - 1.0,
+            y1: rect.y1 - 1.0,
+        },
+        palette.form[3],
+        palette.form[2],
+    );
+}
+
+/// Draws a mark at the rectangle its code names. A selected mark takes the
+/// pressed box and the faded face; the active mark takes the plain box.
+pub fn draw_mark(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    selected: bool,
+    active: bool,
+    palette: &SkinPalette,
+) {
+    if selected {
+        draw_mark_pressed(batch, rect, palette);
+    } else if active {
+        draw_mark_plain(batch, rect, palette);
+    }
+}
+
+/// Whether a mark's code is the active one, or the hot one while the form
+/// is not hot.
+pub fn mark_active(code: i32, active_code: i32, hot_flag: bool, hot_code: i32) -> bool {
+    code == active_code || (code == hot_code && !hot_flag)
+}
+
+/// A mark's icon draw: the place it starts from, the icon, its ink and its
+/// scale. Icons draw upward from the point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkIcon {
+    pub x: f32,
+    pub y: f32,
+    pub id: u32,
+    pub ink: Option<SkinInk>,
+    pub scale: Option<f32>,
+}
+
+/// Places a mark's icon at the bottom-left of its rectangle. The selected
+/// mark draws at scale 1; the others bind an ink first.
+pub fn draw_mark_icon(
+    rect: GuiRect,
+    unit: i32,
+    id: u32,
+    selected: bool,
+    palette: &SkinPalette,
+) -> MarkIcon {
+    let x = rect.x0 + (unit >> 1) as f32;
+    let y = rect.y1;
+    if selected {
+        MarkIcon {
+            x,
+            y,
+            id,
+            ink: None,
+            scale: Some(1.0),
+        }
+    } else {
+        MarkIcon {
+            x,
+            y,
+            id,
+            ink: Some(palette.text[6]),
+            scale: None,
+        }
+    }
+}
+
+/// The gradient form of a rectangle: top ink, its 0.6 mix towards the
+/// bottom ink, the bottom ink itself, then its 0.4 mix back towards the top.
+pub fn gradient_box(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk) {
+    let high = mix_ink(bottom, top, 0.6);
+    let low = mix_ink(bottom, top, 0.4);
+    let middle = (rect.y0 - rect.y1) * 0.5 + rect.y1;
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(rect.x1, rect.y0);
+    batch.vertex(rect.x0, rect.y0);
+    batch.set_ink(high);
+    batch.vertex(rect.x0, middle);
+    batch.vertex(rect.x1, middle);
+    batch.set_ink(bottom);
+    batch.vertex(rect.x1, middle);
+    batch.vertex(rect.x0, middle);
+    batch.set_ink(low);
+    batch.vertex(rect.x0, rect.y1);
+    batch.vertex(rect.x1, rect.y1);
+    batch.end_quads();
+}
+
+/// The bevel form of a rectangle: two inks fading between each other across
+/// the left and right sides, with the top edge at the top ink and the bottom
+/// edge at the bottom ink.
+pub fn bevel_rect(batch: &mut SkinBatch, rect: GuiRect, bottom: SkinInk, top: SkinInk) {
+    let high = mix_ink(bottom, top, 0.65);
+    let low = mix_ink(bottom, top, 0.35);
+    let x0 = rect.x0 + 0.5;
+    let y0 = rect.y0 + 0.5;
+    let x1 = rect.x1 - 0.5;
+    let y1 = rect.y1 - 0.5;
+    let middle = (y0 - y1) * 0.5 + y1 + 0.5;
+    batch.begin();
+    batch.set_ink(top);
+    batch.vertex(x1, y0);
+    batch.vertex(x0, y0);
+    batch.vertex(x0, y0);
+    batch.set_ink(high);
+    batch.vertex(x0, middle);
+    batch.set_ink(low);
+    batch.vertex(x0, middle);
+    batch.set_ink(bottom);
+    batch.vertex(x0, y1);
+    batch.vertex(x0, y1);
+    batch.vertex(x1, y1);
+    batch.vertex(x1, y1);
+    batch.set_ink(low);
+    batch.vertex(x1, middle);
+    batch.set_ink(high);
+    batch.vertex(x1, middle);
+    batch.set_ink(top);
+    batch.vertex(x1, y0 - 1.0);
+    batch.end_lines();
+}
+
+/// The bar's two forms: the line gradient when idle, the gradient boxes
+/// when pressed or hot.
+pub fn draw_bar_with_boxes(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    unit: i32,
+    pressed: bool,
+    palette: &SkinPalette,
+) {
+    let inner = GuiRect {
+        x0: rect.x0 + 1.0,
+        y0: rect.y0 + 1.0,
+        x1: rect.x1 - 1.0,
+        y1: rect.y1 - 1.0,
+    };
+    if pressed {
+        gradient_box(
+            batch,
+            GuiRect {
+                x0: rect.x0 + 2.0,
+                y0: rect.y0 + 2.0,
+                x1: rect.x1 - 2.0,
+                y1: rect.y1 - 2.0,
+            },
+            palette.control[4],
+            palette.control[0],
+        );
+        bevel_rect(batch, inner, palette.control[6], palette.control[4]);
+    } else {
+        vertical_gradient(batch, inner, unit, palette.control[5], palette.control[1]);
+        vertical_gradient_frame(batch, inner, unit, palette.control[6], palette.control[4]);
+    }
+    batch.set_ink(palette.control[0]);
+    outline_rect(batch, rect);
+}
+
+/// A slider's draw: the track and its thumb, or the striped fill and the
+/// unit-wide bar at the value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinControlSlider {
+    pub shift: i32,
+    pub frame: Option<GuiRect>,
+    pub stripe: bool,
+    pub translate: [f32; 2],
+    pub begin: u32,
+    pub end: u32,
+}
+
+/// Draws the slider at `fraction`. A scroll mode fills the track with the
+/// striped record; the plain mode draws the thumb frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlSliderPlace {
+    pub rect: GuiRect,
+    pub inset: i32,
+    pub thumb: i32,
+    pub state: u32,
+    pub style: u32,
+    pub fraction: f32,
+}
+
+pub fn draw_control_slider(
+    batch: &mut SkinBatch,
+    place: ControlSliderPlace,
+    stripes: &[SkinInk],
+    palette: &SkinPalette,
+) -> SkinControlSlider {
+    let rect = place.rect;
+    let thumb = place.thumb;
+    let state = place.state;
+    let fraction = place.fraction;
+    let mode = place.style & 0x3000_0000;
+    let inset = place.inset as f32;
+    let inner = GuiRect {
+        x0: rect.x0 + inset,
+        y0: rect.y0 + inset,
+        x1: rect.x1 - inset,
+        y1: rect.y1 - inset,
+    };
+    if mode == 0 {
+        faded_rect(
+            batch,
+            GuiRect {
+                x0: rect.x0 + 2.0,
+                y0: rect.y0 + 2.0,
+                x1: rect.x1 - 2.0,
+                y1: rect.y1 - 2.0,
+            },
+            palette.control[4],
+            palette.form_hot[0],
+            0.6,
+        );
+        let spare = (rect.x1 - rect.x0 - inset * 2.0 - thumb as f32) * fraction;
+        let shift = spare.round_ties_even() as i32;
+        batch.add_texture_shift(-(shift as f32), 0.0);
+        let frame = GuiRect {
+            x0: rect.x0 + inset + shift as f32,
+            y0: rect.y0 + inset,
+            x1: rect.x0 + inset + shift as f32 + thumb as f32,
+            y1: rect.y1 - inset,
+        };
+        draw_frame_control(batch, frame, (state & 0x10) == 0x10, false, palette);
+        batch.add_texture_shift(shift as f32, 0.0);
+        SkinControlSlider {
+            shift,
+            frame: Some(frame),
+            stripe: false,
+            translate: batch.texture_shift,
+            begin: 0,
+            end: 0,
+        }
+    } else if mode == 0x1000_0000 {
+        batch.select(1, 0, false);
+        stripe_bar(
+            batch,
+            GuiRect {
+                x0: inner.x0 + 1.0,
+                y0: inner.y0 + 1.0,
+                x1: inner.x1 - 1.0,
+                y1: inner.y1 - 1.0,
+            },
+            stripes,
+        );
+        let spare = (rect.x1 - rect.x0 - inset * 2.0 - 4.0) * fraction;
+        let shift = spare.round_ties_even() as i32;
+        batch.set_ink(palette.text[5]);
+        outline_rect(
+            batch,
+            GuiRect {
+                x0: rect.x0 + inset + shift as f32,
+                y0: rect.y0,
+                x1: rect.x0 + inset + shift as f32 + 4.0,
+                y1: rect.y1,
+            },
+        );
+        batch.select(0x10, 0, false);
+        SkinControlSlider {
+            shift,
+            frame: None,
+            stripe: true,
+            translate: batch.texture_shift,
+            begin: 0,
+            end: 0,
+        }
+    } else {
+        SkinControlSlider {
+            shift: 0,
+            frame: None,
+            stripe: false,
+            translate: batch.texture_shift,
+            begin: 0,
+            end: 0,
+        }
+    }
+}
+
+/// The scroll bar's draw: a box with a thumb at the end, or a striped fill
+/// with the unit bar. The step it returns is the unit rounded up to an odd
+/// value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinScrollBar {
+    pub step: i32,
+    pub shift: i32,
+    pub box_rect: Option<GuiRect>,
+    pub thumb: Option<GuiRect>,
+    pub stripe: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlScrollPlace {
+    pub rect: GuiRect,
+    pub inset: i32,
+    pub state: u32,
+    pub style: u32,
+    pub fraction: f32,
+    pub unit: i32,
+}
+
+pub fn draw_control_scrollbar(
+    batch: &mut SkinBatch,
+    place: ControlScrollPlace,
+    stripes: &[SkinInk],
+    palette: &SkinPalette,
+) -> SkinScrollBar {
+    let rect = place.rect;
+    let state = place.state;
+    let fraction = place.fraction;
+    let unit = place.unit;
+    let mode = place.style & 0x3000_0000;
+    let inset = place.inset as f32;
+    if mode == 0 {
+        let bar = ((unit * 4) | 1) as f32;
+        let trough = GuiRect {
+            x0: rect.x0 + 1.0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1 - 1.0,
+            y1: rect.y1 - 1.0,
+        };
+        let thumb = GuiRect {
+            x0: rect.x1 - bar,
+            y0: rect.y0 + 2.0,
+            x1: rect.x1 - 2.0,
+            y1: rect.y1 - 2.0,
+        };
+        // The subclass' box slot is not in this component; the base skin's
+        // raised box is its equivalent (guess).
+        draw_button_box(batch, trough, false, false, palette);
+        draw_frame_control(batch, thumb, (state & 0x10) == 0x10, false, palette);
+        SkinScrollBar {
+            step: (unit + 1) - (unit & 1),
+            shift: 0,
+            box_rect: Some(trough),
+            thumb: Some(thumb),
+            stripe: false,
+        }
+    } else if mode == 0x2000_0000 {
+        batch.select(1, 0, false);
+        stripe_bar(
+            batch,
+            GuiRect {
+                x0: rect.x0 + inset + 1.0,
+                y0: rect.y0 + inset + 1.0,
+                x1: rect.x1 - inset - 1.0,
+                y1: rect.y1 - inset - 1.0,
+            },
+            stripes,
+        );
+        let spare = (rect.x1 - rect.x0 - inset * 2.0 - unit as f32) * fraction;
+        let shift = spare.round_ties_even() as i32;
+        batch.set_ink(palette.text[5]);
+        outline_rect(
+            batch,
+            GuiRect {
+                x0: rect.x0 + inset + shift as f32,
+                y0: rect.y0,
+                x1: rect.x0 + inset + shift as f32 + unit as f32,
+                y1: rect.y1,
+            },
+        );
+        batch.select(0x10, 0, false);
+        SkinScrollBar {
+            step: (unit + 1) - (unit & 1),
+            shift,
+            box_rect: None,
+            thumb: None,
+            stripe: true,
+        }
+    } else {
+        SkinScrollBar {
+            step: (unit + 1) - (unit & 1),
+            shift: 0,
+            box_rect: None,
+            thumb: None,
+            stripe: false,
+        }
+    }
+}
+
+/// A control's sunken or raised shell: its frame, optional shadow and the
+/// sunken face.
+pub fn draw_control_shell(
+    batch: &mut SkinBatch,
+    rect: GuiRect,
+    inset: i32,
+    style: u32,
+    state: u32,
+    unit: i32,
+    palette: &SkinPalette,
+) {
+    let inset = inset as f32;
+    let inner = GuiRect {
+        x0: rect.x0 + inset,
+        y0: rect.y0 + inset,
+        x1: rect.x1 - inset,
+        y1: rect.y1 - inset,
+    };
+    draw_frame_control(
+        batch,
+        inner,
+        (state & 0x40) == 0x40,
+        (state & 0x10) == 0x10,
+        palette,
+    );
+    if (style & 0x2000_0000) != 0 && (state & 0x40) == 0 {
+        shadow_ring(batch, rect, -unit / 2, 0x50);
+    }
+    if ((style & 0x4000_0000) != 0 && (state & 0x40) != 0) || (state & 0x80) != 0 {
+        sunken_ring(batch, inner, unit, &palette.highlight);
+    }
+}
+
+/// Fades a label in from its start clock: the first 300 ms scale its alpha,
+/// and once the fade is complete the label draws normally and clears its
+/// fade bit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FadedLabel {
+    pub ink: SkinInk,
+    pub y: i32,
+    pub calls: u32,
+    pub fade: f32,
+    pub finished: bool,
+    pub clear_bit: bool,
+}
+
+/// Draws a label fading in over a third of a second.
+pub fn fade_label(start: u32, now: u32, rect_y: i32, ink: SkinInk) -> FadedLabel {
+    let fade = now.wrapping_sub(start) as f32 * 0.003_333_333_5;
+    if fade <= 1.0 {
+        FadedLabel {
+            ink: with_alpha(ink, rounded_byte(f32::from(ink[3]) * fade)),
+            y: rect_y,
+            calls: 1,
+            fade,
+            finished: false,
+            clear_bit: false,
+        }
+    } else {
+        FadedLabel {
+            ink,
+            y: 0,
+            calls: 1,
+            fade,
+            finished: true,
+            clear_bit: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9220,5 +9947,274 @@ mod tests {
         assert_eq!(primitive.vertices[3].ink, [1, 2, 3, 200]);
         assert_eq!(primitive.vertices[4].ink, [1, 2, 3, 132]);
         assert_eq!(primitive.vertices[11].ink, [1, 2, 3, 132]);
+    }
+
+    fn palette_for_faces() -> SkinPalette {
+        let mut palette = SkinPalette::filled([9, 9, 9, 255]);
+        palette.form = [[10, 11, 12, 40]; 12];
+        palette.form_hot = [[20, 21, 22, 50]; 12];
+        palette.control = [[30, 31, 32, 60]; 12];
+        palette.text = [[40, 41, 42, 70]; 12];
+        palette.highlight = [[50, 51, 52, 80]; 12];
+        palette
+    }
+
+    #[test]
+    fn an_idle_button_face_draws_its_quad_border_and_outline() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_button_face(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+            false,
+            false,
+            &palette,
+        );
+        assert_eq!(batch.primitives.len(), 3);
+        let quad = &batch.primitives[0].vertices;
+        assert_eq!((quad[0].x, quad[0].y), (98.0, 2.0));
+        assert_eq!(quad[0].ink, [30, 31, 32, 60]);
+        assert_eq!(quad[2].ink, [30, 31, 32, 60]);
+        let border = &batch.primitives[1].vertices;
+        assert_eq!(border[0].ink, [30, 31, 32, 60]);
+        assert_eq!(border[3].ink, [30, 31, 32, 60]);
+        let outline = &batch.primitives[2].vertices;
+        assert_eq!(outline[0].ink, [30, 31, 32, 60]);
+    }
+
+    #[test]
+    fn a_hot_button_face_uses_the_form_copy() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_button_face(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+            false,
+            true,
+            &palette,
+        );
+        assert_eq!(batch.primitives[0].vertices[0].ink, [20, 21, 22, 50]);
+        assert_eq!(batch.primitives[2].vertices[0].ink, [20, 21, 22, 50]);
+    }
+
+    #[test]
+    fn a_pressed_button_face_uses_the_pressed_inks() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_button_face(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+            true,
+            true,
+            &palette,
+        );
+        assert_eq!(batch.primitives[0].vertices[0].ink, [30, 31, 32, 60]);
+        assert_eq!(batch.primitives[0].vertices[2].ink, [30, 31, 32, 60]);
+    }
+
+    #[test]
+    fn a_pressed_panel_draws_a_bevel_outline_and_inner_shadow() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_panel(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 40.0),
+            4,
+            0x40,
+            4,
+            &palette,
+        );
+        assert_eq!(batch.primitives.len(), 4);
+        assert_eq!(batch.primitives[0].vertices[0].ink, [30, 31, 32, 60]);
+        assert_eq!(batch.primitives[2].vertices[0].ink, [30, 31, 32, 60]);
+        assert_eq!(batch.primitives[2].vertices[0].x, 95.5);
+        assert_eq!(batch.primitives[3].vertices.len(), 16);
+        assert_eq!(batch.primitives[3].vertices[0].ink, [0, 0, 0, 0xa0]);
+        assert_eq!(batch.primitives[3].vertices[0].x, 5.0);
+    }
+
+    #[test]
+    fn a_plain_panel_draws_the_frame_slot() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_panel(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 40.0),
+            4,
+            0,
+            4,
+            &palette,
+        );
+        assert_eq!(batch.primitives.len(), 3);
+        assert_eq!(batch.primitives[0].vertices[0].x, 94.0);
+        assert_eq!(batch.primitives[0].vertices[0].y, 6.0);
+    }
+
+    #[test]
+    fn a_plain_slider_places_its_thumb_from_the_fraction() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_slider(
+            &mut batch,
+            ControlSliderPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                thumb: 16,
+                state: 0,
+                style: 0,
+                fraction: 0.5,
+            },
+            &[[1, 2, 3, 4], [5, 6, 7, 8]],
+            &palette,
+        );
+        assert_eq!(drawn.shift, 38);
+        let frame = drawn.frame.expect("a thumb");
+        assert_eq!(
+            (frame.x0, frame.y0, frame.x1, frame.y1),
+            (42.0, 4.0, 58.0, 20.0)
+        );
+        assert_eq!(batch.primitives.len(), 4);
+        assert_eq!(batch.texture_shift, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_filled_slider_stripes_its_track_and_outlines_the_bar() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_slider(
+            &mut batch,
+            ControlSliderPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                thumb: 16,
+                state: 0,
+                style: 0x1000_0000,
+                fraction: 0.5,
+            },
+            &[[1, 2, 3, 4], [5, 6, 7, 8]],
+            &palette,
+        );
+        assert!(drawn.stripe);
+        assert_eq!(drawn.shift, 44);
+        let stripe = &batch.primitives[0].vertices;
+        assert_eq!((stripe[0].x, stripe[0].y), (5.0, 5.0));
+        assert_eq!((stripe[2].x, stripe[2].y), (95.0, 19.0));
+        let outline = &batch.primitives[1].vertices;
+        assert_eq!((outline[0].x, outline[0].y), (51.5, 0.5));
+        assert_eq!((outline[2].x, outline[2].y), (48.5, 0.5));
+        assert_eq!(outline[0].ink, [40, 41, 42, 70]);
+    }
+
+    #[test]
+    fn a_plain_scrollbar_puts_its_thumb_at_the_right_and_steps_by_ten() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_scrollbar(
+            &mut batch,
+            ControlScrollPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                state: 0,
+                style: 0,
+                fraction: 0.5,
+                unit: 4,
+            },
+            &[[1, 2, 3, 4], [5, 6, 7, 8]],
+            &palette,
+        );
+        assert_eq!(drawn.step, 5);
+        let thumb = drawn.thumb.expect("a thumb");
+        assert_eq!(
+            (thumb.x0, thumb.y0, thumb.x1, thumb.y1),
+            (83.0, 2.0, 98.0, 22.0)
+        );
+        assert_eq!(
+            drawn.box_rect.expect("a box"),
+            GuiRect::corners(1.0, 1.0, 99.0, 23.0)
+        );
+    }
+
+    #[test]
+    fn a_scrollbar_fill_is_the_unit_bar_at_the_value() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_scrollbar(
+            &mut batch,
+            ControlScrollPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                state: 0,
+                style: 0x2000_0000,
+                fraction: 0.5,
+                unit: 4,
+            },
+            &[[1, 2, 3, 4], [5, 6, 7, 8]],
+            &palette,
+        );
+        assert_eq!(drawn.shift, 44);
+        let outline = &batch.primitives[1].vertices;
+        assert_eq!((outline[0].x, outline[0].y), (51.5, 0.5));
+        assert_eq!((outline[2].x, outline[2].y), (48.5, 0.5));
+    }
+
+    #[test]
+    fn a_mark_is_active_on_its_code_or_an_unhot_hot_code() {
+        assert!(mark_active(-9, -9, false, -10));
+        assert!(mark_active(-10, -9, false, -10));
+        assert!(!mark_active(-10, -9, true, -10));
+        assert!(!mark_active(-8, -9, false, -10));
+    }
+
+    #[test]
+    fn a_selected_mark_icon_draws_at_scale_one_from_the_bottom_left() {
+        let palette = palette_for_faces();
+        let selected = draw_mark_icon(
+            GuiRect::corners(10.0, 20.0, 30.0, 40.0),
+            5,
+            4,
+            true,
+            &palette,
+        );
+        assert_eq!((selected.x, selected.y), (12.0, 40.0));
+        assert_eq!(selected.scale, Some(1.0));
+        assert_eq!(selected.ink, None);
+        let plain = draw_mark_icon(
+            GuiRect::corners(10.0, 20.0, 30.0, 40.0),
+            5,
+            4,
+            false,
+            &palette,
+        );
+        assert_eq!(plain.scale, None);
+        assert_eq!(plain.ink, Some([40, 41, 42, 70]));
+    }
+
+    #[test]
+    fn the_style_switch_draws_both_double_frames() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_style_frames(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 40.0),
+            0x50,
+            &palette,
+        );
+        assert_eq!(batch.primitives.len(), 2);
+        assert_eq!(batch.primitives[0].vertices.len(), 16);
+        assert_eq!(batch.primitives[1].vertices[0].x, 98.5);
+        assert_eq!(batch.primitives[1].vertices[0].ink, [20, 21, 22, 50]);
+        assert_eq!(batch.primitives[1].vertices[8].ink, [30, 31, 32, 60]);
+    }
+
+    #[test]
+    fn a_label_fades_in_over_three_hundred_seconds() {
+        let faded = fade_label(0, 150, 40, [1, 2, 3, 200]);
+        assert_eq!(faded.ink, [1, 2, 3, 100]);
+        assert!(!faded.finished);
+        assert_eq!(faded.y, 40);
+        let done = fade_label(0, 400, 40, [1, 2, 3, 200]);
+        assert!(done.finished);
+        assert!(done.clear_bit);
+        assert_eq!(done.ink, [1, 2, 3, 200]);
     }
 }
