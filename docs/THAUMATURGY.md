@@ -4,9 +4,8 @@ The original's powers as Exarust runs them: how a cast is let through and
 priced, what each Force, Energy, Displacement and Mind power makes, and the
 effects (electric arcs, the force barricade, displacement wisps, the force
 blast and torrent) that run as simulations in the game. The Mind domain's
-rules are in `exa_game::mind`; the force blast and torrent rules and their
-draw geometry and lights are in `exa_game::effects::blast` and
-`exa_game::effects::torrent`. Lengths are in cm, as the original's effects
+casts and sight are in `exa_game::mind`; the force blast and torrent in
+`exa_game::effects::blast` and `exa_game::effects::torrent`. Lengths are in cm, as the original's effects
 keep them; the effects run at the 83 Hz body tick.
 
 Evidence: the decompiled cast tables, front ends, gates, casts, creators,
@@ -147,128 +146,164 @@ focus, facing within 0.5, a free slot).
 
 ## Mind
 
-`exa_game::mind`. The table has sixteen rows: sense 0x101 (0.13) and its
-persistent form 0x20101 (0.27), mask 0x102 (0.12) and 0x20102 (0.24),
-spirit form 0x10106 (0.025), calm 0x103 (0.14), enrage 0x104 (0.16),
-confusion 0x105 (0.17), the loyalty release 0x109 (0.19) and bind 0x2010A
-(0.29), suspicion 0x10B (0.19), possession 0x2010C (0.35), command over the
-dead 0x2010D (0.25), fear 0x107 (0.18), embolden 0x108 (0.18) and raise dead
-0x10F (0.30).
+`exa_game::mind::casts`. The table has sixteen rows: Sense Minds 0x101
+(0.13) and its persistent form 0x20101 (0.27), Mask Mind 0x102 (0.12) and
+0x20102 (0.24), Spirit Form 0x10106 (0.025), Calm 0x103 (0.14), Enrage
+0x104 (0.16), Confusion 0x105 (0.17), Trust 0x109 (0.19), Loyalty 0x2010A
+(0.29), Suspicion 0x10B (0.19), Control Mind 0x2010C (0.35), Command Dead
+0x2010D (0.25), Fear 0x107 (0.18), Embolden 0x108 (0.18) and Raise Dead
+0x10F (0.30). The persistent Sense Minds and Mask Mind, Loyalty and Command
+Dead can be rebuilt from a save: the row's cost goes into the reserve
+(three quarters with the reserve technique) and the power holds the whole
+cost, which the load then takes three quarters of with the technique.
 
-- **Gates**: most casts need focus of 0.3 times the cost, compared in double
-  precision with an unordered compare that lets a NaN through. Record types
-  1 to 3 are living and 4 and 5 undead; a cast on an undead body spends the
-  cost and does nothing. Suspicion and possession need the whole cost;
-  possession and raise dead also refuse the undead bit 0x10 on the target's
-  status word and the character bit 0x40.
-- **Calm**: a concern with a decay of 10 or less becomes four times itself
-  with its decay cleared; a larger one loses 10 and gains 30. Aggression
-  loses 10, the fear value 50 and the courage 1, each floored at zero (a
-  NaN is left), and the calm factor is set to 1.
-- **Enrage** adds 50 to the target's aggression and its 0x104 effect;
-  **confusion** zeroes the concerns and adds 50 of aggression with the 0x105
-  effect; **fear** adds 20 of the fear value up to 40; **embolden** adds 50
-  of courage up to 80; **suspicion** makes the 0x10010B effect. The effects'
-  sounds are `ThmMnd_R01`, `C02`, `T01`, `S01`, `F01`, `C03`, `C01` and
-  `A01` at volumes 0.1 to 0.3.
-- **Loyalty**: a bind needs a living target, no other bind of the caster's
-  and a free power; it makes the 0x10010A effect with a relation level
-  `(((r + 100)·0.005)²·100)`, sets the relation to 30 and gives the target
-  the 0x2010A power. A second cast on the bound target ends the bind. The
-  release (0x100109) halves the relation weights and sets the relation to
-  30 again.
-- **Sense and mask** are cast on the caster. Sense runs 4000 ms, or the
-  focus's share of it; a persistent sense ends a running one. Mask needs a
-  free mask slot and sets body flag 0x10000; its persistent form ends a
-  running one. The overlay fades over 2 s, the sight nodes are picked every
-  4 ms, and a grace window of 5000 ms (a corpse) or 3000 ms (another tracked
-  body) keeps a node alive.
-- **Possession** needs a living body without the resistance bit 0x10000 and
-  a free power; it makes the 0x2010C effect on the caster (the success
-  spends nothing; a resist or an undead target spends half and plays
-  `ThmMnd_E02`). **Spirit form** needs focus above 0.05, makes the 0x10106
-  effect and the 0x1000000 body flag, and ends on a second cast.
-- **Raise dead** and **command over the dead** need a corpse (body flags
-  0xA00). The revival sets the raised status bit, the condition word 8, the
-  speed `1 − 0.1·strength`, the slow tick
-  `round((1 − 0.25·strength)·1660/83)` (19 at strength 0.2) and the strength
-  scale `1.25 − 0.25·strength²`. Raise dead binds nothing; command makes the
-  0x10010D effect on the corpse and the 0x2010D power on the caster.
-- **Draw descriptions**: the sight screen is a 256² texture with a
-  16-segment, 40 cm sphere and four noise octaves at 0.5; the spirit screen
-  is 512² at 0.8. Each tracked body's draw carries its billboard axes, its
-  three colours and thresholds and its texture offset; the unit's shutdown
-  is empty and its two shader source strings are released.
-- **Target picking** takes a character of body class 1 without effect flag
-  0x10, alive unless the dead powers ask, seen by the view unless Sense
-  Minds runs, and within `n·scale·0.5·40/depth` of the screen centre. The
-  nearest ratio below 1 wins.
-- **Prices and restore**: an instant power repeated with the repeat
-  technique costs half; a sustained one costs the tick times its table cost
-  over 1000, half again with the sustain technique; a persistent one keeps
-  its cost. A restored persistent sense or mask holds three quarters with
-  the reserve technique.
+- **Front end**: while the body runs Control Mind only Control Mind may be
+  cast, and on the held body; the row is priced as the shared front end
+  prices (the tick over 1000 for a sustained row).
+- **Gates**: most casts first need focus of 0.3 times the cost (in double
+  precision; a NaN passes), then a picked target. Record kinds 1 and 2 are
+  living and 4 and 5 undead; anything else refuses after whatever the cast
+  already spent. An undead target takes the cost (half for Control Mind)
+  and answers 0 with the cast's sound. Suspicion needs the whole cost
+  first; the persistent casts, Loyalty, Control Mind and Command Dead need
+  a free slot (the body's slot count, less one a running persistent power;
+  a running Spirit Form leaves Control Mind none) and the whole cost.
+- **Calm**: every contact's concern and hostility settle into its regard:
+  more than 10 loses 10 and gives 30, otherwise (or a NaN) it all goes in
+  three times over. Alert drops 10, stress 50 and fear 1, each floored at 0
+  (a NaN stays), and the calm factor becomes 1.
+- **Enrage** adds 50 alert and the timed enraged bit 0x80000; **Confusion**
+  adds 50 alert, clears every contact and the AI's level and focus, and
+  sets the timed confused bit 0x40000. **Trust** places its timed marker
+  0x100109 toward the caster (refused on a body already loyal to it) and
+  halves the target's contact toward the caster, its regard set to 30;
+  **Suspicion** places 0x10010B. **Fear** adds 20 fear (40 at most),
+  **Embolden** 50 courage (80 at most).
+- **Loyalty** on a body already bound to the caster ends the binding (2);
+  bound to another caster it refuses. Otherwise the target takes the
+  marker 0x10010A with the strength `((relation + 100)·0.005)²·100` (the sum
+  in single precision, the rest in double), its contact toward the caster
+  settles (regard 30, no concern or hostility) and its AI re-arms; the
+  caster runs Loyalty, which takes the cost.
+- **Control Mind** cast while it runs ends it (2), unless it is still
+  starting; a target with technique bit 0x10000 resists (half the cost,
+  `ThmMnd_E02`, −1). The binding itself spends its cost as it runs.
+- **Raise Dead** and **Command Dead** need a collapsed body (condition
+  0xA00) that has not been raised (rules bit 0x10) and whose character
+  allows it (bit 0x40 refuses). A body with no decay is revived: its decay
+  becomes 0.2 (the original stores it and then tests it, so the bare-body
+  branch never runs), its gait scale `1.25 − decay²/4`, its pace
+  `round((1 − decay/4)·1660/83)` = 19 ticks, its most energy `1 − decay/10`
+  and its stamina `(1 − 0.3·decay)·(1 − 0.2·load)·80·build`. Either way its
+  yellow and red health become 0.5 and 1. Command Dead also places the
+  marker 0x10010D and runs the caster's power; cast on a standing body the
+  caster commands, it ends the command.
+- **Sense Minds and Mask Mind**: the instant Sense lasts 4000 ms, or the
+  focus's share of it (rounded to even), on the real clock, and shows the
+  overlay that long; the instant Mask stamps its class with the scene clock
+  and sets the masked bit. A persistent cast ends the running one (2) or
+  ends the instant one beside it and starts its class.
+- **Spirit Form** needs 0.05 of focus (double precision); a running form
+  ends (unless its screen is still coming up); otherwise the form starts
+  with the cost as its drain, the spirit status bit 0x100000 is set, and the
+  spirit screen, its music (`Msc_SprtRealm` at 0.1, 0.15 with the music
+  option) and the spirit body are asked for.
+
+What the Mind domain shows is in `exa_game::mind::sight`:
+
+- **Target pick**: a character on screen, not the player, not hidden (rules
+  bit 0x10), not collapsed unless the dead powers ask, seen by the player's
+  view unless Sense Minds runs, within `height·zoom·0.5·40/depth` pixels of
+  the screen centre (an unordered compare passes); the nearest share wins.
+- **Overlay**: a start registers its frame hook when off, shows it for the
+  duration (to the end of time for the persistent power) or extends a
+  showing one, and restarts its alpha unless it is fading; it fades in and
+  out over 2 s by the time since the tracker's last stamp and, faded out,
+  drops every tracked mind.
+- **Tracker**: at most every 4 ms, every character but the player and the
+  body it controls. A living (2) or undead (1) kind gets an entry (a freed
+  slot is reused) whose three values follow `mood_values` by
+  `exp(−ln 2·dt/1000)` (a half past a second): anger `a = 0.2·anger` and
+  fear `f = 0.2·((dread + fear) − courage)`; a collapsed body or `f > 1`
+  gives (1, 1, 1), else the larger of the clamped two, `f/(f + a)`, and the
+  threshold (larger + 0.2, raised to 0.6 of arousal, set to 0.015 of stress
+  when below 0.02 of it, at most 1). A collapsed body fades over 5 s and an
+  out one over 3 s from when it was first seen so, then is dropped.
+- **Colours**: `MindCol0` (0.1, 0.4, 0.6), `MindCol1` (0.8, 0.6, 0) with
+  alpha `(1 − first)·0.6 + 0.1`, `MindCol2` from (0.4, 0, 0) toward (0.31,
+  0, 0.78) by the third value with alpha `(1 − second)·0.6 + 0.1`; undead
+  (0.3, 0.3, 0.3), (0.3, 0.3, 0.3, 1) and (0.5, 0.5, 0.6, 0.5). The overlay
+  gives `MindCol0` its alpha less the entry's fade, the glow `1 − fade`.
+- **Billboard**: 15 cm above the head node's height offset, the texture
+  axes the node's third and first axes made square to the view, blended by
+  `1 − |dir·axis₀|` and 0.025 long, in the node's frame; the node's rows
+  scaled by the record's three scales.
+- **Glow**: a sensed body's entry (first value 1) that fades in over a
+  second and out over the next two.
+- **Sphere**: 16 segments of 15 cm, shaped once: x narrowed to 0.8, moved
+  by half its negated projection on (0, −0.8, 0.2), tapered by `1 − z/100`
+  above its middle and lifted 2 cm. The overlay and glow textures are 256²
+  noise (four octaves, 0.25), the spirit screen's 512² (0.8).
 
 ## Force blast and torrent
 
 `exa_game::effects::blast` and `exa_game::effects::torrent`.
 
-- **Blast** (0x201, and the bolt and wave through their tuning): sixteen
-  chunks are kept; the 0.7 tuning spans the spawn ring over 58 ticks
-  (83·0.7). Their birth directions are the original's sixteen-slot table:
-  +Z, five points on a cone 26.565° from it stepped by 1.2566371 rad, then
-  the five midpoints to +Z and the five between neighbours; a chunk spawns
-  at its direction times 4 cm with the height `z·1.5 − 0.5`. Charge rises by five sixths of the tick in seconds; past 1 it
-  releases with an alert 1800 cm around it, and the chunks fly at 0.96 of
-  their motion a tick. Each chunk's collision reach grows 0.4 cm and its
-  drawn radius `(speed·0.7 + 3)·0.0006` cm a tick. Two chunks closer than twice the reach
-  push apart by half the overlap. A hit body takes `(1 − d²/r²)` of the
-  push, a character's limb an impulse of at most 30 doubled, a stun of
-  `0.08·(1 − share)` between 0.008 and 0.08 s, and 0.01 of anger toward the
-  caster. Its light is tint (0.16, 0.08, 0) at the chunks' mean 120 cm on
-  each axis, radius 5000 while charging (1000, or down to
-  `5000 − 13333·fade`, once released), each block `light·strength`.
-  A chunk's ribbon runs through 12 trail points with 8 samples, in the
-  chunk's two random tints; the draw's texture offset is (0, 0, 1).
-- **Hits** (both effects): a simulation object (the 0x60000000 class) is
-  touched through its capsule and bounding radius; every body point inside
-  a chunk's `reach·2 + margin + 40` cm moves along the chunk's last motion
-  by `(1 − d²/r²)·0.8·0.025` and gathers `(1 − d²/r²)·0.0001` of impact in
-  double precision. A chunk inside a body's sphere is pushed out by
-  `radius/|d| − 1`, and a rebound moves the chunk half way to the contact
-  and keeps 90 % of its reach.
-- **Torrent hits**: a stream's live history points reach
-  `age·scale + margin + 10` cm (scale 0.25 against the level, 0.5 against a
-  character). A body point inside moves along the point's motion by
-  `(1 − d²/r²)·0.01` and gathers `1e−5` of impact; the stream point keeps
-  0.5 of the way to the contact; the stream's channels rise by the point's
-  remaining life over 66. A character hit drops its guard by
-  `inv mass·0.0005` (double), counts the hit, knocks with an impulse over
-  one normalised and capped at 30 then doubled, clears a 0x10 stance's flag
-  and timer, adds 0.01 of anger, and sets the stun to
-  `0.08·(1 − inv mass)` — floored at zero and, the original's inverted
-  clamp, to 0.008 above 0.08. A limb takes
-  `mass/(mass + 0.5)·scale·0.3·(2 − s)·s` of its overshoot and weight.
-- **Torrent light buckets**: a hit point within 25600 cm² of a bucket joins
-  the nearest, its position averaged by the bucket's weight and its level
-  added; further than that a new bucket opens, until sixteen exist, after
-  which the nearest merges whatever the distance. A bucket's level is
-  `(2 − charge)·charge`.
-- **Aim**: both effects take the planar yaw of the hand's direction from
-  the view, limit it to 45° around the body's aim yaw and build the pitch
-  from the height. The torrent's contact setup is 0.25 of reach and 0.5 of
-  share; the character's is 0.5.
-- **Torrent**: sixteen streams are born along the same sixteen directions,
-  16 cm out, their height 1.5 times the direction's z less 30 cm, with a spawn delay of 8 less a random 0 to 2
-  ticks and a 66-tick life. The level is `0.4·(2 − charge)·charge` while
-  charging; past 1 the streams push 15 cm along the aim a tick. A fade
-  drops the level 0.01 a tick and stops below 0.02. A hit point takes 1 % of
-  its overshoot as a push, and raises the stream's channels 0.005 and 0.01
-  (the second up to 1.8). Its light is tint (0.12, 0.06, 0) at the stream
-  heads' mean 120 cm on each axis, strength 2000 and each block
-  `light·level·0.25·(2 − charge)·charge·1.2`. A stream's ribbon has 12 quads
-  through 16 history points. The cast plays `thmfrc_cu01` and
-  `thmfrc_trntdr`, motion 0x26 and the `PowerUsed` event.
+- **Blast** (and the bolt, through `BlastSetup`): sixteen chunks on the
+  icosahedral directions (+z, a ring of five 26.565° up from the xy plane
+  at 72° steps, and the ten midpoints), each 16 cm out in the hand's frame
+  (its height 1.5 times less 0.5), with reach 4 and a twelve-point trail.
+  The aim from the hand's node to the AI's aim point is held within 45° of
+  the facing. Charging, the chunks follow the hand and grow
+  `0.0015·swell`, the trail eases a tenth toward 9 cm back along the aim,
+  the caster pays the drain and the charge rises five sixths of the tick;
+  past 1 the characters within 1800 cm are alerted by
+  `0.25·(1 − (d/1800)⁴)·(aim·dir + 3)`, the release directions are pushed
+  `forward` along the frame's z, the release sound plays and "PowerUsed" is
+  raised. A fizzle loses twice the rate and removes the blast below 0.
+  Thrown, a chunk's reach grows `growth`, its radius
+  `swell·(0.7·|move| + 3)·0.0006` and its trail `(0.7·|move| + 3)·0.07 + 1`
+  (double precision); it moves by its last move, plus its release
+  direction times `weight·(1 − charge)²·2.4` under a charge of 1, times
+  `retention`; a worn chunk spends `round(|move|²·wear)` life and gains
+  0.25 reach; two chunks closer than twice the first's reach move apart by
+  half the overlap (coincident chunks give NaN, as the original's do). The
+  chunks live `round(83·life)` ticks. The frame's texture offset is
+  `(0, r₀, texture_scale)`, its charge sound `0.4` of the charge's ramp, its
+  release sound the setup's release volume.
+- **Blast hits**: a limb takes `move·f·(−k)·0.2` (`k =
+  (−inverse/(inverse + share))·push`, `f` its velocity's share of the
+  move, clamped to 0..1) and moves the chunk by a quarter of its share of
+  the contact less a twentieth of its move; the share and push are 0.02
+  and `character_push·2/mass` on a character, 0.2 and `body_push` otherwise.
+  A struck character loses `k/1000` energy above 0.25, is knocked by its
+  gathered impulse (capped at 30, doubled), gets a stun of `(1 − k)·0.08`
+  (0 below 0 and, the original's quirk, 0.008 above 0.08), hostility 1 at
+  0.01 toward the caster and a recoil of 5. A simulated object's point
+  moves along the chunk's move by `(1 − d²/r²)·push·0.025` and stirs it by
+  `(1 − d²/r²)·0.0001`.
+- **Torrent**: sixteen streams of sixteen points (up to 24 streams), born
+  at the same directions 16 cm out (height 1.5 times less 30); a point
+  lives 66 ticks. The start puts each stream's first points 18 and 9 cm
+  along the aim; charging feeds the head 15 cm and the point before 30 cm
+  out from the birth place; running, each stream spawns a new head after
+  `8 − roll(3)` ticks along a direction drawn round the aim, every live
+  point ages, pulls its neighbour by `0.1·(1/2 − 2500/(d² + 2500))`, moves
+  on by 0.999 of its last move, and the stream splits where two points lie
+  more than 1000 m apart. Dead streams are removed as the original removes
+  them (it moves the record before the last into the hole, losing the last
+  stream). The sounds follow `step_torrent`. The frame's texture offset is
+  `(0, scroll, 1)`; its samples feed up to sixteen light points that merge
+  within 80 cm (or the nearest within 160 cm once sixteen are kept).
+- **Torrent hits**: a point reaches `age·scale + margin + 10` cm (0.25
+  against the level, 0.5 against a character), keeps the ease share of the
+  way to the contact and raises the loop sound's volume and pitch by its
+  life share; a limb takes `k·f·straightness` of the point's move plus
+  `(contact − point)·(1 − straightness)·(−k)`, `k = inverse/(inverse +
+  0.5)·push·0.3·(2 − s)·s`; a character as the blast's, with `k/2000` of
+  energy. A simulated point moves by `(1 − d²/r²)·0.01` of the move.
+- **Lights**: one multi-point light each, coloured (0.16, 0.08, 1) and
+  (0.12, 0.06, 1) (`effects::emissive`).
 
 ## Energy
 
@@ -393,18 +428,6 @@ the player ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Drawing
 
-The force and mind passes are described as draw calls in
-`exa_game::effects::draw`: program pair, uniforms, textures, blend, depth
-and view. The force geometry is one mesh a view drawn with `effectforce_v`
-and `effectforce_f` (blast family) or `effecttorrent_f` (torrent), with
-`ObjMat`, `TexOfs` (the blast's (0, 0, 1)) and `EmiTex` on unit 0; the GI
-lights carry their position, radius or strength and colour blocks. The mind
-sight is one draw a tracked body with `TexVecU`, `TexVecV`, `EyeVec`, the
-three `MindCol` vectors and `EmiTex`, and the spirit screen one 512² draw.
-Destroying either force effect releases its two sound handles and its GI
-light and drops the chunks or streams. The actual GL calls are platform
-glue and stay out.
-
 The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's
 electricity program, `effectforce` and `effectfbrcd` (with the animated
@@ -415,9 +438,10 @@ are not drawn yet (nothing starts them); the GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
-The force blast and torrent carry
-ribbon vertices (`blast::ribbon`, `torrent::ribbon`) and
-`effects::ribbon_mesh` turns them into the glow material's mesh; no system
-spawns them yet, because Exarust has no power bar and the AI does not cast.
-The mind-sight overlay's sphere and its animated noise are not drawn either;
-its per-entry colours, weights, fade and dwell are in `exa_game::mind`.
+The force blast and torrent are not drawn: their ribbon vertex builds
+are not ported, and nothing spawns them (Exarust has no power bar and the
+AI does not cast). Their geometry classes (`effectforce_v` with
+`effectforce_f` or `effecttorrent_f`) are in `effects::effect_geometry` and
+their multi-point lights in `effects::emissive`. The mind-sight overlay's
+sphere and its animated noise are not drawn either; its pick, tracker,
+colours and billboard are in `exa_game::mind::sight`.

@@ -122,43 +122,36 @@ company's coins (`Company::restock`, `Company::settle`). The shop window,
 an apparel copy's description phrase and the weapon variant roll are not
 in.
 
-The force blast and torrent (`effects::{blast, torrent}`) are rule models, on
-the original's 83 Hz tick: the blast's sixteen chunks on the original's cone-and-midpoint birth table
-and 58-tick spawn ring,
-its charge (five sixths of the tick), its release alert, its chunks' 0.4 cm reach and `(speed·0.7 + 3)·0.0006` drawn
-growth a tick, their 0.96 retention and pairwise separation, the body push
-and character limb impulse (30 doubled, a stun up to 0.08 s, 0.01 anger),
-its 12-point trails and 8-sample ribbons, its tints and charge/release
-colours, and its GI light (tint 0.16 0.08 0.0, radius 5000 and 1000, strength
-blocks); the torrent's sixteen 16 cm births, `0.4·(2 − charge)·charge` level,
-15 cm stream step, 66-tick stream life and 8-less-a-draw spawn delay, its two
-hit channels (0.005 and 0.01, the second up to 1.8), its 1 % push, 12-quad
-ribbons and 120 cm, 2000-strength GI light. `effects::ribbon_mesh` builds the
-glow material's mesh from either ribbon. The contact rules are in too: a
-simulation object's points (`0.8·0.025` push, `0.0001` impact), a chunk's
-constraint and rebound, the torrent's scan, character hit (guard, knock,
-stun with the original's inverted clamp, anger), limb push, the light
-bucket merge (6400/25600 cm², sixteen buckets), the two aim helpers (planar
-yaw clamped 45° around the body's), the contact setups and the destroy's
-two sound handles and GI light. `effects::draw` describes every pass for the
-renderer: `effectforce_v/f`, `effecttorrent_f`, the blast/torrent GI lights,
-the mind sight (256², 16-segment sphere, per-body `MindCol` uniforms) and
-the 512² spirit screen. The power bar that would cast them and the AI's cast
-are not in, so no system spawns them yet; the GL calls themselves are
-platform glue.
+The force blast and torrent (`effects::{blast, torrent}`) are ported
+simulations on the original's 83 Hz tick: the blast's sixteen chunks on
+the icosahedral direction table, held within 45° of the facing, charging
+in the hand (the charge five sixths of the tick, the drain paid each tick,
+running out fizzles), released with their forward-pushed directions, an
+alert to the characters within 18 m and "PowerUsed", then thrown with the
+original's growth, trail, retention, wear and separation; the torrent's
+sixteen streams fed from the hand, spawning, pulling together, splitting
+(up to 24) and removed as the original removes them. Their contact
+arithmetic (limb pushes, the character knock and its stun quirk, rebound,
+push-out, simulated points), their frames' sounds, colour bytes, texture
+offsets and torrent light points, their geometry classes
+(`effects::effect_geometry`) and multi-point lights (`effects::emissive`)
+are in. The engine's mesh and sphere tests that find contacts, the ribbon
+vertex builds and the GL passes are not; nothing casts them yet (no power
+bar, no AI cast).
 
-The Mind domain's rules (`mind`) are in: the sixteen-row table, the
-focus/record/corpse gates, calm, enrage, confusion, fear, embolden,
-suspicion, the loyalty bind and release, sense and mask (instant and
-persistent, with the mask slots and body flag 0x10000), spirit form,
-possession (the 0x10000 resistance bit and the half-cost failures), raise
-dead and command over the dead (revival to condition 8, strength 0.2, slow
-tick 19), the price and restore rules (repeat, sustain, reserve), the
-screen-space mind-target pick, the sight's 4 ms tick, 3000/5000 ms dwell,
-weights, entry kinds and colours, the overlay's two-second fades, the
-three-second mind glow and the effect markers (0x10010A, 0x100109, 0x10010D).
-The sight sphere and its animated noise, the screen effects' GL passes and
-the casting AI are not in.
+The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
+table, the front end (Control Mind's lock, the shared pricing), the 0.3
+focus gate, the record kinds (1–2 living, 4–5 undead), Calm, Enrage,
+Confusion, Trust, Suspicion, Fear, Embolden, Loyalty, Control Mind, Raise
+Dead and Command Dead (with the revival's fixed 0.2 decay), Sense Minds
+and Mask Mind (instant and persistent) and Spirit Form, each handing its
+work to the `thaum::power::mind` classes on the shared `CastBody`; the
+restore of a saved Mind power (wired into `thaum::power::restore_persistent`)
+and the combatant's binding helpers. What it shows (`mind::sight`): the
+mind-target pick, the Sense Minds overlay and its tracker (mood weights,
+dwell windows, slot reuse), the entry colours, the billboard, the glow, the
+sphere's shaping and the spirit screen's start. The overlay's and screens'
+GL passes, the animated noise and the casting AI are not in.
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter
@@ -185,9 +178,9 @@ grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
 Light, Displacement) clockwise from the top of a 76 px ring, with a
 20.8 px hit, its hover, label, open ease, choice flash and confirm rules.
-Rules of the mind powers and the two force effects:
-[`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind, Force blast and
-torrent).
+Rules of the Mind casts and sight and the two force effects:
+[`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
+and torrent).
 The reconstruction device starts the scan (`teleporters`); nothing
 starts the shell, bubble or wheel yet: their callers (the displacement
 powers, the portal screen's journey and the power tree) are not in. Drawing the flame ribbon's vertices, the shell and scan

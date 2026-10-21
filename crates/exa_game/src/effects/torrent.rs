@@ -33,7 +33,7 @@
 //!   from the head back: ages a tick, pulls its neighbour toward it by
 //!   `0.1·(1/2 − 2500/(d² + 2500))`, moves on by 0.999 of its last move and
 //!   keeps the least cosine of that move with its direction. A point more
-//!   than 1000 m² (squared) from its neighbour splits the stream there into
+//!   than 1000 m (1e10 cm²) from its neighbour splits the stream there into
 //!   a new one. The source's width follows the head's less `0.004·d`.
 //!   Dead streams other than the first are removed: the original moves the
 //!   last-but-one record into the hole, so the last stream is lost and the
