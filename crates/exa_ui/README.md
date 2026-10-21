@@ -305,16 +305,21 @@ the teleporter, charges a small crystal, changes level when the resting
 bubble is told to shrink and, for the adapter, marks the teleporter and
 saves when the bubble is freed.
 
-The skill tree's rules are in `skill`: the record's prerequisite table and
-chosen techniques give every node its requirement state, the ready-level
-scan, the 5000-point level cost and the learning/forgetting calls into
-`exa_character`; the ring, its five-satellite hit test, group icons, orbit
-spokes, selected and group tooltips, their fades and the forget dialog's
-placement are modelled with tests. The extended controls in `controls`
-cover the text field, combo box, colour swatch, spinner, progress bar,
-separator, image and texture views, caption, trackbar and scroll bar
-metrics and states, and the label alignment now keeps only the original's
-1/3/4/5 cases. The screen and the controls are not drawn by a form yet.
+The skill tree's rules are in `skill`: the learning row's requirement mask
+(the screen's node-present table, the record's prerequisite table, both
+prerequisites funded), a node's press state, the screen's own unlearning
+(with its committed points) and choosing, the experience pass and ready
+flag, the ring, satellites and link search with the engine's sine across,
+the group icons, orbit bars and spokes, the hover tooltips, learning row,
+forget dialog and popup fade, and the screen's fades. The record's
+prerequisite table and surplus query come from `exa_character`. The
+extended controls in `controls` model each class's message rules: the text
+field's and combo box's edit state and key dispatch, the drop-down
+placement, the colour drag, the spinner's commit, press, key filter, drag
+step and buttons, the progress, separator, image, texture, caption,
+trackbar and scroll-bar geometry, with `CVTSS2SI`'s indefinite result and
+the unordered clamps that let a NaN through. The screen and the controls
+are not drawn by a form yet.
 
 ## Scope
 

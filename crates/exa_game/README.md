@@ -256,6 +256,10 @@ controls, the level change and the save are not in.
 The skill screen's rules now live in `exa_ui::skill`: node requirement
 states from the character record, the ready-level scan, level costs,
 learning and forgetting, ring and tooltip geometry. No play mode opens the
+
+The skill screen's rules live in `exa_ui::skill`; its experience pass
+takes the experience system's conversions (`experience::global_xp_worth`
+and `global_xp_for_worth`) as `ExperienceRates`. No play mode opens the
 screen yet; the character creator and the in-game menu still show only
 stand-ins.
 
