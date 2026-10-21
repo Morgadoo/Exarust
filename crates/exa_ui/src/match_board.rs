@@ -799,7 +799,9 @@ pub struct Board {
     pub season_items: [Option<u32>; 4],
     /// The control states, indexed by [`control`].
     pub controls: [u32; CONTROL_COUNT],
-    /// The last standard refresh's two list spans: one and three rank steps.
+    /// The last standard refresh's two list spans: one and three rank
+    /// steps. The original re-encodes each in its object table's base-12/144
+    /// packing before storing it; these are the decoded spans.
     pub rank_span: i32,
     pub tier_span: i32,
     /// The lineup table's height after a tournament refresh, when the
