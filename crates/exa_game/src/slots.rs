@@ -506,8 +506,9 @@ mod tests {
         let slots = Slots::arena(&dir);
         let number = slots.create(&arena("Ash")).unwrap();
         assert!(!slots.drops_after_death(number, 1.0));
-        assert!(!slots.drops_after_death(number, 0.01));
+        assert!(!slots.drops_after_death(number, 0.010_001));
         assert!(slots.drops_after_death(number, 0.009));
+        assert!(slots.drops_after_death(number, 0.01));
         slots.checkpoint(number, &arena("Ash")).unwrap();
         assert!(!slots.drops_after_death(number, 0.0));
         assert!(slots.file(number, SlotKind::Save).exists());

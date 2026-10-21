@@ -143,8 +143,11 @@ pub const STORY_ORDER_KEY: u32 = 0x6431_ac03;
 /// The arena's most-recently-used slot order key.
 pub const ARENA_ORDER_KEY: u32 = 0x6431_ac13;
 
-/// A player at or below this health is dead for the save rules.
-pub const DEAD_HEALTH: f32 = 0.01;
+/// A player below this health is dead for the save rules. The original
+/// widens the single-precision health to double and compares it with the
+/// double 0.01, so the single nearest 0.01 (just below it) already counts
+/// as dead.
+pub const DEAD_HEALTH: f64 = 0.01;
 
 /// The most-recently-used slot order the scanner installs: the stored
 /// numbers that are still slots, in their stored order, then every other
@@ -219,12 +222,13 @@ pub fn dead_slot_without_checkpoint(current: u32, checkpoint_exists: bool) -> Op
     }
 }
 
-/// Whether a save is written: the health must be at least 0.01 unless the
-/// caller forces it. A NaN health passes the original's `health < 0.01`
-/// test, so it saves; write it as the negation of that test, not `>=`.
+/// Whether a save is written: unless the caller skips the check, the
+/// health widened to double must not be below the double 0.01. A NaN health
+/// is unordered, which the original's branch treats as "not below", so it
+/// saves; write it as the negation of that test, not `>=`.
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn save_allowed(health: f32, forced: bool) -> bool {
-    forced || !(health < DEAD_HEALTH)
+    forced || !(f64::from(health) < DEAD_HEALTH)
 }
 
 /// Whether a checkpoint is written: only when there is none yet.
@@ -273,10 +277,12 @@ impl GameClock {
     }
 
     /// The clock at `ticks_ms`: the saved seconds plus the whole seconds
-    /// since the base. The original subtracts zero-extended 32-bit values
-    /// in 64 bits, so a tick below the base borrows from 2^64.
+    /// since the base. The original subtracts the zero-extended 32-bit words
+    /// in 64 bits and divides that **signed** difference by 1000, rounding
+    /// toward zero, so a tick below the base gives a negative count (the
+    /// clock runs back) rather than a huge one; the sum is kept to 32 bits.
     pub fn now(&self, ticks_ms: u32) -> u32 {
-        let elapsed = u64::from(ticks_ms).wrapping_sub(u64::from(self.base)) / 1000;
+        let elapsed = (i64::from(ticks_ms) - i64::from(self.base)) / 1000;
         self.saved.wrapping_add(elapsed as u32)
     }
 }
@@ -391,8 +397,11 @@ mod tests {
         assert_eq!(dead_slot_without_checkpoint(4, false), Some(4));
         assert_eq!(dead_slot_without_checkpoint(4, true), None);
         assert_eq!(dead_slot_without_checkpoint(0, false), None);
-        assert!(save_allowed(0.01, false));
+        // 0.01 as a single is 0.00999999977648…, below the double 0.01.
+        assert!(!save_allowed(0.01, false));
+        assert!(save_allowed(0.010_001, false));
         assert!(!save_allowed(0.009_999, false));
+        assert!(save_allowed(f32::NAN, false));
         assert!(save_allowed(0.0, true));
         assert!(checkpoint_due(false));
         assert!(!checkpoint_due(true));
@@ -413,9 +422,19 @@ mod tests {
         assert_eq!(clock.now(6_000), 121);
         assert_eq!(clock.now(65_000), 180);
         assert_eq!(GameClock::new().now(12_345), 12);
-        // A tick before the base borrows from 2^64, as the original's
-        // 64-bit subtraction of two zero-extended words does: the quotient
-        // is 18 446 744 073 709 550 and its low word is 1 271 310 318.
-        assert_eq!(GameClock::restore(0, 1_000).now(0), 1_271_310_318);
+        // A tick before the base is a negative difference, divided signed
+        // and rounded toward zero: −500 ms is 0 s, −2000 and −2001 ms are
+        // −2 s, and −1000 ms from a zero clock wraps the word to 2^32 − 1.
+        assert_eq!(clock.now(4_500), 120);
+        assert_eq!(clock.now(3_000), 118);
+        assert_eq!(clock.now(2_999), 118);
+        assert_eq!(GameClock::restore(0, 1_000).now(0), u32::MAX);
+        // The millisecond counter wrapping past the base: 1000 − 4294966296
+        // is −4294965296 ms, −4294965 s, and 120 − 4294965 wraps to
+        // 4290672451.
+        assert_eq!(
+            GameClock::restore(120, 4_294_966_296).now(1_000),
+            4_290_672_451
+        );
     }
 }
