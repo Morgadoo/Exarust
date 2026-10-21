@@ -698,3 +698,10 @@ A pour SHALL warm the character by 0.2, or 0.1 for a liquid of type 50, in doubl
 #### Scenario: Kits over time
 - **WHEN** a wear of 100 is repaired with a rating of 25, and a timed value runs from 100 to 0 for 1000 ms and 2000 ms
 - **THEN** the target is 15, and the value is 50, then 0 and done
+
+### Requirement: Camera wall probe
+Each camera tick SHALL end with a wall probe from 50 cm under the followed point along the view: alternately the present step with a 30 cm ball (a hit climbs, to at most 4) and the step below with a 20 cm ball (a miss comes down), over 38.5 m; the tilt SHALL ease toward 0.15 rad steeper per step and be added to the view's pitch, held to 1.54 rad. With no obstruction the steps and the tilt SHALL stay 0.
+
+#### Scenario: Open space
+- **WHEN** the camera ticks with nothing in the probe's way
+- **THEN** the view's pitch is the camera's own
