@@ -1711,6 +1711,18 @@ fn takes_race_blood(material: &str) -> bool {
 }
 
 /// A Bevy mesh holding only the vertices one material group uses.
+/// A group's index buffer in the smallest type the original uses: u8 below
+/// 255 vertices and u16 below 65 535, of which Bevy has only the u16 and the
+/// u32. `vertices` is the group's vertex count, so 255 vertices still fit
+/// the byte type in the original.
+fn group_indices(vertices: usize, local: Vec<u32>) -> Indices {
+    if vertices < 0x1_0000 {
+        Indices::U16(local.iter().map(|&i| i as u16).collect())
+    } else {
+        Indices::U32(local)
+    }
+}
+
 fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
     if indices.is_empty() {
         return None;
@@ -1737,11 +1749,7 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
     // The original picks the smallest index type that fits: one byte below
     // 255 vertices, two below 65 535. Bevy has no u8 indices, so 255 and
     // fewer vertices use u16.
-    let indices = if used.len() < 0x1_0000 {
-        Indices::U16(local.iter().map(|&i| i as u16).collect())
-    } else {
-        Indices::U32(local)
-    };
+    let indices = group_indices(used.len(), local);
     // Kept in the main world too: static colliders are built from mesh data.
     let mut m = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -2385,5 +2393,15 @@ mod tests {
         assert_ne!(harhps.flags & OPACITY_FLAG, 0);
         assert_eq!(harhps.texture(TextureSlot::Opacity), None);
         assert!(cuts_shadow(harhps, false));
+    }
+
+    /// A group's indices use u16 up to 65 535 vertices and u32 beyond. The
+    /// original's own cut for u8 is 255 vertices.
+    #[test]
+    fn a_group_picks_the_smallest_index_type() {
+        assert!(matches!(group_indices(255, vec![0, 1]), Indices::U16(_)));
+        assert!(matches!(group_indices(65_535, vec![0, 1]), Indices::U16(_)));
+        assert!(matches!(group_indices(65_536, vec![0, 1]), Indices::U32(_)));
+        assert_eq!(group_indices(255, vec![7, 9]), Indices::U16(vec![7, 9]));
     }
 }
