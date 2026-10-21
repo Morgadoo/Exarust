@@ -31,6 +31,7 @@ pub mod font;
 pub mod form;
 pub mod fps;
 pub mod gui_controls;
+pub mod gui_core;
 pub mod gui_font;
 pub mod gui_glyphs;
 pub mod gui_level;
@@ -79,6 +80,12 @@ pub use emblem_form::{
 };
 pub use fade::DeathFade;
 pub use fps::ShowFps;
+pub use gui_core::{
+    CursorState, DragState, FormHost, FormId, GuiMetrics, GuiRect, GuiTask, HitResult,
+    MESSAGE_FRAME, MESSAGE_HIGH, MESSAGE_MODAL, MESSAGE_NO_CLOSE, MessageBoxPlan, PlaceRequest,
+    PlainForm, PointerState, TOOLTIP_DELAY, Tooltip, anchored, drag_threshold, edge_rect,
+    message_box_plan, place_form, set_modal,
+};
 pub use gui_level::GuiLevelState;
 pub use gui_text::{
     ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, count_lines,
