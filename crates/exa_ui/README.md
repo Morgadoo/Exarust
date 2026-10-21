@@ -410,32 +410,51 @@ control's supersampling levels, jitter table and samples, camera scale,
 stereo eye, overlays, frame-rate counter, pixel/space conversions and its
 cursor actions.
 
-## Layers, pickers, swatches, pickers and help
+## Layers, pickers, swatches and help
 
-`gui_task` is the top-level layer (`TGUITask`): its forms drawn in order and
-hit from the top down, its 16-byte shortcut table with the best modifier
-match (a required modifier that is not held refuses the entry; held extras
-cost nothing; a zero score never fires), the active/root 1.0 draw against
-the inactive 0.75 and 0.5, a raise word, the frame callback list, and the
-save/restore/clear focus hooks the form base class calls. `colour_picker`
-is the colour picker logic: one picker per swatch, re-focused on a second
-open, RGB sliders in 0–255 or 0–1, HSV sliders, the six channel-gradient
-ends, the four field corners and the write-back to the swatch with its
-owner callback, guarded against recursion. `drop_down` is the combo box's
-popup: six-unit rows, sixteen then a scrollbar, the row under the pointer,
-the press's armed row, the release's write-back and the close word.
-`col_swatch` is the palette popup: 32 columns of 8 cells of three units,
-clamped hit testing, the two-hex-digit label, the set-value word and the
-direction words.
+`gui_task` is the top-level layer (`TGUITask`): a full-screen form that
+stretches with the root (no attributes, no border), its forms drawn in
+order and hit from the top down (the style's no-hit bit and the layer's own
+hit flag skip them), its 16-byte shortcut table (each entry scores its
+held modifiers plus one, so an unmodified entry fires; Shift is never a
+shortcut and is forwarded to the parent unless the layer is the root), the
+active/root 1.0 draw against the inactive 0.75 and 0.5, the notice word,
+the frame callback list (a callback answering false is dropped) and the
+focus hooks: leaving saves the focused form when it is on the layer,
+returning restores it while visible, else the layer's main form, else the
+layer; closing the main form closes the layer. `colour_picker` is the colour
+picker logic: one picker per swatch (raised on a second open), the opening
+colour kept for the revert button, RGB and HSV sliders and their fields,
+the six channel-gradient ends, the four field corners, each refresh
+updating the other form once under the sync guard, and the write-back as
+bytes to a colour swatch with its owner callback; the conversions are the
+engine's (`exa_formats::palette::{rgb_to_hsv, hsv}`). `drop_down` is the
+combo box's popup: style 0x98, attributes 0x4a1470, border 3, six-unit
+rows cut at sixteen with the scrollbar bit set (and never cleared), the
+step in double, the hit clamp, a press arming the current row, the
+release and 0x100 writing back the selection, the selection band and its
+text. `col_swatch` is the palette popup: a fixed 400 × 112 form of 32
+columns of 8 three-unit cells in the palette's lifted colours, hovering
+selecting at once, the hit answering the cell's control code, the close
+and cancel restoring the opening index, the step words, and the label's
+colour (index in its alpha byte) and engine hex text.
 
 `pickers` holds the character-creation fields: the tone picker's 2 × 2
-checker over a 3 × 3 table with the original's divisors and 0.6 scale, and
-the hair picker's 3 × 3 horizontal run with its value scale, grey marker,
-shade quad and the character generator's shading buffers. `skill_gui`
-builds the three skill atlases (five groups of eight 96-pixel cells, six
-288-pixel single icons, the 44 × 20-unit background), the once-only
-resource pass and the full and compact window constructors. `help_system`
-is the manual (topic directory records of a 16-byte title and an index word,
-the two `.fds` files by input mode, the topic page and the stick scroll
-words) and the one-time tips (the settings mask, the 504-unit popup and the
-text's laid-out height plus 0x60).
+checker over the nine start-up tone bytes and its colour, the skin tone
+before encoding (`exa_assets::human_skin::tone_linear`), handed to the
+owner's callback or tinting the skin; the hair picker's three columns
+over the stored hue run, its value scale, grey marker, four-vertex shade,
+attached control and set slot; and the picker base's pick (double
+divisions, flipped v, epsilon test). The hair material's shading routine
+is not here (the character generator ports it). `skill_gui` builds the
+two skill atlases (the origin cell first, five sets cut as two rows of
+four with the origin row techniques 5–8, 8-unit icons sharpened below 96
+pixels; six 24-unit single icons) and the 44 × 20-unit background, with
+the once-only pass; the page constructor and the record attach are the
+skill screen's (`SkillScreen::open`, `SkillScreen::attach`).
+`help_system` is the manual (`manualkm.fds`, or `manualcn.fds` for a
+controller; topic records whose word is the list position, titles
+title-cased, a page's text without its last byte) and the one-time tips
+(single bits 0–30 of the settings mask, the 504-pixel popup measured with
+markup, "Continue" and "Don't show again", the nine titles and their
+presets).

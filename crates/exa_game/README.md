@@ -527,16 +527,21 @@ the base font until its quads are wired.
 ## The trade window and the camera's wall probe
 
 `shop_window` is the arena shop's `TShopWindow`: the 0x36c × 0x244 page
-titled "Trade", the stock and pack panels, the two 0xc4 × 0x174 baskets,
-the buy total at full price less the sell total quartered, "Pay:" or
-"Receive:" with the purse test disabling the button, the right-button
-close, the stock drop and the confirm through the company's coins or a
-real item transaction.
+titled "Trade" with the character preview and the player's pack under it,
+the quartered sell basket, the full-price buy basket and the stock at the
+right edge. Each basket's callback re-sums its own total. The bottom row
+reads "Pay:" or "Receive:", warns "You cannot afford this transaction." and
+disables the Trade button on a short purse, or when paying with both
+baskets empty; the merchant flag picks the label rows. A take-off from the
+character view lands in the pack, a right release hides the window and the
+close releases the preview and the trade-mode bytes.
 
-`nav_camera` gained the stepped camera's wall avoidance: the probe's
-length and radius, the alternating raised flag, the step count (to four)
-and its eased tilt, the intersection offset and the released node's
-words. `player`'s chase camera probes the physics level with a 25 cm ball
-along the backward vector and applies the tilt, so a wall behind the
-player raises the view instead of pulling the eye in; `fov_from_zoom` is
-the same field-of-view rule the renderer uses.
+`nav_camera` has the stepped camera's per-tick wall probe: from 50 cm under
+the followed point along the camera's yaw, alternately a 30 cm probe at the
+present step (a hit climbs, to four) and a 20 cm one at the step below (a
+miss comes down), over 38.5 m, the tilt eased in double toward −0.15 rad per
+step and added to the axis pitch, held to −1.54. `ChaseCamera` runs it every
+tick, but nothing answers it in the live game: Exarust's level colliders
+include ceilings, which the original's mesh filter leaves out, so the tilt
+stays 0. The pitch ease (in double, only over a gap above 2e-6), the eye
+blend and the field of view are the original's.

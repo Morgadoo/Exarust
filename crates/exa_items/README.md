@@ -13,8 +13,10 @@ Item database and procedural items: weapons assembled from components by factori
 ## The icon manager's tail
 
 `icon_cache` now also carries the manager's construction (`ManagerSetup`:
-the 0x103 icon flags, the 0x100e608 texture flags, forty-unit icons and the
-512/1024 apparel size by shade quality), the draw, the two pixel tests, a
-handle refresh for the debug editor, the user-item tag split (level, world
-or game) and the exact release: a freed slot clears only its id and its
-reference count, keeping its cell, variant and half extents for the caller.
+the atlas's 0x103 blend and 0x100e608 format, forty-unit icons), the
+render's apparel size (`apparel_size`: 1024 at texture detail 3 or more,
+else 512), the draw, the two pixel tests on the slot's cell, the handle
+refresh that repaints a slot's own cell from the caller's record, the
+user-item tags (local, world or base) and errors with the record's own id,
+and the exact release: a freed slot clears its id, reference count and
+cell, keeping its variant and half extents.

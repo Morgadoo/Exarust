@@ -1104,7 +1104,7 @@ character body's possession routines; addresses are in the research notes.
   precision, the product and the sum with 0.8 in double). A vertical
   orbit drag can raise it to 1.5 rad. The camera holds the asked pitch or
   the floor when that is steeper, and the pitch moves 10 % of the way per
-  17 ms camera tick.
+  17 ms camera tick (in double precision, only over a gap above 2e-6).
 - **Cursor Look keeps the target yaw within half a turn of the camera's**:
   the align routine compares the target with the camera's present yaw in
   double precision and adds or subtracts a whole turn, so the spring
@@ -1144,8 +1144,14 @@ character body's possession routines; addresses are in the research notes.
   detector and the fade are not on the draw path yet (`room_view` still
   draws from the room states), and with no CPU triangles the tests stop
   at the bounding sphere.
-- Not yet in Exarust: the original tilts 0.15 rad steeper per step (up to
-  4) when a wall blocks the view.
+- **Wall tilt**: each camera tick ends with a probe from 50 cm under the
+  followed point along the view, alternately testing the present step
+  (30 cm ball, a hit climbs to at most 4) and the step below (20 cm, a miss
+  comes down); the tilt eases toward 0.15 rad steeper per step and is added
+  to the axis pitch, held to 1.54 rad. Modelled (`ChaseCamera::probe_wall`),
+  but nothing answers the probe in the live game yet: the original sweeps
+  only level meshes with certain flag bits, and Exarust's level colliders
+  hold every static mesh, ceilings included.
 - **The idle turn.** Each frame the player's controls test whether the
   player is idle: the pointer within 2 pixels of where it was last seen on
   both axes, the condition word plain (0, so not walking or attacking), no

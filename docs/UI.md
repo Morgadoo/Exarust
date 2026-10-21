@@ -1228,6 +1228,15 @@ next entry whose name starts with them, case-blind, the letters adding up
 within 600 ms. Left and Right move by a line of entries outside the list
 layout, Up and Down by one; F2 renames.
 
+The view's select slot sets the hovered entry. Dragging over it answers
+whether it takes the drop (refused when the drag started on the view
+itself or its state turns drops off); the drop and drop-cancelled hooks
+answer 0 without a hook. A rename places the caret from the pointer over
+the entry's line and scrolls the edit field; check marks draw at the
+scroll offset, one row per entry, lit for the hovered or renamed entry;
+the selection and the rename field fill the band a pixel inside at a
+quarter and half alpha.
+
 ## Skin
 
 The base draw skin (`exa_ui::skin`) is the original's `TGUIDrawSkin`: it
@@ -1566,7 +1575,8 @@ pass a sixth level read the next skill's bytes, as the original's do.
 
 - **Ring.** The ring page shows the groups in the slot order Close Combat,
   Armour, Insight, Concentration, Shields, Ranged Combat; a positive page
-  shows four groups at a 72-unit radius. A slot sits at angle
+  shows four groups at a 72-unit radius stretched 1.25 across (64 and 0.9
+  with the inset-layout flag). A slot sits at angle
   `(1 − turn) + (slot − 3.5)·2π / count`, its offset the radius times the
   unit times the engine's sine across (stretched) and its cosine down,
   each rounded; the radius is 64 units, or 58 with the global inset-layout
@@ -2012,79 +2022,105 @@ toward the gamepad's aim point, which Exarust does not reproduce.
 
 ## Layers, pickers and the remaining original widgets
 
-The tail of the original's GUI is modelled in plain, tested types, with
-the form base class called through the existing window manager.
+The tail of the original's GUI is modelled in plain, tested types; none of
+it is wired into the running game yet.
 
-- **Layer** (`exa_ui::gui_task`). A full-screen unframed task owns its forms
-  (drawn in list order, hit from the top down when visible, state bit 1
-  clear and the point inside its rectangle), a shortcut table of key,
-  modifiers and action, a raise word and a frame callback list. A shortcut
-  qualifies when every modifier it needs is held and scores one per needed
-  modifier; the highest score wins, ties keep the earlier entry, and a zero
-  score never fires; Tab and a repeat or held key are not shortcuts, and a
-  non-root layer forwards unmatched keys to its parent. The active layer and
-  the root draw at 1.0; every other layer at 0.75 with a 0.5 ink. Closing
-  removes the layer from the task list. A form that gains the focus stores
-  the focus it replaced, a freed form clears the records that name it, and a
-  closing form restores its saved form and control, or its next form with
-  control −1.
+- **Layer** (`exa_ui::gui_task`). A full-screen task form that stretches
+  with the root (no attributes, no border; 302 × 402 with no root) owns its
+  forms, drawn in list order and hit from the top down: a form whose style
+  has the no-hit bit is passed over, and the layer's own hit flag turns
+  them all off. Its shortcut table holds key, modifiers and action; each
+  entry whose needed modifiers are held scores their count plus one, so an
+  unmodified entry fires, the highest score wins and ties keep the earlier
+  entry. Shift is never a shortcut and, like an unmatched key, goes to the
+  parent unless the layer is the root; a repeat does nothing. The active
+  layer and the root draw at 1.0, every other layer at 0.75 and 0.5. The
+  frame callbacks run with the layer; one that answers false is dropped.
+  The first form made on a task is its main form. Leaving saves the focused
+  form when it is on this layer; returning restores it and its control
+  while it is visible, else the main form, else the layer, with control −1;
+  closing the main form closes the layer, closing the saved form forgets it.
 - **Colour picker** (`exa_ui::colour_picker`). One picker per colour-swatch
-  control; a second open re-focuses it. The colour is three floats turned
-  into bytes by × 255, round to even and the low byte. An RGB slider writes
-  the colour and refreshes: six channel-gradient ends (each channel at 0 and
-  255), the slider thumbs, the HSV sliders (converted from the RGB unless a
-  sync is in progress), the swatch's colour and its owner callback. An HSV
-  slider writes hue, saturation or value and converts back, also building
-  the field's four corners `(h,0,v)`, `(h,1,v)`, `(h,s,0)` and `(h,s,1)`.
-  A refresh leaves the word 0x2000; a re-focus 0x1000.
-- **Drop-down list** (`exa_ui::drop_down`). Rows are six units; up to
-  sixteen make the list that tall plus twice the border, more cut it at
-  sixteen and scroll by one over the hidden rows. A point hits
-  `(y − border) / row + 1`, held to the rows; a left press over a row arms
-  it, the release writes the armed row back to the owner (the 0x200 message)
-  and closes; a press off the rows closes. 0x100 chooses the pointer's row
-  and closes, 0x200 closes, 0x4000/0x8000 move by one. The pointer's and the
-  selection's rows draw a band from 1 to the client's right less one and the
-  row's bottom less two.
-- **Palette swatch** (`exa_ui::col_swatch`). A 32 × 8 grid of three-unit
-  cells (400 × 112 at unit 4), 256 palette colours supplied by a trait. A
-  point clamps to the grid and takes the cell; a pick stores the index, shows
-  it as two hex digits and calls back. The selection is framed white outside
-  and black inside. 0x100 closes, 0x200 applies the external value then
-  closes, and 0x1000/0x2000/0x4000/0x8000 move by a column (eight indices),
-  a column back, or one index within a column.
-- **Creation pickers** (`exa_ui::pickers`). The tone field is a 2 × 2
-  checkerboard of quads over a 3 × 3 tone table; a point is doubled, split
-  into the cell (strictly above one) and its fraction, bilinearly blended,
-  each channel divided by 0.8, 0.651 and 0.573 and scaled by 0.6. The hair
-  field is 160 × 112, a 3 × 3 grid whose columns run through four table
-  colours (the point's column blended and rounded), scaled by value half plus
-  a quarter; the marker is grey 140 × value; a darkening quad runs from black
-  at the top to white at 1.2 times the height; a refresh raises word 7.
-- **Skill resources** (`exa_ui::skill_gui`). `sgsklicons.rfi` is cut into
-  five groups of eight 96-pixel cells (group 1 has none), `skillicon.rfi`
-  into six 288-pixel cells, and `skillgui.rfi` is rescaled to 44 × 20 units.
-  The once-only initialiser builds them and chains the unit-change hook; a
-  unit change rebuilds. The full window takes the mode, the four-entry group
-  tables [1,0,2,3,4,5] and [1,0,2,3,2,3], and the inset layout's 72-unit
-  radius and 1.25 scale (64 and 0.9 otherwise). The compact window copies six
-  little-endian words from character-data offsets 0xc0…0xe8, or zeroes them.
+  control; a second open raises it. A colour swatch (class 0x17) gives its
+  caption and colour bytes (× 1/255), kept as the revert source. A refresh
+  from RGB turns the colour into bytes (× 255, round to even, the low
+  byte), builds six channel-gradient ends (each channel at 0 and 255), sets
+  the RGB sliders and their fields (× 255) and the preview, and unless a
+  sync is in progress converts to HSV and refreshes the HSV side under the
+  guard; it writes the colour back to the swatch as saturated bytes, calls
+  the swatch's owner when it has a callback and leaves the word 0x2000. A
+  refresh from HSV sets the HSV sliders and fields, converts to RGB unless
+  syncing, builds the field's corners `(h,0,v)`, `(h,1,v)`, `(h,s,0)` and
+  `(h,s,1)` and refreshes the RGB side under the guard. The field point
+  sets hue and saturation; the finish button leaves 0x1000. The conversions
+  are the engine's colour helpers.
+- **Drop-down list** (`exa_ui::drop_down`). Style 0x98, attributes
+  0x4a1470, border 3. Rows are six units; up to sixteen make the list that
+  tall plus twice the border; more cut it at sixteen, set the scrollbar
+  attribute (never cleared) and scroll by `1 / (count − 16)` worked in
+  double. With no control under the pointer a point hits `y / row + 1`,
+  held to 1…count. A press arms the current row (5) or asks to close (3);
+  the release and 0x100 write the selection back to the owner and close;
+  0x4000/0x8000 step the selection. Selecting a row sets the hover and the
+  selection. Only the selection draws a band, from y 1 to the client's
+  right less the border less one, with a frame a pixel inside; the close
+  clears the owner's on and lit bits and frees items the list owns.
+- **Palette swatch** (`exa_ui::col_swatch`). A fixed 400 × 112 popup of 32
+  columns of 8 three-unit cells, index = column · 8 + row, in the palette's
+  lifted colours as bytes; a cell starts a pixel in and ends at the next
+  cell's start. The hit answers the cell's control code (index + 1);
+  hovering a cell selects it at once; a press selects the cell under it;
+  either answers 3 only on a change. A selection stores the index, gives
+  the opener's label the cell's colour with the index in its alpha byte and
+  the index in hex ("0" for zero, else two upper-case digits) and calls the
+  owner (or else the label's own callback). The close, unless kept, and
+  0x200 restore the index the popup opened with; 0x100 closes;
+  0x1000/0x2000 step a column and 0x4000/0x8000 a row within it. The
+  selection is framed in the skin's two frame colours.
+- **Creation pickers** (`exa_ui::pickers`). The tone field is 160 × 160, a
+  2 × 2 checkerboard of quads over nine colours the original builds at
+  start-up (each tone's value lowered by 0.1, × 2.2, raised to 1.5, HSV to
+  RGB, × 255). Its colour is the creator's skin tone before encoding (the
+  grid in linear light over the base texture, × 0.6); a refresh goes to the
+  owner's callback, or tints the character's skin materials (a quarter of
+  the way to the pale tone on a material whose level is under 0.1) and
+  raises notice 7. The hair field is 160 × 112, three columns blending the
+  stored hue run (dark red, blonde, reddish, dark red) repeated in three
+  rows, under a shade from black at the top to white at 1.2 times the
+  height; the point's colour is the blend at 3u (rounded to even) scaled by
+  v·½ + ¼, the marker grey 140·v. The hair picker attaches a control 120
+  pixels below itself, as wide and 40 tall, whose value (¼ at first) is
+  the hair material's third input; with a material attached a refresh
+  re-shades it and raises notice 7. The picker base's pick takes
+  `u = x / width` and `v = 1 − (1 − y / height)` in double, held to 0–1,
+  ignored within an epsilon of the point; a press over the field answers 7.
+- **Skill resources** (`exa_ui::skill_gui`). `sgsklicons.rfi` is cut as the
+  origin cell, then five sets of eight 96-pixel cells in two rows of four
+  (the origin row techniques 5–8, the row below 1–4; group 1 has none),
+  into 8-unit icons sharpened below 96 pixels; `skillicon.rfi` into six
+  288-pixel cells as 24-unit icons (blend 0x203, always sharpened); and
+  `skillgui.rfi` is rescaled to 44 × 20 units. The once-only initialiser
+  builds them and chains the unit-change hook; a unit change rebuilds.
 - **Help** (`exa_ui::help_system`). The manual opens `manualkm.fds`, or
-  `manualcn.fds` in controller mode, as a "MANUAL" page with a 0x90-wide
-  topic list and a text box; its directory records are 0x20 bytes, a
-  16-byte NUL-cut title and a little-endian index word at 0x1c. Selecting a
-  topic of 1…count asks the source for the record, clears the page for a
-  record shorter than two bytes and lays the text out; the stick words
-  0x4002 and 0x8002 scroll by ∓8. A tip whose bit is not in the settings
-  mask makes a 504-unit-wide form whose height is the text box's height plus
-  0x60; the store then marks the bit, and a single-bit tip takes its bit's
-  index, any other the last entry.
+  `manualcn.fds` in controller mode, as a 0x2fc × 0x1e6 "MANUAL" page with
+  a 0x90-wide topic list (list style, full rows, no icon space) and a text
+  box. Each 0x20-byte directory record's 16-byte title is title-cased (a
+  lower-case letter after a space or `_` upper-cased) and its word at 0x1c
+  is its place in the list; picking a topic loads its block and shows the
+  text without its last byte. A tip whose single bit (0–30) is not in the
+  settings mask makes a 504-pixel form, its text measured with markup,
+  with "Continue" and "Don't show again"; the nine tips are Getting
+  Started, Inventory, Matches, Trading, Manage Company, Manage, WARNING,
+  Purchased Items and Tournaments, the first two and the eighth preset to
+  tick the second control. The call itself does not mark the mask.
 - **Trade window** (`exa_game::shop_window`). The page is 0x36c × 0x244 and
-  titled "Trade", with the two 0xe4 × 0xb4 panels and the two 0xc4 × 0x174
-  baskets. The buy basket counts at full price and the sell basket at a
-  quarter; a negative difference shows "Receive:" with its amount, a
-  non-negative one "Pay:" with the amount when the purse covers it. The
-  button is disabled while the purse is short or both baskets are empty. A
-  right-button release closes; the stock panel refuses drop kind 8 and takes
-  every other item; confirm spends through the company's coins and tallies
-  and empties the baskets.
+  titled "Trade": the character preview (0xe4 × 0x17c) with the player's
+  pack under it, the quartered sell basket next to them, the full-price buy
+  basket next to the stock, and the stock (0xe4 × 0x234) at the page's
+  right edge less 0x10. Each basket re-sums its own total. The bottom row
+  shows "Pay:" and the difference, or "Receive:" and its negation; a purse
+  short of the payment hides the label, shows 0 and "You cannot afford this
+  transaction." and disables the Trade button, which paying with both
+  baskets empty also disables. A take-off from the character view goes to
+  the pack; a right release hides the window; the close releases the
+  preview and ends the trade mode.
