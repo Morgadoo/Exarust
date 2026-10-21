@@ -1675,7 +1675,7 @@ fn factory_maps(m: &Material, key: u32, material_word: u32) -> FactoryMaps {
             && key & 0x10_0004 != 0
             && m.texture(TextureSlot::Specular).is_some(),
         normal: key & 0x20_0000 != 0
-            && material_word & 0x10_0807 != 0
+            && exa_render::shader_program::wants_normal_map(material_word)
             && m.texture(TextureSlot::Normal).is_some(),
         gloss: key & 0x100_0000 != 0 && m.texture(TextureSlot::Gloss).is_some(),
         height: key & 0x80_0000 != 0

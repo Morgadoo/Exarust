@@ -218,6 +218,13 @@ pub fn feature_key(material: &Material) -> u32 {
     key
 }
 
+/// The factory's test for a normal map: any of the material word's lit,
+/// specular, opacity-fall-off or reflection bits (`0x100807`). Only such a
+/// surface binds the normal layer and gets `UseNrm`.
+pub fn wants_normal_map(material_word: u32) -> bool {
+    material_word & 0x10_0807 != 0
+}
+
 /// The material and shader state words the original's material factory
 /// builds for a record at shading quality `quality`, before the program key
 /// masks them. `None` when the record draws nothing (no feature bits and no
@@ -305,7 +312,7 @@ pub fn state_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
     }
     // The normal map and `UseNrm` go with any surface that is shaded: lit,
     // specular, fall-off or reflection bits.
-    if mat & 0x10_0807 != 0 {
+    if wants_normal_map(mat) {
         if key & 0x20_0000 != 0
             && let Some(layer) = normal
         {
