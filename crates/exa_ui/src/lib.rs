@@ -25,6 +25,7 @@ pub mod creation;
 pub mod cursor;
 pub mod div_card;
 pub mod emblem_form;
+pub mod engine_math;
 pub mod fade;
 pub mod font;
 pub mod form;
@@ -59,8 +60,8 @@ pub use compact_skill::{
     CompactKeyAction, CompactMetrics, CompactRow, CompactSkillState, HIT_UNITS, LEVEL,
     MARGIN_UNITS, NODE_Y_UNITS, Pip, SPACING_FOUR, SPACING_NARROW, SPACING_WIDE, TITLE_UNITS,
     WheelAnswer, cell_box, cell_centre, decode_cell, draw_order as compact_draw_order,
-    handle_key as compact_key, hit_cells, lay_out_pips, metrics as compact_metrics, overlay_ease,
-    pips, technique_slots, wheel,
+    handle_key as compact_key, hit_cells, lay_out_pips, metrics as compact_metrics, pips,
+    technique_slots, wheel,
 };
 pub use cursor::{
     CursorCapture, CursorShape, DrawWorldCursor, PanelPointer, ScriptedPointer, WorldCursor,
@@ -120,9 +121,8 @@ pub use menu::{
 pub use scale::GuiScale;
 pub use selection::{
     Click as PortalClick, DestinationScreen, DestinationSlot, Frame as PortalFrame, Journey,
-    SelectionDraw, TravelStep, arrival_fade, bubble_origin, bump_flash, crystal_charge,
-    draw_order as selection_draw_order, fill_rows, flash_amount, hit_node, journey, node_mix,
-    place_node, quarter_sine, symbol_quad, travel_step, wobble_step,
+    JourneyGlow, SelectionDraw, SymbolQuad, TravelStep, bump_flash, crystal_charge, fill_rows,
+    flash_amount, flash_fade, journey, node_mix, place_node, symbol_quad, travel_step, wobble_step,
 };
 pub use skill::{
     SkillBounds, SkillHit, SkillHover, SkillHoverInput, SkillInputInput, SkillInputOutput,
@@ -171,9 +171,9 @@ pub use skin::{
     two_ink_outline, vertical_gradient, vertical_gradient_frame, with_alpha,
 };
 pub use technique_selector::{
-    ASSIGNED, BASE_WORD, CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, ROWS, RowKind, SLOTS, SelectorDraw,
-    SelectorKey, SkillRows, SkillTraining, TechniqueChange, TechniqueRow, TechniqueSelector,
-    TechniqueText, TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
+    CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, NodeState, SelectorDraw, SelectorKey, SkillColumn,
+    SkillRecord, TechniqueChange, TechniqueNode, TechniqueSelector, TechniqueText,
+    TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
     draw_order as technique_draw_order, enter_forget, layout as technique_layout, refresh_tree,
     selector_key, text_places,
 };

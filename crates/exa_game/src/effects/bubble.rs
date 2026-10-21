@@ -280,14 +280,15 @@ fn passed(stamp: u32, ms: u32, now_ms: u32) -> bool {
     u64::from(stamp) + u64::from(ms) < u64::from(now_ms)
 }
 
-/// The bubble component stepped by [`tick_bubbles`].
+/// The bubble component stepped by [`tick_bubbles`] (a journey's bubble is
+/// stepped by its journey, [`crate::destination::TravelJourney`]).
 #[derive(Component, Debug, Clone, PartialEq)]
 pub struct BubbleEffect(pub Bubble);
 
 pub fn tick_bubbles(
     mut commands: Commands,
     clock: Res<crate::effects::EffectClock>,
-    mut bubbles: Query<(Entity, &mut BubbleEffect)>,
+    mut bubbles: Query<(Entity, &mut BubbleEffect), Without<crate::destination::TravelJourney>>,
 ) {
     for (entity, mut bubble) in &mut bubbles {
         let step = bubble.0.step(clock.now_ms);

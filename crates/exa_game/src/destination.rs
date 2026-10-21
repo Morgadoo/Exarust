@@ -1,86 +1,100 @@
-//! The portal destination screen in the world: the screen a teleporter
-//! opens, its hover and click, the journey's bubble and the level change
-//! that follows it.
+//! The teleporter's destination screen in the world: the screen a
+//! teleporter opens ([`OpenPortalScreen`]), its pointer input, and the
+//! journey a click starts: the bubble above the teleporter, the
+//! teleporter's glow, the crystal's charge and what happens when the
+//! bubble reaches its end.
 //!
-//! The rules are [`exa_ui::selection`]; this module keeps the open screen,
-//! routes input to it, spawns the bubble under the traveller and sends
-//! [`TravelToLevel`] once the bubble is gone. The session's own fade and
-//! save remain with the session (the level change is Exarust's event, not
-//! the original's save package). Times are the effects' game clock.
+//! The rules are [`exa_ui::selection`]. As in the original, the journey
+//! outlives the screen: a click closes the screen and leaves a
+//! [`TravelJourney`] on the bubble's entity, which steps its own bubble on
+//! the effects' tick and then follows it:
+//!
+//! - a small crystal charges 1 a 12 ms; when the resting bubble is told to
+//!   shrink, [`TravelToLevel`] asks for the row's level;
+//! - the adapter's bubble holds for 7 s; when it is freed the teleporter's
+//!   record takes the single-row flag and, with the player's red health
+//!   above 0.01, [`JourneySave`] asks for a save;
+//! - either way the crystal ends spent (255).
+//!
+//! The level change, the save and the player's controls (stopped and
+//! handed back in the original) belong to the session, which is not in
+//! yet; the screen's drawing waits for the form renderer. Exarust runs
+//! only in a game mode, so the menu's branch (hand the controls back, no
+//! level change) is never taken here.
 
 use bevy::prelude::*;
 use exa_ui::selection::{
-    Click, DestinationScreen, Journey, TravelStep, click, hit_node, journey, travel_step,
+    self, BUBBLE_LIFT_CM, Click, DestinationScreen, Journey, MARK_FLAG, TravelStep,
 };
-use exa_world::teleporters::ScreenData;
+use exa_world::{PlacedItem, TeleportDevice};
 
+use crate::arena::Mt19937;
 use crate::effects::EffectClock;
-use crate::effects::bubble::{Bubble, BubbleEffect};
-use crate::teleporters::OpenPortalScreen;
+use crate::effects::bubble::{Bubble, BubbleEffect, MATERIAL};
+use crate::teleporters::{DeviceGlow, OpenPortalScreen};
 
-/// The open screen and the journey it started.
+/// The open screen.
 #[derive(Resource, Debug, Default)]
 pub struct PortalScreenState {
     pub open: Option<OpenScreen>,
 }
 
-/// A shown destination screen.
+/// A shown destination screen and what opened it.
 #[derive(Debug, Clone)]
 pub struct OpenScreen {
     pub screen: DestinationScreen,
-    pub user: Entity,
-    pub item: Entity,
     pub device: Entity,
-    pub atlas: &'static str,
-    /// The crystal is the large-crystal adapter: its bubble holds.
-    pub adapter: bool,
-    pub level_ids: Vec<u32>,
-    /// The screen's layout, from the interface scale.
+    pub user: Entity,
+    /// The crystal on the teleporter's slot.
+    pub item: Entity,
+    /// The screen's size and the interface unit, from the last input.
     pub width: i32,
     pub height: i32,
     pub unit: i32,
-    /// The journey after a click.
-    pub journey: Option<ActiveJourney>,
+    /// The engine's unit draws for the wobble and the bubble.
+    pub random: Mt19937,
 }
 
-/// A journey in flight.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ActiveJourney {
-    pub bubble: Entity,
-    pub started: u32,
-    pub end_ms: u32,
-    pub level: u32,
-    pub crystal_flags: u32,
-    pub stored_color: u8,
-    pub finish: bool,
-}
-
-/// The pointer's message: its point (if any), the buttons and the layout.
+/// The pointer over the screen: its point in the screen's pixels, the
+/// button mask of a click this frame (bit 0 left, bit 1 right), the leave
+/// key, and the screen's size and unit.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PortalInput {
     pub point: Option<(i32, i32)>,
-    pub left: bool,
-    pub right: bool,
+    pub buttons: u16,
+    pub leave: bool,
     pub width: i32,
     pub height: i32,
     pub unit: i32,
-    /// The leave request (a key or the screen's close).
-    pub close: bool,
 }
 
-/// Travel to a level, once the bubble has finished. `save` asks the session
-/// to save first.
+/// A journey in flight, on the bubble's entity.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct TravelJourney {
+    pub journey: Journey,
+    pub device: Entity,
+    pub user: Entity,
+    /// The paying crystal; the journey lets go of it at the end.
+    pub crystal: Option<Entity>,
+}
+
+/// Change level to `level`, arriving at `arrival` (the session applies
+/// it).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TravelToLevel {
     pub user: Entity,
     pub level: u32,
-    pub save: bool,
+    pub arrival: u32,
 }
 
-/// The spot the bubble sits at in the original: the clicked form's origin
-/// plus 98 pixels, which the UI turns into world space. Only the event is
-/// modelled here.
-#[derive(Message, Debug, Clone, Copy, PartialEq)]
+/// Save the game: an adapter journey ended with the player alive.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JourneySave {
+    pub user: Entity,
+}
+
+/// A journey started.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JourneyStarted {
     pub user: Entity,
     pub level: u32,
@@ -96,199 +110,209 @@ impl Plugin for DestinationPlugin {
             .add_message::<OpenPortalScreen>()
             .add_message::<PortalInput>()
             .add_message::<TravelToLevel>()
+            .add_message::<JourneySave>()
             .add_message::<JourneyStarted>()
-            .add_systems(Update, (open_screen, screen_input, tick_journey).chain());
+            .add_systems(Update, (open_screen, screen_input, paint_screen).chain())
+            .add_systems(
+                FixedUpdate,
+                tick_journeys.after(crate::effects::advance_clock),
+            );
     }
 }
 
+/// Shows the screen a teleporter asks for (one at a time, as the
+/// original finds its form already open).
 fn open_screen(
     mut opened: MessageReader<OpenPortalScreen>,
     clock: Res<EffectClock>,
     mut state: ResMut<PortalScreenState>,
 ) {
     for message in opened.read() {
+        if state.open.is_some() {
+            continue;
+        }
         let rows = message.screen.rows();
-        let level_ids = message.screen.destinations.to_vec();
         state.open = Some(OpenScreen {
-            screen: DestinationScreen::open(level_ids.clone(), rows, rows > 1, clock.now_ms),
+            screen: DestinationScreen::open(
+                message.screen.destinations.to_vec(),
+                rows,
+                message.adapter,
+                clock.now_ms,
+            ),
+            device: message.device,
             user: message.user,
             item: message.item,
-            device: message.device,
-            atlas: message.screen.atlas,
-            adapter: message.adapter,
-            level_ids,
             width: 0,
             height: 0,
             unit: 4,
-            journey: None,
+            random: Mt19937::new(clock.now_ms),
         });
     }
 }
 
+/// Routes the pointer: the leave key, the hover, the click.
+#[allow(clippy::too_many_arguments)]
 fn screen_input(
     mut commands: Commands,
     mut inputs: MessageReader<PortalInput>,
     clock: Res<EffectClock>,
     mut state: ResMut<PortalScreenState>,
+    devices: Query<&GlobalTransform, With<TeleportDevice>>,
+    items: Query<&PlacedItem>,
     mut started: MessageWriter<JourneyStarted>,
 ) {
     let Some(open) = state.open.as_mut() else {
         return;
     };
+    let now = clock.now_ms;
     for input in inputs.read() {
-        // The reveal's turn is the one the last frame drew; update it
-        // before hit-testing so a click on a fresh screen uses it.
-        open.screen.frame(clock.now_ms);
         open.width = input.width;
         open.height = input.height;
         open.unit = input.unit;
-        if input.close {
-            open.screen.close(clock.now_ms);
-            continue;
-        }
-        if open.journey.is_some() {
-            continue;
+        if input.leave {
+            open.screen.leave(now);
         }
         if let Some(point) = input.point {
-            let hit = hit_node(
-                point,
-                open.screen.rows(),
-                open.width,
-                open.height,
-                open.unit,
-                open.screen.turn,
-            );
-            open.screen.hover(hit, clock.now_ms);
+            let hit = open.screen.hit(point, open.width, open.height, open.unit);
+            open.screen.hover(hit, now);
         }
-        let button_mask = if input.right { 2 } else { 0 };
-        match click(&open.screen, button_mask, input.left) {
-            Click::Dismiss => open.screen.close(clock.now_ms),
-            Click::Travel(level) => {
-                let color = level as u8;
-                let journey = journey(open.adapter, level, color);
+        if input.buttons == 0 {
+            continue;
+        }
+        match open.screen.click(input.buttons) {
+            Click::Dismiss => open.screen.close(now),
+            Click::Travel { level } => {
+                let crystal = items
+                    .get(open.item)
+                    .ok()
+                    .map(|item| (item.id, item.condition));
+                let marker = 0;
+                let journey = selection::journey(crystal, level, marker, now);
+                let at = devices
+                    .get(open.device)
+                    .map(|transform| transform.translation())
+                    .unwrap_or(Vec3::ZERO)
+                    + Vec3::Y * (BUBBLE_LIFT_CM / 100.0);
+                let tex_pos = [open.random.unit() as f32, open.random.unit() as f32];
                 let bubble = commands
                     .spawn((
-                        Name::new("portal journey bubble"),
-                        BubbleEffect(Bubble::new(
-                            clock.now_ms,
-                            journey.hold,
-                            [f32::from(color) / 255.0, 0.5],
-                        )),
-                        Transform::default(),
-                        ChildOf(open.user),
+                        Name::new(MATERIAL),
+                        BubbleEffect(Bubble::new(now, journey.hold, tex_pos)),
+                        TravelJourney {
+                            journey,
+                            device: open.device,
+                            user: open.user,
+                            crystal: crystal.map(|_| open.item),
+                        },
+                        Transform::from_translation(at),
                     ))
                     .id();
-                open.journey = Some(ActiveJourney {
-                    bubble,
-                    started: clock.now_ms,
-                    end_ms: clock.now_ms.wrapping_add(journey.end_ms),
-                    level,
-                    // The small teleporter crystal, or its adapter.
-                    crystal_flags: if open.adapter { 0x58f } else { 0x1af },
-                    stored_color: color,
-                    finish: false,
-                });
+                if let Some(glow) = journey.glow {
+                    commands.entity(open.device).insert(DeviceGlow {
+                        start_ms: now,
+                        ramp_ms: glow.ramp_ms,
+                        hold_ms: glow.hold_ms,
+                    });
+                }
                 started.write(JourneyStarted {
                     user: open.user,
                     level,
                     hold: journey.hold,
                     bubble,
                 });
+                open.screen.close(now);
             }
-            Click::None => {}
+            Click::Base | Click::Ignored => {}
         }
     }
 }
 
-fn tick_journey(
-    mut commands: Commands,
-    clock: Res<EffectClock>,
-    mut state: ResMut<PortalScreenState>,
-    bubbles: Query<&BubbleEffect>,
-    mut travel: MessageWriter<TravelToLevel>,
-) {
+/// Steps the screen's reveal, close and wobble as its paint does, and
+/// drops it once the close tail is over.
+fn paint_screen(clock: Res<EffectClock>, mut state: ResMut<PortalScreenState>) {
     let Some(open) = state.open.as_mut() else {
         return;
     };
-    let frame = open.screen.frame(clock.now_ms);
-    if frame.closed {
+    let (width, height, unit) = (open.width, open.height, open.unit);
+    let random = &mut open.random;
+    let painted = open
+        .screen
+        .paint(clock.now_ms, width, height, unit, || random.unit() as f32);
+    if painted.is_none() {
         state.open = None;
-        return;
     }
-    let Some(active) = open.journey.as_mut() else {
-        return;
-    };
-    // The bubble's own system steps it and despawns it at the end; the
-    // journey also waits for its own end time so a bubble spawned this
-    // very tick is not mistaken for a finished one.
-    if clock.now_ms < active.end_ms || bubbles.get(active.bubble).is_ok() {
-        return;
-    }
-    if active.finish {
-        return;
-    }
-    let step = travel_step(
-        Some(active.crystal_flags),
-        active.stored_color,
-        active.started,
-        clock.now_ms,
-        6,
-        active.level,
-        0.02,
-    );
-    if let Some(flags) = step.flags {
-        active.crystal_flags = flags;
-    }
-    if step.done {
-        active.finish = true;
-        travel.write(TravelToLevel {
-            user: open.user,
-            level: active.level,
-            save: step.save,
-        });
-        if bubbles.get(active.bubble).is_ok() {
-            commands.entity(active.bubble).despawn();
+}
+
+/// Steps every journey: its bubble first, then the journey's own tick.
+#[allow(clippy::too_many_arguments)]
+fn tick_journeys(
+    mut commands: Commands,
+    clock: Res<EffectClock>,
+    mut journeys: Query<(Entity, &mut BubbleEffect, &TravelJourney)>,
+    mut items: Query<&mut PlacedItem>,
+    mut devices: Query<&mut TeleportDevice>,
+    fighters: Query<&exa_combat::Fighter>,
+    mut travel: MessageWriter<TravelToLevel>,
+    mut saves: MessageWriter<JourneySave>,
+) {
+    let now = clock.now_ms;
+    for (entity, mut bubble, journey) in &mut journeys {
+        bubble.0.step(now);
+        let crystal = journey
+            .crystal
+            .and_then(|item| items.get(item).ok())
+            .map(|item| (item.id, item.condition));
+        let red = fighters.get(journey.user).ok().map(|f| f.health.red);
+        let step: TravelStep = selection::travel_step(
+            &journey.journey,
+            crystal,
+            bubble.0.state.word(),
+            now,
+            true,
+            red,
+        );
+        if let (Some(charge), Some(item)) = (step.charge, journey.crystal)
+            && let Ok(mut item) = items.get_mut(item)
+        {
+            item.condition = charge;
+        }
+        if let Some(level) = step.change_level {
+            travel.write(TravelToLevel {
+                user: journey.user,
+                level,
+                arrival: selection::ARRIVAL_WORD,
+            });
+        }
+        // The marker word names the teleporter's own operative record;
+        // the device entity carries it here.
+        if journey.journey.hold
+            && step.done
+            && let Ok(mut device) = devices.get_mut(journey.device)
+        {
+            device.operative.flags |= MARK_FLAG;
+        }
+        if step.save {
+            saves.write(JourneySave { user: journey.user });
+        }
+        if step.done {
+            commands.entity(entity).despawn();
         }
     }
-}
-
-/// The travel step the screen takes for a journey, exposed for the session
-/// that applies the change.
-pub fn journey_step(active: &ActiveJourney, now: u32, mode: u32, player_fade: f32) -> TravelStep {
-    travel_step(
-        Some(active.crystal_flags),
-        active.stored_color,
-        active.started,
-        now,
-        mode,
-        active.level,
-        player_fade,
-    )
-}
-
-/// The atlas a screen draws.
-pub fn atlas(screen: &ScreenData) -> &'static str {
-    screen.atlas
-}
-
-/// The journey a click starts. Kept next to the plugin so the screen and
-/// its test share it.
-pub fn click_journey(adapter: bool, level: u32) -> Journey {
-    journey(adapter, level, level as u8)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exa_formats::objdb::{DESTINATIONS, Operative};
-    use exa_world::teleporters::{ROW_SINGLE, ScreenData};
+    use bevy::ecs::system::RunSystemOnce;
+    use exa_formats::objdb::{DESTINATIONS, Operative, operative};
+    use exa_world::teleporters::{CRYSTAL_ADAPTER, POWER_CRYSTAL, ROW_SINGLE, ScreenData};
 
-    fn screen(flags: u16) -> ScreenData {
+    fn record(flags: u16) -> Operative {
         let mut destinations = [0u32; DESTINATIONS];
         destinations[..4].copy_from_slice(&[7, 10, 12, 13]);
-        let record = Operative {
-            class: 0,
-            kind: 0,
+        Operative {
+            class: operative::DEVICE,
+            kind: operative::TELEPORTER,
             flags,
             value: 0,
             time: 0,
@@ -296,14 +320,12 @@ mod tests {
             second: 0,
             atlas: [0; 16],
             destinations,
-        };
-        ScreenData::of(&record)
+        }
     }
 
     fn app() -> App {
         let mut app = App::new();
         app.init_resource::<EffectClock>()
-            .add_systems(Update, crate::effects::bubble::tick_bubbles)
             .add_plugins(DestinationPlugin);
         app
     }
@@ -313,36 +335,201 @@ mod tests {
         app.update();
     }
 
-    #[test]
-    fn a_teleporter_opens_the_screen_and_a_click_starts_the_journey() {
-        let mut app = app();
+    /// The journeys' tick at `ms`, run directly (the test app's fixed
+    /// clock does not advance).
+    fn tick(app: &mut App, ms: u32) {
+        app.world_mut().resource_mut::<EffectClock>().now_ms = ms;
+        app.world_mut()
+            .run_system_once(tick_journeys)
+            .expect("the journey tick runs");
+    }
+
+    fn input(point: Option<(i32, i32)>, buttons: u16) -> PortalInput {
+        PortalInput {
+            point,
+            buttons,
+            leave: false,
+            width: 200,
+            height: 100,
+            unit: 4,
+        }
+    }
+
+    fn open(app: &mut App, item_id: u32, flags: u16) -> (Entity, Entity, Entity) {
         let user = app.world_mut().spawn_empty().id();
-        let item = app.world_mut().spawn_empty().id();
-        let device = app.world_mut().spawn_empty().id();
+        let item = app
+            .world_mut()
+            .spawn(PlacedItem {
+                id: item_id,
+                condition: 3,
+            })
+            .id();
+        let device = app
+            .world_mut()
+            .spawn((
+                TeleportDevice {
+                    kind: operative::TELEPORTER,
+                    operative: record(flags),
+                },
+                GlobalTransform::from_translation(Vec3::new(1.0, 2.0, 3.0)),
+            ))
+            .id();
         app.world_mut().write_message(OpenPortalScreen {
             device,
             user,
             item,
-            adapter: false,
-            screen: screen(0),
+            adapter: item_id == CRYSTAL_ADAPTER,
+            screen: ScreenData::of(&record(flags)),
         });
+        (user, item, device)
+    }
+
+    fn journey_entity(app: &mut App) -> Entity {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<Entity, With<TravelJourney>>();
+        query.single(app.world()).expect("one journey")
+    }
+
+    #[test]
+    fn a_click_closes_the_screen_and_starts_the_journey_above_the_teleporter() {
+        let mut app = app();
+        let (_, _, device) = open(&mut app, POWER_CRYSTAL, 0);
         at(&mut app, 1_000);
-        let state = app.world().resource::<PortalScreenState>();
-        let open = state.open.as_ref().unwrap();
-        assert_eq!(&open.level_ids[..4], &[7, 10, 12, 13]);
-        assert_eq!(open.screen.rows(), 4);
-        // Row 1 shows the first entry after the fill; its node is at the
-        // left of a 200 by 100 screen.
-        app.world_mut().write_message(PortalInput {
-            point: Some((-60, 50)),
-            left: false,
-            right: false,
-            width: 200,
-            height: 100,
-            unit: 4,
-            close: false,
-        });
+        {
+            let state = app.world().resource::<PortalScreenState>();
+            let open = state.open.as_ref().unwrap();
+            assert_eq!(open.screen.rows(), 4);
+            assert!(!open.screen.adapter);
+        }
+        // The paint finishes the reveal; the hit test uses its turn.
+        at(&mut app, 1_500);
+        // Row 1 (the record's first entry, 7) sits above the hub.
+        app.world_mut().write_message(input(Some((100, -110)), 0));
         at(&mut app, 1_600);
+        let selected = app.world().resource::<PortalScreenState>();
+        assert_eq!(selected.open.as_ref().unwrap().screen.selected, 2);
+        app.world_mut().write_message(input(None, 1));
+        at(&mut app, 1_610);
+        let state = app.world().resource::<PortalScreenState>();
+        assert!(state.open.as_ref().unwrap().screen.state & 2 != 0);
+        let bubble = journey_entity(&mut app);
+        let journey = *app.world().get::<TravelJourney>(bubble).unwrap();
+        assert_eq!(journey.journey.level, 7);
+        assert!(!journey.journey.hold);
+        assert_eq!(journey.journey.stored, 3);
+        let at_cm = app.world().get::<Transform>(bubble).unwrap().translation;
+        assert!((at_cm - Vec3::new(1.0, 2.98, 3.0)).length() < 1e-6);
+        // The teleporter glows 1 s up, 1.4 s held.
+        let glow = *app.world().get::<DeviceGlow>(device).unwrap();
+        assert_eq!(
+            (glow.start_ms, glow.ramp_ms, glow.hold_ms),
+            (1_610, 1_000, 1_400)
+        );
+        // The screen goes after its tail; the journey stays.
+        at(&mut app, 1_900);
+        assert!(app.world().resource::<PortalScreenState>().open.is_none());
+        assert!(app.world().get::<TravelJourney>(bubble).is_some());
+    }
+
+    #[test]
+    fn a_small_crystal_journey_charges_and_changes_level_when_the_bubble_rests() {
+        let mut app = app();
+        let (user, item, _) = open(&mut app, POWER_CRYSTAL, 0);
+        at(&mut app, 0);
+        at(&mut app, 500);
+        app.world_mut().write_message(input(Some((100, -110)), 0));
+        at(&mut app, 600);
+        app.world_mut().write_message(input(None, 1));
+        at(&mut app, 600);
+        // 120 ms later the crystal is 10 points more spent.
+        tick(&mut app, 720);
+        assert_eq!(app.world().get::<PlacedItem>(item).unwrap().condition, 13);
+        // The bubble grows 1.8 s, rests 0.5 s, then is told to shrink.
+        tick(&mut app, 2_401);
+        tick(&mut app, 2_902);
+        tick(&mut app, 2_903);
+        let travel: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<TravelToLevel>>()
+            .drain()
+            .collect();
+        assert_eq!(
+            travel,
+            vec![TravelToLevel {
+                user,
+                level: 7,
+                arrival: selection::ARRIVAL_WORD,
+            }]
+        );
+        // It shrinks away in 0.4 s; then the crystal is spent and the
+        // journey is over, with no save.
+        tick(&mut app, 2_904);
+        tick(&mut app, 3_305);
+        assert_eq!(app.world().get::<PlacedItem>(item).unwrap().condition, 255);
+        let mut journeys = app.world_mut().query::<&TravelJourney>();
+        assert_eq!(journeys.iter(app.world()).count(), 0);
+        assert!(app.world().resource::<Messages<JourneySave>>().is_empty());
+    }
+
+    #[test]
+    fn an_adapter_journey_holds_then_marks_the_teleporter_and_saves() {
+        let mut app = app();
+        let (user, item, device) = open(&mut app, CRYSTAL_ADAPTER, 0);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.red = 0.5;
+        app.world_mut().entity_mut(user).insert(fighter);
+        at(&mut app, 0);
+        assert!(
+            app.world()
+                .resource::<PortalScreenState>()
+                .open
+                .as_ref()
+                .unwrap()
+                .screen
+                .adapter
+        );
+        at(&mut app, 500);
+        app.world_mut().write_message(input(Some((100, -110)), 0));
+        at(&mut app, 600);
+        app.world_mut().write_message(input(None, 1));
+        at(&mut app, 600);
+        let glow = *app.world().get::<DeviceGlow>(device).unwrap();
+        assert_eq!((glow.ramp_ms, glow.hold_ms), (1_500, 7_000));
+        // The bubble grows 1.8 s and holds 7 s; no level change.
+        tick(&mut app, 2_401);
+        tick(&mut app, 9_402);
+        assert!(app.world().resource::<Messages<TravelToLevel>>().is_empty());
+        assert_eq!(app.world().get::<PlacedItem>(item).unwrap().condition, 3);
+        let flags = app
+            .world()
+            .get::<TeleportDevice>(device)
+            .unwrap()
+            .operative
+            .flags;
+        assert_eq!(flags & ROW_SINGLE, 0);
+        tick(&mut app, 9_403);
+        assert_eq!(app.world().get::<PlacedItem>(item).unwrap().condition, 255);
+        let flags = app
+            .world()
+            .get::<TeleportDevice>(device)
+            .unwrap()
+            .operative
+            .flags;
+        assert_eq!(flags & ROW_SINGLE, ROW_SINGLE);
+        let saves: Vec<_> = app
+            .world_mut()
+            .resource_mut::<Messages<JourneySave>>()
+            .drain()
+            .collect();
+        assert_eq!(saves, vec![JourneySave { user }]);
+    }
+
+    #[test]
+    fn the_right_button_and_the_leave_key_close_the_screen() {
+        let mut app = app();
+        open(&mut app, POWER_CRYSTAL, ROW_SINGLE);
+        at(&mut app, 0);
         assert_eq!(
             app.world()
                 .resource::<PortalScreenState>()
@@ -350,143 +537,27 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .screen
-                .selected,
-            2
+                .rows(),
+            1
         );
-        app.world_mut().write_message(PortalInput {
-            point: None,
-            left: true,
-            right: false,
-            width: 200,
-            height: 100,
-            unit: 4,
-            close: false,
-        });
-        at(&mut app, 1_610);
-        let state = app.world().resource::<PortalScreenState>();
-        let open = state.open.as_ref().unwrap();
-        let active = open.journey.unwrap();
-        assert_eq!(active.level, 7);
-        assert!(!active.finish);
-        // A bubble child is on the traveller.
-        assert!(app.world().get::<BubbleEffect>(active.bubble).is_some());
-        let started: Vec<_> = app
-            .world_mut()
-            .resource_mut::<Messages<JourneyStarted>>()
-            .drain()
-            .collect();
-        assert_eq!(started.len(), 1);
-        assert_eq!(started[0].level, 7);
-    }
-
-    #[test]
-    fn the_journey_finishes_with_a_level_change() {
-        let mut app = app();
-        let user = app.world_mut().spawn_empty().id();
-        let item = app.world_mut().spawn_empty().id();
-        let device = app.world_mut().spawn_empty().id();
-        app.world_mut().write_message(OpenPortalScreen {
-            device,
-            user,
-            item,
-            adapter: true,
-            screen: screen(ROW_SINGLE),
-        });
-        at(&mut app, 0);
-        // A single row: the only node is the centre of the screen.
-        app.world_mut().write_message(PortalInput {
-            point: Some((100, 50)),
-            left: false,
-            right: false,
-            width: 200,
-            height: 100,
-            unit: 4,
-            close: false,
-        });
-        at(&mut app, 10);
-        // The centre is never a hit, so no journey starts.
-        assert!(
-            app.world()
-                .resource::<PortalScreenState>()
-                .open
-                .as_ref()
-                .unwrap()
-                .journey
-                .is_none()
-        );
-        // Force a journey on the first row through a direct click.
-        {
-            let mut state = app.world_mut().resource_mut::<PortalScreenState>();
-            let open = state.open.as_mut().unwrap();
-            open.screen.selected = 1;
-        }
-        // The reveal must be over before a click travels.
-        at(&mut app, 1_000);
-        app.world_mut().write_message(PortalInput {
-            point: None,
-            left: true,
-            right: false,
-            width: 200,
-            height: 100,
-            unit: 4,
-            close: false,
-        });
-        at(&mut app, 1_010);
-        let level = app
-            .world()
-            .resource::<PortalScreenState>()
-            .open
-            .as_ref()
-            .unwrap()
-            .journey
-            .unwrap()
-            .level;
-        assert_eq!(level, 7);
-        // The adapter's bubble holds: it grows, charges for seven seconds
-        // and is then freed; the travel message follows.
-        at(&mut app, 2_900);
-        at(&mut app, 8_800);
-        at(&mut app, 9_900);
-        at(&mut app, 9_901);
-        at(&mut app, 9_910);
-        let travel: Vec<_> = app
-            .world_mut()
-            .resource_mut::<Messages<TravelToLevel>>()
-            .drain()
-            .collect();
-        assert_eq!(travel.len(), 1);
-        assert_eq!(travel[0].level, 7);
-        assert!(travel[0].save);
-    }
-
-    #[test]
-    fn a_right_click_closes_the_screen() {
-        let mut app = app();
-        let user = app.world_mut().spawn_empty().id();
-        let item = app.world_mut().spawn_empty().id();
-        let device = app.world_mut().spawn_empty().id();
-        app.world_mut().write_message(OpenPortalScreen {
-            device,
-            user,
-            item,
-            adapter: false,
-            screen: screen(0),
-        });
-        at(&mut app, 0);
-        app.world_mut().write_message(PortalInput {
-            point: None,
-            left: false,
-            right: true,
-            width: 200,
-            height: 100,
-            unit: 4,
-            close: false,
-        });
-        at(&mut app, 1_000);
+        app.world_mut().write_message(input(None, 2));
+        at(&mut app, 50);
         let state = app.world().resource::<PortalScreenState>();
         assert!(state.open.as_ref().unwrap().screen.state & 2 != 0);
-        // After the close tail the screen is gone.
-        at(&mut app, 1_300);
+        at(&mut app, 400);
         assert!(app.world().resource::<PortalScreenState>().open.is_none());
+        // The leave key waits for the reveal's last 400 ms.
+        open(&mut app, POWER_CRYSTAL, 0);
+        at(&mut app, 1_000);
+        let mut leave = input(None, 0);
+        leave.leave = true;
+        app.world_mut().write_message(leave);
+        at(&mut app, 1_050);
+        let state = app.world().resource::<PortalScreenState>();
+        assert_eq!(state.open.as_ref().unwrap().screen.state & 2, 0);
+        app.world_mut().write_message(leave);
+        at(&mut app, 1_100);
+        let state = app.world().resource::<PortalScreenState>();
+        assert!(state.open.as_ref().unwrap().screen.state & 2 != 0);
     }
 }

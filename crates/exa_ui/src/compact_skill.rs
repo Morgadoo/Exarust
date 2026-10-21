@@ -10,8 +10,6 @@
 //! five thousand is a level and the pips past the last level show the
 //! remainder as a dimmed pip.
 
-use crate::selection::quarter_sine;
-
 /// One column is this many units wide (the original's `0xb`).
 pub const COLUMN_UNITS: i32 = 11;
 /// The title band is this many units wide (`0x36`).
@@ -655,13 +653,6 @@ pub fn draw_order(
         draw.push(CompactDraw::Overlay);
     }
     draw
-}
-
-/// The base skill screen's own drawing uses this ease for a selection's
-/// ring, kept here so the compact screen's overlay shares it (guess: the
-/// base's draw uses the same quarter sine).
-pub fn overlay_ease(share: f32) -> f32 {
-    quarter_sine(share)
 }
 
 #[cfg(test)]
