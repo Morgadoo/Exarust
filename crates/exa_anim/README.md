@@ -49,6 +49,10 @@ owed to the next frame), 0.6 × the race's base a tick
   frame each playing track sets its node's translation from the original's
   Catmull-Rom curve at its clock's time; F7 starts every track of the
   level ([`docs/formats/RFC.md`](../../docs/formats/RFC.md), Keyframe
-  tracks).
+  tracks). The clock's modes (free, once, reverse, loop) and both curves
+  (the stored Catmull-Rom and the linear controller no chunk builds) are
+  `exa_formats::key_track`'s; `slerp` is the original's quaternion blend
+  (shortest way, the 1.19e-7 linear fallback, sin weights) and is used by
+  the key blend, the gait overlay and the pose sampler.
 - Pose sampling and blending.
 - Procedural layers: stance, aim of the weapon from mouse input, look-at, idle noise.
