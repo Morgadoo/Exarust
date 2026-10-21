@@ -176,9 +176,11 @@ pub fn roster_name(name: &str) -> String {
     name[..end].to_string()
 }
 
-/// The health bar's fill: health over 65535, in single precision.
+/// The health bar's fill: the health word times one over 65535 in double
+/// precision, narrowed once to single precision (a single-precision
+/// product lands one step off for 512 of the 65536 words).
 pub fn health_fill(health: u16) -> f32 {
-    f32::from(health) * (1.0 / 65535.0)
+    (f64::from(health) * (1.0 / 65535.0)) as f32
 }
 
 /// A roster cell: the name in its role's ink, the rank label followed by
@@ -756,14 +758,10 @@ pub fn company_status(
     }
 }
 
-/// The highest rank's index: Master. The rank after it (the "-" label) has
-/// no rank name.
-pub const MASTER_RANK: usize = 5;
-
 /// A fighter's rank: half the sum of the six levels (an experience word
 /// over 5000), at most Master.
 pub fn rank_of(skill_xp: &[u16; 6]) -> usize {
-    (report::level_sum(skill_xp) as usize / 2).min(MASTER_RANK)
+    crate::arena_ids::fighter_rank(skill_xp) as usize
 }
 
 /// A record's daily upkeep: a merchant 2, a physician 12, a trainer the
@@ -775,17 +773,6 @@ pub fn daily_upkeep(profession: Profession, skill_xp: &[u16; 6]) -> u32 {
         Profession::Trainer => report::level_sum(skill_xp),
         Profession::Combatant => rank_of(skill_xp) as u32 + 1,
     }
-}
-
-/// End Day: on a tournament day (a multiple of seven with an event
-/// entered) it is closed while an event is still to play and open once
-/// every event has been played; on any other day it is open once a day
-/// has passed since the last tournament.
-pub fn end_day_open(day: u32, events: usize, unplayed: usize, days_since_tournament: u32) -> bool {
-    if day.is_multiple_of(7) && events > 0 {
-        return unplayed == 0;
-    }
-    days_since_tournament > 0
 }
 
 /// The manage window's plain inputs: the day, the books, the fighter
@@ -1295,17 +1282,6 @@ mod tests {
     }
 
     #[test]
-    fn end_day_closes_on_a_pending_tournament() {
-        assert!(!end_day_open(0, 0, 0, 0));
-        assert!(end_day_open(0, 0, 0, 1));
-        assert!(!end_day_open(0, 3, 1, 4));
-        assert!(end_day_open(0, 3, 0, 0));
-        assert!(end_day_open(7, 3, 0, 4));
-        assert!(end_day_open(3, 3, 1, 2));
-        assert!(!end_day_open(7, 1, 1, 6));
-    }
-
-    #[test]
     fn roster_cells_take_their_text_and_ink() {
         assert_eq!(roster_name("Ash"), "Ash");
         assert_eq!(roster_name("Sixteen chars ok"), "Sixteen chars o");
@@ -1425,6 +1401,9 @@ mod tests {
         assert_eq!(health_fill(0), 0.0);
         assert_eq!(health_fill(65535), 1.0);
         assert_eq!(health_fill(32768), 32768.0 / 65535.0);
+        // A single-precision product would give 0x3b808080 here.
+        assert_eq!(health_fill(257).to_bits(), 0x3b80_8081);
+        assert_eq!(health_fill(269).to_bits(), 0x3b86_8087);
         assert_eq!(
             roster_cell(
                 RosterColumn::Health,
