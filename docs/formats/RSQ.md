@@ -135,22 +135,21 @@ How the original simulates a body (`exa_physics::body`):
     placement routine and one power), so a fresh ragdoll neither jolts nor
     springs back. The living iteration never uses L.
   - A limp link can also be a soft weld (a quarter of its strength times
-    the gap less 0.4 of its points' motion, a tenth of it shared by the
-    mobilities), a breakable grab (its strain falls by 1 + 2q/|d| when
-    q = 1 + the gap on its axis is positive, else by 1; while it lasts it
-    pulls at strength/(1 + 0.001|d|); below zero it and the other grabs on
-    that parent are disabled, and flag 0x200000 re-anchors the parent point
-    once), or a link with an iteration limit (runs only up to its pass).
-  - A link whose parent is a scene node rather than a body pulls its own
-    part to a point in that node's frame: the plain link takes the gap
-    times the strength (with no slack, at most 10·strength cm, and beyond
-    that its strength squared), the damped spring a tenth of the strength
-    less the approach and 0.4 of the motion, the slider its parameter
-    clamped to the travel with the correction applied twice, and a
-    horizontal link across the ground at twice the strength, capped by
-    min(3·√mobility, 5) cm; flag 0x800 first removes 80 % of the gap along
-    the axis. Exarust keeps these in `body::world::WorldLink`; the level
-    registers no body that needs one yet (its hung props stay static).
+    the gap less 0.4 of its two points' motion since the tick began, shared
+    by 0.1/(m + m') rather than by the mobilities), or a link with an
+    iteration limit (runs only up to its pass). A disabled link (flag
+    0x100000) is skipped; a breakable grab is the hand's grab pull.
+  - A root body's link to a scene node pulls its own part to a point in
+    that node's frame: the plain link takes the gap times the strength
+    (with no slack, at most 10·strength cm, and beyond that its strength
+    squared), the damped spring a tenth of the strength less the approach
+    and 0.4 of the motion, the slider its parameter clamped to the travel
+    with the correction applied twice, and a horizontal link across the
+    ground at twice the strength, capped by min(3·√mobility, 5) cm; flag
+    0x800 first removes 80 % of the gap along the axis. Exarust builds
+    these as `body::WorldLink` from a root part's stored links
+    (`Ragdoll::rigid`); the hung props use them, while doors, levers and
+    plates stay static.
   - Each link keeps a strength: 1, except a lower leg's first link with
     over 10 cm of slack (the leg limit): 0.2 when a living body is built,
     then following its gait (below), and 1 again once it goes limp, as the
@@ -162,11 +161,11 @@ How the original simulates a body (`exa_physics::body`):
 - After the iterations and before detection, a part whose tetrahedron is
   inverted (the vector between its opposite edges' midpoints on the wrong
   side of those edges' cross, against the rest pose's sign) is rebuilt: its
-  edges are restored, it moves by its box centre's displacement, its
-  previous points become its current ones, its body matrix is rebuilt from
-  its particles and rest basis, and each axis is re-formed as the cross of
-  the other two when the dot product falls under 0.1; its particles are
-  then put back on the rest tetrahedron under that matrix.
+  edges are restored, its points go back to where the tick began shifted by
+  how far its box centre has come since, its body matrix is built from them
+  and the rest basis, and each axis is re-formed as the cross of the other
+  two when the dot product falls under 0.1; its particles are then put back
+  on the rest tetrahedron under that matrix. Its velocity is left alone.
 - After the iterations, every sphere collider is tested once against the
   level's triangles (`exa_physics::contact`):
   - A triangle pushes only from its front, the side its winding faces in

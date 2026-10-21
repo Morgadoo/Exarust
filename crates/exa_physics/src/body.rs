@@ -404,7 +404,8 @@ impl Part {
         }
         let mut points = [Vec3::ZERO; 4];
         for i in 0..4 {
-            points[i] = from[i].lerp(to[i], alpha);
+            // a + (b − a)·t, as the original sums it (not a(1 − t) + bt).
+            points[i] = from[i] + (to[i] - from[i]) * alpha;
         }
         affine_from_points(&self.rest, &self.rest_inverse, &points)
     }
@@ -784,7 +785,9 @@ impl Link {
         }
         let old = self.length;
         // A NaN length change is left alone too (the original's compare).
-        if !((len - old).abs() > LENGTH_EPSILON) {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let still = !((len - old).abs() > LENGTH_EPSILON);
+        if still {
             return None;
         }
         self.length = old * self.smoothing + (1.0 - self.smoothing) * len;
@@ -798,10 +801,14 @@ impl Link {
             return;
         }
         let len2 = d.length_squared();
-        self.length = if len2 <= LINK_EPSILON2 {
-            0.0
+        // The slack is tried first, so a gap past it takes the slack even
+        // when both are under the epsilon; a NaN gap falls through to 0.
+        self.length = if self.slack * self.slack < len2 {
+            self.slack
+        } else if len2 > LINK_EPSILON2 {
+            len2.sqrt()
         } else {
-            len2.sqrt().min(self.slack)
+            0.0
         };
     }
 
@@ -1041,7 +1048,10 @@ impl WorldLink {
             self.length = 0.0;
             return None;
         }
-        let factor = if !(slack > GENERAL_EPSILON) {
+        // A NaN slack takes the no-slack branch, as the original's compare does.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let no_slack = !(slack > GENERAL_EPSILON);
+        let factor = if no_slack {
             let reach = self.strength * PLAIN_MAX_STEP;
             if reach * reach >= len2 {
                 self.strength

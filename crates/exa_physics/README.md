@@ -285,23 +285,28 @@ retention (0.426, 0.25, 0.05 a second; nothing else damps a body), and the
 sleep countdown is the original's: 256 on fast motion, held at 30–32 on
 slow motion, two off a tick at rest.
 
-A limp body's links also carry the original's other kinds: a soft weld
-takes a quarter of its strength times the gap less 0.4 of its points'
-motion; a breakable grab spends its strain by 1 + 2q/|d| (q = 1 + the
-gap's component on its axis) or 1, pulls at strength/(1 + 0.001|d|) while
-the strain lasts and disables itself below zero; a link with an iteration
-limit runs only up to its pass. Links from a part to a point in a scene
-node (`body::world::WorldLink`, not yet created by the level) are the
-plain pin (the gap times the strength, 10·strength cm at most with no
-slack), the damped spring, the slider (its parameter clamped to the
-travel, the correction applied twice) and the hand's horizontal drag
-(twice the strength, capped by min(3·√mobility, 5) cm, less the approach);
-a plane link removes 80 % of the gap along its axis first. Each pulls only
-its own part through its weights, unclamped. After the iterations a part
-whose tetrahedron is inverted is rebuilt on its rest tetrahedron from its
-own body matrix, each axis re-formed as the cross of the other two when
-the dot product falls under 0.1, and moved by its box centre's
-displacement. `prop` registers
+A limp body's links also carry the original's other kinds. A soft weld
+takes a quarter of its strength times the gap less 0.4 of its two points'
+motion since the tick began, shared by 0.1/(m + m'); a link with an
+iteration limit runs only up to its pass; a disabled link never runs. (A
+breakable grab is `body::pull_grab`'s.) A root body hangs from points in a
+scene node by world links (`body::WorldLink`, made by `Ragdoll::rigid` from
+the part's stored links, so the hung props use them). They are worked in
+centimetres in the original's order: the hand's horizontal drag (twice the
+strength, capped by min(3·√mobility, 5) cm, less the approach); the slider
+(its parameter clamped to the travel, the correction applied twice); the
+damped spring (a tenth of the strength less the approach and 0.4 of the
+motion); a plane link removes 80 % of the gap along its axis first; and the
+plain pin or slack link (the gap times the strength, with no slack at most
+10·strength cm and beyond that its strength squared; inside a slack
+nothing, forgetting the length). Each pulls only its own part through its
+weights, unclamped. After the iterations a part whose tetrahedron is
+inverted is rebuilt as the original does: the edges are restored, its
+points go back to where the tick began shifted by how far its box centre
+has come, the body matrix is built from those points and the rest basis,
+each axis that leans against the cross of the other two (dot under 0.1) is
+re-formed as that cross, and the particles are put back on the rest
+tetrahedron under the matrix; the velocity is left alone. `prop` registers
 them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
 once transforms propagate; the static build keeps their meshes as
 stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
