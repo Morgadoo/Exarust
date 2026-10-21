@@ -426,7 +426,7 @@ pub fn track_condition(
 #[path = "condition_test.rs"]
 mod tests;
 
-/// A knock-out's timer and its wake readiness (`+0x1044`, `+0xdcc`).
+/// A knock-out's timer and its wake readiness.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
 pub struct KnockOut {
     /// The game clock (ms) the body may start waking.
@@ -453,21 +453,26 @@ pub struct Wake {
     pub flags: StateFlags,
     pub tone: f32,
     pub ready: f32,
-    /// The stance factor to restore at full wake (the base), else none.
+    /// The stance factor written this tick: 0 while knocked out, the base at
+    /// full wake, else none.
     pub stance: Option<f32>,
     /// The dormant body's "Awaken" event fired this tick.
     pub awaken: bool,
     /// The body woke fully this tick.
     pub awake: bool,
+    /// The global character-changed hook runs this tick (when the body is
+    /// waking and not held).
+    pub notify: bool,
 }
 
-/// One wake tick (`0x100156b20`). Before `wake_at + 1500 ms` the body stays
-/// knocked out (tone and stance 0, readiness 0.4). After it the tone rises
-/// 0.001 a tick (plus `(1 − clock)²·0.001` while getting up); after
-/// `wake_at + 8000 ms` the readiness rises 0.01 a tick to 1, when the tone
-/// is restored, the stance becomes `base` and, unless held (flag 0x40),
-/// the wake bits clear. A dormant body (0x10) fires "Awaken" when it first
-/// wakes, and the flags become waking (0x20) unless held.
+/// One wake tick. Up to `wake_at + 1500 ms` (a 64-bit sum: it does not wrap)
+/// the body stays knocked out (tone and stance 0, readiness 0.4). After it
+/// the tone rises 0.001 a tick (plus `(1 − clock)²·0.001` while getting up),
+/// summed in double precision; after `wake_at + 8000 ms` the readiness rises
+/// 0.01 a tick (also in double) to 1, when the tone is restored, the stance
+/// becomes `base` and, unless held (flag 0x40), the wake bits clear. A
+/// dormant body (0x10) fires "Awaken" when it first wakes, and the flags
+/// become waking (0x20) unless held.
 pub fn wake(
     knock: &KnockOut,
     condition: Condition,
@@ -485,25 +490,31 @@ pub fn wake(
         stance: None,
         awaken: false,
         awake: false,
+        notify: false,
     };
-    if now_ms <= knock.wake_at_ms.wrapping_add(1500) {
+    let at = u64::from(knock.wake_at_ms);
+    let now = u64::from(now_ms);
+    if at + 1500 >= now {
         out.condition = Condition::DOWN;
         out.flags = StateFlags(flags.0 | 0x30);
         out.tone = 0.0;
         out.ready = 0.4;
+        out.stance = Some(0.0);
         return out;
     }
     if condition == Condition::GETTING_UP {
         let d = 1.0 - clock;
-        out.tone = d * d * 0.001 + tone + 0.001;
+        let rise = f64::from(d * d) * 0.001;
+        out.tone = (rise + (f64::from(tone) + 0.001)) as f32;
     } else {
-        out.tone = tone + 0.001;
+        out.tone = (f64::from(tone) + 0.001) as f32;
     }
     if out.tone > 1.0 {
         out.tone = 1.0;
     }
-    if now_ms > knock.wake_at_ms.wrapping_add(8000) {
-        out.ready += 0.01;
+    if at + 8000 < now {
+        out.ready = (f64::from(out.ready) + 0.01) as f32;
+        // A NaN readiness leaves the tick, like one below 1.
         if out.ready >= 1.0 {
             out.ready = 1.0;
             out.tone = 1.0;
@@ -517,6 +528,7 @@ pub fn wake(
         if flags.0 & StateFlags::DORMANT != 0 {
             out.awaken = true;
         }
+        out.notify = true;
         out.flags = StateFlags((flags.0 & !0xf0) | StateFlags::WAKING);
     } else {
         out.flags = StateFlags(flags.0 | 0x70);
@@ -589,6 +601,8 @@ mod knockout_tests {
         assert_eq!(knocked.condition, Condition::DOWN);
         assert_eq!(knocked.flags.0 & 0x30, 0x30);
         assert_eq!((knocked.tone, knocked.ready), (0.0, 0.4));
+        assert_eq!(knocked.stance, Some(0.0));
+        assert!(!knocked.notify);
         // Just after 1.5 s: the tone starts rising, waking unless held.
         let waking = wake(
             &knock,
@@ -601,6 +615,7 @@ mod knockout_tests {
         );
         assert!((waking.tone - 0.001).abs() < 1e-6);
         assert!(waking.awaken);
+        assert!(waking.notify);
         assert_eq!(waking.flags.0, StateFlags::WAKING);
         // Getting up adds (1 − clock)²·0.001: at 0.5, 0.001 + 0.00025.
         let rising = wake(
@@ -642,6 +657,60 @@ mod knockout_tests {
         assert_eq!(full.stance, Some(0.5));
         assert!(full.awake);
         assert_eq!(full.flags.0 & 0xf0, 0);
+    }
+
+    #[test]
+    fn the_wake_sums_in_double_precision() {
+        let knock = KnockOut::start(1000, 0);
+        // Getting up: the tone is (1 − clock)²·0.001 + (tone + 0.001) summed
+        // in double and narrowed once; the single-precision sum is a bit off.
+        let rising = wake(
+            &knock,
+            Condition::GETTING_UP,
+            StateFlags::NONE,
+            0.90142745,
+            2501,
+            0.030589983,
+            0.5,
+        );
+        assert_eq!(rising.tone, 0.9033672);
+        // The readiness adds 0.01 in double too.
+        let knock = KnockOut {
+            wake_at_ms: 0,
+            ready: 0.0057091294,
+        };
+        let later = wake(
+            &knock,
+            Condition::DOWN,
+            StateFlags::NONE,
+            0.5,
+            8001,
+            0.0,
+            0.5,
+        );
+        assert_eq!(later.ready, 0.01570913);
+        assert!(!later.awake);
+    }
+
+    #[test]
+    fn the_wake_times_do_not_wrap() {
+        // The knock-out lasts past the 32-bit clock's end: the sum with the
+        // grace period is a 64-bit one, so a small clock is still before it.
+        let knock = KnockOut {
+            wake_at_ms: u32::MAX - 100,
+            ready: 0.0,
+        };
+        let knocked = wake(
+            &knock,
+            Condition::NORMAL,
+            StateFlags::NONE,
+            1.0,
+            5000,
+            0.0,
+            0.5,
+        );
+        assert_eq!(knocked.condition, Condition::DOWN);
+        assert_eq!(knocked.stance, Some(0.0));
     }
 
     #[test]
