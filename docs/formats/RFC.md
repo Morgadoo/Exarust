@@ -794,13 +794,16 @@ Character records (`0x00CDACvv`, the low byte the version; framed as tag +
 size, the record ends at its size): name[16], surname[16], physique f32×2,
 height (−1…1, positive is shorter), age (0…1), skin colour u16×2, hair
 style, hair colour u8×4, face styles u16×2 (read by every version),
-voice[16] (`xx0N` gives voice number N − 1), pitch, profession (bit 0
-female, byte 1 race, `0x0100_0000` while the second weapon set is out),
-last locale, four held items {id, flags} (the out set's main and off hand,
-then the stowed set's; flags `0x0100_0000` flipped, `0x0200_0000` a lit
-light; none of the 477 level records sets a flags word or the second-set
-bit), then the
-worn items: `i32 n` and n × {id, flags}. Ids with `0x80000000` refer to the
+voice[16] (`?0N` gives voice number N − 1; the shipped names are `vi01`…
+`vi08`), pitch, profession (bit 0 female, byte 1 race, `0x0100_0000`
+while the second weapon set is out; one record sets `0x40`, another
+`0x10000`, and the reader keeps those bits), last locale, four held items
+{id, flags} (the out set's main and off hand, then the stowed set's; flags
+`0x0100_0000` flipped, `0x0200_0000` a lit light; none of the 477 level
+records sets a hand flags word or the second-set bit), then the worn items:
+`i32 n` and n × {id, flags}. The flags beside the items are part of the
+record and are kept; in the inventory, bit `0x100` marks a copy that goes
+with the hands. Ids with `0x80000000` refer to the
 level's own object database (`DBC0` → `DBDB`, an RDB of item records like
 `objdb.rdb`'s). Across the 29 levels, all 477 placed characters have a
 record and 908 of their 979 worn items resolve locally (`exa-tool corpus
@@ -890,6 +893,39 @@ and red at 0xFFFF and voice pitch 1. The creator's `reset` also sets a male
 human (`profession` 0), physique 0.5/0.5, skin colour 0x8000/0x8000, hair
 style 0, hair colour bytes `40 80 40 00`, voice number 0, pitch 1, full
 pools, and appends the underwear (item 8, flags 0) to the worn items.
+
+**The live record** (`exa_character::record`, `CharacterData`). The record
+in memory carries a reference count (the constructor starts at 1; releasing
+the last holder unregisters it from the world database when its id has
+`0x40000000` and from the level's own when `0x80000000`, the same bits an
+item id uses), and a
+second, unsaved item list the game keeps beside the inventory. The rules:
+- the underwear rule appends item 8 to a human (race byte 0) whose worn
+  items do not set bit `0x02` of the pelvis's layer-0 occupancy byte; the
+  game does not check that item 8 exists.
+- the equip conflict pass takes off every worn item whose occupancy table
+  ANDs non-zero with the new item's on any of the 20 bones; a worn item
+  whose record cannot be read is left on. The second pass in the original
+  refuses an overlapping item whose byte just past its name section is over
+  50; in every shipped item the name section is followed by a tag whose low
+  byte is 0, so the branch never fires.
+- the hands are four slots: two hands, then a second pair (another saved
+  set of hands). An item held more often than the character owns it has its
+  extra hand and loadout references cleared, the second hand of a pair
+  first; only the id is cleared and the flags stay. Putting the hands away
+  (`stow_hands`) appends their items to the inventory, marked with `0x100`
+  for the first pair and listed twice when both hands hold one item.
+- removing an item takes the equipped inventory copy first (else the first
+  worn copy), then clears the surplus references; removing it everywhere
+  also empties the staged list and every saved loadout.
+- the skills are six slots of 5000 points per level; a technique can be
+  unlearnt from a level (the later ones move down and the points lose a
+  level), and the game's own table of related techniques is not reproduced.
+- health is saved and loaded as described under Saving.
+
+Evidence: REA on the record's item-list, hand, loadout, skill and save
+routines; the shipped apparel makes the conflict pass take the braies off
+for trousers and keep a shirt (`exa_character::record` tests).
 
 Evidence: REA on both record readers, the writer, the constructor and the
 creator's reset, the inventory and relation readers and writers, the

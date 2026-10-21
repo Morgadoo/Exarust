@@ -13,10 +13,10 @@ use exa_formats::characters::{
     Role, SKILLS, Skill, UNDERWEAR_ITEM, WORLD_DB, WRITTEN_TECHNIQUES,
 };
 
-/// A character record id's own database bits: unlike an item id's, the
-/// level's own database is `0x40000000` and the world's `0x80000000`.
-const RECORD_LOCAL: u32 = 0x4000_0000;
-const RECORD_WORLD: u32 = 0x8000_0000;
+/// A record id's database bits, as an item id's: `0x40000000` is the world
+/// database and `0x80000000` the level's own.
+const RECORD_WORLD: u32 = 0x4000_0000;
+const RECORD_LOCAL: u32 = 0x8000_0000;
 use exa_formats::objdb::Item;
 
 /// A record field the original flags as in use: an inventory entry with it
@@ -119,10 +119,10 @@ impl CharacterData {
             return None;
         }
         let id = self.record.id;
-        if id & RECORD_LOCAL != 0 {
-            Some(RecordScope::Local(id & ID_MASK))
-        } else if id & RECORD_WORLD != 0 {
+        if id & RECORD_WORLD != 0 {
             Some(RecordScope::World(id & ID_MASK))
+        } else if id & RECORD_LOCAL != 0 {
+            Some(RecordScope::Local(id & ID_MASK))
         } else {
             None
         }

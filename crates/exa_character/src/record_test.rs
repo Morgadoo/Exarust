@@ -2,6 +2,7 @@
 
 use super::*;
 use exa_formats::objdb::{Burden, OCCUPANCY_BONES};
+use exa_formats::rdb::Database;
 
 /// An item of `id` occupying the pelvis with `occupancy`, optionally
 /// covering the groin.
@@ -525,16 +526,16 @@ fn a_record_keeps_its_reference_count_and_its_scope() {
     assert_eq!(data.release(), None, "a record from no database");
     assert_eq!(data.refs, 0);
 
-    let mut local = CharacterData::of_record(CharacterRecord {
+    let mut world = CharacterData::of_record(CharacterRecord {
         id: 0x4000_0007,
         ..CharacterRecord::new()
     });
-    assert_eq!(local.release(), Some(RecordScope::Local(7)));
-    let mut world = CharacterData::of_record(CharacterRecord {
+    assert_eq!(world.release(), Some(RecordScope::World(7)));
+    let mut local = CharacterData::of_record(CharacterRecord {
         id: 0x8000_0008,
         ..CharacterRecord::new()
     });
-    assert_eq!(world.release(), Some(RecordScope::World(8)));
+    assert_eq!(local.release(), Some(RecordScope::Local(8)));
 }
 
 #[test]
@@ -619,4 +620,69 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
     assert_eq!(dead.record.pools.red, 0);
     assert!(dead.record.saved.is_empty());
     assert_eq!(dead.restore_health(1.0).heal_pool, 0.0);
+}
+
+/// The shipped object database's apparel, through the two rules
+/// (skipped without the game): the underwear goes on a bare human and the
+/// items that cover the groin keep it off; every apparel item conflicts
+/// with itself (its occupancy overlaps) and the trousers displace the
+/// braies but not the shirt.
+#[test]
+fn shipped_apparel_follows_the_underwear_and_conflict_rules() {
+    let Some(dir) = exa_assets::locate_install(None) else {
+        return;
+    };
+    let game = exa_assets::GameData::open(&dir).unwrap();
+    let items = game
+        .pack(exa_assets::PackKind::Resource)
+        .and_then(|p| p.get("objdb.rdb"))
+        .and_then(|bytes| Database::parse(bytes).ok())
+        .map(|db| exa_formats::objdb::items(&db))
+        .unwrap_or_default();
+    assert!(items.len() > 1400);
+    let find = |id: u32| items.iter().find(|item| item.id == id);
+
+    // Every apparel item overlaps itself on some bone.
+    let apparel: Vec<_> = items
+        .iter()
+        .filter(|item| !item.worn_model.is_empty() && item.occupancy.iter().any(|o| *o != 0))
+        .collect();
+    assert!(apparel.len() > 300);
+    for item in &apparel {
+        assert!(overlaps(item, item), "{} ({})", item.name, item.id);
+    }
+
+    // A human in the braies and a shirt: the braies stay; the trousers take
+    // them off (and not the shirt).
+    let braies = find(UNDERWEAR_ITEM).expect("the underwear");
+    assert!(braies.covers_groin());
+    let shirt = items
+        .iter()
+        .find(|item| item.name == "Shirt_B")
+        .or_else(|| {
+            items
+                .iter()
+                .find(|item| item.worn_model.eq_ignore_ascii_case("shirt_b"))
+        })
+        .expect("a shirt");
+    let trousers = items
+        .iter()
+        .find(|item| item.worn_model.eq_ignore_ascii_case("trouser_a"))
+        .or_else(|| {
+            items
+                .iter()
+                .find(|item| item.worn_model.eq_ignore_ascii_case("trousers_c"))
+        })
+        .expect("trousers");
+    assert!(!shirt.covers_groin());
+    assert!(trousers.covers_groin());
+
+    let mut data = CharacterData::new();
+    data.record.worn = refs(&[UNDERWEAR_ITEM, shirt.id]);
+    assert!(!data.ensure_underwear(find));
+    assert_eq!(data.record.worn.len(), 2);
+    let removed = data.equip_conflicts(trousers, find);
+    assert_eq!(removed, refs(&[UNDERWEAR_ITEM]));
+    assert_eq!(data.record.worn, refs(&[shirt.id]));
+    assert_eq!(data.record.worn[0].id, shirt.id);
 }
