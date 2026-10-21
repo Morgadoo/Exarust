@@ -21,12 +21,6 @@ pub const NO_PICK: u32 = 0x0400_0000;
 /// The farthest a mesh pick looks (the original starts from the largest
 /// single-precision float).
 pub const MESH_FAR: f32 = 3.4e38;
-/// The sphere radius a ground pick uses for a small node, and for one its
-/// callback calls large.
-pub const GROUND_SMALL_RADIUS: f32 = 0.1;
-pub const GROUND_LARGE_RADIUS: f32 = 5.0;
-/// The distance a kinesis pick starts from (world units).
-pub const KINESIS_FAR: f32 = 4000.0;
 
 /// A ray: an origin and a direction. The direction may be a unit vector or
 /// a segment vector; distances are in its units.
@@ -254,8 +248,9 @@ fn ray_triangle(ray: Ray, triangle: &[Vec3; 3]) -> Option<f32> {
     (distance >= 0.0).then_some(distance)
 }
 
-/// A mesh answered by the physics world: the level's static geometry and
-/// the bodies in it. Exarust stands it in for the original's mesh callbacks.
+/// A mesh answered by the physics world: the level's static geometry, its
+/// fixed colliders. Exarust stands it in for the original's mesh
+/// callbacks.
 pub struct PhysicsMesh<'a> {
     pub physics: &'a Physics,
     pub far: f32,
