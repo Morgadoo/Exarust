@@ -21,8 +21,8 @@
 
 use bevy::math::{Vec2, Vec3};
 use exa_formats::objdb::{Appearance, Layer};
-use exa_formats::palette;
 use exa_formats::procedural::{self, Family};
+use exa_formats::{palette, pixel};
 
 /// A decoded RGBA8 texture.
 pub struct Texels {
@@ -46,9 +46,56 @@ impl Texels {
     }
 }
 
-/// Library textures are laid one texel per painted texel; damage and dirt
-/// textures at a fixed 1024 texels across.
+/// Damage and dirt textures repeat once per this many target texels.
 const DAMAGE_TEXELS: f32 = 1024.0;
+
+/// Where a paint job's library textures fall on its painted texels, as the
+/// original's tile uniforms place them. A material-scale texture repeats
+/// once per as many target texels as the material's first colour texture
+/// is wide (`MatTile`), a damage-scale one once per 1024 (`DmgTile`), each
+/// moved by its offset in texture widths.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tiling {
+    /// Target texels per painted texel (a factory region painted at its
+    /// component's resolution spans more atlas texels than it has).
+    pub density: Vec2,
+    /// The material-scale offset (`MatTile.zw`).
+    pub material_offset: Vec2,
+    /// The damage-scale offset (`DmgTile.zw`).
+    pub damage_offset: Vec2,
+}
+
+impl Default for Tiling {
+    /// Apparel: one target texel per painted texel, no offsets.
+    fn default() -> Self {
+        Self {
+            density: Vec2::ONE,
+            material_offset: Vec2::ZERO,
+            damage_offset: Vec2::ZERO,
+        }
+    }
+}
+
+impl Tiling {
+    /// A factory region's tiling: the region's size in atlas texels over
+    /// the painted size, and the job's four offsets drawn from seed B, each
+    /// `round(r·512)/512 − ½` in double (`MatTile.zw`, then `DmgTile.zw`).
+    pub fn factory(region_texels: Vec2, painted: Vec2, seed_b: u32) -> Self {
+        let mut state = seed_b;
+        let mut offset = || {
+            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+            let r = (f64::from(state) * 2f64.powi(-32)) as f32;
+            let k = exa_formats::pixel::round_f32(r * 512.0);
+            (k as f64 * (1.0 / 512.0) - 0.5) as f32
+        };
+        let (a, b, c, d) = (offset(), offset(), offset(), offset());
+        Self {
+            density: region_texels / painted.max(Vec2::ONE),
+            material_offset: Vec2::new(a, b),
+            damage_offset: Vec2::new(c, d),
+        }
+    }
+}
 
 /// How a material number paints.
 pub type Finish = Family;
@@ -91,6 +138,18 @@ pub fn palette_colour(index: u8) -> Vec3 {
     Vec3::from_array(palette::linear(index))
 }
 
+/// A factory area's colour as its paint layer takes it: the lifted ramp
+/// stored as bytes, read back as `b × 1/255`.
+pub fn factory_colour(index: u8) -> Vec3 {
+    Vec3::from_array(palette::lifted_bytes(index).map(|b| f32::from(b) * pixel::BYTE_UNIT))
+}
+
+/// A factory layer's wear weight (`MatCol.w`): its finish byte's low level
+/// plus one, in sixteenths.
+pub fn factory_wear(finish: u8) -> f32 {
+    f32::from((finish & 0xF) + 1) * 0.0625
+}
+
 /// The condition a paint job uses, 0..=1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Condition {
@@ -111,13 +170,16 @@ impl From<&Appearance> for Condition {
 }
 
 impl Condition {
-    /// The factory paint job's inputs: the item's bytes as they are, not the
-    /// apparel loader's remapped fractions.
-    pub fn raw(appearance: &Appearance) -> Self {
+    /// The factory paint job's inputs: each byte × 1/255 in double, and
+    /// the damage then remapped as `2/(2 − d) − 1` in float; dirt stays as
+    /// it is (apparel squares it in).
+    pub fn factory(appearance: &Appearance) -> Self {
+        let fraction = |b: u8| (f64::from(b) * (1.0 / 255.0)) as f32;
+        let damage = fraction(appearance.damage);
         Self {
-            quality: appearance.quality as f32 / 255.0,
-            damage: appearance.damage as f32 / 255.0,
-            dirt: appearance.dirt as f32 / 255.0,
+            quality: fraction(appearance.quality),
+            damage: 2.0 / (2.0 - damage) - 1.0,
+            dirt: fraction(appearance.dirt),
         }
     }
 }
@@ -125,12 +187,14 @@ impl Condition {
 /// How a library texture is sampled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Uv {
-    /// One texel per painted texel.
+    /// At the material scale (`MatTile`).
     Material,
     /// At twice the material scale (SteelBlade's quality map).
     Material2,
-    /// At the 1024-texel damage scale.
+    /// At the 1024-texel damage scale (`DmgTile`).
     Damage,
+    /// Once over the painted region (the region's own coordinates).
+    Region,
 }
 
 /// Which library list a sample comes from.
@@ -141,91 +205,59 @@ enum List {
     Normal,
 }
 
-/// The sampling rule of list entry `i` for a family.
+/// The sampling rule of list entry `i` for a family: the tile uniform its
+/// fragment program reads that texture with.
 fn sample_uv(family: Finish, list: List, i: usize) -> Option<Uv> {
     use Family as F;
     use List as L;
     use Uv::*;
-    let rule: &[Option<Uv>] = match (family, list) {
-        (F::Cloth | F::Velvet, L::Colour) => {
-            &[Some(Material), Some(Damage), Some(Material), Some(Damage)]
+    let rule: &[Uv] = match (family, list) {
+        (F::Cloth | F::Velvet, L::Colour) => &[Material, Damage, Material, Damage],
+        // The cloth programs read their damage and dirt at the material
+        // scale in the specular pass.
+        (F::Cloth | F::Velvet, L::Specular) => &[Material, Material, Material],
+        (F::Cloth | F::Velvet, L::Normal) => &[Material, Damage, Damage],
+        (F::Leather | F::Suede, L::Colour) => &[Material, Damage, Damage],
+        (F::Leather | F::Suede, L::Specular) => &[Material, Damage, Damage],
+        (F::Leather | F::Suede, L::Normal) => &[Material, Damage, Damage],
+        (F::Wood | F::PlanksPainted, L::Colour) => &[Material, Damage, Damage, Damage],
+        (F::Wood | F::PlanksPainted, L::Specular) => &[Material, Damage, Damage],
+        (F::Wood | F::PlanksPainted, L::Normal) => &[Material, Damage, Damage],
+        (F::Steel | F::SteelPlate | F::SteelPainted, L::Colour) => {
+            &[Material, Material, Damage, Damage, Damage, Damage]
         }
-        (F::Cloth | F::Velvet, L::Specular) => &[Some(Material), Some(Material), Some(Material)],
-        (F::Cloth | F::Velvet, L::Normal) => &[Some(Material), Some(Damage), Some(Damage)],
-        (F::Leather | F::Suede, L::Colour) => &[Some(Material), Some(Damage), Some(Damage)],
-        (F::Leather | F::Suede, L::Specular) => &[Some(Material), Some(Material), Some(Material)],
-        (F::Leather | F::Suede, L::Normal) => &[Some(Material), Some(Damage), Some(Damage)],
-        (F::Wood | F::PlanksPainted, L::Colour) => {
-            &[Some(Material), Some(Damage), Some(Damage), Some(Damage)]
+        (F::SteelBlade, L::Colour) => &[Material, Material2, Damage, Damage, Damage],
+        (F::Chain, L::Colour) => &[Material, Damage, Damage, Damage, Damage],
+        (F::Steel | F::SteelPlate | F::SteelPainted | F::Chain, L::Specular) => {
+            &[Material, Material, Damage, Damage, Damage]
         }
-        (F::Wood | F::PlanksPainted, L::Specular) => &[Some(Material), Some(Damage), Some(Damage)],
-        (F::Wood | F::PlanksPainted, L::Normal) => &[Some(Material), Some(Damage), Some(Damage)],
-        (F::Steel | F::SteelPlate | F::SteelPainted | F::SteelBlade | F::Chain, L::Colour) => &[
-            Some(Material),
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
-        (F::Steel | F::SteelPlate | F::SteelPainted | F::SteelBlade | F::Chain, L::Specular) => &[
-            Some(Material),
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
-        (F::Steel | F::SteelPlate | F::SteelPainted | F::SteelBlade, L::Normal) => &[
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-            Some(Material),
-        ],
-        (F::Chain, L::Normal) => &[
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
-        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Colour) => &[
-            Some(Material),
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
-        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Specular) => &[
-            Some(Damage),
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
-        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Normal) => &[
-            Some(Material),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-            Some(Damage),
-        ],
+        (F::SteelBlade, L::Specular) => &[Material, Material2, Damage, Damage, Damage],
+        // The steel normal programs lay the scuff normals once over the
+        // region; the blade reads its quality normal at twice the scale.
+        (F::Steel | F::SteelPlate | F::SteelPainted, L::Normal) => {
+            &[Material, Damage, Damage, Damage, Region]
+        }
+        (F::SteelBlade, L::Normal) => &[Material2, Damage, Damage, Damage, Region],
+        (F::Chain, L::Normal) => &[Material, Damage, Damage, Damage, Damage],
+        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Colour) => {
+            &[Material, Material, Damage, Damage, Damage, Damage]
+        }
+        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Specular) => {
+            &[Damage, Material, Damage, Damage, Damage]
+        }
+        (F::CopperAlloy | F::CopperSatin | F::Gemstone | F::Resin, L::Normal) => {
+            &[Material, Damage, Damage, Damage, Damage]
+        }
     };
-    let uv = *rule.get(i)?;
-    if family == F::SteelBlade && list == L::Colour && i == 1 {
-        return Some(Material2);
-    }
-    if family == F::SteelBlade && list == L::Normal && i == 0 {
-        return Some(Material2);
-    }
-    uv
+    rule.get(i).copied()
 }
 
 /// What a finish sees at one painted texel.
 struct Texel {
     shade: f32,
+    /// `MatCol.rgb`: the layer's tint.
     colour: Vec3,
+    /// `MatCol.w`: the layer's wear weight.
     weight: f32,
     quality: f32,
     damage: f32,
@@ -235,7 +267,10 @@ struct Texel {
 /// A layer's textures at one painted texel.
 struct Samples<'a> {
     layer: &'a PaintLayer<'a>,
-    item_normal: Option<&'a Texels>,
+    /// The painted normal map (`Nrm`), once the normal pass has run; its
+    /// texels in −1..1.
+    painted_normal: Option<&'a [Vec2]>,
+    tiling: Tiling,
     x: usize,
     y: usize,
     w: usize,
@@ -243,6 +278,42 @@ struct Samples<'a> {
 }
 
 impl Samples<'_> {
+    /// The material-scale reference: the material's first colour texture
+    /// (`MatTile` divides by its size in every pass).
+    fn reference(&self) -> (f32, f32) {
+        self.layer
+            .library
+            .first()
+            .copied()
+            .flatten()
+            .map_or((self.w as f32, self.h as f32), |t| {
+                (t.width as f32, t.height as f32)
+            })
+    }
+
+    fn texel_of(&self, t: &Texels, uv: Uv) -> (i64, i64) {
+        let (x, y) = (self.x as f32, self.y as f32);
+        let (tw, th) = (t.width as f32, t.height as f32);
+        let d = self.tiling.density;
+        let (sx, sy) = match uv {
+            Uv::Material | Uv::Material2 => {
+                let (rw, rh) = self.reference();
+                let o = self.tiling.material_offset;
+                let k = if uv == Uv::Material2 { 2.0 } else { 1.0 };
+                ((x * d.x / rw + o.x) * k * tw, (y * d.y / rh + o.y) * k * th)
+            }
+            Uv::Damage => {
+                let o = self.tiling.damage_offset;
+                (
+                    (x * d.x / DAMAGE_TEXELS + o.x) * tw,
+                    (y * d.y / DAMAGE_TEXELS + o.y) * th,
+                )
+            }
+            Uv::Region => (x * tw / self.w as f32, y * th / self.h as f32),
+        };
+        (sx.floor() as i64, sy.floor() as i64)
+    }
+
     fn tex(&self, list: List, i: usize, family: Finish) -> Option<Vec3> {
         let tex = match list {
             List::Colour => self.layer.library.get(i).copied().flatten(),
@@ -250,7 +321,8 @@ impl Samples<'_> {
             List::Normal => self.layer.normals.get(i).copied().flatten(),
         }?;
         let uv = sample_uv(family, list, i)?;
-        Some(sample(tex, self.x, self.y, self.w, self.h, uv))
+        let (sx, sy) = self.texel_of(tex, uv);
+        Some(tex.at(sx, sy))
     }
 
     fn colour(&self, i: usize, f: Finish) -> Vec3 {
@@ -268,7 +340,7 @@ impl Samples<'_> {
         let Some(uv) = sample_uv(f, List::Specular, i) else {
             return [0.5; 4];
         };
-        let (sx, sy) = uv_texel(tex, self.x, self.y, self.w, self.h, uv);
+        let (sx, sy) = self.texel_of(tex, uv);
         tex.at4(sx, sy)
     }
 
@@ -277,34 +349,28 @@ impl Samples<'_> {
             .unwrap_or(Vec3::new(0.5, 0.5, 1.0))
     }
 
-    fn item_normal(&self) -> Vec2 {
-        self.item_normal
-            .map(|t| unit_xy(sample(t, self.x, self.y, self.w, self.h, Uv::Material)))
-            .unwrap_or(Vec2::ZERO)
+    /// The painted normal `±2` target texels around this one (the
+    /// specular programs' crease measure): `1 − min(|Σ|n − n₀||²·k, 1)`.
+    fn creases(&self, step: i64, factor: f32) -> f32 {
+        let Some(n) = self.painted_normal else {
+            return 1.0;
+        };
+        let (w, h) = (self.w as i64, self.h as i64);
+        let at = |dx: i64, dy: i64| {
+            let x = (self.x as i64 + dx).rem_euclid(w) as usize;
+            let y = (self.y as i64 + dy).rem_euclid(h) as usize;
+            n[y * self.w + x]
+        };
+        // Target texels to painted texels.
+        let sx = ((step as f32 / self.tiling.density.x).round() as i64).max(1);
+        let sy = ((step as f32 / self.tiling.density.y).round() as i64).max(1);
+        let nb = at(0, 0);
+        let mut n1 = Vec2::ZERO;
+        for (dx, dy) in [(-sx, 0), (sx, 0), (0, -sy), (0, sy)] {
+            n1 += (at(dx, dy) - nb).abs();
+        }
+        1.0 - (n1.dot(n1) * factor).min(1.0)
     }
-}
-
-fn uv_texel(t: &Texels, x: usize, y: usize, w: usize, h: usize, uv: Uv) -> (i64, i64) {
-    let (sx, sy) = match uv {
-        Uv::Material => (
-            x as f32 * t.width as f32 / w as f32,
-            y as f32 * t.height as f32 / h as f32,
-        ),
-        Uv::Material2 => (
-            x as f32 * 2.0 * t.width as f32 / w as f32,
-            y as f32 * 2.0 * t.height as f32 / h as f32,
-        ),
-        Uv::Damage => (
-            x as f32 * t.width as f32 / DAMAGE_TEXELS,
-            y as f32 * t.height as f32 / DAMAGE_TEXELS,
-        ),
-    };
-    (sx as i64, sy as i64)
-}
-
-fn sample(t: &Texels, x: usize, y: usize, w: usize, h: usize, uv: Uv) -> Vec3 {
-    let (sx, sy) = uv_texel(t, x, y, w, h, uv);
-    t.at(sx, sy)
 }
 
 fn mix(a: Vec3, b: Vec3, t: f32) -> Vec3 {
@@ -439,8 +505,9 @@ fn velvet(t: &Texel, s: &Samples) -> Vec3 {
     out * a
 }
 
-/// The hide damage curve shared by leather and suede.
-fn hide_damage(shd: f32, dmg: Vec3, damage: f32) -> f32 {
+/// The hide damage curve shared by leather and suede; `growth` is how much
+/// the damage widens it (1 for leather, ½ for suede).
+fn hide_damage(shd: f32, dmg: Vec3, damage: f32, growth: f32) -> f32 {
     let mut a = dmg.y * (2.0 - dmg.x);
     a *= 2.0 - a;
     let b = 0.75 - damage * 0.5;
@@ -448,7 +515,7 @@ fn hide_damage(shd: f32, dmg: Vec3, damage: f32) -> f32 {
     let b = damage * (2.0 - damage);
     let mut d = shd * (2.0 - shd) * (0.45 + b * 0.15);
     d = (1.0 - d) / a;
-    d = (1.0 - d) * (1.0 + damage);
+    d = (1.0 - d) * (1.0 + damage * growth);
     d.max(0.0)
 }
 
@@ -457,7 +524,7 @@ fn leather(t: &Texel, s: &Samples) -> Vec3 {
     let col0 = s.colour(0, Family::Leather);
     let dmg0 = s.colour(1, Family::Leather);
     let drt = s.colour(2, Family::Leather);
-    let mut d = hide_damage(shd, dmg0, damage);
+    let mut d = hide_damage(shd, dmg0, damage, 1.0);
     let a = shd * shd + 0.05;
     d = d * a * a * 3.0;
     let mc = t.colour * 0.5;
@@ -509,7 +576,7 @@ fn suede(t: &Texel, s: &Samples) -> Vec3 {
     let col0 = s.colour(0, Family::Suede);
     let dmg0 = s.colour(1, Family::Suede);
     let drt = s.colour(2, Family::Suede);
-    let mut d = hide_damage(shd, dmg0, damage);
+    let mut d = hide_damage(shd, dmg0, damage, 0.5);
     let a = shd * shd + 0.05;
     d = d * a * a * 3.0;
     let mc = t.colour * 0.5;
@@ -552,7 +619,7 @@ fn wood(t: &Texel, s: &Samples) -> Vec3 {
     let drt = s.colour(2, Family::Wood);
     let g = col0.y;
     let mut v0 = t.colour * 0.6 + Vec3::splat(0.4);
-    let a = luma(t.colour) * 0.5;
+    let a = t.colour.dot(Vec3::splat(0.5));
     v0 = v0 * 0.5 + Vec3::splat(a * 0.1 + 0.25);
     let mut col = col0 * v0 * 0.6 * 1.3;
     col = mix(col, Vec3::new(0.20, 0.18, 0.15), damage * damage * 0.5);
@@ -590,70 +657,81 @@ fn wood(t: &Texel, s: &Samples) -> Vec3 {
     col * (shd * 1.75).min(1.0)
 }
 
-/// Metal wear: bare steel showing through scuffs and pitting.
-fn metal_d(shd: f32, damage: f32, scf: f32, r: f32, edge: f32, dmg_scale: f32) -> f32 {
+/// Metal wear: where rust shows through scuffs and pitting,
+/// `(1 − (worn + shd·r))⁴·damage·scale` (`worn` the scuffed edges past
+/// `shd²·edge`), not yet clamped.
+fn metal_d(shd: f32, damage: f32, scf: f32, r: f32, edge: f32, scale: f32) -> f32 {
+    metal_wear(shd, damage, scf, r, edge, scale, true)
+}
+
+/// [`metal_d`] with the scuffed edges clamped to 1 (the colour and
+/// specular programs) or not (the normal programs).
+fn metal_wear(
+    shd: f32,
+    damage: f32,
+    scf: f32,
+    r: f32,
+    edge: f32,
+    scale: f32,
+    clamp_edges: bool,
+) -> f32 {
     let a = (shd * shd * edge - 0.9).clamp(0.0, 1.0);
-    let worn = (a * scf * 2.0).clamp(0.0, 1.0);
+    let worn = a * scf * 2.0;
+    let worn = if clamp_edges {
+        worn.clamp(0.0, 1.0)
+    } else {
+        worn
+    };
     let a = shd * r * 2.0;
     let a = worn + a * 0.5;
     let a = 1.0 - a;
-    let d = a * a * damage * dmg_scale;
-    d.clamp(0.0, 1.0)
+    let a = a * a;
+    a * a * damage * scale
 }
 
-fn steel(t: &Texel, s: &Samples, family: Family, painted: bool) -> Vec3 {
+/// Painted steel's paint mask: `(shd(2 − shd))⁴·4·scf·(0.25 + 2·damage)`.
+fn paint_mask(shd: f32, scf: f32, damage: f32) -> f32 {
+    let a = shd * (2.0 - shd);
+    let a = a * a;
+    a * a * 4.0 * scf * (0.25 + damage * 2.0)
+}
+
+fn steel(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     let (shd, damage) = (t.shade, t.damage);
     let mat0 = s.colour(0, family);
     let qlt = s.colour(1, family).x;
+    let rust0 = s.colour(2, family);
     let scf = s.colour(3, family).x;
     let r = s.colour(4, family).x;
-    let rust0 = s.colour(2, family);
-    let dirt = s.colour(5, family);
-    let (edge, scale) = match family {
-        Family::SteelPlate | Family::SteelPainted => (4.5, 1.5),
-        _ => (2.5, 1.0),
-    };
-    let mut d = metal_d(shd, damage, scf, r, edge, scale);
-    if painted {
-        // Painted steel: a paint mask decides where the paint survives.
-        let msk = {
-            let a = shd * (2.0 - shd);
-            let a = a * a;
-            a * a * 4.0 * scf * (0.25 + damage * 2.0)
-        };
+    if family == Family::SteelPainted {
+        let dirt = s.colour(5, family);
+        let mut d = metal_d(shd, damage, scf, r, 4.5, 1.5);
+        let msk = paint_mask(shd, scf, damage);
         let a = msk * 0.75 + 0.25;
         d = (d * a * 2.0).clamp(0.0, 1.0);
-    }
-    let mut mat = mat0;
-    if family == Family::SteelPainted {
         let q = t.quality * t.quality;
         let qlt = qlt * (1.0 - q) + q;
-        mat *= qlt * 0.9;
+        let mut mat = mat0 * qlt * 0.9;
         let a = luma(t.colour);
         let rst = mix(t.colour, Vec3::splat(a), 0.4);
-        let msk = {
-            let a = shd * (2.0 - shd);
-            let a = a * a;
-            a * a * 4.0 * scf * (0.25 + damage * 2.0)
-        };
         let a = (msk * msk * msk * 3.0).min(1.0);
         mat = mix(rst * 0.75, mat, a);
         let a = 1.0 - damage;
         mat *= dirt * damage + Vec3::splat(a);
         d = (d * 1.5).min(1.0);
         mat = mix(mat, rust0, d);
-        let a = 0.7 + damage * damage * 0.2;
-        mat *= a;
+        mat *= 0.7 + damage * damage * 0.2;
         let a = shd * (2.0 - shd);
         mat *= a * a * 2.0;
         mat.x *= 1.0 + damage * damage * 0.05;
         return mat;
     }
     if family == Family::SteelPlate {
+        let mut d = metal_d(shd, damage, scf, r, 4.5, 1.5).clamp(0.0, 1.0);
         let a = (damage * 4.0 - 3.0).max(0.0);
         let a = 2.0 - a * a * 0.5;
         let rst = mat0 * mat0 * a;
-        mat = mat0 * 0.25 + Vec3::splat(0.375);
+        let mut mat = mat0 * 0.25 + Vec3::splat(0.375);
         mat = mix(mat, rst, damage);
         let a = luma(t.colour);
         let rst = mix(t.colour, Vec3::splat(a), 0.5);
@@ -664,24 +742,16 @@ fn steel(t: &Texel, s: &Samples, family: Family, painted: bool) -> Vec3 {
         mat *= qlt * 0.9;
         d = (d * 1.5).min(1.0);
         mat = mix(mat, rust0 * (0.4 + damage * (2.0 - damage) * 0.6), d);
-        let a = 0.7 + damage * damage * 0.2;
-        mat *= a;
+        mat *= 0.7 + damage * damage * 0.2;
         let a = shd * (2.0 - shd);
         mat *= a * a * 1.7;
         mat.x *= 1.0 + damage * damage * 0.05;
         return mat;
     }
-    // Steel (SteelGen/IronGen) and the blade family.
-    let a = shd * shd * 2.5;
-    let a = (a - 0.9).clamp(0.0, 1.0);
-    let d2 = (a * scf * 2.0).clamp(0.0, 1.0);
-    let a = shd * r * 2.0;
-    let a = d2 + a * 0.5;
-    let a = 1.0 - a;
-    let mut d = a * a * damage;
-    d = d.clamp(0.0, 1.0);
+    // Steel (SteelGen, IronGen) and the blade.
+    let mut d = metal_d(shd, damage, scf, r, 2.5, 1.0).clamp(0.0, 1.0);
     let rst = mat0 * mat0 * 1.5;
-    mat = mix(mat0, rst, damage);
+    let mut mat = mix(mat0, rst, damage);
     if family == Family::SteelBlade {
         let a = luma(t.colour);
         let rst = mix(t.colour, Vec3::splat(a), 0.5);
@@ -710,7 +780,7 @@ fn steel(t: &Texel, s: &Samples, family: Family, painted: bool) -> Vec3 {
         return mat;
     }
     let rst = t.colour * 0.5 + Vec3::splat(0.2);
-    mat = mat0 * rst * (2.0 - damage * 0.5);
+    mat = mat * rst * (2.0 - damage * 0.5);
     let q = t.quality * t.quality;
     let qlt = qlt * (1.0 - q) + q;
     mat *= qlt * 0.9;
@@ -768,6 +838,7 @@ fn copper(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     let mut d = (a * scf * 2.0).clamp(0.0, 1.0);
     let a2 = shd * r * 2.0;
     let a3 = 1.0 - (d + a2 * 0.5);
+    let a3 = a3 * a3;
     d = a3 * a3 * damage * 1.5;
     d = d.clamp(0.0, 1.0);
     let a = shd * shd - rust0.x * 2.0 + 0.5;
@@ -780,7 +851,10 @@ fn copper(t: &Texel, s: &Samples, family: Family) -> Vec3 {
         })
     .min(1.0);
     d *= 1.0 - a;
-    let lum = luma(t.colour);
+    let mut lum = luma(t.colour);
+    if family == Family::CopperSatin {
+        lum *= 2.0 - lum;
+    }
     let mut col = mix(t.colour, Vec3::splat(lum), 0.4);
     col.x *= 1.05;
     let mut mat = rust0 * 0.4 + Vec3::splat(rust0.y * 0.25 + 0.25);
@@ -795,11 +869,10 @@ fn copper(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     let a = a * (2.0 - a);
     mat *= 1.0 - a * 0.3;
     if family == Family::CopperSatin {
+        let b = 1.5 - damage * 0.5;
+        let d = d * (2.0 - d);
+        mat = mix(mat, verd * shd, d * b);
         let lit = shd * (2.0 - shd);
-        let lit = lit * lit;
-        let a = (1.0 - rust0.x * 2.0 + 0.5).min(1.0);
-        let d = d * (1.0 - a * a * 2.0);
-        mat = mix(mat, verd * shd, d * (1.5 - damage * 0.5));
         let a = (lit + scf * shd).min(1.0);
         let a = a * a * (3.0 - 2.0 * a) * shd * (1.0 + shd) * 1.4;
         return mat * a;
@@ -827,6 +900,7 @@ fn gem(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     let mut d = (a * scf * 2.0).clamp(0.0, 1.0);
     let a = shd * r * 2.0;
     let a = 1.0 - (d + a * 0.5);
+    let a = a * a;
     d = (a * a * dirt * 1.5).clamp(0.0, 1.0);
     let a = shd * shd - rust0.x * 2.0 + 0.5;
     let a = (a * a * 6.0).min(1.0);
@@ -841,8 +915,8 @@ fn gem(t: &Texel, s: &Samples, family: Family) -> Vec3 {
         let qlt = qlt * (1.0 - q) + q;
         mat *= qlt * 0.9;
         let rst = extra * extra * extra;
-        let a = (d * (1.0 - shd) * 1.5).min(1.0) * 1.5;
-        mat = mix(mat, rst, a.min(1.0));
+        let a = (d * (1.0 - shd) * 1.5 * 1.5).min(1.0);
+        mat = mix(mat, rst, a);
         let lit = shd * (2.0 - shd);
         return mat * lit * 1.4;
     }
@@ -853,8 +927,8 @@ fn gem(t: &Texel, s: &Samples, family: Family) -> Vec3 {
     let qlt = qlt * (1.0 - q) + q;
     mat *= qlt * 0.9;
     let rst = extra * extra * extra;
-    let a = (d * (1.0 - shd) * 1.5).min(1.0) * 1.5;
-    mat = mix(mat, rst, a.min(1.0));
+    let a = (d * (1.0 - shd) * 1.5 * 1.5).min(1.0);
+    mat = mix(mat, rst, a);
     let lit = shd * (2.0 - shd);
     mat * lit * 1.4
 }
@@ -1044,7 +1118,8 @@ fn hide_s(t: &Texel, s: &Samples, suede: bool) -> Vec3 {
     let b = damage * (2.0 - damage);
     let b = shd * (2.0 - shd) * (0.45 + b * 0.15);
     let mut d = (1.0 - b) / a;
-    d = (1.0 - d) * (1.0 + damage * 0.5);
+    // Leather's damage widens the curve fully, suede's by half.
+    d = (1.0 - d) * (1.0 + damage * if suede { 0.5 } else { 1.0 });
     d = d.max(0.0);
     if suede {
         let a = shd * (2.0 - shd);
@@ -1117,163 +1192,279 @@ fn wood_s(t: &Texel, s: &Samples) -> Vec3 {
     Vec3::new(shd * 1.75, g, 0.0)
 }
 
+/// The specular programs' sheen falloff: `g` drifts to `g(2 − g)` as the
+/// item is less damaged.
+fn sheen(g: f32, damage: f32) -> f32 {
+    let b = g * (2.0 - g);
+    mix(Vec3::splat(g), Vec3::splat(b), (1.0 - damage) * 0.75).x
+}
+
+/// The shared scuff-sign gloss of the plate and copper programs.
+fn scuff_gloss(btex: f32, shd: f32, damage: f32) -> f32 {
+    let d = (damage * 4.0).min(1.0);
+    let mut b = btex * (btex * d + 1.0 - d);
+    b = b * (0.75 + damage * 0.25) + (1.0 - damage) * 0.25;
+    let a = (0.5 - damage * 16.0).max(0.0);
+    b = b * (1.0 - a) + a * 0.9;
+    b * (shd * shd * 5.0 * b).min(1.0)
+}
+
 fn metal_s(t: &Texel, s: &Samples, family: Family) -> Vec3 {
-    let (shd, damage) = (t.shade, t.damage);
+    let (shd, damage, quality) = (t.shade, t.damage, t.quality);
     let mat0 = s.spec(0, family).x;
     let qlt = s.spec(1, family).x;
     let scf0 = s.spec(2, family).x;
     let r = s.spec(3, family).x;
     let btex = s.spec(4, family).x;
-    let crease = normal_creases(s, t, 0.125);
-    let edge = if family == Family::SteelBlade {
-        2.5
-    } else {
-        4.5
+    let crease = s.creases(2, 0.125);
+    let q2 = quality * quality;
+    let mix1 = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    // The base: steel darkened by the damage towards grey.
+    let base = |mat: f32| {
+        let mat = mix1(mat, mat * mat * 1.5, damage);
+        mix1(mat, 0.5, 0.5 - damage * 0.5)
     };
-    let scale = match family {
-        Family::SteelPlate | Family::SteelPainted => 1.5,
-        Family::SteelBlade => 2.0,
-        Family::Steel => 1.0,
-        _ => 1.0,
-    };
-    let mut a = shd * shd * edge;
-    a = (a - 0.9).clamp(0.0, 1.0);
-    let mut d = (a * scf0 * 2.0).clamp(0.0, 1.0);
-    let a = shd * r * 2.0;
-    let a = 1.0 - (d + a * 0.5);
-    d = a * a * damage * scale;
-    if family == Family::Steel {
-        d = (d * 1.5).min(1.0);
-        let a = mat0 * mat0 * 1.5;
-        let mut mat = mix(Vec3::splat(mat0), Vec3::splat(a), damage).x;
-        mat = mix(Vec3::splat(mat), Vec3::splat(0.5), 0.5 - damage * 0.5).x;
-        let q = t.quality * t.quality;
-        let qlt = qlt * (1.0 - q) + q;
-        mat *= qlt * 0.54;
-        let scf = (1.0 - scf0) * 0.5 + 0.5;
-        let mut b = 1.0 - damage;
-        d *= 1.0 + b * b * 0.5;
-        b = (1.0 - d * 3.0).max(0.0);
-        let mut g = (0.8 + t.weight * 0.533) * (0.3 + mat);
-        g *= 0.8 + scf * 0.2;
-        let e = damage * (1.0 - t.quality) * 0.3 + t.quality * 0.1;
-        g *= 1.2 + e;
-        g *= b;
-        g = g.clamp(0.0, 1.0);
-        let q = t.quality * t.quality;
-        let mut metal = qlt * (1.0 - q) + q;
-        metal *= 1.0 - damage * 0.2;
-        metal *= g;
-        let e = 0.5 + (0.5 - damage).abs() * 0.3;
-        let b2 = g * damage * 1.2 + 1.0 - damage;
-        let mut g2 = g * e * b2;
-        let a = (0.5 - shd).abs() * 2.0;
-        let d2 = 1.0 - (1.0 - btex) * a * 2.0 * damage;
-        let b2 = btex * (shd * 2.5 * btex).min(1.0);
-        g2 *= b2 * d2;
-        return Vec3::new(shd * 3.0, g2, metal);
-    }
-    let mut mat = mat0 * mat0 * 1.5;
-    if family == Family::SteelPlate || family == Family::SteelBlade {
-        d = d.clamp(0.0, 1.0);
-        mat = mix(Vec3::splat(mat0), Vec3::splat(mat), damage).x;
-        mat = mix(Vec3::splat(mat), Vec3::splat(0.5), 0.5 - damage * 0.5).x;
-        if family == Family::SteelPlate {
-            mat *= 1.0 - damage * 0.5;
+    match family {
+        Family::SteelBlade => {
+            let d = metal_d(shd, damage, scf0, r, 4.5, 2.0).clamp(0.0, 1.0);
+            let qlt = qlt * qlt * 1.25;
+            let mut mat = base(mat0);
+            mat *= (qlt * (1.0 - quality) + quality) * 0.54;
+            let mut scf = scf0 * shd * (1.0 + damage);
+            scf *= scf;
+            let scf = (1.0 - scf) * 0.5 + 0.5;
+            let a = (0.65 + mat) * 0.8;
+            let b = (0.3 + mat) * 1.25;
+            let mut g = a * quality + b * (1.0 - quality);
+            g -= shd * shd * shd * 0.3;
+            let a = (0.2 + damage * 5.0).min(1.0);
+            g *= (1.0 - a) + scf * a;
+            g *= 1.0 + (1.0 - damage * quality) * 0.2;
+            g *= 1.0 - d;
+            g = g.clamp(0.0, 1.0);
+            let mut m = (qlt * (1.0 - quality) + quality) * (1.0 - damage * 0.2);
+            m = g * m * (1.0 - d * damage * 16.0).max(0.0);
+            g = g * g * (0.7 + (0.5 - damage).abs() * 0.2);
+            g = sheen(g * crease, damage);
+            Vec3::new(shd * 3.0, g, m)
         }
-        let q = t.quality * t.quality;
-        let qlt = qlt * (1.0 - q) + q;
-        mat *= qlt * 0.54;
-        let scf = (1.0 - scf0) * 0.5 + 0.5;
-        let b = 1.0 - damage;
-        let b2 = 1.0 - b * b * b * b;
-        let d = (1.0 - d) * (0.96 + b2 * 0.15);
-        let lit = shd * (2.0 - shd);
-        let mut g = lit * (0.3 + mat) * 1.7;
-        g *= 0.8 + scf * 0.2;
-        let e = damage * (1.0 - t.quality) * 0.3 + t.quality * 0.1;
-        g *= 1.2 + e;
-        g *= d;
-        g = g.clamp(0.0, 1.0);
-        let q = t.quality * t.quality;
-        let mut metal = qlt * (1.0 - q) + q;
-        metal *= g;
-        let e = 0.7 + (0.5 - damage).abs() * 0.2;
-        g = g * g * e;
-        g *= crease;
-        let e2 = 1.0 - damage;
-        let b2 = g * (2.0 - g);
-        let mut g = mix(Vec3::splat(g), Vec3::splat(b2), e2 * 0.75).x;
-        let d2 = (damage * 4.0).min(1.0);
-        let mut b3 = btex * (btex * d2 + 1.0 - d2);
-        b3 = b3 * (0.75 + damage * 0.25) + e2 * 0.25;
-        let e3 = (0.5 - damage * 16.0).max(0.0);
-        b3 = b3 * (1.0 - e3) + e3 * 0.9;
-        b3 *= (shd * shd * 5.0 * b3).min(1.0);
-        g *= b3;
-        return Vec3::new(shd * 2.0, g, metal);
+        Family::SteelPlate => {
+            let d = metal_d(shd, damage, scf0, r, 4.5, 1.5).clamp(0.0, 1.0);
+            let mut mat = base(mat0) * (1.0 - damage * 0.5);
+            mat *= (qlt * (1.0 - q2) + q2) * 0.54;
+            let scf = (1.0 - scf0) * 0.5 + 0.5;
+            let b = 1.0 - damage;
+            let b = b * b;
+            let b = 0.96 + (1.0 - b * b) * 0.15;
+            let d = (1.0 - d) * b;
+            let lit = shd * (2.0 - shd);
+            let mut g = lit * (0.3 + mat) * 1.7;
+            g *= 0.8 + scf * 0.2;
+            g *= 1.2 + damage * (1.0 - quality) * 0.3 + quality * 0.1;
+            g = (g * d).clamp(0.0, 1.0);
+            let m = g * (qlt * (1.0 - q2) + q2);
+            g = g * g * (0.7 + (0.5 - damage).abs() * 0.2);
+            g = sheen(g * crease, damage);
+            // The program's first scuff-sign term is overwritten: the
+            // gloss keeps the second.
+            let b = btex;
+            let a = 1.0 - damage;
+            let c = a * a;
+            let c = c * c;
+            let c = c * c * a * 0.75 * b + a * 0.25;
+            let b2 = b * b;
+            let b = c * (1.0 - b2) + b2;
+            let b = b * (shd * shd * 5.0 * b).min(1.0);
+            Vec3::new(shd * 2.0, g * b, m)
+        }
+        Family::SteelPainted => {
+            let mut d = metal_d(shd, damage, scf0, r, 4.5, 1.5);
+            let msk = paint_mask(shd, scf0, damage);
+            d = (d * (msk * 0.75 + 0.25) * 2.0).clamp(0.0, 1.0);
+            let mut mat = base(mat0);
+            mat *= (qlt * (1.0 - q2) + q2) * 0.54;
+            mat *= 0.6 + (msk * msk).min(1.0) * 0.4;
+            let b = 1.0 - damage;
+            let d = d * (1.0 + b * b * 0.5);
+            let lit = shd * (2.0 - shd);
+            let mut g = lit * (0.3 + mat) * 1.7;
+            g *= 0.8 + ((1.0 - scf0) * 0.5 + 0.5) * 0.2;
+            g *= 1.2 + damage * (1.0 - quality) * 0.3 + quality * 0.1;
+            g = (g * (1.0 - d)).clamp(0.0, 1.0);
+            let m = g * (qlt * (1.0 - q2) + q2);
+            let m = mix1(0.25, m, (msk * msk * msk * 3.0).min(1.0));
+            g = g * g * (0.7 + (0.5 - damage).abs() * 0.2);
+            g = sheen(g * crease, damage);
+            let b = btex * (0.75 + damage * 0.25) + (1.0 - damage) * 0.25;
+            let b = b * (shd * shd * 5.0 * b).min(1.0);
+            Vec3::new(shd * 2.0, g * b, m)
+        }
+        _ => {
+            // Steel (SteelGen, IronGen).
+            let d = metal_d(shd, damage, scf0, r, 4.5, 1.0).clamp(0.0, 1.0);
+            let mut mat = base(mat0);
+            mat *= (qlt * (1.0 - q2) + q2) * 0.54;
+            let scf = (1.0 - scf0) * 0.5 + 0.5;
+            let b = 1.0 - damage;
+            let d = d * (1.0 + b * b * 0.5);
+            let b = (1.0 - d * 3.0).max(0.0);
+            let mut g = (0.8 + t.weight * 0.533) * (0.3 + mat);
+            g *= 0.8 + scf * 0.2;
+            g *= 1.2 + damage * (1.0 - quality) * 0.3 + quality * 0.1;
+            g = (g * b).clamp(0.0, 1.0);
+            let m = (qlt * (1.0 - q2) + q2) * (1.0 - damage * 0.2) * g;
+            let a = 0.5 + (0.5 - damage).abs() * 0.3;
+            let b = g * damage * 1.2 + 1.0 - damage;
+            g = sheen(g * a * b * crease, damage);
+            let a = (0.5 - shd).abs() * 2.0;
+            let d = 1.0 - (1.0 - btex) * a * 2.0 * damage;
+            let b = btex * (shd * 2.5 * btex).min(1.0) * d;
+            Vec3::new(shd * 3.0, g * b, m * b)
+        }
     }
-    // Painted steel.
-    d = d.clamp(0.0, 1.0);
-    mat = mix(Vec3::splat(mat0), Vec3::splat(mat), damage).x;
-    mat = mix(Vec3::splat(mat), Vec3::splat(0.5), 0.5 - damage * 0.5).x;
-    let q = t.quality * t.quality;
-    let qlt = qlt * (1.0 - q) + q;
-    mat *= qlt * 0.54;
-    let msk = {
-        let a = shd * (2.0 - shd);
-        let a = a * a;
-        a * a * 4.0 * scf0 * (0.25 + damage * 2.0)
-    };
-    let d = (d * (msk * 0.75 + 0.25) * 2.0).clamp(0.0, 1.0);
-    let a = (msk * msk).min(1.0);
-    mat *= 0.6 + a * 0.4;
-    let b = 1.0 - damage;
-    let d = d * (1.0 + b * b * 0.5);
-    let b = 1.0 - d;
-    let a = shd * (2.0 - shd);
-    let mut g = a * (0.3 + mat) * 1.7;
-    let e = (1.0 - scf0) * 0.5 + 0.5;
-    g *= 0.8 + e * 0.2;
-    let e = damage * (1.0 - t.quality) * 0.3 + t.quality * 0.1;
-    g *= 1.2 + e;
-    g *= b;
-    g = g.clamp(0.0, 1.0);
-    let q = t.quality * t.quality;
-    let mut metal = qlt * (1.0 - q) + q;
-    metal *= g;
-    let a = (msk * msk * msk * 3.0).min(1.0);
-    metal = 0.25 + (metal - 0.25) * a;
-    let e = 0.7 + (0.5 - damage).abs() * 0.2;
-    g = g * g * e;
-    g *= crease;
-    let e2 = 1.0 - damage;
-    let b2 = g * (2.0 - g);
-    g = mix(Vec3::splat(g), Vec3::splat(b2), e2 * 0.75).x;
-    let b3 = btex * (0.75 + damage * 0.25) + e2 * 0.25;
-    let b3 = b3 * (shd * shd * 5.0 * b3).min(1.0);
-    g *= b3;
-    Vec3::new(shd * 2.0, g, metal)
 }
 
-fn normal_creases(s: &Samples, _t: &Texel, factor: f32) -> f32 {
-    let Some(n) = s.item_normal else {
-        return 1.0;
+fn chain_s(t: &Texel, s: &Samples) -> Vec3 {
+    let (shd, damage) = (t.shade, t.damage);
+    let mat = s.spec(0, Family::Chain).y;
+    let occ = s.spec(1, Family::Chain).x;
+    let mut scf = s.spec(2, Family::Chain).x;
+    let r = s.spec(3, Family::Chain).x;
+    let scr = s.spec(4, Family::Chain).x;
+    scf = 1.0 - scf * 0.5;
+    let a = shd * (2.0 - shd) * 0.75;
+    let b = scf * 2.0 * damage + (1.0 - damage);
+    let mut g = sheen(a * b, damage);
+    let r = r * damage + (1.0 - damage);
+    g *= r * 0.5 + 0.5;
+    g *= scr * 0.8;
+    let a2 = mat * (2.0 - mat);
+    let a2 = a2 * (2.0 - a2);
+    let mat = mat * mat * damage + a2 * (1.0 - damage);
+    let mut m = shd * mat * (1.6 + damage * damage);
+    m *= g * damage + (1.0 - damage);
+    // The chain measures its creases but does not use them.
+    g = g * 0.65 + g * g * damage * 0.1;
+    Vec3::new(shd * 2.0 * occ, g, m)
+}
+
+fn copper_s(t: &Texel, s: &Samples, satin: bool) -> Vec3 {
+    let family = if satin {
+        Family::CopperSatin
+    } else {
+        Family::CopperAlloy
     };
-    let x = s.x;
-    let y = s.y;
-    let w = s.w;
-    let h = s.h;
-    let nb = sample(n, x, y, w, h, Uv::Material);
-    let nb = unit_xy(nb);
-    let mut n1 = Vec2::ZERO;
-    for (dx, dy) in [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)] {
-        let sx = (x as i32 + dx).rem_euclid(w as i32) as usize;
-        let sy = (y as i32 + dy).rem_euclid(h as i32) as usize;
-        let n0 = unit_xy(sample(n, sx, sy, w, h, Uv::Material));
-        n1 += (n0 - nb).abs();
+    let (shd, damage, dirt, quality) = (t.shade, t.damage, t.dirt, t.quality);
+    let rst = s.spec4(0, family);
+    let qlt = s.spec(1, family).x;
+    let scf0 = s.spec(2, family).x;
+    let btex = s.spec(3, family).x;
+    let r = s.spec(4, family).y;
+    let mut d = metal_d(shd, damage, scf0, rst[3], 4.5, 1.5).clamp(0.0, 1.0);
+    let q2 = quality * quality;
+    let mut mat = (rst[1] * 0.65 + 0.25) * 1.3;
+    mat *= (qlt * (1.0 - q2) + q2) * 0.9;
+    let scf = (1.0 - scf0) * 0.5 + 0.5;
+    let b = 1.0 - damage;
+    let lit = shd * (2.0 - shd);
+    let mut g = if satin {
+        let b = 1.0 - d * (1.0 + b * b * 0.5);
+        let g = lit * (0.3 + mat * 0.6) * (1.0 + t.weight * 0.5);
+        (g * (0.8 + scf * 0.2) * (1.2 + damage * (1.0 - quality) * 0.3 + quality * 0.1) * b)
+            .clamp(0.0, 1.0)
+    } else {
+        let b = 1.0 - d * (0.75 + b * b * 0.75);
+        let g = lit * lit * (0.3 + mat * 0.6) * (1.2 + t.weight);
+        (g * (0.8 + scf * 0.2) * (1.2 + damage * (1.0 - quality) * 0.3 + quality * 0.1) * b)
+            .clamp(0.0, 1.0)
+    };
+    let a = shd * shd - rst[0] * 2.0 + 0.5;
+    d *= 1.0 - (a * a * 6.0).min(1.0);
+    if !satin {
+        d += dirt * (2.0 - dirt) * (1.0 - shd) * 0.4;
     }
-    1.0 - (n1.dot(n1) * factor).min(1.0)
+    let b = (d * (1.0 - shd) * 1.5 * 1.5).min(1.0);
+    let a = r * b + 0.4 * (1.0 - b);
+    let a = (1.0 - (0.4 - a).abs() * (4.0 + damage * 12.0)).max(0.0);
+    g *= if satin {
+        a
+    } else {
+        let c = shd * dirt * 1.2 + (1.0 - dirt);
+        a * c * (2.0 - c)
+    };
+    let m = g * (qlt * (1.0 - q2) + q2);
+    let lift = if satin { 0.0 } else { 0.3 };
+    g = (g * (1.0 + damage * lift)).min(1.0);
+    g = g * g * (0.75 + (0.5 - damage).abs() * 0.2);
+    let crease = s.creases(2, if satin { 0.06 } else { 0.125 });
+    g = sheen(g * crease, damage);
+    Vec3::new(shd * 2.0, g * scuff_gloss(btex, shd, damage), m)
+}
+
+fn gem_s(t: &Texel, s: &Samples, resin: bool) -> Vec3 {
+    let family = if resin {
+        Family::Resin
+    } else {
+        Family::Gemstone
+    };
+    let (shd, damage, dirt, quality) = (t.shade, t.damage, t.dirt, t.quality);
+    let rst = s.spec4(0, family);
+    let qlt = s.spec(1, family).x;
+    let scf0 = s.spec(2, family).x;
+    let sgn = s.spec(3, family).x;
+    let r = s.spec(4, family).y;
+    // The rust weight follows the dirt here.
+    let mut d = metal_d(shd, dirt, scf0, rst[3], 4.5, 1.5).clamp(0.0, 1.0);
+    let a = shd * shd - rst[0] * 2.0 + 0.5;
+    d *= 1.0 - (a * a * 6.0).min(1.0);
+    let q2 = quality * quality;
+    let mut mat = (rst[1] * 0.65 + 0.25) * 1.3;
+    mat = 0.25 * q2 + mat * (1.0 - q2 * 0.5);
+    mat *= (qlt * (1.0 - q2) + q2) * 0.9;
+    let scf = 1.0 - scf0 * damage;
+    let scf = (scf * scf * 1.5).min(1.0);
+    let lit = shd * (2.0 - shd);
+    let mut g = if resin {
+        lit * (0.2 + mat * 0.4)
+    } else {
+        lit * (0.3 + mat * 0.6)
+    };
+    g = (g * (2.0 + t.weight * 0.5)).min(1.0);
+    g *= 0.25 + scf * 0.75;
+    g *= 1.3 + damage * (1.0 - quality) * 0.3;
+    g = g / (4.0 + g) * 4.0;
+    g = g.clamp(0.0, 1.0);
+    let b = (d * (1.0 - shd) * 1.5 * 1.5).min(1.0);
+    let a = r * b + 0.4 * (1.0 - b);
+    let a = 1.0 - (0.4 - a).abs() * 4.0;
+    g *= a * a;
+    g = g * g * s.creases(2, 0.125);
+    let a = (damage * (2.0 - damage) * 2.0).min(1.0);
+    g *= sgn * a + (sgn * 0.25 + 0.75) * (1.0 - a);
+    Vec3::new(shd * 2.0, g.clamp(0.05, 1.0), 0.0)
+}
+
+fn planks_s(t: &Texel, s: &Samples) -> Vec3 {
+    let (shd, damage, dirt) = (t.shade, t.damage, t.dirt);
+    let gls0 = s.spec(0, Family::PlanksPainted).x;
+    let scf = s.spec(1, Family::PlanksPainted).x;
+    let drt = s.spec(2, Family::PlanksPainted).x;
+    let mut gls = 0.1 + gls0 * 0.9;
+    gls *= 0.6 + t.quality * 0.4;
+    gls *= 1.0 - damage * 0.3;
+    let a = shd * shd * 3.0;
+    let b = 0.6 + dirt * (2.0 - dirt) * 0.4;
+    let mut d = b - (b - a).max(0.0) / drt;
+    d = d * 0.8 + 0.3 - dirt * 0.2;
+    let mut g = gls * d;
+    let a = shd * shd * 1.5;
+    let a = a * a;
+    let scf = scf * scf;
+    let d = a * scf * 24.0 * damage * (2.0 - damage);
+    let a = (shd - 0.5) * (shd - 0.5) * 8.0 + 0.2;
+    let a = d + a * (1.0 - gls * gls);
+    g = g * 1.3 * (1.0 - a);
+    Vec3::new(shd * 1.75, g, 0.0)
 }
 
 // ---------------------------------------------------------------------
@@ -1382,46 +1573,60 @@ fn wood_n(t: &Texel, s: &Samples, item: Vec2) -> Vec2 {
 }
 
 fn metal_n(t: &Texel, s: &Samples, item: Vec2, family: Family) -> Vec2 {
-    let (shd, damage) = (t.shade, t.damage);
+    let (shd, damage, quality) = (t.shade, t.damage, t.quality);
     let qlt = unit_xy(s.normal(0, family));
     let rust_n = unit_xy(s.normal(1, family));
     let s_mask = s.normal(2, family).x;
     let r = s.normal(3, family).x;
-    let mut a = shd * shd * 4.5;
-    a = (a - 0.9).clamp(0.0, 1.0);
-    let mut d = a * s_mask * 2.0;
-    let a = shd * r * 2.0;
-    let a = 1.0 - (d + a * 0.5);
-    d = (a * a * damage * 1.5).min(1.0);
-    let lit = shd * (2.0 - shd);
-    let scf_lit = lit * lit;
-    let scf_lit = scf_lit * scf_lit * 4.0;
-    let s_mask = scf_lit * s_mask * (0.25 + damage * 2.0);
-    let mut n = item;
-    if family == Family::Chain {
-        // Chain packs its own normal map.
-        n += unit_xy(s.normal(0, family)) * (1.5 - t.quality * 0.5);
-        let _ = qlt;
-        let rust = unit_xy(s.normal(1, family));
-        n += rust * d * 2.0;
-        let a = damage * (2.0 - damage);
-        let scn = unit_xy(s.normal(4, family));
-        n += scn * d * a * 3.0;
-        return n;
-    }
-    let a = shd * shd * (3.0 - 2.0 * shd);
-    let rust_n = rust_n * d * 2.0 * a;
-    n += rust_n;
     let scuff = unit_xy(s.normal(4, family));
-    let k = damage
-        * if family == Family::CopperAlloy || family == Family::CopperSatin {
-            (2.0 - damage) * 6.0
-        } else {
-            1.0
-        };
-    n += scuff * s_mask * k;
-    let a = 1.0 - t.quality + damage;
-    n + qlt * a
+    if family == Family::Chain {
+        // The chain's own mail normal, rust where the damage pits it and
+        // scratches across it.
+        let a = shd * shd * 4.5;
+        let b = 1.0 - (1.0 - damage).sqrt();
+        let d = (a * (r * b * 4.0)).clamp(0.0, 1.0);
+        let mut n = item + qlt * (1.5 - quality * 0.5);
+        n += rust_n * d * 2.0;
+        let a = damage * (2.0 - damage);
+        return n + scuff * d * a * 3.0;
+    }
+    let edge = match family {
+        Family::Steel | Family::SteelBlade => 2.5,
+        _ => 4.5,
+    };
+    let mut d = metal_wear(shd, damage, s_mask, r, edge, 1.5, false);
+    let smooth = shd * shd * (3.0 - 2.0 * shd);
+    let copper = matches!(family, Family::CopperAlloy | Family::CopperSatin);
+    // Copper weighs its scuffs by the smooth shade, the steels by the
+    // fourth power of the lit shade.
+    let s_mask = if copper {
+        smooth * s_mask * (0.25 + damage * 2.0)
+    } else {
+        paint_mask(shd, s_mask, damage)
+    };
+    if family == Family::SteelPainted {
+        d *= (s_mask * 0.75 + 0.25) * 2.0;
+    }
+    let d = d.min(1.0);
+    let rust = match family {
+        Family::SteelPlate => {
+            let b = damage - 0.65;
+            rust_n * d * (3.0 - b * b * 6.0) * smooth
+        }
+        Family::SteelBlade => rust_n * d * 2.0 * smooth * damage,
+        _ => rust_n * d * 2.0 * smooth,
+    };
+    let scuff_weight = match family {
+        Family::SteelPlate => damage * damage,
+        _ if copper => damage * (2.0 - damage) * 6.0,
+        _ => damage,
+    };
+    let quality_weight = if family == Family::SteelBlade {
+        (0.3 - quality * 0.3) + damage
+    } else {
+        1.0 - quality + damage
+    };
+    item + rust + scuff * s_mask * scuff_weight + qlt * quality_weight
 }
 
 fn gem_n(t: &Texel, s: &Samples, item: Vec2, family: Family) -> Vec2 {
@@ -1465,11 +1670,13 @@ fn planks_n(t: &Texel, s: &Samples, item: Vec2) -> Vec2 {
 // Painting
 // ---------------------------------------------------------------------
 
-/// One layer to paint: its mask, material and palette colour.
+/// One layer to paint: its mask, material, tint (`MatCol.rgb`) and wear
+/// weight (`MatCol.w`).
 pub struct PaintLayer<'a> {
     pub mask: &'a Texels,
     pub material: u8,
-    pub colour: u8,
+    pub tint: Vec3,
+    pub wear: f32,
     /// Colour-pass library textures in [`library`] order.
     pub library: Vec<Option<&'a Texels>>,
     /// Specular-pass textures in the material's order.
@@ -1517,63 +1724,121 @@ pub fn paint(
     layers: &[PaintLayer<'_>],
     appearance: &Appearance,
 ) -> Painted {
-    paint_with(shade, item_normal, layers, Condition::from(appearance))
+    paint_with(
+        shade,
+        item_normal,
+        layers,
+        Condition::from(appearance),
+        Tiling::default(),
+    )
+}
+
+/// An apparel layer's tint and wear weight: its palette colour on the
+/// linear ramp and its material's wear weight.
+pub fn apparel_tint(material: u8, colour: u8) -> (Vec3, f32) {
+    (palette_colour(colour), procedural::material(material).wear)
 }
 
 /// Paints an item: every layer's finish over its mask, in order, on black,
 /// at the shade map's size. `condition` is 0..=1 as the original's paint
-/// program receives it.
+/// program receives it. As the original, the colour and normal passes run
+/// over every layer first, then the specular pass, which reads the painted
+/// normal map for its creases.
 pub fn paint_with(
     shade: &Texels,
     item_normal: Option<&Texels>,
     layers: &[PaintLayer<'_>],
     condition: Condition,
+    tiling: Tiling,
 ) -> Painted {
     let (w, h) = (shade.width, shade.height);
     let mut normal_out = vec![Vec2::ZERO; w * h];
     let mut out = vec![Vec3::ZERO; w * h];
     // The original clears the surface target to (0, 0.01, 0).
     let mut finish_out = vec![Vec3::new(0.0, 0.01, 0.0); w * h];
-    for layer in layers {
-        let colour = palette_colour(layer.colour);
-        let weight = procedural::material(layer.material).wear;
+    let covers: Vec<Vec<f32>> = layers
+        .iter()
+        .map(|layer| {
+            (0..w * h)
+                .map(|i| sample_scaled(layer.mask, i % w, i / w, w, h).x)
+                .collect()
+        })
+        .collect();
+    let texel = |layer: &PaintLayer<'_>, x: usize, y: usize| Texel {
+        shade: shade.at(x as i64, y as i64).x,
+        colour: layer.tint,
+        weight: layer.wear,
+        quality: condition.quality,
+        damage: condition.damage,
+        dirt: condition.dirt,
+    };
+    for (layer, cover) in layers.iter().zip(&covers) {
         let family = finish(layer.material);
         for y in 0..h {
             for x in 0..w {
-                let cover = sample_scaled(layer.mask, x, y, w, h).x;
+                let cover = cover[y * w + x];
                 if cover <= 0.0 {
                     continue;
                 }
                 let samples = Samples {
                     layer,
-                    item_normal,
+                    painted_normal: None,
+                    tiling,
                     x,
                     y,
                     w,
                     h,
                 };
-                let texel = Texel {
-                    shade: shade.at(x as i64, y as i64).x,
-                    colour,
-                    weight,
-                    quality: condition.quality,
-                    damage: condition.damage,
-                    dirt: condition.dirt,
-                };
-                let c = colour_of(family, layer.material, &texel, &samples);
+                let t = texel(layer, x, y);
+                let c = colour_of(family, layer.material, &t, &samples);
                 let o = &mut out[y * w + x];
                 *o = mix(*o, c.clamp(Vec3::ZERO, Vec3::ONE), cover);
-                let surface = surface_of(family, layer.material, &texel, &samples);
-                let f = &mut finish_out[y * w + x];
-                *f = mix(*f, surface.clamp(Vec3::ZERO, Vec3::ONE), cover);
-                let item = samples.item_normal();
-                let n = normal_of(family, layer.material, &texel, &samples, item);
-                let o = &mut normal_out[y * w + x];
-                *o += (n - *o) * cover;
+                if let Some(item) = item_normal {
+                    let item = unit_xy(sample_scaled(item, x, y, w, h));
+                    let n = normal_of(family, layer.material, &t, &samples, item);
+                    let o = &mut normal_out[y * w + x];
+                    *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
+                }
             }
         }
     }
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    // The normal target stores two channels as bytes; the specular pass
+    // reads them back.
+    let normal_bytes: Vec<[u8; 2]> = normal_out
+        .iter()
+        .map(|n| [byte(n.x * 0.5 + 0.5), byte(n.y * 0.5 + 0.5)])
+        .collect();
+    let painted_normal: Option<Vec<Vec2>> = item_normal.map(|_| {
+        normal_bytes
+            .iter()
+            .map(|b| Vec2::new(b[0] as f32, b[1] as f32) * (2.0 / 255.0) - Vec2::ONE)
+            .collect()
+    });
+    for (layer, cover) in layers.iter().zip(&covers) {
+        let family = finish(layer.material);
+        for y in 0..h {
+            for x in 0..w {
+                let cover = cover[y * w + x];
+                if cover <= 0.0 {
+                    continue;
+                }
+                let samples = Samples {
+                    layer,
+                    painted_normal: painted_normal.as_deref(),
+                    tiling,
+                    x,
+                    y,
+                    w,
+                    h,
+                };
+                let t = texel(layer, x, y);
+                let surface = surface_of(family, layer.material, &t, &samples);
+                let f = &mut finish_out[y * w + x];
+                *f = mix(*f, surface.clamp(Vec3::ZERO, Vec3::ONE), cover);
+            }
+        }
+    }
     Painted {
         colour: out
             .iter()
@@ -1583,19 +1848,12 @@ pub fn paint_with(
             .iter()
             .flat_map(|c| [byte(c.x), byte(c.y), byte(c.z), 255])
             .collect(),
+        // Z is rebuilt from the two stored channels, as the original's
+        // two-channel normal target is read.
         normal: item_normal.map(|_| {
-            normal_out
+            normal_bytes
                 .iter()
-                .flat_map(|n| {
-                    let n = n.clamp_length_max(0.999);
-                    let z = (1.0 - n.length_squared()).sqrt();
-                    [
-                        byte(n.x * 0.5 + 0.5),
-                        byte(n.y * 0.5 + 0.5),
-                        byte(z * 0.5 + 0.5),
-                        255,
-                    ]
-                })
+                .flat_map(|&[x, y]| [x, y, pixel::rebuild_z(x, y), 255])
                 .collect()
         }),
     }
@@ -1608,10 +1866,10 @@ fn colour_of(family: Finish, _material: u8, t: &Texel, s: &Samples) -> Vec3 {
         Family::Leather => leather(t, s),
         Family::Suede => suede(t, s),
         Family::Wood => wood(t, s),
-        Family::Steel => steel(t, s, Family::Steel, false),
-        Family::SteelPlate => steel(t, s, Family::SteelPlate, false),
-        Family::SteelPainted => steel(t, s, Family::SteelPainted, true),
-        Family::SteelBlade => steel(t, s, Family::SteelBlade, false),
+        Family::Steel => steel(t, s, Family::Steel),
+        Family::SteelPlate => steel(t, s, Family::SteelPlate),
+        Family::SteelPainted => steel(t, s, Family::SteelPainted),
+        Family::SteelBlade => steel(t, s, Family::SteelBlade),
         Family::Chain => chain(t, s),
         Family::CopperAlloy => copper(t, s, Family::CopperAlloy),
         Family::CopperSatin => copper(t, s, Family::CopperSatin),
@@ -1653,216 +1911,6 @@ fn surface_of(family: Finish, material: u8, t: &Texel, s: &Samples) -> Vec3 {
         Family::PlanksPainted => planks_s(t, s),
     };
     v.clamp(Vec3::ZERO, Vec3::ONE)
-}
-
-fn chain_s(t: &Texel, s: &Samples) -> Vec3 {
-    let (shd, damage) = (t.shade, t.damage);
-    let mat = s.spec(0, Family::Chain).y;
-    let occ = s.spec(1, Family::Chain).x;
-    let mut scf = s.spec(2, Family::Chain).x;
-    let r = s.spec(3, Family::Chain).x;
-    let scr = s.spec(4, Family::Chain).x;
-    scf = 1.0 - scf * 0.5;
-    let a = shd * (2.0 - shd) * 0.75;
-    let b = scf * 2.0 * damage + (1.0 - damage);
-    let mut g = a * b;
-    let a = 1.0 - damage;
-    let b = g * (2.0 - g);
-    g = mix(Vec3::splat(g), Vec3::splat(b), 0.75 * a).x;
-    let r = r * damage + a;
-    g *= r * 0.5 + 0.5;
-    g *= scr * 0.8;
-    let a2 = mat * (2.0 - mat);
-    let a2 = a2 * (2.0 - a2);
-    let b2 = mat * mat;
-    let mat = b2 * damage + a2 * (1.0 - damage);
-    let a3 = 1.6 + damage * damage;
-    let mut m = shd * mat * a3;
-    let a4 = g * damage + (1.0 - damage);
-    m *= a4;
-    g = g * 0.65 + g * g * damage * 0.1;
-    Vec3::new(shd * 2.0 * occ, g, m)
-}
-
-fn copper_s(t: &Texel, s: &Samples, satin: bool) -> Vec3 {
-    let family = if satin {
-        Family::CopperSatin
-    } else {
-        Family::CopperAlloy
-    };
-    let (shd, damage, dirt) = (t.shade, t.damage, t.dirt);
-    let rst = s.spec4(0, family);
-    let qlt = s.spec(1, family).x;
-    let mut scf = s.spec(2, family).x;
-    let btex = s.spec(3, family).x;
-    let r = s.spec(4, family).y;
-    let mut a = shd * shd * 4.5;
-    a = (a - 0.9).clamp(0.0, 1.0);
-    let mut d = (a * scf * 2.0).clamp(0.0, 1.0);
-    let a = shd * rst[3] * 2.0;
-    let a = 1.0 - (d + a * 0.5);
-    d = (a * a * damage * 1.5).clamp(0.0, 1.0);
-    let mut mat = rst[1] * 0.65 + 0.25;
-    mat *= 1.3;
-    let q = t.quality * t.quality;
-    let qlt = qlt * (1.0 - q) + q;
-    mat *= qlt * 0.9;
-    scf = (1.0 - scf) * 0.5 + 0.5;
-    let b = 1.0 - damage;
-    let metal;
-    let mut g;
-    if satin {
-        metal = qlt * (1.0 - q) + q;
-        let b = 1.0 - d * (1.0 + b * b * 0.5);
-        let lit = shd * (2.0 - shd);
-        g = lit * (0.3 + mat * 0.6) * (1.0 + t.weight * 0.5);
-        g *= 0.8 + scf * 0.2;
-        let e = damage * (1.0 - t.quality) * 0.3 + t.quality * 0.1;
-        g *= 1.2 + e;
-        g *= b;
-        g = g.clamp(0.0, 1.0);
-        let a = (shd * shd - rst[0] * 2.0 + 0.5).min(1.0);
-        d *= 1.0 - a * a * 2.0;
-        let b = (d * (1.0 - shd) * 1.5).min(1.5).min(1.0);
-        let a = r * b + 0.4 * (1.0 - b);
-        let b = 4.0 + damage * 12.0;
-        let a = (1.0 - (0.4 - a).abs() * b).max(0.0);
-        g *= a;
-        let m = g * metal;
-        g = (g * (1.0 + damage * 0.0)).min(1.0);
-        let a = 0.75 + (0.5 - damage).abs() * 0.2;
-        g = g * g * a;
-        let crease = normal_creases(s, t, 0.06);
-        g *= crease;
-        let e = 1.0 - damage;
-        let b = g * (2.0 - g);
-        g = mix(Vec3::splat(g), Vec3::splat(b), e * 0.75).x;
-        let d2 = (damage * 4.0).min(1.0);
-        let mut b = btex * (btex * d2 + 1.0 - d2);
-        b = b * (0.75 + damage * 0.25) + e * 0.25;
-        let e2 = (0.5 - damage * 16.0).max(0.0);
-        b = b * (1.0 - e2) + e2 * 0.9;
-        b *= (shd * shd * 5.0 * b).min(1.0);
-        g *= b;
-        return Vec3::new(shd * 2.0, g, m);
-    }
-    metal = qlt * (1.0 - q) + q;
-    let b = 1.0 - d * (0.75 + b * b * 0.75);
-    let lit = shd * (2.0 - shd);
-    g = lit * lit * (0.3 + mat * 0.6) * (1.2 + t.weight);
-    g *= 0.8 + scf * 0.2;
-    let e = damage * (1.0 - t.quality) * 0.3 + t.quality * 0.1;
-    g *= 1.2 + e;
-    g *= b;
-    g = g.clamp(0.0, 1.0);
-    let a = shd * shd - rst[0] * 2.0 + 0.5;
-    d *= 1.0 - (a * a * 6.0).min(1.0);
-    let c = dirt * (2.0 - dirt) * (1.0 - shd) * 0.4;
-    d += c;
-    let b = (d * (1.0 - shd) * 1.5).min(1.5).min(1.0);
-    let a = r * b + 0.4 * (1.0 - b);
-    let b = 4.0 + damage * 12.0;
-    let a = (1.0 - (0.4 - a).abs() * b).max(0.0);
-    let c = shd * dirt * 1.2 + (1.0 - dirt);
-    let a = a * c * (2.0 - c);
-    g *= a;
-    let m = g * metal;
-    g = (g * (1.0 + damage * 0.3)).min(1.0);
-    let a = 0.75 + (0.5 - damage).abs() * 0.2;
-    g = g * g * a;
-    let crease = normal_creases(s, t, 0.125);
-    g *= crease;
-    let e = 1.0 - damage;
-    let b = g * (2.0 - g);
-    g = mix(Vec3::splat(g), Vec3::splat(b), e * 0.75).x;
-    let d2 = (damage * 4.0).min(1.0);
-    let mut b = btex * (btex * d2 + 1.0 - d2);
-    b = b * (0.75 + damage * 0.25) + e * 0.25;
-    let e2 = (0.5 - damage * 16.0).max(0.0);
-    b = b * (1.0 - e2) + e2 * 0.9;
-    b *= (shd * shd * 5.0 * b).min(1.0);
-    g *= b;
-    Vec3::new(shd * 2.0, g, m)
-}
-
-fn gem_s(t: &Texel, s: &Samples, resin: bool) -> Vec3 {
-    let family = if resin {
-        Family::Resin
-    } else {
-        Family::Gemstone
-    };
-    let (shd, damage, dirt) = (t.shade, t.damage, t.dirt);
-    let rst = s.spec4(0, family);
-    let qlt = s.spec(1, family).x;
-    let scf = s.spec(2, family).x;
-    let r = s.spec(3, family).y;
-    let mut a = shd * shd * 4.5;
-    a = (a - 0.9).clamp(0.0, 1.0);
-    let mut d = (a * scf * 2.0).clamp(0.0, 1.0);
-    let a = shd * r * 2.0;
-    let a = 1.0 - (d + a * 0.5);
-    d = (a * a * dirt * 1.5).clamp(0.0, 1.0);
-    let a = shd * shd - rst[0] * 2.0 + 0.5;
-    d *= 1.0 - (a * a * 6.0).min(1.0);
-    let mut mat = rst[1] * 0.65 + 0.25;
-    mat *= 1.3;
-    let q = t.quality * t.quality;
-    mat = 0.25 * q + mat * (1.0 - q * 0.5);
-    let qf = if resin {
-        qlt * (1.0 - q) + q
-    } else {
-        qlt * 1.2 * (1.0 - q) + q
-    };
-    mat *= qf * 0.9;
-    let scf = 1.0 - scf * damage;
-    let scf = (scf * scf * 1.5).min(1.0);
-    let lit = shd * (2.0 - shd);
-    let mut g = if resin {
-        lit * (0.2 + mat * 0.4)
-    } else {
-        lit * (0.3 + mat * 0.6)
-    };
-    g = (g * (2.0 + t.weight * 0.5)).min(1.0);
-    g *= 0.25 + scf * 0.75;
-    let e = damage * (1.0 - t.quality) * 0.3;
-    g *= 1.3 + e;
-    g = g / (4.0 + g) * 4.0;
-    g = g.clamp(0.0, 1.0);
-    let b = (d * (1.0 - shd) * 1.5).min(1.5).min(1.0);
-    let mut a = r * b + 0.4 * (1.0 - b);
-    a = 1.0 - (0.4 - a).abs() * 4.0;
-    g *= a * a;
-    let crease = normal_creases(s, t, 0.125);
-    g = g * g * crease;
-    let s2 = s.spec(2, family).x;
-    let a = (damage * (2.0 - damage) * 2.0).min(1.0);
-    let s2 = s2 * a + (s2 * 0.25 + 0.75) * (1.0 - a);
-    g *= s2;
-    Vec3::new(shd * 2.0, g.clamp(0.05, 1.0), 0.0)
-}
-
-fn planks_s(t: &Texel, s: &Samples) -> Vec3 {
-    let (shd, damage, dirt) = (t.shade, t.damage, t.dirt);
-    let gls0 = s.spec(0, Family::PlanksPainted).x;
-    let scf = s.spec(1, Family::PlanksPainted).x;
-    let drt = s.spec(2, Family::PlanksPainted).x;
-    let mut gls = 0.1 + gls0 * 0.9;
-    gls *= 0.6 + t.quality * 0.4;
-    gls *= 1.0 - damage * 0.3;
-    let mut a = shd * shd * 3.0;
-    let b = 0.6 + dirt * (2.0 - dirt) * 0.4;
-    let mut d = b - (b - a).max(0.0) / drt;
-    d = d * 0.8 + 0.3 - dirt * 0.2;
-    let mut g = gls * d;
-    a = shd * shd * 1.5;
-    a *= a;
-    let scf = scf * scf;
-    let d = a * scf * 24.0 * damage * (2.0 - damage);
-    let a = (shd - 0.5) * (shd - 0.5) * 8.0 + 0.2;
-    let a = d + a * (1.0 - gls * gls);
-    g = g * 1.3 * (1.0 - a);
-    let _ = b;
-    Vec3::new(shd * 1.75, g, 0.0)
 }
 
 fn normal_of(family: Finish, material: u8, t: &Texel, s: &Samples, item: Vec2) -> Vec2 {
@@ -1942,7 +1990,8 @@ mod tests {
         let layer = |mask, colour| PaintLayer {
             mask,
             material: 30, // an unknown material paints as cloth
-            colour,
+            tint: palette_colour(colour),
+            wear: 1.0,
             library: vec![],
             specular: vec![],
             normals: vec![],
@@ -1966,19 +2015,44 @@ mod tests {
     }
 
     #[test]
-    fn condition_keeps_the_factory_bytes_raw() {
+    fn the_factory_condition_remaps_only_the_damage() {
         let appearance = Appearance {
             quality: 160,
             damage: 64,
             dirt: 32,
             layers: Default::default(),
         };
-        let raw = Condition::raw(&appearance);
-        assert!((raw.quality - 160.0 / 255.0).abs() < 1e-6);
-        assert!((raw.damage - 64.0 / 255.0).abs() < 1e-6);
-        assert!((raw.dirt - 32.0 / 255.0).abs() < 1e-6);
+        let factory = Condition::factory(&appearance);
+        assert!((factory.quality - 160.0 / 255.0).abs() < 1e-6);
+        // d = 64/255: 2/(2 − d) − 1 = d/(2 − d).
+        let d = 64.0f32 / 255.0;
+        assert!((factory.damage - d / (2.0 - d)).abs() < 1e-6);
+        assert!((factory.dirt - 32.0 / 255.0).abs() < 1e-6);
         let apparel = Condition::from(&appearance);
-        assert!(apparel.damage < raw.damage && apparel.dirt < raw.dirt);
+        assert!((apparel.damage - factory.damage).abs() < 1e-6);
+        assert!(apparel.dirt < factory.dirt);
+    }
+
+    #[test]
+    fn factory_layers_take_the_lifted_bytes_and_the_finish_level() {
+        // Palette 7 on the lifted ramp is 3/255 grey.
+        assert_eq!(factory_colour(7), Vec3::splat(3.0 * pixel::BYTE_UNIT));
+        // Finish 0x8B: the low level 11, (11 + 1)/16.
+        assert_eq!(factory_wear(0x8B), 0.75);
+        assert_eq!(factory_wear(0xF0), 0.0625);
+    }
+
+    #[test]
+    fn factory_tiling_quantises_its_offsets() {
+        let t = Tiling::factory(Vec2::new(128.0, 512.0), Vec2::new(64.0, 256.0), 1);
+        assert_eq!(t.density, Vec2::splat(2.0));
+        // Seed 1 steps to 0x0808_8406: r = 0.0314, round(r·512) = 16,
+        // 16/512 − ½ = −0.46875.
+        assert_eq!(t.material_offset.x, -0.46875);
+        for o in [t.material_offset, t.damage_offset] {
+            assert!(o.x >= -0.5 && o.x <= 0.5 && o.y >= -0.5 && o.y <= 0.5);
+            assert_eq!((o.x * 512.0).fract(), 0.0);
+        }
     }
 
     #[test]
@@ -1993,7 +2067,17 @@ mod tests {
             sample_uv(F::SteelBlade, List::Colour, 1),
             Some(Uv::Material2)
         );
-        assert_eq!(sample_uv(F::Steel, List::Normal, 4), Some(Uv::Material));
+        assert_eq!(sample_uv(F::Steel, List::Normal, 4), Some(Uv::Region));
+        assert_eq!(sample_uv(F::Chain, List::Colour, 1), Some(Uv::Damage));
+        assert_eq!(sample_uv(F::Leather, List::Specular, 1), Some(Uv::Damage));
+        assert_eq!(
+            sample_uv(F::SteelBlade, List::Specular, 1),
+            Some(Uv::Material2)
+        );
+        assert_eq!(
+            sample_uv(F::SteelBlade, List::Normal, 0),
+            Some(Uv::Material2)
+        );
         assert_eq!(
             sample_uv(F::CopperAlloy, List::Specular, 0),
             Some(Uv::Damage)
@@ -2017,14 +2101,16 @@ mod tests {
             let layer = PaintLayer {
                 mask: &shade,
                 material,
-                colour: 0xdd,
+                tint: palette_colour(0xdd),
+                wear: procedural::material(material).wear,
                 library: vec![None; 6],
                 specular: vec![None; 6],
                 normals: vec![None; 6],
             };
             let samples = Samples {
                 layer: &layer,
-                item_normal: None,
+                painted_normal: None,
+                tiling: Tiling::default(),
                 x: 0,
                 y: 0,
                 w: 2,

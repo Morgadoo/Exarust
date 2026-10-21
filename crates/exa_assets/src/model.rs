@@ -18,8 +18,8 @@ use crate::mesh_edit::material_split_flags;
 use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
-    Condition, Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library,
-    paint_with, specular_library,
+    Condition, Encoding, PaintLayer, Painted, Texels, Tiling, apparel_tint, factory_colour,
+    factory_wear, layer_material, library, normal_library, paint_with, specular_library,
 };
 use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
@@ -145,6 +145,8 @@ pub struct ModelCache {
     /// The built-in race skin by body model, tone and sex
     /// ([`ModelLoader::skin_material_of`]).
     skin_materials: HashMap<(String, [u16; 2], bool), Handle<ExaMaterial>>,
+    /// Painted factory regions by [`FactoryPaint::key`].
+    factory_painted: HashMap<String, Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
     pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
     /// Parsed factory recipes, by lower-case name.
@@ -757,17 +759,74 @@ impl ModelLoader<'_> {
         }
     }
 
-    /// The material of a factory weapon's component `stem` with an area's
-    /// material: the same painter as apparel, with the raw condition bytes
-    /// the factory job uses.
-    pub fn painted_factory(&mut self, stem: &str, appearance: &Appearance) -> Handle<ExaMaterial> {
-        match self.paint_job_factory(stem, appearance) {
-            Paint::Ready(handle) => handle,
-            Paint::Job(job) => {
-                let painted = job.paint();
-                self.painted_material(painted)
-            }
+    /// The material of a factory weapon's component region, painted as the
+    /// original's factory paint job does: each mask with its area's
+    /// material, lifted colour and finish level, the item's condition with
+    /// the factory's remapping, and the region's tiling.
+    pub fn painted_factory(&mut self, paint: &FactoryPaint) -> Handle<ExaMaterial> {
+        let key = paint.key();
+        if let Some(h) = self.cache.factory_painted.get(&key) {
+            return h.clone();
         }
+        let stem = paint.stem.to_ascii_lowercase();
+        let Some(shade) = self.texels(&format!("{stem}d")) else {
+            let handle = self.apparel_material(&stem);
+            self.cache.factory_painted.insert(key, handle.clone());
+            return handle;
+        };
+        let mut layers: Vec<OwnedLayer> = Vec::new();
+        for layer in &paint.layers {
+            let mask_name = format!("{stem}m{}", layer.mask);
+            if self.game.texture(&mask_name).is_none() {
+                // The original stops at the first missing mask.
+                break;
+            }
+            let Some(mask) = self.texels(&mask_name) else {
+                break;
+            };
+            // An area without a material paints as SteelGen.
+            let material = if layer.material == 0 {
+                12
+            } else {
+                layer.material
+            };
+            let (lib, spec, normals) = self.material_texels(material);
+            layers.push(OwnedLayer {
+                mask,
+                material,
+                tint: factory_colour(layer.colour),
+                wear: factory_wear(layer.finish),
+                library: lib,
+                specular: spec,
+                normals,
+            });
+        }
+        let item_normal = self.texels(&format!("{stem}n"));
+        let painted_size = Vec2::new(shade.width as f32, shade.height as f32);
+        let job = PaintJob {
+            key: PaintKey::Factory(stem, key.clone()),
+            shade,
+            item_normal,
+            layers,
+            condition: Condition::factory(&paint.condition),
+            tiling: Tiling::factory(paint.region_texels, painted_size, paint.seed_b),
+        };
+        let painted = job.paint();
+        self.painted_material(painted)
+    }
+
+    /// The library textures a material's three passes read, decoded.
+    fn material_texels(&mut self, material: u8) -> (TexelList, TexelList, TexelList) {
+        let lib = library(material).iter().map(|n| self.texels(n)).collect();
+        let spec = specular_library(material)
+            .iter()
+            .map(|n| self.texels(n))
+            .collect();
+        let normals = normal_library(material)
+            .iter()
+            .map(|n| self.texels(n))
+            .collect();
+        (lib, spec, normals)
     }
 
     /// Decodes the textures painting `stem` with `appearance` reads, one at
@@ -832,12 +891,6 @@ impl ModelLoader<'_> {
         self.paint_job_with(stem, appearance, Condition::from(appearance))
     }
 
-    /// [`ModelLoader::paint_job`] with the condition the factory paint job
-    /// takes (the item's raw bytes).
-    pub fn paint_job_factory(&mut self, stem: &str, appearance: &Appearance) -> Paint {
-        self.paint_job_with(stem, appearance, Condition::raw(appearance))
-    }
-
     fn paint_job_with(
         &mut self,
         stem: &str,
@@ -865,24 +918,26 @@ impl ModelLoader<'_> {
                 continue;
             };
             let material = layer_material(layer);
-            let lib = library(material).iter().map(|n| self.texels(n)).collect();
-            let spec = specular_library(material)
-                .iter()
-                .map(|n| self.texels(n))
-                .collect();
-            let normals = normal_library(material)
-                .iter()
-                .map(|n| self.texels(n))
-                .collect();
-            layers.push((mask, material, layer.colour, lib, spec, normals));
+            let (lib, spec, normals) = self.material_texels(material);
+            let (tint, wear) = apparel_tint(material, layer.colour);
+            layers.push(OwnedLayer {
+                mask,
+                material,
+                tint,
+                wear,
+                library: lib,
+                specular: spec,
+                normals,
+            });
         }
         let item_normal = self.texels(&format!("{stem}n"));
         Paint::Job(PaintJob {
-            key,
+            key: PaintKey::Apparel(key),
             shade,
             item_normal,
             layers,
             condition,
+            tiling: Tiling::default(),
         })
     }
 
@@ -914,7 +969,7 @@ impl ModelLoader<'_> {
         mat.normal_map = match normal {
             Some(image) => Some(self.images.add(image)),
             None => self
-                .texture(&format!("{}n", key.0), ColorSpace::Linear)
+                .texture(&format!("{}n", key.stem()), ColorSpace::Linear)
                 .map(|t| t.0),
         };
         // The original's painted apparel (`_procmat1`) and factory items
@@ -923,7 +978,10 @@ impl ModelLoader<'_> {
         let handle = self
             .materials
             .add(mat.with_blood(BloodProgram::Cloth, spatter));
-        self.cache.painted.insert(key, handle.clone());
+        match key {
+            PaintKey::Apparel(key) => self.cache.painted.insert(key, handle.clone()),
+            PaintKey::Factory(_, key) => self.cache.factory_painted.insert(key, handle.clone()),
+        };
         handle
     }
 
@@ -1233,14 +1291,83 @@ fn group_meshes(
 }
 
 /// A layer's mask, material, colour and library textures, owned while painting.
-type OwnedLayer = (
-    Arc<Texels>,
-    u8,
-    u8,
-    Vec<Option<Arc<Texels>>>,
-    Vec<Option<Arc<Texels>>>,
-    Vec<Option<Arc<Texels>>>,
-);
+/// Decoded library textures of one pass, in the material's order.
+type TexelList = Vec<Option<Arc<Texels>>>;
+
+/// A paint layer with its textures shared from the decoded-texture cache.
+struct OwnedLayer {
+    mask: Arc<Texels>,
+    material: u8,
+    tint: Vec3,
+    wear: f32,
+    library: TexelList,
+    specular: TexelList,
+    normals: TexelList,
+}
+
+/// Which cache a painted set belongs to.
+#[derive(Debug, Clone)]
+enum PaintKey {
+    /// Apparel: texture stem and appearance.
+    Apparel((String, Appearance)),
+    /// A factory region: its stem and [`FactoryPaint::key`].
+    Factory(String, String),
+}
+
+impl PaintKey {
+    fn stem(&self) -> &str {
+        match self {
+            PaintKey::Apparel((stem, _)) | PaintKey::Factory(stem, _) => stem,
+        }
+    }
+}
+
+/// One material area over a factory component's mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactoryLayer {
+    /// Mask number (`<stem>m<n>`).
+    pub mask: u8,
+    pub material: u8,
+    /// The area's finish byte (two levels; the paint takes the low one).
+    pub finish: u8,
+    /// Palette index.
+    pub colour: u8,
+}
+
+/// What a factory region paints with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactoryPaint {
+    /// The component's texture stem.
+    pub stem: String,
+    /// The item's quality, damage and dirt bytes (its appearance's layers
+    /// are unused).
+    pub condition: Appearance,
+    /// The areas over masks 1–4, in order, up to the first missing mask.
+    pub layers: Vec<FactoryLayer>,
+    /// The region's size in atlas texels (the atlas size times the part's
+    /// atlas scale).
+    pub region_texels: Vec2,
+    /// The item's seed B, which places the library tiles.
+    pub seed_b: u32,
+}
+
+impl FactoryPaint {
+    /// The cache key: everything the painting depends on.
+    pub fn key(&self) -> String {
+        let c = &self.condition;
+        format!(
+            "{}|{},{},{}|{:?}|{},{}|{}",
+            self.stem.to_ascii_lowercase(),
+            c.quality,
+            c.damage,
+            c.dirt,
+            self.layers,
+            self.region_texels.x,
+            self.region_texels.y,
+            self.seed_b
+        )
+    }
+}
 
 /// A record's emissive term as the shader takes it (the original's MatEmi):
 /// the linear colour, doubled for shaded materials (lit or specular bits)
@@ -1295,16 +1422,17 @@ pub enum Paint {
 /// shared from the decoded-texture cache: the painting (per-texel work, a
 /// large share of dressing a crowd) can run on any thread.
 pub struct PaintJob {
-    key: (String, Appearance),
+    key: PaintKey,
     shade: Arc<Texels>,
     item_normal: Option<Arc<Texels>>,
     layers: Vec<OwnedLayer>,
     condition: Condition,
+    tiling: Tiling,
 }
 
 /// A painted texture set's images, for [`ModelLoader::painted_material`].
 pub struct PaintedSet {
-    key: (String, Appearance),
+    key: PaintKey,
     colour: Image,
     surface: Image,
     normal: Option<Image>,
@@ -1335,17 +1463,24 @@ impl PaintJob {
         let layers: Vec<PaintLayer<'_>> = self
             .layers
             .iter()
-            .map(|(mask, material, colour, lib, spec, normals)| PaintLayer {
-                mask,
-                material: *material,
-                colour: *colour,
-                library: lib.iter().map(|t| t.as_deref()).collect(),
-                specular: spec.iter().map(|t| t.as_deref()).collect(),
-                normals: normals.iter().map(|t| t.as_deref()).collect(),
+            .map(|l| PaintLayer {
+                mask: &l.mask,
+                material: l.material,
+                tint: l.tint,
+                wear: l.wear,
+                library: l.library.iter().map(|t| t.as_deref()).collect(),
+                specular: l.specular.iter().map(|t| t.as_deref()).collect(),
+                normals: l.normals.iter().map(|t| t.as_deref()).collect(),
             })
             .collect();
         let shade = &self.shade;
-        let painted = paint_with(shade, self.item_normal.as_deref(), &layers, self.condition);
+        let painted = paint_with(
+            shade,
+            self.item_normal.as_deref(),
+            &layers,
+            self.condition,
+            self.tiling,
+        );
         let mut rgba = painted.colour;
         // Keep the cut-outs of the shade map.
         for (o, s) in rgba
@@ -1670,10 +1805,12 @@ mod tests {
         let grey = flat(4, 128);
         {
             let (material, appearance, texel, sampled) = (1, condition(160, 64), 96, 0.1170);
+            let (tint, wear) = crate::paint::apparel_tint(material, 1);
             let layer = PaintLayer {
                 mask: &full,
                 material,
-                colour: 1,
+                tint,
+                wear,
                 library: vec![Some(&grey); 4],
                 specular: vec![],
                 normals: vec![],

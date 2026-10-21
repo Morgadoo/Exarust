@@ -1,17 +1,20 @@
 //! Factory weapons: assembled from component models as a factory recipe and
 //! an item's seeds choose, shaped by the recipe's deforms and painted per
-//! material area like apparel.
+//! part region with each mask's area material, as the original's factory
+//! paint job does.
 
 use std::sync::Arc;
 
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use exa_formats::factory::{Built, ComponentBox, Factory, Generated, WeaponSpec, deform_positions};
-use exa_formats::objdb::{Appearance, Layer, Weapon};
+use exa_formats::factory::{
+    Built, ComponentBox, DEFAULT_METAL, Factory, Generated, WeaponSpec, deform_positions,
+};
+use exa_formats::objdb::{Appearance, Weapon};
 use exa_formats::weapon_stats::{self, StatBytes};
 
 use crate::PackKind;
-use crate::model::{Model, ModelLoader, ModelNode};
+use crate::model::{FactoryLayer, FactoryPaint, Model, ModelLoader, ModelNode};
 
 const CM_PER_METRE: f32 = 100.0;
 
@@ -72,14 +75,7 @@ impl ModelLoader<'_> {
             self.cache.factories.insert(key, f.clone());
             f
         };
-        let spec = weapon.map_or_else(
-            || WeaponSpec {
-                seeds: [0; 2],
-                quality: 0,
-                ..Default::default()
-            },
-            |w| w.spec(0),
-        );
+        let spec = weapon.map_or_else(WeaponSpec::default, |w| w.spec(DEFAULT_METAL));
         let built = factory.build(&spec);
         Some(((*factory).clone(), built))
     }
@@ -98,9 +94,9 @@ impl ModelLoader<'_> {
         } = &built.generated;
         let (quality, damage, dirt) = weapon.map_or((0, 0, 0), |w| (w.quality, w.damage, w.dirt));
 
-        // Load every chosen component and apply its own deforms, then take
-        // the box each attach mode reads. Components are cloned per item so
-        // deforms never leak into the shared models.
+        // Load every chosen component and apply its own deforms; the box each
+        // attach mode reads is the component node's stored one. Components
+        // are cloned per item so deforms never leak into the shared models.
         let mut meshes: Vec<Vec<Mesh>> = vec![Vec::new(); factory.parts.len()];
         let mut boxes = vec![ComponentBox::default(); factory.parts.len()];
         for (i, part) in factory.parts.iter().enumerate() {
@@ -113,6 +109,12 @@ impl ModelLoader<'_> {
                 continue;
             };
             let values = built.generated.deform.get(i).copied().unwrap_or([0.0; 3]);
+            if let Some(node) = component.nodes.iter().find(|n| !n.parts.is_empty()) {
+                boxes[i] = ComponentBox {
+                    centre: (node.bounds.0 * CM_PER_METRE).to_array(),
+                    half: (node.half_extents * CM_PER_METRE).to_array(),
+                };
+            }
             let mut loaded = Vec::new();
             for node in &component.nodes {
                 for (handle, _) in &node.parts {
@@ -125,7 +127,6 @@ impl ModelLoader<'_> {
                     loaded.push(mesh);
                 }
             }
-            boxes[i] = component_box(&loaded);
             meshes[i] = loaded;
         }
 
@@ -171,25 +172,36 @@ impl ModelLoader<'_> {
                     }
                 }
             }
-            let mut layers = [Layer::default(); 8];
-            for (k, &area) in variant.mask_areas.iter().enumerate() {
-                let Some(area) = area_materials.get(area as usize) else {
-                    continue;
-                };
-                layers[k] = Layer {
-                    mask: k as u8 + 1,
-                    random_set: 0,
-                    material: area.material,
-                    colour: area.colour,
-                };
-            }
-            let appearance = Appearance {
-                quality,
-                damage,
-                dirt,
+            // Masks 1–4 take their areas' materials; an area past the
+            // generated ones paints as SteelGen.
+            let layers = variant
+                .mask_areas
+                .iter()
+                .enumerate()
+                .map(|(k, &area)| {
+                    let m = area_materials.get(area as usize);
+                    FactoryLayer {
+                        mask: k as u8 + 1,
+                        material: m.map_or(0, |m| m.material),
+                        finish: m.map_or(0, |m| m.finish),
+                        colour: m.map_or(0, |m| m.colour),
+                    }
+                })
+                .collect();
+            let atlas = Vec2::new(factory.atlas[0] as f32, factory.atlas[1] as f32);
+            let paint = FactoryPaint {
+                stem: variant.model.clone(),
+                condition: Appearance {
+                    quality,
+                    damage,
+                    dirt,
+                    layers: Default::default(),
+                },
                 layers,
+                region_texels: atlas * Vec2::new(part.atlas[2], part.atlas[3]),
+                seed_b: built.seeds[1],
             };
-            let material = self.painted_factory(&variant.model.to_ascii_lowercase(), &appearance);
+            let material = self.painted_factory(&paint);
             let mut parts = Vec::new();
             for mesh in meshes[placed.part].drain(..) {
                 parts.push((self.meshes.add(mesh), material.clone()));
@@ -197,7 +209,8 @@ impl ModelLoader<'_> {
             let [rx, ry, rz] = placed.rotation;
             let transform = Transform {
                 translation: Vec3::from_array(placed.position) / CM_PER_METRE,
-                rotation: Quat::from_euler(EulerRot::YXZ, ry, rx, rz),
+                // The engine's Euler order: X, then Z, then Y.
+                rotation: Quat::from_euler(EulerRot::YZX, ry, rz, rx),
                 scale: Vec3::from_array(placed.scale),
             };
             let box_ = boxes[placed.part];
@@ -295,32 +308,6 @@ fn deform_mesh(mesh: &mut Mesh, d: &exa_formats::factory::Deform, value: f32) {
             c[2] / CM_PER_METRE,
         ];
     }
-}
-
-/// The box of a component's meshes after their deforms, centimetres.
-fn component_box(meshes: &[Mesh]) -> ComponentBox {
-    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
-    let mut any = false;
-    for mesh in meshes {
-        let Some(VertexAttributeValues::Float32x3(positions)) =
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
-        else {
-            continue;
-        };
-        for p in positions {
-            any = true;
-            for k in 0..3 {
-                min[k] = min[k].min(p[k] * CM_PER_METRE);
-                max[k] = max[k].max(p[k] * CM_PER_METRE);
-            }
-        }
-    }
-    if !any {
-        return ComponentBox::default();
-    }
-    let centre = std::array::from_fn(|k| (min[k] + max[k]) * 0.5);
-    let half = std::array::from_fn(|k| (max[k] - min[k]) * 0.5);
-    ComponentBox { centre, half }
 }
 
 #[cfg(test)]
