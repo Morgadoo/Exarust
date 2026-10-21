@@ -677,10 +677,13 @@ pub fn spawn_model_nodes(
                 .insert((light_bundle(light), light_source::LightSource::of(light)));
         }
         if let Some(light) = &node.voxel_light {
-            commands.entity(e).insert(exa_render::gi::VoxelLight::new(
-                light.color,
-                light.intensity,
-            ));
+            commands
+                .entity(e)
+                .insert(exa_render::gi::VoxelLight::from_record(
+                    light.color,
+                    light.intensity,
+                    light.radius,
+                ));
         }
         if let Some(size) = node.fire {
             fire::spawn_fire(commands, e, size);

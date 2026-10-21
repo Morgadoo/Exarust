@@ -3,6 +3,7 @@
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
 pub mod bound_sphere;
+pub mod camera;
 pub mod capture;
 pub mod cube_shadows;
 pub mod electricity;

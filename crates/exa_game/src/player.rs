@@ -1587,6 +1587,7 @@ pub(crate) fn chase_camera(
         t.translation += shake;
         if let Projection::Perspective(p) = projection.as_mut() {
             p.fov = zoom_fov(zoom, aspect);
+            exa_render::camera::CameraNode::with_fov(0.0).apply_planes(p);
         }
     }
 }

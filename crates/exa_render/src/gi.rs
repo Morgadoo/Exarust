@@ -217,18 +217,122 @@ pub struct GiRadius(pub f32);
 /// A voxel light (the original's `0x3D0C` node: a salve's, a power
 /// crystal's or embers' glow). Every step it adds its colour straight into
 /// the voxels around it; it never lights a surface directly.
+///
+/// The original's node keeps the base colour (`+0x1C8`), the current
+/// intensity (`+0x1D4`), the derived linear colour (`+0x1E8`), a node flag
+/// word (`+0x1D8`), the active radius (`+0x214`) and its base radius and
+/// intensity (`+0x230`, `+0x234`). The constructor only sets colour 1 and
+/// intensity 1; the file reader then fills the record's values, and
+/// activation copies the base radius to the active one.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct VoxelLight {
-    /// lin(colour)·√intensity·3.
+    /// The node's sRGB colour (`+0x1C8`).
+    pub color: [f32; 3],
+    /// The current intensity (`+0x1D4`): the colour counts by its square
+    /// root.
+    pub intensity: f32,
+    /// The base intensity (`+0x234`) the condition share is taken from.
+    pub base_intensity: f32,
+    /// The base radius (`+0x230`), metres.
+    pub radius: f32,
+    /// The active radius (`+0x214`), metres; activation copies the base
+    /// radius here.
+    pub active_radius: f32,
+    /// lin(colour)·√intensity·3 (×0.6 on the legacy path).
     pub colour: Vec3,
+    /// The node flag word (`+0x1D8`): bit 2 marks the colour changed, bit 1
+    /// the light activated.
+    pub flags: u32,
+}
+
+/// The node flag word's bits a voxel light sets.
+pub mod voxel_flags {
+    /// The colour was recomputed ([`VoxelLight::colour_update`]).
+    pub const COLOUR_DIRTY: u32 = 4;
+    /// The light is active ([`VoxelLight::activate`]).
+    pub const ACTIVE: u32 = 2;
 }
 
 impl VoxelLight {
     /// The light of a node's sRGB colour and intensity: the intensity
     /// counts by its square root, ×3 in the original's linear workflow.
     pub fn new(srgb: [f32; 3], intensity: f32) -> Self {
+        let mut light = Self {
+            color: srgb,
+            intensity,
+            base_intensity: intensity,
+            radius: 0.0,
+            active_radius: 0.0,
+            colour: Vec3::ZERO,
+            flags: 0,
+        };
+        light.colour_update(false);
+        light
+    }
+
+    /// A light loaded from a node's record: its colour, intensity and
+    /// stored radius, active from the start (the reader fills the node's
+    /// fields and the node is then added to its sector).
+    pub fn from_record(srgb: [f32; 3], intensity: f32, radius: f32) -> Self {
+        let mut light = Self::new(srgb, intensity);
+        light.radius = radius;
+        light.activate();
+        light
+    }
+
+    /// The colour the original derives for `srgb` and `intensity`: the
+    /// linear colour times √intensity × 3, or on its legacy path times 0.6
+    /// in double precision.
+    pub fn colour_for(srgb: [f32; 3], intensity: f32, legacy: bool) -> Vec3 {
+        let linear = linear_rgb(srgb);
+        let root = intensity.max(0.0).sqrt();
+        let gain = if legacy {
+            // SQRTSS, then a double-precision ×0.6, then back to float.
+            (f64::from(root) * 0.6) as f32
+        } else {
+            root * VOXEL_LIGHT_GAIN
+        };
+        linear * gain
+    }
+
+    /// Recomputes the derived colour from the node's colour and current
+    /// intensity, as the original's colour update does, and marks the node's
+    /// colour dirty. The colour update also clears the node's `+0xE4`
+    /// field, which no Exarust reader uses.
+    pub fn colour_update(&mut self, legacy: bool) {
+        self.colour = Self::colour_for(self.color, self.intensity, legacy);
+        self.flags |= voxel_flags::COLOUR_DIRTY;
+    }
+
+    /// Activates the light: recomputes the colour, copies the base radius
+    /// to the active radius and marks the node active.
+    pub fn activate(&mut self) {
+        self.colour_update(false);
+        self.active_radius = self.radius;
+        self.flags |= voxel_flags::ACTIVE;
+    }
+
+    /// Changes the current intensity at run time: the base intensity moves
+    /// with it (the original's effects write the node's intensity and call
+    /// the colour update). The colour is recomputed on the modern path.
+    pub fn set_intensity(&mut self, intensity: f32) {
+        self.intensity = intensity;
+        self.base_intensity = intensity;
+        self.colour_update(false);
+    }
+
+    /// A copy of another node's values, as the original's node clone copies
+    /// them: colour, current intensity, base intensity, radii and the
+    /// derived linear colour. The clone's flags are its own.
+    pub fn copied_from(&self) -> Self {
         Self {
-            colour: linear_rgb(srgb) * intensity.max(0.0).sqrt() * VOXEL_LIGHT_GAIN,
+            color: self.color,
+            intensity: self.intensity,
+            base_intensity: self.base_intensity,
+            radius: self.radius,
+            active_radius: self.active_radius,
+            colour: self.colour,
+            flags: 0,
         }
     }
 }
@@ -1324,6 +1428,55 @@ mod tests {
         let spent = VoxelLight::new([0.2157, 0.6784, 1.0], 16.0 * 0.0044);
         assert!((spent.colour.z - 12.0 * 0.0044f32.sqrt()).abs() < 1e-3);
         assert_eq!(VoxelLight::new([1.0; 3], -1.0).colour, Vec3::ZERO);
+    }
+
+    #[test]
+    fn voxel_light_legacy_path_uses_six_tenths_in_double() {
+        // √16 × 0.6 = 2.4, where the modern path gives × 3 = 12.
+        let legacy = VoxelLight::colour_for([1.0; 3], 16.0, true);
+        let modern = VoxelLight::colour_for([1.0; 3], 16.0, false);
+        assert!((legacy.x - 2.4).abs() < 1e-6);
+        assert!((modern.x - 12.0).abs() < 1e-6);
+        // √2 × 0.6 is worked out as a double and rounded once.
+        let root_two = (f64::from(2f32.sqrt()) * 0.6) as f32;
+        assert_eq!(VoxelLight::colour_for([1.0; 3], 2.0, true).x, root_two);
+    }
+
+    #[test]
+    fn voxel_light_activation_copies_its_base_radius_and_flags() {
+        let mut light = VoxelLight::from_record([1.0, 0.5, 0.25], 4.0, 3.5);
+        assert_eq!(light.radius, 3.5);
+        assert_eq!(light.active_radius, 3.5);
+        assert_eq!(light.base_intensity, 4.0);
+        assert_eq!(light.flags, voxel_flags::ACTIVE | voxel_flags::COLOUR_DIRTY);
+        // A new colour update marks the colour but leaves the light active.
+        light.flags = 0;
+        light.colour_update(false);
+        assert_eq!(light.flags, voxel_flags::COLOUR_DIRTY);
+        // A run-time intensity change recomputes the colour: √9 × 3.
+        light.set_intensity(9.0);
+        assert_eq!(light.base_intensity, 9.0);
+        assert!((light.colour.z - (9f32.sqrt() * 3.0) * linear_rgb([0.25; 3]).z).abs() < 1e-6);
+        // Activation after a radius change copies the new base radius.
+        light.radius = 7.0;
+        light.activate();
+        assert_eq!(light.active_radius, 7.0);
+        assert_eq!(light.flags, voxel_flags::ACTIVE | voxel_flags::COLOUR_DIRTY);
+    }
+
+    #[test]
+    fn voxel_light_clone_takes_the_master_values() {
+        let mut master = VoxelLight::from_record([0.2, 0.4, 1.0], 16.0, 2.0);
+        master.flags = 0xFFFF;
+        let copy = master.copied_from();
+        assert_eq!(copy.color, master.color);
+        assert_eq!(copy.intensity, 16.0);
+        assert_eq!(copy.base_intensity, 16.0);
+        assert_eq!(copy.radius, 2.0);
+        assert_eq!(copy.active_radius, 2.0);
+        assert_eq!(copy.colour, master.colour);
+        // The clone's flag word is its own, not the master's.
+        assert_eq!(copy.flags, 0);
     }
 
     #[test]
