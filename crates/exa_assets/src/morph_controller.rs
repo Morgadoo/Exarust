@@ -2024,6 +2024,16 @@ pub fn apply_morph_targets(
     (base, positions)
 }
 
+/// Whether all three points of a morph control sit within the original's
+/// squared-distance epsilon (1e-8) of the base vertex: such a control has
+/// no area to bind the vertex to and the start skips it.
+pub fn degenerate_control(points: [[f32; 3]; 3], base: [f32; 3], epsilon: f32) -> bool {
+    points.iter().all(|p| {
+        let d = [p[0] - base[0], p[1] - base[1], p[2] - base[2]];
+        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= epsilon
+    })
+}
+
 #[cfg(test)]
 mod registration_tests {
     use super::*;
@@ -2039,6 +2049,21 @@ mod registration_tests {
     }
 
     /// Ascending by number, ties stable: 5, 1, 3, 2 becomes 1, 2, 3, 5.
+    /// A control whose three points all sit on the vertex has no area; one
+    /// point away breaks it. The epsilon is the original's 1e-8.
+    #[test]
+    fn a_degenerate_control_has_no_area() {
+        let p = [1.0, 2.0, 3.0];
+        assert!(degenerate_control([p, p, p], p, 1e-8));
+        let mut away = p;
+        away[0] += 1e-3;
+        assert!(!degenerate_control([p, p, away], p, 1e-8));
+        let mut near = p;
+        near[1] += 2e-4;
+        assert!(!degenerate_control([p, p, p], near, 1e-8));
+        assert!(degenerate_control([p, near, p], p, 1e-8));
+    }
+
     #[test]
     fn parts_are_ordered_by_their_numbers() {
         let names: [&[u8]; 5] = [b"05Chest", b"01Pelvis", b"Hair", b"03Leg", b"02Foot"];

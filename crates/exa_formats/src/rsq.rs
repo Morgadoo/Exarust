@@ -663,6 +663,23 @@ impl Reader<'_> {
     }
 }
 
+/// Sorts a node's children by the absolute x of their translation, as the
+/// motion library's loader sorts every subtree: a selection sort taking the
+/// smallest absolute x for each next slot (a tie keeps the current best).
+/// The skeleton's clips are indexed by bone number, so the order matters
+/// only where the game walks a node's children.
+pub fn sort_by_abs_x<T>(items: &mut [T], x: impl Fn(&T) -> f32) {
+    for slot in 0..items.len() {
+        let mut best = slot;
+        for i in slot + 1..items.len() {
+            if x(&items[i]).abs() < x(&items[best]).abs() {
+                best = i;
+            }
+        }
+        items.swap(slot, best);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1190,5 +1207,26 @@ mod tests {
             let _ = read_bodies(&full[..n]);
         }
         assert!(read_bodies(&full).is_ok());
+    }
+
+    /// The loader's child sort: by absolute x, smallest first, a tie
+    /// keeping the earlier child.
+    #[test]
+    fn children_sort_by_absolute_x() {
+        let mut v = [
+            (3.0f32, 'a'),
+            (-1.0, 'b'),
+            (2.0, 'c'),
+            (-4.0, 'd'),
+            (0.5, 'e'),
+        ];
+        sort_by_abs_x(&mut v, |p| p.0);
+        assert_eq!(
+            v.iter().map(|p| p.1).collect::<Vec<_>>(),
+            ['e', 'b', 'c', 'a', 'd']
+        );
+        let mut tie = [(1.0f32, 'x'), (-1.0, 'y')];
+        sort_by_abs_x(&mut tie, |p| p.0);
+        assert_eq!(tie[0].1, 'x');
     }
 }
