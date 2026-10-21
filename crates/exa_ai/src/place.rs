@@ -3,28 +3,38 @@
 //!
 //! The close term uses the other fighter's reach plus 150 cm. Inside that
 //! limit, with `t` the fraction still left, it is `(2 − t) · t · 4`.
-//! Outside a fight it doubles, and the strike term is 0. In a fight the
-//! strike term uses the observer's reach and step: the square of distance
-//! over the ideal while closer than the ideal, 1 until one step past it,
-//! then a fade that is 0 at 600 cm. A large opponent's ideal is 50 cm
-//! longer. Wanting melee doubles the strike term.
+//! Outside a fight it doubles, and the strike and approach terms are 0. In
+//! a fight the strike term uses the observer's reach and step: the square
+//! of distance over the ideal while closer than the ideal, 1 until one step
+//! past it, then a fade that is 0 at 600 cm. A large opponent's ideal is
+//! 50 cm longer. Wanting melee doubles the strike term.
 //!
 //! A live side swing scores danger from how soon the sweep reaches the
 //! candidate: 4 at the edge, down by one three-hundredth of the
 //! milliseconds until 900 ms, then 1 until 10000 ms. A live thrust scores
 //! 1 inside its arc and 8 outside it, while the candidate is closer than
-//! (skill + 3) × 20 plus the opponent's reach. Skill and feral then scale
-//! that danger, and feral halves the close term at 1. A dull fighter
-//! scores no danger and skips that scale. The approach term eases toward
-//! the strike ideal and is 0 past a band of 100 cm, or 150 cm when wide,
-//! plus (1 − skill) × 200 cm. A recovering swing subtracts 1 from the
-//! close term, not below 0, and multiplies the approach by 4 at skill 0.
-//! A weapon hand at phase 0.4 or later sets one arc edge. When the
+//! (skill + 3) × 20 plus the opponent's reach. The danger is scored in and
+//! out of a fight. Skill and feral then scale it, and feral halves the
+//! close term at 1. A dull fighter scores no danger and skips that scale.
+//! The approach term peaks at the strike ideal: inside it the fraction is
+//! the distance over the ideal (eased when wide), past it the fraction
+//! falls to 0 over a band of 100 cm, or 150 cm when wide, plus
+//! (1 − skill) × 200 cm; a fraction over 0.1 becomes `1.5·g²` with
+//! `g = (3 − 2f)·f²`. A recovering swing subtracts 1 from the close term,
+//! not below 0, and multiplies the approach by 4 at skill 0. A side swing
+//! that never arrives multiplies it by skill + 2, and a thrust whose arc
+//! holds the observer multiplies it by twice the opponent's skill plus 1,
+//! doubled. A weapon hand at phase 0.4 or later sets one arc edge. When the
 //! observer is not attacking, the approach is multiplied by one more than
-//! how far the candidate is from straight ahead. A press multiplies the
-//! strike and the approach by one plus ten times how far the opponent
-//! faces away. An action outside a swing recovers while the body's idle
-//! stamp is above the clock. A blow does not knock a fighter out.
+//! how far the candidate lies from the observer's heading. A press
+//! multiplies the strike and the approach by one plus ten times how far
+//! the candidate lies from the opponent's facing. An action outside a swing
+//! recovers while the body's idle stamp is above the clock. A blow does not
+//! knock a fighter out.
+//!
+//! The original computes several of these steps in double precision (the
+//! phase thresholds, the wrap of an angle, the danger ramp, the thrust wait,
+//! the approach's 0.1 floor); they are kept so here.
 
 /// The strike term is 0 at this distance (cm).
 pub const PLACE_FADE_CM: f32 = 600.0;
@@ -37,17 +47,17 @@ const LARGE_CM: f32 = 50.0;
 /// A full turn, the f32 of two pi. A sweep that crosses the cut measures
 /// the rest of the turn with it.
 const FULL_TURN: f32 = f32::from_bits(0x40c90fdb);
-/// One three-hundredth. Danger falls by this much per millisecond.
-const DANGER_PER_MS: f32 = f32::from_bits(0x3b5a740e);
-/// Below this arrival the danger ramps down from 4. At it, danger is 1.
-const SOON_MS: i64 = 901;
-/// At this arrival and later, a side swing scores no danger.
-const GONE_MS: i64 = 10_001;
+/// Danger falls by one three-hundredth per millisecond (double precision).
+const DANGER_PER_MS: f64 = 1.0 / 300.0;
+/// Above this arrival the danger is 1 rather than the ramp from 4.
+const SOON_MS: i64 = 900;
+/// Above this arrival a side swing scores no danger.
+const GONE_MS: i64 = 10_000;
 /// Arrival reported when the body is not sweeping, or the arc has no side.
 const NOT_SWEEPING_MS: i64 = 100_000;
 /// Degrees to radians, the f32 of pi over 180.
 const DEG: f32 = f32::from_bits(0x3c8efa35);
-/// Pi, used as the wrap bound and as a yaw that faces straight back.
+/// Pi, used as a yaw that faces straight back.
 const PI: f32 = f32::from_bits(0x40490fdb);
 /// A flat offset shorter than this, squared, has yaw 0.
 const YAW_EPS: f32 = f32::from_bits(0x322bcc77);
@@ -67,8 +77,8 @@ pub struct Spot {
     pub other_large: bool,
     /// The observer wants melee, which doubles the strike term.
     pub melee: bool,
-    /// A fight score. Otherwise the strike term is cleared and the close
-    /// term doubles.
+    /// A fight score. Otherwise the strike and approach terms are cleared
+    /// and the close term doubles; the danger stays.
     pub fight: bool,
     /// The observer's feral level. At 1 the close term is halved and the
     /// danger scale is 0.
@@ -80,11 +90,15 @@ pub struct Spot {
     /// The observer's approach band is 150 cm instead of 100, and the
     /// inside fraction is eased.
     pub wide: bool,
-    /// Cosine of the candidate off the opponent's facing.
+    /// Cosine of the candidate (seen from the opponent) off the observer's
+    /// heading. 1 is along it.
+    pub observer_ahead: f32,
+    /// Cosine of the candidate (seen from the opponent) off the opponent's
+    /// facing.
     pub other_ahead: f32,
-    /// The opponent's condition is the attacking one, which skips the
-    /// facing scale of the approach.
-    pub other_attacking: bool,
+    /// The observer's body is in the attack state, which skips the heading
+    /// scale of the approach.
+    pub in_attack: bool,
     /// Flag bit 4. Scales the strike and the approach by the opponent's facing.
     pub presses: bool,
     /// The opponent's combat skill, used by a thrust's approach scale.
@@ -111,10 +125,11 @@ pub struct Blow {
     pub committed: bool,
     /// The body is in the sweep the arrival time reads.
     pub sweeping: bool,
-    /// A held weapon forces a side swing's range check on.
+    /// The observer is locked onto the opponent (its grip link is set),
+    /// which forces a side swing's range check on.
     pub forced_range: bool,
-    /// The observer's measured point lies inside the thrust's arc. A thrust
-    /// inside it and inside reach raises the approach by `(2·skill + 1)·2`.
+    /// The observer's own bearing from the opponent lies in the thrust's
+    /// arc ([`between`]). That is what lets a thrust scale the approach.
     pub origin_in_arc: bool,
 }
 
@@ -135,7 +150,7 @@ impl Default for Blow {
     }
 }
 
-/// The two distance terms.
+/// The distance terms.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlaceScore {
     pub close: f32,
@@ -152,130 +167,175 @@ fn ideal(spot: Spot) -> f32 {
     ideal
 }
 
-/// A swing counts once its phase is past 0.3 minus 0.15 of skill, or when
-/// it is committed.
+/// A swing counts once its phase is past 0.3 minus 0.15 of skill (in
+/// double precision), or when it is committed.
 pub fn blow_is_live(phase: f32, skill: f32, committed: bool) -> bool {
-    phase > 0.3 - skill * 0.15 || committed
+    let threshold = 0.3 - f64::from(skill) * 0.15;
+    threshold < f64::from(phase) || committed
 }
 
-/// The original's `between` test for an angle, an arc end and an arc
-/// start: true when the angle lies outside the end-to-start interval.
+/// The original's arc test for an angle, an arc end and an arc start: true
+/// when the angle lies in the arc that runs up from `start` to `end`,
+/// through the ±π cut when `start` is above `end`. A thrust's published
+/// arc runs from 50° left of the heading round the back to 50° right, so
+/// for a thrust "true" means behind it.
 pub fn between(end: f32, start: f32, angle: f32) -> bool {
     if angle < start {
-        angle < end && end < start
+        angle < end && start > end
     } else {
-        !(start <= end && end <= angle)
+        start > end || angle < end
     }
 }
 
 fn side_gap(kind: i32, start: f32, end: f32, angle: f32) -> f32 {
-    if end <= start {
-        if angle < end || angle > start {
-            10_000.0
+    if end > start {
+        if angle > end {
+            if kind == 1 {
+                angle - end
+            } else {
+                (FULL_TURN - angle) + start
+            }
+        } else if angle > start {
+            1_000.0
         } else if kind == 1 {
-            angle - end
+            (FULL_TURN - end) + angle
         } else {
             start - angle
         }
-    } else if angle <= end {
-        if angle <= start {
-            if kind == 1 {
-                (FULL_TURN - end) + angle
-            } else {
-                start - angle
-            }
-        } else {
-            1_000.0
-        }
+    } else if angle < end || angle > start {
+        10_000.0
     } else if kind == 1 {
         angle - end
     } else {
-        (FULL_TURN - angle) + start
+        start - angle
     }
 }
 
-/// The milliseconds until the sweep of a live side swing reaches `angle`,
-/// or [`NOT_SWEEPING_MS`]. Before a phase of 0.4 the wait adds
-/// `(0.4 − phase)·1.25` (in double precision); the gap itself counts an
-/// eighth of a millisecond per unit. A thrust's wait is `(0.6 − phase)·1.5`,
-/// floored at zero.
+/// The milliseconds until the sweep of a live swing reaches `angle`, or
+/// [`NOT_SWEEPING_MS`]. A side swing's gap counts an eighth of a
+/// millisecond per unit; at a phase of 0.4 or less the wait adds
+/// `(0.4 − phase)·1.25`, summed in double precision. A thrust's wait is
+/// `(0.6 − phase)·1.5`. A negative wait is 0; the rest is rounded to the
+/// nearest (ties to even).
 pub fn arrival_ms(blow: Blow) -> i64 {
     if !blow.sweeping {
         return NOT_SWEEPING_MS;
     }
-    if blow.kind == 3 {
-        let wait = (0.6 - f64::from(blow.phase)) * 1.5;
-        return if wait >= 0.0 {
-            (wait as f32 * 1000.0).round_ties_even() as i64
+    let wait = match blow.kind {
+        1 | 2 => {
+            let raw = side_gap(blow.kind, blow.arc_start, blow.arc_end, blow.angle);
+            if f64::from(blow.phase) > 0.4 {
+                raw * 0.125
+            } else {
+                ((0.4 - f64::from(blow.phase)) * 1.25 + f64::from(raw * 0.125)) as f32
+            }
+        }
+        3 => ((0.6 - f64::from(blow.phase)) * 1.5) as f32,
+        _ => return NOT_SWEEPING_MS,
+    };
+    if wait < 0.0 {
+        return 0;
+    }
+    // The instruction's 64-bit result is cut to 32 bits.
+    i64::from(((wait * 1000.0).round_ties_even() as i64) as i32)
+}
+
+/// How a live blow scales the approach term.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ApproachScale {
+    Keep,
+    /// `factor · approach`.
+    By(f32),
+    /// `factor · approach · 2`.
+    Doubled(f32),
+}
+
+/// What a live blow adds to the score: its danger before the skill and
+/// feral scale, and what it does to the approach term.
+fn blow_terms(distance_cm: f32, spot: Spot) -> (f32, ApproachScale) {
+    let blow = spot.blow;
+    if !(1..=3).contains(&blow.kind) || !blow_is_live(blow.phase, blow.skill, blow.committed) {
+        return (0.0, ApproachScale::Keep);
+    }
+    let gate = (blow.skill + 3.0) * 20.0 + spot.other_reach_cm;
+    if blow.kind < 3 {
+        if !(gate > distance_cm || blow.forced_range) {
+            return (0.0, ApproachScale::Keep);
+        }
+        let ms = arrival_ms(blow);
+        return if ms > GONE_MS {
+            (0.0, ApproachScale::By(blow.skill * 1.0 + 2.0))
+        } else if ms > SOON_MS {
+            (1.0, ApproachScale::Keep)
         } else {
-            0
+            (
+                (4.0 - ms as f64 * DANGER_PER_MS) as f32,
+                ApproachScale::Keep,
+            )
         };
     }
-    if !(1..3).contains(&blow.kind) {
-        return NOT_SWEEPING_MS;
+    // A thrust or guard: inside the gate the candidate's side of the arc
+    // decides the danger, and the candidate outside the arc stops the
+    // approach scale, which otherwise needs the observer in the arc.
+    let mut scales = blow.origin_in_arc;
+    let mut danger = 0.0;
+    if gate > distance_cm {
+        if between(blow.arc_end, blow.arc_start, blow.angle) {
+            danger = 1.0;
+        } else {
+            danger = 8.0;
+            scales = false;
+        }
     }
-    let raw = side_gap(blow.kind, blow.arc_start, blow.arc_end, blow.angle);
-    let gap = if blow.phase <= 0.4 {
-        (0.4 - blow.phase) * 1.25 + raw * 0.125
+    let scale = if scales {
+        ApproachScale::Doubled(spot.other_skill * 2.0 + 1.0)
     } else {
-        raw * 0.125
+        ApproachScale::Keep
     };
-    if gap >= 0.0 {
-        (gap * 1000.0).round_ties_even() as i64
-    } else {
-        0
-    }
+    (danger, scale)
 }
 
 /// Danger before the skill and feral scale. A quiet or finished swing is 0.
 pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
-    if !blow_is_live(blow.phase, blow.skill, blow.committed) {
-        return 0.0;
-    }
-    let limit = (blow.skill + 3.0) * 20.0 + reach_cm;
-    if (1..3).contains(&blow.kind) && (distance_cm < limit || blow.forced_range) {
-        let ms = arrival_ms(blow);
-        if ms < GONE_MS {
-            if ms < SOON_MS {
-                return 4.0 - (ms as f32) * DANGER_PER_MS;
-            }
-            return 1.0;
-        }
-    }
-    if (1..3).contains(&blow.kind) {
-        return 0.0;
-    }
-    if blow.kind == 3 && distance_cm < limit {
-        if between(blow.arc_end, blow.arc_start, blow.angle) {
-            1.0
-        } else {
-            8.0
-        }
-    } else {
-        0.0
-    }
+    let spot = Spot {
+        other_reach_cm: reach_cm,
+        my_reach_cm: 0.0,
+        other_size: 1.0,
+        my_step_cm: 0.0,
+        other_large: false,
+        melee: false,
+        fight: true,
+        feral: 0.0,
+        dull: false,
+        blow,
+        wide: false,
+        observer_ahead: 1.0,
+        other_ahead: 1.0,
+        in_attack: true,
+        presses: false,
+        other_skill: 0.0,
+    };
+    blow_terms(distance_cm, spot).0
 }
 
 fn approach_term(distance_cm: f32, ideal: f32, skill: f32, wide: bool) -> f32 {
     let band = (if wide { 150.0 } else { 100.0 }) + (1.0 - skill) * 200.0;
-    let mut fraction = if ideal < distance_cm {
-        if ideal + band <= distance_cm {
-            0.0
-        } else {
-            (band - (ideal - distance_cm).abs()) / band
-        }
-    } else {
-        let mut fraction = (ideal - distance_cm).abs() / ideal;
+    let fraction = if ideal >= distance_cm {
+        let mut fraction = (ideal - (ideal - distance_cm).abs()) / ideal;
         if wide {
             fraction *= 2.0 - fraction;
         }
         fraction
-    };
-    if fraction <= 0.1 {
-        0.0
+    } else if ideal + band > distance_cm {
+        (band - (ideal - distance_cm).abs()) / band
     } else {
-        fraction = (3.0 - fraction * 2.0) * fraction * fraction;
-        fraction * fraction * 1.5
+        0.0
+    };
+    if f64::from(fraction) > 0.1 {
+        let eased = (3.0 - 2.0 * fraction) * (fraction * fraction);
+        eased * eased * 1.5
+    } else {
+        0.0
     }
 }
 
@@ -301,7 +361,9 @@ pub struct Swing {
     pub held: bool,
     /// The swing is recovering.
     pub recovering: bool,
-    /// The weapon hand. At phase 0.4 or later it sets one arc edge.
+    /// The weapon hand. At phase 0.4 or later it sets one arc edge. The
+    /// original keeps the edge it last published when no part is the hand;
+    /// Exarust uses the heading then.
     pub hand: Option<Hand>,
     /// The idle clock an action outside a swing is compared with.
     pub idle_clock: u32,
@@ -318,15 +380,16 @@ pub struct Arc {
     pub look: f32,
 }
 
-fn wrap(mut angle: f32) -> f32 {
-    if angle >= -PI {
-        if angle > PI {
-            angle -= FULL_TURN;
-        }
+/// Bring an angle back into ±π by one turn, testing the bounds in double
+/// precision.
+fn wrap(angle: f32) -> f32 {
+    if f64::from(angle) < -std::f64::consts::PI {
+        angle + FULL_TURN
+    } else if f64::from(angle) > std::f64::consts::PI {
+        angle - FULL_TURN
     } else {
-        angle += FULL_TURN;
+        angle
     }
-    angle
 }
 
 fn hand_bearing(hand: Hand) -> f32 {
@@ -353,10 +416,10 @@ fn hand_bearing(hand: Hand) -> f32 {
 }
 
 fn arc_mid(start: f32, end: f32) -> f32 {
-    let span = if start <= PI {
-        end - start
-    } else {
+    let span = if f64::from(start) > std::f64::consts::PI {
         end + FULL_TURN + start
+    } else {
+        end - start
     };
     let mut mid = span * 0.5 + start;
     if FULL_TURN < mid {
@@ -376,35 +439,38 @@ pub fn publish_arc(swing: Swing) -> Arc {
     }
     let offset = |degrees: f32| wrap(swing.heading + DEG * degrees);
     let hand_edge = swing.hand.map(hand_bearing).unwrap_or(swing.heading);
+    let late = !(f64::from(swing.phase) < 0.4);
     let (kind, start, end, look) = if !swing.armed {
         let kind = if swing.recovering { 4 } else { 3 };
         (kind, offset(110.0), offset(-110.0), look)
     } else if swing.action == 11 || swing.action == 12 {
         let kind = if swing.recovering {
             4
-        } else if swing.action != 11 || swing.phase >= 0.3 {
-            3
-        } else {
+        } else if swing.action == 11 && f64::from(swing.phase) < 0.3 {
             0
-        };
-        (kind, offset(50.0), offset(-50.0), look)
-    } else if (8..=10).contains(&swing.action) {
-        let kind = if swing.recovering { 4 } else { 2 };
-        let end = offset(-120.0);
-        let start = if swing.phase >= 0.4 {
-            hand_edge
         } else {
-            offset(100.0)
+            3
         };
-        (kind, start, end, arc_mid(start, end))
+        let (start, end) = if f64::from(swing.phase) < 0.2 {
+            (offset(50.0), offset(-50.0))
+        } else {
+            // From a phase of 0.2 the edges are built in double precision
+            // with a narrowing factor of 0, which leaves them at ±50°.
+            let tilt = (f64::from(swing.phase) - 0.2) * 0.0;
+            let edge =
+                |degrees: f64| wrap(swing.heading + (f64::from(DEG) * (degrees - tilt)) as f32);
+            (edge(50.0), edge(-50.0))
+        };
+        (kind, start, end, look)
     } else if (5..=7).contains(&swing.action) {
         let kind = if swing.recovering { 4 } else { 1 };
         let start = offset(100.0);
-        let end = if swing.phase >= 0.4 {
-            hand_edge
-        } else {
-            offset(-140.0)
-        };
+        let end = if late { hand_edge } else { offset(-140.0) };
+        (kind, start, end, arc_mid(start, end))
+    } else if (8..=10).contains(&swing.action) {
+        let kind = if swing.recovering { 4 } else { 2 };
+        let end = offset(-120.0);
+        let start = if late { hand_edge } else { offset(100.0) };
         (kind, start, end, arc_mid(start, end))
     } else {
         let kind = if swing.idle_stamp > swing.idle_clock {
@@ -424,87 +490,67 @@ pub fn publish_arc(swing: Swing) -> Arc {
 
 /// Score a candidate `distance_cm` from the other fighter.
 ///
-/// The close term is the one that survives all the original's additions:
-/// `(2 − t)·t·4` with `t = (reach + 150 − distance)/(reach + 150)` inside
-/// the reach band, doubled outside a fight. The strike term peaks at the
-/// observer's reach plus a size correction and a large opponent's 50 cm,
-/// is 1 for one step past that and falls to 0 at 600 cm. A live side swing
-/// scores danger by its time to impact; a live thrust scores 1 inside its
-/// arc and 8 outside it. The approach term is the banded cubic. The
-/// opponent's feral level halves the close term and scales the danger; the
-/// observer's "dull" rule bit clears the danger. Skill scales the danger
-/// by `skill·0.5 + 0.5`.
+/// The close term is the one that survives all the original's additions
+/// (the personal-space, crossing and approach increments it adds first are
+/// overwritten): `(2 − t)·t·4` with `t = (reach + 150 − distance)/(reach +
+/// 150)` inside the reach band, doubled outside a fight. The strike term
+/// peaks at the observer's reach plus a size correction and a large
+/// opponent's 50 cm, is 1 for one step past that and falls to 0 at 600 cm.
+/// A live side swing scores danger by its time to impact; a live thrust
+/// scores 1 inside its arc and 8 outside it. The approach term is the
+/// banded cubic. The observer's feral level halves the close term and
+/// scales the danger; the observer's "dull" rule bit clears the danger.
+/// Skill scales the danger by `skill·0.5 + 0.5`.
 pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let limit = spot.other_reach_cm + CLOSE_PAST;
-    let mut close = if distance_cm <= limit {
+    let mut close = if limit < distance_cm {
+        0.0
+    } else {
         let t = (limit - distance_cm) / limit;
         (2.0 - t) * t * 4.0
-    } else {
-        0.0
     };
     let ideal = ideal(spot);
-    let mut strike = if distance_cm < ideal {
-        let ratio = distance_cm / ideal;
-        ratio * ratio
-    } else {
-        let end = ideal + spot.my_step_cm;
-        if distance_cm < end {
-            1.0
+    let (mut strike, mut approach) = if spot.fight {
+        let mut strike = if ideal > distance_cm {
+            let ratio = distance_cm / ideal;
+            ratio * ratio
         } else {
-            1.0 - (distance_cm - end) / (PLACE_FADE_CM - end)
-        }
-    };
-    if spot.melee {
-        strike *= 2.0;
-    }
-    let mut approach = if spot.fight {
-        approach_term(distance_cm, ideal, spot.blow.skill, spot.wide)
+            let end = ideal + spot.my_step_cm;
+            if end > distance_cm {
+                1.0
+            } else {
+                1.0 - (distance_cm - end) / (PLACE_FADE_CM - end)
+            }
+        };
+        strike *= if spot.melee { 2.0 } else { 1.0 };
+        (
+            strike,
+            approach_term(distance_cm, ideal, spot.blow.skill, spot.wide),
+        )
     } else {
-        0.0
+        (0.0, 0.0)
     };
-    let mut danger = if spot.fight {
-        attack_danger(distance_cm, spot.other_reach_cm, spot.blow)
+    let mut danger = 0.0;
+    if spot.blow.kind == 4 {
+        // Recovering: one less close term, not below 0, and the approach
+        // pulled in at twice the skill plus two.
+        close = (close - 1.0).max(0.0);
+        approach = (spot.blow.skill * 2.0 + 2.0) * approach * 2.0;
     } else {
-        0.0
-    };
-    if spot.fight {
-        let live = blow_is_live(spot.blow.phase, spot.blow.skill, spot.blow.committed);
-        let gate = (spot.blow.skill + 3.0) * 20.0 + spot.other_reach_cm;
-        match spot.blow.kind {
-            // Recovering: subtract one from the close term, not below 0,
-            // and pull the approach in at twice the skill plus two.
-            4 => {
-                close = (close - 1.0).max(0.0);
-                approach *= (spot.blow.skill * 2.0 + 2.0) * 2.0;
-            }
-            // A side swing whose sweep never arrives still asks for a
-            // cautious approach.
-            1 | 2 if live && (distance_cm < gate || spot.blow.forced_range) => {
-                if arrival_ms(spot.blow) >= GONE_MS {
-                    danger = 0.0;
-                    approach *= spot.blow.skill + 2.0;
-                }
-            }
-            // A thrust or guard.
-            3 if live && distance_cm < gate => {
-                if between(spot.blow.arc_end, spot.blow.arc_start, spot.blow.angle) {
-                    danger = 1.0;
-                    if spot.blow.origin_in_arc {
-                        approach *= (spot.other_skill * 2.0 + 1.0) * 2.0;
-                    }
-                } else {
-                    danger = 8.0;
-                }
-            }
-            _ => {}
+        let (blow_danger, scale) = blow_terms(distance_cm, spot);
+        danger = blow_danger;
+        match scale {
+            ApproachScale::Keep => {}
+            ApproachScale::By(factor) => approach = factor * approach,
+            ApproachScale::Doubled(factor) => approach = factor * approach * 2.0,
         }
     }
     if spot.presses {
         let scale = (1.0 - spot.other_ahead) * 10.0 + 1.0;
-        strike *= scale;
-        approach *= scale;
-    } else if !spot.other_attacking {
-        approach *= (1.0 - spot.other_ahead) + 1.0;
+        strike = scale * strike;
+        approach = scale * approach;
+    } else if !spot.in_attack {
+        approach = (1.0 + (1.0 - spot.observer_ahead)) * approach;
     }
     if !spot.fight {
         close *= 2.0;
@@ -515,7 +561,7 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         danger = 0.0;
     } else {
         let skill_scale = spot.blow.skill * 0.5 + 0.5;
-        danger *= skill_scale * (1.0 - spot.feral);
+        danger = skill_scale * ((1.0 - spot.feral) * danger);
         close *= 1.0 - spot.feral * 0.5;
     }
     PlaceScore {
@@ -526,20 +572,17 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     }
 }
 
-/// The bearing of the observer's measured point as seen from the candidate
-/// (radians), mapped to `[−π, 0)` for a positive bearing and `[0, π]` for a
-/// negative one.
+/// The bearing the score records for a candidate: the yaw of the candidate
+/// as seen from the opponent's measured point, turned by half a turn (in
+/// double precision), so the bearing of that point as seen from the
+/// candidate.
 pub fn bearing_of(origin_cm: (f32, f32), candidate_cm: (f32, f32)) -> f32 {
-    let delta = (origin_cm.0 - candidate_cm.0, origin_cm.1 - candidate_cm.1);
-    let angle = atan2(delta.0, delta.1);
-    if angle >= 0.0 { angle - PI } else { angle + PI }
-}
-
-fn atan2(x: f32, z: f32) -> f32 {
-    if x == 0.0 && z == 0.0 {
-        0.0
+    let yaw =
+        crate::combatant::atan2_xz(candidate_cm.0 - origin_cm.0, candidate_cm.1 - origin_cm.1);
+    if yaw < 0.0 {
+        (f64::from(yaw) + std::f64::consts::PI) as f32
     } else {
-        x.atan2(z)
+        (f64::from(yaw) - std::f64::consts::PI) as f32
     }
 }
 
@@ -576,7 +619,7 @@ pub fn choose_footwork(distance_cm: f32, spot: Spot) -> Footwork {
     }
     if (1..=2).contains(&spot.blow.kind)
         && blow_is_live(spot.blow.phase, spot.blow.skill, spot.blow.committed)
-        && arrival_ms(spot.blow) < GONE_MS
+        && arrival_ms(spot.blow) <= GONE_MS
     {
         // The nearer edge of the arc decides the way round.
         let to_start = (spot.blow.arc_start - spot.blow.angle).rem_euclid(FULL_TURN);
@@ -613,8 +656,9 @@ mod tests {
             dull: false,
             blow: Blow::default(),
             wide: false,
+            observer_ahead: 1.0,
             other_ahead: 0.0,
-            other_attacking: true,
+            in_attack: true,
             presses: false,
             other_skill: 0.0,
         }
@@ -706,8 +750,8 @@ mod tests {
         spot.fight = false;
         let outside = score_place(0.0, spot);
         assert_eq!(outside.strike, 0.0);
-        // Without the fight flag the strike and the danger are cleared.
-        assert_eq!(outside.danger, 0.0);
+        // Without the fight flag the strike is cleared; the danger stays.
+        assert_eq!(outside.danger.to_bits(), 0x4000_0000);
 
         spot.fight = true;
         spot.feral = 1.0;
@@ -806,12 +850,15 @@ mod tests {
     #[test]
     fn a_facing_scales_the_place_and_an_idle_stamp_recovers() {
         let mut spot = fight(false, false);
-        spot.other_attacking = false;
-        spot.other_ahead = 0.0;
+        spot.in_attack = false;
+        spot.observer_ahead = 0.0;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3f40_0000);
-        spot.other_ahead = 1.0;
+        spot.observer_ahead = 1.0;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
-        spot.other_attacking = true;
+        // The opponent's facing does not enter this scale.
+        spot.other_ahead = -1.0;
+        assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
+        spot.in_attack = true;
         spot.presses = true;
         spot.other_ahead = 0.0;
         let pressed = score_place(25.0, spot);
@@ -843,7 +890,7 @@ mod tests {
         assert_eq!(wrapped.kind, 0);
     }
     #[test]
-    fn a_thrust_scales_the_approach_only_inside_its_arc() {
+    fn a_thrust_scales_the_approach_while_its_arc_holds_the_observer() {
         let mut spot = fight(false, false);
         spot.blow = Blow {
             kind: 3,
@@ -867,6 +914,38 @@ mod tests {
         spot.blow.angle = 0.5;
         spot.blow.origin_in_arc = true;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x4010_0000);
+        // Past the gate (110 cm) there is no danger, but the observer in
+        // the arc still scales the approach, wherever the candidate lies.
+        spot.other_skill = 0.0;
+        spot.blow.angle = 2.0;
+        let beyond = score_place(200.0, spot);
+        assert_eq!(beyond.danger, 0.0);
+        assert_eq!(beyond.approach.to_bits(), 0x3f40_0000);
+        spot.blow.origin_in_arc = false;
+        assert_eq!(score_place(200.0, spot).approach.to_bits(), 0x3ec0_0000);
+    }
+
+    #[test]
+    fn the_approach_peaks_at_the_strike_ideal() {
+        let spot = fight(false, false);
+        // At the ideal (50 cm) the fraction is 1: g = 1, 1.5·g².
+        assert_eq!(score_place(50.0, spot).approach, 1.5);
+        // Inside it the fraction is distance over ideal: 10/50 = 0.2 gives
+        // g = (3 − 0.4)·0.04 = 0.104, 1.5·g² = 0.016224.
+        let near = score_place(10.0, spot).approach;
+        assert!((near - 0.016_224).abs() < 1e-6, "{near}");
+        // A fraction of 0.1 (5 cm) is not above the floor.
+        assert_eq!(score_place(5.0, spot).approach, 0.0);
+        // A recovering swing outside a fight still lowers the close term.
+        let mut idle = spot;
+        idle.fight = false;
+        idle.blow.kind = 4;
+        let limit = 200.0_f32;
+        let t = (limit - 25.0) / limit;
+        assert_eq!(
+            score_place(25.0, idle).close,
+            ((2.0 - t) * t * 4.0 - 1.0) * 2.0
+        );
     }
 
     #[test]
@@ -932,9 +1011,36 @@ mod tests {
 
     #[test]
     fn the_bearing_is_measured_from_the_candidate() {
-        assert!((bearing_of((0.0, 0.0), (0.0, -100.0)) + PI).abs() < 1e-6);
-        assert!(bearing_of((0.0, 0.0), (0.0, 100.0)).abs() < 1e-6);
+        // A candidate behind the point (−z) sees it straight ahead (+z).
+        assert!(bearing_of((0.0, 0.0), (0.0, -100.0)).abs() < 1e-6);
+        // One in front sees it behind; π is taken off in double precision.
+        assert_eq!(
+            bearing_of((0.0, 0.0), (0.0, 100.0)),
+            -std::f64::consts::PI as f32
+        );
+        // One on the −x side sees it toward +x.
         let side = bearing_of((0.0, 0.0), (-100.0, 0.0));
-        assert!((side + std::f32::consts::FRAC_PI_2).abs() < 1e-5, "{side}");
+        assert!((side - std::f32::consts::FRAC_PI_2).abs() < 1e-5, "{side}");
+    }
+
+    #[test]
+    fn the_arc_test_and_the_wrap_follow_the_double_precision_bounds() {
+        // In the arc from start up to end.
+        assert!(between(1.0, -1.0, 0.5));
+        assert!(!between(1.0, -1.0, 2.0));
+        assert!(!between(1.0, -1.0, -2.0));
+        // Through the cut when start is above end.
+        assert!(between(-1.0, 1.0, 2.0));
+        assert!(between(-1.0, 1.0, -2.0));
+        assert!(!between(-1.0, 1.0, 0.0));
+        // The f32 of pi is above the double pi, so it wraps.
+        assert_eq!(wrap(PI), PI - FULL_TURN);
+        assert_eq!(wrap(3.141_592_5), 3.141_592_5);
+        // A start at the f32 of pi measures the span across the cut.
+        assert_eq!(arc_mid(PI, 0.0), (FULL_TURN + PI) * 0.5 + PI - FULL_TURN);
+        // The live test compares in double precision: 0.3f32 lies above
+        // the double 0.3, so a phase of 0.3 is live at skill 0.
+        assert!(blow_is_live(0.3, 0.0, false));
+        assert!(!blow_is_live(0.299_999_98, 0.0, false));
     }
 }

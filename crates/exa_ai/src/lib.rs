@@ -142,7 +142,8 @@ fn published_blow(
         skill: 0.0,
         committed: attacking && phase > 0.3,
         sweeping: attacking && !stunned,
-        forced_range: armed,
+        // The observer's grip link on the opponent; a duellist has none.
+        forced_range: false,
         origin_in_arc: false,
         angle: 0.0,
     }
@@ -436,12 +437,14 @@ fn duellist(
             other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
             melee: false,
             fight: true,
-            feral: target_fighter.map_or(0.0, |f| f.stats.feral),
+            feral: fighter.stats.feral,
             dull: fighter.stats.rules.has(4),
             blow,
             wide: false,
+            observer_ahead: Vec3::new(order.heading.sin(), 0.0, order.heading.cos())
+                .dot(dir_to_me),
             other_ahead: target_forward.dot(dir_to_me),
-            other_attacking: target_condition == Condition::ATTACKING,
+            in_attack: *condition == Condition::ATTACKING,
             presses: false,
             other_skill: 0.0,
         };
