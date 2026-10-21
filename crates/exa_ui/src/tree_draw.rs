@@ -310,17 +310,19 @@ pub fn icon(
     if columns == 0 || rows == 0 {
         return false;
     }
+    // The cell is placed with the reciprocal of the sheet's counts, like
+    // the original, and the integer remainder and quotient truncate.
     let index = (power & 0xff) as i64 - 1;
-    let cell_x = index.rem_euclid(i64::from(columns)) as f32 / columns as f32;
-    let cell_y = 1.0 - (index.div_euclid(i64::from(columns)) as f32 + 1.0) / rows as f32;
+    let step = [1.0 / columns as f32, 1.0 / rows as f32];
+    let cell_x = (index % i64::from(columns)) as f32 * step[0];
+    let cell_y = 1.0 - ((index / i64::from(columns)) + 1) as f32 * step[1];
     let x = x - size * 0.5;
     let y = y - size * 0.5;
-    let step = [1.0 / columns as f32, 1.0 / rows as f32];
     batch.uniforms.par0 = [
-        cell_x + step[0] * 0.5,
-        cell_y + step[1] * 0.5,
-        if power & 0xff00 == 0x100 { 1.0 } else { 1.14 },
-        size * 0.05 + 8.0,
+        step[0] * 0.5 + cell_x,
+        step[1] * 0.5 + cell_y,
+        icon_bias(power),
+        (f64::from(size) * 0.05 + 8.0) as f32,
     ];
     batch.uniforms.tscl = [columns as f32 * 0.25, rows as f32 * 0.25];
     batch.quad(cell_quad(
@@ -335,16 +337,20 @@ pub fn icon(
 }
 
 /// A frame or modifier square of the four-by-two sheet, `slot` one-based.
+/// The program's `par0` carries only the two shrink terms, in its first
+/// two lanes; the cell comes from the quad's texture coordinates.
 pub fn frame(batch: &mut Batch, slot: i32, x: f32, y: f32, size: f32, colour: [f32; 4]) {
     let index = slot - 1;
-    let u = index.rem_euclid(4) as f32 * 0.25;
-    let v = 1.0 - (index.div_euclid(4) as f32 + 1.0) * 0.5;
-    let shrink = [
-        (1.0 - size * 0.000_390_625) * 0.005,
-        (1.0 - size * 0.000_390_625) * 0.01,
+    let u = (index % 4) as f32 * 0.25;
+    let v = 1.0 - ((index / 4) + 1) as f32 * 0.5;
+    let shrink = 1.0 - size * 0.000_390_625;
+    let size = (f64::from(size) * 0.8) as f32;
+    batch.uniforms.par0 = [
+        (f64::from(shrink) * 0.005) as f32,
+        (f64::from(shrink) * 0.01) as f32,
+        0.0,
+        0.0,
     ];
-    let size = size * 0.8;
-    batch.uniforms.par0 = [u, v, shrink[0], shrink[1]];
     batch.quad(cell_quad(
         x - size * 0.5,
         y - size * 0.5,
@@ -1152,10 +1158,11 @@ mod tests {
     fn a_frame_uses_the_four_by_two_sheet() {
         let mut batch = blank();
         frame(&mut batch, 5, 0.0, 0.0, 10.0, [1.0; 4]);
-        assert_eq!(batch.uniforms.par0[0], 0.0);
-        assert_eq!(batch.uniforms.par0[1], 0.0);
-        assert_eq!(batch.uniforms.par0[2], f32::from_bits(0x3ba3_3333));
-        assert_eq!(batch.uniforms.par0[3], f32::from_bits(0x3c23_3333));
+        // Only the two shrink terms are set; they sit in the first lanes.
+        assert_eq!(batch.uniforms.par0[0], f32::from_bits(0x3ba3_3333));
+        assert_eq!(batch.uniforms.par0[1], f32::from_bits(0x3c23_3333));
+        assert_eq!(batch.uniforms.par0[2], 0.0);
+        assert_eq!(batch.uniforms.par0[3], 0.0);
         assert_eq!(batch.vertices[0].u, 0.0);
         assert_eq!(batch.vertices[2].u, 0.25);
         assert_eq!(batch.vertices[2].v, 0.5);
