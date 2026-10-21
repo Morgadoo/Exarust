@@ -103,6 +103,10 @@ pub fn displacement(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32, up: 
 
 /// Vegetation density at world (`x`, `z`): the materials' mask-pass green
 /// layered by their opacities and blend masks, stored as a byte, less 0.2.
+/// The sampler works in double precision (the byte times the double
+/// 1/255, less the double 0.2) and rounds the result to `f32`; in `f32`
+/// throughout, 38 of the bytes that grow plants would come out one unit
+/// off in the last place.
 pub fn vegetation(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32) -> f32 {
     let mut total = 0.0;
     for (k, layer) in layers.iter().enumerate() {
@@ -118,7 +122,8 @@ pub fn vegetation(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32) -> f32
         }
         total = total * (1.0 - op) + layer.vegetation * op;
     }
-    (total * 255.0).round().clamp(0.0, 255.0) / 255.0 - 0.2
+    let byte = (total * 255.0).round().clamp(0.0, 255.0);
+    (f64::from(byte) * (1.0 / 255.0) - 0.2) as f32
 }
 
 #[cfg(test)]
@@ -144,6 +149,12 @@ mod tests {
         grass.vegetation = 1.0;
         let d = vegetation(&[flat(0.5), grass], &[1.0, 1.0], 0.0, 0.0);
         assert!((d - 0.8).abs() < 1e-5);
+        // Byte 141: 141 × (1/255) − 0.2 in double, then f32, is 0x3EB4B4B5;
+        // the f32 steps would give 0x3EB4B4B6.
+        let mut lush = flat(0.5);
+        lush.vegetation = 141.0 / 255.0;
+        let d = vegetation(&[lush], &[1.0], 0.0, 0.0);
+        assert_eq!(d.to_bits(), 0x3EB4_B4B5);
     }
 
     #[test]
