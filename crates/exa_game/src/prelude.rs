@@ -207,7 +207,12 @@ impl ActorCache {
         if cached && let Some(record) = self.cached.get(name) {
             return Some(record.clone());
         }
-        let record = self.library(game).get(name).cloned()?;
+        let mut record = self.library(game).get(name).cloned()?;
+        // A template whose own name is empty takes the name it was asked
+        // for, as the original copies the requested asset name into it.
+        if record.name.is_empty() {
+            record.name = name.to_string();
+        }
         if cached {
             self.cached.insert(name.to_string(), record.clone());
         }

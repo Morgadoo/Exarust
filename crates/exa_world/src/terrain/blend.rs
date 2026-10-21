@@ -389,6 +389,71 @@ pub fn channel_bytes(
     out
 }
 
+/// The blur kernel the terrain texture pass builds: half the Gaussian on
+/// the negative side (zero included), mirrored to the positive side, then
+/// normalised to a sum of one. `radius` is the half-width; the kernel has
+/// `2·radius + 1` entries. The exponential is the library's double one, as
+/// the original's, with the sigma a third of the radius.
+pub fn gaussian_kernel(radius: i32) -> Vec<f32> {
+    let count = (radius * 2 + 1).max(1) as usize;
+    let mut kernel = vec![0.0f32; count];
+    let r = radius as f32;
+    let sigma = r * 0.333_333_34;
+    let denominator = sigma * sigma * 2.0;
+    let mut i = -radius;
+    loop {
+        let square = (i * i) as f32;
+        kernel[(i + radius) as usize] = f64::exp(f64::from(-square / denominator)) as f32;
+        if i >= 0 {
+            break;
+        }
+        i += 1;
+    }
+    for i in 1..=radius {
+        kernel[(i + radius) as usize] = kernel[(radius - i) as usize];
+    }
+    let sum: f32 = kernel.iter().sum();
+    if sum != 0.0 {
+        for value in &mut kernel {
+            *value /= sum;
+        }
+    }
+    kernel
+}
+
+/// A kernel widened to four floats an entry (the original's 16-byte
+/// entries), each of the four lanes holding the same weight.
+pub fn expand_kernel(kernel: &[f32]) -> Vec<[f32; 4]> {
+    kernel.iter().map(|&v| [v; 4]).collect()
+}
+
+/// Adds a material's mask into the running weight and rescales the mask to
+/// its share of it: `w += byte`, `byte = min(255, round(byte·255 / w))`.
+/// A zero weight leaves the mask alone (the division would be infinite).
+pub fn merge_into(weights: &mut [f32], mask: &mut [u8]) {
+    for (weight, byte) in weights.iter_mut().zip(mask.iter_mut()) {
+        *weight += f32::from(*byte);
+        if *weight != 0.0 {
+            let scaled = (f32::from(*byte) * 255.0 / *weight).round_ties_even();
+            *byte = scaled.min(255.0) as u8;
+        }
+    }
+}
+
+/// The original's used-material merge: the weights start as the first
+/// material's bytes, then every material but the last merges into them.
+pub fn merge_material_masks(first: &[u8], rest: &mut [Vec<u8>], texels: usize) -> Vec<f32> {
+    let mut weights = vec![0.0f32; texels];
+    for (weight, byte) in weights.iter_mut().zip(first.iter().copied()) {
+        *weight = f32::from(byte);
+    }
+    let last = rest.len().saturating_sub(1);
+    for mask in rest.iter_mut().take(last) {
+        merge_into(&mut weights, mask);
+    }
+    weights
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +643,37 @@ mod tests {
         assert_eq!(packed[..8], [0, 10, 20, 30, 1, 11, 21, 31]);
         assert_eq!(packed[4 * 2], 40);
         assert_eq!(packed[4 * 2 + 1], 41);
+    }
+
+    #[test]
+    fn a_gaussian_kernel_is_mirrored_and_normalised() {
+        let k = gaussian_kernel(1);
+        assert_eq!(k.len(), 3);
+        assert!(k[0] == k[2]);
+        assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((k[1] - 0.978_24).abs() < 1e-4, "{k:?}");
+        assert!((k[0] - 0.010_88).abs() < 1e-4, "{k:?}");
+        let wide = gaussian_kernel(2);
+        assert_eq!(wide.len(), 5);
+        assert!(wide[0] == wide[4] && wide[1] == wide[3]);
+        assert!((wide.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert_eq!(expand_kernel(&[0.25, 0.5, 0.25])[1], [0.5; 4]);
+    }
+
+    #[test]
+    fn a_material_mask_merges_into_the_running_weight() {
+        let mut weights = vec![100.0, 0.0];
+        let mut mask = vec![100u8, 255];
+        merge_into(&mut weights, &mut mask);
+        assert_eq!(weights, [200.0, 255.0]);
+        assert_eq!(mask, [128, 255]);
+        let first = [100u8, 50];
+        let mut rest = vec![vec![100u8, 50], vec![200u8, 0]];
+        let weights = merge_material_masks(&first, &mut rest, 2);
+        // The first material and the middle one merge; the last is skipped.
+        assert_eq!(weights, [200.0, 100.0]);
+        assert_eq!(rest[0], [128, 128]);
+        assert_eq!(rest[1], [200, 0]);
     }
 
     #[test]

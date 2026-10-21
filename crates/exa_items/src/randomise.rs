@@ -620,6 +620,43 @@ pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
     copy
 }
 
+/// What the world-load pass reads of the object database: each record's
+/// section tags, an apparel record's appearance condition, and the refresh
+/// it runs.
+pub trait WorldSource {
+    /// Every record id, in the database's order.
+    fn ids(&self) -> Vec<u32>;
+    /// The section tags of a record's payload, in order.
+    fn sections(&self, id: u32) -> Vec<u32>;
+    /// An apparel record's appearance quality, damage and dirt bytes.
+    fn appearance(&self, id: u32) -> Option<[u8; 3]>;
+    /// Refreshes a record's description and stats.
+    fn refresh(&mut self, id: u32);
+}
+
+/// The world-load pass's walk over the database: an apparel record whose
+/// appearance quality is not zero is refreshed; a weapon or table record is
+/// not (the original refreshes weapons later, when a copy is made); any
+/// record with a factory weapon section is refreshed. Returns how many
+/// records were refreshed. The fill of the tables the records name is
+/// [`Fill::run`], as the original runs it after the walk.
+pub fn world_load(source: &mut dyn WorldSource) -> usize {
+    let mut refreshed = 0;
+    for id in source.ids() {
+        let tags = source.sections(id);
+        if tags.contains(&BODY) {
+            if source.appearance(id).is_some_and(|a| a[0] != 0) {
+                source.refresh(id);
+                refreshed += 1;
+            }
+        } else if tags.contains(&WEAPON) {
+            source.refresh(id);
+            refreshed += 1;
+        }
+    }
+    refreshed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -933,6 +970,46 @@ mod tests {
         plain.0.get_mut(&1).unwrap().0.model = "@ub05ssworda".into();
         plain.0.get_mut(&1).unwrap().0.model_flags = 0;
         assert_eq!(grade_object(&mut plain, 1, 1), 1);
+    }
+
+    struct World {
+        records: Vec<(u32, Vec<u32>, Option<[u8; 3]>)>,
+        refreshed: Vec<u32>,
+    }
+
+    impl WorldSource for World {
+        fn ids(&self) -> Vec<u32> {
+            self.records.iter().map(|r| r.0).collect()
+        }
+        fn sections(&self, id: u32) -> Vec<u32> {
+            self.records
+                .iter()
+                .find(|r| r.0 == id)
+                .map(|r| r.1.clone())
+                .unwrap_or_default()
+        }
+        fn appearance(&self, id: u32) -> Option<[u8; 3]> {
+            self.records.iter().find(|r| r.0 == id).and_then(|r| r.2)
+        }
+        fn refresh(&mut self, id: u32) {
+            self.refreshed.push(id);
+        }
+    }
+
+    #[test]
+    fn the_world_load_walks_apparel_and_weapon_records() {
+        let mut world = World {
+            records: vec![
+                (1, vec![0x1000], Some([1, 2, 3])),
+                (2, vec![0x1000], Some([0, 2, 3])),
+                (3, vec![0x4000], None),
+                (4, vec![0x200], None),
+                (5, vec![0x1000], None),
+            ],
+            refreshed: Vec::new(),
+        };
+        assert_eq!(world_load(&mut world), 2);
+        assert_eq!(world.refreshed, [1, 3]);
     }
 
     #[test]
