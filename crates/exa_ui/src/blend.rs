@@ -6,6 +6,43 @@
 //! over another are composited here as the original would ([`Canvas`]), and
 //! the result's opacity is remapped per pixel so that Bevy's linear blend
 //! gives the original's colour over a reference floor ([`linear_opacity`]).
+//!
+//! [`ui_blend`] is the GUI's blend-state switch: the word `0x100` turns
+//! blending off, any other word selects a source and destination factor
+//! from the original's eight-entry table.
+
+/// The GUI's blend-factor table, indexed by a word nibble: GL_ZERO,
+/// GL_ONE, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_COLOR,
+/// GL_ONE_MINUS_SRC_COLOR, GL_DST_ALPHA, GL_ONE_MINUS_DST_ALPHA.
+pub const UI_BLEND_FACTORS: [u32; 8] = [0, 1, 0x0302, 0x0303, 0x0300, 0x0301, 0x0304, 0x0305];
+
+/// The blend state a GUI word asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiBlend {
+    pub enabled: bool,
+    /// The source and destination factors, when blending is on and the two
+    /// nibbles index the table.
+    pub factors: Option<(u32, u32)>,
+}
+
+/// The UI blend state for `word`: the mask `0x3f0f` equal to `0x100` is the
+/// one word that turns blending off; every other word enables it with the
+/// source factor from bits 8–11 and the destination from bits 0–3. A nibble
+/// past the table's seven leaves the factors unchanged (`None`).
+pub fn ui_blend(word: u32) -> UiBlend {
+    if word & 0x3f0f == 0x100 {
+        return UiBlend {
+            enabled: false,
+            factors: None,
+        };
+    }
+    let source = UI_BLEND_FACTORS.get(((word >> 8) & 0xF) as usize).copied();
+    let destination = UI_BLEND_FACTORS.get((word & 0xF) as usize).copied();
+    UiBlend {
+        enabled: true,
+        factors: source.zip(destination),
+    }
+}
 
 /// The reference background (sRGB, 0–1) the remap is exact over: the dark
 /// floor behind the interface in the original's arena (about 40 of 255).
@@ -183,5 +220,37 @@ mod tests {
         // Outside the canvas nothing happens.
         canvas.blend(30, 30, [1.0; 3], 1.0);
         assert_eq!(canvas.to_srgba8().len(), 8);
+    }
+
+    #[test]
+    fn the_ui_blend_word_picks_factors_or_turns_blending_off() {
+        // The one disabling word is the masked 0x100.
+        assert_eq!(
+            ui_blend(0x100),
+            UiBlend {
+                enabled: false,
+                factors: None
+            }
+        );
+        assert_eq!(
+            ui_blend(0x1f0),
+            UiBlend {
+                enabled: false,
+                factors: None
+            }
+        );
+        // SRC_ALPHA / ONE_MINUS_SRC_ALPHA is the common interface blend.
+        assert_eq!(
+            ui_blend(0x0203),
+            UiBlend {
+                enabled: true,
+                factors: Some((0x0302, 0x0303))
+            }
+        );
+        // ONE / ZERO cannot be expressed: that word is the disabled one.
+        // SRC_ALPHA / ZERO is a plain opaque-ish draw.
+        assert_eq!(ui_blend(0x0200).factors, Some((0x0302, 0)));
+        // A nibble past the table leaves the factors alone.
+        assert_eq!(ui_blend(0x0F00).factors, None);
     }
 }

@@ -275,6 +275,29 @@ pub fn existing_state_list(flags: u32) -> Option<StateList> {
     }
 }
 
+/// The flag word a released render state carries (`0x10004d800`). A
+/// material below detail 3 loses bit 21 and one below 4 loses bit 23; a
+/// material with the first `0x120` flag returns only the original's
+/// `0x600011` bits (the detail clears are discarded); otherwise the second
+/// `0x121` flag clears bits 1 and 2. The two flag bytes' meanings are not
+/// traced.
+pub fn released_flags(flags: u32, detail_level: i32, first_flag: bool, second_flag: bool) -> u32 {
+    let mut adjusted = flags;
+    if detail_level < 3 {
+        adjusted &= !0x0020_0000;
+    }
+    if detail_level < 4 {
+        adjusted &= !0x0080_0000;
+    }
+    if first_flag {
+        return flags & 0x0060_0011;
+    }
+    if second_flag {
+        adjusted &= !6;
+    }
+    adjusted
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,5 +455,25 @@ mod tests {
         assert_eq!(existing_state_list(0), Some(StateList::Opaque));
         assert_eq!(existing_state_list(3), Some(StateList::Blend));
         assert_eq!(existing_state_list(5), None);
+    }
+
+    #[test]
+    fn the_release_clears_bits_by_detail_and_flags() {
+        let all = 0x00FF_FFFF;
+        assert_eq!(released_flags(all, 4, false, false), all);
+        assert_eq!(released_flags(all, 3, false, false), all & !0x0080_0000);
+        assert_eq!(
+            released_flags(all, 2, false, false),
+            all & !(0x0080_0000 | 0x0020_0000)
+        );
+        // The first flag returns only the original word's kept bits, even
+        // when the detail would have cleared more.
+        assert_eq!(released_flags(all, 2, true, false), all & 0x0060_0011);
+        assert_eq!(released_flags(all, 2, true, true), all & 0x0060_0011);
+        // Without it, the second clears the two low blend bits.
+        assert_eq!(
+            released_flags(all, 2, false, true),
+            (all & !(0x0080_0000 | 0x0020_0000)) & !6
+        );
     }
 }

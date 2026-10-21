@@ -636,6 +636,20 @@ pub fn is_grey_upload(rfi: &Rfi, bc_supported: bool) -> bool {
         && !rfi.is_packed()
 }
 
+/// A render parameter stored in hundredths (an `i16`) as the float the
+/// shader uses: the value widened to double, times 0.01, narrowed to f32.
+pub fn hundredths_to_f32(value: i16) -> f32 {
+    (f64::from(value) * 0.01) as f32
+}
+
+/// A float render parameter as its stored hundredths: `value · 100` in f32
+/// converted with the processor's `CVTSS2SI` (nearest, ties to even); a NaN
+/// or out-of-range value gives the indefinite integer, whose low word is 0.
+/// The stored field is 16 bits, so a finite result keeps its low word.
+pub fn f32_to_hundredths(value: f32) -> i16 {
+    exa_formats::pixel::round_f32(value * 100.0) as i16
+}
+
 /// One texture as the unit cache sees it: its GL object, its shared sampler
 /// object and its word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -994,6 +1008,20 @@ mod unit_cache_tests {
         assert_eq!(ops.texture, None);
         assert!(!ops.is_empty());
         assert!(cache.bind(0, None, -0.5).is_empty());
+    }
+
+    #[test]
+    fn render_parameters_store_hundredths() {
+        assert_eq!(hundredths_to_f32(1234), 12.34);
+        assert_eq!(hundredths_to_f32(-5), -0.05);
+        assert_eq!(f32_to_hundredths(12.34), 1234);
+        // Ties go to even: 0.125 · 100 = 12.5 → 12.
+        assert_eq!(f32_to_hundredths(0.125), 12);
+        assert_eq!(f32_to_hundredths(0.135), 14);
+        // NaN gives the indefinite integer's low word.
+        assert_eq!(f32_to_hundredths(f32::NAN), 0);
+        // A finite value past i16 keeps the low 16 bits.
+        assert_eq!(f32_to_hundredths(400.0), (40000i32 & 0xffff) as i16);
     }
 }
 
