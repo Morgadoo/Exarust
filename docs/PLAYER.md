@@ -319,8 +319,8 @@ alone, as the original does.
 
 The Controls page's controller-mode switch writes `InputMode` (0 for the
 keyboard, 51 for a controller). Exarust copies it into the saved bindings'
-controller flag, and the player reads the pad only while that flag is set,
-as the keyboard drives it otherwise. With no settings file there is no
+controller flag, and the player reads the pad only while that flag is set;
+the keyboard stays live in either mode. With no settings file there is no
 Controls page to press, so a connected gamepad turns the flag on for the
 session (Exarust's own; the original's Steam Deck detection is not
 reproduced). A gamepad is connected when Bevy reports one.
