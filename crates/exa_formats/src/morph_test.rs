@@ -338,6 +338,8 @@ fn node(name: &str, parent: Option<usize>, transform: Frame, body: NodeBody) -> 
         cloth_marker: false,
         key_tracks: Vec::new(),
         morph: None,
+        instance: None,
+        unknown_sub_chunks: Vec::new(),
         body,
     }
 }
@@ -352,7 +354,10 @@ fn scene(nodes: Vec<Node>) -> Scene {
         environment: None,
         characters: None,
         local_items: Vec::new(),
+        local_strings: None,
+        local_string_error: None,
         placed_objects: Vec::new(),
+        unknown_chunks: Vec::new(),
         level_errors: Vec::new(),
     }
 }

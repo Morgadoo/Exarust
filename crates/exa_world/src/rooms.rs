@@ -39,6 +39,27 @@ pub struct DoorLink {
     pub to: u32,
 }
 
+/// A doorway's portal, as the original builds it for a door link: a vertical
+/// quad on the cells' shared edge. Lengths are centimetres in the original;
+/// here the centre is in metres on X/Z and the opening in metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoorPortal {
+    pub link: DoorLink,
+    /// The side of the `from` cell the door stands on: 0 back (−Z), 1 left
+    /// (−X), 2 front (+Z), 3 right (+X).
+    pub side: u32,
+    /// The middle of the shared edge, on the floor.
+    pub centre: Vec2,
+    /// Opening width and top height; the quad runs from −50 cm to the top.
+    pub size: Vec2,
+    /// Whether the cell is a special tile (type 1–31 in plane C).
+    pub special: bool,
+}
+
+/// The bottom of a door portal, centimetres below the floor (the original's
+/// quad starts at −50 cm).
+pub const PORTAL_BOTTOM_CM: f32 = -50.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct Room {
     /// The smallest cell rectangle holding the room: x0, y0, x1, y1
@@ -230,6 +251,144 @@ impl Rooms {
             .flat_map(|r| r.links.iter())
             .filter_map(|l| self.room_of_index(l.to))
     }
+
+    /// The index of grid cell (`x`, `y`), or `None` outside the grid.
+    pub fn cell_index(&self, x: u32, y: u32) -> Option<u32> {
+        (x < self.width && y < self.height).then_some(y * self.width + x)
+    }
+
+    /// The cell index as its two coordinates.
+    pub fn cell_coords(&self, cell: u32) -> (u32, u32) {
+        (cell % self.width, cell / self.width)
+    }
+
+    /// A door link's portal: the side the door stands on (from the cells'
+    /// indices), the opening plane B's side nibble gives (0 the narrow one,
+    /// any other the wide one; a special tile the largest) and the cell's
+    /// special type from plane C's bits 16–20, as the original's manager
+    /// builds it.
+    pub fn portal(&self, grid: &LevelGrid, link: DoorLink) -> Option<DoorPortal> {
+        let (fx, fy) = self.cell_coords(link.from);
+        let (tx, ty) = self.cell_coords(link.to);
+        let (dx, dy) = (tx as i64 - fx as i64, ty as i64 - fy as i64);
+        let side = if dx == 1 && dy == 0 {
+            3
+        } else if dx == -1 && dy == 0 {
+            1
+        } else if dx == 0 && dy == -1 {
+            0
+        } else if dx == 0 && dy == 1 {
+            2
+        } else {
+            return None;
+        };
+        let from = link.from as usize;
+        let plane_b = grid.plane_b.get(from).copied().unwrap_or(0);
+        let plane_c = grid.plane_c.get(from).copied().unwrap_or(0);
+        let special = plane_c & 0x1F_0000 != 0;
+        let nibble = (plane_b >> (side * 4)) & 0xF;
+        let size = if special {
+            portal_size(0, true)
+        } else {
+            portal_size(nibble.min(1), false)
+        };
+        let mut centre = self.cell_centre(link.from);
+        match side {
+            3 => centre.x += CELL_M * 0.5,
+            1 => centre.x -= CELL_M * 0.5,
+            0 => centre.y -= CELL_M * 0.5,
+            _ => centre.y += CELL_M * 0.5,
+        }
+        Some(DoorPortal {
+            link,
+            side,
+            centre,
+            size,
+            special,
+        })
+    }
+
+    /// The point ¾ of the way from a door's cell centre to the room behind
+    /// it (the original's door point, used by its light reach and its active
+    /// room test).
+    pub fn door_point(&self, link: DoorLink) -> Vec2 {
+        let from = self.cell_centre(link.from);
+        from + (self.cell_centre(link.to) - from) * 0.75
+    }
+
+    /// Whether light passes between two points (metres, X/Z), as the
+    /// original's light-reach callback answers it: points in the same room
+    /// always reach; otherwise a door of either room opens onto the other
+    /// cell with the far point within 2 m of its door point.
+    pub fn light_reach(&self, a: Vec2, b: Vec2, open: impl Fn(DoorLink) -> bool) -> bool {
+        let (Some(room_a), Some(room_b)) = (self.room_at(a), self.room_at(b)) else {
+            return false;
+        };
+        if room_a == room_b {
+            return true;
+        }
+        let cell_a = self.cell_index_of_point(a);
+        let cell_b = self.cell_index_of_point(b);
+        // The original tests the first room's links against the second
+        // point and then the second room's links against the first.
+        if self.link_reach(room_a, cell_b, b, &open) {
+            return true;
+        }
+        self.link_reach(room_b, cell_a, a, &open)
+    }
+
+    /// One room's door links: a link into `other_cell` whose door point lies
+    /// within [`LIGHT_REACH`] of `point`.
+    fn link_reach(
+        &self,
+        room: u16,
+        other_cell: Option<u32>,
+        point: Vec2,
+        open: &impl Fn(DoorLink) -> bool,
+    ) -> bool {
+        let Some(other_cell) = other_cell else {
+            return false;
+        };
+
+        self.room(room).is_some_and(|r| {
+            r.links.iter().any(|&link| {
+                link.to == other_cell
+                    && open(link)
+                    && self.door_point(link).distance(point) < LIGHT_REACH
+            })
+        })
+    }
+
+    /// The rooms a light at `light` (metres, X/Z) can reach through the open
+    /// doors of its own cell, whose door points lie within 2 m of it. The
+    /// original returns a bit mask over the sector's partner list; Exarust
+    /// has one sector per room, so the rooms themselves are returned.
+    pub fn light_spill(&self, light: Vec2, open: impl Fn(DoorLink) -> bool) -> Vec<u16> {
+        let Some(room) = self.room_at(light) else {
+            return Vec::new();
+        };
+        let cell = self.cell_index_of_point(light);
+        let mut out = Vec::new();
+        for link in self.room(room).map_or(&[][..], |r| &r.links[..]) {
+            if cell != Some(link.from) || !open(*link) {
+                continue;
+            }
+            if self.door_point(*link).distance(light) >= LIGHT_REACH {
+                continue;
+            }
+            if let Some(target) = self.room_of_index(link.to)
+                && !out.contains(&target)
+            {
+                out.push(target);
+            }
+        }
+        out
+    }
+
+    fn cell_index_of_point(&self, p: Vec2) -> Option<u32> {
+        let (x, y) = self.cell_of(p);
+        self.cell_index(x as u32, y as u32)
+    }
 }
 
 /// The rooms behind `room`'s open doors. A shut door, listed in `closed`,
@@ -312,6 +471,27 @@ pub fn cell_step_from_dir(dir: Vec2) -> (i32, i32) {
     }
 }
 
+/// The door link a door standing at `position` (metres, X/Z) and facing
+/// `facing` (the direction its front looks) belongs to: the door's cell from
+/// the floor of its position, the neighbouring cell opposite its facing, and
+/// the room's link between the two. The original binds a placed door to its
+/// portal this way so the portal can test whether it is open.
+pub fn door_link_at(rooms: &Rooms, position: Vec2, facing: Vec2) -> Option<DoorLink> {
+    let (x, y) = rooms.cell_of(position);
+    let from = rooms.cell_index(x as u32, y as u32)?;
+    let (sx, sy) = cell_step_from_dir(facing);
+    let to = rooms.cell_index((x + sx as i64) as u32, (y + sy as i64) as u32)?;
+    rooms
+        .room_of_index(from)
+        .and_then(|r| rooms.room(r))
+        .and_then(|r| {
+            r.links
+                .iter()
+                .copied()
+                .find(|l| l.from == from && l.to == to)
+        })
+}
+
 /// Whether the segment from `eye` to `point` crosses the open doorway.
 /// The door stands on `origin` (its floor centre) facing `normal`, and
 /// its opening is `size` (width, height). A shut door crosses nothing.
@@ -370,6 +550,8 @@ pub const FADE_MS: u64 = 1000;
 /// A door's room is wanted while its point is this close to the anchor
 /// (metres).
 pub const DOOR_REACH: f32 = 2.0;
+/// The light-reach and light-spill radius: 200 cm.
+pub const LIGHT_REACH: f32 = 2.0;
 /// The door point lies this far from the cell centre towards the
 /// neighbour's centre (a quarter of the way: 1.5 m in from the door).
 const DOOR_POINT: f32 = 0.25;
@@ -586,6 +768,15 @@ impl RoomTracker {
         }
     }
 
+    /// Every room hidden (the original's reset when its debug "show all"
+    /// condition is off).
+    pub fn hide_all(&mut self) {
+        self.state.fill(RoomState::Hidden);
+        self.next.fill(RoomState::Hidden);
+        self.fade.fill(Fade::None);
+        self.list.clear();
+    }
+
     /// Every room active, none fading (the debug view of every room).
     pub fn show_all(&mut self) {
         self.state.fill(RoomState::Active);
@@ -756,15 +947,9 @@ mod tests {
         assert_eq!(rooms.cell_of(Vec2::new(0.0, -0.01)), (3, 0));
         assert_eq!(rooms.cell_of(Vec2::new(5.99, 0.0)), (3, 1));
         assert_eq!(
-            rooms.cell_centre(rooms.cell_index(3, 1)),
+            rooms.cell_centre(rooms.cell_index(3, 1).unwrap()),
             Vec2::new(3.0, 3.0)
         );
-    }
-
-    impl Rooms {
-        fn cell_index(&self, x: u32, y: u32) -> u32 {
-            y * self.width + x
-        }
     }
 
     /// The anchor `d` metres from the door point of room 0's door cell
@@ -1036,6 +1221,101 @@ mod tests {
         assert_eq!(ROOM_CEILING_CM, 280.0);
         let rooms = Rooms::flood(&two_rooms().0);
         assert_eq!(rooms.len(), 2);
+    }
+
+    #[test]
+    fn light_reaches_through_a_door_within_two_metres() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let in_a = Vec2::new(-3.0, 3.0);
+        let in_b = Vec2::new(3.0, 3.0);
+        assert!(
+            rooms.light_reach(in_a, in_b, |_| true),
+            "same room? no: a door"
+        );
+        assert!(!rooms.light_reach(in_a, in_b, |_| false), "a shut door");
+        // Each side is tested against its own ¾ point: A's is (1.5, 3),
+        // B's is (−1.5, 3). 2 m of them is the edge.
+        let deep_a = Vec2::new(-3.5, 3.0);
+        assert!(rooms.light_reach(deep_a, Vec2::new(3.49, 3.0), |_| true));
+        assert!(!rooms.light_reach(deep_a, Vec2::new(3.5, 3.0), |_| true));
+        // Points in one room always reach.
+        assert!(rooms.light_reach(in_a, Vec2::new(-8.0, 3.0), |_| false));
+        // A point without a room reaches nothing.
+        assert!(!rooms.light_reach(in_a, Vec2::new(-3.0, -3.0), |_| true));
+
+        let spill = rooms.light_spill(Vec2::new(-0.2, 3.0), |_| true);
+        assert_eq!(spill, [rooms.room_of_cell(3, 1).unwrap()]);
+        // The light must stand in the door's own cell.
+        assert!(rooms.light_spill(Vec2::new(-1.5, 4.0), |_| true).is_empty());
+        // 2 m from the door point is out.
+        assert!(rooms.light_spill(Vec2::new(-0.5, 1.0), |_| true).is_empty());
+    }
+
+    #[test]
+    fn door_portals_take_their_size_from_plane_b_and_c() {
+        let mut g = two_rooms();
+        let from = g.cell(2, 1);
+        let link = DoorLink {
+            from,
+            to: g.cell(3, 1),
+        };
+        let rooms = Rooms::flood(&g.0);
+        let narrow = rooms.portal(&g.0, link).unwrap();
+        assert_eq!(narrow.side, 3);
+        assert_eq!(narrow.size, Vec2::new(0.82, 2.45));
+        assert_eq!(narrow.centre, Vec2::new(0.0, 3.0));
+        assert!(!narrow.special);
+        // Any nibble but 0 is the wide door; a special tile is larger.
+        g.0.plane_b[from as usize] = 5 << 12;
+        assert_eq!(
+            rooms.portal(&g.0, link).unwrap().size,
+            Vec2::new(1.15, 2.90)
+        );
+        g.0.plane_c[from as usize] = 1 << 16;
+        assert_eq!(
+            rooms.portal(&g.0, link).unwrap().size,
+            Vec2::new(2.00, 3.40)
+        );
+        // A link between non-neighbours has no portal.
+        assert!(
+            rooms
+                .portal(
+                    &g.0,
+                    DoorLink {
+                        from: g.cell(1, 1),
+                        to: g.cell(3, 1)
+                    }
+                )
+                .is_none()
+        );
+        // The door point is ¾ of the way into the far cell.
+        assert_eq!(rooms.door_point(link), Vec2::new(1.5, 3.0));
+    }
+
+    #[test]
+    fn a_door_finds_the_link_it_stands_on() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let link = rooms.room(0).unwrap().links[0];
+        // The door stands in cell (2, 1) facing −X, so its neighbour is +X.
+        let found = door_link_at(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(-1.0, 0.0));
+        assert_eq!(found, Some(link));
+        // Facing the other way looks for the door behind it.
+        assert_eq!(
+            door_link_at(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 0.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn hiding_all_rooms_clears_the_tracker() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let mut t = RoomTracker::new(rooms.len());
+        t.update(&rooms, Vec2::new(-8.0, 3.0), 0);
+        assert_eq!(t.state(1), RoomState::Adjacent);
+        t.hide_all();
+        assert_eq!(t.state(0), RoomState::Hidden);
+        assert_eq!(t.state(1), RoomState::Hidden);
+        assert!(t.active().is_empty());
     }
 
     #[test]

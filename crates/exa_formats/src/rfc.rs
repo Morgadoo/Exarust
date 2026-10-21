@@ -17,6 +17,7 @@ use crate::level::{self, LevelGrid, Prop};
 use crate::material::Material;
 use crate::morph::MorphSet;
 use crate::objdb::Item;
+use crate::objstrings::Library;
 use crate::rdb::Database;
 use crate::rigid_body::RigidBody;
 use crate::{Error, Result, read_u32};
@@ -91,9 +92,19 @@ pub struct Scene {
     /// The level's own object database (items its characters and placed
     /// objects refer to with local ids).
     pub local_items: Vec<Item>,
+    /// The level's own string table (sub-chunk `0xDBCD` of its local
+    /// database), which the level's items name their text by. A table that
+    /// does not decode is reported in [`Scene::level_errors`].
+    pub local_strings: Option<Library>,
+    /// Why the level's stored string table did not decode, if it did not
+    /// (the rest of the level still loads, as in the original).
+    pub local_string_error: Option<String>,
     /// Objects from the object databases placed in the level (items, doors,
     /// containers).
     pub placed_objects: Vec<PlacedObject>,
+    /// Root chunk tags the reader does not know: the original hands them to
+    /// its optional callback and skips them.
+    pub unknown_chunks: Vec<u32>,
     /// Level sections that could not be decoded.
     pub level_errors: Vec<String>,
 }
@@ -131,6 +142,14 @@ pub struct Node {
     /// body of a race's `<stem>morph.rfc` carries the physique targets
     /// (`crate::morph`). A set that does not decode keeps its error.
     pub morph: Option<std::result::Result<MorphSet, String>>,
+    /// The instance word of the node header: a 1-based index into
+    /// [`Scene::nodes`] of the node that owns this one, or `None` for a
+    /// node that owns itself. A node with an owner stores no body or
+    /// sub-chunks.
+    pub instance: Option<usize>,
+    /// Sub-chunk tags after the node's body that this reader does not know;
+    /// the original hands each to its registered handlers.
+    pub unknown_sub_chunks: Vec<u32>,
     pub body: NodeBody,
 }
 
@@ -168,8 +187,19 @@ pub enum NodeBody {
     Mesh(Box<Mesh>),
     Light(Light),
     VoxelLight(VoxelLight),
-    /// The node reuses another object's data; nothing else is stored.
+    /// The node reuses another object's data; the word is its owner's
+    /// 1-based index in the node list (see [`Node::instance`]).
     Instance(u32),
+    /// A camera node (`0x3D08`): the node its view follows (a 1-based
+    /// index into the node list, 0 for none) and one word the original
+    /// keeps unread.
+    Camera {
+        target: Option<usize>,
+        value: u32,
+    },
+    /// A sector node (`0x3D0A`): the original makes a scene sector of it.
+    /// Exarust's rooms are its sectors; nothing is stored after the header.
+    Sector,
     /// A plain node carrying a particle emitter record (`0x3DD0E002` is a
     /// fire, `0x3DD0E004` a level portal): its type and size.
     Emitter {
@@ -468,6 +498,7 @@ impl Mesh {
 /// placed objects.
 pub const LOCAL_DATABASE: u32 = 0xDBC0;
 const LOCAL_OBJECTS: u32 = 0xDBDB;
+const LOCAL_STRINGS: u32 = 0xDBCD;
 
 const PLACED_OBJECTS: u32 = 0xDBCE;
 const PLACED_OBJECT: u32 = 0xDB01;
@@ -492,8 +523,8 @@ impl PlacedObject {
     }
 }
 
-fn read_local_database(b: &[u8], version: u16) -> Result<(Vec<Item>, Vec<PlacedObject>)> {
-    let (mut items, mut objects) = (Vec::new(), Vec::new());
+fn read_local_database(b: &[u8], version: u16) -> Result<LocalDatabase> {
+    let mut db = LocalDatabase::default();
     let mut pos = 0;
     while pos + 8 <= b.len() {
         let tag = read_u32(b, pos)?;
@@ -504,13 +535,30 @@ fn read_local_database(b: &[u8], version: u16) -> Result<(Vec<Item>, Vec<PlacedO
             len: b.len(),
         })?;
         match tag {
-            LOCAL_OBJECTS => items = crate::objdb::items(&Database::parse(body)?),
-            PLACED_OBJECTS => objects = read_placed_objects(body, version)?,
+            LOCAL_OBJECTS => db.items = crate::objdb::items(&Database::parse(body)?),
+            LOCAL_STRINGS => match Library::parse(body) {
+                Ok(library) => db.strings = Some(library),
+                Err(e) => db.string_error = Some(e.to_string()),
+            },
+            PLACED_OBJECTS => db.placed_objects = read_placed_objects(body, version)?,
             _ => {}
         }
         pos += 8 + size;
     }
-    Ok((items, objects))
+    Ok(db)
+}
+
+/// The sections of a level's local database (`0xDBC0`): its items, its
+/// string table and the objects it places.
+#[derive(Debug, Clone, Default)]
+pub struct LocalDatabase {
+    pub items: Vec<Item>,
+    pub strings: Option<Library>,
+    /// Why a stored string table did not decode; the original's loader
+    /// reports it and leaves the table out, and the rest of the database
+    /// still loads.
+    pub string_error: Option<String>,
+    pub placed_objects: Vec<PlacedObject>,
 }
 
 fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
@@ -581,7 +629,10 @@ impl Scene {
         let mut environment = None;
         let mut characters = None;
         let mut local_items = Vec::new();
+        let mut local_strings = None;
+        let mut local_string_error = None;
         let mut placed_objects = Vec::new();
+        let mut unknown_chunks = Vec::new();
         let mut level_errors = Vec::new();
         while c.remaining() >= 8 {
             let (tag, mut chunk) = c.chunk()?;
@@ -602,7 +653,12 @@ impl Scene {
                 }
             } else if tag == LOCAL_DATABASE {
                 match read_local_database(chunk.b, version) {
-                    Ok((items, objects)) => (local_items, placed_objects) = (items, objects),
+                    Ok(db) => {
+                        local_items = db.items;
+                        local_strings = db.strings;
+                        local_string_error = db.string_error;
+                        placed_objects = db.placed_objects;
+                    }
                     Err(e) => level_errors.push(format!("local database: {e}")),
                 }
             } else if tag == ENVIRONMENT {
@@ -621,6 +677,8 @@ impl Scene {
                     let (kind, node) = chunk.chunk()?;
                     nodes.push(read_node(kind, node, version)?);
                 }
+            } else {
+                unknown_chunks.push(tag);
             }
         }
         Ok(Self {
@@ -632,9 +690,32 @@ impl Scene {
             environment,
             characters,
             local_items,
+            local_strings,
+            local_string_error,
             placed_objects,
+            unknown_chunks,
             level_errors,
         })
+    }
+
+    /// Reads only a level's local database (`0xDBC0`) and leaves the rest of
+    /// the file alone: the original's database-only entry point, for reading
+    /// a level's items without building its scene.
+    pub fn parse_database(b: &[u8]) -> Result<LocalDatabase> {
+        let mut c = Cursor::new(b);
+        if c.u16()? != SANITY {
+            return Err(Error::Malformed(
+                "not a chunk tree (bad sanity word)".into(),
+            ));
+        }
+        let version = c.u16()?;
+        while c.remaining() >= 8 {
+            let (tag, chunk) = c.chunk()?;
+            if tag == LOCAL_DATABASE {
+                return read_local_database(chunk.b, version);
+            }
+        }
+        Ok(LocalDatabase::default())
     }
 
     pub fn material(&self, name: &str) -> Option<&Material> {
@@ -687,9 +768,14 @@ pub const MORPH: u32 = 0xEDC0_C589;
 const LIGHT_EXTRA_FLAGS: u32 = 0x3_0000;
 /// Bytes of those words.
 const LIGHT_EXTRA_LEN: usize = 16;
-/// Bytes of the body of node kind `0x3D08`: two words, not decoded.
-const NODE_3D08_BODY_LEN: usize = 8;
+/// A camera node (`0x3D08`): its body is the node its view follows (a
+/// 1-based index) and one word.
 const NODE_3D08: u32 = 0x3D08;
+/// A sector node (`0x3D0A`): no body.
+const NODE_SECTOR: u32 = 0x3D0A;
+
+/// Sub-chunk tags after a node's body that the reader knows.
+const KNOWN_SUB_CHUNKS: [u32; 5] = [RIGID_BODY, CLOTH, KEY_TRACK, MORPH, GI_POINTS];
 
 /// What the sub-chunks after a node's body hold.
 #[derive(Default)]
@@ -702,6 +788,8 @@ struct SubChunks {
     /// The first morph set's payload, decoded once the mesh's position
     /// count is known.
     morph: Option<Vec<u8>>,
+    /// Tags of the sub-chunks this reader does not know.
+    unknown: Vec<u32>,
 }
 
 fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
@@ -711,6 +799,9 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
         let Ok((tag, mut sub)) = c.chunk() else {
             break;
         };
+        if !KNOWN_SUB_CHUNKS.contains(&tag) {
+            out.unknown.push(tag);
+        }
         if tag == RIGID_BODY && out.rigid_body.is_none() {
             out.rigid_body = Some(RigidBody::parse(sub.b).map_err(|e| e.to_string()));
         }
@@ -820,12 +911,21 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
         }
+    } else if kind == NODE_3D08 {
+        let target = c.u32()?;
+        let value = c.u32()?;
+        sub = read_sub_chunks(&mut c);
+        NodeBody::Camera {
+            target: (target > 0).then_some(target as usize),
+            value,
+        }
+    } else if kind == NODE_SECTOR {
+        sub = read_sub_chunks(&mut c);
+        NodeBody::Sector
     } else {
         let mut chunks = Cursor::new(c.b);
         chunks.pos = c.pos;
-        if kind != NODE_3D08 || chunks.skip(NODE_3D08_BODY_LEN).is_ok() {
-            sub = read_sub_chunks(&mut chunks);
-        }
+        sub = read_sub_chunks(&mut chunks);
         emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
     Ok(Node {
@@ -842,6 +942,8 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         cloth_marker: sub.cloth_marker,
         key_tracks: sub.key_tracks,
         morph,
+        instance: (instance != 0).then_some(instance as usize),
+        unknown_sub_chunks: sub.unknown,
         body,
     })
 }
@@ -1747,6 +1849,64 @@ mod tests {
         let truncated = &scene.nodes[7];
         assert!(matches!(&truncated.key_tracks[..], [Err(e)] if e.contains("truncated")));
         assert!(truncated.cloth_marker && matches!(truncated.body, NodeBody::Mesh(_)));
+    }
+
+    /// The importer's other node kinds and level sections: an instanced
+    /// node names its 1-based owner, a camera node its target, a sector
+    /// node stores no body, an unknown root chunk is reported, and the
+    /// level's string table decodes on its own.
+    #[test]
+    fn instances_cameras_sectors_strings_and_unknown_chunks() {
+        let first = node_with("Owner", 0, &[]);
+        // node_with writes the header with instance 0; the second node's
+        // instance word (the fourth word of its header) names node 1.
+        let mut second = node_with("Child", 0, &[]);
+        let at = name("Child").len() + 8;
+        second[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        let mut camera = u32s(&[2, 77]);
+        camera.extend(chunk(KEY_TRACK, &u32s(&[0x3AE2, 0])));
+        let mut sectors = node_with("Sector", 0, &[]);
+        sectors.extend(chunk(0x1234_5678, &[9; 4]));
+        let file = {
+            let mut list = u32s(&[4]);
+            list.extend(chunk(0x3D01, &first));
+            list.extend(chunk(0x3D01, &second));
+            list.extend(chunk(NODE_3D08, &node_with("Cam", 0, &camera)));
+            list.extend(chunk(NODE_SECTOR, &sectors));
+            let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+            file.extend(chunk(NODE_LIST, &list));
+            file.extend(chunk(0xDEAD_BEEF, &[1, 2, 3]));
+            file
+        };
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.nodes.len(), 4);
+        assert_eq!(scene.nodes[0].instance, None);
+        assert_eq!(scene.nodes[1].instance, Some(1));
+        assert!(matches!(scene.nodes[1].body, NodeBody::Instance(1)));
+        assert!(matches!(
+            scene.nodes[2].body,
+            NodeBody::Camera {
+                target: Some(2),
+                value: 77
+            }
+        ));
+        assert!(matches!(scene.nodes[3].body, NodeBody::Sector));
+        assert_eq!(scene.nodes[3].unknown_sub_chunks, [0x1234_5678]);
+        assert_eq!(scene.unknown_chunks, [0xDEAD_BEEF]);
+
+        // The level's own string table, alone and inside a scene.
+        let mut library = Library::default();
+        let id = library.add(b"Brass key");
+        let table = chunk(LOCAL_STRINGS, &library.write());
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(LOCAL_DATABASE, &table));
+        let scene = Scene::parse(&file).unwrap();
+        let strings = scene.local_strings.as_ref().unwrap();
+        assert_eq!(strings.get(id).as_deref(), Some("Brass key"));
+        let db = Scene::parse_database(&file).unwrap();
+        assert_eq!(db.strings.unwrap().get(id).as_deref(), Some("Brass key"));
+        assert!(db.items.is_empty() && db.placed_objects.is_empty());
+        assert!(Scene::parse_database(b"not an rfc").is_err());
     }
 
     /// The cloth markers of the installed packs (skipped without the

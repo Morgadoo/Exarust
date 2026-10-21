@@ -1531,7 +1531,10 @@ mod tests {
                 }),
                 ..item(3, "Trouser_At", "Trouser_A", 5)
             }],
+            local_strings: None,
+            local_string_error: None,
             placed_objects: Vec::new(),
+            unknown_chunks: Vec::new(),
             level_errors: Vec::new(),
         };
         let placed = placed_characters(&scene, &global);

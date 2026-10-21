@@ -198,8 +198,10 @@ pub struct TerrainMaterial {
     pub flags: u32,
     /// Texture names by [`TerrainTexture`] slot; empty when unused.
     pub textures: [String; 6],
-    /// Shading parameters (25 in version 2 palettes, 29 in version 3). The
-    /// first two look like tiling factors and 6..10 an RGBA tint.
+    /// Shading parameters in the original's runtime record (29 for every
+    /// palette: version 2 files store 25, and the four the loader inserts
+    /// at index 20 come out here). The first two look like tiling factors
+    /// and 6..10 an RGBA tint.
     pub params: Vec<f32>,
 }
 
@@ -266,9 +268,9 @@ impl Palette {
     pub fn parse(b: &[u8]) -> Result<Self> {
         let mut r = Reader::new(b);
         let magic = r.u32()?;
-        let params = match magic {
-            PALETTE_MAGIC_V2 => 25,
-            PALETTE_MAGIC_V3 => 29,
+        let (params, version_2) = match magic {
+            PALETTE_MAGIC_V2 => (25, true),
+            PALETTE_MAGIC_V3 => (29, false),
             found => {
                 return Err(Error::BadMagic {
                     found,
@@ -291,7 +293,15 @@ impl Palette {
             for t in &mut textures {
                 *t = r.name()?;
             }
-            let params = (0..params).map(|_| r.f32()).collect::<Result<_>>()?;
+            let mut params = (0..params).map(|_| r.f32()).collect::<Result<Vec<_>>>()?;
+            if version_2 {
+                // A version 2 record is the runtime record short of four
+                // parameters, which the original inserts at index 20:
+                // 0.5, 0.3, 0.5, 1.0. The file's parameters 20–24 follow
+                // them, so a version 2 material's displacement values sit at
+                // indices 24–28 here.
+                params.splice(20..20, [0.5, 0.3, 0.5, 1.0]);
+            }
             materials.push(TerrainMaterial {
                 name,
                 flags,
@@ -480,6 +490,45 @@ mod tests {
         b.extend(u32s(&[1, 1, 1, TILE, 100, 0]));
         assert!(Terrain::parse(&b).is_err());
         assert!(Terrain::parse(&[1, 2, 3]).is_err());
+    }
+
+    #[test]
+    fn palette_v2_inserts_the_default_parameters() {
+        let mut b = u32s(&[PALETTE_MAGIC_V2, 0]);
+        b.extend(name("Old"));
+        b.extend(f32s(&[0.0, 0.0]));
+        b.resize(PALETTE_HEADER, 0);
+        b.extend(u32s(&[1]));
+        b.extend(name("Mat Old"));
+        b.extend(u32s(&[0]));
+        for _ in 0..6 {
+            b.extend(name(""));
+        }
+        b.extend(f32s(&(0..25).map(|i| i as f32).collect::<Vec<_>>()));
+        b.extend(u32s(&[0, 0]));
+        let pal = Palette::parse(&b).unwrap();
+        let p = &pal.materials[0].params;
+        assert_eq!(p.len(), 29);
+        assert_eq!(p[19], 19.0);
+        assert_eq!(&p[20..24], &[0.5, 0.3, 0.5, 1.0]);
+        assert_eq!(p[24], 20.0);
+        assert_eq!(p[28], 24.0);
+        // A version 3 palette stores the runtime record as is.
+        let mut b = u32s(&[PALETTE_MAGIC_V3, 0]);
+        b.extend(name("New"));
+        b.extend(f32s(&[0.0, 0.0]));
+        b.resize(PALETTE_HEADER, 0);
+        b.extend(u32s(&[1]));
+        b.extend(name("Mat New"));
+        b.extend(u32s(&[0]));
+        for _ in 0..6 {
+            b.extend(name(""));
+        }
+        b.extend(f32s(&(0..29).map(|i| i as f32).collect::<Vec<_>>()));
+        b.extend(u32s(&[0, 0]));
+        let pal = Palette::parse(&b).unwrap();
+        assert_eq!(pal.materials[0].params.len(), 29);
+        assert_eq!(pal.materials[0].params[20], 20.0);
     }
 
     #[test]
