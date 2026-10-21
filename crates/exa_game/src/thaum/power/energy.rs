@@ -1,12 +1,15 @@
 //! The Energy powers' active classes: Shock's charge and release, and Shock
 //! Weapons' arcs on the held weapons.
 //!
-//! - **Shock** ([`Shock`]): the first control tick starts cast motion 0x27
-//!   and plays the charge. Each later tick adds the charge rate; at or below
-//!   one it spends the tick's focus, and past one it fires the arc burst
-//!   once, clears the hand's arcs and plays the release. A second charge
-//!   past one answers 2 (the power is done). A control event carrying bit 1
-//!   or 3 ends it, clearing the hand's arcs first.
+//! - **Shock** ([`Shock`]): the cast has already started motion 0x27; the
+//!   first control tick installs the cast hook and plays the charge (volume
+//!   0.2, pitch `0.9 + 0.2·roll`). Each later tick adds the charge rate; not
+//!   past one (or not a number) it spends the tick's focus while charging,
+//!   and past one it fires the arc burst once, clears the hand's arcs, the
+//!   cast hook and the cast id, and plays the release (volume 1). A second
+//!   charge past one answers 2 (the power is done). A control event carrying
+//!   bit 1 or 3 ends it, clearing the hand's arcs first when it never fired,
+//!   and stops the cast motion.
 //! - **Shock Weapons** ([`ShockWeapons`]): the first tick starts cast
 //!   motion 0x25; ending clears each armed weapon's arcs and both body
 //!   callbacks. The weapon changes themselves are
@@ -17,17 +20,20 @@
 use super::PowerBase;
 use crate::thaum::casting::{CastBody, start_cast};
 
-/// The Energy power ids the classes run.
-pub const SHOCK: u32 = 0x401;
-pub const SHOCK_WEAPONS: u32 = 0x2040B;
+pub use crate::thaum::energy::{SHOCK, SHOCK_MOTION, SHOCK_WEAPONS};
 
-/// The cast motions they start.
-pub const SHOCK_MOTION: u32 = 0x27;
+/// The cast motion Shock Weapons starts.
 pub const SHOCK_WEAPONS_MOTION: u32 = 0x25;
 
-/// The sounds the shock plays.
-pub const CHARGE_SOUND: &str = "thmnrg_chrga";
-pub const RELEASE_SOUND: &str = "thmnrg_shock";
+/// The sounds the shock plays, and their volumes.
+pub use crate::thaum::energy::{CHARGE_SOUND, SHOCK_SOUND as RELEASE_SOUND};
+pub const CHARGE_VOLUME: f32 = 0.2;
+pub const RELEASE_VOLUME: f32 = 1.0;
+
+/// The pitch both shock sounds take: `0.9 + 0.2·roll` in double.
+pub fn shock_pitch(roll: f64) -> f32 {
+    (roll * 0.2 + 0.9) as f32
+}
 
 /// Shock's phase: charging.
 pub const CHARGE: i32 = 0;
@@ -43,8 +49,9 @@ pub const WEAPON_ARC_ON: i32 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShockStep {
     pub result: i32,
-    /// The first tick's cast motion was taken.
-    pub motion: bool,
+    /// The first tick: the cast hook is installed and the charge sound
+    /// plays.
+    pub charge_sound: bool,
     /// The tick spends its focus.
     pub drain: bool,
     /// The burst fires this tick.
@@ -86,7 +93,7 @@ impl Shock {
     pub fn control(&mut self, event: i32, body: &mut CastBody) -> ShockStep {
         let quiet = ShockStep {
             result: 0,
-            motion: false,
+            charge_sound: false,
             drain: false,
             fired: false,
             cleared: false,
@@ -109,12 +116,14 @@ impl Shock {
         if self.state == super::READY {
             self.state = super::RUNNING;
             return ShockStep {
-                motion: true,
+                charge_sound: true,
                 ..quiet
             };
         }
         self.charge += self.rate;
-        if self.charge <= 1.0 {
+        // The ordered compare: a charge that is not a number keeps
+        // charging.
+        if !(self.charge > 1.0) {
             if self.phase == CHARGE {
                 super::drain(body, self.focus_tick);
                 return ShockStep {
@@ -127,6 +136,8 @@ impl Shock {
         self.charge = 0.0;
         if self.phase == CHARGE {
             self.phase = FIRED;
+            body.cast_hook = None;
+            body.casting = 0;
             return ShockStep {
                 fired: true,
                 cleared: true,
@@ -228,7 +239,8 @@ mod tests {
         let mut body = CastBody::default();
         let mut shock = Shock::new(0.5, 0.1);
         let first = shock.control(0, &mut body);
-        assert!(first.motion);
+        assert!(first.charge_sound);
+        body.casting = SHOCK;
         let half = shock.control(0, &mut body);
         assert!(half.drain);
         assert!((shock.charge - 0.5).abs() < 1e-6);
@@ -239,6 +251,7 @@ mod tests {
         assert!(burst.cleared);
         assert_eq!(shock.phase, FIRED);
         assert_eq!(shock.charge, 0.0);
+        assert_eq!(body.casting, 0);
         // The next charge cycle runs dry without a second burst and ends.
         for _ in 0..4 {
             if shock.control(0, &mut body).result == 2 {

@@ -41,19 +41,16 @@ use super::PowerBase;
 use crate::thaum::casting::{CastBody, start_cast};
 use crate::thaum::engine::dist_sq;
 
-/// The Force power ids the classes run.
+pub use crate::thaum::force::{BARRICADE, BARRICADE_MOTION, KINESIS, STRIKES, STRIKES_MOTION};
+
+/// The Force power ids the classes run beside the cast module's.
 pub const SHELL: u32 = 0x20208;
 pub const BUBBLE: u32 = 0x20207;
-pub const BARRICADE: u32 = 0x20206;
-pub const STRIKES: u32 = 0x2020B;
-pub const KINESIS: u32 = 0x10209;
 pub const THROW: u32 = 0x20A;
 
 /// The cast motions the classes start.
 pub const SHELL_MOTION: u32 = 0x24;
 pub const BUBBLE_MOTION: u32 = 0x24;
-pub const BARRICADE_MOTION: u32 = 0x24;
-pub const STRIKES_MOTION: u32 = 0x25;
 pub const KINESIS_MOTION: u32 = 0x23;
 pub const THROW_MOTION: u32 = 0x23;
 

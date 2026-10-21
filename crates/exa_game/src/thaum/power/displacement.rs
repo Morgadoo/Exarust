@@ -27,10 +27,9 @@ use super::PowerBase;
 use crate::thaum::casting::{CastBody, start_cast};
 
 /// The Displacement power ids the classes run.
-pub const VANISH: u32 = 0x10601;
-pub const LONG_DOOR: u32 = 0x602;
-pub const CONSTANT_DISPLACEMENT: u32 = 0x20603;
-pub const SUMMON: u32 = 0x604;
+pub use crate::thaum::displacement::{
+    CONSTANT as CONSTANT_DISPLACEMENT, LONG_DOOR, SUMMON, VANISH,
+};
 
 /// The cast motion Constant Displacement starts.
 pub const CONSTANT_MOTION: u32 = 0x28;
