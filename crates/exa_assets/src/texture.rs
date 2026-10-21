@@ -323,8 +323,8 @@ pub const COMPATIBLE_MASK: u32 = 0x800C_FFFF;
 
 /// Whether an uncompressed stored word has an sRGB internal format in the
 /// original's table. A word the table does not list is converted by the
-/// image codec before upload; Exarust decodes it to RGBA8, which has an
-/// sRGB variant.
+/// image codec before the original uploads it; no shipped image has one, and
+/// Exarust treats it as having no sRGB variant (its pixels stay linear).
 pub fn has_srgb_format(format_word: u32) -> bool {
     let key = format_word & COMPATIBLE_MASK;
     COMPATIBLE_FORMATS
