@@ -306,14 +306,17 @@ input form yet; the running game has no inventory screen to host it.
 The gamepad (`gamepad`) reproduces the original's Steam Input action sets on
 Bevy's gamepad backend instead of Steam: the menu set and the interact and
 combat gameplay sets with their digital and analog actions and manifest
-names, a documented default binding table, the menu reader's 0.25 dead zone,
-400/150/30 ms repeats, three-millisecond set priming, cursors and directional
-control picking, the focus stack, and the gameplay reader's camera-relative
-move, aim, look dead zones and AimSpeed scale, zoom, step modes, 500 ms power
-hold, command word and rumble. The player reads it for movement, combat
-steps, aim, attack and alternate attack, crouch, sprint, weapon swap,
-combat mode and the chase camera; the controls page's `InputMode` drives its
-controller flag. There is no Steam library, no binding panel and no floating
+names, a documented default binding table, the set table with its gameplay
+layer, the menu reader's 0.25 dead zone, 0.1 analog bits and scaled
+cursors, 400/150/30 ms repeats, three-millisecond set priming, the
+directional control pick at the GUI unit, the focus stack, and the gameplay
+reader's camera-relative move, aim, the look routine at the orbit rate, the
+stepped zoom, the power-bar and dialogue step modes, the 500 ms power-tree
+hold, the command word and rumble. The player reads it for movement
+(`pad_keys`), combat steps, aim, attack and alternate attack, crouch,
+sprint, weapon swap, combat mode and the chase camera's look and zoom; the
+controls page's `InputMode` drives its controller flag. There is no Steam
+library, no binding panel and no floating
 gamepad keyboard ([`docs/PLAYER.md`](../../docs/PLAYER.md#gamepad)).
 
 ## Scope

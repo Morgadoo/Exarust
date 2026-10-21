@@ -1644,7 +1644,8 @@ detail (no per-detail shadow path), vertex-buffer,
 mipmap, swap-copy and GI-precision switches (the GI is already the
 original's 8-bit low-precision format), the video-device and video-memory
 readouts, and the shader-cache progress screen (Bevy compiles shaders as
-needed). The aim-speed scaling and the controller bindings are in: it scales
-the gamepad's look rate and the default pad table plays the game
-([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and prompts
-are not, since Exarust does not link Steam.
+needed). The controller bindings are in: the default pad table plays the
+game ([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and
+prompts are not, since Exarust does not link Steam. The aim speed is stored
+and shown but acts nowhere yet: in the original it eases the screen cursor
+toward the gamepad's aim point, which Exarust does not reproduce.

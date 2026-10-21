@@ -276,9 +276,13 @@ between them with its combat mode. `Inventory` and `Skills` are only in the
 interact set (read only while it is active); `CrouchC` and `AltAction` are
 only in the combat set. Exarust reads whichever variant the player's combat
 mode names. The set table registers `Set_Interact` and `Set_Combat` in that
-order and starts on the interact set; a focus change activates the menus or
-the set a form names, and switching a gameplay set primes the reader
-(`gamepad::SetRegistry`).
+order (1-based indices 1 and 2; registration checks no bound) and starts
+on the interact set. A focused form activates the menus, or the set its
+push word names (bit `0x8000` with the index in the low byte), directly.
+The player controls instead select the gameplay *layer*, which only
+becomes active while no form has the focus; popping the last form
+reselects that layer and primes its reader, rather than leaving the menus
+active (`gamepad::SetRegistry`, `gamepad::FocusStack`).
 
 | action | set | kind | default Bevy control |
 |---|---|---|---|
@@ -334,68 +338,93 @@ set. Activating a set makes the reader wait three milliseconds and prime
 the held keys (`MenuSel`, `MenuBak`, `MenuExit`), so a button that was
 already down is not a press.
 
-- **Navigation.** The `MenuNav` stick navigates once the sum of its squared
-  axes is over 0.25. The dominant axis wins, vertical on a tie; positive
-  `y` is up and positive `x` right. A step emits `0x1001` left, `0x2001`
-  right, `0x4001` up or `0x8001` down, with the original's analog bit
-  `0x10`. The first step is at once, the next after 400 ms, then every
-  150 ms while the stick stays out. A stick back inside the dead zone
-  resets the first delay. In a form whose saved word has bit `0x2000` the
-  original writes the fast 30 ms delay to the *scroll* stick's deadline
-  and leaves the navigation deadline alone: the navigation then steps
-  every frame, which Exarust reproduces. This is a quirk of the original,
-  not a rounding.
-- **Scroll.** The `MenuScr` stick is read only in a frame in which
-  navigation did not step. It uses the same layout with `0x1002`,
-  `0x2002`, `0x4002` and `0x8002` and the analog bit `0x20`, and repeats
-  on its own 400/150/30 ms clock.
-- **Cursor.** The menu cursor moves only on a step: `(x, −y)` scaled by
-  0.0625 of the milliseconds since the previous frame. The scroll stick has
-  its own cursor. The vertical axis is flipped because the interface's
-  cursor is down-positive.
+- **Navigation.** The `MenuNav` stick's pair is the cursor `(x, −y)` (the
+  interface's `y` is down). Its squared length over 0.25 is a direction:
+  vertical unless the horizontal axis is strictly larger (a tie or a NaN
+  is vertical), up or right only for a positive raw axis (zero or NaN is
+  down or left), emitting `0x1001` left, `0x2001` right, `0x4001` up or
+  `0x8001` down. The first step is at once, the next after 400 ms, then
+  every 150 ms while the stick stays out; a stick back inside 0.25 resets
+  the first delay. In a form whose push word has bit `0x2000` the original
+  writes the fast 30 ms delay to the *scroll* stick's deadline and leaves
+  the navigation deadline alone: the navigation then steps every frame,
+  which Exarust reproduces. This is a quirk of the original, not a
+  rounding.
+- **Analog bit and cursor.** Independently of the dead zone and the repeat
+  clock, a squared length over 0.1 (compared in double precision) adds the
+  analog bit `0x10` and scales the cursor by 0.0625 of the milliseconds
+  since the previous frame; under it the cursor is the unscaled pair. So a
+  pushed stick sends `0x10` with its cursor every frame, a step or not,
+  and the form moves analog cursors (sliders, item views) with it.
+- **Scroll.** The `MenuScr` stick is read only in a frame without the
+  navigation's analog bit (otherwise its cursor keeps its last value). It
+  uses the same rules with `0x1002`, `0x2002`, `0x4002` and `0x8002`, the
+  analog bit `0x20` and its own 400/150/30 ms clock.
 - **Keys.** `MenuSel` emits `0x100` on its first frame, `MenuBak` `0x200`
   and `MenuExit` `0x400`; a key held over from the frame before is not sent
-  again. A form with an exit hook takes `MenuExit` directly and dispatches
-  nothing else that frame; the hook's owner is outside this component, so
-  Exarust always uses the normal dispatch.
+  again. The form is called when the newly pressed keys or the direction
+  and analog bits are not zero. A form with an exit hook takes a newly
+  pressed `MenuExit` itself and nothing is dispatched that frame
+  (`MenuFrame::exit_hook`); the hooks' owners are outside this component,
+  so Exarust always uses the normal dispatch.
 - **Picking.** A form's key method may answer the press message, and the
-  original then picks the control under the stick: from the current
-  control's centre, a vertical stick takes the nearest control within 320
-  pixels sideways (ties by the smaller sideways offset), and a horizontal
-  stick scores each control's offset with its vertical part stretched
-  eight times, requiring a dot product of 0.3 or more with the stick's
-  direction and taking the smallest length over that dot product. The
-  current control and controls whose records do not allow a pick are
-  skipped. `gamepad::pick_control` has these rules; Exarust has no drawn
-  form to call it yet. The original also measures the cursor against the
-  focused form's centre and walks child forms, which `pick_control` leaves
-  to its caller.
+  original then picks the control under the stick, in client pixels at the
+  GUI unit (4 by default). The cursor is normalised (each part times the
+  reciprocal of its length) and its axis chosen as above. A control is a
+  candidate when its centre's offset from the current control's centre,
+  along that axis, times the direction's part is at least the unit (a NaN
+  passes). A vertical pick takes the smallest rounded vertical distance
+  (half to even) within 80 units sideways (320 pixels at unit 4), ties by
+  the smaller sideways distance. A horizontal pick stretches the offset's
+  vertical part eight times, normalises it, needs an alignment (dot
+  product with the direction, compared in double precision) of 0.3 or more
+  and takes the smallest length over alignment. The current control and
+  controls whose records do not allow a pick are skipped; the picked
+  control is focused with its 1-based index, plus `0x10000` when the form
+  has a control list. `gamepad::pick_control` has these rules; Exarust has
+  no drawn form to call it yet. The original also offsets the centres by
+  the focused form's parents and walks child forms, which `pick_control`
+  leaves to its caller.
 
 ### The gameplay sets
 
 - **Move.** The `Move` stick's raw pair is stored, and with neither step
   mode set it is turned into the world by the camera's right and forward
-  axes (the vertical component dropped). The squared magnitude over 0.8 is
-  the original's run threshold (`gamepad::MOVE_FAST`). The two step modes
-  read one axis instead, with a 0.1 dead zone: the across mode emits
-  left/right steps (`0x10`/`0x20`), the along mode forward/back
-  (`0x40`/`0x80`), each repeated every 300 ms while held and re-pressed
-  through the command word's edge filter. Their owners are outside this
-  component; Exarust leaves both off and uses the analog move everywhere.
+  axes (the vertical component dropped). The squared magnitude over 0.8
+  (double precision) is the original's run flag (`gamepad::MOVE_FAST`).
+  While the power bar is open the stick's horizontal axis steps instead
+  (`0x10` left under −0.1, `0x20` right over 0.1), and while a dialogue is
+  open (the power bar checked first) its vertical axis does (`0x40` up,
+  `0x80` down), each repeated every 300 ms while held through the command
+  word's edge filter; the move is zeroed and the run flag kept. Exarust has
+  no power bar or dialogue yet, so both modes stay off.
 - **Camera.** `Camera`'s vertical axis has a 0.5 dead zone; its horizontal
-  axis is squared past 0.1. When the resulting squared pair is over 0.01,
-  the camera turns by `0.0025 × AimSpeed × (x·30, y·10)`: right turns
-  right, up looks up. AimSpeed is the setting's 0–1 fraction (default
-  0.29), which Exarust takes as the camera's scale field (a labelled
-  guess: that field's owner is outside this component). So a full stick
-  turns 0.02175 rad a frame at the default.
-- **Aim.** `Aim`'s pair is turned into the camera's frame (or kept raw in
-  the original's own mode) and becomes the player's combat aim; Exarust
-  uses it for the combat heading and the other-side test.
-- **Zoom.** `Zoom_In` and `Zoom_Out` move the camera's zoom every frame
-  they are held, by `10 × 0.008333334 × range × 0.2`: 20 on Exarust's
-  800–2000 scale. The camera's minimum pitch follows the zoom already.
-- **Rumble.** A hit adds its amount to both motors, clamped at 1. Every
+  axis is zero under 0.1 (double precision, a NaN passes) and otherwise
+  `|x|·x`. When the squared pair is over 0.01 the navigation unit's look
+  routine turns the camera by the orbit's rate (4.8 rad over the screen
+  width, so 0.0025 rad a pixel at 1920) times the camera's sensitivity (1
+  for the game's camera) times `(x·30, y·10)`: the yaw loses the `x` part,
+  as a rightward mouse drag does, and the asked pitch becomes the held
+  pitch plus the `y` part, held between the zoom's floor and 1.5. So up
+  tilts the camera steeper, the opposite of an upward mouse drag, and a
+  full stick turns 0.075 rad of yaw a frame at 1920 pixels
+  (`gamepad::look_turn`). AimSpeed plays no part.
+- **Aim.** `Aim`'s pair is turned into the camera's frame (in the
+  original's raw-aim mode it is stored as it is, and the player behaviour
+  then turns the camera with it by the same look rule). The player
+  behaviour takes the aim once its `z·z + x·x` is over 0.01: it puts the
+  cursor point `250·|aim| + 50` cm out along it and eases the screen
+  cursor there by `(0.4·AimSpeed + 0.1)²` a tick, the one place AimSpeed
+  acts. Exarust turns the combat aim straight to the stick's yaw past the
+  same 0.01 (`gamepad::aim_engaged`); the eased cursor is not reproduced.
+- **Zoom.** While `Zoom_In` is held the stepped camera takes ten zoom
+  steps a frame, `Zoom_Out` minus ten, applied in that order and each held
+  in the zoom range: a step is `(steps × 0.008333334) × stop`, the stop
+  being a fifth of the range, subtracted, so zooming in lowers the zoom by
+  20 a frame on 800–2000 (`gamepad::zoom_step`). The camera's minimum
+  pitch follows the zoom already.
+- **Rumble.** With a controller present, a hit adds its amount to both
+  motors, clamped at 1. Every
   frame each motor keeps 0.6 of itself (multiplied in double precision) and
   is turned into a 16-bit speed (`×65535`, rounded to even). The original
   resolves `TriggerVibration` but its wrapper returns without calling it,
@@ -408,20 +437,25 @@ already down is not a press.
   else is primed.
 - **The command word.** The digital actions become the player controls'
   command word, which the game consumes and clears. The bits: `1` the
-  combat action, `2` weapon swap, `0x10`/`0x20` left/right steps,
-  `0x40`/`0x80` forward/back steps, `0x100` inventory, `0x200` skills,
-  `0x1000` use power, `0x2000` powers, `0x4000` the powers' second command
-  after 500 ms held, `0x10000` use/select, `0x20000` talk, `0x100000`
-  Look, `0x200000` camera mode, `0x10000000` pause. All are set on their
-  first pressed frame only; Look and camera mode are held (re-asserted
-  every frame) and cleared on release. Bits 20–23 are the gamepad reader's;
-  its other bits are other input's. `gamepad::PlayPad::commands` keeps the
-  word and `consume` clears what a consumer took.
+  combat action, `2` weapon swap, `0x10`/`0x20` the power bar's left/right
+  steps, `0x40`/`0x80` the dialogue's up/down steps, `0x100` inventory,
+  `0x200` skills, `0x1000` use power, `0x2000` powers, `0x4000` the power
+  tree (`PowerTree` only primes it; `Powers` held past 500 ms sets it),
+  `0x10000` use/select, `0x20000` talk, `0x100000` Look, `0x200000` camera
+  mode, `0x10000000` pause. All are set on their first pressed frame only;
+  Look and camera mode are held (re-asserted every frame) and cleared on
+  release. Bits 20–23 are the gamepad reader's; its other bits are other
+  input's. `gamepad::PlayPad::commands` keeps the word and `consume` clears
+  what a consumer took. `AltAction` and `CrouchC` instead add the Alt and
+  crouch bits to the key word the keyboard fills, and `Sprint` is a held
+  flag of its own.
 
 ### What the running game does with it
 
 With controller mode on: the stick walks (its off-axis part turns with the
-keys' ±0.025 rad a tick; pulled back beyond 135° it backpedals), holds the
+keys' ±0.025 rad a tick; pulled back beyond 135° it backpedals;
+`gamepad::pad_keys`, Exarust's own reading of the original's wanted
+direction for its key-driven steering), holds the
 sprint latch when sprint is on, crouches on `CrouchC`, and in combat mode
 steps along and across the aim. The attack trigger holds the attack request
 (so attacks repeat after their cooldown), and `AltAction` asks for a stab;
@@ -431,7 +465,7 @@ the guard (or Cmbt - Idle) while no attack plays, as with the keyboard.
 `WepSwp` swaps the weapon sets. R3 turns combat mode on and off: the original has no
 Steam action for that, so Exarust gives the right stick's click the job, as
 `Look` (Cursor Look) has no meaning on a pad. The aim stick sets the combat
-aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` orbits it.
+aim, `Zoom_In`/`Zoom_Out` change the camera's zoom, and `Camera` turns it.
 
 The command bits for inventory, skills, powers, the power tree, use power,
 select/use, talk, pause and camera mode reach the word, but Exarust has no
