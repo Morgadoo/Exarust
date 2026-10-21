@@ -8,7 +8,8 @@
 //! a second, offset `_FireBas` emitter for the fire's bed. The templates,
 //! their colour keys and their lights are the original's records; the keys
 //! here are the linear pipeline's, with the RGB of each table's first `n`
-//! entries scaled at load (the alpha is untouched).
+//! entries scaled by 0.7 at load (rounded half to even; the alpha is
+//! untouched).
 //! Rules: `docs/RENDERING.md` (Fires).
 
 use bevy::prelude::*;
@@ -51,6 +52,48 @@ const RAW_SMALL_KEYS: &[Key] = &[
     [0, 0, 0, 48],
     [0, 0, 0, 0],
 ];
+#[cfg(test)]
+const RAW_MEDIUM_SMALL_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [64, 33, 10, 16],
+    [128, 65, 20, 32],
+    [200, 140, 80, 64],
+    [140, 70, 30, 64],
+    [120, 60, 12, 80],
+    [68, 24, 0, 80],
+    [34, 5, 0, 32],
+    [0, 0, 0, 8],
+    [0, 0, 0, 0],
+];
+#[cfg(test)]
+const RAW_MEDIUM_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [64, 23, 15, 32],
+    [100, 60, 42, 32],
+    [120, 70, 30, 64],
+    [98, 50, 15, 64],
+    [80, 20, 5, 64],
+    [48, 10, 0, 80],
+    [8, 0, 0, 48],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+];
+#[cfg(test)]
+const RAW_LARGE_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [120, 75, 32, 64],
+    [125, 60, 6, 80],
+    [64, 38, 15, 80],
+    [40, 15, 5, 64],
+    [16, 2, 0, 32],
+    [0, 0, 0, 16],
+    [0, 0, 0, 0],
+];
+#[cfg(test)]
+const RAW_BASE_KEYS: &[Key] = &[[0, 0, 0, 0], [180, 100, 50, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
 
 /// The small fire's colour keys. The first two and the last keys are black
 /// with no opacity.
@@ -58,12 +101,12 @@ const SMALL_KEYS: &[Key] = &[
     [0, 0, 0, 0],
     [0, 0, 0, 0],
     [22, 9, 2, 16],
-    [44, 16, 3, 32],
-    [134, 88, 46, 32],
-    [178, 111, 65, 64],
-    [118, 83, 41, 64],
-    [62, 20, 4, 64],
-    [33, 8, 2, 80],
+    [45, 16, 4, 32],
+    [134, 89, 47, 32],
+    [178, 112, 66, 64],
+    [119, 84, 42, 64],
+    [63, 21, 5, 64],
+    [34, 8, 2, 80],
     [0, 0, 0, 48],
     [0, 0, 0, 0],
 ];
@@ -71,13 +114,13 @@ const SMALL_KEYS: &[Key] = &[
 const MEDIUM_SMALL_KEYS: &[Key] = &[
     [0, 0, 0, 0],
     [0, 0, 0, 0],
-    [44, 23, 6, 16],
-    [89, 45, 13, 32],
-    [139, 97, 55, 64],
-    [97, 48, 20, 64],
-    [83, 41, 8, 80],
-    [47, 16, 0, 80],
-    [23, 3, 0, 32],
+    [45, 23, 7, 16],
+    [90, 46, 14, 32],
+    [140, 98, 56, 64],
+    [98, 49, 21, 64],
+    [84, 42, 8, 80],
+    [48, 17, 0, 80],
+    [24, 4, 0, 32],
     [0, 0, 0, 8],
     [0, 0, 0, 0],
 ];
@@ -85,13 +128,13 @@ const MEDIUM_SMALL_KEYS: &[Key] = &[
 const MEDIUM_KEYS: &[Key] = &[
     [0, 0, 0, 0],
     [0, 0, 0, 0],
-    [44, 16, 10, 32],
-    [69, 41, 29, 32],
-    [83, 48, 20, 64],
-    [68, 34, 10, 64],
-    [55, 13, 3, 64],
-    [33, 6, 0, 80],
-    [5, 0, 0, 48],
+    [45, 16, 10, 32],
+    [70, 42, 29, 32],
+    [84, 49, 21, 64],
+    [69, 35, 10, 64],
+    [56, 14, 4, 64],
+    [34, 7, 0, 80],
+    [6, 0, 0, 48],
     [0, 0, 0, 0],
     [0, 0, 0, 0],
 ];
@@ -99,20 +142,28 @@ const MEDIUM_KEYS: &[Key] = &[
 const LARGE_KEYS: &[Key] = &[
     [0, 0, 0, 0],
     [0, 0, 0, 0],
-    [83, 52, 22, 64],
-    [87, 41, 4, 80],
-    [44, 26, 10, 80],
-    [27, 10, 3, 64],
+    [84, 52, 22, 64],
+    [88, 42, 4, 80],
+    [45, 27, 10, 80],
+    [28, 10, 4, 64],
     [11, 1, 0, 32],
     [0, 0, 0, 16],
     [0, 0, 0, 0],
 ];
-/// The 0.35–0.5 bed's keys: no alpha, so the bed adds light without
-/// dimming what is behind it. This table is not part of the load-time RGB
+/// The 0.35–0.5 bed's keys (three, so five entries): no alpha, so the bed
+/// adds light without dimming what is behind it, brightest two thirds of
+/// the way through its life. This table is not part of the load-time RGB
 /// scaling.
-const SMALL_BASE_KEYS: &[Key] = &[[0, 0, 0, 0], [200, 120, 50, 0], [0, 0, 0, 0]];
-/// The 0.5–1 and large beds' keys, additive in the same way.
-const BASE_KEYS: &[Key] = &[[125, 69, 34, 0], [0, 0, 0, 0]];
+const SMALL_BASE_KEYS: &[Key] = &[
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [200, 120, 50, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+];
+/// The 0.5–1 and large beds' keys (two, so four entries), additive in the
+/// same way and brightest half way through their life.
+const BASE_KEYS: &[Key] = &[[0, 0, 0, 0], [126, 70, 35, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
 
 /// The small fire's template: a torch or a burning item (size 0.2).
 pub const SMALL: Descriptor = Descriptor {
@@ -445,8 +496,9 @@ fn medium_small(size: f32) -> Preset {
 }
 
 fn medium(size: f32) -> Preset {
+    // Unlike the 0.35–0.5 bed, this bed is scaled by the whole size.
     let template = MEDIUM.scaled(size);
-    let base = MEDIUM_BASE.scaled(size * 0.5);
+    let base = MEDIUM_BASE.scaled(size);
     Preset {
         size,
         flame: EmitterSpec {
@@ -461,7 +513,7 @@ fn medium(size: f32) -> Preset {
         base: Some(EmitterSpec {
             name: "_FireBas",
             template: base,
-            template_size: size * 0.5,
+            template_size: size,
             size: size * 2.0,
             lift: -size * 20.0,
             ring: None,
@@ -538,20 +590,22 @@ pub fn marker_size(bytes: [u8; 4]) -> f32 {
     f32::from_le_bytes(bytes)
 }
 
-/// The keys as the linear pipeline loads them: each of the table's first
-/// `n` entries has its RGB scaled (truncated), its alpha untouched.
+/// The keys as the linear pipeline loads them: the RGB of each of the
+/// table's first `count` keys goes to a float (×1/255), is scaled by 0.7,
+/// back to a byte (×255, rounded half to even, saturated); the alpha is
+/// untouched.
 pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
+    const SCALE: f32 = 0.7;
+    let channel = |b: u8| {
+        let v = f32::from(b) * (1.0 / 255.0);
+        (v * SCALE * 255.0).round_ties_even().clamp(0.0, 255.0) as u8
+    };
     entries
         .iter()
         .enumerate()
         .map(|(i, key)| {
             if i < count {
-                [
-                    (f64::from(key[0]) * f64::from(0.7f32)) as u8,
-                    (f64::from(key[1]) * f64::from(0.7f32)) as u8,
-                    (f64::from(key[2]) * f64::from(0.7f32)) as u8,
-                    key[3],
-                ]
+                [channel(key[0]), channel(key[1]), channel(key[2]), key[3]]
             } else {
                 *key
             }
@@ -708,6 +762,9 @@ mod tests {
         assert!((base.lift + 0.41 * 15.0).abs() < 1e-5);
         assert!((base.size - 0.82).abs() < 1e-5);
         assert!((base.template_size - 0.205).abs() < 1e-6);
+        // The 0.5–1 bed is scaled by the whole size.
+        let p = preset(0.8);
+        assert!((p.base.expect("a bed").template_size - 0.8).abs() < 1e-6);
         let p = preset(3.0);
         let base = p.base.expect("a bed");
         assert!((base.lift + 1.5 * 40.0).abs() < 1e-4);
@@ -748,7 +805,12 @@ mod tests {
     #[test]
     fn the_keys_are_the_load_time_ones() {
         assert_eq!(load_scale(RAW_SMALL_KEYS, 9), SMALL_KEYS);
-        assert_eq!(SMALL_KEYS[5], [178, 111, 65, 64]);
+        assert_eq!(load_scale(RAW_MEDIUM_SMALL_KEYS, 9), MEDIUM_SMALL_KEYS);
+        assert_eq!(load_scale(RAW_MEDIUM_KEYS, 9), MEDIUM_KEYS);
+        assert_eq!(load_scale(RAW_LARGE_KEYS, 7), LARGE_KEYS);
+        assert_eq!(load_scale(RAW_BASE_KEYS, 2), BASE_KEYS);
+        // 160 · 0.7 = 112 exactly, once through the byte-to-float scale.
+        assert_eq!(SMALL_KEYS[5], [178, 112, 66, 64]);
         assert_eq!(SMALL_KEYS[9], [0, 0, 0, 48]);
     }
 
@@ -760,10 +822,27 @@ mod tests {
 
     #[test]
     fn the_key_tables_are_consistent() {
-        for keys in [SMALL.keys, MEDIUM_SMALL.keys, MEDIUM.keys, LARGE.keys] {
+        for keys in [
+            SMALL.keys,
+            MEDIUM_SMALL.keys,
+            MEDIUM_SMALL_BASE.keys,
+            MEDIUM.keys,
+            MEDIUM_BASE.keys,
+            LARGE.keys,
+            LARGE_BASE.keys,
+        ] {
             assert_eq!(keys.entries.len() as i32, keys.count + 2);
         }
-        assert_eq!(SMALL_BASE_KEYS.len(), 3);
-        assert_eq!(BASE_KEYS.len(), 2);
+    }
+
+    #[test]
+    fn the_beds_peak_inside_their_life() {
+        // Even slots: key k at age (k − 1)/n.
+        let bed = MEDIUM_BASE.keys;
+        assert_eq!(bed.sample(0.0, false), [0, 0, 0, 0]);
+        assert_eq!(bed.sample(1.0, false), [126, 70, 35, 0]);
+        let small = MEDIUM_SMALL_BASE.keys;
+        assert_eq!(small.sample(2.0, false), [200, 120, 50, 0]);
+        assert_eq!(small.sample(1.0, false), [0, 0, 0, 0]);
     }
 }
