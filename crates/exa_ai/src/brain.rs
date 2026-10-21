@@ -438,11 +438,16 @@ pub fn perceive_all(
             resist_mind: false,
             target,
         };
+        // The largest radius a tracked perception can have; a character
+        // beyond it cannot be seen, so no contact is made for it.
+        let reach = combatant::PERCEPTION_CM + combatant::TRACKED_CM + combatant::FLAT_BAND_CM;
         for sensed in &candidates {
             if sensed.entity == entity {
                 continue;
             }
-            if sensed.invisible {
+            if sensed.invisible
+                || (sensed.position_cm - position_cm).length_squared() > reach * reach
+            {
                 npc.unseen(sensed.id);
                 continue;
             }
