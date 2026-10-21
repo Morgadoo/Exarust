@@ -119,7 +119,10 @@ pub fn smooth_mesh(mesh: &Mesh, group_flags: &[u32]) -> Result<Smoothed, MeshErr
 /// Whether a mesh with `faces` faces may be subdivided: four times one
 /// more face must fit the original's 16-bit word.
 pub fn can_subdivide(faces: usize) -> bool {
-    (faces + 1) * 4 <= FACE_LIMIT
+    faces
+        .checked_add(1)
+        .and_then(|n| n.checked_mul(4))
+        .is_some_and(|n| n <= FACE_LIMIT)
 }
 
 /// Subdivides `mesh` once. `sharpness` is the weight of points on fewer
