@@ -337,7 +337,11 @@ refitted and it is still converted to render form.
    coordinate at either end. Edge points as above inside each coordinate
    island; when the two opposite coordinates lie on the same side of the
    edge the texture folds there: the edge becomes a seam and takes the mean
-   opposite coordinate projected onto it instead.
+   opposite coordinate projected onto it instead. The projection's
+   direction is the edge's coordinate difference over its length; a
+   zero-length texture edge divides by √0 exactly as the original does (the
+   shipped `HULA03_O` hair has one, so its smoothed coordinates can be
+   non-finite).
 6. Streams sharing a channel take its new count; colours become white.
 7. **Texture vertex points.** A point's coordinates are its first corner's
    and, if different, its last corner's (the original's scan keeps only the
