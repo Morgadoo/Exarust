@@ -409,7 +409,12 @@ pub fn factories(game: &GameData) -> Result<()> {
             println!("{name}: not found");
             continue;
         };
-        let g = f.generate(seed, seed, quality, None);
+        let built = f.build(&exa_formats::factory::WeaponSpec {
+            seeds: [seed, seed],
+            quality,
+            ..Default::default()
+        });
+        let g = &built.generated;
         let chosen: Vec<String> = f
             .parts
             .iter()
@@ -422,7 +427,8 @@ pub fn factories(game: &GameData) -> Result<()> {
             g.selection,
             chosen.join(", ")
         );
-        for placed in f.place(&g) {
+        let boxes = vec![exa_formats::factory::ComponentBox::default(); f.parts.len()];
+        for placed in f.place(g, &boxes) {
             println!(
                 "    {:<10} at {:?}",
                 f.parts[placed.part].name,

@@ -413,7 +413,7 @@ fn plain_sword() -> objdb::Weapon {
         quality: 128,
         damage: 0,
         dirt: 0,
-        materials: [(0, 0, 0); 4],
+        materials: [(0, 0, 0, 0); 4],
         selection: [0; 10],
         stats,
     }

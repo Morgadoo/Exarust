@@ -507,7 +507,9 @@ fn print_chunk(c: &Chunk<'_>, depth: usize, max_depth: usize) {
 }
 
 fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()> {
-    use exa_assets::paint::{PaintLayer, Texels, layer_material, library, normal_library, paint};
+    use exa_assets::paint::{
+        PaintLayer, Texels, layer_material, library, normal_library, paint, specular_library,
+    };
     let db_bytes = game
         .pack(exa_rpk::PackKind::Resource)
         .and_then(|p| p.get("objdb.rdb"))
@@ -535,6 +537,10 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
             continue;
         };
         let lib: Vec<Option<Texels>> = library(material).iter().map(|n| texels(n)).collect();
+        let specular: Vec<Option<Texels>> = specular_library(material)
+            .iter()
+            .map(|n| texels(n))
+            .collect();
         let normals: Vec<Option<Texels>> =
             normal_library(material).iter().map(|n| texels(n)).collect();
         println!(
@@ -544,17 +550,20 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
             lib.iter().filter(|t| t.is_some()).count(),
             lib.len()
         );
-        owned.push((mask, material, layer.colour, lib, normals));
+        owned.push((mask, material, layer.colour, lib, specular, normals));
     }
     let layers: Vec<PaintLayer<'_>> = owned
         .iter()
-        .map(|(mask, material, colour, lib, normals)| PaintLayer {
-            mask,
-            material: *material,
-            colour: *colour,
-            library: lib.iter().map(Option::as_ref).collect(),
-            normals: normals.iter().map(Option::as_ref).collect(),
-        })
+        .map(
+            |(mask, material, colour, lib, specular, normals)| PaintLayer {
+                mask,
+                material: *material,
+                colour: *colour,
+                library: lib.iter().map(Option::as_ref).collect(),
+                specular: specular.iter().map(Option::as_ref).collect(),
+                normals: normals.iter().map(Option::as_ref).collect(),
+            },
+        )
         .collect();
     let item_normal = texels(&format!("{stem}n"));
     let painted = paint(&shade, item_normal.as_ref(), &layers, &appearance);

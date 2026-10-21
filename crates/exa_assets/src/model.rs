@@ -18,7 +18,8 @@ use crate::mesh_edit::material_split_flags;
 use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
-    Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library, paint,
+    Condition, Encoding, PaintLayer, Painted, Texels, layer_material, library, normal_library,
+    paint_with, specular_library,
 };
 use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
@@ -144,6 +145,8 @@ pub struct ModelCache {
     /// The built-in race skin by body model, tone and sex
     /// ([`ModelLoader::skin_material_of`]).
     skin_materials: HashMap<(String, [u16; 2], bool), Handle<ExaMaterial>>,
+    /// Factory weapon stats once its assembled extents are known.
+    pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
@@ -752,6 +755,19 @@ impl ModelLoader<'_> {
         }
     }
 
+    /// The material of a factory weapon's component `stem` with an area's
+    /// material: the same painter as apparel, with the raw condition bytes
+    /// the factory job uses.
+    pub fn painted_factory(&mut self, stem: &str, appearance: &Appearance) -> Handle<ExaMaterial> {
+        match self.paint_job_factory(stem, appearance) {
+            Paint::Ready(handle) => handle,
+            Paint::Job(job) => {
+                let painted = job.paint();
+                self.painted_material(painted)
+            }
+        }
+    }
+
     /// Decodes the textures painting `stem` with `appearance` reads, one at
     /// a time until `deadline` (at least one per call); `true` once they are
     /// all decoded and [`ModelLoader::paint_job`] only reads the cache. A
@@ -781,6 +797,7 @@ impl ModelLoader<'_> {
             names.push(mask);
             let material = layer_material(layer);
             names.extend(library(material).iter().map(|n| n.to_string()));
+            names.extend(specular_library(material).iter().map(|n| n.to_string()));
             names.extend(normal_library(material).iter().map(|n| n.to_string()));
         }
         names.push(format!("{stem}n"));
@@ -810,6 +827,21 @@ impl ModelLoader<'_> {
     /// shade map); otherwise what painting it takes, gathered from the
     /// decoded-texture cache.
     pub fn paint_job(&mut self, stem: &str, appearance: &Appearance) -> Paint {
+        self.paint_job_with(stem, appearance, Condition::from(appearance))
+    }
+
+    /// [`ModelLoader::paint_job`] with the condition the factory paint job
+    /// takes (the item's raw bytes).
+    pub fn paint_job_factory(&mut self, stem: &str, appearance: &Appearance) -> Paint {
+        self.paint_job_with(stem, appearance, Condition::raw(appearance))
+    }
+
+    fn paint_job_with(
+        &mut self,
+        stem: &str,
+        appearance: &Appearance,
+        condition: Condition,
+    ) -> Paint {
         let key = (stem.to_ascii_lowercase(), *appearance);
         if let Some(h) = self.cache.painted.get(&key) {
             return Paint::Ready(h.clone());
@@ -832,11 +864,15 @@ impl ModelLoader<'_> {
             };
             let material = layer_material(layer);
             let lib = library(material).iter().map(|n| self.texels(n)).collect();
+            let spec = specular_library(material)
+                .iter()
+                .map(|n| self.texels(n))
+                .collect();
             let normals = normal_library(material)
                 .iter()
                 .map(|n| self.texels(n))
                 .collect();
-            layers.push((mask, material, layer.colour, lib, normals));
+            layers.push((mask, material, layer.colour, lib, spec, normals));
         }
         let item_normal = self.texels(&format!("{stem}n"));
         Paint::Job(PaintJob {
@@ -844,6 +880,7 @@ impl ModelLoader<'_> {
             shade,
             item_normal,
             layers,
+            condition,
         })
     }
 
@@ -1200,6 +1237,7 @@ type OwnedLayer = (
     u8,
     Vec<Option<Arc<Texels>>>,
     Vec<Option<Arc<Texels>>>,
+    Vec<Option<Arc<Texels>>>,
 );
 
 /// A record's emissive term as the shader takes it (the original's MatEmi):
@@ -1259,6 +1297,7 @@ pub struct PaintJob {
     shade: Arc<Texels>,
     item_normal: Option<Arc<Texels>>,
     layers: Vec<OwnedLayer>,
+    condition: Condition,
 }
 
 /// A painted texture set's images, for [`ModelLoader::painted_material`].
@@ -1294,16 +1333,17 @@ impl PaintJob {
         let layers: Vec<PaintLayer<'_>> = self
             .layers
             .iter()
-            .map(|(mask, material, colour, lib, normals)| PaintLayer {
+            .map(|(mask, material, colour, lib, spec, normals)| PaintLayer {
                 mask,
                 material: *material,
                 colour: *colour,
                 library: lib.iter().map(|t| t.as_deref()).collect(),
+                specular: spec.iter().map(|t| t.as_deref()).collect(),
                 normals: normals.iter().map(|t| t.as_deref()).collect(),
             })
             .collect();
         let shade = &self.shade;
-        let painted = paint(shade, self.item_normal.as_deref(), &layers, &self.key.1);
+        let painted = paint_with(shade, self.item_normal.as_deref(), &layers, self.condition);
         let mut rgba = painted.colour;
         // Keep the cut-outs of the shade map.
         for (o, s) in rgba
@@ -1316,13 +1356,9 @@ impl PaintJob {
         }
         let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
         let (w, h) = (shade.width as u32, shade.height as u32);
-        // The painter's surface map (roughness in G, metal in B) as the
-        // original's packed specular map: intensity, gloss, metal.
-        let mut surface = painted.surface;
-        for px in surface.as_chunks_mut::<4>().0 {
-            px[0] = 255;
-            px[1] = 255 - px[1];
-        }
+        // The painter's surface map is already packed as the original's:
+        // intensity, gloss, metal.
+        let surface = painted.surface;
         PaintedSet {
             colour: painted_image(w, h, rgba, Painted::COLOUR),
             surface: painted_image(w, h, surface, Painted::SURFACE),
@@ -1630,18 +1666,17 @@ mod tests {
         let shade = flat(4, 128);
         let full = flat(4, 255);
         let grey = flat(4, 128);
-        for (material, appearance, texel, sampled) in [
-            (30, condition(255, 0), 160, 0.3515),
-            (1, condition(160, 64), 96, 0.1170),
-        ] {
+        {
+            let (material, appearance, texel, sampled) = (1, condition(160, 64), 96, 0.1170);
             let layer = PaintLayer {
                 mask: &full,
                 material,
                 colour: 1,
                 library: vec![Some(&grey); 4],
+                specular: vec![],
                 normals: vec![],
             };
-            let painted = paint(&shade, None, &[layer], &appearance);
+            let painted = crate::paint::paint(&shade, None, &[layer], &appearance);
             let image = painted_image(4, 4, painted.colour, Painted::COLOUR);
             assert_eq!(
                 image.texture_descriptor.format,

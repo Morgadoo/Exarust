@@ -1164,7 +1164,7 @@ impl Factory {
             {
                 parent = self.parts[parent - 1].attach_to as usize;
             }
-            let attach_to = (parent > 0 && parent <= n).then_some(parent - 1);
+            let attach_to = (parent > 0 && parent <= n).then(|| parent - 1);
             if let Some(pi) = attach_to {
                 let par = &self.parts[pi];
                 let box_ = boxes.get(pi).copied().unwrap_or_default();
@@ -1359,6 +1359,195 @@ mod tests {
         let f = deform_factor(0.5, 1.0);
         assert!((p[1][1] - ((2.0 - 1.0) * f + 1.0)).abs() < 1e-5);
         assert!((p[2][1] - ((-2.0 + 1.0) * f - 1.0)).abs() < 1e-5);
+    }
+
+    fn tiny_factory() -> Factory {
+        let d = deform(1, 2, 0, 0.5, 0.0, 0.0);
+        Factory {
+            version: 2,
+            atlas: [512, 512],
+            parts: vec![Part {
+                flags: 0x10,
+                name: "blade".into(),
+                position: [0.0, 10.0, 0.0],
+                rotation: [0.0, 0.0, 0.0],
+                scale: [1.0; 3],
+                atlas: [1.0, 1.0, 0.0, 0.0],
+                texture_parameter: 0.0,
+                deforms: [
+                    d,
+                    deform(0, 0, 0, 0.0, 0.0, 0.0),
+                    deform(0, 0, 0, 0.0, 0.0, 0.0),
+                ],
+                chance: 100,
+                attach_to: 0,
+                role: 1,
+                attach_mode: 0,
+                variants: vec![
+                    Variant {
+                        model: "blade_a".into(),
+                        mask_areas: [0, 1, 2, 3],
+                        weight: 60,
+                        bonuses: [0; 4],
+                        tags: 0,
+                        excludes: 0,
+                        flags: 0x20,
+                        child_y_offset: 0,
+                        texture_scale: 0,
+                        texture_offset: [0, 0],
+                    },
+                    Variant {
+                        model: "blade_b".into(),
+                        mask_areas: [1, 0, 0, 0],
+                        weight: 40,
+                        bonuses: [0; 4],
+                        tags: 0,
+                        excludes: 0,
+                        flags: 0,
+                        child_y_offset: 0,
+                        texture_scale: 0,
+                        texture_offset: [0, 0],
+                    },
+                ],
+            }],
+            areas: vec![Area {
+                name: "Blade".into(),
+                candidates: vec![
+                    Candidate {
+                        material: 12,
+                        bits: 0x03,
+                        colour: 0,
+                        mode: 0,
+                    },
+                    Candidate {
+                        material: 14,
+                        bits: 0x0C,
+                        colour: 0x42,
+                        mode: 5,
+                    },
+                ],
+            }],
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stored_choices_keep_their_selection() {
+        let f = tiny_factory();
+        let choices = Choices {
+            selection: vec![2],
+            areas: vec![AreaChoice {
+                material: 3,
+                finish: 0x77,
+                colour: 0x11,
+                mode: 5,
+            }],
+        };
+        let g = f.replay(&choices, 0x1234, 0x5678, 128, 0);
+        assert_eq!(g.selection, vec![2]);
+        assert_eq!(g.materials[0].material, 3);
+        assert_eq!(g.materials[0].finish, 0x77);
+        assert_eq!(g.materials[0].colour, 0x11);
+        // The twist comes from seed B alone.
+        let mut b = Lcg::new(0x5678);
+        let want = (b.unit() * 2.0 - 1.0) * std::f32::consts::TAU;
+        assert!((g.twist[0] - want).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_empty_second_seed_is_copied_and_stored() {
+        let f = tiny_factory();
+        let built = f.build(&WeaponSpec {
+            seeds: [7, 0],
+            quality: 128,
+            ..Default::default()
+        });
+        assert_eq!(built.seeds, [7, 7]);
+        assert_eq!(built.flags, STORED_AND_REROLLED);
+        let choices = built.choices.expect("rolled choices");
+        assert_eq!(choices.areas.len(), 1);
+        // The same choices replay to the same selection, and the rerolled
+        // path uses seed A for the twists.
+        let again = f.replay_rerolled(&choices, 7, 128, 0);
+        assert_eq!(again.selection, built.generated.selection);
+        let mut a = Lcg::new(7);
+        for _ in 0..3 {
+            a.step();
+        }
+        // One presence roll and one pick roll, then three shape draws.
+        let mut a = Lcg::new(7);
+        a.unit();
+        a.unit();
+        a.unit();
+        a.unit();
+        a.unit();
+        let want = (a.unit() * 2.0 - 1.0) * std::f32::consts::TAU;
+        assert!((again.twist[0] - want).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_parsed_v0_recipe_uses_the_parser_defaults() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&0xAFCE_0F00u32.to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&[0; 16]);
+        b.extend_from_slice(&512i32.to_le_bytes());
+        b.extend_from_slice(&512i32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes()); // grips
+        b.extend_from_slice(&0u32.to_le_bytes()); // areas
+        b.extend_from_slice(&1u32.to_le_bytes()); // parts
+        b.extend_from_slice(&0u32.to_le_bytes()); // flags
+        b.extend_from_slice(&[0; 16]);
+        for _ in 0..9 {
+            b.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        for _ in 0..4 {
+            b.extend_from_slice(&1.0f32.to_le_bytes());
+        }
+        b.extend_from_slice(&0.0f32.to_le_bytes()); // texture parameter
+        for _ in 0..3 {
+            let header = 1u32; // kind 1, axis 0
+            b.extend_from_slice(&header.to_le_bytes());
+            b.extend_from_slice(&0.5f32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+            b.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        b.extend_from_slice(&[100, 0, 1, 0]); // chance, attach, role, mode
+        b.extend_from_slice(&1u32.to_le_bytes()); // variants
+        let mut v = [0u8; 0x28];
+        v[..4].copy_from_slice(b"axe\0");
+        v[0x22] = 0; // weight: the parser's 100
+        b.extend_from_slice(&v);
+        b.extend_from_slice(&0u32.to_le_bytes()); // tags
+        let f = Factory::parse(&b).expect("parse");
+        assert_eq!(f.version, 0);
+        assert_eq!(f.parts.len(), 1);
+        assert_eq!(f.parts[0].deforms[0].blend, 0.3);
+        assert_eq!(f.parts[0].deforms[0].stat_weight, 1.0);
+        assert_eq!(f.parts[0].variants[0].weight, 100);
+        assert_eq!(f.atlas, [512, 512]);
+    }
+
+    #[test]
+    fn shipped_factories_all_parse_and_roll() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(dir).unwrap();
+        let pack = game.pack(exa_rpk::PackKind::Factories).unwrap();
+        let mut versions = [0usize; 3];
+        for entry in pack.entries() {
+            let f =
+                Factory::parse(pack.bytes(entry)).unwrap_or_else(|e| panic!("{}: {e}", entry.name));
+            versions[f.version as usize] += 1;
+            let _ = f.roll(0x1234_5678, 0x9ABC_DEF0, 128, 0);
+            let _ = f.build(&WeaponSpec {
+                seeds: [0x1234_5678, 0x9ABC_DEF0],
+                quality: 200,
+                ..Default::default()
+            });
+        }
+        assert_eq!(versions, [46, 34, 26]);
     }
 
     #[test]
