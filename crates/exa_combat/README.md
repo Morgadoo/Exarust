@@ -104,6 +104,11 @@ character tick eases back up, instead of the stance's recovery blend. A
 wound on a boned limb adds its size to the struck fighter's bleeding tally
 (`Fighter::bleeding`, the part's slot 39), which the body tick turns into
 damage over time.
+A Force effect's interrupt (`SwingState::force_interrupt`) breaks an
+attack into a full-strength stall with no drain, cleaving and recoiled,
+its window shut and the stance 600 ms on; nothing calls it yet, and the
+original's 50·clock attack-reach penalty has no attack reach to take it
+from.
 
 ## Grips
 

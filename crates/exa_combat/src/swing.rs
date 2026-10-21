@@ -1125,6 +1125,19 @@ impl SwingState {
     pub fn take_recoil(&mut self) -> Option<RecoilRest> {
         self.recoil.take()
     }
+    /// A Force effect breaks its attack, as the original's interrupt does:
+    /// the swing stalls with full strength and no drain, cleaving and
+    /// recoiled, its window shut, and the stance returns 600 ms on. The
+    /// original also takes 50·clock off the attack reach; Exarust keeps no
+    /// attack reach.
+    pub fn force_interrupt(&mut self, now_ms: u64) {
+        self.flags |= flags::STALLING | flags::CLEAVING | flags::RECOILED;
+        self.strength = 1.0;
+        self.stall = 0.0;
+        self.end_ms = now_ms + 600;
+        self.open = [false; 2];
+        self.recoil = None;
+    }
 }
 
 /// Gives each wielder the swing of its primary striker (once a frame; the

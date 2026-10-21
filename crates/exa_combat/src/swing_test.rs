@@ -1028,3 +1028,26 @@ fn a_recoils_rest_starts_the_stance() {
     );
     assert!(w.get::<Attacking>(fighter).is_none());
 }
+
+/// A Force effect's interrupt breaks an attack: the swing stalls at full
+/// strength with no drain, cleaving and recoiled, its window shut, the
+/// stance 600 ms on and any recoil rest dropped.
+#[test]
+fn a_force_effect_breaks_the_attack() {
+    let mut s = SwingState {
+        flags: flags::WINDOW_OPENED,
+        open: [true, true],
+        recoil: Some(RecoilRest {
+            end_ms: 9000,
+            blend: 40,
+            stiffness: 0.2,
+            held: 1.0,
+        }),
+        ..SwingState::default()
+    };
+    s.force_interrupt(5000);
+    assert_eq!(s.flags, flags::WINDOW_OPENED | 0x26);
+    assert_eq!((s.strength, s.stall, s.end_ms), (1.0, 0.0, 5600));
+    assert_eq!(s.open, [false, false]);
+    assert_eq!(s.recoil, None);
+}
