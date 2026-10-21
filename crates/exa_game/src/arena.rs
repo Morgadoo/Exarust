@@ -1229,17 +1229,20 @@ pub fn row_holds(entries: &[u32], current: u32) -> bool {
     false
 }
 
-/// The quality and wear bytes a fresh tournament-prize item copy gets.
+/// The four state bytes a fresh tournament-prize item copy gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrizeCopy {
-    /// The item's quality byte.
+    /// The first state byte, written as 255.
     pub quality: u8,
-    /// The three wear/condition entries the copy clears.
+    /// The next two state bytes, and the byte after them whose three packed
+    /// tier fields are each set from 0.0, so every one is cleared.
     pub wear: [u8; 3],
 }
 
-/// Make a fresh prize copy: an item of the prize's kind with full quality
-/// (255) and every wear entry cleared, then its description rebuilt.
+/// Make a fresh prize copy: an item of the prize's kind whose first state
+/// byte is 255 and whose other three are cleared, then its description
+/// rebuilt (the description and the object-database lookup are the
+/// caller's step).
 #[must_use]
 pub const fn prize_copy() -> PrizeCopy {
     PrizeCopy {
