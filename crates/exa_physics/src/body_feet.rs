@@ -37,7 +37,7 @@ use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
 use super::steps::{self, FootView, ScoreCtx, Work};
-use super::{Bearing, CM, Drive, Part};
+use super::{Bearing, CM, Drive, Part, Ragdoll};
 
 /// A foot contact's state, as the original's bits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -616,6 +616,62 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
     }
     legs[k].anchor = anchor;
     ended
+}
+
+impl Ragdoll {
+    /// Leaving the walk: the rearmost foot (the smallest projection of its
+    /// animated contact along the frame's forward) is anchored at its
+    /// stance spot under the frame, keeping its height, and the other foot
+    /// lands where it is. Both keep their slow ramp bit.
+    pub fn plant_trailing_foot(&mut self) {
+        let Ragdoll {
+            parts, legs, drive, ..
+        } = self;
+        let Some(drive) = drive.as_ref() else {
+            return;
+        };
+        let Some(frame) = drive.frame else {
+            return;
+        };
+        if legs.is_empty() || drive.targets.len() != parts.len() {
+            return;
+        }
+        let forward = Vec3::from(frame.matrix3.z_axis);
+        let rear = legs
+            .iter()
+            .enumerate()
+            .map(|(i, leg)| {
+                let posed = drive.targets[leg.shin].transform_point3(leg.point);
+                (i, posed.dot(forward))
+            })
+            .fold(None, |best: Option<(usize, f32)>, (i, along)| {
+                Some(match best {
+                    Some((_, b)) if b <= along => best.unwrap(),
+                    _ => (i, along),
+                })
+            });
+        let Some((rear, _)) = rear else {
+            return;
+        };
+        for (i, leg) in legs.iter_mut().enumerate() {
+            if i == rear {
+                let posed = drive.targets[leg.shin].transform_point3(leg.point);
+                let at = parts[leg.shin].point(&leg.contact);
+                leg.anchor = Vec3::new(posed.x, at.y, posed.z);
+                leg.at = at;
+                leg.before = at;
+                leg.state = FootState(
+                    leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING | FootState::ANCHORED,
+                );
+            } else if leg.state.has(FootState::ANCHORED) {
+                let at = parts[leg.shin].point(&leg.contact);
+                leg.anchor = at;
+                leg.at = at;
+                leg.before = at;
+                leg.state = FootState(leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING);
+            }
+        }
+    }
 }
 
 /// The two stance spots, when both feet have one.

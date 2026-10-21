@@ -377,8 +377,9 @@ How the original simulates a body (`exa_physics::body`):
     The original's v is the particle's world velocity, the body's travel
     included, so a walking body (|c| ≫ 1) is not pushed along its motion
     and pushed harder against it. While Exarust's capsule carries a body
-    across the ground (until C18), that carry is not velocity: v is the
-    velocity in the carried frame (its vertical is the world's). The
+    across the ground (one without muscles; a body with muscles walks by
+    its carry), that carry is not velocity: v is the velocity in the
+    carried frame (its vertical is the world's). The
     original also multiplies a lean into the spine's rotation and keeps
     only the vertical push for the unconscious; neither is reproduced.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
@@ -678,8 +679,8 @@ moves the stance toward the feet (C15).
 Only the targets' rotations drive the muscles; their places matter to the
 support pins (below) and the feet's stance spots ([Feet](#feet)).
 
-Exarust's own, while a character controller (a capsule) still moves the
-body across the ground instead of the original's locomotion (C18):
+Exarust's own, for a body whose capsule still moves it across the ground
+(a body without muscles; a body with muscles walks by its carry):
 
 - The body is carried with its root's (its character controller's) motion
   since the last tick across the ground and about the vertical only, its
@@ -1214,16 +1215,18 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   0.6·(heading·pelvis forward)² moving by the keys, 0.4 + 0.6·max(0,
   wanted·facing) moving by the mouse; the amount is then × the alignment (the walk's
   drive will read it).
-- **The capsule** carries the decision out until the body walks by its
-  carry (Exarust's own): along the heading at its walk (1.4 m/s)
-  blended toward its run (3.6 m/s; sprinting × the feral sprint thrust over
-  the jog's, 472.2/350 at feral 0) by the run blend
-  ([Locomotion](#locomotion)), backwards at 1.22 m/s,
-  the interim footwork's velocity while it steps; braking it keeps
-  (1 − 0.2·550/83²)·0.98977 of its speed a tick (the original's brake drive
-  and limb retention) and, toward a goal ahead, slows at least by v²/2d to
-  stop on it. The speed the decision reads is the capsule's commanded one
-  (its measured step stalls on the level mesh's seams).
+- **The capsule** follows the body (Exarust's own): a body with muscles
+  walks by its carry and its capsule walks nowhere, following the
+  character frame a tenth of the way a step (at most 2 cm). A body without
+  muscles is still carried by the capsule: along the heading at its walk
+  (1.4 m/s) blended toward its run (3.6 m/s; sprinting × the feral sprint
+  thrust over the jog's, 472.2/350 at feral 0) by the run blend
+  ([Locomotion](#locomotion)), backwards at 1.22 m/s, the interim
+  footwork's velocity while it steps; braking it keeps
+  (1 − 0.2·550/83²)·0.98977 of its speed a tick and, toward a goal ahead,
+  slows at least by v²/2d to stop on it. The decision's speed is the
+  body's own measured one when the carry walks it, the capsule's commanded
+  one otherwise.
 
 The player's behaviour that writes the request is in
 [PLAYER.md](../PLAYER.md) (Movement).
@@ -1278,8 +1281,8 @@ and down. h is the heading.
   (8·v·h, negated backwards) P gains (boost − 8·v·h) × the ramp; drive =
   h × (amount·thrust·tone·P) − 0.4·tone × v (double factor). frac is the
   processor's truncation: negative for a negative value. The drive is
-  kept on the body; until the body walks by its carry (C18) nothing adds
-  it to the carry (the original adds drive·S²·push·lag).
+  applied through the carry as the original adds it (drive·S²·push·lag;
+  the feet's lag factor cuts a foot that trails its animated spot).
 - **Speed.** v projected on h: its length (cm a tick, the square root
   above the epsilon) and direction.
 - **Clock step.** With support: K·(0.8·speed + 1)·rate (double), K = (1 −
@@ -1291,11 +1294,39 @@ and down. h is the heading.
   feet the phase is unset. The clip clock takes the step (below 0 wrapped
   once by the walk's last key) whatever the clip, and keeps the result for
   a resume.
-- Not reproduced: the gait audio mode (the footsteps' component), the
-  exertion value and the head tilt it feeds (the head look's sampler slot
-  is the identity), the dead jump branch, the start's callback and part
-  flag, and the held items' static-only collision flag the move branch
-  sets while armed.
+- **Exertion and the head tilt.** The routine keeps the original's
+  exertion value: the run blend ×0.98 a tick while the cap holds it, ×0.99
+  otherwise. With support the head tilt the twist reads is the exertion's
+  sign × its square × 2 (0 without support), the run lean the twist lowers
+  by the crouch.
+- **Grip mode.** Running it sets the general mode (1), otherwise the
+  walk's (2; 1 for an in-combat behaviour). Its readers are the held
+  items' grips, which are not bodies in Exarust.
+- **Start.** While another clip plays it clears the held items' motion
+  flag (0x10000) and calls a registered start callback with the argument 4
+  (Exarust keeps the notice, sends nothing: no callback is registered);
+  the move branch sets the held items' static-only flag (0x80000) while
+  armed and moving, which makes their level queries static.
+- **Jump.** The flag and timer are never written, so the branch is dead:
+  over a timer of 0.5 it decays the clock step kept from last tick by 0.013
+  and skips the normal clock; a standing leg's jump share is 0.4 while the
+  timer is under 1.5.
+- **The drive is applied through the carry** while the body moves:
+  carry += drive × S² × the gait's push column × the feet's lag, in cm a
+  tick². The lag is 1 less each leg's (throw/60·scale)² when its actual
+  contact trails its animated one along the facing (none past 60·scale).
+  The controller follows the body's frame instead of walking it.
+- **Leaving the walk** plants the rearmost foot (the smallest projection of
+  its animated contact along the frame's forward) at its stance spot under
+  the frame, keeping its height; the other foot lands where it is.
+- **Leg gains.** A powered golem suit halves the standing thigh factor and
+  quarters the leg limit's standing target; a stepping foot that is
+  anchored blends its limit s ← 0.8s + 0.04 instead of following the leg
+  mode.
+- Not reproduced: the start callback itself (no callback is registered),
+  the held items' grips and their collision consumers (items are not bodies
+  yet), the femur posture, the IK and foot pitch (C13), and the
+  reciprocal-square-root approximations (Exarust normalises exactly).
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when

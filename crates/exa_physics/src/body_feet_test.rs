@@ -799,3 +799,32 @@ fn a_stagger_target_walks_one_foot() {
     assert_eq!(walked.foot, None);
     assert_eq!(walked.states, vec![0, 0]);
 }
+
+/// Leaving the walk, the rearmost foot is anchored at its stance spot
+/// under the frame (keeping its height) and the other lands where it is.
+#[test]
+fn the_trailing_foot_is_planted_on_leaving_the_walk() {
+    let (mut body, pose) = footed(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    for leg in &mut body.legs {
+        leg.state = FootState(FootState::ANCHORED | FootState::RAMP_SLOW);
+        leg.anchor = Vec3::new(9.0, 9.0, 9.0);
+    }
+    body.plant_trailing_foot();
+    let anchored: Vec<usize> = body
+        .legs
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.state.has(FootState::ANCHORED))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(anchored.len(), 1);
+    let rear = anchored[0];
+    assert!(body.legs[1 - rear].state.has(FootState::TOUCHING));
+    assert!(!body.legs[1 - rear].state.has(FootState::ANCHORED));
+    let posed =
+        drive(&body).targets()[body.legs[rear].shin].transform_point3(body.legs[rear].point);
+    assert!(close(body.legs[rear].anchor.x, posed.x, 1e-5));
+    assert!(close(body.legs[rear].anchor.z, posed.z, 1e-5));
+    assert_ne!(body.legs[rear].anchor, Vec3::new(9.0, 9.0, 9.0));
+}

@@ -194,6 +194,7 @@ pub(crate) fn decide_movement(
     let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
     // A body without muscles stands on level ground.
     let level = drive.map_or(1.0, |d| d.balance().level());
+    let was_locomoting = body.locomoted;
     if body.moving() {
         // The root's displacement: the body's own while it walks by its
         // carry; otherwise across the ground the capsule's step, up and
@@ -290,6 +291,10 @@ pub(crate) fn decide_movement(
     if let Some(r) = ragdoll.as_mut() {
         if start_notice {
             r.walk_started();
+        }
+        // Leaving the walk, the rearmost foot is planted anew.
+        if was_locomoting && !body.moving() {
+            r.plant_trailing_foot();
         }
         // A moving armed body's held items query the level statically
         // (guess: Exarust's nearest read of the original's weapon-class

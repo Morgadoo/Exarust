@@ -135,15 +135,17 @@ decides from it each tick (below). Outside combat:
   (×|err|/0.6, so it settles onto the heading), ×0.9 moving by the keys,
   the step ÷ √scale. There is no turn-in-place clip. How well the pelvis
   faces the heading (the alignment, 0.4 to 1 moving, smoothed 0.97 a tick)
-  is kept for the walk's drive to come.
-- **Speeds.** Until the body walks by its carry, its capsule carries the
-  decision out (Exarust's own): walking settles near 1.4 m/s, a full run
-  3.6 m/s (a measured guess until the jog row is simulated), backpedalling
-  is the walk scaled by the gait table's thrusts (77.8 against 88.9);
-  braking it slows by the original's brake drive and limb retention and at
-  least enough to stop on its goal (a released walk stops in about 0.35 s).
-  NPCs (the duellist) still write their capsule's velocity directly
-  through their path driver, not the request.
+  scales the walk's drive.
+- **Speeds.** A body with muscles walks by its carry: the drive (thrust,
+  phase push, braking, the 0.4·tone drag) is added to the carry with S²,
+  the push column and the feet's lag, so walking settles near 1.6 m/s
+  where thrust balances the drag, retention and foot friction. Its capsule
+  only follows its frame (a tenth of the way a step, at most 2 cm), as the
+  original has no capsule. A body without muscles is carried by its
+  capsule at Exarust's speeds: walking 1.4 m/s, a full run 3.6 m/s,
+  backpedalling 1.22 m/s; braking it keeps the original's brake drive and
+  limb retention. NPCs (the duellist) still write their capsule's velocity
+  directly through their path driver when they have no muscles.
 - Moving firms the body up: its stance factor rises 0.01 per tick from the
   race's 0.5 to 0.7 walking and 1 running (it keeps what it reached until
   the character stops), so its link muscles pull with tone × 0.7 or × 1
