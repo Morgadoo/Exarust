@@ -21,10 +21,10 @@
 //! reported as [`SessionEnded`].
 //!
 //! All times are the effects' game clock ([`EffectClock`]). The scan and
-//! the glow are the device unit's own effects; the destination screen, its
-//! journey bubble, the grab code that sends [`SlotReleased`], the level
-//! change and the corpse record a strip leaves behind belong to other
-//! modules that are not in yet.
+//! the glow are the device unit's own effects; the destination screen and
+//! its journey are [`crate::destination`]; the grab code that sends
+//! [`SlotReleased`], the level change and the corpse record a strip leaves
+//! behind belong to other modules that are not in yet.
 
 use bevy::prelude::*;
 use exa_character::{Outfit, WearsUnderwear, Wielded};

@@ -514,43 +514,57 @@ The original's own forms and controls that Exarust rebuilds, with the
 - **Match board** (`exa_ui::match_board`): the 379-byte `0x100195c00` and
   the 121-byte `0x100195d80`.
 - **Skill screen** (`exa_ui::skill`): `TSkillUI`'s 186-byte node placement.
-- **Technique selector** (`exa_ui::technique_selector`): one skill's
-  eight-row technique list, 332 × 112 pixels; a level is 5 000
-  experience; an assignment moves at most a level from the unspent pool
-  (the weighted rule divides by `4 + Σ level` and caps at a level);
-  forgetting returns `level · 5 000 − spent` capped by the pool; words 9
-  and 10 mean "forget" and the confirmation text is 47 bytes.
-- **Compact skill screen** (`exa_ui::compact_skill`): the short tree
-  character creation shows, eleven units a column; rows are 30 units on a
-  four-skill tree, else 22 on a wide interface and 24 on a narrow one;
-  the margin is 4 units plus 6 for a shown title and plus 5 for the
-  compact flag on a narrow interface; a cell hit is strictly within five
-  units; the wheel picks the row nearest the pointer, then one column.
+- **Technique selector** (`exa_ui::technique_selector`,
+  `exa_game::techniques`): one skill's eight techniques, 332 × 112
+  pixels, editing the record's six skills (an experience word and five
+  technique bytes each, a level 5 000). A pick into an empty slot replaces
+  the technique in training (the first skill whose slot past its level is
+  filled) and gains the unspent experience up to a level, or `pool · 4 /
+  (4 + Σ levels)` capped at a level under the weighted rule, which draws
+  `gain · divisor / 4`; a forget closes the slots up, drops the techniques
+  that name the forgotten one (the character data's prerequisite pairs)
+  and a level for each, then refunds into the technique in training. The
+  name sits at 16 units, the description at 18, the 47-byte confirmation
+  at 12; a key goes to the base only for a pick in the confirm mode or the
+  hovered code 9, else closes with 0x40.
+- **Compact skill screen** (`exa_ui::compact_skill`): character creation's
+  short tree, 240 × 800 at (400, 50); rows 30 units apart on a four-skill
+  tree, else 22 (wide) or 24; a margin of 4 units, plus 6 for a title, plus
+  5 for the compact flag on a narrow interface; the hover word `row << 8 |
+  column`; a hit strictly within five units (a later row wins); the wheel
+  takes the nearest row (horizontal) or the row above or below (vertical).
 - **Arena loadout** (`exa_ui::loadout`, `exa_game::loadout`): the 1024 ×
-  768 editor for one fighter's kit at one rank, the arsenal swap of the
-  form's own item category, the two-handed off-hand rule, the point limit
-  and the rank's per-rank kit (`Member::loadouts`). The form's opacity is
-  0.83739835 on a wide interface; the preview's encumbrance is
-  `strength² × 10`. The original's per-rank record is 0x30 bytes; Exarust
-  keeps the item ids, so the record layout is our reading (guess).
+  768 editor of one fighter's kit at one rank. The arsenal is 228 wide at
+  (4, 180) and `492 · opacity` tall (the opacity 0.83739835 on a wide
+  interface), the equipment 236 wide at the parent's right edge, y 88. A
+  weapon costs its points less what it displaces from the hands; an item
+  is equipped when a copy is free, its rank is at most the form's (5 when
+  unset) and the cost fits the limit. A rank's kit is the record's own
+  loadout; the editor's lists of it are Exarust's model (guess).
 - **Divination cards** (`exa_ui::div_card`): three distinct cards out of
   the twenty-two on `divcardsa1.rfi` (a 6 × 4 sheet, first card at cell
-  2), dealt over 600 ms each, flipped over 900 ms each, held from 4.5 s,
-  with a one-second fade to alpha 128 and `PprMov` at each step.
+  2), the screen darkened to 128 over a second, dealt over 600 ms each
+  and turned over 900 ms each by the ease `(3 − 2t)·t²`, a half turn about
+  an axis swinging from (0.3, 0.9, 0.2) to (0, 1, 0), held from 4.5 s,
+  each card over a drop shadow with a four-unit fading band.
 - **Company emblem** (`exa_ui::emblem_form`, `exa_game::emblem`): the
   background (1…50) and design (1…80) layers, the two mirror bits, four
-  palette colours and the randomiser (a 32-bit multiply-add generator,
-  four records of history), previewed by the recorded four-texture
-  shader.
+  palette indices (0xd3, 0x72, 0x5a, 0x4e on a new form) and the
+  randomiser (`state · 0x8088405 + 1`, each draw the high half of `state ·
+  n`, four records of history), previewed by the four-texture shader.
 - **Destination screen** (`exa_ui::selection`, `exa_game::destination`):
-  the teleporter's four (or one) reachable levels laid on a ring of 40
-  units, the 500 ms reveal and 256 ms close, hover's 200 ms flash, the
-  14-unit hit, the click that starts the journey's bubble and the travel
-  that follows it. The row fill is the original's: the first entry takes
-  row 1, later entries rows 2…, and row 0 takes the last entry once the
-  other rows are taken; the shipped 7, 10, 12, 13 show as 13, 7, 10, 12.
-  `exa_game::destination` spawns the existing bubble and sends
-  `TravelToLevel`; the level change and the save are the session's.
+  the teleporter's four (or one) rows on a ring of 40 units, node `i` at
+  `(1 − turn) + (2.5 − i)·2π/(count − 1)` with the engine's sine across and
+  cosine down; a 500 ms reveal (the alpha eased once, the ring twice), a
+  256 ms close, a 200 ms hover flash and the 14-unit hit on the three
+  orbit nodes; only the adapter's orbit wobbles. The row fill is the
+  original's: the shipped 7, 10, 12, 13 show as 13, 7, 10, 12. A click
+  closes the screen and starts the journey: the bubble 98 cm above the
+  teleporter, the teleporter's glow (1.5 s up and 7 s held for the
+  adapter, 1 s and 1.4 s otherwise) and a small crystal charging a point
+  per 12 ms. The level changes when the resting bubble is told to shrink;
+  the adapter's held bubble instead marks the teleporter single-row and
+  saves while the player's red health is above 0.01.
 
 When the GUI unit changes, every form rescales from the old unit to the
 new (`exa_ui::gui_rescale`): lengths are divided by the old unit, then

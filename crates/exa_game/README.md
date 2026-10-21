@@ -235,23 +235,23 @@ the kinesis pick; the cursor's aim plane and reach use them, and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles.
 
-The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds six
-kits of weapon and armour item ids and their counted points; the editor
-takes the rank's kit, that rank's point limit (`arena::point_limit`) and the
-shop's shelf as its arsenal, and saving writes the ids back; the session
-save does not store the kits or the emblem yet. The technique selector's bridge
-(`techniques`) copies a member's six skill experience words and six
-technique slots into the selector's training and back, with the member's
-`xp` as the unspent pool and 5 000 a level. The company emblem is a
-`exa_ui::EmblemRecord` on `Company`; `emblem::editor_for` and
-`emblem::save_to` open and close it. The teleporter's destination screen
-(`destination`) keeps the open `exa_ui::DestinationScreen`, hit-tests
-`PortalInput`, hovers and closes it, spawns the existing bubble as a
-child of the traveller, and after the bubble's end sends `TravelToLevel`
-with the row's level id and the save request. The screen's own drawing,
-the bubble's GI light values (not in the pack), the world-space place of
-the bubble (98 pixels above the clicked form) and the session's level
-change are not in.
+The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
+six of the record's own loadouts (hands and worn items); the editor takes
+the rank's kit, that rank's point limit (`arena::point_limit`) and the
+shop's shelf as its arsenal, and its close writes the kit back in the
+arena and match modes. The session save does not store the kits or the
+emblem yet. The technique selector's bridge (`techniques`) reads a
+member's six skills (`skill_xp`, `techniques`) and its `xp` as the pool
+and writes them back with the levels. The company emblem is an
+`exa_ui::EmblemRecord` on `Company`. The teleporter's destination screen
+(`destination`) opens on `OpenPortalScreen`, hit-tests and hovers
+`PortalInput`, and a click closes it and starts a `TravelJourney`: the
+bubble 98 cm above the teleporter (stepped by the journey, not by
+`tick_bubbles`), the teleporter's `DeviceGlow`, the small crystal's
+charge on its `PlacedItem`; `TravelToLevel` when the resting bubble is
+told to shrink, and for the adapter the teleporter's single-row flag and
+`JourneySave` when the bubble is freed. The screen's drawing, the player's
+controls, the level change and the save are not in.
 
 ## Scope
 

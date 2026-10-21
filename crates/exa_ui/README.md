@@ -275,50 +275,35 @@ slider effects (live, draft or session only), the aim-speed row, the
 Controls rows' key cells and binding slots, and the tab/button actions ([`docs/UI.md`](../../docs/UI.md#settings-options)).
 
 The forms of the arena and the teleporter (see
-[`docs/UI.md`](../../docs/UI.md), Forms). The technique selector
-(`technique_selector`) is 332 × 112 with eight rows and five learned
-levels: a level is 5 000 experience, an assignment moves at most a level
-from the unspent pool, the weighted rule divides by four plus the sum of
-the skill's levels and drops the pool by `gain · divisor / 4`, a forget
-returns `level · 5 000 − spent` capped by the pool, words 9 and 10 mean
-forget, and the confirmation is the 47-byte question. Its refresh marks
-the next free learned row, locks rows from `level + 2`, and the all-learned
-mode locks every row through the level. The compact skill screen
-(`compact_skill`) is the character-creation tree: eleven units a column,
-row spacing 30 on four skills and 22 (wide) or 24 (narrow) otherwise,
-margin 4 plus 6 for a title plus 5 for the compact flag on a narrow
-interface, a strict five-unit hit, a wheel that picks the nearest row and
-one column, arrow keys that skip used slots, and a paint that draws the
-category titles, the lines, the grid, the pips and the technique nodes in
-that order. The arena loadout (`loadout`) is 1024 × 768: arsenal 4, 228,
-180 by floor(opacity · 492), equipment at 236, 548 (or 500 wide), the
-character preview 236, 0, 544 by the client height less four, the
-opacity 0.83739835 on a wide interface, points that count a two-handed
-weapon once and the encumbrance `strength² × 10`; a drop checks the rank
-and the limit, swaps an arsenal item of the form's category, replaces an
-armour copy and clears the off hand for a two-handed weapon. The
-divination reading (`div_card`) deals three distinct cards out of
-twenty-two (redrawing each until it is new), takes cell `(card + 2) mod
-6` of row `(card + 2) / 6` on a sheet whose cards are twenty by
-thirty-three and a third units, fades over a second to 128, deals each
-card over 600 ms (`sin(t · π/2) · 700 − 300`), flips each over 900 ms
-through a half turn, holds from 4.5 s and sounds `PprMov` at each step.
-The emblem editor (`emblem_form`) selects background 1…50 and design
-1…80 (clamping to the maximum and lighting one of two page buttons),
-mirrors on bits `0x10` and `0x100`, draws four textures through the
-recorded shader with `Colour1`–`Colour4`, `Mirror` and `Alpha`, and rolls
-its values with `state = state · 0x8088405 + 1`, each draw the high half
-of `state · n`, keeping four records of history. The destination screen
-(`selection`) lays the reachable levels on a ring of forty units (node 0
-at the centre, the angle from 2.5 nodes over one turn divided by
-`count − 1`), fills its rows in the original's order, opens over 500 ms
-by the eased `x(2 − x)`, closes over 256 ms, bumps a hover's flash to now
-plus 200 or reflects a future one, hits within fourteen units, mixes the
-hovered row toward the highlight and the others away, and starts the
-journey: the adapter's bubble holds, starting at 1.5 s and ending at 7 s;
-a small crystal starts at 1 s and ends at 1.4 s, its charge the stored
-byte plus elapsed over twelve; a mode-4 session ends and a mode-6 one
-saves and removes the level once the player's fade passes 0.01.
+[`docs/UI.md`](../../docs/UI.md), Forms), each read from the original's
+instructions. The technique selector (`technique_selector`) edits the
+character record's six skills (an experience word and five technique
+bytes each): a pick into an empty slot replaces the technique in training,
+gains the unspent experience up to a level (or `pool · 4 / (4 + Σ levels)`
+under the weighted rule, which draws `gain · divisor / 4` from the pool);
+a forget closes the slots up, drops the techniques that depend on the
+forgotten one and a level for each, and refunds into the technique in
+training. Its tree refresh marks learned, assigned, empty, next and locked
+slots by the original's ranges. The compact skill screen (`compact_skill`)
+is character creation's short tree: its hit word is `row << 8 | column`,
+the technique line `unit · (spacing · row + (margin + 16.6))`, the wheel
+picks the row nearest (horizontal) or above/below (vertical) the pointer,
+pips show the remainder narrowed by `share · 0.8 + 0.1`, nodes stop at the
+first empty slot. The arena loadout (`loadout`) reads the form's fields
+(arsenal 228 wide at (4, 180), 492 · opacity tall; the equipment 236 wide
+at the parent's right edge), the cost rule (a weapon's points less what it
+displaces from the hands) and the equip rule (held copies, the form's rank,
+the limit); its list model of the kit is Exarust's own. The divination
+reading (`div_card`) deals three distinct cards out of twenty-two, eases
+the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
+a swinging axis and draws the original's drop shadow. The emblem editor
+(`emblem_form`) starts on palette 0xd3, 0x72, 0x5a, 0x4e and rolls with
+`state · 0x8088405 + 1`. The destination screen (`selection`) places its
+nodes by the engine's sine and cosine (`engine_math`), eases the ring
+twice and the alpha once, tries three orbit nodes, and its journey glows
+the teleporter, charges a small crystal, changes level when the resting
+bubble is told to shrink and, for the adapter, marks the teleporter and
+saves when the bubble is freed.
 
 ## Scope
 
