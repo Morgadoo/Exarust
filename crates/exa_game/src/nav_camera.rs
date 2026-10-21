@@ -436,9 +436,9 @@ pub fn camera_axis(pitch: f32, yaw: f32) -> Vec3 {
 
 /// The move one contact puts on a ball: `(point − centre) · (1 − radius /
 /// |point − centre|)`, which sets the centre `radius` from the point on
-/// the line through both. Single precision, the length summed `(x² + z²)
-/// + y²`; a contact at the centre divides by zero, as the original does,
-/// and gives NaN.
+/// the line through both. Single precision, the length summed
+/// `(x² + z²) + y²`; a contact at the centre divides by zero, as the
+/// original does, and gives NaN.
 pub fn hit_offset(centre: Vec3, point: Vec3, radius: f32) -> Vec3 {
     let vector = point - centre;
     vector * (1.0 - radius / length(vector))
@@ -501,14 +501,8 @@ pub fn frame_notice(rebuilt: bool, still: bool) -> Option<u32> {
 pub fn fov_from_zoom(zoom: f32, divisor: f32, aspect: f64) -> f32 {
     let scale = (1.6 / aspect).sqrt() as f32;
     let fov = zoom / divisor * 45.0 * scale;
-    let fov = if fov < 10.0 {
-        10.0
-    } else if fov > 100.0 {
-        100.0
-    } else {
-        fov
-    };
-    fov.to_radians()
+    // `clamp` keeps a NaN, as the original's compares let it pass.
+    fov.clamp(10.0, 100.0).to_radians()
 }
 
 /// One camera frame's ticks: given the time until the next tick (`ahead`,

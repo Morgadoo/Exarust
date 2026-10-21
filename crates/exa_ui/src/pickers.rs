@@ -101,15 +101,8 @@ pub type FieldQuad = [FieldVertex; 6];
 /// otherwise the point takes `u` and `1 − v′` and the picker refreshes.
 /// Answers whether the point moved.
 pub fn pick_point(point: &mut PickPoint, x: i32, y: i32, size: (i32, i32)) -> bool {
-    let hold = |c: f32| {
-        if c < 0.0 {
-            0.0
-        } else if c > 1.0 {
-            1.0
-        } else {
-            c
-        }
-    };
+    // Below 0 to 0, above 1 to 1; a NaN passes, as `clamp` keeps it.
+    let hold = |c: f32| c.clamp(0.0, 1.0);
     let u = hold((f64::from(x) / f64::from(size.0)) as f32);
     let flipped = hold((1.0 - f64::from(y) / f64::from(size.1)) as f32);
     let epsilon = f32::from_bits(0x33ff_ffd7);

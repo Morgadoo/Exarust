@@ -268,10 +268,8 @@ impl ColourPicker {
     pub fn refresh_rgb(&mut self, source: Rgba, swatch: Option<&mut SwatchControl>) -> Refresh {
         let bytes = rgb_bytes(source);
         self.ramps = channel_ramps(bytes);
-        for channel in 0..3 {
-            self.rgb_sliders[channel] = source[channel];
-            self.rgb_fields[channel] = source[channel] * 255.0;
-        }
+        self.rgb_sliders = [source[0], source[1], source[2]];
+        self.rgb_fields = self.rgb_sliders.map(|c| c * 255.0);
         self.preview = [bytes[0], bytes[1], bytes[2], 255];
         self.colour = source;
         if !self.syncing {
@@ -298,10 +296,8 @@ impl ColourPicker {
     /// Refreshes from an HSV source.
     pub fn refresh_hsv(&mut self, source: Hsv, swatch: Option<&mut SwatchControl>) -> Refresh {
         self.hsv = source;
-        for channel in 0..3 {
-            self.hsv_sliders[channel] = source[channel];
-            self.hsv_fields[channel] = source[channel] * 255.0;
-        }
+        self.hsv_sliders = [source[0], source[1], source[2]];
+        self.hsv_fields = self.hsv_sliders.map(|c| c * 255.0);
         if !self.syncing {
             let [r, g, b] = hsv(source[0], source[1], source[2]);
             self.colour = [r, g, b, self.colour[3]];
