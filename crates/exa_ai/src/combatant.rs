@@ -723,11 +723,10 @@ pub fn perceive(
             own = value;
         }
     }
-    if out.crowd < max_negative {
-        out.crowd = max_negative;
-    }
+    let crowd = out.crowd.max(max_negative);
+    out.crowd = crowd;
     let scale = 1.0 - base * base * base;
-    let scaled_negative = max_negative * scale;
+    let scaled_negative = crowd * scale;
     let friendly = friendly * 0.85;
     let all = (max - scaled_negative) * friendly;
     let threat = (own / (own + 0.5) - scaled_negative) * friendly;
