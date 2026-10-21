@@ -8,6 +8,7 @@ pub mod electricity;
 pub mod flame;
 pub mod gi;
 pub mod glow;
+pub mod icon;
 pub mod image_noise;
 pub mod lights;
 pub mod material;
@@ -15,11 +16,13 @@ pub mod material_state;
 pub mod mipmap;
 pub mod passes;
 pub mod post;
+pub mod quads;
 pub mod quality;
 pub mod shader_program;
 pub mod shader_template;
 pub mod shader_uniforms;
 pub mod shell;
+pub mod smoke;
 pub mod spray;
 pub mod stain;
 pub mod sun_fit;
@@ -63,7 +66,10 @@ impl Plugin for RenderPlugin {
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
             glow::GlowPlugin,
+            smoke::SmokePlugin,
+            quads::QuadPlugin,
         ))
+            .add_plugins(icon::IconRenderPlugin)
             // The original's shadow maps at its top shadow detail: 512² cubes
             // for lights and fires, 4096² for the sun.
             .insert_resource(bevy::light::PointLightShadowMap {

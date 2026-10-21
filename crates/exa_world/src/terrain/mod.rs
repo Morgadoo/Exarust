@@ -242,6 +242,76 @@ pub struct PendingSplat(pub TerrainSplat);
 #[derive(Component)]
 pub struct TerrainPart;
 
+/// One 6 m terrain block: the original's `TTerrainMesh`, a mesh node that
+/// draws a 30 × 30 cell window of the tile's shared patch. The block's
+/// frame is the flat 10 cm slab its bounds report:
+///
+/// `step = size / 2^level`, `half = size / 2^(level+1)` and
+/// `first = half − size/2`; block `(bx, by)` sits at
+/// `(step·bx + first, 0, step·by + first)` in the tile's space, half
+/// extents `(half, 10 cm, half)` and radius the box's half diagonal. At the
+/// original's 48 m tile and level 3 (8 × 8 blocks) the step is 6 m, half 3,
+/// first −21.
+///
+/// Activation (`0x1001aa170`) sets the node visible, gives it the floor's
+/// shadow-bias level (3) and its light-link distances 1, then builds its
+/// kd-tree; Exarust's room visibility is the activation, and its shadow
+/// bias is the same floor level.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct TerrainBlock {
+    pub bx: u32,
+    pub by: u32,
+    /// The block level: 3 for the original's eight blocks a side.
+    pub level: u32,
+    pub room: Option<u16>,
+}
+
+impl TerrainBlock {
+    /// The original's block level (eight 6 m blocks across a 48 m tile).
+    pub const LEVEL: u32 = 3;
+    /// The slab's half height, metres (the original's 10 cm).
+    pub const HALF_HEIGHT: f32 = 0.1;
+
+    /// The step between block origins and the half extent for a tile of
+    /// `size` metres.
+    pub fn step(size: f32, level: u32) -> (f32, f32) {
+        let half = size / (2u32 << level) as f32;
+        (size / (1u32 << level) as f32, half)
+    }
+
+    /// The block's centre in its tile's space, metres.
+    pub fn centre_in_tile(size: f32, bx: u32, by: u32, level: u32) -> Vec3 {
+        let (step, half) = Self::step(size, level);
+        let first = half - size * 0.5;
+        Vec3::new(step * bx as f32 + first, 0.0, step * by as f32 + first)
+    }
+
+    /// The block's half extents, metres.
+    pub fn half_extents(size: f32, level: u32) -> Vec3 {
+        let (_, half) = Self::step(size, level);
+        Vec3::new(half, Self::HALF_HEIGHT, half)
+    }
+
+    /// The block's bounding radius: the half extents' length.
+    pub fn radius(size: f32, level: u32) -> f32 {
+        Self::half_extents(size, level).length()
+    }
+
+    /// Its bounds, for the collision and shadow links.
+    pub fn bounds(&self, size: f32, tile_centre: Vec3) -> crate::PartBounds {
+        crate::PartBounds {
+            centre: Self::centre_in_tile(size, self.bx, self.by, self.level) + tile_centre,
+            radius: Self::radius(size, self.level),
+            half_extents: Self::half_extents(size, self.level),
+        }
+    }
+
+    /// The shadow-bias level activation gives the block.
+    pub fn shadow_bias(&self) -> u32 {
+        exa_render::shadow_bias::FLOOR
+    }
+}
+
 fn apply_splats(
     mut commands: Commands,
     pending: Query<(Entity, &PendingSplat, Option<&Children>, Has<Mesh3d>)>,
@@ -1006,7 +1076,15 @@ impl TerrainBuild {
             crate::shadow_links::Unwalled,
             exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
         );
+        let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         for block in std::mem::take(&mut built.blocks) {
+            let record = TerrainBlock {
+                bx: block.bx as u32,
+                by: block.by as u32,
+                level: TerrainBlock::LEVEL,
+                room: block.room,
+            };
+            let bounds = record.bounds(tile_size, Vec3::ZERO);
             let part = commands
                 .spawn((
                     Name::new(format!(
@@ -1015,6 +1093,8 @@ impl TerrainBuild {
                     )),
                     Mesh3d(loader.meshes.add(block.mesh)),
                     TerrainPart,
+                    record,
+                    bounds,
                     surface,
                     Transform::IDENTITY,
                     Visibility::default(),
@@ -1645,6 +1725,42 @@ fn sobel_normal(tile: &TerrainTile, i: i32, j: i32, spacing: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terrain_block_reports_its_flat_slab() {
+        // The original's 48 m tile, eight blocks a side.
+        let size = 48.0;
+        let (step, half) = TerrainBlock::step(size, TerrainBlock::LEVEL);
+        assert_eq!((step, half), (6.0, 3.0));
+        let first = TerrainBlock::centre_in_tile(size, 0, 0, TerrainBlock::LEVEL);
+        assert_eq!(first, Vec3::new(-21.0, 0.0, -21.0));
+        let last = TerrainBlock::centre_in_tile(size, 7, 7, TerrainBlock::LEVEL);
+        assert_eq!(last, Vec3::new(21.0, 0.0, 21.0));
+        let middle = TerrainBlock::centre_in_tile(size, 3, 4, TerrainBlock::LEVEL);
+        assert_eq!(middle, Vec3::new(-3.0, 0.0, 3.0));
+        let half_extents = TerrainBlock::half_extents(size, TerrainBlock::LEVEL);
+        assert_eq!(half_extents, Vec3::new(3.0, 0.1, 3.0));
+        assert!((TerrainBlock::radius(size, TerrainBlock::LEVEL) - 18.01f32.sqrt()).abs() < 1e-6);
+        let block = TerrainBlock {
+            bx: 3,
+            by: 4,
+            level: TerrainBlock::LEVEL,
+            room: Some(2),
+        };
+        let bounds = block.bounds(size, Vec3::new(100.0, -1.0, 50.0));
+        assert_eq!(bounds.centre, Vec3::new(97.0, -1.0, 53.0));
+        assert_eq!(bounds.half_extents, half_extents);
+        assert_eq!(block.shadow_bias(), exa_render::shadow_bias::FLOOR);
+        assert_eq!(block.room, Some(2));
+        // Every block centre is on the 6 m lattice from -21 to 21.
+        for by in 0..8 {
+            for bx in 0..8 {
+                let c = TerrainBlock::centre_in_tile(size, bx, by, TerrainBlock::LEVEL);
+                assert_eq!((c.x - 6.0 * bx as f32 + 21.0).abs(), 0.0);
+                assert_eq!((c.z - 6.0 * by as f32 + 21.0).abs(), 0.0);
+            }
+        }
+    }
 
     #[test]
     fn look_follows_the_parameter_block() {
