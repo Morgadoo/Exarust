@@ -346,12 +346,17 @@ fn hip_of(feet: Vec3, body: Option<&Ragdoll>) -> Vec3 {
 
 pub struct HandPlugin;
 
+/// The hand's frame: the press, the hold and the reach.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HandSystems;
+
 impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hand>().add_systems(
             Update,
             (press_hand, hold_hand, reach_hand)
                 .chain()
+                .in_set(HandSystems)
                 .after(crate::player::chase_camera)
                 .before(crate::cursor::pick_cursor),
         );

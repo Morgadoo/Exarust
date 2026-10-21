@@ -719,7 +719,8 @@ character body's possession routines; addresses are in the research notes.
 - The camera follows the player's **pelvis** only, at a fixed **20 m**: the
   pelvis as it is drawn in the frame, between its last two body ticks, so
   the view rises and falls with the walking body (the feet before the
-  player has a body). It never turns by itself in exploration.
+  player has a body). It never turns by itself in exploration, except
+  when the player is left idle (below).
 - The camera **ticks every 17 ms** of real time: a tick runs once the frame
   passes its start, at most nine a frame (a longer stall drops the rest).
   Each frame shows the direction to the eye, the zoom and any shake offset
@@ -786,6 +787,19 @@ character body's possession routines; addresses are in the research notes.
   at the bounding sphere.
 - Not yet in Exarust: the original tilts 0.15 rad steeper per step (up to
   4) when a wall blocks the view.
+- **The idle turn.** Each frame the player's controls test whether the
+  player is idle: the pointer within 2 pixels of where it was last seen on
+  both axes, the condition word plain (0, so not walking or attacking), no
+  foot stepping, the left button holding nothing, and no mouse button
+  held. A dead player counts as idle whatever the pointer does. When the
+  player is busy the pointer's place and the game clock are noted. When it
+  is idle and the game clock is past the noted time plus 10 000 ms, the
+  camera's target yaw turns by 0.0001 rad for each millisecond since the
+  last frame (0.1 rad a second, in double precision, then single), less a
+  whole turn once it passes 2π, and the behaviour stops reading the cursor
+  until the player is busy again. Not in Exarust: the death screen and the
+  in-game menu, which turn the camera the same way without the idle test,
+  and an open window, which stops the turn.
 
 ## Start outfit
 

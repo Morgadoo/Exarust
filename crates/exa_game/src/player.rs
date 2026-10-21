@@ -491,6 +491,7 @@ pub(crate) fn steer_player(
     nav: Option<Res<exa_world::nav::NavGrid>>,
     motions: Option<Res<Motions>>,
     hand: Option<Res<crate::hand::Hand>>,
+    idle: Option<Res<crate::idle_orbit::IdleWatch>>,
     mut players: Query<(&CharacterBody, &mut Transform, &Children), With<Player>>,
     mut bodies: Query<(
         &mut PlayerBody,
@@ -566,7 +567,11 @@ pub(crate) fn steer_player(
             let line = |from: Vec3, to: Vec3| {
                 line_walk(nav.as_deref(), &physics, from, to, capsule.radius)
             };
-            let to_cursor = cursor.0.map(|c| c - standing);
+            // While the idle camera turns the cursor is not read.
+            let to_cursor = cursor
+                .0
+                .filter(|_| idle.as_ref().is_none_or(|i| i.follows_cursor))
+                .map(|c| c - standing);
             let mut steering = pb.steering;
             Steering::latch(&mut req, &input);
             if pb.combat {
