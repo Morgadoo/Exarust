@@ -79,6 +79,8 @@ pub use pairs::{Pairing, Pairs, Touch};
 mod drag;
 #[path = "body_rigid.rs"]
 mod rigid;
+#[path = "body_world.rs"]
+pub mod world;
 pub use drag::{Grab, drag_pull};
 pub use rigid::{FALL_OUT_HEIGHT, RigidLink, RigidPart};
 
@@ -127,6 +129,18 @@ const LENGTH_EPSILON: f32 = 1.19e-9;
 /// Softening of a pivot per cm of its gap (a living body's) or per cm² (a
 /// limp body's).
 const PIVOT_SOFTENING: f32 = 0.001;
+/// The original's general epsilon (1.19209e-7): squared gaps under it are
+/// ignored, and friction limits are compared against squared slips.
+const GENERAL_EPSILON: f32 = 1.192_09e-7;
+/// Link flags a rigid body's links can carry. A link made by code (the
+/// origin pivot, a grab) carries [`LINK_CODE`]; a disabled link is skipped.
+pub const LINK_BODY: u32 = 0x1_0000;
+pub const LINK_SOFT_WELD: u32 = 0x8;
+pub const LINK_BREAKABLE: u32 = 0x1000;
+pub const LINK_ITERATION_LIMIT: u32 = 0x4000;
+pub const LINK_DISABLED: u32 = 0x10_0000;
+pub const LINK_REANCHOR: u32 = 0x20_0000;
+pub const LINK_CODE: u32 = 0x40_0000;
 /// Squared gaps (m², 1.19e-7 cm²) a link, or the pose drive, leaves alone.
 const LINK_EPSILON2: f32 = 1.19e-11;
 /// A living body's slack-link correction is cut to this (m, 80 cm); a
@@ -678,6 +692,19 @@ pub struct Link {
     pub slack: f32,
     /// 1, or 0.2 on a living lower leg's limit link.
     pub strength: f32,
+    /// The link's kind: [`LINK_BODY`], with [`LINK_SOFT_WELD`] or
+    /// [`LINK_BREAKABLE`], and the flags code sets ([`LINK_DISABLED`],
+    /// [`LINK_ITERATION_LIMIT`], [`LINK_REANCHOR`], [`LINK_CODE`]).
+    pub flags: u32,
+    /// A pivot's softening per cm² of its gap (the original's 0.001).
+    pub softness: f32,
+    /// A breakable grab's axis in the part's frame.
+    pub axis: Vec3,
+    /// A link that runs only in the passes up to this one (flag
+    /// [`LINK_ITERATION_LIMIT`]).
+    pub iteration_limit: Option<u32>,
+    /// A breakable grab's remaining strain; a soft weld's current length.
+    pub state: f32,
     /// How fast a limp joint's smoothed length follows its links inside the
     /// slack: (1 − (r² − 25)·0.001)², at most 0.99, r the point's distance
     /// from the part's origin in cm (0 within √0.1 cm of it).
@@ -741,7 +768,7 @@ impl Link {
             return None;
         }
         if self.slack <= LIMP_PIVOT_SLACK {
-            return Some(d * (self.strength / (1.0 + PIVOT_SOFTENING * len2 * CM * CM)));
+            return Some(d * (self.strength / (1.0 + self.softness * len2 * CM * CM)));
         }
         let len = len2.sqrt();
         if len > self.slack {
@@ -768,6 +795,17 @@ impl Link {
         } else {
             len2.sqrt().min(self.slack)
         };
+    }
+
+    /// The correction of a soft weld with gap `d` (m) whose two link points
+    /// moved `moved` (m) this tick: a quarter of the strength times the gap,
+    /// less 0.4 of the points' motion. The caller takes a tenth of it and
+    /// shares it by the mobilities. None under the general epsilon.
+    fn welded(&self, d: Vec3, moved: Vec3) -> Option<Vec3> {
+        if d.length_squared() < GENERAL_EPSILON / (CM * CM) {
+            return None;
+        }
+        Some(d * (0.25 * self.strength) - moved * 0.4)
     }
 }
 
@@ -1001,6 +1039,13 @@ pub struct Ragdoll {
     fell_out: bool,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
     grabs: Vec<Grab>,
+    /// Links from its parts to points in scene nodes (a body hung from the
+    /// world: a lamp, a chain, a door).
+    world_links: Vec<world::WorldLink>,
+    /// Scratch lists for the level detection, kept across ticks so a tick
+    /// does not allocate.
+    pieces: Vec<u32>,
+    triangles: Vec<[Vec3; 3]>,
     /// The iteration pass this tick is in, from 0: a grab with a last pass
     /// reads it.
     pass: u32,
@@ -1405,6 +1450,15 @@ impl Ragdoll {
                         on_parent: weights(&parts[parent], on_parent + s.origin),
                         slack,
                         strength: 1.0,
+                        flags: if origin {
+                            LINK_BODY | LINK_CODE
+                        } else {
+                            LINK_BODY
+                        },
+                        softness: PIVOT_SOFTENING,
+                        axis: Vec3::ZERO,
+                        iteration_limit: None,
+                        state: 0.0,
                         smoothing: setup_smoothing(on_part),
                         length: 0.0,
                         shares,
@@ -1470,6 +1524,9 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             grabs: Vec::new(),
+            world_links: Vec::new(),
+            pieces: Vec::new(),
+            triangles: Vec::new(),
             pass: 0,
         }
     }
@@ -2107,15 +2164,52 @@ impl Ragdoll {
                 self.outward[k]
             };
             for l in &mut self.links[self.links_of[i].clone()] {
+                if l.flags & LINK_DISABLED != 0 {
+                    continue;
+                }
+                if l.flags & LINK_ITERATION_LIMIT != 0
+                    && l.iteration_limit.is_some_and(|limit| self.pass > limit)
+                {
+                    continue;
+                }
                 let (part, parent) = (&self.parts[l.part], &self.parts[l.parent]);
                 let a = part.point(&l.on_part);
                 let b = parent.point(&l.on_parent);
+                let d = b - a;
                 let correction = match (gains, l.anchor) {
                     (Some(gains), Some(anchor)) if l.slack > PIVOT_SLACK => {
                         l.muscle(part, parent, anchor, gains)
                     }
-                    (Some(_), _) => l.living(b - a),
-                    (None, _) => l.limp(b - a),
+                    (Some(_), _) => l.living(d),
+                    (None, _) if l.flags & LINK_SOFT_WELD != 0 => l
+                        .welded(d, part.slip(&l.on_part) + parent.slip(&l.on_parent))
+                        .map(|c| c * 0.1),
+                    (None, _) if l.flags & LINK_BREAKABLE != 0 => {
+                        let len2 = d.length_squared();
+                        if len2 < GENERAL_EPSILON / (CM * CM) {
+                            None
+                        } else if l.flags & LINK_REANCHOR != 0 {
+                            l.flags &= !LINK_REANCHOR;
+                            if let Some(w) = parent.weights_now(a) {
+                                l.on_parent = w;
+                            }
+                            None
+                        } else {
+                            let local =
+                                part.transform().to_scale_rotation_translation().1.inverse() * d;
+                            let q = 1.0 + local.dot(l.axis);
+                            let len_cm = len2.sqrt() * CM;
+                            let drop = if q > 0.0 { 1.0 + 2.0 * q / len_cm } else { 1.0 };
+                            l.state -= drop;
+                            if l.state < 0.0 {
+                                l.flags |= LINK_DISABLED;
+                                None
+                            } else {
+                                Some(d * (l.strength / (1.0 + PIVOT_SOFTENING * len_cm)))
+                            }
+                        }
+                    }
+                    (None, _) => l.limp(d),
                 };
                 let Some(c) = correction.filter(|c| c.is_finite()) else {
                     continue;
@@ -2164,11 +2258,64 @@ impl Ragdoll {
         self.pass += 1;
     }
 
+    /// Repairs a part whose tetrahedron is inverted, as the original's
+    /// post-iteration repair does: the edges are restored, the part moves by
+    /// its box centre's displacement, its previous points become its current
+    /// ones, its body matrix is rebuilt from the current points and the rest
+    /// basis, each axis is re-formed as the cross of the other two when it
+    /// leans against it (`dot < 0.1`), and the particles are put back on the
+    /// rest tetrahedron under that matrix. The inverted state is tested on
+    /// the vector between the midpoints of opposite edges against the cross
+    /// of those edges: a positive dot inverts the part.
+    fn repair_inverted(&mut self) {
+        for p in &mut self.parts {
+            let [p0, p1, p2, p3] = p.positions;
+            let a = p0 - p1;
+            let b = p2 - p3;
+            let mid_a = p1 + a * 0.5;
+            let mid_b = p3 + b * 0.5;
+            // The original's test is tied to its rest particles' order; a
+            // body is inverted when the current sign is the rest sign's
+            // opposite.
+            let current = (mid_a - mid_b).dot(a.cross(b));
+            let [r0, r1, r2, r3] = p.rest;
+            let (ra, rb) = (r0 - r1, r2 - r3);
+            let rest = (r1 + ra * 0.5 - (r3 + rb * 0.5)).dot(ra.cross(rb));
+            if current * rest >= 0.0 {
+                continue;
+            }
+            keep_rigid(p);
+            let centre = p.pairing.centre_weights();
+            let shift = p.point(&centre) - p.point_at_start(&centre);
+            p.previous = p.positions;
+            for x in &mut p.positions {
+                *x += shift;
+            }
+            let edges = Mat3::from_cols(
+                p.positions[1] - p.positions[0],
+                p.positions[2] - p.positions[0],
+                p.positions[3] - p.positions[0],
+            );
+            let m = edges * p.rest_inverse;
+            let translation = p.positions[0] - m * p.rest[0];
+            let mut axes = [m.x_axis, m.y_axis, m.z_axis];
+            for (i, (a, b)) in [(1, 2), (2, 0), (0, 1)].into_iter().enumerate() {
+                let cross = axes[a].cross(axes[b]);
+                if axes[i].dot(cross) < 0.1 {
+                    axes[i] = cross.try_normalize().unwrap_or(Vec3::ZERO);
+                }
+            }
+            let fixed = Mat3::from_cols(axes[0], axes[1], axes[2]);
+            p.positions = p.rest.map(|r| fixed * r + translation);
+            keep_rigid(p);
+        }
+    }
+
     /// Tests every sphere against the level: swept from where the last tick
     /// left it when it moved far enough, else where it is.
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
-        let mut pieces = Vec::new();
-        let mut triangles = Vec::new();
+        let mut pieces = std::mem::take(&mut self.pieces);
+        let mut triangles = std::mem::take(&mut self.triangles);
         for p in &mut self.parts {
             if p.no_level {
                 continue;
@@ -2217,6 +2364,8 @@ impl Ragdoll {
                 }
             }
         }
+        self.pieces = pieces;
+        self.triangles = triangles;
     }
 }
 
@@ -2512,6 +2661,10 @@ mod contact_test;
 #[cfg(test)]
 #[path = "body_tick_test.rs"]
 mod tick_test;
+
+#[cfg(test)]
+#[path = "body_repair_test.rs"]
+mod repair_test;
 
 #[cfg(test)]
 #[path = "body_joint_test.rs"]

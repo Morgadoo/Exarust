@@ -244,6 +244,11 @@ impl Ragdoll {
                         on_parent: super::weights(&parts[parent], l.on_parent + s.origin),
                         slack: l.slack.max(0.0),
                         strength: l.strength,
+                        flags: l.flags | super::LINK_BODY,
+                        softness: super::PIVOT_SOFTENING,
+                        axis: l.axis,
+                        iteration_limit: None,
+                        state: 0.0,
                         smoothing: l.smoothing,
                         length: 0.0,
                         shares,
@@ -283,6 +288,9 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             grabs: Vec::new(),
+            world_links: Vec::new(),
+            pieces: Vec::new(),
+            triangles: Vec::new(),
             pass: 0,
         }
     }

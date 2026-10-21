@@ -266,6 +266,7 @@ pub fn solve_among<L: Level + Sync + ?Sized>(
         for p in &mut b.parts {
             p.contacts.clear();
         }
+        b.repair_inverted();
     }
     for s in stages.iter_mut() {
         s.sim_objects(bodies);

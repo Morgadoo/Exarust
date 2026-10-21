@@ -149,6 +149,12 @@ impl Pairing {
             0
         }
     }
+
+    /// The centre of the box around the part's spheres, as weights on its
+    /// particles (the original's box-centre weights).
+    pub(crate) fn centre_weights(&self) -> [f32; 4] {
+        self.centre
+    }
 }
 
 /// Whether two parts of different bodies, with layer masks `a` and `b`,
