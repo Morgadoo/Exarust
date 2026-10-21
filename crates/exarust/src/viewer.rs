@@ -890,11 +890,12 @@ fn spawn_players(
             start.foes.clone()
         };
         // The original's practice opponent comes from an actors.rpk template
-        // (the first opponent), with its practice traits, team 0x10 and
-        // three-second reaction delay. Without the template, the debug
-        // duellist keeps its fixed outfit.
+        // (read without the cache; the first practice opponent here), with
+        // its practice traits, team 0x10 and three-second reaction delay.
+        // Without the template, the debug duellist keeps its fixed outfit;
+        // `--weapon` still picks the weapon.
         let mut actors = exa_game::prelude::ActorCache::new();
-        let template = actors.template(game, "opponent01", true);
+        let template = actors.template(game, "opponent01", false);
         for foe_at in foes {
             let foe_root = commands
                 .spawn((
@@ -930,14 +931,14 @@ fn spawn_players(
                         .map(String::from)
                         .to_vec()
                 });
-            let weapon = practice
-                .as_ref()
-                .and_then(|opponent| {
-                    let hand = opponent.record.hands[0];
+            let weapon = options
+                .weapon
+                .clone()
+                .or_else(|| {
+                    let hand = practice.as_ref()?.record.hands[0];
                     let item = items.iter().find(|item| item.id == hand.index())?;
                     (!item.model.is_empty()).then(|| item.model.clone())
                 })
-                .or_else(|| options.weapon.clone())
                 .unwrap_or_else(|| "ub05ssworda".into());
             let stats = match &practice {
                 Some(opponent) => {

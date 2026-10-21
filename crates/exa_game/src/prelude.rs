@@ -2,26 +2,33 @@
 //! rotating game-tips popup, the actor templates loaded from `actors.rpk`,
 //! and the practice opponent's fixed traits, team and reaction delay.
 //!
-//! The tips popup shows the explicit tip it is given, or, without one and
-//! with the `ShowGameTips` setting on, the least-shown tip. Ties are broken
-//! by the engine's generator: the count of least-shown tips is one draw,
-//! and the draw picks that many entries in from the start. Shown counts
-//! start at one; a tip shown again goes to two and then counts up. The tip
-//! strings themselves are retail text, so the selection lives here and the
-//! caller supplies the texts.
+//! The popup holds two tables: eighteen rotating tips and six control
+//! hints. Index 0 asks for a rotating tip, and only with the `ShowGameTips`
+//! setting on; index `n` from 1 shows hint `n − 1` whatever the setting.
+//! A rotating tip is drawn among the least-shown ones with the engine's
+//! generator: the draw is the high word of the tie count times the stepped
+//! state. The original then uses the draw itself as the tip's index (the
+//! loop that walks the ties stores its tie counter, not the table
+//! position), so the tip shown, and counted, is the draw-th of the table
+//! whether or not it is one of the least shown. Shown counts start at one;
+//! a count of zero goes to two, any other counts up. The texts are retail
+//! data, so the selection lives here and the caller supplies them.
 //!
-//! Actor templates are read once per name from the archive and cached when
-//! asked for; the uncached reader (shopkeepers, summoned demons) parses the
-//! record every time. Evidence: the prelude unit's notes in the component
-//! map (SG_Prelude_Main).
-
-use std::collections::HashMap;
+//! The cached template reader looks for a cached record whose own name
+//! matches (sixteen bytes, ASCII letters case-blind), reads the template
+//! from the archive otherwise, gives a nameless one the asked-for name and
+//! caches a copy. The same reader without caching (the practice spawn)
+//! only reads and names. The unit's second reader, which builds a template
+//! together with its object chunks, is not reproduced. Evidence: the
+//! prelude unit's routines (SG_Prelude_Main) in the assembly.
 
 use exa_assets::{Archive, Game, PackKind};
 use exa_formats::characters::CharacterRecord;
 
 /// How many tips the popup rotates through.
 pub const TIPS: usize = 18;
+/// How many control hints the popup shows by index.
+pub const HINTS: usize = 6;
 /// The actor library inside the resource pack.
 pub const ACTOR_PACK: &str = "actors.rpk";
 /// The role the practice opponent is put on (the arena's Unaligned role).
@@ -29,6 +36,19 @@ pub const PRACTICE_TEAM: u32 = 0x10;
 /// The practice opponent's reaction delay after the fight starts, in
 /// milliseconds.
 pub const PRACTICE_REACTION_MS: u32 = 3000;
+/// Where the original's practice spawn places the opponent, in its level
+/// coordinates (metres), with no turn. Not wired: Exarust's duel placement
+/// stands in for it.
+pub const PRACTICE_SPOT: [f32; 3] = [0.0, 5.0, 107.0];
+
+/// What the popup shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shown {
+    /// A rotating tip, by its table position.
+    Tip(usize),
+    /// A control hint, by its table position.
+    Hint(usize),
+}
 
 /// The original's generator step.
 fn step(state: &mut u32) -> u32 {
@@ -48,8 +68,8 @@ pub struct Tips {
     pub shown: [u32; TIPS],
     /// The generator state.
     pub roll: u32,
-    /// The tip index on screen, if any.
-    pub current: Option<usize>,
+    /// What is on screen, if anything.
+    pub current: Option<Shown>,
 }
 
 impl Default for Tips {
@@ -72,9 +92,10 @@ impl Tips {
     }
 
     /// Shows a tip as the original's show routine does: index 0 is the
-    /// automatic least-shown tip, gated by the setting; any other index is
-    /// the tip at that zero-based table position, whatever the setting.
-    pub fn show(&mut self, index: usize) -> Option<usize> {
+    /// automatic rotating tip, gated by the setting; index `n` from 1 is
+    /// control hint `n − 1`, whatever the setting (an index past the hints
+    /// shows nothing here; the original reads past its table).
+    pub fn show(&mut self, index: usize) -> Option<Shown> {
         if index == 0 && !self.show_game_tips {
             return None;
         }
@@ -82,33 +103,29 @@ impl Tips {
             self.create();
         }
         if index != 0 {
-            if index >= TIPS {
+            if index > HINTS {
                 return None;
             }
-            self.current = Some(index);
-            return Some(index);
+            let shown = Shown::Hint(index - 1);
+            self.current = Some(shown);
+            return Some(shown);
         }
         let least = *self.shown.iter().min()?;
-        let ties = self.shown.iter().filter(|&&count| count == least).count() as u32;
-        let draw = ((u64::from(step(&mut self.roll)) * u64::from(ties)) >> 32) as usize;
-        let chosen = self
-            .shown
-            .iter()
-            .enumerate()
-            .filter(|(_, count)| **count == least)
-            .nth(draw)
-            .map(|(at, _)| at)?;
+        let ties = self.shown.iter().filter(|&&count| count == least).count() as u64;
+        // The draw is the index: the original keeps its tie counter.
+        let chosen = ((u64::from(step(&mut self.roll)) * ties) >> 32) as usize;
         if self.shown[chosen] == 0 {
             self.shown[chosen] = 2;
         } else {
             self.shown[chosen] += 1;
         }
-        self.current = Some(chosen);
-        Some(chosen)
+        let shown = Shown::Tip(chosen);
+        self.current = Some(shown);
+        Some(shown)
     }
 
     /// Shows the least-shown tip: [`Tips::show`] with index 0.
-    pub fn show_automatic(&mut self) -> Option<usize> {
+    pub fn show_automatic(&mut self) -> Option<Shown> {
         self.show(0)
     }
 
@@ -179,14 +196,27 @@ impl ActorTemplates {
     }
 }
 
-/// The template loader with the original's two modes: a cached lookup keeps
-/// the record it read, the uncached one parses a fresh copy each time.
+/// The template reader with the original's two modes: the cached one
+/// first looks among the records it handed out, the plain one always reads.
 #[derive(Debug, Clone, Default)]
 pub struct ActorCache {
     /// The library, read on the first lookup.
     library: Option<ActorTemplates>,
-    /// Records the cached loader has handed out, by name.
-    cached: HashMap<String, CharacterRecord>,
+    /// Copies of the records the cached reader handed out, in order.
+    cached: Vec<CharacterRecord>,
+}
+
+/// The original's name compare: the first sixteen bytes, zero padded, with
+/// `a`…`z` folded to upper case.
+fn same_name(a: &str, b: &str) -> bool {
+    let pad = |s: &str| {
+        let mut out = [0u8; 16];
+        let bytes = s.as_bytes();
+        let n = bytes.len().min(16);
+        out[..n].copy_from_slice(&bytes[..n]);
+        out.map(|c| c.to_ascii_uppercase())
+    };
+    pad(a) == pad(b)
 }
 
 impl ActorCache {
@@ -195,26 +225,36 @@ impl ActorCache {
         Self::default()
     }
 
-    fn library<'a>(&'a mut self, game: &Game) -> &'a ActorTemplates {
-        self.library
-            .get_or_insert_with(|| ActorTemplates::load(game))
+    /// A template by name. With `cached`, a cached record whose own name
+    /// matches is returned, and a record read is cached. Either way a
+    /// template whose own name is empty takes the asked-for name. The
+    /// library is read once.
+    pub fn template(&mut self, game: &Game, name: &str, cached: bool) -> Option<CharacterRecord> {
+        self.template_with(name, cached, || ActorTemplates::load(game))
     }
 
-    /// A template by name: `cached` keeps the first record read and returns
-    /// it again, as the story's cached loader does; either mode reads the
-    /// library once.
-    pub fn template(&mut self, game: &Game, name: &str, cached: bool) -> Option<CharacterRecord> {
-        if cached && let Some(record) = self.cached.get(name) {
+    /// [`ActorCache::template`] with the library read by `load` when the
+    /// cache has none yet.
+    pub fn template_with(
+        &mut self,
+        name: &str,
+        cached: bool,
+        load: impl FnOnce() -> ActorTemplates,
+    ) -> Option<CharacterRecord> {
+        if cached
+            && let Some(record) = self
+                .cached
+                .iter()
+                .find(|record| same_name(&record.name, name))
+        {
             return Some(record.clone());
         }
-        let mut record = self.library(game).get(name).cloned()?;
-        // A template whose own name is empty takes the name it was asked
-        // for, as the original copies the requested asset name into it.
+        let mut record = self.library.get_or_insert_with(load).get(name).cloned()?;
         if record.name.is_empty() {
             record.name = name.to_string();
         }
         if cached {
-            self.cached.insert(name.to_string(), record.clone());
+            self.cached.push(record.clone());
         }
         Some(record)
     }
@@ -231,13 +271,13 @@ pub struct PracticeOpponent {
     pub reaction_ms: u32,
 }
 
-/// The practice opponent from `record`: its second to fourth personality
-/// traits are set to −100, 100 and 100, it goes on team `0x10` and it waits
-/// three seconds after the fight starts.
+/// The practice opponent from `record` (read without the cache): its first
+/// three personality traits are set to −100, 100 and 100, it goes on team
+/// `0x10` and it waits three seconds after the fight starts.
 pub fn practice_opponent(mut record: CharacterRecord) -> PracticeOpponent {
-    record.traits[1] = -100.0;
+    record.traits[0] = -100.0;
+    record.traits[1] = 100.0;
     record.traits[2] = 100.0;
-    record.traits[3] = 100.0;
     PracticeOpponent {
         record,
         team: PRACTICE_TEAM,
@@ -250,37 +290,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_tip_counts_up_and_hiding_keeps_the_counts() {
+    fn a_hint_is_one_based_and_does_not_count() {
         let mut tips = Tips::default();
         assert_eq!(tips.shown, [0; TIPS]);
-        assert_eq!(tips.show(3), Some(3));
+        assert_eq!(tips.show(3), Some(Shown::Hint(2)));
         assert!(tips.created);
-        assert_eq!(tips.current, Some(3));
-        assert_eq!(tips.shown, [1; TIPS], "indexed tips do not count");
+        assert_eq!(tips.current, Some(Shown::Hint(2)));
+        assert_eq!(tips.shown, [1; TIPS], "hints do not count");
+        assert_eq!(tips.show(HINTS), Some(Shown::Hint(HINTS - 1)));
         tips.hide();
         assert_eq!(tips.current, None);
         assert_eq!(tips.shown, [1; TIPS]);
     }
 
     #[test]
-    fn the_least_shown_tip_is_drawn_and_counted() {
+    fn the_rotating_tip_is_the_draw_itself() {
         let mut tips = Tips::default();
-        let first = tips.show_automatic().unwrap();
-        assert!(first < TIPS);
-        assert_eq!(tips.shown[first], 2);
-        let mut again = Tips {
+        // Eighteen ties at one: state 1 after one step from 0, so the draw
+        // is (1 * 18) >> 32 = 0.
+        assert_eq!(tips.show_automatic(), Some(Shown::Tip(0)));
+        assert_eq!(tips.shown[0], 2);
+        // Seventeen ties left; the state 0x0808_8406 times 17 is
+        // 0x8890_C466, high word 0: tip 0 again, although it is no longer
+        // among the least shown.
+        assert_eq!(tips.roll, 1);
+        assert_eq!(tips.show_automatic(), Some(Shown::Tip(0)));
+        assert_eq!(tips.shown[0], 3);
+    }
+
+    #[test]
+    fn the_drawn_index_need_not_be_a_least_shown_tip() {
+        let mut tips = Tips {
             created: true,
-            roll: tips.roll,
-            shown: tips.shown,
+            shown: [3; TIPS],
             ..Tips::default()
         };
-        let second = again.show_automatic().unwrap();
-        assert_ne!(second, first, "the first tip now has a higher count");
-        assert_eq!(again.shown[second], 2);
-        // The draws are the generator's high word times the tie count.
-        let mut state = 0u32;
-        let draw = ((u64::from(step(&mut state)) * 17) >> 32) as usize;
-        assert!(draw < 17);
+        tips.shown[5] = 1;
+        tips.shown[9] = 1;
+        // Two ties: draw 0 or 1, and that is the index counted.
+        let mut state = tips.roll;
+        let draw = ((u64::from(step(&mut state)) * 2) >> 32) as usize;
+        assert_eq!(tips.show_automatic(), Some(Shown::Tip(draw)));
+        assert_eq!(tips.shown[draw], 4);
+        assert_eq!((tips.shown[5], tips.shown[9]), (1, 1));
+        // A zero count goes to two.
+        let mut fresh = Tips {
+            created: true,
+            ..Tips::default()
+        };
+        assert_eq!(fresh.show_automatic(), Some(Shown::Tip(0)));
+        assert_eq!(fresh.shown[0], 2);
     }
 
     #[test]
@@ -291,39 +350,26 @@ mod tests {
         };
         assert_eq!(tips.show_automatic(), None);
         assert!(!tips.created, "a refused automatic tip creates nothing");
-        assert_eq!(tips.show(1), Some(1), "an explicit tip still shows");
+        assert_eq!(tips.show(1), Some(Shown::Hint(0)), "a hint still shows");
     }
 
     #[test]
-    fn an_out_of_range_tip_shows_nothing() {
+    fn an_index_past_the_hints_shows_nothing() {
         let mut tips = Tips::default();
-        assert_eq!(tips.show(TIPS), None);
-        assert_eq!(tips.show(TIPS + 1), None);
+        assert_eq!(tips.show(HINTS + 1), None);
         assert_eq!(tips.current, None);
     }
 
     #[test]
-    fn the_draw_can_pick_a_later_tie_and_counts_only_that_one() {
-        let mut tips = Tips {
-            created: true,
-            shown: [3; TIPS],
-            roll: 0,
-            ..Tips::default()
-        };
-        tips.shown[5] = 1;
-        tips.shown[9] = 1;
-        // Two ties; the draw is 0 or 1.
-        let mut state = 0u32;
-        let draw = ((u64::from(step(&mut state)) * 2) >> 32) as usize;
-        let chosen = if draw == 0 { 5 } else { 9 };
-        let got = tips.show_automatic().unwrap();
-        assert_eq!(got, chosen);
-        assert_eq!(tips.shown[chosen], 2);
-        assert_eq!(tips.shown[if chosen == 5 { 9 } else { 5 }], 1);
+    fn names_compare_on_sixteen_bytes_without_letter_case() {
+        assert!(same_name("Opponent01", "opponent01"));
+        assert!(!same_name("opponent01", "opponent02"));
+        assert!(same_name("abcdefghijklmnopXYZ", "ABCDEFGHIJKLMNOP"));
+        assert!(!same_name("a[", "A{"), "only letters fold");
     }
 
     #[test]
-    fn an_actor_cache_reads_named_records_and_caches_them() {
+    fn an_actor_library_finds_entries_by_their_exact_name() {
         let mut record = CharacterRecord::reset();
         record.name = "Opponent".into();
         let library = ActorTemplates::from_records([("opponent01".to_string(), record.clone())]);
@@ -334,23 +380,46 @@ mod tests {
         );
         assert!(library.get("Opponent").is_none(), "the entry name is exact");
         assert!(library.get("missing").is_none());
-        // The cache's bookkeeping without a game: an empty library.
-        let mut cache = ActorCache::new();
-        assert_eq!(cache.cached.len(), 0);
-        cache.cached.insert("opponent01".into(), record.clone());
+    }
+
+    #[test]
+    fn the_cache_matches_a_record_by_its_own_name() {
+        let mut named = CharacterRecord::reset();
+        named.name = "Opponent".into();
+        let nameless = CharacterRecord::reset();
+        let mut cache = ActorCache {
+            library: Some(ActorTemplates::from_records([
+                ("opponent01".to_string(), named),
+                ("opponent02".to_string(), nameless),
+            ])),
+            cached: Vec::new(),
+        };
+        let none = ActorTemplates::new;
+        // A record with its own name is cached under it, so asking by the
+        // entry name reads and caches it again.
+        cache.template_with("opponent01", true, none).unwrap();
+        cache.template_with("opponent01", true, none).unwrap();
+        assert_eq!(cache.cached.len(), 2);
+        assert!(cache.template_with("OPPONENT", true, none).is_some());
+        assert_eq!(cache.cached.len(), 2, "found by the record's name");
+        // A nameless one takes the asked-for name and is found by it.
+        let got = cache.template_with("opponent02", true, none).unwrap();
+        assert_eq!(got.name, "opponent02");
+        cache.template_with("opponent02", true, none).unwrap();
+        assert_eq!(cache.cached.len(), 3);
+        // Without the cache nothing is kept.
         assert_eq!(
-            cache.cached.get("opponent01").map(|r| r.name.clone()),
-            Some("Opponent".to_string())
+            cache.template_with("opponent02", false, none).unwrap().name,
+            "opponent02"
         );
+        assert_eq!(cache.cached.len(), 3);
     }
 
     #[test]
     fn the_practice_opponent_gets_its_traits_team_and_delay() {
         let record = CharacterRecord::reset();
         let opponent = practice_opponent(record);
-        assert_eq!(opponent.record.traits[1], -100.0);
-        assert_eq!(opponent.record.traits[2], 100.0);
-        assert_eq!(opponent.record.traits[3], 100.0);
+        assert_eq!(opponent.record.traits[..3], [-100.0, 100.0, 100.0]);
         assert_eq!(opponent.team, 0x10);
         assert_eq!(opponent.reaction_ms, 3000);
     }
