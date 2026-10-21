@@ -9,7 +9,16 @@
 //! put under the placeholder handle the texture manager handed out when the
 //! record was created. The upload pass drains every ready entry, as the
 //! original's does; a frame's cost is one decode in the background and the
-//! image insertions, not the decode itself.
+//! image insertions, not the decode itself. Each frame collects the finished
+//! decodes, uploads them, and only then starts the next decodes, so the
+//! original's yield rule (no new decode while an upload waits) does not idle
+//! the loader every frame that collected one.
+//!
+//! A replaced placeholder is a new image under the same handle: materials
+//! and shadow cuts that bound the placeholder are touched or rebuilt so they
+//! draw the real one; a caller that needs the real size at once (parallax
+//! depth, terrain and particle materials) decodes on its own thread with
+//! `ModelLoader::texture_sync`.
 //!
 //! The manager's streaming path is off unless something turns it on
 //! ([`crate::texture_cache::TextureCache::set_streaming`]); the running game

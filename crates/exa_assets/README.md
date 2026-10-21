@@ -127,9 +127,16 @@ gets the original's 1×1 grey placeholder under its handle and a queued load
 (`ModelLoader::texture_with_flags` returns at once), and `TextureStreamPlugin`
 decodes the queue on the async compute pool, four requests in flight and
 only the oldest collected, so uploads keep request order. Each upload
-replaces the placeholder's image under the same handle, so materials that
-already bound it draw the real texture from the next frame. The loader yields
-while uploads wait (the original's rule), the pump drains every ready upload,
+replaces the placeholder's image under the same handle; the plugin touches
+the materials that bound the placeholder and the cube shadow cuts rebuild
+their bind groups, so they draw the real texture from the next frame.
+Consumers whose bindings the upload cannot refresh (terrain and particle
+materials) load through `texture_sync`, and the parallax depth is read from
+the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
+the shaders repeat into colour for diffuse maps, apparel, race skins and the
+skin scatter; emissive and unpacked specular maps are not greyed. The loader yields
+while uploads wait (the original's rule; the frame uploads before it starts
+new decodes), the pump drains every ready upload,
 and a record freed at its last reference drops its queued load and its image
 (`ModelLoader::release_texture`). `texture_now` decodes on the calling
 thread (the original's synchronous path and its priority load); `wait_decodes`
