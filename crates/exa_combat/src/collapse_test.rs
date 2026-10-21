@@ -636,6 +636,7 @@ fn blade(at: Vec3) -> RigidPart {
             Vec3::new(0.0, 0.4, 0.0),
         ],
         point_masses: [4.0; 4],
+        parent_world: Affine3A::IDENTITY,
         mobility: 0.2,
         spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
         origin: Vec3::ZERO,

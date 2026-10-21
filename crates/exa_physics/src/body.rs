@@ -229,6 +229,9 @@ pub struct Part {
     rest_inverse: Mat3,
     /// Friction against the level.
     pub friction: f32,
+    /// Whether the part skips level detection: a root body with world links
+    /// (its static mask is 1), as the original's hung props and mechanisms.
+    pub no_level: bool,
     /// Particles at the start of the tick (where the last tick left them).
     start: [Vec3; 4],
     /// Each particle's displacement over the last tick, as this tick's
@@ -339,6 +342,7 @@ impl Part {
             spheres,
             pairing,
             rest_inverse,
+            no_level: false,
             friction: if matches!(bone, 4 | 7) {
                 FOOT_FRICTION
             } else {
@@ -845,6 +849,116 @@ fn setup_smoothing(r: Vec3) -> f32 {
     (1.0 - (r2 - 25.0) * 0.001).powi(2).min(0.99)
 }
 
+/// The flags of a root body's links to its node (the world). Registration
+/// keeps them as they are; a slider keeps its axis and travel.
+pub mod world_link {
+    /// A slider: the link's slack is its travel and its axis the direction.
+    pub const SLIDER: u32 = 0x4;
+    /// A damped spring (a soft weld).
+    pub const SPRING: u32 = 0x8;
+    /// A horizontal drag (a hand pulling a body across the ground).
+    pub const HORIZONTAL: u32 = 0x200;
+    /// A plane: the correction's axis component mostly removed.
+    pub const PLANE: u32 = 0x800;
+    /// The link is solved in the first iteration only (a drag).
+    pub const ITERATION_LIMIT: u32 = 0x4000;
+}
+
+/// A link from a body part to its node (the world): a point on the part
+/// held to an anchor in world space. A hung body's root has these instead
+/// of body links; the world does not move, so the correction is unshared.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldLink {
+    /// The part the link holds.
+    pub part: usize,
+    /// The point's weights on the part's particles.
+    pub on_part: [f32; 4],
+    /// The anchor in world space (m).
+    pub anchor: Vec3,
+    /// The free length (m): 0 for a pin; a slider's travel.
+    pub slack: f32,
+    pub strength: f32,
+    pub smoothing: f32,
+    pub flags: u32,
+    /// A slider's axis in world space, its length the travel; a plane's
+    /// normal.
+    pub axis: Vec3,
+    /// The slider's fraction of its travel (+0x28).
+    pub length: f32,
+    /// Whether this is the part's origin pivot.
+    pub origin: bool,
+}
+
+impl WorldLink {
+    /// The correction of this link for its part: the original's world-link
+    /// law (horizontal drag, slider, damped spring, plain pin or slack
+    /// link). A slider also updates its fraction; a plain slack link
+    /// records the distance once it is taut. None when the link is inside
+    /// its slack or the points coincide.
+    fn correction(&mut self, p: &Part) -> Option<Vec3> {
+        let point = p.point(&self.on_part);
+        let moved: Vec3 = (0..4)
+            .map(|i| (p.positions[i] - p.previous[i]) * self.on_part[i])
+            .sum();
+        if self.flags & world_link::SLIDER != 0 {
+            let travel = self.slack;
+            if travel <= 0.0 || !travel.is_finite() || !self.axis.is_finite() {
+                return None;
+            }
+            let target = self.anchor + self.axis * self.length;
+            let q = point + (target - point) * self.smoothing;
+            let t = (self.axis.dot(q - self.anchor) / (travel * travel)).clamp(0.0, 1.0);
+            self.length = t;
+            return Some(self.anchor + self.axis * t - point);
+        }
+        let mut d = self.anchor - point;
+        if self.flags & world_link::PLANE != 0 {
+            d -= self.axis * (d.dot(self.axis) * 0.8);
+        }
+        if self.flags & world_link::HORIZONTAL != 0 {
+            d.y = 0.0;
+            let len2 = d.length_squared();
+            if len2 <= LINK_EPSILON2 {
+                return None;
+            }
+            let dir = d * (1.0 / len2.sqrt());
+            let step = (3.0 * p.inverse_mass.max(0.0).sqrt()).min(5.0) / CM;
+            let pull = (d * (2.0 * self.strength)).clamp_length_max(step);
+            let toward = moved.dot(dir).max(0.0);
+            return Some(pull - dir * toward);
+        }
+        if self.flags & world_link::SPRING != 0 {
+            let len2 = d.length_squared();
+            if len2 <= LINK_EPSILON2 {
+                return None;
+            }
+            let dir = d * (1.0 / len2.sqrt());
+            let toward = moved.dot(dir).max(0.0);
+            return Some(d * (0.1 * self.strength) - moved * 0.4 - dir * toward);
+        }
+        let len2 = d.length_squared();
+        if len2 <= LINK_EPSILON2 {
+            return None;
+        }
+        let len = len2.sqrt();
+        let factor = if self.slack <= LIMP_PIVOT_SLACK {
+            let reach = 10.0 * self.strength / CM;
+            if len > reach {
+                10.0 * self.strength * self.strength / len
+            } else {
+                self.strength
+            }
+        } else if len > self.slack {
+            self.length = len;
+            self.strength * (len - self.slack) / len
+        } else {
+            self.length = 0.0;
+            return None;
+        };
+        Some(d * factor)
+    }
+}
+
 /// A simulated body: limp, or driven by its muscles when it has a
 /// [`Drive`].
 #[derive(Component, Debug, Clone)]
@@ -852,6 +966,9 @@ pub struct Ragdoll {
     pub parts: Vec<Part>,
     /// Every part's links, the skeleton's then its origin pivot, part by part.
     pub links: Vec<Link>,
+    /// The links of a hung root body to its node (the world), solved with the
+    /// body's links every iteration.
+    pub world: Vec<WorldLink>,
     /// The links of each part.
     links_of: Vec<std::ops::Range<usize>>,
     /// The parts parents first, depth first (a limp body's order), and
@@ -1334,6 +1451,7 @@ impl Ragdoll {
         Self {
             parts,
             links,
+            world: Vec::new(),
             links_of,
             outward,
             inward,
@@ -2004,6 +2122,18 @@ impl Ragdoll {
                 self.parts[l.part].push(&l.on_part, c * l.shares.0);
                 self.parts[l.parent].push(&l.on_parent, -c * l.shares.1);
             }
+            // A hung root's links to its node: unshared, the world does not
+            // move. A slider's correction is applied twice.
+            let (world, parts) = (&mut self.world, &mut self.parts);
+            for link in world.iter_mut().filter(|l| l.part == i) {
+                let Some(c) = link.correction(&parts[i]).filter(|c| c.is_finite()) else {
+                    continue;
+                };
+                parts[i].push(&link.on_part, c);
+                if link.flags & world_link::SLIDER != 0 {
+                    parts[i].push(&link.on_part, c);
+                }
+            }
             // The hand's grabs come last among a limp part's links.
             if gains.is_none() && !self.grabs.is_empty() {
                 self.pull_grabs(i);
@@ -2039,6 +2169,9 @@ impl Ragdoll {
         let mut pieces = Vec::new();
         let mut triangles = Vec::new();
         for p in &mut self.parts {
+            if p.no_level {
+                continue;
+            }
             let before = p.settled;
             let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
             let now = p.transform();

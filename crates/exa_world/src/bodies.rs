@@ -132,6 +132,8 @@ fn child_link(l: &exa_formats::rigid_body::BodyLink) -> RigidLink {
         slack,
         strength: l.strength,
         smoothing: l.smoothing,
+        flags: l.flags,
+        axis: l.axis.map(Vec3::from).unwrap_or(Vec3::ZERO),
     }
 }
 
@@ -150,6 +152,7 @@ fn rigid_part(
         world: bevy::math::Affine3A::IDENTITY,
         rest: b.rest.map(Vec3::from),
         point_masses: b.point_masses,
+        parent_world: bevy::math::Affine3A::IDENTITY,
         mobility: rigid.mobility(),
         spheres: b
             .spheres

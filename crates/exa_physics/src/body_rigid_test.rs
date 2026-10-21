@@ -20,6 +20,7 @@ fn crate_at(at: Vec3) -> RigidPart {
             Vec3::new(0.0, 0.4, 0.0),
         ],
         point_masses: [4.0; 4],
+        parent_world: Affine3A::IDENTITY,
         mobility: 0.5,
         spheres: vec![
             (Vec3::new(0.0, 0.2, 0.0), 0.2),
@@ -173,6 +174,8 @@ fn articulated_children_pivot_on_their_parent() {
             slack: 0.0451,
             strength: 1.0,
             smoothing: 0.2,
+            flags: 0,
+            axis: Vec3::ZERO,
         }],
         ..crate_at(Vec3::ZERO)
     };
@@ -558,4 +561,155 @@ fn a_grabbed_crate_slides_to_its_anchor() {
     }
     assert!(body.asleep());
     assert!(lowest(&body).abs() < 0.02, "rests at {}", lowest(&body));
+}
+
+/// A crate hung from the world by one pin at its centre point, anchored at
+/// the node's origin: the pin holds the point near the anchor, the body
+/// never meets the level, and the origin pivot is added unless the first
+/// link is a slider.
+fn hung_crate(at: Vec3, anchor: Vec3, link: RigidLink) -> RigidPart {
+    let mut part = crate_at(at);
+    part.parent_world = Affine3A::from_translation(anchor);
+    part.links = vec![link];
+    part
+}
+
+fn pin(on_body: Vec3) -> RigidLink {
+    RigidLink {
+        on_body,
+        on_parent: Vec3::ZERO,
+        slack: 0.0,
+        strength: 1.0,
+        smoothing: 0.0,
+        flags: 0,
+        axis: Vec3::ZERO,
+    }
+}
+
+/// A hung body's root carries a world link and an origin pivot, and no
+/// level detection; a slider's first link suppresses the pivot.
+#[test]
+fn a_hung_body_anchors_to_its_node() {
+    let at = Vec3::new(1.0, 2.8, 3.0);
+    let anchor = Vec3::new(1.0, 2.5, 3.0);
+    let part = hung_crate(at, anchor, pin(Vec3::new(0.0, 0.2, 0.0)));
+    let body = Ragdoll::rigid(&[part]);
+    assert!(body.parts[0].no_level);
+    assert_eq!(body.world.len(), 2);
+    let link = &body.world[0];
+    assert_eq!(link.anchor, anchor);
+    assert!(!link.origin);
+    let pivot = &body.world[1];
+    assert!(pivot.origin);
+    assert_eq!((pivot.slack, pivot.strength), (0.0, 1.0));
+    assert_eq!(pivot.anchor, anchor);
+    // The pin's point is the crate's own centre point.
+    assert_eq!(
+        link.on_part,
+        super::super::weights(&body.parts[0], Vec3::new(0.0, 0.2, 0.0))
+    );
+
+    let slider = RigidLink {
+        flags: world_link::SLIDER,
+        slack: 1.0,
+        axis: Vec3::Y,
+        on_body: Vec3::new(0.0, 0.2, 0.0),
+        on_parent: Vec3::ZERO,
+        strength: 1.0,
+        smoothing: 0.01,
+    };
+    let part = hung_crate(at, anchor, slider);
+    let body = Ragdoll::rigid(&[part]);
+    assert_eq!(body.world.len(), 1);
+    assert_eq!(body.world[0].flags & world_link::SLIDER, world_link::SLIDER);
+    assert!(
+        (body.world[0].length - 0.5).abs() < 1e-5,
+        "{}",
+        body.world[0].length
+    );
+}
+
+/// A pinned crate swings about its anchor and stays there: the world link
+/// removes gravity's fall every iteration.
+#[test]
+fn a_hung_body_hangs_from_its_pin() {
+    // The node's origin is the crate's origin; the stored link's parent
+    // point puts its anchor at the crate's centre point, so both links are
+    // satisfied where the body is placed.
+    let at = Vec3::new(0.0, 1.8, 0.0);
+    let anchor = at;
+    let mut link = pin(Vec3::new(0.0, 0.2, 0.0));
+    link.on_parent = Vec3::new(0.0, 0.2, 0.0);
+    let mut body = Ragdoll::rigid(&[hung_crate(at, anchor, link)]);
+    body.wake();
+    let point = |body: &Ragdoll| {
+        let p = &body.parts[0];
+        (0..4)
+            .map(|i| p.positions[i] * body.world[0].on_part[i])
+            .sum::<Vec3>()
+    };
+    let held = Vec3::new(0.0, 2.0, 0.0);
+    assert!(point(&body).distance(held) < 1e-3);
+    for _ in 0..200 {
+        body.tick(NONE);
+    }
+    let gap = point(&body).distance(held);
+    assert!(gap < 0.01, "the pin opened {gap} m");
+    assert!(!body.fell_out());
+}
+
+/// A hung body passes through the level: its root skips detection while
+/// its pinned point holds it below the floor.
+#[test]
+fn a_hung_body_skips_the_level() {
+    let floor = floor_quad(0.0, 5.0);
+    // The anchor is below the floor; the crate hangs at it.
+    let at = Vec3::new(0.0, -0.7, 0.0);
+    let anchor = Vec3::new(0.0, -0.5, 0.0);
+    let mut body = Ragdoll::rigid(&[hung_crate(at, anchor, pin(Vec3::new(0.0, 0.2, 0.0)))]);
+    body.wake();
+    for _ in 0..50 {
+        body.tick(&floor[..]);
+    }
+    assert!(body.parts[0].contacts.is_empty());
+    assert!(
+        lowest(&body) < -0.1,
+        "the floor stopped it at {}",
+        lowest(&body)
+    );
+}
+
+/// A slider holds its point on the axis and lets it slide to the end of its
+/// travel: under gravity down a downward axis the fraction reaches 1.
+#[test]
+fn a_world_slider_slides_to_its_travel() {
+    let anchor = Vec3::ZERO;
+    let slider = RigidLink {
+        on_body: Vec3::new(0.0, 0.2, 0.0),
+        on_parent: Vec3::ZERO,
+        slack: 1.0,
+        strength: 1.0,
+        smoothing: 0.01,
+        flags: world_link::SLIDER,
+        axis: Vec3::NEG_Y,
+    };
+    let at = Vec3::new(0.0, -0.2, 0.0);
+    let mut body = Ragdoll::rigid(&[hung_crate(at, anchor, slider)]);
+    body.wake();
+    let point = |body: &Ragdoll| {
+        let p = &body.parts[0];
+        (0..4)
+            .map(|i| p.positions[i] * body.world[0].on_part[i])
+            .sum::<Vec3>()
+    };
+    for _ in 0..300 {
+        body.tick(NONE);
+    }
+    let t = body.world[0].length;
+    assert!((t - 1.0).abs() < 1e-4, "slider at {t}");
+    let there = point(&body);
+    assert!(
+        (there - Vec3::new(0.0, -1.0, 0.0)).length() < 0.05,
+        "point at {there}"
+    );
 }

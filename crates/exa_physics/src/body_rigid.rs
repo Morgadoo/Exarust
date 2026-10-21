@@ -16,7 +16,8 @@ use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
 use super::{
-    LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, pairs, setup_smoothing, tree_orders,
+    LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, WorldLink, pairs, setup_smoothing,
+    tree_orders, world_link,
 };
 
 /// The gravity shares a built or stored body's point masses give, as the
@@ -48,6 +49,9 @@ pub struct RigidPart {
     pub point_masses: [f32; 4],
     /// The stored mobility over its material's divisor.
     pub mobility: f32,
+    /// The world transform of the node's parent, where a root body's world
+    /// links anchor; identity for a free body or a child.
+    pub parent_world: Affine3A,
     /// Collision spheres: centre, radius.
     pub spheres: Vec<(Vec3, f32)>,
     /// Where the node sits in its parent node's frame: an articulated
@@ -68,6 +72,11 @@ pub struct RigidLink {
     pub slack: f32,
     pub strength: f32,
     pub smoothing: f32,
+    /// The file's flags (a root's world links keep them; a child keeps only
+    /// the soft-weld sense).
+    pub flags: u32,
+    /// A slider's axis (m), its length the travel; zero for other links.
+    pub axis: Vec3,
 }
 
 impl RigidPart {
@@ -112,6 +121,7 @@ impl Part {
             spheres: s.spheres.clone(),
             pairing: Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility),
             rest_inverse,
+            no_level: false,
             friction: RIGID_FRICTION,
             start: positions,
             moved: [Vec3::ZERO; 4],
@@ -150,6 +160,55 @@ impl Ragdoll {
             .map(|(i, s)| Part::rigid(s, i))
             .collect();
         pairs::mask_groups(&mut parts);
+        // A root body with stored links hangs from its node: each link's
+        // parent point (in the parent node's frame, plus the node's own
+        // translation) becomes a world anchor, and unless the first link is
+        // a slider an origin pivot holds the part's origin at the node.
+        let mut world = Vec::new();
+        for (i, s) in setup.iter().enumerate() {
+            if s.parent.is_some() || s.links.is_empty() {
+                continue;
+            }
+            parts[i].no_level = true;
+            for l in &s.links {
+                let on_part = super::weights(&parts[i], l.on_body);
+                let point = parts[i].point(&on_part);
+                let anchor = s.parent_world.transform_point3(l.on_parent + s.origin);
+                let axis = s.parent_world.transform_vector3(l.axis);
+                let slider = l.flags & world_link::SLIDER != 0;
+                let length = if slider && l.slack > 0.0 {
+                    (axis.dot(point - anchor) / (l.slack * l.slack)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                world.push(WorldLink {
+                    part: i,
+                    on_part,
+                    anchor,
+                    slack: l.slack.max(0.0),
+                    strength: l.strength,
+                    smoothing: l.smoothing,
+                    flags: l.flags,
+                    axis,
+                    length,
+                    origin: false,
+                });
+            }
+            if s.links[0].flags & world_link::SLIDER == 0 {
+                world.push(WorldLink {
+                    part: i,
+                    on_part: parts[i].own_origin,
+                    anchor: s.parent_world.transform_point3(s.origin),
+                    slack: 0.0,
+                    strength: 1.0,
+                    smoothing: setup_smoothing(Vec3::ZERO),
+                    flags: 0,
+                    axis: Vec3::ZERO,
+                    length: 0.0,
+                    origin: true,
+                });
+            }
+        }
         let mut links = Vec::new();
         let mut links_of = Vec::with_capacity(setup.len());
         for (i, s) in setup.iter().enumerate() {
@@ -162,6 +221,8 @@ impl Ragdoll {
                     slack: 0.0,
                     strength: 1.0,
                     smoothing: setup_smoothing(Vec3::ZERO),
+                    flags: 0,
+                    axis: Vec3::ZERO,
                 };
                 for (k, l) in s.links.iter().chain([&pivot]).enumerate() {
                     links.push(Link {
@@ -195,6 +256,7 @@ impl Ragdoll {
         Self {
             parts,
             links,
+            world,
             links_of,
             outward,
             inward,

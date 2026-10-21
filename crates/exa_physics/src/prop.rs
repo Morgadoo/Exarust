@@ -176,6 +176,7 @@ mod tests {
                 Vec3::new(0.0, 0.4, 0.0),
             ],
             point_masses: [4.0; 4],
+            parent_world: Affine3A::IDENTITY,
             mobility: 1.0,
             spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
             origin: Vec3::ZERO,
