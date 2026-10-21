@@ -7,7 +7,7 @@
 //! along all three axes (a cell is solid when both rays of every axis hit),
 //! the solid cells give the volume and the centre of mass ([`summarise`]),
 //! an 8-bit corner mask per cell describes the voxel surface, and spheres
-//! are extracted from the solid cells and their corners ([`extract_spheres`]).
+//! are extracted from the solid cells and their corners.
 //!
 //! The volume weighs the body: its mobility is 10 000 over the volume, and
 //! its four point masses are 4 over the barycentric weights of the centre of
