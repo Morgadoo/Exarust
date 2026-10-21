@@ -946,6 +946,7 @@ fn spawn_players(
             hands: [const { None }; exa_formats::characters::HANDS],
             record: exa_formats::characters::CharacterRecord::reset(),
             encumbrance: 0.0,
+            pose: Vec::new(),
         })
         .collect();
     let placing = Placing {
@@ -1509,22 +1510,37 @@ fn spawn_placed_characters(
                 ..default()
             });
         }
-        // What the record holds picks its moveset: the first hand is the
-        // main one, the first pair's other hand a second weapon or a
-        // shield. Only the main hand's item is drawn so far.
+        // What the record holds picks its moveset: the equip pass's plan
+        // gives the main hand, the off hand's second weapon and its shield.
+        // Only the main hand's item is drawn so far.
+        let plan = exa_character::spawn::equip_hands(&c.record, |r| {
+            let idx = c.record.hands.iter().position(|h| h.id == r.id)?;
+            let item = c.hands.get(idx)?.as_ref()?;
+            Some(exa_character::spawn::HandEntry {
+                model: item.model.clone(),
+                weapon: item.weapon,
+                shield: item.shield,
+                light: false,
+            })
+        });
         let mut hands = exa_character::held::Hands::default();
-        if let Some(item) = &c.hands[0]
+        if let Some(item) = &plan[0]
+            && item.kind == exa_character::spawn::EquipKind::Weapon
             && let Some(weapon) = item.weapon
         {
             hands.main = Some(exa_character::held::HeldItem::weapon(weapon.flags));
         }
-        if let Some(item) = &c.hands[1] {
-            if item.shield {
-                hands.shield = Some(exa_character::held::ShieldStyle::Plain);
-            } else if let Some(weapon) = item.weapon
-                && hands.main.is_some()
-            {
-                hands.second = Some(exa_character::held::HeldItem::weapon(weapon.flags));
+        if let Some(item) = &plan[1] {
+            match item.kind {
+                exa_character::spawn::EquipKind::Shield => {
+                    hands.shield = Some(exa_character::held::ShieldStyle::Plain);
+                }
+                exa_character::spawn::EquipKind::Weapon if hands.main.is_some() => {
+                    if let Some(weapon) = item.weapon {
+                        hands.second = Some(exa_character::held::HeldItem::weapon(weapon.flags));
+                    }
+                }
+                _ => {}
             }
         }
         commands.entity(model).insert((
