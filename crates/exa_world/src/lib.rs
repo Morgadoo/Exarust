@@ -30,7 +30,8 @@ pub mod terrain;
 
 use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
-use exa_formats::objdb::{Appearance, Item};
+use exa_formats::objdb::{self, Appearance, Item};
+use exa_formats::rdb::Database;
 use exa_formats::rfc::{Light, Scene};
 
 pub struct WorldPlugin;
@@ -66,20 +67,6 @@ pub struct PartBounds {
 #[derive(Component)]
 pub struct LevelRoot {
     pub name: String,
-}
-
-/// The level's object database: the base tier and its string library, kept
-/// for later object requests, as the original's per-scene object manager
-/// is. The local tier stays in the level's own database chunk.
-#[derive(Resource, Clone)]
-pub struct SceneObjectDb(pub std::sync::Arc<exa_formats::objdb::ObjectDb>);
-
-impl std::ops::Deref for SceneObjectDb {
-    type Target = exa_formats::objdb::ObjectDb;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 /// A placed object of the object database, on its model root: the record
@@ -1131,29 +1118,13 @@ impl LevelLoad {
                 }
                 if self.prop_entities.len() == self.scene.props.len() {
                     self.link_props(commands);
-                    // The per-scene object manager's data: the base tier
-                    // with its string library. The original keeps the
-                    // manager on the scene for every later object request;
-                    // here the resource holds the same owned database (the
-                    // local tier comes from the level itself).
-                    let resource = loader.game.pack(PackKind::Resource);
-                    let db = resource.and_then(|p| p.get("objdb.rdb"));
-                    let strings = resource
-                        .and_then(|p| p.get("objstrings.rdb"))
-                        .unwrap_or(&[]);
-                    match db.and_then(|b| match exa_formats::objdb::ObjectDb::parse(b, strings) {
-                        Ok(objects) => Some(objects),
-                        Err(e) => {
-                            warn!("objdb.rdb: {e}");
-                            None
-                        }
-                    }) {
-                        Some(objects) => {
-                            self.global_items = objects.items();
-                            commands.insert_resource(SceneObjectDb(std::sync::Arc::new(objects)));
-                        }
-                        None => self.global_items.clear(),
-                    }
+                    self.global_items = loader
+                        .game
+                        .pack(PackKind::Resource)
+                        .and_then(|p| p.get("objdb.rdb"))
+                        .and_then(|b| Database::parse(b).ok())
+                        .map(|db| objdb::items(&db))
+                        .unwrap_or_default();
                     self.stage = Stage::PlacedObjects;
                 }
             }
@@ -1352,7 +1323,6 @@ mod tests {
     use exa_formats::characters::{
         CharacterRecord, ItemRef, LOCAL_ITEM, LevelCharacters, Placement,
     };
-    use exa_formats::objdb;
 
     /// The skinned shadow maps that Bevy still renders for characters keep
     /// the original's 3 cm near plane, not Bevy's 10 cm default. At 10 cm the
