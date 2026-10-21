@@ -680,6 +680,24 @@ mod tests {
         assert!(!screen.is_active());
     }
 
+    /// The installed logo sizes, when `EXANIMA_DIR` names the game; skipped
+    /// otherwise.
+    #[test]
+    fn the_installed_logos_are_readable() {
+        let Ok(root) = std::env::var("EXANIMA_DIR") else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(root) else {
+            return;
+        };
+        let game = Game(std::sync::Arc::new(data));
+        let logos = read_logos(&game).expect("the splash logos");
+        assert!(logos[0].width > 0);
+        assert!(logos[0].height > 0);
+        assert!(logos[1].width > 0);
+        assert!(logos[1].height > 0);
+    }
+
     #[test]
     fn the_alpha_rounds_to_even_and_the_logo_sizes_are_read() {
         assert_eq!(alpha_of(0.0), 0);
