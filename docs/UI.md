@@ -502,7 +502,8 @@ caller. The board does not count matches; the arena does.
 
 The hub's company windows are modelled as rules (`exa_game::manage`); no
 hub screen draws them yet. Their controls are read from the original's form
-tables.
+tables. The roster cells, manage refresh and `arsenalico.rfi` icon sheet are in
+`exa_game::manage` and `exa_game::manage_icons`.
 
 - **Manage Company** (0x2c4 × 0x1d4): Roster and Report tables, Manage,
   Arsenal, Recruit and Hire, the Owned, Upkeep, Earned today and Spent today
