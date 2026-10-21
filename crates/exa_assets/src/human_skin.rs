@@ -47,40 +47,111 @@ pub const MIDDLE_SKIN_TONE: [f32; 3] = [0.46, 0.47, 0.47];
 /// The middle tone's coordinates on the creator's grid (the record's two
 /// 16-bit words).
 pub const MIDDLE_TONE: [u16; 2] = [0x8000, 0x8000];
-/// The nine grid colours in linear light, rows `v` = 0, ½, 1 and columns
-/// `u` = 0, ½, 1. Recovered from the original's tone multipliers with
-/// `grid = (reference / 0.6) · sRGB⁻¹(tone / 1.4)`; the multipliers are
-/// known to two decimals, so the grid is good to about 0.001.
-const TONE_GRID: [[[f32; 3]; 3]; 3] = [
+/// The creator's nine skin tones as hue, saturation and value, rows `v` = 0,
+/// ½, 1 and columns `u` = 0, ½, 1: the original's start-up table, which it
+/// turns into linear colours (HSV to RGB, then the sRGB decode).
+const TONE_HSV: [[[f32; 3]; 3]; 3] = [
     [
-        [0.101_122, 0.066_601, 0.042_322],
-        [0.119_097, 0.084_449, 0.061_387],
-        [0.119_097, 0.094_311, 0.084_699],
+        [0.082, 0.35, 0.35],
+        [0.075, 0.28, 0.38],
+        [0.055, 0.15, 0.38],
     ],
+    [[0.08, 0.35, 0.28], [0.062, 0.3, 0.33], [0.055, 0.3, 0.38]],
     [
-        [0.063_476, 0.042_180, 0.027_250],
-        [0.088_754, 0.058_591, 0.044_239],
-        [0.119_097, 0.075_217, 0.056_792],
-    ],
-    [
-        [0.035_600, 0.023_982, 0.016_976],
-        [0.063_476, 0.036_091, 0.025_810],
-        [0.096_895, 0.053_580, 0.036_868],
+        [0.065, 0.35, 0.21],
+        [0.055, 0.38, 0.28],
+        [0.062, 0.38, 0.34],
     ],
 ];
-/// The base skin texture's own colour in linear light: sRGB
-/// (0.8, 0.651, 0.573). The tone grid is divided by it.
-const TONE_REFERENCE: [f32; 3] = [0.603_827_34, 0.381_351_44, 0.287_936_84];
+/// The base skin texture's own colour, sRGB (204, 166, 146)/255 as stored;
+/// the grid is divided by its linear value.
+const TONE_REFERENCE: [f32; 3] = [0.8, 0.650_980_4, 0.572_549_05];
 /// The tone multiplier's scale before the sRGB encode, and after it.
-const TONE_DIVISOR: f32 = 0.6;
+const TONE_SCALE: f32 = 0.6;
 const TONE_GAIN: f32 = 1.4;
 
-/// The linear-to-sRGB encode of one channel.
-fn srgb_encode(c: f32) -> f32 {
-    if c <= 0.003_130_8 {
-        12.92 * c
+/// The engine's fast natural logarithm: the float's exponent times ln 2
+/// plus a polynomial in its mantissa (operation order as the original's).
+fn engine_ln(x: f32) -> f32 {
+    let bits = x.to_bits();
+    let exponent = (bits >> 23) as i32 as f32;
+    // A non-positive argument gives −∞; NaN takes the positive offset.
+    let offset = if x <= 0.0 {
+        f32::NEG_INFINITY
     } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
+        f32::from_bits(0xc2b3_de55)
+    };
+    let m = f32::from_bits((bits & 0x007f_ffff) | 1.0f32.to_bits());
+    let m2 = m * m;
+    let ln2 = f32::from_bits(0x3f31_7218);
+    let tail = ((m * f32::from_bits(0x3ccc_a7fc) - f32::from_bits(0x3e79_8f62)) * m2
+        + (m - f32::from_bits(0x4011_9122)))
+        * m2
+        + exponent * ln2;
+    (m * f32::from_bits(0x4059_7523) + offset) + tail
+}
+
+/// The engine's fast exponential: the argument scaled into a float's bit
+/// pattern (rounded to nearest, clamped, negatives to zero), its exponent
+/// times a polynomial in its mantissa.
+fn engine_exp(x: f32) -> f32 {
+    let y = x * f32::from_bits(0x4b38_aa3b) + f32::from_bits(0x4e7e_0000);
+    let top = f32::from_bits(0x4eff_0000);
+    let y = if y < top { y } else { top };
+    // CVTPS2DQ: round half to even.
+    let i = (y.round_ties_even() as i32).max(0) as u32;
+    let scale = f32::from_bits(i & 0x7f80_0000);
+    let m = f32::from_bits((i & 0x007f_ffff) | 1.0f32.to_bits());
+    let p = (((m * f32::from_bits(0x3c5d_be77) + f32::from_bits(0xbb0b_4858)) * m
+        + f32::from_bits(0x3e2a_9cbe))
+        * m
+        + f32::from_bits(0x3e9f_c08b))
+        * m
+        + f32::from_bits(0x3f02_8d05);
+    scale * p
+}
+
+/// The engine's sRGB decode of one channel (double compares and divides,
+/// the power through the fast logarithm and exponential).
+fn srgb_decode(c: f32) -> f32 {
+    let wide = f64::from(c);
+    if wide > 0.04045 {
+        let base = ((wide + 0.055) / 1.055) as f32;
+        engine_exp(engine_ln(base) * 2.4)
+    } else {
+        (wide / 12.92) as f32
+    }
+}
+
+/// The engine's linear-to-sRGB encode of one channel.
+fn srgb_encode(c: f32) -> f32 {
+    if f64::from(c) > 0.003_130_8 {
+        let p = engine_exp(engine_ln(c) * 0.416_666_66);
+        (f64::from(p) * 1.055 - 0.055) as f32
+    } else {
+        (f64::from(c) * 12.92) as f32
+    }
+}
+
+/// Hue, saturation and value to RGB as the engine converts them (the sextant
+/// is the floor of 6·hue).
+fn hsv_to_rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
+    if s == 0.0 {
+        return [v; 3];
+    }
+    let h6 = h * 6.0;
+    let sextant = h6.floor() as i32;
+    let f = h6 - sextant as f32;
+    let p = (1.0 - s) * v;
+    let q = (1.0 - s * f) * v;
+    let t = (1.0 - (1.0 - f) * s) * v;
+    match sextant {
+        1 => [q, v, p],
+        2 => [p, v, t],
+        3 => [p, q, v],
+        4 => [t, p, v],
+        5 => [v, p, q],
+        _ => [v, t, p],
     }
 }
 
@@ -88,32 +159,38 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t)
 }
 
-/// One row of the grid at `u`: bilinear within the half it falls in, the
-/// middle column exactly at 0.5.
-fn row_at(row: &[[f32; 3]; 3], u: f32) -> [f32; 3] {
-    if u <= 0.5 {
-        mix(row[0], row[1], u * 2.0)
-    } else {
-        mix(row[1], row[2], (u - 0.5) * 2.0)
-    }
+/// The grid colour at row `row`, column `column`, in linear light.
+fn tone_grid(row: usize, column: usize) -> [f32; 3] {
+    hsv_to_rgb(TONE_HSV[row][column]).map(srgb_decode)
 }
 
-/// The skin tone multiplier of the creator's grid at (`u`, `v`), in sRGB
-/// values: the generated diffuse map multiplies the race's stored texels by
-/// it. The grid is interpolated in linear light and the tone encoded once.
+/// A coordinate's half of the grid and the fraction within it: twice the
+/// coordinate, less one past the middle.
+fn grid_half(coordinate: f32) -> (usize, f32) {
+    let s = coordinate * 2.0;
+    if s > 1.0 { (1, s - 1.0) } else { (0, s) }
+}
+
+/// The skin tone multiplier of the creator's grid at the record's two
+/// 16-bit words, in sRGB values: the generated diffuse map multiplies the
+/// race's stored texels by it. The grid is interpolated in linear light,
+/// divided by the base texture's colour, scaled by 0.6, encoded and scaled
+/// by 1.4, in the original's order and precision.
 pub fn tone_colour(tone: [u16; 2]) -> [f32; 3] {
-    let u = f32::from(tone[0]) / 65535.0;
-    let v = f32::from(tone[1]) / 65535.0;
-    let rows = [0, 1, 2].map(|i| row_at(&TONE_GRID[i], u));
-    let grid = if v <= 0.5 {
-        mix(rows[0], rows[1], v * 2.0)
-    } else {
-        mix(rows[1], rows[2], (v - 0.5) * 2.0)
-    };
-    [0, 1, 2].map(|i| {
-        let linear = TONE_DIVISOR * grid[i] / TONE_REFERENCE[i];
-        (TONE_GAIN * srgb_encode(linear.max(0.0))).min(1.0)
-    })
+    // The column in double precision, the row in single, as the original.
+    let u = (f64::from(tone[0]) * 1.525_902_189_669_642_2e-5) as f32;
+    let v = f32::from(tone[1]) * 1.525_902_2e-5;
+    let (column, s) = grid_half(u);
+    let (row, t) = grid_half(v);
+    let upper = mix(tone_grid(row, column), tone_grid(row, column + 1), s);
+    let lower = mix(
+        tone_grid(row + 1, column),
+        tone_grid(row + 1, column + 1),
+        s,
+    );
+    let grid = mix(upper, lower, t);
+    let reference = TONE_REFERENCE.map(srgb_decode);
+    [0, 1, 2].map(|i| srgb_encode(grid[i] / reference[i] * TONE_SCALE) * TONE_GAIN)
 }
 /// The share of the diffuse colour that scatters under a human's skin (sRGB).
 pub const SCATTER: [f32; 3] = [1.0, 0.8, 0.46];
@@ -183,7 +260,7 @@ pub fn race_textures(stem: &str, female: bool) -> [String; 3] {
 
 /// The built-in skin's shading parameters, without textures.
 pub fn skin_params(kind: SkinKind) -> ExaParams {
-    skin_params_of(kind, MIDDLE_SKIN_TONE)
+    skin_params_of(kind, tone_colour(MIDDLE_TONE))
 }
 
 /// The built-in skin's shading parameters for a skin tone multiplier.
@@ -200,7 +277,7 @@ pub fn skin_params_of(kind: SkinKind, tone: [f32; 3]) -> ExaParams {
 /// The built-in skin of the race whose body model is `entry`, with the
 /// race's textures, at the middle tone.
 pub fn skin_material(loader: &mut ModelLoader, entry: &str) -> ExaMaterial {
-    skin_material_of(loader, entry, MIDDLE_SKIN_TONE, false)
+    skin_material_of(loader, entry, tone_colour(MIDDLE_TONE), false)
 }
 
 /// The built-in skin of the race whose body model is `entry` for a skin
@@ -274,6 +351,52 @@ mod tests {
                 "{middle:?}"
             );
         }
+    }
+
+    /// The engine's fast logarithm and exponential track the true ones to
+    /// a few parts in ten thousand, which is what the skin tone carries.
+    #[test]
+    fn the_engine_power_is_close_to_the_true_one() {
+        for x in [0.01f32, 0.1, 0.35, 0.6, 1.0, 1.7] {
+            let ln = engine_ln(x);
+            assert!((ln - x.ln()).abs() < 2e-3, "ln {x}: {ln}");
+            let e = engine_exp(ln);
+            assert!((e / x - 1.0).abs() < 3e-3, "exp {x}: {e}");
+        }
+        assert_eq!(engine_exp(-200.0), 0.0);
+        assert!((srgb_decode(0.8) - 0.6038).abs() < 1e-3);
+        assert!((srgb_encode(0.6038) - 0.8).abs() < 1e-3);
+        assert_eq!(srgb_decode(0.04), (0.04f64 / 12.92) as f32);
+    }
+
+    /// The tone pipeline bit for bit, against an independent single
+    /// precision emulation of the original's instructions.
+    #[test]
+    fn tones_match_the_original_bit_for_bit() {
+        let bits = |t: [u16; 2]| tone_colour(t).map(f32::to_bits);
+        assert_eq!(bits(MIDDLE_TONE), [0x3eeb_cf59, 0x3ef0_1524, 0x3eef_21e0]);
+        assert_eq!(bits([0, 0]), [0x3efa_1b4f, 0x3f00_ac80, 0x3eeb_b95d]);
+        assert_eq!(
+            bits([0xFFFF, 0xFFFF]),
+            [0x3ef2_f514, 0x3ee8_513c, 0x3edb_77d9]
+        );
+        assert_eq!(bits([0, 0xFFFF]), [0x3e96_0719, 0x3e97_31bd, 0x3e93_17f8]);
+    }
+
+    /// The middle grid entry, (0.062, 0.3, 0.33) in HSV: the first sextant,
+    /// f = 0.372, so (V, (1 − (1 − f)·S)·V, (1 − S)·V).
+    #[test]
+    fn tones_come_from_the_hsv_table() {
+        let rgb = hsv_to_rgb(TONE_HSV[1][1]);
+        let want = [0.33, 0.267_828, 0.231];
+        for c in 0..3 {
+            assert!((rgb[c] - want[c]).abs() < 1e-6, "{rgb:?}");
+        }
+        assert_eq!(hsv_to_rgb([0.4, 0.0, 0.2]), [0.2; 3]);
+        // The middle words fall just past the middle: the upper halves,
+        // a hair from their start.
+        assert_eq!(grid_half(0x8000 as f32 / 65535.0).0, 1);
+        assert_eq!(grid_half(0.5), (0, 1.0));
     }
 
     #[test]

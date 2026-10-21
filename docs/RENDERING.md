@@ -332,11 +332,13 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
   0.29–0.64, (0.46, 0.47, 0.47) at the centre. The texture's own skin
   colour, sRGB (0.80, 0.65, 0.57), shows as linear (0.112, 0.076, 0.059) at
   the middle tone. Exarust reads the record's two tone words
-  (`CharacterRecord::skin_tone`) and applies its grid multiplier to the
-  stored texels (`human_skin::tone_colour`); the nine grid colours are
-  recovered from the published multipliers, which are known to two
-  decimals. A body without a record (the player, the duellist) keeps the
-  middle tone.
+  (`CharacterRecord::skin`) and computes the multiplier as the original does
+  (`human_skin::tone_colour`): the nine tones are an HSV table turned into
+  linear colours at start-up, interpolated per half of the grid, divided by
+  the base texture's colour, scaled by 0.6, encoded and scaled by 1.4, with
+  the engine's fast logarithm and exponential; it matches an instruction
+  emulation bit for bit. A body without a record (the player, the duellist)
+  keeps the middle tone.
 - **Specular map**: intensity 1, gloss 0.8 × the race's gloss texture
   (`humanspcm`), no metal. So F0 is 0.04 and the roughness 1 − 0.8·gloss.
 - **Subsurface program**: of the diffuse colour, the subsurface colour's
