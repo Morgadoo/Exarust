@@ -236,8 +236,10 @@ const HALF_PI: f32 = std::f32::consts::FRAC_PI_2;
 
 /// The fast two-argument arctangent, by octant on [`atan`]. The first
 /// argument is the sine-like coordinate and the second the cosine-like one,
-/// so `atan2(a, b)` is `a.atan2(b)` in Rust's terms. The compares send NaN
-/// down the negative-second path, as the original's `COMISS` does.
+/// so `atan2(a, b)` is `a.atan2(b)` in Rust's terms. Each `COMISS` sends an
+/// unordered (NaN) compare down the branch its parity jump takes: a NaN
+/// coordinate counts as negative, and a NaN octant compare takes the
+/// `atan(b / a)` side.
 pub fn atan2(a: f32, b: f32) -> f32 {
     if b.is_nan() || b < 0.0 {
         if a.is_nan() || a < 0.0 {
@@ -252,7 +254,7 @@ pub fn atan2(a: f32, b: f32) -> f32 {
             atan(a / b) + PI
         }
     } else if a.is_nan() || a < 0.0 {
-        if b <= -a {
+        if !(b > -a) {
             -HALF_PI - atan(b / a)
         } else {
             atan(a / b)
