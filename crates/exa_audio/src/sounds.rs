@@ -89,6 +89,7 @@ pub(crate) fn heal_sounds(
 
 /// Plays a swing's whoosh when a fighter's strike window opens, at its
 /// primary weapon's swing volume and pitch (W25, W26).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn swing_sounds(
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
@@ -96,6 +97,7 @@ pub(crate) fn swing_sounds(
     mut env: ResMut<AudioEnvironment>,
     swings: Query<(Entity, &exa_combat::swing::SwingState, &GlobalTransform)>,
     blades: Query<&exa_combat::Blade>,
+    mut set: Local<Option<u32>>,
     mut open: Local<bevy::platform::collections::HashMap<Entity, bool>>,
 ) {
     let Some(game) = game else { return };
@@ -108,7 +110,7 @@ pub(crate) fn swing_sounds(
         let Some(blade) = blades.iter().find(|b| b.wielder == entity) else {
             continue;
         };
-        let set = bank.load_set(&game, &mut sources, SWING.prefix);
+        let set = *set.get_or_insert_with(|| bank.load_set(&game, &mut sources, SWING.prefix));
         let position = gt.translation() + Vec3::Y;
         env.play_set(
             &mut bank,
