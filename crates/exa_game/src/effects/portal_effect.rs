@@ -1,19 +1,22 @@
 //! A portal's particle emission, as the original's portal effect spawns it:
-//! one particle a call on an outward ellipse in the portal's plane.
+//! one particle a call on an ellipse standing at the portal node's place.
 //!
-//! - **The ring** ([`PortalSpray::spawn`]): the counter advances. Past the
-//!   particle count the ring starts again, unless the effect is closing
-//!   (state 1), which parks the counter at the end and spawns nothing. In
-//!   state 2 the counter's last step spawns nothing.
-//! - **Each particle**: the angle is `2π·0.76·r − 2.38761` (radians; the
-//!   constant is the original's), its ellipse point
-//!   `(sin·s·80, cos·s·115, s·10·(r − 0.5))` cm with the spread
-//!   `s = 0.8 + 0.4·r`, in the portal's frame. The particle's place is that
-//!   point, 1.0015 of it along, added to the node's place; its velocity is
-//!   the same point added to the node's place as the original leaves it.
-//! - **Colour and size**: the colour word is copied per particle. With flag
-//!   0x400 a random 3-bit index is written, with flag 0x800 a random 5-bit
-//!   index (both the high half of the engine generator's step shifted left).
+//! - **The ring** ([`PortalSpray::spawn`]): the counter advances first, so
+//!   the first particle fills slot 1. Past the particle count the system's
+//!   flag bit 2 is cleared and the ring starts again at 0, unless the effect
+//!   is closing (state 1), which parks the counter at the count and spawns
+//!   nothing. When the state less one equals the advanced counter, the
+//!   counter steps back and nothing spawns.
+//! - **Each particle**: the angle is `2π·0.76·r − 0.76π` (a draw in double
+//!   precision, so the arc spans ±137° about the top), the ellipse point
+//!   `(sin·s·scale·80, cos·s·scale·115, scale·10·(r − 0.5))` cm with the
+//!   spread `s = 0.8 + 0.4·r`, in world axes (the node's rotation is not
+//!   applied). The record's previous position is that point plus the node's
+//!   place, its position the point times 1.0015 plus the place: the
+//!   particle starts moving outward by 0.0015 of its offset a step.
+//! - **Colour**: the system's colour word is copied into the particle's
+//!   slot. With flag 0x400 a 3-bit look index is drawn, with flag 0x800 a
+//!   5-bit one (the high bits of the engine generator's next word).
 //!
 //! Evidence: the effect's spawn-one-particle routine, read from
 //! `Exanima.exe`.
@@ -30,13 +33,13 @@ pub const RADIUS_X_CM: f32 = 80.0;
 pub const RADIUS_Y_CM: f32 = 115.0;
 /// The particle's thickness across the portal, cm per unit of scale.
 pub const THICKNESS_CM: f32 = 10.0;
-/// The angle's turn: 0.76 of a full turn, less 2.38761 radians.
+/// The angle's turn: 0.76 of a full turn, less 0.76π radians.
 pub const ANGLE_TURN: f64 = 0.76;
 pub const ANGLE_OFFSET: f64 = 2.387_610_416_728_242_6;
 /// The spread across the ellipse: `0.8 + 0.4·r`.
 pub const SPREAD_BASE: f64 = 0.8;
 pub const SPREAD_RANGE: f64 = 0.4;
-/// A particle's place is moved along by this factor.
+/// A particle's position is its previous position's offset times this.
 pub const PLACE_SCALE: f32 = 1.0015;
 /// Colours come from a 3-bit or 5-bit random index.
 pub const COLOUR_SMALL: u32 = 0x400;
@@ -45,12 +48,15 @@ pub const COLOUR_LARGE: u32 = 0x800;
 pub const CLOSING: i32 = 1;
 /// The state of an effect whose last step spawns nothing.
 pub const LAST: i32 = 2;
+/// The system flag a wrap of the ring clears.
+pub const RING_FLAG: u32 = 0x2;
 
-/// One portal particle: its velocity and place.
+/// One portal particle: its previous position and its position (the
+/// particle step moves it by their difference).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Particle {
-    pub velocity: Vec3,
-    pub position: Vec3,
+    pub before: Vec3,
+    pub at: Vec3,
 }
 
 /// A portal's emitter state.
@@ -62,15 +68,19 @@ pub struct PortalSpray {
     pub count: i32,
     /// 0 running, 1 closing, 2 last.
     pub state: i32,
-    /// The emitter flags, of which 0x400 and 0x800 pick the colour index.
+    /// The emitter flags, of which 0x400 and 0x800 pick the look index.
     pub flags: u32,
+    /// The particle system's own flags, of which a wrap clears bit 2.
+    pub system_flags: u32,
     /// The per-particle colour word.
     pub colour: u32,
     /// The scale the effect is drawn at.
     pub scale: f32,
     /// The particles, one per ring slot.
     pub particles: Vec<Particle>,
-    /// The per-particle colour index (the short the original writes).
+    /// The per-particle colour words.
+    pub colours: Vec<u32>,
+    /// The per-particle look index (the short the original writes).
     pub colour_index: Vec<u16>,
     /// The engine's generator.
     pub roll: Roll,
@@ -85,17 +95,19 @@ impl PortalSpray {
             count,
             state: 0,
             flags,
+            system_flags: RING_FLAG,
             colour,
             scale,
             // The counter runs from 0 to `count`: slot 0 is only filled
             // after a wrap.
             particles: vec![
                 Particle {
-                    velocity: Vec3::ZERO,
-                    position: Vec3::ZERO,
+                    before: Vec3::ZERO,
+                    at: Vec3::ZERO,
                 };
                 count as usize + 1
             ],
+            colours: vec![0; count as usize + 1],
             colour_index: vec![0; count as usize + 1],
             roll: Roll(seed),
         }
@@ -106,6 +118,7 @@ impl PortalSpray {
     pub fn spawn(&mut self, frame: &Frame, random: &mut Mt19937) -> Option<usize> {
         self.index += 1;
         if self.count < self.index {
+            self.system_flags &= !RING_FLAG;
             if self.state == CLOSING {
                 self.index = self.count;
                 return None;
@@ -122,7 +135,7 @@ impl PortalSpray {
         let spread = (random.unit() * SPREAD_RANGE + SPREAD_BASE) as f32;
         let sin = sin * spread;
         let cos = cos * spread;
-        let velocity = Vec3::new(
+        let offset = Vec3::new(
             sin * self.scale * RADIUS_X_CM,
             cos * self.scale * RADIUS_Y_CM,
             (f64::from(self.scale) * f64::from(THICKNESS_CM) * (random.unit() - 0.5)) as f32,
@@ -135,10 +148,13 @@ impl PortalSpray {
         } else {
             0
         };
-        let position = velocity * PLACE_SCALE + frame.at;
-        let velocity = velocity + frame.at;
+        let at = offset * PLACE_SCALE + frame.at;
+        let before = offset + frame.at;
         let record = self.particles.get_mut(index)?;
-        *record = Particle { velocity, position };
+        *record = Particle { before, at };
+        if let Some(slot) = self.colours.get_mut(index) {
+            *slot = self.colour;
+        }
         if let Some(slot) = self.colour_index.get_mut(index) {
             *slot = colour_index;
         }
@@ -161,8 +177,10 @@ mod tests {
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(1));
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(2));
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(3));
-        // 3 < 4: wraps to 0.
+        // 3 < 4: wraps to 0 and clears the ring flag.
+        assert_eq!(spray.system_flags, RING_FLAG);
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(0));
+        assert_eq!(spray.system_flags, 0);
         spray.index = 3;
         spray.state = CLOSING;
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), None);
@@ -186,9 +204,10 @@ mod tests {
         spray.spawn(&frame, &mut rng);
         let p = spray.particles[1];
         assert_eq!(spray.colour_index[1], 0);
-        // The place is 1.0015 of the offset past the frame's place.
-        let offset = p.position - frame.at;
-        let local = p.velocity - frame.at;
+        assert_eq!(spray.colours[1], 0x11223344);
+        // The position is 1.0015 of the offset past the node's place.
+        let offset = p.at - frame.at;
+        let local = p.before - frame.at;
         assert!((offset - local * 1.0015).length() < 1e-4);
     }
 
@@ -202,7 +221,7 @@ mod tests {
         let z = (f64::from(THICKNESS_CM) * (r.unit() - 0.5)) as f32;
         let mut spray = PortalSpray::new(1, 1.0, 0, 0, 1);
         spray.spawn(&Frame::IDENTITY, &mut Mt19937::new(1));
-        let v = spray.particles[1].velocity;
+        let v = spray.particles[1].before;
         assert!((v.x - sin * spread * RADIUS_X_CM).abs() < 1e-4);
         assert!((v.y - cos * spread * RADIUS_Y_CM).abs() < 1e-4);
         assert!((v.z - z).abs() < 1e-6);
