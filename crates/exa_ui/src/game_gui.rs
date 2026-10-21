@@ -345,6 +345,12 @@ impl Journal {
         self.current as i32 + 1
     }
 
+    /// Whether a key mask closes the journal: both bits 0x2000 and 0x2, as
+    /// the inventory's rule.
+    pub fn key_close(mask: u16) -> bool {
+        mask & 0x2002 == 0x2002
+    }
+
     /// The remembered place and the edited text on close.
     pub fn close(&mut self, place: (i32, i32), text: &str) -> (i32, i32) {
         self.store_text(text);
@@ -1204,6 +1210,14 @@ mod tests {
                 bottom: 500
             }
         );
+    }
+
+    #[test]
+    fn the_journal_closes_on_its_mask() {
+        assert!(Journal::key_close(0x2002));
+        assert!(Journal::key_close(0x2003));
+        assert!(!Journal::key_close(0x2000));
+        assert!(!Journal::key_close(0x0002));
     }
 
     #[test]

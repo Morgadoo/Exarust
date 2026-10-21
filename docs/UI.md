@@ -977,7 +977,8 @@ drawing classes:
   otherwise. Its window is 244 × 518 with its text box 228 × 412 at (0, 88),
   titled "Journal"; its first entry is "New Entry", adding an entry stores
   the current text and appends and selects a new one, deleting the last
-  entry resets it, and closing stores the text and the window place.
+  entry resets it, closing stores the text and the window place, and the
+  close mask needs both bits 0x2000 and 0x2.
 - **The player's screen.** The inventory is 244 × 644 (628 compact, 590 in
   the arsenal) and, for the player, sits at the screen's right less its
   width and four units; a mind-controlled character locks the transfer and
