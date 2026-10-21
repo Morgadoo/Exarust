@@ -79,7 +79,8 @@ pub fn wake_limb_scale(mass: f32) -> f32 {
     mass
 }
 
-/// A woken glow: fifty times its stored value.
+/// A woken glow: fifty times its current value (the inverse of the
+/// dormancy's twentieth).
 pub fn wake_glow_scale(glow: f32) -> f32 {
     glow * WAKE_GLOW_SCALE
 }
@@ -245,8 +246,6 @@ pub struct GolemState {
     pub masses: Vec<f32>,
     /// Each limb's current scale.
     pub limb_scales: Vec<f32>,
-    /// Each limb's stored glow.
-    pub glow: Vec<f32>,
     /// Each limb's current glow scale.
     pub glow_scales: Vec<f32>,
 }
@@ -266,8 +265,8 @@ pub fn wake(state: &GolemState, roll: f64, at: Vec3) -> (GolemChange, Option<f32
         for (scale, mass) in limb_scales.iter_mut().zip(&state.masses) {
             *scale = wake_limb_scale(*mass);
         }
-        for (scale, glow) in glow_scales.iter_mut().zip(&state.glow) {
-            *scale = wake_glow_scale(*glow);
+        for scale in glow_scales.iter_mut() {
+            *scale = wake_glow_scale(*scale);
         }
     }
     (
@@ -536,7 +535,6 @@ mod tests {
             body_angle: 0.5,
             masses: vec![20.0, 10.0],
             limb_scales: vec![20.0, 10.0],
-            glow: vec![1.0, 2.0],
             glow_scales: vec![1.0, 2.0],
         }
     }
@@ -574,7 +572,7 @@ mod tests {
         assert_eq!(change.home, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(change.home_angle, 0.5, "the body's own angle");
         assert_eq!(change.limb_scales, vec![20.0, 10.0]);
-        assert_eq!(change.glow_scales, vec![50.0, 100.0]);
+        assert_eq!(change.glow_scales, vec![1.0, 2.0]);
         assert!(!change.latch);
         assert!((pitch.unwrap() - 1.0).abs() < 1e-6);
         assert!((wake_pitch(0.0) - 0.9).abs() < 1e-6);
