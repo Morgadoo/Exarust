@@ -1,39 +1,68 @@
-//! The object manager's scene decisions: which tier an object id names,
-//! which collision body its record asks for, what its scene tree is, the
-//! entity kind it is marked with, the invisible container volume and the
-//! 50 cm usable placeholder, the apparel paint and hide rules, the master
-//! cache every instance clones, and the release check.
+//! The object manager's scene decisions, as its create, clone, release and
+//! flag routines take them: which database an id names, what a record's
+//! scene tree is, the node flags and kind word the tree gets, how apparel
+//! materials are drawn, which trees are kept as masters, and the release
+//! check.
 //!
-//! The original's `Create` resolves the record, loads the model from
-//! `Objects.rpk` once into a per-record master and instances clones of it;
-//! a factory weapon is assembled instead, a record without a model becomes
-//! an invisible container volume or, when usable, a 50 cm placeholder. The
-//! record's flags choose the collision body: an operative's class 3 (a
-//! lever) or 5 (a push surface) and a door each take a tetrahedral variant,
-//! everything else none. Wearables mark their node tree (`0x4000`, children
-//! `|0x5000`), doors `0x40000`, operatives `0x10000`; apparel's `&`
-//! materials are painted and its `*` materials hidden.
+//! `Create` resolves the record in its tier. A record without a model name
+//! becomes its invisible container volume (the volume section's three
+//! extents, its radius their length) or, with an operative section, a
+//! 50 cm placeholder; anything else has no tree. A model name starting
+//! with `@` is a weapon the factory assembles. Any other model is found
+//! by name in the model table: a model already loaded is cloned from its
+//! master, otherwise it is loaded from `Objects.rpk`, its materials ruled
+//! by the record (a weapon record hides `*` materials; an item-body
+//! record hides `*` and paints `&` ones), and the tree is kept as the
+//! model's master unless it was painted. Every tree the manager makes
+//! carries node flag `0x4000`, and each of its children `0x5000` plus the
+//! parent's hidden bit; a create asked to hide marks the whole tree
+//! hidden. The collision body a first load uses is the record's mechanism
+//! ([`Item::mechanism`]).
 //!
-//! Evidence: the object manager's create, release, flag and collision-class
-//! routines in the component map (RF_DBObjects).
+//! Evidence: the object manager's routines (RF_DBObjects) in the assembly.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::Component;
-use exa_assets::PackKind;
 use exa_formats::containers;
-use exa_formats::objdb::{Item, operative};
+use exa_formats::objdb::{self, Item};
 
-/// An invisible container volume's extents, cm: the original's scene node
-/// without a model, sized by its volume section.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+/// The node flag every tree the manager makes carries (the model's root,
+/// a factory weapon's, the container volume and the placeholder).
+pub const MANAGED_NODE: u32 = 0x4000;
+/// The node flags each child of a managed tree takes with its own.
+pub const MANAGED_CHILD: u32 = 0x5000;
+/// The hidden node flag, which children take from their parent.
+pub const HIDDEN: u32 = 0x8_0000;
+/// The create flag that hides the whole tree.
+pub const CREATE_HIDDEN: u32 = 0x10;
+/// The kind word of a door's tree.
+pub const KIND_DOOR: u32 = 0x4_0000;
+/// The kind word of an operative's tree and of the placeholder.
+pub const KIND_OPERATIVE: u32 = 0x1_0000;
+/// The kind word of a container volume ([`objdb::VOLUME`], its section).
+pub const KIND_VOLUME: u32 = objdb::VOLUME;
+/// The side of the placeholder cube, cm.
+pub const PLACEHOLDER_SIDE: f32 = 50.0;
+/// The placeholder's bounding radius as the original stores it, the
+/// length of its extents rounded to single precision.
+pub const PLACEHOLDER_RADIUS: f32 = 86.602_54;
+/// The side of the texture an apparel paint makes, at the higher detail
+/// setting and otherwise.
+pub const PAINT_SIDE: (u32, u32) = (1024, 512);
+/// The mode flag under which a base-tier factory weapon is first copied
+/// to the local database.
+pub const MODE_LOCAL_COPIES: u32 = 0x40;
+
+/// An invisible container volume node: its extents and radius, cm.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct ContainerVolume {
-    pub extents: [u16; 3],
+    pub extents: [f32; 3],
+    pub radius: f32,
 }
 
-/// A usable object's 50 cm placeholder node: the extents and the bounding
-/// sphere radius the original gives it.
+/// A usable object's 50 cm placeholder node.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct PlaceholderNode {
     pub extents: [f32; 3],
@@ -42,31 +71,12 @@ pub struct PlaceholderNode {
 
 impl Default for PlaceholderNode {
     fn default() -> Self {
-        let (extents, radius) = placeholder();
-        Self { extents, radius }
+        Self {
+            extents: [PLACEHOLDER_SIDE; 3],
+            radius: PLACEHOLDER_RADIUS,
+        }
     }
 }
-
-/// The section of an invisible container volume.
-pub const CONTAINER_VOLUME: u32 = 0x8000_ac07;
-/// The section of a usable object.
-pub const USABLE: u32 = 0x1_0000;
-/// The side of a usable object's placeholder cube, in centimetres.
-pub const PLACEHOLDER_SIDE: f32 = 50.0;
-/// The radius the original gives the 50 cm cube's bounding sphere:
-/// `√(50² + 50² + 50²)`.
-pub const PLACEHOLDER_RADIUS: f32 = 86.602_54;
-
-/// The node flag of a wearable object.
-pub const WEARABLE: u32 = 0x4000;
-/// The node flag of a door.
-pub const DOOR: u32 = 0x4_0000;
-/// The node flag of an operative object.
-pub const OPERATIVE: u32 = 0x1_0000;
-/// The node flag every child of a wearable receives with its own bits.
-pub const CHILD_WEARABLE: u32 = 0x5000;
-/// The flag a child copies from its parent's `0x80000`.
-pub const HIDDEN: u32 = 0x8_0000;
 
 /// Which object database an id names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,316 +90,234 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// The tier the id's top bits choose: bit 31 local, else bit 30 world,
-    /// else base. The lookup id drops those bits.
+    /// The tier the id's top bits choose (bit 31 local, else bit 30 world,
+    /// else base) and the lookup id, which drops both bits.
     pub fn of(id: u32) -> (Self, u32) {
-        if id & 0x8000_0000 != 0 {
-            (Tier::Local, id & 0x3FFF_FFFF)
-        } else if id & 0x4000_0000 != 0 {
-            (Tier::World, id & 0x3FFF_FFFF)
+        let tier = if id & objdb::LOCAL != 0 {
+            Tier::Local
+        } else if id & objdb::WORLD != 0 {
+            Tier::World
         } else {
-            (Tier::Base, id)
-        }
-    }
-}
-
-/// The flags a record's sections give its object.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ObjectFlags(pub u32);
-
-impl ObjectFlags {
-    /// Wearable: has an item body.
-    pub fn wearable(self) -> bool {
-        self.0 & WEARABLE != 0
-    }
-    /// Door.
-    pub fn door(self) -> bool {
-        self.0 & DOOR != 0
-    }
-    /// Operative.
-    pub fn operative(self) -> bool {
-        self.0 & OPERATIVE != 0
-    }
-}
-
-/// The flag word a record's sections imply, checked in the original's
-/// order: wearable first, then door, then operative.
-pub fn object_flags(item: &Item) -> ObjectFlags {
-    if !item.worn_model.is_empty() || item.burden.is_some() || item.appearance.is_some() {
-        ObjectFlags(WEARABLE)
-    } else if item.door.is_some() {
-        ObjectFlags(DOOR)
-    } else if item.operative.is_some() {
-        ObjectFlags(OPERATIVE)
-    } else {
-        ObjectFlags(0)
-    }
-}
-
-/// The collision body a record's flags ask for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollisionClass {
-    /// No body of its own.
-    None,
-    /// A lever's tetrahedron.
-    Lever,
-    /// A push surface's tetrahedron.
-    PushSurface,
-    /// A door's tetrahedron.
-    Door,
-}
-
-/// The collision body class, in the original's branch order: an operative
-/// object checks its class (3 a lever, 5 a push surface, anything else
-/// none, even when the record also has a door section); without an
-/// operative section a door section gives the door body.
-pub fn collision_class(item: &Item) -> CollisionClass {
-    if let Some(operative) = item.operative {
-        return match operative.class {
-            operative::LEVER => CollisionClass::Lever,
-            operative::PUSH_SURFACE => CollisionClass::PushSurface,
-            _ => CollisionClass::None,
+            Tier::Base
         };
-    }
-    if item.door.is_some() {
-        CollisionClass::Door
-    } else {
-        CollisionClass::None
+        (tier, id & objdb::ID_MASK)
     }
 }
 
 /// What a record's scene tree is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SceneTree<'a> {
-    /// The model from a pack, as named.
-    Model { pack: PackKind, entry: &'a str },
-    /// A weapon the factory assembles (`@` and the name after it).
+    /// A model found by name in the model table.
+    Model(&'a str),
+    /// A weapon the factory assembles (the name after `@`).
     FactoryWeapon(&'a str),
-    /// An invisible container volume, with its three extents.
-    ContainerVolume([u16; 3]),
-    /// A 50 cm placeholder cube for a usable object.
+    /// An invisible container volume.
+    ContainerVolume(ContainerVolume),
+    /// The 50 cm placeholder of an operative object.
     Placeholder,
-    /// The record or its model is missing.
-    Missing,
+    /// No tree.
+    None,
 }
 
-/// The tree `item` gets when its model resolves to `model` (the pack and
-/// entry the object manager found), as the original's create decides it.
-pub fn scene_tree<'a>(item: &'a Item, model: Option<(PackKind, &'a str)>) -> SceneTree<'a> {
-    if let Some(factory) = item.model.strip_prefix('@') {
-        return SceneTree::FactoryWeapon(factory);
+/// The tree `item` gets, `payload` being its section chain: with a model
+/// name, the factory weapon or the model; without one (or an empty one),
+/// the container volume when the volume section is there, else the
+/// placeholder for an operative record, else none.
+pub fn scene_tree<'a>(item: &'a Item, payload: &[u8]) -> SceneTree<'a> {
+    if !item.model.is_empty() {
+        return match item.model.strip_prefix('@') {
+            Some(factory) => SceneTree::FactoryWeapon(factory),
+            None => SceneTree::Model(&item.model),
+        };
     }
-    if let Some((pack, entry)) = model {
-        return SceneTree::Model { pack, entry };
-    }
-    SceneTree::Missing
-}
-
-/// The tree for a record with no model: its container volume when it has
-/// the volume section, else a placeholder for a usable object, else
-/// missing. `payload` is the record's section chain.
-pub fn modelless_tree(item: &Item, payload: &[u8]) -> SceneTree<'static> {
-    if let Some(body) = containers::section(payload, CONTAINER_VOLUME) {
+    if let Some(body) = containers::section(payload, objdb::VOLUME) {
         let extent = |at: usize| {
             body.get(at..at + 2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-                .unwrap_or(0)
+                .map_or(0.0, |b| f32::from(u16::from_le_bytes([b[0], b[1]])))
         };
-        return SceneTree::ContainerVolume([extent(0), extent(2), extent(4)]);
+        return SceneTree::ContainerVolume(container_volume([extent(0), extent(2), extent(4)]));
     }
-    if item.operative.is_some() || containers::section(payload, USABLE).is_some() {
+    if item.operative.is_some() {
         return SceneTree::Placeholder;
     }
-    SceneTree::Missing
+    SceneTree::None
 }
 
-/// The placeholder cube's extents and radius: 50 cm a side, and the sphere
-/// the original gives it.
-pub fn placeholder() -> ([f32; 3], f32) {
-    ([PLACEHOLDER_SIDE; 3], PLACEHOLDER_RADIUS)
+/// A container volume of `extents`: its radius is their length, the
+/// squares summed x and z, then y.
+pub fn container_volume(extents: [f32; 3]) -> ContainerVolume {
+    let [x, y, z] = extents;
+    ContainerVolume {
+        extents,
+        radius: (x * x + z * z + y * y).sqrt(),
+    }
 }
 
-/// The node flags a wearable's children take: the parent's hidden bit, the
-/// child's own bits, and `0x5000` (wearable and draw-through).
-pub fn child_flags(parent: ObjectFlags, child: u32) -> u32 {
-    (parent.0 & HIDDEN) | child | CHILD_WEARABLE
+/// The node flags a child of a managed tree takes: its parent's hidden
+/// bit, its own bits and [`MANAGED_CHILD`].
+pub fn child_flags(parent: u32, child: u32) -> u32 {
+    (parent & HIDDEN) | child | MANAGED_CHILD
 }
 
-/// The node flags of a wearable object itself: its own kind and `0x4000`.
-pub fn wearable_flags() -> u32 {
-    WEARABLE
+/// The kind word a first load gives the tree: a door's or an operative's,
+/// for a record that is neither a weapon nor an item body; else none.
+pub fn tree_kind(item: &Item) -> u32 {
+    if item.weapon.is_some() || item.burden.is_some() {
+        0
+    } else if item.door.is_some() {
+        KIND_DOOR
+    } else if item.operative.is_some() {
+        KIND_OPERATIVE
+    } else {
+        0
+    }
 }
 
-/// The node flags of a hidden instance: `0x80000`.
-pub fn hidden_flags(flags: u32) -> u32 {
-    flags | HIDDEN
+/// How a first load draws a material of the record's model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialRule {
+    /// As loaded.
+    Draw,
+    /// Hidden: its alpha zeroed and its hidden flag set.
+    Hide,
+    /// Painted by the apparel painter with the record's appearance.
+    Paint,
 }
 
-/// The impact sound class of an item body's byte at `0x1a6`: a class only
-/// below 7. The original indexes its `FlsCol` name table with it; the table
-/// itself is retail content, so the index is what this returns.
+/// The rule for material `name` of `item`'s model: a weapon record hides
+/// `*` materials; an item-body record (checked after) also paints `&`
+/// ones; other records draw everything.
+pub fn material_rule(item: &Item, name: &str) -> MaterialRule {
+    let weapon = item.weapon.is_some();
+    if !weapon && item.burden.is_none() {
+        return MaterialRule::Draw;
+    }
+    if name.starts_with('*') {
+        MaterialRule::Hide
+    } else if !weapon && name.starts_with('&') {
+        MaterialRule::Paint
+    } else {
+        MaterialRule::Draw
+    }
+}
+
+/// The impact sound class a painted item body takes from its material
+/// byte: a class only up to 6 (an index into the original's sound table).
 pub fn impact_sound_class(byte: u8) -> Option<u8> {
-    (byte < 7).then_some(byte)
+    (byte <= 6).then_some(byte)
 }
 
-/// Whether an apparel material name is one the original hides rather than
-/// draws: the `*` prefix (the `_null` groups are dropped by the loader
-/// already).
-pub fn hidden_material(name: &str) -> bool {
-    name.starts_with('*')
+/// Whether a factory weapon of `id` is first copied to the local database:
+/// only under [`MODE_LOCAL_COPIES`] and for a base-tier id.
+pub fn factory_copies_locally(mode_flags: u32, id: u32) -> bool {
+    mode_flags & MODE_LOCAL_COPIES != 0 && id & objdb::TAG_MASK == 0
 }
 
-/// Whether a material name is one the apparel painter takes: the `&`
-/// prefix.
-pub fn painted_material(name: &str) -> bool {
-    name.starts_with('&')
-}
-
-/// A master cache: one loaded scene tree per object id, cloned by every
-/// instance. `T` is the scene tree type; the clone is an [`Arc`] so all
-/// instances share the meshes and materials, as the original's clones do.
+/// The masters: one loaded tree per model name, cloned by every later
+/// create of that model. A painted tree is never kept, so every painted
+/// object is loaded on its own. The clone is an [`Arc`] here: instances
+/// share the meshes and materials.
 #[derive(Debug)]
 pub struct Masters<T> {
-    by_id: HashMap<u32, Arc<T>>,
-    /// The per-model index the original keeps beside the ids.
     by_model: HashMap<String, Arc<T>>,
 }
 
 impl<T> Default for Masters<T> {
     fn default() -> Self {
         Self {
-            by_id: HashMap::new(),
             by_model: HashMap::new(),
         }
     }
 }
 
 impl<T> Masters<T> {
-    /// An empty cache.
+    /// An empty table.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// The master of `id`, loading it once; a later call shares it.
-    pub fn master(&mut self, id: u32, load: impl FnOnce() -> T) -> Arc<T> {
-        if let Some(master) = self.by_id.get(&id) {
+    /// The tree for `model`: the master's clone when there is one, else
+    /// `load`'s tree, which becomes the master unless `painted`.
+    pub fn create(&mut self, model: &str, painted: bool, load: impl FnOnce() -> T) -> Arc<T> {
+        if let Some(master) = self.by_model.get(model) {
             return master.clone();
         }
-        let master = Arc::new(load());
-        self.by_id.insert(id, master.clone());
-        master
-    }
-
-    /// The master of a model key, loading it once; the original's table
-    /// over the pack's model slots.
-    pub fn master_of(&mut self, key: &str, load: impl FnOnce() -> T) -> Arc<T> {
-        if let Some(master) = self.by_model.get(key) {
-            return master.clone();
+        let tree = Arc::new(load());
+        if !painted {
+            self.by_model.insert(model.to_string(), tree.clone());
         }
-        let master = Arc::new(load());
-        self.by_model.insert(key.to_string(), master.clone());
-        master
+        tree
     }
 
-    /// The master already loaded for `id`.
-    pub fn get(&self, id: u32) -> Option<&Arc<T>> {
-        self.by_id.get(&id)
+    /// The master of `model`, if one is kept.
+    pub fn get(&self, model: &str) -> Option<&Arc<T>> {
+        self.by_model.get(model)
     }
 
-    /// Forgets the master of `id`, as a release does when the last instance
-    /// goes.
-    pub fn release(&mut self, id: u32) -> Option<Arc<T>> {
-        self.by_id.remove(&id)
-    }
-
-    /// How many masters are cached.
+    /// How many masters are kept.
     pub fn len(&self) -> usize {
-        self.by_id.len()
+        self.by_model.len()
     }
 
-    /// Whether no master is cached.
+    /// Whether no master is kept.
     pub fn is_empty(&self) -> bool {
-        self.by_id.is_empty()
+        self.by_model.is_empty()
     }
 }
 
-/// The release check failed: an instance named a master the table does not
-/// hold for its slot.
+/// A release found another master in the instance's slot; the original
+/// logs "Mismatched database object instance reference" and goes on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MismatchedInstance {
+    /// The instance released.
     pub instance: usize,
-    pub expected: usize,
+    /// The master the slot held.
     pub found: usize,
 }
 
-/// The master the release found for an instance: the slot table gives the
-/// master's index, and that master must be the instance's own. A null
-/// instance clears the slot. The original compares the two pointers and
-/// reports "Mismatched database object instance reference" on a mismatch.
+/// The release of `instance`, whose model's 1-based slot is `slots[at]`
+/// and whose own master is `own_master`: nothing without a slot; else a
+/// slot holding another tree is reported, and in every case the slot is
+/// cleared when the instance is its own master, or handed to its master
+/// otherwise. Returns whether a slot was there and the mismatch, if any.
 pub fn release_instance(
     masters: &mut [usize],
     slots: &mut [usize],
+    at: usize,
     instance: usize,
-    slot: usize,
     own_master: usize,
-) -> Result<bool, MismatchedInstance> {
-    let Some(&at) = slots.get(slot) else {
-        return Ok(false);
+) -> (bool, Option<MismatchedInstance>) {
+    let Some(&slot) = slots.get(at) else {
+        return (false, None);
     };
-    if at == 0 {
-        return Ok(false);
-    }
-    let master = at - 1;
-    if masters.get(master).copied() != Some(instance) {
-        return Err(MismatchedInstance {
-            instance,
-            expected: own_master,
-            found: master,
-        });
-    }
+    let Some(index) = slot.checked_sub(1) else {
+        return (false, None);
+    };
+    let Some(&held) = masters.get(index) else {
+        return (false, None);
+    };
+    let mismatch = (held != instance).then_some(MismatchedInstance {
+        instance,
+        found: held,
+    });
     if own_master == instance {
-        masters[master] = 0;
-        slots[slot] = 0;
+        masters[index] = 0;
+        slots[at] = 0;
     } else {
-        masters[master] = own_master;
+        masters[index] = own_master;
     }
-    Ok(true)
+    (true, mismatch)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exa_formats::objdb::{DESTINATIONS, Door, Operative};
+    use exa_formats::objdb::{DESTINATIONS, Door, Operative, operative};
 
     fn item(model: &str) -> Item {
-        Item {
-            id: 1,
-            name: "thing".into(),
-            model: model.into(),
-            model_flags: 0,
-            worn_model: String::new(),
-            appearance: None,
-            slot_layers: [0; exa_formats::objdb::SLOTS],
-            occupancy: [0; exa_formats::objdb::OCCUPANCY_BONES],
-            weapon: None,
-            armour: None,
-            shield: None,
-            door: None,
-            operative: None,
-            burden: None,
-            equip_lock: 0,
-        }
-    }
-
-    fn door_record() -> Door {
-        Door {
-            flags: 0,
-            key: 0,
-            lock_sound: 0,
-            slam_sound: 0,
-            hinge_sound: 0,
-            unlatch_sound: 0,
-        }
+        let mut item = Item::parse(1, &[]).unwrap();
+        item.model = model.into();
+        item
     }
 
     fn section_bytes(tag: u32, body: &[u8]) -> Vec<u8> {
@@ -399,10 +327,10 @@ mod tests {
         out
     }
 
-    fn operative_item(class: u8) -> Item {
-        let mut it = item("model");
+    fn operative_item(model: &str) -> Item {
+        let mut it = item(model);
         it.operative = Some(Operative {
-            class,
+            class: operative::KEY,
             kind: 0,
             flags: 0,
             value: 0,
@@ -416,152 +344,129 @@ mod tests {
     }
 
     #[test]
-    fn ids_choose_their_tier() {
+    fn ids_choose_their_tier_and_drop_its_bits() {
         assert_eq!(Tier::of(7), (Tier::Base, 7));
         assert_eq!(Tier::of(0x4000_0007), (Tier::World, 7));
         assert_eq!(Tier::of(0x8000_0007), (Tier::Local, 7));
-        assert_eq!(Tier::of(0xC000_0007), (Tier::Local, 0x0000_0007));
+        assert_eq!(Tier::of(0xC000_0007), (Tier::Local, 7));
     }
 
     #[test]
-    fn the_record_flags_and_collision_follow_the_branch_order() {
-        let plain = item("model");
-        assert_eq!(object_flags(&plain), ObjectFlags(0));
-        assert_eq!(collision_class(&plain), CollisionClass::None);
-        let mut wearable = plain.clone();
-        wearable.worn_model = "Trouser_A".into();
-        assert_eq!(object_flags(&wearable), ObjectFlags(WEARABLE));
-        let mut door = plain.clone();
-        door.door = Some(door_record());
-        assert_eq!(object_flags(&door), ObjectFlags(DOOR));
-        assert_eq!(collision_class(&door), CollisionClass::Door);
+    fn a_tree_is_a_model_a_factory_weapon_a_volume_or_a_placeholder() {
+        assert_eq!(scene_tree(&item("chair"), &[]), SceneTree::Model("chair"));
         assert_eq!(
-            collision_class(&operative_item(operative::LEVER)),
-            CollisionClass::Lever
-        );
-        assert_eq!(
-            collision_class(&operative_item(operative::PUSH_SURFACE)),
-            CollisionClass::PushSurface
-        );
-        assert_eq!(
-            collision_class(&operative_item(operative::KEY)),
-            CollisionClass::None
-        );
-        // An operative item with a door section still checks its class.
-        let mut both = operative_item(operative::KEY);
-        both.door = Some(door_record());
-        assert_eq!(collision_class(&both), CollisionClass::None);
-    }
-
-    #[test]
-    fn a_model_or_factory_or_placeholder() {
-        let plain = item("chair");
-        assert_eq!(
-            scene_tree(&plain, Some((PackKind::Objects, "chair"))),
-            SceneTree::Model {
-                pack: PackKind::Objects,
-                entry: "chair"
-            }
-        );
-        let factory = item("@ub05ssworda");
-        assert_eq!(
-            scene_tree(&factory, None),
+            scene_tree(&item("@ub05ssworda"), &[]),
             SceneTree::FactoryWeapon("ub05ssworda")
         );
-        assert_eq!(scene_tree(&plain, None), SceneTree::Missing);
-        assert_eq!(modelless_tree(&plain, &[]), SceneTree::Missing);
+        assert_eq!(scene_tree(&item(""), &[]), SceneTree::None);
+        assert_eq!(scene_tree(&operative_item(""), &[]), SceneTree::Placeholder);
+        // A named model wins over the operative section.
         assert_eq!(
-            modelless_tree(&operative_item(operative::KEY), &[]),
-            SceneTree::Placeholder
+            scene_tree(&operative_item("lever"), &[]),
+            SceneTree::Model("lever")
         );
-        let volume = section_bytes(CONTAINER_VOLUME, &[10, 0, 20, 0, 30, 0]);
-        assert_eq!(
-            modelless_tree(&plain, &volume),
-            SceneTree::ContainerVolume([10, 20, 30])
-        );
-        let usable = section_bytes(USABLE, &[]);
-        assert_eq!(modelless_tree(&plain, &usable), SceneTree::Placeholder);
-        assert_eq!(placeholder().0, [50.0; 3]);
-        assert!((placeholder().1 - (7500.0f32).sqrt()).abs() < 1e-3);
+        // The volume section wins over the operative section.
+        let volume = section_bytes(objdb::VOLUME, &[30, 0, 40, 0, 120, 0]);
+        let SceneTree::ContainerVolume(v) = scene_tree(&operative_item(""), &volume) else {
+            panic!("a volume");
+        };
+        assert_eq!(v.extents, [30.0, 40.0, 120.0]);
+        assert_eq!(v.radius, 130.0);
+        let p = PlaceholderNode::default();
+        assert_eq!(p.extents, [50.0; 3]);
+        assert_eq!(p.radius, container_volume([50.0; 3]).radius);
     }
 
     #[test]
-    fn flags_travel_down_and_hide() {
-        assert_eq!(wearable_flags(), 0x4000);
-        assert_eq!(child_flags(ObjectFlags(0), OPERATIVE), 0x5000 | OPERATIVE);
+    fn child_flags_take_the_hidden_bit() {
+        assert_eq!(child_flags(MANAGED_NODE, 0x2), 0x5002);
         assert_eq!(
-            child_flags(ObjectFlags(HIDDEN), DOOR),
-            HIDDEN | DOOR | CHILD_WEARABLE
+            child_flags(MANAGED_NODE | HIDDEN, KIND_DOOR),
+            HIDDEN | KIND_DOOR | MANAGED_CHILD
         );
-        assert_eq!(hidden_flags(0), HIDDEN);
     }
 
     #[test]
-    fn materials_and_impact_classes() {
-        assert!(hidden_material("*mask"));
-        assert!(!hidden_material("&cloth"));
-        assert!(painted_material("&cloth"));
-        assert!(!painted_material("*mask"));
-        assert_eq!(impact_sound_class(0), Some(0));
+    fn materials_follow_the_record_kind() {
+        let plain = item("chair");
+        assert_eq!(material_rule(&plain, "*glass"), MaterialRule::Draw);
+        assert_eq!(material_rule(&plain, "&cloth"), MaterialRule::Draw);
+        // An item-body section (0x1000) gives the record its burden.
+        let body = Item::parse(1, &section_bytes(0x1000, &[0; 0x300])).unwrap();
+        assert!(body.burden.is_some());
+        assert_eq!(material_rule(&body, "*mask"), MaterialRule::Hide);
+        assert_eq!(material_rule(&body, "&cloth"), MaterialRule::Paint);
+        assert_eq!(material_rule(&body, "leather"), MaterialRule::Draw);
         assert_eq!(impact_sound_class(6), Some(6));
         assert_eq!(impact_sound_class(7), None);
-        assert_eq!(impact_sound_class(255), None);
     }
 
     #[test]
-    fn a_master_is_loaded_once_and_cloned() {
+    fn a_door_or_operative_kind_only_without_weapon_or_body() {
+        let mut door = item("door");
+        door.door = Some(Door {
+            flags: 0,
+            key: 0,
+            lock_sound: 0,
+            slam_sound: 0,
+            hinge_sound: 0,
+            unlatch_sound: 0,
+        });
+        assert_eq!(tree_kind(&door), KIND_DOOR);
+        assert_eq!(tree_kind(&operative_item("lever")), KIND_OPERATIVE);
+        assert_eq!(tree_kind(&item("chair")), 0);
+        assert!(factory_copies_locally(0x40, 7));
+        assert!(!factory_copies_locally(0x40, 0x4000_0007));
+        assert!(!factory_copies_locally(0, 7));
+    }
+
+    #[test]
+    fn a_master_is_kept_per_model_unless_painted() {
         let mut masters = Masters::new();
         let mut loads = 0;
-        let a = masters.master(7, || {
+        let a = masters.create("chair", false, || {
             loads += 1;
-            "tree".to_string()
+            1
         });
-        let b = masters.master(7, || {
+        let b = masters.create("chair", false, || {
             loads += 1;
-            "other".to_string()
+            2
         });
         assert_eq!(loads, 1);
         assert!(Arc::ptr_eq(&a, &b));
-        assert_eq!(&*a, "tree");
+        let c = masters.create("tunic", true, || 3);
+        let d = masters.create("tunic", true, || 4);
+        assert_eq!((*c, *d), (3, 4), "painted trees load each time");
         assert_eq!(masters.len(), 1);
-        let c = masters.master_of("chair", || "chair-tree".to_string());
-        assert_eq!(&*c, "chair-tree");
-        assert!(masters.get(8).is_none());
-        masters.release(7);
-        assert!(masters.is_empty());
+        assert!(masters.get("tunic").is_none());
     }
 
     #[test]
-    fn a_release_checks_the_master_and_relinks() {
-        let mut masters = [10, 0, 12];
-        let mut slots = [1, 0, 0];
-        // A mismatched instance is reported, the tables untouched.
+    fn a_release_reports_a_mismatch_and_still_relinks() {
+        let mut masters = [10, 0];
+        let mut slots = [1, 0];
+        // Another tree in the slot is reported, and the slot still goes to
+        // the instance's master.
         assert_eq!(
-            release_instance(&mut masters, &mut slots, 11, 0, 11),
-            Err(MismatchedInstance {
-                instance: 11,
-                expected: 11,
-                found: 0
-            })
+            release_instance(&mut masters, &mut slots, 0, 11, 12),
+            (
+                true,
+                Some(MismatchedInstance {
+                    instance: 11,
+                    found: 10
+                })
+            )
         );
-        assert_eq!(slots[0], 1);
-        // The last instance clears its slot; another relinks it to its own
-        // master.
+        assert_eq!((masters[0], slots[0]), (12, 1));
+        // The master itself clears the slot.
         assert_eq!(
-            release_instance(&mut masters, &mut slots, 10, 0, 10),
-            Ok(true)
+            release_instance(&mut masters, &mut slots, 0, 12, 12),
+            (true, None)
         );
-        assert_eq!(masters[0], 0);
-        assert_eq!(slots[0], 0);
+        assert_eq!((masters[0], slots[0]), (0, 0));
         assert_eq!(
-            release_instance(&mut masters, &mut slots, 9, 1, 9),
-            Ok(false)
-        );
-        let mut masters = [10];
-        let mut slots = [1];
-        assert_eq!(
-            release_instance(&mut masters, &mut slots, 10, 0, 10),
-            Ok(true)
+            release_instance(&mut masters, &mut slots, 1, 9, 9),
+            (false, None)
         );
     }
 }

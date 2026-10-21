@@ -326,10 +326,7 @@ impl ModelLoader<'_> {
                 continue;
             };
             for group in &mesh.groups {
-                if group.index_count == 0
-                    || group.material.eq_ignore_ascii_case("_null")
-                    || group.material.starts_with('*')
-                {
+                if group.index_count == 0 || group.material.eq_ignore_ascii_case("_null") {
                     continue;
                 }
                 let key = Self::material_key(entry, &scene, &group.material);
@@ -1516,10 +1513,7 @@ fn group_meshes(
     pool: Option<&bevy::tasks::ComputeTaskPool>,
 ) -> Vec<(usize, Mesh)> {
     let groups: Vec<usize> = (0..mesh.groups.len())
-        .filter(|&g| {
-            let name = &mesh.groups[g].material;
-            !name.eq_ignore_ascii_case("_null") && !name.starts_with('*')
-        })
+        .filter(|&g| !mesh.groups[g].material.eq_ignore_ascii_case("_null"))
         .collect();
     let build = |g: usize| {
         let group = &mesh.groups[g];

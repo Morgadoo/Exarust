@@ -8,13 +8,15 @@ and the grid's rooms; portal clipping is next (see
 [`docs/PLAN.md`](../../docs/PLAN.md)).
 
 - `spawn_model(commands, model, placement)`: a cached model with its node hierarchy, its lights, fires and voxel lights (`exa_render::gi::VoxelLight`) and its nodes' keyframe tracks (`exa_anim::tracks::NodeTracks`); a placement replaces the root transform, as level props do. Placed items dim their voxel lights and glow meshes by their condition byte. `spawn_model_nodes` also returns the node entities.
-- `db_objects`: the object manager's scene decisions: the id tier bits,
-  the record kind flags, the collision body class (a lever or push surface
-  by its operative class, a door, else none), the scene tree (a pack model,
-  a factory weapon, an invisible container volume or the 50 cm usable
-  placeholder), the recursive wearable flags, the impact-sound class, the
-  apparel `&` paint and `*` hide rules, a master cache loaded once per id
-  or model and shared by every clone, and the release mismatch check.
+- `db_objects`: the object manager's scene decisions: the id tier, the
+  scene tree (a model, a factory weapon, the invisible container volume
+  with its radius, or the 50 cm placeholder of an operative record without
+  a model name), the managed node flags (`0x4000`, children `0x5000` and
+  the parent's hidden bit), the door and operative kind words, the
+  material rules (a weapon record hides `*`, an item-body record hides
+  `*` and paints `&`), the impact-sound class, masters kept per model
+  unless painted, and the release that logs a mismatch and goes on. Only
+  the placeholder is spawned; the rest is not wired.
 - `bodies`: which rigid bodies of a level register in the solver, as the original registers them (each body tree from its top body down through its body children), and their registration: the free and hung trees of props not placed static (`Prop::STATIC`; nodes marked static, `rfc::Node::STATIC`, never register), of placed objects that are no door, lever or push surface, and of the level's own model, asleep; a hung tree's root keeps its stored links as world links anchored in its parent node (`exa_physics::body::WorldLink`), an origin pivot unless the first is a slider, and no level detection; mechanisms stay static until their steps drive their bodies (`LevelInfo::bodies` counts each).
 - `mechanisms`: the door and operative records a placed object carries (`MechanismRecords`, under its tagged placed id), converted for `exa_physics`'s door, lever, plate and signal rules; a signal can be dispatched by them. Nothing ticks a mechanism yet: its body stays static level geometry; the hung props' world links are in the solver.
 - `spawn_level(commands, loader, name)`: the level's own meshes and omni lights plus every prop from `Objlib.rpk`, with the placement's node overrides (a named node's transform or mesh positions, `exa_formats::level::PropAttachment`) applied before its bodies register; placed objects take the same overrides.

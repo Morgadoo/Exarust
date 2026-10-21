@@ -73,9 +73,6 @@ pub struct LevelRoot {
 pub struct PlacedItem {
     pub id: u32,
     pub condition: u8,
-    /// The record's kind flags ([`db_objects::object_flags`]): wearable,
-    /// door or operative.
-    pub flags: u32,
 }
 
 impl PlacedItem {
@@ -84,7 +81,6 @@ impl PlacedItem {
         Self {
             id: item.id,
             condition: ((object.flags >> 16) & 0xFF) as u8,
-            flags: db_objects::object_flags(item).0,
         }
     }
 }
@@ -344,20 +340,18 @@ fn spawn_placed_object(
     let model = placed_object_model(loader, scene, global, object)
         .and_then(|(kind, entry)| placement_base(loader, kind, &entry, &object.attachments));
     let Some(model) = model else {
-        // No model: an operative or otherwise usable object gets the
-        // original's 50 cm placeholder node, so its placement still exists.
-        if item.operative.is_some() {
-            let e = commands
-                .spawn((
-                    transform_from_rows(&object.transform),
-                    Name::new(item.name.clone()),
-                    room_view::PendingRoom::default(),
-                    PlacedItem::of(item, object),
-                    db_objects::PlaceholderNode::default(),
-                    ChildOf(parent),
-                ))
-                .id();
-            let _ = e;
+        // A record without a model name and with an operative section gets
+        // the original's 50 cm placeholder node, so its placement exists.
+        // A named model that is not found has no tree, as in the original.
+        if db_objects::scene_tree(item, &[]) == db_objects::SceneTree::Placeholder {
+            commands.spawn((
+                transform_from_rows(&object.transform),
+                Name::new(item.name.clone()),
+                room_view::PendingRoom::default(),
+                PlacedItem::of(item, object),
+                db_objects::PlaceholderNode::default(),
+                ChildOf(parent),
+            ));
             return Some(PlacedSpawn::Placed {
                 lights: 0,
                 bodies: bodies::BodyCounts::default(),
@@ -409,7 +403,7 @@ fn spawn_placed_object(
         });
     }
     // A door, lever or push surface keeps its body for its mechanism.
-    let placement = if db_objects::collision_class(item) != db_objects::CollisionClass::None {
+    let placement = if item.mechanism().is_some() {
         bodies::Placement::Mechanism
     } else {
         bodies::Placement::Loose

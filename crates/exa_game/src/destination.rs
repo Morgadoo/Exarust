@@ -360,7 +360,6 @@ mod tests {
         let item = app
             .world_mut()
             .spawn(PlacedItem {
-                flags: 0,
                 id: item_id,
                 condition: 3,
             })
