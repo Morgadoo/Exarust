@@ -129,6 +129,21 @@ dirt mode 4 with a diffuse map, and a bleeding race's body-model materials
 whose names start with `s`; each binds the speckle texture `spatter01`
 (`ModelLoader::spatter`).
 
+Painting (`paint`): every one of the original's 25 procedural materials is
+painted on the CPU from its shade map, masks and library textures, family by
+family (cloth, silk, velvet, leather, suede, wood, steel, blade, plate,
+painted steel, chain, copper alloy, copper satin, gemstone, resin, painted
+planks). The colour map follows the original's sRGB chain; the surface map is
+its packed intensity/gloss/metal target; the normal map is the item's normal
+plus the material's and damage normals. Factory parts are painted with the
+item's raw condition bytes, apparel with the loader's remapped ones.
+
+Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
+deform (scale, band, taper, bend, radial), place (by the parent's box minimum
+or maximum) and paint `Components.rpk` parts, then assemble the striking
+extent and the stat bytes. Item quality, condition and stored choices are
+honoured.
+
 Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
 character's variant of a race body or garment at its `BodyMorph` (race
 stem and record physique): each node's share of the race's morph set is

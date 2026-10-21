@@ -715,25 +715,47 @@ name the stem: the ten characters after the `&` (`&doublet_aa1` →
 `doublet_aa`, `&gambsonaba1` → `gambsonaba`). The finishes by material
 number:
 
-| material | finish | library textures |
-|---|---|---|
-| 1 Cloth Rough, 2 Cloth Fine, 3 Silk, 5–6 Padded | cloth | weave (`ClothRghA03`, `ClothFinA01`, `ClthP01/02`), `LeatherDmgA02`, `ClothDmgA01` (worn), `DrtApr01` |
-| 4 Velvet | velvet | `ClothFinA01` with a pale sheen |
-| 7–8 Leather | leather | `LeatherA02/A01`, `LeatherDmgA02`, `DrtApr01` |
-| 9 Suede, 10 Rawhide | suede | `SuedeA01` |
-| 11 Mail | mail | `MailStlA01` d/o, rust, scuffs |
-| 12–13, 15 Steel, Plate, Gilded | plate | `MtlStlBas01`, `MtlImpure01`, rust `MtlRustA03/A04`, `ScuffsGnrA01` |
-| 14 Painted | painted steel | as plate plus `MtlDirtA01` |
+| id | material | finish family | colour-pass textures (sampler order) |
+|---|---|---|---|
+| 1 | ClothBasic | cloth, painted pattern | `ClothRghA03d`, `LeatherDmgA02d`, `ClothDmgA01d`, `DrtApr01` |
+| 2 | ClothFine | cloth | `ClothFinA01d`, `LeatherDmgA02d`, `ClothDmgA01d`, `DrtApr01` |
+| 3 | ClothSilk | cloth, silk specular | as ClothFine |
+| 4 | ClothVelvet | velvet | `ClothFinA01d`, `LeatherDmgA02d`, `ClothDmgA01d`, `DrtApr01` |
+| 5–6 | ClothPadded1/2 | cloth, clothp normals | `ClthP01d`/`ClthP02d`, `LeatherDmgA02d`, `ClothDmgA01d`, `DrtApr01` |
+| 7–8 | LeatherA02/A01 | leather, painted pattern | `LeatherA02d`/`LeatherA01d`, `LeatherDmgA02d`, `DrtApr01` |
+| 9–10 | SuedeA01 | suede | `SuedeA01d`, `LeatherDmgA02d`, `DrtApr01` |
+| 11 | SteelChain | chain | `MailStlA01d`, `MtlDirtA01d`, `MtlRustA02d`, `MtlScufA01`, `MtlRustA01g` |
+| 12 | SteelGen | steel, alt normal | `MtlStlBas01d`, `MtlImpure01d`, `MtlRustA03d`, `MtlScufA01`, `MtlRustA01g` |
+| 13, 15 | SteelPlate2 | plate | `MtlStlBas01d`, `MtlImpure01d`, `MtlRustA03d`, `MtlScufA01`, `MtlRustA04g` |
+| 14 | SteelPainted | painted steel | as SteelGen plus `MtlDirtA01d` |
+| 16 | SteelBlade | blade | `MtlStlBld01d`, `MtlRough01d`, `MtlRustA02d`, `MtlScufA01`, `MtlRustA01g` |
+| 17–18 | WoodFineA/WoodRoughA | wood | `WoodFineA01d`/`WodHft01d`, `MtlScufA01`, `MtlDirtA01d` |
+| 19 | IronGen | steel, alt normal | as SteelGen |
+| 20 | CopperAlloy | copper alloy | `MtlStlBas01d`, `MtlImpure01d`, `MtlRustC01d`, `MtlScufA01`, `MtlRustA01g`, `Verdigris01d` |
+| 21 | CopperSatin | copper satin, copper-alloy normals | as CopperAlloy |
+| 22 | WiredGripA01 | leather | `GripLtrA02d`, `LeatherDmgA02d`, `DrtApr01` |
+| 23 | Gemstone | gemstone, alpha, pattern | `MtlStlBas01d`, `MtlImpure01d`, `MtlRustC01d`, `MtlScufA01`, `MtlRustA01g`, `DirtBrownA01` |
+| 24 | Resin | resin, alpha | as Gemstone |
+| 25 | PlanksPainted | painted planks | `WodPlnkP01d`, `MtlScufA01`, `MtlDirtA01d`, `PaintMskA01` |
 
 Material 0 takes the first material of its set (sets 1/3/5/6/8 → 1, 2/9 → 5,
-4/10 → 7, 7/12/13 → 13, 11 → 11, 14 → 20, 15 → 23). Library textures are laid
-one texel per painted texel (weave, worn weave, impurities); damage, dirt,
-rust and scuff maps are laid at 1024 texels across.
+4/10 → 7, 7/12 → 13, 11 → 11, 13 → 13, 14 → 20, 15 → 23). An unknown id
+reports "Invalid Procedural Material ID." and paints as ClothBasic. The
+specular and normal passes have their own lists (for example metals read the
+impurity map for quality, the rust normal for damage, a colour map's red as
+the rust mask and a full-resolution scuff normal); the registry is in
+`exa_formats::procedural`.
+
+Library textures are laid one texel per painted texel (weave, worn weave,
+impurities, quality); damage, dirt, rust and scuff maps are laid at 1024
+texels across.
 
 Palette: index = family × 8 + shade. Each of the 32 families has hue,
-saturation, base value and value step. With k = 7 − shade:
-v = min(k·step·0.13 + base, 1) and s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)²
-when v < 0.4. Then HSV → RGB. Family 0 is the greys (0.91 down to black).
+saturation, base value and value step. With k = 7 − shade, the linear ramp
+(apparel) is v = min(k·step·0.13 + base, 1) and the lifted ramp (factory
+material rolls) is v = min((k·step·0.13 + base + 0.1)², 1); both use
+s = (1 − (0.09k)²)·sat, scaled by (v + 0.6)² when v < 0.4, then HSV → RGB.
+Family 0 is the greys (0.91 down to black).
 
 **Colour space.** REA on the original's paint jobs and texture loading shows
 the following.
@@ -760,16 +782,20 @@ original's driver builds sRGB mips in linear light, as it filters them). The
 surface and normal maps are uploaded as linear data.
 
 Exarust paints on the CPU (`exa_assets::paint`; `exa-tool paint <model>
-<stem> out.png`). The original's surface pass writes specular occlusion, gloss
-and metalness, with roughness = 1 − gloss. Exarust paints gloss and metalness
-into Bevy's metallic-roughness texture. Plate, painted steel and mail follow
-the original; fabrics and hides are approximated without their gloss textures.
-The normal pass adds the material's weave or grain normal to the item's own
-normal, scaled by wear, plus the damage normal where cloth frays or hide
-scuffs. Exarust paints it for fabrics and hides; metals keep the item normal.
-Not yet painted: wood, bronze, gemstone and resin finishes
-(drawn plain), pattern opacity textures, and per-instance appearances
-(randomised items, wear on characters).
+<stem> out.png`). It transcribes all fifteen colour programs and their
+surface, specular and normal passes: cloth, silk, velvet, leather, suede,
+wood, steel, blade, plate, painted steel, chain, copper alloy, copper satin,
+gemstone, resin and painted planks. The surface target keeps the original's
+packed layout (intensity in red, gloss in green, metal in blue); the scene
+reads roughness = 1 − gloss, so Exarust no longer copies gloss and drops
+intensity. A factory item's paint job gets the item's raw condition bytes
+(quality, damage, dirt over 255); apparel keeps the loader's remapped
+fractions (damage x/(2−x), dirt (x²+x)/2).
+
+Not yet painted: the per-area emblem layers (the factory appends an extra
+layer in another palette colour with a generated emblem texture; the emblem
+generator is outside the factory), pattern opacity textures, the atlas UV
+crop of a factory's part texture, and per-instance randomized appearances.
 
 ### Trade fields
 
@@ -1050,35 +1076,55 @@ factory weapons of a real save, part for part and material for material.
   (at most 8 read) × 56 bytes: name[16], 8 candidates
   {material, bits, fixed colour, mode}, count at +0x30.
 - **Parts**: `i32 n`, then per part `u32 flags` (bit 0 texture-only overlay,
-  `0x10` random twist), name[16], position, rotation (radians), scale
-  (cm), atlas rectangle, a texture parameter, 3 deforms (16 bytes in v0,
-  28 in v1/v2: header type|axis<<8|flags, amount, pivot, range, blend, stat
-  weight, 0), {chance, attach-to (1-based), role, attach mode}, then
-  `i32` variants of 40 bytes (44 in v2): model[16], mask areas[4],
-  slash/crush/pierce/thrust bonuses, weight (0 → 100 before v2), tags,
-  exclude mask, flags, and in v2 a child Y offset (mm). A trailer lists the
-  tag names.
+  `0x10` random twist, bits 1–2 paint-region flags), name[16], position,
+  rotation (radians), scale (cm), atlas rectangle (scale, offset), a
+  texture parameter, 3 deforms (16 bytes in v0, 28 in v1/v2: header
+  type|axis<<8|flags, amount, pivot, range, blend, stat weight, 0), {chance,
+  attach-to (1-based), role, attach mode}, then `i32` variants of 40 bytes
+  (44 in v2): model[16], mask areas[4], slash/crush/pierce/thrust bonuses,
+  weight (0 → 100 before v2), tags, exclude mask, flags, and in v2 a texture
+  scale, a child Y offset (mm) and two texture offsets. A trailer lists the
+  tag names. v0 deforms carry no blend or stat weight; the parser fills in
+  0.3 and 1.
 - **Generation** (32-bit LCG `s·0x08088405 + 1`; seeds A and B; quality
   q = byte/255): a twist per part from B; per part and deform
   value = (2B−1)·blend + (1−blend)·(2A−1); per part a presence roll and a
   weighted pick among variants whose tags agree with earlier choices. The
   first part offering a tag owns it. Then per area a weighted material
   roll (weights 100/50/20/10 by class, scaled by distance from q to the
-  candidate's level) with a finish and a colour by material class. Items
-  with flag `0x10000000` in their weapon section keep their stored choices
-  and materials.
-- **Assembly**: components (`Components.rpk`, one mesh each, +Y along the
-  weapon, cm) are placed in recipe order on their nearest chosen ancestor.
-  The ancestor's scale and band deforms move the attach point, and twists
-  accumulate. Textures are `<model>d`, `n`, `m1`..`m4`, painted per mask
-  with the material of the area the variant maps it to.
+  candidate's level) with a finish (nibbles 3/7/11/15) and a colour by the
+  material's colour class on the lifted palette ramp. A patterned candidate
+  appends an emblem layer: three draws pick an emblem id from 40, a new
+  family and a shade near the area's.
+- **Stored choices** (section flags): a fresh item with seed A set and seed
+  B zero copies A into B, marks the section `0x30000000` and rolls the
+  choices from A (three spare draws per present part so the area colours
+  land where a full roll would; the first three areas take their first
+  candidate's material and a random colour). The three generation paths
+  then are: no flag, a full A+B roll which stores its choices when A is
+  set (flag `0x10000000`); `0x10000000`, replay the selection and areas
+  while twists use B and shapes blend A and B; `0x20000000`, replay the
+  stored choices but roll shapes and twists from A alone.
+- **Assembly**: components (`Components.rpk`, +Y along the weapon, cm) are
+  placed in recipe order on their nearest chosen ancestor. The ancestor's
+  scale and band deforms move the attach point; attach mode 0 adds the
+  parent variant's child Y offset ×0.1, modes 1–3 add the parent's box
+  minimum and 4–6 its box maximum. A parent deform flagged `0x40000` also
+  deforms the child's mesh, and one flagged `0x10000` scales the child.
+  The part is then scaled by its own scale and moved to the parent's
+  position; twists accumulate down the ancestor chain.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
-  4 material slots, stats, and the stored choices at +0x50.
+  4 material slots (material, finish, colour, mode), stats, and the stored
+  choices at +0x50.
+- **Striking extent**: a role 2/3 head (or a role 6 part) stores its
+  assembled Y range over the root's top in bytes `0x35`/`0x36` (or
+  `0x3B`/`0x3C`), ×200 rounded. The stat-only refresh does not assemble,
+  so it keeps the template's bytes.
 
-Exarust assembles factory weapons for held items, placed objects and
-`--weapon @name`. Not yet: taper, bend and radial deforms, atlas UV
-cropping.
+Exarust follows all of this (`exa_formats::factory`, `exa_assets::weapon`).
+Not yet: the per-part atlas UV crop, the TTetraRBD body and its impact
+sound, icon-only builds, and the half-size texture target at low quality.
 
 ## Weapon stats
 
@@ -1122,25 +1168,31 @@ two clawed ones).
   +0x1A, i16 each, low byte, wrapping). It also sets the type code from
   its flags (>> 4 & 0xF). Role-6 parts fill the flipped block instead.
 - Each deform with value x = v·stat weight (deform +0x14) scales bytes by
-  role. F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0. G(x)
-  is the same without the amount.
+  role through F(x) = 1 + x·amount, or 1/(1 − x·amount) when that is ≤ 0.
+  The second helper is the same function (its amount is the deform's, not
+  1).
 
 | role | deform | effect |
 |---|---|---|
 | blade | type 1, Y | weight ×F, balance ÷F |
 | blade | type 1, X | weight ×F, balance ÷F, slash ×F, thrust ÷F |
-| blade | type 3, Y | balance and 1/slash ×(F/2 + ½), thrust ×F |
-| blade | type 4 (bend) | thrust by G (depends on flags) |
-| haft | type 1 or 2, Y | f = 0.4G + 0.6; weight ×(f/2 + ½), balance ÷f |
-| haft | type 1, XZ | weight ×(0.1G + 0.9) |
+| blade | type 3, Y | balance ×(F/2 + ½), slash ÷ the same, thrust ×F |
+| blade | type 4, X | one-sided: thrust ÷(F/4 + ¾); else thickens: ×(F/2 + ½), thins: ×(F(−x)/2 + ½) |
+| haft | type 1 or 2, Y | f = 0.4F + 0.6; weight ×(f/2 + ½), balance ÷f |
+| haft | type 1, XZ | weight ×(0.1F + 0.9) |
 | guard | type 1, Y | thrust ×F |
-| head | type 1 | the same as a haft, with f = F (halfway when per axis) |
-| head | type 3, Y | same, with f = 0.5G(−x/2) + 0.5 |
-| head | type 5, all or XZ | pierce ×(0.6G(x/2) + 0.4), crush ÷ the same |
-| head | type 5, Y | same as a haft, with f = 0.4G(x/2) + 0.6 |
+| head, role 2 | type 1, any axis | f = F, halved and raised by ½ on axes 1–6; weight ×(f/2 + ½), balance ÷f |
+| head | type 3, Y | f = F(−x/2), then f/2 + ½; weight ×(f/2 + ½), balance ÷f |
+| head | type 5, all or XZ | h = 0.6F(x/2) + 0.4; pierce ×h, crush ÷h |
+| head | type 5, Y | f = 0.4F(x/2) + 0.6; weight ×(f/2 + ½), balance ÷f |
+| role 6 | type 1, Y | weight ×(F/2 + ½), balance ÷F |
+| role 6 | type 3, Y | f = F(−x/2); f = f/2 + ½; weight ×(f/2 + ½), balance ÷f |
+| role 6 | type 5, all/XZ | h = 0.6F(x/2) + 0.4; pierce ×h, crush ÷h |
+| role 6 | type 5, Y | f = 0.4F(x/2) + 0.6; weight ×(f/2 + ½), balance ÷f |
 
-- Every step rounds. Weight and balance are capped at 100. Variant flag
-  `0x800` removes the flipped side.
+- Each rounded product is stored as a byte, so values above 255 wrap
+  (the condition step clamps instead). Weight and balance are then capped
+  at 100. Variant flag `0x800` removes the flipped side.
 - Factory items then scale by condition c = (1 − 0.4d)(0.8 + 0.5q), with q
   and d the quality and damage bytes /255 (the damage term and the product
   in double, the quality term's product in float, c stored as float):
