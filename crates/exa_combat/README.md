@@ -100,7 +100,8 @@ other than its primary ends into its stance with no lock and no sag
 rest on the swing (`SwingState::recoil`) until the stall ends, and the
 stance that ends it starts with the rest's blend (40 frames) and both
 arms' stiffness (0.2, `Ragdoll::set_arm_stiffness`), which the next
-character tick eases back up, instead of the stance's recovery blend. A
+standing tick eases back up, each arm on its own, instead of the
+stance's recovery blend. A
 wound on a boned limb adds its size to the struck fighter's bleeding tally
 (`Fighter::bleeding`, the part's slot 39), which the body tick turns into
 damage over time.

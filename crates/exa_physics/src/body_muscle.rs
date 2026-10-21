@@ -416,13 +416,15 @@ const ARM_POWER: f32 = 0.3;
 /// A weapon switch's arms, both of them.
 const ARM_SWITCH: f32 = 0.4;
 
-/// The arms' stiffness after one tick, `x` last tick's: 0.2 collapsing;
+/// One arm's stiffness after one tick, `x` last tick's: 0.2 collapsing;
 /// 0.5 off balance; 0.2 dazed (tone under 0.85); striding, the
 /// character's walking arms (0.2, looser for the feral); a kick leaves
 /// `x`; a power sets 0.3 and a weapon switch 0.4, each floored by the
 /// attack setter's compare; else easing to 0.4·(0.5 + 0.5·race arm
 /// relaxation). While the body turns, except on a kick, it is at least
-/// min(0.4·|turn left|, 0.4).
+/// min(0.4·|turn left|, 0.4). The muscle tune eases the two stored
+/// stiffnesses with [`attack_arms`] on that last branch; this eases one
+/// value, which the other branches still share.
 pub(super) fn arm_stiffness(
     x: f32,
     bearing: &Bearing,
@@ -647,21 +649,46 @@ impl Ragdoll {
                 || drive.balance.value < OFF_BALANCE_BELOW,
             ..bearing
         };
-        drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
-        // An attack's drives stay on the body: a later power or weapon
-        // switch saturates each arm from the one it stored.
-        if let Some(tune) = drive.attack_arms {
-            drive.arm_drive = tune.drive;
-        }
         // Standing, at full tone, not in a walk or a run: a kick leaves
-        // the arms, and a power or a weapon switch writes both through
-        // the attack setter.
+        // the two stored stiffnesses, and a power or a weapon switch
+        // writes both the same through the attack setter. Otherwise each
+        // stored stiffness eases on its own. A collapse, a daze and a
+        // stride write both the same. An attack stores its floored pair
+        // so the next standing tick starts there, unless a kick is holding.
         let posed = !unsteady.collapsing
             && !unsteady.off_balance
             && drive.tone >= ARM_DAZED_TONE
             && !unsteady.striding;
         let hold_arms = posed && unsteady.kicking;
         let snap = posed && (unsteady.casting || unsteady.switching);
+        let easing = posed && !unsteady.kicking && !unsteady.casting && !unsteady.switching;
+        // An attack's drives stay on the body: a later power, weapon
+        // switch or standing tick saturates each arm from the one it stored.
+        if let Some(tune) = drive.attack_arms {
+            drive.arm_drive = tune.drive;
+        }
+        if hold_arms {
+            drive.arm = drive.arms.0;
+        } else if let Some(tune) = drive.attack_arms {
+            let right = attack_stiffness_floor(tune.stiffness.0, unsteady.turn);
+            let left = attack_stiffness_floor(tune.stiffness.1, unsteady.turn);
+            drive.arms = (right, left);
+            drive.arm = right;
+        } else if easing {
+            let eased = attack_arms(
+                drive.arms,
+                false,
+                false,
+                drive.race.arm_relaxation,
+                unsteady.turn,
+            );
+            drive.arms = eased;
+            drive.arm = eased.0;
+        } else {
+            let x = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
+            drive.arms = (x, x);
+            drive.arm = x;
+        }
         let limbs = LIMB_SCALE * drive.stats.scale;
         let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support, &bearing);
         for i in 0..parts.len() {
@@ -694,9 +721,9 @@ impl Ragdoll {
                     }
                     let bone = parts[i].bone;
                     let p = &mut parts[i];
-                    // An attack tick's arms replace the eased stiffness on
-                    // every bone of that side. The idle tune already drives
-                    // those bones together; the swing's pair is what this
+                    // An attack tick's arms replace the stored stiffness on
+                    // every bone of that side. A standing tick eases those
+                    // stored values apart; the swing's pair is what this
                     // tick's muscles pull with. A power or a weapon switch
                     // writes the one stiffness on both sides, and each side
                     // keeps the saturation of the drive its last attack stored.
@@ -720,6 +747,19 @@ impl Ragdoll {
                         };
                         p.factor = drive.arm * limbs;
                         p.relax_cap = attack_relax_cap(drive.arm);
+                        p.saturation = attack_saturation(drv);
+                    } else if easing && let Some(side) = attack_side(bone) {
+                        // Each stored stiffness, eased this tick, with the
+                        // attack setter's cap and the drive the last attack
+                        // stored. Until an attack writes one, that drive is
+                        // 0 and the saturation is the idle 0.1.
+                        let (stiff, drv) = if side == 0 {
+                            (drive.arms.0, drive.arm_drive.0)
+                        } else {
+                            (drive.arms.1, drive.arm_drive.1)
+                        };
+                        p.factor = stiff * limbs;
+                        p.relax_cap = attack_relax_cap(stiff);
                         p.saturation = attack_saturation(drv);
                     } else {
                         p.factor = drive.arm * limbs;

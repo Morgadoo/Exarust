@@ -773,7 +773,10 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 - The swinging arm's stiffness (W20·L(p)) runs in the muscle tune while
   an attack plays: each side's shoulder, upper arm, forearm and hand
   take that arm's stiffness, and the turn floors it. A power sets both
-  arms to 0.3 and a weapon switch to 0.4; a kick leaves them. Not yet:
+  arms to 0.3 and a weapon switch to 0.4; a kick leaves them. Once the
+  attack ends, a standing tick eases each stored stiffness
+  (0.8x + 0.08·(0.5 + 0.5·race arm relaxation)) and keeps that side's
+  drive. Not yet:
   swing sounds, the AI's own release and attack choice (L11), recoil and the
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).

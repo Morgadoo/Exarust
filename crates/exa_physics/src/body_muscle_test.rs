@@ -910,3 +910,68 @@ fn an_attack_writes_each_arms_stiffness() {
     );
     assert_eq!(body.arm_stiffness(), Some(0.4));
 }
+
+/// After an attack the two arms stay apart. A standing tick eases each
+/// stored stiffness, and each side keeps the drive the attack stored. A
+/// kick leaves that pair. A power writes both the same, so the next
+/// standing tick eases from there. A recoil's rest does too.
+#[test]
+fn a_standing_tick_eases_the_two_stored_stiffnesses() {
+    let mut body = both_arms();
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let limbs = 1.25;
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    body.set_attack_arms(None);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let (right, left) = attack_arms((0.8, 0.2), false, false, 1.0, 0.0);
+    assert_ne!(right, left);
+    assert_eq!(body.arm_stiffness(), Some(right));
+    assert_eq!(body.parts[0].factor, right * limbs);
+    assert_eq!(body.parts[1].factor, right * limbs);
+    assert_eq!(body.parts[2].factor, left * limbs);
+    assert_eq!(body.parts[0].relax_cap, attack_relax_cap(right));
+    assert_eq!(body.parts[2].relax_cap, attack_relax_cap(left));
+    assert_eq!(body.parts[0].saturation, attack_saturation(1.0));
+    assert_eq!(body.parts[2].saturation, attack_saturation(0.0));
+    // The next standing tick eases on from that pair.
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let (right, left) = attack_arms((right, left), false, false, 1.0, 0.0);
+    assert_eq!(body.parts[0].factor, right * limbs);
+    assert_eq!(body.parts[2].factor, left * limbs);
+    // A kick leaves the pair, turn and all.
+    body.set_bearing(Bearing {
+        kicking: true,
+        turn: 2.0,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.parts[0].factor, right * limbs);
+    assert_eq!(body.parts[2].factor, left * limbs);
+    assert_eq!(body.arm_stiffness(), Some(right));
+    // A power stores one stiffness on both sides. The drives stay.
+    body.set_bearing(Bearing {
+        casting: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    body.set_bearing(Bearing::default());
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let (both, other) = attack_arms((0.3, 0.3), false, false, 1.0, 0.0);
+    assert_eq!(both, other);
+    assert_eq!(body.parts[0].factor, both * limbs);
+    assert_eq!(body.parts[2].factor, both * limbs);
+    assert_eq!(body.parts[0].saturation, attack_saturation(1.0));
+    assert_eq!(body.parts[2].saturation, attack_saturation(0.0));
+    // A recoil's rest writes both, and the next standing tick eases from it.
+    body.set_arm_stiffness(0.2);
+    body.aim(Affine3A::IDENTITY, pose);
+    let (rest, other) = attack_arms((0.2, 0.2), false, false, 1.0, 0.0);
+    assert_eq!(rest, other);
+    assert_eq!(body.arm_stiffness(), Some(rest));
+    assert_eq!(body.parts[0].factor, rest * limbs);
+    assert_eq!(body.parts[2].factor, rest * limbs);
+}

@@ -333,22 +333,24 @@ humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
       1.25 × the body scale × the arm stiffness (the scale is the
       character's, 0.95 to 1.05 by its height: RFC.md, Stats derived at
       spawn).
-    - Arm stiffness (both arms): 0.5 off balance (balance under 0.6,
-      falling, lying, getting up); 0.2 at tone under 0.85; in the walk and
-      run cycles the character's walking arms (0.2, or 0.2 − 0.15 × its
-      feral level, at least 0.05: a zombie's arms hang at 0.05); a power
-      sets both to 0.3 and a weapon switch both to 0.4 (the attack
-      setter's floor, relaxation cap and saturation, the saturation from
-      the drive the last attack stored, 0 until then); a kick leaves the
-      arms as the last tick wrote them; otherwise
-      x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
+    - Arm stiffness: 0.5 off balance (balance under 0.6, falling, lying,
+      getting up); 0.2 at tone under 0.85; in the walk and run cycles the
+      character's walking arms (0.2, or 0.2 − 0.15 × its feral level, at
+      least 0.05: a zombie's arms hang at 0.05). Those three write both
+      arms the same. A power sets both to 0.3 and a weapon switch both to
+      0.4 (the attack setter's floor, relaxation cap and saturation, the
+      saturation from the drive the last attack stored, 0 until then). A
+      kick leaves each arm as the last tick wrote it. Otherwise each
+      stored stiffness eases on its own,
+      x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), with that same
+      setter floor, cap and saturation, so a human at rest is 0.4 on both
+      arms and a tick after an attack starts from the attack's pair. At
       least 0.4 × the turn left (rad), at most 0.4, except a kick which
       is not floored. An idle arm pulls at
       σ = 0.25, walking 0.175, off balance 0.31. An attack tick replaces
-      both with the swing's pair (the swing routine's body side, below).
-      Not reproduced on this path: the parry blend, the clinch, and easing
-      the two stored stiffnesses apart once the attack has ended (the
-      standing ease is still one value).
+      both with the swing's pair and stores them (the swing routine's
+      body side, below). Not reproduced on this path: the parry blend and
+      the clinch.
     - A leg limit link's strength s ← 0.9s + 0.1t each tick (double
       precision), t = 0.4 walking or running, 0.5·S² standing or
       backpedalling (0.2 → 0.5 standing); kept while the body collapses.

@@ -1230,8 +1230,14 @@ pub struct Drive {
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
     stance: f32,
-    /// The arms' stiffness.
+    /// The right arm's stiffness, which the readout reports. Standing, the
+    /// two arms ease apart and this is the right one ([`Self::arms`]).
     arm: f32,
+    /// The two stored arm stiffnesses, right then left. A standing tick
+    /// eases each; a kick leaves them; a collapse, a daze, a stride, a
+    /// power and a weapon switch write both the same. An attack stores the
+    /// floored pair so the next standing tick starts there.
+    arms: (f32, f32),
     /// Support S, 0..=1.
     support: f32,
     /// The balance its character tick measures.
@@ -1312,6 +1318,7 @@ impl Default for Drive {
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
+            arms: (0.0, 0.0),
             support: 1.0,
             balance: Balance::default(),
             carry: lift::gravity_per_tick(),
@@ -1409,7 +1416,8 @@ impl Drive {
         self.steps.stepping
     }
 
-    /// The arms' stiffness (their link muscle factor is 1.25 times it).
+    /// The right arm's stiffness (its link muscle factor is 1.25 times it).
+    /// Standing, the two arms ease apart and this is the right one.
     pub fn arm_stiffness(&self) -> f32 {
         self.arm
     }
@@ -1708,16 +1716,19 @@ impl Ragdoll {
         self
     }
 
-    /// Sets both arms' stiffness to `x`, as the original's recoil does when
-    /// its stance returns: the next character tick eases it back up.
+    /// Sets both stored arm stiffnesses to `x`, as the original's recoil
+    /// does when its stance returns: the next standing tick eases each
+    /// back up from there.
     pub fn set_arm_stiffness(&mut self, x: f32) {
         if let Some(d) = self.drive.as_mut() {
             d.arm = x;
+            d.arms = (x, x);
         }
     }
 
-    /// The arms' stiffness, or none for a limp body (the debug readout and
-    /// the recoil's rest).
+    /// The right arm's stiffness, or none for a limp body (the debug
+    /// readout and the recoil's rest). Standing, the two arms ease apart
+    /// and this is the right one.
     pub fn arm_stiffness(&self) -> Option<f32> {
         self.drive.as_ref().map(|d| d.arm)
     }
