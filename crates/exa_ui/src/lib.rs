@@ -53,6 +53,7 @@ pub mod skin;
 pub mod table_view;
 pub mod technique_selector;
 pub mod text_box;
+pub mod text_edit;
 pub mod text_layout;
 
 use bevy::prelude::*;
@@ -195,6 +196,12 @@ pub use technique_selector::{
     TechniqueTraining, TechniqueTree, assign_technique, clamp_index, close_pick,
     draw_order as technique_draw_order, enter_forget, layout as technique_layout, refresh_tree,
     selector_key, text_places,
+};
+pub use text_edit::{
+    CARET, EditAction, EditDraw, EditView, MarkupPicture, MarkupState, SPAN, TextureCache,
+    apply_key, apply_markup_state, apply_markup_tag, backspace, caret_from_x, caret_position,
+    delete_forward, delete_selection, draw_edit, key, navigate_key, paste, picture_rect,
+    scroll_view, selected_text, selection,
 };
 
 pub struct UiPlugin;
