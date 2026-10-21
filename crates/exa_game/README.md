@@ -221,8 +221,11 @@ frame-rate readout and the window's mode, size and present mode
 The camera's navigation unit is `nav_camera`: the align-behind wrap, the
 orbit rate and pitch limits (0.8 rad to 1.5, 0.000125 steeper per zoom unit
 in double precision), the frame clock's nine ticks, the camera placement
-with its height, distance and pitch clamps, the free zoom's 0.2 % step and
-the random kick offset. Its picking unit is `nav_pick`: the screen ray's
+with its height, distance and pitch clamps, the free zoom's 0.2 % step, the
+preset record's numeric fields (the 59² view and size scales, the 59th
+roots, the pitch bounds, the 10/10000 distance range and the fixed camera's
+pitch and zoom speeds; its GUI callbacks and editor scan are not modelled),
+and the random kick offset. Its picking unit is `nav_pick`: the screen ray's
 plane pick, the node walk with the class, layer and option-word filters,
 the bounding-sphere test, the nearest mesh hit and the kinesis pick; the
 cursor's aim plane and reach use them, and the physics world answers as the

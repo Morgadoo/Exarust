@@ -228,6 +228,182 @@ pub fn frame_step(ahead: &mut f32, dt: f32) -> (u32, f32) {
     (ran, 1.0 - (f64::from(*ahead) / f64::from(TICK)) as f32)
 }
 
+/// The constant the camera's preset divides several values by: 59². It is
+/// the original's fixed base of the field of view (its 2000 zoom is 45°),
+/// and the same divisor scales the preset's angles.
+pub const PRESET_SCALE: f32 = 59.0 * 59.0;
+
+/// A camera preset's raw fields, in the order the original's record keeps
+/// them. Their roles were read from the fields the preset writes (guesses
+/// where a field only feeds an editor): a zero asks for the default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresetFields {
+    /// Flags word. `0x200` installs the wheel's stop easing, `0x200000`
+    /// the fixed-distance camera, `0x100000` the editor's drag, `0x400000`
+    /// the editor's target scan.
+    pub flags: u32,
+    /// Field of view scale (default 280).
+    pub view: f32,
+    /// Angle whose 59th root scales with the zoom (default 4719934.5).
+    pub angle: f32,
+    /// Drag sensitivity (default 1).
+    pub sensitivity: f32,
+    /// Lower pitch bound (default −1.5).
+    pub pitch_low: f32,
+    /// Upper pitch bound (default 1.5).
+    pub pitch_high: f32,
+    /// A size whose 59² share is the extent (default 16000).
+    pub size: f32,
+    /// A rate whose 59th root scales (default 1 when not positive).
+    pub rate: f32,
+    /// The first distance, 0 meaning derive it (default 0).
+    pub distance: f32,
+    /// Smallest distance (default 10).
+    pub min_distance: f32,
+    /// Largest distance (default 10000).
+    pub max_distance: f32,
+    /// Smallest looked-at height.
+    pub min_height: f32,
+    /// Largest looked-at height.
+    pub max_height: f32,
+    /// A free field the original copies to the controller (0xD; its role
+    /// was not established).
+    pub extra: f32,
+}
+
+impl Default for PresetFields {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            view: 0.0,
+            angle: 0.0,
+            sensitivity: 0.0,
+            pitch_low: 0.0,
+            pitch_high: 0.0,
+            size: 0.0,
+            rate: 0.0,
+            distance: 0.0,
+            min_distance: 0.0,
+            max_distance: 0.0,
+            min_height: 0.0,
+            max_height: 0.0,
+            extra: 0.0,
+        }
+    }
+}
+
+/// What a preset puts on the camera controller, with the defaults filled
+/// in and the divisions done.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Preset {
+    pub flags: u32,
+    pub view: f32,
+    pub angle: f32,
+    pub sensitivity: f32,
+    pub pitch_low: f32,
+    pub pitch_high: f32,
+    pub extent: f32,
+    pub extent_step: f32,
+    pub rate: f32,
+    pub distance: f32,
+    pub min_distance: f32,
+    pub max_distance: f32,
+    pub min_height: f32,
+    pub max_height: f32,
+    pub extra: f32,
+    /// The pitch speed and the zoom speed the preset sets (fields 0x17C and
+    /// 0x154 in the original).
+    pub pitch_speed: f32,
+    pub zoom_speed: f32,
+}
+
+/// The field of view scale a preset value gives: `value / 59²`.
+pub fn fov_scale(value: f32) -> f32 {
+    value / PRESET_SCALE
+}
+
+/// `exp(log2(value) / 59)`: the preset's 59th-root scaling, as the original
+/// does it with the runtime library's log2 and exp in double precision.
+fn root59(value: f32) -> f32 {
+    (f64::from(value).log2() / 59.0).exp2() as f32
+}
+
+/// Applies a preset as the original's routine does. The GUI callbacks and
+/// the editor's field-of-view viewport are not part of this model.
+pub fn apply_preset(fields: PresetFields) -> Preset {
+    let size = if fields.size == 0.0 {
+        16000.0
+    } else {
+        fields.size
+    };
+    let extent = size / PRESET_SCALE;
+    let fixed = fields.flags & 0x20_0000 != 0;
+    let min_distance = if fields.min_distance > 0.0 {
+        fields.min_distance
+    } else {
+        10.0
+    };
+    let max_distance = if fields.max_distance > 0.0 {
+        fields.max_distance
+    } else {
+        10000.0
+    };
+    let rate = if fields.rate > 0.0 {
+        root59(fields.rate)
+    } else {
+        1.0
+    };
+    let pitch_speed = if fixed {
+        5.0
+    } else {
+        max_distance * 15.0 / PRESET_SCALE
+    };
+    let zoom_speed = if fixed {
+        (5.0 / 59.0) as f32
+    } else {
+        (6.6 / 59.0) as f32
+    };
+    Preset {
+        flags: fields.flags,
+        view: fov_scale(if fields.view == 0.0 {
+            280.0
+        } else {
+            fields.view
+        }),
+        angle: root59(if fields.angle == 0.0 {
+            4719934.5
+        } else {
+            fields.angle
+        }),
+        sensitivity: if fields.sensitivity == 0.0 {
+            1.0
+        } else {
+            fields.sensitivity
+        },
+        pitch_low: if fields.pitch_low == 0.0 {
+            -1.5
+        } else {
+            fields.pitch_low
+        },
+        pitch_high: if fields.pitch_high == 0.0 {
+            1.5
+        } else {
+            fields.pitch_high
+        },
+        extent,
+        extent_step: (f64::from(extent) * 0.001) as f32,
+        rate,
+        distance: fields.distance,
+        min_distance,
+        max_distance,
+        min_height: fields.min_height,
+        max_height: fields.max_height,
+        extra: fields.extra,
+        pitch_speed,
+        zoom_speed,
+    }
+}
+
 /// The segment the camera's cut-away detector casts: it starts two camera
 /// distances behind the looked-at point, along the backward vector, and
 /// runs back along it for `2·distance − 1 m`, stopping a metre short of the
@@ -427,6 +603,77 @@ mod tests {
         let (ran, t) = frame_step(&mut ahead, 1.0);
         assert_eq!((ran, t), (9, 1.0));
         assert_eq!(ahead, 0.0);
+    }
+
+    #[test]
+    fn a_preset_fills_the_defaults_and_scales_by_59() {
+        let preset = apply_preset(PresetFields::default());
+        assert!(
+            (preset.view - 0.080_436_656).abs() < 1e-6,
+            "{}",
+            preset.view
+        );
+        assert!(
+            (preset.angle - 1.297_530_5).abs() < 1e-6,
+            "{}",
+            preset.angle
+        );
+        assert!((preset.extent - 4.596_380_4).abs() < 1e-6);
+        assert!((preset.extent_step - 0.004_596_380_4).abs() < 1e-9);
+        assert!((preset.rate - 1.0).abs() < 1e-6);
+        assert_eq!(
+            (preset.sensitivity, preset.pitch_low, preset.pitch_high),
+            (1.0, -1.5, 1.5)
+        );
+        assert_eq!((preset.min_distance, preset.max_distance), (10.0, 10000.0));
+        assert!((preset.pitch_speed - 43.091_064).abs() < 1e-4);
+        assert!((preset.zoom_speed - 0.111_864_41).abs() < 1e-6);
+        // The fixed-distance camera swaps in its own speeds.
+        let fixed = apply_preset(PresetFields {
+            flags: 0x20_0000,
+            ..PresetFields::default()
+        });
+        assert_eq!(fixed.pitch_speed, 5.0);
+        assert!((fixed.zoom_speed - 5.0 / 59.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_preset_keeps_nonzero_fields_and_takes_the_roots() {
+        let preset = apply_preset(PresetFields {
+            flags: 0x200,
+            view: 100.0,
+            angle: 8.0,
+            sensitivity: 2.0,
+            pitch_low: -0.5,
+            pitch_high: 0.75,
+            size: 3481.0,
+            rate: 59.0,
+            distance: 2000.0,
+            min_distance: 1.0,
+            max_distance: 5000.0,
+            min_height: 10.0,
+            max_height: 20.0,
+            extra: 3.0,
+        });
+        assert!((preset.view - 100.0 / 3481.0).abs() < 1e-6);
+        assert!((preset.angle - 8f32.powf(1.0 / 59.0)).abs() < 1e-5);
+        assert_eq!(preset.sensitivity, 2.0);
+        assert_eq!((preset.pitch_low, preset.pitch_high), (-0.5, 0.75));
+        assert_eq!(preset.extent, 1.0);
+        assert!((preset.rate - 59f32.powf(1.0 / 59.0)).abs() < 1e-5);
+        assert_eq!(preset.distance, 2000.0);
+        assert_eq!((preset.min_distance, preset.max_distance), (1.0, 5000.0));
+        assert_eq!(
+            (preset.min_height, preset.max_height, preset.extra),
+            (10.0, 20.0, 3.0)
+        );
+        // A non-positive rate keeps the default 1.
+        let preset = apply_preset(PresetFields {
+            rate: -1.0,
+            ..PresetFields::default()
+        });
+        assert_eq!(preset.rate, 1.0);
+        assert_eq!(fov_scale(3481.0), 1.0);
     }
 
     #[test]

@@ -656,8 +656,13 @@ character body's possession routines; addresses are in the research notes.
   and a looked-at point: the point's height is clamped to the preset's
   limits, a fixed-distance camera keeps its distance between 10 and 10000
   and its pitch between the zoom's floor and 1.5 rad, and a free zoom
-  moves 0.2 % a step but at least 0.5 % of its range. The chase camera
-  uses the shared pieces; the placement and free-zoom paths are modelled
+  moves 0.2 % a step but at least 0.5 % of its range. The preset record's
+  numeric fields are applied as the original applies them (the 280 and
+  16000 defaults over 59², the 4719934.5 angle's and the rate's 59th
+  roots, the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range
+  and the fixed camera's 5 and 6.6/59 speeds); its GUI callbacks and
+  editor scan have no Exarust counterpart. The chase camera uses the
+  shared pieces; the placement and free-zoom paths are modelled
   (`exa_game::nav_camera`) with tests but have no Exarust caller yet.
 - **Middle mouse** orbits: 4.8 rad per screen width, through a near
   critically damped spring (stiffness 0.0718 and retention 0.616 per tick),

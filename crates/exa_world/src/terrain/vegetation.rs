@@ -82,7 +82,7 @@ fn poisson_disc() -> Vec<Vec2> {
         for _ in 0..ATTEMPTS {
             let angle = rng.unit() * std::f32::consts::TAU;
             let radius = (rng.unit() + 1.0) * r;
-            let p = centre + Vec2::new(angle.cos(), angle.sin()) * radius;
+            let p = centre + Vec2::new(angle.sin(), angle.cos()) * radius;
             if p.x <= margin || p.y <= margin || p.x >= SIDE - margin || p.y >= SIDE - margin {
                 continue;
             }
