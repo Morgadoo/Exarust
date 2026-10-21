@@ -15,16 +15,15 @@ use crate::career::{Company, Member};
 /// Where the loadout editor takes the record it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordSource {
-    /// The manager (page 0, no employee selected).
+    /// The manager (selection 0 on the roster and event pages).
     Manager,
     /// A roster employee, zero-based.
     Employee(usize),
     /// A hire-list candidate, zero-based.
     Candidate(usize),
-    /// A tournament event's lineup (page 3).
-    Event,
-    /// A specialist's record page (page 2).
-    Specialist(usize),
+    /// The open step leaves the shown record alone (the specialist page
+    /// and any other page value have no branch of their own).
+    Unchanged,
 }
 
 /// What binding a record to the editor did.
@@ -34,40 +33,41 @@ pub struct BoundRecord {
     pub copy: bool,
     /// The six loadouts were missing and were rebuilt.
     pub repaired: bool,
-    /// The loadout rank the form shows.
-    pub rank: usize,
-    /// The two hand items page 3 writes back, otherwise unchanged.
-    pub hands: [u64; 2],
+    /// The rank whose loadout is applied to the bound record, when the
+    /// record is a fighter and the form's tab is inside its loadout list.
+    pub applied_rank: Option<usize>,
+    /// The two hand items the event page writes into the record, otherwise
+    /// none.
+    pub hands: Option<[u64; 2]>,
 }
 
 /// Bind one record to the editor (the original's bind step).
 ///
-/// A fighter's record whose profession class is at most the combatant class
-/// and which does not hold six loadouts is repaired first. The hire page
-/// (1) takes a copy; every other page keeps the live record. The form's
-/// rank selects the record's loadout only when the record is a fighter and
-/// the rank is within its loadout count. On the event page (3) the record's
-/// two hand items become the lineup's saved hands.
+/// A fighter's record (profession class at most the combatant class) that
+/// does not hold six loadouts is repaired first, which leaves it six. The
+/// hire page (1) takes a copy; every other page keeps the live record. The
+/// kit of the form's kept rank is applied to a fighter's record only when
+/// the form's tab is below the record's loadout count (the count after the
+/// repair); the tab and the kept rank are two separate fields of the form.
+/// On the event page (3) the record's two hand items become the lineup's
+/// saved hands.
 #[must_use]
 pub fn bind_record(
     page: u32,
     profession_class: u32,
     loadout_count: usize,
-    form_rank: usize,
+    tab: usize,
+    kept_rank: usize,
     saved_hands: [u64; 2],
 ) -> BoundRecord {
     let fighter = profession_class < 0x2000_0001;
     let repaired = fighter && loadout_count != RANKS;
-    let rank = if fighter && form_rank < loadout_count {
-        form_rank
-    } else {
-        0
-    };
+    let count = if repaired { RANKS } else { loadout_count };
     BoundRecord {
         copy: page == 1,
         repaired,
-        rank,
-        hands: if page == 3 { saved_hands } else { [0, 0] },
+        applied_rank: (fighter && tab < count).then_some(kept_rank),
+        hands: (page == 3).then_some(saved_hands),
     }
 }
 
@@ -75,83 +75,65 @@ pub fn bind_record(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EditorOpen {
     pub source: RecordSource,
-    /// The roster or hire-list row the form's index names, zero-based.
-    pub row: usize,
-    /// The event rank on the event page.
-    pub rank: usize,
+    /// The selection after clamping to the list.
+    pub selection: usize,
+    /// The event rank fixed on the slider (the event page only).
+    pub rank: Option<usize>,
 }
 
-/// Open the editor on a page and row (the original's open step).
+/// Open the editor on a page and selection (the original's open step).
 ///
-/// Page 0 is the roster: index 0 (or less) is the manager, a positive index
-/// is that employee less one. Page 1 is the hire list at the form's row.
-/// Page 2 is an employee's specialist record. Page 3 is a tournament event,
-/// opened at the event's rank.
+/// The selection is clamped to `0..=last`, where `last` is the candidate
+/// count less one on the hire page and the employee count otherwise. The
+/// roster page (0) and the event page (3) show the manager at selection 0
+/// and the employee one before the selection otherwise; the event page also
+/// fixes the event's rank on the slider. The hire page (1) shows the
+/// candidate at the selection. Any other page shows nothing new.
 #[must_use]
-pub fn open_editor(page: u32, index: i32, event_rank: u32) -> EditorOpen {
-    let row = usize::try_from(index.max(0)).unwrap_or(0);
-    match page {
-        1 => EditorOpen {
-            source: RecordSource::Candidate(row),
-            row,
-            rank: 0,
-        },
-        2 => EditorOpen {
-            source: RecordSource::Specialist(row.saturating_sub(1)),
-            row: row.saturating_sub(1),
-            rank: 0,
-        },
-        3 => EditorOpen {
-            source: RecordSource::Event,
-            row: 0,
-            rank: event_rank as usize,
-        },
-        0 if index < 1 => EditorOpen {
-            source: RecordSource::Manager,
-            row: 0,
-            rank: 0,
-        },
-        0 => EditorOpen {
-            source: RecordSource::Employee(row.saturating_sub(1)),
-            row: row.saturating_sub(1),
-            rank: 0,
-        },
-        _ => EditorOpen {
-            source: RecordSource::Manager,
-            row: 0,
-            rank: 0,
-        },
+pub fn open_editor(page: u32, selection: i32, last: usize, event_rank: u32) -> EditorOpen {
+    let selection = usize::try_from(selection.max(0)).unwrap_or(0).min(last);
+    let by_selection = if selection == 0 {
+        RecordSource::Manager
+    } else {
+        RecordSource::Employee(selection - 1)
+    };
+    let (source, rank) = match page {
+        0 => (by_selection, None),
+        1 => (RecordSource::Candidate(selection), None),
+        3 => (by_selection, Some(event_rank as usize)),
+        _ => (RecordSource::Unchanged, None),
+    };
+    EditorOpen {
+        source,
+        selection,
+        rank,
     }
 }
 
-/// Which list the editor fills its second pane from when a record is bound.
+/// Which list the editor fills its second pane from when a record is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListSource {
-    /// The record's own worn items (the roster and specialist pages).
+    /// The shown record's own worn items (the specialist page).
     Record,
-    /// The hub stash (page 0 when no employee is selected).
+    /// The hub stash (selection 0).
     Stash,
     /// The selected employee's own list.
     EmployeeList(usize),
 }
 
-/// The list the editor reloads when the record is bound.
+/// The list the editor reloads when the record is shown, or `None` when the
+/// page keeps its containers.
 ///
-/// The hire page keeps its containers. Page 2 and the other non-hub pages
-/// show the record's own items; page 0 with no selected employee shows the
-/// hub stash, otherwise the selected employee's list.
+/// The hire page (1) keeps them. Page 2 shows the record's own items. The
+/// other pages show the hub stash at selection 0 and otherwise the selected
+/// employee's list.
 #[must_use]
-pub fn reload_source(page: u32, selected_employee: i32) -> ListSource {
-    if page == 1 {
-        return ListSource::Record;
-    }
-    if page == 2 {
-        return ListSource::Record;
-    }
-    if selected_employee < 1 {
-        ListSource::Stash
-    } else {
-        ListSource::EmployeeList((selected_employee - 1) as usize)
+pub fn reload_source(page: u32, selection: i32) -> Option<ListSource> {
+    match page {
+        1 => None,
+        2 => Some(ListSource::Record),
+        _ if selection < 1 => Some(ListSource::Stash),
+        _ => Some(ListSource::EmployeeList((selection - 1) as usize)),
     }
 }
 
@@ -162,23 +144,21 @@ pub struct FormRefresh {
     pub title: String,
     /// The hire page's "Profession: ..." line; empty on the other pages.
     pub profession: String,
-    /// The hire fee, in the packed coin word.
+    /// The hire fee in copper; zero off the hire page.
     pub price: u32,
-    /// The employee's daily wage.
+    /// The daily wage; zero off the hire page.
     pub wage: u32,
-    /// The health bar's yellow share and red share, 0…1.
+    /// The two health meters, from the record's two health words.
     pub health: (f32, f32),
-    /// The page's current rank row.
-    pub rank: usize,
 }
 
-/// One loadout-form refresh (the original's refresh routine).
+/// One loadout-form refresh (the original's record-view routine).
 ///
 /// A specialist's title is its profession; a fighter's is its rank name.
-/// The hire page (1) shows "Profession: …" and the hire fee, which is
-/// `(rank + 1)² · 12` plus four fifths of the kit value, rounded, and the
-/// daily wage. The health shares are the record's two words over 65535.
-/// The event page (3) keeps the event's rank row.
+/// The hire page (1) shows "Profession: ..." and the hire fee
+/// ([`hire_fee`](crate::career::hire_fee) of the fighter's rank and the
+/// kit value), and the daily wage. The health meters are each word times one
+/// over 65535 ([`manage::health_fill`](super::manage::health_fill)).
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn refresh(
@@ -188,46 +168,28 @@ pub fn refresh(
     rank: usize,
     kit_value: u32,
     wage: u32,
-    yellow: u16,
-    red: u16,
-    event_rank: usize,
+    first_health: u16,
+    second_health: u16,
 ) -> FormRefresh {
     let rank = rank.min(RANKS - 1);
-    let specialist = profession.is_some_and(|p| !matches!(p, crate::career::Profession::Combatant));
-    let title = if specialist {
-        super::manage::record_title(name, profession, rank)
-    } else {
-        super::manage::record_title(name, None, rank)
-    };
-    let price = if page == 1 {
-        let step = (rank as u32).saturating_add(1);
-        step.saturating_mul(step)
-            .saturating_mul(crate::career::COIN)
-            .saturating_add(((u64::from(kit_value) * 4 + 2) / 5) as u32)
-    } else {
-        0
-    };
+    let hire = page == 1;
     FormRefresh {
-        title,
-        profession: if page == 1 {
-            let mut line = String::from("Profession: ");
-            line.push_str(match profession {
-                Some(crate::career::Profession::Combatant) | None => "Combatant",
-                Some(crate::career::Profession::Trainer) => "Trainer",
-                Some(crate::career::Profession::Merchant) => "Merchant",
-                Some(crate::career::Profession::Physician) => "Physician",
-            });
-            line
+        title: super::manage::record_title(name, profession, rank),
+        profession: if hire {
+            super::manage::profession_line(profession).to_string()
         } else {
             String::new()
         },
-        price,
-        wage,
+        price: if hire {
+            crate::career::hire_fee(rank as u32, kit_value)
+        } else {
+            0
+        },
+        wage: if hire { wage } else { 0 },
         health: (
-            f32::from(yellow) * f32::from_bits(0x3780_0080),
-            f32::from(red) * f32::from_bits(0x3780_0080),
+            super::manage::health_fill(first_health),
+            super::manage::health_fill(second_health),
         ),
-        rank: if page == 3 { event_rank } else { rank },
     }
 }
 
@@ -391,67 +353,69 @@ mod tests {
 
     #[test]
     fn binding_repairs_a_short_fighter_record_and_copies_the_hire_page() {
-        let bound = bind_record(0, 0x2000_0000, 4, 3, [11, 22]);
+        let bound = bind_record(0, 0x2000_0000, 4, 3, 3, [11, 22]);
         assert!(bound.repaired);
         assert!(!bound.copy);
-        assert_eq!(bound.rank, 3);
-        assert_eq!(bound.hands, [0, 0]);
-        let hire = bind_record(1, 0x2000_0000, 6, 3, [11, 22]);
+        // The repair leaves six loadouts, so tab 5 is inside the list.
+        assert_eq!(
+            bind_record(0, 0x2000_0000, 4, 5, 5, [0, 0]).applied_rank,
+            Some(5)
+        );
+        assert_eq!(bound.applied_rank, Some(3));
+        assert_eq!(bound.hands, None);
+        let hire = bind_record(1, 0x2000_0000, 6, 3, 2, [11, 22]);
         assert!(hire.copy);
         assert!(!hire.repaired);
-        assert_eq!(hire.rank, 3);
-        let event = bind_record(3, 0x2000_0000, 6, 9, [11, 22]);
-        assert_eq!(event.rank, 0);
-        assert_eq!(event.hands, [11, 22]);
-        // A specialist has no loadout rank and is never repaired.
-        let specialist = bind_record(2, 0x4000_0000, 0, 4, [1, 2]);
+        // The tab picks whether a kit is applied, the kept rank which one.
+        assert_eq!(hire.applied_rank, Some(2));
+        assert_eq!(
+            bind_record(0, 0x2000_0000, 6, 6, 2, [0, 0]).applied_rank,
+            None
+        );
+        let event = bind_record(3, 0x2000_0000, 6, 3, 3, [11, 22]);
+        assert_eq!(event.hands, Some([11, 22]));
+        // A specialist is never repaired and takes no kit.
+        let specialist = bind_record(2, 0x4000_0000, 0, 0, 0, [1, 2]);
         assert!(!specialist.repaired);
-        assert_eq!(specialist.rank, 0);
+        assert_eq!(specialist.applied_rank, None);
     }
 
     #[test]
     fn opening_picks_the_manager_employee_candidate_or_event() {
-        assert_eq!(
-            open_editor(0, 0, 0),
-            EditorOpen {
-                source: RecordSource::Manager,
-                row: 0,
-                rank: 0
-            }
-        );
-        assert_eq!(open_editor(0, 3, 0).source, RecordSource::Employee(2));
-        assert_eq!(open_editor(1, 4, 0).source, RecordSource::Candidate(4));
-        assert_eq!(open_editor(2, 3, 0).source, RecordSource::Specialist(2));
-        assert_eq!(open_editor(3, 0, 5).rank, 5);
-        assert_eq!(open_editor(9, 0, 0).source, RecordSource::Manager);
-        assert_eq!(open_editor(0, -2, 0).source, RecordSource::Manager);
+        let roster = open_editor(0, 0, 4, 0);
+        assert_eq!(roster.source, RecordSource::Manager);
+        assert_eq!(roster.rank, None);
+        assert_eq!(open_editor(0, 3, 4, 0).source, RecordSource::Employee(2));
+        // The selection clamps to the list.
+        let far = open_editor(0, 9, 4, 0);
+        assert_eq!(far.source, RecordSource::Employee(3));
+        assert_eq!(far.selection, 4);
+        assert_eq!(open_editor(0, -2, 4, 0).source, RecordSource::Manager);
+        assert_eq!(open_editor(1, 4, 6, 0).source, RecordSource::Candidate(4));
+        // The event page shows the selected record at the event's rank.
+        let event = open_editor(3, 2, 4, 5);
+        assert_eq!(event.source, RecordSource::Employee(1));
+        assert_eq!(event.rank, Some(5));
+        assert_eq!(open_editor(2, 3, 4, 0).source, RecordSource::Unchanged);
     }
 
     #[test]
     fn reloading_the_second_pane_follows_the_page_and_selection() {
-        assert_eq!(reload_source(0, 0), ListSource::Stash);
-        assert_eq!(reload_source(0, 2), ListSource::EmployeeList(1));
-        assert_eq!(reload_source(1, 0), ListSource::Record);
-        assert_eq!(reload_source(2, 5), ListSource::Record);
+        assert_eq!(reload_source(0, 0), Some(ListSource::Stash));
+        assert_eq!(reload_source(0, 2), Some(ListSource::EmployeeList(1)));
+        assert_eq!(reload_source(3, 1), Some(ListSource::EmployeeList(0)));
+        assert_eq!(reload_source(1, 0), None);
+        assert_eq!(reload_source(2, 5), Some(ListSource::Record));
     }
 
     #[test]
     fn a_refresh_names_a_specialist_and_prices_a_hire() {
-        let fighter = refresh(
-            0,
-            "Bran",
-            Some(Profession::Combatant),
-            2,
-            0,
-            5,
-            32_767,
-            0,
-            0,
-        );
+        let fighter = refresh(0, "Bran", Some(Profession::Combatant), 2, 0, 5, 32_767, 0);
         assert_eq!(fighter.title, "Bran (Novice)");
         assert_eq!(fighter.profession, "");
         assert_eq!(fighter.price, 0);
-        assert!((fighter.health.0 - 0.499_992_37).abs() < 1e-6);
+        assert_eq!(fighter.wage, 0);
+        assert_eq!(fighter.health.0, super::super::manage::health_fill(32_767));
         let hire = refresh(
             1,
             "Mira",
@@ -459,17 +423,17 @@ mod tests {
             2,
             100,
             12,
-            0,
+            257,
             65_535,
-            0,
         );
         assert_eq!(hire.title, "Mira (Physician)");
         assert_eq!(hire.profession, "Profession: Physician");
-        // (2 + 1)² · 12 + round(100 · 4 / 5) = 108 + 80.
+        // (2 + 1)^2 * 12 + round(100 * 4 / 5) = 108 + 80.
         assert_eq!(hire.price, 188);
         assert_eq!(hire.wage, 12);
+        assert_eq!(hire.health.0.to_bits(), 0x3b80_8081);
         assert_eq!(hire.health.1, 1.0);
-        let event = refresh(3, "Bran", None, 0, 0, 0, 0, 0, 4);
-        assert_eq!(event.rank, 4);
+        // The fee is the shared hire rule.
+        assert_eq!(hire.price, crate::career::hire_fee(2, 100));
     }
 }

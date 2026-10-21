@@ -346,6 +346,16 @@ pub fn line_price(word: u16) -> u32 {
     count * unit
 }
 
+/// The hire fee for a fighter of `rank` (0..=5) carrying gear worth
+/// `gear_total` copper: one more than the rank, squared, times 12, plus four
+/// fifths of the gear rounded to the nearest copper (the fifths never land on
+/// a half, so the integer form matches the original's double product).
+pub fn hire_fee(rank: u32, gear_total: u32) -> u32 {
+    let step = rank + 1;
+    let share = ((u64::from(gear_total) * 4 + 2) / 5) as u32;
+    step * step * COIN + share
+}
+
 /// Copper in a basket. A sale is the sum divided by 4, dropping the remainder.
 pub fn basket_total(lines: &[u16], sell: bool) -> u32 {
     let sum = lines
@@ -490,13 +500,10 @@ impl Company {
             .take(6)
             .fold(0u32, |sum, level| sum.saturating_add(*level));
         let rank = (sum / 2).min(5);
-        let step = rank + 1;
-        let standing = step * step * COIN;
         let gear_total = gear
             .iter()
             .fold(0u32, |sum, word| sum.wrapping_add(line_price(*word)));
-        let share = ((u64::from(gear_total) * 4 + 2) / 5) as u32;
-        standing + share
+        hire_fee(rank, gear_total)
     }
 
     /// Hire a listed candidate. A short purse is refused before the roster
