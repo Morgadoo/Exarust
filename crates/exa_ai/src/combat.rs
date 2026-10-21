@@ -1740,7 +1740,7 @@ fn let_go(me: &Body, blow: &mut Blow) {
 
 /// Whether the body may act: no blocking condition bit, a grip of at least
 /// 0.7, an awareness above 0.7 (a double compare) and no blocking state.
-/// A distance that is not a number fails either float compare.
+/// A NaN grip or awareness fails its compare.
 pub fn can_act(me: &Body) -> bool {
     me.condition & exa_physics::motile::ACTION_BLOCK == 0
         && 0.7 <= me.grip
@@ -2282,11 +2282,8 @@ pub fn drift_morale(state: &mut MoraleDrift, body: MoraleBody, roll: &mut u32) {
         }
     } else {
         let centred = unit_draw(roll) - 0.5;
-        state.jitter = (f64::from(centred) * 0.01 + f64::from(state.jitter)) as f32;
-        if state.jitter < -1.0 {
-            state.jitter = -1.0;
-        } else if state.jitter > 1.0 {
-            state.jitter = 1.0;
-        }
+        // A NaN stays, as the original's ordered compares leave it.
+        state.jitter =
+            ((f64::from(centred) * 0.01 + f64::from(state.jitter)) as f32).clamp(-1.0, 1.0);
     }
 }

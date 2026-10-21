@@ -891,12 +891,6 @@ fn spawn_players(
         } else {
             start.foes.clone()
         };
-        // The arena opponent has no record of its own: the creator's start
-        // record is its personality's source, as it is for its stats.
-        let arena_record = exa_formats::characters::CharacterRecord {
-            feral: 0.0,
-            ..exa_formats::characters::CharacterRecord::reset()
-        };
         for foe_at in foes {
             let foe_root = commands
                 .spawn((
@@ -912,14 +906,6 @@ fn spawn_players(
             let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Idle");
             let mut duellist = exa_ai::Duellist::new(player);
             duellist.holds_ground = options.still_opponent;
-            let mut arena_roll = 0x9e37_79b9u32;
-            duellist.personality = Some(exa_ai::personality::personality(
-                arena_record.combat_skill,
-                arena_record.traits,
-                arena_record.feral,
-                false,
-                &mut arena_roll,
-            ));
             let outfit = ["leathjac_a", "trouser_a", "boots_b", "helm_b"].map(String::from);
             let stats = new_human(0.0).with_encumbrance(outfit_encumbrance(&outfit));
             log_encumbrance("duellist", &stats);

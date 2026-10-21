@@ -377,6 +377,8 @@ pub const NEARBY_CM2: f32 = 9e6;
 /// distance and whether the brain sees it, in the rooms' order. A new one
 /// goes in front of every entry it is not farther than (so before equal
 /// ones, and a NaN in front of all); a full list drops its last.
+// The unordered compare is the original's: a NaN distance goes first.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn nearby(around: &[(u64, f32, bool)]) -> Vec<(u64, f32)> {
     let mut kept: Vec<(u64, f32)> = Vec::with_capacity(MOST_NEARBY);
     for &(id, squared, seen) in around {
@@ -943,6 +945,8 @@ pub fn target_pass(
 
 /// The greeting's gates: a notice scale and a readiness not above 6 and 1,
 /// and the other within 600 cm (squared, 3-D); a NaN passes each.
+// The unordered compares are the original's: a NaN passes each gate.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn greets((notice, readiness): (f32, f32), distance2: f32) -> bool {
     !(notice > 6.0) && !(readiness > 1.0) && !(distance2 > GREETING_CM * GREETING_CM)
 }

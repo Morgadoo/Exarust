@@ -792,8 +792,11 @@ fn duellist(
                 step.goal = stopped.step_goal / CM;
             }
             // The swing the combat state lets go of is released here, as
-            // the player's own leave does.
+            // the player's own leave does: once a swing (its released bit
+            // keeps a later tick from restarting the stall).
             if out.blow.release
+                && attacking.is_some()
+                && !swinging.has(swing::flags::RELEASED)
                 && let Some(motion) = motions.as_deref()
                 && let Some(at) = SwingAt::of(now, &anim, motion, base)
                 && !swinging.has(swing::flags::NO_RELEASE)
