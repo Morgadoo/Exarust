@@ -32,38 +32,21 @@ pub struct Sequences {
     pub bodies: Vec<BoneBody>,
 }
 
-/// A bone's physical body as its character block stores it: the class
-/// word, the collision spheres, how the part joins its parent and touches
-/// the ground (links, foot contact points and shoulder pins, in the bone's
-/// space, metres), and the two mass factors the loader sets to 1.
-#[derive(Debug, Clone, PartialEq)]
+/// A bone's physical body as its character block stores it: the part's
+/// flag word, the collision spheres, and how the part joins its parent and
+/// touches the ground (links, foot contact points and shoulder pins, in
+/// the bone's space, metres).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BoneBody {
-    /// The body's class word (the first word of the body chunk; `0x10000000`
-    /// on every shipped character part).
+    /// The body chunk's first word, which the loader stores as the part's
+    /// flag word (`0x1240_0000` with bits `0x8000` and `0x8` on some parts
+    /// of `humanoid.rsq`; the bits are not decoded here).
     pub class: u32,
-    /// The two per-part mass factors the loader writes as 1.0
-    /// (`0xB4` and `0x54` in the original's part); a character's init later
-    /// normalises the part masses by their divisor.
-    pub mass_factors: [f32; 2],
-    /// The collision spheres in the part's frame (metres), sorted later by
-    /// the dynamics builder.
+    /// The stored collision spheres in the part's frame (metres).
     pub spheres: Vec<crate::rigid_body::Sphere>,
     pub links: Vec<BoneLink>,
     pub contacts: Vec<[f32; 3]>,
     pub pins: Vec<[f32; 3]>,
-}
-
-impl Default for BoneBody {
-    fn default() -> Self {
-        Self {
-            class: 0,
-            mass_factors: [1.0; 2],
-            spheres: Vec::new(),
-            links: Vec::new(),
-            contacts: Vec::new(),
-            pins: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -663,17 +646,25 @@ impl Reader<'_> {
     }
 }
 
-/// Sorts a node's children by the absolute x of their translation, as the
-/// motion library's loader sorts every subtree: a selection sort taking the
-/// smallest absolute x for each next slot (a tie keeps the current best).
-/// The skeleton's clips are indexed by bone number, so the order matters
-/// only where the game walks a node's children.
+/// Sorts one node's children by the absolute x of their translation, as
+/// the motion library's loader does for every node (the caller recurses):
+/// for each slot a scan over that slot and the ones after it keeps the
+/// first child whose |x| is strictly below the best so far, which starts
+/// at 3.4e38, and swaps it into the slot. The best index starts at 0, not
+/// at the slot: when no remaining |x| is below 3.4e38 (all NaN or larger)
+/// the slot is swapped with the first child. The skeleton's clips are
+/// indexed by bone number, so the order matters only where the game walks
+/// a node's children.
 pub fn sort_by_abs_x<T>(items: &mut [T], x: impl Fn(&T) -> f32) {
+    let bound = f32::from_bits(0x7f7f_c99e);
     for slot in 0..items.len() {
-        let mut best = slot;
-        for i in slot + 1..items.len() {
-            if x(&items[i]).abs() < x(&items[best]).abs() {
+        let mut best = 0;
+        let mut best_x = bound;
+        for i in slot..items.len() {
+            let ax = x(&items[i]).abs();
+            if ax < best_x {
                 best = i;
+                best_x = ax;
             }
         }
         items.swap(slot, best);
@@ -1178,8 +1169,7 @@ mod tests {
         let list = body_node(0x1000_0000, &[(SPHERES, spheres), (LINKS, links)]);
         let bodies = read_bodies(&list).unwrap();
         let body = &bodies[0];
-        eprintln!("class {:#x}", body.class);
-        assert_eq!(body.mass_factors, [1.0, 1.0]);
+        assert_eq!(body.class, 0x1000_0000);
         assert_eq!(body.spheres.len(), 1);
         let sphere = body.spheres[0];
         assert!((sphere.centre[0] - 0.1).abs() < 1e-6);
@@ -1228,12 +1218,17 @@ mod tests {
         let mut tie = [(1.0f32, 'x'), (-1.0, 'y')];
         sort_by_abs_x(&mut tie, |p| p.0);
         assert_eq!(tie[0].1, 'x');
+        // A slot whose remaining children are all NaN swaps with the first
+        // child: the 1.0 child moves to the front, then back behind the NaN.
+        let mut nan = [(f32::NAN, 'n'), (1.0f32, 'o')];
+        sort_by_abs_x(&mut nan, |p| p.0);
+        assert_eq!(nan.map(|p| p.1), ['n', 'o']);
     }
 
     /// The shipped `humanoid.rsq`'s physical bodies: every one has its
-    /// class, its two 1.0 mass factors and its stored collision spheres.
+    /// flag words, and no stored collision spheres.
     #[test]
-    fn shipped_bodies_have_their_spheres() {
+    fn shipped_bodies_store_no_spheres() {
         let Some(dir) = exa_rpk::locate_install(None) else {
             return;
         };
@@ -1244,11 +1239,10 @@ mod tests {
         let mut classes = Vec::new();
         for body in &seq.bodies {
             classes.push(body.class);
-            assert_eq!(body.mass_factors, [1.0, 1.0]);
             spheres += body.spheres.len();
         }
         assert_eq!(seq.bodies.len(), 18);
-        // The humanoid body's class words, pelvis to left hand. The shipped
+        // The humanoid body's flag words, in node order. The shipped
         // file stores no 0xCD00 sphere lists on its character parts.
         assert_eq!(
             classes,

@@ -31,11 +31,11 @@ named with the same indices (`01Pelvis`, `09Chest`, `17RHand`).
 ## Physical body (`0x3DD0B100`)
 
 Each bone node carries a body chunk. The node header is 112 bytes. The
-chunk's first word is the body's class: `0x12400000` with `0x8` on some
-parts, `0x12408000` with `0x8` on the feet and `0x12408008` on the head
-and feet of `humanoid.rsq`; the fixed header runs to `0x5C`. The two
-per-part mass factors at the original's `+0xB4` and `+0x54` are written as
-1.0 by the loader, not read. Its nested sub-chunks start at offset `0x5C`:
+chunk's first word becomes the part's flag word (in `humanoid.rsq`
+`0x12400000`, some parts with `0x8`, `0x8000` or both; the bits are not
+decoded); the fixed header runs to `0x5C`, and the loader sets two of
+the part's factors to 1.0 rather than reading them. Its nested
+sub-chunks start at offset `0x5C`:
 
 | chunk | content |
 |---|---|
