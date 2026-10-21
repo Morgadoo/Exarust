@@ -82,8 +82,7 @@ pub struct SceneInfo {
     pub room_mode: bool,
     /// Tiles the manager has loaded.
     pub tiles: usize,
-    /// The room-mode pool's two factors (the manager's words at +0x170 and
-    /// +0x174).
+    /// The room-mode pool's two factors (two words of the manager).
     pub room_pool: (usize, usize),
 }
 
