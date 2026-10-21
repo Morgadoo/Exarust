@@ -138,8 +138,8 @@ pub struct Node {
     pub owner: u32,
     /// The body slot its name gives.
     pub slot: usize,
-    /// The layer digits of its name.
-    pub layer: u32,
+    /// The layer bits of its name ([`crate::layers::layer_of`]).
+    pub layer: u64,
     /// The mesh is linked to the morph controller (the frame refresh
     /// after a morph only walks such meshes).
     pub morphed: bool,

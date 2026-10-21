@@ -247,15 +247,15 @@ pub fn slot_of(name: &str) -> Option<usize> {
     (1..=SLOTS.len()).contains(&slot).then_some(slot)
 }
 
-/// The layer a node's name names: its third and fourth digits (`0900Chest`
-/// is layer 0). A name without them is layer 0, as the builder's parse
-/// returns 0.
-pub fn layer_of(name: &str) -> u32 {
+/// The layer bits a node's name names: its third and fourth characters as
+/// two decimal digits (`0906Chest` is 6, bits `0b110`). The scorer reads
+/// them without a digit check, in 64-bit unsigned arithmetic, so a name
+/// without them gives whatever its characters make (`09Chest` gives 246,
+/// a missing character counts as a zero byte).
+pub fn layer_of(name: &str) -> u64 {
     let b = name.as_bytes();
-    if b.len() < 4 || !b[2].is_ascii_digit() || !b[3].is_ascii_digit() {
-        return 0;
-    }
-    u32::from(b[2] - b'0') * 10 + u32::from(b[3] - b'0')
+    let c = |i: usize| u64::from(b.get(i).copied().unwrap_or(0)).wrapping_sub(0x30);
+    c(2).wrapping_mul(10).wrapping_add(c(3))
 }
 
 /// The number of set bits among the low five bits: the original's layer
@@ -270,8 +270,7 @@ pub fn five_bit_count(v: u64) -> i32 {
 /// of `layer`, the unmatched bits cost eight each from a base of sixteen.
 /// A garment whose layer bits the slot's coverage holds scores highest, then
 /// the one sharing most of them.
-pub fn layer_score(layer: u32, word: u64) -> i32 {
-    let layer = u64::from(layer);
+pub fn layer_score(layer: u64, word: u64) -> i32 {
     let matched = layer & word;
     let base = if matched < layer {
         16 - 8 * five_bit_count(!word & layer)
@@ -605,7 +604,7 @@ impl<'a> Assembler<'a> {
     /// first one whose layer is not `wanted` ends that tree's walk, and one
     /// whose layer is offers its children in `slot`, the best scoring one
     /// winning (ties to the first).
-    pub fn related_search(&self, slot: usize, wanted: u32) -> Option<usize> {
+    pub fn related_search(&self, slot: usize, wanted: u64) -> Option<usize> {
         if !(1..=SLOTS.len()).contains(&slot) {
             return None;
         }
@@ -705,8 +704,10 @@ mod tests {
         assert_eq!(slot_of("_hidden"), None);
         assert_eq!(layer_of("0900Chest"), 0);
         assert_eq!(layer_of("0904Chest"), 4);
-        assert_eq!(layer_of("09Chest"), 0);
-        assert_eq!(layer_of("01Pelvis"), 0);
+        // No digit check: ('C' − '0')·10 + ('h' − '0').
+        assert_eq!(layer_of("09Chest"), 246);
+        assert_eq!(layer_of("01Pelvis"), 373);
+        assert_eq!(layer_of("09"), 0u64.wrapping_sub(0x30 * 11));
     }
 
     /// A node's layer matches the garment's own coverage: breastplate chest
