@@ -1992,7 +1992,7 @@ pub fn control_matches(points: [[f32; 2]; 3], rotation: usize, reference: [[f32;
         let dx = r[0] - p[0];
         let dy = r[1] - p[1];
         let d = f64::from(dx * dx + dy * dy);
-        !(d > 1e-8)
+        d <= 1e-8 || d.is_nan()
     })
 }
 
