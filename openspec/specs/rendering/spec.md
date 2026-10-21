@@ -276,7 +276,7 @@ The system SHALL cast a surface through the alpha-tested caster when its materia
 - **THEN** its shadow is cut by its diffuse map's alpha and cast from both sides
 
 ### Requirement: Built-in skin
-The system SHALL draw the skin of human and ancient bodies as the original's built-in skins instead of their `skinhuman` record, with the race's own textures named after the body model's stem (`<stem>difm`, `<stem>nrmm0`, `<stem>spcm`). The diffuse colour SHALL be the colour texture's stored texels times the middle skin tone (0.46, 0.47, 0.47), decoded from sRGB after the product.
+The system SHALL draw the skin of human and ancient bodies as the original's built-in skins instead of their `skinhuman` record, with the race's own textures named after the body model's stem (`<stem>difm`, `<stem>nrmm0`, `<stem>spcm`, or the women's `diff`, `nrmf0` and `spcf` for a female record). The diffuse colour SHALL be the colour texture's stored texels times the character's skin tone multiplier, decoded from sRGB after the product.
 
 #### Scenario: Lit skin in the character view
 - **WHEN** `exarust character Default/Idle` runs
@@ -289,6 +289,15 @@ The system SHALL draw the skin of human and ancient bodies as the original's bui
 #### Scenario: Ancient body
 - **WHEN** `exarust --race 2 character` runs
 - **THEN** the ancient's body shows its own desiccated skin texture, not an untextured glossy figure
+
+### Requirement: Skin tone
+The system SHALL compute a character's skin tone multiplier as the original does from the record's two tone words: its HSV tone table decoded to linear colours, interpolated within the grid half each word falls in, divided by the base texture's colour, scaled by 0.6, encoded and scaled by 1.4. A body without a record SHALL take the middle tone.
+
+#### Scenario: Tone words
+- **WHEN** a record's tone words are both 0x8000
+- **THEN** the multiplier is about (0.461, 0.469, 0.467)
+- **WHEN** they are 0 and 0xFFFF
+- **THEN** the multiplier is about (0.293, 0.295, 0.287), the darkest tone
 
 ### Requirement: Skin lighting
 The system SHALL light built-in skin with F0 0.04 and roughness 1 − 0.8 × the gloss texture, plus a subsurface share of the diffuse colour, sRGB (1.0, 0.8, 0.46) for humans and (1.0, 0.63, 0.133) for ancients, lit by a wrapped term on the normal map at mip 2.
