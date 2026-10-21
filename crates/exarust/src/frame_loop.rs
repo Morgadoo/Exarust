@@ -28,7 +28,14 @@ impl Plugin for FrameLoopPlugin {
             .init_resource::<WindowedFrame>()
             .add_systems(Startup, take_fps_cap)
             .add_systems(First, pace_frame)
-            .add_systems(PreUpdate, (apply_launch_fullscreen, toggle_windowed));
+            .add_systems(
+                PreUpdate,
+                (
+                    apply_launch_fullscreen,
+                    toggle_windowed,
+                    clear_keys_on_focus_loss,
+                ),
+            );
     }
 }
 
@@ -107,6 +114,30 @@ fn pace_frame(
         exa_game::frame::sleep_yield(wait);
     }
     clock.last_ms = clock.start.elapsed().as_millis() as u32;
+}
+
+/// Clears the held keys and mouse buttons when the window loses focus, as
+/// the original's focus message empties its 256-entry key table. Without it a
+/// key held at the moment of the switch would stay down until pressed again.
+fn clear_keys_on_focus_loss(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut keys: Option<ResMut<ButtonInput<KeyCode>>>,
+    mut buttons: Option<ResMut<ButtonInput<MouseButton>>>,
+    mut focused: Local<Option<bool>>,
+) {
+    let Ok(window) = windows.single() else { return };
+    if *focused == Some(window.focused) {
+        return;
+    }
+    let was = focused.replace(window.focused);
+    if was == Some(true) && !window.focused {
+        if let Some(keys) = keys.as_mut() {
+            keys.clear();
+        }
+        if let Some(buttons) = buttons.as_mut() {
+            buttons.clear();
+        }
+    }
 }
 
 /// Picks the exclusive display mode once the monitor is known: the requested
