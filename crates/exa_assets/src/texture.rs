@@ -465,8 +465,8 @@ pub fn rfi_to_texture(
             }
             let mut image = Image::new_uninit(
                 Extent3d {
-                    width: w >> first.min(31),
-                    height: h >> first.min(31),
+                    width: (w >> first.min(31)).max(1),
+                    height: (h >> first.min(31)).max(1),
                     depth_or_array_layers: 1,
                 },
                 TextureDimension::D2,
@@ -955,10 +955,10 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
     }
 
-    /// A detail skip past the end of a tiny image falls back to its base:
-    /// the retail data never asks for this, but the loader is total.
+    /// A detail level past the natural chain still yields the floored 1×1
+    /// level the original filters: the sides never reach zero.
     #[test]
-    fn a_skip_past_the_chain_falls_back_to_the_base() {
+    fn a_skip_past_the_chain_still_yields_a_one_texel_level() {
         let (data, mut header) = rgba_image(2, 2, 1, 3 << 22);
         header.flags |= 3 << 22;
         let mut bytes = Vec::new();
@@ -982,8 +982,10 @@ mod level_tests {
         };
         let image =
             rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
-        assert_eq!(image.texture_descriptor.size.width, 2);
+        assert_eq!(image.texture_descriptor.size.width, 1);
+        assert_eq!(image.texture_descriptor.size.height, 1);
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        assert_eq!(image.data.as_ref().unwrap().len(), 4);
     }
 }
 
