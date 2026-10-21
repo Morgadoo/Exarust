@@ -966,14 +966,6 @@ impl TreeScreen {
         };
         self.drag = DragState::Idle;
         let id = self.focus;
-        if word & press::RIGHT != 0 {
-            match self.mode {
-                TreeMode::Play => out.open = true,
-                TreeMode::Practice => {}
-                _ => {}
-            }
-            return out;
-        }
         if word & press::CLICK != 0 && word & press::LEFT != 0 {
             if id == focus::BACK {
                 out.back = true;
@@ -998,6 +990,95 @@ impl TreeScreen {
             self.drag_origin = self.pan.value;
             out.result = 0x15;
             return out;
+        }
+        if word & press::RIGHT != 0 {
+            if self.mode == TreeMode::Play {
+                out.open = true;
+            }
+            return out;
+        }
+        if word & press::LEFT != 0 {
+            self.node_under = if id > 0 { id & focus::NODE } else { 0 };
+            let plain = self.node_under > 0
+                && word & press::CLICK != 0
+                && id & focus::LINK == 0
+                && now >= self.learn_until
+                && id & focus::SLOT == 0;
+            if plain {
+                let node = self.node_under as usize - 1;
+                if self.marks[node] & LEARNED == 0 {
+                    let learnable = record
+                        .as_deref()
+                        .is_some_and(|record| can_learn(record, self.nodes[node].power));
+                    if learnable && self.marks[node] & (NEW | LEARNED) == 0 {
+                        self.flash = 0;
+                        for index in 0..self.nodes.len() {
+                            if self.marks[index] & NEW != 0 {
+                                self.marks[index] &= !NEW;
+                                self.flash = index as i32 + 1;
+                                if let Some(record) = record.as_deref_mut() {
+                                    record.store_pair(self.nodes[index].power, self.marks[index]);
+                                }
+                            }
+                        }
+                        out.sound = Some(SELECT_SOUND);
+                        self.flash = node as i32 + 1;
+                        self.marks[node] |= NEW;
+                        if let Some(record) = record {
+                            record.store_pair(self.nodes[node].power, self.marks[node]);
+                        }
+                        self.learn_until = now.wrapping_add(200);
+                    }
+                    return out;
+                }
+                self.flash = node as i32;
+                self.flash_until = now.wrapping_add(300);
+                let picked = self.marks[node] & PICKED != 0;
+                if picked {
+                    for index in 0..self.nodes.len() {
+                        if self.marks[index] & PICKED == 0 {
+                            continue;
+                        }
+                        if self.links[index]
+                            .iter()
+                            .any(|link| link.end as usize == node + 1)
+                        {
+                            out.sound = Some(FAIL_SOUND);
+                            self.denied = true;
+                            return out;
+                        }
+                    }
+                    self.marks[node] &= !PICKED;
+                    out.sound = Some(DROP_SOUND);
+                } else {
+                    let domain = domain_of(self.nodes[node].power);
+                    let cost = if (1..=6).contains(&domain) {
+                        self.costs[usize::from(domain) - 1]
+                    } else {
+                        4.0
+                    };
+                    if self.available < cost {
+                        out.sound = Some(FAIL_SOUND);
+                        self.denied = true;
+                        return out;
+                    }
+                    for link in &self.links[node] {
+                        let end = link.end as usize;
+                        if end < 1 || end > self.nodes.len() || self.marks[end - 1] & PICKED == 0 {
+                            out.sound = Some(FAIL_SOUND);
+                            self.denied = true;
+                            return out;
+                        }
+                    }
+                    self.marks[node] |= PICKED;
+                    out.sound = Some(PICK_SOUND);
+                }
+                if let Some(record) = record {
+                    record.store_pair(self.nodes[node].power, self.marks[node]);
+                    self.read_record(record);
+                }
+                return out;
+            }
         }
         if word & press::DRAG != 0 && id > 0 {
             let node = id & focus::NODE;
@@ -1032,90 +1113,6 @@ impl TreeScreen {
                 }
             }
             return out;
-        }
-        if word & press::LEFT == 0 {
-            return out;
-        }
-        self.node_under = if id > 0 { id & focus::NODE } else { 0 };
-        if self.node_under <= 0
-            || word & press::CLICK == 0
-            || id & focus::LINK != 0
-            || now < self.learn_until
-            || id & focus::SLOT != 0
-        {
-            return out;
-        }
-        let node = self.node_under as usize - 1;
-        if self.marks[node] & LEARNED == 0 {
-            let learnable = record
-                .as_deref()
-                .is_some_and(|record| can_learn(record, self.nodes[node].power));
-            if learnable && self.marks[node] & (NEW | LEARNED) == 0 {
-                self.flash = 0;
-                for index in 0..self.nodes.len() {
-                    if self.marks[index] & NEW != 0 {
-                        self.marks[index] &= !NEW;
-                        self.flash = index as i32 + 1;
-                        if let Some(record) = record.as_deref_mut() {
-                            record.store_pair(self.nodes[index].power, self.marks[index]);
-                        }
-                    }
-                }
-                out.sound = Some(SELECT_SOUND);
-                self.flash = node as i32 + 1;
-                self.marks[node] |= NEW;
-                if let Some(record) = record {
-                    record.store_pair(self.nodes[node].power, self.marks[node]);
-                }
-                self.learn_until = now.wrapping_add(200);
-            }
-            return out;
-        }
-        self.flash = node as i32;
-        self.flash_until = now.wrapping_add(300);
-        let picked = self.marks[node] & PICKED != 0;
-        if picked {
-            for index in 0..self.nodes.len() {
-                if self.marks[index] & PICKED == 0 {
-                    continue;
-                }
-                if self.links[index]
-                    .iter()
-                    .any(|link| link.end as usize == node + 1)
-                {
-                    out.sound = Some(FAIL_SOUND);
-                    self.denied = true;
-                    return out;
-                }
-            }
-            self.marks[node] &= !PICKED;
-            out.sound = Some(DROP_SOUND);
-        } else {
-            let domain = domain_of(self.nodes[node].power);
-            let cost = if (1..=6).contains(&domain) {
-                self.costs[usize::from(domain) - 1]
-            } else {
-                4.0
-            };
-            if self.available < cost {
-                out.sound = Some(FAIL_SOUND);
-                self.denied = true;
-                return out;
-            }
-            for link in &self.links[node] {
-                let end = link.end as usize;
-                if end < 1 || end > self.nodes.len() || self.marks[end - 1] & PICKED == 0 {
-                    out.sound = Some(FAIL_SOUND);
-                    self.denied = true;
-                    return out;
-                }
-            }
-            self.marks[node] |= PICKED;
-            out.sound = Some(PICK_SOUND);
-        }
-        if let Some(record) = record {
-            record.store_pair(self.nodes[node].power, self.marks[node]);
-            self.read_record(record);
         }
         out
     }
