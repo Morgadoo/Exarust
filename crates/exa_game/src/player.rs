@@ -317,11 +317,11 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 #[derive(Resource, Default)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 
-/// The gamepad aim's eased cursor point in the world: the stick's direction
-/// places the point `250·|aim| + 50` cm out, and it eases toward it by
-/// `(0.4·AimSpeed + 0.1)²` a frame (the original eases the screen cursor;
-/// Exarust eases the world point the camera projects, a guess at the
-/// projection step).
+/// The gamepad aim's eased cursor point in the world (m): the stick's
+/// direction places the point `250·|aim| + 50` cm out, and it eases toward
+/// it by `(0.4·AimSpeed + 0.1)²` a behaviour tick (the original eases the
+/// screen cursor and picks its point on the aim plane; Exarust eases the
+/// world point by the same factor).
 #[derive(Resource, Default)]
 pub(crate) struct AimCursor(pub(crate) Option<Vec3>);
 
@@ -341,19 +341,18 @@ impl Plugin for PlayerPlugin {
             )
             .add_systems(
                 FixedPreUpdate,
-                (request_attacks, steer_player, take_player_stance).chain(),
+                (
+                    pad_aim_cursor,
+                    request_attacks,
+                    steer_player,
+                    take_player_stance,
+                )
+                    .chain(),
             )
             .add_systems(Update, (begin_play_session, end_play_session))
             .add_systems(
                 Update,
-                (
-                    cursor_look,
-                    cursor_ground,
-                    pad_aim_cursor,
-                    player_combat,
-                    chase_camera,
-                )
-                    .chain(),
+                (cursor_look, cursor_ground, player_combat, chase_camera).chain(),
             );
     }
 }
@@ -958,14 +957,16 @@ fn take_player_stance(
     }
 }
 
-/// The gamepad aim's eased cursor, each frame while a stick asks for it:
-/// its direction and distance place a point, which eases toward the new one
-/// by the AimSpeed factor. With no stick the resource is cleared and the
-/// mouse's point is used.
+/// The gamepad aim's eased cursor, each behaviour tick while a stick asks
+/// for it (its `z·z + x·x` over 0.01): its direction and magnitude place a
+/// point `250·|aim| + 50` cm out from the player, which the cursor eases
+/// toward by the AimSpeed factor. With no stick the resource is cleared and
+/// the mouse's point is used.
 fn pad_aim_cursor(
     config: Option<Res<crate::hw_config::HardwareConfig>>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     status: Option<Res<crate::gamepad::PadStatus>>,
+    ground: Res<CursorGround>,
     players: Query<&GlobalTransform, With<Player>>,
     mut aim: ResMut<AimCursor>,
 ) {
@@ -984,9 +985,12 @@ fn pad_aim_cursor(
     };
     let magnitude = (stick.x * stick.x + stick.z * stick.z).sqrt();
     let want = player.translation()
-        + stick.normalize_or_zero() * crate::player_behaviour::aim_distance(magnitude);
+        + stick.with_y(0.0)
+            * (crate::player_behaviour::aim_distance(magnitude) / magnitude / 100.0);
     let speed = config.map_or(0.29, |c| c.live.aim_speed);
-    let current = aim.0.unwrap_or(want);
+    // The first tick starts the ease from the mouse's point, as the
+    // original starts its screen cursor from the pointer.
+    let current = aim.0.or(ground.0).unwrap_or(want);
     aim.0 = Some(crate::player_behaviour::aim_point_step(
         current, want, speed,
     ));

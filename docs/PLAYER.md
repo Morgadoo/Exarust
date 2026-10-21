@@ -434,10 +434,11 @@ already down is not a press.
   behaviour takes the aim once its `z·z + x·x` is over 0.01: it puts the
   cursor point `250·|aim| + 50` cm out along it and eases the screen
   cursor there by `(0.4·AimSpeed + 0.1)²` a tick, the one place AimSpeed
-  acts. Exarust eases the world point the camera projects by the same
-  factor (`player::AimCursor`, `player_behaviour::aim_factor`)
-  and turns the combat aim to it; the projection step is Exarust's own,
-  and the screen point would ease the same way.
+  acts. Exarust eases the world point by the same factor each behaviour
+  tick, starting from the mouse's point (`player::AimCursor`,
+  `player_behaviour::aim_factor`), and turns the combat aim to it; the
+  original eases the screen point and picks it on the aim plane, which
+  follows a slightly different path to the same point.
 - **Zoom.** While `Zoom_In` is held the stepped camera takes ten zoom
   steps a frame, `Zoom_Out` minus ten, applied in that order and each held
   in the zoom range: a step is `(steps × 0.008333334) × stop`, the stop
