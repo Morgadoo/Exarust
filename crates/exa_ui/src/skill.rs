@@ -1,27 +1,44 @@
 //! The skill screen's node model and placement.
 //!
 //! A skill tree has six groups of eight nodes. The character record owns the
-//! skill points, the chosen techniques and the prerequisite table
-//! ([`exa_character::record`]); this module reads them, lays the ring and its
-//! satellites out and models the screen's interaction, tooltip and draw
-//! geometry. A positive index names a group and a node; a non-positive index
-//! takes the scaled base or the centre of the bounds.
+//! skill points, the chosen techniques, the prerequisite table and the
+//! surplus-choice query ([`exa_character::record`]); this module reads them,
+//! lays the ring and its satellites out and models the screen's own rules:
+//! the learning row's requirement mask, a node's press state, the screen's
+//! unlearning and choosing (which also keep the committed points), the
+//! experience pass and ready flag, and the icon, orbit, tooltip, popup and
+//! fade geometry. A node code holds a 1-based group in bits 8–15 and a
+//! 1-based level in bits 0–2; a non-positive index takes the scaled base or
+//! the centre of the bounds.
+//!
+//! The engine's sine-cosine helper returns the sine first; every ring and
+//! pentagon offset puts the sine across and the cosine down (or up).
 //!
 //! Evidence: the retail skill screen's methods (`docs/UI.md`, Forms).
 
-use exa_character::record::slot_prerequisites;
-use exa_formats::characters::{POINTS_PER_TECHNIQUE, SKILL_NAMES, SKILLS, Skill, TECHNIQUE_NAMES};
+use exa_character::record::{CharacterData, technique_prerequisites};
+use exa_formats::characters::{
+    MAX_TOTAL_LEVELS, POINTS_PER_TECHNIQUE, SKILL_NAMES, SKILLS, Skill, TECHNIQUE_NAMES,
+    WRITTEN_TECHNIQUES,
+};
 
 /// The nodes a skill group can hold (1-based node ids 1 to 8).
 pub const NODES_PER_GROUP: usize = 8;
-/// A node's requirement state: it cannot be chosen yet (no node there).
-pub const NODE_UNAVAILABLE: u8 = 0;
-/// A node's requirement state: it may be chosen, or is already chosen.
-pub const NODE_AVAILABLE: u8 = 1;
-/// A node's requirement state: its prerequisites are not met.
-pub const NODE_REQUIREMENTS_NOT_MET: u8 = 2;
-/// A node's requirement state: there is no node in the slot.
-pub const NODE_EMPTY: u8 = 3;
+/// A ring node's press state: nothing happens.
+pub const NODE_LOCKED: u8 = 0;
+/// A ring node's press state: the level is learnt; a press asks to forget it.
+pub const NODE_LEARNT: u8 = 1;
+/// A ring node's press state: the level is open; a press opens the learning
+/// row.
+pub const NODE_OPEN: u8 = 2;
+/// A learning-row slot that may be chosen.
+pub const REQUIREMENT_MET: u8 = 0;
+/// A learning-row slot whose technique the record already holds.
+pub const REQUIREMENT_CHOSEN: u8 = 1;
+/// A learning-row slot whose prerequisites are not funded.
+pub const REQUIREMENT_MISSING: u8 = 2;
+/// A learning-row slot the tree has no node for.
+pub const REQUIREMENT_ABSENT: u8 = 3;
 
 /// The skill screen's bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,34 +127,56 @@ pub fn leave_skill_ui(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkillRing {
     pub count: i32,
+    /// The ring radius in units (64, 58 with the inset layout flag, 72 on a
+    /// four-group page).
     pub offset_a: i32,
-    pub offset_b: i32,
+    /// The horizontal stretch (1.0 as built); it scales only the x offset.
+    pub offset_b: f32,
+    /// The reveal scale the draw stores; it also turns the ring as it opens.
     pub turn: f32,
     pub width: i32,
     pub height: i32,
     pub page: i32,
     pub unit: i32,
+    /// The global layout flag that moves a page's ring one unit left.
     pub scrolled: bool,
 }
 
-/// Places a skill node on the ring.
-pub fn skill_ring_position(slot: i32, ring: &SkillRing) -> (f32, f32) {
+/// The ring's centre: half the width (one unit less on a page with the
+/// global layout flag) and half the height, three units higher on the ring
+/// page.
+fn ring_centre(ring: &SkillRing) -> (f32, f32) {
+    let mut x = (ring.width / 2) as f32;
+    if ring.scrolled && ring.page > 0 {
+        x -= ring.unit as f32;
+    }
+    let y = ring.height / 2 - if ring.page == 0 { 3 * ring.unit } else { 0 };
+    (x, y as f32)
+}
+
+/// The angle of a ring slot: `(1 − turn) + (slot − shift)·2π / count`, the
+/// sum in the original's order.
+fn ring_angle(slot: f32, shift: f32, ring: &SkillRing) -> f32 {
+    (1.0 - ring.turn) + ((slot - shift) * std::f32::consts::TAU) / ring.count as f32
+}
+
+/// A ring node's offset from the centre: the radius times the unit times the
+/// engine's sine across (stretched by `offset_b`) and its cosine down, each
+/// rounded half to even and scaled by the reveal.
+fn ring_offset(angle: f32, ring: &SkillRing) -> (f32, f32) {
     let unit = ring.unit as f32;
-    let centre_x = ring.width / 2
-        - if ring.scrolled && ring.page > 0 {
-            ring.unit
-        } else {
-            0
-        };
-    let centre_y = ring.height / 2 - if ring.page == 0 { 3 * ring.unit } else { 0 };
-    let angle = (slot as f32 - 3.5) * (std::f32::consts::TAU / ring.count as f32) + 1.0 - ring.turn;
-    let x = centre_x as f32
-        + (ring.offset_a as f32 * (unit * angle.cos()) * ring.offset_b as f32).round_ties_even()
-            * ring.turn;
-    let y = centre_y as f32
-        + (ring.offset_a as f32 * (unit * angle.sin()) * ring.offset_b as f32).round_ties_even()
-            * ring.turn;
+    let radius = ring.offset_a as f32;
+    let x = (radius * (unit * angle.sin()) * ring.offset_b).round_ties_even() * ring.turn;
+    let y = (radius * (unit * angle.cos())).round_ties_even() * ring.turn;
     (x, y)
+}
+
+/// Places a skill node on the ring. The engine's sine-cosine helper hands
+/// back the sine first, and the x offset is the sine.
+pub fn skill_ring_position(slot: i32, ring: &SkillRing) -> (f32, f32) {
+    let (cx, cy) = ring_centre(ring);
+    let (ox, oy) = ring_offset(ring_angle(slot as f32, 3.5, ring), ring);
+    (ox + cx, oy + cy)
 }
 
 /// The skill ring's hit test inputs.
@@ -250,30 +289,29 @@ pub fn skill_hover(input: SkillHoverInput<'_>) -> SkillHover {
     out
 }
 
-/// Places the stored slot's satellite at a sample index.
+/// Places the stored slot's satellite at a sample index. `stored` is the
+/// group's ring slot from the screen's group-to-slot table (0-based, hence
+/// the `2.5` shift); the sample's offset is `18.3` units at a fifth of a
+/// turn per sample, the sine across and the cosine up, rounded in double
+/// precision.
 pub fn skill_satellite(stored: i32, sample: i32, ring: &SkillRing) -> (f32, f32) {
-    let unit = ring.unit as f32;
-    let centre_x = ring.width / 2
-        - if ring.scrolled && ring.page > 0 {
-            ring.unit
-        } else {
-            0
-        };
-    let centre_y = ring.height / 2 - if ring.page == 0 { 3 * ring.unit } else { 0 };
-    let angle =
-        (stored as f32 - 2.5) * (std::f32::consts::TAU / ring.count as f32) + 1.0 - ring.turn;
-    let node_x = centre_x as f32
-        + (ring.offset_a as f32 * (unit * angle.cos()) * ring.offset_b as f32).round_ties_even()
-            * ring.turn;
-    let node_y = centre_y as f32
-        + (ring.offset_a as f32 * (unit * angle.sin())).round_ties_even() * ring.turn;
-    let sample_angle = (sample - 1) as f32 * std::f32::consts::TAU * 0.2;
-    let radius = f64::from(ring.unit) * 18.3;
-    let x =
-        node_x + ((radius * f64::from(sample_angle.cos())).round_ties_even() as f32) * ring.turn;
-    let y =
-        node_y - ((radius * f64::from(sample_angle.sin())).round_ties_even() as f32) * ring.turn;
-    (x, y)
+    let (cx, cy) = ring_centre(ring);
+    let (ox, oy) = ring_offset(ring_angle(stored as f32, 2.5, ring), ring);
+    let (node_x, node_y) = (ox + cx, oy + cy);
+    let (sx, sy) = pentagon_offset(sample - 1, ring.unit);
+    (sx * ring.turn + node_x, node_y - sy * ring.turn)
+}
+
+/// The offset of a group's `slot`-th (0-based) pentagon point: `18.3`
+/// units at a fifth of a turn per slot, the sine across and the cosine up,
+/// each rounded half to even in double precision. Slot 0 is straight up.
+pub fn pentagon_offset(slot: i32, unit: i32) -> (f32, f32) {
+    let angle = slot as f32 * std::f32::consts::TAU * 0.2;
+    let radius = f64::from(unit) * 18.3;
+    (
+        (f64::from(angle.sin()) * radius).round_ties_even() as f32,
+        (f64::from(angle.cos()) * radius).round_ties_even() as f32,
+    )
 }
 
 /// The skill screen key handler's inputs.
@@ -444,11 +482,15 @@ pub struct SkillInputInput {
     pub page: i32,
     pub closing: i32,
     pub state: u16,
+    /// The node awaiting the forget confirmation.
     pub high: i32,
+    /// The node whose learning row is open.
     pub low: i32,
     pub hide: u8,
     pub flag_1ea: bool,
     pub clock: i32,
+    /// The learning row's requirement mask; a row slot (1–8) reads byte
+    /// `slot − 1`.
     pub used: [u8; 8],
     pub repage: i32,
     pub selected: i32,
@@ -582,7 +624,13 @@ pub fn handle_skill_input(input: SkillInputInput) -> SkillInputOutput {
         if out.index == 1 {
             out.select = true;
         }
-    } else if input.used.get(out.index as usize).copied().unwrap_or(0) == 0 {
+    } else if input
+        .used
+        .get((out.index - 1) as usize)
+        .copied()
+        .unwrap_or(0)
+        == 0
+    {
         if input.selected > 0 {
             out.select = true;
         }
@@ -611,9 +659,13 @@ pub struct SkillPointInput {
     pub width: i32,
     pub height: i32,
     pub unit: i32,
+    /// The node awaiting the forget confirmation; checked first.
     pub high: i32,
+    /// The node whose learning row is open.
     pub low: i32,
+    /// `high`'s position after the 41-unit tooltip clamp.
     pub high_point: (f32, f32),
+    /// `low`'s position after the 41-unit tooltip clamp.
     pub low_point: (f32, f32),
     pub fallback: i32,
 }
@@ -643,40 +695,43 @@ pub fn hit_skill_point(input: SkillPointInput) -> i32 {
     if input.state as u8 == 4 {
         return input.base;
     }
-    // `high` holds the group whose node row is open for learning: its
-    // eight slots lie from eight units above the group to its centre.
+    // `high` holds the node awaiting the forget confirmation (its point
+    // already moved into the window by the 41-unit tooltip clamp): Yes and
+    // No sit six to ten units below it, Yes 4 to 13 units left, No 4 to 13
+    // units right of the rounded (half to even) offset.
     if input.high > 0 {
         let (px, py) = input.high_point;
-        let top = py - 8.0 * (unit as f32);
+        let top = (6 * unit) as f32 + py;
         if top > y as f32 {
             return -1;
         }
-        if py < y as f32 {
-            return -1;
-        }
-        let slot = ((x as f32 - px) / (10.0 * unit as f32) + 4.5).round_ties_even() as i32;
-        if slot > 0 && slot < 9 {
-            return slot;
-        }
-        return -1;
-    }
-    // `low` holds a chosen group whose two arrows are six to ten units
-    // below its node.
-    if input.low > 0 {
-        let (px, py) = input.low_point;
-        let top = py + 6.0 * (unit as f32);
-        if top > y as f32 {
-            return -1;
-        }
-        if top + 4.0 * (unit as f32) < y as f32 {
+        if (4 * unit) as f32 + top < y as f32 {
             return -1;
         }
         let dx = (x as f32 - px).round_ties_even() as i32;
-        if dx > -13 * unit && dx < -4 * unit {
+        if -4 * unit > dx && -13 * unit < dx {
             return 1;
         }
-        if dx > 4 * unit && dx < 13 * unit {
+        if 4 * unit < dx && 13 * unit > dx {
             return 2;
+        }
+        return -1;
+    }
+    // `low` holds the node whose learning row is open (its point clamped
+    // the same way): the row's eight slots lie in the eight units above it,
+    // ten units apart, the slot rounded half to even.
+    if input.low > 0 {
+        let (px, py) = input.low_point;
+        let top = py - (8 * unit) as f32;
+        if top > y as f32 {
+            return -1;
+        }
+        if (8 * unit) as f32 + top < y as f32 {
+            return -1;
+        }
+        let slot = ((x as f32 - px) / (10 * unit) as f32 + 4.5).round_ties_even() as i32;
+        if slot > 0 && slot < 9 {
+            return slot;
         }
         return -1;
     }
@@ -704,11 +759,8 @@ pub struct SkillLink {
 }
 
 fn link_satellite(node: (f32, f32), slot: i32, unit: i32, turn: f32) -> (f32, f32) {
-    let angle = slot as f32 * std::f32::consts::TAU * 0.2;
-    let radius = f64::from(unit) * 18.3;
-    let x = node.0 + ((radius * f64::from(angle.cos())).round_ties_even() as f32) * turn;
-    let y = node.1 - ((radius * f64::from(angle.sin())).round_ties_even() as f32) * turn;
-    (x, y)
+    let (sx, sy) = pentagon_offset(slot, unit);
+    (sx * turn + node.0, node.1 - sy * turn)
 }
 
 fn link_metric(
@@ -896,797 +948,1180 @@ pub fn skill_screen_fade_in(
     }
 }
 
-/// The status text of a node already among the chosen ones.
+/// The status line of a learning-row node the record already holds.
 pub const STATUS_CHOSEN: &str = "Already chosen.";
-/// The status text of a node whose table prerequisite is missing.
+/// The status line of a learning-row node whose prerequisites are missing.
 pub const STATUS_REQUIREMENTS: &str = "Requirements not met.";
-/// The status text of a node with no technique.
+/// The status line of a learning-row slot the tree has no node for.
 pub const STATUS_UNAVAILABLE: &str = "Unavailable.";
+/// The forget dialog's title.
+pub const FORGET_TITLE: &str = "Forget Technique";
+/// The forget dialog's question.
+pub const FORGET_QUESTION: &str = "Forget all knowledge of this technique?";
 
-/// A node tooltip's text: its group and technique names, the status line
-/// and the points the level costs.
+/// The record's skill block as the screen addresses it: each skill is its
+/// points (two bytes, little-endian) then its six technique bytes, eight
+/// bytes a skill, so an index past a skill's techniques reads on into the
+/// next skill. The screen's loops do read that far (a level count can pass
+/// six); bytes past the sixth skill belong to the record's next field,
+/// which this model reads as 0 and never writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SkillNodeTip {
-    pub group: &'static str,
-    pub title: &'static str,
-    pub status: Option<&'static str>,
-    /// The points the node's level costs (`level × 5000`).
-    pub cost: u32,
-}
+struct SkillBlock([u8; SKILLS * 8]);
 
-/// The tooltip text of a node code, or `None` for an empty node. The
-/// technique table's empty names are empty nodes. `state` is the
-/// requirement state; a chosen node shows "Already chosen.", a node asking
-/// for requirements "Requirements not met." and an empty one
-/// "Unavailable.".
-pub fn skill_node_tip(index: i32) -> Option<SkillNodeTip> {
-    let group = usize::try_from((index >> 8) & 0x7).ok()?.checked_sub(1)?;
-    let node = usize::try_from(index & 0x7).ok()?.checked_sub(1)?;
-    let group_name = *SKILL_NAMES.get(group)?;
-    let title = *TECHNIQUE_NAMES.get(group)?.get(node)?;
-    if title.is_empty() {
-        return None;
+impl SkillBlock {
+    fn of(skills: &[Skill; SKILLS]) -> Self {
+        let mut bytes = [0u8; SKILLS * 8];
+        for (at, skill) in skills.iter().enumerate() {
+            let entry = &mut bytes[at * 8..at * 8 + 8];
+            entry[..2].copy_from_slice(&skill.points.to_le_bytes());
+            entry[2..].copy_from_slice(&skill.techniques);
+        }
+        Self(bytes)
     }
-    Some(SkillNodeTip {
-        group: group_name,
-        title,
-        status: None,
-        cost: skill_level_cost(node as u32 + 1),
-    })
-}
 
-/// The status line a node's cached requirement state shows.
-pub fn skill_node_status(requirements: u8) -> Option<&'static str> {
-    match requirements {
-        NODE_AVAILABLE => Some(STATUS_CHOSEN),
-        NODE_REQUIREMENTS_NOT_MET => Some(STATUS_REQUIREMENTS),
-        NODE_EMPTY => Some(STATUS_UNAVAILABLE),
-        _ => None,
+    fn store(&self, skills: &mut [Skill; SKILLS]) {
+        for (at, skill) in skills.iter_mut().enumerate() {
+            let entry = &self.0[at * 8..at * 8 + 8];
+            skill.points = u16::from_le_bytes([entry[0], entry[1]]);
+            skill.techniques.copy_from_slice(&entry[2..]);
+        }
+    }
+
+    fn byte(&self, at: usize) -> u8 {
+        self.0.get(at).copied().unwrap_or(0)
+    }
+
+    fn set_byte(&mut self, at: usize, value: u8) {
+        if let Some(byte) = self.0.get_mut(at) {
+            *byte = value;
+        }
+    }
+
+    /// The `index`-th technique byte of a 0-based skill.
+    fn technique(&self, skill: usize, index: usize) -> u8 {
+        self.byte(skill * 8 + 2 + index)
+    }
+
+    fn points(&self, skill: usize) -> u16 {
+        u16::from_le_bytes([self.byte(skill * 8), self.byte(skill * 8 + 1)])
+    }
+
+    fn set_points(&mut self, skill: usize, points: u16) {
+        let [low, high] = points.to_le_bytes();
+        self.set_byte(skill * 8, low);
+        self.set_byte(skill * 8 + 1, high);
     }
 }
 
-/// The requirement state of every node in a skill group.
+/// Which learning-row nodes the tree has: the screen's own node table marks
+/// each of a group's eight slots present or not. Ranged Combat has none;
+/// Close Combat's fifth to seventh (Draw, Impel, Brace), Armour's sixth to
+/// eighth and Shields' seventh and eighth are absent.
+pub const NODE_PRESENT: [[bool; NODES_PER_GROUP]; SKILLS] = [
+    [true, true, true, true, false, false, false, true],
+    [false; NODES_PER_GROUP],
+    [true, true, true, true, true, false, false, false],
+    [true, true, true, true, true, true, false, false],
+    [true; NODES_PER_GROUP],
+    [true; NODES_PER_GROUP],
+];
+
+/// The skill the screen draws when it has no record: 13 200 points with
+/// techniques 1, 3 and 5 chosen, a preview the group icons and orbit bars
+/// read in place of the character's.
+pub const PREVIEW_SKILL: Skill = Skill {
+    points: 13_200,
+    techniques: [1, 3, 5, 0, 0, 0],
+};
+
+/// The ring page's slot order: the group (0-based) each of the six ring
+/// slots shows, clockwise from the first.
+pub const RING_GROUPS: [usize; 6] = [0, 2, 4, 5, 3, 1];
+/// The inverse of [`RING_GROUPS`]: the 0-based ring slot of each group.
+pub const GROUP_SLOTS: [usize; 6] = [0, 5, 1, 4, 2, 3];
+/// A four-group page's slot order (the screen opened on a page).
+pub const PAGE_GROUPS: [usize; 4] = [1, 0, 2, 3];
+/// The inverse of [`PAGE_GROUPS`].
+pub const PAGE_SLOTS: [usize; 4] = [1, 0, 2, 3];
+
+/// The requirement mask of a group's learning row: one byte per node slot.
 ///
-/// The returned bytes are indexed by the node's 0-based slot:
-/// [`NODE_AVAILABLE`] for a chosen node, [`NODE_REQUIREMENTS_NOT_MET`] when
-/// one of its table prerequisites is not among the first `level` choices,
-/// [`NODE_EMPTY`] when the slot has no node, else 0. `skill` is 0-based.
-///
-/// The table is the character record's; this only orders it as the screen
-/// does: the five chosen nodes first, then each slot's two prerequisites.
+/// The chosen techniques of the five written slots mark their nodes
+/// [`REQUIREMENT_CHOSEN`]; a slot the tree has no node for becomes
+/// [`REQUIREMENT_ABSENT`] (over a chosen mark); then every still-open slot
+/// whose prerequisite (each of the two, in turn) is not among the
+/// techniques the points fund becomes [`REQUIREMENT_MISSING`]. Both
+/// prerequisites must be held: Dual Wield wants Remise and Riposte. The
+/// funded run is read through the record's byte layout, so a level count
+/// past six reads the next skill's bytes, as the original does. The
+/// prerequisite ids are the character record's table
+/// ([`technique_prerequisites`]); the screen keeps an identical copy.
+/// `skill` is 0-based.
 pub fn skill_requirements(skill: usize, skills: &[Skill; SKILLS]) -> [u8; NODES_PER_GROUP] {
-    let mut state = [0u8; NODES_PER_GROUP];
-    let Some(entry) = skills.get(skill) else {
-        return state;
-    };
-    for &node in entry.techniques.iter().take(5) {
-        if node != 0 && usize::from(node) <= NODES_PER_GROUP {
-            state[usize::from(node) - 1] = NODE_AVAILABLE;
+    let mut mask = [REQUIREMENT_MET; NODES_PER_GROUP];
+    if skill >= SKILLS {
+        return mask;
+    }
+    let block = SkillBlock::of(skills);
+    for index in 0..WRITTEN_TECHNIQUES {
+        let technique = block.technique(skill, index);
+        // An id past the eighth would write past the mask in the original.
+        if let Some(slot) = usize::from(technique)
+            .checked_sub(1)
+            .and_then(|at| mask.get_mut(at))
+        {
+            *slot = REQUIREMENT_CHOSEN;
         }
     }
-    let level = usize::try_from(entry.levels()).unwrap_or(usize::MAX);
-    for (node, slot) in state.iter_mut().enumerate() {
-        let prerequisites = slot_prerequisites(skill, node);
-        if prerequisites[0] == 0 {
-            *slot = NODE_EMPTY;
+    for (slot, present) in mask.iter_mut().zip(NODE_PRESENT[skill]) {
+        if !present {
+            *slot = REQUIREMENT_ABSENT;
         }
-        for prerequisite in prerequisites {
-            if prerequisite != 0 && *slot == 0 {
-                let chosen = entry
-                    .techniques
-                    .iter()
-                    .take(level)
-                    .take(entry.techniques.len())
-                    .any(|&chosen| chosen == prerequisite);
-                if !chosen {
-                    *slot = NODE_REQUIREMENTS_NOT_MET;
-                }
+    }
+    let funded = usize::from(block.points(skill) / POINTS_PER_TECHNIQUE);
+    for which in 0..2 {
+        for (node, slot) in mask.iter_mut().enumerate() {
+            let need = technique_prerequisites(skill, node as u8 + 1)[which];
+            if need == 0 || *slot != REQUIREMENT_MET {
+                continue;
+            }
+            if !(0..funded).any(|at| block.technique(skill, at) == need) {
+                *slot = REQUIREMENT_MISSING;
             }
         }
     }
-    state
+    mask
 }
 
-/// A node's own state for the tooltip and the selection rules.
+/// What a press on a ring node does: [`NODE_LOCKED`], [`NODE_LEARNT`] (the
+/// forget dialog opens) or [`NODE_OPEN`] (the learning row opens).
 ///
-/// `index` is the screen's node code: the group in bits 8-10 (1-based) and
-/// the node in bits 0-2 (1-based). The result is [`NODE_UNAVAILABLE`],
-/// [`NODE_AVAILABLE`] or [`NODE_REQUIREMENTS_NOT_MET`]. `can_learn` is the
-/// screen's own "a level is ready" flag. A node below the group's level is
-/// always available; the next one is available while its level's technique
-/// is chosen and the level is finished, or when a level is ready and no
-/// technique has been chosen there yet.
-pub fn skill_node_state(skill: &Skill, index: i32, can_learn: bool) -> u8 {
-    let group = (index >> 8) & 0xff;
-    let node = index & 7;
-    if group == 0 || node == 0 {
-        return NODE_UNAVAILABLE;
+/// `code` is the screen's node code, the group in bits 8–15 (1-based) and
+/// the level in bits 0–2 (1-based); either 0 is locked. A level the points
+/// fund is learnt. The next level is open while a level is `ready` and its
+/// technique byte is empty; with a technique already chosen there (ahead of
+/// the points) it is learnt once the skill sits more than ten points past
+/// its funded levels, else still open. Any later level is locked. The
+/// technique byte is read through the record's layout (a seventh level
+/// reads the next skill's points).
+pub fn skill_node_state(skills: &[Skill; SKILLS], code: i32, ready: bool) -> u8 {
+    let group = usize::try_from((code >> 8) & 0xff).unwrap_or(0);
+    let level = usize::try_from(code & 7).unwrap_or(0);
+    // A group past the six reads outside the record in the original.
+    if group == 0 || level == 0 || group > SKILLS {
+        return NODE_LOCKED;
     }
-    let slot = usize::try_from(node).unwrap_or(0);
-    let level = usize::try_from(skill.levels()).unwrap_or(usize::MAX);
-    if level >= slot {
-        return NODE_AVAILABLE;
+    let block = SkillBlock::of(skills);
+    let skill = group - 1;
+    let points = block.points(skill);
+    let funded = usize::from(points / POINTS_PER_TECHNIQUE);
+    if funded >= level {
+        return NODE_LEARNT;
     }
-    if level + 1 != slot {
-        return NODE_UNAVAILABLE;
+    if funded + 1 != level {
+        return NODE_LOCKED;
     }
-    let chosen = skill.techniques.get(slot - 1).copied().unwrap_or_default();
-    if chosen == 0 {
-        if can_learn {
-            NODE_REQUIREMENTS_NOT_MET
+    if block.technique(skill, level - 1) == 0 {
+        return if ready { NODE_OPEN } else { NODE_LOCKED };
+    }
+    let past = i64::from(points) - funded as i64 * i64::from(POINTS_PER_TECHNIQUE);
+    if past > 10 { NODE_LEARNT } else { NODE_OPEN }
+}
+
+/// The deepest unlearning chain this model follows; the shipped table's
+/// chains are three long, and the original has no bound.
+const MAX_UNLEARN_DEPTH: usize = 64;
+
+/// Unlearns a level of a group, as the skill screen does: its own variant of
+/// the record's rule, which also keeps the screen's committed points
+/// (`base`, the points the group had before this visit's experience).
+///
+/// `group` and `level` are 1-based (a group of 0 does nothing). The points
+/// change first, by where the level sits against the committed and the
+/// record's levels:
+/// - at or below the committed levels: both lose 5000;
+/// - one past them: the committed points round down to their levels, and
+///   the record's points lose 5000 while it holds more levels, else take
+///   the committed points;
+/// - further out: the record's points lose 5000 when it funds the level,
+///   else round down to their levels.
+///
+/// Then the level's technique leaves (the later written slots move down,
+/// the fifth clears) and, from the last funded level down, every technique
+/// that lists the removed one as a prerequisite is unlearned in turn. All
+/// arithmetic is 16-bit and wraps. The prerequisite table is the character
+/// record's ([`technique_prerequisites`]).
+pub fn unlearn_skill_level(
+    skills: &mut [Skill; SKILLS],
+    base: &mut [u16; SKILLS],
+    group: u16,
+    level: u16,
+) {
+    let mut block = SkillBlock::of(skills);
+    unlearn_in_block(&mut block, base, group, level, 0);
+    block.store(skills);
+}
+
+fn unlearn_in_block(
+    block: &mut SkillBlock,
+    base: &mut [u16; SKILLS],
+    group: u16,
+    level: u16,
+    depth: usize,
+) {
+    if group == 0 || depth > MAX_UNLEARN_DEPTH {
+        return;
+    }
+    let skill = usize::from(group - 1);
+    // A group past the six writes outside the record in the original.
+    if skill >= SKILLS {
+        return;
+    }
+    let step = POINTS_PER_TECHNIQUE;
+    let committed = base[skill] / step;
+    let points = block.points(skill);
+    let funded = points / step;
+    if level > committed {
+        if u32::from(committed) + 1 < u32::from(level) {
+            if level > funded {
+                block.set_points(skill, funded.wrapping_mul(step));
+            } else {
+                block.set_points(skill, points.wrapping_sub(step));
+            }
         } else {
-            NODE_UNAVAILABLE
+            base[skill] = committed.wrapping_mul(step);
+            if committed < funded {
+                block.set_points(skill, points.wrapping_sub(step));
+            } else {
+                block.set_points(skill, base[skill]);
+            }
         }
     } else {
-        let spent = (level as u16).wrapping_mul(POINTS_PER_TECHNIQUE);
-        if skill.points.wrapping_sub(spent) <= 10 {
-            NODE_REQUIREMENTS_NOT_MET
-        } else {
-            NODE_AVAILABLE
+        base[skill] = base[skill].wrapping_sub(step);
+        block.set_points(skill, points.wrapping_sub(step));
+    }
+    let entry = skill * 8;
+    let removed = block.byte(entry + 1 + usize::from(level));
+    // The shift runs from the level's slot to the fifth; a level of 0 starts
+    // one byte early, on the points' high byte, as the original's does.
+    let first = i32::from(level) - 1;
+    if first <= 4 {
+        for at in first..=4 {
+            let to = (entry as i32 + 2 + at) as usize;
+            block.set_byte(to, block.byte(to + 1));
+        }
+    }
+    block.set_byte(entry + 6, 0);
+    for at in (0..usize::from(funded)).rev() {
+        let technique = block.technique(skill, at);
+        let needs = technique_prerequisites(skill, technique);
+        if needs.contains(&removed) {
+            unlearn_in_block(block, base, group, at as u16 + 1, depth + 1);
         }
     }
 }
 
-/// Whether the screen shows a level ready to spend. The rule is the
-/// character record's [`exa_character::record::CharacterData::skill_ready`].
-pub fn skill_can_learn(data: &exa_character::record::CharacterData) -> bool {
-    data.skill_ready()
-}
-
-/// The experience a skill level costs: one [`POINTS_PER_TECHNIQUE`] a level.
-pub fn skill_level_cost(level: u32) -> u32 {
-    level.saturating_mul(u32::from(POINTS_PER_TECHNIQUE))
-}
-
-/// The points still needed for a skill's next level.
-pub fn skill_cost_remaining(skill: &Skill) -> u32 {
-    let level = skill.levels();
-    skill_level_cost(level + 1).saturating_sub(u32::from(skill.points))
-}
-
-/// A skill's progress within its current level and the level's cost.
-pub fn skill_level_progress(skill: &Skill) -> (u16, u16) {
-    (skill.points % POINTS_PER_TECHNIQUE, POINTS_PER_TECHNIQUE)
-}
-
-/// Unlearns the node of a group and level, with the record's dependent and
-/// point rules. `skill` and `level` are 1-based, as the screen's node code.
-/// Returns the first technique removed, if the record had one.
-pub fn unlearn_skill_node(
-    data: &mut exa_character::record::CharacterData,
-    skill: usize,
-    level: u32,
-) -> Option<u8> {
-    data.unlearn_level(skill, level)
-}
-
-/// Chooses a node after its requirements were met. The record removes a
-/// technique that its points do not fund first, then writes the node.
-pub fn choose_skill_node(
-    data: &mut exa_character::record::CharacterData,
-    skill: usize,
-    level: u32,
-) -> bool {
-    data.choose_technique(skill, level)
-}
-
-/// The leftover experience after a share was distributed into the shown
-/// skill points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SkillExperience {
-    /// The shown points of the six groups after the pass.
-    pub shown: [u16; SKILLS],
-    /// What did not fit and stays for the next pass.
-    pub leftover: u32,
-}
-
-/// Distributes experience into the six groups' shown points.
+/// The skill screen's experience pass: spends the screen's global experience
+/// on the record's skill points, as the shown levels allow.
 ///
-/// `data.record.skills[*].points` are the target points. A partial group
-/// takes the next share first (`remainder × weight / 4`), then complete
-/// levels fill in at `weight × 5000 / 4` each, and what is left goes to the
-/// first unfunded choice or the first group below the cap. The weight is
-/// four plus the levels already shown. This follows the screen's arithmetic;
-/// the choice of the final group is a guess, because the experience system's
-/// selector is outside the evidence. Points are stored in 16-bit fields and
-/// wrap as the original's do.
-pub fn distribute_skill_experience(
-    data: &exa_character::record::CharacterData,
-    shown: &mut [u16; SKILLS],
-    gained: u32,
-) -> SkillExperience {
-    let skills = &data.record.skills;
-    let mut weight = 4i64;
-    let mut partial: Option<(usize, i64)> = None;
-    for (group, skill) in skills.iter().enumerate() {
-        let levels = i64::from(skill.points / POINTS_PER_TECHNIQUE);
-        weight += levels;
-        let remainder = i64::from(skill.points % POINTS_PER_TECHNIQUE);
-        if remainder != 0 {
-            partial = Some((group, i64::from(POINTS_PER_TECHNIQUE) - remainder));
+/// `base` holds the committed points; the record's points are rewritten
+/// from them. `budget` is the experience's worth in points (the experience
+/// system's conversion of the screen's global experience). The weight
+/// starts at four plus the committed levels. The last group with a partial
+/// committed level is topped up first: that costs the missing points times
+/// the weight, quartered toward zero; a smaller budget adds
+/// `budget × 4 / weight` (in double precision, truncated) instead and is
+/// spent. Then every level between a group's committed (or topped-up) level
+/// and its record level costs `weight × 5000 / 4`, the weight rising after
+/// each. Whatever is left, even below zero, goes to the record's surplus
+/// choice (the first skill whose next written technique is ahead of its
+/// points): a full level when it covers `weight × 5000 / 4`, else the share
+/// on top of the level below. Returns what is left, which the screen turns
+/// back into global experience. The budget is 32-bit and its comparisons
+/// with the costs read it unsigned, as the original's do.
+pub fn spend_skill_experience(data: &mut CharacterData, base: &[u16; SKILLS], budget: u32) -> u32 {
+    let step = i64::from(POINTS_PER_TECHNIQUE);
+    let mut weight: i32 = 4;
+    let mut partial: Option<(usize, i32)> = None;
+    for (group, &committed) in base.iter().enumerate() {
+        let levels = i32::from(committed / POINTS_PER_TECHNIQUE);
+        weight = weight.wrapping_add(levels);
+        if i64::from(levels) * step < i64::from(committed) {
+            partial = Some((group, (levels + 1) * 5000 - i32::from(committed)));
         }
     }
-    let mut left = i64::from(gained);
-    if let Some((group, remainder)) = partial {
-        let cost = remainder * weight / 4;
-        if left < cost {
-            let share = left * 4 / weight;
-            shown[group] = (i64::from(skills[group].points) + share) as u16;
+    let share = |budget: u32, weight: i32| -> i64 {
+        ((f64::from(budget) * 4.0) / f64::from(weight)) as i64
+    };
+    let mut left = budget;
+    if let Some((group, need)) = partial {
+        let cost = quarter(i64::from(need) * i64::from(weight)) as i32;
+        let skill = &mut data.record.skills[group];
+        if i64::from(cost) > i64::from(left) {
+            skill.points = (share(left, weight) + i64::from(base[group])) as u16;
             left = 0;
         } else {
-            shown[group] = (i64::from(skills[group].points) + remainder) as u16;
-            left -= cost;
-            weight += 1;
+            skill.points = (i32::from(base[group]) + need) as u16;
+            left = left.wrapping_sub(cost as u32);
+            weight = weight.wrapping_add(1);
         }
     }
-    for (group, skill) in skills.iter().enumerate() {
-        let mut levels = i64::from(skill.points / POINTS_PER_TECHNIQUE);
+    for (group, &committed) in base.iter().enumerate() {
+        let mut from = i32::from(committed / POINTS_PER_TECHNIQUE);
         if partial.is_some_and(|(at, _)| at == group) {
-            levels += 1;
+            from += 1;
         }
-        let target = i64::from(shown[group] / POINTS_PER_TECHNIQUE) - 1;
-        let mut at = levels;
-        while at <= target {
-            left -= weight * i64::from(POINTS_PER_TECHNIQUE) / 4;
-            weight += 1;
-            at += 1;
+        let last = i32::from(data.record.skills[group].points / POINTS_PER_TECHNIQUE) - 1;
+        for _ in from..=last {
+            left = left.wrapping_sub(quarter(i64::from(weight) * step) as i32 as u32);
+            weight = weight.wrapping_add(1);
         }
     }
-    if left > 0 {
-        // Guess: the record's surplus choice is the group the leftover
-        // belongs to; with none, the first group below the cap.
-        let target = data.surplus_chosen_level().or_else(|| {
-            skills
-                .iter()
-                .position(|skill| skill.levels() < 8)
-                .map(|group| {
-                    (
-                        group + 1,
-                        u32::from(shown[group] / POINTS_PER_TECHNIQUE) + 1,
-                    )
-                })
-        });
-        if let Some((group, level)) = target {
-            let group = group.saturating_sub(1);
-            if group < SKILLS {
-                let cost = weight * i64::from(POINTS_PER_TECHNIQUE) / 4;
-                if left < cost {
-                    let share = left * 4 / weight;
-                    let base = (level.saturating_sub(1) as i64) * i64::from(POINTS_PER_TECHNIQUE);
-                    shown[group] = (base + share) as u16;
-                    left = 0;
-                } else {
-                    shown[group] = ((level as i64) * i64::from(POINTS_PER_TECHNIQUE)) as u16;
-                    left -= cost;
-                }
-            }
+    if left != 0
+        && let Some((skill, level)) = data.surplus_chosen_level()
+    {
+        let cost = i64::from(quarter(i64::from(weight) * step) as i32);
+        let level = i64::from(level);
+        let entry = &mut data.record.skills[skill - 1];
+        if cost > i64::from(left) {
+            entry.points = (share(left, weight) + (level - 1) * step) as u16;
+            left = 0;
+        } else {
+            entry.points = (level * step) as u16;
+            left = left.wrapping_sub(cost as i32 as u32);
         }
     }
-    SkillExperience {
-        shown: *shown,
-        leftover: u32::try_from(left.max(0)).unwrap_or(u32::MAX),
-    }
+    left
 }
 
-/// The skill screen's view state: the ring's bounds and zoom, the selected
-/// node and the ready-level flag.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// `value / 4`, rounded toward zero as the original's shift-with-bias.
+fn quarter(value: i64) -> i64 {
+    value / 4
+}
+
+/// The skill screen's model: the record it edits, its ring, its pending
+/// learn or forget choice and the fades.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillScreen {
     pub bounds: SkillBounds,
     pub unit: i32,
-    /// The number of groups on the ring (six in the retail tree).
+    /// The groups on the ring: six, or four on a page.
     pub count: i32,
-    /// The compact character-creation layout (a smaller ring radius).
-    pub compact: bool,
-    pub zoom: f32,
-    /// The ring radius in units (64, or 58 compact).
+    /// The ring radius in units: 64, 58 with the global inset-layout flag,
+    /// 72 on a page.
     pub radius: i32,
-    /// The 1-based selected node code; 0 for none.
-    pub selected: i32,
-    /// The 1-based group whose detail is open; 0 for the ring.
+    /// The ring's horizontal stretch (1.0 as built).
+    pub stretch: f32,
+    /// The page the screen opened on; 0 is the ring.
     pub page: i32,
-    /// A node waiting for its choice to be confirmed.
-    pub pending: i32,
-    pub requirements: [u8; NODES_PER_GROUP],
-    /// Bit 1 is drawn, bit 2 is fading in.
+    /// The global inset-layout flag (it also moves a page's ring a unit).
+    pub inset: bool,
+    /// Bit 1 is the reveal, bit 2 the hide; 4 is hidden.
     pub state: u8,
-    /// The reveal deadline (bit 1).
-    pub show_deadline: i32,
-    /// The hide deadline (bit 2).
+    /// The reveal's end (500 ms after the screen is built).
+    pub reveal_deadline: i32,
+    /// The hide's end.
     pub hide_deadline: i32,
-    /// The forget dialog's close clock.
-    pub forget_deadline: i32,
+    /// The learning row's and forget dialog's fade: bit 1 opening, bit 2
+    /// closing.
+    pub popup: u8,
+    pub popup_deadline: i32,
+    /// The node code (or row slot, or arrow) under the pointer.
+    pub hover: i32,
+    /// The node whose learning row is open; 0 for none.
+    pub learning: i32,
+    /// The node awaiting the forget confirmation; 0 for none.
+    pub forgetting: i32,
+    /// The learning row's requirement mask.
+    pub requirements: [u8; NODES_PER_GROUP],
+    /// The committed points of each group, before this visit's experience.
+    pub base: [u16; SKILLS],
+    /// The global experience the screen may spend.
+    pub experience: u32,
+    /// The global experience left after the last pass.
+    pub leftover: i32,
+    /// Whether a level is ready to spend.
+    pub ready: bool,
+    /// A locked screen never has a level ready.
+    pub locked: bool,
+}
+
+/// Converts experience to its worth in skill points and back (the
+/// experience system's two conversions, which live with the game).
+#[derive(Clone, Copy)]
+pub struct ExperienceRates {
+    pub worth: fn(u32) -> u32,
+    pub experience: fn(i32) -> i32,
 }
 
 impl SkillScreen {
-    /// A screen at the original's constructor defaults: six groups, full
-    /// zoom, a 64-unit ring (58 compact), bit 1 set.
-    pub fn open(bounds: SkillBounds, unit: i32, compact: bool) -> Self {
+    /// A screen as the original builds it: six groups at a 64-unit radius
+    /// (58 with the inset-layout flag), stretch 1, the reveal running for
+    /// 500 ms. A positive `page` opens a four-group page at a 72-unit
+    /// radius instead.
+    pub fn open(bounds: SkillBounds, unit: i32, inset: bool, page: i32, clock: i32) -> Self {
+        let (count, radius) = if page > 0 {
+            (4, 72)
+        } else {
+            (6, if inset { 58 } else { 64 })
+        };
         Self {
             bounds,
             unit,
-            count: 6,
-            compact,
-            zoom: 1.0,
-            radius: if compact { 58 } else { 64 },
-            selected: 0,
-            page: 0,
-            pending: 0,
-            requirements: [0; NODES_PER_GROUP],
+            count,
+            radius,
+            stretch: 1.0,
+            page: page.max(0),
+            inset,
             state: 1,
-            show_deadline: 0,
+            reveal_deadline: clock.wrapping_add(500),
             hide_deadline: 0,
-            forget_deadline: 0,
+            popup: 0,
+            popup_deadline: 0,
+            hover: 0,
+            learning: 0,
+            forgetting: 0,
+            requirements: [REQUIREMENT_MET; NODES_PER_GROUP],
+            base: [0; SKILLS],
+            experience: 0,
+            leftover: 0,
+            ready: false,
+            locked: false,
         }
     }
 
-    /// Starts the reveal: bit 1 and the deadline `delay` ms on.
-    pub fn reveal(&mut self, clock: i32, delay: i32) {
-        self.state |= 1;
-        self.show_deadline = clock.saturating_add(delay);
-    }
-
-    /// Starts the hide: bit 2 set and the 256 ms tail stamped.
-    pub fn begin_hide(&mut self, clock: i32) {
-        self.state |= 2;
-        self.hide_deadline = clock.saturating_add(256);
-    }
-
-    /// The fade the draw body computes: 0 when closed, 1 when not fading,
-    /// the smoothstepped `1 − 0.002 × remaining` while fading in, then the
-    /// bit-2 fraction over 256 ms.
-    pub fn alpha(&mut self, clock: i32) -> f32 {
-        if self.state == 4 {
-            return 0.0;
-        }
-        let mut alpha = if self.state & 1 == 0 {
-            1.0
-        } else if clock < self.show_deadline {
-            let t = (1.0 - f64::from(self.show_deadline - clock) * 0.002) as f32;
-            t * (2.0 - t)
+    /// The group (0-based) a 1-based ring slot shows.
+    pub fn slot_group(&self, slot: i32) -> Option<usize> {
+        let at = usize::try_from(slot).ok()?.checked_sub(1)?;
+        if self.page > 0 {
+            PAGE_GROUPS.get(at).copied()
         } else {
-            self.state &= !1;
-            1.0
-        };
-        if self.state & 2 != 0 {
-            if clock < self.hide_deadline {
-                alpha *= (self.hide_deadline - clock) as f32 / 256.0;
-            } else {
-                self.state = 4;
-                alpha = 0.0;
-            }
+            RING_GROUPS.get(at).copied()
         }
-        alpha
     }
 
-    /// Places a group's node on the ring: the first node on the top.
-    pub fn group_position(&self, group: i32) -> (f32, f32) {
-        let ring = SkillRing {
+    /// The 1-based ring slot of a 0-based group.
+    pub fn group_slot(&self, group: usize) -> Option<i32> {
+        let slot = if self.page > 0 {
+            PAGE_SLOTS.get(group)
+        } else {
+            GROUP_SLOTS.get(group)
+        };
+        slot.map(|&at| at as i32 + 1)
+    }
+
+    /// The ring's layout at a reveal scale.
+    pub fn ring(&self, turn: f32) -> SkillRing {
+        SkillRing {
             count: self.count,
             offset_a: self.radius,
-            offset_b: 1,
-            turn: self.zoom,
+            offset_b: self.stretch,
+            turn,
             width: self.bounds.right - self.bounds.left,
             height: self.bounds.bottom - self.bounds.top,
-            page: if self.page == 0 { 0 } else { 1 },
+            page: self.page,
             unit: self.unit,
-            scrolled: false,
-        };
-        skill_ring_position(group, &ring)
+            scrolled: self.inset,
+        }
     }
 
-    /// Selects a node code and returns its node state: an available node
-    /// opens its group's detail; one asking for requirements stores the
-    /// pending choice.
-    pub fn select(&mut self, data: &exa_character::record::CharacterData, index: i32) -> u8 {
-        self.selected = index.max(0);
-        let group = usize::try_from((index >> 8) & 0x7).unwrap_or(0);
-        let state = data
-            .record
-            .skills
-            .get(group.saturating_sub(1))
-            .map(|skill| skill_node_state(skill, index, data.skill_ready()))
-            .unwrap_or(NODE_UNAVAILABLE);
-        if state == NODE_AVAILABLE {
-            self.page = ((index >> 8) & 0x7).max(1);
-            self.requirements = skill_requirements(group.saturating_sub(1), &data.record.skills);
-            self.pending = 0;
-        } else if state == NODE_REQUIREMENTS_NOT_MET {
-            self.pending = index;
-            self.requirements = skill_requirements(group.saturating_sub(1), &data.record.skills);
-        } else {
-            self.pending = 0;
+    /// The draw's two fades: the reveal scale (it also spreads and turns
+    /// the ring) and the alpha, after the reveal and hide clocks. The hide
+    /// scales the alpha by its remaining part of 256 ms and, once over,
+    /// hides the screen. Updates the state bits as the draw does.
+    pub fn fade(&mut self, clock: i32) -> (f32, f32) {
+        let reveal = skill_screen_fade(self.state, self.reveal_deadline, clock);
+        if reveal.cleared {
+            self.state &= !1;
         }
+        let hide = skill_screen_fade_in(
+            self.state,
+            self.hide_deadline,
+            clock,
+            reveal.alpha,
+            256.0,
+            self.page,
+        );
+        self.state = hide.state;
+        if self.state == 4 {
+            return (0.0, 0.0);
+        }
+        (reveal.sound, hide.sound)
+    }
+
+    /// Starts the hide: bit 2 and a 256 ms deadline.
+    pub fn begin_hide(&mut self, clock: i32) {
+        self.state |= 2;
+        self.hide_deadline = clock.wrapping_add(256);
+    }
+
+    /// A press on a ring node while nothing is pending: a learnt node asks
+    /// to be forgotten, an open one opens its learning row (with the
+    /// group's requirement mask), and either starts the popup's 300 ms
+    /// opening. Returns the node's state.
+    pub fn press_node(&mut self, skills: &[Skill; SKILLS], code: i32, clock: i32) -> u8 {
+        let state = skill_node_state(skills, code, self.ready);
+        match state {
+            NODE_LEARNT => self.forgetting = code,
+            NODE_OPEN => {
+                self.learning = code;
+                let group = usize::try_from((code >> 8) & 7).unwrap_or(0);
+                self.requirements = group
+                    .checked_sub(1)
+                    .map(|skill| skill_requirements(skill, skills))
+                    .unwrap_or([REQUIREMENT_MET; NODES_PER_GROUP]);
+            }
+            _ => return state,
+        }
+        self.popup = 1;
+        self.popup_deadline = clock.wrapping_add(300);
         state
     }
 
-    /// Confirms the pending node, spending its level. Returns whether a
-    /// technique was written.
-    pub fn confirm(&mut self, data: &mut exa_character::record::CharacterData) -> bool {
-        if self.pending <= 0 {
-            return false;
+    /// The second press while a choice is pending. With the forget dialog
+    /// up, `hover` 1 (Yes) unlearns the node's level. With the learning row
+    /// open, a slot (`hover`, 1–8) whose requirement byte is clear first
+    /// unlearns the record's surplus choice, then writes that technique into
+    /// the pending level's slot. Either refreshes the ready flag; then the
+    /// popup starts its 200 ms close unless it is already fading. Returns
+    /// whether the record changed.
+    pub fn commit(
+        &mut self,
+        data: &mut CharacterData,
+        hover: i32,
+        clock: i32,
+        rates: ExperienceRates,
+    ) -> bool {
+        let mut changed = false;
+        if self.forgetting != 0 {
+            if hover == 1 {
+                let group = ((self.forgetting >> 8) & 7) as u16;
+                let level = (self.forgetting & 7) as u16;
+                unlearn_skill_level(&mut data.record.skills, &mut self.base, group, level);
+                self.refresh(data, rates);
+                changed = true;
+            }
+        } else if let Some(&clear) = usize::try_from(hover)
+            .ok()
+            .and_then(|at| at.checked_sub(1))
+            .and_then(|at| self.requirements.get(at))
+            && clear == REQUIREMENT_MET
+        {
+            if let Some((skill, level)) = data.surplus_chosen_level() {
+                unlearn_skill_level(
+                    &mut data.record.skills,
+                    &mut self.base,
+                    skill as u16,
+                    level as u16,
+                );
+            }
+            let group = usize::try_from((self.learning >> 8) & 7).unwrap_or(0);
+            let level = usize::try_from(self.learning & 7).unwrap_or(0);
+            if let Some(skill) = group.checked_sub(1) {
+                let mut block = SkillBlock::of(&data.record.skills);
+                block.set_byte(skill * 8 + 1 + level, hover as u8);
+                block.store(&mut data.record.skills);
+            }
+            self.refresh(data, rates);
+            changed = true;
         }
-        let group = usize::try_from((self.pending >> 8) & 0x7).unwrap_or(0);
-        let level = usize::try_from(self.pending & 0x7).unwrap_or(0);
-        self.pending = 0;
-        if group == 0 || level == 0 {
-            return false;
+        if self.popup == 0 {
+            self.popup = 2;
+            self.popup_deadline = clock.wrapping_add(200);
         }
-        choose_skill_node(data, group, level as u32)
+        changed
     }
 
-    /// Forgets the selected node's technique, with its dependents.
-    pub fn forget(&mut self, data: &mut exa_character::record::CharacterData) -> Option<u8> {
-        let group = usize::try_from((self.selected >> 8) & 0x7).unwrap_or(0);
-        let level = usize::try_from(self.selected & 0x7).unwrap_or(0);
-        if group == 0 || level == 0 {
-            return None;
+    /// Refreshes the ready flag. A locked screen is never ready. Otherwise
+    /// the screen spends its experience first (when it has any); while
+    /// experience is left over a level is ready. With none left, the scan
+    /// stops at the first skill whose next technique byte is set (read
+    /// through the record's layout): that skill must sit no more than ten
+    /// points past its funded levels, and the levels counted up to there
+    /// must stay below the total cap.
+    pub fn refresh(&mut self, data: &mut CharacterData, rates: ExperienceRates) {
+        if self.locked {
+            self.ready = false;
+            return;
         }
-        unlearn_skill_node(data, group, level as u32)
+        self.ready = true;
+        if self.experience != 0 {
+            let left = spend_skill_experience(data, &self.base, (rates.worth)(self.experience));
+            self.leftover = (rates.experience)(left as i32);
+        }
+        if self.leftover != 0 {
+            return;
+        }
+        let block = SkillBlock::of(&data.record.skills);
+        let mut total = 0u32;
+        for skill in 0..SKILLS {
+            let points = block.points(skill);
+            let funded = points / POINTS_PER_TECHNIQUE;
+            total += u32::from(funded);
+            if block.technique(skill, usize::from(funded)) != 0 {
+                if i64::from(funded) * 5000 + 10 < i64::from(points) {
+                    self.ready = false;
+                }
+                break;
+            }
+        }
+        if total >= MAX_TOTAL_LEVELS {
+            self.ready = false;
+        }
     }
 }
 
-/// The screen's icons are one atlas cell each. This is the normalised atlas
-/// point a 1-based icon draws from: the cell's column and row in the grid.
-///
-/// `cell` is the cell size in pixels, `columns` and `rows` the atlas size in
-/// pixels. The grid step is `columns / cell`, truncated, as the original's.
-pub fn skill_icon_cell(icon: i32, cell: i32, columns: i32, rows: i32) -> (f32, f32) {
-    if icon < 1 || cell == 0 || columns <= 0 || rows <= 0 {
-        return (0.0, 0.0);
-    }
-    let step = (columns / cell) as f32;
-    if step == 0.0 {
-        return (0.0, 0.0);
-    }
-    let index = icon - 1;
-    let column =
-        (index as f32 - (index as f32 / step).trunc() * step) * (cell as f32 / columns as f32);
-    let row =
-        (index as f32 / step).trunc() * (cell as f32 / rows as f32) + cell as f32 / rows as f32;
-    (column, row)
-}
-
-/// One icon of a group's ring: its centre and the 1-based node it shows.
+/// A screen-space icon quad from the skill icon atlas.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SkillGroupIcon {
-    pub node: i32,
+pub struct SkillIconQuad {
+    /// The cell's texture rectangle `[u, v, u + du, v + dv]`; the quad's
+    /// top edge samples `v + dv` and its bottom edge `v` (texture rows run
+    /// up, as GL's).
+    pub uv: [f32; 4],
+    /// The quad's top-left corner and its side (the atlas cell size).
     pub x: f32,
     pub y: f32,
-    pub chosen: bool,
-    pub selected: bool,
+    pub size: f32,
 }
 
-/// Places the icons of one group's ring.
+/// The quad a 1-based icon draws: the atlas cell `icon − 1`, counted along
+/// rows of `width / cell` cells (integer division), at `(x, y)` with the
+/// cell's size. An icon below 1 draws nothing. The cell's texture size is
+/// `cell / width` by `cell / height`, divided in double precision.
+pub fn skill_icon_quad(
+    icon: i32,
+    cell: i32,
+    width: u16,
+    height: u16,
+    x: f32,
+    y: f32,
+) -> Option<SkillIconQuad> {
+    let index = icon - 1;
+    if index < 0 || cell <= 0 {
+        return None;
+    }
+    let du = (f64::from(cell) / f64::from(width)) as f32;
+    let dv = (f64::from(cell) / f64::from(height)) as f32;
+    let per_row = (i64::from(width) / i64::from(cell)) as f32;
+    let index = index as f32;
+    let row = (index / per_row) as i64 as f32;
+    let u = (index - row * per_row) * du;
+    let v = row * dv;
+    Some(SkillIconQuad {
+        uv: [u, v, u + du, v + dv],
+        x,
+        y,
+        size: cell as f32,
+    })
+}
+
+/// One icon of a group on the ring.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillGroupIcon {
+    /// The 1-based level.
+    pub level: i32,
+    pub x: f32,
+    pub y: f32,
+    /// The technique id; 0 draws the screen's "choose" icon.
+    pub technique: u8,
+    /// The icon under the pointer draws in the highlight colour.
+    pub hovered: bool,
+    /// The chosen technique ahead of the points draws at half alpha.
+    pub half: bool,
+}
+
+/// The skill block a group's icons and bars read, and the group's index in
+/// it: the record's, or the preview skill (followed by zero bytes, as in the
+/// original) when the screen has no record.
+fn group_block(skills: Option<&[Skill; SKILLS]>, group: usize) -> (SkillBlock, usize) {
+    match skills {
+        Some(skills) => (SkillBlock::of(skills), group),
+        None => {
+            let mut preview = [Skill::default(); SKILLS];
+            preview[0] = PREVIEW_SKILL;
+            (SkillBlock::of(&preview), 0)
+        }
+    }
+}
+
+/// The icons of one group around its ring position `(x, y)`.
 ///
-/// `level` is the group's shown points over 5000, `chosen` its eight node
-/// bytes, `selected` the hovered/current node code and `can_learn` the
-/// screen's ready flag. The icons sit on a pentagon of radius
-/// `18.3 × unit × zoom` around the group's centre, four units left and up;
-/// a node below the level draws whether or not the record holds one, the
-/// next draws only while a level is ready.
+/// A group shows one icon per funded level, plus the next level when a
+/// technique is chosen there ahead of the points, or when a level is
+/// `ready` and fewer than five are funded. The icons stand on the pentagon
+/// ([`pentagon_offset`]) scaled by the reveal `turn`, about a point four
+/// units left of and above `(x, y)`. The first empty technique byte draws
+/// the "choose" icon and ends the row. `group` is 0-based; `hover` is the
+/// screen's hovered node code; `skills` is the record's, or `None` for the
+/// preview.
 #[allow(clippy::too_many_arguments)]
 pub fn skill_group_icons(
-    group: i32,
+    skills: Option<&[Skill; SKILLS]>,
+    group: usize,
     x: f32,
     y: f32,
     unit: i32,
-    zoom: f32,
-    level: i32,
-    chosen: &[u8; NODES_PER_GROUP],
-    selected: i32,
-    can_learn: bool,
+    turn: f32,
+    ready: bool,
+    hover: i32,
 ) -> Vec<SkillGroupIcon> {
-    let mut count = level.max(0);
-    let partial = chosen
-        .get(count as usize)
-        .copied()
-        .unwrap_or_default()
-        .ne(&0);
-    if partial || (can_learn && count < 5) {
+    let (block, at_group) = group_block(skills, group);
+    let funded = usize::from(block.points(at_group) / POINTS_PER_TECHNIQUE);
+    let mut count = funded;
+    let ahead = block.technique(at_group, funded) != 0;
+    if ahead || (ready && funded < 5) {
         count += 1;
     }
+    let left = x - (4 * unit) as f32;
+    let top = y - (4 * unit) as f32;
+    let hovered_group = usize::try_from((hover >> 8) & 0xff).ok() == Some(group + 1);
     let mut icons = Vec::new();
-    for node in 0..count {
-        let angle = node as f32 * std::f32::consts::TAU * 0.2;
-        let radius = f64::from(unit) * 18.3;
-        let cx = ((radius * f64::from(angle.cos())).round_ties_even() as f32) * zoom
-            + (x - 4.0 * unit as f32);
-        let cy = (y - 4.0 * unit as f32)
-            - ((radius * f64::from(angle.sin())).round_ties_even() as f32) * zoom;
-        let code = (group << 8) | (node + 1);
+    for at in 0..count {
+        let (sx, sy) = pentagon_offset(at as i32, unit);
+        let technique = block.technique(at_group, at);
         icons.push(SkillGroupIcon {
-            node: node + 1,
-            x: cx,
-            y: cy,
-            chosen: chosen.get(node as usize).copied().unwrap_or_default() != 0,
-            selected: selected == code,
+            level: at as i32 + 1,
+            x: sx * turn + left,
+            y: top - sy * turn,
+            technique,
+            hovered: hovered_group && hover & 0xff == at as i32 + 1,
+            half: technique != 0 && ahead && at + 1 == count,
         });
+        if technique == 0 {
+            break;
+        }
     }
     icons
 }
 
-/// The four corners of one orbit mark around a group.
-///
-/// A spoke is a radial bar from `20.3 × unit` to `26.3 × unit` out, `14 ×
-/// unit` either side, at the same angles as the group's icons. Angle zero
-/// points up (the negative y axis), as the original's.
-pub fn skill_orbit_mark(slot: usize, x: f32, y: f32, unit: i32, zoom: f32) -> [[f32; 2]; 4] {
+/// A radial bar about a point: corners in drawing order.
+pub type SkillBar = [[f32; 2]; 4];
+
+/// The four corners of a bar at pentagon slot `slot`, `half` either side of
+/// the spoke, from `inner` to `outer` units out (both given negative, as
+/// the original's), its sine and cosine scaled by `turn`. The sums keep the
+/// original's order.
+fn pentagon_bar(
+    slot: i32,
+    x: f32,
+    y: f32,
+    half: f32,
+    inner: f32,
+    outer: f32,
+    turn: f32,
+) -> SkillBar {
     let angle = slot as f32 * std::f32::consts::TAU * 0.2;
-    let (sin, cos) = (angle.sin() * zoom, angle.cos() * zoom);
-    let inner = 20.3 * unit as f32;
-    let outer = 26.3 * unit as f32;
-    let half = 14.0 * unit as f32;
-    let point =
-        |radius: f32, side: f32| [x + radius * sin - side * cos, y - radius * cos - side * sin];
+    let sin = angle.sin() * turn;
+    let cos = angle.cos() * turn;
     [
-        point(inner, half),
-        point(outer, half),
-        point(outer, -half),
-        point(inner, -half),
+        [
+            (x - half * cos) - inner * sin,
+            inner * cos + (y - half * sin),
+        ],
+        [
+            (x - half * cos) - outer * sin,
+            outer * cos + (y - half * sin),
+        ],
+        [
+            (half * cos + x) - outer * sin,
+            (outer * cos + half * sin) + y,
+        ],
+        [
+            (half * cos + x) - inner * sin,
+            (inner * cos + half * sin) + y,
+        ],
     ]
 }
 
-/// The selected-node tooltip's slide.
-///
-/// The original slides the tooltip in over 200 ms after the selection
-/// changed, and removes it when the selection is cleared. `since` is the
-/// time since the selection stamp; returns the opacity, or `None` when the
-/// tooltip is gone.
-pub fn selection_tip_slide(selected: i32, since: i32) -> Option<f32> {
+/// One orbit bar of a group: its corners and how full its shader draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillOrbitBar {
+    pub corners: SkillBar,
+    pub fill: f32,
+}
+
+/// The orbit bars of a group around its ring position: one per funded level
+/// plus one for a technique chosen ahead of the points, which fills by the
+/// points past the funded levels (`× 0.0002`, in double precision). Each
+/// bar spans 20.3 to 26.3 units out and 14 units either side, on the icons'
+/// spokes (up first). A bar fills completely unless it is the last and
+/// below 0.99. `group` is 0-based; `skills` is `None` for the preview.
+pub fn skill_orbit_bars(
+    skills: Option<&[Skill; SKILLS]>,
+    group: usize,
+    x: f32,
+    y: f32,
+    unit: i32,
+    turn: f32,
+) -> Vec<SkillOrbitBar> {
+    let (block, at_group) = group_block(skills, group);
+    let points = block.points(at_group);
+    let funded = usize::from(points / POINTS_PER_TECHNIQUE);
+    let mut count = funded;
+    let mut progress = 1.0f32;
+    if block.technique(at_group, funded) != 0 {
+        let past = i64::from(points) - funded as i64 * 5000;
+        progress = (past as f64 * 0.0002) as f32;
+        count += 1;
+    }
+    let half = (14 * unit) as f32;
+    let inner = (-f64::from(unit) * 20.3) as f32;
+    let outer = inner - (6 * unit) as f32;
+    (0..count)
+        .map(|at| SkillOrbitBar {
+            corners: pentagon_bar(at as i32, x, y, half, inner, outer, turn),
+            fill: if at + 1 == count && f64::from(progress) < 0.99 {
+                progress
+            } else {
+                1.0
+            },
+        })
+        .collect()
+}
+
+/// The five background spokes the draw puts behind every ring node: 12.3 to
+/// 26.3 units out, 18 units either side, scaled by the reveal.
+pub fn skill_node_spokes(x: f32, y: f32, unit: i32, turn: f32) -> [SkillBar; 5] {
+    let half = (18 * unit) as f32;
+    let inner = (-f64::from(unit) * 12.3) as f32;
+    let outer = inner - (14 * unit) as f32;
+    std::array::from_fn(|slot| pentagon_bar(slot as i32, x, y, half, inner, outer, turn))
+}
+
+/// The hover tooltip's opacity: it slides in over 200 ms after the hovered
+/// node changed and out again once none is hovered (`hovered` below 1),
+/// then goes. `since` is the time since the change stamp.
+pub fn selection_tip_slide(hovered: i32, since: i32) -> Option<f32> {
     if since < 200 {
         let t = since as f32 * 0.005;
-        Some(if selected < 1 { 1.0 - t } else { t })
-    } else if selected < 1 {
+        Some(if hovered < 1 { 1.0 - t } else { t })
+    } else if hovered < 1 {
         None
     } else {
         Some(1.0)
     }
 }
 
-/// The forget dialog's or a tooltip's fade.
+/// The learning row's or forget dialog's fade.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkillPopupFade {
     pub flags: u8,
     pub alpha: f32,
-    /// The alpha for the second layer (the dialog's arrow or the tooltip's
-    /// icons).
-    pub secondary: f32,
+    /// The width scale of the box.
+    pub scale: f32,
+    /// The closing fade ended: the pending choice is cleared and nothing
+    /// draws.
     pub closed: bool,
 }
 
-/// The forget dialog's fade (0.5% a millisecond in, 0.333% out, squared).
-pub fn forget_dialog_fade(flags: u8, deadline: i32, clock: i32) -> SkillPopupFade {
-    skill_popup_fade(flags, deadline, clock, 0.005, 0.003_333_333_5, true)
-}
-
-/// A node tooltip's fade (the same curve, its second layer squared again).
-pub fn node_tooltip_fade(flags: u8, deadline: i32, clock: i32) -> SkillPopupFade {
-    skill_popup_fade(flags, deadline, clock, 0.005, 0.003_333_333_5, false)
-}
-
-fn skill_popup_fade(
-    flags: u8,
-    deadline: i32,
-    clock: i32,
-    opening: f64,
-    closing: f64,
-    dialog: bool,
-) -> SkillPopupFade {
+/// The popup fade both the learning row and the forget dialog run. Opening
+/// (bit 1) eases in over 300 ms: `t = 1 − remaining / 300`, the alpha
+/// `t(2 − t)` and the width scale that eased again; once over, bit 1
+/// clears. Closing (bit 2) fades the alpha as `(remaining × 0.005)²` at
+/// full width; once over, the flags clear and the popup closes.
+pub fn skill_popup_fade(flags: u8, deadline: i32, clock: i32) -> SkillPopupFade {
+    let remaining = f64::from(deadline.wrapping_sub(clock));
     if flags & 1 == 0 {
         if flags & 2 == 0 {
             return SkillPopupFade {
                 flags,
                 alpha: 1.0,
-                secondary: 1.0,
+                scale: 1.0,
                 closed: false,
             };
         }
         if deadline <= clock {
             return SkillPopupFade {
-                flags: flags & !3,
+                flags: 0,
                 alpha: 0.0,
-                secondary: 0.0,
+                scale: 0.0,
                 closed: true,
             };
         }
-        let t = f64::from(deadline - clock) * opening;
-        let alpha = (t * t) as f32;
+        let t = (remaining * 0.005) as f32;
         return SkillPopupFade {
             flags,
-            alpha,
-            // Guess: the dialog's second layer is fully in while it opens;
-            // the node tooltip's icon strip starts hidden.
-            secondary: if dialog { 1.0 } else { 0.0 },
+            alpha: t * t,
+            scale: 1.0,
             closed: false,
         };
     }
     if clock < deadline {
-        let t = 1.0 - f64::from(deadline - clock) * closing;
-        let a = (t * (2.0 - t)) as f32;
+        let t = (1.0 - remaining * 0.003_333_333_333_333_333_5) as f32;
+        let alpha = t * (2.0 - t);
         return SkillPopupFade {
             flags,
-            alpha: a,
-            secondary: a * (2.0 - a),
+            alpha,
+            scale: alpha * (2.0 - alpha),
             closed: false,
         };
     }
     SkillPopupFade {
         flags: flags & !1,
         alpha: 1.0,
-        secondary: 1.0,
+        scale: 1.0,
         closed: false,
     }
 }
 
-/// Clamps a tooltip's left edge into the window.
-///
-/// `x` is the untransformed centre, `window` the window width, `offsets`
-/// the form and parent origins and `radius` the tooltip's half width. The
-/// original moves the tip left by the amount it overflows the right edge.
-pub fn clamp_tooltip(x: f32, offsets: &[i32], radius: f32, window: i32) -> f32 {
+/// Moves a popup left by however far its right edge (`x + half_width`,
+/// with the form's and its parent's origins added) passes the window's
+/// width. `offsets` are the form's two origin terms then its parent's, in
+/// the original's order of addition.
+pub fn clamp_tooltip(x: f32, offsets: &[i32], half_width: f32, window: i32) -> f32 {
     let mut left = x;
     for offset in offsets {
         left += *offset as f32;
     }
-    let overflow = (left + radius) - window as f32;
+    let overflow = (left + half_width) - window as f32;
     if overflow > 0.0 { x - overflow } else { x }
 }
 
-/// A tooltip's box: centre and half extent.
+/// A popup box: its rectangle and the glow's alpha.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SkillNodeTipPlace {
-    pub x: f32,
-    pub y: f32,
-    pub half_width: f32,
-    pub half_height: f32,
+pub struct SkillTipBox {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The box's alpha (0.6 of the text's).
+    pub alpha: f32,
 }
 
-/// Places the ring's node tooltip: `82 × 14` units, its centre 13 units
-/// below the node and clamped into the window.
+/// The hover tooltip of a ring group: the group's name in a box sized to
+/// it. `(x, y)` is the group's ring position; the text width is halved by
+/// an integer shift and padded by a unit. The box spans the four units
+/// under the node and the name sits at its bottom, centred. No clamp.
+/// Returns the box and the name's origin.
+pub fn ring_group_tooltip(
+    x: f32,
+    y: f32,
+    text_width: u32,
+    unit: i32,
+    alpha: f32,
+) -> (SkillTipBox, (f32, f32)) {
+    let baseline = (4 * unit) as f32 + y;
+    let half = (text_width >> 1) as f32 + unit as f32;
+    let tip = SkillTipBox {
+        left: x - half,
+        top: baseline - (4 * unit) as f32,
+        width: half * 2.0,
+        height: (4 * unit) as f32,
+        alpha: alpha * 0.6,
+    };
+    (tip, (x - (half - unit as f32), baseline))
+}
+
+/// The hover tooltip of a ring node: `82 × 14` units centred 13 units under
+/// the node, clamped into the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillNodeTip {
+    pub tip: SkillTipBox,
+    /// The clamped centre.
+    pub x: f32,
+    /// The title's baseline (3 units above the box's centre).
+    pub title_y: f32,
+    /// The description block's corner, 76 by 12 units.
+    pub text: (f32, f32),
+}
+
+/// Places a ring node's hover tooltip. The title is the technique chosen
+/// at that level ([`ring_node_title`]), centred on `x`; with none chosen
+/// the group's name is drawn from the centre instead.
 pub fn ring_node_tooltip(
     x: f32,
     y: f32,
     unit: i32,
     window: i32,
     offsets: &[i32],
-) -> SkillNodeTipPlace {
-    let half_width = 41.0 * unit as f32;
-    let half_height = 7.0 * unit as f32;
-    SkillNodeTipPlace {
-        x: clamp_tooltip(x, offsets, half_width, window),
-        y: y + 13.0 * unit as f32,
-        half_width,
-        half_height,
+    alpha: f32,
+) -> SkillNodeTip {
+    let centre_y = (13 * unit) as f32 + y;
+    let half = (41 * unit) as f32 * 1.0;
+    let x = clamp_tooltip(x, offsets, half, window);
+    let title_y = centre_y - (3 * unit) as f32;
+    SkillNodeTip {
+        tip: SkillTipBox {
+            left: x - half,
+            top: centre_y - (7 * unit) as f32,
+            width: half * 2.0,
+            height: (7 * unit) as f32 * 2.0,
+            alpha: alpha * 0.6,
+        },
+        x,
+        title_y,
+        text: (x - (38 * unit) as f32, title_y + (2 * unit) as f32),
     }
 }
 
-/// Places the ring's group tooltip: the group icon's half width plus a
-/// unit, `4` units tall, its centre 4 units below the node.
-pub fn ring_group_tooltip(
-    x: f32,
-    y: f32,
-    icon_width: i32,
-    unit: i32,
-    window: i32,
-    offsets: &[i32],
-) -> SkillNodeTipPlace {
-    let half_width = icon_width as f32 / 2.0 + unit as f32;
-    SkillNodeTipPlace {
-        x: clamp_tooltip(x, offsets, half_width, window),
-        y: y + 4.0 * unit as f32,
-        half_width,
-        half_height: 2.0 * unit as f32,
+/// The ring node tooltip's title: the technique the record holds at the
+/// node's level, or the group's name (and `false`) when that slot is empty.
+/// The level's byte is read through the record's layout.
+pub fn ring_node_title(skills: &[Skill; SKILLS], code: i32) -> Option<(&'static str, bool)> {
+    let group = usize::try_from((code >> 8) & 0xff).ok()?.checked_sub(1)?;
+    let level = usize::try_from(code & 0xff).ok()?.checked_sub(1)?;
+    let name = *SKILL_NAMES.get(group)?;
+    let technique = SkillBlock::of(skills).technique(group, level);
+    if technique == 0 {
+        return Some((name, false));
     }
+    let title = TECHNIQUE_NAMES
+        .get(group)?
+        .get(usize::from(technique) - 1)
+        .copied()
+        .unwrap_or("");
+    Some((title, true))
 }
 
-/// Places the group detail tooltip: `82 × 28` units, its centre 4 units
-/// below the selected group.
-pub fn detail_tooltip(
-    x: f32,
-    y: f32,
-    unit: i32,
-    window: i32,
-    offsets: &[i32],
-) -> SkillNodeTipPlace {
-    let half_width = 41.0 * unit as f32;
-    SkillNodeTipPlace {
-        x: clamp_tooltip(x, offsets, half_width, window),
-        y: y + 4.0 * unit as f32,
-        half_width,
-        half_height: 14.0 * unit as f32,
-    }
-}
-
-/// One icon of the node tooltip's seven-slot strip.
+/// One icon of the learning row.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SkillTipIcon {
-    pub node: i32,
+pub struct SkillRowIcon {
+    /// The 1-based slot (the technique id it offers).
+    pub slot: i32,
     pub x: f32,
     pub y: f32,
-    pub dimmed: bool,
-    pub selected: bool,
+    /// The slot under the pointer, with a clear requirement byte, draws in
+    /// the highlight colour.
+    pub hovered: bool,
+    /// The icon's alpha factor: a slot with a requirement byte set draws at
+    /// half.
+    pub alpha: f32,
 }
 
-/// Places the group tooltip and its seven node icons.
-///
-/// The box is `82 × unit` wide and `28 × unit` tall; the icons stand in a
-/// row `10 × unit` apart, centred, four units left of the box's centre. A
-/// slot whose requirement byte is zero draws at full opacity; the others
-/// draw at half. `requirements` is the group's requirement mask and
-/// `current` the hovered node code.
+/// The learning row: its box, its eight icons and the hovered slot's text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillLearningRow {
+    pub tip: SkillTipBox,
+    pub x: f32,
+    pub icons: [SkillRowIcon; NODES_PER_GROUP],
+    /// The hovered slot's title baseline and status or description corner.
+    pub title_y: f32,
+    pub text: (f32, f32),
+    /// The status line for the hovered slot, `None` for its description.
+    pub status: Option<&'static str>,
+}
+
+/// Places the learning row of the node at `(x, y)`: an `82 × 28`-unit box
+/// whose width eases with the popup's `scale`, centred four units under the
+/// node and clamped into the window; eight icons ten units apart (also
+/// scaled), centred four units left of the box's centre, two units under
+/// its top. `hover` is the slot under the pointer (1–8, else none);
+/// `alpha` the popup's alpha times the screen's.
 #[allow(clippy::too_many_arguments)]
-pub fn group_tooltip(
-    group: i32,
+pub fn learning_row(
     x: f32,
     y: f32,
     unit: i32,
+    scale: f32,
     window: i32,
     offsets: &[i32],
+    alpha: f32,
     requirements: &[u8; NODES_PER_GROUP],
-    current: i32,
-) -> (SkillNodeTipPlace, Vec<SkillTipIcon>) {
-    let place = detail_tooltip(x, y, unit, window, offsets);
-    let bottom = place.y - 14.0 * unit as f32;
-    let mut icons = Vec::new();
-    for slot in 0..7usize {
-        let ix = (slot as f32 - 3.5) * 10.0 * unit as f32 + place.x - 4.0 * unit as f32;
-        let iy = bottom + 2.0 * unit as f32;
-        let code = (group << 8) | (slot as i32 + 1);
-        let dimmed = requirements.get(slot).copied().unwrap_or_default() != 0;
-        icons.push(SkillTipIcon {
-            node: slot as i32 + 1,
-            x: ix,
-            y: iy,
-            dimmed,
-            selected: current == code,
-        });
+    hover: i32,
+) -> SkillLearningRow {
+    let centre_y = (4 * unit) as f32 + y;
+    let half = (41 * unit) as f32 * scale;
+    let half_height = (14 * unit) as f32;
+    let x = clamp_tooltip(x, offsets, half, window);
+    let top = centre_y - half_height;
+    let row_y = (2 * unit) as f32 + top;
+    let icons = std::array::from_fn(|slot| {
+        let left = (((slot as f32 - 3.5) * (10 * unit) as f32) * scale + x) - (4 * unit) as f32;
+        let clear = requirements[slot] == REQUIREMENT_MET;
+        SkillRowIcon {
+            slot: slot as i32 + 1,
+            x: left,
+            y: row_y,
+            hovered: clear && hover - 1 == slot as i32,
+            alpha: if clear { 1.0 } else { 0.5 },
+        }
+    });
+    let title_y = (14 * unit) as f32 + row_y;
+    let status = match usize::try_from(hover)
+        .ok()
+        .filter(|&slot| (1..=NODES_PER_GROUP).contains(&slot))
+        .map(|slot| requirements[slot - 1])
+    {
+        Some(REQUIREMENT_CHOSEN) => Some(STATUS_CHOSEN),
+        Some(REQUIREMENT_MISSING) => Some(STATUS_REQUIREMENTS),
+        Some(REQUIREMENT_ABSENT) => Some(STATUS_UNAVAILABLE),
+        _ => None,
+    };
+    SkillLearningRow {
+        tip: SkillTipBox {
+            left: x - half,
+            top,
+            width: half * 2.0,
+            height: half_height * 2.0,
+            alpha: alpha * 0.6,
+        },
+        x,
+        icons,
+        title_y,
+        text: (x - (38 * unit) as f32, (2 * unit) as f32 + title_y),
+        status,
     }
-    (place, icons)
 }
 
-/// A forget dialog's geometry.
+/// The forget dialog's geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ForgetDialogPlace {
+    pub tip: SkillTipBox,
+    /// The clamped centre.
     pub x: f32,
-    pub y: f32,
-    pub half_width: f32,
+    /// The text lines' left edge and width (82 units, scaled).
+    pub text_left: f32,
+    pub text_width: f32,
     pub title_y: f32,
+    /// The Yes and No captions, drawn only once the alpha passes 0.5.
     pub yes_x: f32,
     pub no_x: f32,
     pub choice_y: f32,
-    pub text_y: f32,
+    pub choices: bool,
+    /// The captions' alpha factor, `(alpha − 0.5) × 2`.
+    pub choice_alpha: f32,
+    pub question_y: f32,
 }
 
-/// Places the forget dialog under the selected node.
-///
-/// The title sits five units under the node, the Yes and No choices one
-/// title line lower, twelve units either side of the centre, and the
-/// question seven units under the choices. The glow ellipse behind them is
-/// `82 × 20` units.
+/// Places the forget dialog under the node at `(x, y)`: a glow box 82 units
+/// wide (eased by the popup's `scale`) and 20 tall, centred two units under
+/// the node and clamped into the window; the title five units into it, Yes
+/// and No one 13-unit line lower at 12 units left and 6 units right of the
+/// centre, and the question seven units above the choices.
 pub fn forget_dialog_place(
     x: f32,
     y: f32,
     unit: i32,
+    scale: f32,
     window: i32,
     offsets: &[i32],
     alpha: f32,
 ) -> ForgetDialogPlace {
-    let half_width = 41.0 * unit as f32 * alpha;
-    let cx = clamp_tooltip(x, offsets, half_width, window);
-    // The glow box is centred two units under the node and ten units
-    // tall; the title sits five units into it.
-    let title_y = y + 2.0 * unit as f32 - 10.0 * unit as f32 + 5.0 * unit as f32;
-    let choice_y = title_y + 13.0 * unit as f32;
+    let centre_y = (2 * unit) as f32 + y;
+    let half = (41 * unit) as f32 * scale;
+    let half_height = (10 * unit) as f32;
+    let x = clamp_tooltip(x, offsets, half, window);
+    let title_y = (5 * unit) as f32 + (centre_y - half_height);
+    let text_width = (82 * unit) as f32 * scale;
+    let choice_y = (13 * unit) as f32 + title_y;
     ForgetDialogPlace {
-        x: cx,
-        y: y + 2.0 * unit as f32,
-        half_width,
+        tip: SkillTipBox {
+            left: x - half,
+            top: centre_y - half_height,
+            width: half * 2.0,
+            height: half_height * 2.0,
+            alpha: alpha * 0.6,
+        },
+        x,
+        text_left: x - text_width * 0.5,
+        text_width,
         title_y,
-        yes_x: cx - 12.0 * unit as f32,
-        no_x: cx + 6.0 * unit as f32,
+        yes_x: x - (12 * unit) as f32,
+        no_x: (6 * unit) as f32 + x,
         choice_y,
-        text_y: choice_y - 7.0 * unit as f32,
+        choices: 0.5 < alpha,
+        choice_alpha: (alpha - 0.5) * 2.0,
+        question_y: choice_y - (7 * unit) as f32,
     }
 }
 
@@ -1751,7 +2186,7 @@ mod tests {
         let ring = SkillRing {
             count: 8,
             offset_a: 10,
-            offset_b: 5,
+            offset_b: 5.0,
             turn: 1.0,
             width: 200,
             height: 100,
@@ -1759,13 +2194,13 @@ mod tests {
             unit: 4,
             scrolled: false,
         };
-        assert_eq!(skill_ring_position(3, &ring), (285.0, -39.0));
+        assert_eq!(skill_ring_position(3, &ring), (23.0, 75.0));
         let scrolled = SkillRing {
             page: 1,
             scrolled: true,
             ..ring
         };
-        assert_eq!(skill_ring_position(3, &scrolled), (281.0, -27.0));
+        assert_eq!(skill_ring_position(3, &scrolled), (19.0, 87.0));
     }
 
     #[test]
@@ -1904,7 +2339,7 @@ mod tests {
         let ring = SkillRing {
             count: 8,
             offset_a: 10,
-            offset_b: 5,
+            offset_b: 5.0,
             turn: 1.0,
             width: 200,
             height: 100,
@@ -1912,14 +2347,16 @@ mod tests {
             unit: 4,
             scrolled: false,
         };
-        assert_eq!(skill_satellite(3, 1, &ring), (358.0, 53.0));
-        assert_eq!(skill_satellite(3, 3, &ring), (226.0, 10.0));
+        // The node at (177, 75); the first sample straight up, the third
+        // 144° on.
+        assert_eq!(skill_satellite(3, 1, &ring), (177.0, 2.0));
+        assert_eq!(skill_satellite(3, 3, &ring), (220.0, 134.0));
         let scrolled = SkillRing {
             page: 1,
             scrolled: true,
             ..ring
         };
-        assert_eq!(skill_satellite(3, 1, &scrolled), (354.0, 65.0));
+        assert_eq!(skill_satellite(3, 1, &scrolled), (173.0, 14.0));
     }
 
     fn key_input() -> SkillKeyInput {
@@ -2231,8 +2668,9 @@ mod tests {
         assert_eq!(used.slot, None);
         assert!(used.hint);
 
+        // Row slot 5 reads mask byte 4.
         let mut free = input();
-        free.used[5] = 0;
+        free.used[4] = 0;
         let written = handle_skill_input(SkillInputInput {
             index: 5,
             mask: 0x2000,
@@ -2291,8 +2729,9 @@ mod tests {
             unit: 1,
             turn: 1.0,
         });
+        // Slot 1 is straight up (10, −8); slot 3 is at (21, 25).
         assert_eq!(adjacent.code, 0x0201);
-        assert_eq!(adjacent.point, (28, 10));
+        assert_eq!(adjacent.point, (10, -8));
 
         let nodes = [(0x100, (0.0, 0.0))];
         let scanned = pick_skill_satellite(SkillLinkInput {
@@ -2305,8 +2744,8 @@ mod tests {
             unit: 1,
             turn: 1.0,
         });
-        assert_eq!(scanned.code, 0x105);
-        assert_eq!(scanned.point, (6, 17));
+        assert_eq!(scanned.code, 0x103);
+        assert_eq!(scanned.point, (11, 15));
 
         let unreachable = pick_skill_satellite(SkillLinkInput {
             point: (3, 4),
@@ -2321,7 +2760,7 @@ mod tests {
         assert_eq!(unreachable.code, 0);
         assert_eq!(unreachable.point, (3, 4));
 
-        let only = |code: i32| code == 0x105;
+        let only = |code: i32| code == 0x103;
         let fallback = pick_skill_satellite(SkillLinkInput {
             point: (0, 0),
             direction: (0.0, 1.0),
@@ -2332,8 +2771,8 @@ mod tests {
             unit: 1,
             turn: 1.0,
         });
-        assert_eq!(fallback.code, 0x105);
-        assert_eq!(fallback.point, (6, 17));
+        assert_eq!(fallback.code, 0x103);
+        assert_eq!(fallback.point, (11, 15));
     }
 
     fn point_input() -> SkillPointInput {
@@ -2400,86 +2839,49 @@ mod tests {
             0x10
         );
 
-        // The high group's node row: eight slots from eight units above
-        // its node down to the node.
-        assert_eq!(
+        // The forget confirmation (high, at (100, 50)): Yes and No six to
+        // ten units below, beyond four units either side.
+        let at = |point| {
             hit_skill_point(SkillPointInput {
-                point: (80, 40),
+                point,
                 ..point_input()
-            }),
-            4
-        );
+            })
+        };
+        assert_eq!(at((80, 80)), 1);
+        assert_eq!(at((120, 80)), 2);
+        assert_eq!(at((100, 80)), -1);
+        assert_eq!(at((84, 80)), -1);
+        assert_eq!(at((80, 74)), 1);
+        assert_eq!(at((80, 70)), -1);
+        assert_eq!(at((80, 95)), -1);
+        // It is checked before the learning row.
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (120, 40),
-                ..point_input()
-            }),
-            5
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (0, 40),
-                ..point_input()
-            }),
-            2
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (100, 10),
-                ..point_input()
-            }),
-            -1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (100, 60),
+                point: (100, 20),
+                low: 1,
+                low_point: (100.0, 40.0),
                 ..point_input()
             }),
             -1
         );
 
-        // The low group's two arrows: six to ten units below its node.
+        // The learning row (low, at (100, 40)): eight slots in the eight
+        // units above, ten units apart, rounded half to even.
         let low = SkillPointInput {
             high: 0,
             low: 1,
             low_point: (100.0, 40.0),
             ..point_input()
         };
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (80, 70),
-                ..low
-            }),
-            1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (120, 70),
-                ..low
-            }),
-            2
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (100, 70),
-                ..low
-            }),
-            -1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (80, 60),
-                ..low
-            }),
-            -1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (80, 90),
-                ..low
-            }),
-            -1
-        );
+        let row = |point| hit_skill_point(SkillPointInput { point, ..low });
+        assert_eq!(row((80, 20)), 4);
+        assert_eq!(row((120, 20)), 5);
+        assert_eq!(row((0, 20)), 2);
+        assert_eq!(row((100, 20)), 4);
+        assert_eq!(row((260, 20)), 8);
+        assert_eq!(row((-80, 20)), -1);
+        assert_eq!(row((100, 5)), -1);
+        assert_eq!(row((100, 45)), -1);
 
         assert_eq!(
             hit_skill_point(SkillPointInput {
@@ -2536,380 +2938,460 @@ mod tests {
         [Skill::default(); SKILLS]
     }
 
+    fn skill(points: u16, techniques: [u8; 6]) -> Skill {
+        Skill { points, techniques }
+    }
+
+    /// Identity stand-ins for the experience system's conversions: the
+    /// screen's rules only pass the values through them.
+    const SAME: ExperienceRates = ExperienceRates {
+        worth: |xp| xp,
+        experience: |worth| worth,
+    };
+
     #[test]
-    fn requirements_follow_the_chosen_nodes_and_the_table() {
+    fn the_requirement_mask_marks_chosen_absent_and_missing_nodes() {
+        // Close Combat at seven funded levels holding Remise to Riposte:
+        // Draw, Impel and Brace are absent; Dual Wield has both of its
+        // prerequisites.
         let mut tree = skills();
-        tree[0] = Skill {
-            points: 35_000,
-            techniques: [1, 2, 3, 4, 5, 0],
-        };
-        let state = skill_requirements(0, &tree);
-        // Nodes 1 to 5 are chosen, but only nodes with a table entry keep a
-        // selectable state; the empty Close Combat slots read unavailable.
-        assert_eq!(state, [3, 3, 3, 3, 3, 3, 3, 0]);
-        // Dual Wield (slot 8) needs Remise or Riposte (slots 1 or 4); both
-        // are chosen here, so no requirement is missing.
-        assert_eq!(state[7], 0);
-
-        let mut missing = skills();
-        missing[0] = Skill {
-            points: 35_000,
-            techniques: [2, 3, 4, 5, 0, 0],
-        };
-        let state = skill_requirements(0, &missing);
-        assert_eq!(state[7], NODE_REQUIREMENTS_NOT_MET);
-
-        // Armour's second tier needs the first.
+        tree[0] = skill(35_000, [1, 2, 3, 4, 0, 0]);
+        assert_eq!(skill_requirements(0, &tree), [1, 1, 1, 1, 3, 3, 3, 0]);
+        // Without Riposte, Dual Wield misses one: both are needed.
+        tree[0] = skill(35_000, [1, 2, 3, 0, 0, 0]);
+        assert_eq!(skill_requirements(0, &tree), [1, 1, 1, 0, 3, 3, 3, 2]);
+        // Riposte chosen but not funded (one level) does not count.
+        tree[0] = skill(5_000, [1, 4, 0, 0, 0, 0]);
+        assert_eq!(skill_requirements(0, &tree), [1, 0, 0, 1, 3, 3, 3, 2]);
+        // Seven funded levels read the next skill's points as the seventh
+        // technique byte: Ranged Combat's 4 points count as Riposte.
+        tree[0] = skill(35_000, [1, 0, 0, 0, 0, 0]);
+        tree[1].points = 4;
+        assert_eq!(skill_requirements(0, &tree), [1, 0, 0, 0, 3, 3, 3, 0]);
+        // Ranged Combat has no nodes.
+        assert_eq!(skill_requirements(1, &tree), [3; 8]);
+        // Armour's second tier needs the first, the third the second.
         let mut armour = skills();
-        armour[2] = Skill {
-            points: 10_000,
-            techniques: [1, 0, 0, 0, 0, 0],
-        };
-        assert_eq!(skill_requirements(2, &armour)[1], 0);
-        let mut armour_missing = skills();
-        armour_missing[2] = Skill {
-            points: 10_000,
-            techniques: [0, 0, 0, 0, 0, 0],
-        };
-        assert_eq!(
-            skill_requirements(2, &armour_missing)[1],
-            NODE_REQUIREMENTS_NOT_MET
-        );
+        armour[2] = skill(10_000, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(skill_requirements(2, &armour), [1, 0, 2, 0, 0, 3, 3, 3]);
+        assert_eq!(skill_requirements(6, &armour), [0; 8]);
     }
 
     #[test]
-    fn a_nodes_state_reads_the_level_and_the_ready_flag() {
-        let skill = Skill {
-            points: 5_000,
-            techniques: [1, 0, 0, 0, 0, 0],
-        };
-        assert_eq!(skill_node_state(&skill, 0x0101, false), NODE_AVAILABLE);
-        assert_eq!(skill_node_state(&skill, 0x0102, false), NODE_UNAVAILABLE);
-        assert_eq!(skill_node_state(&skill, 0x0103, true), NODE_UNAVAILABLE);
-        // A ready level with no choice at the next level shows the
-        // requirements-not-met state in the original (its "can learn"
-        // branch).
-        assert_eq!(
-            skill_node_state(&skill, 0x0102, true),
-            NODE_REQUIREMENTS_NOT_MET
-        );
-        assert_eq!(skill_node_state(&skill, 0x0001, true), NODE_UNAVAILABLE);
-        assert_eq!(skill_node_state(&skill, 0x0100, true), NODE_UNAVAILABLE);
-        // A chosen next technique with ten points left is not yet
-        // available; one more point makes it so.
-        let done = Skill {
-            points: 5_010,
-            techniques: [1, 2, 0, 0, 0, 0],
-        };
-        assert_eq!(
-            skill_node_state(&done, 0x0102, false),
-            NODE_REQUIREMENTS_NOT_MET
-        );
-        let next = Skill {
-            points: 5_011,
-            techniques: [1, 2, 0, 0, 0, 0],
-        };
-        assert_eq!(skill_node_state(&next, 0x0102, false), NODE_AVAILABLE);
+    fn a_nodes_press_state_reads_the_funded_levels_and_the_ready_flag() {
+        let mut tree = skills();
+        tree[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(skill_node_state(&tree, 0x101, false), NODE_LEARNT);
+        assert_eq!(skill_node_state(&tree, 0x102, true), NODE_OPEN);
+        assert_eq!(skill_node_state(&tree, 0x102, false), NODE_LOCKED);
+        assert_eq!(skill_node_state(&tree, 0x103, true), NODE_LOCKED);
+        assert_eq!(skill_node_state(&tree, 0x001, true), NODE_LOCKED);
+        assert_eq!(skill_node_state(&tree, 0x100, true), NODE_LOCKED);
+        assert_eq!(skill_node_state(&tree, 0x701, true), NODE_LOCKED);
+        // A technique chosen ahead of the points is learnt once the skill
+        // is more than ten points past its funded level.
+        tree[0] = skill(5_010, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(skill_node_state(&tree, 0x102, false), NODE_OPEN);
+        tree[0].points = 5_011;
+        assert_eq!(skill_node_state(&tree, 0x102, false), NODE_LEARNT);
+        // The seventh level's byte is the next skill's low points byte.
+        tree[0] = skill(30_000, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(skill_node_state(&tree, 0x107, false), NODE_LOCKED);
+        tree[1].points = 1;
+        assert_eq!(skill_node_state(&tree, 0x107, false), NODE_OPEN);
     }
 
     #[test]
-    fn the_ready_flag_stops_at_the_first_chosen_next_node_and_the_cap() {
-        use exa_character::record::CharacterData;
+    fn unlearning_moves_the_committed_and_the_record_points() {
+        // At or below the committed levels both lose 5000; the later
+        // technique moves down.
+        let mut tree = skills();
+        let mut base = [0u16; SKILLS];
+        tree[0] = skill(10_000, [1, 2, 0, 0, 0, 0]);
+        base[0] = 10_000;
+        unlearn_skill_level(&mut tree, &mut base, 1, 1);
+        assert_eq!(tree[0], skill(5_000, [2, 0, 0, 0, 0, 0]));
+        assert_eq!(base[0], 5_000);
 
-        let mut tree = CharacterData::new();
-        assert!(skill_can_learn(&tree));
-        tree.record.skills[0] = Skill {
-            points: 10_000,
-            techniques: [1, 0, 0, 0, 0, 0],
-        };
-        assert!(skill_can_learn(&tree));
-        tree.record.skills[0].techniques[1] = 2;
-        assert!(skill_can_learn(&tree));
-        tree.record.skills[0].techniques[2] = 3;
-        tree.record.skills[0].points = 10_011;
-        assert!(!skill_can_learn(&tree));
+        // One past the committed levels: the record falls back.
+        let mut base = [0u16; SKILLS];
+        tree[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        unlearn_skill_level(&mut tree, &mut base, 1, 1);
+        assert_eq!(tree[0], skill(0, [0; 6]));
+        assert_eq!(base[0], 0);
 
-        let mut full = CharacterData::new();
-        for (slot, skill) in full.record.skills.iter_mut().enumerate() {
-            *skill = Skill {
-                points: (slot as u16 + 2) * POINTS_PER_TECHNIQUE,
-                techniques: [1, 2, 0, 0, 0, 0],
-            };
-        }
-        assert!(!skill_can_learn(&full));
+        // Further out: a choice ahead of the points keeps the funded points.
+        tree[0] = skill(5_000, [1, 2, 0, 0, 0, 0]);
+        unlearn_skill_level(&mut tree, &mut base, 1, 2);
+        assert_eq!(tree[0], skill(5_000, [1, 0, 0, 0, 0, 0]));
+
+        // 16-bit arithmetic wraps.
+        tree[0] = skill(0, [3, 0, 0, 0, 0, 0]);
+        base[0] = 5_000;
+        unlearn_skill_level(&mut tree, &mut base, 1, 1);
+        assert_eq!(tree[0], skill(60_536, [0; 6]));
+        assert_eq!(base[0], 0);
+
+        // Armour I takes II (which needs it) and II takes III, each from the
+        // last funded level down.
+        let mut tree = skills();
+        let mut base = [0u16; SKILLS];
+        tree[2] = skill(15_000, [1, 2, 3, 0, 0, 0]);
+        base[2] = 15_000;
+        unlearn_skill_level(&mut tree, &mut base, 3, 1);
+        assert_eq!(tree[2], skill(0, [0; 6]));
+        assert_eq!(base[2], 0);
+
+        // A group of 0 or past the six does nothing.
+        let before = tree;
+        unlearn_skill_level(&mut tree, &mut base, 0, 1);
+        unlearn_skill_level(&mut tree, &mut base, 7, 1);
+        assert_eq!(tree, before);
     }
 
     #[test]
-    fn learning_and_forgetting_use_the_records_rules() {
-        use exa_character::record::CharacterData;
-
+    fn the_experience_pass_tops_up_charges_levels_and_feeds_the_surplus() {
+        // The partial committed level costs its missing 2500 at weight 4;
+        // the rest is left over.
         let mut data = CharacterData::new();
-        data.record.skills[0] = Skill {
-            points: 10_000,
-            techniques: [1, 0, 0, 0, 0, 0],
-        };
-        assert!(choose_skill_node(&mut data, 1, 2));
-        assert_eq!(data.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
-        assert_eq!(unlearn_skill_node(&mut data, 1, 1), Some(1));
+        data.record.skills[0] = skill(2_500, [0; 6]);
+        let base = [2_500, 0, 0, 0, 0, 0];
+        assert_eq!(spend_skill_experience(&mut data, &base, 5_000), 2_500);
         assert_eq!(data.record.skills[0].points, 5_000);
-    }
 
-    #[test]
-    fn experience_fills_a_partial_group_then_a_level() {
-        use exa_character::record::CharacterData;
+        // A surplus choice takes the rest: 2500 short of a 6250 level at
+        // weight 5 adds 2500 × 4 / 5 on top of the level below.
+        data.record.skills[0] = skill(2_500, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(spend_skill_experience(&mut data, &base, 5_000), 0);
+        assert_eq!(data.record.skills[0].points, 7_000);
 
+        // A budget short of the top-up adds its share: 1000 × 4 / 4.
+        data.record.skills[0] = skill(2_500, [0; 6]);
+        assert_eq!(spend_skill_experience(&mut data, &base, 1_000), 0);
+        assert_eq!(data.record.skills[0].points, 3_500);
+
+        // Two record levels above none committed cost 5000 then 6250.
         let mut data = CharacterData::new();
-        data.record.skills[0] = Skill {
-            points: 2_500,
-            techniques: [0, 0, 0, 0, 0, 0],
-        };
-        let mut shown = [0u16; SKILLS];
-        // Weight 4: the partial 2500 points cost 2500 experience, then the
-        // leftover 2500 experience (a weight of 5) tops the next level up
-        // by 2000 points.
-        let first = distribute_skill_experience(&data, &mut shown, 5_000);
-        assert_eq!(first.shown[0], 2_500 + 2_500 + 2_000);
-        assert_eq!(first.leftover, 0);
+        data.record.skills[0] = skill(10_000, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(spend_skill_experience(&mut data, &[0; 6], 20_000), 8_750);
 
-        let mut shown = [0u16; SKILLS];
-        let second = distribute_skill_experience(&data, &mut shown, 20_000);
-        assert_eq!(second.shown[0], 10_000);
-        assert_eq!(second.leftover, 11_250);
-
-        let empty = CharacterData::new();
-        let mut shown = [0u16; SKILLS];
-        let third = distribute_skill_experience(&empty, &mut shown, 20_000);
-        assert_eq!(third.shown[0], 5_000);
-        assert_eq!(third.leftover, 15_000);
+        // Overspent, the budget wraps; its unsigned compare still buys the
+        // surplus level (7500 at weight 6) and wraps further.
+        data.record.skills[0] = skill(10_000, [1, 2, 3, 0, 0, 0]);
+        let left = spend_skill_experience(&mut data, &[0; 6], 6_000);
+        assert_eq!(left as i32, -12_750);
+        assert_eq!(data.record.skills[0].points, 15_000);
     }
 
     #[test]
-    fn a_group_ring_places_its_icons_on_a_pentagon() {
-        let chosen = [1, 2, 0, 0, 0, 0, 0, 0];
-        let icons = skill_group_icons(1, 100.0, 100.0, 4, 1.0, 2, &chosen, 0x0102, false);
-        assert_eq!(icons.len(), 2);
-        assert_eq!(icons[0].node, 1);
-        assert_eq!(icons[1].node, 2);
-        assert!(icons[0].chosen && icons[1].chosen);
-        // The first icon sits on the +x axis, the second 72° on.
-        assert_eq!(icons[0].x, 84.0 + 73.0);
-        assert_eq!(icons[0].y, 84.0);
-        assert!(icons[1].x > 84.0 && icons[1].x < 157.0);
-        assert!(icons[1].y < 84.0);
+    fn the_ready_flag_stops_at_the_first_chosen_next_technique() {
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 0);
+        let mut data = CharacterData::new();
+        screen.refresh(&mut data, SAME);
+        assert!(screen.ready);
+        data.record.skills[0] = skill(5_011, [1, 2, 0, 0, 0, 0]);
+        screen.refresh(&mut data, SAME);
+        assert!(!screen.ready);
+        data.record.skills[0].points = 5_010;
+        screen.refresh(&mut data, SAME);
+        assert!(screen.ready);
 
-        // With a ready level and one chosen, the next icon appears for the
-        // choice while an empty node is not shown.
-        let ready = skill_group_icons(
-            1,
-            0.0,
-            0.0,
-            4,
-            1.0,
-            1,
-            &[1, 0, 0, 0, 0, 0, 0, 0],
-            0x0102,
-            true,
+        // The scan stops at the first set next byte: later levels are not
+        // counted against the cap.
+        let mut data = CharacterData::new();
+        for entry in data.record.skills.iter_mut() {
+            *entry = skill(15_000, [1, 2, 0, 0, 0, 0]);
+        }
+        screen.refresh(&mut data, SAME);
+        assert!(!screen.ready);
+        data.record.skills[0] = skill(10_000, [1, 2, 3, 0, 0, 0]);
+        screen.refresh(&mut data, SAME);
+        assert!(screen.ready);
+
+        // Experience left over keeps a level ready; a locked screen never is.
+        screen.experience = 1_000;
+        for entry in data.record.skills.iter_mut() {
+            *entry = skill(15_000, [1, 2, 0, 0, 0, 0]);
+        }
+        screen.base = [15_000; SKILLS];
+        screen.refresh(&mut data, SAME);
+        assert_eq!(screen.leftover, 1_000);
+        assert!(screen.ready);
+        screen.locked = true;
+        screen.refresh(&mut data, SAME);
+        assert!(!screen.ready);
+    }
+
+    fn bounds() -> SkillBounds {
+        SkillBounds {
+            left: 0,
+            right: 400,
+            top: 0,
+            bottom: 300,
+        }
+    }
+
+    #[test]
+    fn a_press_opens_the_row_and_a_second_press_writes_the_choice() {
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 0);
+        let mut data = CharacterData::new();
+        data.record.skills[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        screen.refresh(&mut data, SAME);
+        assert_eq!(
+            screen.press_node(&data.record.skills, 0x102, 1_000),
+            NODE_OPEN
         );
+        assert_eq!(screen.learning, 0x102);
+        assert_eq!(screen.requirements, [1, 0, 0, 0, 3, 3, 3, 2]);
+        assert_eq!((screen.popup, screen.popup_deadline), (1, 1_300));
+        // Dual Wield's prerequisites are missing: nothing is written.
+        assert!(!screen.commit(&mut data, 8, 1_100, SAME));
+        assert!(!screen.commit(&mut data, 0, 1_100, SAME));
+        // Riposte goes into the second level's slot; the opening popup
+        // keeps fading in.
+        assert!(screen.commit(&mut data, 4, 1_100, SAME));
+        assert_eq!(data.record.skills[0].techniques, [1, 4, 0, 0, 0, 0]);
+        assert_eq!(screen.popup, 1);
+        screen.popup = 0;
+        screen.commit(&mut data, 8, 1_200, SAME);
+        assert_eq!((screen.popup, screen.popup_deadline), (2, 1_400));
+
+        // A surplus choice elsewhere is unlearned first.
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 0);
+        let mut data = CharacterData::new();
+        data.record.skills[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        data.record.skills[2] = skill(0, [1, 0, 0, 0, 0, 0]);
+        screen.ready = true;
+        screen.press_node(&data.record.skills, 0x102, 0);
+        assert!(screen.commit(&mut data, 2, 0, SAME));
+        assert_eq!(data.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(data.record.skills[2], skill(0, [0; 6]));
+
+        // A learnt node asks to be forgotten; Yes unlearns it.
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 0);
+        let mut data = CharacterData::new();
+        data.record.skills[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        screen.base[0] = 5_000;
+        assert_eq!(
+            screen.press_node(&data.record.skills, 0x101, 0),
+            NODE_LEARNT
+        );
+        assert_eq!(screen.forgetting, 0x101);
+        assert!(!screen.commit(&mut data, 2, 0, SAME));
+        assert!(screen.commit(&mut data, 1, 0, SAME));
+        assert_eq!(data.record.skills[0], skill(0, [0; 6]));
+        assert_eq!(screen.base[0], 0);
+        // A locked node does nothing.
+        assert_eq!(
+            screen.press_node(&data.record.skills, 0x103, 0),
+            NODE_LOCKED
+        );
+    }
+
+    #[test]
+    fn a_screen_opens_on_the_ring_or_a_page_and_fades() {
+        let mut screen = SkillScreen::open(bounds(), 4, false, 0, 100);
+        assert_eq!((screen.count, screen.radius, screen.state), (6, 64, 1));
+        assert_eq!(screen.reveal_deadline, 600);
+        assert_eq!(SkillScreen::open(bounds(), 4, true, 0, 0).radius, 58);
+        let page = SkillScreen::open(bounds(), 4, false, 2, 0);
+        assert_eq!((page.count, page.radius, page.page), (4, 72, 2));
+        assert_eq!(page.slot_group(1), Some(1));
+        assert_eq!(screen.slot_group(2), Some(2));
+        assert_eq!(screen.group_slot(1), Some(6));
+        assert_eq!(screen.slot_group(7), None);
+        // The first slot sits at −150°: the sine across, the cosine down.
+        assert_eq!(skill_ring_position(1, &screen.ring(1.0)), (72.0, -84.0));
+
+        // Half way through the reveal: alpha 0.75, the scale eased again.
+        assert_eq!(screen.fade(100), (0.0, 0.0));
+        assert_eq!(screen.fade(350), (0.9375, 0.75));
+        assert_eq!(screen.fade(600), (1.0, 1.0));
+        assert_eq!(screen.state, 0);
+        screen.begin_hide(700);
+        assert_eq!(screen.hide_deadline, 956);
+        assert_eq!(screen.fade(828), (1.0, 0.5));
+        assert_eq!(screen.fade(956), (0.0, 0.0));
+        assert_eq!(screen.state, 4);
+    }
+
+    #[test]
+    fn an_icon_quad_is_an_atlas_cell() {
+        let first = skill_icon_quad(1, 64, 256, 128, 10.0, 20.0).unwrap();
+        assert_eq!(first.uv, [0.0, 0.0, 0.25, 0.5]);
+        assert_eq!((first.x, first.y, first.size), (10.0, 20.0, 64.0));
+        let sixth = skill_icon_quad(6, 64, 256, 128, 0.0, 0.0).unwrap();
+        assert_eq!(sixth.uv, [0.25, 0.5, 0.5, 1.0]);
+        assert_eq!(skill_icon_quad(0, 64, 256, 128, 0.0, 0.0), None);
+        assert_eq!(skill_icon_quad(1, 0, 256, 128, 0.0, 0.0), None);
+    }
+
+    #[test]
+    fn a_groups_icons_stand_on_its_pentagon() {
+        let mut tree = skills();
+        tree[0] = skill(10_000, [1, 2, 0, 0, 0, 0]);
+        let icons = skill_group_icons(Some(&tree), 0, 100.0, 100.0, 4, 1.0, false, 0x102);
+        assert_eq!(icons.len(), 2);
+        // Up first, then 72° on: (0, 73) and (70, 23) from (84, 84).
+        assert_eq!(
+            (icons[0].x, icons[0].y, icons[0].technique),
+            (84.0, 11.0, 1)
+        );
+        assert_eq!(
+            (icons[1].x, icons[1].y, icons[1].technique),
+            (154.0, 61.0, 2)
+        );
+        assert!(!icons[0].hovered && icons[1].hovered);
+
+        // A ready level adds the "choose" icon.
+        tree[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        let ready = skill_group_icons(Some(&tree), 0, 0.0, 0.0, 4, 1.0, true, 0);
         assert_eq!(ready.len(), 2);
-        assert!(ready[0].chosen);
-        assert!(!ready[1].chosen);
-        assert!(ready[1].selected);
+        assert_eq!(ready[1].technique, 0);
+        // A choice ahead of the points draws at half alpha.
+        tree[0] = skill(5_000, [1, 3, 0, 0, 0, 0]);
+        let ahead = skill_group_icons(Some(&tree), 0, 0.0, 0.0, 4, 1.0, false, 0);
+        assert!(ahead[1].half && !ahead[0].half);
+        // An empty funded level draws the "choose" icon and ends the row.
+        tree[0] = skill(10_000, [0, 2, 0, 0, 0, 0]);
+        assert_eq!(
+            skill_group_icons(Some(&tree), 0, 0.0, 0.0, 4, 1.0, false, 0).len(),
+            1
+        );
+        // With no record the preview shows its three techniques.
+        let preview = skill_group_icons(None, 3, 0.0, 0.0, 4, 1.0, false, 0);
+        let ids: Vec<u8> = preview.iter().map(|icon| icon.technique).collect();
+        assert_eq!(ids, [1, 3, 5]);
+        assert!(preview[2].half);
     }
 
     #[test]
-    fn an_orbit_mark_spans_its_two_radii() {
-        let mark = skill_orbit_mark(0, 100.0, 100.0, 4, 1.0);
-        // Slot 0 points up: from 81.2 to 105.2 above the node, 56 either
-        // side.
-        assert_eq!(mark[0][0], 44.0);
-        assert!((mark[0][1] - 18.8).abs() < 1e-4);
-        assert!((mark[1][1] + 5.2).abs() < 1e-4);
-        assert_eq!(mark[1][0], 44.0);
-        assert_eq!(mark[2][0], 156.0);
-        assert!((mark[2][1] + 5.2).abs() < 1e-4);
-        assert_eq!(mark[3][0], 156.0);
-        assert!((mark[3][1] - 18.8).abs() < 1e-4);
+    fn orbit_bars_and_spokes_span_their_radii() {
+        let mut tree = skills();
+        tree[0] = skill(7_500, [1, 3, 0, 0, 0, 0]);
+        let bars = skill_orbit_bars(Some(&tree), 0, 100.0, 100.0, 4, 1.0);
+        assert_eq!(bars.len(), 2);
+        // Slot 0 points up: 81.2 to 105.2 units above, 56 either side.
+        let up = bars[0].corners;
+        assert_eq!(
+            (up[0][0], up[1][0], up[2][0], up[3][0]),
+            (44.0, 44.0, 156.0, 156.0)
+        );
+        assert!((up[0][1] - 18.8).abs() < 1e-4 && (up[1][1] + 5.2).abs() < 1e-4);
+        assert!((up[2][1] + 5.2).abs() < 1e-4 && (up[3][1] - 18.8).abs() < 1e-4);
+        assert_eq!(bars[0].fill, 1.0);
+        // The choice ahead fills by 2500 × 0.0002.
+        assert!((bars[1].fill - 0.5).abs() < 1e-6);
+        // 0.99 in single precision is not below the double 0.99.
+        tree[0] = skill(9_950, [1, 2, 0, 0, 0, 0]);
+        let full = skill_orbit_bars(Some(&tree), 0, 0.0, 0.0, 4, 1.0);
+        assert_eq!(full[1].fill, 1.0);
+        tree[0] = skill(5_000, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(skill_orbit_bars(Some(&tree), 0, 0.0, 0.0, 4, 1.0).len(), 1);
+
+        let spokes = skill_node_spokes(0.0, 0.0, 4, 1.0);
+        assert_eq!((spokes[0][0][0], spokes[0][2][0]), (-72.0, 72.0));
+        assert!((spokes[0][0][1] + 49.2).abs() < 1e-4);
+        assert!((spokes[0][1][1] + 105.2).abs() < 1e-4);
     }
 
     #[test]
-    fn a_skill_icon_cell_is_a_normalised_atlas_grid_point() {
-        // A 4 by 4 grid of 64-pixel cells: icon 1 is the top-left cell's
-        // lower-left normalised point, icon 20 the next row's first.
-        let (u, v) = skill_icon_cell(1, 64, 256, 256);
-        assert_eq!((u, v), (0.0, 0.25));
-        let (u, v) = skill_icon_cell(5, 64, 256, 256);
-        assert_eq!((u, v), (0.0, 0.5));
-        let (u, v) = skill_icon_cell(16, 64, 256, 256);
-        assert_eq!((u, v), (0.75, 1.0));
-        assert_eq!(skill_icon_cell(0, 64, 256, 256), (0.0, 0.0));
-    }
-
-    #[test]
-    fn the_popup_fades_hold_their_curve() {
-        let plain = forget_dialog_fade(0, 1000, 500);
-        assert_eq!(plain.alpha, 1.0);
-        assert_eq!(plain.secondary, 1.0);
-        assert!(!plain.closed);
-
-        // Opening over the last 200 ms: 0.5% a millisecond, squared.
-        let opening = forget_dialog_fade(2, 700, 600);
-        assert!((opening.alpha - 0.25).abs() < 1e-6);
-        assert_eq!(opening.secondary, 1.0);
-
-        let closed = forget_dialog_fade(2, 500, 600);
+    fn the_popup_fade_opens_and_closes() {
+        let plain = skill_popup_fade(0, 1_000, 500);
+        assert_eq!((plain.alpha, plain.scale, plain.closed), (1.0, 1.0, false));
+        // Closing: (100 × 0.005)².
+        let closing = skill_popup_fade(2, 700, 600);
+        assert_eq!((closing.alpha, closing.scale), (0.25, 1.0));
+        let closed = skill_popup_fade(2, 500, 600);
         assert!(closed.closed);
-        assert_eq!(closed.flags & 3, 0);
-
-        // Closing: 0.333% a millisecond, smoothstepped, the secondary
-        // smoothstepped again.
-        let closing = forget_dialog_fade(1, 950, 900);
-        let a = (1.0 - 50.0f64 * 0.003_333_333_5) as f32;
-        assert!((closing.alpha - (a * (2.0 - a))).abs() < 1e-6);
-        let b = closing.alpha;
-        assert!((closing.secondary - (b * (2.0 - b))).abs() < 1e-6);
-
-        let tooltip = node_tooltip_fade(2, 700, 600);
-        assert!((tooltip.alpha - 0.25).abs() < 1e-6);
-        assert_eq!(tooltip.secondary, 0.0);
+        assert_eq!(closed.flags, 0);
+        // Opening half way through 300 ms: 0.75, the width 0.9375.
+        let opening = skill_popup_fade(1, 900, 750);
+        assert!((opening.alpha - 0.75).abs() < 1e-6);
+        assert!((opening.scale - 0.9375).abs() < 1e-6);
+        let opened = skill_popup_fade(1, 500, 600);
+        assert_eq!((opened.flags, opened.alpha), (0, 1.0));
     }
 
     #[test]
-    fn a_selection_tip_slides_in_and_disappears() {
+    fn the_hover_tip_slides_in_and_out() {
         assert_eq!(selection_tip_slide(5, 100), Some(0.5));
-        assert_eq!(selection_tip_slide(0, 100), Some(0.5));
+        assert_eq!(selection_tip_slide(0, 50), Some(0.75));
         assert_eq!(selection_tip_slide(5, 200), Some(1.0));
         assert_eq!(selection_tip_slide(0, 200), None);
     }
 
     #[test]
-    fn tooltips_clamp_to_the_window_and_place_their_icons() {
-        let place = ring_node_tooltip(300.0, 200.0, 4, 500, &[10, 20]);
-        assert_eq!(place.half_width, 164.0);
-        assert_eq!(place.half_height, 28.0);
-        assert_eq!(place.y, 252.0);
-        let group = ring_group_tooltip(300.0, 200.0, 60, 4, 500, &[10, 20]);
-        assert_eq!(group.half_width, 34.0);
-        assert_eq!(group.half_height, 8.0);
-        assert_eq!(group.y, 216.0);
-        let detail = detail_tooltip(300.0, 200.0, 4, 500, &[10, 20]);
-        assert_eq!(detail.half_width, 164.0);
-        assert_eq!(detail.half_height, 56.0);
-        assert_eq!(detail.y, 216.0);
-        assert!(place.x + 164.0 <= 500.0);
+    fn the_ring_tooltips_place_their_boxes_and_titles() {
+        assert_eq!(clamp_tooltip(300.0, &[10, 20], 164.0, 500), 300.0);
+        assert_eq!(clamp_tooltip(400.0, &[10, 20], 164.0, 500), 306.0);
 
-        let (place, icons) = group_tooltip(1, 100.0, 100.0, 4, 1000, &[], &[0; 8], 0x0101);
-        assert_eq!(place.y, 116.0);
-        assert_eq!(icons.len(), 7);
-        assert_eq!(icons[0].x, place.x - 156.0);
-        assert_eq!(icons[6].x, place.x + 84.0);
-        assert!(icons.iter().all(|icon| !icon.dimmed));
-        assert!(icons[0].selected);
-        assert!(!icons[1].selected);
-        let (_, dimmed) = group_tooltip(1, 100.0, 100.0, 4, 1000, &[], &[3; 8], 0x0101);
-        assert!(dimmed.iter().all(|icon| icon.dimmed));
-    }
-
-    #[test]
-    fn a_node_tooltip_names_its_group_technique_status_and_cost() {
-        let tip = skill_node_tip(0x0104).unwrap();
-        assert_eq!(tip.group, "Close Combat");
-        assert_eq!(tip.title, "Riposte");
-        assert_eq!(tip.cost, 20_000);
-        assert_eq!(tip.status, None);
-        assert_eq!(skill_node_status(NODE_AVAILABLE), Some(STATUS_CHOSEN));
+        let (tip, name) = ring_group_tooltip(300.0, 200.0, 61, 4, 1.0);
         assert_eq!(
-            skill_node_status(NODE_REQUIREMENTS_NOT_MET),
-            Some(STATUS_REQUIREMENTS)
+            (tip.left, tip.top, tip.width, tip.height),
+            (266.0, 200.0, 68.0, 16.0)
         );
-        assert_eq!(skill_node_status(NODE_EMPTY), Some(STATUS_UNAVAILABLE));
-        assert_eq!(skill_node_status(0), None);
-        // Ranged Combat has no techniques and the seventh Armour slot none.
-        assert_eq!(skill_node_tip(0x0201), None);
-        assert_eq!(skill_node_tip(0x0307), None);
-        assert_eq!(skill_node_tip(0x0100), None);
-        assert_eq!(skill_node_tip(0x0801), None);
-    }
+        assert!((tip.alpha - 0.6).abs() < 1e-6);
+        assert_eq!(name, (270.0, 216.0));
 
-    #[test]
-    fn a_screen_opens_fades_and_selects_a_node() {
-        use exa_character::record::CharacterData;
-
-        let mut screen = SkillScreen::open(
-            SkillBounds {
-                left: 0,
-                right: 400,
-                top: 0,
-                bottom: 300,
-            },
-            4,
-            false,
+        let node = ring_node_tooltip(300.0, 200.0, 4, 1_000, &[], 0.5);
+        assert_eq!(
+            (node.tip.left, node.tip.top, node.tip.width, node.tip.height),
+            (136.0, 224.0, 328.0, 56.0)
         );
-        assert_eq!((screen.count, screen.radius), (6, 64));
-        screen.reveal(100, 256);
-        assert_eq!(screen.show_deadline, 356);
-        let opening = screen.alpha(100);
-        assert!(opening > 0.73 && opening < 0.74);
-        assert!((screen.alpha(356) - 1.0).abs() < 1e-6);
-        // The reveal bit clears once its deadline passes.
-        assert_eq!(screen.state, 0);
-        screen.begin_hide(400);
-        assert_eq!(screen.hide_deadline, 656);
-        assert!((screen.alpha(400) - 1.0).abs() < 1e-6);
-        assert_eq!(screen.alpha(656), 0.0);
-        assert_eq!(screen.state, 4);
+        assert_eq!((node.title_y, node.text), (240.0, (148.0, 248.0)));
 
-        let mut data = CharacterData::new();
-        data.record.skills[0] = Skill {
-            points: 10_000,
-            techniques: [1, 2, 0, 0, 0, 0],
-        };
-        assert_eq!(screen.select(&data, 0x0102), NODE_AVAILABLE);
-        assert_eq!(screen.page, 1);
-        let mut data = CharacterData::new();
-        data.record.skills[0] = Skill {
-            points: 5_000,
-            techniques: [1, 0, 0, 0, 0, 0],
-        };
-        data.record.skills[0].points = 5_011;
-        assert_eq!(screen.select(&data, 0x0102), NODE_REQUIREMENTS_NOT_MET);
-        assert_eq!(screen.pending, 0x0102);
-        assert!(screen.confirm(&mut data));
-        assert_eq!(data.record.skills[0].techniques[1], 2);
-        screen.selected = 0x0101;
-        assert_eq!(screen.forget(&mut data), Some(1));
-        assert_eq!(data.record.skills[0].techniques, [2, 0, 0, 0, 0, 0]);
-        assert_eq!(data.record.skills[0].points, 11);
-
-        // Six groups put the first at −150° on the 64-unit circle.
-        let position = screen.group_position(1);
-        assert_eq!(position.0, -22.0);
-        assert_eq!(position.1, 22.0);
+        let mut tree = skills();
+        tree[0] = skill(5_000, [4, 0, 0, 0, 0, 0]);
+        assert_eq!(ring_node_title(&tree, 0x101), Some(("Riposte", true)));
+        assert_eq!(ring_node_title(&tree, 0x102), Some(("Close Combat", false)));
+        assert_eq!(
+            ring_node_title(&tree, 0x201),
+            Some(("Ranged Combat", false))
+        );
+        assert_eq!(ring_node_title(&tree, 0x100), None);
     }
 
     #[test]
-    fn a_level_costs_five_thousand_points() {
-        let mut skill = Skill::default();
-        assert_eq!(skill_level_cost(1), 5_000);
-        assert_eq!(skill_cost_remaining(&skill), 5_000);
-        skill.points = 2_500;
-        assert_eq!(skill_cost_remaining(&skill), 2_500);
-        assert_eq!(skill_level_progress(&skill), (2_500, 5_000));
-        skill.points = 15_000;
-        assert_eq!(skill_level_cost(3), 15_000);
-        assert_eq!(skill_cost_remaining(&skill), 5_000);
-        assert_eq!(skill_level_progress(&skill), (0, 5_000));
+    fn the_learning_row_places_eight_icons_and_the_hovered_status() {
+        let mask = [1, 0, 0, 0, 3, 3, 3, 2];
+        let row = learning_row(100.0, 100.0, 4, 1.0, 1_000, &[], 1.0, &mask, 2);
+        assert_eq!(
+            (row.tip.left, row.tip.top, row.tip.width, row.tip.height),
+            (-64.0, 60.0, 328.0, 112.0)
+        );
+        assert_eq!((row.icons[0].x, row.icons[0].y), (-56.0, 68.0));
+        assert_eq!(row.icons[7].x, 224.0);
+        assert!(row.icons[1].hovered && !row.icons[0].hovered);
+        assert_eq!((row.icons[0].alpha, row.icons[1].alpha), (0.5, 1.0));
+        assert_eq!((row.title_y, row.text), (124.0, (-52.0, 132.0)));
+        assert_eq!(row.status, None);
+        let status = |hover| learning_row(0.0, 0.0, 4, 1.0, 1_000, &[], 1.0, &mask, hover).status;
+        assert_eq!(status(1), Some(STATUS_CHOSEN));
+        assert_eq!(status(8), Some(STATUS_REQUIREMENTS));
+        assert_eq!(status(5), Some(STATUS_UNAVAILABLE));
+        assert_eq!(status(9), None);
     }
 
     #[test]
-    fn the_forget_dialog_places_its_choices() {
-        let place = forget_dialog_place(100.0, 200.0, 4, 800, &[], 1.0);
-        assert_eq!(place.x, 100.0);
-        assert_eq!(place.y, 208.0);
-        assert_eq!(place.half_width, 164.0);
-        assert_eq!(place.title_y, 188.0);
-        assert_eq!(place.choice_y, 240.0);
-        assert_eq!(place.yes_x, 52.0);
-        assert_eq!(place.no_x, 124.0);
-        assert_eq!(place.text_y, 212.0);
+    fn the_forget_dialog_places_its_lines() {
+        let dialog = forget_dialog_place(100.0, 200.0, 4, 1.0, 800, &[], 1.0);
+        assert_eq!(
+            (
+                dialog.tip.left,
+                dialog.tip.top,
+                dialog.tip.width,
+                dialog.tip.height
+            ),
+            (-64.0, 168.0, 328.0, 80.0)
+        );
+        assert_eq!((dialog.text_left, dialog.text_width), (-64.0, 328.0));
+        assert_eq!(
+            (dialog.title_y, dialog.choice_y, dialog.question_y),
+            (188.0, 240.0, 212.0)
+        );
+        assert_eq!((dialog.yes_x, dialog.no_x), (52.0, 124.0));
+        assert!(dialog.choices);
+        assert!(!forget_dialog_place(100.0, 200.0, 4, 1.0, 800, &[], 0.5).choices);
     }
 }

@@ -598,82 +598,19 @@ fn unlearning_a_technique_takes_its_dependents() {
     assert_eq!(skipped.record.skills[ARMOUR_SLOT].points, 15000);
 }
 
-/// The node table the screen reads: Close Combat's Dual Wield needs Remise
-/// or Riposte, Armour's second and third tiers need the one before, and an
-/// empty node has none.
+/// The prerequisite lookup by technique id: Close Combat's Dual Wield
+/// lists Remise and Riposte, Armour's second and third tiers the one before,
+/// an empty id reads the previous skill's eighth entry and an id past the
+/// table has none.
 #[test]
-fn a_skill_slots_prerequisites_come_from_the_table() {
-    assert_eq!(slot_prerequisites(0, 7), [1, 4]);
-    assert_eq!(slot_prerequisites(2, 1), [1, 0]);
-    assert_eq!(slot_prerequisites(2, 2), [2, 0]);
-    assert_eq!(slot_prerequisites(4, 7), [0, 0]);
-    // Past the table reads as no prerequisites, as the game would read on.
-    assert_eq!(slot_prerequisites(9, 0), [0, 0]);
-    assert_eq!(slot_prerequisites(0, 9), [0, 0]);
-}
-
-/// The screen's ready scan stops at the first skill with a chosen next
-/// technique, rejects one more than ten points past its level, and keeps
-/// the counted levels under the cap.
-#[test]
-fn the_skill_screen_ready_scan_reads_the_next_technique() {
-    let mut data = CharacterData::new();
-    assert!(data.skill_ready());
-    data.record.skills[0] = Skill {
-        points: 10_011,
-        techniques: [1, 2, 0, 0, 0, 0],
-    };
-    assert!(data.skill_ready());
-    data.record.skills[0].techniques[2] = 3;
-    assert!(!data.skill_ready());
-    data.record.skills[0].points = 10_010;
-    assert!(data.skill_ready());
-
-    let mut full = CharacterData::new();
-    for (slot, skill) in full.record.skills.iter_mut().enumerate() {
-        *skill = Skill {
-            points: (slot as u16 + 2) * 5000,
-            techniques: [1, 2, 0, 0, 0, 0],
-        };
-    }
-    assert!(!full.skill_ready());
-}
-
-/// Choosing a technique spends a level the record already funds and takes
-/// the slot; a technique past the funded levels is a surplus choice and is
-/// unlearned first.
-#[test]
-fn choosing_a_technique_writes_the_slot_and_clears_a_surplus() {
-    let mut data = CharacterData::new();
-    data.record.skills[0] = Skill {
-        points: 10000,
-        techniques: [1, 0, 0, 0, 0, 0],
-    };
-    assert!(data.choose_technique(1, 2));
-    assert_eq!(data.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
-    assert_eq!(data.record.skills[0].points, 10000);
-    // The same choice again writes nothing.
-    assert!(!data.choose_technique(1, 2));
-
-    // A surplus third technique is unlearned (and its points rebased)
-    // before the second level's choice goes in.
-    let mut surplus = CharacterData::new();
-    surplus.record.skills[0] = Skill {
-        points: 10000,
-        techniques: [1, 0, 3, 0, 0, 0],
-    };
-    assert_eq!(surplus.surplus_chosen_level(), Some((1, 3)));
-    assert!(surplus.choose_technique(1, 2));
-    assert_eq!(surplus.record.skills[0].techniques, [1, 2, 0, 0, 0, 0]);
-    // Unlearning the level past the chosen run re-bases the points to the
-    // chosen count less one.
-    assert_eq!(surplus.record.skills[0].points, 0);
-
-    // A skill, level or slot outside the record writes nothing.
-    assert!(!surplus.choose_technique(0, 1));
-    assert!(!surplus.choose_technique(7, 1));
-    assert!(!surplus.choose_technique(1, 0));
-    assert!(!surplus.choose_technique(1, 7));
+fn a_techniques_prerequisites_come_from_the_table() {
+    assert_eq!(technique_prerequisites(0, 8), [1, 4]);
+    assert_eq!(technique_prerequisites(2, 2), [1, 0]);
+    assert_eq!(technique_prerequisites(2, 3), [2, 0]);
+    assert_eq!(technique_prerequisites(4, 8), [0, 0]);
+    assert_eq!(technique_prerequisites(1, 0), [1, 4]);
+    assert_eq!(technique_prerequisites(0, 0), [0, 0]);
+    assert_eq!(technique_prerequisites(9, 1), [0, 0]);
 }
 
 #[test]
