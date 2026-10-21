@@ -1,14 +1,17 @@
 //! The "Body" loot window: another character's pack above what it wears
 //! and holds.
 //!
-//! The window is 244 wide and 440 tall, with two 228-wide panels: the pack
-//! 180 tall at the bottom, and the body's equipment above it, four units
-//! shorter than the pack's top. A drag off the equipment panel drops the
-//! held weapon when that is what was taken, otherwise unequips the item,
-//! marks the character and rebuilds its apparel textures and mesh when the
-//! item is apparel. Power Crystal AL (500) dropped onto the body clears a
-//! flag and runs the body's "Activate" dialogue with the player as actor
-//! before equipping.
+//! The window is 244 wide and 440 tall at x 400, with two 228-wide
+//! panels: the pack 180 tall at the bottom of the client area, and the
+//! body's equipment above it, ending four units before the pack starts.
+//! A drag off the equipment panel drops the held weapon when that is what
+//! was taken. Otherwise it takes the item off the character's record and
+//! asks the character view to remove it; when that works the character is
+//! marked, a sound plays and the character's balance may be reworked. An
+//! apparel item then has its textures and mesh rebuilt. Dropping Power
+//! Crystal AL (500) onto the body clears the mark, runs the body's
+//! "Activate" dialogue and sets a flag byte on the character's record
+//! before the item is added.
 //!
 //! Evidence: the Body window's constructor, accept filter, drop, drag-off,
 //! bind, close and right-click routines (`context/re/item-gui-lane.md`).
@@ -30,24 +33,28 @@ pub const LOOT_WINDOW: u32 = 0x2000_0000;
 pub const RIGHT_RELEASE: u16 = 0x2002;
 /// Power Crystal AL's item id.
 pub const POWER_CRYSTAL_AL: u32 = 500;
-/// The body flag the crystal clears.
-pub const ACTIVATED_FLAG: u32 = 0x100;
-/// The sound the unequip plays (its record id).
+/// The mark on the character's state that the crystal clears and a
+/// removal sets.
+pub const MARK_FLAG: u32 = 0x100;
+/// The sound a removal plays (its record id).
 pub const UNEQUIP_SOUND: u32 = 0x6f67;
 /// The item classification that means apparel.
 pub const APPAREL_KIND: u32 = 0x1000;
+/// The dialogue the crystal runs on the body.
+pub const ACTIVATE_DIALOGUE: &str = "Activate";
 
-/// Where the two panels sit in a window of `height` units.
+/// Where the two panels sit in a window whose client area is
+/// `client_height` units tall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     pub pack: [i32; 4],
     pub equipment: [i32; 4],
 }
 
-/// The pack fills the bottom of the window; the equipment panel above it
-/// ends four units before the pack starts.
-pub fn layout(height: i32) -> Layout {
-    let pack_y = height.wrapping_sub(PACK_HEIGHT);
+/// The pack fills the bottom of the client area; the equipment panel above
+/// it ends four units before the pack starts.
+pub fn layout(client_height: i32) -> Layout {
+    let pack_y = client_height.wrapping_sub(PACK_HEIGHT);
     Layout {
         pack: [0, pack_y, PACK_WIDTH, PACK_HEIGHT],
         equipment: [0, 0, PACK_WIDTH, pack_y.wrapping_sub(4)],
@@ -57,31 +64,33 @@ pub fn layout(height: i32) -> Layout {
 /// What dragging an item off the equipment panel does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragOff {
-    /// A cancelled drag (the original's `-0x80000000` slot).
+    /// A cancelled drag (the original's `i32::MIN` slot).
     Nothing,
-    /// The dropped item was the held weapon: drop it and clear the AI's
-    /// activity.
+    /// The dropped item was the held weapon: drop it, clear a field of the
+    /// character's record and tell the scene.
     HeldWeapon,
-    /// Unequip it, mark the character, play the sound and maybe rebalance.
-    Unequipped {
-        /// The view callback removed the item.
-        changed: bool,
-        /// The character was not feral, so its balance runs.
+    /// Take it off the record and ask the view to remove it.
+    Removed {
+        /// The view removed it: mark the character, play the sound.
+        marked: bool,
+        /// Removed, and the record's state byte is clear: the character's
+        /// balance is reworked.
         rebalance: bool,
-        /// The item is apparel: rebuild its textures and mesh.
+        /// The item is apparel: rebuild its textures and mesh, whether or
+        /// not the view removed it.
         rebuild: bool,
     },
 }
 
-/// The drag-off decision. `held_weapon` is the item id the body's held
-/// weapon record carries (None when nothing is held); `removed` is the
-/// view callback's answer; `feral` the AI's byte.
+/// The drag-off decision. `held_weapon` is the item id of the held weapon
+/// record (None when nothing is held); `removed` is the character view's
+/// answer; `state_byte` the record's byte the rebalance tests.
 pub fn drag_off(
     slot: i32,
     id: u32,
     held_weapon: Option<u32>,
     removed: bool,
-    feral: bool,
+    state_byte: bool,
     apparel: bool,
 ) -> DragOff {
     if slot == i32::MIN {
@@ -90,78 +99,65 @@ pub fn drag_off(
     if held_weapon == Some(id) {
         return DragOff::HeldWeapon;
     }
-    DragOff::Unequipped {
-        changed: removed,
-        rebalance: !feral,
-        rebuild: apparel && removed,
+    DragOff::Removed {
+        marked: removed,
+        rebalance: removed && !state_byte,
+        rebuild: apparel,
     }
 }
 
 /// What dropping an item onto the equipment panel does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EquipDrop {
-    /// The Power Crystal AL cleared the flag and runs "Activate".
+    /// Clear the mark and the field after it, run the "Activate"
+    /// dialogue (the actor is a game global, not traced) and set the
+    /// record's flag byte.
     pub activate: bool,
-    pub equip: bool,
+    /// The item is added to the character's record either way.
+    pub add: bool,
 }
 
-/// Whether the crystal's "Activate" dialogue runs.
+/// The drop for an item id.
 pub fn equip_drop(id: u32) -> EquipDrop {
     EquipDrop {
         activate: id == POWER_CRYSTAL_AL,
-        equip: true,
+        add: true,
     }
 }
 
-/// The accept filter: whether the body can wear the item.
-pub fn accepts(can_wear: bool) -> bool {
-    can_wear
+/// The accept filter: whether the character view can take the item.
+pub fn accepts(can_take: bool) -> bool {
+    can_take
 }
 
-/// The window's bind: fills the pack from the character's carried list
-/// and the equipment panel from its worn and held items.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Bind {
-    pub pack_filled: bool,
-    pub equipment_filled: bool,
-    pub drag_callback: bool,
-}
-
-pub fn bind(record_present: bool) -> Bind {
-    Bind {
-        pack_filled: record_present,
-        equipment_filled: record_present,
-        drag_callback: record_present,
-    }
-}
-
-/// The close: the game is told the window id, the panel saves its
-/// contents, and the base close runs. A window already closing does none
-/// of it.
+/// The close: the game is told the record's id with the loot-window bit
+/// and the pack saves its contents when it was changed; then the base
+/// close runs. A window already closing does none of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Close {
     pub notify_id: Option<u32>,
-    pub save_panel: bool,
+    pub save_pack: bool,
     pub base: bool,
 }
 
-pub fn close(closing: bool, record_id: u32) -> Close {
+pub fn close(closing: bool, record_id: u32, pack_dirty: bool) -> Close {
     if closing {
         Close {
             notify_id: None,
-            save_panel: false,
+            save_pack: false,
             base: false,
         }
     } else {
         Close {
             notify_id: Some(record_id | LOOT_WINDOW),
-            save_panel: true,
+            save_pack: pack_dirty,
             base: true,
         }
     }
 }
 
-/// A right release closes the window.
+/// A right release closes the window (answered handled); anything else
+/// goes to the base handler.
 pub fn closes_on(mask: u16) -> bool {
     mask & RIGHT_RELEASE == RIGHT_RELEASE
 }
@@ -171,12 +167,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_panels_stack() {
-        let l = layout(HEIGHT);
-        assert_eq!(l.pack, [0, 260, 228, 180]);
-        assert_eq!(l.equipment, [0, 0, 228, 256]);
+    fn the_panels_stack_in_the_client_area() {
+        // A 380-high client area: the pack is its last 180 units and the
+        // equipment ends four units above it.
+        let l = layout(380);
+        assert_eq!(l.pack, [0, 200, 228, 180]);
+        assert_eq!(l.equipment, [0, 0, 228, 196]);
         assert_eq!(TITLE, "Body");
-        assert_eq!((WIDTH, FORM_X), (244, 400));
+        assert_eq!((WIDTH, HEIGHT, FORM_X), (244, 440, 400));
     }
 
     #[test]
@@ -191,18 +189,28 @@ mod tests {
         );
         assert_eq!(
             drag_off(1, 5, Some(9), true, false, true),
-            DragOff::Unequipped {
-                changed: true,
+            DragOff::Removed {
+                marked: true,
                 rebalance: true,
                 rebuild: true
             }
         );
+        // The state byte set: no rebalance. Not removed: no mark, no
+        // rebalance, but apparel is still rebuilt.
         assert_eq!(
-            drag_off(1, 5, None, false, true, true),
-            DragOff::Unequipped {
-                changed: false,
+            drag_off(1, 5, None, true, true, false),
+            DragOff::Removed {
+                marked: true,
                 rebalance: false,
                 rebuild: false
+            }
+        );
+        assert_eq!(
+            drag_off(1, 5, None, false, false, true),
+            DragOff::Removed {
+                marked: false,
+                rebalance: false,
+                rebuild: true
             }
         );
     }
@@ -213,22 +221,22 @@ mod tests {
             equip_drop(POWER_CRYSTAL_AL),
             EquipDrop {
                 activate: true,
-                equip: true
+                add: true
             }
         );
-        assert!(!equip_drop(499).activate);
+        assert!(!equip_drop(499).activate && equip_drop(499).add);
         assert!(accepts(true));
         assert!(!accepts(false));
     }
 
     #[test]
-    fn closing_tells_the_game_and_saves() {
-        assert_eq!(close(false, 0x41).notify_id, Some(0x2000_0041));
-        assert!(close(false, 1).save_panel);
-        assert_eq!(close(true, 1).notify_id, None);
-        assert!(!close(true, 1).base);
+    fn closing_tells_the_game_and_saves_a_changed_pack() {
+        assert_eq!(close(false, 0x41, true).notify_id, Some(0x2000_0041));
+        assert!(close(false, 1, true).save_pack);
+        assert!(!close(false, 1, false).save_pack);
+        assert!(close(false, 1, false).base);
+        assert_eq!(close(true, 1, true).notify_id, None);
+        assert!(!close(true, 1, true).base);
         assert!(closes_on(0x2002) && !closes_on(0x2000));
-        let b = bind(true);
-        assert!(b.pack_filled && b.equipment_filled && b.drag_callback);
     }
 }

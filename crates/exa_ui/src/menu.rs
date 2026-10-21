@@ -272,23 +272,24 @@ pub enum EndSessionAction {
     Registered(u64),
 }
 
-/// The end-session menu's own constructor values: the main menu's base at
-/// scale 0.9, two flags clear, and the view mode 1.
+/// The end-session menu's own constructor values, set after the main
+/// menu's base constructor: the scale 0.9, two byte flags clear and one base
+/// word set to 1 (the uses of the flags and the word are not traced).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EndSessionForm {
     pub scale: f32,
-    pub resume_flag: bool,
-    pub final_round: bool,
-    pub action: i32,
+    pub first_flag: bool,
+    pub second_flag: bool,
+    pub base_word: i32,
 }
 
 /// The constructor's values.
 pub fn end_session_form() -> EndSessionForm {
     EndSessionForm {
         scale: 0.9,
-        resume_flag: false,
-        final_round: false,
-        action: 0,
+        first_flag: false,
+        second_flag: false,
+        base_word: 1,
     }
 }
 
@@ -1642,8 +1643,8 @@ mod tests {
     fn the_end_session_form_keeps_its_constructor_values() {
         let f = end_session_form();
         assert_eq!(f.scale, 0.9);
-        assert!(!f.resume_flag && !f.final_round);
-        assert_eq!(f.action, 0);
+        assert!(!f.first_flag && !f.second_flag);
+        assert_eq!(f.base_word, 1);
     }
 
     #[test]

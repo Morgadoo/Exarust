@@ -21,12 +21,13 @@ user-item tags (local, world or base) and errors with the record's own id,
 and the exact release: a freed slot clears its id, reference count and
 cell, keeping its variant and half extents.
 The off-screen icon renderer (`item_renderer`) is modelled from its
-constructor: a 160-pixel icon, 320-square colour and depth buffers, the
-two RGBA image headers, the sun along (0.46, 0.47, 0.48) in the colour
-(0.75, 0.75, 0.75), and the 40-unit camera at (0, 0, 350) with exposure
-10. The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
-pack below the equipment panel; a drag off the body drops a held weapon
-or unequips and rebuilds apparel, and Power Crystal AL (500) runs the
-body's "Activate" script. The inventory (`inventory_window`) and arsenal
+constructor: an icon-size global starting at 160 pixels, depth and colour
+renderbuffers at twice that, the two RGBA image headers, the sun along
+(0.46, 0.47, 0.48) in the colour (0.75, 0.75, 0.75, 0.5), and the camera at
+(0, 0, 350) with the settings 40 and 10. The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
+pack at the bottom of the client area and the equipment panel above it; a
+drag off the body drops a held weapon, or takes the item off the record,
+marks the character and rebuilds apparel, and Power Crystal AL (500) runs
+the body's "Activate" dialogue. The inventory (`inventory_window`) and arsenal
 (`arsenal`) gained their constructors' geometry, close plans and
 position memory.

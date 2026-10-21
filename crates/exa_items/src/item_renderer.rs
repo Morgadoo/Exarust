@@ -1,187 +1,188 @@
-//! The off-screen icon renderer: a private scene, a camera and a
-//! framebuffer at twice the icon size, with the full-size and the final
+//! The off-screen icon renderer: a private scene, a view and two
+//! renderbuffers at twice the icon size, with the full-size and the final
 //! RGBA images the item GUI samples.
 //!
-//! The icon is 160 pixels, so the render buffers and the first image are
-//! 320 square and the final image is 160 square. Each image is the raw
-//! RGBA payload plus a 32-byte header: width and height as 16-bit words,
-//! the texture format `0x100E608`, the flag word `0x20000000`, the data
-//! offset of 32 and the payload's size.
+//! The icon size is a global that starts at 160 pixels; the renderbuffers
+//! and the first image are twice that and the second image is the icon
+//! size. A renderbuffer holds the depth (`GL_DEPTH_COMPONENT`, attached as
+//! the depth attachment) and one the colour (sRGB with alpha, or without
+//! while the alpha global is clear; attached as the first colour
+//! attachment). Each image is the raw RGBA payload behind a 32-byte header.
 //!
-//! The scene's sun points along (0.46, 0.47, 0.48) with the colour
-//! (0.75, 0.75, 0.75); the camera sits 40 from the target, looks at the
-//! origin from (0, 0, 350), has exposure 10 and the 0.8 depth range. The
-//! environment's sun distance is 100 and its field 0.75's neighbour is
-//! 0.5. [The field names are not established; the values are the ones the
-//! constructor stores.]
+//! The scene's sun points along (0.46, 0.47, 0.48) and has the colour
+//! (0.75, 0.75, 0.75, 0.5); the view's camera sits at (0, 0, 350) looking
+//! at the origin, 40 away, with the setting 10 after the distance.
 //!
 //! Evidence: the renderer's constructor, its image allocator and its
 //! destroy (`docs/RENDERING.md`, item icons).
 
-/// The icon's size in pixels, and the doubled render size.
+/// The icon size global's start value, in pixels.
 pub const ICON_SIZE: i32 = 160;
+/// The render size: twice the icon size.
 pub const BUFFER_SIZE: i32 = ICON_SIZE * 2;
 /// The image header's size.
 pub const IMAGE_HEADER: u32 = 0x20;
 /// The image's texture format and flag word.
 pub const IMAGE_FORMAT: u32 = 0x0100_e608;
 pub const IMAGE_FLAGS: u32 = 0x2000_0000;
-/// The flag word at the image's depth/size fields.
-pub const IMAGE_DEPTH_FLAGS: u16 = 0x1000;
-/// The framebuffer's colour and depth attachment formats.
-pub const COLOUR_ATTACHMENT: u32 = 0x8ce0;
+/// The header word the allocator sets to 1.
+pub const IMAGE_PLANES: u16 = 1;
+/// The header word the allocator sets to `0x1000` (its role is not
+/// traced).
+pub const IMAGE_WORD: u16 = 0x1000;
+/// The framebuffer's depth and first colour attachment points.
 pub const DEPTH_ATTACHMENT: u32 = 0x8d00;
-/// The depth renderbuffer's formats: 16-bit component, or 24-bit with
-/// stencil when the global picks it.
+pub const COLOUR_ATTACHMENT: u32 = 0x8ce0;
+/// The depth renderbuffer's format (`GL_DEPTH_COMPONENT`).
 pub const DEPTH_FORMAT: u32 = 0x1902;
-pub const DEPTH_STENCIL_FORMAT: u32 = 0x8c43;
+/// The colour renderbuffer's format while the alpha global is set
+/// (`GL_SRGB8_ALPHA8`), and without it (`GL_SRGB8`).
+pub const COLOUR_FORMAT_ALPHA: u32 = 0x8c43;
+pub const COLOUR_FORMAT: u32 = 0x8c41;
 
-/// One RGBA image buffer.
+/// One RGBA image header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IconImage {
     pub width: u16,
     pub height: u16,
+    /// The header word set to 1.
+    pub planes: u16,
     /// The format word.
     pub format: u32,
     /// The flag word.
     pub flags: u32,
-    /// The flag at the image's size group.
-    pub depth_flags: u16,
+    /// The header word set to `0x1000`.
+    pub word: u16,
     /// Where the payload starts.
     pub data_offset: u32,
     /// The payload's size in bytes.
     pub data_size: i32,
+    /// The whole allocation: the payload plus the header.
+    pub allocation: i64,
 }
 
-/// The image for a size: width × height × 4 bytes of payload after the
-/// 32-byte header.
-pub fn image(width: i32, height: i32) -> IconImage {
+/// The image for a side: the 32-byte header, then `side × side × 4` bytes
+/// of payload. The allocation is worked in 64 bits, the payload size in 32.
+pub fn image(side: i32) -> IconImage {
+    let area = side.wrapping_mul(side);
     IconImage {
-        width: width as u16,
-        height: height as u16,
+        width: side as u16,
+        height: side as u16,
+        planes: IMAGE_PLANES,
         format: IMAGE_FORMAT,
         flags: IMAGE_FLAGS,
-        depth_flags: IMAGE_DEPTH_FLAGS,
+        word: IMAGE_WORD,
         data_offset: IMAGE_HEADER,
-        data_size: width.wrapping_mul(height).wrapping_mul(4),
+        data_size: area.wrapping_shl(2),
+        allocation: (i64::from(area) << 2) + i64::from(IMAGE_HEADER),
     }
 }
 
-/// The allocations a renderer makes.
+/// The renderbuffers and images a renderer makes for an icon of `icon`
+/// pixels (the global's value).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Allocations {
-    /// The colour renderbuffer's size.
-    pub colour: i32,
-    /// The depth renderbuffer's size.
-    pub depth: i32,
-    /// The depth format: 16-bit or 24-bit with stencil.
-    pub depth_format: u32,
+    /// The side of both renderbuffers.
+    pub buffer_side: i32,
+    /// The colour renderbuffer's format.
+    pub colour_format: u32,
     /// The full-size image (twice the icon).
     pub full: IconImage,
     /// The final image (the icon's size).
     pub final_image: IconImage,
-    /// The byte count of each allocation.
-    pub buffer_bytes: i32,
-    pub full_bytes: i32,
-    pub final_bytes: i32,
 }
 
-/// The allocations for a renderer whose depth uses the stencil format.
-pub fn allocations(depth_stencil: bool) -> Allocations {
+/// The allocations for an icon size and the alpha global.
+pub fn allocations(icon: i32, alpha: bool) -> Allocations {
+    let buffer_side = icon.wrapping_shl(1);
     Allocations {
-        colour: BUFFER_SIZE,
-        depth: BUFFER_SIZE,
-        depth_format: if depth_stencil {
-            DEPTH_STENCIL_FORMAT
+        buffer_side,
+        colour_format: if alpha {
+            COLOUR_FORMAT_ALPHA
         } else {
-            DEPTH_FORMAT
+            COLOUR_FORMAT
         },
-        full: image(BUFFER_SIZE, BUFFER_SIZE),
-        final_image: image(ICON_SIZE, ICON_SIZE),
-        buffer_bytes: BUFFER_SIZE * BUFFER_SIZE * 4 + IMAGE_HEADER as i32,
-        full_bytes: BUFFER_SIZE * BUFFER_SIZE * 4 + IMAGE_HEADER as i32,
-        final_bytes: ICON_SIZE * ICON_SIZE * 4 + IMAGE_HEADER as i32,
+        full: image(buffer_side),
+        final_image: image(icon),
     }
 }
 
 /// The renderer's private scene settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconScene {
-    /// The sun's direction, normalised by the engine.
+    /// The sun's direction (fourth component 0).
     pub sun_direction: [f32; 3],
-    /// The sun's colour.
-    pub sun_colour: [f32; 3],
-    /// The sun distance the constructor stores (100).
-    pub sun_distance: f32,
-    /// The environment field the constructor sets to 0.5.
-    pub field: f32,
-    /// The environment's inner value set to 4.
-    pub strength: f32,
+    /// The sun's colour (red, green, blue, and a fourth component, 0.5).
+    pub sun_colour: [f32; 4],
+    /// The scene value set to 100 times a global scale (1).
+    pub scene_value: f32,
+    /// The scene value set to 0.5.
+    pub scene_half: f32,
+    /// The environment value set to 4 (its role is not traced).
+    pub environment_value: f32,
 }
 
 /// The icon renderer's scene.
 pub fn scene() -> IconScene {
     IconScene {
         sun_direction: [0.46, 0.47, 0.48],
-        sun_colour: [0.75, 0.75, 0.75],
-        sun_distance: 100.0,
-        field: 0.5,
-        strength: 4.0,
+        sun_colour: [0.75, 0.75, 0.75, 0.5],
+        scene_value: 100.0,
+        scene_half: 0.5,
+        environment_value: 4.0,
     }
 }
 
-/// The renderer's camera settings.
+/// The renderer's view settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct IconCamera {
-    /// The camera's distance from its target.
+pub struct IconView {
+    /// The camera's distance setting.
     pub distance: f32,
+    /// The camera setting after it (10).
+    pub setting: f32,
     /// The camera position.
     pub position: [f32; 3],
     /// The look-at target.
     pub target: [f32; 3],
-    /// The exposure.
-    pub exposure: f32,
-    /// The near/far setting the constructor clears.
-    pub range: f32,
-    /// The two view fields set to 1 and 0.
-    pub fixed: bool,
-    pub offset: f32,
-    /// The image size the view renders at.
+    /// A view value set to 0.8 (its role is not traced).
+    pub view_factor: f32,
+    /// A view value set to 0.
+    pub view_zero: f32,
+    /// The view's size: twice the icon.
     pub size: (i32, i32),
 }
 
-/// The icon renderer's camera, its target at the origin.
-pub fn camera() -> IconCamera {
-    IconCamera {
+/// The icon renderer's view for an icon size.
+pub fn view(icon: i32) -> IconView {
+    let side = icon.wrapping_shl(1);
+    IconView {
         distance: 40.0,
+        setting: 10.0,
         position: [0.0, 0.0, 350.0],
         target: [0.0, 0.0, 0.0],
-        exposure: 10.0,
-        range: 0.8,
-        fixed: true,
-        offset: 0.0,
-        size: (BUFFER_SIZE, BUFFER_SIZE),
+        view_factor: 0.8,
+        view_zero: 0.0,
+        size: (side, side),
     }
 }
 
-/// What the renderer releases, in the original's order.
+/// What the destroy does, in the original's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DestroyOrder {
-    pub camera: bool,
-    pub scene: bool,
-    pub full_image: bool,
-    pub final_image: bool,
-    pub object: bool,
+    /// A positive count first runs the object's release hook.
+    pub release_hook: bool,
+    /// The view, the scene and both images are freed.
+    pub frees_parts: bool,
+    /// A non-zero count ends with the instance's free.
+    pub frees_instance: bool,
 }
 
-/// A destroy with a positive reference count frees all of it.
+/// The destroy for a signed count.
 pub fn destroy(count: i64) -> DestroyOrder {
     DestroyOrder {
-        camera: true,
-        scene: true,
-        full_image: true,
-        final_image: true,
-        object: count > 0,
+        release_hook: count > 0,
+        frees_parts: true,
+        frees_instance: count != 0,
     }
 }
 
@@ -191,46 +192,53 @@ mod tests {
 
     #[test]
     fn the_buffers_are_twice_the_icon() {
-        let a = allocations(false);
-        assert_eq!((a.colour, a.depth), (320, 320));
-        assert_eq!(a.depth_format, DEPTH_FORMAT);
-        assert_eq!(allocations(true).depth_format, DEPTH_STENCIL_FORMAT);
+        let a = allocations(160, true);
+        assert_eq!(a.buffer_side, 320);
+        assert_eq!(a.colour_format, 0x8c43);
+        assert_eq!(allocations(160, false).colour_format, 0x8c41);
         assert_eq!((a.full.width, a.full.height), (320, 320));
         assert_eq!((a.final_image.width, a.final_image.height), (160, 160));
-        assert_eq!(a.final_bytes, 160 * 160 * 4 + 32);
-        assert_eq!(a.full_bytes, 320 * 320 * 4 + 32);
-        assert_eq!(a.buffer_bytes, a.full_bytes);
+        assert_eq!(a.final_image.allocation, 160 * 160 * 4 + 32);
+        assert_eq!(a.full.allocation, 320 * 320 * 4 + 32);
+        assert_eq!(DEPTH_FORMAT, 0x1902);
+        // A different icon size scales both.
+        assert_eq!(allocations(96, true).buffer_side, 192);
     }
 
     #[test]
     fn the_image_header_matches_the_allocator() {
-        let i = image(320, 160);
-        assert_eq!((i.width, i.height), (320, 160));
+        let i = image(320);
+        assert_eq!((i.width, i.height, i.planes), (320, 320, 1));
         assert_eq!(i.format, 0x100e608);
         assert_eq!(i.flags, 0x20000000);
-        assert_eq!(i.depth_flags, 0x1000);
+        assert_eq!(i.word, 0x1000);
         assert_eq!(i.data_offset, 32);
-        assert_eq!(i.data_size, 320 * 160 * 4);
+        assert_eq!(i.data_size, 320 * 320 * 4);
     }
 
     #[test]
-    fn the_scene_and_camera_keep_the_constructor_numbers() {
+    fn the_scene_and_view_keep_the_constructor_numbers() {
         let s = scene();
         assert_eq!(s.sun_direction, [0.46, 0.47, 0.48]);
-        assert_eq!(s.sun_colour, [0.75, 0.75, 0.75]);
-        assert_eq!((s.sun_distance, s.field, s.strength), (100.0, 0.5, 4.0));
-        let c = camera();
-        assert_eq!(c.position, [0.0, 0.0, 350.0]);
-        assert_eq!(c.target, [0.0, 0.0, 0.0]);
-        assert_eq!((c.distance, c.exposure, c.range), (40.0, 10.0, 0.8));
-        assert_eq!(c.size, (320, 320));
-        assert!(c.fixed && c.offset == 0.0);
+        assert_eq!(s.sun_colour, [0.75, 0.75, 0.75, 0.5]);
+        assert_eq!(
+            (s.scene_value, s.scene_half, s.environment_value),
+            (100.0, 0.5, 4.0)
+        );
+        let v = view(160);
+        assert_eq!(v.position, [0.0, 0.0, 350.0]);
+        assert_eq!(v.target, [0.0, 0.0, 0.0]);
+        assert_eq!((v.distance, v.setting, v.view_factor), (40.0, 10.0, 0.8));
+        assert_eq!(v.size, (320, 320));
     }
 
     #[test]
-    fn the_destroy_releases_everything() {
+    fn the_destroy_follows_the_count() {
         let d = destroy(1);
-        assert!(d.camera && d.scene && d.full_image && d.final_image && d.object);
-        assert!(!destroy(0).object);
+        assert!(d.release_hook && d.frees_parts && d.frees_instance);
+        let d = destroy(0);
+        assert!(!d.release_hook && d.frees_parts && !d.frees_instance);
+        let d = destroy(-1);
+        assert!(!d.release_hook && d.frees_instance);
     }
 }

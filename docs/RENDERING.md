@@ -1994,16 +1994,19 @@ ordered test. No corpse path calls the passes yet.
 ## Item icons
 
 The item icon renderer (`exa_items::item_renderer`) is a private scene
-and camera with a framebuffer at twice the 160-pixel icon. The scene's
-sun points along (0.46, 0.47, 0.48) in the colour (0.75, 0.75, 0.75); the
-camera sits 40 from its target, at (0, 0, 350) looking at the origin, with
-exposure 10 and the 0.8 depth range. The colour and depth render buffers
-are 320 square (the depth is 16-bit, or 24-bit with stencil when the
-global asks). The two RGBA images are 320 and 160 square; each is the
-payload plus a 32-byte header (16-bit width and height, format
-`0x100E608`, flags `0x20000000`, offset 32 and the payload size). The
-icon is later framed at 70, 30 for apparel or 20 when close, with the
-weapon light preset (see `exa_items::item_gui`).
+and view with two renderbuffers at twice the icon size. The icon size is
+a global that starts at 160 pixels. The depth renderbuffer is plain depth;
+the colour renderbuffer is sRGB with alpha, or without it while the alpha
+global is clear, and the view takes the engine's `0x100E608` format when
+it is set. The scene's sun points along (0.46, 0.47, 0.48) in the colour
+(0.75, 0.75, 0.75, 0.5); the camera sits at (0, 0, 350) looking at the
+origin, with the settings 40 and 10. The two RGBA images are twice the icon
+and the icon in size; each is the payload plus a 32-byte header (16-bit
+width and height, a word of 1, the format, the flags `0x20000000`, a word
+of `0x1000`, the payload size, and the payload's address). The icon is
+later framed at 70, 30 for apparel or 20 when close, with the weapon light
+preset (see `exa_items::item_gui`). The running game does not use the
+module: its icons come from `exa_items::icon_cache`.
 
 ## Procedural noise
 

@@ -1925,9 +1925,13 @@ plain draw and input records.
   rendered at 320 into colour and depth buffers, with the full and final
   RGBA images and the private scene and camera.
 - **Body loot** (`exa_items::char_loot`): 244 by 440, a 228-wide pack 180
-  tall at the bottom and the equipment panel four units above it; a
-  held weapon is dropped, other items unequipped (apparel rebuilt), and
-  Power Crystal AL (500) runs the body's "Activate" script.
+  tall at the bottom of the client area and the equipment panel above it,
+  ending four units before the pack. A held weapon dragged off is
+  dropped; any other item is taken off the record and the character view
+  asked to remove it, which marks the character, plays a sound and may
+  rebalance it, and apparel is rebuilt either way. Power Crystal AL (500)
+  dropped on the body clears the mark and runs its "Activate" dialogue
+  before the item is added. Not wired into the running game.
 
 ## Character view
 

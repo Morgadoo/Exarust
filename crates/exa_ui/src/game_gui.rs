@@ -314,7 +314,7 @@ pub struct JournalEntry {
 }
 
 /// The journal's entries for the session and the selected one. The window
-/// opens at `place` when it is set (who sets it is not in the evidence).
+/// opens at `place` when it is set (the journal's close sets it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journal {
     pub entries: Vec<JournalEntry>,
@@ -408,12 +408,6 @@ impl Journal {
     /// box's `text` into the selected entry (the original's two steps).
     pub fn close(&mut self, position: (i32, i32), text: &str) {
         self.place = Some(position);
-        self.store_text(text);
-    }
-
-    /// Stores the text without moving the window (the snapshot the game
-    /// takes while the journal is open).
-    pub fn store_only(&mut self, text: &str) {
         self.store_text(text);
     }
 
