@@ -993,7 +993,7 @@ pub fn side_of(look: Vec3) -> Vec3 {
 pub fn keep_off(me_chest: Vec3, foe_chest: Vec3, foe_scale: f32, offset: &mut Vec3) {
     let v = (offset.x, offset.z);
     let d = (me_chest.x - foe_chest.x, me_chest.z - foe_chest.z);
-    let r = 60.0 * foe_scale;
+    let r = crate::manager::CIRCLE_PER_SPEED * foe_scale;
     let d2 = d.0 * d.0 + d.1 * d.1;
     if d2 <= r * r {
         if r > d2 {
@@ -1027,7 +1027,7 @@ pub fn keep_off(me_chest: Vec3, foe_chest: Vec3, foe_scale: f32, offset: &mut Ve
     let cos = (w.0 * d.0 + w.1 * d.1) / (d2 * w2).sqrt();
     // Only a cosine under 0.75 leaves the step: one that is not a number
     // (a zero test vector) cuts it too, as the original's compare does.
-    if cos < 0.75 {
+    if cos < crate::manager::CUT_HEADING {
         return;
     }
     offset.x = cut.0;

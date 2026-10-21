@@ -19,17 +19,19 @@
 //!   `0x2xx`, kind `0x10`) runs its script while the player is inside.
 //! - **Alert.** Raising the group alert adds one and holds it for 10 s.
 //! - **Approach.** A step `v` from A toward B is kept out of a circle of
-//!   60 × B's speed around B: from outside, a step that would cross the
-//!   circle is cut at the crossing when the cut step still heads within
-//!   acos 0.75 of straight away from B; inside, a distance squared under
-//!   the radius pushes out to the circle and otherwise the step is dropped.
+//!   60 × B's body scale around B: from outside, a step that would cross
+//!   the circle is cut at the crossing when the original's test (a vector
+//!   of the cut point's z offset from B and an unwritten 0) has a cosine
+//!   of 0.75 or more with A's offset, or none at all; inside, a distance
+//!   squared under the radius pushes out to the circle and otherwise the
+//!   step is dropped.
 //!
 //! Evidence: the original's AI manager frame, zone checks, alert counter
-//! and approach clamp. The clamp's last test reads a vector whose first
-//! component the original overwrites with its second; Exarust tests the
-//! vector as computed (both components), a labelled deviation.
+//! and approach clamp. The clamp is the combat state's keep-off
+//! ([`crate::combat::keep_off`]), which keeps the original's last test as
+//! it reads (a vector whose first component is overwritten by its second).
 
-use bevy::math::Vec2;
+use bevy::math::{Vec2, Vec3};
 
 /// A character that moved more than this (cm), squared, checks the zones.
 pub const MOVED_CM2: f32 = 9.0;
@@ -184,32 +186,14 @@ pub fn raise_alert(count: i32, now_ms: u32) -> (i32, u32) {
     (count.wrapping_add(1), now_ms.wrapping_add(ALERT_HOLD_MS))
 }
 
-/// Clamps the step `v` (horizontal, cm) of a character at `from` toward a
-/// target at `target` moving at `speed`.
+/// Clamps the step `v` (horizontal x, z, cm) of a character at `from`
+/// toward a target at `target` whose circle is 60 cm × `speed` (the
+/// target's body scale): the combat state's keep-off.
 pub fn clamp_approach(from: Vec2, target: Vec2, speed: f32, v: Vec2) -> Vec2 {
-    let d = from - target;
-    let r = speed * CIRCLE_PER_SPEED;
-    let dd = d.length_squared();
-    if r * r < dd {
-        let a = v.length_squared();
-        let b = d.dot(v) * 2.0;
-        let disc = b * b - a * 4.0 * (dd - r * r);
-        if disc < 0.0 {
-            return v;
-        }
-        let t = (-b - disc.sqrt()) / (a * 2.0);
-        if !(0.0..=1.0).contains(&t) {
-            return v;
-        }
-        let cut = v * t;
-        let w = from + cut - target;
-        let heading = w.dot(d) / (d.length_squared() * w.length_squared()).sqrt();
-        return if CUT_HEADING <= heading { cut } else { v };
-    }
-    if r <= dd {
-        return Vec2::ZERO;
-    }
-    d * r * (1.0 / dd.sqrt())
+    let flat = |p: Vec2| Vec3::new(p.x, 0.0, p.y);
+    let mut step = flat(v);
+    crate::combat::keep_off(flat(from), flat(target), speed, &mut step);
+    Vec2::new(step.x, step.z)
 }
 
 #[cfg(test)]
