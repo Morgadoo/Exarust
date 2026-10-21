@@ -47,6 +47,7 @@ notice drops the sleep role and wakes.
 | `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
 | `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
+| `golem` | the golem guardians: wake (`golem_act`, the glow at full, the limbs' mass restored) and sleep (the hidden render bit, a twentieth of the mass, a fiftieth of the glow), the homeward return, the `Alarm_` node lookup within 0.1 cm, the strict 6 m sector radius query, the alarm post 200 cm past the node at 10 cm up, and the pose reset |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
 while the role just handled inherits (flag `0x10000`) its parent: a parent
@@ -121,6 +122,9 @@ is not scheduled: the running game's perception does not yet fill the
 contact words the integration reads (the calming term, this tick's
 sighting, the concern target), and the mind's own rating decides the
 duellist's engagement.
+
+The golem guardians' rules are plain functions with tests; no level has a
+golem entity or an alarm zone yet.
 
 Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two

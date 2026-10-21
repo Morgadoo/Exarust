@@ -331,9 +331,15 @@ at the contact. The AI's long door and summoning words carry their cost.
 (4·size) at a time, open branches where they bend and lose points where
 they fold, trade tails with branches that outlive them, jitter (one tick
 in 30 they jump), keep 0.9 of their motion and stay within half a segment
-of their neighbours' middle, end at the level, and shock the first
-character they touch (once per character with the shock-once flag),
-reaching a branch toward it. Each frame the light flickers within 0.75–1.2,
+of their neighbours' middle, end at the level after the point that met it,
+and shock the first character they touch (once per character with the
+shock-once flag, the character's own 20 cm probe run from each segment's
+start over all but the last two segments), reaching a branch toward it.
+The emitter also enters and leaves the world on its node, starts and stops
+its hum and its light points, and refreshes a local-frame node's box; its
+draw exposes the electricity program's scroll and two colours. The
+character probe itself is the character's own query, which the pack does
+not carry. Each frame the light flickers within 0.75–1.2,
 the hum's gain and pitch follow the share of points in use, and a
 camera-facing ribbon runs through Hermite midpoints, its ends transparent,
 its points feeding up to 16 light points merged within 40 cm.
@@ -402,6 +408,23 @@ effect_geometry}`.
   released; the face word mixes the viewer's look and facing. A released
   blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`.
 
+## The shaped-force aurora
+
+`exa_game::thaum` holds the force-shell aura (`ForceShell`, the
+section filter, the uniforms and the draw in `shell_draw`): it OPENS over
+1.5 times its 800 cm size (1.2 s), holds, closes over 800 ms from wherever
+it is and then leaves. A hit keeps at most eight ripples; each ripple's
+strength loses 0.04 a tick, its shown amount moves within 0.06 and −0.04,
+and it leaves under 0.05 both. The impact sound plays at most every 400 ms
+at volume `strength·(0.05 + 0.05r)` and pitch `0.5 + 0.4r`. The shader is
+`effectshell_v`/`effectshell_f` on texture unit 3 with `ObjMat`, `LclMat`,
+`TexOfs`, `ViewPos`, `Fade`, `TexPos`, `ColPt`, `FdPln`, `ColourInt`,
+`TexScale` and `EmiTex`; the fade is `1 − shown`, the fade plane is the
+body's bottom scaled by the plane scale, and the vertex is the kept
+vertex's place plus twice its normal. The section filter keeps a triangle
+whose first corner lies in a skinned section. The aura is not spawned by
+the running game yet.
+
 ## Displacement wisps
 
 `exa_game::thaum::wisps`. Rings of eight nodes per strand, 40 cm apart,
@@ -413,15 +436,16 @@ drawn as smoothed camera-facing strips.
 
 `exa_game::thaum::live::ThaumEffectsPlugin` runs live arcs, barricades and
 wisps after the bodies: arcs follow their hand, end at the static level and
-shock other fighters: a shock lands once the game clock is within 150 ms
+shock other fighters with the character probe; a shock lands once the game clock is within 150 ms
 of the fighter's next shock time, which then moves 500 ms plus a draw below
 200 ms of the engine's generator ahead, and a fighter that is not
 collapsing or dead loses the strength in yellow health (the rest of the
 shock reaction, its motion and stagger, is not wired); a barricade pushes
 the particles of every body part it holds (`Ragdoll::push_sphere`), wakes
 the body for 32 ticks, knocks a character back a step and sets its
-instability, and each part it strikes in front lowers the character's
-energy again while it is above 0.25;
+instability, each part it strikes in front lowers the character's energy
+again while it is above 0.25, and its line closes the planner grid's cells
+until the wall falls;
 wisps ride their parts. The player cannot cast yet (there is no power bar):
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` put the effects on
 the player ([DEBUGGING.md](DEBUGGING.md)).
@@ -431,9 +455,11 @@ the player ([DEBUGGING.md](DEBUGGING.md)).
 The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's
 electricity program, `effectforce` and `effectfbrcd` (with the animated
-force noise) are not ported, nor are the lights, sounds, the navigation
-stamp or the AI's sight of a barricade (its rules are `effects::danger`,
-which nothing registers yet). The domes, the wave and the rain
+force noise) are not ported, nor are the lights and sounds. The arcs now
+upload their ribbon's UVs and expose the electricity uniforms. The
+barricade's navigation stamp is applied to the planner grid (as cell
+penalties) and the AI's sight is still `effects::danger`, which nothing
+registers yet. The domes, the wave and the rain
 are not drawn yet (nothing starts them); the GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,

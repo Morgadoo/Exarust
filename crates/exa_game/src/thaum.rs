@@ -1006,6 +1006,343 @@ pub fn shell_apply_compact(
     Ok(out)
 }
 
+/// The force shell's stored size (800 cm).
+pub const FORCE_SHELL_SIZE: f32 = 800.0;
+/// The force shell's colour intensity, texture scale and plane scale, as the
+/// constructor leaves them.
+pub const SHELL_COLOUR: f32 = 1.0;
+pub const SHELL_TEX_SCALE: f32 = 0.015;
+pub const SHELL_PLANE_SCALE: f32 = 1.0;
+/// The shell's sound gain and base pitch.
+pub const SHELL_SOUND_GAIN: f32 = 1.0;
+pub const SHELL_SOUND_PITCH: f32 = 0.5;
+/// The ripple decay scale the constructor stores.
+pub const SHELL_RIPPLE_SCALE: f32 = 1.0;
+/// The light's colour at unit level ([`shell_light`] gives the level).
+pub const SHELL_LIGHT_COLOUR: [f32; 3] = [0.14, 0.08, 1.0];
+
+/// The force-shell aura: a copy of a body's or a held object's mesh drawn
+/// with the force-shell shader, with impact ripples. It opens over 1.5 times
+/// its size (1.2 s at 800), holds, closes, and is then removed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForceShell {
+    pub state: i32,
+    /// The clock the current phase started.
+    pub stamp: u32,
+    /// The shown amount, 0..1.
+    pub shown: f32,
+    /// The stored size (800 cm).
+    pub size: f32,
+    /// The colour intensity.
+    pub colour: f32,
+    pub tex_scale: f32,
+    pub plane_scale: f32,
+    /// The closing shell keeps its pair and finishes rather than resting.
+    pub hold: bool,
+    /// The shader's two texture positions.
+    pub tex_pos: [f32; 2],
+    /// The light's colour as last written.
+    pub light: [f32; 3],
+    /// The light pair.
+    pub pair: ShellPair,
+    /// The ripples on the aura.
+    pub ripples: Vec<ShellRippleSlot>,
+    /// The shell's sound gain and base pitch.
+    pub sound_gain: f32,
+    pub sound_pitch: f32,
+    /// The scale each ripple step uses (1.0).
+    pub ripple_scale: f32,
+    /// The sound gate (ms of game time).
+    pub sound_at: u32,
+    /// The mesh is skinned (the copy rides a skin controller).
+    pub skinned: bool,
+}
+
+/// A ripple on the force shell: its place in the shell's frame, its shown
+/// amount and its strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellRippleSlot {
+    pub at: [f32; 3],
+    pub shown: f32,
+    pub strength: f32,
+}
+
+impl ForceShell {
+    /// A shell created at `now`, opening, with its two texture positions
+    /// drawn from `tex_pos`.
+    pub fn new(now: u32, tex_pos: [f32; 2]) -> Self {
+        Self {
+            state: 1,
+            stamp: now,
+            shown: 0.0,
+            size: FORCE_SHELL_SIZE,
+            colour: SHELL_COLOUR,
+            tex_scale: SHELL_TEX_SCALE,
+            plane_scale: SHELL_PLANE_SCALE,
+            hold: false,
+            tex_pos,
+            light: SHELL_LIGHT_COLOUR,
+            pair: ShellPair {
+                first: 0.1,
+                second: 0.75,
+            },
+            ripples: Vec::new(),
+            sound_gain: SHELL_SOUND_GAIN,
+            sound_pitch: SHELL_SOUND_PITCH,
+            ripple_scale: SHELL_RIPPLE_SCALE,
+            sound_at: 0,
+            skinned: false,
+        }
+    }
+
+    /// The shell asks to close: from opening or resting only.
+    pub fn start_fade(&mut self) {
+        if self.state < 2 {
+            self.state = 2;
+        }
+    }
+
+    /// Adds a hit's ripple (at most eight) and gives the impact sound's
+    /// pitch and volume; no sound while the 400 ms gate is closed.
+    pub fn hit(
+        &mut self,
+        at: [f32; 3],
+        amount: f32,
+        now: u32,
+        roll: &mut impl FnMut() -> f32,
+    ) -> Option<(f32, f32)> {
+        let strength = shell_hit(self.ripples.len() as u32, amount)?;
+        self.ripples.push(ShellRippleSlot {
+            at,
+            shown: 0.0,
+            strength,
+        });
+        if self.sound_at < now {
+            let volume = strength * (roll() * 0.05 + 0.05) * self.sound_gain;
+            let pitch = roll() * 0.4 + self.sound_pitch;
+            self.sound_at = now.wrapping_add(SHELL_SOUND_GATE_MS);
+            Some((pitch, volume))
+        } else {
+            None
+        }
+    }
+
+    /// One render step: the fade machine, the light, the pair, the ripple
+    /// places and the shader mirrors. Returns whether the shell has left.
+    pub fn frame(&mut self, now: u32) -> ShellView {
+        let fade = step_shell_fade(
+            ShellFade {
+                state: self.state,
+                shown: self.shown,
+                stamp: self.stamp,
+                gain: 0.0,
+            },
+            now,
+            self.size,
+            self.hold,
+        );
+        self.state = fade.state;
+        self.stamp = fade.stamp;
+        self.shown = fade.shown;
+        let mut remove = false;
+        if self.state == 4 {
+            // The closed shell detaches its mesh, frees its light and leaves.
+            self.state = 5;
+            remove = true;
+        }
+        let light = shell_light(self.state, self.shown, 0.0);
+        self.light = [
+            SHELL_LIGHT_COLOUR[0] * light.level,
+            SHELL_LIGHT_COLOUR[1] * light.level,
+            SHELL_LIGHT_COLOUR[2] * light.level,
+        ];
+        if self.state == 3 {
+            self.colour = (f64::from(self.shown) * 2.8) as f32;
+        }
+        self.pair = shell_pair(self.state, self.shown, self.pair);
+        ShellView {
+            state: self.state,
+            shown: self.shown,
+            colour: self.colour,
+            light: light.level,
+            pair: self.pair,
+            faded: 1.0 - self.shown,
+            remove,
+        }
+    }
+
+    /// The ripple places the shader's `ColPt` takes: each at its place with
+    /// its shown amount in the fourth channel.
+    pub fn colour_points(&self) -> [[f32; 4]; 8] {
+        let mut out = [[0.0; 4]; 8];
+        for (slot, ripple) in out.iter_mut().zip(&self.ripples) {
+            *slot = [ripple.at[0], ripple.at[1], ripple.at[2], ripple.shown];
+        }
+        out
+    }
+
+    /// One ripple step: its strength loses a fortieth of the decay scale,
+    /// its shown amount moves toward it within a twentieth and a
+    /// twenty-fifth, and it leaves under 0.05 both.
+    pub fn step_ripples(&mut self) {
+        let mut at = 0;
+        while at < self.ripples.len() {
+            let ripple = self.ripples[at];
+            if let Some(next) = step_shell(ripple.shown, ripple.strength, self.ripple_scale) {
+                self.ripples[at] = ShellRippleSlot {
+                    at: ripple.at,
+                    shown: next.shown,
+                    strength: next.strength,
+                };
+                at += 1;
+            } else {
+                self.ripples.swap_remove(at);
+            }
+        }
+    }
+}
+
+/// The shell's impact sound gate (400 ms).
+pub const SHELL_SOUND_GATE_MS: u32 = 400;
+
+/// What one render step of a force shell shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellView {
+    pub state: i32,
+    pub shown: f32,
+    pub colour: f32,
+    /// The first light's level (already a tenth of its curve).
+    pub light: f32,
+    pub pair: ShellPair,
+    /// The shader's fade value, `1 − shown`.
+    pub faded: f32,
+    /// The shell leaves the scene.
+    pub remove: bool,
+}
+
+/// The shell shader's programs, texture unit and uniform names, as the
+/// draw binds them.
+pub const SHELL_VERTEX_PROGRAM: &str = "effectshell_v";
+pub const SHELL_FRAGMENT_PROGRAM: &str = "effectshell_f";
+pub const SHELL_TEXTURE_UNIT: u32 = 3;
+pub const SHELL_UNIFORMS: [&str; 11] = [
+    "ObjMat",
+    "LclMat",
+    "TexOfs",
+    "ViewPos",
+    "Fade",
+    "TexPos",
+    "ColPt",
+    "FdPln",
+    "ColourInt",
+    "TexScale",
+    "EmiTex",
+];
+
+/// The values of the shell shader's uniforms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellUniforms {
+    /// The node's local matrix (identity for a rigid copy).
+    pub local: [f32; 16],
+    /// The view position in the node's frame.
+    pub view_pos: [f32; 3],
+    /// The fade plane `(x, y, z, offset)`.
+    pub fade_plane: [f32; 4],
+    /// The eight ripple points.
+    pub colour_points: [[f32; 4]; 8],
+    pub tex_pos: [f32; 2],
+    pub colour_int: f32,
+    pub tex_scale: f32,
+    /// `1 − shown`.
+    pub fade: f32,
+}
+
+/// The shell's uniforms. A rigid copy takes the identity matrix; a skinned
+/// one its node's frame. The view position is turned into the node's frame
+/// by the frame's axes (the matrix's transpose, its axes being orthonormal).
+#[allow(clippy::too_many_arguments)]
+pub fn shell_uniforms(
+    skinned: bool,
+    axes: [bevy::math::Vec3; 3],
+    at: bevy::math::Vec3,
+    view: bevy::math::Vec3,
+    fade_plane: [f32; 4],
+    colour_points: [[f32; 4]; 8],
+    tex_pos: [f32; 2],
+    colour_int: f32,
+    tex_scale: f32,
+    shown: f32,
+) -> ShellUniforms {
+    let local = if skinned {
+        [
+            axes[0].x, axes[1].x, axes[2].x, 0.0, axes[0].y, axes[1].y, axes[2].y, 0.0, axes[0].z,
+            axes[1].z, axes[2].z, 0.0, at.x, at.y, at.z, 1.0,
+        ]
+    } else {
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+    };
+    let d = view - at;
+    let view_pos = [d.dot(axes[0]), d.dot(axes[1]), d.dot(axes[2])];
+    ShellUniforms {
+        local,
+        view_pos,
+        fade_plane,
+        colour_points,
+        tex_pos,
+        colour_int,
+        tex_scale,
+        fade: 1.0 - shown,
+    }
+}
+
+/// The full section filter's kept triangle: its source triangle, the
+/// section its first skinned corner belongs to, and that corner's index
+/// inside the section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellTriangleSlot {
+    pub triangle: u32,
+    pub section: u32,
+    pub local: i32,
+}
+
+/// The section filter for a skinned shell: each triangle takes the first
+/// corner whose vertex belongs to a skinned section, and a triangle with no
+/// such corner is dropped. `vertex_slot` gives each mesh vertex its
+/// (section, stored index) when it lies in a skinned section.
+pub fn shell_section_filter(
+    triangles: &[u32],
+    vertex_slot: &[Option<ShellSlot>],
+    bases: &[i32],
+) -> Vec<ShellTriangleSlot> {
+    let mut out = Vec::new();
+    for (index, corners) in triangles.as_chunks::<3>().0.iter().enumerate() {
+        for &corner in corners {
+            let Some(slot) = usize::try_from(corner)
+                .ok()
+                .and_then(|k| vertex_slot.get(k))
+                .copied()
+                .flatten()
+            else {
+                continue;
+            };
+            if bases.get(slot.section as usize).is_none() {
+                continue;
+            }
+            out.push(ShellTriangleSlot {
+                triangle: index as u32,
+                section: slot.section,
+                // The slot already holds the source index less the section's
+                // base; the base lookup only refuses a bad section.
+                local: slot.local,
+            });
+            break;
+        }
+    }
+    out
+}
+
 /// A torrent's level and its two channels after one tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TorrentMix {
@@ -1783,6 +2120,147 @@ mod tests {
             gain: 1.0,
         };
         assert_eq!(step_shell_fade(resting, 50, size, true), resting);
+    }
+
+    #[test]
+    fn the_force_shell_opens_holds_closes_and_leaves() {
+        let mut shell = ForceShell::new(1_000, [0.25, 0.75]);
+        assert_eq!(shell.state, 1);
+        assert_eq!(shell.size, 800.0);
+        assert_eq!(shell.tex_scale, 0.015);
+        assert_eq!(shell.plane_scale, 1.0);
+        assert_eq!(shell.tex_pos, [0.25, 0.75]);
+        let at_zero = shell.frame(1_000);
+        assert_eq!(at_zero.state, 1);
+        assert_eq!(at_zero.shown, 0.0);
+        assert_eq!(at_zero.faded, 1.0);
+        assert_eq!(at_zero.light, 0.0);
+        let half = shell.frame(1_600);
+        assert_eq!(half.shown, 0.5);
+        assert_eq!(half.light, shell_light(1, 0.5, 0.0).level);
+        assert_eq!(half.pair.first, 0.1);
+        assert_eq!(half.pair.second, 0.75);
+        let resting = shell.frame(2_201);
+        assert_eq!(resting.state, 0);
+        assert_eq!(resting.shown, 1.0);
+        shell.start_fade();
+        assert_eq!(shell.state, 2);
+        let closing = shell.frame(2_300);
+        assert_eq!(closing.state, 3);
+        assert_eq!(shell.stamp, 2_300);
+        let fading = shell.frame(2_700);
+        assert_eq!(fading.shown, 0.5);
+        assert_eq!(fading.colour, 1.4);
+        assert!((fading.pair.second - 0.375).abs() < 1e-6);
+        let gone = shell.frame(3_100);
+        assert_eq!(gone.state, 5);
+        assert!(gone.remove);
+    }
+
+    #[test]
+    fn a_force_shell_hit_makes_a_ripple_and_sounds() {
+        let mut shell = ForceShell::new(0, [0.0, 0.0]);
+        let (pitch, volume) = shell.hit([1.0, 2.0, 3.0], 0.2, 100, &mut || 0.5).unwrap();
+        assert!((pitch - 0.7).abs() < 1e-6);
+        assert!((volume - 0.4).abs() < 1e-4);
+        assert_eq!(shell.ripples.len(), 1);
+        assert_eq!(shell.ripples[0].at, [1.0, 2.0, 3.0]);
+        let scaled = (0.2f64 * 3.333) as f32;
+        let strength = (2.0 - scaled) * scaled * 6.0;
+        assert!((shell.ripples[0].strength - strength).abs() < 1e-6);
+        // Within the 400 ms gate no second sound, but the ripple is kept.
+        assert!(shell.hit([0.0; 3], 0.5, 300, &mut || 0.5).is_none());
+        assert_eq!(shell.ripples.len(), 2);
+        assert_eq!(shell.ripples[1].strength, 6.0);
+        for _ in 0..6 {
+            shell.hit([0.0; 3], 0.5, 1_000, &mut || 0.5);
+        }
+        assert_eq!(shell.ripples.len(), 8);
+        assert!(shell.hit([0.0; 3], 0.5, 1_000, &mut || 0.5).is_none());
+        let points = shell.colour_points();
+        assert_eq!([points[0][0], points[0][1], points[0][2]], [1.0, 2.0, 3.0]);
+        assert_eq!(points[7][3], 0.0);
+        // Step the ripples: each loses 0.04 and shows 0.04, then leaves.
+        shell.step_ripples();
+        assert!((shell.ripples[0].strength - (strength - 0.04)).abs() < 1e-5);
+        assert!((shell.ripples[0].shown - 0.06).abs() < 1e-6);
+        for _ in 0..200 {
+            shell.step_ripples();
+        }
+        assert!(shell.ripples.is_empty());
+    }
+
+    #[test]
+    fn the_shell_uniforms_are_the_frame_values() {
+        let z = bevy::math::Vec3::Z;
+        let x = bevy::math::Vec3::X;
+        let y = bevy::math::Vec3::Y;
+        let plane = [0.0, 0.025, 0.0, 0.0];
+        let u = shell_uniforms(
+            false,
+            [x, y, z],
+            bevy::math::Vec3::ZERO,
+            bevy::math::Vec3::new(0.0, 0.0, 5.0),
+            plane,
+            [[0.0; 4]; 8],
+            [0.125, 0.875],
+            1.0,
+            0.015,
+            0.25,
+        );
+        assert_eq!(u.local[0], 1.0);
+        assert_eq!(u.local[15], 1.0);
+        assert_eq!(u.view_pos, [0.0, 0.0, 5.0]);
+        assert_eq!(u.fade_plane, plane);
+        assert_eq!(u.tex_pos, [0.125, 0.875]);
+        assert_eq!(u.colour_int, 1.0);
+        assert_eq!(u.tex_scale, 0.015);
+        assert_eq!(u.fade, 0.75);
+        let skinned = shell_uniforms(
+            true,
+            [x, y, z],
+            bevy::math::Vec3::new(1.0, 2.0, 3.0),
+            bevy::math::Vec3::new(1.0, 2.0, 8.0),
+            plane,
+            [[0.0; 4]; 8],
+            [0.0; 2],
+            1.0,
+            0.015,
+            1.0,
+        );
+        assert_eq!(&skinned.local[12..15], &[1.0, 2.0, 3.0]);
+        assert_eq!(skinned.view_pos, [0.0, 0.0, 5.0]);
+        assert_eq!(SHELL_VERTEX_PROGRAM, "effectshell_v");
+        assert_eq!(SHELL_FRAGMENT_PROGRAM, "effectshell_f");
+        assert_eq!(SHELL_TEXTURE_UNIT, 3);
+        assert_eq!(SHELL_UNIFORMS.len(), 11);
+        assert_eq!(SHELL_UNIFORMS[7], "FdPln");
+    }
+
+    #[test]
+    fn the_section_filter_keeps_the_first_skinned_corner() {
+        let vertices = [
+            Some(ShellSlot {
+                section: 0,
+                local: 1,
+            }),
+            None,
+            Some(ShellSlot {
+                section: 1,
+                local: 2,
+            }),
+        ];
+        let kept = shell_section_filter(&[0, 1, 2, 1, 1, 1], &vertices, &[10, 20]);
+        assert_eq!(
+            kept,
+            [ShellTriangleSlot {
+                triangle: 0,
+                section: 0,
+                local: 1
+            }]
+        );
+        assert!(shell_section_filter(&[0, 1, 2], &[], &[0]).is_empty());
+        assert!(shell_section_filter(&[0, 1, 2], &vertices[1..2], &[0]).is_empty());
     }
 
     #[test]
