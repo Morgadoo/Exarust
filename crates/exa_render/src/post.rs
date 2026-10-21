@@ -41,10 +41,15 @@ pub const FADE_TICKS: u32 = 5000;
 /// A desaturation fade lasts this many ticks (3 s); its ramp rises by
 /// 1/3000 a tick.
 pub const DESAT_FADE_TICKS: u32 = 3000;
+/// The stored per-tick steps, as doubles: the original multiplies the ticks
+/// left by these rather than dividing.
+const FADE_STEP: f64 = 0.000_2;
+const DESAT_FADE_STEP: f64 = 0.000_333_333_333_333_333_3;
 
 /// The two fade controls the game main and the selection UI start. A fade
 /// stores the clock it started at and which of the two runs; the
-/// desaturation fade also has a kind byte that adds a bloom term.
+/// desaturation fade also has a kind byte that adds a bloom term. The two
+/// fades share the start clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FadeControl {
     pub start: u32,
@@ -54,8 +59,8 @@ pub struct FadeControl {
 }
 
 impl FadeControl {
-    /// Starts the screen fade at `clock` (`0x1002025e0`): the other fade's
-    /// flags stay as they were.
+    /// Starts the screen fade at `clock`: the other fade's flags stay as
+    /// they were.
     pub fn begin_fade(clock: u32, previous: Self) -> Self {
         Self {
             start: clock,
@@ -64,7 +69,7 @@ impl FadeControl {
         }
     }
 
-    /// Starts a desaturation fade at `clock` with a kind (`0x100202600`).
+    /// Starts a desaturation fade at `clock` with a kind.
     pub fn begin_desaturate(clock: u32, kind: u8, previous: Self) -> Self {
         Self {
             start: clock,
@@ -75,91 +80,82 @@ impl FadeControl {
     }
 }
 
-/// The final pass's runtime values: the sharpen uniform, the desaturation
-/// and bloom terms the fades compute, and the desaturation mask.
+/// The four components the final pass's `Blur` uniform receives each frame,
+/// in order: the screen fade's weight, the desaturation, the desaturation
+/// mask and the bloom term.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostFade {
-    pub sharpen: f32,
+    pub weight: f32,
     pub desaturation: f32,
-    pub bloom: f32,
     pub mask: f32,
+    pub bloom: f32,
 }
 
-/// The fade values at `clock` for an active control and a base
-/// desaturation (`+0x78`). With neither fade active the sharpen is 1 and
-/// the base desaturation passes through.
+/// The fade values at `clock` for a control and the base desaturation. With
+/// no fade active the weight is 1 and the base desaturation passes through.
 ///
-/// The screen fade's alpha is `1 − (start + 5000 − clock) / 5000` in double
-/// precision (0 at the start, 1 at the end), and it then squares that alpha
-/// and raises it to the tenth (the original's one square then five
-/// factors): its sharpen. The
-/// desaturation fade's ramp is `1 − (start + 3000 − clock) / 3000`; below
-/// a quarter it gives the mask `1 − 4·ramp`, else `(ramp − 0.25)·1.333`,
-/// inverted at the end, and a non-zero kind adds `(1 − mask)² · 0.4` to the
-/// bloom.
+/// The screen fade's alpha is `1 - (start + 5000 - clock) * 0.0002` computed
+/// in double precision (0 at the start, 1 at the end, 1 once it has run out,
+/// when the fade also stops); the weight is the alpha to the tenth power
+/// (one square, then four more factors of it in f32) and the desaturation
+/// is `alpha · base`.
+///
+/// The desaturation fade's ramp is `1 - (start + 3000 - clock) / 3000` (1
+/// once it has run out); below a quarter its mask is `1 - 4·ramp`, else
+/// `(ramp - 0.25) · 1.333` with the product in double precision. The mask
+/// the pass receives is `1 - mask`, the weight stays 1 and the base
+/// desaturation passes through; a non-zero kind adds `(1 - mask)² · 0.4`
+/// (a double product) to the bloom. The frame in which it runs out still
+/// computes the mask from a ramp of 1 and has no bloom.
 pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> PostFade {
+    let clock = u64::from(clock);
     let started = u64::from(control.start);
     if control.fade {
         let until = started + u64::from(FADE_TICKS);
-        if until < u64::from(clock) {
-            return PostFade {
-                sharpen: 1.0,
-                desaturation: 0.0,
-                bloom: 0.0,
-                mask: 0.0,
-            };
-        }
-        let alpha = (1.0 - (until - u64::from(clock)) as f64 * 0.000_2) as f32;
+        let alpha = if until < clock {
+            1.0f32
+        } else {
+            (1.0 - (until - clock) as f64 * FADE_STEP) as f32
+        };
         let squared = alpha * alpha;
-        let sharpen = squared * squared * squared * squared * squared;
         return PostFade {
-            sharpen,
+            weight: squared * squared * squared * squared * squared,
             desaturation: alpha * base_desaturation,
-            bloom: 0.0,
             mask: 0.0,
+            bloom: 0.0,
         };
     }
     if control.desaturate {
         let until = started + u64::from(DESAT_FADE_TICKS);
-        let (ramp, expired) = if until < u64::from(clock) {
-            (1.0f32, true)
+        let expired = until < clock;
+        let ramp = if expired {
+            1.0f32
         } else {
-            (
-                (1.0 - (until - u64::from(clock)) as f64 * 0.000_333_333_333_333_333_3) as f32,
-                false,
-            )
+            (1.0 - (until - clock) as f64 * DESAT_FADE_STEP) as f32
         };
-        if expired {
-            return PostFade {
-                sharpen: 1.0,
-                desaturation: base_desaturation,
-                bloom: 0.0,
-                mask: 0.0,
-            };
-        }
-        let mask = if ramp >= 0.25 {
-            (ramp - 0.25) * 1.333
-        } else {
+        let mask = if ramp < 0.25 {
             1.0 - ramp * 4.0
+        } else {
+            (f64::from(ramp - 0.25) * 1.333) as f32
         };
-        let bloom = if control.desaturate_kind != 0 {
+        let bloom = if control.desaturate_kind != 0 && !expired {
             let rest = 1.0 - mask;
-            rest * rest * 0.4
+            (f64::from(rest * rest) * 0.4) as f32
         } else {
             0.0
         };
         return PostFade {
-            sharpen: 1.0,
+            weight: 1.0,
             desaturation: base_desaturation,
-            bloom,
             mask: 1.0 - mask,
+            bloom,
         };
     }
     PostFade {
-        sharpen: 1.0,
+        weight: 1.0,
         desaturation: base_desaturation,
-        bloom: 0.0,
         mask: 0.0,
+        bloom: 0.0,
     }
 }
 
@@ -520,55 +516,70 @@ mod fade_tests {
         assert_eq!(
             values,
             PostFade {
-                sharpen: 1.0,
+                weight: 1.0,
                 desaturation: 0.6,
-                bloom: 0.0,
-                mask: 0.0
+                mask: 0.0,
+                bloom: 0.0
             }
         );
     }
 
     #[test]
-    fn the_fade_falls_over_five_seconds_and_sharpens_tenth_power() {
+    fn the_fade_rises_over_five_seconds_and_weighs_the_tenth_power() {
         let fade = FadeControl::begin_fade(1000, idle());
-        // The ramp starts at alpha 0 (the frame is black) and rises.
+        assert!(fade.fade && !fade.desaturate);
+        // The ramp starts at alpha 0 and rises.
         let start = fade_values(1000, fade, 0.8);
-        assert_eq!((start.sharpen, start.desaturation), (0.0, 0.0));
-        // Halfway: alpha 0.5, desaturation 0.4, sharpen 0.5^10.
+        assert_eq!((start.weight, start.desaturation), (0.0, 0.0));
+        // Halfway: alpha 0.5, desaturation 0.4, weight 0.5^10.
         let half = fade_values(3500, fade, 0.8);
-        assert!((half.sharpen - 0.000_976_562_5).abs() < 1e-7);
+        assert!((half.weight - 0.000_976_562_5).abs() < 1e-7);
         assert!((half.desaturation - 0.4).abs() < 1e-6);
         // At the end the alpha reaches 1 and the base desaturation returns.
         let end = fade_values(6000, fade, 0.8);
-        assert!((end.sharpen - 1.0).abs() < 1e-6);
+        assert!((end.weight - 1.0).abs() < 1e-6);
         assert!((end.desaturation - 0.8).abs() < 1e-6);
-        // Past it the control is finished: full brightness, no desaturation.
+        // Past it the alpha stays 1: the same values, mask and bloom zero.
         let done = fade_values(6001, fade, 0.8);
-        assert_eq!((done.sharpen, done.desaturation), (1.0, 0.0));
+        assert_eq!(
+            done,
+            PostFade {
+                weight: 1.0,
+                desaturation: 0.8,
+                mask: 0.0,
+                bloom: 0.0
+            }
+        );
     }
 
     #[test]
     fn the_desaturation_fade_ramps_mask_and_kind_bloom() {
         let fade = FadeControl::begin_desaturate(500, 0, idle());
         // At the start the ramp is 0, so the mask is 1 and then inverted.
-        assert_eq!(fade_values(500, fade, 0.75).mask, 0.0);
-        // Halfway (ramp 0.5): (0.5 − 0.25)·1.333 = 0.33325, inverted.
+        let start = fade_values(500, fade, 0.75);
+        assert_eq!(
+            (start.mask, start.weight, start.desaturation),
+            (0.0, 1.0, 0.75)
+        );
+        // Halfway (ramp 0.5): (0.5 - 0.25) * 1.333 = 0.33325, inverted.
         let half = fade_values(2000, fade, 0.75);
         assert!((half.mask - (1.0 - 0.333_25)).abs() < 1e-6);
         assert_eq!(half.bloom, 0.0);
-        // The kind adds (1 − mask)²·0.4 at the same point.
+        // The kind adds (1 - mask)^2 * 0.4 at the same point.
         let kind = FadeControl::begin_desaturate(500, 1, idle());
         let with_kind = fade_values(2000, kind, 0.75);
-        let expected = (1.0 - 0.333_25) * (1.0 - 0.333_25) * 0.4;
+        let expected = (1.0 - 0.333_25f32) * (1.0 - 0.333_25) * 0.4;
         assert!((with_kind.bloom - expected).abs() < 1e-6);
-        // The low ramp branch: at ramp 1/6 the mask is 1 − 4·ramp, then
+        // The low ramp branch: at ramp 1/6 the mask is 1 - 4 * ramp, then
         // inverted, so 2/3.
         let low = fade_values(1000, fade, 0.75);
         assert!((low.mask - 2.0 / 3.0).abs() < 1e-6);
-        // Past the end the base desaturation returns.
-        let done = fade_values(3501, fade, 0.75);
+        // Past the end the ramp is 1 and the mask 1 - 0.75 * 1.333 inverted,
+        // not zero; the kind's bloom is gone.
+        let done = fade_values(3501, kind, 0.75);
+        assert!((done.mask - 0.999_75).abs() < 1e-6);
         assert_eq!(
-            (done.mask, done.desaturation, done.sharpen),
+            (done.bloom, done.desaturation, done.weight),
             (0.0, 0.75, 1.0)
         );
     }
