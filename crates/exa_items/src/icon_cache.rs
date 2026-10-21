@@ -44,6 +44,18 @@ pub fn key(variant: u32, lit_model: bool) -> u32 {
     }
 }
 
+/// The key an icon resolved through the object database takes: [`key`]
+/// plus [`variant::EFFECT`] when the model carries it and
+/// [`variant::STREAMED`] always.
+pub fn streamed_key(variant: u32, lit_model: bool, effect: bool) -> u32 {
+    let key = key(variant, lit_model);
+    if effect {
+        key | variant::EFFECT | variant::STREAMED
+    } else {
+        key | variant::STREAMED
+    }
+}
+
 /// What the renderer gives for one icon: its atlas cell and its rendered
 /// size in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -323,6 +335,8 @@ mod tests {
         assert_eq!(key(0xC4FF_1234, false), variant::APPAREL);
         assert_eq!(key(0x0037_0000, true), 0x2037_0000);
         assert_eq!(key(0x5000_0001, true), 0x6000_0000);
+        assert_eq!(streamed_key(0x0037_0000, true, false), 0x3037_0000);
+        assert_eq!(streamed_key(0, false, true), 0x9000_0000);
     }
 
     #[test]

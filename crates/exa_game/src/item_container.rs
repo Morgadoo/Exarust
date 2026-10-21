@@ -1220,6 +1220,8 @@ pub struct Container {
     /// The client area the entries stay inside.
     pub client: (i32, i32),
     pub icon_size: i32,
+    /// The GUI unit positions are stored against.
+    pub unit: i32,
 }
 
 impl Default for Container {
@@ -1242,6 +1244,7 @@ impl Default for Container {
             loaded: false,
             client: (228, 180),
             icon_size: 160,
+            unit: 4,
         }
     }
 }
@@ -1249,8 +1252,8 @@ impl Default for Container {
 /// A drop from a drag payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DropDrag {
-    /// The panel the drag came from (0 for a new item from elsewhere).
-    pub src: u32,
+    /// The source is this same panel.
+    pub same_panel: bool,
     /// The source is this panel's linked one.
     pub linked: bool,
     pub id: u32,
@@ -1323,7 +1326,7 @@ impl Container {
     {
         self.entries.clear();
         self.used = 0;
-        let unit = 4;
+        let unit = self.unit;
         for child in children {
             let Some((icon, bulk)) = resolve(child.id, child.flags) else {
                 continue;
@@ -1344,7 +1347,7 @@ impl Container {
 
     /// The inverse of [`Container::load_list`], in sixteenths of a unit.
     pub fn save_list(&self) -> Vec<ListChild> {
-        let unit = 4;
+        let unit = self.unit;
         self.entries
             .iter()
             .map(|entry| {
@@ -1371,7 +1374,7 @@ impl Container {
         self.max_item = i32::from(record.max_item);
         self.entries.clear();
         self.used = 0;
-        let unit = 4;
+        let unit = self.unit;
         for child in &record.children {
             let Some((icon, bulk)) = resolve(child.id, child.flags & 0x0FFF_FFFF) else {
                 continue;
@@ -1392,7 +1395,7 @@ impl Container {
     /// The inverse of [`Container::load_record`]. The size, capacity and
     /// item limit come from what the panel loaded.
     pub fn save_record(&self, size: (u16, u16)) -> ContainerRecord {
-        let unit = 4;
+        let unit = self.unit;
         ContainerRecord {
             size,
             capacity: self.capacity as u16,
@@ -1439,7 +1442,7 @@ impl Container {
     /// container's id, or function 3 for a character-owned panel.
     pub fn drop_entry(&mut self, drag: DropDrag, grab: Cell, cursor: Cell) -> Option<DropResult> {
         let DropDrag {
-            src,
+            same_panel,
             linked,
             id,
             icon,
@@ -1447,7 +1450,16 @@ impl Container {
             bulk,
         } = drag;
         let mut index = None;
-        if linked
+        if same_panel
+            && let Some(at) = self
+                .entries
+                .iter()
+                .position(|e| e.drag & 1 != 0 && e.id == id)
+        {
+            self.entries[at].drag = 0;
+            self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
+            index = Some(at);
+        } else if linked
             && let Some(at) = self
                 .entries
                 .iter()
@@ -1457,29 +1469,20 @@ impl Container {
             self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
             index = Some(at);
         }
+        let mut added = None;
         let index = match index {
             Some(at) => at,
             None => {
-                if src == 0 {
-                    self.entries.push(Entry {
-                        cell: Cell::new(cursor.x - grab.x, cursor.y - grab.y),
-                        id,
-                        icon,
-                        flags,
-                        drag: 0,
-                    });
-                    self.used += bulk;
-                    self.entries.len() - 1
-                } else {
-                    let at = self
-                        .entries
-                        .iter()
-                        .position(|e| e.drag & 1 != 0 && e.id == id)
-                        .or_else(|| self.entries.iter().position(|e| e.id == id))?;
-                    self.entries[at].drag = 0;
-                    self.entries[at].cell = Cell::new(cursor.x - grab.x, cursor.y - grab.y);
-                    at
-                }
+                self.entries.push(Entry {
+                    cell: Cell::new(cursor.x - grab.x, cursor.y - grab.y),
+                    id,
+                    icon,
+                    flags,
+                    drag: 0,
+                });
+                self.used += bulk;
+                added = Some(id);
+                self.entries.len() - 1
             }
         };
         let index = raise(&mut self.entries, index)?;
@@ -1492,16 +1495,18 @@ impl Container {
                 self.client.1,
             );
         }
-        let fired = (id == 499).then(|| {
-            if self.container_id == 0 {
-                if self.owner.is_some() { (3, 0) } else { (0, 0) }
-            } else {
-                (2, self.container_id)
-            }
+        let fired = added.and_then(|_| {
+            (id == 499).then(|| {
+                if self.container_id == 0 {
+                    if self.owner.is_some() { (3, 0) } else { (0, 0) }
+                } else {
+                    (2, self.container_id)
+                }
+            })
         });
         Some(DropResult {
             index,
-            added: (src == 0).then_some(id),
+            added,
             fired: fired.filter(|f| f.0 != 0),
         })
     }
@@ -1965,7 +1970,7 @@ mod container_tests {
         let r = panel
             .drop_entry(
                 DropDrag {
-                    src: 4,
+                    same_panel: false,
                     linked: true,
                     id: 5,
                     icon: 2,
@@ -1984,7 +1989,7 @@ mod container_tests {
         let r = panel
             .drop_entry(
                 DropDrag {
-                    src: 0,
+                    same_panel: false,
                     linked: false,
                     id: 499,
                     icon: 3,
@@ -2004,7 +2009,7 @@ mod container_tests {
         let r = panel
             .drop_entry(
                 DropDrag {
-                    src: 0,
+                    same_panel: false,
                     linked: false,
                     id: 499,
                     icon: 3,
