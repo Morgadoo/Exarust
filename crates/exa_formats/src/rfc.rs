@@ -1109,6 +1109,17 @@ pub const RIGID_BODY: u32 = 0x3DD0_B001;
 /// Sub-chunk marking a mesh node as cloth (one word, 0 in every shipped
 /// file).
 pub const CLOTH: u32 = 0x3DD0_C001;
+/// The scene flag under which a cloth marker gives its node a cloth
+/// controller: the game sets it when it creates the scene the node is
+/// loaded into (so every cloth-marked node in play gets one).
+pub const CLOTH_SCENE: u32 = 0x1_0000;
+
+/// The cloth importer's gate: a marked node in a scene with the cloth flag
+/// gets a controller; elsewhere the marker is ignored (the original also
+/// clears two node flag bits).
+pub fn cloth_import(marker: bool, scene_flags: u32) -> bool {
+    marker && scene_flags & CLOTH_SCENE != 0
+}
 /// Sub-chunk of a keyframe track (`key_track::KeyTrack`), which may follow
 /// any stored node's body.
 pub const KEY_TRACK: u32 = 0x3AC1;
@@ -2494,6 +2505,14 @@ mod tests {
         assert!(n.nested > 0, "transform records nest: {n:?}");
         assert_eq!(n.unresolved, 0, "{n:?}");
         assert_eq!((n.positions, n.matching), (14, 14), "{n:?}");
+    }
+
+    #[test]
+    fn the_cloth_gate_needs_the_marker_and_the_scene_flag() {
+        assert!(cloth_import(true, CLOTH_SCENE));
+        assert!(!cloth_import(false, CLOTH_SCENE));
+        assert!(!cloth_import(true, 0));
+        assert!(!cloth_import(true, CLOTH_SCENE - 1));
     }
 
     /// The cloth markers of the installed packs (skipped without the

@@ -521,7 +521,13 @@ scene's set-up); elsewhere the marker is ignored. Shipped: the two meshes
 of each of the six long hair models in `CharExt.rpk` (`hair hula01…05`,
 `hair husa02`), four banners in `Objlib.rpk` (`bannerubma01`, `mawbanner01`,
 `uw01_banner01`, `uw01_banner02`) and the wraith's robe in
-`wraithhabase.rfc`. Exarust reads the marker (`Node::cloth_marker`).
+`wraithhabase.rfc`. Exarust reads the marker (`Node::cloth_marker`) and
+applies the scene gate (`rfc::cloth_import`); a marked node's mesh becomes
+a simulated cloth (`exa_world::cloth`): a particle per vertex, the triangle
+edges as structural links and the two vertices opposite a shared edge as
+bend links, pinned at the mesh's rest points (the loose 0.1 weight; the
+pin rule is a labelled guess because the shipped cloth meshes carry no skin
+weights), stepped at the body's 83 Hz with gravity.
 
 ## Keyframe tracks (`3AC1`)
 

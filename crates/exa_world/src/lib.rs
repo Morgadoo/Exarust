@@ -5,6 +5,7 @@
 
 pub mod arc;
 pub mod bodies;
+pub mod cloth;
 pub mod cloth_draw;
 pub mod db_objects;
 pub mod environment;
@@ -50,6 +51,7 @@ impl Plugin for WorldPlugin {
             light_source::LightSourcePlugin,
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
+            cloth::ClothPlugin,
         ));
     }
 }
@@ -660,6 +662,17 @@ pub fn spawn_model_nodes(
             commands
                 .entity(e)
                 .insert(node_parts::NodeParts::new(parts.clone()));
+            if node.cloth {
+                commands.entity(part).insert(cloth::ClothNode);
+            }
+            // The level the mesh ships with. Builders that set their own
+            // (grid sets, floors) replace it.
+            if node.shadow_bias != 0 {
+                commands
+                    .entity(part)
+                    .insert(exa_render::lights::ShadowBias(node.shadow_bias));
+            }
+            parts.push(part);
         }
         parts_of.push(parts);
         if node.placeholder {
@@ -1587,6 +1600,7 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
             placeholder: false,
+            cloth: false,
         }
     }
 

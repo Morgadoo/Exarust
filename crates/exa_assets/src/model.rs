@@ -83,6 +83,11 @@ pub struct ModelNode {
     /// ([`exa_formats::rfc::Node::PLACEHOLDER`]): a clone keeps its
     /// transform but draws nothing and has no body.
     pub placeholder: bool,
+    /// The node carries the cloth marker (the mesh is simulated as cloth in
+    /// the game: long hair, banners, the wraith's robe). The original makes
+    /// a controller only in a scene carrying the cloth-flag 0x10000, which
+    /// every game scene does ([`exa_formats::rfc::cloth_import`]).
+    pub cloth: bool,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -535,6 +540,10 @@ impl ModelLoader<'_> {
                 },
                 is_skin,
                 placeholder: node.flags & exa_formats::rfc::Node::PLACEHOLDER != 0,
+                cloth: exa_formats::rfc::cloth_import(
+                    node.cloth_marker,
+                    exa_formats::rfc::CLOTH_SCENE,
+                ),
             });
         }
         // An instance node shares the node it names (1-based): the original
