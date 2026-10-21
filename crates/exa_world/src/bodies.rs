@@ -4,13 +4,13 @@
 //! under a plain node under a body never registers), unless the prop is
 //! placed static (`Prop::STATIC`) or the node is marked as level geometry
 //! (`Node::STATIC`, whose body the model loader drops). Exarust registers
-//! only free bodies for
-//! now: a body hung from the world by its links (lamps, chains, wall
-//! rings) needs the world-link laws, and doors, levers and push surfaces
-//! need their mechanisms and those same world links, so they stay static
-//! level geometry until both land. Their rules are in `exa_physics`'s
-//! `door`, `lever`, `plate` and `mechanism` modules. Evidence:
-//! `docs/formats/RFC.md` (Rigid body, Props).
+//! free bodies and hung ones: a body
+//! whose root carries links (lamps, chains, wall rings) registers with its
+//! stored links anchored to its node ([`exa_physics::body::WorldLink`]) and
+//! no level detection. Doors, levers and push surfaces stay static level
+//! geometry until their mechanisms drive their bodies. Their rules are in
+//! `exa_physics`'s `door`, `lever`, `plate` and `mechanism` modules.
+//! Evidence: `docs/formats/RFC.md` (Rigid body, Props).
 
 use bevy::prelude::*;
 use exa_assets::{Model, NodeRigidBody};
@@ -23,8 +23,8 @@ use exa_physics::prop::{BodyNode, PendingProp};
 pub enum TreeKind {
     /// No links on its top body: it registers, asleep.
     Free,
-    /// Its top body carries links: it hangs from the world (static until
-    /// the world links land).
+    /// Its top body carries links: it registers hung from the world, its
+    /// root's stored links anchored to its node.
     Hung,
 }
 
@@ -160,11 +160,7 @@ fn rigid_part(
             .map(|s| (Vec3::from(s.centre), s.radius))
             .collect(),
         origin,
-        links: if parent.is_some() {
-            b.links.iter().map(child_link).collect()
-        } else {
-            Vec::new()
-        },
+        links: b.links.iter().map(child_link).collect(),
     }
 }
 
@@ -188,11 +184,13 @@ pub fn plan(
         match (placement, tree.kind) {
             (Placement::Static, _) => counts.static_props += 1,
             (Placement::Mechanism, _) => counts.mechanisms += 1,
-            (Placement::Loose, TreeKind::Hung) => counts.hung += 1,
-            (Placement::Loose, TreeKind::Free) => {
+            (Placement::Loose, TreeKind::Free | TreeKind::Hung) => {
                 if !tree.nodes.iter().all(|&i| nodes[i].1.is_some_and(solid)) {
                     counts.flat += 1;
                     continue;
+                }
+                if tree.kind == TreeKind::Hung {
+                    counts.hung += 1;
                 }
                 counts.registered += 1;
                 counts.parts += tree.nodes.len();
@@ -386,13 +384,14 @@ mod tests {
     }
 
     /// The installed levels' bodies (skipped without the game): what
-    /// registers asleep and what stays static. `exanima01`: 4 591 trees of
-    /// 5 000 bodies register (props' sacks, buckets and carts with their
-    /// children among them); 122 hang from the world (wall chains, lamps),
-    /// 198 are doors, levers and plates, 492 belong to props placed static.
-    /// `arenao1`: 68 of its props are placed static (the barrels, the cart),
-    /// 3 lanterns hang, its own model's tavern table is a node marked static;
-    /// 17 bodies register (its tableware, clothes and a basket).
+    /// registers and what stays static. `exanima01`: 4 713 trees of 6 023
+    /// bodies register (props' sacks, buckets and carts with their children
+    /// among them); 122 of the trees hang from the world (wall chains,
+    /// lamps, 1 023 bodies), 198 are doors, levers and plates, 492 belong to
+    /// props placed static. `arenao1`: 68 of its props are placed static (the
+    /// barrels, the cart), 3 lanterns hang, its own model's tavern table is a
+    /// node marked static; 20 bodies register (its tableware, clothes, a
+    /// basket and the lanterns).
     #[test]
     fn shipped_level_bodies() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -409,9 +408,9 @@ mod tests {
         };
         assert_eq!(
             level_counts(&game, "exanima01"),
-            counts(4591, 5000, 122, 198, 492)
+            counts(4713, 6023, 122, 198, 492)
         );
-        assert_eq!(level_counts(&game, "arenao1"), counts(17, 17, 3, 0, 68));
+        assert_eq!(level_counts(&game, "arenao1"), counts(20, 20, 3, 0, 68));
         // The levels' own bodies marked as level geometry: only the tavern
         // table of arenao1 (the six of exanima01 register).
         let res = game.pack(exa_assets::PackKind::Resource).unwrap();

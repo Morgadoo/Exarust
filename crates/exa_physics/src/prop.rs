@@ -98,12 +98,20 @@ fn register_props(
     mut commands: Commands,
     pending: Query<(Entity, &PendingProp)>,
     globals: Query<&GlobalTransform>,
+    parents: Query<&ChildOf>,
 ) {
     for (root, PendingProp(parts)) in &pending {
         let mut parts = parts.clone();
         for part in &mut parts {
             if let Ok(g) = globals.get(part.entity) {
                 part.world = g.affine();
+            }
+            // A root body's world links anchor in its parent node's frame.
+            if part.parent.is_none()
+                && let Ok(parent) = parents.get(part.entity)
+                && let Ok(g) = globals.get(parent.parent())
+            {
+                part.parent_world = g.affine();
             }
         }
         let body = Ragdoll::rigid(&parts);

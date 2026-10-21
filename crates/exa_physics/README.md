@@ -4,7 +4,8 @@ Rigid-body and articulated-body simulation: the core of Exanima's feel (physical
 
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
 body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
-character controller (`lib`) and the shared intersection maths (`intersect`).
+character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
+builders (`shape`) and the shared intersection maths (`intersect`).
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the
@@ -200,6 +201,38 @@ master-to-instances copy, and `mesh_touches` a stand-in for the node's
 sphere query. `exa_world::gi_volume` runs the floor generator on each grid
 cell's floor in the original's centimetres.
 
+The three shape builders (`src/shape.rs`) fit a body to a mesh node the way
+the original does: they run the volume fit, sort the extracted spheres
+around the node's box centre or origin, take the node's box (a limb's cut
+at its own origin so the box reaches the joint), clamp the extents (the two
+smaller at least a fifth of the largest, in double precision, then six
+centimetres), order the axes by extent smallest first (a limb overrides the
+order from its own numbers), lay the regular tetrahedron over the box (the
+middle √2 sign fixes the handedness for every axis order; a mirrored limb
+on the +x side flips x and y), and weigh the body: mobility 10 000 over the
+volume and point masses 4 over the barycentric weights of the volume's
+centre. The quality flag gives one voxel per centimetre and eight cells at
+least; the wide-query flag reaches the grid; a factory weapon takes its
+resolution multiplier, even-axis word, depth, free-corner count, map tag and
+mirror byte from its definition's fit record instead. The original scales
+and offsets only three of the four rest points (its loop runs over three);
+the fourth stays the unit template vertex, and the shipped prop bodies,
+made by the editor, have all four scaled.
+
+The dynamics world unit (`src/dynamics.rs`) holds the rest of the world's
+side of the solver as data and rules: the simulation clock and the step
+driver (a simulation is due when its step's end is reached; more than four
+steps late, its backlog is dropped; the soonest end wins), the time-scale
+helper, the default/mechanism/zero-gravity environments with their retention
+bands, the shared 600 cm grid (a body's cell from its node's translation over
+600 cm rounded to even plus the half; the nine neighbours; the flat-row
+shift with its strip clear), the node and body tree helpers (wake from a
+body's node down through body children, settle living bodies through every
+node, freeze at a matrix, disable and enable, the grab layer, held pairs),
+the purges of what left a scene or a removed sub-scene, the placement
+overlap query (nine cells, own tree and disabled bodies skipped, pair masks
+compared, the higher-order body moving first), and the watch list.
+
 Props and items with a rigid body are bodies in the same solver
 (`src/body_rigid.rs`, `body::Ragdoll::rigid`): built as the original
 registers them, asleep (countdown 0) where the level placed them, with
@@ -230,6 +263,17 @@ anchor in the passes it runs in, twice the strength times the gap counted at
 most 3·√mobility (≤ 5) cm, less the motion already heading there.
 `Physics::fixed_pick` and `prop::StandIns::owner_of` name the prop a ray
 meets.
+
+A root body whose stored links hang from the world keeps them: `Ragdoll::rigid`
+turns each into a `WorldLink` anchored in the node's parent frame (the
+parent point plus the node's translation, through the parent's world
+matrix), with the origin pivot added unless the first link is a slider, and
+marks the part as skipping level detection. The links are solved unshared
+with the body's links every iteration, by the original's world-link law: a
+plain pin (strength, capped at 10·strength cm beyond 10·strength), a slack
+link, a slider (its fraction of the travel projected on its axis, the
+correction applied twice), a horizontal drag (capped at min(3·√mobility, 5)
+cm less the motion already toward the anchor), a damped spring and a plane.
 
 The level's mechanisms are in `door`, `lever`, `plate`, `relay`, `signal`
 and `mechanism`. Their rules follow the original's instruction listings,
@@ -301,9 +345,10 @@ leaf's summary.
 Wiring: a placed object keeps its door and operative records
 (`exa_world::mechanisms::MechanismRecords`), but the level loader leaves
 doors, levers and plates static (`exa_world::bodies`,
-`Placement::Mechanism`): their bodies hang from the world by links and the
-solver's world-link law is not implemented, so nothing produces the
-heading, handle speed, travel fraction or arm angle these steps read.
+`Placement::Mechanism`): their bodies would need their steps to drive them,
+so nothing produces the heading, handle speed, travel fraction or arm angle
+these steps read. Hung props (lamps, chains, wall rings) do register, with
+their world links.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,
@@ -330,6 +375,18 @@ sets the instability counter (the barricade sets it to 100).
   counts, the near-surface and six-ray solid fills, the corner masks, the
   candidate and corner sphere extraction with its coverage pruning and
   fallback, and the volume, centre and point masses that weigh a body.
+- The three rigid-body shape builders (`shape`): the sphere sort, the box
+  cut and growth, the extent clamps, the axis order, the tetrahedron with
+  its mirroring, the point masses and the setup's gravity shares, and the
+  quality, wide-query and factory-weapon fit flags.
+- The dynamics world unit (`dynamics`): the fixed-step driver and its
+  backlog drop, the clock's time scale, the environments and their bands,
+  the 600 cm grid and its shift, the node and body tree helpers, the scene
+  purges, the placement overlap query and the watch list.
+- A root body's world links (`body::WorldLink`): a pin or slack link, a
+  slider with its travel, a horizontal drag, a damped spring and a plane,
+  anchored in the node's parent frame, with the origin pivot and no level
+  detection for a hung root.
 - The cloth's start seeds its fields, installs an identity matrix and derives its step from the particle count; its frame swap rotates three vertex buffers.
 - Activation sets the cloth's flag words, phase and 0.4 scale; the transform visits all three particle buffers plus the object's origin and extent.
 - The rebuild copies the origin, rejects a mismatched override and transforms every particle point into a fresh submitted buffer.
