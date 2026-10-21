@@ -98,6 +98,11 @@ pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 const HUMAN_LIMB_DAMPING: f32 = 1.0;
 pub(crate) const LINK_ITERATIONS: usize = 20;
 pub(crate) const FRICTION_PASSES: usize = 8;
+/// A held item body's motion flag: a walk's start clears it.
+pub const HELD_MOTION_FLAG: u32 = 0x10000;
+/// A held item body's static-only flag: every level query uses the current
+/// pose, never a sweep.
+pub const HELD_STATIC_ONLY: u32 = 0x80000;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -292,6 +297,9 @@ pub struct Part {
     /// The part's state word: whether it strikes, is a held item, an arm or
     /// a muscled limb ([`PartState`]).
     pub state: PartState,
+    /// Its level queries are static (the current pose only, no sweep), as
+    /// a held item body's are in the original's static-only mode.
+    pub static_only: bool,
 }
 
 /// Barycentric weights of a point given in a part's space.
@@ -386,6 +394,7 @@ impl Part {
             relax_cap: muscle::RELAX_CAP,
             rest_turn: Quat::IDENTITY,
             state: PartState::LIMB_FRESH,
+            static_only: false,
         }
         .settle()
     }
@@ -1120,6 +1129,13 @@ pub struct Ragdoll {
     /// The iteration pass this tick is in, from 0: a grab with a last pass
     /// reads it.
     pass: u32,
+    /// The class flags of the bodies it holds (two hands at most), as the
+    /// original keeps them on the held item bodies: bit 0x10000 is the
+    /// motion flag a walk's start clears, bit 0x80000 makes every level
+    /// query static (no sweep). Exarust holds items as bone-attached
+    /// models, so the word is kept for them; no part reads it yet.
+    held_flags: [u32; 2],
+    held_count: usize,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1598,6 +1614,8 @@ impl Ragdoll {
             pieces: Vec::new(),
             triangles: Vec::new(),
             pass: 0,
+            held_flags: [0; 2],
+            held_count: 0,
         }
     }
 
@@ -1662,6 +1680,47 @@ impl Ragdoll {
     pub fn clear_feet(&mut self) {
         for leg in &mut self.legs {
             leg.state = FootState::default();
+        }
+    }
+
+    /// Registers a held item body's flags (two at most), as the original
+    /// keeps them on the item: the walk's start clears bit 0x10000 and the
+    /// armed move branch sets bit 0x80000 (static-only level queries).
+    pub fn hold_item(&mut self, flags: u32) {
+        if self.held_count < self.held_flags.len() {
+            self.held_flags[self.held_count] = flags;
+            self.held_count += 1;
+        }
+    }
+
+    /// Releases the held items' flags.
+    pub fn drop_items(&mut self) {
+        self.held_count = 0;
+    }
+
+    /// The held item bodies' class flags.
+    pub fn held_flags(&self) -> &[u32] {
+        &self.held_flags[..self.held_count]
+    }
+
+    /// A walk's start (another clip playing while it locomotes) clears the
+    /// held items' motion flag.
+    pub fn walk_started(&mut self) {
+        for flags in &mut self.held_flags[..self.held_count] {
+            *flags &= !HELD_MOTION_FLAG;
+        }
+    }
+
+    /// The move branch's static-only mode for the held items, which makes
+    /// every level query static: set while armed and moving. Exarust keeps
+    /// the held item bodies' word, not their queries yet.
+    pub fn set_held_static_only(&mut self, on: bool) {
+        for flags in &mut self.held_flags[..self.held_count] {
+            if on {
+                *flags |= HELD_STATIC_ONLY;
+            } else {
+                *flags &= !HELD_STATIC_ONLY;
+            }
         }
     }
 
@@ -2513,7 +2572,7 @@ impl Ragdoll {
                     let (centre, r) = p.spheres[k];
                     let start = before.transform_point3(centre);
                     let mut end = p.transform().transform_point3(centre);
-                    let swept = start.distance_squared(end) > SWEEP_TRAVEL2;
+                    let swept = !p.static_only && start.distance_squared(end) > SWEEP_TRAVEL2;
                     // Room for the pushes of earlier triangles.
                     let reach = Vec3::splat(2.0 * r);
                     let (lo, hi) = if swept {

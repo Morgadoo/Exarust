@@ -199,7 +199,15 @@ fn look_of(body: &Ragdoll, req: &Locomotion, l: &mut Locomotor, looks: bool) -> 
     }
     let energy = body.drive.as_ref().map_or(1.0, |d| d.energy);
     let ahead = Vec3::from(head.transform().matrix3.z_axis);
-    let cursor = forward(req.cursor);
+    // A behaviour's look target turns the look toward its eye point while
+    // its deadline is in the past; the cursor otherwise.
+    let cursor = match req.look_target {
+        Some(target) if req.look_until < l.now => match body.chest_point() {
+            Some(chest) => (target - chest).normalize_or_zero(),
+            None => forward(req.cursor),
+        },
+        _ => forward(req.cursor),
+    };
     let d = cursor + (ahead - cursor) * (1.0 - energy * energy);
     let mut d = Quat::from_rotation_y(-l.frame_yaw) * d;
     d.y *= 0.5;
@@ -439,5 +447,44 @@ mod tests {
         assert_eq!(l.head_weight, 0.0);
         let dazed = look_of(&head(0.0), &req, &mut l, true).unwrap();
         assert!((dazed.dir - forward(-0.2)).length() < 1e-5, "{}", dazed.dir);
+    }
+
+    /// A behaviour's look target turns the look toward its point while its
+    /// deadline is in the past; before it, the cursor.
+    #[test]
+    fn a_look_target_turns_the_head_after_its_timer() {
+        let setup = [PartSetup {
+            bone: HEAD,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: vec![Vec3::ZERO],
+        }];
+        let mut body = Ragdoll::new(&setup).with_drive();
+        body.drive.as_mut().unwrap().energy = 1.0;
+        let mut req = Locomotion {
+            cursor: 0.0,
+            look_target: Some(Vec3::new(1.0, 0.0, 1.0)),
+            look_until: 50,
+            ..default()
+        };
+        let mut l = Locomotor {
+            now: 100,
+            ..default()
+        };
+        let look = look_of(&body, &req, &mut l, true).unwrap();
+        assert!(
+            (look.dir - forward(std::f32::consts::FRAC_PI_4)).length() < 1e-5,
+            "{}",
+            look.dir
+        );
+        req.look_until = 200;
+        let look = look_of(&body, &req, &mut l, true).unwrap();
+        assert!((look.dir - forward(0.0)).length() < 1e-5, "{}", look.dir);
     }
 }

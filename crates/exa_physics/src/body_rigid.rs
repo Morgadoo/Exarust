@@ -154,6 +154,7 @@ impl Part {
             rest_turn: Quat::IDENTITY,
             // A prop is not a living limb: no limb family.
             state: PartState(0),
+            static_only: false,
         }
         .settle()
     }
@@ -296,6 +297,8 @@ impl Ragdoll {
             pieces: Vec::new(),
             triangles: Vec::new(),
             pass: 0,
+            held_flags: [0; 2],
+            held_count: 0,
         }
     }
 }

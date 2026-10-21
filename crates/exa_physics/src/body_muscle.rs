@@ -60,12 +60,20 @@ const LIMB_SCALE: f32 = 1.25;
 const THIGH_FACTOR: f32 = 0.2;
 const THIGH_RUNNING: f32 = 0.6;
 const THIGH_STANDING: f64 = 0.2;
+const THIGH_JUMP: f64 = 0.4;
 /// A leg limit link's strength s ← 0.9s + 0.1t (double precision) each
-/// tick: t = 0.5·S² standing or backpedalling, 0.4 walking or running.
+/// tick: t = 0.5·S² standing or backpedalling, 0.4 walking or running;
+/// while stepping with the foot anchored s ← 0.8s + 0.04 instead.
 const LEG_LIMIT_KEEP: f64 = 0.9;
 const LEG_LIMIT_TAKE: f64 = 0.1;
 const LEG_LIMIT_STANDING: f32 = 0.5;
 const LEG_LIMIT_MOVING: f32 = 0.4;
+const STEP_LIMIT_KEEP: f64 = 0.8;
+const STEP_LIMIT_TAKE: f64 = 0.04;
+/// A powered golem suit halves the standing thigh factor and quarters the
+/// leg limit's standing target.
+const GOLEM_THIGH: f32 = 0.5;
+const GOLEM_LIMIT: f32 = 0.25;
 /// Arm stiffness: off balance, and dazed (tone under 0.85) or striding
 /// (the walking arms of a character that is not feral). A body is off
 /// balance below this balance.
@@ -248,6 +256,27 @@ pub struct Bearing {
     /// link anchors are placed relative to the thorax where it physically
     /// is, not where its pose puts it.
     pub head_looks: bool,
+    /// The locomotion drive this tick (cm a tick²) and its push gain (the
+    /// gait table's push column), which the carry adds to every part while
+    /// it moves: drive × S² × push × the feet's lag.
+    pub push: Vec3,
+    pub push_gain: f32,
+    /// The feet's lag factor, 0 to 1: a foot that trails its animated spot
+    /// cuts the push.
+    pub lag: f32,
+    /// The body's facing across the ground (negated while it backpedals),
+    /// which the feet's lag is measured along.
+    pub facing: Vec3,
+    /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
+    /// instead of following the leg mode.
+    pub stepping: bool,
+    /// Its golem suit is powered: the standing thigh factor and the leg
+    /// limit's target are halved a second time.
+    pub golem_powered: bool,
+    /// The jump flag and its timer: the original never writes either, so
+    /// the leg mode's jump share is dead; kept for the rule.
+    pub jump: bool,
+    pub jump_progress: f32,
 }
 
 impl Default for Bearing {
@@ -272,6 +301,14 @@ impl Default for Bearing {
             progress: 0.0,
             idle: false,
             head_looks: false,
+            push: Vec3::ZERO,
+            push_gain: 0.0,
+            lag: 1.0,
+            facing: Vec3::Z,
+            stepping: false,
+            golem_powered: false,
+            jump: false,
+            jump_progress: 0.0,
         }
     }
 }
@@ -341,14 +378,26 @@ pub(super) fn stance_factor(s: f32, bearing: &Bearing, race: &RaceMuscles) -> f3
 /// The thighs' factor and the leg limits' target this tick by the leg
 /// mode: walking 0.2 and 0.4, running 0.6 and 0.4, otherwise 0.2 × the
 /// limbs' factor (double precision) and 0.5·S².
-fn leg_gains(legs: LegMode, limbs: f32, support: f32) -> (f32, f32) {
+fn leg_gains(legs: LegMode, limbs: f32, support: f32, bearing: &Bearing) -> (f32, f32) {
     match legs {
         LegMode::Walk => (THIGH_FACTOR, LEG_LIMIT_MOVING),
         LegMode::Run => (THIGH_RUNNING, LEG_LIMIT_MOVING),
-        LegMode::Backpedal | LegMode::Standing => (
-            (f64::from(limbs) * THIGH_STANDING) as f32,
-            support * support * LEG_LIMIT_STANDING,
-        ),
+        LegMode::Backpedal | LegMode::Standing => {
+            // A jump raises the standing thigh factor from 0.2 to 0.4 while
+            // its timer is under 1.5 (the flag is never written).
+            let share = if bearing.jump && bearing.jump_progress < 1.5 {
+                THIGH_JUMP
+            } else {
+                THIGH_STANDING
+            };
+            let mut thigh = (f64::from(limbs) * share) as f32;
+            let mut limit = support * support * LEG_LIMIT_STANDING;
+            if bearing.golem_powered {
+                thigh *= GOLEM_THIGH;
+                limit *= GOLEM_LIMIT;
+            }
+            (thigh, limit)
+        }
     }
 }
 
@@ -498,6 +547,7 @@ impl Ragdoll {
             parts,
             links,
             links_of,
+            legs,
             drive,
             ..
         } = self;
@@ -517,15 +567,25 @@ impl Ragdoll {
         };
         drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
         let limbs = LIMB_SCALE * drive.stats.scale;
-        let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support);
+        let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support, &bearing);
         for i in 0..parts.len() {
             match role(parts[i].bone) {
                 // A collapsing body's legs keep their gains.
                 Role::Shin if parts[i].foot.is_some() && !bearing.collapsing => {
                     if let Some(k) = parts[i].leg_limit.filter(|&k| k < links.len()) {
                         let s = &mut links[k].strength;
-                        *s = (f64::from(limit) * LEG_LIMIT_TAKE + f64::from(*s) * LEG_LIMIT_KEEP)
-                            as f32;
+                        // A stepping foot that is anchored eases to 0.2
+                        // whatever its leg mode.
+                        let anchored = bearing.stepping
+                            && legs.iter().any(|l| {
+                                l.shin == i && l.state.has(super::feet::FootState::ANCHORED)
+                            });
+                        *s = if anchored {
+                            (f64::from(*s) * STEP_LIMIT_KEEP + STEP_LIMIT_TAKE) as f32
+                        } else {
+                            (f64::from(limit) * LEG_LIMIT_TAKE + f64::from(*s) * LEG_LIMIT_KEEP)
+                                as f32
+                        };
                     }
                     if let Some(j) = parts[i].parent.filter(|&j| j < parts.len()) {
                         parts[j].factor = thigh;

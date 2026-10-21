@@ -554,6 +554,7 @@ pub(crate) fn bearing(
         idle: anim.action == "Idle",
         // The sampler's head look sets it.
         head_looks: false,
+        ..Bearing::default()
     }
 }
 

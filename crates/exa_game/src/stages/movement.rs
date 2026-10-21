@@ -101,13 +101,21 @@ pub(crate) fn decide_movement(
     let standing = controller
         .as_ref()
         .map_or(t.translation, |(_, at)| at.translation);
+    // A body with muscles walks by its carry: its own measured speed is
+    // the decision's, and its controller only follows its frame. Without
+    // muscles the capsule walks as before.
+    let carry_walk = ragdoll.as_deref().is_some_and(|r| r.drive.is_some());
     // Its speed along its heading: the capsule's, as the decision last set
     // it (its measured step stalls for a tick on the level mesh's seams,
-    // which would stop a braking body short).
+    // which would stop a braking body short), or its own, cm a tick.
     let velocity = controller
         .as_ref()
         .map_or(Vec3::ZERO, |(c, _)| c.desired_velocity);
-    let speed = (velocity.with_y(0.0).dot(forward(req.heading)) * CM / TICKS_A_SECOND).abs();
+    let speed = if carry_walk {
+        body.speed
+    } else {
+        (velocity.with_y(0.0).dot(forward(req.heading)) * CM / TICKS_A_SECOND).abs()
+    };
     let state = condition.copied().unwrap_or_default();
     let held = fallen || state.helpless();
     if held {
@@ -187,12 +195,17 @@ pub(crate) fn decide_movement(
     // A body without muscles stands on level ground.
     let level = drive.map_or(1.0, |d| d.balance().level());
     if body.moving() {
-        // The root's displacement: across the ground the capsule's step,
-        // which carries the body until it walks by its carry; up and down
-        // the pelvis's own.
-        let rise = ragdoll.as_deref().map_or(0.0, |r| r.root_moved().y);
-        let moved =
-            Vec3::new(velocity.x, 0.0, velocity.z) * (CM / TICKS_A_SECOND) + Vec3::Y * (rise * CM);
+        // The root's displacement: the body's own while it walks by its
+        // carry; otherwise across the ground the capsule's step, up and
+        // down the pelvis's.
+        let moved = if carry_walk {
+            ragdoll
+                .as_deref()
+                .map_or(Vec3::ZERO, |r| r.root_moved() * CM)
+        } else {
+            let rise = ragdoll.as_deref().map_or(0.0, |r| r.root_moved().y);
+            Vec3::new(velocity.x, 0.0, velocity.z) * (CM / TICKS_A_SECOND) + Vec3::Y * (rise * CM)
+        };
         let stride = Stride {
             supported: drive.is_none_or(|d| d.balance().has_support()),
             level,
@@ -203,9 +216,14 @@ pub(crate) fn decide_movement(
             moved,
             heading: forward(req.heading),
             walking: anim.as_deref().is_some_and(|a| a.action == WALK),
+            in_combat: matches!(state, Condition::ATTACKING | Condition::COMBAT_IDLE),
             now: ticks.as_deref().map_or(0, BodyTicks::millis),
         };
+        body.now = stride.now;
         let start = locomotion::locomote(&req, &mut body, &table, &stride);
+        // The original clears its held items' motion flag and calls its
+        // start callback on every tick another clip plays (done below,
+        // once the borrow of the body's drive ends).
         if let Some(anim) = anim.as_deref_mut() {
             start_walk(motions, anim, start);
             let length = motions
@@ -220,6 +238,8 @@ pub(crate) fn decide_movement(
     // The torso twist toward the look, before the sampler.
     let crouch = player.map_or(0.0, PlayerBody::crouch);
     let moving = body.moving();
+    let head_tilt = body.head_tilt;
+    let start_notice = body.start_notice;
     locomotion::twist(
         &mut body,
         &TwistBy {
@@ -233,7 +253,7 @@ pub(crate) fn decide_movement(
                 .map(|(swing, swinging)| (swing.handling, swinging.strength)),
             casting: state == Condition::CASTING,
             crouch,
-            tilt: 0.0,
+            tilt: head_tilt,
         },
     );
     locomotion::count_down(&mut body);
@@ -245,18 +265,36 @@ pub(crate) fn decide_movement(
         *gaits
     };
     if let Some((c, _)) = controller.as_mut() {
-        c.desired_velocity = if held {
+        c.desired_velocity = if held || carry_walk {
             Vec3::ZERO
         } else {
             locomotion::capsule_velocity(&req, &body, &gaits, c.desired_velocity, standing)
         };
     }
     t.rotation = Quat::from_rotation_y(body.yaw);
+    // The body walks by its carry: the drive, its push gain and the feet's
+    // lag go to the physics, which adds them to the carry.
+    let facing = forward(body.yaw) * if req.has(flags::BACK) { -1.0 } else { 1.0 };
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
         d.bearing.moving = body.moving() || req.stepping.is_some();
         d.bearing.run = body.run;
         d.bearing.legs = body.leg;
         d.bearing.turn = if held { 0.0 } else { req.turn_left(&body) };
+        d.bearing.push = body.drive;
+        d.bearing.push_gain = body.gait.push;
+        d.bearing.facing = facing;
+        d.bearing.stepping = req.stepping.is_some();
+        d.bearing.jump = body.jump;
+        d.bearing.jump_progress = body.jump_progress;
+    }
+    if let Some(r) = ragdoll.as_mut() {
+        if start_notice {
+            r.walk_started();
+        }
+        // A moving armed body's held items query the level statically
+        // (guess: Exarust's nearest read of the original's weapon-class
+        // test is the attacking condition).
+        r.set_held_static_only(state == Condition::ATTACKING);
     }
 }
 

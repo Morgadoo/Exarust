@@ -411,3 +411,67 @@ fn the_target_follows_a_30_cm_step() {
     // Landing, it sinks no more than 2 cm under where it settles.
     assert!(settled - lowest < 0.02, "{}", settled - lowest);
 }
+
+/// The feet's lag: a foot 10 cm behind its animated spot along the facing
+/// cuts the factor by (10/60)² (scale 1); 60 cm behind cuts it to 0.
+#[test]
+fn the_feet_lag_cuts_the_push() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let floor = floor_quad(0.0, 5.0);
+    body.measure_balance(&floor[..]);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let facing = Vec3::Z;
+    let targets = drive(&body).targets().to_vec();
+    assert!(close(
+        feet_lag(&body.parts, &body.legs, &targets, facing, 1.0),
+        1.0,
+        1e-4
+    ));
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= facing * 0.1;
+        }
+    }
+    let lag = feet_lag(&body.parts, &body.legs, &targets, facing, 1.0);
+    let one = 1.0 - (10.0f32 / 60.0).powi(2);
+    assert!(close(lag, one * one, 1e-5), "{lag}");
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= facing * 0.5;
+        }
+    }
+    assert_eq!(
+        feet_lag(&body.parts, &body.legs, &targets, facing, 1.0),
+        0.0
+    );
+}
+
+/// A moving body's carry takes the locomotion drive × S² × the push gain ×
+/// the feet's lag, in its cm a tick²; a still one takes none of it.
+#[test]
+fn the_carry_takes_the_locomotion_push() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let floor = floor_quad(0.0, 5.0);
+    body.measure_balance(&floor[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        push: Vec3::X * 2.0,
+        push_gain: 0.5,
+        facing: Vec3::Z,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let d = drive(&body);
+    let expected = 2.0 * d.support() * d.support() * 0.5 * d.bearing.lag / CM;
+    assert!(close(d.carry().x, expected, 1e-6), "{}", d.carry().x);
+    assert_eq!(d.carry().z, 0.0);
+    body.set_bearing(Bearing {
+        moving: false,
+        push: Vec3::X * 2.0,
+        push_gain: 0.5,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(drive(&body).carry().x, 0.0);
+}

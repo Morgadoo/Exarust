@@ -143,6 +143,11 @@ pub struct Locomotion {
     pub goal: Vec3,
     /// The slow turn (0.5·B): the exploration behaviour asks for it.
     pub slow_turn: bool,
+    /// Where a behaviour looks at (m, world) and until when (ms): while the
+    /// deadline is in the past the look turns toward the point instead of
+    /// the cursor. None keeps the cursor.
+    pub look_target: Option<Vec3>,
+    pub look_until: u64,
     /// Exarust's interim footwork: while set the body steps (it cannot
     /// locomote) and its capsule takes this velocity (m/s), until the
     /// original's steps replace it.
@@ -161,6 +166,8 @@ impl Default for Locomotion {
             free_walk: false,
             goal: Vec3::ZERO,
             slow_turn: false,
+            look_target: None,
+            look_until: 0,
             stepping: None,
         }
     }
@@ -332,6 +339,27 @@ pub struct Locomotor {
     /// looks, and the look yaw it follows.
     pub head_weight: f32,
     pub head_yaw: f32,
+    /// The held items' grip mode the routine sets: running the general
+    /// mode, otherwise the walk's (or the general one in combat).
+    pub grip_mode: i32,
+    /// The original's exertion value, which the run blend's cap lowers and
+    /// whose square and sign make the head tilt.
+    pub exertion: f32,
+    /// The head tilt the torso twist reads (the original's run lean).
+    pub head_tilt: f32,
+    /// The jump flag and its timer: neither is written anywhere in the
+    /// original, so the jump branch is dead; kept for the rule.
+    pub jump: bool,
+    pub jump_progress: f32,
+    /// A start callback is registered (none is in Exarust): the routine
+    /// then calls it every tick another clip plays.
+    pub start_callback: bool,
+    /// Another clip played this tick and the original cleared its held
+    /// items' motion flag (and called the callback) there.
+    pub start_notice: bool,
+    /// The game clock (ms) at this tick: the look target's deadline is
+    /// compared with it.
+    pub now: u64,
 }
 
 impl Default for Locomotor {
@@ -364,6 +392,14 @@ impl Default for Locomotor {
             frame_yaw: 0.0,
             head_weight: 0.0,
             head_yaw: 0.0,
+            grip_mode: 0,
+            exertion: 0.0,
+            head_tilt: 0.0,
+            jump: false,
+            jump_progress: 0.0,
+            start_callback: false,
+            start_notice: false,
+            now: 0,
         }
     }
 }

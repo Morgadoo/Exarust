@@ -688,3 +688,48 @@ fn a_looking_heads_anchors_follow_the_physical_thorax() {
     assert!(moved, "{looked:?} {rest:?}");
     assert_eq!(anchors(true, &still).len(), rest.len());
 }
+
+/// A powered golem suit halves the standing thigh factor and quarters the
+/// leg limit's target; a stepping foot that is anchored eases the limit to
+/// 0.2 (0.8s + 0.04) whatever the leg mode.
+#[test]
+fn the_golem_suit_and_a_stepping_foot_change_the_leg_gains() {
+    let (mut setup, pose) = super::super::floor_test::humanoid(Vec3::ZERO);
+    for s in &mut setup {
+        if matches!(s.bone, 3 | 6) {
+            s.foot = Some(cm(0.16, -48.97, 2.4));
+            s.links
+                .push((cm(0.0, -12.49, -2.08), cm(0.44, -2.31, -12.44), 0.12657));
+        }
+    }
+    let mut body = Ragdoll::new(&setup).with_drive();
+    let shin = body.parts.iter().position(|p| p.bone == 3).unwrap();
+    let thigh = body.parts[shin].parent.unwrap();
+    let limit = body.parts[shin].leg_limit.unwrap();
+    let golem = Bearing {
+        golem_powered: true,
+        ..Bearing::default()
+    };
+    let (factor, target) = leg_gains(LegMode::Standing, 1.25, 0.5, &golem);
+    assert_eq!(factor, 1.25 * 0.2 * 0.5);
+    assert_eq!(target, 0.5 * 0.5 * 0.5 * 0.25);
+    body.set_bearing(golem);
+    for _ in 0..300 {
+        body.aim(Affine3A::IDENTITY, pose.clone());
+    }
+    assert!((body.parts[thigh].factor - 0.125).abs() < 1e-6);
+    assert!((body.links[limit].strength - 0.125).abs() < 1e-4);
+    // The stepping foot: anchored, the limit leaves the leg mode's target
+    // for 0.8s + 0.04.
+    let index = body.legs.iter().position(|l| l.shin == shin).unwrap();
+    body.legs[index].state = super::super::FootState(super::super::FootState::ANCHORED);
+    body.set_bearing(Bearing {
+        moving: true,
+        legs: LegMode::Run,
+        stepping: true,
+        ..Bearing::default()
+    });
+    let before = body.links[limit].strength;
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert!((body.links[limit].strength - (before * 0.8 + 0.04)).abs() < 1e-6);
+}

@@ -54,6 +54,24 @@ const CROUCH_FROM: f64 = 0.1;
 const CROUCH_CLOCK: f64 = 0.1;
 /// The single-precision epsilon the original's square roots test against.
 const EPSILON: f32 = 1.192_09e-7;
+/// The exertion value (the original's) is kept ×0.98 a tick while the run
+/// blend is capped, ×0.99 otherwise (both double precision). It is the run
+/// blend's own margin: it falls while the body is held under its cap.
+const EXERTION_CAPPED: f64 = 0.98;
+const EXERTION_KEEP: f64 = 0.99;
+/// The head tilt the torso twist reads: the sign of the exertion × its
+/// square × 2.
+const TILT_SHARE: f32 = 2.0;
+/// A jump (a flag and a timer the original never writes) decelerates the
+/// clock by this much a tick (double) once its timer passes a half.
+const JUMP_DECAY: f64 = 0.013;
+const JUMP_FROM: f32 = 0.5;
+/// The grip mode the locomotion routine sets: the general mode (a run, or
+/// an in-combat behaviour's walk), else the idle/walk mode. Its only
+/// readers are the held items' grips, which Exarust does not model as
+/// bodies yet.
+pub const GRIP_MODE: i32 = 1;
+pub const GRIP_MODE_WALKING: i32 = 2;
 /// A walk that ran within this long (ms) resumes its clock.
 const RESUME_WITHIN: u64 = 600;
 /// The walk's start keys: backwards; with the heading more than 1 rad on
@@ -217,6 +235,9 @@ pub struct Stride {
     pub heading: Vec3,
     /// The walk clip plays.
     pub walking: bool,
+    /// The character's behaviour is in combat: under locomotion its grip
+    /// mode is the general one instead of the walk's.
+    pub in_combat: bool,
     /// The game clock (ms).
     pub now: u64,
 }
@@ -276,8 +297,10 @@ pub fn locomote(
     let latch = req.has(SPRINT);
     let back = req.has(BACK);
     let v = at.moved;
+    body.start_notice = false;
     // The run blend.
     if body.leg == LegMode::Run {
+        body.grip_mode = GRIP_MODE;
         if at.supported {
             body.run = body.align.sqrt() * body.run * at.level;
         }
@@ -286,8 +309,14 @@ pub fn locomote(
         body.run = (f64::from(body.run) + RUN_RISE) as f32;
         if cap < body.run {
             body.run = cap;
+            body.exertion = (f64::from(body.exertion) * EXERTION_CAPPED) as f32;
         }
     } else {
+        body.grip_mode = if at.in_combat {
+            GRIP_MODE
+        } else {
+            GRIP_MODE_WALKING
+        };
         if req.flags & (BRAKE | STOPPING) == 0 {
             body.run = (f64::from(body.run) - RUN_FALL) as f32;
         } else {
@@ -303,11 +332,19 @@ pub fn locomote(
         if body.run < 0.0 {
             body.run = 0.0;
         }
+        body.exertion = (f64::from(body.exertion) * EXERTION_KEEP) as f32;
     }
     body.run = (f64::from(body.run) - f64::from(v.y.abs()) * RUN_VERTICAL) as f32;
     if body.run < 0.0 {
         body.run = 0.0;
     }
+    // The head tilt the twist reads, while it has support: the sign of the
+    // exertion times its square times two.
+    body.head_tilt = if at.supported {
+        tilt_of(body.exertion)
+    } else {
+        0.0
+    };
     // The gait columns.
     let rest = 1.0 - body.run;
     let root = if body.run > EPSILON {
@@ -360,6 +397,12 @@ pub fn locomote(
         None
     } else {
         body.boost = 0.0;
+        // The original calls its registered start callback here (with the
+        // argument 4, clearing it when the call returns a negative value)
+        // and clears the held items' motion flag on every tick another clip
+        // plays. No callback is registered in Exarust: the notice tells the
+        // character tick to clear the held items' flag.
+        body.start_notice = body.start_callback;
         Some(if body.last_ran + RESUME_WITHIN < at.now {
             if back {
                 Start::Key(KEY_BACK)
@@ -428,6 +471,14 @@ pub fn locomote(
 fn clock_step(req: &Locomotion, body: &mut Locomotor, at: &Stride) {
     let rate = body.gait.clock;
     let speed = body.speed;
+    // The jump branch: the flags it reads are never written in the
+    // original, so it is dead; kept for the rule.
+    if body.jump && body.jump_progress > JUMP_FROM {
+        // The original decays the clock step kept from last tick.
+        let step = (f64::from(body.clock_step) - JUMP_DECAY) as f32;
+        body.clock_step = if step < 0.0 { 0.0 } else { step };
+        return;
+    }
     if at.supported {
         let p = fraction((at.progress + CLOCK_PHASE) * 2.0);
         let envelope = (1.0 - f64::from((0.5 - p).abs()) * CLOCK_DIP) as f32;
@@ -452,6 +503,17 @@ fn clock_step(req: &Locomotion, body: &mut Locomotor, at: &Stride) {
         let u = fraction((1.0 + body.phase) - at.progress);
         body.clock_step = (2.0 - u) * (base * u);
     }
+}
+
+/// The head tilt an exertion value makes: the original's copysign(1, x)
+/// (0 at zero, either sign for NaN) × x² × 2.
+fn tilt_of(exertion: f32) -> f32 {
+    let sign = if exertion == 0.0 {
+        0.0
+    } else {
+        1.0_f32.copysign(exertion)
+    };
+    sign * exertion * exertion * TILT_SHARE
 }
 
 /// The processor's conversion to a 64-bit integer under its default

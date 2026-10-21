@@ -33,6 +33,7 @@ fn walker() -> (Locomotion, Locomotor, Stride) {
         moved: Vec3::ZERO,
         heading: Vec3::Z,
         walking: true,
+        in_combat: false,
         now: 10_000,
     };
     (req, body, at)
@@ -398,4 +399,88 @@ fn the_clock_wraps_once_and_is_kept() {
     assert_eq!(fraction(-0.25), -0.25);
     assert_eq!(fraction(2.75), 0.75);
     assert!(fraction(f32::NAN).is_nan());
+}
+
+/// The exertion value falls ×0.98 while the run blend is capped and ×0.99
+/// otherwise (double precision); the head tilt is its sign × its square ×
+/// 2 while the body has support, and 0 without.
+#[test]
+fn exertion_bleeds_and_tilts_the_head() {
+    let (req, mut body, mut at) = walker();
+    body.leg = LegMode::Run;
+    body.exertion = 0.5;
+    body.run = 1.0;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.exertion, 0.49);
+    assert_eq!(body.head_tilt, 0.49 * 0.49 * 2.0);
+    body.leg = LegMode::Walk;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.exertion, 0.49 * 0.99);
+    at.supported = false;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.head_tilt, 0.0);
+}
+
+/// The grip mode the routine sets: the general mode running (and walking
+/// in combat), the walk's mode otherwise.
+#[test]
+fn locomotion_sets_the_grip_mode() {
+    let (mut req, mut body, mut at) = walker();
+    body.leg = LegMode::Run;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.grip_mode, GRIP_MODE);
+    body.leg = LegMode::Walk;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.grip_mode, GRIP_MODE_WALKING);
+    at.in_combat = true;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.grip_mode, GRIP_MODE);
+    req.flags |= flags::BACK;
+    at.in_combat = false;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.grip_mode, GRIP_MODE_WALKING);
+}
+
+/// Another clip playing clears the boost ramp, notifies the start (the
+/// original calls its callback and clears the held items' motion flag) and
+/// starts the walk, while a playing walk does neither.
+#[test]
+fn a_walk_start_notifies_once_another_clip_plays() {
+    let (req, mut body, at) = walker();
+    body.start_callback = true;
+    let mut walking = at;
+    walking.walking = true;
+    assert!(locomote(&req, &mut body, &GaitTable::default(), &walking).is_none());
+    assert!(!body.start_notice);
+    let mut other = at;
+    other.walking = false;
+    assert!(locomote(&req, &mut body, &GaitTable::default(), &other).is_some());
+    assert!(body.start_notice);
+    body.start_callback = false;
+    locomote(&req, &mut body, &GaitTable::default(), &other);
+    assert!(!body.start_notice);
+}
+
+/// The jump branch is dead (nothing writes its flag or timer), but its
+/// rule holds: over a timer of 0.5 it decays the clock step kept from the
+/// last tick by 0.013 a tick, floored at 0, and skips the normal clock.
+#[test]
+fn a_jump_only_decays_the_clock_step() {
+    let (req, mut body, at) = walker();
+    body.clock_step = 1.0;
+    body.jump = true;
+    body.jump_progress = 1.0;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert!(
+        (body.clock_step - 0.987).abs() < 1e-6,
+        "{}",
+        body.clock_step
+    );
+    body.clock_step = 0.005;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert_eq!(body.clock_step, 0.0);
+    body.clock_step = 0.0;
+    body.jump_progress = 0.5;
+    locomote(&req, &mut body, &GaitTable::default(), &at);
+    assert!(body.clock_step > 0.0);
 }
