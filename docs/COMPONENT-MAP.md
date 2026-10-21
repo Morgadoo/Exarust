@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **25.0% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 21.1% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **25.5% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 21.6% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **27.3%** reproduced.
 
 ## By section
@@ -24,7 +24,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Items, materials & crafting | 341 | 140 | 40 | 21% | 0% | Item description phrases, SG_ItemGUI, Character equipment & inventory routines (TCharacterView by address) |
 | AI & behaviour | 437 | 206 | 17 | 21% | 0% | TAISearchActivity, Character roles & relations (script functions), SG_CharacterAI |
 | Thaumaturgy & effects | 697 | 296 | 83 | 11% | 0% | TTendrilEmitter, SG_Thaum_Force, SG_Thaum_DIsp |
-| Audio | 59 | 18 | 4 | 28% | 0% |  |
+| Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 0% | 0% | RFG_Dialogue, FG_AIFunctions, RFG_Scripts |
 | Game modes, arena & session | 646 | 193 | 23 | 19% | 0% | TMatchBoard, TLoadoutForm, TDivCardForm |
 | UI | 959 | 312 | 63 | 15% | 0% | RF_GUI_Main, TGUIItemView, TTextBox |
@@ -77,7 +77,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 7 | 14 | 5% |
 | RF_GUI_Main | UI | 47 | 14 | 1% |
 | SG_Thaum_Force | Thaumaturgy & effects | 56 | 14 | 0% |
-| TAudioEnvironment | Audio | 44 | 13 | 15% |
+| TGUIItemView | UI | 29 | 13 | 0% |
 
 ## Best covered components
 
@@ -90,6 +90,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TGSLines | UI | 24 | 60% | exa_ui/src/skin.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 55% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
+| TAudioEnvironment | Audio | 13 | 93% | exa_audio/src/ambience.rs; exa_audio/src/bank.rs |
 | FLX_ItemFactory | Items, materials & crafting | 24 | 50% | exa_formats::factory; exa_formats::weapon_stats |
 | RF_Intersection | Physics, bodies & cloth | 14 | 85% | exa_physics/src/intersect.rs; exa_render/src/cube_shadows.rs |
 | RF_MeshVoxels | Rendering & GPU | 10 | 90% | exa_physics/src/voxel.rs; exa_world/src/gi_volume.rs |
@@ -102,7 +103,6 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_3DView | Rendering & GPU | 11 | 60% | exa_render/src/supersample.rs; exa_render/src/resolve.wesl |
 | FLX_System | Core, math & threading | 12 | 51% | glam via bevy::math; exa_game/src/player.rs |
 | Engine math (vectors, matrices, fast trig) | Core, math & threading | 8 | 73% | exa_game/src/player.rs; exa_game/src/torch.rs |
-| Pixel-format converters (8-bit and float) | Rendering & GPU | 6 | 95% | exa_formats/src/pixel.rs; exa_formats/src/rfi.rs |
 
 ## Combat rules
 

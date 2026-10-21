@@ -79,3 +79,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | f1bebbd7 | dirty | 24.5% | 5.7% | 20.8% | 27.3% | bounding sphere, RFC writer, settings, experience and trade, image noise and pixel formats |
 | 2026-10-21 | 8b6d3ce9 | clean | 24.8% | 5.7% | 21.0% | 27.3% | RF_Intersection unit routines 30 -> 85 |
 | 2026-10-21 | 9cb4c3fb | clean | 25.0% | 5.7% | 21.1% | 27.3% | mesh voxeliser: TVoxelMap 0 -> 95, RF_MeshVoxels 35 -> 90 |
+| 2026-10-21 | 37ba13cd | clean | 25.5% | 5.7% | 21.6% | 27.3% | audio environment: TAudioEnvironment 15 -> 93 |
