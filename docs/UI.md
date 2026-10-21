@@ -552,7 +552,8 @@ drawn yet: the rules wait for the forms that will show them.
   inside (right, left, top, bottom). An item given back to an open pack
   that still lists it as held is shown again; the dragged entry taken
   into a hand becomes held. A looted body's worn panel scatters its
-  items and shield over the middle half of the panel and relaxes them in
+  items and shield (leaving out any the icon cache cannot draw, which take
+  no random draws) over the middle half of the panel and relaxes them in
   four rounds (overlap ÷ 6, 5, 4, 3, twice each). A map opens as a
   parchment of its texture's size in sixths of a unit.
 - **Inventory** (`exa_items::inventory_window`): 244 × 644 units (628

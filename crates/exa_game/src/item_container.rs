@@ -917,13 +917,15 @@ pub fn bulk_of(
 }
 
 /// The worn and shield panel of a body being looted: each worn item and
-/// each held shield is placed at a random spot in the middle half of the
-/// panel, then the entries push each other apart over four rounds (overlap
+/// each held shield whose icon the cache gives (`icon` returns its slot and
+/// half extents; an item without one is left out and draws no random
+/// numbers) is placed at a random spot in the middle half of the panel,
+/// then the entries push each other apart over four rounds (overlap
 /// divided by 6, 5, 4 and 3, twice each), each pass ending with every
 /// centre kept inside the panel; the centres then become cells.
 pub fn worn_layout(
     items: &[(u32, u32)],
-    halves: &dyn Fn(u32) -> (i32, i32),
+    icon: &mut dyn FnMut(u32) -> Option<(usize, (i32, i32))>,
     client: (i32, i32),
     icon_size: i32,
     state: &mut u32,
@@ -933,17 +935,19 @@ pub fn worn_layout(
     let mut pos: Vec<[i32; 2]> = Vec::new();
     let mut half: Vec<[i32; 2]> = Vec::new();
     for &(id, flags) in items {
+        let Some((slot, (a, b))) = icon(id) else {
+            continue;
+        };
         let mut rng = Rng(*state);
         let x = (hw as u32 >> 1) as i32 + rng.below(hw as u32) as i32;
         let y = (hh as u32 >> 1) as i32 + rng.below(hh as u32) as i32;
         *state = rng.0;
-        let (a, b) = halves(id);
         pos.push([x, y]);
         half.push([a, b]);
         out.push(Entry {
             cell: Cell::new(x, y),
             id,
-            icon: 0,
+            icon: slot,
             flags,
             drag: 0,
         });
@@ -1100,14 +1104,24 @@ mod entry_tests {
     #[test]
     fn the_worn_panel_spreads_its_items() {
         let items = [(1, 0), (2, 0), (3, 0x10)];
+        let mut icon = |id: u32| Some((id as usize, (40, 40)));
         let mut state = 0x1234;
-        let a = worn_layout(&items, &|_| (40, 40), (228, 228), 160, &mut state);
+        let a = worn_layout(&items, &mut icon, (228, 228), 160, &mut state);
         let mut state2 = 0x1234;
-        let b = worn_layout(&items, &|_| (40, 40), (228, 228), 160, &mut state2);
+        let b = worn_layout(&items, &mut icon, (228, 228), 160, &mut state2);
         assert_eq!(a, b);
         assert_eq!(state, state2);
         assert_eq!(a.len(), 3);
-        assert_eq!(a[2].flags, 0x10);
+        assert_eq!((a[2].flags, a[2].icon), (0x10, 3));
+        // An item the cache cannot draw is left out and takes no draws: the
+        // second item then lands where the first did.
+        let mut state3 = 0x1234;
+        let mut no_first = |id: u32| (id != 1).then_some((id as usize, (40, 40)));
+        let c = worn_layout(&items[..2], &mut no_first, (228, 228), 160, &mut state3);
+        let mut state4 = 0x1234;
+        let d = worn_layout(&items[1..2], &mut icon, (228, 228), 160, &mut state4);
+        assert_eq!(c, d);
+        assert_eq!(state3, state4);
         for e in &a {
             // Centres inside [40, 188].
             let (cx, cy) = (e.cell.x + 80, e.cell.y + 80);
@@ -1116,7 +1130,7 @@ mod entry_tests {
                 "{e:?}"
             );
         }
-        assert!(worn_layout(&[], &|_| (0, 0), (228, 228), 160, &mut state).is_empty());
+        assert!(worn_layout(&[], &mut icon, (228, 228), 160, &mut state).is_empty());
         assert_eq!(parchment_size((768, 512), 4), (512, 341));
     }
 }
