@@ -4,7 +4,7 @@
 //! materials are drawn, which trees are kept as masters, and the release
 //! check.
 //!
-//! `Create` resolves the record in its tier. A record without a model name
+//! `Create` resolves the record in its tier ([`objdb::Tier`]). A record without a model name
 //! becomes its invisible container volume (the volume section's three
 //! extents, its radius their length) or, with an operative section, a
 //! 50 cm placeholder; anything else has no tree. A model name starting
@@ -75,32 +75,6 @@ impl Default for PlaceholderNode {
             extents: [PLACEHOLDER_SIDE; 3],
             radius: PLACEHOLDER_RADIUS,
         }
-    }
-}
-
-/// Which object database an id names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    /// The base templates.
-    Base,
-    /// The promoted world objects.
-    World,
-    /// The level's local objects.
-    Local,
-}
-
-impl Tier {
-    /// The tier the id's top bits choose (bit 31 local, else bit 30 world,
-    /// else base) and the lookup id, which drops both bits.
-    pub fn of(id: u32) -> (Self, u32) {
-        let tier = if id & objdb::LOCAL != 0 {
-            Tier::Local
-        } else if id & objdb::WORLD != 0 {
-            Tier::World
-        } else {
-            Tier::Base
-        };
-        (tier, id & objdb::ID_MASK)
     }
 }
 
@@ -341,14 +315,6 @@ mod tests {
             destinations: [0; DESTINATIONS],
         });
         it
-    }
-
-    #[test]
-    fn ids_choose_their_tier_and_drop_its_bits() {
-        assert_eq!(Tier::of(7), (Tier::Base, 7));
-        assert_eq!(Tier::of(0x4000_0007), (Tier::World, 7));
-        assert_eq!(Tier::of(0x8000_0007), (Tier::Local, 7));
-        assert_eq!(Tier::of(0xC000_0007), (Tier::Local, 7));
     }
 
     #[test]

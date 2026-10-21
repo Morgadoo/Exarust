@@ -8,8 +8,7 @@ and the grid's rooms; portal clipping is next (see
 [`docs/PLAN.md`](../../docs/PLAN.md)).
 
 - `spawn_model(commands, model, placement)`: a cached model with its node hierarchy, its lights, fires and voxel lights (`exa_render::gi::VoxelLight`) and its nodes' keyframe tracks (`exa_anim::tracks::NodeTracks`); a placement replaces the root transform, as level props do. Placed items dim their voxel lights and glow meshes by their condition byte. `spawn_model_nodes` also returns the node entities.
-- `db_objects`: the object manager's scene decisions: the id tier, the
-  scene tree (a model, a factory weapon, the invisible container volume
+- `db_objects`: the object manager's scene decisions: the scene tree (a model, a factory weapon, the invisible container volume
   with its radius, or the 50 cm placeholder of an operative record without
   a model name), the managed node flags (`0x4000`, children `0x5000` and
   the parent's hidden bit), the door and operative kind words, the
