@@ -1903,9 +1903,12 @@ plain draw and input records.
   table.
 - **Journal** (`exa_ui::game_gui`): closing remembers the window position
   and stores the text box into the selected entry.
-- **Colour swatch** (`exa_ui::colour_swatch`): an eight-column grid of
-  three-unit cells at the current colour's cell, from the screen's
-  bottom-right or the button's anchor, in the `0x6000` action set.
+- **Colour swatch opener** (`exa_ui::colour_swatch`): the popup of
+  `exa_ui::col_swatch` is placed to put the current colour's cell (column
+  `colour >> 3`, row `colour % 8`, three-unit cells) under the pointer, or
+  under the button's anchor (x plus half its width, y plus its height) when
+  the anchor bit is set; a colour button's popup uses the `0x6000` action
+  set.
 - **Item renderer** (`exa_items::item_renderer`): a 160-pixel icon
   rendered at 320 into colour and depth buffers, with the full and final
   RGBA images and the private scene and camera.
