@@ -656,9 +656,8 @@ fn a_broadcast_reaches_a_witness_through_its_relation_role() {
     assert_eq!(words, Some(vec![ACTIVATED | 1000]));
 }
 
-/// The mood mask and mood code reproduce the original's nested `<=` tests:
-/// a hostile contact, a NaN concern, and an unworldly attitude each take
-/// the first branch of the test they reach.
+/// The mood mask and mood code reproduce the original's ordered compares:
+/// an unordered (NaN) value fails every test it reaches.
 #[test]
 fn the_mood_mask_and_code_test_exactly() {
     use crate::dialogue::{mood, mood_code};
@@ -693,19 +692,18 @@ fn the_mood_mask_and_code_test_exactly() {
     set(&mut cast, &|c| c.attitude = 0.0);
     assert_eq!(mood(&cast, 1, 2), 0x40);
     assert_eq!(mood_code(&cast, 1, 2), 0x3000_0000);
-    // Below −30 is the hostile band. The inner `−60 <= attitude` test can
-    // never fail once `−30 <= attitude` has: 0x100 and 0x50000000 are
-    // unreachable, as in the original.
+    // Below −30 is the hostile band. The below −60 test after it can never
+    // pass: 0x100 and 0x50000000 are unreachable, as in the original.
     set(&mut cast, &|c| c.attitude = -40.0);
     assert_eq!(mood(&cast, 1, 2), 0x80);
     assert_eq!(mood_code(&cast, 1, 2), 0x4000_0000);
     set(&mut cast, &|c| c.attitude = -70.0);
     assert_eq!(mood(&cast, 1, 2), 0x80);
     assert_eq!(mood_code(&cast, 1, 2), 0x4000_0000);
-    // An unordered attitude takes every `<=` branch: > 70.
+    // An unordered attitude fails every compare: the neutral band.
     set(&mut cast, &|c| c.attitude = f32::NAN);
-    assert_eq!(mood(&cast, 1, 2), 0x10);
-    assert_eq!(mood_code(&cast, 1, 2), 0x1000_0000);
+    assert_eq!(mood(&cast, 1, 2), 0x40);
+    assert_eq!(mood_code(&cast, 1, 2), 0x3000_0000);
     // The contact value scales the attitude by (10 − x)²/100; 5 makes an
     // 80 attitude 20, still the neutral band.
     set(&mut cast, &|c| {
@@ -713,7 +711,8 @@ fn the_mood_mask_and_code_test_exactly() {
         c.range = 5.0;
     });
     assert_eq!(mood(&cast, 1, 2), 0x40);
-    // Past 10 (and an unordered value) the attitude counts for nothing.
+    // Past 10 the attitude counts for nothing; an unordered value scales
+    // it to NaN, which also lands in the neutral band.
     set(&mut cast, &|c| {
         c.attitude = 80.0;
         c.range = 11.0;
@@ -724,8 +723,8 @@ fn the_mood_mask_and_code_test_exactly() {
         c.range = f32::NAN;
     });
     assert_eq!(mood(&cast, 1, 2), 0x40);
-    // Concern over 4, and an unordered concern, make a hostile code; over
-    // 1.2 a wary one.
+    // Concern over 4 makes a hostile code, over 1.2 a wary one; an
+    // unordered concern makes none.
     set(&mut cast, &|c| {
         c.state = 1;
         c.concern = 5.0;
@@ -736,7 +735,7 @@ fn the_mood_mask_and_code_test_exactly() {
         c.state = 1;
         c.concern = f32::NAN;
     });
-    assert_eq!(mood(&cast, 1, 2) & 0x600, 0x600);
+    assert_eq!(mood(&cast, 1, 2) & 0x600, 0);
     set(&mut cast, &|c| {
         c.state = 1;
         c.concern = 2.0;

@@ -14,11 +14,11 @@
 //! **Running a node.** Each actor's mood toward the other is a hostility
 //! code (0x600 hostile or engaged with concern above 4, 0x200 above 1.2)
 //! plus an attitude band (above 70: 0x10, above 30: 0x20, at least −30:
-//! 0x40, below that: 0x80; the inner −60 test can never fail and its 0x100
-//! band is unreachable). The attitude is first scaled by ((10 − x)/10)²
-//! for a contact value x ≤ 10; past that (and for an unordered value) it
-//! counts for nothing. Every test is the original's `<=`, so an unordered
-//! attitude takes the > 70 band and an unordered concern the hostile code.
+//! 0x40, below that: 0x80; the following below −60 test can never pass and
+//! its 0x100 band is unreachable). The attitude is first scaled by
+//! ((10 − x)/10)² for a contact value x ≤ 10 (an unordered value
+//! included); past 10 it counts for nothing. An unordered attitude takes
+//! the 0x40 band and an unordered concern no hostility code.
 //! Branches of the current group are tried in order: a line of either
 //! player slot becomes a reply choice when choices are being offered (after
 //! the branch's condition passes); another speaker's line is a candidate if
@@ -405,9 +405,10 @@ pub enum Purpose {
 
 /// The mood mask of `a` toward `b` (hostility code + attitude band).
 ///
-/// The comparisons are the original's `<=` tests, in the original's order:
-/// an unordered value (NaN) takes the first branch of every test (hostile
-/// contact, no attitude scaling and the > 70 band).
+/// Each test is the original's ordered `>` / `<` (an unordered compare
+/// fails it), in the original's order: a NaN concern sets no hostility
+/// code, a NaN contact value still scales the attitude, and a NaN attitude
+/// falls through to the neutral band.
 pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
     let Some(ca) = cast.get(a) else { return 0 };
     let contact = ca.contact(b);
@@ -417,35 +418,38 @@ pub fn mood(cast: &Cast, a: u32, b: u32) -> u16 {
         if c.state & 2 != 0 {
             m = 0x600;
         } else if c.state == 1 {
-            if c.concern <= 4.0 {
-                if c.concern > 1.2 {
-                    m = 0x200;
-                }
-            } else {
+            if c.concern > 4.0 {
                 m = 0x600;
+            } else if c.concern > 1.2 {
+                m = 0x200;
             }
         }
-        // Past 10 the attitude counts for nothing; otherwise the contact
-        // value scales it by ((10 − x) / 10)².
-        att = if c.range <= 10.0 {
+        // Past 10 the attitude counts for nothing; otherwise (an unordered
+        // value included) the contact value scales it by ((10 − x) / 10)².
+        att = if c.range > 10.0 {
+            0.0
+        } else {
             let s = f64::from(10.0 - c.range) * 0.1;
             (s * s * f64::from(att)) as f32
-        } else {
-            0.0
         };
     }
-    m | if att <= 70.0 {
-        if att <= 30.0 {
-            if -30.0 <= att {
-                if -60.0 <= att { 0x40 } else { 0x100 }
-            } else {
-                0x80
-            }
-        } else {
-            0x20
-        }
+    m | attitude_band(att, [0x10, 0x20, 0x80, 0x100, 0x40])
+}
+
+/// The original's attitude bands: above 70, above 30, below −30, below
+/// −60, else. Below −60 is already below −30, so the fourth band is never
+/// taken; an unordered attitude fails every test and takes the last.
+fn attitude_band<T: Copy>(att: f32, bands: [T; 5]) -> T {
+    if att > 70.0 {
+        bands[0]
+    } else if att > 30.0 {
+        bands[1]
+    } else if att < -30.0 {
+        bands[2]
+    } else if att < -60.0 {
+        bands[3]
     } else {
-        0x10
+        bands[4]
     }
 }
 
@@ -462,23 +466,16 @@ pub fn mood_code(cast: &Cast, a: u32, b: u32) -> u32 {
         }
     }
     let att = contact.map_or(0.0, |c| c.attitude);
-    if att <= 70.0 {
-        if att <= 30.0 {
-            if -30.0 <= att {
-                if -60.0 <= att {
-                    0x3000_0000
-                } else {
-                    0x5000_0000
-                }
-            } else {
-                0x4000_0000
-            }
-        } else {
-            0x2000_0000
-        }
-    } else {
-        0x1000_0000
-    }
+    attitude_band(
+        att,
+        [
+            0x1000_0000,
+            0x2000_0000,
+            0x4000_0000,
+            0x5000_0000,
+            0x3000_0000,
+        ],
+    )
 }
 
 /// Whether a speaker's lines are a player's: the original tests the
