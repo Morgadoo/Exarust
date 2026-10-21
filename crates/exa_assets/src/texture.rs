@@ -614,7 +614,6 @@ pub fn has_alpha(rfi: &Rfi) -> bool {
         PixelFormat::Bc1Alpha
             | PixelFormat::Bc3
             | PixelFormat::Bc4Alpha
-            | PixelFormat::Latc2
             | PixelFormat::Rgba8
             | PixelFormat::Bgra8
             | PixelFormat::Zyxv8

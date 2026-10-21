@@ -61,8 +61,8 @@ bits 0..7     0x08 when alpha present
 | `0x817BE608` | 110 | BC3 | diffuse with alpha (foliage) |
 | `0x827BA408` | 4 | BC3 (guess) | |
 | `0x813BE601` | — | BC1 with one-bit alpha (`DXT1a`) | registered by the original; not shipped |
-| `0x813B2008` | — | BC4 alpha only (`ALPHATC`) | registered; not shipped |
-| `0x817B6208` | — | two-channel BC4 luminance-alpha (`LATC`) | registered; not shipped |
+| `0x813B2008` | — | BC4 alpha plane (`ALPHATC`) | registered; not shipped |
+| `0x817B6208` | — | `LATC` (16-byte blocks) | registered; not shipped; the colour block in the second half is the only part its converter reads |
 | `0x827BE608` | — | BC3 data (`DXT5n`) | registered; not shipped |
 | `0x0200C600`, `0x0200E608` | — | BGR8, BGRA8 | registered; converted to RGB8/RGBA8 |
 | `0x1201C600`, `0x1201E608` | — | ZYX8, ZYXV8 | registered; normal-map channel orders |
@@ -122,13 +122,30 @@ upload table lists their GL formats as `GL_BGR`/`GL_BGRA`. Exarust
 classifies them and decodes them through the converters.
 
 The compressed words whose block layouts are not shipped decode through
-the registered converter family: `DXT1a` keeps the second mode's black
-texel transparent, `ALPHATC` is BC4 alpha only, `LATC` takes two BC4
-channels as luminance and alpha, and `DXT5n`/`DXT5na` decode as plain BC3
-(the latter is a guess; only four images carry the word). The BC1 colour
-expansion and the BC4/BC3 alpha blends use the original's integer
-arithmetic: bit replication for 5-6-5 endpoints and truncating `/3`,
-`/7` and `/5` divisions with no rounding term.
+the registered converter family. Each converter decides by the target it
+is asked for, and Exarust takes the one the word's registered fallback
+names. `DXT1a` makes the colour
+block's index-3 texel in its three-colour mode transparent black (its RGBA
+target); `DXT1c` and `DXT1d` go to RGB, where that texel is opaque black.
+`ALPHATC` is a BC4 plane read as ALPHA8, so its RGBA is white under that
+alpha ((255, 255, 255, a)); `LUMTC` (the shipped BC4 grey) reads as LUM8,
+(l, l, l, 255). `DXT5`, `DXT5n` and `DXT5na` all fall back to a target
+that reduces to RGBA8 and so decode as plain BC3 (alpha block first, colour
+block second); the normal-map arrangement of `DXT5n` (X from the alpha
+block, Y from the colour block's green, Z rebuilt) exists in the original's
+converter but is only reached for an XYZ8 target, which no registered word
+asks for. `LATC` has an RGB-only converter: it decodes the colour block
+in the second half of each 16-byte block and ignores the first (its own
+LUMA8 fallback is declined by the original, so a `LATC` image would not load
+there at all; Exarust decodes it through the RGB path). `XYTC` (the
+shipped BC5) rebuilds Z from the two alpha-style blocks exactly as the
+two-channel pixel converter does. The BC1 colour expansion and the BC4/BC3
+alpha blends use the original's integer arithmetic: bit replication for
+5-6-5 endpoints and truncating `/3`, `/7` and `/5` divisions with no
+rounding term. The original's drivers write nothing for a mip level
+narrower or shorter than four texels in the RGBA, grey and BC3 paths (the
+RGB path crops the first block); Exarust decodes that block's visible
+texels instead.
 
 ## Pixel-format conversion
 

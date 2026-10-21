@@ -136,10 +136,13 @@ pub enum PixelFormat {
     Bc3,
     /// One channel (luminance), 8 bytes per block.
     Bc4,
-    /// One channel stored as alpha only, 8 bytes per block.
+    /// One channel stored as alpha only (`ALPHATC`), 8 bytes per block;
+    /// decoded to RGBA as the alpha plane under white.
     Bc4Alpha,
-    /// Two luminance-alpha channels, 16 bytes per block.
-    Latc2,
+    /// Luminance-alpha `LATC`, 16 bytes per block. The original's converter
+    /// serves only an RGB target, from the colour block in the second half
+    /// of each block; the first half is never read.
+    Latc,
     /// Two channels (normal map X/Y), 16 bytes per block.
     Bc5,
     /// Stored as R, G, B.
@@ -175,7 +178,7 @@ impl PixelFormat {
             0x817B_E608 | 0x827B_E608 | 0x827B_A408 => return PixelFormat::Bc3,
             0x813B_4200 => return PixelFormat::Bc4,
             0x813B_2008 => return PixelFormat::Bc4Alpha,
-            0x817B_6208 => return PixelFormat::Latc2,
+            0x817B_6208 => return PixelFormat::Latc,
             0x927B_8400 => return PixelFormat::Bc5,
             0x0200_C600 => return PixelFormat::Bgr8,
             0x0200_E608 => return PixelFormat::Bgra8,
@@ -219,7 +222,7 @@ impl PixelFormat {
             PixelFormat::Bc1 | PixelFormat::Bc1Alpha | PixelFormat::Bc4 | PixelFormat::Bc4Alpha => {
                 blocks() * 8
             }
-            PixelFormat::Bc3 | PixelFormat::Latc2 | PixelFormat::Bc5 => blocks() * 16,
+            PixelFormat::Bc3 | PixelFormat::Latc | PixelFormat::Bc5 => blocks() * 16,
             PixelFormat::Rgb8 | PixelFormat::Bgr8 | PixelFormat::Zyx8 => px * 3,
             PixelFormat::Rgba8 | PixelFormat::Bgra8 | PixelFormat::Zyxv8 => px * 4,
             PixelFormat::La8 => px * 2,
@@ -601,7 +604,7 @@ impl<'a> Rfi<'a> {
             | PixelFormat::Bc3
             | PixelFormat::Bc4
             | PixelFormat::Bc4Alpha
-            | PixelFormat::Latc2
+            | PixelFormat::Latc
             | PixelFormat::Bc5 => decode_blocks(self.format, src, w, h, out),
             // Already the target layout: the converters only run between
             // different layouts.
@@ -999,7 +1002,6 @@ fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut 
     let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
     let mut tile = [[0u8; 4]; 16];
     let mut alpha = [0u8; 16];
-    let mut second = [0u8; 16];
     for by in 0..bh {
         for bx in 0..bw {
             let i = (by * bw + bx) * block_len;
@@ -1024,18 +1026,13 @@ fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut 
                     }
                 }
                 PixelFormat::Bc4Alpha => {
+                    // The alpha plane through the alpha-to-RGBA converter.
                     decode_alpha_block(block, &mut alpha);
                     for (texel, a) in tile.iter_mut().zip(alpha) {
-                        *texel = [0, 0, 0, a];
+                        *texel = [255, 255, 255, a];
                     }
                 }
-                PixelFormat::Latc2 => {
-                    decode_alpha_block(block, &mut alpha);
-                    decode_alpha_block(&block[8..], &mut second);
-                    for ((texel, l), a) in tile.iter_mut().zip(alpha).zip(second) {
-                        *texel = [l, l, l, a];
-                    }
-                }
+                PixelFormat::Latc => decode_colour_block(&block[8..], &mut tile, false),
                 PixelFormat::Bc5 => {
                     let (x, y) = decode_pair(block, &block[8..]);
                     for ((texel, x), y) in tile.iter_mut().zip(x).zip(y) {
@@ -1072,7 +1069,7 @@ mod tests {
         assert_eq!(PixelFormat::from_word(0x813B_E601), PixelFormat::Bc1Alpha);
         assert_eq!(PixelFormat::from_word(0x813B_4200), PixelFormat::Bc4);
         assert_eq!(PixelFormat::from_word(0x813B_2008), PixelFormat::Bc4Alpha);
-        assert_eq!(PixelFormat::from_word(0x817B_6208), PixelFormat::Latc2);
+        assert_eq!(PixelFormat::from_word(0x817B_6208), PixelFormat::Latc);
         assert_eq!(PixelFormat::from_word(0x927B_8400), PixelFormat::Bc5);
         assert_eq!(PixelFormat::from_word(0x817B_E608), PixelFormat::Bc3);
         assert_eq!(PixelFormat::from_word(0x827B_E608), PixelFormat::Bc3);
@@ -1174,12 +1171,12 @@ mod tests {
         );
         assert_eq!(texels[0], [255, 255, 255, 255]);
 
-        // Alpha-only: the value lands in alpha.
+        // Alpha-only: the value lands in alpha, under white.
         let decoded = Rfi::parse(&block_image(0x813B_2008, &block))
             .unwrap()
             .decode_rgba8()
             .unwrap();
-        assert_eq!(rgba_attexels(&decoded)[2], [0, 0, 0, 218]);
+        assert_eq!(rgba_attexels(&decoded)[2], [255, 255, 255, 218]);
 
         // The second mode: /5 blends, then 0 and 255.
         let mut block = [0u8; 8];
@@ -1234,14 +1231,22 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(texels[0], [128, 128, 255, 255]);
-        // The luminance-alpha variant feeds the second channel to alpha.
+    }
+
+    #[test]
+    fn latc_reads_only_the_colour_block_of_its_second_half() {
+        // Junk in the first half; a red endpoint over blue in the second.
+        let mut block = [0x55u8; 16];
+        block[8..12].copy_from_slice(&[0x00, 0xF8, 0x1F, 0x00]);
+        block[12..].fill(0);
         let texels = rgba_attexels(
             &Rfi::parse(&block_image(0x817B_6208, &block))
                 .unwrap()
                 .decode_rgba8()
                 .unwrap(),
         );
-        assert_eq!(texels[0], [128, 128, 128, 128]);
+        assert_eq!(texels[0], [255, 0, 0, 255]);
+        assert_eq!(texels[15], [255, 0, 0, 255]);
     }
 
     #[test]
