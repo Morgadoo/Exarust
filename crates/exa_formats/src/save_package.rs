@@ -131,7 +131,7 @@ pub fn slot_file_name(prefix: &str, number: u32, kind: SlotKind) -> String {
     let prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(PREFIX_MAX)]);
     format!(
         "{prefix}{}{}",
-        crate::save_chunk::format_save_number(number.clamp(0, i32::MAX as u32) as i32),
+        crate::save_chunk::format_save_number(number as i32),
         kind.extension()
     )
 }
@@ -1103,17 +1103,27 @@ impl PlayerData {
         }
     }
 
-    /// A chunk's payload.
+    /// A chunk's payload. A repeated id resolves to the last chunk, as the
+    /// original's reader dispatches every chunk in order and the later one
+    /// wins.
     pub fn chunk(&self, id: u32) -> Option<&[u8]> {
         self.chunks
             .iter()
+            .rev()
             .find(|chunk| chunk.id == id)
             .map(|chunk| chunk.data.as_slice())
     }
 
-    /// Replaces a chunk, or appends it when it is not there.
+    /// Whether a chunk is present.
+    pub fn has_chunk(&self, id: u32) -> bool {
+        self.chunk(id).is_some()
+    }
+
+    /// Replaces a chunk, or appends it when it is not there. With repeated
+    /// ids the last one is replaced, which is the one [`PlayerData::chunk`]
+    /// and the original's reader see.
     pub fn set_chunk(&mut self, id: u32, data: Vec<u8>) {
-        match self.chunks.iter_mut().find(|chunk| chunk.id == id) {
+        match self.chunks.iter_mut().rev().find(|chunk| chunk.id == id) {
             Some(chunk) => chunk.data = data,
             None => self.chunks.push(OwnedChunk { id, data }),
         }
@@ -1614,6 +1624,12 @@ mod tests {
         // Both extensions and the number rules are unchanged.
         assert_eq!(slot_file_name("Arena", 999, SlotKind::Save), "Arena999.rsg");
         assert_eq!(slot_file_name("Arena", 0, SlotKind::Save), "Arena000.rsg");
+        // The number is a signed word: a value with the top bit set is
+        // negative and the formatter emits "00".
+        assert_eq!(
+            slot_file_name("Arena", u32::MAX, SlotKind::Save),
+            "Arena00.rsg"
+        );
     }
 
     #[test]
@@ -1747,6 +1763,40 @@ mod tests {
         assert_eq!(short.global_experience(), 0);
         assert_eq!(short.memory_flags(), 0);
         assert_eq!(&short.transition_state()[..2], &[2, 0]);
+    }
+
+    #[test]
+    fn a_repeated_chunk_id_reads_its_last_chunk() {
+        let mut data = PlayerData::story(name("exanima01"));
+        data.set_chunk(GLOBAL_XP_CHUNK, 1u32.to_le_bytes().to_vec());
+        data.chunks.push(OwnedChunk {
+            id: GLOBAL_XP_CHUNK,
+            data: 2u32.to_le_bytes().to_vec(),
+        });
+        assert_eq!(data.chunk(GLOBAL_XP_CHUNK), Some(&2u32.to_le_bytes()[..]));
+        assert_eq!(data.global_experience(), 2);
+        data.set_chunk(GLOBAL_XP_CHUNK, 3u32.to_le_bytes().to_vec());
+        assert_eq!(data.chunk(GLOBAL_XP_CHUNK), Some(&3u32.to_le_bytes()[..]));
+        // The reader's dispatch takes the later journal too.
+        let mut data = PlayerData::story(name("exanima01"));
+        data.chunks.push(OwnedChunk {
+            id: JOURNAL_CHUNK,
+            data: write_journal(&[JournalRecord {
+                id: 1,
+                title: "A".to_string(),
+                text: String::new(),
+            }]),
+        });
+        data.chunks.push(OwnedChunk {
+            id: JOURNAL_CHUNK,
+            data: write_journal(&[JournalRecord {
+                id: 2,
+                title: "B".to_string(),
+                text: String::new(),
+            }]),
+        });
+        assert_eq!(data.journal().unwrap().unwrap()[0].id, 2);
+        assert_eq!(data.journal_or_default().unwrap()[0].id, 2);
     }
 
     #[test]
