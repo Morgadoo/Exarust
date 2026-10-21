@@ -5,13 +5,16 @@
 //! light at the middle of the line. Igniting sets the fade-in bit; the row
 //! fades in by 0.02 a tick to one and clears the bit. Extinguishing sets the
 //! fade-out bit; the row loses 0.015 a tick and is removed once it is below
-//! 0.01. The line's ends lag behind the item (the tip's points rise 4 cm a
-//! tick and close a fifth of the gap), and the light's flicker is a
-//! soft-bounded random walk scaled by 0.06, with a separate 0.87–1.15
-//! softness walk.
+//! 0.01 (the fades are taken in double precision). The ribbon's lagging
+//! points follow the line's ends, each tick closing a fifth of the gap to a
+//! point 20 cm above its end, so the flame leans up and trails the swing.
+//! The light's flicker is a soft-bounded random walk scaled by 0.06, with a
+//! separate 0.87–1.15 softness walk; both run only while the row has a
+//! light, and the loop sound's pitch walk only while it has a sound.
 //!
-//! The same row is what a lit torch-like effect is built from, but the
-//! carried torch uses its model's own fire emitter instead.
+//! The carried torch is not a flame row: it uses its model's own fire
+//! emitter (`crate::torch`). A flame row needs a held item whose ability
+//! word is a burning one, which Exarust's item records do not carry yet.
 //!
 //! Sizes are the original's centimetres and its 83 Hz ticks.
 
@@ -20,28 +23,38 @@ use bevy::prelude::*;
 use crate::arena::Mt19937;
 use crate::effects::{Frame, round_i32};
 
+/// One tick's lerp of the original's helper: `a + (b − a)·t`.
+fn lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
+    a + (b - a) * t
+}
+
 /// The flame starts this far along the item's local +Y.
 pub const START_CM: f32 = 30.0;
 /// And ends here.
 pub const END_CM: f32 = 115.0;
 
-/// Fade in per tick while lit.
-pub const FADE_IN_PER_TICK: f32 = 0.02;
-/// Fade out per tick while extinguishing.
-pub const FADE_OUT_PER_TICK: f32 = 0.015;
+/// Fade in per tick while lit, a double.
+pub const FADE_IN_PER_TICK: f64 = 0.02;
+/// Fade out per tick while extinguishing, a double.
+pub const FADE_OUT_PER_TICK: f64 = 0.015;
 /// The lit flag: the row is fading in.
 pub const FADING_IN: u32 = 1;
 /// The extinguish flag: the row is fading out.
 pub const EXTINGUISHING: u32 = 2;
 /// The removed flag.
 pub const REMOVED: u32 = 4;
-/// An extinguished row leaves the scene once its fade is below this.
-pub const REMOVE_BELOW: f32 = 0.01;
+/// An extinguished row leaves the scene once its fade, widened to double,
+/// is below this.
+pub const REMOVE_BELOW: f64 = 0.01;
 
-/// The tip's points rise this much per tick (a fifth of it: 4 cm).
+/// The lagging points aim this far above the line's ends, on the up axis.
 pub const TIP_RISE_CM: f32 = 20.0;
-/// And close this share of the gap to the true end each tick.
+/// And close this share of the gap each tick.
 pub const TIP_SMOOTHING: f32 = 0.2;
+/// The speed's smoothing: a tenth of the new move, nine tenths of the old
+/// speed, in double precision.
+pub const SPEED_NEW: f64 = 0.1;
+pub const SPEED_OLD: f64 = 0.9;
 
 /// The light's colour, sRGB.
 pub const LIGHT_COLOUR: [f32; 3] = [1.0, 0.68, 0.43];
@@ -52,28 +65,32 @@ pub const LIGHT_SOFTNESS: f32 = 4.0;
 pub const LIGHT_BASE_INTENSITY: f32 = 5.0;
 /// The intensity the light object is created with.
 pub const LIGHT_START_INTENSITY: f32 = 0.01;
-/// The walk's share of the intensity.
-pub const LIGHT_WALK_SCALE: f32 = 0.06;
+/// The walk's share of the intensity, a double.
+pub const LIGHT_WALK_SCALE: f64 = 0.06;
 /// How far the walk moves its speed each tick.
 pub const LIGHT_FLICKER_STEP: f32 = 1.0;
-/// The softness walk's step and bounds.
-pub const JITTER_STEP: f32 = 0.125;
+/// The softness walk's step and bounds (compared in double precision).
+pub const JITTER_STEP: f64 = 0.125;
 pub const JITTER_MIN: f32 = 0.87;
 pub const JITTER_MAX: f32 = 1.15;
-/// The swing follows the speed by this share.
-pub const SWING_SCALE: f32 = 0.3;
+/// The swing follows the speed by this share, a double.
+pub const SWING_SCALE: f64 = 0.3;
+/// The flags the row raises on its light each frame.
+pub const LIGHT_UPDATE_FLAGS: u32 = 0xb;
 
-/// The loop sound (`FireS02`) follows the row's speed and fade.
+/// The loop sound (`FireS02`) follows the row's speed and fade. It starts
+/// at volume 0 and pitch 1.
 pub const LOOP_SOUND: &str = "FireS02";
-pub const SOUND_VOLUME_SCALE: f32 = 0.001;
+pub const SOUND_VOLUME_SCALE: f64 = 0.001;
 pub const SOUND_VOLUME_MIN: f32 = 0.03;
 pub const SOUND_VOLUME_MAX: f32 = 1.0;
 pub const SOUND_VOLUME_GAIN: f32 = 2.0;
-/// The loop's pitch walk and its 0.8 operating scale.
-pub const PITCH_STEP: f32 = 0.005;
+/// The loop's pitch walk, its bounds and the 0.8 the stored pitch is then
+/// multiplied by, all in double precision.
+pub const PITCH_STEP: f64 = 0.005;
 pub const PITCH_MIN: f32 = 0.85;
 pub const PITCH_MAX: f32 = 1.15;
-pub const PITCH_SCALE: f32 = 0.8;
+pub const PITCH_SCALE: f64 = 0.8;
 
 /// The sizzle of a blade being lit: volume 0.3, pitch 0.8–1.0.
 pub const SIZZLE_SOUND: &str = "FireSizzleA";
@@ -130,13 +147,55 @@ pub const ELE_COLOUR: [f32; 3] = [0.65, 0.4, 1.0];
 pub const EDGE_COLOUR: [f32; 3] = [0.08, 0.14, 0.2];
 /// The row's material and texture.
 pub const MATERIAL: &str = "_FlameMat01";
-/// The texture animation runs over 50 s.
+/// The texture animation runs over 50 s, in double precision.
 pub const ANIM_PERIOD_MS: u32 = 50_000;
-pub const ANIM_STEP: f32 = 0.000_02;
+pub const ANIM_STEP: f64 = 0.000_02;
 /// The ribbon is built from this many sections.
 pub const SECTIONS: i32 = 16;
-/// The width of one section, as a share of the line.
+/// The width of one section, as a share of the line's length over the
+/// section count.
 pub const SECTION_WIDTH: f32 = 1.5;
+/// A section's texture step along the ribbon.
+pub const SECTION_U: f32 = 0.025;
+/// The vertex colours of each four ribbon vertices: the first two clear
+/// black, the last two white with zero alpha (RGBA8).
+pub const RIBBON_COLOURS: [[u8; 4]; 4] = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [255, 255, 255, 0],
+    [255, 255, 255, 0],
+];
+
+/// The ribbon's index list: each section's two quads of four vertices,
+/// split into two triangles `(0, 1, 3)` and `(3, 1, 2)`.
+pub fn ribbon_indices() -> Vec<u16> {
+    (0..(SECTIONS * 2) as u16)
+        .flat_map(|q| {
+            let b = q * 4;
+            [b, b + 1, b + 3, b + 3, b + 1, b + 2]
+        })
+        .collect()
+}
+
+/// The ribbon's texture coordinates: per section, a quad from the
+/// section's step back by one step and one forward, each from v 0 to 1.
+pub fn ribbon_uvs() -> Vec<[f32; 2]> {
+    (0..SECTIONS)
+        .flat_map(|i| {
+            let u = i as f32 * SECTION_U;
+            [
+                [u, 0.0],
+                [u, 1.0],
+                [u - SECTION_U, 1.0],
+                [u - SECTION_U, 0.0],
+                [u, 0.0],
+                [u, 1.0],
+                [u + SECTION_U, 1.0],
+                [u + SECTION_U, 0.0],
+            ]
+        })
+        .collect()
+}
 
 /// What a held item's fire state asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,14 +358,22 @@ pub struct FlameRow {
     pub lag_end: Vec3,
     pub older_lag_start: Vec3,
     pub older_lag_end: Vec3,
+    /// The ends the ribbon interpolates between over a frame: the pair
+    /// shifted out last and the pair before it (start, end).
+    pub ribbon_prev: [Vec3; 2],
+    pub ribbon_old: [Vec3; 2],
+    /// Whether the row has a light and a loop sound: the light's walks and
+    /// the sound's pitch walk run only with them.
+    pub has_light: bool,
+    pub has_sound: bool,
     /// Smoothed speed of the ends, cm per tick.
     pub speed: f32,
     /// The light's random walk, speed and its softness jitter.
     pub walk: f32,
     pub swing: f32,
     pub jitter: f32,
-    /// The loop sound's pitch (guess: the sound object's +0x14 field, the
-    /// one the per-frame walk stores, is its pitch).
+    /// The loop sound's pitch: the value the sound is started with (one)
+    /// and the per-frame walk stores.
     pub pitch: f32,
     /// The seeded stream the light and sound walks draw from.
     pub rng: Mt19937,
@@ -328,6 +395,10 @@ impl FlameRow {
             lag_end: Vec3::ZERO,
             older_lag_start: Vec3::ZERO,
             older_lag_end: Vec3::ZERO,
+            ribbon_prev: [Vec3::ZERO; 2],
+            ribbon_old: [Vec3::ZERO; 2],
+            has_light: true,
+            has_sound: true,
             speed: 0.0,
             walk: 0.0,
             swing: 0.0,
@@ -343,25 +414,62 @@ impl FlameRow {
         Self::new(light.start_cm, light.end_cm, light.flags, seed)
     }
 
+    /// Attach the row to its item: the ends from the item's frame, and
+    /// every remembered and lagging point set to them.
+    pub fn attach(&mut self, frame: &Frame) {
+        self.start = frame.point(self.start_local);
+        self.end = frame.point(self.end_local);
+        self.prev_start = self.start;
+        self.prev_end = self.end;
+        self.lag_start = self.start;
+        self.older_lag_start = self.lag_start;
+        self.lag_end = self.end;
+        self.older_lag_end = self.lag_end;
+    }
+
+    /// The pair shift before a tick: the ribbon's older ends take the
+    /// previous ones, and the previous ones take the line's ends.
+    pub fn shift_ribbon(&mut self) {
+        self.ribbon_old = self.ribbon_prev;
+        self.ribbon_prev = [self.start, self.end];
+    }
+
+    /// The ribbon's ends `t` of the way through the frame.
+    pub fn ribbon_ends(&self, t: f32) -> (Vec3, Vec3) {
+        (
+            lerp(self.ribbon_old[0], self.ribbon_prev[0], t),
+            lerp(self.ribbon_old[1], self.ribbon_prev[1], t),
+        )
+    }
+
+    /// The row's bounds `t` of the way through the frame: the middle of the
+    /// line (where its light and sound sit) and half the ribbon's length.
+    pub fn bounds(&self, t: f32) -> (Vec3, f32) {
+        let (a, b) = self.ribbon_ends(t);
+        let d = a - b;
+        let length = ((d.x * d.x + d.z * d.z) + d.y * d.y).sqrt();
+        (lerp(self.start, self.end, 0.5), length * 0.5)
+    }
+
     /// Whether the row has been removed.
     pub fn removed(&self) -> bool {
         self.flags & REMOVED != 0
     }
 
-    /// One tick: fade, the ends from the attachment, the tip lag, the speed
-    /// and the light's walk. `random` holds the walk, swing and jitter
-    /// units, in that draw order.
+    /// One tick: fade, the ends from the attachment, the lag, the speed
+    /// and, with a light, its walks. `random` holds the walk, swing and
+    /// jitter units, in that draw order (drawn only with a light).
     pub fn tick(&mut self, attach: Option<&Frame>, random: [f64; 3]) -> RowLight {
         if self.removed() {
             return self.light();
         }
         if self.flags & EXTINGUISHING != 0 {
-            self.fade -= FADE_OUT_PER_TICK;
+            self.fade = (f64::from(self.fade) - FADE_OUT_PER_TICK) as f32;
             if self.fade < 0.0 {
                 self.fade = 0.0;
             }
         } else if self.flags & FADING_IN != 0 {
-            self.fade += FADE_IN_PER_TICK;
+            self.fade = (f64::from(self.fade) + FADE_IN_PER_TICK) as f32;
             if self.fade > 1.0 {
                 self.fade = 1.0;
                 self.flags &= !FADING_IN;
@@ -377,61 +485,70 @@ impl FlameRow {
         self.older_lag_end = self.lag_end;
         self.lag_start = lag_step(self.start, self.lag_start);
         self.lag_end = lag_step(self.end, self.lag_end);
-        // The original measures squared distances and smooths them as they are.
-        let moved = (self.prev_start - self.start)
-            .length_squared()
-            .max((self.prev_end - self.end).length_squared());
-        self.speed = moved * 0.1 + self.speed * 0.9;
+        // The original measures squared distances and smooths them as they
+        // are; the larger is kept unless the first is a NaN.
+        let a = crate::effects::distance_squared(self.prev_start, self.start);
+        let b = crate::effects::distance_squared(self.prev_end, self.end);
+        let moved = if a < b { b } else { a };
+        self.speed = (f64::from(moved) * SPEED_NEW + f64::from(self.speed) * SPEED_OLD) as f32;
 
-        self.walk = walk_step(self.walk, self.swing, random[0], LIGHT_FLICKER_STEP);
-        self.swing = (f64::from(self.walk) * f64::from(SWING_SCALE) * random[1]
-            + f64::from(self.swing)) as f32;
-        // A zero-initialised jitter clamps to 0.87 on the first tick
-        // (guess: the class does not write the field elsewhere).
-        self.jitter = jitter_step(self.jitter, random[2]);
+        if self.has_light {
+            self.walk = walk_step(self.walk, self.swing, random[0], LIGHT_FLICKER_STEP);
+            self.swing =
+                (f64::from(self.walk) * SWING_SCALE * random[1] + f64::from(self.swing)) as f32;
+            // A zero-initialised jitter clamps to 0.87 on the first tick
+            // (guess: the class does not write the field elsewhere).
+            self.jitter = jitter_step(self.jitter, random[2]);
+        }
         self.light()
     }
 
-    /// The light from the current fade and walks.
+    /// The light from the current fade and walks: the intensity in double
+    /// precision, `fade · ((swing · 0.06 + 1) · base)`.
     pub fn light(&self) -> RowLight {
+        let gain =
+            (f64::from(self.swing) * LIGHT_WALK_SCALE + 1.0) * f64::from(LIGHT_BASE_INTENSITY);
         RowLight {
-            intensity: self.fade * (self.swing * LIGHT_WALK_SCALE + 1.0) * LIGHT_BASE_INTENSITY,
-            softness: self.jitter * LIGHT_SOFTNESS,
+            intensity: (f64::from(self.fade) * gain) as f32,
+            softness: LIGHT_SOFTNESS * self.jitter,
             radius_cm: LIGHT_RADIUS_CM,
             colour: LIGHT_COLOUR,
         }
     }
 
-    /// One frame: remove a faded-out row and step the loop's pitch.
+    /// One frame: remove a faded-out row (its flags become the removed
+    /// flag alone) and, with a sound, step the loop's pitch. `pitch_unit` is
+    /// drawn only with a sound.
     pub fn frame(&mut self, pitch_unit: f64) -> Option<RowSound> {
         if self.removed() {
             return None;
         }
-        if self.flags & EXTINGUISHING != 0 && self.fade < REMOVE_BELOW {
-            self.flags |= REMOVED;
+        if self.flags & EXTINGUISHING != 0 && f64::from(self.fade) < REMOVE_BELOW {
+            self.flags = REMOVED;
             return None;
         }
-        let mut pitch = ((pitch_unit - 0.5) * f64::from(PITCH_STEP) + f64::from(self.pitch)) as f32;
-        pitch = if pitch >= PITCH_MIN {
-            if pitch > PITCH_MAX { PITCH_MAX } else { pitch }
-        } else {
-            PITCH_MIN
-        };
-        self.pitch = pitch * PITCH_SCALE;
+        if !self.has_sound {
+            return None;
+        }
+        let mut pitch = ((pitch_unit - 0.5) * PITCH_STEP + f64::from(self.pitch)) as f32;
+        if f64::from(pitch) < 0.85 {
+            pitch = PITCH_MIN;
+        } else if f64::from(pitch) > 1.15 {
+            pitch = PITCH_MAX;
+        }
+        self.pitch = (f64::from(pitch) * PITCH_SCALE) as f32;
         Some(self.sound())
     }
 
     /// The loop sound's volume and pitch from the current speed and fade.
     pub fn sound(&self) -> RowSound {
-        let mut volume = self.speed * SOUND_VOLUME_SCALE;
-        if volume <= SOUND_VOLUME_MAX {
-            if volume < SOUND_VOLUME_MIN {
-                volume = SOUND_VOLUME_MIN;
-            }
-        } else {
+        let mut volume = (f64::from(self.speed) * SOUND_VOLUME_SCALE) as f32;
+        if volume > SOUND_VOLUME_MAX {
             volume = SOUND_VOLUME_MAX;
+        } else if f64::from(volume) < 0.03 {
+            volume = SOUND_VOLUME_MIN;
         }
-        volume *= self.fade * SOUND_VOLUME_GAIN;
+        volume = volume * self.fade * SOUND_VOLUME_GAIN;
         if self.flags & FADING_IN != 0 {
             volume = (volume + 0.5) - (self.fade - 0.5).abs();
         }
@@ -442,38 +559,38 @@ impl FlameRow {
     }
 }
 
-/// One lagging point: rise a fifth of 20 cm and close a fifth of the gap.
+/// One lagging point: close a fifth of the gap to a point 20 cm above the
+/// target on the up axis.
 fn lag_step(target: Vec3, lag: Vec3) -> Vec3 {
     let mut delta = target - lag;
-    delta.z += TIP_RISE_CM;
+    delta.y += TIP_RISE_CM;
     lag + delta * TIP_SMOOTHING
 }
 
 /// The light's soft-bounded speed walk. Its arithmetic is in double, as
 /// the original's, then narrowed back to a float.
 pub fn walk_step(walk: f32, swing: f32, unit: f64, step: f32) -> f32 {
-    let (walk, step) = (f64::from(walk), f64::from(step));
-    let next = if f64::from(swing) > 1.0 || walk > 1.0 {
-        walk - step * unit
-    } else if f64::from(swing) < -1.0 || walk < -1.0 {
-        walk + step * unit
+    let next = if 1.0 < swing || 1.0 < walk {
+        f64::from(walk) - f64::from(step) * unit
+    } else if -1.0 > swing || -1.0 > walk {
+        f64::from(step) * unit + f64::from(walk)
     } else {
-        (step + 1.0) * (unit - 0.5) + walk
+        // The one is added to the step in single precision.
+        f64::from(1.0 + step) * (unit - 0.5) + f64::from(walk)
     };
     next as f32
 }
 
-/// The softness jitter's walk, clamped to 0.87–1.15.
+/// The softness jitter's walk, compared with 0.87 and 1.15 in double
+/// precision and clamped to their single-precision values.
 pub fn jitter_step(jitter: f32, unit: f64) -> f32 {
-    let jitter = ((unit - 0.5) * f64::from(JITTER_STEP) + f64::from(jitter)) as f32;
-    if jitter >= JITTER_MIN {
-        if jitter > JITTER_MAX {
-            JITTER_MAX
-        } else {
-            jitter
-        }
-    } else {
+    let jitter = ((unit - 0.5) * JITTER_STEP + f64::from(jitter)) as f32;
+    if f64::from(jitter) < 0.87 {
         JITTER_MIN
+    } else if f64::from(jitter) > 1.15 {
+        JITTER_MAX
+    } else {
+        jitter
     }
 }
 
@@ -503,32 +620,62 @@ impl Flame {
     }
 }
 
-/// The attach frame of a row from its world transform, in centimetres.
+/// The attach frame of a row from its world transform: centimetres in,
+/// centimetres out, so the basis keeps its scale and only the translation
+/// turns from metres to centimetres.
 pub fn attach_frame(transform: &GlobalTransform) -> Frame {
     let (scale, rotation, translation) = transform.to_scale_rotation_translation();
     Frame {
-        x: rotation * Vec3::X * scale.x * 100.0,
-        y: rotation * Vec3::Y * scale.y * 100.0,
-        z: rotation * Vec3::Z * scale.z * 100.0,
+        x: rotation * Vec3::X * scale.x,
+        y: rotation * Vec3::Y * scale.y,
+        z: rotation * Vec3::Z * scale.z,
         at: translation * 100.0,
     }
 }
 
-pub fn tick_rows(mut rows: Query<(&mut Flame, Option<&GlobalTransform>)>) {
-    for (mut flame, transform) in &mut rows {
+/// A row that has taken its first ends from its item.
+#[derive(Component)]
+pub struct Attached;
+
+#[allow(clippy::type_complexity)]
+pub fn tick_rows(
+    mut commands: Commands,
+    mut rows: Query<(Entity, &mut Flame, Option<&GlobalTransform>, Has<Attached>)>,
+) {
+    for (entity, mut flame, transform, attached) in &mut rows {
         let frame = transform.map(attach_frame);
         let row = &mut flame.0;
-        let random = [row.rng.unit(), row.rng.unit(), row.rng.unit()];
+        if !attached && let Some(frame) = &frame {
+            row.attach(frame);
+            commands.entity(entity).insert(Attached);
+        }
+        // The pair shift runs before the tick (guess: its caller is outside
+        // this group).
+        row.shift_ribbon();
+        let random = if row.has_light {
+            [row.rng.unit(), row.rng.unit(), row.rng.unit()]
+        } else {
+            [0.5; 3]
+        };
         row.tick(frame.as_ref(), random);
     }
 }
 
-#[allow(clippy::type_complexity)]
-pub fn frame_rows(mut rows: Query<(&mut Flame, Option<&mut PointLight>)>) {
-    for (mut flame, light) in &mut rows {
+/// One frame of each row: a faded-out row leaves the scene; a live one
+/// steps its loop's pitch and shows its light.
+pub fn frame_rows(
+    mut commands: Commands,
+    mut rows: Query<(Entity, &mut Flame, Option<&mut PointLight>)>,
+) {
+    for (entity, mut flame, light) in &mut rows {
         let row = &mut flame.0;
-        let unit = row.rng.unit();
-        if row.frame(unit).is_none() {
+        if row.removed() {
+            continue;
+        }
+        let unit = if row.has_sound { row.rng.unit() } else { 0.5 };
+        row.frame(unit);
+        if row.removed() {
+            commands.entity(entity).despawn();
             continue;
         }
         if let Some(mut light) = light {
@@ -553,14 +700,16 @@ pub fn light_record() -> exa_formats::rfc::Light {
     }
 }
 
-/// The sizzle's pitch for a random unit: 0.8 + 0.2·u.
-pub fn sizzle_pitch(unit: f32) -> f32 {
-    SIZZLE_PITCH_BASE + unit * SIZZLE_PITCH_SPAN
+/// The sizzle's pitch for a random unit: `u·0.2 + 0.8` in double
+/// precision.
+pub fn sizzle_pitch(unit: f64) -> f32 {
+    (unit * f64::from(SIZZLE_PITCH_SPAN) + f64::from(SIZZLE_PITCH_BASE)) as f32
 }
 
-/// The mesh level of detail the play renderer stores for the row.
-pub fn level_of_detail(distance: f32) -> f32 {
-    LOD_BASE / (distance * distance).max(1.0)
+/// The mesh level of detail the play renderer stores for the row: 200
+/// over the squared camera distance (cm), raised to one.
+pub fn level_of_detail(camera: Vec3, at: Vec3) -> f32 {
+    crate::effects::level_of_detail(LOD_BASE, camera, at)
 }
 
 /// The sizzle of a hit: volume 0.3 and a pitch from 0.8 to 1.0.
@@ -571,7 +720,7 @@ pub struct Sizzle {
 }
 
 /// One sizzle from a random unit.
-pub fn sizzle(unit: f32) -> Sizzle {
+pub fn sizzle(unit: f64) -> Sizzle {
     Sizzle {
         volume: SIZZLE_VOLUME,
         pitch: sizzle_pitch(unit),
@@ -593,7 +742,7 @@ pub fn lit_render(flags: u32) -> u32 {
 /// The shader's `Anim` values this frame: the rolling texture offset, its
 /// negative twin, and the fade's other half.
 pub fn texture_animation(now_ms: u32, fade: f32) -> [f32; 3] {
-    let offset = (now_ms % ANIM_PERIOD_MS) as f32 * ANIM_STEP;
+    let offset = (f64::from(now_ms % ANIM_PERIOD_MS) * ANIM_STEP) as f32;
     [offset, offset * -2.0, (1.0 - fade) * 0.5]
 }
 
@@ -612,13 +761,14 @@ mod tests {
         assert_eq!(row.fade, 0.0);
         let light = row.tick(None, [0.5, 0.5, 0.5]);
         assert!((light.intensity - 0.1).abs() < 1e-6);
-        assert_eq!(row.fade, FADE_IN_PER_TICK);
-        // 0.02 does not add to exactly one in single precision: 50 ticks
-        // leave 0.9999996 and the fifty-first passes the clamp.
+        assert_eq!(row.fade, 0.02);
+        // The double 0.02 added to the stored float and narrowed back does
+        // not reach one: 50 ticks leave 0.99999964 and the fifty-first
+        // passes the clamp.
         for _ in 0..49 {
             row.tick(None, [0.5, 0.5, 0.5]);
         }
-        assert_eq!(row.fade.to_bits(), 0.999_999_6f32.to_bits());
+        assert_eq!(row.fade.to_bits(), 0.999_999_64f32.to_bits());
         assert_eq!(row.flags & FADING_IN, FADING_IN);
         row.tick(None, [0.5, 0.5, 0.5]);
         assert_eq!(row.fade, 1.0);
@@ -640,25 +790,99 @@ mod tests {
         }
         assert_eq!(ticks, 67);
         assert!(!row.removed());
-        // 66 ticks leave 0.0099999, already below the removal line.
-        assert!(row.fade < REMOVE_BELOW);
         assert!(row.frame(0.5).is_none());
         assert!(row.removed());
+        // The flags become the removed flag alone.
+        assert_eq!(row.flags, REMOVED);
+        // 66 ticks leave 0.0100007, still at the removal line in double
+        // precision: the row is drawn one more frame.
+        let mut row = FlameRow::lit(1);
+        row.fade = 1.0;
+        row.flags = EXTINGUISHING;
+        for _ in 0..66 {
+            row.tick(None, [0.5, 0.5, 0.5]);
+        }
+        assert!((row.fade - 0.010_000_7).abs() < 1e-7, "{}", row.fade);
+        assert!(row.frame(0.5).is_some());
+        // A float 0.01 is below the double 0.01 and removes the row.
+        row.fade = 0.01;
+        assert!(row.frame(0.5).is_none());
     }
 
     #[test]
-    fn the_tip_lags_and_rises_four_centimetres_a_tick() {
+    fn the_lag_closes_a_fifth_of_the_gap_to_twenty_centimetres_up() {
         let mut row = FlameRow::lit(7);
         row.start = Vec3::new(10.0, 0.0, 0.0);
-        row.end = Vec3::new(10.0, 0.0, 100.0);
+        row.end = Vec3::new(10.0, 100.0, 0.0);
         row.lag_start = Vec3::ZERO;
         row.lag_end = Vec3::ZERO;
         row.tick(None, [0.5, 0.5, 0.5]);
-        assert_eq!(row.lag_start, Vec3::new(2.0, 0.0, 4.0));
-        assert_eq!(row.lag_end, Vec3::new(2.0, 0.0, 24.0));
+        assert_eq!(row.lag_start, Vec3::new(2.0, 4.0, 0.0));
+        assert_eq!(row.lag_end, Vec3::new(2.0, 24.0, 0.0));
+        assert_eq!(row.older_lag_start, Vec3::ZERO);
         row.tick(None, [0.5, 0.5, 0.5]);
         assert!((row.lag_start.x - 3.6).abs() < 1e-5);
-        assert!((row.lag_start.z - 7.2).abs() < 1e-5);
+        assert!((row.lag_start.y - 7.2).abs() < 1e-5);
+        assert_eq!(row.older_lag_start, Vec3::new(2.0, 4.0, 0.0));
+    }
+
+    #[test]
+    fn an_attached_row_starts_at_rest_on_its_item() {
+        let mut row = FlameRow::lit(7);
+        let frame = Frame {
+            at: Vec3::new(5.0, 0.0, 0.0),
+            ..Frame::IDENTITY
+        };
+        row.attach(&frame);
+        assert_eq!(row.start, Vec3::new(5.0, 30.0, 0.0));
+        assert_eq!(row.end, Vec3::new(5.0, 115.0, 0.0));
+        assert_eq!((row.prev_start, row.prev_end), (row.start, row.end));
+        assert_eq!((row.lag_start, row.lag_end), (row.start, row.end));
+        assert_eq!(
+            (row.older_lag_start, row.older_lag_end),
+            (row.start, row.end)
+        );
+        // Still on the next tick: no speed.
+        row.tick(Some(&frame), [0.5, 0.5, 0.5]);
+        assert_eq!(row.speed, 0.0);
+    }
+
+    #[test]
+    fn the_ribbon_interpolates_the_shifted_ends() {
+        let mut row = FlameRow::lit(7);
+        row.start = Vec3::new(0.0, 0.0, 0.0);
+        row.end = Vec3::new(0.0, 10.0, 0.0);
+        row.shift_ribbon();
+        row.start = Vec3::new(4.0, 0.0, 0.0);
+        row.end = Vec3::new(4.0, 10.0, 0.0);
+        row.shift_ribbon();
+        assert_eq!(row.ribbon_old, [Vec3::ZERO, Vec3::new(0.0, 10.0, 0.0)]);
+        let (a, b) = row.ribbon_ends(0.5);
+        assert_eq!(
+            (a, b),
+            (Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 10.0, 0.0))
+        );
+        let (centre, radius) = row.bounds(0.5);
+        assert_eq!((centre, radius), (Vec3::new(4.0, 5.0, 0.0), 5.0));
+        let indices = ribbon_indices();
+        assert_eq!(indices.len(), 192);
+        assert_eq!(&indices[..12], &[0, 1, 3, 3, 1, 2, 4, 5, 7, 7, 5, 6]);
+        let uvs = ribbon_uvs();
+        assert_eq!(uvs.len(), 128);
+        assert_eq!(uvs[2], [-0.025, 1.0]);
+        assert_eq!(uvs[14], [0.05, 1.0]);
+        assert_eq!(RIBBON_COLOURS[2], [255, 255, 255, 0]);
+    }
+
+    #[test]
+    fn a_row_without_a_light_does_not_walk() {
+        let mut row = FlameRow::lit(1);
+        row.has_light = false;
+        row.tick(None, [1.0, 1.0, 1.0]);
+        assert_eq!((row.walk, row.swing, row.jitter), (0.0, 0.0, 0.0));
+        row.has_sound = false;
+        assert!(row.frame(1.0).is_none());
+        assert_eq!(row.pitch, 1.0);
     }
 
     #[test]
@@ -863,9 +1087,9 @@ mod tests {
         assert_eq!(deadline_ms(100, 0.4), 500);
         assert_eq!(LIT_RENDER_FLAG, 0x800);
         assert_eq!(lit_render(0), 0x800);
-        assert_eq!(level_of_detail(0.5), 200.0);
-        assert_eq!(level_of_detail(1.0), 200.0);
-        assert_eq!(level_of_detail(4.0), 12.5);
+        assert_eq!(level_of_detail(Vec3::ZERO, Vec3::new(0.5, 0.0, 0.0)), 200.0);
+        assert_eq!(level_of_detail(Vec3::ZERO, Vec3::X), 200.0);
+        assert_eq!(level_of_detail(Vec3::ZERO, Vec3::new(0.0, 0.0, 4.0)), 12.5);
         assert_eq!(texture_animation(0, 1.0), [0.0, -0.0, 0.0]);
         assert_eq!(texture_animation(25_000, 0.0), [0.5, -1.0, 0.5]);
         assert_eq!(texture_animation(50_000, 1.0), [0.0, -0.0, 0.0]);
@@ -882,6 +1106,11 @@ mod tests {
         let transform = GlobalTransform::from_xyz(1.0, 2.0, 3.0);
         let frame = attach_frame(&transform);
         assert_eq!(frame.at, Vec3::new(100.0, 200.0, 300.0));
-        assert_eq!(frame.x, Vec3::new(100.0, 0.0, 0.0));
+        // A local centimetre stays a centimetre.
+        assert_eq!(frame.x, Vec3::X);
+        assert_eq!(
+            frame.point(Vec3::new(0.0, 30.0, 0.0)),
+            Vec3::new(100.0, 230.0, 300.0)
+        );
     }
 }
