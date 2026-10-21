@@ -161,6 +161,8 @@ pub struct Control {
     pub reports: bool,
     /// An image button's right-press has its own handler.
     pub alt_press: bool,
+    /// The layout pass has resolved this record.
+    pub laid_out: bool,
 }
 
 impl Control {
@@ -182,6 +184,7 @@ impl Control {
             icon: 0,
             reports: false,
             alt_press: false,
+            laid_out: false,
         }
     }
 
@@ -615,6 +618,256 @@ pub fn icon_ink(c: &Control) -> IconInk {
     }
 }
 
+/// Appends records after `last` (the last used index, -1 for none), as the
+/// original's record-append helper does, and returns the new last index.
+pub fn append_records(records: &mut Vec<Control>, last: i32, added: &[Control]) -> i32 {
+    let at = (last + 1).max(0) as usize;
+    let at = at.min(records.len());
+    let count = added.len() as i32;
+    records.splice(at..at, added.iter().cloned());
+    last + count
+}
+
+/// Registers a class and returns its index in the registry (the original
+/// appends to the dynamic class table).
+pub fn register_class(classes: &mut Vec<ControlClass>, class: ControlClass) -> usize {
+    let index = classes.len();
+    classes.push(class);
+    index
+}
+
+/// The shipped registry, in the order the original registers it: button,
+/// check box, image button, label, trackbar, icon button, picture.
+pub fn register_default_classes() -> Vec<ControlClass> {
+    let mut classes = Vec::new();
+    for id in [1, 2, 3, 5, 4, 6, 7] {
+        if let Some(class) = class(id) {
+            register_class(&mut classes, *class);
+        }
+    }
+    classes
+}
+
+/// The y anchors of a control layout record (`-0x8000` … `-0x7ff6`), as
+/// offsets from the record above: top, and the window rows 13 down to 5.
+fn anchor_row(code: i32) -> Option<i32> {
+    Some(match code {
+        -0x8000 => 0,
+        -0x7ffe => 13,
+        -0x7ffd => 12,
+        -0x7ffc => 11,
+        -0x7ffb => 10,
+        -0x7ffa => 9,
+        -0x7ff9 => 8,
+        -0x7ff8 => 7,
+        -0x7ff7 => 6,
+        -0x7ff6 => 5,
+        _ => return None,
+    })
+}
+
+/// The x anchors after the record above (`-0x7ffe` … `-0x7ff6`), as gaps
+/// after its right edge.
+fn anchor_gap(code: i32) -> Option<i32> {
+    Some(match code {
+        -0x7ffe => 0x48,
+        -0x7ffd => 0x38,
+        -0x7ffc => 0x20,
+        -0x7ffb => 0x14,
+        -0x7ffa => 0x10,
+        -0x7ff9 => 0xc,
+        -0x7ff8 => 8,
+        -0x7ff7 => 4,
+        -0x7ff6 => 0,
+        _ => return None,
+    })
+}
+
+/// The control layout pass: records without the laid-out bit take their
+/// class's default size and style, their relative anchors are resolved
+/// against the record above, and every record is then aligned to its
+/// parent and snapped to the four-pixel grid. `parent` is its client
+/// rectangle (left is taken as zero).
+pub fn layout_records(records: &mut [Control], parent: (i32, i32), unit: i32) {
+    let count = records.len();
+    for i in 0..count {
+        if records[i].laid_out {
+            continue;
+        }
+        if i == 0 {
+            if records[i].x < -0x7ff8 {
+                records[i].x = unit;
+            }
+            if records[i].y < -0x7ff8 {
+                records[i].y = unit;
+            }
+        } else {
+            let (above_x, above_y, above_w) = {
+                let above = &records[i - 1];
+                (above.x, above.y, above.w)
+            };
+            if records[i].y < 0 {
+                let row = anchor_row(records[i].y).unwrap_or(0);
+                records[i].y = if records[i].style & 0x8_0000 == 0 {
+                    above_y + row
+                } else {
+                    above_y - row
+                };
+            }
+            match records[i].x {
+                -0x8000 => records[i].x = above_x,
+                -0x7fff => {
+                    records[i].x = if above_y == records[i].y {
+                        above_x + above_w + 4
+                    } else {
+                        0
+                    };
+                    let mut best_y = -0x8000;
+                    let mut best_x = 0x7fff;
+                    for earlier in &records[..i] {
+                        if earlier.y < records[i].y && records[i].x <= earlier.x {
+                            if earlier.y < best_y {
+                                break;
+                            }
+                            if earlier.x < best_x {
+                                best_x = earlier.x;
+                                best_y = earlier.y;
+                            }
+                        }
+                    }
+                    if best_y > -0x8000 {
+                        records[i].x = best_x;
+                    }
+                }
+                code => {
+                    if let Some(gap) = anchor_gap(code) {
+                        records[i].x = above_x + above_w + gap;
+                    }
+                }
+            }
+        }
+        if let Some(class) = class(records[i].class) {
+            if records[i].w == 0 {
+                records[i].w = class.size.0;
+            }
+            if records[i].h == 0 {
+                records[i].h = class.size.1;
+            }
+            records[i].w = crate::gui_font::round_i32(f64::from(records[i].w) * 0.25) << 2;
+            if records[i].style == 0 {
+                records[i].style = class.style;
+            }
+            if records[i].margin == 0 {
+                records[i].margin = 0;
+            }
+        }
+        records[i].laid_out = true;
+    }
+    for record in records.iter_mut() {
+        if !record.laid_out {
+            continue;
+        }
+        if record.style & 0x800 == 0x800 {
+            record.x = (parent.0 - record.w) >> 1;
+        } else if record.style & 0x3_0000 == 0x2_0000 {
+            record.x = (parent.0 - (crate::gui_font::round_i32(f64::from(record.x) * 0.25) << 2))
+                - record.w;
+        } else {
+            record.x = crate::gui_font::round_i32(f64::from(record.x) * 0.25) << 2;
+        }
+        if record.style & 0xc_0000 == 0x8_0000 {
+            record.y = parent.1 + (record.y + 8) * -4;
+            record.y -= (record.h - 0x10) >> 1;
+        } else {
+            record.y <<= 2;
+            if record.h < 0x21 {
+                record.y -= (record.h - 0x10) >> 1;
+            } else {
+                record.y -= 4;
+            }
+        }
+        if record.style & 0x30 != 0 {
+            record.margin += 1;
+        }
+        if record.style & 0xc0 != 0 {
+            record.margin += 2;
+        }
+        // A later pass lays out the already-marked records' children; the
+        // control record itself keeps the mark.
+    }
+}
+
+/// A label's draw: whether it draws its background panel, and which ink
+/// (the plain, the coloured, the nudged or the shadowed ink, as the style
+/// word picks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelDraw {
+    pub panel: bool,
+    pub ink: LabelInk,
+}
+
+/// The label ink the style picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelInk {
+    First,
+    Second,
+    Nudged,
+    Coloured,
+}
+
+/// A label's draw from its style: `0x10000000` adds the background panel,
+/// `0x10` the first ink, `0x20000000` the coloured renderer, and `0x60` the
+/// nudged third ink; any other word uses the second.
+pub fn label_draw(style: u32) -> LabelDraw {
+    let ink = if style & 0x10 != 0 {
+        LabelInk::First
+    } else if style & 0x1_0000 != 0 {
+        LabelInk::Coloured
+    } else if style & 0x60 != 0 {
+        LabelInk::Nudged
+    } else {
+        LabelInk::Second
+    };
+    LabelDraw {
+        panel: style & 0x1000_0000 != 0,
+        ink,
+    }
+}
+
+/// A check box's drawn tick: a plain box ticks while on or lit, a
+/// three-state box while partly on; the style `0x10000000` picks the
+/// three-state test and `0x80` the partial bit.
+pub fn check_tick_shown(style: u32, state: u32) -> bool {
+    if style & 0x1000_0000 != 0 {
+        state & 0x80 != 0
+    } else {
+        state & 0x60 != 0
+    }
+}
+
+/// A control's class registry as the running app keeps it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClassRegistry {
+    pub classes: Vec<ControlClass>,
+}
+
+impl ClassRegistry {
+    /// The shipped registry.
+    pub fn shipped() -> Self {
+        Self {
+            classes: register_default_classes(),
+        }
+    }
+
+    pub fn find(&self, id: u16) -> Option<&ControlClass> {
+        self.classes.iter().find(|c| c.id == id)
+    }
+
+    pub fn register(&mut self, class: ControlClass) -> usize {
+        register_class(&mut self.classes, class)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,6 +1202,99 @@ mod tests {
             &mut ev,
         );
         assert_eq!(ev.last(), Some(&ControlEvent::AltPress(0)));
+    }
+
+    #[test]
+    fn records_append_after_the_last_one() {
+        let mut records = vec![Control::new(5, 0, 0, 10, 10)];
+        let added = [Control::new(1, 0, 0, 80, 24), Control::new(2, 0, 0, 16, 16)];
+        assert_eq!(append_records(&mut records, 0, &added), 2);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[1].class, 1);
+        assert_eq!(records[2].class, 2);
+        assert_eq!(append_records(&mut records, 2, &added[..1]), 3);
+        assert_eq!(records.last().map(|c| c.class), Some(1));
+    }
+
+    #[test]
+    fn the_registry_keeps_the_original_order() {
+        let registry = ClassRegistry::shipped();
+        assert_eq!(
+            registry.classes.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [1, 2, 3, 5, 4, 6, 7]
+        );
+        assert_eq!(registry.find(4).map(|c| c.size), Some((0, 16)));
+        let mut registry = ClassRegistry::default();
+        let custom = ControlClass {
+            id: 9,
+            name: "custom",
+            size: (10, 10),
+            style: 0,
+            picture: false,
+        };
+        assert_eq!(registry.register(custom), 0);
+        assert_eq!(registry.find(9).map(|c| c.size), Some((10, 10)));
+    }
+
+    #[test]
+    fn the_layout_pass_snaps_and_anchors_records() {
+        let mut records = vec![
+            Control::new(1, 4, 4, 0, 0),
+            Control::new(5, 0, -0x7ffe, 0, 0),
+            Control::new(5, -0x7fff, 17, 0, 0),
+        ];
+        layout_records(&mut records, (200, 120), 4);
+        assert_eq!(
+            (records[0].x, records[0].y, records[0].w, records[0].h),
+            (4, 12, 80, 24)
+        );
+        assert_eq!((records[1].x, records[1].y), (0, 66));
+        // The row anchor is the record above's design y plus 13, then
+        // doubled: 4 + 13 = 17, 17 × 4 = 68 less half the spare (2).
+        assert_eq!((records[2].x, records[2].y), (4, 66));
+        assert!(records.iter().all(|r| r.laid_out));
+        // A gap anchor places the third record after the second's width.
+        let mut gap = vec![
+            Control::new(5, 0, 4, 10, 20),
+            Control::new(5, -0x7ffe, 0, 10, 20),
+            Control::new(5, -0x7ffe, 0, 10, 20),
+        ];
+        gap[0].style = 0; // label style applies
+        layout_records(&mut gap, (200, 120), 4);
+        assert_eq!(gap[2].x, gap[1].x + gap[1].w + 0x48);
+    }
+
+    #[test]
+    fn a_centred_and_a_bottom_record_use_the_parent() {
+        let mut records = vec![Control::new(5, 0, 0, 40, 20), Control::new(5, 0, 0, 40, 20)];
+        records[0].style = 0x800;
+        records[1].style = 0x80000 | 0x30;
+        layout_records(&mut records, (200, 120), 4);
+        assert_eq!(records[0].x, (200 - 40) >> 1);
+        // y = 120 + (0 + 8) × -4 = 88, less (20 − 16) / 2 = 2.
+        assert_eq!(records[1].y, 86);
+        // The margin gains one for the low nibble.
+        assert_eq!(records[1].margin, 1);
+    }
+
+    #[test]
+    fn the_label_and_tick_inks_follow_the_style() {
+        assert_eq!(
+            label_draw(0),
+            LabelDraw {
+                panel: false,
+                ink: LabelInk::Second
+            }
+        );
+        assert_eq!(label_draw(0x10).ink, LabelInk::First);
+        assert_eq!(label_draw(0x1_0000).ink, LabelInk::Coloured);
+        assert!(label_draw(0x1000_0010).panel);
+        assert_eq!(label_draw(0x60).ink, LabelInk::Nudged);
+        assert!(check_tick_shown(0, 0x20));
+        assert!(check_tick_shown(0, 0x40));
+        assert!(!check_tick_shown(0, 0));
+        assert!(!check_tick_shown(0x1000_0000, 0x20));
+        assert!(check_tick_shown(0x1000_0000, 0x80));
     }
 
     #[test]
