@@ -19,7 +19,6 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use exa_formats::pixel::MipConversion;
 use exa_formats::rfi::{PixelFormat, Rfi, level_dims};
 
 /// How an image's colour should be interpreted.
@@ -443,16 +442,19 @@ pub fn rfi_to_texture(
                 // With mipmapping the chain runs to its end; without it only
                 // the chosen level is generated, or the base when the
                 // chosen level is 0.
+                // The chain reads the image's own flags: its wrap on each
+                // axis and the normal-map renormalisation. The format word
+                // picks the filtering space and the bank (uniform for data
+                // words, Kaiser for colour).
                 let last = if mipmapped { u32::MAX } else { first };
-                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_between_flagged(
-                    &rgba,
-                    w as usize,
-                    h as usize,
+                let options = exa_render::mipmap::ChainOptions::for_image(
+                    rfi.header.format_word,
+                    rfi.header.flags,
                     first,
                     last,
-                    true,
-                    mip_conversion(rfi.header.format_word),
-                    rfi.header.flags & flags::NORMALISE != 0,
+                );
+                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_with(
+                    &rgba, w as usize, h as usize, &options,
                 );
                 if levels > 0 {
                     rgba = chain;
@@ -526,14 +528,6 @@ fn block_image(
     image.texture_descriptor.mip_level_count = (last - first + 1).max(1);
     image.data = Some(data);
     Ok(image)
-}
-
-/// The filtering space of a generated chain: the original's pick for the
-/// format word (squared colour for plain 8-bit images, linear for data
-/// words, centred for signed ones). Block-compressed images decoded on the
-/// CPU, which the original never mips itself, filter linearly.
-fn mip_conversion(word: u32) -> MipConversion {
-    exa_formats::pixel::mip_conversion(word).unwrap_or(MipConversion::Linear)
 }
 
 /// Whether the image carries an alpha channel worth alpha-testing.
@@ -1014,6 +1008,9 @@ mod corpus_tests {
         let mut stored_chain = 0usize;
         let mut unchained_compressed = 0usize;
         let mut images = 0usize;
+        // The generated chains, and how many filter with the uniform bank,
+        // clamp on an axis or renormalise.
+        let mut generated = [0usize; 4];
         let start = std::time::Instant::now();
         for (_, pack) in game.packs() {
             for entry in pack.entries() {
@@ -1041,6 +1038,19 @@ mod corpus_tests {
                 if first > 0 && !(compressed && !rfi.header.has_mip_chain()) {
                     later += 1;
                 }
+                if !compressed && !rfi.header.has_mip_chain() {
+                    let options = exa_render::mipmap::ChainOptions::for_image(
+                        rfi.header.format_word,
+                        rfi.header.flags,
+                        first,
+                        u32::MAX,
+                    );
+                    generated[0] += 1;
+                    generated[1] +=
+                        usize::from(options.kernel == exa_render::mipmap::MipKernel::Box);
+                    generated[2] += usize::from(options.wrap != [true, true]);
+                    generated[3] += usize::from(options.renormalise);
+                }
                 let space = if word_is_data(rfi.header.format_word) {
                     ColorSpace::Linear
                 } else {
@@ -1056,7 +1066,8 @@ mod corpus_tests {
         eprintln!(
             "{images} images, classes {classes:?}, {stored_chain} with a stored chain, \
              {unchained_compressed} compressed without one, \
-             {later} start at a later level at detail {}; {:?}",
+             {later} start at a later level at detail {}; generated chains \
+             [all, box bank, clamped on an axis, renormalised] {generated:?}; {:?}",
             settings.texture_detail,
             start.elapsed()
         );

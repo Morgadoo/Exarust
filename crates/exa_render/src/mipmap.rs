@@ -1,20 +1,26 @@
 //! The original's image resampling unit (`RFP_Mipmaps_Kaiser`): its Kaiser
-//! bank for mip chains, its windowed kernel for resampling to an arbitrary
-//! size, its separable axis passes, blits and its sharpen kernel.
+//! and uniform banks for mip chains, its windowed kernel for resampling to
+//! an arbitrary size, its separable axis passes, blits and its sharpen
+//! kernel.
 //!
-//! **Mip chains** ([`build_mip_chain_rgba8_between`]) use a bank of 13
-//! normalised kernels, one per level. Level `L` has `n = 8·2^(L−1)` taps,
-//! `h = n/2` and `c = 2^−L`. Tap `i` uses `u = i − h + 0.5`, `t = u/h` and
-//! `w = I0(4·√(1 − t²))/I0(4) · sinc(π·c·u)`, or 0 outside `|t| < 1`; the
-//! weights are normalised to sum one. Each level is filtered directly from
-//! the stored base level, horizontally and then vertically, with its own
-//! table. The axis pass takes `ratio = ⌊src/dst⌋` and starts at
-//! `−((n − ratio) ≫ 1)`, wrapping or clamping every tap.
+//! **Mip chains** ([`build_mip_chain_rgba8_with`]) filter colour images with
+//! a bank of 13 normalised Kaiser kernels, one per level. Level `L` has
+//! `n = 8·2^(L−1)` taps, `h = n/2` and `c = 2^−L`. Tap `i` uses
+//! `u = i − h + 0.5`, `t = u/h` and
+//! `w = I0(4·√(1 − t²))/I0(4) · sinc(π·c·u)`, or 0 outside `|t| ≤ 1`; the
+//! weights are summed in f64 and each divided by that sum. Data images
+//! (format bit 16, not compressed) use the uniform bank instead: `2^L` taps
+//! of `2^−L`. Each level is filtered directly from the stored base level,
+//! horizontally and then vertically, with its own table. The axis pass
+//! takes `ratio = ⌊src/dst⌋` and starts at `−((n − ratio) ≫ 1)`, wrapping
+//! or clamping every tap by the image's own flags (`0x10000` across,
+//! `0x20000` along the height).
 //!
-//! **Resampling to an arbitrary size** ([`resample_rgba8_to_size`]) uses a
-//! different, phase-shifted window: for every output texel the taps are
-//! centred on `i·src/dst` and reach two output texels each way, with
-//! `t = min(|tap|·scale, 2)/2`, `scale = min(dst/src, 1)` and
+//! **Resampling to an arbitrary size** ([`resample_rgba8_to_size`]) takes
+//! the chain's level when the sizes are a power-of-two ratio, and otherwise
+//! a phase-shifted window: for every output texel the taps are centred on
+//! `i·src/dst` and reach two output texels each way, with
+//! `t = min(max(|tap|·scale, 1e-6), 2)/2`, `scale = min(dst/src, 1)` and
 //! `w = (1 − t)³·(1 + 3t − 3t² − 13.6t³)`, normalised. The same window
 //! kernel also scales icons, cursors, terrain inputs and GUI images in the
 //! original.
@@ -27,8 +33,9 @@
 //! sides are allowed.
 //!
 //! Evidence: reverse engineering of the original's unit (the kernel
-//! builders, the bank, the axis passes and the chain loop; REA). Rules:
-//! `docs/formats/RFI.md` (Generated mip levels).
+//! builders, both banks, the axis passes, the chain loop and the texture
+//! loader's call into it; REA). Rules: `docs/formats/RFI.md` (Generated mip
+//! levels).
 
 use exa_formats::pixel::{self, MipConversion};
 
@@ -36,6 +43,8 @@ use exa_formats::pixel::{self, MipConversion};
 pub const KAISER_BETA: f64 = 4.0;
 /// The tap base of level 1.
 pub const KAISER_BASE_TAPS: usize = 8;
+/// The uniform bank's tap base of level 1.
+pub const BOX_BASE_TAPS: usize = 2;
 /// The largest table level the original builds.
 pub const KAISER_MAX_LEVEL: u32 = 13;
 /// The arbitrary-size window's radius, in output texels.
@@ -44,8 +53,9 @@ pub const WINDOW_RADIUS: f32 = 2.0;
 pub const WINDOW_EPSILON: f32 = 1e-6;
 
 /// The modified Bessel function of the first kind, order zero, by its
-/// series: `Σ ((x/2)^m / m!)²`, stopped when a squared term is no larger
-/// than `sum · 2^−53` (the original's `1e-16`).
+/// series: `Σ ((x/2)^m / m!)²`, in f64. The loop goes on while
+/// `sum · 1e-16 < term²` (an ordered compare: a NaN stops it), the sum
+/// already holding the newest term.
 pub fn bessel_i0(x: f64) -> f64 {
     let half = x * 0.5;
     // The original keeps the linear term and squares it for the sum.
@@ -56,19 +66,21 @@ pub fn bessel_i0(x: f64) -> f64 {
         term *= half / m;
         let squared = term * term;
         sum += squared;
-        if squared <= sum * 1e-16 {
+        if !(sum * 1e-16 < squared) {
             return sum;
         }
         m += 1.0;
     }
 }
 
-/// `sin(x)/x`, with the series `1 − x²/6 + x⁴/120` under `1e-4`. The
-/// quadratic coefficient is the original's f32-rounded `−1/6`.
+/// `sin(x)/x`, with the series `1 − x²/6 + x⁴/120` under `1e-4` (a NaN
+/// takes the sine). The quadratic coefficient is the original's
+/// f32-rounded `−1/6`, and `x²` is formed once.
 pub fn sinc(x: f64) -> f64 {
     if x.abs() < 1e-4 {
         const MINUS_SIXTH: f64 = -0.166_666_671_633_720_4;
-        (x * x * 1.0 * 0.008_333_333_333_333_333 + MINUS_SIXTH) * x * x + 1.0
+        let x2 = x * x;
+        (x2 * 1.0 * 0.008_333_333_333_333_333 + MINUS_SIXTH) * x2 + 1.0
     } else {
         x.sin() / x
     }
@@ -81,33 +93,79 @@ fn kaiser_bank() -> &'static [Vec<f32>] {
     BANK.get_or_init(|| (1..=KAISER_MAX_LEVEL).map(kaiser_table).collect())
 }
 
+/// The 13 uniform tables, built with the Kaiser bank at start-up.
+fn box_bank() -> &'static [Vec<f32>] {
+    static BANK: std::sync::OnceLock<Vec<Vec<f32>>> = std::sync::OnceLock::new();
+    BANK.get_or_init(|| (1..=KAISER_MAX_LEVEL).map(box_table).collect())
+}
+
+/// The uniform table of a mip level (1 through 13): `2^L` taps of
+/// `1/2^L` each, a plain box over the texels the level halves.
+pub fn box_table(level: u32) -> Vec<f32> {
+    let level = level.clamp(1, KAISER_MAX_LEVEL);
+    let taps = BOX_BASE_TAPS << (level - 1);
+    vec![1.0 / taps as f32; taps]
+}
+
+/// Which bank a generated chain filters with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MipKernel {
+    /// The windowed-sinc bank: colour images.
+    Kaiser,
+    /// The uniform bank: data images.
+    Box,
+}
+
+impl MipKernel {
+    /// The bank the original's chain picks from an image's format word: the
+    /// uniform one when bit 16 (data) is set and bit 31 (compressed) is not
+    /// (`VAL8`, `ABC8`, `ABCD8`, the signed `0x1111` words and the float
+    /// data words), the Kaiser bank otherwise.
+    pub fn for_format(format_word: u32) -> Self {
+        if format_word & 0x8001_0000 == 0x0001_0000 {
+            MipKernel::Box
+        } else {
+            MipKernel::Kaiser
+        }
+    }
+
+    fn table(self, level: u32) -> &'static [f32] {
+        let bank = match self {
+            MipKernel::Kaiser => kaiser_bank(),
+            MipKernel::Box => box_bank(),
+        };
+        &bank[level.clamp(1, KAISER_MAX_LEVEL) as usize - 1]
+    }
+}
+
 /// The normalised Kaiser table of a mip level (1 through 13). Level 1 has
 /// eight taps; each later level doubles them and halves the sinc's scale.
 pub fn kaiser_table(level: u32) -> Vec<f32> {
     let level = level.clamp(1, KAISER_MAX_LEVEL);
     let taps = KAISER_BASE_TAPS << (level - 1);
-    // The original computes the half width, the tap position and the sum in
-    // f32, and the Bessel and sinc arguments in f64.
+    // The original computes the half width and the tap position in f32,
+    // the window, the sinc and the weights' sum in f64, and stores each
+    // weight as f32.
     let half = (taps as f32) * 0.5;
     let half64 = f64::from(half);
-    // The original's bank computes `2^−L` as `exp(−L·ln 2)`.
-    let c = (-(level as f64) * 0.693_147_180_559_945_3).exp();
+    // The original's bank computes `2^−L` as `exp(L·(−ln 2))`.
+    let c = (level as f64 * -0.693_147_180_559_945_3).exp();
     let mut weights = vec![0.0f32; taps];
-    let mut sum = 0.0f32;
+    let mut sum = 0.0f64;
     for (index, weight) in weights.iter_mut().enumerate() {
         let u = ((index as f32 - half) + 0.5) as f64;
         let t = u / half64;
         let radius = 1.0 - t * t;
+        // An ordered compare: a negative (or NaN) radius leaves a zero tap.
         if radius >= 0.0 {
-            *weight = (sinc(std::f64::consts::PI * c * u)
-                * (bessel_i0(KAISER_BETA * radius.sqrt()) / bessel_i0(KAISER_BETA)))
-                as f32;
-            sum += *weight;
+            let window = bessel_i0(radius.sqrt() * KAISER_BETA) / bessel_i0(KAISER_BETA);
+            *weight = (sinc(u * std::f64::consts::PI * c) * window) as f32;
+            sum += f64::from(*weight);
         }
     }
-    let inverse = 1.0 / sum;
+    // Each stored weight is widened and divided by the f64 sum.
     for weight in &mut weights {
-        *weight *= inverse;
+        *weight = (f64::from(*weight) / sum) as f32;
     }
     weights
 }
@@ -260,9 +318,6 @@ pub fn bytes_per_pixel(format_word: u32) -> usize {
     bits_per_pixel(format_word).div_ceil(8) as usize
 }
 
-/// Copies whole rows of `dst_width` texels from `src`, the first source row
-/// at `first_row` and the first source byte at `byte_column` (the
-/// original's sub-image copy). Returns whether the rectangles fit.
 /// The first level `k` (1 through 13) at which a destination size scaled by
 /// `2^k` reaches the source size on both axes, as the original's
 /// power-of-two resample looks for it. `None` when the sizes are not a
@@ -325,21 +380,58 @@ pub fn place_on_canvas(
     Some(canvas)
 }
 
-/// Normalises the first three floats of every RGBA texel to unit length, as
-/// the original does to a filtered level of an image whose flag `0x4000000`
-/// asks for it (normal maps). A zero-length vector is left alone; the
-/// original divides it to NaN.
-pub fn renormalise_texels(texels: &mut [f32]) {
-    for texel in texels.as_chunks_mut::<4>().0 {
-        let length = (texel[0] * texel[0] + texel[1] * texel[1] + texel[2] * texel[2]).sqrt();
-        if length > 0.0 {
-            texel[0] /= length;
-            texel[1] /= length;
-            texel[2] /= length;
+/// The engine's approximate reciprocal square root (the processor's
+/// estimate, about 12 bits).
+fn reciprocal_sqrt(value: f32) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: SSE is part of the x86_64 baseline.
+        unsafe {
+            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
         }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        1.0 / value.sqrt()
     }
 }
 
+/// The engine's in-place vector normalisation: the squares summed x, z then
+/// y, scaled by the approximate reciprocal square root; a zero vector stays
+/// zero.
+fn normalise_vector(v: &mut [f32]) {
+    let sum = (v[0] * v[0] + v[2] * v[2]) + v[1] * v[1];
+    let scale = if sum == 0.0 {
+        0.0
+    } else {
+        reciprocal_sqrt(sum)
+    };
+    v[0] *= scale;
+    v[1] *= scale;
+    v[2] *= scale;
+}
+
+/// Normalises the first three floats of every RGBA texel, as the original
+/// does to a filtered level of a three- or four-channel image whose flag
+/// `0x4000000` asks for it (normal maps): the engine's vector normaliser,
+/// so a zero vector stays zero. Alpha is left alone.
+pub fn renormalise_texels(texels: &mut [f32]) {
+    for texel in texels.as_chunks_mut::<4>().0 {
+        normalise_vector(texel);
+    }
+}
+
+/// Whether the original renormalises an image's filtered levels: the image
+/// flag `0x4000000` on a three- or four-channel word (`0xC600`, `0xE608`).
+/// One- and two-channel images are never touched.
+pub fn renormalises(format_word: u32, image_flags: u32) -> bool {
+    image_flags & 0x0400_0000 != 0 && matches!(format_word & pixel::TARGET_MASK, 0xC600 | 0xE608)
+}
+
+/// Copies `dst_height` whole rows of `dst_width` texels out of `src`, row
+/// `y` and texel `x` of the source first (the original's sub-image copy).
+/// Returns whether the rectangles fit.
 #[allow(clippy::too_many_arguments)]
 pub fn blit_rows(
     dst: &mut [u8],
@@ -348,8 +440,8 @@ pub fn blit_rows(
     src: &[u8],
     src_width: usize,
     format_word: u32,
-    byte_column: usize,
-    first_row: usize,
+    x: usize,
+    y: usize,
 ) -> bool {
     let bpp = bytes_per_pixel(format_word);
     let stride = dst_width.saturating_mul(bpp);
@@ -360,7 +452,10 @@ pub fn blit_rows(
         return false;
     }
     for row in 0..dst_height {
-        let source = byte_column + src_width.saturating_mul(row + first_row) * bpp;
+        let source = src_width
+            .saturating_mul(row + y)
+            .saturating_add(x)
+            .saturating_mul(bpp);
         let target = row * stride;
         let (Some(input), Some(output)) = (
             src.get(source..source.saturating_add(stride)),
@@ -373,9 +468,8 @@ pub fn blit_rows(
     true
 }
 
-/// Copies `src_width` texels of every source row into `dst` at
-/// `byte_column` and `first_row` (the original's paste into a canvas).
-/// Returns whether the rectangles fit.
+/// Pastes every row of `src` into `dst` at texel `x` of row `y` (the
+/// original's paste into a canvas). Returns whether the rectangles fit.
 #[allow(clippy::too_many_arguments)]
 pub fn blit_into(
     dst: &mut [u8],
@@ -385,8 +479,8 @@ pub fn blit_into(
     src_width: usize,
     src_height: usize,
     format_word: u32,
-    byte_column: usize,
-    first_row: usize,
+    x: usize,
+    y: usize,
 ) -> bool {
     let bpp = bytes_per_pixel(format_word);
     let stride = src_width.saturating_mul(bpp);
@@ -396,7 +490,10 @@ pub fn blit_into(
         return false;
     }
     for row in 0..src_height {
-        let target = byte_column + dst_width.saturating_mul(row + first_row) * bpp;
+        let target = dst_width
+            .saturating_mul(row + y)
+            .saturating_add(x)
+            .saturating_mul(bpp);
         let (Some(input), Some(output)) = (
             src.get(row * stride..(row + 1) * stride),
             dst.get_mut(target..target.saturating_add(stride)),
@@ -424,6 +521,8 @@ mod tests {
         assert!((sinc(0.0) - 1.0).abs() < 1e-12);
         assert!((sinc(1e-6) - 0.999_999_999_999_833_3).abs() < 1e-12);
         assert!((sinc(std::f64::consts::PI) - 3.898_171_5e-17).abs() < 1e-18);
+        // The series' ordered compare stops on a NaN instead of looping.
+        assert!(bessel_i0(f64::NAN).is_nan());
     }
 
     #[test]
@@ -525,10 +624,10 @@ mod tests {
         let mut dst = [0u8; 2 * 2 * 3];
         assert!(blit_rows(&mut dst, 2, 2, &src, 2, id::RGB8, 0, 0));
         assert_eq!(dst, src[..]);
-        // Pasting a 1x2 block at byte column 3, row 1.
+        // Pasting a 1x2 block at texel 1, row 1.
         let strip: Vec<u8> = [10, 10, 10, 20, 20, 20].to_vec();
         let mut canvas = [0u8; 3 * 3 * 3];
-        assert!(blit_into(&mut canvas, 3, 3, &strip, 1, 2, id::RGB8, 3, 1));
+        assert!(blit_into(&mut canvas, 3, 3, &strip, 1, 2, id::RGB8, 1, 1));
         assert_eq!(
             canvas,
             [
@@ -706,11 +805,12 @@ pub fn build_mip_chain_rgba8_from(
         conversion,
     )
 }
-
 /// Builds an RGBA8 chain of the levels `first_level..=last_level`. The first
 /// level is uploaded as the texture's base; `last_level` bounds the chain
 /// (the texture's mip filter, or the first level itself when mipmapping is
-/// off). The chain also stops after a level whose sides sum to two.
+/// off). The chain also stops after a level whose sides sum to two. This
+/// form filters with the Kaiser bank and wraps on both axes; an image's own
+/// rules come from [`ChainOptions::for_image`].
 pub fn build_mip_chain_rgba8_between(
     base: &[u8],
     width: usize,
@@ -720,74 +820,114 @@ pub fn build_mip_chain_rgba8_between(
     wrap: bool,
     conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
-    build_mip_chain_rgba8_between_flagged(
+    build_mip_chain_rgba8_with(
         base,
         width,
         height,
-        first_level,
-        last_level,
-        wrap,
-        conversion,
-        false,
+        &ChainOptions {
+            first_level,
+            last_level,
+            wrap: [wrap; 2],
+            conversion,
+            kernel: MipKernel::Kaiser,
+            renormalise: false,
+        },
     )
 }
 
-/// [`build_mip_chain_rgba8_between`] with the image's normal-map flag: every
-/// filtered level has each texel's first three channels normalised before it
-/// is converted back to bytes (flag `0x4000000`).
-#[allow(clippy::too_many_arguments)]
-pub fn build_mip_chain_rgba8_between_flagged(
+/// How the original's chain driver filters one image.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChainOptions {
+    /// The first generated level, uploaded as the texture's base (0 keeps
+    /// the stored base in front of level 1).
+    pub first_level: u32,
+    /// The last level the chain may reach.
+    pub last_level: u32,
+    /// Wrap (`true`) or clamp each tap, horizontally then vertically.
+    pub wrap: [bool; 2],
+    /// The filtering space.
+    pub conversion: MipConversion,
+    /// The bank the levels are filtered with.
+    pub kernel: MipKernel,
+    /// Normalise every filtered texel's first three channels.
+    pub renormalise: bool,
+}
+
+impl ChainOptions {
+    /// The options the original's chain driver reads from an image: the
+    /// format word picks the filtering space and the bank, and the image's
+    /// own flags (its header word) the wrap on each axis (`0x10000` across,
+    /// `0x20000` along the height, clamping without them) and the
+    /// renormalisation (`0x4000000`, three- and four-channel words only).
+    pub fn for_image(
+        format_word: u32,
+        image_flags: u32,
+        first_level: u32,
+        last_level: u32,
+    ) -> Self {
+        ChainOptions {
+            first_level,
+            last_level,
+            wrap: [
+                image_flags & 0x0001_0000 != 0,
+                image_flags & 0x0002_0000 != 0,
+            ],
+            conversion: pixel::mip_conversion(format_word).unwrap_or(MipConversion::Linear),
+            kernel: MipKernel::for_format(format_word),
+            renormalise: renormalises(format_word, image_flags),
+        }
+    }
+}
+
+/// Builds an RGBA8 chain with the given options: the levels from
+/// `first_level` up to `last_level` or the level whose sides sum to two,
+/// each filtered from the stored base, packed largest first, and the count.
+/// With `first_level` 0 the stored base comes first. A chain that starts
+/// past the last table (a tiny image skipped too far) has nothing to
+/// upload: no bytes and a count of 0.
+pub fn build_mip_chain_rgba8_with(
     base: &[u8],
     width: usize,
     height: usize,
-    first_level: u32,
-    last_level: u32,
-    wrap: bool,
-    conversion: MipConversion,
-    renormalise: bool,
+    options: &ChainOptions,
 ) -> (Vec<u8>, u32) {
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
-    let (chain, count) = build_chain_from_floats(
-        base,
-        width,
-        height,
-        first_level,
-        last_level,
-        wrap,
-        conversion,
-        renormalise,
-    );
-    if count == 0 {
-        // A chain that stops before `first_level` (a tiny image): the caller
-        // has nothing to upload. The retail data never asks for this.
-        return (Vec::new(), 0);
+    build_chain_from_floats(base, width, height, options)
+}
+
+/// Converts RGBA8 bytes to floats in the filtering space.
+fn to_floats(bytes: &[u8], conversion: MipConversion, floats: &mut [f32]) {
+    match conversion {
+        MipConversion::Linear => pixel::unit_floats(bytes, floats),
+        MipConversion::Gamma => pixel::gamma_floats(bytes, floats),
+        MipConversion::GammaColour => pixel::gamma_colour_floats(bytes, floats),
+        MipConversion::Signed => pixel::signed_floats(bytes, floats),
     }
-    (chain, count)
+}
+
+/// Converts filtered floats back to RGBA8 bytes.
+fn to_bytes(floats: &[f32], conversion: MipConversion, bytes: &mut [u8]) {
+    match conversion {
+        MipConversion::Linear => pixel::unit_bytes(floats, bytes),
+        MipConversion::Gamma => pixel::gamma_bytes(floats, bytes),
+        MipConversion::GammaColour => pixel::gamma_colour_bytes(floats, bytes),
+        MipConversion::Signed => pixel::signed_bytes(floats, bytes),
+    }
 }
 
 /// The chain levels from `first_level` up, without the levels before it.
-#[allow(clippy::too_many_arguments)]
 fn build_chain_from_floats(
     base: &[u8],
     width: usize,
     height: usize,
-    first_level: u32,
-    last_level: u32,
-    wrap: bool,
-    conversion: MipConversion,
-    renormalise: bool,
+    options: &ChainOptions,
 ) -> (Vec<u8>, u32) {
+    let first_level = options.first_level;
     let first = first_level.max(1);
     let mut floats = vec![0.0f32; width * height * 4];
-    let base_bytes = &base[..width * height * 4];
-    match conversion {
-        MipConversion::Linear => pixel::unit_floats(base_bytes, &mut floats),
-        MipConversion::Gamma => pixel::gamma_floats(base_bytes, &mut floats),
-        MipConversion::GammaColour => pixel::gamma_colour_floats(base_bytes, &mut floats),
-        MipConversion::Signed => pixel::signed_floats(base_bytes, &mut floats),
-    }
+    to_floats(&base[..width * height * 4], options.conversion, &mut floats);
     let floats = floats.as_slice();
     // The chain's levels, base bytes included when `first_level` is 0.
     let mut out: Vec<u8> = if first_level == 0 {
@@ -796,11 +936,11 @@ fn build_chain_from_floats(
         Vec::new()
     };
     let mut count = if first_level == 0 { 1u32 } else { 0u32 };
-    let bank = kaiser_bank();
-    for level in first..=last_level.min(KAISER_MAX_LEVEL) {
+    let [wrap_x, wrap_y] = options.wrap;
+    for level in first..=options.last_level.min(KAISER_MAX_LEVEL) {
         let dst_width = (width >> level).max(1);
         let dst_height = (height >> level).max(1);
-        let weights = &bank[level as usize - 1];
+        let weights = options.kernel.table(level);
         let mut horizontal = vec![0.0f32; dst_width * height * 4];
         let threads = std::thread::available_parallelism()
             .map(|count| count.get())
@@ -816,7 +956,6 @@ fn build_chain_from_floats(
                     let rows = per.min(height - start_row);
                     let (chunk, tail) = rest.split_at_mut(rows * dst_width * 4);
                     rest = tail;
-                    let weights_ref: &[f32] = weights;
                     scope.spawn(move || {
                         let mut row = vec![0.0f32; dst_width * 4];
                         for row_index in 0..rows {
@@ -825,8 +964,8 @@ fn build_chain_from_floats(
                                 &floats[y * width * 4..(y + 1) * width * 4],
                                 width,
                                 dst_width,
-                                weights_ref,
-                                wrap,
+                                weights,
+                                wrap_x,
                                 &mut row,
                             );
                             chunk[row_index * dst_width * 4..(row_index + 1) * dst_width * 4]
@@ -844,7 +983,7 @@ fn build_chain_from_floats(
                     width,
                     dst_width,
                     weights,
-                    wrap,
+                    wrap_x,
                     &mut row,
                 );
                 horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
@@ -864,7 +1003,6 @@ fn build_chain_from_floats(
                 for column_start in (0..dst_width).step_by(per) {
                     let column_end = (column_start + per).min(dst_width);
                     let horizontal_ref = &horizontal;
-                    let weights_ref: &[f32] = weights;
                     handles.push(scope.spawn(move || {
                         let mut column = vec![0.0f32; height * 4];
                         let mut output = vec![0.0f32; dst_height * 4];
@@ -879,8 +1017,8 @@ fn build_chain_from_floats(
                                 &column,
                                 height,
                                 dst_height,
-                                weights_ref,
-                                wrap,
+                                weights,
+                                wrap_y,
                                 &mut output,
                             );
                             results.push((x, output.clone()));
@@ -907,23 +1045,18 @@ fn build_chain_from_floats(
                     let source = (y * dst_width + x) * 4;
                     column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
                 }
-                resample_axis(&column, height, dst_height, weights, wrap, &mut output);
+                resample_axis(&column, height, dst_height, weights, wrap_y, &mut output);
                 for y in 0..dst_height {
                     let destination = (y * dst_width + x) * 4;
                     texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
                 }
             }
         }
-        let mut level = vec![0u8; texels.len()];
-        if renormalise {
+        if options.renormalise {
             renormalise_texels(&mut texels);
         }
-        match conversion {
-            MipConversion::Linear => pixel::unit_bytes(&texels, &mut level),
-            MipConversion::Gamma => pixel::gamma_bytes(&texels, &mut level),
-            MipConversion::GammaColour => pixel::gamma_colour_bytes(&texels, &mut level),
-            MipConversion::Signed => pixel::signed_bytes(&texels, &mut level),
-        }
+        let mut level = vec![0u8; texels.len()];
+        to_bytes(&texels, options.conversion, &mut level);
         out.extend(level);
         count += 1;
         if dst_width + dst_height <= 2 {
@@ -933,10 +1066,35 @@ fn build_chain_from_floats(
     (out, count)
 }
 
-/// Resamples an RGBA8 image to a new size with the windowed kernel, in the
-/// space the format word picks. The result is the converted destination
-/// level. This is the original's resample-to-size path (icons, cursors,
-/// terrain and GUI images), not the mip chain.
+/// The filtering space of the resample-to-size path: signed data
+/// centred; data words (bit 16 or 17), and any image the resample
+/// magnifies (fewer source texels than destination texels), linear; other
+/// words squared. RGBA8 and LUMA8 colour words (no data or signed bit)
+/// keep the squared colour with linear alpha whatever the sizes, as the
+/// original's per-format override comes after the magnification test.
+pub fn resample_conversion(format_word: u32, src_texels: u64, dst_texels: u64) -> MipConversion {
+    let plain = format_word & 0x1003_0000 == 0;
+    match format_word & pixel::TARGET_MASK {
+        0x6208 | 0xE608 if plain => return MipConversion::GammaColour,
+        _ => {}
+    }
+    if format_word & 0x1000_0000 != 0 {
+        MipConversion::Signed
+    } else if src_texels < dst_texels || format_word & 0x0003_0000 != 0 {
+        MipConversion::Linear
+    } else {
+        MipConversion::Gamma
+    }
+}
+
+/// Resamples an RGBA8 image to a new size, as the original's
+/// resample-to-size path does (icons, cursors, terrain inputs and GUI
+/// images). When the destination is the source shifted down by `k` (1 to
+/// 13) on both axes, the result is level `k` of the image's mip chain
+/// ([`power_of_two_level`], [`ChainOptions::for_image`]); otherwise both
+/// axes go through the phase-shifted window, in the space
+/// [`resample_conversion`] picks, wrapping or clamping by the image flags'
+/// `0x10000` and `0x20000`, and renormalised under `0x4000000`.
 #[allow(clippy::too_many_arguments)]
 pub fn resample_rgba8_to_size(
     base: &[u8],
@@ -944,9 +1102,8 @@ pub fn resample_rgba8_to_size(
     height: usize,
     dst_width: usize,
     dst_height: usize,
-    wrap: bool,
-    conversion: MipConversion,
-    renormalise: bool,
+    format_word: u32,
+    image_flags: u32,
 ) -> Vec<u8> {
     if width == 0 || height == 0 || dst_width == 0 || dst_height == 0 {
         return Vec::new();
@@ -955,14 +1112,19 @@ pub fn resample_rgba8_to_size(
     if base.len() < usable {
         return Vec::new();
     }
-    let mut floats = vec![0.0f32; usable];
-    let base_bytes = &base[..usable];
-    match conversion {
-        MipConversion::Linear => pixel::unit_floats(base_bytes, &mut floats),
-        MipConversion::Gamma => pixel::gamma_floats(base_bytes, &mut floats),
-        MipConversion::GammaColour => pixel::gamma_colour_floats(base_bytes, &mut floats),
-        MipConversion::Signed => pixel::signed_floats(base_bytes, &mut floats),
+    if let Some(level) = power_of_two_level(width, height, dst_width, dst_height) {
+        let options = ChainOptions::for_image(format_word, image_flags, level, level);
+        return build_mip_chain_rgba8_with(base, width, height, &options).0;
     }
+    let conversion = resample_conversion(
+        format_word,
+        (width * height) as u64,
+        (dst_width as u64).saturating_mul(dst_height as u64),
+    );
+    let wrap_x = image_flags & 0x0001_0000 != 0;
+    let wrap_y = image_flags & 0x0002_0000 != 0;
+    let mut floats = vec![0.0f32; usable];
+    to_floats(&base[..usable], conversion, &mut floats);
     let mut horizontal = vec![0.0f32; dst_width * height * 4];
     let mut row = vec![0.0f32; dst_width * 4];
     for y in 0..height {
@@ -970,7 +1132,7 @@ pub fn resample_rgba8_to_size(
             &floats[y * width * 4..(y + 1) * width * 4],
             width,
             dst_width,
-            wrap,
+            wrap_x,
             &mut row,
         );
         horizontal[y * dst_width * 4..(y + 1) * dst_width * 4].copy_from_slice(&row);
@@ -983,28 +1145,26 @@ pub fn resample_rgba8_to_size(
             let source = (y * dst_width + x) * 4;
             column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
         }
-        resample_axis_phased(&column, height, dst_height, wrap, &mut output);
+        resample_axis_phased(&column, height, dst_height, wrap_y, &mut output);
         for y in 0..dst_height {
             let destination = (y * dst_width + x) * 4;
             texels[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
         }
     }
-    let mut out = vec![0u8; texels.len()];
-    if renormalise {
+    if renormalises(format_word, image_flags) {
         renormalise_texels(&mut texels);
     }
-    match conversion {
-        MipConversion::Linear => pixel::unit_bytes(&texels, &mut out),
-        MipConversion::Gamma => pixel::gamma_bytes(&texels, &mut out),
-        MipConversion::GammaColour => pixel::gamma_colour_bytes(&texels, &mut out),
-        MipConversion::Signed => pixel::signed_bytes(&texels, &mut out),
-    }
+    let mut out = vec![0u8; texels.len()];
+    to_bytes(&texels, conversion, &mut out);
     out
 }
 
 /// One axis pass with the phase-shifted window: output texel `i` is centred
-/// on source position `i·src/dst` (the fractional part goes into the
-/// window's phase), and its taps span two output texels each way.
+/// on source position `i·ratio` (`ratio = src/dst`, divided in f64 and
+/// rounded to f32; the truncated whole part picks the taps, the fraction
+/// goes into the window's phase), and its taps span two output texels each
+/// way. The first tap is the whole part less `(taps − ⌊src/dst⌋)/2`
+/// (truncated; the integer ratio is 0 when the pass magnifies).
 pub fn resample_axis_phased(
     src: &[f32],
     src_extent: usize,
@@ -1015,20 +1175,19 @@ pub fn resample_axis_phased(
     if src_extent == 0 || dst_extent == 0 || out.len() < dst_extent * 4 {
         return;
     }
-    let ratio = src_extent as f64 / dst_extent as f64;
-    let ratio_f = ratio as f32;
+    let ratio = (src_extent as f64 / dst_extent as f64) as f32;
     let scale = ((dst_extent as f64 / src_extent as f64) as f32).min(1.0);
     // The original's base offset: half an output texel, or half a source
     // texel when the pass magnifies.
-    let base = if ratio_f >= 1.0 { 0.5 } else { ratio_f * 0.5 };
-    let integer_ratio = (src_extent / dst_extent).max(1) as i64;
+    let base = if ratio >= 1.0 { 0.5 } else { ratio * 0.5 };
+    let integer_ratio = (src_extent / dst_extent) as i64;
     for x in 0..dst_extent {
-        let position = x as f32 * ratio_f;
-        let whole = position.trunc();
-        let fraction = position - whole;
+        let position = x as f32 * ratio;
+        let whole = position as i64;
+        let fraction = position - whole as f32;
         let offset = base - fraction;
         let (_, weights) = window_kernel(scale, offset, WINDOW_RADIUS);
-        let first = whole as i64 - ((weights.len() as i64 - integer_ratio) / 2);
+        let first = whole - ((weights.len() as i64 - integer_ratio) / 2);
         for channel in 0..4 {
             let mut acc = 0.0f32;
             for (k, &weight) in weights.iter().enumerate() {
@@ -1048,7 +1207,6 @@ pub fn resample_axis_phased(
         }
     }
 }
-
 #[cfg(test)]
 mod rgba_chain_tests {
     use super::*;
@@ -1151,21 +1309,88 @@ mod rgba_chain_tests {
     /// (0.577, 0.577, −0.577), bytes 201, 201, 54, instead of clamping.
     #[test]
     fn a_normal_map_level_is_renormalised() {
+        use exa_formats::pixel::id;
         let base = [255u8, 255, 0, 255].repeat(4 * 4);
-        let (out, _) = build_mip_chain_rgba8_between_flagged(
-            &base,
-            4,
-            4,
-            0,
-            1,
-            true,
-            MipConversion::Signed,
-            true,
-        );
+        let options = ChainOptions::for_image(id::XYZV8, 0x0403_0000, 0, 1);
+        assert!(options.renormalise);
+        assert_eq!(options.conversion, MipConversion::Signed);
+        let (out, _) = build_mip_chain_rgba8_with(&base, 4, 4, &options);
         assert_eq!(&out[64..68], &[201, 201, 54, 255]);
         let (plain, _) =
             build_mip_chain_rgba8_between(&base, 4, 4, 0, 1, true, MipConversion::Signed);
         assert_eq!(&plain[64..68], &[255, 255, 0, 255]);
+        // A two-channel word is never renormalised, whatever its flag.
+        assert!(!renormalises(id::XY8, 0x0400_0000));
+        assert!(renormalises(id::XYZ8, 0x0400_0000));
+        assert!(!renormalises(id::XYZ8, 0));
+    }
+
+    /// A zero vector stays zero under the engine's normaliser (its mask
+    /// turns the infinite reciprocal into 0), and alpha is never touched.
+    #[test]
+    fn a_zero_vector_stays_zero_when_renormalised() {
+        let mut texels = [0.0, 0.0, 0.0, 0.5, 3.0, 0.0, 4.0, 1.0];
+        renormalise_texels(&mut texels);
+        assert_eq!(&texels[..4], &[0.0, 0.0, 0.0, 0.5]);
+        // (3, 0, 4) has length 5; the reciprocal estimate is within 2^-11.
+        assert!((texels[4] - 0.6).abs() < 1e-3, "{texels:?}");
+        assert!((texels[6] - 0.8).abs() < 1e-3, "{texels:?}");
+        assert_eq!(texels[7], 1.0);
+    }
+
+    /// Data words filter with the uniform bank: a 0, 0, 255, 255 row halves
+    /// to exactly 0 and 255, where the Kaiser bank of a colour word blurs
+    /// the step across both outputs.
+    #[test]
+    fn data_words_filter_with_the_box_bank() {
+        use exa_formats::pixel::id;
+        let mut base = Vec::new();
+        for _ in 0..2 {
+            for v in [0u8, 0, 255, 255] {
+                base.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        assert_eq!(MipKernel::for_format(id::ABCD8), MipKernel::Box);
+        assert_eq!(MipKernel::for_format(id::XYZV8), MipKernel::Box);
+        assert_eq!(MipKernel::for_format(id::RGBA8), MipKernel::Kaiser);
+        assert_eq!(MipKernel::for_format(0x817B_E608), MipKernel::Kaiser);
+        let data = ChainOptions::for_image(id::ABCD8, 0, 1, 1);
+        let (out, count) = build_mip_chain_rgba8_with(&base, 4, 2, &data);
+        assert_eq!(count, 1);
+        assert_eq!(out, [0, 0, 0, 255, 255, 255, 255, 255]);
+        let colour = ChainOptions {
+            kernel: MipKernel::Kaiser,
+            ..data
+        };
+        let (blurred, _) = build_mip_chain_rgba8_with(&base, 4, 2, &colour);
+        assert!(blurred[0] > 0 && blurred[4] < 255, "{blurred:?}");
+        assert_eq!(box_table(1), [0.5, 0.5]);
+        assert_eq!(box_table(3), [0.125; 8]);
+    }
+
+    /// The image's own flags pick wrap or clamp on each axis: with clamping
+    /// a bright last column cannot bleed into the first output texel.
+    #[test]
+    fn the_image_flags_pick_wrap_or_clamp_per_axis() {
+        use exa_formats::pixel::id;
+        let mut base = Vec::new();
+        for _ in 0..8 {
+            for x in 0..8 {
+                let v = if x == 7 { 255 } else { 0 };
+                base.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let clamped = ChainOptions::for_image(id::RGBA8, 0, 1, 1);
+        assert_eq!(clamped.wrap, [false, false]);
+        let across = ChainOptions::for_image(id::RGBA8, 0x0001_0000, 1, 1);
+        assert_eq!(across.wrap, [true, false]);
+        assert_eq!(
+            ChainOptions::for_image(id::RGBA8, 0x0002_0000, 1, 1).wrap,
+            [false, true]
+        );
+        let (clamp_out, _) = build_mip_chain_rgba8_with(&base, 8, 8, &clamped);
+        let (wrap_out, _) = build_mip_chain_rgba8_with(&base, 8, 8, &across);
+        assert!(wrap_out[0] > clamp_out[0], "{wrap_out:?} {clamp_out:?}");
     }
 
     /// A non-power-of-two image gets a chain too; the level dimensions shift
@@ -1184,16 +1409,51 @@ mod rgba_chain_tests {
     /// the phase of the window.
     #[test]
     fn resampling_to_a_new_size_keeps_a_constant() {
+        use exa_formats::pixel::id;
         let base = vec![200u8; 8 * 8 * 4];
-        let out = resample_rgba8_to_size(&base, 8, 8, 5, 3, true, MipConversion::Linear, false);
+        let out = resample_rgba8_to_size(&base, 8, 8, 5, 3, id::ABCD8, 0x0003_0000);
         assert_eq!(out.len(), 5 * 3 * 4);
         assert!(
             out.iter().all(|&value| (199..=200).contains(&value)),
             "{out:?}"
         );
-        let out = resample_rgba8_to_size(&base, 8, 8, 13, 11, false, MipConversion::Linear, false);
+        let out = resample_rgba8_to_size(&base, 8, 8, 13, 11, id::ABCD8, 0);
         assert_eq!(out.len(), 13 * 11 * 4);
         assert!(out.iter().all(|&value| (199..=200).contains(&value)));
+    }
+
+    /// A destination that is the source shifted down is that level of the
+    /// image's own chain, not the windowed resample.
+    #[test]
+    fn a_power_of_two_resample_is_a_chain_level() {
+        use exa_formats::pixel::id;
+        let base: Vec<u8> = (0..8 * 8 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let resampled = resample_rgba8_to_size(&base, 8, 8, 2, 2, id::RGBA8, 0x0003_0000);
+        let options = ChainOptions::for_image(id::RGBA8, 0x0003_0000, 2, 2);
+        let (level, count) = build_mip_chain_rgba8_with(&base, 8, 8, &options);
+        assert_eq!(count, 1);
+        assert_eq!(resampled, level);
+    }
+
+    /// The resample's filtering space: signed centred, data and magnified
+    /// images linear, the rest squared, with the RGBA8 and LUMA8 colour
+    /// words squared whatever the sizes.
+    #[test]
+    fn the_resample_picks_its_space_by_word_and_size() {
+        use exa_formats::pixel::id;
+        assert_eq!(resample_conversion(id::XYZ8, 4, 1), MipConversion::Signed);
+        assert_eq!(resample_conversion(id::ABC8, 4, 1), MipConversion::Linear);
+        assert_eq!(resample_conversion(id::RGB8, 4, 1), MipConversion::Gamma);
+        assert_eq!(resample_conversion(id::RGB8, 1, 4), MipConversion::Linear);
+        assert_eq!(resample_conversion(id::LUM8, 1, 4), MipConversion::Linear);
+        assert_eq!(
+            resample_conversion(id::RGBA8, 1, 4),
+            MipConversion::GammaColour
+        );
+        assert_eq!(
+            resample_conversion(id::LUMA8, 4, 1),
+            MipConversion::GammaColour
+        );
     }
 
     /// The phased axis pass reproduces the window: a single bright texel in
