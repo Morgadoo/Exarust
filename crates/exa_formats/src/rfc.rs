@@ -270,6 +270,21 @@ pub struct Mesh {
     pub uv_count: usize,
 }
 
+/// A mesh's refitted bounds, in metres: the box centre and half extents and
+/// the bounding-sphere radius.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct MeshBounds {
+    pub centre: [f32; 3],
+    pub half_extents: [f32; 3],
+    pub radius: f32,
+}
+
+/// The smallest half extent the original keeps (1 mm, its 1e-3 cm).
+pub const BOUNDS_HALF_FLOOR: f32 = 1e-5;
+/// The squared radius below which the original does not take a square root
+/// (its 1e-6 cm²).
+pub const BOUNDS_RADIUS_SQUARED_FLOOR: f32 = 1e-10;
+
 impl Mesh {
     /// The node's shadow-bias level, 0..=7 (bits 16..18 of its render
     /// flags): the original scales a level-v caster's stored shadow
@@ -283,6 +298,53 @@ impl Mesh {
     /// 1 + 0.005·v instead (one shipped mesh, `Pave03Brk`).
     pub fn shadow_bias_inflated(&self) -> bool {
         self.render_flags & 0x8_0000 != 0
+    }
+
+    /// The node's box and bounding sphere from its vertices, as the original
+    /// refits them: the component-wise minimum and maximum, their centre and
+    /// half extents, and the radius as the farthest vertex from that centre.
+    /// Half extents are floored at the original's 1 mm, and the radius is
+    /// square-rooted above its 1e-6 cm² floor. Positions are in metres, so
+    /// the floors are the original's centimetre values scaled.
+    pub fn bounds(&self) -> MeshBounds {
+        if self.positions.is_empty() {
+            return MeshBounds {
+                centre: [0.0; 3],
+                half_extents: [BOUNDS_HALF_FLOOR; 3],
+                radius: BOUNDS_HALF_FLOOR,
+            };
+        }
+        let mut low = self.positions[0];
+        let mut high = self.positions[0];
+        for position in &self.positions[1..] {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(position[axis]);
+                high[axis] = high[axis].max(position[axis]);
+            }
+        }
+        let mut centre = [0.0f32; 3];
+        let mut half_extents = [0.0f32; 3];
+        for axis in 0..3 {
+            centre[axis] = (low[axis] + high[axis]) * 0.5;
+            half_extents[axis] = ((high[axis] - low[axis]) * 0.5).max(BOUNDS_HALF_FLOOR);
+        }
+        let mut radius_squared = 0.0f32;
+        for position in &self.positions {
+            let dx = position[0] - centre[0];
+            let dy = position[1] - centre[1];
+            let dz = position[2] - centre[2];
+            radius_squared = radius_squared.max(dx * dx + dy * dy + dz * dz);
+        }
+        let radius = if radius_squared > BOUNDS_RADIUS_SQUARED_FLOOR {
+            radius_squared.sqrt()
+        } else {
+            radius_squared
+        };
+        MeshBounds {
+            centre,
+            half_extents,
+            radius,
+        }
     }
 
     /// Works the normals out again from the positions, as at load: the
@@ -1475,6 +1537,26 @@ mod tests {
             [("wraithhabase.rfc".to_string(), 1)]
         );
         assert!(marked(PackKind::Objects).is_empty());
+    }
+
+    #[test]
+    fn refitted_bounds_use_the_box_centre_and_farthest_vertex() {
+        let mesh = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            ..Default::default()
+        };
+        let bounds = mesh.bounds();
+        assert_eq!(bounds.centre, [1.0, 1.0, 0.5]);
+        assert_eq!(bounds.half_extents, [1.0, 1.0, 0.5]);
+        assert!((bounds.radius - 1.5).abs() < 1e-6);
+        let empty = Mesh::default().bounds();
+        assert_eq!(empty.half_extents, [BOUNDS_HALF_FLOOR; 3]);
+        assert_eq!(empty.radius, BOUNDS_HALF_FLOOR);
     }
 
     #[test]

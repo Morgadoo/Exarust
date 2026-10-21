@@ -1728,6 +1728,20 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
         .collect();
     let positions: Vec<[f32; 3]> = used.iter().map(|&i| mesh.positions[i]).collect();
     let normals: Vec<[f32; 3]> = used.iter().map(|&i| mesh.normals[i]).collect();
+    // The original's splitter: per-vertex tangents from the UV channel and
+    // surface normals, in its own handedness convention.
+    let tangents = mesh.uvs.as_ref().and_then(|uvs| {
+        let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
+        crate::tangents::split_tangents(&positions, &normals, &uv, &local)
+    });
+    // The original picks the smallest index type that fits: one byte below
+    // 255 vertices, two below 65 535. Bevy has no u8 indices, so 255 and
+    // fewer vertices use u16.
+    let indices = if used.len() < 0x1_0000 {
+        Indices::U16(local.iter().map(|&i| i as u16).collect())
+    } else {
+        Indices::U32(local)
+    };
     // Kept in the main world too: static colliders are built from mesh data.
     let mut m = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -1735,12 +1749,13 @@ fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> O
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-    .with_inserted_indices(Indices::U32(local));
+    .with_inserted_indices(indices);
     if let Some(uvs) = &mesh.uvs {
         let uv: Vec<[f32; 2]> = used.iter().map(|&i| uvs[i]).collect();
         m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
-        // Tangents are only needed for normal mapping; failures leave the mesh usable.
-        let _ = m.generate_tangents();
+    }
+    if let Some(tangents) = tangents {
+        m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     }
     if let Some(skin) = skin {
         let joints: Vec<[u16; 4]> = used.iter().map(|&i| skin[i].map(|(b, _)| b)).collect();
