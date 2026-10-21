@@ -14,7 +14,7 @@
 //! both constructors, the tone field's pick and draw, the hair picker's
 //! refresh, set and draw, and the task notification word 7.
 
-use crate::colour_picker::{hsv_to_rgb, rgb_to_hsv};
+use exa_formats::palette::{hsv as hsv_to_rgb_parts, rgb_to_hsv};
 
 /// The tone table's 3 × 3 colours, red green blue, raw bytes read as
 /// floats.
@@ -557,7 +557,7 @@ pub fn hair_shading(u: f32, v: f32, version: f32) -> ([f32; 3], [f32; 3]) {
     ]);
     hsv[1] *= 1.5;
     hsv[2] = ((value * 0.9 + 0.3) - version * 0.1) * 0.8;
-    let second = hsv_to_rgb(hsv);
+    let second = hsv_to_rgb_parts(hsv[0], hsv[1], hsv[2]);
     (first, second)
 }
 

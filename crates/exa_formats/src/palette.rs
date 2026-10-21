@@ -236,6 +236,47 @@ pub fn hsv(hue: f32, saturation: f32, value: f32) -> [f32; 3] {
     }
 }
 
+/// RGB to hue (in turns), saturation and value, as the engine's colour
+/// helper converts them: the value is the largest channel (green wins over
+/// red only when strictly larger, blue over that only when strictly
+/// larger), a value under 0.5/255 is black (hue and saturation 0), a
+/// saturation `1 − min/max` under 0.5/255 is a grey (hue 0). The hue is a
+/// sixth of the two other channels' spread, each taken above the least and
+/// over the spread in single precision; the red sextant wraps a negative
+/// hue by adding it to 1, and the green and blue sextants add their third
+/// in double. A NaN falls through the compares as the instructions do.
+pub fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
+    let [r, g, b] = c;
+    let mut imax = usize::from(g > r);
+    if c[imax] < b {
+        imax = 2;
+    }
+    let mut imin = usize::from(g < r);
+    if c[imin] > b {
+        imin = 2;
+    }
+    let value = c[imax];
+    let floor = f32::from_bits(0x3b00_8081);
+    if value < floor {
+        return [0.0, 0.0, value];
+    }
+    let saturation = 1.0 - c[imin] / value;
+    if saturation < floor {
+        return [0.0, saturation, value];
+    }
+    let inv = 1.0 / (c[imax] - c[imin]);
+    let t = c.map(|x| (x - c[imin]) * inv);
+    let hue = match imax {
+        0 => {
+            let h = (t[1] - t[2]) / 6.0;
+            if h < 0.0 { 1.0 + h } else { h }
+        }
+        1 => (f64::from((t[2] - t[0]) / 6.0) + 1.0 / 3.0) as f32,
+        _ => (f64::from((t[0] - t[1]) / 6.0) + 2.0 / 3.0) as f32,
+    };
+    [hue, saturation, value]
+}
+
 /// The saturation both ramps share: `(1 − (0.09k)²)·s`, then, below a value
 /// of 0.4, `(v + 0.6)²` times that, each in double precision and stored as
 /// a float.
@@ -321,6 +362,28 @@ mod tests {
         let linear_dark = linear(15);
         assert!(lifted_dark.iter().sum::<f32>() < linear_dark.iter().sum::<f32>());
         assert!(lifted_dark.iter().all(|v| (0.0..=1.0).contains(v)));
+    }
+
+    #[test]
+    fn rgb_to_hsv_reads_the_sextants_and_its_thresholds() {
+        assert_eq!(rgb_to_hsv([1.0, 0.0, 0.0]), [0.0, 1.0, 1.0]);
+        assert_eq!(rgb_to_hsv([0.0, 1.0, 0.0]), [(1.0f64 / 3.0) as f32, 1.0, 1.0]);
+        assert_eq!(rgb_to_hsv([0.0, 0.0, 1.0]), [(2.0f64 / 3.0) as f32, 1.0, 1.0]);
+        // A red with more blue than green wraps: 1 + (0 − 0.5)/6.
+        assert_eq!(rgb_to_hsv([1.0, 0.0, 0.5]), [1.0 - 0.5 / 6.0, 1.0, 1.0]);
+        assert_eq!(rgb_to_hsv([0.5, 0.5, 0.5]), [0.0, 0.0, 0.5]);
+        // Under half a byte the value is black and the rest zero.
+        assert_eq!(rgb_to_hsv([0.001, 0.0, 0.0]), [0.0, 0.0, 0.001]);
+        // A tied green does not displace red, so the hue is red's.
+        assert_eq!(rgb_to_hsv([1.0, 1.0, 0.0])[0], 1.0 / 6.0);
+        // Round trip through the engine's HSV to RGB.
+        let back = {
+            let [h, s, v] = rgb_to_hsv([0.2, 0.4, 0.6]);
+            hsv(h, s, v)
+        };
+        for (a, b) in back.iter().zip([0.2, 0.4, 0.6]) {
+            assert!((a - b).abs() < 1e-6, "{back:?}");
+        }
     }
 
     #[test]

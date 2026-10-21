@@ -87,9 +87,9 @@ pub use col_swatch::{
     SwatchForm, SwatchMetrics, SwatchPick,
 };
 pub use colour_picker::{
-    COLOUR_SWATCH_CLASS, ColourPicker, FOCUS_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
-    Refresh, Rgba, SwatchControl, channel_ramps, field_corners, hsv_to_rgb, rgb_bytes, rgb_to_hsv,
-    to_byte,
+    COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
+    Refresh, Rgba, SwatchControl, channel_ramps, field_corners, packed_bytes, rgb_bytes, to_byte,
+    unpacked,
 };
 pub use compact_skill::{
     CompactBase, CompactDraw, CompactMetrics, CompactRow, CompactSkillState, NodeDraw, Pip,
