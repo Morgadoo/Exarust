@@ -85,18 +85,26 @@ fn carry_shares_are_the_originals() {
         (4, 0.25),
         (7, 0.25),
     ] {
-        assert_eq!(carry_share(bone, 1.0, 0.6), Some(want), "bone {bone}");
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.0), Some(want), "bone {bone}");
         assert!(close(
-            carry_share(bone, 0.9, 0.6).unwrap(),
+            carry_share(bone, 0.9, 0.6, 1.0).unwrap(),
             0.9 * want,
             1e-6
         ));
+        // Scale 1.3 stays; the next step up zeroes the legs and pelvis.
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.3), Some(want), "bone {bone}");
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.31), Some(0.0), "bone {bone}");
     }
     for bone in [8, 9, 10, 11, 13, 17] {
-        assert!(close(carry_share(bone, 0.9, 0.6).unwrap(), 0.54, 1e-6));
+        assert!(close(carry_share(bone, 0.9, 0.6, 1.0).unwrap(), 0.54, 1e-6));
+        assert!(close(
+            carry_share(bone, 0.9, 0.6, 1.31).unwrap(),
+            0.54,
+            1e-6
+        ));
     }
-    assert_eq!(carry_share(1, 0.5, 1.0), None);
-    assert_eq!(carry_share(9, 0.3, 1.0), None);
+    assert_eq!(carry_share(1, 0.5, 1.0, 1.31), None);
+    assert_eq!(carry_share(9, 0.3, 1.0, 1.0), None);
 }
 
 /// The leg of a standing human as the arena's Idle gives it (cm): the clip
@@ -365,7 +373,7 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
             "a foot touches the floor at {energy}: {lowest}"
         );
         let (mass, carried) = body.parts.iter().fold((0.0, 0.0), |(m, am), p| {
-            let a = carry_share(p.bone, 1.0, energy).unwrap();
+            let a = carry_share(p.bone, 1.0, energy, 1.0).unwrap();
             (m + 1.0 / p.inverse_mass, am + a / p.inverse_mass)
         });
         let f: f32 = mass / carried;

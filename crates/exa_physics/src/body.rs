@@ -2504,7 +2504,10 @@ impl Ragdoll {
         }
         // A living part over half its tone falls by g(1 − a) + carry·a, a
         // its share of the carry; any other by gravity.
-        let carried = self.drive.as_ref().map(|d| (d.tone, d.energy, d.carry));
+        let carried = self
+            .drive
+            .as_ref()
+            .map(|d| (d.tone, d.energy, d.carry, d.stats.scale));
         // A limp part keeps its velocity by how fast it moved last tick; a
         // living limb keeps the fast retention whatever its speed.
         let dormant = self.drive.as_ref().is_some_and(|d| d.dormant);
@@ -2516,8 +2519,8 @@ impl Ragdoll {
             p.start = p.positions;
             p.strain = 0.0;
             let pull = carried
-                .and_then(|(tone, energy, carry)| {
-                    let a = lift::carry_share(p.bone, tone, energy)?;
+                .and_then(|(tone, energy, carry, scale)| {
+                    let a = lift::carry_share(p.bone, tone, energy, scale)?;
                     Some(gravity * (1.0 - a) + carry * a)
                 })
                 .unwrap_or(gravity);

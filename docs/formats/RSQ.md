@@ -273,10 +273,10 @@ humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
     t × E for the upper body. A standing body floats on its legs at f = 1,
     its pelvis 1.7 cm over its target; well under it, f = 1.5 lifts the
     pelvis and thighs at half g. A dazed body's upper body takes less of
-    the lift, so it sags; a body without support falls at g. The original
-    zeroes the shares of the legs and pelvis on bodies of scale over 1.3
-    (not yet in Exarust), and multiplies f by t² while collapsing (the
-    word's bit 0x800: [The collapse](#the-collapse)).
+    the lift, so it sags; a body without support falls at g. A body of
+    scale over 1.3, compared in double, zeroes the shares of the legs and
+    pelvis (`carry_share`), and the lift multiplies f by t² while collapsing
+    (the word's bit 0x800: [The collapse](#the-collapse)).
   - The **target pelvis height** comes from the feet, each tick, in cm.
     Each leg's is its ground + crouch·60 + (1 − crouch)·(the clip root's
     height over the leg's animated ankle + its ground offset). The ground

@@ -84,11 +84,24 @@ pub(super) fn support_share(bone: usize) -> Option<f32> {
     }
 }
 
+/// A body larger than this, in double precision, takes no carry on its
+/// pelvis or legs.
+const LARGE_BODY: f64 = 1.3;
+
 /// How much of the carry a part of `bone` takes at `tone` and `energy`:
 /// a = tone × its support share, or tone × energy; none at a tone of a
-/// half or less (it falls by gravity alone).
-pub(super) fn carry_share(bone: usize, tone: f32, energy: f32) -> Option<f32> {
-    (tone > TONE_FLOOR).then(|| tone * support_share(bone).unwrap_or(energy))
+/// half or less (it falls by gravity alone). A body of `scale` over 1.3
+/// zeroes the pelvis and leg shares.
+pub(super) fn carry_share(bone: usize, tone: f32, energy: f32, scale: f32) -> Option<f32> {
+    if tone.partial_cmp(&TONE_FLOOR) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    let share = match support_share(bone) {
+        Some(_) if f64::from(scale) > LARGE_BODY => 0.0,
+        Some(share) => share,
+        None => energy,
+    };
+    Some(tone * share)
 }
 
 /// The lift term before clamping: standing, 0.075(h + 15); moving,
