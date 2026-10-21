@@ -795,9 +795,19 @@ mod knockout_tests {
         assert_eq!(low.flags.0, StateFlags::WAKING);
         assert!(settle_death(Condition::DEAD, dormant, 0, 0.0, false, 50).is_none());
 
-        // 0.01 is not below the double threshold. A NaN is not either.
+        // The f32 value 0.01 promotes to a double just under the f64
+        // threshold, so it clears. The next f32 promotes above it. A NaN
+        // does not compare below.
         let edge = settle_death(Condition::NORMAL, dormant, 0, 0.01, false, 0).unwrap();
-        assert_eq!(edge.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
+        assert_eq!(edge.flags.0 & StateFlags::DORMANT, 0);
+        let above = f32::from_bits(0.01f32.to_bits() + 1);
+        let held_health = settle_death(Condition::NORMAL, dormant, 0, above, false, 0).unwrap();
+        assert_eq!(
+            held_health.flags.0 & StateFlags::DORMANT,
+            StateFlags::DORMANT
+        );
+        let suited = settle_death(Condition::NORMAL, dormant, 0, 0.01, true, 0).unwrap();
+        assert_eq!(suited.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
         let nan = settle_death(Condition::NORMAL, dormant, 0, f32::NAN, false, 0).unwrap();
         assert_eq!(nan.flags.0 & StateFlags::DORMANT, StateFlags::DORMANT);
 
