@@ -102,6 +102,11 @@ impl Rect {
     pub fn bottom(self) -> i32 {
         self.y + self.h
     }
+
+    /// Whether a point lies in the half-open rectangle.
+    pub fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
 }
 
 const MATCH_COLUMNS: [Column; 1] = [Column {
@@ -1595,6 +1600,92 @@ impl Board {
         }
     }
 
+    /// The tables visible on the open tab.
+    pub fn visible_tables(&self) -> &'static [TableSlot] {
+        match self.tab {
+            BoardTab::Matches => &[
+                TableSlot::Match,
+                TableSlot::Rank,
+                TableSlot::Tier,
+                TableSlot::Roster,
+                TableSlot::Lineup,
+            ],
+            BoardTab::Events => &[TableSlot::Events, TableSlot::Roster, TableSlot::Lineup],
+            BoardTab::Tournament => &[TableSlot::Winners, TableSlot::Roster, TableSlot::Lineup],
+            BoardTab::Season => &[TableSlot::Season],
+        }
+    }
+
+    /// A table's layout, with the lineup's tournament height applied.
+    pub fn table_layout(&self, slot: TableSlot) -> TableLayout {
+        let layout = self.layout();
+        let mut table = match slot {
+            TableSlot::Match => layout.match_table,
+            TableSlot::Rank => layout.rank_table,
+            TableSlot::Tier => layout.tier_table,
+            TableSlot::Events => layout.events_table,
+            TableSlot::Winners => layout.winners_table,
+            TableSlot::Roster => layout.roster_table,
+            TableSlot::Lineup => layout.lineup_table,
+            TableSlot::Season => layout.season_table,
+        };
+        if slot == TableSlot::Lineup {
+            table.rect.h = self.lineup_height();
+        }
+        table
+    }
+
+    /// The board's hit test: a tab, the primary button, or a visible table
+    /// cell. The row height is the layout's guess, so cells below it follow
+    /// that guess.
+    pub fn hit_test(&self, point: (i32, i32)) -> BoardHit {
+        let layout = self.layout();
+        for (index, rect) in layout.tabs.iter().enumerate() {
+            if rect.contains(point.0, point.1) {
+                return BoardHit::Tab(index);
+            }
+        }
+        if !control::hidden(self.enter_state()) && layout.enter_button.contains(point.0, point.1) {
+            return BoardHit::Enter;
+        }
+        for &slot in self.visible_tables() {
+            let table = self.table_layout(slot);
+            if !table.rect.contains(point.0, point.1) {
+                continue;
+            }
+            let row = ((point.1 - table.rect.y) / ROW_HEIGHT) as usize;
+            if row >= table.rows {
+                continue;
+            }
+            let mut x = table.rect.x;
+            for (column, spec) in table.columns.iter().enumerate() {
+                if point.0 >= x && point.0 < x + spec.width {
+                    return BoardHit::Table { slot, row, column };
+                }
+                x += spec.width;
+            }
+        }
+        BoardHit::Outside
+    }
+
+    /// Turns a click at a point into the matching board input.
+    pub fn click(&mut self, point: (i32, i32)) -> BoardAction {
+        let hit = self.hit_test(point);
+        match hit {
+            BoardHit::Tab(index) => self.handle(BoardInput::SelectTab(index)),
+            BoardHit::Enter => self.handle(BoardInput::Confirm),
+            BoardHit::Table { slot, row, .. } => match slot {
+                TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
+                TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
+                TableSlot::Tier => self.handle(BoardInput::SelectTier(row)),
+                TableSlot::Events => self.handle(BoardInput::ClickEvent(row)),
+                TableSlot::Winners => self.handle(BoardInput::ClickWinner(row)),
+                TableSlot::Roster | TableSlot::Lineup | TableSlot::Season => BoardAction::None,
+            },
+            BoardHit::Outside => BoardAction::None,
+        }
+    }
+
     /// Handles one board input and returns the action the arena should take.
     pub fn handle(&mut self, input: BoardInput) -> BoardAction {
         match input {
@@ -2173,6 +2264,23 @@ fn paint_table_rows(
 
 fn count_char(count: usize) -> char {
     char::from_u32((count as u32).wrapping_add(0x30) & 0xff).unwrap_or('\u{fffd}')
+}
+
+/// What a point on the board hits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardHit {
+    /// A tab button.
+    Tab(usize),
+    /// A table's cell.
+    Table {
+        slot: TableSlot,
+        row: usize,
+        column: usize,
+    },
+    /// The primary Enter/Begin/Continue button.
+    Enter,
+    /// Nothing the board handles.
+    Outside,
 }
 
 /// One board input.
@@ -2924,6 +3032,82 @@ mod tests {
         assert_eq!(cells[4], (0, 4, 454));
         assert_eq!(cells[5], (1, 0, 0));
         assert_eq!(cells[9], (1, 4, 454,));
+    }
+
+    #[test]
+    fn the_hit_test_follows_the_layout_and_the_tab() {
+        let mut board = board();
+        assert_eq!(board.hit_test((10, 18)), BoardHit::Tab(0));
+        assert_eq!(
+            board.hit_test((10, 70)),
+            BoardHit::Table {
+                slot: TableSlot::Match,
+                row: 0,
+                column: 0
+            }
+        );
+        assert_eq!(
+            board.hit_test((210, 70)),
+            BoardHit::Table {
+                slot: TableSlot::Rank,
+                row: 0,
+                column: 0
+            }
+        );
+        // The tier list starts at x 396.
+        assert_eq!(
+            board.hit_test((400, 100)),
+            BoardHit::Table {
+                slot: TableSlot::Tier,
+                row: 1,
+                column: 0
+            }
+        );
+        assert_eq!(board.hit_test((10_000, 10_000)), BoardHit::Outside);
+        assert_eq!(board.hit_test((450, 610)), BoardHit::Enter);
+
+        // The event table's five columns at 140, 100, 100, 114 and 106.
+        assert_eq!(board.handle(BoardInput::SelectTab(1)), BoardAction::Changed);
+        assert_eq!(
+            board.hit_test((150, 70)),
+            BoardHit::Table {
+                slot: TableSlot::Events,
+                row: 0,
+                column: 1
+            }
+        );
+        assert_eq!(
+            board.hit_test((454, 70)),
+            BoardHit::Table {
+                slot: TableSlot::Events,
+                row: 0,
+                column: 4
+            }
+        );
+
+        let mut season = board;
+        season.tab = BoardTab::Season;
+        assert_eq!(season.hit_test((450, 610)), BoardHit::Outside);
+    }
+
+    #[test]
+    fn a_click_selects_and_confirms() {
+        let mut board = board();
+        board.team_size = 1;
+        board.rank_floor = 0;
+        board.rebuild_lineups();
+        assert_eq!(board.click((155, 18)), BoardAction::Changed);
+        assert_eq!(board.tab, BoardTab::Events);
+        assert_eq!(board.click((10, 18)), BoardAction::Changed);
+        assert_eq!(board.tab, BoardTab::Matches);
+        assert_eq!(
+            board.click((10, 56 + 2 * ROW_HEIGHT + 5)),
+            BoardAction::Changed
+        );
+        assert_eq!(board.match_type, 2);
+        assert_eq!(board.click((450, 610)), BoardAction::EnterMatch);
+        assert_eq!(board.matches_played, 1);
+        assert_eq!(board.click((10_000, 10_000)), BoardAction::None);
     }
 
     #[test]

@@ -427,7 +427,10 @@ Bevy app.
   order the constructor made them: match, rank, tier, events, winners,
   picture, reward panel, message, roster, lineup and season. A table draws
   its frame, its column headers, then its rows left to right. The rows are
-  30 pixels tall (a guess from the six-row and eight-row fits).
+  30 pixels tall (a guess from the six-row and eight-row fits). A point maps
+  to a tab, the primary button or a visible cell (`Board::hit_test`), and a
+  click selects the tab, match, rank, tier, event or winner or confirms the
+  board (`Board::click`).
 
 Known guesses: the row height, the tab strip's exact rectangles, the static
 labels' positions, the fee field of an event, the class bytes for the three

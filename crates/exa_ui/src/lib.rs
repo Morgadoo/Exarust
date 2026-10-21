@@ -57,12 +57,12 @@ pub use heartbeat::Heartbeat;
 pub use hud::{DrawHud, HudBars};
 pub use loading::LoadingStatus;
 pub use match_board::{
-    Board, BoardAction, BoardEvent, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,
-    CloseState, CoinDraw, Column, EventEntry, Fighter, MatchBoardDestroy, MatchBoardShow,
-    MatchBoardShowInput, Participant, Rect, ShowState, TableLayout, TableSlot, TournamentStatus,
-    Widget, control, destroy_match_board, is_tournament_day, layout, rank_name, rank_of,
-    season_index, season_picture_name, season_reward_order, season_weeks_elapsed, show_match_board,
-    tournament_begins_in,
+    Board, BoardAction, BoardEvent, BoardHit, BoardInput, BoardLayout, BoardPaint, BoardTab,
+    CellValue, CloseState, CoinDraw, Column, EventEntry, Fighter, MatchBoardDestroy,
+    MatchBoardShow, MatchBoardShowInput, Participant, Rect, ShowState, TableLayout, TableSlot,
+    TournamentStatus, Widget, control, destroy_match_board, is_tournament_day, layout, rank_name,
+    rank_of, season_index, season_picture_name, season_reward_order, season_weeks_elapsed,
+    show_match_board, tournament_begins_in,
 };
 pub use menu::{
     CharLootShow, CharLootShowInput, ClassCardHit, ClassCardHitInput, ClassConfirm, ClassNav,

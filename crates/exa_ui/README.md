@@ -239,7 +239,8 @@ the reward order first, third, second, fourth. The form's exact rectangles,
 columns and drawing order are in `layout` and `Board::paint`, with a 30-pixel
 row height guessed from the six-row and eight-row fits. The two shared
 roster tables take a double click or a drop; on a tournament day with
-entries the tournament tab is forced and assignment is locked. The
+entries the tournament tab is forced and assignment is locked. The same
+layout drives the hit test and a click's tab, row, cell and confirmation. The
 tournament status line, primary button, "Entered n/m" label and the show,
 close and control states follow the original's tab switch. `exa_game`'s
 `arena_board` fills a board from a career and the generated daily board.
