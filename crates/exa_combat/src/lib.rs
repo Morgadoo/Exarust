@@ -2016,6 +2016,7 @@ mod tests {
             id: 2,
             name: "Skeleton".into(),
             flags,
+            look: 0,
             stem: "Skel".into(),
             movesets: ["Default".into(), "Skeleton".into()],
             health: 1.0,

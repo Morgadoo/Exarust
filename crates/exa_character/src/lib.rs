@@ -17,6 +17,10 @@
 
 pub mod held;
 
+pub mod layers;
+
+pub mod look;
+
 pub mod record;
 
 pub mod blood;
@@ -355,6 +359,9 @@ struct Fitting(HashMap<String, Task<model::BuiltModel>>);
 #[derive(Debug, Clone, Default)]
 struct ItemInfo {
     apparel: Option<(Appearance, u32, Option<Armour>)>,
+    /// The item's eight-byte coverage word per body slot, for the exact
+    /// hidden-slot mask.
+    slot_words: Option<[u64; objdb::SLOTS]>,
     weapon: Option<objdb::Weapon>,
 }
 
@@ -381,6 +388,7 @@ fn item_info_of(items: &[Item]) -> HashMap<String, ItemInfo> {
             let info = out.entry(item.worn_model.to_ascii_lowercase()).or_default();
             if info.apparel.is_none() {
                 info.apparel = Some((a, item.hidden_slots(), item.armour));
+                info.slot_words = Some(item.slot_words);
             }
         }
         if let (false, Some(w)) = (item.model.is_empty(), item.weapon) {
@@ -688,17 +696,23 @@ fn equip_outfits(
             continue;
         }
         let mut hidden = 0u32;
+        let mut union = [0u64; 18];
         let mut protection = Vec::new();
         for garment in &outfit.0 {
             let Some(apparel) = loader.morphed_model(PackKind::Characters, &garment.model, morph)
             else {
                 continue;
             };
-            let known = infos
-                .get(&garment.model.to_ascii_lowercase())
-                .and_then(|i| i.apparel);
+            let info = infos.get(&garment.model.to_ascii_lowercase());
+            let known = info.and_then(|i| i.apparel);
             let appearance = garment_appearance(garment, infos);
             hidden |= garment.hides.or(known.map(|k| k.1)).unwrap_or(0);
+            // The original's coverage pass over the eight layer bytes.
+            if let Some(words) = info.and_then(|i| i.slot_words) {
+                for (slot, word) in union.iter_mut().zip(words.iter().skip(1)) {
+                    *slot |= word;
+                }
+            }
             // The armour pass reads the protection an item stores: an
             // item made from a template stores it scaled by its condition.
             if let Some(armour) = garment.armour.or(known.and_then(|k| k.2)) {
@@ -731,6 +745,7 @@ fn equip_outfits(
                 }
             }
         }
+        hidden |= !layers::visible_body_slots(&union) & 0x3_FFFF;
         // Body parts under apparel that covers them are not drawn.
         for (&bone, &part) in &by_bone {
             if bone < 32 && hidden & (1 << bone) != 0 {
@@ -895,6 +910,7 @@ mod tests {
                 layers,
             }),
             slot_layers: [0; objdb::SLOTS],
+            slot_words: [0; objdb::SLOTS],
             occupancy,
             weapon: None,
             armour: None,

@@ -20,6 +20,7 @@ fn item(id: u32, occupancy: u64) -> Item {
         worn_model: format!("worn{id}"),
         appearance: None,
         slot_layers: [0; exa_formats::objdb::SLOTS],
+        slot_words: [0; exa_formats::objdb::SLOTS],
         occupancy: table,
         weapon: None,
         armour: None,

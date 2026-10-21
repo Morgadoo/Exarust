@@ -1683,6 +1683,7 @@ mod tests {
                 layers,
             }),
             slot_layers: [0; objdb::SLOTS],
+            slot_words: [0; objdb::SLOTS],
             occupancy: [0; objdb::OCCUPANCY_BONES],
             weapon: None,
             armour: None,

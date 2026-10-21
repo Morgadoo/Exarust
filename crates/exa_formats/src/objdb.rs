@@ -94,6 +94,10 @@ pub struct Item {
     /// Apparel's first layer byte per body slot: low bits the layer, bit
     /// `0x80` hides the body part, `0x40` its partial variant.
     pub slot_layers: [u8; SLOTS],
+    /// The whole eight-byte coverage word per body slot (layer L is byte
+    /// L): what the layer pass reads to find the outermost layer and the
+    /// slots a garment hides.
+    pub slot_words: [u64; SLOTS],
     /// Sub-parts occupied per bone 1..20 (index 0 is the pelvis): byte L of
     /// each entry is layer L, 0 the innermost. Items that overlap here are
     /// not worn together. Zero when the body is too short to hold it.
@@ -485,6 +489,11 @@ impl Weapon {
 }
 
 impl Item {
+    /// The coverage word of body slot `slot` (1..18).
+    pub fn slot_word(&self, slot: usize) -> u64 {
+        self.slot_words.get(slot).copied().unwrap_or(0)
+    }
+
     /// Body slots (bone indices) this item hides, as a bit mask.
     pub fn hidden_slots(&self) -> u32 {
         self.slot_layers
@@ -612,6 +621,7 @@ impl Item {
             worn_model: String::new(),
             appearance: None,
             slot_layers: [0; SLOTS],
+            slot_words: [0; SLOTS],
             occupancy: [0; OCCUPANCY_BONES],
             weapon: None,
             armour: None,
@@ -659,6 +669,9 @@ impl Item {
                         .and_then(|b| Appearance::parse(b).ok());
                     if let Some(t) = body.get(SLOT_LAYERS_OFFSET..SLOT_LAYERS_OFFSET + SLOTS * 8) {
                         item.slot_layers = std::array::from_fn(|s| t[s * 8]);
+                        item.slot_words = std::array::from_fn(|s| {
+                            u64::from_le_bytes(t[s * 8..s * 8 + 8].try_into().expect("8 bytes"))
+                        });
                     }
                     item.armour = Armour::parse(body);
                     item.burden = Some(Burden::parse(body));

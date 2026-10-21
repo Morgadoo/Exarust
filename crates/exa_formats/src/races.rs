@@ -30,6 +30,12 @@ pub struct Race {
     /// name); see [`Race::bleeds`] and the bit constants ([`BLEEDS`],
     /// [`MAY_RISE`], [`REGENERATES_RED`], [`HOVERS`]).
     pub flags: u32,
+    /// The look word (`0x14`): which skin, hair and beard features the
+    /// race has ([`LOOK_FEMALE_TEXTURES`], [`LOOK_MALE_TEXTURES`],
+    /// [`LOOK_NORMALS`], [`LOOK_HAIR`], [`LOOK_BEARD`], [`LOOK_SKIN`],
+    /// [`LOOK_AGE_DARKENS`]). Human 0x1BF, Ancient 0x86, Skeleton, Ogre and
+    /// Manipulator 4, Wraith 0x1000.
+    pub look: u32,
     /// Body model stem.
     pub stem: String,
     /// The shared and the race's own moveset.
@@ -274,6 +280,25 @@ pub struct RaceStats {
 /// First flag word: its characters bleed (wounds paint blood, and its body
 /// model's skin materials show it).
 pub const BLEEDS: u32 = 0x1;
+/// Look word: the race ships women's skin textures (`diff`, `nrmf0…5`,
+/// `spcf`) beside the men's.
+pub const LOOK_FEMALE_TEXTURES: u32 = 0x1;
+/// Look word: the race ships the men's skin textures (`difm`, `nrmm0…5`,
+/// `spcm`).
+pub const LOOK_MALE_TEXTURES: u32 = 0x2;
+/// Look word: the race ships six normal maps for each sex, blended by the
+/// physique.
+pub const LOOK_NORMALS: u32 = 0x4;
+/// Look word: the race has hair (the body builder adds a `CharExt` style
+/// under the head).
+pub const LOOK_HAIR: u32 = 0x10;
+/// Look word: the race's men may wear one of six beards.
+pub const LOOK_BEARD: u32 = 0x20;
+/// Look word: the race's body wears the built-in skin material.
+pub const LOOK_SKIN: u32 = 0x80;
+/// Look word: the age darkens the skin (and the feral level darkens it
+/// further).
+pub const LOOK_AGE_DARKENS: u32 = 0x100;
 /// First flag word: in the story, a dead character of the race may be
 /// raised again later (humans and the golem suit; inferred from the rule
 /// bit it sets).
@@ -345,6 +370,8 @@ pub struct Natural {
 }
 
 const NAME: usize = 0x00;
+/// The look word, before the first flag word.
+const LOOK: usize = 0x14;
 const FLAGS: usize = 0x18;
 const FLAGS2: usize = 0x1C;
 const STEM: usize = 0x20;
@@ -449,6 +476,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Race>> {
             id: r.id,
             name: text(b, NAME, 0x20),
             flags: word(b, FLAGS),
+            look: word(b, LOOK),
             stem: text(b, STEM, 0x18),
             movesets: MOVESETS.map(|at| text(b, at, 0x10)),
             health: float(b, HEALTH),
@@ -616,6 +644,7 @@ mod tests {
     #[test]
     fn stats() {
         let mut b = record("Demon", "DemonA01", "Demon A01");
+        put_word(&mut b, 0x14, 0x1BF);
         put_word(&mut b, 0x18, 0x23);
         put_word(&mut b, 0x1C, 0x7);
         put_word(&mut b, 0x58, 0x2_0100);
@@ -632,6 +661,11 @@ mod tests {
         put_word(&mut b, 0x1C4, 2);
         let races = parse(&database(&[(12, b)])).unwrap();
         let demon = &races[0];
+        assert_eq!(demon.look, 0x1BF);
+        assert_eq!(
+            (demon.look & LOOK_FEMALE_TEXTURES, demon.look & LOOK_HAIR),
+            (LOOK_FEMALE_TEXTURES, LOOK_HAIR)
+        );
         let s = &demon.stats;
         assert_eq!((s.flags2, s.kind), (0x7, 0x2_0100));
         assert!(demon.regenerates_red() && demon.clawed());

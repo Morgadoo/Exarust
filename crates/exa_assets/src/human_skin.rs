@@ -72,7 +72,7 @@ const TONE_GAIN: f32 = 1.4;
 
 /// The engine's fast natural logarithm: the float's exponent times ln 2
 /// plus a polynomial in its mantissa (operation order as the original's).
-fn engine_ln(x: f32) -> f32 {
+pub(crate) fn engine_ln(x: f32) -> f32 {
     let bits = x.to_bits();
     let exponent = (bits >> 23) as i32 as f32;
     // A non-positive argument gives −∞; NaN takes the positive offset.
@@ -94,7 +94,7 @@ fn engine_ln(x: f32) -> f32 {
 /// The engine's fast exponential: the argument scaled into a float's bit
 /// pattern (rounded to nearest, clamped, negatives to zero), its exponent
 /// times a polynomial in its mantissa.
-fn engine_exp(x: f32) -> f32 {
+pub(crate) fn engine_exp(x: f32) -> f32 {
     let y = x * f32::from_bits(0x4b38_aa3b) + f32::from_bits(0x4e7e_0000);
     let top = f32::from_bits(0x4eff_0000);
     let y = if y < top { y } else { top };
@@ -124,7 +124,7 @@ pub fn srgb_decode(c: f32) -> f32 {
 }
 
 /// The engine's linear-to-sRGB encode of one channel.
-fn srgb_encode(c: f32) -> f32 {
+pub(crate) fn srgb_encode(c: f32) -> f32 {
     if f64::from(c) > 0.003_130_8 {
         let p = engine_exp(engine_ln(c) * 0.416_666_66);
         (f64::from(p) * 1.055 - 0.055) as f32
@@ -135,7 +135,7 @@ fn srgb_encode(c: f32) -> f32 {
 
 /// Hue, saturation and value to RGB as the engine converts them (the sextant
 /// is the floor of 6·hue).
-fn hsv_to_rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
+pub(crate) fn hsv_to_rgb([h, s, v]: [f32; 3]) -> [f32; 3] {
     if s == 0.0 {
         return [v; 3];
     }

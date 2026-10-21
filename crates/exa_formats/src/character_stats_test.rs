@@ -8,6 +8,7 @@ fn race(byte: u8, health: f32) -> Race {
         id: u32::from(byte) + 1,
         name: String::new(),
         flags: 0,
+        look: 0,
         stem: String::new(),
         movesets: [String::new(), String::new()],
         health,

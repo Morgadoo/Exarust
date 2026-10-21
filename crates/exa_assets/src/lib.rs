@@ -5,7 +5,9 @@
 //! ([`model`]), each cached by name.
 
 pub mod content_stream;
+pub mod hair;
 pub mod human_skin;
+pub mod merge;
 pub mod mesh_edit;
 pub mod mesh_smooth;
 pub mod mesh_weld;
