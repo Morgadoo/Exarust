@@ -341,11 +341,11 @@ impl Plants {
                 if v.indices.is_empty() {
                     continue;
                 }
-                // Grass and small plants are lit as if facing up and shaded
-                // 0.75 (the original's plant loader); grass is smaller.
+                // Grass and small plants are lit as if facing up (the
+                // original's plant loader sets their normals to +Y); grass
+                // is smaller.
                 if kind < 2 {
                     v.normals.iter_mut().for_each(|n| *n = Vec3::Y);
-                    v.colour = [0.75, 0.75, 0.75, 0.0];
                 }
                 if kind == 0 {
                     v.positions
@@ -371,7 +371,7 @@ impl Plants {
                 params: ExaParams {
                     // The shader multiplies the texture by the tint as is.
                     diffuse: Vec4::new(tint[0], tint[1], tint[2], 1.0),
-                    flags: flags::LIT | flags::TWO_SIDED | flags::PLANT_TINT,
+                    flags: flags::LIT | flags::TWO_SIDED,
                     ..default()
                 },
                 diffuse_map: base_color_texture,
@@ -470,7 +470,6 @@ impl Plants {
                     .collect::<Vec<_>>(),
             );
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, baked.uvs);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, baked.colours);
             mesh.insert_indices(Indices::U32(baked.indices));
             let _ = mesh.generate_tangents();
             let e = commands

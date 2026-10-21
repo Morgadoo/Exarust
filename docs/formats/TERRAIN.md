@@ -251,8 +251,10 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
 - **Shapes**: every mesh of `trn_grassa02.rfc` (1 grass), `trn_splnta02.rfc`
   (6 small) and `trn_lplnta02.rfc` (29 large) is a variant, all textured with
   `PlantSet_01D`/`N`. Grass is shrunk to 0.75. Grass and small plants are
-  lit as if facing up and store the loader's 0.75 grey vertex colour (the
-  large plants store none and are lit normally). Alpha test 0.1, no fade.
+  lit as if facing up: the plant loader sets their normals to (0, 1, 0)
+  (the large plants keep theirs). No plant library stores vertex colours,
+  and the plant program's fourth stream is the tangent, so the plants are
+  not tinted per vertex. Alpha test 0.1, no fade.
   The original's grass program sways them in the wind; Exarust draws them
   still. Exarust gives the chunks no collider, and casts their shadows only
   above shadow quality 4 (the original's shadow hook).

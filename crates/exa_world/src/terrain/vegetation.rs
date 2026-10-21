@@ -269,30 +269,12 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
 }
 
 /// A plant shape, in metres, standing on its origin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Variant {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub uvs: Vec<[f32; 2]>,
-    /// One colour per position, from [`Variant::colour`].
-    pub colours: Vec<[f32; 4]>,
-    /// The colour the original's plant loader gives every vertex: 0.75 grey
-    /// for grass and small plants, white for large plants (alpha is unused).
-    pub colour: [f32; 4],
     pub indices: Vec<u32>,
-}
-
-impl Default for Variant {
-    fn default() -> Self {
-        Self {
-            positions: Vec::new(),
-            normals: Vec::new(),
-            uvs: Vec::new(),
-            colours: Vec::new(),
-            colour: [1.0; 4],
-            indices: Vec::new(),
-        }
-    }
 }
 
 /// The density mask texel of a vertex-step point, row-major on 240 × 240.
@@ -325,8 +307,6 @@ pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Ve
                 .map(|n| Vec3::new(c * n.x + s * n.z, n.y, -s * n.x + c * n.z)),
         );
         out.uvs.extend_from_slice(&v.uvs);
-        out.colours
-            .extend(std::iter::repeat_n(v.colour, v.positions.len()));
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
     out
@@ -411,24 +391,6 @@ mod tests {
         assert_eq!(density_texel(Vec2::new(239.0, 1.0)), (238, 1));
         // The constant is the original's stored `0.9958333`.
         assert_eq!(DENSITY_STEP.to_bits(), 0x3f7e_eeef);
-    }
-
-    #[test]
-    fn growth_is_coloured_by_its_variant() {
-        let mut v = Variant::default();
-        v.positions.push(Vec3::ZERO);
-        v.colour = [0.75, 0.75, 0.75, 0.0];
-        let baked = bake(
-            &[v],
-            &[Growth {
-                variant: 0,
-                at: Vec2::ZERO,
-                scale: 1.0,
-                angle: 0.0,
-            }],
-            |_| Vec3::ZERO,
-        );
-        assert_eq!(baked.colours, [[0.75, 0.75, 0.75, 0.0]]);
     }
 
     #[test]

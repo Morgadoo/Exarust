@@ -30,8 +30,8 @@ and the grid's rooms; portal clipping is next (see
   program's normal-map tangent frame; `terrain::stream` holds the
   original's streaming decisions (60 m block priorities, the 44.4 m / 15 m
   composite selection and its pools, the 3 × 3 tile gather). Grass and
-  small plants take the original's 0.75 vertex colour and upward normals,
-  grass is drawn at 0.75 size, the density mask is sampled on its
+  small plants take the original's upward normals, grass is drawn at 0.75
+  size, the density mask is sampled on its
   240 × 240 texels, and the baked chunks have no collider and cast shadows
   only above shadow quality 4; wind is not ported.
 - `gi_volume`: the voxel GI occupancy block, built on the async compute pool around the camera's focus; each grid cell's floor meshes are merged and get the original's floor heightfield points (`exa_physics::voxel`) once per level, in the cell's own space, and `GiState` tells a loading screen where it stands. The block covers the level grid's eight 6 m cells around the focus point (the synthetic 8 × 8 grid for a level without one); every frame it marks the cells within the reach that are built and in view, then the built cells next to a marked one, in the original's two passes, and lists each sector's lights from the 6 m cells' flood lists (`exa_render::gi::GiSectorLights`).

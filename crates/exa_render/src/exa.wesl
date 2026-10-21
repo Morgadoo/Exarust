@@ -70,8 +70,6 @@ const OPACITY_FALLOFF: u32 = 1048576u;
 const BLOOD: u32 = 2097152u;
 const BLOOD_SKIN: u32 = 4194304u;
 const BLOOD_HAIR: u32 = 8388608u;
-// The vertex colour multiplies the diffuse colour (plant tint).
-const PLANT_TINT: u32 = 16777216u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -260,13 +258,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.v = v;
     s.ndv = abs(dot(v, n));
     var dif_col = material.diffuse.rgb * dif_tex.rgb;
-    // Terrain vegetation: the original's plant loader shades grass and small
-    // plants 0.75 and leaves the large plants white, per vertex.
-@if(VERTEX_COLORS) {
-    if has(PLANT_TINT) {
-        dif_col *= in.color.rgb;
-    }
-}
     // The colour the light scattered under the skin takes: the diffuse map
     // blurred.
     var scatter_col = material.diffuse.rgb;
