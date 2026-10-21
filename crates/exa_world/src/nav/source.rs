@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use bevy::math::{Affine3A, DVec3, Vec2, Vec3, Vec3Swizzles};
+use bevy::math::{Affine3A, DVec3, Vec3, Vec3Swizzles};
 
 use super::{CELL, CELLS_PER_ROOM, Columns, DEFAULT_ROOMS, DEPTH, FLOOR_LIFT, NavGrid};
 
@@ -17,111 +17,7 @@ pub const FLOOR_COLUMN_CM: i64 = 10;
 pub const FLOOR_BLOCK_CM: i64 = 20;
 /// Smallest upward component of a floor face's unit normal.
 const UPWARD: f32 = 1.2e-7;
-/// Blocks of 6 m along a terrain tile's side.
-pub const TILE_BLOCKS: usize = crate::terrain::TileBlocks::SIDE;
-
-/// A terrain tile's ground as the original samples it: the vertex heights
-/// (displaced by the height pass, as the game moves its vertices), the
-/// holes, and which of its 6 m blocks the level builds.
-#[derive(Debug, Clone)]
-pub struct GroundTile {
-    /// World X and Z of vertex (0, 0), metres.
-    pub corner: Vec2,
-    /// Distance between vertices, metres.
-    pub spacing: f32,
-    /// Vertices along each side.
-    pub side: usize,
-    /// `side × side` heights, metres, rows along Z.
-    pub heights: Vec<f32>,
-    /// Vertices cut out of the surface, same layout.
-    pub holes: Vec<bool>,
-    /// The tile's [`TILE_BLOCKS`] × [`TILE_BLOCKS`] blocks that exist: bit
-    /// `bx` of row `by` (along X and Z). Every block outside a tile-grid
-    /// level; in one, only those the terrain builds.
-    pub blocks: [u8; TILE_BLOCKS],
-}
-
-impl GroundTile {
-    /// Every block of a tile.
-    pub const ALL_BLOCKS: [u8; TILE_BLOCKS] = [u8::MAX; TILE_BLOCKS];
-
-    /// The ground of `tile` with `heights` (displaced, `side × side`),
-    /// every block present.
-    pub fn new(
-        terrain: &exa_formats::terrain::Terrain,
-        tile: &exa_formats::terrain::TerrainTile,
-        heights: Vec<f32>,
-    ) -> Self {
-        let side = exa_formats::terrain::TILE_VERTICES;
-        let centre = terrain.tile_centre(tile);
-        let half = (side - 1) as f32 * 0.5 * terrain.spacing;
-        let holes = (0..side * side)
-            .map(|v| tile.is_hole(v % side, v / side))
-            .collect();
-        Self {
-            corner: Vec2::new(centre[0] - half, centre[1] - half),
-            spacing: terrain.spacing,
-            side,
-            heights,
-            holes,
-            blocks: Self::ALL_BLOCKS,
-        }
-    }
-
-    /// The same ground with only the blocks `present` (bit `bx` of row
-    /// `by`), as a tile-grid level builds them.
-    pub fn with_blocks(mut self, present: [u8; TILE_BLOCKS]) -> Self {
-        self.blocks = present;
-        self
-    }
-
-    /// Whether block (`bx`, `by`) exists.
-    pub fn has_block(&self, bx: usize, by: usize) -> bool {
-        self.blocks
-            .get(by)
-            .is_some_and(|row| bx < TILE_BLOCKS && row & (1 << bx) != 0)
-    }
-
-    /// The ground of `tile` at its stored heights (no height pass).
-    pub fn stored(
-        terrain: &exa_formats::terrain::Terrain,
-        tile: &exa_formats::terrain::TerrainTile,
-    ) -> Self {
-        let side = exa_formats::terrain::TILE_VERTICES;
-        let heights = (0..side * side)
-            .map(|v| tile.height(v % side, v / side))
-            .collect();
-        Self::new(terrain, tile, heights)
-    }
-
-    /// Height (metres) at vertex coordinates (`u`, `v`), bilinear between
-    /// the four vertices around; `None` when one of them is a hole as the
-    /// original reads its hole mask (a byte at a time, so the right-hand
-    /// vertex is not tested where it starts the next byte).
-    pub fn height(&self, u: f32, v: f32) -> Option<f32> {
-        if u < 0.0 || v < 0.0 {
-            return None;
-        }
-        let (i, j) = (u as usize, v as usize);
-        if i + 1 >= self.side || j + 1 >= self.side {
-            return None;
-        }
-        let at = |i: usize, j: usize| j * self.side + i;
-        let right = i % 8 != 7;
-        let hole = |j: usize| self.holes[at(i, j)] || (right && self.holes[at(i + 1, j)]);
-        if hole(j) || hole(j + 1) {
-            return None;
-        }
-        let (fu, fv) = (u - i as f32, v - j as f32);
-        let h = |i: usize, j: usize| self.heights[at(i, j)];
-        Some(
-            h(i + 1, j + 1) * fu * fv
-                + h(i, j + 1) * (1.0 - fu) * fv
-                + h(i + 1, j) * fu * (1.0 - fv)
-                + h(i, j) * (1.0 - fu) * (1.0 - fv),
-        )
-    }
-}
+pub use crate::terrain::ground::{GroundTile, TILE_BLOCKS};
 
 /// A floor mesh's positions and triangles with its world transform.
 #[derive(Debug, Clone)]

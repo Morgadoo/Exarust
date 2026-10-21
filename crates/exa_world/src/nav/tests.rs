@@ -280,6 +280,8 @@ fn a_flat_6_m_floor_gets_900_points_10_cm_under_it() {
 fn ground_tiles_sample_bilinearly_and_read_holes_a_byte_at_a_time() {
     let side = 241;
     let mut tile = GroundTile {
+        x: 0,
+        y: 0,
         corner: Vec2::ZERO,
         spacing: 0.2,
         side,
@@ -305,6 +307,8 @@ fn ground_fills_only_the_blocks_that_exist() {
     // 20), its ground rising 5 mm a vertex along Z.
     let side = 241;
     let full = GroundTile {
+        x: 0,
+        y: 0,
         corner: Vec2::splat(-24.0),
         spacing: 0.2,
         side,

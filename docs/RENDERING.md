@@ -215,8 +215,11 @@ layers that do not cover the pixel:
 - texture coordinates (X, −Z)·f0/12 per metre;
 - colour: texture × linear(tint) × 1.5·min(f9, 1), cover f9, sharpness
   f2/f3; then × 0.75 (the terrain's `MatDif`);
-- normal: (N·2 − 1)·f11, mixed by the mask-sharpened opacity (f4/f5), in a
-  frame of +X and +Z across the ground (green along −v);
+- normal: (N·2 − 1)·f11, mixed by the mask-sharpened opacity (f4/f5), in
+  the frame the original builds from the vertex normal s: +X projected onto
+  the surface, then its cross with s (on flat ground +X and +Z, green along
+  −v); the stored z is the square root of 1 − the xy length squared, capped
+  at 0.999, and the vector is normalised;
 - gloss: the gloss texture × f10 × 1.5·min(f9, 1), stacked like the colour;
   roughness = 1 − gloss (no wetness indoors);
 - parallax height: f20 + (B − f21)·f22 from the bump slot, stacked like the
@@ -230,6 +233,23 @@ The original's composites hold about 170 texels per metre and have no mip
 levels, so its terrain always shows the layers' full detail. Exarust reads
 the colour and normal layers at their base level and lets supersampling
 smooth the aliasing.
+
+**Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
+20 cm, and the original draws it as one terrain mesh per 6 m block: a
+30 × 30 cell window of the same grid, each block in its grid cell's room.
+The shared triangle list is serpentine, cell row 0 running along +X, row 1
+back along −X, and every quad splits along the diagonal from its low corner
+(i, j) to its high corner (i + 1, j + 1). Exarust builds one mesh per built
+block the same way (`terrain::patch`), so rooms and visibility work per
+6 m block rather than per room. A hole removes the quads whose low corner
+is a hole, and each tile's edge hangs a 0.5 m skirt (an Exarust addition).
+
+**Height query** (`TerrainGround`): the original's ground slot floors the
+tile coordinate `width/2 + x/48 m`, floors the fraction times eight for the
+6 m block, refuses blocks the level does not build, takes the bilinear
+height of the four vertices around (its sums in the original's order; a
+hole is tested as a byte, so the right-hand neighbour is not tested where it
+starts the next byte), and reports no ground at or below −100 m.
 
 Each layer's height, gloss and blend mask are packed into one texture, and
 every layer texture is read through one repeating sampler. Each vertex's

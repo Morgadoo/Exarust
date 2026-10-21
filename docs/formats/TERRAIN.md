@@ -44,6 +44,31 @@ ground), `arenao3` a 16 × 15 rectangle around the arena, `arenao1` and
 it drops those of holes [guess: the original's grass chunks were not
 traced].
 
+A tile's geometry is one 241 × 241 vertex grid (240 × 240 cells of 20 cm)
+and one mesh per 6 m block, the block's 30 × 30 cell window of that grid.
+The original builds one shared triangle list for the tile: serpentine cell
+rows, row 0 along +X and row 1 back along −X, each quad split along the
+diagonal from its low corner (i, j) to its high corner (i + 1, j + 1).
+Exarust builds each block's mesh with the same patch (`terrain::patch`), so
+a room's terrain is one mesh per block rather than one per room. Evidence:
+REA on the block mesh builder and the patch builder; the block draw names a
+vertex offset of 30·(241·by + bx) into the tile's shared grid.
+
+### Height query
+
+The original's ground slot answers a world (`x`, `z`) in centimetres: the
+tile coordinate is the floor of `width/2 + x/4800` (the engine's "round"
+helper rounds down), the 6 m block the floor of the tile fraction times
+eight, the point is refused where the block is not built, and its height is
+the bilinear interpolation of the four vertices around it, the products and
+sums in the original's order. A vertex is a hole when it or its +X
+neighbour is set in its row or the row below of the hole mask, read a byte
+at a time (the +X neighbour is not tested where it starts the next byte);
+any corner being a hole means no ground. Results at or below −100 m are no
+ground (the hole answer is −1000 m). Exarust's `TerrainGround`
+(`exa_world::terrain::ground`) builds the same field from the displaced
+tile heights as a level loads, and keeps each tile's block bits.
+
 The navigation grid reads the same blocks: its terrain fill walks each
 tile's list of built blocks, and the level load builds the terrain before
 the grid ([NAVIGATION.md](../NAVIGATION.md)). In a grid level the original
@@ -161,8 +186,9 @@ what is below is scaled by `1 − a′ × cover`. Materials without textures sho
 their flat tint (e.g. black `Mat STint`, which fills unseen ground).
 
 The original bakes this into per-tile colour, normal, gloss, mask, height and
-displacement textures, using up to 32 materials in groups of four. Exarust
-evaluates the same weights per vertex and layers every material of a tile
+displacement textures, using up to 32 materials in groups of four, and draws
+the tile as one 6 m block mesh at a time. Exarust evaluates the same weights
+per vertex and layers every material of a tile
 (up to 16) in a shader, in palette order; each vertex's over opacities go to
 the shader in a per-tile texture, one texel per vertex. Shipped tiles use up
 to 12 materials (11 in one 6 m block, 10 in one quad): 11 of `exanima01`'s
@@ -206,8 +232,9 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   N = round(50d²), then the variant. A second pass, two steps per point,
   gives rotation rand·2π (applied times 2π again) and scale
   (2d + 0.1)(0.4 + 0.33·rand).
-- **Placement**: on the displaced ground of the cell's triangle, rotated
-  about Y only, never tilted to the slope.
+- **Placement**: on the displaced ground of the cell, on the triangle the
+  rendered patch splits it into (the low-to-high diagonal), rotated about Y
+  only, never tilted to the slope.
 
 Each tile also hangs a 0.5 m skirt from its edges (an Exarust addition). It
 hides cracks where neighbouring tiles, keeping different materials, lift a

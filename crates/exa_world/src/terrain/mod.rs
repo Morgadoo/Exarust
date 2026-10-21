@@ -9,7 +9,9 @@
 //! per-tile splat texture, one texel per vertex.
 
 pub mod blend;
+pub mod ground;
 pub mod height;
+pub mod patch;
 pub mod vegetation;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
@@ -547,6 +549,11 @@ pub struct TerrainBuild {
     built: Option<BuiltTile>,
     /// In a tile-grid level, which blocks of each tile exist.
     blocks: Option<Vec<TileBlocks>>,
+    /// Each tile's ground, shared with the navigation grid and the world
+    /// height query.
+    grounds: Vec<Option<Arc<ground::GroundTile>>>,
+    /// Whether the world height query has been given to the world.
+    ground_inserted: bool,
     next: usize,
     parent: Entity,
     stats: TerrainStats,
@@ -639,6 +646,7 @@ impl TerrainBuild {
         let environment = loader.environment_map();
         let layer_sampler = loader.images.add(layer_sampler_image());
         let plants = Plants::load(loader, &palette);
+        let tile_count = terrain.tiles.len();
         Some(Self {
             terrain,
             palette,
@@ -653,6 +661,8 @@ impl TerrainBuild {
             uploaded: 0,
             built: None,
             blocks,
+            grounds: vec![None; tile_count],
+            ground_inserted: false,
             next: 0,
             parent,
             stats: TerrainStats::default(),
@@ -698,7 +708,20 @@ impl TerrainBuild {
                 break;
             }
         }
-        self.next >= self.terrain.tiles.len()
+        let done = self.next >= self.terrain.tiles.len();
+        if done && !self.ground_inserted {
+            let mut field = ground::TerrainGround::new(
+                self.terrain.width,
+                self.terrain.height,
+                self.terrain.spacing,
+            );
+            for ground in self.grounds.iter().flatten() {
+                field.insert(ground.clone());
+            }
+            commands.insert_resource(field);
+            self.ground_inserted = true;
+        }
+        done
     }
 
     /// One part of the next tile: its heightfield, a material's textures,
@@ -827,40 +850,36 @@ impl TerrainBuild {
             crate::shadow_links::Unwalled,
             exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
         );
-        let parts = std::mem::take(&mut built.parts);
-        if blocks.is_none() {
-            // Without a grid the tile is one mesh, on the tile's entity.
-            if let Some((_, mesh)) = parts.into_iter().next() {
-                commands
-                    .entity(tile_entity)
-                    .insert((Mesh3d(loader.meshes.add(mesh)), surface));
-            }
-        } else {
-            for (room, mesh) in parts {
-                let part = commands
-                    .spawn((
-                        Name::new(format!("terrain {} {} room {room:?}", tile.x, tile.y)),
-                        Mesh3d(loader.meshes.add(mesh)),
-                        TerrainPart,
-                        surface,
-                        Transform::IDENTITY,
-                        Visibility::default(),
-                        ChildOf(tile_entity),
-                    ))
-                    .id();
-                if let Some(room) = room {
-                    commands.entity(part).insert(InRoom(room));
-                }
+        for block in std::mem::take(&mut built.blocks) {
+            let part = commands
+                .spawn((
+                    Name::new(format!(
+                        "terrain {} {} block {} {}",
+                        tile.x, tile.y, block.bx, block.by
+                    )),
+                    Mesh3d(loader.meshes.add(block.mesh)),
+                    TerrainPart,
+                    surface,
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                    ChildOf(tile_entity),
+                ))
+                .id();
+            if let Some(room) = block.room {
+                commands.entity(part).insert(InRoom(room));
             }
         }
-        // The navigation grid reads the ground of the blocks built here.
-        let mut ground = crate::nav::GroundTile::new(&self.terrain, tile, built.heights.clone());
+        // The navigation grid reads the ground of the blocks built here,
+        // and the world height query keeps the same ground.
+        let mut ground = ground::GroundTile::new(&self.terrain, tile, built.heights.clone());
         if let Some(b) = blocks {
             ground = ground.with_blocks(b.present);
         }
+        let ground = Arc::new(ground);
         commands
             .entity(tile_entity)
-            .insert(crate::nav::view::Ground(Arc::new(ground)));
+            .insert(crate::nav::view::Ground(ground.clone()));
+        let slot = self.next;
         if let Some(plants) = &self.plants {
             self.stats.plants += plants.spawn(
                 commands,
@@ -872,6 +891,7 @@ impl TerrainBuild {
                 tile_entity,
             );
         }
+        self.grounds[slot] = Some(ground);
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -1032,10 +1052,19 @@ impl Look {
     }
 }
 
+/// One 6 m block of a tile, built as its own mesh as the original builds a
+/// terrain mesh per block.
+struct BuiltBlock {
+    bx: usize,
+    by: usize,
+    room: Option<u16>,
+    mesh: Mesh,
+}
+
 struct BuiltTile {
-    /// The tile's meshes, each with its room (one, roomless, without a
-    /// grid); taken when the tile spawns.
-    parts: Vec<(Option<u16>, Mesh)>,
+    /// The tile's 6 m block meshes, each with its room; taken when the tile
+    /// spawns.
+    blocks: Vec<BuiltBlock>,
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
@@ -1142,38 +1171,28 @@ fn build_tile(
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
     // Quads (and, at the tile's edge, the skirt below them) go to the mesh
-    // of their block's room; quads of absent blocks are not built.
-    type Groups = Vec<(Option<u16>, Vec<u32>)>;
-    fn group_of(room: Option<u16>, groups: &mut Groups) -> usize {
-        match groups.iter().position(|g| g.0 == room) {
-            Some(k) => k,
-            None => {
-                groups.push((room, Vec::new()));
-                groups.len() - 1
-            }
-        }
-    }
-    let mut groups: Groups = Vec::new();
-    let block_group = |i: usize, j: usize, groups: &mut Groups| match blocks {
-        None => Some(group_of(None, groups)),
-        Some(b) => {
-            let (bx, by) = TileBlocks::of(i, j, n);
-            b.has(bx, by).then(|| group_of(b.room(bx, by), groups))
-        }
-    };
+    // of their 6 m block; quads of absent blocks are not built. The quads
+    // are the original's serpentine patch, row by row, each split along its
+    // low-to-high diagonal.
+    let side = TileBlocks::SIDE;
+    let block_at = |i: usize, j: usize| TileBlocks::of(i, j, n);
+    let present = |bx: usize, by: usize| blocks.is_none_or(|b| b.has(bx, by));
+    let mut groups: Vec<Option<Vec<u32>>> = vec![None; side * side];
     for j in 0..n - 1 {
-        for i in 0..n - 1 {
+        let forward = j % 2 == 0;
+        for k in 0..n - 1 {
+            let i = if forward { k } else { n - 2 - k };
             if tile.is_hole(i, j) {
                 continue;
             }
-            let Some(g) = block_group(i, j, &mut groups) else {
+            let (bx, by) = block_at(i, j);
+            if !present(bx, by) {
                 continue;
-            };
-            let a = (j * n + i) as u32;
-            let b = a + 1;
-            let c = a + n as u32;
-            let d = c + 1;
-            groups[g].1.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+            let tri = patch::quad_indices(i as u32, (j * n) as u32, ((j + 1) * n) as u32, forward);
+            groups[by * side + bx]
+                .get_or_insert_with(Vec::new)
+                .extend_from_slice(&tri);
         }
     }
     // A skirt hanging from the tile's edge hides cracks where neighbouring
@@ -1199,15 +1218,16 @@ fn build_tile(
             (a as usize % n).min(b as usize % n),
             (a as usize / n).min(b as usize / n),
         );
-        let Some(g) = block_group(i, j, &mut groups) else {
+        let (bx, by) = block_at(i, j);
+        if !present(bx, by) {
             continue;
-        };
+        }
         let (c, d) = (
             first_skirt + k as u32,
             first_skirt + ((k + 1) % edge.len()) as u32,
         );
-        groups[g]
-            .1
+        groups[by * side + bx]
+            .get_or_insert_with(Vec::new)
             .extend_from_slice(&[a, b, c, b, d, c, a, c, b, b, c, d]);
     }
 
@@ -1216,20 +1236,22 @@ fn build_tile(
         normals,
         uvs,
     };
-    let parts = match blocks {
-        // Without a grid the whole tile is one mesh, as built.
-        None => groups
-            .pop()
-            .map(|(room, indices)| (room, vertices.mesh(indices)))
-            .into_iter()
-            .collect(),
-        Some(_) => groups
-            .into_iter()
-            .map(|(room, indices)| (room, vertices.part(&indices)))
-            .collect(),
-    };
+    let mut built = Vec::new();
+    for by in 0..side {
+        for bx in 0..side {
+            let Some(indices) = groups[by * side + bx].take() else {
+                continue;
+            };
+            built.push(BuiltBlock {
+                bx,
+                by,
+                room: blocks.and_then(|b| b.room(bx, by)),
+                mesh: vertices.part(&indices),
+            });
+        }
+    }
     BuiltTile {
-        parts,
+        blocks: built,
         heights,
         density,
         materials: used,
@@ -1543,6 +1565,75 @@ mod tests {
         assert_eq!(p, [[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
         let i: Vec<usize> = part.indices().unwrap().iter().collect();
         assert_eq!(i, [0, 1, 2, 2, 1, 0]);
+    }
+
+    /// A tile becomes one mesh per 6 m block, each covering its own 30 × 30
+    /// cells (plus its share of the edge skirt), and each in its block's
+    /// room.
+    #[test]
+    fn a_tile_is_built_as_six_metre_blocks() {
+        use exa_formats::terrain::Palette;
+        let terrain = flat_terrain(1, 1);
+        let tile = &terrain.tiles[0];
+        let palette = Palette {
+            name: "p".into(),
+            materials: Vec::new(),
+            rules: Vec::new(),
+            plants: Vec::new(),
+        };
+        let tree = RuleTree::new(&palette);
+        let noise = NoiseMaps::default();
+        let built = build_tile(
+            &terrain,
+            tile,
+            &palette,
+            &tree,
+            &noise,
+            &mut |_| Vec::new(),
+            None,
+        );
+        assert_eq!(built.blocks.len(), 64);
+        for block in &built.blocks {
+            let indices = block.mesh.indices().unwrap().len();
+            // 30 × 30 quads, and the skirt of the blocks on the edge.
+            assert!(indices >= 30 * 30 * 6, "{},{}", block.bx, block.by);
+            let positions = block
+                .mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|a| a.as_float3())
+                .unwrap();
+            let (x0, x1) = (-24.0 + 6.0 * block.bx as f32, -18.0 + 6.0 * block.bx as f32);
+            let (z0, z1) = (-24.0 + 6.0 * block.by as f32, -18.0 + 6.0 * block.by as f32);
+            for p in positions {
+                assert!(p[0] >= x0 - 1e-3 && p[0] <= x1 + 1e-3, "x {p:?}");
+                assert!(p[2] >= z0 - 1e-3 && p[2] <= z1 + 1e-3, "z {p:?}");
+            }
+            assert_eq!(block.room, None);
+        }
+        // The four corner blocks carry the whole perimeter skirt.
+        let skirt: usize = built
+            .blocks
+            .iter()
+            .map(|b| b.mesh.indices().unwrap().len() - 30 * 30 * 6)
+            .sum();
+        assert_eq!(skirt, 4 * (TILE_VERTICES - 1) * 12);
+
+        // In a grid level only the present block exists, in its room.
+        let mut blocks = TileBlocks::default();
+        blocks.present[2] = 1 << 3;
+        blocks.rooms[2][3] = Some(7);
+        let built = build_tile(
+            &terrain,
+            tile,
+            &palette,
+            &tree,
+            &noise,
+            &mut |_| Vec::new(),
+            Some(&blocks),
+        );
+        assert_eq!(built.blocks.len(), 1);
+        assert_eq!((built.blocks[0].bx, built.blocks[0].by), (3, 2));
+        assert_eq!(built.blocks[0].room, Some(7));
     }
     #[test]
     fn splat_texels_hold_each_layer_in_its_channel() {

@@ -38,6 +38,7 @@ pub mod walkable;
 
 use bevy::math::{DVec3, Vec2, Vec3};
 
+pub use crate::terrain::ground::GroundTile;
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
@@ -45,7 +46,7 @@ pub use mover::{
 };
 pub use path::{Look, Path, find_path, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
-pub use source::{GroundTile, NavSource};
+pub use source::NavSource;
 pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 

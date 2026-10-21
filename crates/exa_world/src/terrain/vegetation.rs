@@ -212,17 +212,20 @@ pub fn grow(
 }
 
 /// Ground height under a point of an `n` × `n` vertex grid of heights, on
-/// the triangle the point falls in (cells split along (i+1, j)–(i, j+1)).
+/// the triangle the point falls in. Terrain cells split along the diagonal
+/// from (i, j) to (i + 1, j + 1), as the original's grid patch does.
 pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
     let x = at.x.clamp(0.0, (n - 1) as f32 - 1e-3);
     let z = at.y.clamp(0.0, (n - 1) as f32 - 1e-3);
     let (i, j) = (x as usize, z as usize);
     let (fx, fz) = (x - i as f32, z - j as f32);
     let h = |di: usize, dj: usize| heights[(j + dj) * n + i + di];
-    if fx + fz <= 1.0 {
-        h(0, 0) + (h(1, 0) - h(0, 0)) * fx + (h(0, 1) - h(0, 0)) * fz
+    if fx >= fz {
+        // The triangle (0, 0), (1, 0), (1, 1).
+        h(0, 0) * (1.0 - fx) + h(1, 0) * (fx - fz) + h(1, 1) * fz
     } else {
-        h(1, 1) + (h(0, 1) - h(1, 1)) * (1.0 - fx) + (h(1, 0) - h(1, 1)) * (1.0 - fz)
+        // The triangle (0, 0), (0, 1), (1, 1).
+        h(0, 0) * (1.0 - fz) + h(0, 1) * (fz - fx) + h(1, 1) * fx
     }
 }
 
@@ -308,5 +311,10 @@ mod tests {
         let heights = [0.0, 1.0, 1.0, 2.0];
         assert!((ground(&heights, 2, Vec2::new(0.25, 0.25)) - 0.5).abs() < 1e-5);
         assert!((ground(&heights, 2, Vec2::new(0.75, 0.75)) - 1.5).abs() < 1e-4);
+        // The diagonal runs (0, 0) → (1, 1): on its two sides the opposite
+        // corners weigh in.
+        let heights = [0.0, 3.0, 1.0, 2.0];
+        assert!((ground(&heights, 2, Vec2::new(0.2, 0.6)) - 0.8).abs() < 1e-5);
+        assert!((ground(&heights, 2, Vec2::new(0.6, 0.2)) - 1.6).abs() < 1e-5);
     }
 }

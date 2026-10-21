@@ -827,6 +827,9 @@ impl LevelLoad {
                         .terrain
                         .as_ref()
                         .and_then(terrain::TerrainBuild::horizontal_extent);
+                    if self.terrain.is_none() {
+                        commands.remove_resource::<terrain::ground::TerrainGround>();
+                    }
                     self.stage = Stage::Terrain;
                 }
             }
