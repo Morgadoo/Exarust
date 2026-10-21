@@ -33,62 +33,70 @@ pub mod variant {
 /// The message a release past the last reference reports.
 pub const UNDERFLOW: &str = "Item reference underflow.";
 
+/// The title of the item error boxes (the underflow and the user item
+/// messages).
+pub const ERROR_TITLE: &str = "Item Error";
+
 /// The manager's icon-atlas flags.
 pub const MANAGER_ICON_FLAGS: u32 = 0x103;
 /// The manager's atlas texture flags.
 pub const MANAGER_TEXTURE_FLAGS: u32 = 0x100e608;
-/// An icon's size in units.
-pub const MANAGER_ICON_UNITS: i32 = 40;
-/// The apparel texture size at shade quality 3 and above.
+/// The apparel painter's texture side at texture detail 3 and above.
 pub const APPAREL_SIZE_HIGH: i32 = 0x400;
-/// The apparel texture size below it.
+/// The apparel painter's texture side below it.
 pub const APPAREL_SIZE_LOW: i32 = 0x200;
-/// The RFC reader's two flags after the manager's constructor.
+/// The two flags the manager sets on its scene reader.
 pub const MANAGER_RFC_FLAGS: [u8; 2] = [1, 1];
 
-/// The manager's construction: the unit, the atlas flags and sizes, the
-/// apparel painter's texture size and the RFC reader's flags. The original
-/// makes the object database access, the shared apparel painter, the item
-/// renderer, an icon atlas with [`MANAGER_ICON_FLAGS`] and an icon size of
-/// 40 units, and a reader whose scene is the renderer's.
+/// The manager's construction: the atlas flags, the icon size and the
+/// scene reader's flags. The original makes the object database access,
+/// the shared apparel painter (once), the item renderer, an icon atlas
+/// with [`MANAGER_ICON_FLAGS`], the icon size ([`icon_size`], set when the
+/// GUI unit is) and [`MANAGER_TEXTURE_FLAGS`], and a scene reader whose
+/// scene is the renderer's, with [`MANAGER_RFC_FLAGS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerSetup {
     pub unit: i32,
     pub icon_flags: u32,
     pub texture_flags: u32,
     pub icon_size: i32,
-    pub apparel_size: i32,
     pub rfc_flags: [u8; 2],
 }
 
 impl ManagerSetup {
-    /// The manager as its constructor makes it: `shade_quality` 3 and above
-    /// paints apparel at 1024, below it at 512.
-    pub fn new(unit: i32, shade_quality: i32) -> Self {
+    /// The manager as its constructor makes it for GUI unit `unit`.
+    pub fn new(unit: i32) -> Self {
         Self {
             unit,
             icon_flags: MANAGER_ICON_FLAGS,
             texture_flags: MANAGER_TEXTURE_FLAGS,
-            icon_size: MANAGER_ICON_UNITS * unit,
-            apparel_size: if shade_quality >= 3 {
-                APPAREL_SIZE_HIGH
-            } else {
-                APPAREL_SIZE_LOW
-            },
+            icon_size: icon_size(unit),
             rfc_flags: MANAGER_RFC_FLAGS,
         }
     }
 }
 
-/// Where a user item id is looked up: its top two bits tag the database.
+/// The apparel painter's texture side (width and height) for an icon
+/// render: 1024 at texture detail 3 and above, else 512. The render sets
+/// it on the shared painter before each apparel paint.
+pub fn apparel_size(texture_detail: i32) -> i32 {
+    if texture_detail >= 3 {
+        APPAREL_SIZE_HIGH
+    } else {
+        APPAREL_SIZE_LOW
+    }
+}
+
+/// Which object database a user item id is looked up in: its top two bits
+/// tag it (bit 31 first).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserItemSource {
-    /// The level's objects (bit 31).
-    Level,
-    /// The world's objects (bit 30).
+    /// The local database (bit 31), with its own string library.
+    Local,
+    /// The world database (bit 30).
     World,
-    /// The game's objects (neither tag).
-    Game,
+    /// The base object database (`objdb.rdb`; neither tag).
+    Base,
 }
 
 /// The part of a user item id past its database tag.
@@ -99,11 +107,11 @@ pub fn user_item_id(id: u32) -> u32 {
 /// The database a user item's tag names.
 pub fn user_item_source(id: u32) -> UserItemSource {
     if id & 0x8000_0000 != 0 {
-        UserItemSource::Level
+        UserItemSource::Local
     } else if id & 0x4000_0000 != 0 {
         UserItemSource::World
     } else {
-        UserItemSource::Game
+        UserItemSource::Base
     }
 }
 
@@ -284,8 +292,7 @@ impl IconCache {
             return Released::Kept;
         }
         let underflow = e.refs < 0;
-        e.refs = 0;
-        e.id = 0;
+        free_slot(e);
         if underflow {
             self.errors.push(UNDERFLOW.to_string());
         }
@@ -307,8 +314,7 @@ impl IconCache {
         if e.refs >= 1 {
             return Released::Kept;
         }
-        e.refs = 0;
-        e.id = 0;
+        free_slot(e);
         Released::Freed
     }
 
@@ -336,70 +342,61 @@ impl IconCache {
         Some((h + x - e.half_width, h + y + e.half_height))
     }
 
-    /// Renders a cached icon again by its handle (the debug editor's
-    /// refresh): the stored id and variant go to `render`, and a success
-    /// replaces the cell and both extents. False for a bad handle or a
-    /// failed render.
-    pub fn refresh_handle<R>(&mut self, handle: usize, mut render: R) -> bool
+    /// Paints a cached icon again in place by its handle (the debug
+    /// editor's refresh): `id` (the caller's item, not the slot's stored id)
+    /// is rendered with the slot's variant, and on success the rendered
+    /// image replaces the slot's own atlas cell; the cell and both half
+    /// extents stay. Returns the repainted cell, `None` for a bad handle
+    /// (the original does not check it) or a failed render.
+    pub fn refresh_handle<R>(&self, handle: usize, id: u32, render: R) -> Option<i32>
     where
-        R: FnMut(u32, u32) -> Option<Rendered>,
+        R: FnOnce(u32, u32) -> Option<Rendered>,
     {
-        let Some(entry) = handle
-            .checked_sub(1)
-            .and_then(|index| self.entries.get(index).copied())
-        else {
-            return false;
-        };
-        let Some(rendered) = render(entry.id, entry.variant) else {
-            return false;
-        };
-        let (half_width, half_height) = self.halves(rendered);
-        let slot = &mut self.entries[handle - 1];
-        slot.cell = rendered.cell;
-        slot.half_width = half_width;
-        slot.half_height = half_height;
-        true
+        let entry = handle.checked_sub(1).and_then(|i| self.entries.get(i))?;
+        render(id, entry.variant).map(|_| entry.cell)
     }
 
-    /// One cached icon's draw: its atlas cell and the position the atlas is
-    /// asked to draw at. The original only draws a nonzero handle, with
-    /// white inks.
+    /// One cached icon's draw: its atlas cell, drawn at `at` with white
+    /// inks. A zero handle draws nothing (the original does not check the
+    /// upper bound).
     pub fn draw(&self, handle: usize, at: (i32, i32)) -> Option<(i32, (i32, i32))> {
         let entry = handle.checked_sub(1).and_then(|i| self.entries.get(i))?;
-        if handle == 0 {
-            return None;
-        }
         Some((entry.cell, at))
     }
 
-    /// The pointed pixel test: only a nonzero handle, and only when the
-    /// atlas's alpha at the point is above zero.
+    /// The exact pixel test: the atlas's alpha of the slot's cell at the
+    /// point (`alpha_at(cell, x, y)`) is above 0 (a NaN fails). A zero
+    /// handle fails.
     pub fn pixel_test(
         &self,
         handle: usize,
         point: (i32, i32),
-        alpha_at: impl Fn(i32, i32) -> f32,
+        alpha_at: impl Fn(i32, i32, i32) -> f32,
     ) -> bool {
-        handle != 0 && handle <= self.entries.len() && alpha_at(point.0, point.1) > 0.0
+        let Some(entry) = handle.checked_sub(1).and_then(|i| self.entries.get(i)) else {
+            return false;
+        };
+        alpha_at(entry.cell, point.0, point.1) > 0.0
     }
 
-    /// The loose pixel test: the atlas's own second test, which decides
-    /// from its cell's coverage; a zero handle never passes.
+    /// The loose pixel test: the atlas's near-hit test of the slot's cell
+    /// at the point (`near(cell, x, y)`). A zero handle fails.
     pub fn loose_pixel_test(
         &self,
         handle: usize,
         point: (i32, i32),
-        covered: impl Fn(i32, i32) -> bool,
+        near: impl Fn(i32, i32, i32) -> bool,
     ) -> bool {
-        handle != 0 && handle <= self.entries.len() && covered(point.0, point.1)
+        let Some(entry) = handle.checked_sub(1).and_then(|i| self.entries.get(i)) else {
+            return false;
+        };
+        near(entry.cell, point.0, point.1)
     }
 
-    /// The manager's destructor: the entries and the two renderer objects
-    /// go (the original frees the item renderer and the atlas; Exarust's
-    /// atlas-free cache just drops its entries).
+    /// The manager's destructor: the item renderer, the entries and the
+    /// icon atlas go. Exarust's atlas-free cache just drops its entries.
     pub fn destroy(&mut self) {
         self.clear();
-        self.errors.clear();
     }
 
     /// A level or save load empties the cache.
@@ -427,22 +424,46 @@ impl IconCache {
     }
 }
 
+/// A slot whose last reference went: its atlas cell is released (the
+/// atlas's release clears a positive handle), its count and its item go;
+/// the variant and the half extents stay until the slot is reused.
+fn free_slot(e: &mut Entry) {
+    if e.cell > 0 {
+        e.cell = 0;
+    }
+    e.refs = 0;
+    e.id = 0;
+}
+
 /// The icon size for GUI unit `unit`: 40 units.
 pub fn icon_size(unit: i32) -> i32 {
     40 * unit
 }
 
-/// Why an item could not be shown, as the original's error box words it.
-/// `found` is the record's size and display name when the id's database
-/// (the level's, the world's or the game's, by its tag bits) has it.
-pub fn user_item_error(id: u32, found: Option<(u32, String)>) -> Option<String> {
+/// A user item's record in its database, as the error box reads it: the
+/// record's own id, its size and its display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserItemRecord {
+    pub id: u32,
+    pub size: u32,
+    pub name: String,
+}
+
+/// Why an item could not be shown, as the original's error box (titled
+/// [`ERROR_TITLE`]) words it. `found` is the record when the id's database
+/// ([`user_item_source`], looked up by [`user_item_id`]) has it. A missing
+/// record names the tagged id, a record of 0x18 bytes or less its own id,
+/// a larger one its name.
+pub fn user_item_error(id: u32, found: Option<&UserItemRecord>) -> Option<String> {
     if id == 0 {
         return None;
     }
     Some(match found {
         None => format!("User item does not exist: {id:08X}"),
-        Some((size, _)) if size < 0x19 => format!("Invalid User Item: {id:08X}"),
-        Some((_, name)) => format!("Failed to load user item: {name}"),
+        Some(record) if record.size <= 0x18 => {
+            format!("Invalid User Item: {:08X}", record.id)
+        }
+        Some(record) => format!("Failed to load user item: {}", record.name),
     })
 }
 
@@ -581,14 +602,14 @@ mod tests {
 
     #[test]
     fn the_manager_is_built_for_forty_unit_icons() {
-        let setup = ManagerSetup::new(5, 3);
+        let setup = ManagerSetup::new(5);
         assert_eq!(setup.icon_flags, 0x103);
         assert_eq!(setup.texture_flags, 0x100e608);
         assert_eq!(setup.icon_size, 200);
-        assert_eq!(setup.apparel_size, 0x400);
         assert_eq!(setup.rfc_flags, [1, 1]);
-        assert_eq!(ManagerSetup::new(4, 2).apparel_size, 0x200);
-        assert_eq!(MANAGER_ICON_UNITS, 40);
+        // The apparel painter follows the texture detail at each render.
+        assert_eq!(apparel_size(3), 0x400);
+        assert_eq!(apparel_size(2), 0x200);
     }
 
     #[test]
@@ -596,88 +617,102 @@ mod tests {
         assert_eq!(user_item_id(0x8000_0012), 0x12);
         assert_eq!(user_item_id(0x4000_00ff), 0xff);
         assert_eq!(user_item_id(0x0123_4567), 0x0123_4567);
-        assert_eq!(user_item_source(0x8000_0001), UserItemSource::Level);
+        assert_eq!(user_item_source(0x8000_0001), UserItemSource::Local);
         assert_eq!(user_item_source(0x4000_0001), UserItemSource::World);
-        assert_eq!(user_item_source(1), UserItemSource::Game);
-        assert_eq!(user_item_source(0xc000_0001), UserItemSource::Level);
+        assert_eq!(user_item_source(1), UserItemSource::Base);
+        assert_eq!(user_item_source(0xc000_0001), UserItemSource::Local);
     }
 
     #[test]
-    fn a_handle_refresh_replaces_the_cell_and_extents() {
+    fn a_handle_refresh_repaints_the_slot_s_own_cell() {
         let mut c = IconCache::new(4);
-        c.acquire(7, 0, Some(false), render(1));
-        assert!(c.refresh_handle(1, |id, variant| {
-            assert_eq!((id, variant), (7, 0));
+        c.acquire(7, 0x0012_0000, Some(true), render(1));
+        let before = c.entries[0];
+        // The caller's item goes to the render with the slot's variant.
+        let repainted = c.refresh_handle(1, 9, |id, variant| {
+            assert_eq!((id, variant), (9, 0x2012_0000));
             Some(Rendered {
                 cell: 8,
                 width: 200.0,
                 height: 100.0,
             })
-        }));
-        assert_eq!(
-            (
-                c.entries[0].cell,
-                c.entries[0].half_width,
-                c.entries[0].half_height
-            ),
-            (8, 104, 54)
-        );
-        assert!(!c.refresh_handle(2, |_, _| Some(Rendered {
-            cell: 1,
-            width: 100.0,
-            height: 61.0
-        })));
-        assert!(!c.refresh_handle(1, |_, _| None));
+        });
+        assert_eq!(repainted, Some(1));
+        // The cell and the extents stay.
+        assert_eq!(c.entries[0], before);
+        assert_eq!(c.refresh_handle(2, 7, render(1)), None);
+        assert_eq!(c.refresh_handle(1, 7, |_, _| None), None);
     }
 
     #[test]
-    fn a_freed_slot_keeps_its_cell_variant_and_halves() {
+    fn a_freed_slot_releases_its_cell_and_keeps_its_variant() {
         let mut c = IconCache::new(4);
         c.acquire(7, 0x0100_0000, Some(true), render(9));
         let before = c.entries[0];
         let mut handle = 1;
         assert_eq!(c.release(&mut handle), Released::Freed);
-        let after = c.entries[0];
-        assert_eq!(after.id, 0);
-        assert_eq!(after.refs, 0);
         assert_eq!(
-            (
-                after.cell,
-                after.variant,
-                after.half_width,
-                after.half_height
-            ),
-            (
-                before.cell,
-                before.variant,
-                before.half_width,
-                before.half_height
-            )
+            c.entries[0],
+            Entry {
+                id: 0,
+                cell: 0,
+                refs: 0,
+                ..before
+            }
         );
-        // Drawing and the two pixel tests still need a live handle.
+        // The lit release frees the same way.
+        c.acquire(8, 0x0012_0000, Some(true), render(4));
+        c.acquire(9, 0, Some(false), render(5));
+        let mut lit = 1;
+        assert_eq!(c.release_lit(&mut lit), Released::Freed);
+        assert_eq!((c.entries[0].id, c.entries[0].cell), (0, 0));
+    }
+
+    #[test]
+    fn draws_and_pixel_tests_read_the_slot_s_cell() {
+        let mut c = IconCache::new(4);
+        c.acquire(7, 0, Some(false), render(9));
         assert_eq!(c.draw(0, (1, 2)), None);
-        assert!(!c.pixel_test(0, (0, 0), |_, _| 1.0));
-        assert!(!c.loose_pixel_test(0, (0, 0), |_, _| true));
         assert_eq!(c.draw(1, (1, 2)), Some((9, (1, 2))));
-        assert!(c.pixel_test(1, (0, 0), |_, _| 0.5));
-        assert!(!c.pixel_test(1, (0, 0), |_, _| 0.0));
-        assert!(c.loose_pixel_test(1, (0, 0), |_, _| true));
-        assert!(!c.loose_pixel_test(9, (0, 0), |_, _| true));
+        assert!(!c.pixel_test(0, (0, 0), |_, _, _| 1.0));
+        assert!(c.pixel_test(1, (3, 4), |cell, x, y| {
+            assert_eq!((cell, x, y), (9, 3, 4));
+            0.5
+        }));
+        assert!(!c.pixel_test(1, (0, 0), |_, _, _| 0.0));
+        assert!(!c.pixel_test(1, (0, 0), |_, _, _| f32::NAN));
+        assert!(!c.loose_pixel_test(0, (0, 0), |_, _, _| true));
+        assert!(c.loose_pixel_test(1, (0, 0), |cell, _, _| cell == 9));
+        assert!(!c.loose_pixel_test(9, (0, 0), |_, _, _| true));
+        c.destroy();
+        assert!(c.entries.is_empty());
     }
 
     #[test]
     fn the_error_box_messages() {
+        assert_eq!(ERROR_TITLE, "Item Error");
         assert_eq!(user_item_error(0, None), None);
         assert_eq!(
             user_item_error(0x8000_0012, None).unwrap(),
             "User item does not exist: 80000012"
         );
+        // A short record names its own id, not the tagged one.
+        let short = UserItemRecord {
+            id: 0x12,
+            size: 0x18,
+            name: String::new(),
+        };
         assert_eq!(
-            user_item_error(0x12, Some((8, String::new()))).unwrap(),
+            user_item_error(0x8000_0012, Some(&short)).unwrap(),
             "Invalid User Item: 00000012"
         );
+        let full = UserItemRecord {
+            id: 0x12,
+            size: 0x19,
+            name: "Hatchet A01".into(),
+        };
         assert_eq!(
-            user_item_error(0x12, Some((40, "Hatchet A01".into()))).unwrap(),
+            user_item_error(0x12, Some(&full)).unwrap(),
             "Failed to load user item: Hatchet A01"
         );
         assert_eq!(
