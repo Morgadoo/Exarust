@@ -54,9 +54,9 @@ pub struct Session {
     /// None keeps the chunk a save already has, else the default (zero).
     pub global_experience: Option<u32>,
     /// The memory-fragment flags; zero is not written.
-    pub memory_flags: u32,
+    pub memory_flags: Option<u32>,
     /// The sixteen-byte portal/respawn state; all zeroes are not written.
-    pub transition: [u8; 16],
+    pub transition: Option<[u8; 16]>,
 }
 
 impl Session {
@@ -71,8 +71,8 @@ impl Session {
             start_background: 0,
             discovery: None,
             global_experience: None,
-            memory_flags: 0,
-            transition: [0; 16],
+            memory_flags: None,
+            transition: None,
         }
     }
 
@@ -87,8 +87,8 @@ impl Session {
             start_background: 0,
             discovery: None,
             global_experience: None,
-            memory_flags: 0,
-            transition: [0; 16],
+            memory_flags: None,
+            transition: None,
         }
     }
 }
@@ -154,14 +154,22 @@ pub fn player_data(session: &Session) -> PlayerData {
             if let Some(worth) = session.global_experience {
                 data.set_chunk(save_package::GLOBAL_XP_CHUNK, worth.to_le_bytes().to_vec());
             }
-            if session.memory_flags != 0 {
-                data.set_chunk(
-                    save_package::MEMORY_FLAGS_CHUNK,
-                    session.memory_flags.to_le_bytes().to_vec(),
-                );
+            if let Some(flags) = session.memory_flags {
+                if flags == 0 {
+                    data.remove_chunk(save_package::MEMORY_FLAGS_CHUNK);
+                } else {
+                    data.set_chunk(
+                        save_package::MEMORY_FLAGS_CHUNK,
+                        flags.to_le_bytes().to_vec(),
+                    );
+                }
             }
-            if session.transition.iter().any(|&byte| byte != 0) {
-                data.set_chunk(save_package::TRANSITION_CHUNK, session.transition.to_vec());
+            if let Some(state) = session.transition {
+                if state.iter().all(|&byte| byte == 0) {
+                    data.remove_chunk(save_package::TRANSITION_CHUNK);
+                } else {
+                    data.set_chunk(save_package::TRANSITION_CHUNK, state.to_vec());
+                }
             }
             data
         }
@@ -211,6 +219,26 @@ pub fn player_section_after(session: &Session, previous: Option<&[u8]>) -> Vec<u
     // The story writer always emits the discovery chunk and the global
     // experience word; a session with neither writes the defaults.
     if flavour == Flavour::Story {
+        // The memory flags and the transition state are written only when
+        // non-zero. A session with a state (Some) decides: a zero state
+        // removes an older chunk; None keeps what the save had.
+        if let Some(flags) = session.memory_flags {
+            if flags == 0 {
+                data.remove_chunk(save_package::MEMORY_FLAGS_CHUNK);
+            } else {
+                data.set_chunk(
+                    save_package::MEMORY_FLAGS_CHUNK,
+                    flags.to_le_bytes().to_vec(),
+                );
+            }
+        }
+        if let Some(state) = session.transition {
+            if state.iter().all(|&byte| byte == 0) {
+                data.remove_chunk(save_package::TRANSITION_CHUNK);
+            } else {
+                data.set_chunk(save_package::TRANSITION_CHUNK, state.to_vec());
+            }
+        }
         if data.chunk(save_package::DISCOVERY_CHUNK).is_none() {
             data.set_chunk(save_package::DISCOVERY_CHUNK, vec![0; 8]);
         }
@@ -348,10 +376,10 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
             session.global_experience = Some(data.global_experience());
         }
         if data.chunk(save_package::MEMORY_FLAGS_CHUNK).is_some() {
-            session.memory_flags = data.memory_flags();
+            session.memory_flags = Some(data.memory_flags());
         }
         if data.chunk(save_package::TRANSITION_CHUNK).is_some() {
-            session.transition = data.transition_state();
+            session.transition = Some(data.transition_state());
         }
     }
     Ok(session)
@@ -420,8 +448,20 @@ fn write_body(session: &Session) -> Vec<u8> {
         }
         None => out.push(0),
     }
-    out.extend_from_slice(&session.memory_flags.to_le_bytes());
-    out.extend_from_slice(&session.transition);
+    match session.memory_flags {
+        Some(flags) => {
+            out.push(1);
+            out.extend_from_slice(&flags.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    match &session.transition {
+        Some(state) => {
+            out.push(1);
+            out.extend_from_slice(state);
+        }
+        None => out.push(0),
+    }
     out
 }
 
@@ -511,8 +551,16 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         1 => Some(u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap())),
         _ => return Err(SaveError::Malformed),
     };
-    let memory_flags = u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap());
-    let transition: [u8; 16] = take(&mut rest, 16)?.try_into().unwrap();
+    let memory_flags = match take(&mut rest, 1)?[0] {
+        0 => None,
+        1 => Some(u32::from_le_bytes(take(&mut rest, 4)?.try_into().unwrap())),
+        _ => return Err(SaveError::Malformed),
+    };
+    let transition = match take(&mut rest, 1)?[0] {
+        0 => None,
+        1 => Some(<[u8; 16]>::try_from(take(&mut rest, 16)?).unwrap()),
+        _ => return Err(SaveError::Malformed),
+    };
     if !focus.is_finite() || !rest.is_empty() {
         return Err(SaveError::Malformed);
     }
@@ -630,8 +678,8 @@ mod tests {
         session.clock = 4321;
         session.discovery = Some(vec![1, 0, 0, 0, 0, 0, 0, 0]);
         session.global_experience = Some(250);
-        session.memory_flags = 3;
-        session.transition = [1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0];
+        session.memory_flags = Some(3);
+        session.transition = Some([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
         let bytes = write(&session);
         let mut loaded = read(&bytes).unwrap();
         assert_eq!(loaded, session);
@@ -640,7 +688,7 @@ mod tests {
             Some(&[1, 0, 0, 0, 0, 0, 0, 0][..])
         );
         assert_eq!(loaded.global_experience, Some(250));
-        assert_eq!(loaded.memory_flags, 3);
+        assert_eq!(loaded.memory_flags, Some(3));
         assert_eq!(loaded.transition, session.transition);
         assert_eq!(loaded.story.level(), "exanima02");
         assert_eq!(loaded.story.journal().entries()[0].text, "The pit is open.");
@@ -807,8 +855,8 @@ mod tests {
         let mut with = session;
         with.discovery = Some(vec![4, 0, 0, 0, 0, 0, 0, 0]);
         with.global_experience = Some(9);
-        with.memory_flags = 2;
-        with.transition = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        with.memory_flags = Some(2);
+        with.transition = Some([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let data = PlayerData::parse(&player_section(&with), Flavour::Story).unwrap();
         assert_eq!(
             data.chunks.iter().map(|chunk| chunk.id).collect::<Vec<_>>(),
@@ -866,6 +914,39 @@ mod tests {
         assert_eq!(loaded.clock, 70);
         assert_eq!(loaded.company.copper, 80);
         assert_eq!(loaded.company.day, 90);
+    }
+
+    #[test]
+    fn a_zero_memory_state_removes_an_older_chunk_and_none_keeps_it() {
+        let mut old = PlayerData::story(save_package::name("exanima01"));
+        old.set_chunk(
+            save_package::MEMORY_FLAGS_CHUNK,
+            9u32.to_le_bytes().to_vec(),
+        );
+        old.set_chunk(
+            save_package::TRANSITION_CHUNK,
+            [2u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        let bytes = old.write();
+        let session = Session::story();
+        let kept = PlayerData::parse(
+            &player_section_after(&session, Some(&bytes)),
+            Flavour::Story,
+        )
+        .unwrap();
+        assert_eq!(kept.memory_flags(), 9);
+        assert_eq!(kept.transition_state()[0], 2);
+        let mut cleared = session;
+        cleared.memory_flags = Some(0);
+        cleared.transition = Some([0; 16]);
+        let cut = PlayerData::parse(
+            &player_section_after(&cleared, Some(&bytes)),
+            Flavour::Story,
+        )
+        .unwrap();
+        assert_eq!(cut.memory_flags(), 0);
+        assert_eq!(cut.chunk(save_package::MEMORY_FLAGS_CHUNK), None);
+        assert_eq!(cut.chunk(save_package::TRANSITION_CHUNK), None);
     }
 
     #[test]
