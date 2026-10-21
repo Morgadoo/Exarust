@@ -50,7 +50,7 @@ impl MessageBox {
     }
 
     /// What a click on a button with mask `mask` did. `0x100` is the
-    /// confirming button; `0x600` cancels. The event is always consumed.
+    /// confirming button; `0x600` cancels; any other mask does nothing.
     pub fn click(&mut self, mask: u32) -> bool {
         if mask & 0x100 != 0 {
             self.closed = true;
@@ -63,6 +63,13 @@ impl MessageBox {
         }
         false
     }
+}
+
+/// The clock units from `start` to `now`, signed so that a clock behind its
+/// start gives a negative span (the original subtracts in 64 bits and
+/// converts the result as a signed number).
+fn elapsed(now: u32, start: u32) -> f64 {
+    (i64::from(now) - i64::from(start)) as f64
 }
 
 /// The two fade lengths the small screens use, clock units.
@@ -132,12 +139,12 @@ impl CacheShaderScreen {
     pub fn step(&mut self, now: u32, mut warm: impl FnMut(i32) -> bool) -> bool {
         match self.phase {
             WarmScreenPhase::FadingIn => {
-                let mut t = (u64::from(now) - u64::from(self.start)) as f64 / 200.0;
+                let mut t = elapsed(now, self.start) / 200.0;
                 if t >= 1.0 {
                     self.phase = WarmScreenPhase::Warming;
                     t = 1.0;
                 }
-                self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as u8;
+                self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as i64 as u8;
                 false
             }
             WarmScreenPhase::Warming => {
@@ -149,13 +156,13 @@ impl CacheShaderScreen {
                 false
             }
             WarmScreenPhase::FadingOut => {
-                let mut t = 1.0 - (u64::from(now) - u64::from(self.start)) as f64 / 200.0;
+                let mut t = 1.0 - elapsed(now, self.start) / 200.0;
                 let mut close = false;
                 if t < 0.001 {
                     close = true;
                     t = 0.0;
                 }
-                self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as u8;
+                self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as i64 as u8;
                 close
             }
         }
@@ -173,16 +180,21 @@ impl CacheShaderScreen {
         (true, true)
     }
 
-    /// The text's centred origin and the colour's alpha.
+    /// The text's centred origin and the colour's alpha. Both halves use a
+    /// shift, so an odd negative margin rounds down.
     pub fn draw(
         &self,
         width: i32,
-        line_height_view_top: i32,
+        height: i32,
+        line_height: i32,
         text_width: i32,
         palette_alpha: u8,
     ) -> ([i32; 2], u8) {
         (
-            [(width - text_width) / 2, (line_height_view_top) / 2],
+            [
+                width.wrapping_sub(text_width) >> 1,
+                height.wrapping_sub(line_height) >> 1,
+            ],
             screen_colour_alpha(255, palette_alpha),
         )
     }
@@ -200,12 +212,15 @@ pub const PRESS_A_KEY: &str = "PRESS A KEY";
 pub const ALREADY_IN_USE: &str = "ALREADY IN USE";
 
 /// The alpha a small screen's colour takes: the colour's own alpha times
-/// the palette's, truncated after dividing by 128. The original converts
-/// through a double and truncates toward zero.
+/// the palette's, divided by 128 and rounded half to even, then stored in a
+/// byte (so a product above 32767 wraps).
 pub fn screen_colour_alpha(colour_alpha: u8, palette_alpha: u8) -> u8 {
     let product = u64::from(colour_alpha) * u64::from(palette_alpha);
-    ((product as f64 * 0.0078125) as i64) as u8
+    (product as f64 * 0.0078125).round_ties_even() as i64 as u8
 }
+
+/// How many binding entries the key screen compares a new key against.
+pub const BINDING_SLOTS: usize = 23;
 
 /// The key screen's constructor values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,7 +257,10 @@ pub struct ReadKeyScreen {
     /// The action being rebound (the control id).
     pub action: u32,
     pub phase: ReadKeyPhase,
+    /// The clock the fade-in started at.
     pub start: u32,
+    /// The clock the "already in use" warning was raised at.
+    pub warned_at: u32,
     pub alpha: u8,
 }
 
@@ -252,6 +270,7 @@ impl ReadKeyScreen {
             action,
             phase: ReadKeyPhase::FadingIn,
             start: now,
+            warned_at: now,
             alpha: 0,
         }
     }
@@ -266,12 +285,12 @@ impl ReadKeyScreen {
     }
 
     /// The key-capture registration: a key already bound to another action
-    /// (index ≠ action − 1) raises the warning and fails; otherwise the key
-    /// is stored in the table at `action` and the capture succeeds.
+    /// (any of the first 23 entries other than entry `action − 1`) raises
+    /// the warning and fails; otherwise the key is stored in entry
+    /// `action − 1` and the capture succeeds. Actions count from one.
     pub fn register(&mut self, bindings: &mut [u32], action: u32, key: u32, now: u32) -> bool {
-        let action_index = action as usize;
         let mut found = false;
-        for (i, bound) in bindings.iter().enumerate().take(22) {
+        for (i, bound) in bindings.iter().enumerate().take(BINDING_SLOTS) {
             if action.wrapping_sub(1) != i as u32 && *bound == key {
                 found = true;
                 break;
@@ -279,11 +298,14 @@ impl ReadKeyScreen {
         }
         if found {
             self.phase = ReadKeyPhase::InUse;
-            self.start = now;
+            self.warned_at = now;
             return false;
         }
-        if action_index < bindings.len() {
-            bindings[action_index] = key;
+        if let Some(slot) = (action as usize)
+            .checked_sub(1)
+            .and_then(|i| bindings.get_mut(i))
+        {
+            *slot = key;
         }
         true
     }
@@ -332,7 +354,7 @@ impl ReadKeyScreen {
     /// One frame's fade and warning timer. Returns whether the form should
     /// close (never: the screen closes on a capture or Escape).
     pub fn step(&mut self, now: u32) -> bool {
-        let mut t = (u64::from(now) - u64::from(self.start)) as f64 / 200.0;
+        let mut t = elapsed(now, self.start) / 200.0;
         if t >= 1.0 {
             t = 1.0;
             if self.phase == ReadKeyPhase::FadingIn {
@@ -340,11 +362,11 @@ impl ReadKeyScreen {
             }
         }
         if self.phase == ReadKeyPhase::InUse
-            && u64::from(self.start) + u64::from(IN_USE_MS) < u64::from(now)
+            && u64::from(self.warned_at) + u64::from(IN_USE_MS) < u64::from(now)
         {
             self.phase = ReadKeyPhase::Ready;
         }
-        self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as u8;
+        self.alpha = (t as f32 * SCREEN_ALPHA).round_ties_even() as i64 as u8;
         false
     }
 }
@@ -360,7 +382,10 @@ impl ReadKeyScreen {
         palette_alpha: u8,
     ) -> ([i32; 2], &'static str, u8) {
         (
-            [(width - text_width) / 2, (height - line_height) / 2],
+            [
+                width.wrapping_sub(text_width) >> 1,
+                height.wrapping_sub(line_height) >> 1,
+            ],
             self.prompt(),
             screen_colour_alpha(255, palette_alpha),
         )
@@ -434,9 +459,14 @@ mod tests {
         let mut screen = ReadKeyScreen::new(3, 0);
         let mut binds = [0x11u32, 0x12, 0x13, 0];
         assert!(screen.register(&mut binds, 3, 0x14, 0));
-        assert_eq!(binds[3], 0x14);
+        // Actions count from one: action 3 owns entry 2.
+        assert_eq!(binds, [0x11, 0x12, 0x14, 0]);
         assert!(!screen.register(&mut binds, 3, 0x11, 500));
-        assert_eq!((screen.phase, screen.start), (ReadKeyPhase::InUse, 500));
+        // The warning has its own clock; the fade clock is untouched.
+        assert_eq!(
+            (screen.phase, screen.warned_at, screen.start),
+            (ReadKeyPhase::InUse, 500, 0)
+        );
         assert_eq!(screen.prompt(), ALREADY_IN_USE);
         assert_eq!(screen.mouse(&mut binds, 8, 600), Some(0x8005));
         assert_eq!(screen.mouse(&mut binds, 1, 600), None);
@@ -450,6 +480,26 @@ mod tests {
     }
 
     #[test]
+    fn the_key_screen_compares_against_twenty_three_entries() {
+        let mut screen = ReadKeyScreen::new(1, 0);
+        let mut binds = [0u32; 24];
+        binds[22] = 0x55;
+        assert!(!screen.register(&mut binds, 1, 0x55, 0));
+        binds[22] = 0;
+        binds[23] = 0x55;
+        assert!(screen.register(&mut binds, 1, 0x55, 0));
+        assert_eq!(binds[0], 0x55);
+    }
+
+    #[test]
+    fn a_clock_behind_the_start_wraps_the_fade_byte() {
+        let mut s = CacheShaderScreen::new(1000);
+        assert!(!s.step(900, |_| true));
+        // Minus half of 128, stored in a byte.
+        assert_eq!(s.alpha, 192);
+    }
+
+    #[test]
     fn the_key_screen_fades_and_clears_the_warning() {
         let mut s = ReadKeyScreen::new(1, 0);
         s.step(100);
@@ -457,14 +507,15 @@ mod tests {
         s.step(200);
         assert_eq!((s.alpha, s.phase), (128, ReadKeyPhase::Ready));
         s.phase = ReadKeyPhase::InUse;
-        s.start = 1000;
+        s.warned_at = 1000;
         s.step(1100);
+        assert_eq!(s.alpha, 128);
         assert_eq!(s.phase, ReadKeyPhase::InUse);
         s.step(2001);
         assert_eq!(s.phase, ReadKeyPhase::Ready);
         // A fresh warning's 1000 units are measured from its own start.
         s.phase = ReadKeyPhase::InUse;
-        s.start = 9000;
+        s.warned_at = 9000;
         s.step(9500);
         assert_eq!(s.phase, ReadKeyPhase::InUse);
         s.step(10_001);
@@ -481,7 +532,9 @@ mod tests {
         assert_eq!(warm.hit(), -1);
         assert_eq!(warm.destroy(), (true, true));
         assert!(warm.release_text());
-        assert_eq!(warm.draw(400, 200, 100, 255).0, [150, 100]);
+        assert_eq!(warm.draw(400, 200, 20, 100, 255).0, [150, 90]);
+        // An odd negative margin rounds down, not toward zero.
+        assert_eq!(warm.draw(99, 20, 20, 100, 255).0, [-1, 0]);
         let r = read_key_form();
         assert_eq!((r.flags, r.colour), (0x1020, 0xff000000));
         let screen = ReadKeyScreen::new(2, 0);
@@ -496,7 +549,7 @@ mod tests {
     #[test]
     fn the_screen_colour_alpha_truncates() {
         assert_eq!(screen_colour_alpha(255, 255), 252);
-        assert_eq!(screen_colour_alpha(255, 64), 127);
+        assert_eq!(screen_colour_alpha(255, 64), 128);
         assert_eq!(screen_colour_alpha(128, 255), 255);
         assert_eq!(screen_colour_alpha(0, 200), 0);
     }

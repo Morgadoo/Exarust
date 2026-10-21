@@ -248,9 +248,9 @@ pub const SKILL_TITLE_UNITS: [i32; 2] = [2, 5];
 pub const SKILL_BODY_UNITS: [i32; 2] = [2, 6];
 /// The skill tooltip's width, in units, plus its odd-unit pixel.
 pub const SKILL_WIDTH_UNITS: i32 = 50;
-/// Its height in the normal and the compact layout, in units.
+/// Its height in units: 18, or 24 when the shared style word is zero.
 pub const SKILL_HEIGHT_UNITS: i32 = 18;
-pub const SKILL_HEIGHT_COMPACT_UNITS: i32 = 24;
+pub const SKILL_HEIGHT_TALL_UNITS: i32 = 24;
 /// It sits nine units below its anchor.
 pub const SKILL_GAP_UNITS: i32 = 9;
 
@@ -267,13 +267,13 @@ pub struct SkillTipPlace {
 /// Places the skill tooltip at a control's screen point.
 pub fn skill_tip_place(
     anchor: (i32, i32),
-    compact: bool,
+    tall: bool,
     unit: i32,
     fade_at: u32,
 ) -> SkillTipPlace {
     let width = (unit & 1).wrapping_add(unit.wrapping_mul(SKILL_WIDTH_UNITS));
-    let height = unit.wrapping_mul(if compact {
-        SKILL_HEIGHT_COMPACT_UNITS
+    let height = unit.wrapping_mul(if tall {
+        SKILL_HEIGHT_TALL_UNITS
     } else {
         SKILL_HEIGHT_UNITS
     });
@@ -312,11 +312,11 @@ pub fn skill_tip_draw(place: SkillTipPlace, unit: i32) -> SkillTipDraw {
     }
 }
 
-/// The skill tooltip's table cell: the original indexes a 32-byte row by
-/// four-byte steps, i.e. two cells per 64-bit table entry. The mapping of
-/// odd columns is not established, so only even column indices are read.
+/// The skill tooltip's table cell. The text table holds eight cells to a row
+/// and each cell is 32 bytes, so the cell index is `row * 8 + column`; a
+/// cell's first word is the title text and its second the body text.
 pub fn skill_tip_cell(row: u32, column: u32) -> usize {
-    (row as usize) * 4 + (column as usize) / 2
+    (row as usize) * 8 + column as usize
 }
 
 #[cfg(test)]
@@ -390,6 +390,6 @@ mod tests {
         // The odd unit adds one pixel to the width.
         assert_eq!(skill_tip_place((0, 0), true, 5, 0).width, 251);
         assert_eq!(skill_tip_place((0, 0), true, 4, 0).height, 96);
-        assert_eq!(skill_tip_cell(2, 6), 11);
+        assert_eq!(skill_tip_cell(2, 6), 22);
     }
 }

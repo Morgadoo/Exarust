@@ -3,9 +3,9 @@
 //! navigation, the character view and the inventory register on.
 //!
 //! An action entry is 24 bytes: the event mask, the form and the callback.
-//! An event with no top nibble gains `0x1000`. Removing an entry clears
-//! the callback and shifts the following entries down; the original's loop
-//! also removes a second matching entry in the same pass.
+//! An event with no top nibble gains `0x1000`. Removing an entry shifts the
+//! following entries down; the original's loop scans the whole list, so
+//! every entry of the form goes.
 //!
 //! Evidence: the super-sample get/set and the list add/remove routines
 //! (`docs/UI.md`, the 3D viewport).
@@ -67,19 +67,14 @@ impl CursorActions {
         self.entries.len() - 1
     }
 
-    /// Removes the first entry of `form`, clearing its callback and
-    /// shifting the rest down. Returns whether an entry went.
+    /// Removes every entry of `form`, shifting the rest down. The original
+    /// scans the whole list and does not step its index after a removal, so
+    /// matching entries anywhere in the list all go. Returns whether any
+    /// entry went.
     pub fn remove(&mut self, form: u64) -> bool {
-        let Some(at) = self.entries.iter().position(|e| e.form == form) else {
-            return false;
-        };
-        self.entries.remove(at);
-        // The original does not step its index after a removal, so a
-        // second entry of the same form at the new index goes too.
-        while self.entries.get(at).is_some_and(|e| e.form == form) {
-            self.entries.remove(at);
-        }
-        true
+        let before = self.entries.len();
+        self.entries.retain(|e| e.form != form);
+        self.entries.len() != before
     }
 
     /// The unit finaliser: frees the list.
@@ -122,11 +117,12 @@ mod tests {
     }
 
     #[test]
-    fn a_removal_takes_every_copy_at_the_same_index() {
+    fn a_removal_takes_every_copy_of_the_form() {
         let mut list = CursorActions::default();
         list.add(0x1000, 7, 1);
         list.add(0x1000, 7, 2);
         list.add(0x1000, 8, 3);
+        list.add(0x1000, 7, 4);
         assert!(list.remove(7));
         assert_eq!(list.entries().len(), 1);
         assert_eq!(list.entries()[0].form, 8);
