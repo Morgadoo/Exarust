@@ -3251,7 +3251,7 @@ pub enum EquipContainer {
     Apparel,
     /// The weapon list (item class `0x4000`).
     Weapons,
-    /// The arena or versus equipment list (item class `0x8000`).
+    /// The mode's own equipment list.
     Other,
     /// No container: the item is refused.
     None,
@@ -3270,33 +3270,45 @@ pub struct EquipDrop {
 }
 
 /// Routes a dropped `item_class` to its container for a creation
-/// `screen_mode`. `special`: the mode's own container is present.
+/// `screen_mode`. `special`: the mode's own equipment container is present
+/// (it takes the drop first). The arena mode (8) puts a drop in its
+/// apparel list; the versus mode's script handles it. Otherwise class
+/// `0x1000` is apparel, `0x4000` weapons, and `0x8000` the same weapon
+/// list without displacing a full list's last entry.
 pub fn equip_drop(screen_mode: i32, item_class: u32, special: bool, full: bool) -> EquipDrop {
-    let (container, handled) = if special {
-        (EquipContainer::Other, true)
-    } else if screen_mode == 8 {
-        (EquipContainer::Other, false)
-    } else if screen_mode == 0x1010 {
-        (EquipContainer::None, false)
-    } else {
-        let container = match item_class & 0xF000 {
-            0x1000 => EquipContainer::Apparel,
-            0x4000 => EquipContainer::Weapons,
-            0x8000 => EquipContainer::Other,
-            _ => EquipContainer::None,
-        };
-        (container, true)
-    };
-    if !handled && screen_mode == 8 && !special {
-        // The arena mode without its container refuses the drop.
+    if special {
         return EquipDrop {
-            container: EquipContainer::None,
-            replaced_last: false,
+            container: EquipContainer::Other,
+            replaced_last: full,
         };
     }
-    EquipDrop {
-        container,
-        replaced_last: container != EquipContainer::None && full,
+    match screen_mode {
+        8 => EquipDrop {
+            container: EquipContainer::Apparel,
+            replaced_last: full,
+        },
+        0x1010 => EquipDrop {
+            container: EquipContainer::None,
+            replaced_last: false,
+        },
+        _ => match item_class & 0xF000 {
+            0x1000 => EquipDrop {
+                container: EquipContainer::Apparel,
+                replaced_last: full,
+            },
+            0x4000 => EquipDrop {
+                container: EquipContainer::Weapons,
+                replaced_last: full,
+            },
+            0x8000 => EquipDrop {
+                container: EquipContainer::Weapons,
+                replaced_last: false,
+            },
+            _ => EquipDrop {
+                container: EquipContainer::None,
+                replaced_last: false,
+            },
+        },
     }
 }
 
@@ -5433,9 +5445,10 @@ mod tests {
             }
         );
         assert_eq!(
-            equip_drop(0, 0x8000, false, false).container,
-            EquipContainer::Other
+            equip_drop(0, 0x8000, false, true).container,
+            EquipContainer::Weapons
         );
+        assert!(!equip_drop(0, 0x8000, false, true).replaced_last);
         assert_eq!(
             equip_drop(0, 0x2000, false, false).container,
             EquipContainer::None
@@ -5447,7 +5460,7 @@ mod tests {
         assert!(equip_drop(3, 0x2000, true, true).replaced_last);
         assert_eq!(
             equip_drop(8, 0x1000, false, false).container,
-            EquipContainer::None
+            EquipContainer::Apparel
         );
         assert_eq!(
             equip_drop(0x1010, 0x1000, false, false).container,
