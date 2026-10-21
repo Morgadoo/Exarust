@@ -73,30 +73,21 @@ const fn build_slot_children() -> [SlotChildren; 18] {
     out
 }
 
-/// The factory's mutable state: the item database override and the global
-/// look seed holder the spawn reads. The original keeps both in the
-/// singleton; a factory owns them here.
+/// The factory's mutable state: the item database override the spawns and
+/// rebuilds set (a placement's own database, or the rebuild's) and clear
+/// when done. The original keeps it in the singleton; a factory owns it
+/// here. The unit's finalizer, which frees the apparel model cache, is
+/// Rust's drop.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CharacterFactory {
-    /// The database the equip pass resolves world/global item ids against;
-    /// cleared when a spawn has no override.
+    /// The database the equip pass resolves world/global item ids against.
     pub item_database: Option<String>,
-    /// The texture-job seed holder (the one the look rebuild reads).
-    pub look_seed: u32,
 }
 
 impl CharacterFactory {
     /// Clears the item-database override.
     pub fn clear_item_database(&mut self) {
         self.item_database = None;
-    }
-
-    /// The finalizer: release the override and the seed
-    /// holder. Rust's drop would do this; the method keeps the original's
-    /// explicit release point testable.
-    pub fn release(&mut self) {
-        self.item_database = None;
-        self.look_seed = 0;
     }
 }
 
@@ -153,15 +144,11 @@ mod tests {
     }
 
     #[test]
-    fn an_item_database_override_clears_and_releases() {
+    fn an_item_database_override_clears() {
         let mut f = CharacterFactory {
             item_database: Some("arenaactors".into()),
-            look_seed: 7,
         };
         f.clear_item_database();
-        assert_eq!(f.item_database, None);
-        f.item_database = Some("x".into());
-        f.release();
         assert_eq!(f, CharacterFactory::default());
     }
 
