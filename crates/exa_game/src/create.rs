@@ -585,8 +585,12 @@ pub struct CreationRefresh {
 }
 
 /// Refreshes the creation label at most once per 300 units.
+///
+/// This is the voice preview button: the "label" built when absent is the
+/// selected voice's sample, and the draw plays it (see [`throttle_voice`]
+/// for the same 300-unit guard).
 pub fn refresh_creation_label(clock: i32, last: i32, has_widget: bool) -> CreationRefresh {
-    if (clock as u32).wrapping_sub(last as u32) < 300 {
+    if !throttle_voice(clock, last).played {
         return CreationRefresh {
             ran: false,
             built: false,
@@ -778,7 +782,8 @@ pub struct CreationCopy {
 
 /// Copies the link word and runs its two-unit debounce.
 pub fn copy_creation_link(stamp: i32, clock: i32) -> CreationCopy {
-    if (stamp as u32).wrapping_add(2) <= clock as u32 {
+    // The stamp is zero-extended and added in 64 bits, so it does not wrap.
+    if u64::from(stamp as u32) + 2 <= u64::from(clock as u32) {
         CreationCopy {
             copied: true,
             fired: true,
@@ -2315,9 +2320,10 @@ pub fn continue_layout(
     }
 }
 
-/// The voice pitch a slider value produces: 0.9 to 1.07.
+/// The voice pitch a slider value produces: 0.9 to 1.07. The product and
+/// sum are worked in double precision and stored as a float.
 pub fn voice_pitch(slider: f32) -> f32 {
-    slider * 0.17 + 0.9
+    (f64::from(slider) * 0.17 + 0.9) as f32
 }
 
 /// The two-digit number the voice names use: at least two digits, and a
@@ -2334,6 +2340,15 @@ pub fn two_digits(value: i32) -> String {
     }
 }
 
+/// The suffix every voice sample name ends with.
+pub const VOICE_SUFFIX: &str = "_GruntS";
+
+/// The voice name prefix a sex change sets: `V` and the appearance label
+/// (`VHM`, `VHF`, …), or a bare `V` for a race with no label.
+pub fn voice_prefix(label: CreationLabel) -> String {
+    format!("V{}", label.code().unwrap_or(""))
+}
+
 /// The sound a voice selection plays.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoicePreview {
@@ -2345,13 +2360,14 @@ pub struct VoicePreview {
 }
 
 /// Builds the sound names of a selected voice, played when its sample
-/// exists. The name is the prefix and the one-based voice number; the
-/// alternative inserts `DA` before it.
+/// exists: the prefix, the one-based voice number and `_GruntS`
+/// (`VHM01_GruntS`); the alternative inserts `DA` before the number
+/// (`VHMDA01_GruntS`). Both previews play at volume 0.4.
 pub fn voice_preview(prefix: &str, index: i32, pitch: f32) -> VoicePreview {
-    let number = two_digits(index + 1);
+    let number = two_digits(index.wrapping_add(1));
     VoicePreview {
-        name: format!("{prefix}{number}"),
-        variant_name: format!("{prefix}DA{number}"),
+        name: format!("{prefix}{number}{VOICE_SUFFIX}"),
+        variant_name: format!("{prefix}DA{number}{VOICE_SUFFIX}"),
         pitch_bits: voice_pitch(pitch).to_bits(),
     }
 }
@@ -2361,13 +2377,14 @@ pub fn previous_voice(index: i32) -> Option<i32> {
     (index > 0).then_some(index - 1)
 }
 
-/// Steps the voice selection up.
+/// Steps the voice selection up; there is no upper bound, the selection
+/// just fails when no sample has the number.
 pub fn next_voice(index: i32) -> i32 {
-    index.saturating_add(1)
+    index.wrapping_add(1)
 }
 
-/// The pitch slider's throttle: a preview at most once per 300 clock
-/// units.
+/// The voice preview button's throttle: a preview at most once per 300
+/// clock units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoiceThrottle {
     pub played: bool,
@@ -2375,8 +2392,11 @@ pub struct VoiceThrottle {
 }
 
 /// Allows a voice preview when 300 clock units have passed.
+///
+/// Both words are zero-extended and subtracted in 64 bits, so a stamp
+/// ahead of the clock gives a negative distance and blocks the preview.
 pub fn throttle_voice(clock: i32, last: i32) -> VoiceThrottle {
-    if (clock as u32).wrapping_sub(last as u32) > 299 {
+    if i64::from(clock as u32) - i64::from(last as u32) >= 300 {
         VoiceThrottle {
             played: true,
             last: clock,
@@ -2417,19 +2437,27 @@ pub fn set_hair_visible(word: i32, checkbox_on: bool) -> i32 {
     }
 }
 
-/// The sex change's record word and voice prefix suffix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The sex change's record word, label and voice prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SexChange {
     pub word: i32,
     pub label: CreationLabel,
+    /// The prefix the voice names are built from (see [`voice_prefix`]).
+    pub voice_prefix: String,
 }
 
 /// Applies the sex radio choice: 2 is female.
+///
+/// The original only reacts to the radio button being checked. After the
+/// word and prefix change it reselects voice 0 and variant voice 0 with
+/// the preview muted, then runs the change callback.
 pub fn change_sex(word: i32, radio: i32) -> SexChange {
     let word = if radio == 2 { word | 1 } else { word & !1 };
+    let label = creation_label(word);
     SexChange {
         word,
-        label: creation_label(word),
+        label,
+        voice_prefix: voice_prefix(label),
     }
 }
 
@@ -2836,9 +2864,17 @@ pub fn equipment_tab(index: i32) -> EquipmentTab {
     }
 }
 
-/// Whether a voice selection takes: only when its sample exists.
+/// Whether a voice selection takes: only when its sample exists. The
+/// voice caption then shows the letter `A` plus the index.
 pub fn select_voice(index: i32, sample_exists: bool) -> Option<i32> {
     sample_exists.then_some(index)
+}
+
+/// Whether a variant voice selection takes. A record whose race byte is
+/// set takes the index directly, with no sample and no preview; a human
+/// needs the `DA` sample to exist.
+pub fn select_variant_voice(index: i32, race_set: bool, sample_exists: bool) -> Option<i32> {
+    (race_set || sample_exists).then_some(index)
 }
 
 /// The record fields a loaded preset leaves behind.
@@ -2928,32 +2964,39 @@ pub struct VoiceHistory {
     pub before_last: usize,
 }
 
-/// Draws the voice variant a preview plays.
+/// Draws the voice variant a preview plays, or none for an empty sound.
 ///
-/// One or two samples always use the first; two or three avoid the last
-/// variant, and four or more avoid the last two. The draw advances the
-/// engine's generator; a single sample does not draw at all.
-pub fn draw_voice_variant(rng: &mut Lcg, count: usize, history: &mut VoiceHistory) -> usize {
-    let index = if count < 2 {
-        0
-    } else if count < 4 {
-        let mut index = rng.below(count as u32) as usize;
-        while index == history.last {
-            index = rng.below(count as u32) as usize;
+/// One sample always plays the first and does not advance the engine's
+/// generator; two or three avoid the last variant, and four or more avoid
+/// the last two, redrawing until they do. Every played variant pushes the
+/// history. The audio environment's own play routine does this, and only
+/// once its device is open.
+pub fn draw_voice_variant(
+    rng: &mut Lcg,
+    count: usize,
+    history: &mut VoiceHistory,
+) -> Option<usize> {
+    let index = match count {
+        0 => return None,
+        1 => 0,
+        2 | 3 => {
+            let mut index = rng.below(count as u32) as usize;
+            while index == history.last {
+                index = rng.below(count as u32) as usize;
+            }
+            index
         }
-        index
-    } else {
-        let mut index = rng.below(count as u32) as usize;
-        while index == history.last || index == history.before_last {
-            index = rng.below(count as u32) as usize;
+        _ => {
+            let mut index = rng.below(count as u32) as usize;
+            while index == history.last || index == history.before_last {
+                index = rng.below(count as u32) as usize;
+            }
+            index
         }
-        index
     };
-    if count >= 1 {
-        history.before_last = history.last;
-        history.last = index;
-    }
-    index
+    history.before_last = history.last;
+    history.last = index;
+    Some(index)
 }
 
 #[cfg(test)]
@@ -3495,6 +3538,10 @@ mod tests {
         assert!(!pending.fired);
         assert_eq!(pending.stamp, 10);
         assert!(pending.pending);
+
+        // Near the top of the clock the stamp plus two does not wrap.
+        assert!(copy_creation_link(-1, 0).pending);
+        assert!(copy_creation_link(-3, -1).fired);
 
         let fired = copy_creation_link(10, 12);
         assert!(fired.fired);
@@ -4417,17 +4464,25 @@ mod tests {
         assert_eq!(two_digits(100), "100");
         assert_eq!(two_digits(-1), "0");
 
-        let preview = voice_preview("Vo", 0, 0.0);
-        assert_eq!(preview.name, "Vo01");
-        assert_eq!(preview.variant_name, "VoDA01");
+        let preview = voice_preview("VHM", 0, 0.0);
+        assert_eq!(preview.name, "VHM01_GruntS");
+        assert_eq!(preview.variant_name, "VHMDA01_GruntS");
         assert_eq!(preview.pitch_bits, 0.9f32.to_bits());
+        assert_eq!(voice_preview("VHF", 11, 0.0).name, "VHF12_GruntS");
+        assert_eq!(voice_prefix(CreationLabel::Ham), "VHAM");
+        assert_eq!(voice_prefix(CreationLabel::None), "V");
 
         assert_eq!(previous_voice(0), None);
         assert_eq!(previous_voice(1), Some(0));
         assert_eq!(next_voice(4), 5);
+        assert_eq!(next_voice(i32::MAX), i32::MIN);
 
-        assert!((voice_pitch(0.0) - 0.9).abs() < 1e-7);
-        assert!((voice_pitch(1.0) - 1.07).abs() < 1e-6);
+        assert_eq!(voice_pitch(0.0), 0.9);
+        // 0.17 + 0.9 in doubles is 1.07 rounded once to a float.
+        assert_eq!(voice_pitch(1.0), 1.07);
+        // A slider of 0.001 gives 0x3f66718b in doubles; float arithmetic
+        // would round to 0x3f66718a.
+        assert_eq!(voice_pitch(0.001).to_bits(), 0x3f66_718b);
     }
 
     #[test]
@@ -4437,7 +4492,10 @@ mod tests {
         assert_eq!(played.last, 300);
         assert!(!throttle_voice(299, 0).played);
         assert!(!throttle_voice(0, -2).played);
-        assert!(throttle_voice(0, -300).played);
+        // A stamp ahead of the clock is a negative distance, not a wrap.
+        assert!(!throttle_voice(0, -300).played);
+        assert!(throttle_voice(-1, 0).played);
+        assert!(!refresh_creation_label(0, -300, true).ran);
     }
 
     #[test]
@@ -4456,9 +4514,11 @@ mod tests {
         let male = change_sex(1, 1);
         assert_eq!(male.word, 0);
         assert_eq!(male.label, CreationLabel::HumanMale);
+        assert_eq!(male.voice_prefix, "VHM");
         let ham = change_sex(0x200, 2);
         assert_eq!(ham.word, 0x201);
         assert_eq!(ham.label, CreationLabel::Ham);
+        assert_eq!(ham.voice_prefix, "VHAM");
     }
 
     #[test]
@@ -4711,6 +4771,9 @@ mod tests {
     fn a_voice_selection_needs_its_sample() {
         assert_eq!(select_voice(3, true), Some(3));
         assert_eq!(select_voice(3, false), None);
+        assert_eq!(select_variant_voice(2, true, false), Some(2));
+        assert_eq!(select_variant_voice(2, false, false), None);
+        assert_eq!(select_variant_voice(2, false, true), Some(2));
     }
 
     #[test]
@@ -4720,13 +4783,13 @@ mod tests {
 
         // The first two draws are 0 and 0 and repeat the last variant; the
         // third is 3.
-        assert_eq!(draw_voice_variant(&mut rng, 4, &mut history), 3);
+        assert_eq!(draw_voice_variant(&mut rng, 4, &mut history), Some(3));
         assert_eq!(history.last, 3);
         assert_eq!(history.before_last, 0);
 
         let mut rng = Lcg(0);
         let mut history = VoiceHistory::default();
-        assert_eq!(draw_voice_variant(&mut rng, 2, &mut history), 1);
+        assert_eq!(draw_voice_variant(&mut rng, 2, &mut history), Some(1));
         assert_eq!(history.last, 1);
 
         let mut rng = Lcg(0);
@@ -4734,7 +4797,9 @@ mod tests {
             last: 5,
             before_last: 5,
         };
-        assert_eq!(draw_voice_variant(&mut rng, 1, &mut history), 0);
+        assert_eq!(draw_voice_variant(&mut rng, 0, &mut history), None);
+        assert_eq!(history.last, 5);
+        assert_eq!(draw_voice_variant(&mut rng, 1, &mut history), Some(0));
         assert_eq!(rng.0, 0);
         assert_eq!(history.last, 0);
         assert_eq!(history.before_last, 5);
