@@ -6042,39 +6042,46 @@ pub fn draw_control_shell(
     }
 }
 
-/// Fades a label in from its start clock: the first 300 ms scale its alpha,
-/// and once the fade is complete the label draws normally and clears its
-/// fade bit.
+/// A label fading in from its start clock over a third of a second. A
+/// start of 0 is taken as now. While the fade is at most 1 the label draws
+/// through the caller's-ink variant with the label group's seventh shade,
+/// its alpha scaled by the fade, and asks for another frame; past 1 the
+/// fade bit (bit 1 of the state) is cleared and the label draws plainly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FadedLabel {
-    pub ink: SkinInk,
-    pub y: i32,
-    pub calls: u32,
+    /// The start clock the label keeps.
+    pub start: u32,
     pub fade: f32,
+    /// The ink for the caller's-ink variant, while the label still fades.
+    pub ink: Option<SkinInk>,
     pub finished: bool,
     pub clear_bit: bool,
+    pub redraw_calls: u32,
 }
 
-/// Draws a label fading in over a third of a second.
-pub fn fade_label(start: u32, now: u32, rect_y: i32, ink: SkinInk) -> FadedLabel {
-    let fade = now.wrapping_sub(start) as f32 * 0.003_333_333_5;
-    if fade <= 1.0 {
+/// Works out a label's fade at `now` (milliseconds).
+pub fn fade_label(start: u32, now: u32, palette: &SkinPalette) -> FadedLabel {
+    let start = if start == 0 { now } else { start };
+    let elapsed = i64::from(now) - i64::from(start);
+    let fade = (elapsed as f64 * 0.003_333_333_333_333_333_5) as f32;
+    if fade > 1.0 {
         FadedLabel {
-            ink: with_alpha(ink, rounded_byte(f32::from(ink[3]) * fade)),
-            y: rect_y,
-            calls: 1,
+            start,
             fade,
-            finished: false,
-            clear_bit: false,
-        }
-    } else {
-        FadedLabel {
-            ink,
-            y: 0,
-            calls: 1,
-            fade,
+            ink: None,
             finished: true,
             clear_bit: true,
+            redraw_calls: 0,
+        }
+    } else {
+        let ink = palette.text[6];
+        FadedLabel {
+            start,
+            fade,
+            ink: Some(with_alpha(ink, low_byte(f32::from(ink[3]) * fade))),
+            finished: false,
+            clear_bit: false,
+            redraw_calls: 1,
         }
     }
 }
@@ -6840,6 +6847,7 @@ pub struct ControlLabelPlace {
     pub line_height: i32,
     pub base: i32,
     pub text_len: usize,
+    /// The font's character step the block form divides the width by.
     pub step: i32,
 }
 
@@ -6865,16 +6873,37 @@ pub struct ControlLabelDraw {
     pub y: i32,
     /// The ink of the single call, when there is one.
     pub ink: Option<SkinInk>,
-    /// The two calls of the shadow arm, first then second.
-    pub shadow: Option<[(i32, i32); 2]>,
-    /// True for the coloured renderer.
+    /// The two calls of the shadow arm, each with its place and ink.
+    pub shadow: Option<[(i32, i32, SkinInk); 2]>,
+    /// True for the glowing text (`glow_text`) of a coloured label.
     pub coloured: bool,
     /// The bytes of the text the block arm keeps.
     pub keep: usize,
-    /// The cursor cross drawn after coloured text, and the blend it uses.
-    pub cross: Option<SkinInk>,
+    /// The block arm's right-aligned form (style 0x4000).
+    pub right_aligned: bool,
     pub calls: u32,
-    pub mode_calls: u32,
+}
+
+impl ControlLabelDraw {
+    fn single(x: i32, y: i32, ink: SkinInk, keep: usize) -> Self {
+        ControlLabelDraw {
+            x,
+            y,
+            ink: Some(ink),
+            shadow: None,
+            coloured: false,
+            keep,
+            right_aligned: false,
+            calls: 1,
+        }
+    }
+
+    fn glowing(x: i32, y: i32, palette: &SkinPalette, keep: usize) -> Self {
+        ControlLabelDraw {
+            coloured: true,
+            ..Self::single(x, y, glow_text(x, y, palette).text_ink, keep)
+        }
+    }
 }
 
 fn place_control_text(place: &ControlLabelPlace, unit: i32) -> (i32, i32) {
@@ -6900,7 +6929,9 @@ fn place_control_text(place: &ControlLabelPlace, unit: i32) -> (i32, i32) {
 }
 
 /// Places and selects a control label: the measured x and y, then the ink
-/// and the calls the variant makes.
+/// and the calls the variant makes. Unfocused labels draw in the label
+/// group's seventh shade, focused ones in its third; the slot's idle label
+/// uses the ninth.
 pub fn draw_control_label(
     place: ControlLabelPlace,
     variant: LabelVariant,
@@ -6911,72 +6942,37 @@ pub fn draw_control_label(
     let (x, y) = place_control_text(&place, unit);
     let focused = (place.state & 0x10) == 0x10;
     let coloured = (place.state & 0xf_0000) == 0x1_0000;
+    let pressed = (place.state & 0x40) == 0x40;
+    let keep = place.text_len;
+    let offset_y = y + place.offset;
     match variant {
-        LabelVariant::Plain => ControlLabelDraw {
+        LabelVariant::Plain => ControlLabelDraw::single(
             x,
-            y: y + place.offset,
-            ink: Some(if focused {
+            offset_y,
+            if focused {
                 palette.text[2]
             } else {
-                palette.text[5]
-            }),
-            shadow: None,
-            coloured: false,
-            keep: place.text_len,
-            cross: None,
-            calls: 1,
-            mode_calls: 0,
-        },
+                palette.text[6]
+            },
+            keep,
+        ),
         LabelVariant::WithText => {
             if focused {
-                ControlLabelDraw {
-                    x,
-                    y: y + place.offset,
-                    ink: Some(palette.text[2]),
-                    shadow: None,
-                    coloured: false,
-                    keep: place.text_len,
-                    cross: None,
-                    calls: 1,
-                    mode_calls: 0,
-                }
+                ControlLabelDraw::single(x, offset_y, palette.text[2], keep)
             } else if coloured {
-                ControlLabelDraw {
-                    x,
-                    y: y + place.offset,
-                    ink: Some(palette.text[6]),
-                    shadow: None,
-                    coloured: true,
-                    keep: place.text_len,
-                    cross: Some(palette.highlight[0]),
-                    calls: 1,
-                    mode_calls: 2,
-                }
+                // The glowing text takes the measured place, without the
+                // caller's offset.
+                ControlLabelDraw::glowing(x, y, palette, keep)
             } else {
-                ControlLabelDraw {
-                    x,
-                    y: y + place.offset,
-                    ink: Some(palette.text[5]),
-                    shadow: None,
-                    coloured: false,
-                    keep: place.text_len,
-                    cross: None,
-                    calls: 1,
-                    mode_calls: 0,
-                }
+                ControlLabelDraw::single(x, offset_y, palette.text[6], keep)
             }
         }
-        LabelVariant::Ink => ControlLabelDraw {
+        LabelVariant::Ink => ControlLabelDraw::single(
             x,
-            y: y + place.offset,
-            ink: Some(if focused { palette.text[3] } else { ink }),
-            shadow: None,
-            coloured: false,
-            keep: place.text_len,
-            cross: None,
-            calls: 1,
-            mode_calls: 0,
-        },
+            offset_y,
+            if focused { palette.text[3] } else { ink },
+            keep,
+        ),
         LabelVariant::Block => {
             let keep = if place.step > 0 {
                 let fit = ((place.rect.x1 - place.rect.x0) as i32 - place.inset * 2) / place.step;
@@ -6984,105 +6980,55 @@ pub fn draw_control_label(
             } else {
                 place.text_len
             };
+            let block_ink = if coloured {
+                with_alpha(palette.highlight[7], 0xff)
+            } else {
+                palette.text[6]
+            };
             ControlLabelDraw {
-                x,
-                y,
-                ink: Some(if coloured {
-                    with_alpha(
-                        [
-                            palette.highlight[7][0],
-                            palette.highlight[7][1],
-                            palette.highlight[7][2],
-                            0,
-                        ],
-                        0xff,
-                    )
-                } else {
-                    palette.text[5]
-                }),
-                shadow: None,
                 coloured,
-                keep,
-                cross: None,
-                calls: 1,
-                mode_calls: 0,
+                right_aligned: (place.style & 0x7000) == 0x4000,
+                ..ControlLabelDraw::single(x, offset_y, block_ink, keep)
             }
         }
         LabelVariant::Slot => {
             if focused {
-                ControlLabelDraw {
-                    x,
-                    y,
-                    ink: Some(palette.text[2]),
-                    shadow: None,
-                    coloured: false,
-                    keep: place.text_len,
-                    cross: None,
-                    calls: 1,
-                    mode_calls: 0,
-                }
+                ControlLabelDraw::single(x, y, palette.text[2], keep)
             } else if coloured {
-                let nudge = i32::from((place.state & 0x40) == 0x40);
+                ControlLabelDraw::glowing(x, y + i32::from(pressed), palette, keep)
+            } else if pressed {
                 ControlLabelDraw {
-                    x,
-                    y: y + nudge,
-                    ink: Some(palette.text[6]),
-                    shadow: None,
-                    coloured: true,
-                    keep: place.text_len,
-                    cross: Some(palette.highlight[0]),
-                    calls: 1,
-                    mode_calls: 2,
-                }
-            } else if (place.state & 0x40) == 0x40 {
-                ControlLabelDraw {
-                    x,
-                    y,
                     ink: None,
-                    shadow: Some([(x - 1, y), (x, y + 1)]),
-                    coloured: false,
-                    keep: place.text_len,
-                    cross: None,
+                    shadow: Some([(x - 1, y, palette.control[1]), (x, y + 1, palette.text[6])]),
                     calls: 2,
-                    mode_calls: 0,
+                    ..ControlLabelDraw::single(x, y, palette.text[6], keep)
                 }
             } else {
-                ControlLabelDraw {
-                    x,
-                    y,
-                    ink: Some(palette.text[7]),
-                    shadow: None,
-                    coloured: false,
-                    keep: place.text_len,
-                    cross: None,
-                    calls: 1,
-                    mode_calls: 0,
-                }
+                ControlLabelDraw::single(x, y, palette.text[8], keep)
             }
         }
     }
 }
 
-/// The coloured text draw's cursor: the text ink at the place, then four
-/// one-pixel lines around the point in the highlight ink, under blend 0x201.
+/// A coloured label's glowing text: the text in the label group's eighth
+/// shade, then four copies a pixel left, right, below and above in the
+/// highlight group's first shade, in one batch under the additive blend.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TextCursor {
+pub struct GlowText {
     pub text_ink: SkinInk,
-    pub cross_ink: SkinInk,
-    pub cross_points: [(f32, f32); 4],
+    pub glow_ink: SkinInk,
+    pub glow_places: [(i32, i32); 4],
     pub begin_calls: u32,
     pub end_calls: u32,
     pub blend: u16,
 }
 
-/// Draws coloured text and its cursor cross.
-pub fn text_cursor(x: i32, y: i32, palette: &SkinPalette) -> TextCursor {
-    let x = x as f32;
-    let y = y as f32;
-    TextCursor {
+/// Draws coloured text and its glow.
+pub fn glow_text(x: i32, y: i32, palette: &SkinPalette) -> GlowText {
+    GlowText {
         text_ink: palette.text[7],
-        cross_ink: palette.highlight[0],
-        cross_points: [(x - 1.0, y), (x + 1.0, y), (x, y + 1.0), (x, y - 1.0)],
+        glow_ink: palette.highlight[0],
+        glow_places: [(x - 1, y), (x + 1, y), (x, y + 1), (x, y - 1)],
         begin_calls: 1,
         end_calls: 1,
         blend: 0x201,
@@ -11719,15 +11665,25 @@ mod tests {
     }
 
     #[test]
-    fn a_label_fades_in_over_three_hundred_seconds() {
-        let faded = fade_label(0, 150, 40, [1, 2, 3, 200]);
-        assert_eq!(faded.ink, [1, 2, 3, 100]);
+    fn a_label_fades_in_over_a_third_of_a_second() {
+        let palette = palette_for_faces();
+        // 150 ms is a fade of 0.5: the seventh label shade at alpha 35.
+        let faded = fade_label(1000, 1150, &palette);
+        assert_eq!(faded.ink, Some([40, 6, 0, 35]));
         assert!(!faded.finished);
-        assert_eq!(faded.y, 40);
-        let done = fade_label(0, 400, 40, [1, 2, 3, 200]);
+        assert_eq!(faded.redraw_calls, 1);
+        let done = fade_label(1000, 1400, &palette);
         assert!(done.finished);
         assert!(done.clear_bit);
-        assert_eq!(done.ink, [1, 2, 3, 200]);
+        assert_eq!(done.ink, None);
+        // A start of 0 begins now.
+        let fresh = fade_label(0, 5000, &palette);
+        assert_eq!((fresh.start, fresh.fade), (5000, 0.0));
+        // A clock behind the start fades from below zero: −0.5 × 70 is
+        // −35, whose low byte is 221.
+        let early = fade_label(1150, 1000, &palette);
+        assert!(!early.finished);
+        assert_eq!(early.ink, Some([40, 6, 0, 221]));
     }
 
     fn form_rect_place() -> FormRectPlace {
@@ -12254,7 +12210,7 @@ mod tests {
     fn a_control_label_picks_the_focused_or_the_plain_ink() {
         let palette = palette_for_faces();
         let plain = draw_control_label(label_place(0, 0), LabelVariant::Plain, [0; 4], &palette, 5);
-        assert_eq!(plain.ink, Some(palette.text[5]));
+        assert_eq!(plain.ink, Some([40, 6, 0, 70]));
         let focused = draw_control_label(
             label_place(0, 0x10),
             LabelVariant::Plain,
@@ -12262,7 +12218,7 @@ mod tests {
             &palette,
             5,
         );
-        assert_eq!(focused.ink, Some(palette.text[2]));
+        assert_eq!(focused.ink, Some([40, 2, 0, 70]));
         let ink = draw_control_label(
             label_place(0, 0),
             LabelVariant::Ink,
@@ -12271,23 +12227,65 @@ mod tests {
             5,
         );
         assert_eq!(ink.ink, Some([7, 8, 9, 10]));
+        let focused_ink = draw_control_label(
+            label_place(0, 0x10),
+            LabelVariant::Ink,
+            [7, 8, 9, 10],
+            &palette,
+            5,
+        );
+        assert_eq!(focused_ink.ink, Some([40, 3, 0, 70]));
+    }
+
+    #[test]
+    fn a_coloured_text_label_glows_at_the_measured_place() {
+        let palette = palette_for_faces();
+        let place = ControlLabelPlace {
+            offset: 6,
+            ..label_place(0, 0x1_0000)
+        };
+        let plain = draw_control_label(place, LabelVariant::WithText, [0; 4], &palette, 5);
+        assert!(plain.coloured);
+        // The glow ignores the offset and draws the text in shade 8.
+        assert_eq!((plain.x, plain.y), (15, 23));
+        assert_eq!(plain.ink, Some([40, 7, 0, 70]));
+        let idle = draw_control_label(
+            ControlLabelPlace { state: 0, ..place },
+            LabelVariant::WithText,
+            [0; 4],
+            &palette,
+            5,
+        );
+        assert_eq!((idle.y, idle.ink), (29, Some([40, 6, 0, 70])));
     }
 
     #[test]
     fn a_block_label_keeps_only_the_bytes_that_fit() {
         let palette = palette_for_faces();
-        let block = draw_control_label(label_place(0, 0), LabelVariant::Block, [0; 4], &palette, 5);
+        let place = ControlLabelPlace {
+            offset: 3,
+            ..label_place(0, 0)
+        };
+        let block = draw_control_label(place, LabelVariant::Block, [0; 4], &palette, 5);
+        // (100 − 2 × 2) / 7 = 13 bytes, drawn at the offset.
         assert_eq!(block.keep, 13);
-        assert_eq!(block.ink, Some(palette.text[5]));
+        assert_eq!(block.y, 26);
+        assert_eq!(block.ink, Some([40, 6, 0, 70]));
+        assert!(!block.right_aligned);
         let coloured = draw_control_label(
-            label_place(0, 0x1_0000),
+            ControlLabelPlace {
+                style: 0x4000,
+                state: 0x1_0000,
+                ..place
+            },
             LabelVariant::Block,
             [0; 4],
             &palette,
             5,
         );
         assert!(coloured.coloured);
-        assert_eq!(coloured.ink.expect("an ink")[3], 255);
+        assert!(coloured.right_aligned);
+        assert_eq!(coloured.ink, Some([50, 7, 0, 255]));
     }
 
     #[test]
@@ -12301,31 +12299,32 @@ mod tests {
             5,
         );
         assert_eq!(shadow.calls, 2);
-        assert_eq!(shadow.shadow, Some([(14, 23), (15, 24)]));
+        assert_eq!(
+            shadow.shadow,
+            Some([(14, 23, [30, 1, 0, 60]), (15, 24, [40, 6, 0, 70])])
+        );
+        let idle = draw_control_label(label_place(0, 0), LabelVariant::Slot, [0; 4], &palette, 5);
+        assert_eq!(idle.ink, Some([40, 8, 0, 70]));
         let coloured = draw_control_label(
-            label_place(0, 0x1_0000),
+            label_place(0, 0x1_0040),
             LabelVariant::Slot,
             [0; 4],
             &palette,
             5,
         );
         assert!(coloured.coloured);
-        assert_eq!(coloured.cross, Some(palette.highlight[0]));
-        assert_eq!(coloured.mode_calls, 2);
+        assert_eq!((coloured.y, coloured.ink), (24, Some([40, 7, 0, 70])));
     }
 
     #[test]
-    fn a_text_cursor_draws_four_points_around_the_place() {
+    fn glowing_text_repeats_a_pixel_around_the_place() {
         let palette = palette_for_faces();
-        let cursor = text_cursor(10, 20, &palette);
-        assert_eq!(cursor.text_ink, palette.text[7]);
-        assert_eq!(cursor.cross_ink, palette.highlight[0]);
+        let glow = glow_text(10, 20, &palette);
+        assert_eq!(glow.text_ink, [40, 7, 0, 70]);
+        assert_eq!(glow.glow_ink, [50, 0, 0, 80]);
+        assert_eq!(glow.glow_places, [(9, 20), (11, 20), (10, 21), (10, 19)]);
         assert_eq!(
-            cursor.cross_points,
-            [(9.0, 20.0), (11.0, 20.0), (10.0, 21.0), (10.0, 19.0)]
-        );
-        assert_eq!(
-            (cursor.begin_calls, cursor.end_calls, cursor.blend),
+            (glow.begin_calls, glow.end_calls, glow.blend),
             (1, 1, 0x201)
         );
     }

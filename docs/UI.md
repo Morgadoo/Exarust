@@ -764,12 +764,17 @@ primitives below are the base class's.
   control, 0x3000 centred by the measured width, 0x4000 right, 0x5000 past
   the right edge, otherwise the inset and half the unit plus one; the
   vertical arms are half a unit up, centred on the line height, at the
-  base, below the control, or the same default. The variants pick the
-  focused, plain, selected or caller's ink, the coloured renderer with its
-  cursor cross, the shadow pair one pixel left and one below, or the block
-  form that keeps only the bytes that fit (`(width − 2·inset) / step`).
-  A fade scales the ink's alpha by the elapsed third of a second and clears
-  the fade bit once it is complete.
+  base, below the control, or the same default. The variants draw a
+  focused label in the label group's third shade and an unfocused one in
+  its seventh (the slot's idle label in its ninth); the caller's-ink form
+  uses the fourth when focused. A coloured label glows: its text in the
+  eighth shade at the measured place, then four copies a pixel left,
+  right, below and above in the highlight group's first shade, additively.
+  The slot's pressed label draws a shadow pair (control shade 2 one pixel
+  left, label shade 7 one below); the block form keeps only the bytes that
+  fit (`(width − 2·inset) / step`) and right-aligns for style 0x4000. A
+  fade scales the seventh shade's alpha by the elapsed third of a second
+  (a start of 0 is now) and clears the fade bit once it passes 1.
 
 ## Controls
 
