@@ -27,6 +27,7 @@
 pub mod blast;
 pub mod bubble;
 pub mod danger;
+pub mod draw;
 pub mod effect_geometry;
 pub mod emissive;
 pub mod fire_node;

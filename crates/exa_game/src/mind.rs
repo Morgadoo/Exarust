@@ -3281,3 +3281,62 @@ mod screen_tests {
         assert_eq!(screen, 3);
     }
 }
+
+/// The mind-sight screen's initialisation values: a 256² texture, a sphere
+/// of 16 segments and radius 40 cm, and four noise octaves at scale 0.5.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MindScreenInit {
+    pub texture: u32,
+    pub segments: u32,
+    pub radius: f32,
+    pub noise_octaves: u32,
+    pub noise_scale: f32,
+}
+
+/// The mind-sight screen's init description.
+pub fn mind_sight_screen() -> MindScreenInit {
+    MindScreenInit {
+        texture: MIND_SIGHT_TEXTURE,
+        segments: MIND_SIGHT_SEGMENTS,
+        radius: MIND_SIGHT_RADIUS,
+        noise_octaves: MIND_SIGHT_NOISE_OCTAVES,
+        noise_scale: MIND_SIGHT_NOISE_SCALE,
+    }
+}
+
+/// The spirit screen's init description: a 512² texture and noise at 0.8.
+pub fn spirit_screen_init() -> MindScreenInit {
+    MindScreenInit {
+        texture: SPIRIT_TEXTURE,
+        segments: MIND_SIGHT_SEGMENTS,
+        radius: MIND_SIGHT_RADIUS,
+        noise_octaves: MIND_SIGHT_NOISE_OCTAVES,
+        noise_scale: SPIRIT_NOISE_SCALE,
+    }
+}
+
+/// The unit's shutdown routine: it does nothing.
+pub fn shutdown() {}
+
+/// Releases the two shader source strings the unit holds; both exist.
+pub fn release_shader_sources() -> usize {
+    2
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::*;
+
+    #[test]
+    fn the_screens_report_the_recorded_sizes() {
+        let sight = mind_sight_screen();
+        assert_eq!((sight.texture, sight.segments), (256, 16));
+        assert_eq!((sight.radius, sight.noise_octaves), (40.0, 4));
+        assert_eq!(sight.noise_scale, 0.5);
+        let spirit = spirit_screen_init();
+        assert_eq!(spirit.texture, 512);
+        assert_eq!(spirit.noise_scale, 0.8);
+        shutdown();
+        assert_eq!(release_shader_sources(), 2);
+    }
+}

@@ -206,6 +206,8 @@ pub struct Blast {
     pub tints: Vec<(f32, f32)>,
     /// Whether the release has been reported used.
     pub power_used: bool,
+    /// Whether the geometry is linked and its draw callback installed.
+    pub linked: bool,
 }
 
 impl Blast {
@@ -226,6 +228,7 @@ impl Blast {
             chunks: Vec::new(),
             tints,
             power_used: false,
+            linked: false,
         }
     }
 
@@ -795,6 +798,212 @@ pub fn trail_life_ticks(seconds: f32) -> i32 {
     (seconds * TICK_HZ as f32) as i32
 }
 
+/// The push a chunk gives a simulation object's point, as the tuning's
+/// contact scale (0.8) times the fixed 0.025.
+pub const SIM_OBJECT_PUSH: f32 = 0.8;
+/// The simulation-object contact's additive reach, cm.
+pub const SIM_OBJECT_ADD: f32 = 40.0;
+/// The impact a pushed point gathers, in double precision.
+pub const IMPACT_PER_POINT: f64 = 0.0001;
+
+/// A simulation object a chunk can hit: a capsule from `centre` to
+/// `second`, its bounding radius, and the points the hit moves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimObject {
+    pub centre: Vec3,
+    /// The other end of the object's axis (equal to `centre` for a point).
+    pub second: Vec3,
+    pub bounding: f32,
+    pub points: Vec<Vec3>,
+    /// The impact gathered, in double precision.
+    pub impact: f64,
+}
+
+/// The result of a blast's contact with simulation objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimObjectHits {
+    /// How many objects had a point pushed.
+    pub bodies: usize,
+    /// How many points moved.
+    pub points: usize,
+}
+
+/// The blast's aim: the planar yaw of the hand's direction, clamped to 45°
+/// around the body's aim yaw, and the pitch from the height (the negated
+/// arc sine). The same arithmetic as the torrent's aim.
+pub fn blast_aim(hand: Vec3, origin: Vec3, body_yaw: f32) -> crate::effects::torrent::TorrentAim {
+    crate::effects::torrent::torrent_aim(hand, origin, body_yaw)
+}
+
+/// Keeps a chunk out of a body's sphere: a chunk inside it moves out by
+/// `radius/|d| − 1` of its offset, and a chunk at the centre stays.
+pub fn keep_out_of(point: Vec3, centre: Vec3, radius: f32) -> Option<Vec3> {
+    let d = point - centre;
+    let distance_sq = d.length_squared();
+    if distance_sq >= radius * radius || distance_sq < 0.000_000_119_208_998_228_259_58 {
+        return None;
+    }
+    let scaled = d * (radius / distance_sq.sqrt() - 1.0);
+    Some(scaled)
+}
+
+/// The distance squared from a point to a segment; a zero-length segment is
+/// a point.
+pub fn point_segment_distance_sq(point: Vec3, a: Vec3, b: Vec3) -> f32 {
+    let axis = b - a;
+    let length_sq = axis.length_squared();
+    if length_sq <= 0.0 {
+        return (point - a).length_squared();
+    }
+    let t = ((point - a).dot(axis) / length_sq).clamp(0.0, 1.0);
+    let closest = a + axis * t;
+    (point - closest).length_squared()
+}
+
+impl Blast {
+    /// The contact with simulation objects: every chunk's reach is
+    /// `reach·2 + margin + 40` cm; a point inside it moves along the chunk's
+    /// last motion by `(1 − d²/r²)·0.8·0.025`, and the object gathers
+    /// `(1 − d²/r²)·0.0001` of impact in double precision.
+    pub fn hit_sim_objects(&self, objects: &mut [SimObject]) -> SimObjectHits {
+        let mut bodies = 0;
+        let mut points = 0;
+        for chunk in &self.chunks {
+            let reach = chunk.reach * 2.0 + self.setup.margin + SIM_OBJECT_ADD;
+            let reach_sq = reach * reach;
+            let motion = chunk.at - chunk.previous;
+            for object in &mut *objects {
+                let span = reach + object.bounding;
+                if point_segment_distance_sq(chunk.at, object.centre, object.second) > span * span {
+                    continue;
+                }
+                if point_segment_distance_sq(chunk.at, object.centre, object.second) > reach_sq {
+                    continue;
+                }
+                let mut pushed = false;
+                for point in &mut object.points {
+                    let d = chunk.at - *point;
+                    let distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
+                    if distance_sq <= reach_sq {
+                        let fraction = 1.0 - distance_sq / reach_sq;
+                        *point += motion * (fraction * SIM_OBJECT_PUSH * 0.025);
+                        object.impact += f64::from(fraction) * IMPACT_PER_POINT;
+                        points += 1;
+                        pushed = true;
+                    }
+                }
+                if pushed {
+                    bodies += 1;
+                }
+            }
+        }
+        SimObjectHits { bodies, points }
+    }
+}
+
+/// A blast's contact setup: the contact scale (2.0) and the callback the
+/// hit sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlastContact {
+    pub radius_scale: f32,
+    pub margin: f32,
+    pub callback: bool,
+}
+
+/// The link the draw callback installs: the geometry, the body's effect
+/// flag and the callback itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlastLink {
+    pub geometry: bool,
+    pub effect_flag: u32,
+    pub callback: bool,
+}
+
+/// What destroying a blast releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlastTeardown {
+    pub stopped: bool,
+    pub sounds_released: usize,
+    pub strings_released: usize,
+    pub arrays_released: usize,
+    pub light_released: bool,
+    pub object_released: bool,
+    pub chunks_released: usize,
+}
+
+impl Blast {
+    /// The contact a body's hit begins with.
+    pub fn contact(&self) -> BlastContact {
+        BlastContact {
+            radius_scale: 2.0,
+            margin: self.setup.margin,
+            callback: true,
+        }
+    }
+
+    /// The effect's frame: its translation at the hand.
+    pub fn frame_matrix(&self) -> [[f32; 4]; 4] {
+        [
+            [1.0, 0.0, 0.0, self.hand.x],
+            [0.0, 1.0, 0.0, self.hand.y],
+            [0.0, 0.0, 1.0, self.hand.z],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// The blast's draw descriptions, one a view.
+    pub fn draw_calls(&self, views: &[[[f32; 4]; 4]]) -> Vec<crate::effects::draw::DrawCall> {
+        crate::effects::draw::blast_geometry_draws(
+            views,
+            self.frame_matrix(),
+            self.texture_offset(),
+        )
+    }
+
+    /// A rebound: the chunk moves half the way to the contact point and its
+    /// trail keeps 90 % of its width.
+    pub fn rebound(&mut self, index: usize, point: Vec3) -> bool {
+        let Some(chunk) = self.chunks.get_mut(index) else {
+            return false;
+        };
+        chunk.at += (point - chunk.at) * 0.5;
+        chunk.reach *= 0.9;
+        true
+    }
+
+    /// Links the geometry and installs the draw callback.
+    pub fn link(&mut self) -> BlastLink {
+        self.linked = true;
+        BlastLink {
+            geometry: true,
+            effect_flag: 0x1_0000,
+            callback: true,
+        }
+    }
+
+    /// Destroys the effect: `stop` stops a running sound first; the two
+    /// sound handles, the two freed strings, the three arrays, the GI light
+    /// and its object are released and the chunks dropped.
+    pub fn destroy(&mut self, stop: bool) -> BlastTeardown {
+        let stopped = stop && !self.chunks.is_empty();
+        let chunks = self.chunks.len();
+        self.chunks.clear();
+        self.tints.clear();
+        self.linked = false;
+        self.power_used = false;
+        self.phase = FINISHED;
+        BlastTeardown {
+            stopped,
+            sounds_released: 2,
+            strings_released: 2,
+            arrays_released: 3,
+            light_released: true,
+            object_released: true,
+            chunks_released: chunks,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,6 +1157,101 @@ mod tests {
         assert_eq!(blast.drawn_light(&blast.chunks[0]), 1.0);
         blast.phase = RELEASED;
         assert!((blast.drawn_light(&blast.chunks[0]) - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn simulation_objects_are_pushed_by_their_points() {
+        let mut blast = blast();
+        blast.chunks[0].at = Vec3::ZERO;
+        blast.chunks[0].previous = Vec3::new(-0.25, 0.0, 0.0);
+        blast.chunks[0].reach = 0.0;
+        for chunk in &mut blast.chunks[1..] {
+            chunk.at = Vec3::new(1000.0, 0.0, 0.0);
+            chunk.reach = 0.0;
+        }
+        let mut object = SimObject {
+            centre: Vec3::new(0.0, 0.0, 8.0),
+            second: Vec3::new(0.0, 0.0, 8.0),
+            bounding: 1.0,
+            points: vec![Vec3::new(0.0, 0.0, 8.0)],
+            impact: 0.0,
+        };
+        let hits = blast.hit_sim_objects(std::slice::from_mut(&mut object));
+        assert_eq!(
+            hits,
+            SimObjectHits {
+                bodies: 1,
+                points: 1
+            }
+        );
+        let fraction = 1.0 - 64.0 / 1600.0;
+        assert!((object.points[0].x - 0.25 * fraction * 0.8 * 0.025).abs() < 1e-6);
+        assert!((object.impact - f64::from(fraction) * 0.0001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_aim_and_rebound_carry_the_numbers() {
+        let aim = blast_aim(Vec3::new(0.0, 10.0, 10.0), Vec3::ZERO, 0.0);
+        assert!((aim.pitch + std::f32::consts::FRAC_PI_4).abs() < 1e-5);
+        assert!(aim.direction.y > 0.7);
+        let offset = keep_out_of(Vec3::new(0.0, 0.0, 2.0), Vec3::ZERO, 5.0).expect("inside");
+        assert_eq!(offset, Vec3::new(0.0, 0.0, 3.0));
+        assert!(keep_out_of(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, 5.0).is_none());
+        let mut blast = blast();
+        blast.chunks[0].at = Vec3::ZERO;
+        blast.chunks[0].reach = 10.0;
+        assert!(blast.rebound(0, Vec3::new(10.0, 0.0, 0.0)));
+        assert_eq!(blast.chunks[0].at, Vec3::new(5.0, 0.0, 0.0));
+        assert!((blast.chunks[0].reach - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_segment_distance_clamps_to_its_ends() {
+        let a = Vec3::ZERO;
+        let b = Vec3::new(10.0, 0.0, 0.0);
+        assert_eq!(
+            point_segment_distance_sq(Vec3::new(5.0, 0.0, 3.0), a, b),
+            9.0
+        );
+        assert_eq!(
+            point_segment_distance_sq(Vec3::new(-3.0, 0.0, 0.0), a, b),
+            9.0
+        );
+        assert_eq!(
+            point_segment_distance_sq(Vec3::new(2.0, 2.0, 2.0), a, a),
+            12.0
+        );
+    }
+
+    #[test]
+    fn linking_and_destroying_release_the_recorded_resources() {
+        let mut blast = blast();
+        assert!(blast.link().callback);
+        let teardown = blast.destroy(true);
+        assert!(teardown.stopped);
+        assert_eq!(teardown.sounds_released, 2);
+        assert_eq!(teardown.strings_released, 2);
+        assert_eq!(teardown.arrays_released, 3);
+        assert!(teardown.light_released && teardown.object_released);
+        assert_eq!(teardown.chunks_released, CHUNKS);
+        assert!(blast.chunks.is_empty());
+        assert!(!blast.linked);
+    }
+
+    #[test]
+    fn the_contact_and_draws_carry_the_numbers() {
+        let blast = blast();
+        let contact = blast.contact();
+        assert_eq!((contact.radius_scale, contact.callback), (2.0, true));
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let calls = blast.draw_calls(&[identity, identity]);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].fragment, "effectforce_f");
     }
 
     #[test]
