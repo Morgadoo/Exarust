@@ -711,8 +711,12 @@ pub fn rank_passes(match_id: u32, floor: i32, rank: i32, first: bool) -> bool {
 /// The board's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board {
+    /// The compact form size, which shortens the form, the fighter tables
+    /// and the reward panel.
     pub compact: bool,
+    /// The arena day; seven-day weeks and 28-day seasons are read from it.
     pub day: u32,
+    /// The open tab.
     pub tab: BoardTab,
     /// The selected standard match type, 0 through 5.
     pub match_type: usize,
@@ -724,11 +728,16 @@ pub struct Board {
     pub rank_floor: usize,
     /// Fighters per side for the selected match.
     pub team_size: usize,
+    /// Matches the company has entered today; the day allows three.
     pub matches_played: u32,
+    /// Whether more than one leader-class fighter may join (the flag word's
+    /// low bit).
     pub allow_multiple_leaders: bool,
     /// The tournament-layout flag (the original's flag word bit 2).
     pub tournament_mode: bool,
+    /// Whether the tournament's week is over (the caller's flag).
     pub tournament_ended: bool,
+    /// Whether the season tab's activity marker is on.
     pub season_available: bool,
     /// The player's company name.
     pub company_name: String,
@@ -778,7 +787,7 @@ pub struct Board {
     pub season_items: [Option<u32>; 4],
     /// The control states, indexed by [`control`].
     pub controls: [u32; CONTROL_COUNT],
-    /// The last standard refresh's two list spans.
+    /// The last standard refresh's two list spans: one and three rank steps.
     pub rank_span: i32,
     pub tier_span: i32,
     /// The lineup table's height after a tournament refresh, when the
@@ -1987,29 +1996,43 @@ pub struct TournamentStatus {
 /// The result of the show method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShowState {
+    /// Whether the day is the weekly tournament day.
     pub tournament_day: bool,
+    /// Whether any tournament event has an entry.
     pub has_entrants: bool,
+    /// The tab left open.
     pub tab: BoardTab,
+    /// Whether the tournament tab was forced.
     pub forced_tournament: bool,
 }
 
 /// What closing the board gives back for the next opening.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseState {
+    /// The tab to reopen next time.
     pub tab: BoardTab,
+    /// The selected standard match type.
     pub match_type: usize,
+    /// The selected rank.
     pub rank: usize,
+    /// The selected tier.
     pub tier: usize,
+    /// The tournament reward item that was in its slot.
     pub tournament_reward: Option<u32>,
+    /// The four season reward items that were in their slots.
     pub season_items: [Option<u32>; 4],
+    /// The season picture that was loaded.
     pub picture: String,
 }
 
 /// What a tab change did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabView {
+    /// The tab that is now open.
     pub tab: BoardTab,
+    /// Which tabs were hidden by the change.
     pub hidden: [bool; 4],
+    /// The control states after the change.
     pub controls: [u32; CONTROL_COUNT],
 }
 
@@ -2041,39 +2064,46 @@ pub enum CoinDraw {
 /// A view in the paint list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Widget {
+    /// The board's form.
     Form,
+    /// The tournament picture.
     Picture,
+    /// The tournament reward panel.
     RewardPanel,
+    /// A reward item slot, zero through three.
     Reward(usize),
+    /// The message box.
     Message,
+    /// The tournament status line.
     Status,
+    /// The Enter, Begin or Continue button.
     EnterButton,
+    /// The "Entered n/m" label.
     EnteredLabel,
 }
 
 /// One entry in the board's paint list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoardPaint {
-    Frame {
-        widget: Widget,
-        rect: Rect,
-    },
+    /// A form, panel, picture or item slot.
+    Frame { widget: Widget, rect: Rect },
+    /// One of the four tab buttons.
     Tab {
         index: usize,
         rect: Rect,
         title: &'static str,
         selected: bool,
     },
-    Table {
-        slot: TableSlot,
-        rect: Rect,
-    },
+    /// A table's frame.
+    Table { slot: TableSlot, rect: Rect },
+    /// A table's column header.
     Column {
         slot: TableSlot,
         index: usize,
         rect: Rect,
         title: &'static str,
     },
+    /// A table cell.
     Cell {
         slot: TableSlot,
         row: usize,
@@ -2082,6 +2112,8 @@ pub enum BoardPaint {
         value: CellValue,
         disabled: bool,
     },
+    /// A label; its rectangle is absent when the form template places it
+    /// and that placement is not modelled.
     Label {
         widget: Widget,
         rect: Option<Rect>,
@@ -2163,11 +2195,17 @@ pub enum BoardInput {
 /// What the board asks the arena to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardAction {
+    /// Nothing happened.
     None,
+    /// The board's tables or controls changed.
     Changed,
+    /// The company enters the selected match.
     EnterMatch,
+    /// The tournament's first round begins.
     BeginTournament,
+    /// The next tournament round begins.
     ContinueTournament,
+    /// The form closes.
     Close,
 }
 
@@ -2194,7 +2232,9 @@ pub struct MatchBoardShow {
     pub stored_cleared: bool,
 }
 
-/// Shows the match board: seed the columns, clear the panels and return.
+/// The base form's show helper kept from the first model; the board's own
+/// show is [`Board::show`]. It seeds the columns, clears the panels and
+/// returns.
 pub fn show_match_board(input: MatchBoardShowInput) -> MatchBoardShow {
     MatchBoardShow {
         seed: input.seed,
@@ -2220,7 +2260,8 @@ pub struct MatchBoardDestroy {
     pub freed: bool,
 }
 
-/// Destroys the match board. The object itself is present.
+/// The base form's destroy helper: the object itself is present. The board
+/// releases its items and selections through [`Board::close`].
 pub fn destroy_match_board(flags: i32) -> MatchBoardDestroy {
     MatchBoardDestroy {
         base_destroy: flags > 0,
