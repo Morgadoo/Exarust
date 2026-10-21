@@ -438,7 +438,8 @@ pub enum OpponentPlan {
 /// One opponent the generator is asked to create.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OpponentAttempt {
-    pub slot: usize,
+    /// Index inside the team window, as [`bracket_layout`] records it.
+    pub index: usize,
     pub team: i32,
     pub place: Place,
     pub plan: OpponentPlan,
@@ -469,7 +470,8 @@ pub enum RaisedBody {
 /// One placed fighter of a fresh match.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RaisedFighter {
-    pub slot: usize,
+    /// Index inside the team window, as [`bracket_layout`] records it.
+    pub index: usize,
     pub team: i32,
     pub place: Place,
     pub body: RaisedBody,
@@ -478,8 +480,10 @@ pub struct RaisedFighter {
 /// Familiarity from one generated teammate toward another.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TeammateLink {
-    pub from_slot: usize,
-    pub to_slot: usize,
+    /// The source fighter's index inside its team window.
+    pub from_index: usize,
+    /// The other fighter's index inside the same team window.
+    pub to_index: usize,
     pub familiarity: f32,
 }
 
@@ -560,12 +564,14 @@ pub fn raise_fresh_match(
 }
 
 fn raise_company(team: &BracketTeam, spec: &FreshMatch<'_>, raised: &mut RaisedMatch) {
-    for (order, &(slot, place)) in team.members.iter().enumerate() {
+    for (order, &(index, place)) in team.members.iter().enumerate() {
         if order >= spec.company_entries {
             break;
         }
-        let window = slot % spec.per_team as usize;
-        let body = if spec.player_entry == Some(window) {
+        // `index` is the place inside the team window. The roster is read
+        // there; `order` is how far along the occupied members this one is,
+        // and that is what the company-entry count limits.
+        let body = if spec.player_entry == Some(index) {
             RaisedBody::Player
         } else {
             RaisedBody::Company {
@@ -575,7 +581,7 @@ fn raise_company(team: &BracketTeam, spec: &FreshMatch<'_>, raised: &mut RaisedM
             }
         };
         raised.fighters.push(RaisedFighter {
-            slot,
+            index,
             team: team.team,
             place,
             body,
@@ -591,10 +597,10 @@ fn raise_opponents(
     raised: &mut RaisedMatch,
 ) {
     let mut spawned = Vec::new();
-    for &(slot, place) in &team.members {
+    for &(index, place) in &team.members {
         let plan = opponent_plan(team.team, spec);
         let attempt = OpponentAttempt {
-            slot,
+            index,
             team: team.team,
             place,
             plan,
@@ -606,9 +612,9 @@ fn raise_opponents(
             });
             break;
         }
-        spawned.push(slot);
+        spawned.push(index);
         raised.fighters.push(RaisedFighter {
-            slot,
+            index,
             team: team.team,
             place,
             body: RaisedBody::Opponent {
@@ -625,8 +631,8 @@ fn raise_opponents(
         for &to in &spawned {
             if from != to {
                 raised.links.push(TeammateLink {
-                    from_slot: from,
-                    to_slot: to,
+                    from_index: from,
+                    to_index: to,
                     familiarity: TEAMMATE_FAMILIARITY,
                 });
             }
@@ -895,7 +901,7 @@ mod tests {
         let mut asked = 0;
         let raised = raise_fresh_match(&spec, |attempt| {
             asked += 1;
-            assert_eq!(attempt.slot, 0);
+            assert_eq!(attempt.index, 0);
             assert_eq!(attempt.team, 4);
             match attempt.plan {
                 OpponentPlan::Hire(plan) => {
@@ -928,7 +934,7 @@ mod tests {
             n < 3
         });
         assert_eq!(
-            raised.fighters.iter().map(|f| f.slot).collect::<Vec<_>>(),
+            raised.fighters.iter().map(|f| f.index).collect::<Vec<_>>(),
             vec![0, 1]
         );
         let (plan, condition, role, act_at, behaviour) = opponent(&raised.fighters[0].body);
@@ -941,13 +947,13 @@ mod tests {
             raised.links,
             vec![
                 TeammateLink {
-                    from_slot: 0,
-                    to_slot: 1,
+                    from_index: 0,
+                    to_index: 1,
                     familiarity: 100.0,
                 },
                 TeammateLink {
-                    from_slot: 1,
-                    to_slot: 0,
+                    from_index: 1,
+                    to_index: 0,
                     familiarity: 100.0,
                 },
             ]
@@ -969,7 +975,7 @@ mod tests {
             raised
                 .links
                 .iter()
-                .all(|link| link.from_slot != link.to_slot)
+                .all(|link| link.from_index != link.to_index)
         );
         assert!(raised.links.iter().all(|link| link.familiarity == 100.0));
     }
@@ -992,7 +998,7 @@ mod tests {
 
     #[test]
     fn a_low_team_id_is_generic_level_five() {
-        let slots = [0];
+        let slots = [1];
         let mut spec = fresh(&slots, 1, 1);
         spec.player_team = 99;
         spec.tier = 3;
@@ -1009,10 +1015,11 @@ mod tests {
         spec.company_entries = 2;
         let mut asked = Vec::new();
         let raised = raise_fresh_match(&spec, |attempt| {
-            asked.push(attempt.slot);
+            asked.push(attempt.index);
             true
         });
-        assert_eq!(asked, vec![3]);
+        // The opponent is the first (and only) member of the second window.
+        assert_eq!(asked, vec![0]);
         assert_eq!(raised.fighters.len(), 3);
         assert!(matches!(
             raised.fighters[0].body,
@@ -1023,7 +1030,7 @@ mod tests {
             }
         ));
         assert!(matches!(raised.fighters[1].body, RaisedBody::Player));
-        assert_eq!(raised.fighters[1].slot, 2);
+        assert_eq!(raised.fighters[1].index, 2);
         assert!(raised.links.is_empty());
         let (_, _, role, _, _) = opponent(&raised.fighters[2].body);
         assert_eq!(role, HOSTILE);
@@ -1034,8 +1041,12 @@ mod tests {
         let slots = [4, 4, 5];
         let raised = raise_fresh_match(&fresh(&slots, 2, 2), |attempt| attempt.team != 4);
         assert_eq!(
-            raised.fighters.iter().map(|f| f.slot).collect::<Vec<_>>(),
-            vec![2]
+            raised
+                .fighters
+                .iter()
+                .map(|f| (f.index, f.team))
+                .collect::<Vec<_>>(),
+            vec![(0, 5)]
         );
         assert_eq!(raised.reports.len(), 1);
         assert!(raised.links.is_empty());
