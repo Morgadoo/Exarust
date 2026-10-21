@@ -1416,6 +1416,13 @@ mod tests {
     }
 
     #[test]
+    fn the_dot_command_swizzles_a_loop_variable() {
+        let library = lib(&[("p", "{%LOOP 3 i%}{%.i%}{%END%}")]);
+        let c = context();
+        assert_eq!(expand(&library, "p", &c).unwrap(), "#version 150\r\n.x.y.z");
+    }
+
+    #[test]
     fn surface_program_uses_shading_v_for_every_set() {
         let library = lib(&[("shading_v", "vertex"), ("shadeopt_f", "fragment")]);
         let c = context();
@@ -1489,7 +1496,8 @@ mod installed {
     #[test]
     fn every_library_entry_expands() {
         let Some(library) = library() else { return };
-        let mut context = context();
+        let context = context();
+        let mut unknown = Vec::new();
         for entry in library.entries() {
             let mut c = context.clone();
             let text = expand_with(&library, &entry.name, &mut c).unwrap();
@@ -1498,8 +1506,13 @@ mod installed {
                 "{}: unexpanded marker",
                 entry.name
             );
+            unknown.extend(
+                c.unknown_includes
+                    .into_iter()
+                    .map(|u| (entry.name.clone(), u)),
+            );
         }
-        let _ = &mut context;
+        assert!(unknown.is_empty(), "{unknown:?}");
     }
 
     #[test]

@@ -541,6 +541,21 @@ pub fn parallax_texels(amount: f32, width: u32, height: u32) -> (u16, u16) {
     )
 }
 
+/// A spot light's vertical shaping terms from its two stored values `q` and
+/// `p`: `y = ½·sin(qπ/2)` (`3 − 3/cos(qπ/2)` for a negative `q`), `z = p + 1`
+/// and `w = 1/(2^z − 1)`.
+pub fn vertical_shaping(q: f32, p: f32) -> [f32; 3] {
+    let angle = q * std::f32::consts::FRAC_PI_2;
+    let y = if q >= 0.0 {
+        0.5 * angle.sin()
+    } else {
+        3.0 - 3.0 / angle.cos()
+    };
+    let z = p + 1.0;
+    let w = 1.0 / (z.exp2() - 1.0);
+    [y, z, w]
+}
+
 /// One light's three `vec4`s: position/depth scale, colour/attenuation and
 /// filter radius/vertical shaping.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -837,6 +852,18 @@ mod tests {
         assert_eq!(parallax_texels(0.6, 1024, 2048), (60, 30));
         assert_eq!(parallax_texels(0.0, 1024, 1024), (0, 0));
         assert_eq!(parallax_texels(f32::NAN, 1024, 1024), (0, 0));
+    }
+
+    #[test]
+    fn vertical_shaping_matches_the_light_record() {
+        // q = 1 straight down: y = ½, z = 1, w = 1.
+        assert_eq!(vertical_shaping(1.0, 0.0), [0.5, 1.0, 1.0]);
+        // q = 0: no vertical narrowing.
+        assert_eq!(vertical_shaping(0.0, 0.0), [0.0, 1.0, 1.0]);
+        // p = 1: z = 2, w = 1/3.
+        let [_, z, w] = vertical_shaping(1.0, 1.0);
+        assert_eq!(z, 2.0);
+        assert!((w - 1.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]

@@ -62,4 +62,11 @@ fn lists_the_library_entries() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.lines().any(|line| line == "shadeopt_f"));
     assert!(text.lines().any(|line| line == "ambient"));
+    let output = Command::new(env!("CARGO_BIN_EXE_exa-tool"))
+        .args(["shader", "--list", "--shader-library", "textures.flb"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.lines().any(|line| line == "chardecomp_d"));
 }

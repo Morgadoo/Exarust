@@ -611,9 +611,10 @@ impl ModelLoader<'_> {
             && size.y > 1
         {
             let (w, h) = (size.x as f32, size.y as f32);
-            let depth = (50.0 * layer.amount).round().min(65535.0);
-            let y = (depth * 2048.0 / h).round();
-            let x = (y * h / w).round();
+            // The engine's round helper floors (as the GI edges do).
+            let depth = (50.0 * layer.amount).floor().min(65535.0);
+            let y = (depth * 2048.0 / h).floor();
+            let x = (y * h / w).floor();
             mat.params.displacement = Vec4::new(
                 x * PARALLAX_UNIT,
                 y * PARALLAX_UNIT,
@@ -1525,7 +1526,9 @@ fn material_specular(m: &Material) -> Vec3 {
         return Vec3::ZERO;
     }
     let mut specular = linear_rgb([m.specular[0], m.specular[1], m.specular[2]]) * m.specular_level;
-    if m.kind & 1 != 0 && m.texture(TextureSlot::Specular).is_some() {
+    // Only the PBR program (type 1) triples the specular with a map; the
+    // skin program multiplies the lights by the map instead.
+    if m.kind & 0xFF == 1 && m.texture(TextureSlot::Specular).is_some() {
         specular *= 3.0;
     }
     specular

@@ -136,7 +136,10 @@ a guess):
 Not reproduced from these programs: the legacy unlit program's vertex-colour
 branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
 `BlendMode = 4` multiply branch, the hair and translucent programs, and the
-`Shd.DispSdwF` pre-pass.
+`Shd.DispSdwF` pre-pass. The legacy lit program never samples an opacity
+map, so the original's alpha-tested cobweb cutout is unresolved; Exarust
+keeps the opacity map in the alpha for Bevy's alpha test (both shipped
+alpha-tested records have opacity 1).
 
 ## Surfaces
 

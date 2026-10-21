@@ -148,6 +148,10 @@ enum Cmd {
         /// Material library inside `Resource.rpk` (e.g. `common.rml`).
         #[arg(default_value = "common.rml")]
         library: String,
+        /// Shader library to read (`shading.flb` for the material programs,
+        /// `textures.flb` for the procedural textures).
+        #[arg(long, default_value = "shading.flb")]
+        shader_library: String,
         /// Material name in that library.
         material: Option<String>,
         /// Lights on the object, 0 through 6.
@@ -237,6 +241,7 @@ fn main() -> Result<()> {
         Cmd::Info => info(&game),
         Cmd::Shader {
             library,
+            shader_library,
             material,
             lights,
             quality,
@@ -260,6 +265,7 @@ fn main() -> Result<()> {
             &game,
             &ShaderRequest {
                 library,
+                shader_library,
                 material,
                 lights,
                 quality,
@@ -733,6 +739,7 @@ fn extract(a: &Archive<'_>, out: &Path, filter: Option<&str>) -> Result<()> {
 /// The `shader` command's arguments.
 struct ShaderRequest {
     library: String,
+    shader_library: String,
     material: Option<String>,
     lights: u32,
     quality: u32,
@@ -764,8 +771,8 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
     use exa_render::shader_template::LightKind;
 
     let bytes = game
-        .resource_file("shading.flb")
-        .ok_or_else(|| anyhow!("shading.flb is not installed"))?;
+        .resource_file(&request.shader_library)
+        .ok_or_else(|| anyhow!("{} is not installed", request.shader_library))?;
     let shaders = ShaderLibrary::parse(bytes)?;
     let scene = SceneOptions {
         quality: request.quality,

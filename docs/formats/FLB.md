@@ -5,7 +5,8 @@ surface, light, ambient, fog, reflection, GI and effect programs) and
 `textures.flb` (61 procedural texture generators). `exa_formats::flb` parses
 and decodes them; `exa_render::shader_template` expands their text and
 `exa_render::shader_program` chooses the program and its flags.
-`exa-tool shader` prints the result for a material.
+`exa-tool shader` prints the result for a material (`--shader-library
+textures.flb --list` lists the procedural texture programs).
 
 ## Container
 
