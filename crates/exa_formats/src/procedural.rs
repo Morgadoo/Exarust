@@ -164,36 +164,37 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
         ],
         wear: 1.0,
     };
-    let steel = |family, rust, rust_normal, wear, passes| Material {
+    // SteelGen and IronGen take the A01 rust grain, the plates the A04 one.
+    let steel = |family, rust_normal, grain, wear, passes| Material {
         family,
         passes,
         colour: vec![
             "mtlstlbas01d",
             "mtlimpure01d",
-            rust,
+            "mtlrusta03d",
             "mtlscufa01",
-            "mtlrusta01g",
+            grain,
         ],
         specular: vec![
             "mtlstlbas01d",
             "mtlimpure01d",
             "mtlscufa01",
-            "mtlrusta01g",
+            grain,
             "scuffsgnra01",
         ],
         normal: vec![
             "mtlimpure02n",
             rust_normal,
             "mtlscufa01",
-            "mtlrusta01g",
+            grain,
             "mtlscufa01n",
         ],
         wear,
     };
     m[12] = steel(
         Family::Steel,
-        "mtlrusta03d",
         "mtlrusta03n",
+        "mtlrusta01g",
         0.75,
         Passes {
             alternate_normal: true,
@@ -202,8 +203,8 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
     );
     m[13] = steel(
         Family::SteelPlate,
-        "mtlrusta03d",
         "mtlrusta04n",
+        "mtlrusta04g",
         1.0,
         Passes::default(),
     );
@@ -236,8 +237,8 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
     };
     m[15] = steel(
         Family::SteelPlate,
-        "mtlrusta03d",
         "mtlrusta04n",
+        "mtlrusta04g",
         1.0,
         Passes::default(),
     );
@@ -279,8 +280,8 @@ pub static MATERIALS: LazyLock<[Material; 26]> = LazyLock::new(|| {
     m[18] = wood("wodhft01d", "wodhft01g", "wodhft01n");
     m[19] = steel(
         Family::Steel,
-        "mtlrusta03d",
         "mtlrusta03n",
+        "mtlrusta01g",
         1.0,
         Passes {
             alternate_normal: true,
@@ -503,6 +504,18 @@ mod tests {
         assert_eq!(material(23).family, Family::Gemstone);
         assert_eq!(material(24).family, Family::Resin);
         assert_eq!(material(25).family, Family::PlanksPainted);
+    }
+
+    #[test]
+    fn plates_take_the_a04_rust_grain() {
+        for id in [13u8, 15] {
+            let m = material(id);
+            assert_eq!(m.colour[4], "mtlrusta04g");
+            assert_eq!(m.specular[3], "mtlrusta04g");
+            assert_eq!(m.normal[1], "mtlrusta04n");
+            assert_eq!(m.normal[3], "mtlrusta04g");
+        }
+        assert_eq!(material(12).colour[4], "mtlrusta01g");
     }
 
     #[test]
