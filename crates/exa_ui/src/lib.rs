@@ -19,9 +19,11 @@
 //! and drawing order live in [`match_board`].
 
 pub mod blend;
+pub mod compact_skill;
 pub mod controls;
 pub mod creation;
 pub mod cursor;
+pub mod emblem_form;
 pub mod fade;
 pub mod font;
 pub mod form;
@@ -39,6 +41,7 @@ pub mod loading;
 pub mod match_board;
 pub mod menu;
 pub mod scale;
+pub mod selection;
 pub mod settings;
 pub mod skill;
 pub mod skin;
@@ -48,9 +51,23 @@ pub mod text_layout;
 
 use bevy::prelude::*;
 
+pub use compact_skill::{
+    BaseConfirm, CELL_HEIGHT_UNITS, CELL_WIDTH_UNITS, COLUMN_UNITS, CompactBase, CompactDraw,
+    CompactKeyAction, CompactMetrics, CompactRow, CompactSkillState, HIT_UNITS, LEVEL,
+    MARGIN_UNITS, NODE_Y_UNITS, Pip, SPACING_FOUR, SPACING_NARROW, SPACING_WIDE, TITLE_UNITS,
+    WheelAnswer, cell_box, cell_centre, decode_cell, draw_order as compact_draw_order,
+    handle_key as compact_key, hit_cells, lay_out_pips, metrics as compact_metrics, overlay_ease,
+    pips, technique_slots, wheel,
+};
 pub use cursor::{
     CursorCapture, CursorShape, DrawWorldCursor, PanelPointer, ScriptedPointer, WorldCursor,
     pointer_visibility,
+};
+pub use emblem_form::{
+    BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
+    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemRandom, EmblemRecord, MIRROR_UNIFORM,
+    PictureSelection, draw_order as emblem_draw_order, picture, preview_quad, select_background,
+    select_design,
 };
 pub use fade::DeathFade;
 pub use fps::ShowFps;
@@ -86,6 +103,11 @@ pub use menu::{
     show_skill_tip, skill_selector_key, splash_bounds, type_menu_name, update_menu_hover,
 };
 pub use scale::GuiScale;
+pub use selection::{
+    Click as PortalClick, DestinationScreen, DestinationSlot, Frame as PortalFrame, Journey,
+    TravelStep, arrival_fade, bubble_origin, bump_flash, crystal_charge, fill_rows, flash_amount,
+    hit_node, journey, node_mix, place_node, quarter_sine, symbol_quad, travel_step, wobble_step,
+};
 pub use skill::{
     SkillBounds, SkillHit, SkillHover, SkillHoverInput, SkillInputInput, SkillInputOutput,
     SkillKeyInput, SkillKeyOutput, SkillLeave, SkillLink, SkillLinkInput, SkillPointInput,
