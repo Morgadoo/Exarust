@@ -59,7 +59,7 @@ pub fn made_condition(body: &[u8]) -> Option<MadeCondition> {
     })
 }
 
-fn write_condition(body: &mut [u8], c: &MadeCondition) {
+pub(crate) fn write_condition(body: &mut [u8], c: &MadeCondition) {
     body[0..4].copy_from_slice(&c.flags.to_le_bytes());
     body[4..8].copy_from_slice(&c.seeds[0].to_le_bytes());
     body[8..12].copy_from_slice(&c.seeds[1].to_le_bytes());
