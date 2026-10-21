@@ -16,6 +16,8 @@ thiserror.workspace = true
 # Real-data checks read the installed packs (and skip without them).
 exa_rpk.workspace = true
 naga = { version = "30", features = ["wgsl-in"] }
+# The surface shader test reads Bevy's shader sources through cargo metadata.
+serde_json.workspace = true
 
 [lints]
 workspace = true

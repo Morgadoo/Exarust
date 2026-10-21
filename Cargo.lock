@@ -2533,6 +2533,7 @@ dependencies = [
  "exa_physics",
  "exa_rpk",
  "naga",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
