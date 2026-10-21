@@ -239,30 +239,24 @@ box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
 
-The original's line skin (`exa_ui::line_skin`, `TGSLines`) draws the same
-widgets with thin lines instead of filled bevels. Its draw call sets three
-side lengths (2, 3 and 4 units), optionally lays a soft plate under a
-floating form and a textured backdrop in it, clips to the client (the
-stored scroll less the client's extent, times the view scale; bit 0x800
-locks it at zero), draws its own content and each visible child, then the
-caption and the chrome. Two style groups select a window frame and a bar
-frame. The window group draws six-unit corner squares, a title band with
-caps around the caption and 6.6-unit side and bottom rails, or, maximised,
-a thirteen-arm double frame; the bar group draws its frame from the
-owner-room edge mask, with the close-edge tints of marks -9, -10 and -8.
-A close mark of -4 draws the late orange square at the top right. A widget
-whose style is 0x80 and whose mask is 3 draws its caps, a mask of 5 the
-right arm, 0xa the bottom corners and 0xc the lower right; the close and
-arrow strips use the scroll thumb's place. The sliders, frames, chips,
-icons and labels are the same shapes the base skin draws; the line skin's
-own helpers add the four-unit marker, the 6.6-unit bordered rectangle, the
-three-quad open bars, the nine-quad scroll rail and the three- or six-quad
-progress bar with its selected thumb. At unit 5 a bar at 10, 20 and width 100 draws
-its caps from 0, 20 to 30, 40 and 120, 20 to 90, 40 around a middle from
-30, 30 to 90, 40. A 100 by 80 widget with the line bar style, style word
-0x44 and state 0x200 draws 14 quads, its first frame arm from -10, -10 to
-30, 30. A maximised bar draws thirteen arms. A window with a 40-wide title,
-state 3 and close mark -4 draws 18 quads and puts its caption at 30.
+The game's own skin is a thin-line subclass of the draw skin. Most of its
+methods are modelled in `skin` beside the parent's: the opening (whose
+fifth length is four units, set by the parent constructor's call to the
+length setter), the vertical scale, the hit test (a title-band point that
+misses the corner and the band goes on to the strip test), the slider,
+frame, chip and rail, the shade, the four-unit square, the capped and plain
+span bars, the label and the widget dispatcher (`dispatch_form`), whose
+close-edge tints follow the tab quads they colour. `line_skin` holds the
+rest: the five unit lengths and the once-only registration, the line
+skin's own centred icon (label shades 4, 8, 7 and 6, opaque or with the
+alpha raised by 0x40, and bit 0x40000000 picking the mirrored draw), the
+scroll refresh that places a bar window's thumb, the progress strip that
+the dispatcher draws for a titled window (split at the title's gap) and an
+untitled open bar, the compact skill screen's integer span bar, and the
+maximised window's frame, which the dispatcher now draws. At unit 5 a
+100-wide window with a 40-wide title splits its strip at 17, and a
+maximised 100 by 80 window draws eight quads, its top bar from 30, 0 to
+70, 10. None of it is drawn in the running game yet.
 
 ## Character view
 

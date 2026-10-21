@@ -1356,49 +1356,59 @@ primitives below are the base class's.
 
 ### Line skin
 
-The original's `TGSLines` (`exa_ui::line_skin`) is the flat, thin-line
-variant of the draw skin. It keeps its own five unit lengths (2, 1, 2, 2
-and 4 units), its own hit test, scale and centred icon, and overrides the
-draw call, the window frame, the bar frame, the rectangle slot, the
-marker, the rail, the detail strip and the caption.
+The game's GUI skin is the original's `TGSLines`, a thin-line subclass
+of the draw skin. `exa_ui::skin` models most of it beside the parent:
+the opening, the vertical scale, the hit test, the slider and scroll bar,
+the frame, the chip, the rail, the shade, the four-unit square, the
+capped and plain span bars, the label and the widget dispatcher
+(`dispatch_form`). `exa_ui::line_skin` holds the remaining methods.
 
-- **Draw.** The draw sets sides 2, 3 and 4 units. A state bit 0x40 lays a
-  soft plate under the widget. A state bit 0x2_0000 with a style word clear
-  of bit 4 fills the widget with a textured backdrop (u, v 0,0 to 1,1).
-  Bit 0x800 locks the scroll; otherwise the clip's translation is the
-  stored scroll less the client's extent times the view scale, rounded to
-  even. The widget clips to its client, draws its own content, then each
-  visible child in order, and takes the clip away. It selects the textured
-  program, draws the caption centred from the font's ascent when state bit
-  1 is set, binds the skin texture and the normal ink, and opens one run.
-- **Window frame.** Style bits 0x30 equal to 0x10 draw a window. Unless
-  state bit 0x40_0000 (maximised) is set, it draws 6-unit corner squares,
-  a 4-unit close square at the top right when state bit 2 is set and the
-  close mark is not -4, the caption band from 6.6 units in with a 2-unit
-  height, caps around the measured caption, 6.6-unit side and bottom rails,
-  and a progress bar when state bit 1 is set and the fixed-width bit is
-  clear. Maximised, it draws the 13-quad double frame from a unit outside
-  each edge. Otherwise the scroll rail is drawn.
-- **Bar frame.** Style bits 0xc0 equal to 0x80 draw a bar. A style word
-  without bit 4 draws only the progress bar when state bit 1 is clear. With
-  bit 4 the owner-room mask gives bit 1 for a top above the unit, bit 2
-  for a left before it, bit 4 and bit 8 for a widget reaching past the
-  owner's right or bottom by a unit. The skin then draws the doubled top
-  bar, the close-edge strips (marks -9, -10 and -8, with an orange tint
-  when active), the side arms, the corner caps chosen by mask bits 3, 5,
-  0xa and 0xc, and the bottom bar. A clear state bit 0x200 selects the
-  wider right and corner arms. State bit 0x40_0000 draws the maximised
-  thirteen-arm frame instead.
-- **Helpers.** A progress bar draws two caps, one or two track pieces and
-  a cap on each side of the selected thumb; the border draws six thin
-  lines half a unit outside; the marker is a four-unit square; the open
-  bars draw a cap, a middle and a cap; the detail strip a bar between two
-  caps; the scroll rail nine quads, with the top bar drawn twice while
-  the owner is focused and the top is in view; the caption picks the
-  pressed, owner-drawn, plain or hot ink and moves the hot one a pixel
-  down. The centred icon sits on half the spare, marks the state with bit
-  0x40 one pixel lower, and mirrors (outlined when marked) on style bit
-  0x4000_0000.
+- **Lengths.** The skin keeps five unit lengths, 2, 1, 2, 2 and 4 units.
+  The parent constructor calls the setter through the object's table and
+  the line constructor then rewrites the first four, so an opened line
+  skin keeps the fifth at four units. A once-only flag registers the
+  unit.
+- **Hit test.** A point in a window's title band (style bits 0x30 equal
+  to 0x10, y within four units, or six on the wide setting) returns -4
+  at the close corner and -3 on state bit 1; any other point, that one
+  included, goes on to the strip test of state bit 0x200, which returns
+  -8 beside the client, -10 below it and -9 above it, within the same
+  span. The edge sums are 64-bit.
+- **Centred icon.** The line skin places its icon as the parent does
+  (half the spare, toward zero; a marked state with bit 0x40 inside 0x60
+  one pixel lower, drawn at scale 1 with no ink) but picks its own inks:
+  state bit 0x10 the label group's fourth shade as stored; with style bit
+  0x8000_0000 clear the eighth shade on state bit 0x40, else the fourth,
+  both opaque; with it set the seventh shade with its alpha raised by
+  0x40 (wrapping in a byte) on bit 0x40, else the sixth as stored. Style
+  bit 0x4000_0000 picks the icon manager's other draw, whose texture runs
+  right to left.
+- **Scroll refresh.** A bar window without style bit 4 takes the edge
+  mask 0xf; with it, bit 1 marks a top above the unit, bit 4 a right edge
+  within a unit of the owner's room and bit 8 the same for the bottom
+  (the refresh never sets bit 2). The rail starts five units below the
+  client top with bits 1 and 4, else four, ends five or four units above
+  the client bottom with bits 4 and 8, keeps a side of two units, and
+  places the thumb at the start plus the vertical fraction of the span
+  less the side, rounded half to even; a NaN slide is 0.
+- **Progress strip.** A titled window (unless state bit 0x80_0000 is
+  set) and an untitled open bar draw a strip from two to four units down:
+  a cap at each end eight units in and the track between them. A titled
+  window splits the track at its title's gap, half of the width less the
+  title and five units, and puts a cap on the inner side of each piece.
+- **Close-edge tints.** With state bit 0x200 a bar draws an upper and a
+  lower tab beside the client and a square below the scroll thumb. Close
+  mark -9 tints the upper tab, -10 the lower one and -8 the square (which
+  binds the marker's sample) in 255, 204, 153, 255.
+- **Maximised window.** A window style with state bit 0x40_0000 draws a
+  frame of its own: an outer top bar (only with style bit 4, which also
+  binds the hot ink on style bit 0x40, and not when the window sits within
+  a unit of a focused owner's top), the top, left and right bars, the
+  bottom bar and four corner arms reaching two units outside and six in.
+  The side bars run four units from the corners, or two with style bit 4.
+- **Integer span bar.** The compact skill screen draws a capped span from
+  integer arguments with the shared skin and no ink of its own: caps four
+  units tall from the top, the middle from two units down.
 
 ## Controls
 
