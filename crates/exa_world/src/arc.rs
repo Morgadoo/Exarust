@@ -46,11 +46,12 @@ pub fn spawn_arc(
     start: Vec3,
     end: Vec3,
 ) -> Entity {
+    let offset = spec.offset;
     let arc = Arc::new(spec, Vec3::ZERO, end - start);
     let glow = arc.spec.glow;
     let mut e = commands.spawn((
         Name::new("_Elec"),
-        Transform::from_translation(start / 100.0),
+        Transform::from_translation((start + offset) / 100.0),
         ArcEffect {
             arc,
             accumulator: 0.0,

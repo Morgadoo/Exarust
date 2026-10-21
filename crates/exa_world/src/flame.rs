@@ -161,7 +161,7 @@ fn simulate(
 
 fn build_meshes(
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
-    flames: Query<(&Flame, &Mesh3d)>,
+    flames: Query<(&Flame, &Mesh3d, &GlobalTransform)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(camera) = cameras.iter().next() else {
@@ -173,12 +173,15 @@ fn build_meshes(
         up: camera.up().as_vec3(),
         forward: camera.forward().as_vec3(),
     };
-    for (flame, mesh) in &flames {
+    for (flame, mesh, at) in &flames {
         let Some(mut mesh) = meshes.get_mut(&mesh.0) else {
             continue;
         };
         let alpha = (flame.accumulator * TICK_HZ).clamp(0.0, 1.0);
         let quads = flame.emitter.quads(alpha, view);
+        // The particles are in world space; the mesh entity carries the
+        // fire node's transform, so take the vertices back into its space.
+        let inverse = at.affine().inverse();
         let mut positions = Vec::with_capacity(quads.len() * 4);
         let mut uvs = Vec::with_capacity(quads.len() * 4);
         let mut colours = Vec::with_capacity(quads.len() * 4);
@@ -192,7 +195,7 @@ fn build_meshes(
                 f32::from(quad.colour[3]) / 255.0,
             ];
             for (corner, uv) in quad.corners.iter().zip(quad.uv.iter()) {
-                positions.push((*corner / 100.0).to_array());
+                positions.push(inverse.transform_point3(*corner / 100.0).to_array());
                 uvs.push([uv.x, uv.y]);
                 colours.push(colour);
             }
