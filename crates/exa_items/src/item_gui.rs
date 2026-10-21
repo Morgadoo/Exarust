@@ -163,10 +163,11 @@ impl Sockets {
         crystal_of(self.kind(i)).map(|c| (c, u32::from(self.charge(i)) << 16))
     }
 
-    /// The drag out of socket `i` ended: the socket is left empty.
+    /// The drag out of socket `i` ended: the socket's low byte becomes the
+    /// bare socket mark; the charge byte above it is left as it was.
     pub fn emptied(&mut self, i: usize) {
         if let Some(s) = self.0.get_mut(i) {
-            *s = u16::from(SOCKET);
+            *s = (*s & 0xFF00) | u16::from(SOCKET);
         }
     }
 
@@ -234,16 +235,23 @@ impl Sockets {
         self.emptied(i);
     }
 
-    /// What committing the row into an item does: an existing socket's
-    /// crystal is written into the weapon's or apparel's four sockets, the
-    /// weapon's effects refresh or the apparel refreshes the player's
-    /// abilities, and an AR crystal fires the game's fourth function.
-    pub fn commit(&self) -> SocketCommit {
-        SocketCommit {
-            weapon: true,
-            apparel: true,
+    /// What committing the row into its item does: the four socket words
+    /// are written into the item's weapon section when it has one (and the
+    /// weapon's effects refresh), else into its apparel section (and the
+    /// player's abilities refresh), else nowhere. Either write fires the
+    /// game's fourth function when a socket holds the AR crystal.
+    pub fn commit(&self, weapon: bool, apparel: bool) -> Option<SocketCommit> {
+        let target = if weapon {
+            CommitTarget::Weapon
+        } else if apparel {
+            CommitTarget::Apparel
+        } else {
+            return None;
+        };
+        Some(SocketCommit {
+            target,
             ar: self.holds_ar(),
-        }
+        })
     }
 
     /// What the socket row draws: each existing socket's frame 5 units
@@ -302,13 +310,19 @@ pub struct SocketDropResult {
     pub code: u32,
 }
 
+/// Which section of the item a socket row is written into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitTarget {
+    /// The weapon section; the weapon's effects refresh.
+    Weapon,
+    /// The apparel section; the player's abilities refresh.
+    Apparel,
+}
+
 /// What committing a socket row into its item does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SocketCommit {
-    /// A weapon item's electric effect refreshes.
-    pub weapon: bool,
-    /// An apparel item refreshes the player's abilities.
-    pub apparel: bool,
+    pub target: CommitTarget,
     /// An AR crystal fires the game's fourth function.
     pub ar: bool,
 }
@@ -453,28 +467,6 @@ pub fn slider(x: i32, width: i32, share: f32) -> Slider {
     }
 }
 
-/// One row of a weapon card's striking side: its place (raised by a row
-/// when an earlier one is absent), whether it shows and its value.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StrikingRow {
-    pub visible: bool,
-    pub value: f32,
-    /// The row's place from the side's first row, in the original's rows.
-    pub row: usize,
-}
-
-/// The three striking rows of side `side` (the grip button's): slash,
-/// crush and pierce at `sides[side][r]`. An absent row is hidden; the
-/// visible rows keep their original places (the card's nodes are fixed).
-pub fn striking_rows(sides: [[u8; 3]; 2], side: usize) -> [StrikingRow; 3] {
-    let bytes = sides[side.min(1)];
-    std::array::from_fn(|r| StrikingRow {
-        visible: bytes[r] != 0,
-        value: f32::from(bytes[r]) * 0.05,
-        row: r,
-    })
-}
-
 /// The side the card's striking rows show: the second when the grip
 /// button's mask carries either grip bit.
 pub fn card_side(mask: u32) -> usize {
@@ -529,13 +521,15 @@ where
 }
 
 impl Payload {
-    /// Cancelling a drag releases the item icon it held; an object payload
-    /// holds none.
+    /// Cancelling an item drag releases the icon it holds, if any, and
+    /// clears the payload's kind (true); any other payload is left alone.
     pub fn cancel<T>(&self, mut release: impl FnMut(usize) -> T) -> bool {
         if self.kind != ITEM_PAYLOAD {
             return false;
         }
-        release(self.icon);
+        if self.icon != 0 {
+            release(self.icon);
+        }
         true
     }
 }
@@ -571,14 +565,17 @@ pub fn popup_place(
     (x, y)
 }
 
-/// The weapon card's striking-side rows: slash, crush and pierce of side
-/// `side` (the grip button's), each shown when its byte is not 0, at that
-/// byte × 0.05; the rest of the three rows are hidden.
+/// The weapon card's striking-side rows: slash, crush and pierce (0, 1, 2)
+/// of side `side` (the grip button's), each shown when its byte is not 0,
+/// at that byte × 0.05 in double precision narrowed to single. The shown
+/// ones fill the card's rows from the first in that order and the rest of
+/// the three rows are hidden; the item stores the second side six bytes
+/// after the first.
 pub fn side_rows(sides: [[u8; 3]; 2], side: usize) -> Vec<(usize, f32)> {
     let bytes = sides[side.min(1)];
     (0..3)
         .filter(|&r| bytes[r] != 0)
-        .map(|r| (r, f32::from(bytes[r]) * 0.05))
+        .map(|r| (r, (f64::from(bytes[r]) * 0.05) as f32))
         .collect()
 }
 
@@ -615,15 +612,6 @@ where
     icon(id, flags)
         .filter(|slot| *slot > 0)
         .ok_or_else(|| crate::icon_cache::unresolved(id).unwrap_or_default())
-}
-
-/// A popup container's inner panel from its record's size in units and the
-/// popup's border.
-pub fn popup_container_size(size: (u16, u16), unit: i32, border: i32) -> (i32, i32) {
-    (
-        i32::from(size.0) * unit + border * 2,
-        i32::from(size.1) * unit + border * 2,
-    )
 }
 
 /// The icon renderer's framing for an item.
@@ -852,7 +840,6 @@ mod tests {
             resolve_item(7, 0, |_, _| true, |_, _| None),
             Err("Unable to resolve item: 00000007".to_string())
         );
-        assert_eq!(popup_container_size((10, 6), 4, 4), (48, 32));
     }
 
     #[test]
@@ -871,43 +858,37 @@ mod tests {
         assert_eq!(s.card_at(0), Some((crystal::C, 0x0030_0000)));
         assert_eq!(s.start_drag(0), Some((crystal::C, 0x0030_0000)));
         s.drag_ended(0);
-        assert_eq!(s.0[0], 0x80);
+        // The kind goes; the charge byte stays behind the bare mark.
+        assert_eq!(s.0[0], 0x3080);
         assert_eq!(s.card_at(0), None);
         let s = Sockets([0x80 | 0x11, 0, 0, 0]);
         assert_eq!(
-            s.commit(),
-            SocketCommit {
-                weapon: true,
-                apparel: true,
+            s.commit(true, true),
+            Some(SocketCommit {
+                target: CommitTarget::Weapon,
                 ar: true
-            }
+            })
         );
-        assert!(!Sockets::default().commit().ar);
+        assert_eq!(
+            s.commit(false, true).map(|c| c.target),
+            Some(CommitTarget::Apparel)
+        );
+        assert_eq!(s.commit(false, false), None);
+        assert!(!Sockets::default().commit(false, true).unwrap().ar);
     }
 
     #[test]
     fn a_weapon_card_switches_its_striking_side() {
-        let rows = striking_rows([[10, 0, 40], [0, 20, 0]], 0);
+        // The shown rows fill from the first: slash, then pierce.
         assert_eq!(
-            rows,
-            [
-                StrikingRow {
-                    visible: true,
-                    value: 0.5,
-                    row: 0
-                },
-                StrikingRow {
-                    visible: false,
-                    value: 0.0,
-                    row: 1
-                },
-                StrikingRow {
-                    visible: true,
-                    value: 2.0,
-                    row: 2
-                },
-            ]
+            side_rows([[10, 0, 40], [0, 20, 0]], 0),
+            vec![(0, 0.5), (2, 2.0)]
         );
+        // 9 × 0.05 in double precision narrows to a different single than
+        // the single-precision product.
+        let nine = side_rows([[9, 0, 0], [0; 3]], 0)[0].1;
+        assert_eq!(nine, (9.0f64 * 0.05) as f32);
+        assert_ne!(nine, 9.0f32 * 0.05);
         assert_eq!(card_side(0x40), 1);
         assert_eq!(card_side(0x10), 0);
         assert_eq!(card_side(0x60), 1);
