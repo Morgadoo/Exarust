@@ -35,6 +35,12 @@ owed to the next frame), 0.6 × the race's base a tick
   from them (`exa_formats::rsq::MotionSet::assemble`), built once per base
   and config and shared ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md),
   A character's clip table).
+- CPU skin data (`skin`): the skin matrix (joint world × inverse bind),
+  one vertex's four-weight deformation, the joint numbering and inverse
+  binds a mesh registers (bone `n` = joint `n`, a gap taking the mesh's own
+  part with an identity inverse, each inverse relative to the mesh's part
+  in rest), and a mesh's vertex translation. Bevy's GPU skinning performs
+  the per-frame deform; the wound painter and the bind use these numbers.
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every

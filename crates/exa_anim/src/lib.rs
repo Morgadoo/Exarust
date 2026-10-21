@@ -32,6 +32,8 @@ pub use clock::{
 /// original's simulation step, `exa_physics::body::BODY_HZ`).
 pub const TICKS_PER_SECOND: f32 = 83.0;
 
+pub mod skin;
+
 pub struct AnimPlugin;
 
 impl Plugin for AnimPlugin {
@@ -377,13 +379,13 @@ fn bind_skins(
             let Some(&(own_entity, own_rest)) = rest.get(&(skinned.bone as usize)) else {
                 continue; // the skeleton is not attached yet
             };
-            let count = rest.keys().max().map_or(0, |b| b + 1);
-            let (joints, inverse): (Vec<Entity>, Vec<Mat4>) = (0..count)
-                .map(|b| match rest.get(&b) {
-                    Some(&(e, m)) => (e, m.inverse() * own_rest),
-                    None => (own_entity, Mat4::IDENTITY),
-                })
-                .unzip();
+            let rests: HashMap<usize, Mat4> =
+                rest.iter().map(|(&bone, &(_, m))| (bone, m)).collect();
+            let (bones, inverse) = skin::bindings(&rests, skinned.bone as usize, own_rest);
+            let joints: Vec<Entity> = bones
+                .into_iter()
+                .map(|b| rest.get(&b).map_or(own_entity, |&(e, _)| e))
+                .collect();
             slot.insert((
                 bindposes.add(SkinnedMeshInverseBindposes::from(inverse)),
                 joints,
