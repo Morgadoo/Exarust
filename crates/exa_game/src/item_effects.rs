@@ -302,24 +302,24 @@ pub fn charge_tick(
 pub struct WornState {
     /// The item glows.
     pub lit: bool,
-    /// The character's light value.
+    /// The character's light value (its own when the item stays dark).
     pub light: f32,
-    /// The character's impact counter.
-    pub impact: f32,
+    /// The character's worn counter (2 more when the item stays dark).
+    pub counter: f32,
 }
 
 /// Registers a worn item: the character is marked worn, an odd kind with a
 /// sub-byte below 0xff lights the item at 0.75 and fades its material to
 /// `1 − sub/255`; otherwise the impact counter gains two and the material
 /// fades to zero.
-pub fn register_worn(kind: u16, sub: u8, impact: f32) -> (WornState, f32) {
+pub fn register_worn(kind: u16, sub: u8, counter: f32, light: f32) -> (WornState, f32) {
     let lit = kind & 1 != 0 && sub < 0xff;
     if lit {
         (
             WornState {
                 lit,
                 light: WORN_LIGHT,
-                impact,
+                counter,
             },
             (1.0 - f64::from(sub) / 255.0) as f32,
         )
@@ -327,8 +327,8 @@ pub fn register_worn(kind: u16, sub: u8, impact: f32) -> (WornState, f32) {
         (
             WornState {
                 lit,
-                light: 0.0,
-                impact: impact + WORN_IMPACT,
+                light,
+                counter: counter + WORN_IMPACT,
             },
             0.0,
         )
@@ -652,15 +652,15 @@ mod tests {
 
     #[test]
     fn a_worn_item_lights_and_fades() {
-        let (state, fade) = register_worn(1, 0, 0.0);
+        let (state, fade) = register_worn(1, 0, 0.0, 0.3);
         assert!(state.lit);
         assert_eq!(state.light, 0.75);
         assert!((fade - (1.0 - 0.0f64 / 255.0) as f32).abs() < 1e-7);
-        let (state, _) = register_worn(2, 0, 0.0);
+        let (state, _) = register_worn(2, 0, 0.0, 0.3);
         assert!(!state.lit);
-        assert_eq!(state.light, 0.0);
-        assert_eq!(state.impact, 2.0);
-        let (_state, fade) = register_worn(1, 0x7f, 0.0);
+        assert_eq!(state.light, 0.3);
+        assert_eq!(state.counter, 2.0);
+        let (_state, fade) = register_worn(1, 0x7f, 0.0, 0.0);
         assert!((fade - (1.0 - 127.0f64 / 255.0) as f32).abs() < 1e-7);
         let mut sub = 0xfe;
         let step = step_worn(1, &mut sub, true, 0.5, [1.5, 1.5]);

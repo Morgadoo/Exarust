@@ -234,6 +234,8 @@ pub struct GolemState {
     pub energy: f32,
     pub alarm: u32,
     pub latch: bool,
+    /// The body's two speed words.
+    pub speeds: [f32; 2],
     pub home: Vec3,
     pub home_angle: f32,
     /// Each limb's stored mass (the base the sleep scale multiplies).
@@ -318,7 +320,7 @@ pub fn sleep(state: &GolemState, home: Vec3, home_angle: f32) -> GolemChange {
         stance: 2,
         energy: 0.0,
         wake_ticks: SLEEP_TICKS,
-        speeds: [0.0, 0.0],
+        speeds: state.speeds,
         home,
         home_angle,
         alarm: 0,
@@ -343,8 +345,6 @@ pub fn go_home(state: &GolemState, at: Vec3, character_dormant: bool) -> Option<
         state.home
     };
     let mut change = sleep(state, home, state.home_angle);
-    change.stance = 0;
-    change.energy = 1.0;
     change.speeds = [1.0, 1.0];
     change.hook = Hook::Dormant;
     Some(change)
@@ -527,6 +527,7 @@ mod tests {
             energy: 0.5,
             alarm: 0,
             latch: false,
+            speeds: [0.25, 0.75],
             home: Vec3::ZERO,
             home_angle: 0.25,
             masses: vec![20.0, 10.0],
@@ -585,7 +586,7 @@ mod tests {
         assert_eq!(change.pose, 1);
         assert_eq!(change.stance, 2);
         assert_eq!(change.energy, 0.0);
-        assert_eq!(change.speeds, [0.0, 0.0]);
+        assert_eq!(change.speeds, [0.25, 0.75], "dormancy keeps the speeds");
         assert_eq!(change.limb_scales, vec![1.0, 0.5]);
         assert_eq!(change.glow_scales, vec![0.02, 0.04]);
         assert!(change.latch);
@@ -604,7 +605,7 @@ mod tests {
         assert_eq!(change.home, Vec3::new(9.0, 0.0, 9.0));
         assert_eq!(change.home_angle, 0.25);
         assert!(change.dormant);
-        assert_eq!(change.energy, 1.0);
+        assert_eq!(change.energy, 0.0, "the dormancy after the home step");
         assert_eq!(change.speeds, [1.0, 1.0]);
         let mut asleep = state();
         asleep.alarm = 0x800;

@@ -893,7 +893,7 @@ impl ArcEmitter {
                         }
                         shock = Some(ArcShock {
                             character: limb.character,
-                            direction: normalize(limb.chest - self.world(self.mean)),
+                            direction: normalize(limb.chest - self.mean),
                             strength: self.strength,
                         });
                     }
@@ -1674,6 +1674,31 @@ mod tests {
             arc.strike_limb(&caster, |_, _, _| true, &mut draws)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_shock_points_from_the_world_mean_to_the_chest() {
+        let mut draws = Fixed::new(&[0.5], &[1]);
+        let mut arc = ArcEmitter::allocate(3, 5, 1.0);
+        arc.anchor = Some(Vec3::new(0.0, 0.0, 5.0));
+        let t = &mut arc.tendrils[0];
+        t.count = 4;
+        for k in 0..4 {
+            t.points[k] = Vec3::new(k as f32 * 4.0, 0.0, 0.0);
+        }
+        arc.bounds();
+        // The mean is in the world: the tendril's six, plus the anchor's z.
+        assert_eq!(arc.mean, Vec3::new(6.0, 0.0, 5.0));
+        let limb = ArcLimb {
+            character: 1,
+            caster: false,
+            at: Vec3::new(4.0, 10.0, 5.0),
+            chest: Vec3::new(6.0, 100.0, 5.0),
+        };
+        let shock = arc
+            .strike_limb(&limb, |_, _, _| true, &mut draws)
+            .expect("a shock");
+        assert!((shock.direction - Vec3::Y).length() < 1e-3);
     }
 
     #[test]

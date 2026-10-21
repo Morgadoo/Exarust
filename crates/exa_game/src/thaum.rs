@@ -1202,6 +1202,50 @@ impl ForceShell {
     }
 }
 
+impl ForceShell {
+    /// Attaches the shell to a skin controller: its mesh follows the
+    /// controller's vertices (the copy is skinned).
+    pub fn attach_skinned(&mut self) {
+        self.skinned = true;
+    }
+
+    /// The opening ends with the shell told to close at once (the one-shot
+    /// shell): the closing keeps its pair and leaves after the fade.
+    pub fn finish_after_open(&mut self) {
+        self.hold = true;
+    }
+
+    /// Frees the shell: its skin link, its ripples and its light. Returns
+    /// whether it still had a sound to stop.
+    pub fn destroy(&mut self) -> bool {
+        self.skinned = false;
+        self.ripples.clear();
+        self.light = [0.0; 3];
+        self.sound_gain > 0.0
+    }
+
+    /// Removes the shell from the scene: it stops following its mesh and
+    /// drops its light (the render callback's detach).
+    pub fn remove(&mut self) -> bool {
+        let had = self.skinned;
+        self.skinned = false;
+        self.light = [0.0; 3];
+        had
+    }
+
+    /// The sound a closing shell plays: volume 0.4, pitch 0.6 plus two
+    /// fifths of a draw.
+    pub fn close_sound(roll: f32) -> (f32, f32) {
+        (roll * 0.4 + 0.6, 0.4)
+    }
+
+    /// The pitch a shell's start sound takes: its base duration times the
+    /// draw times 0.8.
+    pub fn start_pitch(duration: f32, roll: f32) -> f32 {
+        duration * roll * 0.8
+    }
+}
+
 /// The shell's impact sound gate (400 ms).
 pub const SHELL_SOUND_GATE_MS: u32 = 400;
 
@@ -1295,6 +1339,71 @@ pub fn shell_uniforms(
         tex_scale,
         fade: 1.0 - shown,
     }
+}
+
+/// One section of a rigid mesh the shell copies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RigidSection {
+    /// The mesh's own vertex for the section's place.
+    pub position: [f32; 3],
+    /// The vertex each of the section's triangle corners uses.
+    pub corners: Vec<u32>,
+    /// The section is hidden (flag 0x80000) and left out.
+    pub hidden: bool,
+}
+
+/// A rigid shell's mesh: one vertex per visible section and the mesh's
+/// indices through the vertex map.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RigidShell {
+    pub positions: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+}
+
+/// The rigid copy: each visible section's shell vertex is its own place plus
+/// twice the unit-ed sum of its corner vertices; the index buffer is the
+/// source mesh's indices through `remap` (each mesh vertex's shell vertex).
+pub fn rigid_shell(
+    sections: &[RigidSection],
+    vertices: &[[f32; 3]],
+    indices: &[u32],
+    remap: &[u32],
+) -> Result<RigidShell, ShellIndexError> {
+    let mut positions = Vec::new();
+    for section in sections {
+        if section.hidden {
+            continue;
+        }
+        let mut sum = [0.0f32; 3];
+        for &corner in &section.corners {
+            let vertex = vertices
+                .get(usize::try_from(corner).map_err(|_| ShellIndexError::Remap)?)
+                .ok_or(ShellIndexError::Short)?;
+            for axis in 0..3 {
+                sum[axis] += vertex[axis];
+            }
+        }
+        let length = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+        let normal = if length == 0.0 {
+            [0.0; 3]
+        } else {
+            [sum[0] / length, sum[1] / length, sum[2] / length]
+        };
+        positions.push([
+            section.position[0] + normal[0] * 2.0,
+            section.position[1] + normal[1] * 2.0,
+            section.position[2] + normal[2] * 2.0,
+        ]);
+    }
+    let mut out = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let slot = usize::try_from(index).map_err(|_| ShellIndexError::Remap)?;
+        out.push(*remap.get(slot).ok_or(ShellIndexError::Remap)?);
+    }
+    Ok(RigidShell {
+        positions,
+        indices: out,
+    })
 }
 
 /// The full section filter's kept triangle: its source triangle, the
@@ -2261,6 +2370,50 @@ mod tests {
         );
         assert!(shell_section_filter(&[0, 1, 2], &[], &[0]).is_empty());
         assert!(shell_section_filter(&[0, 1, 2], &vertices[1..2], &[0]).is_empty());
+    }
+
+    #[test]
+    fn a_rigid_shell_averages_each_section() {
+        let vertices = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 2.0, 2.0],
+        ];
+        let sections = [
+            RigidSection {
+                position: [0.0, 0.0, 0.0],
+                corners: vec![0, 1, 2],
+                hidden: false,
+            },
+            RigidSection {
+                position: [1.0, 1.0, 1.0],
+                corners: vec![3],
+                hidden: true,
+            },
+        ];
+        let shell = rigid_shell(&sections, &vertices, &[0, 1, 2], &[0, 1, 2, 3]).unwrap();
+        assert_eq!(shell.positions.len(), 1);
+        // The sum is (1,1,1), unit-ed, times two: the place gains (1.15,
+        // 1.15, 1.15) as the probe sum divides by √3.
+        assert!((shell.positions[0][0] - 2.0 / 3f32.sqrt()).abs() < 1e-5);
+        assert_eq!(shell.indices, [0, 1, 2]);
+        assert_eq!(
+            rigid_shell(&sections, &vertices, &[0, 3], &[0, 1, 2]),
+            Err(ShellIndexError::Remap)
+        );
+        let mut force = ForceShell::new(0, [0.0, 0.0]);
+        force.attach_skinned();
+        assert!(force.skinned);
+        force.finish_after_open();
+        assert!(force.hold);
+        force.start_fade();
+        force.frame(1_201);
+        assert_eq!(force.state, 3);
+        assert!(force.destroy());
+        assert!(!force.skinned);
+        assert_eq!(ForceShell::close_sound(0.5), (0.8, 0.4));
+        assert!((ForceShell::start_pitch(2.0, 0.5) - 0.8).abs() < 1e-6);
     }
 
     #[test]
