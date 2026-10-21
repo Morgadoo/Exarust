@@ -675,23 +675,20 @@ fn the_environment_converts_to_a_tick() {
     assert_eq!(inert.gravity, Vec3::ZERO);
 }
 
-/// The frame fraction is one plus the frame's excess over the previous
-/// one, in steps, clamped to [−2, 2]; a time scale of one holds.
+/// The frame fraction is one plus the time past the last step, in steps,
+/// clamped to [−2, 2].
 #[test]
 fn the_frame_fraction_extrapolates_and_clamps() {
     assert_eq!(frame_fraction(12, 11, 12), 1.083_333_4);
     assert_eq!(frame_fraction(10, 11, 12), 0.916_666_7);
     assert_eq!(frame_fraction(100, 0, 12), 2.0);
     assert_eq!(frame_fraction(0, 100, 12), -2.0);
-    let mut timing = FrameTiming {
-        last_update: 12,
-        previous: 11,
-        ..FrameTiming::default()
+    let clock = Clock {
+        time: 11,
+        last: 1000,
+        ..Clock::default()
     };
-    assert_eq!(timing.update(20, 12, 1.0), None);
-    assert_eq!(timing.fraction, 1.0);
-    assert_eq!(timing.update(24, 12, 0.5), Some(1.083_333_4));
-    assert_eq!(timing.previous, 12);
+    assert_eq!(clock.fraction(1012), 1.083_333_4);
 }
 
 /// A sector's batch append sets the pending flag and keeps the nodes in
@@ -710,7 +707,8 @@ fn a_sector_appends_a_batch_of_nodes() {
 #[test]
 fn the_constructor_constants() {
     assert_eq!(MAX_BACKLOG_STEPS, 11);
-    assert_eq!(DEFAULT_STEP_MS, 12);
+    assert_eq!(f64::from(TICK_HZ), crate::STEP_HZ);
+    assert_eq!(STEP_MS, (1000.0 / f64::from(TICK_HZ)).round() as u32);
     assert_eq!(DEFAULT_ENVIRONMENTS, 5);
 }
 

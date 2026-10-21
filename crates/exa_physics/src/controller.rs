@@ -1,14 +1,16 @@
-//! The original's physics-controller interface (`TPhysicsController`): the
-//! abstract base every simulated object shares with its controllers, and
-//! the default method bodies it installs.
+//! The original's physics-controller base (`TPhysicsController`): the
+//! abstract class every simulated object's controller derives from, and the
+//! default bodies its virtual slots install.
 //!
-//! The original dispatches through a virtual table; here a trait carries the
-//! same defaults. A controller has a kind word, an attached node, a flag
-//! word (the base's `clear_flags` masks bits 0 and 3), a step and a
-//! post-step, an attach, a wake, an interpolation at the frame's fraction,
-//! a translation, and a render fraction that the base answers 0.0.
-//! The trait's no-op methods stand for the slots that only return their own
-//! object; the `Clone` bound stands for the copy slot.
+//! The base has a kind word, an attached node and a flag word. Its slots
+//! are: a node setter, a kind setter, a flag reset that clears bits 0 and 3,
+//! a render fraction that answers 0.0, eight slots that only return their
+//! own object, one that answers false and one that returns its float
+//! argument. The slot table order is not in the evidence, so which of the
+//! eight identity slots is the step, the post-step, the wake, the
+//! interpolation or the translation is an inference from how the solver
+//! drives a controller; the trait names those five and leaves the false and
+//! float-passing slots out. Nothing in the game drives a controller yet.
 
 use bevy::math::Vec3;
 
@@ -17,15 +19,15 @@ pub const CLEARED_FLAGS: u32 = 0xffff_fff6;
 
 /// One object the simulation steps, with the original base class's default
 /// behaviour.
-pub trait PhysicsController: Clone {
+pub trait PhysicsController {
     /// One fixed step.
     fn step(&mut self) {}
 
     /// The post-step, after the solver's phases.
     fn post_step(&mut self) {}
 
-    /// Attaches the controller to a scene node (the original stores the
-    /// node at `+0x18`).
+    /// Attaches the controller to a scene node (the base stores the
+    /// node).
     fn attach(&mut self, _node: Option<u32>) {}
 
     /// Wakes the controlled object.
@@ -51,9 +53,9 @@ pub trait PhysicsController: Clone {
 /// for the base class instance the original's factory creates.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InertController {
-    /// The kind word at `+0x10` (set by the base's setter slot).
+    /// The kind word (set by the base's setter slot).
     pub kind: u32,
-    /// The attached node at `+0x18`.
+    /// The attached node.
     pub node: Option<u32>,
     /// The base's flag word.
     pub flags: u32,
@@ -70,7 +72,7 @@ impl InertController {
         }
     }
 
-    /// Sets the kind word (the base's `+0x10` setter).
+    /// Sets the kind word (the base's kind setter).
     pub fn set_kind(&mut self, kind: u32) {
         self.kind = kind;
     }
