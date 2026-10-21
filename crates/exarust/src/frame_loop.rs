@@ -1,21 +1,23 @@
 //! The frame loop's pacing and window controls.
 //!
 //! Applies the original's frame-rate cap and unfocused hold
-//! ([`exa_game::frame`]) to the running winit event loop, and Alt+Enter's
-//! windowed/borderless toggle ([`exa_game::window`]). The default cap is
-//! off, so no frame is slowed: the swap chain's vertical sync and Bevy's
-//! schedules already run the loop, and a frame cap is an explicit launch
-//! option.
+//! ([`exa_game::frame`]) to the running winit event loop, empties the held
+//! keys and buttons when the focus changes, and binds Alt+Enter to the
+//! windowed/full-screen toggle ([`exa_game::window`]). The cap is off unless
+//! the command line (`--max-fps`) or the settings file (`FPSLimit`) gives
+//! one, so no frame is slowed by default: the swap chain's vertical sync and
+//! Bevy's schedules already run the loop.
 //!
-//! Window focus changes are handled by winit; the unfocused hold is
-//! [`bevy::winit::WinitSettings`], set at start-up in the launcher.
+//! The unfocused hold is [`bevy::winit::WinitSettings`], set at start-up in
+//! the launcher. The settings' full screen and vertical sync are applied by
+//! `exa_game::hw_config`.
 
 use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow, WindowMode};
 use exa_game::frame::FramePacer;
-use exa_game::window::{toggled_style, window_mode};
+use exa_game::window::{display_refresh_hz, toggled_style, window_mode};
 
 use crate::Options;
 
@@ -31,18 +33,16 @@ impl Plugin for FrameLoopPlugin {
             .add_systems(
                 PreUpdate,
                 (
-                    apply_launch_fullscreen,
                     toggle_windowed,
-                    clear_keys_on_focus_loss,
+                    clear_keys_on_focus_change.after(bevy::input::InputSystems),
                 ),
             );
     }
 }
 
-/// The frame-rate cap the launcher asks for: positive is a fixed rate, a
-/// negative value automatic, zero off (the default). The original's cap
-/// only ever holds the loop back, so the default leaves the frame at the
-/// display's or the GPU's pace.
+/// The frame-rate cap in force: positive is a fixed rate, a negative value
+/// automatic, zero off (the default). The original's cap only ever holds
+/// the loop back.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FramePacing {
     pub fps_cap: i32,
@@ -73,13 +73,12 @@ struct WindowedFrame {
 
 fn take_fps_cap(options: Option<Res<Options>>, mut pacing: ResMut<FramePacing>) {
     if let Some(options) = options {
-        pacing.fps_cap = options.max_fps;
+        pacing.fps_cap = options.max_fps.unwrap_or(0);
     }
 }
 
 /// Holds the frame to the configured rate, measuring from the previous
-/// frame's start as the original does. With no cap, or while the display
-/// rate is unknown, nothing happens.
+/// frame's start as the original does. With no cap nothing happens.
 fn pace_frame(
     pacing: Res<FramePacing>,
     mut clock: ResMut<PacerClock>,
@@ -92,12 +91,12 @@ fn pace_frame(
     let Ok(window) = windows.single() else {
         return;
     };
-    let refresh_hz = monitors
-        .single()
-        .ok()
-        .and_then(|monitor| monitor.refresh_rate_millihertz)
-        .map(|milli| (milli / 1000).max(1))
-        .unwrap_or(0);
+    let refresh_hz = display_refresh_hz(
+        monitors
+            .single()
+            .ok()
+            .and_then(|monitor| monitor.refresh_rate_millihertz),
+    );
     let vsync = !matches!(
         window.present_mode,
         PresentMode::AutoNoVsync | PresentMode::Immediate
@@ -116,68 +115,39 @@ fn pace_frame(
     clock.last_ms = clock.start.elapsed().as_millis() as u32;
 }
 
-/// Clears the held keys and mouse buttons when the window loses focus, as
-/// the original's focus message empties its 256-entry key table. Without it a
-/// key held at the moment of the switch would stay down until pressed again.
-fn clear_keys_on_focus_loss(
+/// Releases the held keys and mouse buttons when the window gains or loses
+/// the focus, as the original empties its 256-entry key table on both
+/// focus messages. Bevy already releases the keys on a focus loss; the
+/// mouse buttons and the gain are Exarust's addition. Runs after Bevy's
+/// input systems so the releases are this frame's.
+fn clear_keys_on_focus_change(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut keys: Option<ResMut<ButtonInput<KeyCode>>>,
     mut buttons: Option<ResMut<ButtonInput<MouseButton>>>,
     mut focused: Local<Option<bool>>,
 ) {
     let Ok(window) = windows.single() else { return };
-    if *focused == Some(window.focused) {
-        return;
-    }
     let was = focused.replace(window.focused);
-    if was == Some(true) && !window.focused {
-        if let Some(keys) = keys.as_mut() {
-            keys.clear();
-        }
-        if let Some(buttons) = buttons.as_mut() {
-            buttons.clear();
-        }
+    if was.is_none_or(|was| was == window.focused) {
+        return;
+    }
+    if let Some(keys) = keys.as_mut()
+        && keys.get_pressed().next().is_some()
+    {
+        keys.release_all();
+    }
+    if let Some(buttons) = buttons.as_mut()
+        && buttons.get_pressed().next().is_some()
+    {
+        buttons.release_all();
     }
 }
 
-/// Picks the exclusive display mode once the monitor is known: the requested
-/// window size when the display lists it, otherwise the current mode. The
-/// original reports an unsupported mode and keeps the current screen size.
-fn apply_launch_fullscreen(
-    options: Option<Res<Options>>,
-    monitors: Query<&Monitor, With<PrimaryMonitor>>,
-    mut windows: Query<&mut Window, With<PrimaryWindow>>,
-    mut done: Local<bool>,
-) {
-    if *done {
-        return;
-    }
-    let Some(options) = options else { return };
-    if !options.fullscreen {
-        *done = true;
-        return;
-    }
-    let Ok(monitor) = monitors.single() else {
-        return;
-    };
-    let (width, height) = options.size.unwrap_or((1600, 900));
-    let requested = bevy::prelude::UVec2::new(width, height);
-    let video_mode = monitor
-        .video_modes
-        .iter()
-        .find(|mode| mode.physical_size == requested)
-        .copied()
-        .map(bevy::window::VideoModeSelection::Specific)
-        .unwrap_or(bevy::window::VideoModeSelection::Current);
-    if let Ok(mut window) = windows.single_mut() {
-        window.mode = WindowMode::Fullscreen(bevy::window::MonitorSelection::Primary, video_mode);
-    }
-    *done = true;
-}
-
-/// Alt+Enter switches between a windowed frame and borderless full screen,
-/// restoring the size and position the window had. The original intercepts
-/// the system key, so releases do not repeat the toggle.
+/// Alt+Enter switches between a framed window and full screen over the
+/// desktop, restoring the size and position the framed window had, as the
+/// original's system-key handler does (it ignores the key while its window
+/// is fixed-size). The original sees the key's auto-repeat as well; Exarust
+/// toggles once a press.
 fn toggle_windowed(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
@@ -213,13 +183,13 @@ fn toggle_windowed(
     }
 }
 
-/// The window mode a launch full-screen flag asks for: the original changes
-/// the display mode and creates an exclusive full-screen window. Winit maps
-/// this to an exclusive mode where the platform has one and to borderless
-/// full screen on Wayland.
+/// The window mode a launch full-screen flag asks for: a borderless window
+/// over the desktop, as the original's full screen is while its
+/// `ScreenWidth`/`ScreenHeight` settings are unset. With a settings file,
+/// `exa_game::hw_config` replaces it with the settings' choice.
 pub fn launch_window_mode(fullscreen: bool) -> WindowMode {
     if fullscreen {
-        window_mode(exa_game::window::WindowStyle::Exclusive)
+        window_mode(exa_game::window::WindowStyle::Borderless)
     } else {
         WindowMode::Windowed
     }

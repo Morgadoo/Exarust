@@ -18,7 +18,7 @@
 //!          --no-supersample           draw at window resolution (default: 4× supersampling, as the original)
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x900)
-//!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate
+//!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate (off unless FPSLimit is set)
 //!          --no-settings              ignore the user's settings files (see below)
 //!          --benchmark                run the GPU benchmark and take its quality levels
 //!          --screenshot <file.png>    save a frame and exit
@@ -137,11 +137,13 @@ pub struct Options {
     /// Present frames as soon as they are drawn (for measuring).
     pub no_vsync: bool,
     /// The original's frame-rate cap: positive is a fixed rate, negative
-    /// automatic (the display's rate, at least 120), zero off.
-    pub max_fps: i32,
+    /// automatic (the display's rate), zero off. `None` (off) unless the
+    /// command line or the settings file's `FPSLimit` gives one.
+    pub max_fps: Option<i32>,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
-    /// Borderless full screen on the primary display.
+    /// Full screen over the primary display (borderless; the settings'
+    /// `ScreenWidth`/`ScreenHeight` can ask for another display mode).
     pub fullscreen: bool,
     /// Ignore the user's settings files.
     pub no_settings: bool,
@@ -411,7 +413,7 @@ fn main() -> AppExit {
             "--max-fps" => {
                 let value = args.next().unwrap_or_default();
                 match parse_max_fps(&value) {
-                    Some(cap) => options.max_fps = cap,
+                    Some(cap) => options.max_fps = Some(cap),
                     None => {
                         eprintln!("--max-fps: cannot read {value:?} (a rate, auto or 0)");
                         return AppExit::from_code(2);
@@ -729,14 +731,21 @@ fn main() -> AppExit {
 
     let fixed_frames = options.fixed_frames;
     let mut app = App::new();
-    // The original holds a background window to about 31 frames a second
-    // and runs the foreground one as fast as its pacing allows. Winit's
-    // reactive mode wakes on every window event and otherwise waits 32 ms.
+    // The original holds a background window to 32 ms a frame (about 31 a
+    // second) and runs the foreground one as fast as its pacing allows.
+    // Winit's low-power reactive mode wakes on the window's own events and
+    // otherwise waits 32 ms. Unattended runs (a screenshot, fixed frames)
+    // keep running at full speed in the background.
+    let unattended = options.screenshot.is_some() || options.fixed_frames;
     app.insert_resource(bevy::winit::WinitSettings {
         focused_mode: bevy::winit::UpdateMode::Continuous,
-        unfocused_mode: bevy::winit::UpdateMode::reactive(std::time::Duration::from_millis(
-            exa_game::frame::UNFOCUSED_INTERVAL_MS as u64,
-        )),
+        unfocused_mode: if unattended {
+            bevy::winit::UpdateMode::Continuous
+        } else {
+            bevy::winit::UpdateMode::reactive_low_power(std::time::Duration::from_millis(
+                exa_game::frame::UNFOCUSED_INTERVAL_MS as u64,
+            ))
+        },
     });
     if let Some(trace) = trace {
         app.insert_resource(trace);

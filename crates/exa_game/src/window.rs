@@ -1,25 +1,31 @@
 //! Window styles and display modes.
 //!
-//! Window styles and display modes.
-//!
-//! The original creates a windowed frame, a borderless popup or an exclusive
-//! full-screen window whose display mode it changes first, with a 640 × 480
-//! minimum and Alt+Enter toggling between windowed and borderless. Winit and
-//! Bevy own the window; the rules that can be expressed through
-//! [`bevy::window::Window`] are applied by `exarust::frame_loop`, and the
-//! display-mode enumeration and fitting arithmetic are modelled here and
-//! pinned by tests. Rules: `docs/PERFORMANCE.md`, `docs/UI.md` (Interface
-//! scale).
+//! The original creates a framed window, or for full screen a popup that
+//! covers the desktop, changing the display mode first only when its
+//! `ScreenWidth`/`ScreenHeight` settings ask for a size other than the
+//! desktop's. Its window has a 640 × 480 minimum track size, and Alt+Enter
+//! toggles between the framed window and full screen. Winit and Bevy own the
+//! window; the rules that can be expressed through [`bevy::window::Window`]
+//! are applied by `hw_config` (the settings' full screen and vertical sync)
+//! and `exarust::frame_loop` (pacing, Alt+Enter), and the display-mode list
+//! and window fitting are modelled here and pinned by tests. Rules:
+//! `docs/PERFORMANCE.md` (Frame pacing), `docs/UI.md` (Settings options).
 
 use bevy::prelude::*;
-use bevy::window::{MonitorSelection, VideoMode, VideoModeSelection, WindowMode};
+use bevy::window::{MonitorSelection, PresentMode, VideoMode, VideoModeSelection, WindowMode};
 
-/// The original's minimum window client size, in physical pixels.
+/// The original's minimum track size. Win32 measures it on the outer
+/// window, borders and caption included; winit's resize constraints apply
+/// to the inner size, so Exarust's window is that much larger at the limit.
 pub const MIN_WINDOW_SIZE: UVec2 = UVec2::new(640, 480);
 
 /// Modes narrower than this are not offered by the original's display-mode
 /// list.
 pub const MIN_DISPLAY_WIDTH: u32 = 640;
+
+/// Rates below this are reported as unknown (0) by the original's refresh
+/// rate query.
+pub const MIN_KNOWN_REFRESH_HZ: u32 = 30;
 
 /// How a window is framed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,13 +38,15 @@ pub enum WindowStyle {
     Exclusive,
 }
 
-/// One display mode the original enumerates: a size and a refresh rate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One size the original's display-mode list holds, with every refresh
+/// rate the driver reported for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayMode {
     pub width: u32,
     pub height: u32,
-    /// Refresh rate in hertz; 1 means the driver did not report one.
-    pub refresh_hz: u32,
+    /// The rates in discovery order: the first as reported (even 0 or 1),
+    /// later ones only when above 1 and not already listed.
+    pub refresh_rates: Vec<u32>,
 }
 
 /// The display modes, ordered by area as the original orders them.
@@ -48,11 +56,13 @@ pub struct DisplayModes {
 }
 
 impl DisplayModes {
-    /// Builds the list from a driver's enumeration: modes narrower than
-    /// [`MIN_DISPLAY_WIDTH`] are dropped, a size is stored once with every
-    /// refresh rate above 1 that the driver reports for it, and the list is
-    /// sorted by pixel area (the original's ascending selection-sort order;
-    /// equal areas keep their discovery order here).
+    /// Builds the list from a driver's enumeration, as the original does:
+    /// modes narrower than [`MIN_DISPLAY_WIDTH`] are skipped, a new size is
+    /// stored with its first rate and a known size gains each further rate
+    /// above 1 it does not list yet. The list is then ordered by pixel area
+    /// with the original's exchange sort: each slot in turn swaps with every
+    /// later entry of smaller area, so equal areas need not keep their
+    /// discovery order.
     pub fn from_enumerated<'a>(modes: impl IntoIterator<Item = &'a VideoMode>) -> Self {
         let mut out: Vec<DisplayMode> = Vec::new();
         for mode in modes {
@@ -61,40 +71,51 @@ impl DisplayModes {
             if width < MIN_DISPLAY_WIDTH {
                 continue;
             }
+            // Win32 reports whole hertz; winit's millihertz are truncated.
             let refresh_hz = mode.refresh_rate_millihertz / 1000;
             match out
                 .iter_mut()
                 .find(|m| m.width == width && m.height == height)
             {
                 Some(existing) => {
-                    if refresh_hz > 1 && !existing.has_refresh(refresh_hz) {
-                        // The original records only one rate per size in its
-                        // per-size list; the first is enough to pick a mode.
-                        existing.refresh_hz = existing.refresh_hz.max(refresh_hz);
+                    if refresh_hz > 1 && !existing.refresh_rates.contains(&refresh_hz) {
+                        existing.refresh_rates.push(refresh_hz);
                     }
                 }
                 None => out.push(DisplayMode {
                     width,
                     height,
-                    refresh_hz,
+                    refresh_rates: vec![refresh_hz],
                 }),
             }
         }
-        out.sort_by_key(|m| m.width as u64 * m.height as u64);
+        let area = |m: &DisplayMode| i64::from(m.width) * i64::from(m.height);
+        for i in 0..out.len() {
+            for j in i + 1..out.len() {
+                if area(&out[j]) < area(&out[i]) {
+                    out.swap(i, j);
+                }
+            }
+        }
         Self { modes: out }
     }
 
-    /// The modes, widest last.
+    /// The modes, largest last.
     pub fn modes(&self) -> &[DisplayMode] {
         &self.modes
     }
 
-    /// The index of the mode matching the current screen size, if the driver
-    /// lists it.
+    /// The index of the first mode of this size, if the driver lists it.
     pub fn index_of(&self, width: u32, height: u32) -> Option<usize> {
         self.modes
             .iter()
             .position(|m| m.width == width && m.height == height)
+    }
+
+    /// The desktop mode's index the original keeps: the first entry of the
+    /// desktop's size, else 0.
+    pub fn current_index(&self, desktop: UVec2) -> usize {
+        self.index_of(desktop.x, desktop.y).unwrap_or(0)
     }
 
     /// Whether a size is listed.
@@ -103,32 +124,34 @@ impl DisplayModes {
     }
 }
 
-impl DisplayMode {
-    fn has_refresh(&self, hz: u32) -> bool {
-        self.refresh_hz == hz
+/// The display's refresh rate as the original's pacing sees it: whole hertz,
+/// and 0 (unknown) below [`MIN_KNOWN_REFRESH_HZ`] or when none is reported.
+pub fn display_refresh_hz(refresh_rate_millihertz: Option<u32>) -> u32 {
+    match refresh_rate_millihertz.map(|milli| milli / 1000) {
+        Some(hz) if hz >= MIN_KNOWN_REFRESH_HZ => hz,
+        _ => 0,
     }
 }
 
-/// The swap's present mode for the vertical-sync setting and the adaptive
-/// choice: off presents immediately, adaptive vertical sync lets a late
-/// frame tear instead of waiting (`FifoRelaxed`), and plain vertical sync
-/// waits for the display (`Fifo`). The original sets the swap interval to
-/// 0, 1 or −1 respectively.
-pub fn present_mode(vertical_sync: bool, adaptive: bool) -> bevy::window::PresentMode {
-    use bevy::window::PresentMode;
+/// The swap's present mode for the vertical-sync setting: off presents
+/// immediately (swap interval 0), on waits for the display (`Fifo`, swap
+/// interval 1). The original's setter would pick the adaptive interval −1
+/// (`FifoRelaxed`, which `AutoVsync` prefers) when its adaptive switch is
+/// set, but nothing in the shipped executable sets that switch, so play
+/// always uses interval 1; `adaptive` is kept for that branch.
+pub fn present_mode(vertical_sync: bool, adaptive: bool) -> PresentMode {
     if !vertical_sync {
         PresentMode::AutoNoVsync
     } else if adaptive {
-        // AutoVsync prefers FifoRelaxed, the swap-control-tear behaviour.
         PresentMode::AutoVsync
     } else {
         PresentMode::Fifo
     }
 }
 
-/// The Bevy window mode for a style. Exclusive full screen uses the display's
-/// current mode (winit's video-mode selection); on Wayland, which has no
-/// exclusive mode, Bevy falls back to a borderless window.
+/// The Bevy window mode for a style on the primary display. Exclusive full
+/// screen keeps the display's current mode here; [`fullscreen_mode`] picks a
+/// specific one.
 pub fn window_mode(style: WindowStyle) -> WindowMode {
     match style {
         WindowStyle::Windowed => WindowMode::Windowed,
@@ -139,58 +162,86 @@ pub fn window_mode(style: WindowStyle) -> WindowMode {
     }
 }
 
-/// Where a window of `size` goes inside a work area, keeping it wholly
-/// visible.
+/// The full-screen window the original creates for its `ScreenWidth` and
+/// `ScreenHeight` settings (0 when unset).
 ///
-/// The original adds the frame's borders to the desired client size, drops a
-/// size larger than the work area to the work area's, and centres a window
-/// whose frame is smaller only in the borderless mode. This model takes the
-/// resulting outer size and the work area: `center` is the borderless flag.
+/// When either is set and differs from the desktop's size, the original
+/// changes the display mode to that size and covers it; a mode the display
+/// refuses is reported ("Display mode not supported.") and the desktop's
+/// size is kept. Otherwise the window simply covers the desktop. Exarust
+/// maps the first case to exclusive full screen at the listed video mode
+/// (`modes`, the primary monitor's) and every other case to a borderless
+/// window. `desktop` is `None` when the primary monitor is unknown (Wayland
+/// has no primary monitor), which gives the borderless window.
+pub fn fullscreen_mode(
+    screen_size: (i32, i32),
+    desktop: Option<UVec2>,
+    modes: &[VideoMode],
+) -> WindowMode {
+    let borderless = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+    let Some(desktop) = desktop else {
+        return borderless;
+    };
+    let (width, height) = screen_size;
+    let differs = (width != 0 && width as i64 != i64::from(desktop.x))
+        || (height != 0 && height as i64 != i64::from(desktop.y));
+    if !differs || width <= 0 || height <= 0 {
+        return borderless;
+    }
+    let size = UVec2::new(width as u32, height as u32);
+    modes
+        .iter()
+        .find(|mode| mode.physical_size == size)
+        .map_or(borderless, |mode| {
+            WindowMode::Fullscreen(
+                MonitorSelection::Primary,
+                VideoModeSelection::Specific(*mode),
+            )
+        })
+}
+
+/// Where a framed window goes inside a work area.
+///
+/// `outer` is the window's size with its borders and caption (the original
+/// adds them from the system metrics before calling this). An axis larger
+/// than the work area takes the work area's size and its left or top edge;
+/// otherwise, when `center` is set, the window is placed half the spare
+/// space in, measured from 0 rather than from the work area's edge (the
+/// original adds no origin); otherwise `position` is kept. The original
+/// centres only a window that has never been framed before, at its default
+/// size; a restored window keeps its saved position.
 pub fn fit_window(
-    desired: UVec2,
+    position: IVec2,
+    outer: UVec2,
     work_origin: IVec2,
     work_size: UVec2,
     center: bool,
 ) -> (IVec2, UVec2) {
-    let mut size = desired;
-    let mut origin = work_origin;
-    if size.x > work_size.x {
+    let mut size = outer;
+    let mut origin = position;
+    if i64::from(work_size.x) < i64::from(size.x) {
         size.x = work_size.x;
         origin.x = work_origin.x;
     } else if center {
-        origin.x = work_origin.x + (work_size.x - size.x) as i32 / 2;
+        origin.x = ((work_size.x - size.x) / 2) as i32;
     }
-    if size.y > work_size.y {
+    if i64::from(work_size.y) < i64::from(size.y) {
         size.y = work_size.y;
         origin.y = work_origin.y;
     } else if center {
-        origin.y = work_origin.y + (work_size.y - size.y) as i32 / 2;
+        origin.y = ((work_size.y - size.y) / 2) as i32;
     }
     (origin, size)
 }
 
-/// The window a full-screen toggle returns to: Alt+Enter switches a windowed
-/// frame to borderless full screen and back, restoring the saved client
-/// size.
+/// The window an Alt+Enter toggle switches to: a framed window goes full
+/// screen and anything else back to the framed window, which gets its saved
+/// size and position. (The original's full screen is exclusive only when
+/// its settings changed the display mode; the toggle keeps that choice.)
 pub fn toggled_style(current: WindowMode) -> WindowStyle {
     match current {
         WindowMode::Windowed => WindowStyle::Borderless,
         _ => WindowStyle::Windowed,
-    }
-}
-
-/// The window the game's display-mode setting asks for.
-///
-/// The original's "full screen" is exclusive; a mode the display does not
-/// list makes it report the mode as unsupported and keep the current screen
-/// size. The caller applies the result to a window's [`WindowMode`].
-pub fn style_for_setting(fullscreen: bool, borderless: bool, exclusive: bool) -> WindowStyle {
-    if !fullscreen {
-        WindowStyle::Windowed
-    } else if borderless || !exclusive {
-        WindowStyle::Borderless
-    } else {
-        WindowStyle::Exclusive
     }
 }
 
@@ -206,76 +257,130 @@ mod tests {
         }
     }
 
+    fn mode(width: u32, height: u32, rates: &[u32]) -> DisplayMode {
+        DisplayMode {
+            width,
+            height,
+            refresh_rates: rates.to_vec(),
+        }
+    }
+
     #[test]
-    fn display_modes_are_filtered_deduped_and_ordered_by_area() {
+    fn display_modes_are_filtered_merged_and_ordered_by_area() {
         let modes = [
             video(1920, 1080, 60),
             video(800, 600, 60),
             video(640, 480, 60),
             video(320, 200, 60),
             video(1920, 1080, 144),
+            video(1280, 720, 1),
             video(1280, 720, 60),
+            video(1920, 1080, 60),
             video(1280, 720, 1),
         ];
         let list = DisplayModes::from_enumerated(&modes);
         assert_eq!(
             list.modes(),
             &[
-                DisplayMode {
-                    width: 640,
-                    height: 480,
-                    refresh_hz: 60
-                },
-                DisplayMode {
-                    width: 800,
-                    height: 600,
-                    refresh_hz: 60
-                },
-                DisplayMode {
-                    width: 1280,
-                    height: 720,
-                    refresh_hz: 60
-                },
-                DisplayMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh_hz: 144
-                },
+                mode(640, 480, &[60]),
+                mode(800, 600, &[60]),
+                // The first rate is kept even when it is 1; a later 1 is not.
+                mode(1280, 720, &[1, 60]),
+                mode(1920, 1080, &[60, 144]),
             ]
         );
         assert_eq!(list.index_of(1280, 720), Some(2));
         assert_eq!(list.index_of(1920, 1200), None);
+        assert_eq!(list.current_index(UVec2::new(1920, 1080)), 3);
+        assert_eq!(list.current_index(UVec2::new(2560, 1440)), 0);
         assert!(list.contains(640, 480));
         assert!(!list.contains(320, 200));
     }
 
     #[test]
+    fn equal_areas_follow_the_exchange_sort() {
+        // Slot 0 takes the smaller 800 x 600 from the end, which pushes
+        // 1200 x 800 back behind 960 x 1000 of the same area.
+        let modes = [
+            video(1200, 800, 60),
+            video(960, 1000, 60),
+            video(800, 600, 60),
+        ];
+        let list = DisplayModes::from_enumerated(&modes);
+        let sizes: Vec<(u32, u32)> = list.modes().iter().map(|m| (m.width, m.height)).collect();
+        assert_eq!(sizes, [(800, 600), (960, 1000), (1200, 800)]);
+    }
+
+    #[test]
+    fn the_refresh_rate_is_unknown_below_30_hz() {
+        assert_eq!(display_refresh_hz(Some(143_998)), 143);
+        assert_eq!(display_refresh_hz(Some(59_940)), 59);
+        assert_eq!(display_refresh_hz(Some(30_000)), 30);
+        assert_eq!(display_refresh_hz(Some(29_999)), 0);
+        assert_eq!(display_refresh_hz(None), 0);
+    }
+
+    #[test]
     fn a_window_fits_the_work_area() {
-        let origin = IVec2::new(10, 20);
+        let work_origin = IVec2::new(10, 20);
         let work = UVec2::new(1920, 1040);
-        // A smaller borderless window is centred.
+        // A first framed window is centred from 0, not from the work area's
+        // corner: (1920 - 1600) / 2 = 160, (1040 - 900) / 2 = 70.
         assert_eq!(
-            fit_window(UVec2::new(1600, 900), origin, work, true),
-            (IVec2::new(170, 90), UVec2::new(1600, 900))
+            fit_window(IVec2::ZERO, UVec2::new(1600, 900), work_origin, work, true),
+            (IVec2::new(160, 70), UVec2::new(1600, 900))
         );
-        // A framed window keeps its requested corner.
+        // A restored window keeps its position.
         assert_eq!(
-            fit_window(UVec2::new(1600, 900), origin, work, false),
-            (origin, UVec2::new(1600, 900))
+            fit_window(
+                IVec2::new(300, 200),
+                UVec2::new(1600, 900),
+                work_origin,
+                work,
+                false
+            ),
+            (IVec2::new(300, 200), UVec2::new(1600, 900))
         );
-        // Too large: both axes clamp to the work area.
+        // Too large: each axis takes the work area and its edge.
         assert_eq!(
-            fit_window(UVec2::new(3000, 2000), origin, work, true),
-            (origin, work)
+            fit_window(
+                IVec2::new(5, 5),
+                UVec2::new(3000, 900),
+                work_origin,
+                work,
+                true
+            ),
+            (IVec2::new(10, 70), UVec2::new(1920, 900))
         );
     }
 
     #[test]
     fn the_present_mode_follows_the_swap_interval() {
-        use bevy::window::PresentMode;
         assert_eq!(present_mode(false, false), PresentMode::AutoNoVsync);
         assert_eq!(present_mode(true, false), PresentMode::Fifo);
         assert_eq!(present_mode(true, true), PresentMode::AutoVsync);
+    }
+
+    #[test]
+    fn full_screen_changes_the_mode_only_for_another_size() {
+        let desktop = Some(UVec2::new(2560, 1440));
+        let modes = [video(2560, 1440, 144), video(1920, 1080, 60)];
+        let borderless = WindowMode::BorderlessFullscreen(MonitorSelection::Primary);
+        // Unset, or the desktop's size: a window over the desktop.
+        assert_eq!(fullscreen_mode((0, 0), desktop, &modes), borderless);
+        assert_eq!(fullscreen_mode((2560, 1440), desktop, &modes), borderless);
+        // Another listed size: that display mode.
+        assert_eq!(
+            fullscreen_mode((1920, 1080), desktop, &modes),
+            WindowMode::Fullscreen(
+                MonitorSelection::Primary,
+                VideoModeSelection::Specific(modes[1])
+            )
+        );
+        // Unlisted, half set, or no primary monitor: the desktop's size.
+        assert_eq!(fullscreen_mode((1600, 900), desktop, &modes), borderless);
+        assert_eq!(fullscreen_mode((1920, 0), desktop, &modes), borderless);
+        assert_eq!(fullscreen_mode((1920, 1080), None, &modes), borderless);
     }
 
     #[test]
@@ -289,13 +394,6 @@ mod tests {
         assert_eq!(
             window_mode(WindowStyle::Exclusive),
             WindowMode::Fullscreen(MonitorSelection::Primary, VideoModeSelection::Current)
-        );
-        assert_eq!(style_for_setting(false, false, true), WindowStyle::Windowed);
-        assert_eq!(style_for_setting(true, false, true), WindowStyle::Exclusive);
-        assert_eq!(style_for_setting(true, true, true), WindowStyle::Borderless);
-        assert_eq!(
-            style_for_setting(true, false, false),
-            WindowStyle::Borderless
         );
     }
 }

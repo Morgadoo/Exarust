@@ -78,6 +78,11 @@ impl UserSettings {
         if self.last_bool("ShowFPS") == Some(false) {
             options.no_fps = true;
         }
+        // The original's frame-rate cap; a file that does not name it leaves
+        // Exarust's cap off (the original's default is automatic).
+        if options.max_fps.is_none() && self.sets("FPSLimit") {
+            options.max_fps = Some(s.fps_cap);
+        }
     }
 
     /// The hardware configuration the settings file gives, with the launch
@@ -106,6 +111,7 @@ impl UserSettings {
         live.show_fps = !no_fps;
         exa_game::hw_config::HardwareConfig {
             window_size: size,
+            screen_size: (self.settings.screen_width, self.settings.screen_height),
             ..exa_game::hw_config::HardwareConfig::new(live).with_file(self.ini_path.clone())
         }
     }
@@ -254,6 +260,19 @@ mod tests {
         };
         user(b"WindowWidth = 1280\r\nWindowHeight = 720\r\n").apply_to(&mut options);
         assert_eq!(options.size, Some((640, 480)));
+        // The file's FPSLimit gives the cap (60 is 16 ms, 62 frames), unless
+        // the command line gave one.
+        let mut options = Options::default();
+        user(b"").apply_to(&mut options);
+        assert_eq!(options.max_fps, None);
+        user(b"FPSLimit = 60\r\n").apply_to(&mut options);
+        assert_eq!(options.max_fps, Some(62));
+        let mut options = Options {
+            max_fps: Some(-1),
+            ..default()
+        };
+        user(b"FPSLimit = 60\r\n").apply_to(&mut options);
+        assert_eq!(options.max_fps, Some(-1));
     }
 
     #[test]
@@ -274,6 +293,13 @@ mod tests {
         assert!(hardware.live.controller);
         assert_eq!(hardware.live.aim_speed, (29.0f64 / 99.0) as f32);
         assert_eq!(hardware.window_size, Some((1280, 720)));
+        assert_eq!(hardware.screen_size, (0, 0));
+        assert_eq!(
+            user(b"ScreenWidth = 1920\r\nScreenHeight = 1080\r\n")
+                .hardware(true, None, false, false, false)
+                .screen_size,
+            (1920, 1080)
+        );
         // The test's folder is empty, so the file path is empty too.
         assert_eq!(hardware.settings_file, Some(PathBuf::new()));
 

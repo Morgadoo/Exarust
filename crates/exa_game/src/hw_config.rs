@@ -14,10 +14,7 @@ use std::path::PathBuf;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::window::{
-    Monitor, MonitorSelection, PresentMode, PrimaryMonitor, PrimaryWindow, VideoModeSelection,
-    WindowMode,
-};
+use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow, WindowMode};
 use exa_audio::{AudioEnvironment, MusicSetting};
 use exa_formats::file_ref::{read_whole_file, write_whole_file};
 use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
@@ -68,6 +65,9 @@ pub struct HardwareConfig {
     /// The window size the launcher asked for, kept for a return to windowed
     /// mode.
     pub window_size: Option<(u32, u32)>,
+    /// The `ScreenWidth` and `ScreenHeight` settings: the full-screen display
+    /// mode's size, 0 when unset ([`crate::window::fullscreen_mode`]).
+    pub screen_size: (i32, i32),
     /// The Controls page's "Enable Rumble" checkbox. It has no saved setting
     /// in the original and no Exarust effect (no gamepad); kept as a session
     /// flag (its default is a guess).
@@ -111,6 +111,7 @@ impl HardwareConfig {
             steam_deck: false,
             session_music: live.music,
             window_size: None,
+            screen_size: (0, 0),
             rumble: true,
         }
     }
@@ -563,8 +564,9 @@ fn apply_options(
     }
 }
 
-/// The window state a frame last applied: windowed, size and vertical sync.
-type AppliedWindow = (bool, Option<(u32, u32)>, bool);
+/// The window state a frame last applied: windowed, size, vertical sync and
+/// whether the primary monitor was known.
+type AppliedWindow = (bool, Option<(u32, u32)>, bool, bool);
 
 /// Applies the live window mode, size and vertical sync.
 fn apply_window(
@@ -579,35 +581,26 @@ fn apply_window(
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
+    let monitor = monitors.single().ok();
     let state = (
         config.live.window_mode,
         config.window_size,
         config.live.vertical_sync,
+        monitor.is_some(),
     );
     if applied.as_ref() == Some(&state) {
         return;
     }
     *applied = Some(state);
-    // The original's full screen changes the display mode and creates an
-    // exclusive window; winit falls back to borderless where the platform
-    // has no exclusive mode. A requested size picks that video mode when the
-    // display lists it, otherwise the current mode stays.
+    // Full screen covers the desktop, and changes the display mode only for
+    // a `ScreenWidth`/`ScreenHeight` other than the desktop's.
     let mode = if config.live.window_mode {
         WindowMode::Windowed
     } else {
-        let specific = config.window_size.and_then(|(width, height)| {
-            monitors.single().ok().and_then(|monitor| {
-                monitor
-                    .video_modes
-                    .iter()
-                    .find(|mode| mode.physical_size.x == width && mode.physical_size.y == height)
-                    .copied()
-                    .map(VideoModeSelection::Specific)
-            })
-        });
-        WindowMode::Fullscreen(
-            MonitorSelection::Primary,
-            specific.unwrap_or(VideoModeSelection::Current),
+        crate::window::fullscreen_mode(
+            config.screen_size,
+            monitor.map(|m| m.physical_size()),
+            monitor.map_or(&[], |m| m.video_modes.as_slice()),
         )
     };
     if window.mode != mode {
