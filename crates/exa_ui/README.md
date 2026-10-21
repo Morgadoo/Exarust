@@ -164,8 +164,10 @@ inset, from 15, 25 to 105, 95 at place 10, 20 of size 100 by 80. The parent
 cross draws four line segments around a point; at unit 5 and point 10, 20 its
 corners are (8, 15), (13, 15), (8, 25), (13, 25), (6, 18), (6, 23), (16, 18),
 (16, 23). The control-code switch returns the close band for -4, -6 and -5 and
-the rail squares for -9, -10, -13 and -14; at unit 5 and trim 2, code -4 at
-x 100 returns 74, 4, 95, 26. Style bits 0x30 and 0xc0 independently select two
+the rail squares for -9, -10, -13 and -14; the close band is 17 wide and
+`27 − unit` tall, and at unit 5, a width of 100, an inset of 20, a client top
+of 7 and a right of 90, code -4 returns 78, 4, 95, 22 (corners, not a size).
+Style bits 0x30 and 0xc0 independently select two
 textured frames, the second inset by one; at place 10, 20 of size 100 by 80 they
 run to 110, 100 and 109, 99. The control image centres its square at 52, 52, or
 52, 53 when marked; mode 0x10000 draws with scale 1, and otherwise the flags
