@@ -2167,26 +2167,38 @@ pub fn hover_sound(has_sound: bool, draw: f64) -> Option<f32> {
 /// The volume the end menu's click sound plays at.
 pub const HOVER_VOLUME: f32 = 0.06;
 
-/// The practice scene filter: a level's node stays unless its class is the
-/// player's, the character database's or one of the locale's own trigger
-/// classes. A node of item type 0x11 has its own list filtered the same way;
-/// a node of the 0x4000 type is filtered, and every other node stays.
+/// Whether an object id is the player's own: its record's id, its second id
+/// or one of the ids in its record's item list. The practice scene filter
+/// removes such objects from a level loaded around the player, so the level
+/// does not hold a second copy of the player's things.
+fn players_own(id: u32, player_id: u32, second_id: u32, item_ids: &[u32]) -> bool {
+    id == player_id || id == second_id || item_ids.contains(&id)
+}
+
+/// The practice scene filter on a level's top node: a container node (item
+/// type 0x11) always stays and has its children filtered by
+/// [`child_stays`]; a node of the 0x4000 family is removed when its object
+/// is the player's own; every other node stays.
 pub fn node_stays(
     item_type: u32,
-    class: u32,
-    locale_classes: &[u32],
-    player_class: u32,
-    character_class: u32,
+    id: u32,
+    item_ids: &[u32],
+    player_id: u32,
+    second_id: u32,
 ) -> bool {
-    let removed =
-        class == player_class || class == character_class || locale_classes.contains(&class);
     if item_type & 0xfff == 0x11 {
-        return !removed;
+        return true;
     }
     if item_type & 0x7000 == 0x4000 {
-        return !removed;
+        return !players_own(id, player_id, second_id, item_ids);
     }
     true
+}
+
+/// The practice scene filter on a container's child: a child without an
+/// object (id 0) stays; one whose object is the player's own is removed.
+pub fn child_stays(id: u32, item_ids: &[u32], player_id: u32, second_id: u32) -> bool {
+    id == 0 || !players_own(id, player_id, second_id, item_ids)
 }
 
 /// An exit trigger as the nudge reads it: its centre and bounding radius,
@@ -2984,18 +2996,24 @@ mod tests {
     }
 
     #[test]
-    fn the_node_filter_keeps_the_scenes_own_nodes() {
+    fn the_node_filter_removes_the_players_own_objects() {
         // Nodes of other item types are never filtered.
         assert!(node_stays(0, 5, &[6, 7], 100, 0x6c));
         assert!(node_stays(0, 100, &[6, 7], 100, 0x6c));
+        assert!(node_stays(0x2000, 100, &[], 100, 0x6c));
+        // The 0x4000 family loses the player's own objects.
         assert!(node_stays(0x4000, 5, &[6, 7], 100, 0x6c));
         assert!(!node_stays(0x4000, 100, &[6, 7], 100, 0x6c));
         assert!(!node_stays(0x4000, 0x6c, &[6, 7], 100, 0x6c));
         assert!(!node_stays(0x4000, 7, &[6, 7], 100, 0x6c));
-        assert!(!node_stays(0x11, 6, &[6], 100, 0x6c));
-        assert!(node_stays(0x11, 1, &[6], 100, 0x6c));
-        assert!(!node_stays(0x4000, 100, &[], 100, 0x6c));
-        assert!(node_stays(0x2000, 100, &[], 100, 0x6c));
+        // A container always stays; its children are filtered, and a child
+        // without an object stays.
+        assert!(node_stays(0x11, 100, &[6], 100, 0x6c));
+        assert!(node_stays(0x3011, 6, &[6], 100, 0x6c));
+        assert!(!child_stays(6, &[6], 100, 0x6c));
+        assert!(!child_stays(100, &[], 100, 0x6c));
+        assert!(child_stays(1, &[6], 100, 0x6c));
+        assert!(child_stays(0, &[0], 0, 0));
     }
 
     #[test]
