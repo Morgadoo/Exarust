@@ -10,7 +10,7 @@
 //! whose rating turns hostile engages as the duellist does.
 
 use bevy::prelude::*;
-use exa_anim::Animator;
+use exa_anim::{Animator, Motions};
 use exa_combat::attack::{self, Attacker, Busy};
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, SwingState};
@@ -20,6 +20,8 @@ use exa_physics::body::{BodyTicks, Fallen, MAX_ENERGY, Ragdoll};
 
 pub mod activity;
 pub mod brain;
+use crate::combatant::{Combatant, Observed, Observer, Perception, atan2_xz, perceive};
+
 pub mod combatant;
 pub mod fight;
 pub mod golem;
@@ -56,7 +58,7 @@ impl Plugin for AiPlugin {
 /// `CharacterBody`) that duels `target` (a world-space entity, e.g. the
 /// player's physics root).
 #[derive(Component, Debug, Clone)]
-#[require(Stance)]
+#[require(Stance, Combatant)]
 pub struct Duellist {
     pub target: Entity,
     pub cooldown: f32,
@@ -70,6 +72,12 @@ pub struct Duellist {
     pub holds_ground: bool,
     /// It has entered combat (taken its guard).
     in_combat: bool,
+    /// The footwork it is carrying out.
+    pub footwork: place::Footwork,
+    /// Ticks the footwork is held before the next change. The original's
+    /// combat state biases a step change by a switching cost; the hold is
+    /// this interim duellist's version of it (a guess).
+    pub hold_ticks: u32,
 }
 
 impl Duellist {
@@ -84,7 +92,58 @@ impl Duellist {
             engaged: false,
             holds_ground: false,
             in_combat: false,
+            footwork: place::Footwork::Hold,
+            hold_ticks: 0,
         }
+    }
+}
+
+/// The attack arc a fighter publishes, as the position score reads it.
+#[allow(clippy::too_many_arguments)]
+fn published_blow(
+    fighter: Entity,
+    blades: &Query<&Blade>,
+    anim: &Animator,
+    phase: f32,
+    heading: f32,
+    facing: f32,
+    attacking: bool,
+    stunned: bool,
+) -> place::Blow {
+    let armed = blades
+        .iter()
+        .any(|b| b.wielder == fighter && b.record.armed());
+    let motion = if attacking { anim.action.as_str() } else { "" };
+    let action = match motion {
+        "Attack Mid" | "Attack Down" | "Attack Up" => 5,
+        "Attack Combo 1" | "Attack Combo 2" | "Attack Combo 3" => 8,
+        "Stab" => 11,
+        "Overhead Swing" => 12,
+        _ => 0,
+    };
+    let arc = place::publish_arc(place::Swing {
+        action,
+        phase,
+        heading,
+        facing,
+        armed,
+        held: armed,
+        recovering: stunned,
+        hand: None,
+        idle_clock: 0,
+        idle_stamp: 0,
+    });
+    place::Blow {
+        kind: arc.kind,
+        arc_start: arc.start,
+        arc_end: arc.end,
+        phase,
+        skill: 0.0,
+        committed: attacking && phase > 0.3,
+        sweeping: attacking && !stunned,
+        forced_range: armed,
+        origin_in_arc: false,
+        angle: 0.0,
     }
 }
 
@@ -128,7 +187,17 @@ fn duellist(
     time: Res<Time>,
     ticks: Option<Res<BodyTicks>>,
     targets: Query<&GlobalTransform>,
-    bodies: Query<(&Condition, &GlobalTransform, Option<&Ragdoll>, &Fighter)>,
+    motions: Option<Res<Motions>>,
+    bodies: Query<
+        (
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            &Fighter,
+            Option<&Animator>,
+        ),
+        Without<Duellist>,
+    >,
     children: Query<&Children>,
     blades: Query<&Blade>,
     mut minds: Query<&mut Mind>,
@@ -142,6 +211,11 @@ fn duellist(
         &ChildOf,
         Option<&Attacking>,
         Has<Fallen>,
+        &mut Combatant,
+        &Condition,
+        &GlobalTransform,
+        Option<&Ragdoll>,
+        &Fighter,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
 ) {
@@ -156,15 +230,17 @@ fn duellist(
         parent,
         attacking,
         fallen,
+        mut combatant,
+        condition,
+        gt,
+        ragdoll,
+        fighter,
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
             continue;
         };
         body.desired_velocity = Vec3::ZERO;
-        let Ok((condition, gt, ragdoll, fighter)) = bodies.get(entity) else {
-            continue;
-        };
         // Down, getting up, collapsing or dead (or Exarust's fall), it does
         // nothing.
         if condition.fallen_or_dying() || fallen {
@@ -207,7 +283,7 @@ fn duellist(
             .find_map(|e| bodies.get(e).ok());
         // Its stance by the distance between the chests: the guard at four
         // reaches or more, the combat idle within.
-        if let Some((_, tgt, tgt_body, _)) = target_body {
+        if let Some((_, tgt, tgt_body, _, _)) = target_body {
             let d = stance::chest_point(gt, ragdoll).distance(stance::chest_point(tgt, tgt_body));
             let reach = reach_of(entity, &blades);
             let chosen = stance::duellist_stance(d, reach);
@@ -242,33 +318,167 @@ fn duellist(
         if dist > 0.05 {
             t.rotation = Quat::from_rotation_y(order.heading);
         }
+
+        // One perception pass on the target, then the position terms.
+        let target_forward = target.rotation() * Vec3::Z;
+        let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
+        let target_fighter = target_body.map(|(_, _, _, f, _)| f);
+        let target_anim = target_body.and_then(|(_, _, _, _, a)| a);
+        let phase = target_anim
+            .zip(motions.as_deref())
+            .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
+            .unwrap_or(0.0);
+        let observed = Observed {
+            entity: ai.target,
+            position_cm: target.translation() * 100.0,
+            look: target_forward,
+            forward: target_forward,
+            condition: target_condition.0,
+            flags: 0,
+            combat_flags: 0,
+            speed: 0.0,
+            size: target_fighter.map_or(1.0, |f| f.stats.size),
+            reach_cm: reach_of(ai.target, &blades) * 100.0,
+            skill: 0.0,
+            phase,
+            combat_mode: target_condition != Condition::NORMAL,
+            armed: blades
+                .iter()
+                .any(|b| b.wielder == ai.target && b.record.armed()),
+            guard_up: false,
+            hidden: false,
+            asleep: false,
+            dead: target_condition.is_dead(),
+        };
+        let observer = Observer {
+            entity,
+            origin_cm: gt.translation() * 100.0,
+            look: facing,
+            forward: facing,
+            condition: condition.0,
+            flags: 0,
+            combat_flags: 0,
+            skill: 0.0,
+            calm: 0.0,
+            aggression: 0.0,
+            perception: fighter.stats.perception,
+            mask: None,
+            tracked: combatant.contact(ai.target).is_some_and(|c| c.seen),
+            target: Some(ai.target),
+            reach_cm: reach_of(entity, &blades) * 100.0,
+            speed: 0.0,
+        };
+        let mut perception = Perception {
+            raw_attitude: combatant.contact(ai.target).map_or(0.0, |c| c.attitude),
+            attitude: combatant.contact(ai.target).map_or(0.0, |c| c.attitude),
+            ..combatant.perception
+        };
+        let noticed = perceive(
+            &observer,
+            &observed,
+            &[],
+            &mut combatant.contacts,
+            &mut perception,
+            now,
+            1.0,
+        );
+        combatant.perception = perception;
+        combatant.target = Some(ai.target);
+        if let Some(floor) = perception.alert_floor {
+            combatant.alert = combatant.alert.max(floor);
+        }
+        let contact = combatant.contact_mut(ai.target);
+        contact.seen = noticed;
+        contact.distance_cm = perception.distance_cm;
+        contact.closeness = perception.closeness;
+        contact.facing = perception.facing;
+        if target_condition.is_dead() && contact.died_ms.is_none() {
+            contact.died_ms = Some(now);
+        }
+
+        let target_angle = {
+            let to_me = gt.translation() - target.translation();
+            atan2_xz(to_me.x, to_me.z)
+        };
+        let mut blow = published_blow(
+            ai.target,
+            &blades,
+            target_anim.unwrap_or(&anim),
+            phase,
+            atan2_xz(target_forward.x, target_forward.z),
+            atan2_xz(target_forward.x, target_forward.z),
+            target_condition == Condition::ATTACKING,
+            false,
+        );
+        blow.angle = target_angle;
+        blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, target_angle);
+        if blow.kind == 0 {
+            blow.sweeping = false;
+        }
+        let dir_to_me = -flat.normalize_or_zero();
+        let spot = place::Spot {
+            other_reach_cm: reach_of(ai.target, &blades) * 100.0,
+            my_reach_cm: reach_of(entity, &blades) * 100.0,
+            other_size: target_fighter.map_or(1.0, |f| f.stats.size),
+            my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * 100.0,
+            other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
+            melee: false,
+            fight: true,
+            feral: target_fighter.map_or(0.0, |f| f.stats.feral),
+            dull: fighter.stats.rules.has(4),
+            blow,
+            wide: false,
+            other_ahead: target_forward.dot(dir_to_me),
+            other_attacking: target_condition == Condition::ATTACKING,
+            presses: false,
+            other_skill: 0.0,
+        };
+        if ai.holds_ground {
+            ai.footwork = place::Footwork::Hold;
+        } else if ai.hold_ticks > 0 {
+            ai.hold_ticks -= 1;
+        } else {
+            let chosen = place::choose_footwork(dist * 100.0, spot);
+            if chosen != ai.footwork {
+                ai.footwork = chosen;
+                // A queued step resets the switching weight to four, or to
+                // eight for a retreat (the original's two reset values).
+                ai.hold_ticks = if chosen == place::Footwork::Retreat {
+                    8
+                } else {
+                    4
+                };
+            }
+        }
+
         ai.cooldown -= time.delta_secs();
         if attacking.is_some() || !anim.looping {
             continue;
         }
-        let spot = place::Spot {
-            other_reach_cm: reach_of(ai.target, &blades) * 100.0,
-            my_reach_cm: reach_of(entity, &blades) * 100.0,
-            other_size: target_body
-                .map(|(_, _, _, foe)| foe.stats.size)
-                .unwrap_or(1.0),
-            my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * 100.0,
-            other_large: target_body.is_some_and(|(_, _, _, foe)| foe.stats.rules.has(1)),
-            melee: false,
-            fight: true,
-            feral: fighter.stats.feral,
-            dull: fighter.stats.rules.has(4),
-            blow: place::Blow::default(),
-            wide: false,
-            other_ahead: 0.0,
-            other_attacking: true,
-            presses: false,
-            other_skill: 0.0,
-        };
-        if place::still_closing(dist * 100.0, spot) && !ai.holds_ground {
-            body.desired_velocity = order.velocity;
-            anim.play_loop(COMBAT_WALK);
-            continue;
+        match ai.footwork {
+            place::Footwork::Approach if !ai.holds_ground => {
+                body.desired_velocity = order.velocity;
+                anim.play_loop(COMBAT_WALK);
+                continue;
+            }
+            place::Footwork::Retreat if !ai.holds_ground => {
+                body.desired_velocity = -order.velocity * 0.8;
+                anim.play_loop("Backpedal");
+                continue;
+            }
+            place::Footwork::CircleLeft | place::Footwork::CircleRight if !ai.holds_ground => {
+                let dir = flat.normalize_or_zero();
+                let sign = if ai.footwork == place::Footwork::CircleLeft {
+                    1.0
+                } else {
+                    -1.0
+                };
+                body.desired_velocity =
+                    Vec3::new(dir.z, 0.0, -dir.x) * sign * order.velocity.length() * 0.6;
+                anim.play_loop(COMBAT_WALK);
+                continue;
+            }
+            _ => {}
         }
         // Standing: its stance starts at once, as the original's AI starts
         // it whenever it is free.
@@ -377,6 +587,39 @@ mod tests {
 
     fn engage(app: &mut App, foe: Entity) {
         app.world_mut().get_mut::<Duellist>(foe).unwrap().engaged = true;
+    }
+
+    /// The perception pass fills a contact for the target: seen, its
+    /// distance and its closeness.
+    #[test]
+    fn the_duellist_keeps_a_contact_with_its_target() {
+        let (mut app, foe, _) = duel(2.0, false);
+        engage(&mut app, foe);
+        app.update();
+        app.update();
+        let target = app.world().get::<Duellist>(foe).unwrap().target;
+        let combatant = app.world().get::<Combatant>(foe).unwrap();
+        assert_eq!(combatant.target, Some(target));
+        let contact = combatant.contact(target).unwrap();
+        assert!(contact.seen);
+        assert!((contact.distance_cm - 200.0).abs() < 0.1);
+        assert!((contact.closeness - (1.0 - 200.0 / 1200.0)).abs() < 1e-5);
+        assert!(combatant.perception.noticed);
+    }
+
+    /// A chosen footwork is held for its timer before the next decision.
+    #[test]
+    fn the_footwork_is_held_between_decisions() {
+        let (mut app, foe, _) = duel(2.0, false);
+        engage(&mut app, foe);
+        app.update();
+        app.world_mut().get_mut::<Duellist>(foe).unwrap().hold_ticks = 2;
+        app.update();
+        assert_ne!(state(&app, foe).1, "Combat Walk");
+        app.update();
+        assert_ne!(state(&app, foe).1, "Combat Walk");
+        app.update();
+        assert_eq!(state(&app, foe).1, "Combat Walk");
     }
 
     /// On the strike plateau (1.20 m, inside reach 50 cm plus a step of

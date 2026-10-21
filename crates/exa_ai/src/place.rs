@@ -158,7 +158,9 @@ pub fn blow_is_live(phase: f32, skill: f32, committed: bool) -> bool {
     phase > 0.3 - skill * 0.15 || committed
 }
 
-fn in_arc(end: f32, start: f32, angle: f32) -> bool {
+/// The original's `between` test for an angle, an arc end and an arc
+/// start: true when the angle lies outside the end-to-start interval.
+pub fn between(end: f32, start: f32, angle: f32) -> bool {
     if angle < start {
         angle < end && end < start
     } else {
@@ -228,7 +230,7 @@ pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
         return 0.0;
     }
     if blow.kind == 3 && distance_cm < limit {
-        if in_arc(blow.arc_end, blow.arc_start, blow.angle) {
+        if between(blow.arc_end, blow.arc_start, blow.angle) {
             1.0
         } else {
             8.0
@@ -469,7 +471,7 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
             }
             // A thrust or guard.
             3 if live && distance_cm < gate => {
-                if in_arc(spot.blow.arc_end, spot.blow.arc_start, spot.blow.angle) {
+                if between(spot.blow.arc_end, spot.blow.arc_start, spot.blow.angle) {
                     danger = 1.0;
                     if spot.blow.origin_in_arc {
                         approach *= (spot.other_skill * 2.0 + 1.0) * 2.0;

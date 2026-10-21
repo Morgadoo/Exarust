@@ -51,6 +51,63 @@ found, not run; only the init assignments run), the mind powers' attitude
 overrides and the perception's group blend; the roam and patrol walk only
 once the running game has a navigation grid, and the search has no item
 instances, containers or corpses to act on there.
+## The combatant
+
+`combatant` is the shared base of the original's character behaviours: one
+contact per character it has met (`Contact`: its level, attitude,
+tolerance, hostility, concern and concern target, alarm, closeness, facing,
+threat and death time), the references to its combat target, look target and
+holder, its published combat rating and reach, its courage, its alert level
+and its nav footprint.
+
+`perceive` is one pass of one character looking at another. It measures the
+distance with vertical offsets under 150 cm ignored, halves the 1200 cm
+detection radius while asleep and adds 600 cm for a tracked contact; a
+hidden contact's radius is scaled by the observer's perception through the
+0.9 and 0.8 factors (or a masking power's two factors). It publishes
+closeness (at most 0.99), noticeability (3·c² dead, 24·c down, the
+look/forward/closeness product otherwise, +10 while attacking), the
+observer's view weight, the facing term, the bearing, the group-blended
+attitude and the threat estimate. The threat weights each of the other's
+contacts by trust and by how that contact faces it, at 32 while the other
+attacks, 16 or 8 in or out of combat, 2 down, and ×4 for a fast other; the
+largest third-party weight and the most negative one give the threat and
+the crowd penalty, published back onto the observer's contact. A lost
+tracked target raises the observer's alert to 40.
+
+`effective_attitude` and `trust` apply the mind powers to a raw role
+attitude: kind 0x105 sets it to half the negated aggression toward everyone;
+loyalty or command sourced on the other makes it 100, or averages it with
+100 under the resistance technique; the aimed power makes it 100; the
+suspect power takes 50, not below −100 (and trust ignores that one).
+`add_concern` is the script's `AddConcern`: the attention-weighted rise,
+capped at 15, with its event bits at 1.2 and 4. `look_direction` holds the
+look within 45° of the body; `candidate_cost` is the footwork step's
+pathfinder cost; `outside_radius` and `clamp_step` are the carry and move
+clamps; `foot_cell` and `stamp_footprint` are the 30 cm nav footprint with
+the fallback cell and its once-only overflow warning. `forget`, `replace`
+and `reset` clear or remap every reference when a character dies or is
+swapped.
+
+`place` is the combat position score against one opponent: the close band
+at its reach plus 150 cm, the strike ideal at the observer's reach plus a
+size correction, a step's plateau and a fade to 600 cm, the danger of a live
+side swing by its time to impact (4 at the edge, 1 by 900 ms, nothing by
+10 s) and of a live thrust (1 or 8 by its arc), the banded approach term,
+the opponent's facing and attack state, the press flag and the feral and
+skill scales. `publish_arc` is the opponent's published sector and its
+recovering kind; `blow_is_live` its is-attacking test; `between` the
+original's arc test; `arrival_ms` its time to impact. `choose_footwork`
+turns the terms into hold, approach, retreat or a circle out of a live
+swing, and the duellist runs the chosen footwork (with a short hold timer
+standing in for the original combat state's switching cost) before it
+takes its stance and strikes.
+
+Not yet: the role database's raw attitude and tolerance at run time (both
+are inputs), the encounter scripts and familiarity writes, the mind
+powers' own effects, the target selection and morale rules, the full
+eight-candidate footwork search, and the auto-parry.
+
 
 ## Scope
 

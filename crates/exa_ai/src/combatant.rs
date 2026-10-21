@@ -190,6 +190,8 @@ pub struct Contact {
     pub character: Entity,
     /// The contact's kind. Only kind 1 (another character) is scored.
     pub kind: i32,
+    /// The contact's level, set to 3 when the script raises concern.
+    pub level: i32,
     /// The observer's effective attitude, −100 through 100.
     pub attitude: f32,
     /// The observer's tolerance, 0 through 100.
@@ -222,6 +224,7 @@ impl Contact {
         Self {
             character,
             kind: 1,
+            level: 0,
             attitude: 0.0,
             tolerance: 0.0,
             hostility: 0.0,
@@ -484,7 +487,11 @@ pub fn add_concern(
     amount: f32,
     gain: f32,
 ) -> (f32, bool, bool) {
-    if contact.kind != 1 || contact.concern >= CONCERN_CAP {
+    if contact.kind != 1 {
+        return (contact.concern, false, false);
+    }
+    contact.level = 3;
+    if contact.concern >= CONCERN_CAP {
         return (contact.concern, false, false);
     }
     let before = contact.concern;
@@ -801,6 +808,31 @@ fn group_attitude(
     };
 }
 
+/// A candidate footwork step's terrain cost from the pathfinder's clearance
+/// and penalty samples: `(a² + a)·120 + b·40 + 1`.
+pub fn candidate_cost(clearance: f32, penalty: f32) -> f32 {
+    (clearance * clearance + clearance) * 120.0 + penalty * 40.0 + 1.0
+}
+
+/// Whether a point `offset` from a body centre is outside the body's
+/// bounding radius (cm). With `half_height` the vertical offset counts at
+/// half weight, the test the original uses for a carried point; without it
+/// the test is flat.
+pub fn outside_radius(radius_cm: f32, offset_cm: Vec3, half_height: bool) -> bool {
+    let y = if half_height { offset_cm.y * 0.5 } else { 0.0 };
+    radius_cm * radius_cm < offset_cm.x * offset_cm.x + y * y + offset_cm.z * offset_cm.z
+}
+
+/// Clamp a move point to `limit_cm` from `from`, keeping its direction.
+pub fn clamp_step(from_cm: Vec3, to_cm: Vec3, limit_cm: f32) -> Vec3 {
+    let delta = to_cm - from_cm;
+    let length = delta.length();
+    if length <= limit_cm || length <= f32::EPSILON || !length.is_finite() {
+        return to_cm;
+    }
+    from_cm + delta * (limit_cm / length)
+}
+
 /// The published combat rating and reach of a combatant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fighting {
@@ -867,6 +899,8 @@ pub struct Combatant {
     pub threat_raised: bool,
     /// The nav footprint.
     pub footprint: Option<Footprint>,
+    /// The off-grid warning has been logged.
+    pub footprint_logged: bool,
     /// Whether the character has entered combat.
     pub in_combat: bool,
 }
@@ -888,6 +922,7 @@ impl Default for Combatant {
             perception: Perception::default(),
             threat_raised: false,
             footprint: None,
+            footprint_logged: false,
             in_combat: false,
         }
     }
@@ -982,6 +1017,7 @@ impl Combatant {
         self.perception = Perception::default();
         self.alert = 0.0;
         self.footprint = None;
+        self.footprint_logged = false;
         self.in_combat = false;
         self.threat_raised = false;
     }
@@ -996,6 +1032,25 @@ impl Combatant {
     ) -> (f32, bool, bool) {
         let contact = self.contact_mut(character);
         add_concern(contact, aggression, amount, gain)
+    }
+
+    /// Stamp the 30 cm grid cell the character stands in. Returns whether
+    /// this is the first time it is off the grid on this reset (the caller
+    /// logs the original's "Character position overflow" once).
+    pub fn stamp_footprint(&mut self, position_cm: Vec3, grid_size: i32) -> bool {
+        let cell = foot_cell(position_cm, grid_size);
+        self.footprint = Some(cell);
+        if !cell.in_grid && !self.footprint_logged {
+            self.footprint_logged = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Leave the nav grid.
+    pub fn leave_grid(&mut self) {
+        self.footprint = None;
     }
 
     /// The point of interest the interaction code asks for: the body's
@@ -1257,6 +1312,118 @@ mod tests {
         let off = foot_cell(Vec3::new(100_000.0, 0.0, 0.0), 100);
         assert_eq!(off.cell, (NAV_FALLBACK_CELL, 8));
         assert!(!off.in_grid);
+    }
+
+    #[test]
+    fn the_threat_estimate_weights_the_observer_and_its_friends() {
+        let mut world = World::new();
+        let observer_id = world.spawn_empty().id();
+        let seen_id = world.spawn_empty().id();
+        let mut o = observer();
+        o.entity = observer_id;
+        let mut seen = observed(600.0);
+        seen.entity = seen_id;
+        let mut own = Contact::new(observer_id);
+        own.attitude = 0.0;
+        let mut seen_group = Contact::new(observer_id);
+        seen_group.attitude = 80.0;
+        seen_group.closeness = 1.0;
+        seen_group.facing = 1.0;
+        let mut out = Perception {
+            attitude: 0.0,
+            ..Perception::default()
+        };
+        assert!(perceive(
+            &o,
+            &seen,
+            &[seen_group],
+            std::slice::from_mut(&mut own),
+            &mut out,
+            0,
+            1.0
+        ));
+        assert!((out.threat - 0.36).abs() < 1e-4, "{}", out.threat);
+        assert!(
+            (out.threat_peak - 3.825).abs() < 1e-4,
+            "{}",
+            out.threat_peak
+        );
+        assert_eq!(out.selected, Some(observer_id));
+        assert_eq!(out.attitude, 0.0);
+    }
+
+    #[test]
+    fn the_group_blend_moves_toward_a_trusted_friend() {
+        let mut world = World::new();
+        let observer_id = world.spawn_empty().id();
+        let seen_id = world.spawn_empty().id();
+        let friend = world.spawn_empty().id();
+        let mut o = observer();
+        o.entity = observer_id;
+        o.calm = 0.5;
+        let mut seen = observed(600.0);
+        seen.entity = seen_id;
+        let mut own_friend = Contact::new(friend);
+        own_friend.attitude = 50.0;
+        let mut seen_friend = Contact::new(friend);
+        seen_friend.attitude = 80.0;
+        let mut out = Perception {
+            attitude: 20.0,
+            ..Perception::default()
+        };
+        assert!(perceive(
+            &o,
+            &seen,
+            &[seen_friend],
+            std::slice::from_mut(&mut own_friend),
+            &mut out,
+            0,
+            1.0
+        ));
+        assert!((out.attitude - 35.0).abs() < 1e-4, "{}", out.attitude);
+    }
+
+    #[test]
+    fn a_step_costs_by_its_clearance_and_penalty() {
+        assert_eq!(candidate_cost(0.0, 0.0), 1.0);
+        assert_eq!(candidate_cost(1.0, 1.0), 281.0);
+        assert_eq!(candidate_cost(0.5, 0.25), 101.0);
+    }
+
+    #[test]
+    fn a_point_outside_the_radius_counts_height_at_half() {
+        assert!(outside_radius(50.0, Vec3::new(60.0, 0.0, 0.0), false));
+        assert!(!outside_radius(50.0, Vec3::new(40.0, 0.0, 0.0), false));
+        // 40² + (60·0.5)² = 2500: on the sphere, not outside it.
+        assert!(!outside_radius(50.0, Vec3::new(40.0, 60.0, 0.0), true));
+        assert!(outside_radius(50.0, Vec3::new(40.0, 61.0, 0.0), true));
+        // Flattened, the height does not count.
+        assert!(!outside_radius(50.0, Vec3::new(40.0, 60.0, 0.0), false));
+    }
+
+    #[test]
+    fn a_move_point_is_clamped_to_its_limit() {
+        let from = Vec3::ZERO;
+        assert_eq!(
+            clamp_step(from, Vec3::new(10.0, 0.0, 0.0), 20.0),
+            Vec3::new(10.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            clamp_step(from, Vec3::new(30.0, 0.0, 0.0), 20.0),
+            Vec3::new(20.0, 0.0, 0.0)
+        );
+        let to = clamp_step(from, Vec3::new(30.0, 40.0, 0.0), 10.0);
+        assert_eq!(to, Vec3::new(6.0, 8.0, 0.0));
+        assert_eq!(clamp_step(from, from, 10.0), from);
+    }
+
+    #[test]
+    fn an_off_grid_footprint_warns_once() {
+        let mut c = Combatant::default();
+        assert!(!c.stamp_footprint(Vec3::ZERO, 100));
+        assert!(c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100));
+        assert!(!c.stamp_footprint(Vec3::new(100_000.0, 0.0, 0.0), 100));
+        assert_eq!(c.footprint.unwrap().cell, (NAV_FALLBACK_CELL, 8));
     }
 
     #[test]
