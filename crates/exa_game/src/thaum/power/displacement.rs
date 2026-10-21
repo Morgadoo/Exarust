@@ -210,7 +210,10 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
         }
         FADING_OUT => {
             if now < base.deadline {
-                base.shown = (base.deadline - now) as f32 / FADE_OUT_MS as f32;
+                // The original works the fade in double precision and
+                // narrows it: (deadline - now) times one over the length.
+                let left = f64::from(base.deadline - now) * (1.0 / f64::from(FADE_OUT_MS));
+                base.shown = left as f32;
                 VanishStep {
                     spend: drain,
                     ..VanishStep::quiet(base.shown)
@@ -244,7 +247,8 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32) -> VanishStep {
         }
         FADING_IN => {
             if now < base.deadline {
-                base.shown = 1.0 - (base.deadline - now) as f32 / FADE_IN_MS as f32;
+                let left = f64::from(base.deadline - now) * (1.0 / f64::from(FADE_IN_MS));
+                base.shown = (1.0 - left) as f32;
                 VanishStep::quiet(base.shown)
             } else {
                 base.shown = 1.0;
