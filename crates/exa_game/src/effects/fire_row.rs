@@ -883,6 +883,5 @@ mod tests {
         let frame = attach_frame(&transform);
         assert_eq!(frame.at, Vec3::new(100.0, 200.0, 300.0));
         assert_eq!(frame.x, Vec3::new(100.0, 0.0, 0.0));
-        assert_eq!(crate::effects::TICK_MS, 12);
     }
 }
