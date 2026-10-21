@@ -411,7 +411,11 @@ impl Plants {
             )
         };
         let density = |p: bevy::math::Vec2| {
-            if tile.is_hole(p.x.round() as usize, p.y.round() as usize) {
+            let (hx, hy) = (
+                p.x.round_ties_even() as usize,
+                p.y.round_ties_even() as usize,
+            );
+            if tile.is_hole(hx, hy) {
                 return -1.0;
             }
             if let Some(b) = blocks {
@@ -485,8 +489,9 @@ impl Plants {
                 ))
                 .id();
             if let Some(b) = blocks {
-                let mid = chunk.iter().map(|g| g.at).sum::<bevy::math::Vec2>() / chunk.len() as f32;
-                let (bx, by) = block(mid);
+                // The point set is partitioned into the tile's 8 × 8 chunks:
+                // chunk `k` is column `k % 8`, row `k / 8`.
+                let (bx, by) = (k % vegetation::CHUNKS, k / vegetation::CHUNKS);
                 if let Some(room) = b.room(bx, by) {
                     commands.entity(e).insert(InRoom(room));
                 }
