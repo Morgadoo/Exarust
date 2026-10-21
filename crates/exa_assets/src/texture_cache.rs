@@ -117,6 +117,9 @@ pub struct TextureRecord {
     /// colour of all three channels and is never sRGB-decoded
     /// ([`crate::texture::is_grey_upload`]).
     pub grey: bool,
+    /// The image is the loader's placeholder and its real upload has not
+    /// arrived yet.
+    pub pending: bool,
     /// The original's reference count; the record is freed at zero.
     pub references: u32,
 }
@@ -142,7 +145,7 @@ pub struct TextureCache {
     streaming: bool,
     /// Loads the streaming path queued, in request order, waiting for the
     /// loader to take them.
-    pending: Vec<TextureRequest>,
+    queued: Vec<TextureRequest>,
 }
 
 /// What [`TextureCache::acquire`] found.
@@ -184,27 +187,27 @@ impl TextureCache {
 
     /// Queues a load for the loader thread and returns its position.
     pub fn queue(&mut self, request: TextureRequest) -> usize {
-        self.pending.push(request);
-        self.pending.len() - 1
+        self.queued.push(request);
+        self.queued.len() - 1
     }
 
     /// Drops a load still queued for the loader (the original's record freed
     /// before the loader reached it). A load already being decoded is not
     /// touched.
     pub fn cancel_pending(&mut self, key: &TextureKey) -> bool {
-        let before = self.pending.len();
-        self.pending.retain(|request| &request.key != key);
-        self.pending.len() != before
+        let before = self.queued.len();
+        self.queued.retain(|request| &request.key != key);
+        self.queued.len() != before
     }
 
     /// Takes the queued loads, in request order, for the loader to own.
     pub fn take_requests(&mut self) -> Vec<TextureRequest> {
-        std::mem::take(&mut self.pending)
+        std::mem::take(&mut self.queued)
     }
 
     /// The queued loads not yet handed to the loader.
-    pub fn pending(&self) -> &[TextureRequest] {
-        &self.pending
+    pub fn queued_loads(&self) -> &[TextureRequest] {
+        &self.queued
     }
 
     /// The records in name order, as the manager's array holds them.
@@ -246,6 +249,7 @@ impl TextureCache {
                         alpha: false,
                         image: None,
                         grey: false,
+                        pending: false,
                         references: 1,
                     },
                 );
@@ -274,6 +278,7 @@ impl TextureCache {
                 alpha: false,
                 image: None,
                 grey: false,
+                pending: false,
                 references: 1,
             },
         );
@@ -305,6 +310,15 @@ impl TextureCache {
         if let Some(record) = self.get_mut(key) {
             record.image = Some(image);
             record.alpha = alpha;
+            record.pending = false;
+        }
+    }
+
+    /// Marks the record's image as the loader's placeholder, whose real
+    /// upload has not arrived yet.
+    pub fn set_pending(&mut self, key: &TextureKey, pending: bool) {
+        if let Some(record) = self.get_mut(key) {
+            record.pending = pending;
         }
     }
 
@@ -330,7 +344,7 @@ impl TextureCache {
         let record = self.entries.remove(index);
         // A load still waiting for the loader must not upload a freed
         // record.
-        self.pending.retain(|request| &request.key != key);
+        self.queued.retain(|request| &request.key != key);
         Some(record)
     }
 
@@ -451,7 +465,7 @@ mod tests {
         let freed = cache.release_record(&key).expect("the last reference");
         assert_eq!(freed.key, key);
         assert!(cache.get(&key).is_none());
-        assert!(cache.pending().is_empty());
+        assert!(cache.queued_loads().is_empty());
         assert!(cache.release_record(&key).is_none());
     }
 

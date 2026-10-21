@@ -1196,7 +1196,15 @@ impl ModelLoader<'_> {
     ) -> CachedTexture {
         let key = TextureKey::new(name, space);
         let created = self.cache.textures.acquire(key, flags).created;
-        if created {
+        // A record whose image is still the loader's placeholder is decoded
+        // here when the caller wants it now (`texture_now`); with streaming
+        // on, the placeholder stays and the loader replaces it.
+        let placeholder = self
+            .cache
+            .textures
+            .get(&key)
+            .is_some_and(|record| record.pending);
+        if created || (placeholder && !streaming) {
             let settings = *self.cache.textures.settings();
             let Some(bytes) = self.game.texture(key.name.as_str()) else {
                 self.warn_once(format!("texture {name:?} not found"));
@@ -1207,8 +1215,7 @@ impl ModelLoader<'_> {
                 Err(e) => {
                     self.warn_once(format!("texture {name:?}: {e}"));
                     let image = crate::texture::placeholder_image(space, flags, &settings);
-                    let handle = self.images.add(image);
-                    self.cache.textures.finish(&key, handle.clone(), false);
+                    let handle = self.store_texture(key, image, false);
                     return Some((handle, false));
                 }
             };
@@ -1221,8 +1228,8 @@ impl ModelLoader<'_> {
                 // The record draws its placeholder until the loader's upload
                 // arrives under the same handle.
                 let image = crate::texture::placeholder_image(space, flags, &settings);
-                let handle = self.images.add(image);
-                self.cache.textures.finish(&key, handle.clone(), alpha);
+                let handle = self.store_texture(key, image, alpha);
+                self.cache.textures.set_pending(&key, true);
                 self.cache
                     .textures
                     .queue(crate::stream::TextureRequest::new(
@@ -1235,15 +1242,13 @@ impl ModelLoader<'_> {
             }
             match rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings) {
                 Ok(image) => {
-                    let handle = self.images.add(image);
-                    self.cache.textures.finish(&key, handle.clone(), alpha);
+                    let handle = self.store_texture(key, image, alpha);
                     Some((handle, alpha))
                 }
                 Err(e) => {
                     self.warn_once(format!("texture {name:?}: {e}"));
                     let image = crate::texture::placeholder_image(space, flags, &settings);
-                    let handle = self.images.add(image);
-                    self.cache.textures.finish(&key, handle.clone(), false);
+                    let handle = self.store_texture(key, image, false);
                     Some((handle, false))
                 }
             }
@@ -1252,6 +1257,29 @@ impl ModelLoader<'_> {
                 .textures
                 .get(&key)
                 .and_then(|record| record.image.clone().map(|image| (image, record.alpha)))
+        }
+    }
+
+    /// Stores a decoded image under the record's handle when it has one (a
+    /// placeholder being replaced) and in a new asset otherwise, then marks
+    /// the record finished.
+    fn store_texture(&mut self, key: TextureKey, image: Image, alpha: bool) -> Handle<Image> {
+        let existing = self
+            .cache
+            .textures
+            .get(&key)
+            .and_then(|record| record.image.clone());
+        match existing {
+            Some(handle) => {
+                let _ = self.images.insert(handle.id(), image);
+                self.cache.textures.finish(&key, handle.clone(), alpha);
+                handle
+            }
+            None => {
+                let handle = self.images.add(image);
+                self.cache.textures.finish(&key, handle.clone(), alpha);
+                handle
+            }
         }
     }
 }

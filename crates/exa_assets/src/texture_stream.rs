@@ -188,14 +188,10 @@ mod tests {
     use super::*;
     use bevy::asset::AssetApp;
 
-    /// The streaming path decodes a shipped image on the task pool and
-    /// replaces the placeholder under the record's handle (skipped without
-    /// the game).
-    #[test]
-    fn a_streamed_texture_replaces_its_placeholder() {
-        let Some(dir) = crate::locate_install(None) else {
-            return;
-        };
+    /// An app with the loader on the streaming path, and its installation
+    /// (skipped without the game).
+    fn streaming_app() -> Option<(App, std::sync::Arc<crate::GameData>)> {
+        let dir = crate::locate_install(None)?;
         let game = Game(std::sync::Arc::new(crate::GameData::open(dir).unwrap()));
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
@@ -208,54 +204,101 @@ mod tests {
             .resource_mut::<ModelCache>()
             .textures
             .set_streaming(true);
-        let key = crate::TextureKey::new("spatter01", texture::ColorSpace::Srgb);
-        let game = app.world().resource::<Game>().0.clone();
-        let handle = app
-            .world_mut()
+        let data = app.world().resource::<Game>().0.clone();
+        Some((app, data))
+    }
+
+    /// Requests `name`; with `now`, through the synchronous priority path.
+    fn request(app: &mut App, data: &crate::GameData, name: &str, now: bool) -> Handle<Image> {
+        app.world_mut()
             .resource_scope(
                 |world: &mut World, mut cache: bevy::ecs::change_detection::Mut<ModelCache>| {
                     let mut images = world.resource_mut::<Assets<Image>>();
                     let mut meshes = Assets::<Mesh>::default();
                     let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
                     let mut loader = crate::ModelLoader {
-                        game: &game,
+                        game: data,
                         cache: &mut cache,
                         meshes: &mut meshes,
                         materials: &mut materials,
                         images: &mut images,
                         bc_supported: true,
                     };
-                    loader
-                        .texture(key.name.as_str(), texture::ColorSpace::Srgb)
-                        .map(|(handle, _)| handle)
+                    let texture = if now {
+                        loader.texture_now(
+                            name,
+                            texture::ColorSpace::Srgb,
+                            texture::default_flags(),
+                        )
+                    } else {
+                        loader.texture(name, texture::ColorSpace::Srgb)
+                    };
+                    texture.map(|(handle, _)| handle)
                 },
             )
-            .expect("the texture is shipped");
-        let size_of = |app: &mut App, handle: &Handle<Image>| {
-            app.world()
-                .resource::<Assets<Image>>()
-                .get(handle)
-                .map(|image| image.texture_descriptor.size)
+            .unwrap_or_else(|| panic!("texture {name} is shipped"))
+    }
+
+    fn width(app: &App, handle: &Handle<Image>) -> u32 {
+        app.world()
+            .resource::<Assets<Image>>()
+            .get(handle)
+            .map(|image| image.texture_descriptor.size.width)
+            .unwrap_or(0)
+    }
+
+    /// The streaming path decodes a shipped image on the task pool and
+    /// replaces the placeholder under the record's handle.
+    #[test]
+    fn a_streamed_texture_replaces_its_placeholder() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
         };
+        let key = crate::TextureKey::new("spatter01", texture::ColorSpace::Srgb);
+        let handle = request(&mut app, &data, "spatter01", false);
         // Before the loader runs, the record draws the 1x1 placeholder.
-        assert_eq!(size_of(&mut app, &handle).unwrap().width, 1);
+        assert_eq!(width(&app, &handle), 1);
         for _ in 0..600 {
             app.update();
-            if size_of(&mut app, &handle).unwrap().width > 1 {
+            if width(&app, &handle) > 1 {
                 break;
             }
         }
-        let size = size_of(&mut app, &handle).unwrap();
-        assert!(size.width > 1 && size.height > 1, "{size:?}");
+        assert!(width(&app, &handle) > 1);
         let loader = app.world().resource::<TextureLoader>();
         assert_eq!(loader.stream().queued(), 0);
         assert!(!loader.is_decoding());
+        let cache = app.world().resource::<ModelCache>();
+        assert!(cache.textures.get(&key).is_some());
         assert!(
+            !cache.textures.get(&key).unwrap().pending,
+            "the upload finished"
+        );
+    }
+
+    /// The synchronous priority path replaces a placeholder at once and
+    /// drops its queued load.
+    #[test]
+    fn a_priority_load_replaces_the_placeholder_at_once() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        let key = crate::TextureKey::new("spatter01", texture::ColorSpace::Srgb);
+        let first = request(&mut app, &data, "spatter01", false);
+        assert_eq!(width(&app, &first), 1);
+        assert_eq!(
             app.world()
                 .resource::<ModelCache>()
                 .textures
-                .get(&key)
-                .is_some()
+                .queued_loads()
+                .len(),
+            1
         );
+        let second = request(&mut app, &data, "spatter01", true);
+        assert!(width(&app, &second) > 1);
+        // The queued load was dropped and the record is finished.
+        let cache = app.world().resource::<ModelCache>();
+        assert!(cache.textures.queued_loads().is_empty());
+        assert!(!cache.textures.get(&key).unwrap().pending);
     }
 }
