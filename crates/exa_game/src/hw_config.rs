@@ -600,7 +600,7 @@ fn apply_window(
         crate::window::fullscreen_mode(
             config.screen_size,
             monitor.map(|m| m.physical_size()),
-            monitor.map_or(&[], |m| m.video_modes.as_slice()),
+            monitor.map(|m| m.video_modes.as_slice()).unwrap_or(&[]),
         )
     };
     if window.mode != mode {
