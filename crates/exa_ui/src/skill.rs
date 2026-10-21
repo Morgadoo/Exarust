@@ -643,12 +643,32 @@ pub fn hit_skill_point(input: SkillPointInput) -> i32 {
     if input.state as u8 == 4 {
         return input.base;
     }
+    // `high` holds the group whose node row is open for learning: its
+    // eight slots lie from eight units above the group to its centre.
     if input.high > 0 {
         let (px, py) = input.high_point;
-        if py > y as f32 {
+        let top = py - 8.0 * (unit as f32);
+        if top > y as f32 {
             return -1;
         }
-        if py + 4.0 * (unit as f32) < y as f32 {
+        if py < y as f32 {
+            return -1;
+        }
+        let slot = ((x as f32 - px) / (10.0 * unit as f32) + 4.5).round_ties_even() as i32;
+        if slot > 0 && slot < 9 {
+            return slot;
+        }
+        return -1;
+    }
+    // `low` holds a chosen group whose two arrows are six to ten units
+    // below its node.
+    if input.low > 0 {
+        let (px, py) = input.low_point;
+        let top = py + 6.0 * (unit as f32);
+        if top > y as f32 {
+            return -1;
+        }
+        if top + 4.0 * (unit as f32) < y as f32 {
             return -1;
         }
         let dx = (x as f32 - px).round_ties_even() as i32;
@@ -657,20 +677,6 @@ pub fn hit_skill_point(input: SkillPointInput) -> i32 {
         }
         if dx > 4 * unit && dx < 13 * unit {
             return 2;
-        }
-        return -1;
-    }
-    if input.low > 0 {
-        let (px, py) = input.low_point;
-        if py > y as f32 {
-            return -1;
-        }
-        if py + 8.0 * (unit as f32) < y as f32 {
-            return -1;
-        }
-        let slot = ((x as f32 - px) / (10.0 * unit as f32) + 4.5).round_ties_even() as i32;
-        if slot > 0 && slot < 9 {
-            return slot;
         }
         return -1;
     }
@@ -2394,35 +2400,45 @@ mod tests {
             0x10
         );
 
+        // The high group's node row: eight slots from eight units above
+        // its node down to the node.
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (80, 50),
+                point: (80, 40),
                 ..point_input()
             }),
-            1
+            4
         );
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (120, 50),
+                point: (120, 40),
+                ..point_input()
+            }),
+            5
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (0, 40),
                 ..point_input()
             }),
             2
         );
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (100, 50),
+                point: (100, 10),
                 ..point_input()
             }),
             -1
         );
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (80, 70),
+                point: (100, 60),
                 ..point_input()
             }),
             -1
         );
 
+        // The low group's two arrows: six to ten units below its node.
         let low = SkillPointInput {
             high: 0,
             low: 1,
@@ -2431,38 +2447,38 @@ mod tests {
         };
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (120, 40),
-                ..low
-            }),
-            5
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (-70, 40),
-                ..low
-            }),
-            -1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (120, 80),
-                ..low
-            }),
-            -1
-        );
-        assert_eq!(
-            hit_skill_point(SkillPointInput {
-                point: (-30, 40),
+                point: (80, 70),
                 ..low
             }),
             1
         );
         assert_eq!(
             hit_skill_point(SkillPointInput {
-                point: (240, 40),
+                point: (120, 70),
                 ..low
             }),
-            8
+            2
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (100, 70),
+                ..low
+            }),
+            -1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (80, 60),
+                ..low
+            }),
+            -1
+        );
+        assert_eq!(
+            hit_skill_point(SkillPointInput {
+                point: (80, 90),
+                ..low
+            }),
+            -1
         );
 
         assert_eq!(
