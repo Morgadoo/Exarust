@@ -248,6 +248,121 @@ pub enum NextRound {
     Reserve(usize),
 }
 
+/// The double a bracket place scales its turn by (not quite a sixth).
+pub const BRACKET_SIXTH: f64 = 0.166_666_6;
+
+/// A bracket place: the turn times `(3 − a) × 0.1666666` (that product in
+/// double, stored as single) gives the direction, and the fighter stands
+/// `radius` against it, facing along it.
+pub fn bracket_place(spawn: [f32; 3], a: f32, radius: f32) -> Place {
+    let turns = ((f64::from(3.0f32 - a)) * BRACKET_SIXTH) as f32;
+    let (sin, cos) = sin_cos(TURN * turns);
+    let direction = [sin, 0.0, cos];
+    let scale = -radius;
+    Place {
+        position: [
+            spawn[0] + direction[0] * scale,
+            spawn[1] + direction[1] * scale,
+            spawn[2] + direction[2] * scale,
+        ],
+        forward: direction,
+    }
+}
+
+/// One team of a tournament event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BracketTeam {
+    /// The first entered slot's id: 1 is the player's team, 2 and up a
+    /// company, others generic.
+    pub team: i32,
+    /// Each member's slot within its team and its place.
+    pub members: Vec<(usize, Place)>,
+}
+
+/// Group a tournament event's entry slots into teams and place them.
+///
+/// From the first slot that holds an id, a team is the run of `per_team`
+/// slots it falls in, its id the first held id, its members the slots with
+/// a positive id; the next team starts after that run, until `teams` teams
+/// are formed or the slots end. The ring's radius is
+/// `teams × per_team × 50 + 100`, at most 350. Team `g` of `G` with `n`
+/// members spreads them over `2 (n − 1)/(n + 1)` (in double, stored as
+/// single) from `g/G × 6` less half the spread, a member every spread over
+/// `n − 1`.
+pub fn bracket_layout(
+    slots: &[i32],
+    per_team: i32,
+    teams: i32,
+    spawn: [f32; 3],
+) -> Vec<BracketTeam> {
+    let mut groups: Vec<(i32, Vec<usize>)> = Vec::new();
+    let mut cursor = 0usize;
+    if per_team > 0 {
+        loop {
+            while cursor < slots.len() && slots[cursor] == 0 {
+                cursor += 1;
+            }
+            if cursor >= slots.len() {
+                break;
+            }
+            let base = (cursor as i32 / per_team * per_team) as usize;
+            let members = (0..per_team as usize)
+                .filter(|k| slots.get(base + k).is_some_and(|id| *id > 0))
+                .collect();
+            groups.push((slots[cursor], members));
+            cursor = base + per_team as usize;
+            if groups.len() as i32 == teams {
+                break;
+            }
+        }
+    }
+    let radius = (i64::from(teams) * i64::from(per_team) * 50 + 100).min(350) as f32;
+    let count = groups.len() as f32;
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(index, (team, members))| {
+            let n = members.len() as i64;
+            let mut spread = ((n - 1) as f64 / (n + 1) as f64 * 2.0) as f32;
+            let start = index as f32 / count * 6.0 - spread * 0.5;
+            if n > 1 {
+                spread /= (n - 1) as f32;
+            }
+            let members = members
+                .into_iter()
+                .enumerate()
+                .map(|(order, slot)| {
+                    let a = order as f32 * spread + start;
+                    (slot, bracket_place(spawn, a, radius))
+                })
+                .collect();
+            BracketTeam { team, members }
+        })
+        .collect()
+}
+
+/// A tournament opponent: a generic fighter of level 5 for a team id under
+/// 2, else that company's fighter; hostile while at most two teams fight,
+/// else every team for itself.
+pub fn bracket_opponent(team: i32, teams: usize, tier: i32) -> Fighter {
+    let flags = if teams <= 2 { HOSTILE } else { FREE_FOR_ALL };
+    if team < 2 {
+        Fighter::Opponent {
+            level: 5,
+            tier,
+            team: team as u32,
+            flags,
+        }
+    } else {
+        Fighter::Opponent {
+            level: -1,
+            tier,
+            team: team as u32,
+            flags,
+        }
+    }
+}
+
 /// The next round's change.
 pub fn next_round(losses: i32, fighter_dead: bool) -> NextRound {
     if losses < 1 || !fighter_dead {
@@ -391,6 +506,61 @@ mod tests {
         assert_eq!(teams, vec![8, 16, 32, 128, 256]);
         assert_eq!(slots[0].place.position, [0.0, 0.0, -350.0]);
         assert_eq!(layout(12, 2, 2, [0.0; 3]), slots);
+    }
+
+    #[test]
+    fn a_bracket_groups_slots_into_teams() {
+        // Two slots a team: the player (1) with two, a company (5) with one,
+        // an empty run skipped, and a third team cut off at two teams.
+        let slots = [1, 1, 0, 5, 0, 0, 7, 7];
+        let teams = bracket_layout(&slots, 2, 2, [0.0; 3]);
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].team, 1);
+        assert_eq!(teams[1].team, 5);
+        assert_eq!(
+            teams[0].members.iter().map(|m| m.0).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            teams[1].members.iter().map(|m| m.0).collect::<Vec<_>>(),
+            vec![1]
+        );
+        // Radius 2 × 2 × 50 + 100 = 300. Two members spread 2/3 from
+        // −1/3; a lone member of the second team stands at a = 3, turn 0.
+        let lone = teams[1].members[0].1;
+        assert_eq!(lone.position, [0.0, 0.0, -300.0]);
+        assert_eq!(lone.forward, [0.0, 0.0, 1.0]);
+        let first = teams[0].members[0].1;
+        let expected = bracket_place([0.0; 3], -f32::from_bits(0x3eaa_aaab), 300.0);
+        assert_eq!(first, expected);
+        // The radius stops at 350.
+        let big = bracket_layout(&[2, 2, 2, 3, 3, 3], 3, 2, [0.0; 3]);
+        let reach = big[0].members[1].1.position;
+        assert!((reach[0].hypot(reach[2]) - 350.0).abs() < 1e-3);
+        assert!(bracket_layout(&[0, 0], 2, 2, [0.0; 3]).is_empty());
+        assert!(bracket_layout(&[1], 0, 2, [0.0; 3]).is_empty());
+    }
+
+    #[test]
+    fn bracket_opponents_are_generic_or_a_company() {
+        assert_eq!(
+            bracket_opponent(1, 2, 3),
+            Fighter::Opponent {
+                level: 5,
+                tier: 3,
+                team: 1,
+                flags: HOSTILE
+            }
+        );
+        assert!(matches!(
+            bracket_opponent(6, 3, 3),
+            Fighter::Opponent {
+                level: -1,
+                team: 6,
+                flags: FREE_FOR_ALL,
+                ..
+            }
+        ));
     }
 
     #[test]

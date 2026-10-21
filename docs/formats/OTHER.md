@@ -1902,7 +1902,10 @@ for the one-on-one matches; a 3.5 m ring at fractions of a turn for the team
 matches (Doubles ∓0.05 against 0.55 and 0.45, Valiance ∓1/15, Valour and
 Captain −1/12, 0, 1/12, Skirmish and the Beast's company at 7/12, 0.5,
 5/12); six places a sixth of a turn apart for a fray or a brawl, each
-opponent its own team.
+opponent its own team. A tournament event groups its entry slots into
+teams of its team size and stands every member on one ring of
+`teams × size × 50 + 100` cm (at most 350), each team spread around its
+own sixth (`bracket_layout`).
 
 The staff (`exa_game::staff`) keeps the original's 56-byte employee
 records reduced to what its routines read: a class byte (1 a recruit, 2 a
