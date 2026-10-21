@@ -208,15 +208,16 @@ bit 0 → PBR; else legacy. Grass (`shadegrs_f`), smoke (`shadesmk_f`), the
 terrain (`shadetrn_f/v`) and the effect programs are chosen by their own
 draw paths, not this word.
 
-`exa_render::material_state` keeps the type table and the material-to-state
-builder that reads it: the five built-ins above with their masks and base
-classes, and `MaterialTypes::register`, which initialises the built-ins
-first and appends a plug-in at index 5 and up. A record picks its type by
-the low byte of its kind word. The builder's decisions (the scale order,
-gloss floor, subsurface split, premultiplied diffuse, specular triple,
-`MatDrt`, texture-slot order and shadow flags) are pinned by tests; the
-smoke program's state key masks the same material state with
-`0x0003_C00F_0048_0008`.
+`exa_render::material_state` keeps the type table: the five built-ins
+above with their masks and base classes, a reset to them (the factory's
+start-up hook resets it each time it runs, dropping plug-ins), and
+`MaterialTypes::register`, which resets an empty table first and appends a
+plug-in at index 5 and up. A record picks its type by the low byte of its
+kind word. The factory list beside it is ordered by the low nibble of each
+record's flags, a new record going after those of the same or a higher
+priority; a material calls every record whose mask meets its plug-in mask
+(payload `0x94`), in that order. The default builder's record serves masks
+1 and 4.
 
 The factory starts from the record's loaded feature bits: its flags
 (`0x48`), plus `0x800` for a positive fall-off amount, the slot bit of a

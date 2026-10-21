@@ -80,41 +80,32 @@ pub struct TextureLayer {
     pub amount: f32,
 }
 
-/// The identity UV transform: no offset, unit scale, no rotation.
-pub const IDENTITY_UV: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-
-/// The texture-coordinate transform the material's UV builder makes: a
-/// 2-D scale about the coordinate centre, then a rotation, then the stored
-/// translation, as a row-major 3 × 4 matrix over `(u, v, 1)`: three rows of
-/// three and a translation row. The original computes it only for a record
-/// whose extra flags carry `0x40`.
+/// The texture-coordinate matrix the record loader builds for a record
+/// whose extra flags (`0x4C`) carry `0x40`, from its angle (`0x8C`), scale
+/// (`0x84`) and translation (`0x7C`): a 3 × 3 rotation-scale block and a
+/// translation row, row-major. With `(s, c)` the engine's sine and cosine
+/// of the negated angle:
 ///
-/// `m[0] = cos·sx`, `m[1] = −sin·sy`, `m[3] = sin·sx`, `m[4] = cos·sy`,
+/// `m[0] = c·sx`, `m[1] = −s·sy`, `m[3] = s·sx`, `m[4] = c·sy`, `m[8] = 1`,
 /// `m[9] = ((½ − m[0]·½) − m[3]·½) + tx`, `m[10] = ((½ − m[1]·½) −
-/// m[4]·½) + ty`, each in single precision in that order. (The original
-/// computes the angle with its fast trig after flipping the angle's sign
-/// bit; whether its helper returns sine or cosine first is not established,
-/// so the standard rotation that fits the matrix is used.)
+/// m[4]·½) + ty`, the rest zero, each step in single precision in that
+/// order (the scale and rotation are about the coordinates' centre).
 pub fn uv_transform(angle: f32, scale: [f32; 2], offset: [f32; 2]) -> [f32; 12] {
-    let (sin, cos) = angle.sin_cos();
+    let (s, c) = crate::factory::sin_cos(f32::from_bits(angle.to_bits() ^ 0x8000_0000));
     let mut m = [0.0f32; 12];
-    m[0] = cos * scale[0];
-    m[1] = -sin * scale[1];
-    m[3] = sin * scale[0];
-    m[4] = cos * scale[1];
+    m[0] = c * scale[0];
+    m[1] = -s * scale[1];
+    m[3] = s * scale[0];
+    m[4] = c * scale[1];
     m[8] = 1.0;
     m[9] = ((0.5 - m[0] * 0.5) - m[3] * 0.5) + offset[0];
     m[10] = ((0.5 - m[1] * 0.5) - m[4] * 0.5) + offset[1];
     m
 }
 
-/// One texture-coordinate through a [`uv_transform`].
-pub fn apply_uv(m: &[f32; 12], uv: [f32; 2]) -> [f32; 2] {
-    [
-        m[0] * uv[0] + m[1] * uv[1] + m[9],
-        m[3] * uv[0] + m[4] * uv[1] + m[10],
-    ]
-}
+/// The engine's single-precision epsilon: the loader replaces a refraction
+/// word smaller than it in magnitude by 1.
+const REFRACTION_EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Material {
@@ -133,9 +124,9 @@ pub struct Material {
     /// Dirt strength (`0x30`): the dirt modes' colour take, `2 − this` in the
     /// material uniform's `MatDrt.w`.
     pub dirt_amount: f32,
-    /// The word at `0x34`, which the material builder writes into the dirt
-    /// uniform's fourth lane for a state with bit 0 set. Its meaning is not
-    /// established; it ships as 1 in most records.
+    /// The word at `0x34`, which the factory copies into the draw state of
+    /// a record whose plug-in-masked flags have bit 0; its reader there is
+    /// not traced. It ships as 1 in most records.
     pub dirt_lane: f32,
     /// Shading flags ([`flags`]) and the texture slots in use.
     pub flags: u32,
@@ -157,25 +148,24 @@ pub struct Material {
     /// fade with the view angle when the amount exceeds 0.01.
     pub falloff_amount: f32,
     pub falloff_exponent: f32,
-    /// The vertical shaping word (`0x58`), floored to 1 when it is zero:
-    /// the material builder writes it to the spot-shaping half-float of a
-    /// record whose mode (`kind & 0x300`) is `0x200`. Its exact effect on
-    /// the shading is not established.
-    pub shaping: f32,
-    /// The texture-coordinate transform the UV builder makes from `0x7C`
-    /// (translation), `0x84` (scale) and `0x8C` (angle): a row-major 3 × 3
-    /// matrix over `(u, v, 1)`. Identity unless extra flag `0x40` is set.
-    pub uv_transform: [f32; 12],
+    /// The refraction word (`0x58`), replaced by 1 when its magnitude is
+    /// below 2⁻²³ (a NaN is kept): the factory packs it into the opacity
+    /// fall-off uniform's fourth lane for a record in refraction mode
+    /// (`flags & 0x300 == 0x200`).
+    pub refraction: f32,
+    /// The texture-coordinate matrix ([`uv_transform`]) when extra flag
+    /// `0x40` asks for it.
+    pub uv_transform: Option<[f32; 12]>,
     /// The texture-coordinate rotation angle (`0x8C`), radians.
     pub uv_angle: f32,
     /// The texture-coordinate translation (`0x7C`) and scale (`0x84`).
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
-    /// Render-state word (`0x90`): the flags the material manager keeps
-    /// across a plugin pass.
+    /// Render-state word (`0x90`): the loader keeps its bit `0x20` and adds
+    /// its own bits.
     pub render_state: u32,
-    /// Plug-in mask (`0x94`): which material types' plug-ins the record asks
-    /// for.
+    /// Plug-in mask (`0x94`): the factory records (and plug-ins) a record
+    /// calls are those whose mask meets it.
     pub plugin_mask: u32,
     /// Words `0x98`, `0x9C`, `0xA0` and `0xA8`: kept whole, no reader found
     /// for them in the shipped data.
@@ -232,8 +222,8 @@ impl Default for Material {
             displacement_bias: 0.0,
             falloff_amount: 0.0,
             falloff_exponent: 0.0,
-            shaping: 0.0,
-            uv_transform: [0.0; 12],
+            refraction: 0.0,
+            uv_transform: None,
             uv_angle: 0.0,
             uv_offset: [0.0; 2],
             uv_scale: [0.0; 2],
@@ -320,22 +310,15 @@ impl Material {
             displacement_bias: f32_at(0x60),
             falloff_amount: f32_at(0x64),
             falloff_exponent: f32_at(0x68),
-            shaping: {
+            refraction: {
                 let v = f32_at(0x58);
-                if v.abs() < 1.192_089_982_282_595_9e-7 {
-                    1.0
-                } else {
-                    v
-                }
+                if v.abs() < REFRACTION_EPSILON { 1.0 } else { v }
             },
             uv_angle: f32_at(0x8C),
             uv_offset: vec2_at(0x7C),
             uv_scale: vec2_at(0x84),
-            uv_transform: if u32_at(0x4C) & 0x40 != 0 {
-                uv_transform(f32_at(0x8C), vec2_at(0x84), vec2_at(0x7C))
-            } else {
-                IDENTITY_UV
-            },
+            uv_transform: (u32_at(0x4C) & 0x40 != 0)
+                .then(|| uv_transform(f32_at(0x8C), vec2_at(0x84), vec2_at(0x7C))),
             render_state: u32_at(0x90),
             plugin_mask: u32_at(0x94),
             reserved: [u32_at(0x98), u32_at(0x9C), u32_at(0xA0), u32_at(0xA8)],
@@ -568,53 +551,53 @@ mod tests {
         assert_eq!(m.raw_block[0xA8 / 4], m.reserved[3]);
         assert_eq!(m.render_state, 0x1000_0024);
         assert_eq!(m.plugin_mask, 0x1000_0025);
-        // The shaping word is floored to one when its magnitude is under
-        // the engine's epsilon; all other floats are kept as stored.
+        // The refraction word becomes one when its magnitude is under the
+        // engine's epsilon; all other floats are kept as stored.
         let mut q = vec![0u8; PARAMETER_BLOCK];
-        assert_eq!(Material::parse(&q).unwrap().shaping, 1.0);
+        assert_eq!(Material::parse(&q).unwrap().refraction, 1.0);
         q[0x58..0x5C].copy_from_slice(&0.5f32.to_le_bytes());
-        assert_eq!(Material::parse(&q).unwrap().shaping, 0.5);
+        assert_eq!(Material::parse(&q).unwrap().refraction, 0.5);
         q[0x58..0x5C].copy_from_slice(&1e-30f32.to_le_bytes());
-        assert_eq!(Material::parse(&q).unwrap().shaping, 1.0);
+        assert_eq!(Material::parse(&q).unwrap().refraction, 1.0);
+        q[0x58..0x5C].copy_from_slice(&(-1.0e-7f32).to_le_bytes());
+        assert_eq!(Material::parse(&q).unwrap().refraction, 1.0);
+        q[0x58..0x5C].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(Material::parse(&q).unwrap().refraction.is_nan());
     }
 
     #[test]
-    fn the_uv_builder_scales_about_the_centre_then_rotates() {
-        // Unit scale, no rotation: the identity, including the translation.
+    fn the_uv_builder_scales_about_the_centre_then_rotates_by_the_negated_angle() {
+        // Unit scale, no rotation: the identity, no translation.
         let m = uv_transform(0.0, [1.0, 1.0], [0.0, 0.0]);
-        assert!((m[0] - 1.0).abs() < 1e-6 && m[1].abs() < 1e-6);
-        assert!(m[9].abs() < 1e-6 && m[10].abs() < 1e-6);
-        assert_eq!(apply_uv(&m, [0.25, 0.75]), [0.25, 0.75]);
-        // Scale 2: the corners go to -0.5 and 1.5.
+        assert_eq!((m[0], m[1], m[3], m[4], m[8]), (1.0, 0.0, 0.0, 1.0, 1.0));
+        assert_eq!((m[9], m[10]), (0.0, 0.0));
+        // Scale 2 about the centre: the translation row is −0.5.
         let m = uv_transform(0.0, [2.0, 2.0], [0.0, 0.0]);
         assert_eq!((m[0], m[4], m[9], m[10]), (2.0, 2.0, -0.5, -0.5));
-        assert_eq!(apply_uv(&m, [0.0, 0.0]), [-0.5, -0.5]);
-        assert_eq!(apply_uv(&m, [1.0, 1.0]), [1.5, 1.5]);
         // A translation adds last.
         let m = uv_transform(0.0, [1.0, 1.0], [0.25, -0.5]);
         assert_eq!((m[9], m[10]), (0.25, -0.5));
-        // A quarter turn, pinned to the original's translation formula:
-        // m[0] = cos = 0, m[1] = -sin = -1, m[3] = sin = 1, m[4] = cos = 0,
-        // m[9] = 0.5 - 0 - 0.5 = 0, m[10] = 0.5 + 0.5 - 0 = 1.
+        // A quarter turn: (s, c) are the sine and cosine of −π/2, so
+        // m[1] = −s = 1 and m[3] = s = −1; then m[9] = ½ − c·½ + ½ = 1 and
+        // m[10] = ½ − ½ − c·½ = 0 (to the polynomial's precision).
+        let (s, c) = crate::factory::sin_cos(-std::f32::consts::FRAC_PI_2);
         let m = uv_transform(std::f32::consts::FRAC_PI_2, [1.0, 1.0], [0.0, 0.0]);
-        assert!(m[0].abs() < 1e-6 && (m[1] + 1.0).abs() < 1e-6);
-        assert!((m[3] - 1.0).abs() < 1e-6 && m[4].abs() < 1e-6);
-        assert!(m[9].abs() < 1e-6 && (m[10] - 1.0).abs() < 1e-6);
-        assert_eq!(apply_uv(&m, [1.0, 0.0])[1], 2.0);
-        assert!(apply_uv(&m, [1.0, 0.0])[0].abs() < 1e-6);
+        assert_eq!((m[0], m[1], m[3], m[4]), (c, -s, s, c));
+        assert!((m[1] - 1.0).abs() < 1e-6 && (m[3] + 1.0).abs() < 1e-6);
+        assert_eq!(m[9], ((0.5 - m[0] * 0.5) - m[3] * 0.5) + 0.0);
+        assert!((m[9] - 1.0).abs() < 1e-6 && m[10].abs() < 1e-6);
     }
 
     #[test]
-    fn the_uv_transform_is_read_only_with_extra_flag_0x40() {
+    fn the_uv_transform_is_built_only_with_extra_flag_0x40() {
         let mut p = vec![0u8; PARAMETER_BLOCK];
         p[0x84..0x88].copy_from_slice(&2.0f32.to_le_bytes());
         p[0x88..0x8C].copy_from_slice(&2.0f32.to_le_bytes());
         let m = Material::parse(&p).unwrap();
-        assert_eq!(m.uv_transform, IDENTITY_UV);
+        assert_eq!(m.uv_transform, None);
         assert_eq!(m.uv_scale, [2.0, 2.0]);
         p[0x4C..0x50].copy_from_slice(&0x40u32.to_le_bytes());
-        let m = Material::parse(&p).unwrap();
-        assert_eq!(m.uv_transform[0], 2.0);
-        assert_eq!(m.uv_transform[9], -0.5);
+        let m = Material::parse(&p).unwrap().uv_transform.unwrap();
+        assert_eq!((m[0], m[9]), (2.0, -0.5));
     }
 }

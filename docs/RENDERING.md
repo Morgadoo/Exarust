@@ -276,21 +276,23 @@ program.
 | `0x48` | flags: lit `0x3`, specular `0x4`, emissive `0x8`, two-sided `0x10`, refraction `0x200`, opacity falloff `0x800` (the loader also sets it when `0x64` > 0), plus the texture slots |
 | `0x4C` | extra flags: `0x100` the opacity fall-off fades toward the outline (most records), `0x100000` displacement shadows |
 | `0x50` | type: bit 0 means the specular map is a packed intensity/gloss/metal map |
-| `0x58` | vertical shaping word (zero becomes 1), written to the spot-shaping half-float of mode `0x200` |
+| `0x58` | refraction word (below 2⁻²³ in magnitude becomes 1), packed into `OpcFll.w` for refraction mode (`0x48 & 0x300 == 0x200`) |
 | `0x64`, `0x68` | opacity fall-off amount and exponent |
-| `0x30`, `0x34` | dirt amount and the word written to the dirt uniform's fourth lane |
+| `0x30`, `0x34` | dirt amount, and a word the factory copies into the draw state when the plug-in-masked flags have bit 0 (reader not traced) |
 | `0x7C`, `0x84`, `0x8C` | texture-coordinate translation (2 floats), scale (2) and angle; extra flag `0x40` builds the transform |
-| `0x90` | render-state word | 
-| `0x94` | plug-in mask |
+| `0x90` | render-state word: the loader keeps its bit `0x20` |
+| `0x94` | plug-in mask: the factory records a record calls |
 | `0x98`, `0x9C`, `0xA0`, `0xA8`, `0xB0`, `0xB4` | kept whole; no reader found |
 
-`exa_formats::material::Material` now decodes every word of the block
-(`raw_block`), so a pass-through rewrite keeps it. The original's order is
-kept: type-0 diffuse is scaled ×1.5 in stored sRGB before the decode, the
-gloss floor to 0.01 applies only to type 0, and the specular level scales
-the linearised specular colour. `Material::uv_transform` builds the 3 × 4
-matrix in the original's order (scale about the centre, rotation, then the
-translation).
+`exa_formats::material::Material` decodes every word of the block
+(`raw_block`), so a pass-through rewrite keeps it. The record loader's
+order is kept: type-0 diffuse is scaled ×1.5 in stored sRGB before the
+decode, the gloss floor to 0.01 applies only to type 0, and the specular
+level scales the linearised specular colour.
+`exa_formats::material::uv_transform` builds the texture-coordinate matrix
+of a record with extra flag `0x40` in the loader's order (the engine's sine
+and cosine of the negated angle, scale about the centre, then the
+translation); nothing draws with it yet.
 
 **Texture slots**:
 - `0x20000` diffuse
