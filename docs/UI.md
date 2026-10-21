@@ -660,53 +660,89 @@ calling the rest of the game, so the order is testable.
 - **Modes and phases.** The mode word is 0 (title), 2 (practice), 4 (story),
   8 (arena) or a scripted mode (versus is 0x1010). Phases: 0 transition, 1
   title, 3 playing, 4 won, 5 ended, 8 round won, 0x10 forfeit and 0x20
-  paused. Switching stores the outgoing mode's player, restores the incoming
-  one, sets the mode's flags and installs its hook; story mode uses
-  checkpoints, arena mode overrides the inventory.
+  paused. A switch clears the reconstruction state, stores the outgoing
+  mode's player, restores the incoming one and sets the incoming hook: the
+  story's for story, none for the arena, the title and a scripted mode
+  (whose enter hook runs); practice keeps its hook until its start installs
+  one. Story mode uses checkpoints, arena mode overrides the inventory (the
+  flag words' reading is a guess).
 - **Starts.** A story starts at `exanima01` with its background's role,
-  flags, pose, light and Derrin (unknown background), or the knight,
-  proctor or villager pose; practice starts at `arena`/`arenae` with
-  `opponent01`/`opponent09`, the ladder's music, the wide shot and the ring's
-  middle; a continue loads the save's locale (or `exanima01`) and frames the
-  player; the arena continue loads `arenahub` with the hub's music.
+  flags, pose and wake-up motion; the unknown background and the villager
+  get a starting light (turned −48°, 110°, 88° and 8°, −150°, 50°), the
+  unknown one Derrin. The spawn turns are the engine's angle builder's rows
+  (`(cz·cy, sz, −cz·sy)`, …). Practice starts at `arena`/`arenae` with
+  `opponent01`/`opponent09`, the ladder's music (0.1 and 0.25; both
+  drum-and-bass tracks at 0.15) and the player in the ring's middle at its
+  standing height plus 5 cm; the next fight stands it at its measured stand
+  height. A continue loads the save's locale (or `exanima01`); the arena
+  continue loads `arenahub` with the hub's music.
+- **Camera shots.** A point shot puts the camera at the point plus an
+  offset: (700, 1180, 1100) cm for every shot of the group (practice start,
+  next fight, story and arena continues), (300, 1180, 1300) for the arena
+  unit's far shot; a fast shot forces 1300 on the view. The story start puts
+  the camera 600, 600, 1300 cm off the player. The cursor warps to the client
+  centre plus (120, −200) (or (−200, 0) for the story) × height/1140.
 - **Transitions.** Everything that changes the world runs behind the
   transition screen, 100 ms later: the quit to the title, the story respawn
-  at `exanima05`, the revival, a level load. The phase before the transition
-  is kept.
+  at `exanima05`'s portal (15 cm up, the camera left alone, the save written
+  first), the revival (also saving first), a level load at the exit's spawn
+  point. The phase before the transition is kept.
 - **The frame.** While no menu covers the game and no transition runs, each
   frame ticks the dialogue engine and then the mode's hook. The story hook
   checks the three wake-up flags, runs discovery once a second and handles a
-  knocked-out player (five seconds, then a revival; a dead one dies). The
-  practice hook waits a second, then the first dead opponent ends the round;
-  the eighth fight wins the ladder and unlocks expert.
+  fallen player (dead with at least 0.01 health: knocked out for five
+  seconds, then revived; otherwise dead). The practice hook waits a second;
+  then a dead player dies, or the first dead opponent ends the round; the
+  eighth fight wins the ladder and unlocks expert.
 - **Death and the end menu.** Death shows the end menu and, in the story,
   drops the save unless the player can be rebuilt (then the first death
   strips them). The end menus are EXIT; (a won story or arena), RESTART/EXIT
   (practice over), CONTINUE/EXIT (rebuilt), CONTINUE/LOBBY/EXIT (arena) and
-  NEXT FIGHT, at scales 0.9, 0.85 and 0.78.
-- **Level exits.** A level changed by a trigger or a teleporter names its
-  locale by campaign number; levels 1 to 6 write the transition save unless
-  it is off or the level is already saved, levels past 6 do not. A dead
-  player drops the save instead.
-- **The exit-trigger nudge** pushes a player standing in an exit trigger out
-  along the nearer local axis, by the span minus the signed offset plus
-  75 cm (the negative branch keeps the original's overshoot), after the
-  trigger's radius plus 50 cm and box-distance checks.
+  NEXT FIGHT, at scales 0.9, 0.85 and 0.78. Its confirm key plays the
+  menu's click at 0.06 with a pitch of 0.8 to 1.2.
+- **Level exits.** A level the locale table names is left behind the
+  transition; a player with neither dead bit loses the controls. Every exit
+  saves (without the death rule); levels below 7 also keep a checkpoint when
+  `CheckPoints` is on (level 6 always) and the save holds neither
+  `exanima04` nor the level.
+- **The quit autosave** is the application's quit callback: in the paused
+  phase the arena unit's pause callback runs; while playing, a story saves
+  with the death rule, an arena saves from its in-game page or forfeits from
+  its pause page; practice writes nothing.
+- **The exit-trigger nudge** pushes a continued story's player out of an
+  exit trigger that holds it: the squared distance to the centre within
+  (radius + 50)², the squared box distance within 50 and an exit-marker
+  object. The offset, its height zeroed, is turned into the trigger's frame
+  by its rows; the axis with the smaller clearance is taken and the player
+  moves along that row by `(extent − local) + 75`, negated when the local
+  offset is not positive (the original's arithmetic, which overshoots on the
+  negative side).
 - **Wiring.** `FlowPlugin` boots the flow, ticks it on the 12 ms game clock,
   watches a play level's player (a sandbox practice session) and turns a
   teleporter's `TravelToLevel` into a level exit; F1 then opens the in-game
-  page with the flow's mode and phase words.
+  page with the flow's mode and phase words. The steps are logged; the
+  world, save and camera steps are not applied yet.
 
 ### The splash screen
 
-`exa_game::splash` is the start-up splash: `bmelogol01.rfi` and
-`bmelogol02.rfi` centred at `round(H/135)·0.125`, a one-second renderer
-warm-up, a 600 ms fade-in, a two-second hold, the second logo with
-`BME Critters` at 0.2, a 200 ms hold, a 300 ms fade-out, the hand-over to the
-menu, a one-second hold and a one-second fade to the game (closing under the
-float 1.1920899822825959e-07). The alpha is the fade times 255, rounded half
-to even; the screen holds a busy count until the menu is up. The plugin can
-run and log it; nothing starts it by default.
+`exa_game::splash` is the start-up splash. Each tick draws a black backdrop
+over the client at the backdrop's alpha, then runs its state: a one-second
+renderer warm-up; `bmelogol01.rfi` fading in from black over 600 ms (its grey
+level rises, the backdrop stays opaque) and holding to two seconds;
+`bmelogol02.rfi` with `BME Critters` at 0.2, a 200 ms hold while the warm-up
+goes on, a 300 ms fade to black; the rest of the warm-up; the hand-over (the
+title page is built behind the splash); a one-second wait; the menu theme;
+and a one-second fade of the backdrop that uncovers the menu (closing under
+the float 1.1920899822825959e-07). Logos are centred at
+`round(H/135)·0.125`. Fades are computed in double and kept in single; the
+grey level and the alpha are rounded half to even and kept as a byte. Every
+comparison uses the frame's time and every stamp the system clock, so an
+elapsed time is their signed difference. The splash also drives the
+transition audio gain (silent until the second logo, silent again after the
+menu wait, rising with the last fade) and the marker outline fade. The form's
+hit-test and destroy order are `exa_ui::menu`'s. `exarust --splash` shows it
+at start-up (about five seconds) and opens the main menu at the hand-over;
+without the flag nothing starts it.
 
 ### The main menu screen
 
