@@ -141,6 +141,25 @@ powers, the portal screen's journey and the power tree) are not in. Drawing the 
 mesh copies, the bubble and wheel geometry, the portal particle
 simulation and the bubble's GI light values is not in.
 
+The force and environment effects of the same powers are in as plain
+rules: `effects::rain` (4096 drops in a box kept on the camera, the double
+gust walk, the frame fall and ground wrap, the eye fade and the two
+shaders kept as data), `effects::portal_effect` (one ellipse particle per
+call with the 3- and 5-bit colour draws), `effects::fire_node` (the
+`_FlameMat01` node with its 800 cm 1/0.68/0.43 light and `FireS02`),
+`effects::force_dome` (the dome's eight-ripple list, the Barrier's 800 ms
+grow and 500 ms fall, the Bubble's 1200 ms grow and 700 ms fall and the
+20 m end, keep-out, follow and the icosphere and cap meshes),
+`effects::force_wave` (32 chunks, the charge and 1200 cm release, the
+spread, slice spacing and front strip), `effects::danger` (what the AI
+makes of a blast, a wave and a barricade), `effects::emissive` (the seven
+GI programs with their boxes and phase colours), `effects::effect_geometry`
+(the geometry flags, programs, uniforms, instance rows and fades),
+`effects::vanish` (hide, show, lend and phase end) and `effects::force_draw`
+(one glow-material draw per shell). Nothing starts a rain set, a dome or a
+wave yet: their callers are the powers, the scene's weather and the
+portal's journey, which are not in.
+
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages
 (`stages`: the driver and one module a stage; the rules in `limp`): its

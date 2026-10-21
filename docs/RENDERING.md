@@ -1740,7 +1740,31 @@ barrier the icosahedron's five-face top cap, each subdivided three times:
 every edge's midpoint pushed out to unit length, every face split into its
 three corner faces then its middle one (1 280 faces and 642 points for the
 bubble). The subdivided cap counts 4n − 6 points, more than it makes.
-`exa_assets::polyhedra` builds them; the effects are not drawn yet.
+`exa_assets::polyhedra` builds them. `exa_game::effects::force_dome`
+turns them into the bubble's closed sphere (1 280 faces) and the barrier's
+double-sided cap (both windings), and `effects::force_draw` draws a
+`EffectShell` once through the glow material. The force geometries'
+programs and uniform sets, their per-instance texture rows and their fades
+are in `effects::effect_geometry`; the original's `effectbarrier`,
+`effectbubble` and `effectfbrcd` programs themselves are not ported.
+`effects::emissive` models the seven GI lights the effects carry
+(`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
+`gi_multipoint`, `gi_telebubble`) with their world boxes and phase
+colours; nothing injects them into the GI volume yet.
+
+## Rain and the portal's spray
+
+`exa_game::effects::rain` is the original's rain: 4096 drops in a
+1200 × 1200 × 1200 cm box centred on the eye, the drawn count
+`round(4096·intensity)`, a gust walk in double precision, a fall of
+`12·(intensity + 1)·(dt⁴ + 0.2)` cm an update while the update is short
+enough, a wrap at the ground, and the eye's `(0.6 − 0.000667·d)⁴` fade.
+Its shader sources are kept as data; `Rain::mesh` draws the drops as lines
+with the existing glow material. `effects::portal_effect` spawns a portal's
+particles one at a time on an 80 × 115 cm ellipse in the portal's frame,
+with the original's 3- or 5-bit colour index draws. `effects::fire_node`
+builds the `_FlameMat01` node's warm 800 cm light and its `FireS02` loop;
+the row itself is `effects::fire_row`.
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both
