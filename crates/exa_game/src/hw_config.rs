@@ -182,17 +182,23 @@ impl HardwareConfig {
         self.benchmark = None;
         self.live = Options::auto_detected(&self.live, perf_index, width, height);
         self.session_music = self.live.music;
-        if std::mem::take(&mut self.refresh_after_benchmark)
-            && let Some(screen) = &mut self.screen
-        {
-            screen.draft = Options::opened_from(&self.live);
+        let refresh = std::mem::take(&mut self.refresh_after_benchmark);
+        if let Some(screen) = &mut self.screen {
+            // The saved baseline moves with the detected quality; only the
+            // page's show handler also fills the draft.
             screen.baseline = self.live;
+            if refresh {
+                screen.draft = Options::opened_from(&self.live);
+            }
         }
     }
 
     /// The Deck's fixed preset, instead of a benchmark.
     pub fn deck_preset(&mut self) {
         self.live = Options::deck_preset(&self.live);
+        if let Some(screen) = &mut self.screen {
+            screen.baseline = self.live;
+        }
     }
 
     /// A slider step on the open screen. Aim speed is the extra row the
@@ -785,6 +791,23 @@ mod tests {
         assert_eq!(config.lines().unwrap()[9], ("InputMode", "51".to_string()));
         config.set_rumble(false);
         assert!(!config.rumble);
+    }
+
+    #[test]
+    fn defaults_move_the_baseline_but_not_the_page() {
+        let mut config = HardwareConfig::default();
+        config.open();
+        // A benchmark started by the Defaults action, not by the page's show.
+        config.refresh_after_benchmark = false;
+        config.finish_benchmark(4.0, 1600, 900);
+        let screen = config.screen.as_ref().unwrap();
+        assert_eq!(screen.baseline.supersample, 3);
+        assert_eq!(screen.draft.supersample, 0);
+        // Apply then compares the old draft with the new baseline and pushes
+        // the old values again, as the original does.
+        let applied = config.apply().unwrap();
+        assert!(applied.quality.supersample);
+        assert_eq!(config.live.supersample, 0);
     }
 
     #[test]
