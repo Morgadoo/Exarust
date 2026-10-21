@@ -579,6 +579,9 @@ pub(crate) fn call_global<H: Host>(
 ) -> i32 {
     match global {
         Global::GameEvent => {
+            // The shipped scripts write the code as bare hex
+            // (`GameEvent(00C10EC0);`), so the argument is read as
+            // hexadecimal rather than the `$`-or-decimal id form.
             let code = ctx.args.first().map_or(0, |&(s, l)| {
                 interp::hexadecimal(interp::arg_bytes(text, s, l))
             });

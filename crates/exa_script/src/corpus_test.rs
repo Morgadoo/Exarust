@@ -193,3 +193,43 @@ fn the_plugin_runs_the_narrator() {
     assert_eq!(c.engine.bubbles.list.len(), 1);
     assert_eq!(c.engine.bubbles.list[0].text, b"You wake.");
 }
+
+/// Every link of every shipped dialogue (role graphs and the narrator)
+/// points at a node that exists.
+#[test]
+fn shipped_dialogue_links_resolve() {
+    let Some(s) = scripts() else { return };
+    let mut graphs: Vec<(u32, &Dialogue)> = Vec::new();
+    for role in &s.roles.roles {
+        for entry in &role.entries {
+            if let Some(d) = &entry.dialogue {
+                graphs.push((role.id, d));
+            }
+        }
+    }
+    if let Some(d) = &s.narrator {
+        graphs.push((0, d));
+    }
+    for (role, d) in graphs {
+        for node in d.nodes.iter().flatten() {
+            for &link in &node.links {
+                let index = (link & 0xFFFF) as usize;
+                if index != 0 {
+                    assert!(
+                        d.node(index).is_some(),
+                        "role {role} node {:?} links to {index}",
+                        node.title
+                    );
+                }
+            }
+            for b in &node.branches {
+                assert!(
+                    b.link() as usize <= node.links.len(),
+                    "role {role} branch link {} of {} links",
+                    b.link(),
+                    node.links.len()
+                );
+            }
+        }
+    }
+}

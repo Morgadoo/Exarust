@@ -2415,7 +2415,7 @@ impl Engine {
 
     /// `StartDialogue(topic)` for the pair `a`, `b`.
     pub fn start_dialogue(&mut self, scene: &mut Scene<'_>, a: u32, b: u32, topic: Name) -> bool {
-        if scene.cast.get(a).is_none_or(|c| c.arousal > START_AROUSAL) || self.engaged(a, true) {
+        if scene.cast.get(a).is_none_or(|c| c.arousal > START_AROUSAL) || self.engaged(a, false) {
             return false;
         }
         self.search(

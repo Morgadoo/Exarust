@@ -57,6 +57,30 @@ pub enum Use {
     Refused,
 }
 
+/// What a glow pulse drives on a child object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// An emissive mesh (the original's type `& 0x5f == 9`): its intensity.
+    Emissive,
+    /// A light (type `& 0x5f == 0x41`): its intensity is the base times
+    /// the pulse level.
+    Light,
+}
+
+/// The channel a child object of `kind` (its type word) shows a pulse on.
+pub fn channel(kind: u32) -> Option<Channel> {
+    match kind & 0x5f {
+        9 => Some(Channel::Emissive),
+        0x41 => Some(Channel::Light),
+        _ => None,
+    }
+}
+
+/// A light's intensity during a pulse: its base intensity times the level.
+pub fn light_intensity(base: f32, level: f32) -> f32 {
+    base * level
+}
+
 /// A used device of type 0x12 plays its power-up sound (the teleporter
 /// device handler does it).
 pub fn device_power_up(kind: u8) -> bool {
@@ -271,6 +295,10 @@ mod tests {
         assert_eq!(Source::Socketed(5).code(), 4);
         assert!(device_power_up(0x12));
         assert!(!device_power_up(0x0F));
+        assert_eq!(channel(0x29), Some(Channel::Emissive));
+        assert_eq!(channel(0x41), Some(Channel::Light));
+        assert_eq!(channel(0x40), None);
+        assert_eq!(light_intensity(2.0, 0.5), 1.0);
         let mut d = Drain::default();
         d.add(Source::Inventory);
         d.add(Source::Socketed(5));

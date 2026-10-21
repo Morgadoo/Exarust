@@ -29,9 +29,9 @@ notice drops the sleep role and wakes.
 
 | module | what it holds |
 |---|---|
-| `roles` | role lists (adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts and the entry finder |
+| `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts and the entry finder |
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
-| `activity` | applying roles: the init scripts' assignments (newest role first), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
+| `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming and tidying |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert and the approach clamp |
 | `brain` | the components and systems that carry roles into the running game |
@@ -88,8 +88,10 @@ contact when full, where the original's admission (`contacts::admit`)
 replaces the lightest. The running game has no room graph yet, so no
 flight starts there.
 
-Not in yet: a script engine (encounter, dialogue and condition scripts are
-found, not run; only the init assignments run), the brain feeding the
+Not in yet: role init scripts other than Activity and IdleActivity have no
+effect (the interpreter runs them, but the AI's host exposes only those two
+slots); encounters, dialogue and condition scripts are found, not run from
+the AI; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol walk only
 once the running game has a navigation grid, and the search has no item
