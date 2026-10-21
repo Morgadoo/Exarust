@@ -7,7 +7,7 @@
 //! between. Weight the painted layers leave over goes to node 0. Evidence:
 //! `docs/formats/TERRAIN.md`.
 
-use exa_formats::terrain::Palette;
+use exa_formats::terrain::{BlendRule, Palette};
 use exa_render::image_noise::{ridge_bytes, value_noise_bytes};
 
 /// Side of the repeating noise maps, in terrain vertices (96 m).
@@ -19,6 +19,12 @@ const NOISE_OCTAVES: u32 = 4;
 const LEFTOVER_EPSILON: f32 = 0.001;
 /// Deeper rule chains are treated as cycles.
 const MAX_DEPTH: usize = 32;
+/// The most painted brushes a tile vertex evaluates; the original stops at
+/// ten and reports "Maximum brushes exceeded."
+pub const MAX_BRUSHES: usize = 10;
+/// One material channel's side: the original allocates 256 × 256 bytes per
+/// channel.
+pub const CHANNEL_SIDE: usize = 256;
 
 /// Per-vertex values a rule can select by its kind.
 pub const INPUTS: usize = 9;
@@ -201,6 +207,188 @@ pub fn over_alphas(weights: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// One entry of the original's name-sorted brush table: a 16-byte
+/// lower-case name, the node it names and its tag (0 for a rule, the
+/// material index for a material).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrushEntry {
+    pub name: [u8; 16],
+    pub node: usize,
+    pub tag: i32,
+}
+
+/// The original's brush table: rules inserted first, then materials, each
+/// by binary search into a list sorted by the lower-case name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrushTable {
+    entries: Vec<BrushEntry>,
+}
+
+impl BrushTable {
+    /// Builds the table from a palette: its rules first (tag 0, the rule's
+    /// index as the node), then its materials (tag the material index, the
+    /// node after the rules). The original first inserts every name into
+    /// its sorted list and then keeps the mapped record.
+    pub fn of(palette: &Palette) -> Self {
+        let mut table = Self::default();
+        for (at, rule) in palette.rules.iter().enumerate() {
+            table.insert(&rule.name, at, 0);
+        }
+        for (at, material) in palette.materials.iter().enumerate() {
+            table.insert(&material.name, palette.rules.len() + at, at as i32);
+        }
+        table
+    }
+
+    /// Inserts one entry before the first name not below it, shifting the
+    /// tail (the original's binary-search insertion).
+    pub fn insert(&mut self, name: &str, node: usize, tag: i32) {
+        let mut key = [0u8; 16];
+        for (out, byte) in key.iter_mut().zip(name.as_bytes()) {
+            *out = byte.to_ascii_lowercase();
+        }
+        let entry = BrushEntry {
+            name: key,
+            node,
+            tag,
+        };
+        let at = self.entries.partition_point(|other| other.name < key);
+        self.entries.insert(at, entry);
+    }
+
+    /// The entry named `name`, compared as the original's 16 lower-case
+    /// bytes; the last of duplicate names wins, as its later insertion
+    /// shadows the earlier one.
+    pub fn get(&self, name: &str) -> Option<&BrushEntry> {
+        let mut key = [0u8; 16];
+        for (out, byte) in key.iter_mut().zip(name.as_bytes()) {
+            *out = byte.to_ascii_lowercase();
+        }
+        self.entries.iter().rev().find(|entry| entry.name == key)
+    }
+
+    /// The entries in sorted order.
+    pub fn entries(&self) -> &[BrushEntry] {
+        &self.entries
+    }
+
+    /// How many entries the table holds.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// A tile's painted brushes resolved against the table, with the base
+/// tree's node appended. The original allows at most [`MAX_BRUSHES`] and
+/// reports "Maximum brushes exceeded." for the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Brushes {
+    /// Painted nodes, in the tile's order.
+    pub nodes: Vec<usize>,
+    /// The base rule tree's node (`0`, the first rule).
+    pub base: usize,
+    /// How many painted layers were past the limit.
+    pub exceeded: usize,
+}
+
+/// Resolves a tile's layer names into at most ten brushes plus the base
+/// tree. Unknown names are left out, as the original's failed lookup.
+pub fn brushes<'a>(table: &BrushTable, layers: impl IntoIterator<Item = &'a str>) -> Brushes {
+    let mut nodes = Vec::new();
+    let mut exceeded = 0;
+    for name in layers {
+        let Some(entry) = table.get(name) else {
+            continue;
+        };
+        if nodes.len() >= MAX_BRUSHES {
+            exceeded += 1;
+            continue;
+        }
+        nodes.push(entry.node);
+    }
+    Brushes {
+        nodes,
+        base: 0,
+        exceeded,
+    }
+}
+
+/// Scales the rule height bounds by `scale` and adds `offset`, in the
+/// original's truncating integer arithmetic. Only rules (tag 0) are
+/// touched; materials keep their bounds.
+pub fn scale_rule_heights(rules: &mut [BlendRule], scale: f32, offset: f32) {
+    for rule in rules {
+        rule.lo = ((rule.lo * scale + offset) as i32) as f32;
+        rule.hi = ((rule.hi * scale + offset) as i32) as f32;
+    }
+}
+
+/// Adds one vertex's weight to a material channel's byte, rounding the
+/// weight to 0..=255 and saturating: the original's accumulator.
+pub fn accumulate(current: u8, weight: f32) -> u8 {
+    let add = (weight * 255.0).round_ties_even();
+    let add = if add < 0.0 {
+        0
+    } else if add > 255.0 {
+        255
+    } else {
+        add as u8
+    };
+    current.saturating_add(add)
+}
+
+/// Packs used materials into interleaved mask planes, four per plane: the
+/// first plane of a group holds up to four materials' bytes per texel,
+/// laid out material by material at `texel·group + lane`; the next group
+/// starts a plane later. `mask(material, texel)` gives each byte. This is
+/// the original's four-per-RGBA-mask packing, with a short last group
+/// packed tighter.
+pub fn pack_material_masks(
+    used: usize,
+    texels: usize,
+    mask: impl Fn(usize, usize) -> u8,
+) -> Vec<u8> {
+    let mut out = vec![0u8; used.saturating_mul(texels)];
+    let mut start = 0;
+    while start < used {
+        let group = (used - start).min(4);
+        let base = start * texels;
+        for texel in 0..texels {
+            for lane in 0..group {
+                out[base + texel * group + lane] = mask(start + lane, texel);
+            }
+        }
+        start += group;
+    }
+    out
+}
+
+/// A tile's material weights from the painted brushes and the leftover,
+/// before packing: one channel of 256 × 256 bytes per material, each byte
+/// accumulated the original's way. `weigh` is the per-vertex evaluator.
+pub fn channel_bytes(
+    materials: usize,
+    vertices: usize,
+    mut weigh: impl FnMut(usize) -> Vec<f32>,
+) -> Vec<u8> {
+    let mut out = vec![0u8; materials.saturating_mul(vertices)];
+    for vertex in 0..vertices {
+        for (material, weight) in weigh(vertex).into_iter().enumerate() {
+            if material >= materials {
+                break;
+            }
+            let at = material * vertices + vertex;
+            out[at] = accumulate(out[at], weight);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +499,85 @@ mod tests {
         assert_eq!(inputs[3], 137.0 / 255.0);
         assert_eq!(inputs[6], inputs[3]);
         assert_eq!(inputs[4], 156.0 / 255.0);
+    }
+
+    #[test]
+    fn a_brush_table_is_sorted_by_lower_case_name() {
+        let p = palette(vec![
+            rule("Coast", 0, "Sand", "Rock", 0.0, 2.0),
+            rule("Inland", 1, "Rock", "Grass", 0.25, 0.81),
+        ]);
+        let table = BrushTable::of(&p);
+        let names: Vec<String> = table
+            .entries()
+            .iter()
+            .map(|e| {
+                String::from_utf8_lossy(&e.name)
+                    .trim_end_matches('\0')
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names, ["coast", "grass", "inland", "rock", "sand"]);
+        assert_eq!(table.get("COAST").map(|e| e.node), Some(0));
+        assert_eq!(table.get("grass").map(|e| e.tag), Some(2));
+        assert_eq!(table.get("missing"), None);
+        assert_eq!(table.len(), 5);
+        let brushes = brushes(&table, ["coast", "missing", "INLAND"]);
+        assert_eq!(brushes.nodes, [0, 1]);
+        assert_eq!(brushes.base, 0);
+        assert_eq!(brushes.exceeded, 0);
+    }
+
+    #[test]
+    fn only_ten_brushes_fit() {
+        let p = palette(
+            (0..12)
+                .map(|i| rule(&format!("r{i}"), 0, "Sand", "Rock", 0.0, 1.0))
+                .collect(),
+        );
+        let table = BrushTable::of(&p);
+        let b = brushes(
+            &table,
+            (0..12)
+                .map(|i| format!("r{i}"))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(String::as_str),
+        );
+        assert_eq!(b.nodes.len(), MAX_BRUSHES);
+        assert_eq!(b.exceeded, 2);
+    }
+
+    #[test]
+    fn rule_heights_scale_with_truncation() {
+        let mut rules = vec![
+            rule("a", 0, "Sand", "Rock", 0.25, 0.75),
+            rule("b", 1, "Rock", "Grass", -0.5, 1.5),
+        ];
+        scale_rule_heights(&mut rules, 100.0, 5.0);
+        assert_eq!((rules[0].lo, rules[0].hi), (30.0, 80.0));
+        assert_eq!((rules[1].lo, rules[1].hi), (-45.0, 155.0));
+    }
+
+    #[test]
+    fn weights_accumulate_into_channels_and_pack_four_a_plane() {
+        assert_eq!(accumulate(0, 0.5), 128);
+        assert_eq!(accumulate(200, 0.5), 255);
+        assert_eq!(accumulate(10, 0.0), 10);
+        let channels = channel_bytes(2, 3, |v| vec![v as f32 / 3.0, 1.0 - v as f32 / 3.0]);
+        // Material-major channels: each material's whole channel first.
+        assert_eq!(channels[0], 0);
+        assert_eq!(channels[1], 85);
+        assert_eq!(channels[2], 170);
+        assert_eq!(channels[3], 255);
+        assert_eq!(channels[4], 170);
+        assert_eq!(channels[5], 85);
+        let packed = pack_material_masks(5, 2, |m, v| (m * 10 + v) as u8);
+        // Group 0 holds materials 0..4 interleaved at texel·4+lane; group 1
+        // starts at material 4's plane and holds one byte a texel.
+        assert_eq!(packed[..8], [0, 10, 20, 30, 1, 11, 21, 31]);
+        assert_eq!(packed[4 * 2], 40);
+        assert_eq!(packed[4 * 2 + 1], 41);
     }
 
     #[test]

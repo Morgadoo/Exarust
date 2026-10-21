@@ -310,6 +310,8 @@ pub struct TerrainStats {
     pub unresolved_layers: usize,
     /// Tiles that use more materials than the four a tile can show.
     pub truncated_tiles: usize,
+    /// Tiles whose painted brushes passed the original's ten-brush limit.
+    pub brush_limit_tiles: usize,
     /// Grass tufts and plants grown.
     pub plants: usize,
 }
@@ -889,12 +891,18 @@ impl TerrainBuild {
             {
                 self.building = Some((next, task));
             }
-            let (unresolved, truncated, materials) = {
+            let (unresolved, truncated, brushes_exceeded, materials) = {
                 let built = self.built.as_ref().expect("tile just built");
-                (built.unresolved, built.truncated, built.materials.clone())
+                (
+                    built.unresolved,
+                    built.truncated,
+                    built.brushes_exceeded,
+                    built.materials.clone(),
+                )
             };
             self.stats.unresolved_layers += unresolved;
             self.stats.truncated_tiles += usize::from(truncated);
+            self.stats.brush_limit_tiles += usize::from(brushes_exceeded > 0);
             // Its new materials' surface maps are packed meanwhile.
             for m in materials {
                 if !self.textures.contains_key(&m) && !self.surfaces.contains_key(&m) {
@@ -1225,6 +1233,8 @@ struct BuiltTile {
     splat: Vec<u8>,
     unresolved: usize,
     truncated: bool,
+    /// Painted brushes past the original's ten-brush limit.
+    brushes_exceeded: usize,
 }
 
 fn build_tile(
@@ -1256,12 +1266,28 @@ fn build_tile(
     }
 
     // Material weights per vertex from the painted layers.
-    let layers: Vec<(Option<usize>, &[u8])> = tile
+    let mut layers: Vec<(Option<usize>, &[u8])> = tile
         .layers
         .iter()
         .map(|l| (RuleTree::node(palette, &l.name), l.weights.as_slice()))
         .collect();
     let unresolved = layers.iter().filter(|l| l.0.is_none()).count();
+    // The original evaluates at most ten painted brushes; the rest are
+    // reported as "Maximum brushes exceeded." and left out.
+    let mut brushes = 0;
+    let mut brushes_exceeded = 0;
+    let mut keep = layers.len();
+    for (at, layer) in layers.iter().enumerate() {
+        if layer.0.is_none() {
+            continue;
+        }
+        brushes += 1;
+        if brushes > blend::MAX_BRUSHES {
+            brushes_exceeded += 1;
+            keep = keep.min(at);
+        }
+    }
+    layers.truncate(keep);
     let m = tree.material_count();
     let mut weights = vec![0.0f32; n * n * m];
     let mut totals = vec![0.0f32; m];
@@ -1410,6 +1436,7 @@ fn build_tile(
         splat,
         unresolved,
         truncated,
+        brushes_exceeded,
     }
 }
 
