@@ -1311,7 +1311,7 @@ mod tests {
         assert_eq!(v.accepts_drop(4, true, false), 0);
         // The drop and cancel slots are the owner's hooks, 0 without.
         assert_eq!(v.dropped(None), 0);
-        let hook: &dyn Fn(&ItemView) -> u32 = &|v| v.drag_kind as u32 + 1;
+        let hook: &dyn Fn(&ItemView) -> u32 = &|v: &ItemView| v.drag_kind as u32 + 1;
         assert_eq!(v.dropped(Some(hook)), 5);
         assert_eq!(v.drop_cancelled(None), 0);
         assert_eq!(v.drop_cancelled(Some(hook)), 5);
