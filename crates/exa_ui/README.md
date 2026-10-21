@@ -25,7 +25,15 @@ vertical and alpha-scaled gradients, striped bars, selection bands,
 rounded fills and textured frames, edge and bevel frames, solid and two-ink
 rectangles, drop shadows and embossed rings, clamped vertical gradients and
 the scroll arrows. The control faces, panels, marks, sliders and scroll
-bars are built from them in the original's ink order. A form's chrome
+bars are built from them in the original's ink order. `gui_draw` submits a
+frame: every `GuiLayer` carries a batch, the texture its textured
+primitives sample and an optional clip; the renderer walks the layers and
+their primitives in submission order and reproduces the skin's four
+programs (solid, textured with `TexCol`, rounded with `Scale`, and the
+subclass' place-over-viewport sample) and the original's blend words
+(0x203 normal, 0x201 additive, 0x103 premultiplied, 0x100 off). The
+running game rasterises the frame in sRGB into one window-sized image over
+the 3-D view; text and icon quads are layers of their own. A form's chrome
 (gutter strips, client fill, double frames), its default background (round
 shell, title bar, marks, scrollbars and title blocks) and a page's draw
 order (background, clip, scroll, lines, controls, children, shadow) are
@@ -377,7 +385,12 @@ messages and blocks, the status marker, skill-ready alert, level curtain,
 compass, heartbeat sound fade, menu cursor and HUD draw order, and the
 save and close scopes. The bars and their frames are `hud`'s.
 `exa_game::gui_screens` opens the inventory and journal from the I and J
-hotkeys on a `GuiTask`; the forms are not drawn yet.
+hotkeys on a `GuiTask` and draws them through `gui_draw` and
+`exa_game::gui_paint`: the frame and title, the inventory's character-view
+wash, 40 × 4 preview bars, pack panel, Encumbrance label and Primary
+button, and the journal's New and Erase buttons and the selected entry's
+text. The item icons and the journal's entry list have no draw path in the
+packs yet.
 
 ## Scope
 

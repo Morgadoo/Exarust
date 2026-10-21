@@ -43,6 +43,7 @@ pub mod fps;
 pub mod game_gui;
 pub mod gui_controls;
 pub mod gui_core;
+pub mod gui_draw;
 pub mod gui_font;
 pub mod gui_glyphs;
 pub mod gui_level;
@@ -129,6 +130,12 @@ pub use gui_core::{
     clamp_form, drag_limit, drag_threshold, edge_rect, message_box_plan, place_form, set_control,
     set_control_on, set_control_text, set_modal,
 };
+pub use gui_draw::{
+    BLEND_ADDITIVE, BLEND_ALPHA, BLEND_PREMULTIPLIED, BLEND_REPLACE, BlendFactor, GuiCanvas,
+    GuiDrawPlugin, GuiFrame, GuiFrames, GuiLayer, GuiTexture, GuiTextures, LayerTexture,
+    SKIN_TEXTURE, TEXTURE_SCALE, blend_factor, blend_factors, blend_word, glyph_batch, icon_batch,
+    rasterise, text_batch,
+};
 pub use gui_level::GuiLevelState;
 pub use gui_task::{
     ACTIVE_ALPHA, CallbackList, INACTIVE_ALPHA, KeyOutcome, LAYER_ATTRIBUTES, LAYER_BORDER,
@@ -151,10 +158,10 @@ pub use help_system::{
 };
 pub use hud::{DrawHud, HudBars};
 pub use line_skin::{
-    LINE_STRIP_CAP, LineIcon, LineIconAlpha, LineIconInk, LineMetrics, LineScroll, LineScrollPlace,
-    WINDOW_CORNER, WindowFrame, WindowFrameInk, WindowFramePlace, draw_line_icon,
-    draw_line_progress, draw_open_span, draw_window_frame, refresh_line_scroll, register_line_skin,
-    set_line_metrics,
+    LINE_SCHEME, LINE_STRIP_CAP, LineIcon, LineIconAlpha, LineIconInk, LineMetrics, LineScroll,
+    LineScrollPlace, WINDOW_CORNER, WindowFrame, WindowFrameInk, WindowFramePlace, draw_line_icon,
+    draw_line_progress, draw_open_span, draw_window_frame, line_inks, line_palette,
+    refresh_line_scroll, register_line_skin, set_line_metrics,
 };
 pub use loading::LoadingStatus;
 pub use loadout::{
@@ -287,6 +294,7 @@ impl Plugin for UiPlugin {
             hud::plugin,
             heartbeat::plugin,
             fade::plugin,
+            gui_draw::GuiDrawPlugin,
         ));
     }
 }

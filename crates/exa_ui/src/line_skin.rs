@@ -17,9 +17,40 @@
 //! number, so its float sums are exact while the corners stay below 2^24.
 
 use crate::skin::{
-    CappedSpan, IconPlace, SPAN_BAR, SPAN_END, SliderQuad, SpanView, WIDE_BAR, WIDE_CAP,
-    place_span_corner,
+    CappedSpan, IconPlace, SKIN_INK, SPAN_BAR, SPAN_END, SkinInk, SkinPalette, SkinScheme,
+    SliderQuad, SpanView, WIDE_BAR, WIDE_CAP, load_scheme, place_span_corner,
 };
+
+/// The colour scheme the shipped line skin loads: four colours with their
+/// scales and tones (black, black transparent, grey, orange-red), the
+/// accent and the two alpha ramps. The original keeps it with the GUI's
+/// data, not in a game file.
+pub const LINE_SCHEME: SkinScheme = SkinScheme {
+    groups: [
+        ([0, 0, 0, 224], 1.3, 0.4),
+        ([0, 0, 0, 0], 1.4, 0.4),
+        ([170, 165, 160, 255], 1.15, 0.0),
+        ([200, 90, 10, 196], 1.22, 0.2),
+    ],
+    accent: [16, 12, 40, 196],
+    accent_scale: 0.0,
+    first_alpha: 170,
+    second_alpha: 125,
+};
+
+/// The palette an opened line skin holds: its constructor's ink, then the
+/// scheme expanded into the five groups and the accent ramp.
+pub fn line_palette() -> SkinPalette {
+    let mut palette = SkinPalette::filled(SKIN_INK);
+    load_scheme(&mut palette, &LINE_SCHEME);
+    palette
+}
+
+/// A form's title ink pairs and text ink read from the line skin's palette.
+pub fn line_inks() -> (SkinInk, SkinInk, SkinInk) {
+    let palette = line_palette();
+    (palette.form[1], palette.text[6], palette.text[4])
+}
 
 /// The five lengths the line skin derives from the GUI unit: 2, 1, 2, 2 and
 /// 4 units. The parent constructor calls this setter through the object's
@@ -769,5 +800,25 @@ mod tests {
             },
         );
         assert_eq!(lower.quads.len(), 9);
+    }
+
+    #[test]
+    fn the_line_scheme_expands_to_the_shipped_inks() {
+        let palette = line_palette();
+        // The third group is the label group: its base is the grey text.
+        assert_eq!(palette.text[4], [170, 165, 160, 255]);
+        // The form group's base is the black shell at the first ramp's
+        // alpha byte.
+        assert_eq!(palette.form[4], [0, 0, 0, 224]);
+        // The fourth group (highlight) keeps its own alpha for the accent.
+        assert_eq!(palette.highlight[4], [191, 92, 20, 196]);
+        // The accent's scale is zero, so both accent ends carry alpha 0.
+        assert_eq!(palette.accent_dim[3], 0);
+        assert_eq!(palette.accent_bright[3], 0);
+        assert_eq!(palette.accent_dim[0], 8);
+        let (shade, label, slot) = line_inks();
+        assert_eq!(shade, palette.form[1]);
+        assert_eq!(label, palette.text[6]);
+        assert_ne!(slot, label);
     }
 }
