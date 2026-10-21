@@ -1052,20 +1052,23 @@ pub fn worn_layout(
         for _ in 0..2 {
             for i in 0..n {
                 for j in i + 1..n {
-                    for axis in 0..2 {
-                        if pos[i][axis] < pos[j][axis] {
-                            let o = (half[i][0] + pos[i][axis]) - (pos[j][axis] - half[j][0]) + 1;
+                    // Both axes push by the horizontal half extents.
+                    let (hi, hj) = (half[i][0], half[j][0]);
+                    let (head, tail) = pos.split_at_mut(j);
+                    for (ci, cj) in head[i].iter_mut().zip(tail[0].iter_mut()) {
+                        if *ci < *cj {
+                            let o = (hi + *ci) - (*cj - hj) + 1;
                             if d < o {
                                 let p = o / d;
-                                pos[i][axis] -= p;
-                                pos[j][axis] += p;
+                                *ci -= p;
+                                *cj += p;
                             }
                         } else {
-                            let o = (pos[j][axis] + half[j][0]) - (pos[i][axis] - half[i][0]) + 1;
+                            let o = (*cj + hj) - (*ci - hi) + 1;
                             if d < o {
                                 let p = o / d;
-                                pos[i][axis] += p;
-                                pos[j][axis] -= p;
+                                *ci += p;
+                                *cj -= p;
                             }
                         }
                     }
