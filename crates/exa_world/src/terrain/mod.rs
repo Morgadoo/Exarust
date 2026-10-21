@@ -9,6 +9,7 @@
 //! per-tile splat texture, one texel per vertex.
 
 pub mod blend;
+pub mod frame;
 pub mod ground;
 pub mod height;
 pub mod patch;
@@ -1578,6 +1579,8 @@ mod tests {
         let tile = &terrain.tiles[0];
         let palette = Palette {
             name: "p".into(),
+            environment: 0.0,
+            wetness: 0.0,
             materials: Vec::new(),
             rules: Vec::new(),
             plants: Vec::new(),
@@ -1681,6 +1684,33 @@ mod tests {
             // exanima01's dirt rooms stack eight; one exanima67 tile twelve.
             assert!(most > 4, "{level}: {most}");
         }
+    }
+
+    /// The palette's two header floats: every shipped palette is dry but
+    /// the sewer, whose wet-floor source is 0.5 (skipped without the game).
+    #[test]
+    fn shipped_palette_wetness() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let mut palettes = 0;
+        for entry in pack.entries() {
+            if !entry.name.to_ascii_lowercase().ends_with(".ftb") {
+                continue;
+            }
+            palettes += 1;
+            let palette = Palette::parse(pack.bytes(entry)).unwrap();
+            let wet = if entry.name.eq_ignore_ascii_case("uwswra1.ftb") {
+                0.5
+            } else {
+                0.0
+            };
+            assert_eq!(palette.wetness, wet, "{}", entry.name);
+            assert_eq!(palette.environment, 0.0, "{}", entry.name);
+        }
+        assert_eq!(palettes, 15);
     }
 
     /// The installed story level and outdoor arena keep terrain only on

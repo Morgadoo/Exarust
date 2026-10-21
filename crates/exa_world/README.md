@@ -24,7 +24,8 @@ and the grid's rooms; portal clipping is next (see
   block (`terrain::patch` is the original's shared serpentine triangle
   list), in a grid level only the blocks its grid flags, one mesh per block room; `terrain::ground`
   is the original's world height query (`TerrainGround`), built from the
-  same displaced heights the navigation grid reads; `terrain::stream` holds
+  same displaced heights the navigation grid reads; `terrain::frame` is the
+  lit program's normal-map tangent frame; `terrain::stream` holds
   the original's streaming decisions (60 m block priorities, the 44.4 m /
   15 m composite selection and its pools, the 3 × 3 tile gather).
 - `gi_volume`: the voxel GI occupancy block, built on the async compute pool around the camera's focus; each grid cell's floor meshes are merged and get the original's floor heightfield points (`exa_physics::voxel`) once per level, in the cell's own space, and `GiState` tells a loading screen where it stands.

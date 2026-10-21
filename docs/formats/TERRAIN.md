@@ -112,7 +112,10 @@ not count as painted, so their weight falls to node 0 (see below).
 |---|---|---|
 | 0 | u32 | magic `0x3EEFBD03` (v3) or `0x3EEFBD02` (v2) |
 | 4 | u32 | 0 |
-| 8 | name[16] | palette name, zero-padded to offset 144 |
+| 8 | name[16] | palette name |
+| 24 | f32 | environment value; the original copies it into the scene's environment record, and the terrain passes do not read it (0 in every shipped palette) |
+| 28 | f32 | wet-floor source: the terrain draw sets its specular level to it + 0.3 (unused with the gloss pass) and turns on the wet-floor flag above 0.4; 0 in every palette but `UWSwrA1`'s 0.5 |
+| 32 | | zero padding to offset 144 |
 | 144 | u32 | material count, then the material records |
 | | u32 | rule count, then 64-byte rule records |
 | | u32 | plant count, then 104-byte plant records |

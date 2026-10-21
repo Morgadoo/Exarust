@@ -230,6 +230,8 @@ mod tests {
     fn palette(rules: Vec<BlendRule>) -> Palette {
         Palette {
             name: "p".into(),
+            environment: 0.0,
+            wetness: 0.0,
             materials: vec![material("Sand"), material("Rock"), material("Grass")],
             rules,
             plants: vec![],

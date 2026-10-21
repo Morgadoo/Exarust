@@ -337,19 +337,26 @@ fn fragment(
             nxy = stack_normal(nxy, nk, a, su.b, k);
         }
     }
+    // The specular term is masked by the composite colour, before the
+    // terrain's diffuse factor, as the original's program does.
+    let specular_mask = min(colour.r * 255.0, 1.0);
     colour *= TERRAIN_DIFFUSE;
     let nz = sqrt(1.0 - min(dot(nxy, nxy), 0.999));
-    // The normal map's frame: +X and +Z across the ground (green along −v),
-    // as the original's terrain program builds it.
+    // The normal map's frame, as the original's lit program builds it: +X
+    // projected onto the surface, then its cross with the normal (on flat
+    // ground +X and +Z; green along −v), so the frame stays orthonormal on
+    // a slope. `terrain::frame` is the tested model of it.
     let t = normalize(vec3<f32>(1.0, 0.0, 0.0) - ng * ng.x);
-    let b = normalize(vec3<f32>(0.0, 0.0, 1.0) - ng * ng.z);
+    let b = normalize(cross(t, ng));
     let n = normalize(t * nxy.x + b * nxy.y + ng * nz);
 
     var s: Surface;
     s.n = n;
     s.v = v;
     s.ndv = abs(dot(v, n));
-    s.rough = clamp(1.0 - clamp(gloss.x, 0.0, 1.0), 0.02, 1.0);
+    // The composite gloss is an 8-bit value; roughness is 1 - it, with no
+    // other floor.
+    s.rough = 1.0 - clamp(gloss.x, 0.0, 1.0);
     s.f0 = vec3(0.04);
     s.legacy = false;
 
@@ -387,6 +394,6 @@ fn fragment(
     }
     var out: FragmentOutput;
     let specular = lit.specular + reflected * schlick(s.f0, s.ndv);
-    out.color = vec4((lit.diffuse + ambient) * colour + specular * min(colour.r * 255.0, 1.0), 1.0);
+    out.color = vec4((lit.diffuse + ambient) * colour + specular * specular_mask, 1.0);
     return out;
 }

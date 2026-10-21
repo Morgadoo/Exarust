@@ -220,14 +220,21 @@ layers that do not cover the pixel:
   the surface, then its cross with s (on flat ground +X and +Z, green along
   −v); the stored z is the square root of 1 − the xy length squared, capped
   at 0.999, and the vector is normalised;
-- gloss: the gloss texture × f10 × 1.5·min(f9, 1), stacked like the colour;
-  roughness = 1 − gloss (no wetness indoors);
+- gloss: the gloss texture × f10 × 1.5·min(f9, 1), stacked like the colour
+  and clamped to the 8-bit composite's range; roughness = 1 − gloss (no
+  wetness indoors);
 - parallax height: f20 + (B − f21)·f22 from the bump slot, stacked like the
   normals;
 - parallax: scale 0.007 in 6 m block units, four accumulating steps, then
   eased back toward the unshifted coordinates by min((h₀ − h₃)·2, 1);
 - Fresnel F0 = 0.04 per light; GI or cube ambient, cube reflections;
-  specular × min(255·r, 1).
+  specular × min(255·r, 1), with r the composite colour before the 0.75
+  (the original masks with the composite's red, then applies `MatDif`).
+- The palette's header float at offset 28 is the draw's specular level
+  (`+ 0.3`, unused while the gloss pass is on) and turns on the wet-floor
+  flag above 0.4; only the sewer palette ships 0.5. Exarust reads the float
+  (`Palette::wetness`) but does not apply the wet-floor term, whose shader
+  expression was not recovered.
 
 The original's composites hold about 170 texels per metre and have no mip
 levels, so its terrain always shows the layers' full detail. Exarust reads

@@ -237,6 +237,14 @@ pub struct Plant {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
     pub name: String,
+    /// Header float at offset 24. The original copies it into the scene's
+    /// environment record; the terrain's passes do not read it.
+    pub environment: f32,
+    /// Header float at offset 28. The terrain draw puts it in its specular
+    /// level (`+ 0.3`, unused while the gloss pass is on) and turns on its
+    /// wet-floor flag above 0.4 (only `UWSwrA1` ships a non-zero value,
+    /// 0.5).
+    pub wetness: f32,
     pub materials: Vec<TerrainMaterial>,
     pub rules: Vec<BlendRule>,
     pub plants: Vec<Plant>,
@@ -270,6 +278,8 @@ impl Palette {
         };
         r.u32()?;
         let name = r.name()?;
+        let environment = r.f32()?;
+        let wetness = r.f32()?;
         r.bytes(PALETTE_HEADER - r.pos)?;
         let n = r.u32()? as usize;
         r.fits(n, MATERIAL_FIXED + params * 4)?;
@@ -322,6 +332,8 @@ impl Palette {
         }
         Ok(Self {
             name,
+            environment,
+            wetness,
             materials,
             rules,
             plants,
@@ -474,6 +486,7 @@ mod tests {
     fn palette_materials_rules_and_lookup() {
         let mut b = u32s(&[PALETTE_MAGIC_V3, 0]);
         b.extend(name("Seaside"));
+        b.extend(f32s(&[0.25, 0.5]));
         b.resize(PALETTE_HEADER, 0);
         b.extend(u32s(&[1]));
         b.extend(name("Mat Sand"));
@@ -494,6 +507,7 @@ mod tests {
         b.extend(u32s(&[0]));
         let pal = Palette::parse(&b).unwrap();
         assert_eq!(pal.name, "Seaside");
+        assert_eq!((pal.environment, pal.wetness), (0.25, 0.5));
         let m = &pal.materials[0];
         assert_eq!(m.texture(TerrainTexture::Diffuse), Some("Trn_SandA01D"));
         assert_eq!(m.texture(TerrainTexture::Normal), None);
