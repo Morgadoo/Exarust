@@ -94,18 +94,19 @@ impl AbstractPathFinder {
         self
     }
 
-    /// The third word of a point, the abstract class's only point query
-    /// that returns a word rather than a path answer [guess: what the
-    /// caller reads it as; no engine caller was resolved].
-    pub fn point_word(&self, point: Vec3) -> u32 {
-        point.z.to_bits()
+    /// The word the two-point query answers: the third word of the second
+    /// point, whatever the first. It is the abstract class's only point
+    /// query that returns a word rather than a flag [guess: what the caller
+    /// reads it as; no engine caller was resolved].
+    pub fn end_word(&self, _start: Vec3, end: Vec3) -> u32 {
+        end.z.to_bits()
     }
 
     /// The line walk: nothing blocks, and the line keeps its asked end.
-    pub fn line_walk(&self, _start: Vec3, _end: Vec3) -> LineHit {
+    pub fn line_walk(&self, _start: Vec3, end: Vec3) -> LineHit {
         LineHit {
             blocked: false,
-            end: _end,
+            end,
         }
     }
 
@@ -267,7 +268,7 @@ mod tests {
         assert!(std::ptr::eq(f.grid(), &f));
         assert!(std::ptr::eq(f.planner(), &f));
         let point = Vec3::new(1.0, 2.0, 3.0);
-        assert_eq!(f.point_word(point), 3.0f32.to_bits());
+        assert_eq!(f.end_word(Vec3::X, point), 3.0f32.to_bits());
         let hit = f.line_walk(Vec3::ZERO, point);
         assert!(!hit.blocked);
         assert_eq!(hit.end, point);

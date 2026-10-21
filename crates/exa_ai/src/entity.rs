@@ -88,7 +88,7 @@ impl ObjectEntity {
     /// entity is within its reach: `1 − d/1200 cm`, capped at 0.99.
     pub fn attraction(&self, head: Vec3) -> Option<f32> {
         let d = self.at - head;
-        let distance_sq = d.z * d.z + d.y * d.y + d.x * d.x;
+        let distance_sq = d.y * d.y + d.x * d.x + d.z * d.z;
         if GOAL_RANGE * GOAL_RANGE < distance_sq {
             return None;
         }
