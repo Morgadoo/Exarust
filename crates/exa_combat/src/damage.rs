@@ -1053,8 +1053,10 @@ pub fn wake_combat_targets(wake: bool, body_word: u32, target_count: i32) -> Com
 pub struct CombatForgetInput {
     pub entries: Vec<u64>,
     pub target: u64,
-    pub slot_778: u64,
-    pub slot_770: u64,
+    /// The non-character target (the behaviour's second target slot).
+    pub other_target: u64,
+    /// The character the behaviour pays attention to (looks at).
+    pub look_target: u64,
     pub hit: Option<u64>,
     pub contact: Option<u64>,
 }
@@ -1066,8 +1068,10 @@ pub struct CombatForget {
     pub count: i32,
     pub removed: bool,
     pub moves: u32,
-    pub slot_778: u64,
-    pub slot_770: u64,
+    /// The non-character target (the behaviour's second target slot).
+    pub other_target: u64,
+    /// The character the behaviour pays attention to (looks at).
+    pub look_target: u64,
     pub hit: Option<u64>,
     pub contact: Option<u64>,
 }
@@ -1089,15 +1093,15 @@ pub fn forget_combat_target(input: CombatForgetInput) -> CombatForget {
         entries,
         removed,
         moves: u32::from(removed),
-        slot_778: if input.slot_778 == input.target {
+        other_target: if input.other_target == input.target {
             0
         } else {
-            input.slot_778
+            input.other_target
         },
-        slot_770: if input.slot_770 == input.target {
+        look_target: if input.look_target == input.target {
             0
         } else {
-            input.slot_770
+            input.look_target
         },
         hit: input
             .hit
@@ -1120,15 +1124,27 @@ pub struct CombatResetInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CombatReset {
     pub count: i32,
-    pub slot_770: u64,
-    pub slot_7a0: i32,
-    pub field_200: i32,
-    pub slot_788: u64,
-    pub slot_798: u64,
-    pub body_e38: u64,
-    pub body_e50: u64,
-    pub field_158: i32,
-    pub byte_87e: u8,
+    /// The character the behaviour pays attention to (looks at).
+    pub look_target: u64,
+    /// The room the character was in before its current one (−1 none).
+    pub previous_room: i32,
+    /// The count of the nearby-characters list.
+    pub nearby_count: i32,
+    /// The character the behaviour steers around: one standing in its way,
+    /// or the foe it last left (a guess from the two writers).
+    pub avoided: u64,
+    /// The character it follows, stored while following (a guess from the
+    /// follow routine).
+    pub leader: u64,
+    /// The body's combat target.
+    pub body_target: u64,
+    /// The body's look target, the character its head turns toward.
+    pub body_look_target: u64,
+    /// The count of the rooms the flight remembers having searched.
+    pub remembered_room_count: i32,
+    /// The activity goal is weighed as a contact and slows the turn while
+    /// it is the look target (a guess from its two readers).
+    pub goal_watched: u8,
     pub marker_cleared: bool,
     pub reference_count: i32,
 }
@@ -1137,15 +1153,15 @@ pub struct CombatReset {
 pub fn reset_combatant(input: CombatResetInput) -> CombatReset {
     CombatReset {
         count: 0,
-        slot_770: 0,
-        slot_7a0: -1,
-        field_200: 0,
-        slot_788: 0,
-        slot_798: 0,
-        body_e38: 0,
-        body_e50: 0,
-        field_158: 0,
-        byte_87e: 0,
+        look_target: 0,
+        previous_room: -1,
+        nearby_count: 0,
+        avoided: 0,
+        leader: 0,
+        body_target: 0,
+        body_look_target: 0,
+        remembered_room_count: 0,
+        goal_watched: 0,
         marker_cleared: input.has_marker,
         reference_count: if input.has_reference {
             input.reference_count - 1
@@ -1177,8 +1193,10 @@ pub struct CombatReplaceInput {
     pub old: u64,
     pub new: u64,
     pub new_hit: u64,
-    pub slot_778: u64,
-    pub slot_770: u64,
+    /// The non-character target (the behaviour's second target slot).
+    pub other_target: u64,
+    /// The character the behaviour pays attention to (looks at).
+    pub look_target: u64,
     pub hit: Option<u64>,
     pub contact: Option<u64>,
 }
@@ -1188,8 +1206,10 @@ pub struct CombatReplaceInput {
 pub struct CombatReplace {
     pub entries: Vec<u64>,
     pub replaced: bool,
-    pub slot_778: u64,
-    pub slot_770: u64,
+    /// The non-character target (the behaviour's second target slot).
+    pub other_target: u64,
+    /// The character the behaviour pays attention to (looks at).
+    pub look_target: u64,
     pub hit: Option<u64>,
     pub contact: Option<u64>,
 }
@@ -1206,15 +1226,15 @@ pub fn replace_combat_target(input: CombatReplaceInput) -> CombatReplace {
     CombatReplace {
         entries,
         replaced,
-        slot_778: if input.slot_778 == input.old {
+        other_target: if input.other_target == input.old {
             input.new
         } else {
-            input.slot_778
+            input.other_target
         },
-        slot_770: if input.slot_770 == input.old {
+        look_target: if input.look_target == input.old {
             input.new
         } else {
-            input.slot_770
+            input.look_target
         },
         hit: input.hit.map(|value| {
             if value == input.old {
@@ -1813,8 +1833,8 @@ mod tests {
         let input = |entries, target| CombatForgetInput {
             entries,
             target,
-            slot_778: target,
-            slot_770: 9,
+            other_target: target,
+            look_target: 9,
             hit: Some(target),
             contact: Some(7),
         };
@@ -1824,8 +1844,8 @@ mod tests {
         assert_eq!(middle.entries, vec![1, 3]);
         assert_eq!(middle.count, 2);
         assert_eq!(middle.moves, 1);
-        assert_eq!(middle.slot_778, 0);
-        assert_eq!(middle.slot_770, 9);
+        assert_eq!(middle.other_target, 0);
+        assert_eq!(middle.look_target, 9);
         assert_eq!(middle.hit, Some(0));
         assert_eq!(middle.contact, Some(7));
 
@@ -1838,7 +1858,7 @@ mod tests {
         assert_eq!(absent.entries, vec![1, 2, 3]);
         assert_eq!(absent.count, 3);
         assert_eq!(absent.moves, 0);
-        assert_eq!(absent.slot_778, 0);
+        assert_eq!(absent.other_target, 0);
     }
 
     #[test]
@@ -1849,15 +1869,15 @@ mod tests {
             reference_count: 3,
         });
         assert_eq!(reset.count, 0);
-        assert_eq!(reset.slot_770, 0);
-        assert_eq!(reset.slot_7a0, -1);
-        assert_eq!(reset.field_200, 0);
-        assert_eq!(reset.slot_788, 0);
-        assert_eq!(reset.slot_798, 0);
-        assert_eq!(reset.body_e38, 0);
-        assert_eq!(reset.body_e50, 0);
-        assert_eq!(reset.field_158, 0);
-        assert_eq!(reset.byte_87e, 0);
+        assert_eq!(reset.look_target, 0);
+        assert_eq!(reset.previous_room, -1);
+        assert_eq!(reset.nearby_count, 0);
+        assert_eq!(reset.avoided, 0);
+        assert_eq!(reset.leader, 0);
+        assert_eq!(reset.body_target, 0);
+        assert_eq!(reset.body_look_target, 0);
+        assert_eq!(reset.remembered_room_count, 0);
+        assert_eq!(reset.goal_watched, 0);
         assert!(reset.marker_cleared);
         assert_eq!(reset.reference_count, 2);
 
@@ -1868,7 +1888,7 @@ mod tests {
         });
         assert!(!quiet.marker_cleared);
         assert_eq!(quiet.reference_count, 3);
-        assert_eq!(quiet.slot_7a0, -1);
+        assert_eq!(quiet.previous_room, -1);
 
         let measures = refresh_combat_measures(12.5, 0.75);
         assert_eq!(measures.reach, 12.5);
@@ -1882,8 +1902,8 @@ mod tests {
             old,
             new: 9,
             new_hit: 0x99,
-            slot_778: old,
-            slot_770: 7,
+            other_target: old,
+            look_target: 7,
             hit: Some(old),
             contact: Some(old),
         };
@@ -1891,15 +1911,15 @@ mod tests {
         let swapped = replace_combat_target(input(vec![1, 2, 3], 2));
         assert!(swapped.replaced);
         assert_eq!(swapped.entries, vec![1, 9, 3]);
-        assert_eq!(swapped.slot_778, 9);
-        assert_eq!(swapped.slot_770, 7);
+        assert_eq!(swapped.other_target, 9);
+        assert_eq!(swapped.look_target, 7);
         assert_eq!(swapped.hit, Some(0x99));
         assert_eq!(swapped.contact, Some(9));
 
         let absent = replace_combat_target(input(vec![1, 2, 3], 4));
         assert!(!absent.replaced);
         assert_eq!(absent.entries, vec![1, 2, 3]);
-        assert_eq!(absent.slot_778, 9);
+        assert_eq!(absent.other_target, 9);
         assert_eq!(absent.hit, Some(0x99));
         assert_eq!(absent.contact, Some(9));
     }
