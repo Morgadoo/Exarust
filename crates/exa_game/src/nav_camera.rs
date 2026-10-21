@@ -75,7 +75,7 @@ pub fn planar_yaw(v: Vec3) -> f32 {
 /// `(π/2 − 0.2075·x + 0.0535·x²)·√(1 − x)` from zero up, both in single
 /// precision with the original's bit-exact coefficients. A NaN takes the
 /// second form.
-fn fast_acos(x: f32) -> f32 {
+pub(crate) fn fast_acos(x: f32) -> f32 {
     const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
     const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
     const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);

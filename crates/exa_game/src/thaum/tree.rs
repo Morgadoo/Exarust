@@ -63,6 +63,7 @@ use exa_formats::power_tree::{PowerNode, PowerTree, learn_marks, node_pixels, pl
 const BAR_LOAD_MASK: u32 = 0x0E7F_FFFF;
 
 use super::casting::{ActivePower, CastBody};
+use crate::nav_camera::fast_acos;
 
 /// The mind domain's code.
 pub const DOMAIN_MIND: u8 = 1;
@@ -949,9 +950,14 @@ impl TreeScreen {
         }
         let candidate = if id & focus::SLOT != 0 {
             0
-        } else if id > 0 && id < 0xfffe {
+        } else if id > 0 && id < 0xffff {
             let index = id as usize - 1;
-            if self.nodes.get(index).is_some_and(|node| node.power != 0) {
+            // Only a node that has a name text can be chosen.
+            if self
+                .nodes
+                .get(index)
+                .is_some_and(|node| node.name_text != 0)
+            {
                 id & focus::NODE
             } else {
                 0
@@ -1366,16 +1372,23 @@ impl TreeScreen {
         if hidden {
             return 0;
         }
-        if self.mode == TreeMode::Create && height - 36.0 < y && y < height - 8.0 && 20.0 < x {
-            if width - 148.0 < x && x < width - 20.0 {
-                return focus::BEGIN;
+        // The pointer and the form's size are whole pixels.
+        let (x, y) = (x as i32, y as i32);
+        let (width, height) = (width as i32, height as i32);
+        if self.mode == TreeMode::Create {
+            if height - 9 * 4 < y && y < height - 2 * 4 {
+                if x < 37 * 4 {
+                    if 5 * 4 < x {
+                        return focus::BACK;
+                    }
+                } else if width - 37 * 4 < x && x < width - 5 * 4 {
+                    return focus::BEGIN;
+                }
             }
-            if x < 148.0 {
-                return focus::BACK;
-            }
-        } else if let Some(slot) = bar_slot_at(x, y, width, false, 4.0) {
+        } else if let Some(slot) = bar_slot_at(x as f32, y as f32, width as f32, false, 4.0) {
             return focus::SLOT | (slot as i32 + 1);
         }
+        let (x, y) = (x as f32, y as f32);
         for index in 0..self.nodes.len() {
             if self.marks[index] & SHOWN == 0 {
                 continue;
@@ -1383,27 +1396,31 @@ impl TreeScreen {
             let node = &self.nodes[index];
             let dx = x - node.x;
             let dy = y - node.y;
-            let distance = dy * dy + dx * dx;
-            let radius = if node.power & word::FRAME != 0 {
-                self.zoom.value
+            let distance = f64::from(dy * dy + dx * dx);
+            // A framed node's circle is half the size of the others'.
+            let radius = if node.power & word::FRAME == 0 {
+                self.zoom_fixed
             } else {
-                self.zoom.value * 0.5
+                self.zoom_fixed * 0.5
             };
-            if distance < radius * 0.45 * radius * 0.45 {
+            let core = f64::from(radius) * 0.45;
+            if core * core > distance {
                 return index as i32 + 1;
             }
-            let reach = radius * 0.55 + 10.0;
-            if distance < reach * reach {
+            let reach = f64::from(radius) * 0.55 + 10.0;
+            if reach * reach > distance {
                 let turn = link_angle(node.x, node.y, x, y) / std::f32::consts::TAU;
+                let near = |other: f32| f64::from((turn - other).abs()) < 0.01;
                 for (at, link) in self.links[index].iter().enumerate() {
-                    if (turn - link.out_turn).abs() < 0.01 {
+                    if near(link.out_turn) {
                         return ((at as i32 + 1) << 16) | (index as i32 + 1);
                     }
                 }
-                for other in 0..self.nodes.len() {
-                    for (at, link) in self.links[other].iter().enumerate() {
-                        if link.end as usize == index + 1 && (turn - link.in_turn).abs() < 0.01 {
-                            return ((at as i32 + 1) << 16) | (index as i32 + 1) | focus::INCOMING;
+                // An incoming link is named by the node it leaves from.
+                for (owner, links) in self.links.iter().enumerate() {
+                    for (at, link) in links.iter().enumerate() {
+                        if link.end as usize == index + 1 && near(link.in_turn) {
+                            return ((at as i32 + 1) << 16) | (owner as i32 + 1) | focus::INCOMING;
                         }
                     }
                 }
@@ -1552,23 +1569,28 @@ pub const CAST_FAIL_SOUND: TreeSound = TreeSound {
     pitch: 1.0,
 };
 
-/// The smoothstep the pan's ease uses: `(3 − 2x)·x²`.
+/// The quick-rising ease the tree uses on a share `x`: `1 + 0.111·x −
+/// 1/(1 + 8x)`, the reciprocal in single precision and the rest in double.
 pub fn ease(x: f32) -> f32 {
-    (3.0 - 2.0 * x) * (x * x)
+    let rise = 1.0 / (x * 8.0 + 1.0);
+    (f64::from(x) * 0.111 + 1.0 - f64::from(rise)) as f32
 }
 
 /// The angle a point makes about a node's centre, measured from +y and
-/// signed by x: `acos(dy / length)`, negated when dx is negative. A
-/// zero-length vector answers π (its x is not negative).
+/// signed by x: the engine's arc cosine of `dy / length`, π at or below −1
+/// and 0 above 1, negated when dx is negative. A NaN cosine (a point on the
+/// centre) falls through to the arc cosine, as the unordered compares do.
 pub fn link_angle(node_x: f32, node_y: f32, x: f32, y: f32) -> f32 {
     let dx = x - node_x;
     let dy = y - node_y;
     let length = (dy * dy + dx * dx).sqrt();
     let cosine = dy / length;
-    let angle = if -1.0 < cosine {
-        if cosine <= 1.0 { cosine.acos() } else { 0.0 }
-    } else {
+    let angle = if cosine <= -1.0 {
         std::f32::consts::PI
+    } else if cosine > 1.0 {
+        0.0
+    } else {
+        fast_acos(cosine)
     };
     if dx < 0.0 { -angle } else { angle }
 }
@@ -2933,16 +2955,17 @@ mod tests {
             TreeMode::Play,
             vec![node(0x101, vec![]), node(0, vec![])],
         );
+        screen.nodes[0].name_text = 1;
         assert_eq!(screen.set_focus(1, 10), 3);
         assert_eq!(screen.last_choice, 1);
         assert_eq!(screen.set_focus(1, 20), 0);
         // A special id of a non-creation screen is read: its candidate is 0.
         assert_eq!(screen.set_focus(0x200_0000, 30), 3);
         assert_eq!(screen.last_choice, 0);
-        // A node with no power is no candidate, and the candidate stays 0.
+        // A node with no name text is no candidate, and the candidate stays 0.
         assert_eq!(screen.set_focus(2, 40), 0);
         assert_eq!(screen.last_choice, 0);
-        // The second node has no power, so a bar slot keeps the candidate 0.
+        // The second node has no name, so a bar slot keeps the candidate 0.
         assert_eq!(screen.set_focus(focus::SLOT | 1, 50), 0);
         // Returning to the node whose choice was shown gives 0.
         assert_eq!(screen.set_focus(1, 60), 0);
@@ -3057,7 +3080,7 @@ mod tests {
             vec![node(0x101, vec![link_to(2)]), node(0x102, vec![])],
         );
         screen.marks = vec![SHOWN, SHOWN];
-        screen.zoom.value = 0.2929;
+        screen.zoom_fixed = 4.0;
         assert_eq!(screen.hover(194.0, 32.0, 1000.0, 700.0, false), 0x40_0001);
         assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false), 1);
         assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true), 0);
@@ -3087,6 +3110,45 @@ mod tests {
             focus::BEGIN
         );
         assert_eq!(create.hover(60.0, 675.0, 1000.0, 700.0, false), focus::BACK);
+    }
+
+    #[test]
+    fn the_hover_sizes_the_circles_by_the_pixel_zoom_and_names_incoming_links_by_their_owner() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![]), node(0x102, vec![])],
+        );
+        screen.marks = vec![SHOWN, SHOWN];
+        screen.nodes[0].x = 500.0;
+        screen.nodes[0].y = 500.0;
+        screen.nodes[1].x = 100.0;
+        screen.nodes[1].y = 100.0;
+        screen.zoom_fixed = 100.0;
+        // Inside 0.45 of the circle's size: the node; outside it, and with no
+        // link there, nothing.
+        assert_eq!(screen.hover(500.0, 544.0, 1000.0, 700.0, false), 1);
+        assert_eq!(screen.hover(500.0, 546.0, 1000.0, 700.0, false), 0);
+        // A framed node's circle is half the size.
+        screen.nodes[0].power |= 0x100_0000;
+        assert_eq!(screen.hover(500.0, 522.0, 1000.0, 700.0, false), 1);
+        assert_eq!(screen.hover(500.0, 524.0, 1000.0, 700.0, false), 0);
+        // A link that leaves the second node and ends at the first is named
+        // by the second node when the first is hovered where it arrives.
+        screen.nodes[0].power = 0x101;
+        screen.zoom_fixed = 60.0;
+        screen.links[1] = vec![NodeLink {
+            out_turn: 0.9,
+            in_turn: 0.0,
+            end: 1,
+        }];
+        assert_eq!(
+            screen.hover(500.0, 540.0, 1000.0, 700.0, false),
+            (1 << 16) | 2 | focus::INCOMING
+        );
+        // The creation prompt does not read the quick bar.
+        let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
+        assert_eq!(create.hover(194.0, 32.0, 1000.0, 700.0, false), 0);
     }
 
     #[test]
@@ -3143,14 +3205,15 @@ mod tests {
     #[test]
     fn the_ease_and_the_link_angle_match_the_original() {
         assert_eq!(ease(0.0), 0.0);
-        assert_eq!(ease(1.0), 1.0);
-        assert_eq!(ease(0.5), 0.5);
-        assert!(ease(0.25) < 0.25);
-        assert!(ease(0.75) > 0.75);
+        // 1 + 0.111/2 - 1/5, 1 + 0.111 - 1/9: it rises fast, then flattens.
+        assert!((ease(0.5) - 0.855_5).abs() < 1e-6);
+        assert!((ease(1.0) - 0.999_888_9).abs() < 1e-6);
+        assert!(ease(0.1) > 0.4 && ease(0.1) < 0.5);
         assert!((link_angle(0.0, 0.0, 0.0, 10.0) / std::f32::consts::TAU).abs() < 1e-6);
         assert!((link_angle(0.0, 0.0, 10.0, 0.0) / std::f32::consts::TAU - 0.25).abs() < 1e-6);
         assert!((link_angle(0.0, 0.0, -10.0, 0.0) / std::f32::consts::TAU + 0.25).abs() < 1e-6);
-        assert_eq!(link_angle(1.0, 2.0, 1.0, 2.0), std::f32::consts::PI);
+        assert!(link_angle(1.0, 2.0, 1.0, 2.0).is_nan());
+        assert_eq!(link_angle(0.0, 0.0, 0.0, -10.0), std::f32::consts::PI);
         assert!(wants_power_drag(press::POWER_DRAG));
         assert!(!wants_power_drag(0));
     }
