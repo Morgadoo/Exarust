@@ -3,7 +3,7 @@
 //!
 //! A level stores posed bodies (seated, lying, slumped) as a depth-first
 //! list of 3 × 4 bone frames. The original writes them onto the body nodes
-//! (`0x1000f0820`); Exarust puts them on the part entities, whose bones the
+//!; Exarust puts them on the part entities, whose bones the
 //! skinning follows.
 
 use bevy::prelude::*;

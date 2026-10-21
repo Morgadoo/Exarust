@@ -1,6 +1,5 @@
 //! What a record holds and where its spawn stands: the generator's equip
-//! pass (`0x1000efd80`) and the spawn's motion, stance and tallies
-//! (`0x1000f0170`, `0x1000f0d00`, `0x1000f1220`).
+//! pass and the spawn's motion, stance and height rules.
 //!
 //! The plans are plain data. The game uses them for the hands it can draw;
 //! shields, off-hand lights and saved poses stay plans until the renderer
@@ -9,7 +8,7 @@
 use exa_formats::characters::{CharacterRecord, ItemRef};
 use exa_formats::objdb::Weapon;
 
-/// Where an item's model comes from (`0x1000e66d0`): a factory recipe or a
+/// Where an item's model comes from: a factory recipe or a
 /// `Characters.rpk` entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelSource {
@@ -29,7 +28,7 @@ pub struct ItemModelPlan {
     pub light: bool,
 }
 
-/// The item-model loader's plan (`0x1000e66d0`): a name starting `@` is a
+/// The item-model loader's plan: a name starting `@` is a
 /// factory recipe, any other a `Characters` entry (the original looks it up
 /// in that package's library). The item's weapon, shield and light sections
 /// pick its class, and the current pixel format picks the texture side.
@@ -67,7 +66,7 @@ pub fn item_model_plan(
 }
 
 /// Whether a material name is one the generator makes at run time (`&` and
-/// ten characters, `0x1000e9fb0`): those are valid without a library entry.
+/// ten characters): those are valid without a library entry.
 pub fn is_runtime_material(name: &str) -> bool {
     name.starts_with('&') && name.chars().count() == 12
 }
@@ -109,7 +108,7 @@ pub struct HandEntry {
     pub light: bool,
 }
 
-/// The equip pass (`0x1000efd80`) over a record's first two hands.
+/// The equip pass over a record's first two hands.
 ///
 /// The off hand's torch path (`flags & 0x100`) takes the item before the
 /// weapon/shield tests and ends the pass. A weapon goes to the main hand
@@ -153,13 +152,13 @@ pub fn equip_hands(
     out
 }
 
-/// The stance the spawn sets (`0x1000f0170`): 3 for the player/practice
+/// The stance the spawn sets: 3 for the player/practice
 /// spawn, 0x13 for the other spawns.
 pub fn spawn_stance(player: bool) -> i32 {
     if player { 3 } else { 0x13 }
 }
 
-/// The motion a placed character starts in (`0x1000f0d00`): the saved one
+/// The motion a placed character starts in: the saved one
 /// when the placement has it, an attack motion (5…12) reset to the Defence
 /// stance 3, else 0x13, or 0x19 for a feral/golem record whose word has
 /// `0x1000`.
@@ -182,7 +181,7 @@ pub struct SpawnPlan {
     pub pose: Vec<exa_formats::morph::Frame>,
 }
 
-/// The placed-character spawn plan (`0x1000f0d00`).
+/// The placed-character spawn plan.
 pub fn placed_spawn(
     record: &CharacterRecord,
     standing: f32,
@@ -200,7 +199,7 @@ pub fn placed_spawn(
     }
 }
 
-/// The player/creator spawn plan (`0x1000f0170`): stance 3 and the standing
+/// The player/creator spawn plan: stance 3 and the standing
 /// height less 5 cm, or the saved pose's height.
 pub fn player_spawn(
     standing: f32,
@@ -216,7 +215,7 @@ pub fn player_spawn(
     }
 }
 
-/// The corpse spawn plan (`0x1000f1220`): the Defence stance, dead
+/// The corpse spawn plan: the Defence stance, dead
 /// condition and no motion of its own.
 pub fn corpse_spawn(
     standing: f32,
@@ -232,12 +231,12 @@ pub fn corpse_spawn(
     }
 }
 
-/// The corpse's motion (`0x1000f1220`): the Defence stance 3.
+/// The corpse's motion: the Defence stance 3.
 pub const CORPSE_MOTION: i32 = 3;
-/// The corpse's condition word (`0x1000f1220`): dead.
+/// The corpse's condition word: dead.
 pub const CORPSE_CONDITION: u32 = 0xA00;
 
-/// The root height a spawn places a body at (`0x1000f0d00`): the standing
+/// The root height a spawn places a body at: the standing
 /// pelvis less 8 cm over the level's feet point, unless the saved condition
 /// has bit 2 (lying), which places it 5 cm under.
 pub fn placed_root_height(standing: f32, saved_pose: bool, saved_y: f32, lying: bool) -> f32 {
@@ -250,7 +249,7 @@ pub fn placed_root_height(standing: f32, saved_pose: bool, saved_y: f32, lying: 
     }
 }
 
-/// The player's spawn height (`0x1000f0170`): the standing pelvis less 5 cm,
+/// The player's spawn height: the standing pelvis less 5 cm,
 /// or the saved pose's height plus the pelvis less 6 cm.
 pub fn player_root_height(standing: f32, saved_pose: bool, saved_y: f32) -> f32 {
     if saved_pose {

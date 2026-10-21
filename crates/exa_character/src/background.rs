@@ -1,6 +1,6 @@
 //! The generator's background rebuild hook: a character rebuild can run on
-//! a worker and apply its result on the main thread (`0x1000f1420`), or run
-//! inline when no runner is installed (`0x1000f1400`/`0x1000ef240`).
+//! a worker and apply its result on the main thread, or run
+//! inline when no runner is installed.
 //!
 //! The original keeps a function-pointer chain. Exarust keeps the same
 //! shape in Rust closures; the running game installs no runner, so a
@@ -18,7 +18,7 @@ pub struct Background {
 }
 
 impl Background {
-    /// Installs the worker hook (`0x1000f14f0`); a second install replaces
+    /// Installs the worker hook; a second install replaces
     /// the old hook.
     pub fn install(&mut self, runner: Runner) {
         self.runner = Some(runner);

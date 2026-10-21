@@ -35,7 +35,7 @@ pub struct HairShading {
 
 /// The hair a record's three colour bytes make at `feral`, with the
 /// material's specular level doubled unless `light_variant` (the record's
-/// bit `0x10000`).
+/// bit the generator's pass).
 ///
 /// The colour bytes are the record's hue, saturation and value; the feral
 /// level lifts the saturation toward 0.6 and the value toward 0.4 of where
@@ -62,7 +62,7 @@ pub fn hair_shading(colour: [u8; 3], feral: f32, light_variant: bool) -> HairSha
     }
 }
 
-/// The creation preview's hair colour (`0x1000eaeb0`): the record's three
+/// The creation preview's hair colour: the record's three
 /// colour bytes taken as hue, saturation and value without the feral
 /// modulation, the specular level boosted by 1.3, gloss 0.9 and full
 /// opacity. The preview's material is the same `_HumanHair` payload.
@@ -79,7 +79,7 @@ pub fn preview_shading(colour: [u8; 3]) -> HairShading {
     }
 }
 
-/// Whether a hair part takes the hair material (`0x1000eb9d0`): its
+/// Whether a hair part takes the hair material: its
 /// material opacity is over 0.5.
 pub fn hair_material_part(opacity: f32) -> bool {
     opacity > 0.5

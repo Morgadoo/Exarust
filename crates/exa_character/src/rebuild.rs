@@ -2,9 +2,9 @@
 //! body, its look or only its textures, and the hair refresh cut.
 //!
 //! The original runs the same builder again on an existing body when the
-//! creation screen changes a look (`0x1000ee9c0`), when only the textures
-//! change (`0x1000ef960`) or when only the hair changes (`0x1000ef490`,
-//! `0x1000ef7f0`). The parts that touch the scene are kept as a plan here;
+//! creation screen changes a look, when only the textures
+//! change or when only the hair changes. The parts that touch the scene are
+//! kept as a plan here;
 //! the frame and slot operations run on [`crate::runtime::Body`], so the
 //! rules are testable without a renderer.
 
@@ -17,7 +17,7 @@ use crate::texture_job::SkinJob;
 /// A body's saved build state, as the rebuild keeps it while it runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rebuild {
-    /// The world frames saved before the rebuild (`0x1000ee570`).
+    /// The world frames saved before the rebuild.
     pub frames: Vec<Frame>,
     /// The skin texture job, reset for the new pass.
     pub texture: SkinJob,
@@ -32,7 +32,7 @@ pub struct Rebuild {
 }
 
 impl Rebuild {
-    /// Starts a rebuild of `body` (`0x1000ee9c0`): saves its frames, resets
+    /// Starts a rebuild of `body`: saves its frames, resets
     /// the texture job at `pixel_format`, and clears the dynamics/slot
     /// arrays the run fills.
     pub fn prepare(
@@ -76,7 +76,7 @@ impl Rebuild {
     }
 }
 
-/// The dressed-mesh plan (`0x1000e7ec0`/`0x1000e9350`): the chosen node of
+/// The dressed-mesh plan: the chosen node of
 /// each slot, the body slots still drawn, and the merge order through the
 /// tree.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +86,7 @@ pub struct DressPlan {
     pub merge: Vec<usize>,
 }
 
-/// Plans a dressed body from the garment coverage words (`0x1000e9350`):
+/// Plans a dressed body from the garment coverage words:
 /// assemble the slots, compute the visible body slots, then merge the
 /// chosen parts in body order.
 pub fn dress_plan(body: &Body, coverage: &[u64; 19], visibility: &[u32; 18]) -> DressPlan {
@@ -100,7 +100,7 @@ pub fn dress_plan(body: &Body, coverage: &[u64; 19], visibility: &[u32; 18]) -> 
     }
 }
 
-/// A texture-only rebuild (`0x1000ef960`): reset the job, re-read the look,
+/// A texture-only rebuild: reset the job, re-read the look,
 /// and take the first apparel texture. Returns the job.
 pub fn retexture(
     pixel_format: u32,
@@ -123,7 +123,7 @@ pub fn retexture(
     job
 }
 
-/// The hair cut a look rebuild needs (`0x1000ef490`): keep the hair, show
+/// The hair cut a look rebuild needs: keep the hair, show
 /// only its `?` roots, or replace it whole.
 pub fn hair_cut(
     built_style: u32,
@@ -135,7 +135,7 @@ pub fn hair_cut(
     hair_refresh(built_style, built_covered, style, covered, has_hair)
 }
 
-/// Rebuilds the hair of an existing body (`0x1000ef7f0`): the style's roots
+/// Rebuilds the hair of an existing body: the style's roots
 /// are kept when the cut is [`HairCut::Keep`], the `?` roots alone when it
 /// is [`HairCut::Cover`], and nothing when it is [`HairCut::Replace`].
 pub fn hair_roots<'a>(
@@ -152,7 +152,7 @@ pub fn hair_roots<'a>(
         .collect()
 }
 
-/// The creator's preview wrapper (`0x1000f13c0`): a rebuild of the existing
+/// The creator's preview wrapper: a rebuild of the existing
 /// body with the new record look.
 pub fn preview(
     body: &Body,
@@ -163,7 +163,7 @@ pub fn preview(
     Rebuild::prepare(body, pixel_format, slot_frames, weights, None, true)
 }
 
-/// The re-texture wrapper (`0x1000f14a0`): only the skin job is rebuilt.
+/// The re-texture wrapper: only the skin job is rebuilt.
 pub fn retexture_only(
     pixel_format: u32,
     stem: &str,
@@ -185,7 +185,7 @@ pub fn retexture_only(
 }
 
 /// Waits while the render thread still owns the old texture
-/// (`0x1000ee930`). The original sleeps a millisecond and checks the node's
+///. The original sleeps a millisecond and checks the node's
 /// busy flag; a single-threaded caller waits cooperatively.
 pub fn wait_for_render(busy: &std::sync::atomic::AtomicBool) {
     while busy.load(std::sync::atomic::Ordering::Acquire) {

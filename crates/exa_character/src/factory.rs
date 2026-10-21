@@ -86,12 +86,12 @@ pub struct CharacterFactory {
 }
 
 impl CharacterFactory {
-    /// Clears the item-database override (`0x1000f0ce0`).
+    /// Clears the item-database override.
     pub fn clear_item_database(&mut self) {
         self.item_database = None;
     }
 
-    /// The finalizer (`0x1000f1520`): release the override and the seed
+    /// The finalizer: release the override and the seed
     /// holder. Rust's drop would do this; the method keeps the original's
     /// explicit release point testable.
     pub fn release(&mut self) {
@@ -101,8 +101,7 @@ impl CharacterFactory {
 }
 
 /// The material manager's lock, which several generator routines take and
-/// release (`0x1000eab70`, `0x1000eae80`, `0x1000edb20`, `0x1000ee960`,
-/// `0x1000ef430`). Exarust's asset loader owns materials exclusively; the
+/// release. Exarust's asset loader owns materials exclusively; the
 /// lock is kept as data so the acquire/release order can be tested.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MaterialLock {

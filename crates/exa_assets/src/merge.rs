@@ -168,7 +168,7 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
     Some(out)
 }
 
-/// The generator's occlusion alpha for a merged mesh (`0x1000e7a90`).
+/// The generator's occlusion alpha for a merged mesh.
 ///
 /// **Guess:** the class the original compares is the mesh part's material
 /// group; the caller passes the class per vertex.
@@ -199,7 +199,7 @@ pub fn occlusion_alpha(part: &[u32], class: &[u32], indices: &[u32]) -> Vec<u8> 
     alpha
 }
 
-/// The triangles of `mesh` left after the cull pass (`0x1000e9270`): a
+/// The triangles of `mesh` left after the cull pass: a
 /// triangle whose flags hold any of `bits` is dropped. Without per-triangle
 /// flags nothing is culled.
 pub fn culled_indices(mesh: &Mesh, bits: u32) -> Vec<u32> {

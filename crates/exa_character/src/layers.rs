@@ -220,7 +220,7 @@ pub const CHILD_SLOT_MASK: [u32; 18] = [
     0,
 ];
 
-/// Per-slot masks of the cull pass (`0x1000e9270`): when the slot's first
+/// Per-slot masks of the cull pass: when the slot's first
 /// mask does not meet the visible body mask the merged triangles take cull
 /// bit `0x200000`, and when the second does not, `0x400000`.
 pub const CULL_FIRST: [u32; 18] = [
@@ -460,7 +460,7 @@ pub struct SlotGroup {
     pub score: i32,
 }
 
-/// The fallback search (`0x1000e8500`): when a garment has no node of its
+/// The fallback search: when a garment has no node of its
 /// own in `slot`, look under the related slot for a child in `slot` whose
 /// layer differs from `wanted`, scoring it against the slot's coverage.
 pub fn related_search(
@@ -497,7 +497,7 @@ pub fn related_search(
     best.1
 }
 
-/// Assembles one slot's candidate groups (`0x1000e8b30`): every node whose
+/// Assembles one slot's candidate groups: every node whose
 /// slot is `target` is scored against the slot's coverage; the best score
 /// clears the groups and equal scores add one. When there is a group, the
 /// child slots' groups are pruned and the group's nodes fill the caller's
@@ -562,7 +562,7 @@ pub fn assemble_slot(
     true
 }
 
-/// Prunes a slot's groups (`0x1000e8730`): each group's node in `slot` is
+/// Prunes a slot's groups: each group's node in `slot` is
 /// looked under for a better child, else the related-slot fallback supplies
 /// one; the group's score grows by it. Groups below the best total are
 /// dropped, groups with no node in the slot go once one has a node, and the

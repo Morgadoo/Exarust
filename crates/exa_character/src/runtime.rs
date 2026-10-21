@@ -56,7 +56,7 @@ impl Default for MaterialStyle {
     }
 }
 
-/// The hair/cloth material pass (`0x1000e6510`): a node whose mesh carries
+/// The hair/cloth material pass: a node whose mesh carries
 /// flag `0x400000` raises its material's flags and sets the four shading
 /// values. Returns whether it did.
 pub fn raise_material_flags(mesh_flags: u32, material: &mut MaterialStyle) -> bool {
@@ -70,7 +70,7 @@ pub fn raise_material_flags(mesh_flags: u32, material: &mut MaterialStyle) -> bo
     true
 }
 
-/// Overlay mesh nodes (`0x1000e9ee0`): mesh nodes with the held/overlay
+/// Overlay mesh nodes: mesh nodes with the held/overlay
 /// flags `0x400040` past the eighteen body slots. Their flags gain
 /// `0x0C0000` when merged.
 pub fn overlay_nodes(body: &Body) -> Vec<usize> {
@@ -176,7 +176,7 @@ pub struct Node {
     pub dynamics: Option<Dynamics>,
     /// The mesh's position count (`+0x268`, or `+0x6C` for a garment).
     pub position_count: usize,
-    /// The velocity of a cloth mesh (`0x1000ee2a0`), zero otherwise.
+    /// The velocity of a cloth mesh, zero otherwise.
     pub velocity: [f32; 3],
 }
 
@@ -278,8 +278,7 @@ impl Body {
     }
 
     /// Marks a character's held meshes: every mesh node under `root` takes
-    /// the held flag and every part's hidden flag is set (`0x10000`, then
-    /// each part's `+0x109 = 1`).
+    /// the held flag and every part's hidden flag is set.
     pub fn mark_held(&mut self, root: usize) {
         for i in self.descendants(root) {
             if self.nodes[i].mesh {
@@ -334,7 +333,7 @@ impl Body {
     }
 
     /// Writes each node's slot from its name's first two digits, through
-    /// every subtree, and marks its mesh (`0x100000`).
+    /// every subtree, and marks its mesh.
     pub fn assign_slots(&mut self, root: usize, digits: impl Fn(&str) -> usize) {
         for i in self.descendants(root) {
             let slot = digits(&self.nodes[i].name);
@@ -368,7 +367,7 @@ impl Body {
     }
 
     /// Re-frames every node with a slot from the slot's stored rest frame
-    /// (`0x1000e81d0`): the local frame becomes the slot frame, the world
+    ///: the local frame becomes the slot frame, the world
     /// frame is composed again and the children follow.
     pub fn reframe_from_slots(&mut self, frames: &[Frame; 19]) {
         let order: Vec<usize> = self
@@ -392,7 +391,7 @@ impl Body {
         self.refresh_world();
     }
 
-    /// Saves each node's world frame (`0x1000ee570`): its three basis rows
+    /// Saves each node's world frame: its three basis rows
     /// are normalised and its translation kept, before a rebuild.
     pub fn save_frames(&self) -> Vec<Frame> {
         self.nodes
@@ -404,7 +403,7 @@ impl Body {
             .collect()
     }
 
-    /// Restores the saved local frames (`0x1000ee7f0`): a node whose parent
+    /// Restores the saved local frames: a node whose parent
     /// is not flagged `0x10` copies the whole frame; a child of a flagged
     /// parent takes only its stored translation. **Guess:** the original
     /// copies four qwords and a dword from its saved block in that branch;
@@ -428,7 +427,7 @@ impl Body {
     }
 
     /// Restores each node's local frame from a saved bone tree in walk order
-    /// (`0x1000f0820`): the root first, then its children in the save's
+    ///: the root first, then its children in the save's
     /// order, each frame copied and its world composed.
     pub fn restore_pose(&mut self, frames: &[Frame]) {
         let order: Vec<usize> = self
@@ -443,12 +442,12 @@ impl Body {
     }
 
     /// Recomputes every node's world frame from its parent after a rebuild
-    /// (`0x1000ee690`).
+    ///.
     pub fn restore_world(&mut self) {
         self.refresh_world();
     }
 
-    /// Clears every node's scene parent (`0x1000ee880`).
+    /// Clears every node's scene parent.
     pub fn clear_parents(&mut self, root: usize) {
         for i in self.descendants(root) {
             self.nodes[i].parent = None;
@@ -456,7 +455,7 @@ impl Body {
         self.refresh_links();
     }
 
-    /// Detaches a body from its scene (`0x1000ee8f0`): every node is
+    /// Detaches a body from its scene: every node is
     /// unparented and the root's static flag is cleared.
     pub fn detach(&mut self, root: usize) {
         self.clear_parents(root);
@@ -464,7 +463,7 @@ impl Body {
         self.roots();
     }
 
-    /// Sets a cloth velocity through a subtree (`0x1000ee2a0`): every node
+    /// Sets a cloth velocity through a subtree: every node
     /// with cloth takes the velocity (the original calls the cloth body's
     /// velocity setter, which the tree keeps here).
     pub fn set_cloth_velocity(&mut self, root: usize, velocity: [f32; 3]) {
@@ -476,7 +475,7 @@ impl Body {
     }
 
     /// Copies one body's node state onto another by matching slot, as the
-    /// rebuild's state copy does (`0x1000ee330`): transforms, flags, kind,
+    /// rebuild's state copy does: transforms, flags, kind,
     /// held and cloth state and position count. **Guess:** the saved body's
     /// descendants are paired in walk order with the rebuilt body's.
     pub fn copy_state(&mut self, dst_root: usize, src: &Body, src_root: usize) {
@@ -525,7 +524,7 @@ impl Body {
         }
     }
 
-    /// Splits a built body into a second one (`0x1000e62e0`): the existing
+    /// Splits a built body into a second one: the existing
     /// dynamics becomes a new one with `0x12000000`, its four scales moved
     /// halfway to 1, and the split is repeated on every flagged mesh child.
     pub fn split_dynamics(&mut self, root: usize) {
@@ -558,7 +557,7 @@ impl Body {
         }
     }
 
-    /// Rebuilds an existing node's dynamics (`0x1000e6be0`): a character
+    /// Rebuilds an existing node's dynamics: a character
     /// body has its four scales reset to 1 and its rest vectors to 1.25,
     /// then its mesh children are rebuilt too.
     pub fn rebuild_dynamics(&mut self, root: usize) {
@@ -574,7 +573,7 @@ impl Body {
         }
     }
 
-    /// The generator's node-tree clone (`0x1000e6ff0`): a deep copy of the
+    /// The generator's node-tree clone: a deep copy of the
     /// body's nodes, frames and dynamics, linked again.
     pub fn clone_tree(&self) -> Body {
         let mut out = self.clone();
@@ -583,7 +582,7 @@ impl Body {
         out
     }
 
-    /// The selected merge nodes in body order (`0x1000e9090`/`0x1000e9140`):
+    /// The selected merge nodes in body order:
     /// each chosen slot's node and every mesh child under it, once, roots
     /// before leaves.
     pub fn merge_order(&self, chosen: &[Option<usize>; 19], visible: u32) -> Vec<usize> {
@@ -603,7 +602,7 @@ impl Body {
                 }
             }
         }
-        // Overlay meshes past the slots come last (`0x1000e9ee0`).
+        // Overlay meshes past the slots come last.
         for i in overlay_nodes(self) {
             if !seen[i] {
                 out.push(i);

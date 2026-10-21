@@ -36,15 +36,15 @@ pub struct SkinJob {
     pub beard: Option<[String; 2]>,
     /// The normal-map blend layers.
     pub layers: Vec<NormalLayer>,
-    /// The first apparel texture the job carries (`0x1000e8390`).
+    /// The first apparel texture the job carries.
     pub first_apparel: Option<String>,
     /// Whether the job has been handed to the texture manager.
     pub started: bool,
 }
 
 impl SkinJob {
-    /// A new job at the current pixel-format setting (`0x1000e8320`,
-    /// `0x1000ef1c0`): the side and format words, no maps, not started.
+    /// A new job at the current pixel-format setting: the side and format
+    /// words, no maps, not started.
     pub fn new(pixel_format: u32) -> Self {
         Self {
             format: SkinFormat::of_setting(pixel_format),
@@ -61,7 +61,7 @@ impl SkinJob {
         }
     }
 
-    /// Fills the job's look from a record and race (`0x1000ec3e0`), if the
+    /// Fills the job's look from a record and race, if the
     /// race has a skin set. `exists` says whether a texture the race names
     /// is shipped.
     pub fn with_look(
@@ -96,7 +96,7 @@ impl SkinJob {
         std::array::from_fn(|i| self.normals[i].clone().unwrap_or_default())
     }
 
-    /// The first-apparel pass (`0x1000e8390`): the job takes the first
+    /// The first-apparel pass: the job takes the first
     /// texture of a mesh part that has one, scanning in node order.
     pub fn take_first_apparel(&mut self, candidates: &[Option<String>]) -> Option<String> {
         let first = candidates.iter().flatten().next()?.clone();
@@ -105,7 +105,7 @@ impl SkinJob {
         Some(first)
     }
 
-    /// Resets the job for a new texture pass (`0x1000ef1c0`).
+    /// Resets the job for a new texture pass.
     pub fn reset(&mut self) {
         self.colour = None;
         self.gloss = None;
