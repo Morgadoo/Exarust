@@ -454,14 +454,15 @@ impl TextureStream {
         if !self.promote(key) {
             return false;
         }
-        while self.is_pending(key) {
-            if !self.decode_next(&mut decode) {
-                break;
-            }
-            self.pump_uploads(budget, &mut upload);
+        // Decode the promoted request alone; it is now at the front.
+        let queued = self
+            .requests
+            .as_ref()
+            .is_some_and(|queue| queue.iter().any(|request| &request.key == key));
+        if queued {
+            self.decode_next(&mut decode);
         }
-        // Uploads can still trail behind if the budget stopped a pass short;
-        // keep draining while this key is among them.
+        // Then upload it, even if the budget needs several passes.
         while self.uploads.iter().any(|upload| &upload.key == key) {
             self.pump_uploads(budget, &mut upload);
             if budget == 0 {
@@ -691,6 +692,22 @@ mod tests {
         assert_eq!(uploaded, ["c"]);
         assert_eq!(stream.queued(), 2);
         assert!(!stream.is_idle());
+        // A settled key is no longer a priority item: nothing is decoded or
+        // uploaded for it.
+        let mut second_order = Vec::new();
+        let mut second_upload = Vec::new();
+        assert!(!stream.load_now(
+            &key("c"),
+            1,
+            |request| {
+                second_order.push(request.key.name.as_str().to_string());
+                Some((Image::default(), false))
+            },
+            |item| second_upload.push(item.key.name.as_str().to_string()),
+        ));
+        assert!(second_order.is_empty());
+        assert!(second_upload.is_empty());
+        assert_eq!(stream.queued(), 2);
         assert!(!stream.load_now(&key("zz"), 1, |_| None, |_| {}));
     }
 

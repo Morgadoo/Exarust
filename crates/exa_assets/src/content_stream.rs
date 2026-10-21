@@ -428,7 +428,7 @@ impl ContentStream {
         builders: &mut dyn ContentBuilders,
         mut idle: impl FnMut(),
     ) -> LevelStream {
-        while self.level.done < self.level.total {
+        while self.level.done < self.level.total && !self.terminated {
             self.step(builders);
             // The original pumps procedural work and yields between objects.
             idle();
@@ -453,7 +453,7 @@ impl ContentStream {
         mut idle: impl FnMut(),
     ) -> Vec<CharacterResult> {
         let mut finished = Vec::new();
-        while !self.character_requests.is_empty() {
+        while !self.character_requests.is_empty() && !self.terminated {
             while let Some(result) = self.attachments.pop() {
                 finished.push(result);
             }
@@ -753,6 +753,16 @@ mod tests {
         let mut builders = Recorder::default();
         assert_eq!(stream.step(&mut builders), Step::Idle);
         assert!(stream.is_terminated());
+        // The waiting helpers must not spin on a terminated stream.
+        stream.begin_level(7, 4);
+        assert_eq!(stream.wait_for_level(&mut builders, || {}).objects.len(), 0);
+        stream.request_character(CharacterRequest {
+            owner: 1,
+            scene: 7,
+            class: 0,
+            flags: 0,
+        });
+        assert!(stream.wait_for_characters(&mut builders, || {}).is_empty());
     }
 
     #[test]
