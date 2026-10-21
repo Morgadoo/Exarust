@@ -118,4 +118,44 @@ mod tests {
         assert_eq!(member.skill_xp[0], 5_000);
         assert_eq!(member.skills[0], 1);
     }
+
+    /// The selector's forget and its technique in training are the
+    /// character record's own unlearning and surplus slot: both follow the
+    /// same routines, so they agree on every record.
+    #[test]
+    fn the_selector_agrees_with_the_live_record() {
+        use exa_character::record::CharacterData;
+        let records: [[u8; 6]; 5] = [
+            [1, 2, 3, 4, 0, 0],
+            [2, 3, 4, 1, 0, 0],
+            [1, 2, 0, 5, 0, 0],
+            [4, 3, 2, 1, 8, 0],
+            [0, 0, 0, 0, 0, 0],
+        ];
+        for skill in 1..=6u16 {
+            for techniques in records {
+                for points in [0u16, 7_500, 15_000, 20_000] {
+                    for slot in 1..=5u16 {
+                        let mut training = TechniqueTraining::default();
+                        let index = usize::from(skill) - 1;
+                        training.skills[index] = SkillRecord { points, techniques };
+                        let mut data = CharacterData::new();
+                        data.record.skills = training.skills;
+                        assert_eq!(
+                            training
+                                .in_training()
+                                .map(|(s, l)| (usize::from(s), u32::from(l))),
+                            data.surplus_chosen_level()
+                        );
+                        training.forget(skill, slot);
+                        data.unlearn_level(usize::from(skill), u32::from(slot));
+                        assert_eq!(
+                            training.skills, data.record.skills,
+                            "{skill} {techniques:?} {slot}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
