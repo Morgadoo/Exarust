@@ -23,6 +23,9 @@
 //!   custom-fighter flag (a flagged entry carries no character id), the
 //!   character id otherwise, an item list (a count and twelve-byte entries)
 //!   and four words.
+//! * hireables (`0x00010000`): written only while the hire list has
+//!   candidates: a count and, per candidate, an unused word then the
+//!   candidate's character export. The export's own codec delimits it.
 //! * merchant (`0xA0500000`): written only while a merchant is employed:
 //!   the stock type, the specialisation word, two unused words, and the
 //!   stock's count and item ids. A loader that skips stock reads only the
@@ -401,6 +404,52 @@ pub fn write_merchant(chunk: &MerchantChunk) -> Vec<u8> {
     out
 }
 
+/// One hire-list candidate: the unused word the chunk writes and the
+/// candidate's encoded character.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Hireable<T> {
+    pub unused: u32,
+    pub character: T,
+}
+
+/// Read a hireables chunk's payload. `parse_character` returns the
+/// character and how many bytes it consumed, or `None` when the export is
+/// broken. The count's low word is read as written.
+pub fn parse_hireables<T>(
+    bytes: &[u8],
+    mut parse_character: impl FnMut(&[u8]) -> Option<(T, usize)>,
+) -> Result<Vec<Hireable<T>>, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let count = r.word()? as i32;
+    let mut entries = Vec::new();
+    for _ in 0..count.max(0) {
+        let unused = r.word()?;
+        let rest = bytes.get(r.at..).ok_or(ArenaSaveError::Short)?;
+        let (character, used) = parse_character(rest).ok_or(ArenaSaveError::Short)?;
+        if used == 0 || used > rest.len() {
+            return Err(ArenaSaveError::Short);
+        }
+        r.at += used;
+        entries.push(Hireable { unused, character });
+    }
+    Ok(entries)
+}
+
+/// Write a hireables chunk's payload. `write_character` appends one
+/// candidate's encoded character.
+pub fn write_hireables<T>(
+    entries: &[Hireable<T>],
+    mut write_character: impl FnMut(&T, &mut Vec<u8>),
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, entries.len() as u32);
+    for entry in entries {
+        put(&mut out, entry.unused);
+        write_character(&entry.character, &mut out);
+    }
+    out
+}
+
 /// One tournament event's saved words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EventEntry {
@@ -685,6 +734,46 @@ mod tests {
         assert_eq!(skipped.specialisation, u32::MAX);
         assert_eq!(
             parse_merchant(&payload[..15], true),
+            Err(ArenaSaveError::Short)
+        );
+    }
+
+    #[test]
+    fn hireables_use_the_character_codec_for_their_boundaries() {
+        // A synthetic export: a 16-bit byte count and that many bytes.
+        fn write_character(character: &Vec<u8>, out: &mut Vec<u8>) {
+            out.extend_from_slice(&(character.len() as u16).to_le_bytes());
+            out.extend_from_slice(character);
+        }
+        fn parse_character(bytes: &[u8]) -> Option<(Vec<u8>, usize)> {
+            let len = u16::from_le_bytes([*bytes.first()?, *bytes.get(1)?]) as usize;
+            let body = bytes.get(2..2 + len)?;
+            Some((body.to_vec(), 2 + len))
+        }
+        let entries = vec![
+            Hireable {
+                unused: 0,
+                character: vec![1, 2, 3],
+            },
+            Hireable {
+                unused: 7,
+                character: vec![],
+            },
+        ];
+        let payload = write_hireables(&entries, write_character);
+        assert_eq!(payload.len(), 4 + 4 + 5 + 4 + 2);
+        assert_eq!(parse_hireables(&payload, parse_character).unwrap(), entries);
+        // A negative count reads no entries.
+        let mut negative = (-1i32).to_le_bytes().to_vec();
+        negative.extend_from_slice(&[0; 8]);
+        assert!(
+            parse_hireables(&negative, parse_character)
+                .unwrap()
+                .is_empty()
+        );
+        // A character export that consumes nothing is refused.
+        assert_eq!(
+            parse_hireables(&payload, |_| Some(((), 0))),
             Err(ArenaSaveError::Short)
         );
     }
