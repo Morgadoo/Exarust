@@ -25,3 +25,10 @@ Raising the group alert SHALL add one and hold it 10 s. A step from outside a ci
 #### Scenario: A 60 cm circle
 - **WHEN** a character 100 cm from a target of scale 1 steps 60 cm, 30 cm and diagonally past it, and characters 5 cm and 30 cm away step 30 cm in
 - **THEN** the 60 cm step is cut to 40 cm, the others are kept, the 5 cm one is pushed out to 60 cm, and the 30 cm one is dropped
+
+### Requirement: AI start-up
+The AI start-up of a scene SHALL give the scene a `_Temp` node with flag bit 0x100000 when it has none, and SHALL independently start the AI manager only when none runs yet.
+
+#### Scenario: A second scene
+- **WHEN** a scene without `_Temp` starts while the manager already runs
+- **THEN** the node is made and no second manager starts
