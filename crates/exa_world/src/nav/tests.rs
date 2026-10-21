@@ -553,13 +553,16 @@ fn shipped_levels() {
                 width: 640,
                 depth: 800,
                 columns_by_spans: [190_921, 320_149, 930, 0],
-                floors: [219_539, 825],
-                passable: [219_364, 825],
-                sky: [101_540, 105],
+                floors: [219_538, 825],
+                passable: [219_363, 825],
+                sky: [101_541, 105],
             },
-            // The grid's special tiles now mask their edges in every
-            // rotation, as the original's start-up table does.
-            191_331,
+            // The height and mask planes now decode with the original's
+            // truncating block arithmetic (no rounding term), which moves one
+            // terrain cell from floor to sky. The grid's special tiles now
+            // mask their edges in every rotation, as the original's start-up
+            // table does.
+            191_330,
             682,
         ),
     ];
@@ -641,7 +644,7 @@ fn shipped_levels() {
                 }
                 let g = whole.build();
                 assert_eq!(floors_over_closed_rooms(&g, &grid), 186_721);
-                assert_eq!(reach(&g, start).len(), 338_602);
+                assert_eq!(reach(&g, start).len(), 338_601);
             }
             _ => {}
         }

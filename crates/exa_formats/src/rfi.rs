@@ -1013,8 +1013,9 @@ fn decode_blocks(format: PixelFormat, src: &[u8], w: usize, h: usize, out: &mut 
                     decode_colour_block(block, &mut tile, format == PixelFormat::Bc1Alpha);
                 }
                 PixelFormat::Bc3 => {
-                    decode_colour_block(block, &mut tile, false);
-                    decode_alpha_block(&block[8..], &mut alpha);
+                    // The alpha block comes first, the colour block second.
+                    decode_colour_block(&block[8..], &mut tile, false);
+                    decode_alpha_block(block, &mut alpha);
                     for (texel, a) in tile.iter_mut().zip(alpha) {
                         texel[3] = a;
                     }
@@ -1199,13 +1200,14 @@ mod tests {
     #[test]
     fn bc3_combines_a_colour_block_with_an_alpha_block() {
         let mut block = [0u8; 16];
-        // Red endpoint over blue, all indices zero.
-        block[..4].copy_from_slice(&[0x00, 0xF8, 0x1F, 0x00]);
-        // Alpha endpoint 200 over 100, all indices 0 except the last pixel.
-        block[8] = 200;
-        block[9] = 100;
+        // Red endpoint over blue, all indices zero (the second half).
+        block[8..12].copy_from_slice(&[0x00, 0xF8, 0x1F, 0x00]);
+        // Alpha endpoint 200 over 100, all indices 0 except the last pixel
+        // (the first half).
+        block[0] = 200;
+        block[1] = 100;
         let indices = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        block[10..].copy_from_slice(&alpha_indices(&indices));
+        block[2..8].copy_from_slice(&alpha_indices(&indices));
         let texels = rgba_attexels(
             &Rfi::parse(&block_image(0x817B_E608, &block))
                 .unwrap()
