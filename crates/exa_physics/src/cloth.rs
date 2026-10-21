@@ -356,6 +356,82 @@ impl Cloth {
     }
 }
 
+/// The smallest half extent cloth bounds keep (the original's 1e-4 cm).
+pub const BOUNDS_FLOOR_CM: f32 = 1.0e-4;
+
+/// The box about a cloth's particles, in centimetres: the midpoint of the
+/// per-component minimum and maximum, and the box's half extents (each at
+/// least [`BOUNDS_FLOOR_CM`]). An empty cloth gives the origin and the
+/// floor.
+pub fn bounds(particles: &[Particle]) -> (Vec3, Vec3) {
+    let Some(first) = particles.first() else {
+        return (Vec3::ZERO, Vec3::splat(BOUNDS_FLOOR_CM));
+    };
+    let mut min = first.position;
+    let mut max = first.position;
+    for particle in &particles[1..] {
+        min = min.min(particle.position);
+        max = max.max(particle.position);
+    }
+    let centre = (min + max) * 0.5;
+    let half = (max - centre).max(Vec3::splat(BOUNDS_FLOOR_CM));
+    (centre, half)
+}
+
+/// A particle or sphere as a swept test sees it: its position, radius and
+/// the velocity that carries it (and its radius) over the tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SweptProbe {
+    pub position: Vec3,
+    pub radius: f32,
+    pub velocity: Vec3,
+    pub radius_rate: f32,
+}
+
+/// The first particle in `from..from + count` that a sphere swept over the
+/// tick meets, as the original's cloth query does.
+///
+/// The relative motion is the sphere's velocity less the particle's. The
+/// pair is taken as touching when they already overlap (their distance no
+/// more than the difference of their radii) and the relative radius rate
+/// covers that distance; otherwise when the squared distance times the
+/// relative speed squared is within the approach's squared dot product
+/// (the closest approach reaches them). The original's second branch also
+/// allows a tolerance the first already implies.
+pub fn swept_hit(
+    particles: &[SweptProbe],
+    sphere: &SweptProbe,
+    from: usize,
+    count: usize,
+) -> Option<usize> {
+    let end = from.saturating_add(count).min(particles.len());
+    for (index, particle) in particles.iter().enumerate().take(end).skip(from) {
+        let d = particle.position - sphere.position;
+        let distance_sq = d.x * d.x + d.y * d.y + d.z * d.z;
+        let reach = particle.radius - sphere.radius;
+        if distance_sq <= reach * reach {
+            let relative = sphere.velocity - particle.velocity;
+            let rate = sphere.radius_rate - particle.radius_rate;
+            if distance_sq <= rate * rate {
+                return Some(index);
+            }
+            let speed_sq =
+                relative.x * relative.x + relative.y * relative.y + relative.z * relative.z;
+            if 1.192_09e-7 <= speed_sq {
+                let dot = relative.x * d.x + relative.y * d.y + relative.z * d.z;
+                let left = (distance_sq - rate * rate) * speed_sq;
+                if left <= dot * dot {
+                    let slack = speed_sq * 0.5 - dot.abs();
+                    if left - dot * dot <= slack * slack {
+                        return Some(index);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Advance one tick. Returns without changing non-finite input.
 pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
@@ -1704,5 +1780,73 @@ mod tests {
         assert_eq!(cloned.base_word, 0x33);
         assert_eq!(cloned.param_flags, 0x44);
         assert_eq!(cloned.params, 0x55);
+    }
+
+    #[test]
+    fn cloth_bounds_midpoint_the_extremes() {
+        let cloth = Cloth::new(vec![
+            still(Vec3::new(-10.0, 0.0, -20.0)),
+            still(Vec3::new(10.0, 5.0, 20.0)),
+        ]);
+        let (centre, half) = bounds(&cloth.particles);
+        assert_eq!(centre, Vec3::new(0.0, 2.5, 0.0));
+        assert_eq!(half, Vec3::new(10.0, 2.5, 20.0));
+        let flat = Cloth::new(vec![still(Vec3::new(3.0, 4.0, 5.0))]);
+        let (centre, half) = bounds(&flat.particles);
+        assert_eq!(centre, Vec3::new(3.0, 4.0, 5.0));
+        assert_eq!(half, Vec3::splat(BOUNDS_FLOOR_CM));
+        assert_eq!(bounds(&[]), (Vec3::ZERO, Vec3::splat(BOUNDS_FLOOR_CM)));
+    }
+
+    #[test]
+    fn a_swept_sphere_finds_the_first_particle_it_meets() {
+        // A large cloth vertex at the origin and a small sphere passing it
+        // 0.4 cm off the line: the pair already overlaps the vertex's
+        // envelope, and the sphere's growing radius covers the 0.4 cm
+        // approach (the squared impact parameter, 0.16) when the relative
+        // radius rate is 1, but not at 0.1.
+        let particles = [SweptProbe {
+            position: Vec3::ZERO,
+            radius: 100.0,
+            velocity: Vec3::ZERO,
+            radius_rate: 0.0,
+        }];
+        let sphere = SweptProbe {
+            position: Vec3::new(0.0, 0.4, 90.0),
+            radius: 1.0,
+            velocity: Vec3::new(0.0, 0.0, 10.0),
+            radius_rate: 1.0,
+        };
+        assert_eq!(swept_hit(&particles, &sphere, 0, 1), Some(0));
+        let thin = SweptProbe {
+            radius_rate: 0.1,
+            ..sphere
+        };
+        assert_eq!(swept_hit(&particles, &thin, 0, 1), None);
+        // A sphere resting inside the envelope at the same point hits at
+        // once; a far one does not.
+        let inside = SweptProbe {
+            position: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            radius_rate: 0.0,
+            ..sphere
+        };
+        assert_eq!(swept_hit(&particles, &inside, 0, 1), Some(0));
+        let far = SweptProbe {
+            position: Vec3::new(200.0, 0.0, 0.0),
+            ..sphere
+        };
+        assert_eq!(swept_hit(&particles, &far, 0, 1), None);
+        // The index range starts at `from` and stops at `from + count`.
+        let second = SweptProbe {
+            position: Vec3::ZERO,
+            radius: 100.0,
+            velocity: Vec3::ZERO,
+            radius_rate: 0.0,
+        };
+        let pair = [particles[0], second];
+        assert_eq!(swept_hit(&pair, &inside, 0, 1), Some(0));
+        assert_eq!(swept_hit(&pair, &inside, 1, 1), Some(1));
+        assert_eq!(swept_hit(&pair, &inside, 2, 1), None);
     }
 }
