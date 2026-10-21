@@ -922,6 +922,11 @@ pub struct FormDispatch {
     pub wide_bottom: Vec<SliderQuad>,
     pub wide_right: Vec<SliderQuad>,
     pub wide_calls: u32,
+    /// The maximised window's frame, drawn by the call `wide_calls` counts.
+    pub window_frame: Option<crate::line_skin::WindowFrame>,
+    /// The progress strip: a titled window's (unless state bit 0x80_0000
+    /// is set), split at the title's gap, or an open bar's without a title.
+    pub progress: Vec<SliderQuad>,
     pub mark_calls: u32,
     pub late_close: Vec<SliderQuad>,
     pub edge_mask: u32,
@@ -1582,6 +1587,45 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         && (place.flags_a & FORM_HOLD) == 0;
     let open_mask = if on_open { 0xf } else { 0 };
     let open_calls = u32::from(on_open && (place.flags_b & FORM_TITLE) == 0);
+    let window_frame = (styled && wide).then(|| {
+        crate::line_skin::draw_window_frame(
+            unit,
+            crate::line_skin::WindowFramePlace {
+                style: place.flags_a,
+                y: place.edge_y,
+                owner_state: place.owner_flags,
+                width: place.width,
+                height: place.height,
+            },
+        )
+    });
+    let mut progress = Vec::new();
+    if styled && !wide && (place.flags_b & FORM_TITLE) != 0 && (place.flags_b & 0x80_0000) == 0 {
+        // The thumb is the title's gap; a title that measures nothing
+        // passes its width, which draws the whole track.
+        let thumb = if measured > 0 {
+            ((i64::from(place.width) - i64::from(measured) - i64::from(unit.wrapping_mul(5))) / 2)
+                as i32
+        } else {
+            measured
+        };
+        progress.extend(crate::line_skin::draw_line_progress(
+            unit,
+            span_a,
+            span_c,
+            place.width,
+            thumb,
+        ));
+    }
+    if open_calls != 0 {
+        progress.extend(crate::line_skin::draw_line_progress(
+            unit,
+            span_a,
+            span_c,
+            place.width,
+            0,
+        ));
+    }
     let (open_tab, open_lower, open_post) = if on_open && (place.flags_b & FORM_TAB) == FORM_TAB {
         raised_tabs(unit, &place)
     } else {
@@ -1898,6 +1942,8 @@ pub fn dispatch_form(unit: i32, shade: u8, place: DispatchPlace, shown: &[u8]) -
         wide_bottom,
         wide_right,
         wide_calls,
+        window_frame,
+        progress,
         mark_calls,
         late_close,
         edge_mask,
@@ -1994,6 +2040,11 @@ pub struct SpanBar {
     pub mark_indexes: [u32; 12],
     pub mark_count: u32,
     pub cursor_after: u32,
+}
+
+/// Places one span corner through the view, as the span bars do.
+pub(crate) fn place_span_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
+    place_corner(x, y, view)
 }
 
 fn place_corner(x: f32, y: f32, view: SpanView) -> (f32, f32) {
@@ -10013,6 +10064,48 @@ mod tests {
         form.flags_b = FORM_TAB;
         let open = dispatch_form(5, 0, form, &[]);
         assert_eq!(open.close_edges[0].corners, open.open_tab[0].corners);
+    }
+
+    #[test]
+    fn a_dispatch_draws_the_maximised_frame_and_the_progress_strip() {
+        // A maximised window style draws its frame through the line skin.
+        let mut form = place(0, FORM_BOX, 0, 0, 0, 0);
+        form.flags_d = 0x10;
+        let maximised = dispatch_form(5, 0, form, &[]);
+        assert_eq!(maximised.wide_calls, 1);
+        let frame = maximised.window_frame.expect("a maximised frame");
+        assert_eq!(frame.quads.len(), 8);
+        assert_eq!(
+            frame.quads[0].corners,
+            [(30, 0), (30, 10), (70, 10), (70, 0)]
+        );
+        assert!(maximised.progress.is_empty());
+
+        // A titled window with a 40-wide title splits the strip at the
+        // title's gap, (100 - 40 - 25) / 2 = 17.
+        let mut titled = place(0, FORM_TITLE, 0, 0, 0, 0);
+        titled.flags_d = 0x10;
+        titled.title_width = 40;
+        let window = dispatch_form(5, 0, titled, &[]);
+        assert!(window.window_frame.is_none());
+        assert_eq!(window.progress.len(), 6);
+        assert_eq!(
+            window.progress[2].corners,
+            [(40, 10), (40, 20), (17, 20), (17, 10)]
+        );
+        // State bit 0x80_0000 keeps the strip off.
+        titled.flags_b |= 0x80_0000;
+        assert!(dispatch_form(5, 0, titled, &[]).progress.is_empty());
+
+        // An open bar without a title draws the whole track.
+        let mut open = place(0, 0, 0, 0, 0, 0);
+        open.flags_d = 0x80;
+        let bar = dispatch_form(5, 0, open, &[]);
+        assert_eq!(bar.progress.len(), 3);
+        assert_eq!(
+            bar.progress[2].corners,
+            [(40, 10), (40, 20), (60, 20), (60, 10)]
+        );
     }
 
     #[test]
