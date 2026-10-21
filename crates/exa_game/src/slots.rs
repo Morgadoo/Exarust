@@ -458,15 +458,17 @@ impl Slots {
             Mode::Arena => Flavour::Arena,
         };
         let mut data = PlayerData::parse(section, flavour).map_err(|_| SaveError::Malformed)?;
-        data.apply_mask(mask);
         let mut converted = false;
         if flavour == Flavour::Arena && data.arena_data_is_old() {
+            // Convert and write back before the load mask hides chunks:
+            // the file keeps every chunk the conversion did not drop.
             data.convert_arena();
             package.remove_section(&save_package::name("arenahub"));
             package.put_section(PLAYER_DATA, &data.write_ordered());
             fs::write(&path, package.to_bytes()).map_err(|_| SaveError::Malformed)?;
             converted = true;
         }
+        data.apply_mask(mask);
         let forced_locale = if flavour == Flavour::Story {
             data.story_transition_locale()
         } else {
@@ -1485,6 +1487,17 @@ mod tests {
         );
         let scanned = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
         assert!(!scanned.has_section(&save_package::name("arenahub")));
+
+        // The character screen's masked load must not strip the file's
+        // chunks when it converts the old save.
+        slots.load_character_screen(number, false).unwrap();
+        let screened = PackageImage::read(&fs::read(&path).unwrap()).unwrap();
+        let screened_data = PlayerData::parse(
+            screened.section(PLAYER_DATA).unwrap(),
+            save_package::Flavour::Arena,
+        )
+        .unwrap();
+        assert!(screened_data.chunk(save_package::EXARUST_CHUNK).is_some());
 
         let loaded = slots.load_package(number, false).unwrap();
         assert!(loaded.converted);
