@@ -1487,6 +1487,12 @@ fn spawn_placed_characters(
         }
         let root = root.id();
         let model = exa_world::spawn_model(commands, &body, None);
+        if !c.pose.is_empty() {
+            // The placement's saved bone matrices, written by 0x1000f0820.
+            commands
+                .entity(model)
+                .insert(exa_character::pose::Pose(c.pose.clone()));
+        }
         let anim = exa_anim::Animator::new(&moveset, "Idle");
         if c.dead {
             // The dead fall where they lie: their condition is dead, as

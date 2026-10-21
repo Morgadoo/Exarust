@@ -168,6 +168,51 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
     Some(out)
 }
 
+/// The generator's occlusion alpha for a merged mesh (`0x1000e7a90`).
+///
+/// `part` names the body part each vertex came from (0 when it is not a
+/// body part), `class` the material group the vertex belongs to, and
+/// `indices` the mesh's triangles. Every marked vertex starts opaque; a
+/// marked vertex in a triangle with another marked vertex of a different
+/// class is cleared, so seams between parts and material groups never show
+/// the transparent skin underneath. Unmarked vertices keep their value.
+pub fn occlusion_alpha(part: &[u32], class: &[u32], indices: &[u32]) -> Vec<u8> {
+    let mut alpha = vec![255u8; part.len()];
+    for tri in indices.as_chunks::<3>().0 {
+        let marked: Vec<usize> = tri
+            .iter()
+            .map(|&v| v as usize)
+            .filter(|&v| v < part.len() && part[v] != 0)
+            .collect();
+        for &v in &marked {
+            if marked
+                .iter()
+                .any(|&w| w != v && class.get(w).copied() != class.get(v).copied())
+            {
+                alpha[v] = 0;
+            }
+        }
+    }
+    alpha
+}
+
+/// The triangles of `mesh` left after the cull pass (`0x1000e9270`): a
+/// triangle whose flags hold any of `bits` is dropped. Without per-triangle
+/// flags nothing is culled.
+pub fn culled_indices(mesh: &Mesh, bits: u32) -> Vec<u32> {
+    let Some(flags) = &mesh.triangle_flags else {
+        return mesh.indices.clone();
+    };
+    mesh.indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(flags)
+        .filter(|(_, f)| **f & bits == 0)
+        .flat_map(|(tri, _)| *tri)
+        .collect()
+}
+
 /// A vertex's fallback weight: all of it on `bone`.
 fn fallback(bone: u32) -> SkinWeights {
     SkinWeights {
@@ -307,6 +352,26 @@ mod tests {
         assert_eq!(merged.normals[0], [0.0, 1.0, 0.0]);
         assert_eq!(merged.indices, [0, 1, 2]);
         assert!(merged.skin.is_none());
+    }
+
+    /// A triangle whose marked vertices belong to two parts loses their
+    /// alpha; an unmarked vertex keeps the opaque value.
+    #[test]
+    fn the_occlusion_alpha_clears_part_seams() {
+        let part = [1, 1, 0, 2, 2];
+        let class = [0, 0, 0, 1, 2];
+        let alpha = occlusion_alpha(&part, &class, &[0, 1, 2]);
+        assert_eq!(alpha, [255, 255, 255, 255, 255]);
+        let alpha = occlusion_alpha(&part, &class, &[0, 1, 2, 3, 4, 3]);
+        assert_eq!(alpha, [255, 255, 255, 0, 0]);
+    }
+
+    #[test]
+    fn the_cull_pass_drops_a_flagged_triangle() {
+        let mut m = mesh(&[[0.0; 3]; 6], &[0, 1, 2, 3, 4, 5]);
+        m.triangle_flags = Some(vec![0, 0x20_0000]);
+        assert_eq!(culled_indices(&m, 0x20_0000), [0, 1, 2]);
+        assert_eq!(culled_indices(&m, 0x40_0000), [0, 1, 2, 3, 4, 5]);
     }
 
     #[test]

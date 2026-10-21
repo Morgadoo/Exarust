@@ -1,0 +1,192 @@
+//! The character factory's start-up data: the per-slot child table and the
+//! screen-format side of the skin texture job.
+//!
+//! The original builds its factory once: it allocates the object-database
+//! table and fills each of the eighteen slots' child pointers from the
+//! static slot table, and it reads the active pixel-format setting to pick
+//! the side of the generated skin maps (512 or 1024). Exarust keeps the
+//! table static ([`crate::layers::SLOTS`]) and reproduces the derived data
+//! here so a job can be described without a renderer.
+
+use crate::layers::SLOTS;
+
+/// The side of a generated skin map: the original uses 512 while the pixel
+/// format setting is below 3 and 1024 from 3 up.
+pub fn skin_side(pixel_format: u32) -> u32 {
+    if pixel_format < 3 { 0x200 } else { 0x400 }
+}
+
+/// The two format words a texture job carries: its side, then the same word
+/// as the target format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkinFormat {
+    pub side: u32,
+    pub format: u32,
+}
+
+impl SkinFormat {
+    pub fn of_setting(pixel_format: u32) -> Self {
+        let side = skin_side(pixel_format);
+        Self { side, format: side }
+    }
+}
+
+/// What the factory derives from the slot table at start-up: each slot's
+/// child slots, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotChildren {
+    pub slot: usize,
+    pub children: [usize; 3],
+    pub count: usize,
+}
+
+/// The eighteen slots' child tables, filled as the factory's constructor
+/// does from the static table.
+pub const SLOT_CHILDREN: [SlotChildren; 18] = build_slot_children();
+
+const fn build_slot_children() -> [SlotChildren; 18] {
+    let mut out = [SlotChildren {
+        slot: 0,
+        children: [0; 3],
+        count: 0,
+    }; 18];
+    let mut i = 0;
+    while i < 18 {
+        let children = SLOTS[i].children;
+        let mut count = children.len();
+        if count > 3 {
+            count = 3;
+        }
+        let mut table = [0usize; 3];
+        let mut k = 0;
+        while k < count {
+            table[k] = children[k];
+            k += 1;
+        }
+        out[i] = SlotChildren {
+            slot: i + 1,
+            children: table,
+            count,
+        };
+        i += 1;
+    }
+    out
+}
+
+/// The factory's mutable state: the item database override and the global
+/// look seed holder the spawn reads. The original keeps both in the
+/// singleton; a factory owns them here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CharacterFactory {
+    /// The database the equip pass resolves world/global item ids against
+    /// (`+0x940`); cleared when a spawn has no override.
+    pub item_database: Option<String>,
+    /// The texture-job seed holder (`+0x940` in the look rebuild).
+    pub look_seed: u32,
+}
+
+impl CharacterFactory {
+    /// Clears the item-database override (`0x1000f0ce0`).
+    pub fn clear_item_database(&mut self) {
+        self.item_database = None;
+    }
+
+    /// The finalizer (`0x1000f1520`): release the override and the seed
+    /// holder. Rust's drop would do this; the method keeps the original's
+    /// explicit release point testable.
+    pub fn release(&mut self) {
+        self.item_database = None;
+        self.look_seed = 0;
+    }
+}
+
+/// The material manager's lock, which several generator routines take and
+/// release (`0x1000eab70`, `0x1000eae80`, `0x1000edb20`, `0x1000ee960`,
+/// `0x1000ef430`). Exarust's asset loader owns materials exclusively; the
+/// lock is kept as data so the acquire/release order can be tested.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialLock {
+    pub held: bool,
+}
+
+impl MaterialLock {
+    pub fn acquire(&mut self) {
+        self.held = true;
+    }
+
+    pub fn release(&mut self) {
+        self.held = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_skin_side_is_512_below_three_and_1024_after() {
+        assert_eq!(skin_side(0), 0x200);
+        assert_eq!(skin_side(2), 0x200);
+        assert_eq!(skin_side(3), 0x400);
+        assert_eq!(
+            SkinFormat::of_setting(2),
+            SkinFormat {
+                side: 0x200,
+                format: 0x200
+            }
+        );
+        assert_eq!(
+            SkinFormat::of_setting(5),
+            SkinFormat {
+                side: 0x400,
+                format: 0x400
+            }
+        );
+    }
+
+    #[test]
+    fn the_material_lock_is_acquired_and_released() {
+        let mut lock = MaterialLock::default();
+        lock.acquire();
+        assert!(lock.held);
+        lock.release();
+        assert!(!lock.held);
+    }
+
+    #[test]
+    fn an_item_database_override_clears_and_releases() {
+        let mut f = CharacterFactory {
+            item_database: Some("arenaactors".into()),
+            look_seed: 7,
+        };
+        f.clear_item_database();
+        assert_eq!(f.item_database, None);
+        f.item_database = Some("x".into());
+        f.release();
+        assert_eq!(f, CharacterFactory::default());
+    }
+
+    /// The constructor's child table: the pelvis has three children (the
+    /// two legs and the belly), the chest three (head and both shoulders),
+    /// a foot none.
+    #[test]
+    fn the_slot_child_table_is_the_static_one() {
+        assert_eq!(SLOT_CHILDREN[0].slot, 1);
+        assert_eq!(
+            (SLOT_CHILDREN[0].children, SLOT_CHILDREN[0].count),
+            ([2, 5, 8], 3)
+        );
+        assert_eq!(
+            (SLOT_CHILDREN[8].children, SLOT_CHILDREN[8].count),
+            ([10, 11, 14], 3)
+        );
+        assert_eq!(SLOT_CHILDREN[3].count, 0);
+        assert_eq!(
+            (SLOT_CHILDREN[15].children, SLOT_CHILDREN[15].count),
+            ([18, 0, 0], 1)
+        );
+        for (i, s) in SLOT_CHILDREN.iter().enumerate() {
+            assert_eq!(s.slot, i + 1);
+        }
+    }
+}

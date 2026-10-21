@@ -62,6 +62,29 @@ pub fn hair_shading(colour: [u8; 3], feral: f32, light_variant: bool) -> HairSha
     }
 }
 
+/// The creation preview's hair colour (`0x1000eaeb0`): the record's three
+/// colour bytes taken as hue, saturation and value without the feral
+/// modulation, the specular level boosted by 1.3, gloss 0.9 and full
+/// opacity. The preview's material is the same `_HumanHair` payload.
+pub fn preview_shading(colour: [u8; 3]) -> HairShading {
+    let h = f32::from(colour[0]) / 255.0;
+    let s = f32::from(colour[1]) / 255.0;
+    let v = f32::from(colour[2]) / 255.0;
+    let (diffuse, specular) = pick(h, s, v);
+    HairShading {
+        diffuse,
+        specular: specular.map(|c| c * 1.3),
+        gloss: 0.9,
+        opacity: 1.0,
+    }
+}
+
+/// Whether a hair part takes the hair material (`0x1000eb9d0`): its
+/// material opacity is over 0.5.
+pub fn hair_material_part(opacity: f32) -> bool {
+    opacity > 0.5
+}
+
 /// The picker: hue, saturation and value in 0…1 to diffuse and specular
 /// colours in encoded sRGB.
 pub fn pick(h: f32, s: f32, v: f32) -> ([f32; 3], [f32; 3]) {
@@ -150,6 +173,19 @@ mod tests {
         let (d, s) = pick(0.0, 0.0, 0.0);
         assert_eq!(d.map(f32::to_bits), [0x3e20_a95d, 0x3dbf_7a98, 0x3d66_1a37]);
         assert_eq!(s.map(f32::to_bits), [0x3f18_282c, 0x3ecc_570f, 0x3e35_6bc5]);
+    }
+
+    #[test]
+    fn the_preview_keeps_the_specular_light_and_shows_opaque_parts() {
+        let shown = preview_shading([40, 80, 40]);
+        assert_eq!(shown.gloss, 0.9);
+        assert_eq!(shown.opacity, 1.0);
+        let (_, spec) = pick(40.0 / 255.0, 80.0 / 255.0, 40.0 / 255.0);
+        for (shown, base) in shown.specular.iter().zip(spec) {
+            assert!((shown - base * 1.3).abs() < 1e-6);
+        }
+        assert!(hair_material_part(0.51));
+        assert!(!hair_material_part(0.5));
     }
 
     /// The hue anchors interpolate: 0 is the dark red, 1 is the blonde.

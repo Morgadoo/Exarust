@@ -143,6 +143,8 @@ pub struct PlacedCharacter {
     /// What it wears and the shield it holds weigh, as the spawn's armour
     /// pass sums them.
     pub encumbrance: f32,
+    /// The placement's saved bone matrices, in skeleton order.
+    pub pose: Vec<[[f32; 3]; 4]>,
 }
 
 /// An item in one of a record's four hand slots.
@@ -232,6 +234,7 @@ fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec
                 hands,
                 record: record.clone(),
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
+                pose: p.pose.clone(),
             })
         })
         .collect()

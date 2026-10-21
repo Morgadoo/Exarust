@@ -15,6 +15,8 @@
 //! Its empty hands are its fists (or claws), strikers built from its race's
 //! unarmed records; a wielded weapon strikes instead.
 
+pub mod factory;
+
 pub mod hair;
 
 pub mod held;
@@ -23,9 +25,21 @@ pub mod layers;
 
 pub mod look;
 
+pub mod rebuild;
+
+pub mod pose;
+
 pub mod record;
 
+pub mod runtime;
+
+pub mod texture_job;
+
+pub mod background;
+
 pub mod blood;
+pub mod spawn;
+
 pub mod spray;
 
 use std::collections::HashMap;
@@ -58,6 +72,7 @@ impl Plugin for CharacterPlugin {
                 (
                 apply_skin_looks.run_if(resource_exists::<Game>),
                 hair::attach_hair.run_if(resource_exists::<Game>),
+                pose::apply_saved_pose,
                 load_underwear_items
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),

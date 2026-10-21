@@ -220,6 +220,51 @@ pub const CHILD_SLOT_MASK: [u32; 18] = [
     0,
 ];
 
+/// Per-slot masks of the cull pass (`0x1000e9270`): when the slot's first
+/// mask does not meet the visible body mask the merged triangles take cull
+/// bit `0x200000`, and when the second does not, `0x400000`.
+pub const CULL_FIRST: [u32; 18] = [
+    0x1, 0, 0, 0, 0, 0, 0, 0x80, 0x100, 0x200, 0, 0x800, 0x1000, 0, 0x4000, 0x8000, 0, 0,
+];
+/// The second cull mask per slot.
+pub const CULL_SECOND: [u32; 18] = [
+    0x10_0000,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0x8000_0000,
+    0x20_0000,
+    0x1000_0000,
+    0,
+    0x80_0000,
+    0x100_0000,
+    0,
+    0x400_0000,
+    0x800_0000,
+    0,
+    0,
+];
+
+/// The cull bits a slot's merged triangles take from the body's visible
+/// mask: none when both masks meet it, `0x200000`/`0x400000` for each that
+/// does not.
+pub fn cull_bits(slot: usize, visible: u32) -> u32 {
+    let Some(i) = slot.checked_sub(1).filter(|&i| i < 18) else {
+        return 0;
+    };
+    let mut bits = 0;
+    if CULL_FIRST[i] & visible == 0 {
+        bits |= 0x20_0000;
+    }
+    if CULL_SECOND[i] & visible == 0 {
+        bits |= 0x40_0000;
+    }
+    bits
+}
+
 /// The per-slot bit of a slot in a `u32` body mask.
 pub const fn slot_bit(slot: usize) -> u32 {
     1 << (slot - 1)
@@ -405,6 +450,197 @@ pub fn select(candidates: &[Candidate], coverage: &[[u64; 18]]) -> Selection {
 /// inserts them, so the outermost is merged last.
 pub fn outer_layer(coverage: &[u64; 18]) -> Option<u8> {
     coverage.iter().filter_map(|&w| word_layer(w)).max()
+}
+
+/// A candidate group kept by the assembler: one node per slot and the
+/// group's total score.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SlotGroup {
+    pub nodes: [Option<usize>; 19],
+    pub score: i32,
+}
+
+/// The fallback search (`0x1000e8500`): when a garment has no node of its
+/// own in `slot`, look under the related slot for a child in `slot` whose
+/// layer differs from `wanted`, scoring it against the slot's coverage.
+pub fn related_search(
+    body: &crate::runtime::Body,
+    slot: usize,
+    wanted: u32,
+    coverage: &[u64; 19],
+) -> Option<usize> {
+    if !(1..=SLOTS.len()).contains(&slot) {
+        return None;
+    }
+    let related = SLOTS[slot - 1].related;
+    let mut best = (-64, None);
+    for root in body.roots() {
+        let mut stack = vec![root];
+        while let Some(i) = stack.pop() {
+            let n = &body.nodes[i];
+            if n.slot == related {
+                if n.layer != wanted {
+                    for &c in &n.children {
+                        if body.nodes[c].slot == slot {
+                            let score = layer_score(body.nodes[c].layer, coverage[slot]);
+                            if score > best.0 {
+                                best = (score, Some(c));
+                            }
+                        }
+                    }
+                }
+            } else {
+                stack.extend(n.children.iter().rev());
+            }
+        }
+    }
+    best.1
+}
+
+/// Assembles one slot's candidate groups (`0x1000e8b30`): every node whose
+/// slot is `target` is scored against the slot's coverage; the best score
+/// clears the groups and equal scores add one. When there is a group, the
+/// child slots' groups are pruned and the group's nodes fill the caller's
+/// chosen slots where the visibility table lets them.
+pub fn assemble_slot(
+    body: &crate::runtime::Body,
+    roots: &[usize],
+    target: usize,
+    coverage: &[u64; 19],
+    visibility: &[u32; 18],
+    groups: &mut Vec<SlotGroup>,
+    chosen: &mut [Option<usize>; 19],
+) -> bool {
+    if !(1..=SLOTS.len()).contains(&target) {
+        return false;
+    }
+    groups.clear();
+    let mut best = i32::MIN;
+    for &root in roots {
+        let mut stack = vec![root];
+        while let Some(i) = stack.pop() {
+            let n = &body.nodes[i];
+            if n.slot == target {
+                let score = layer_score(n.layer, coverage[target]);
+                if score >= best {
+                    if score > best {
+                        groups.clear();
+                        best = score;
+                    }
+                    let mut group = SlotGroup::default();
+                    group.nodes[target] = Some(i);
+                    group.score = score;
+                    groups.push(group);
+                }
+            } else if n.mesh || !n.children.is_empty() {
+                for &c in n.children.iter().rev() {
+                    stack.push(c);
+                }
+                if stack.len() > 32 {
+                    // The original logs "Body part stack overflow" and keeps
+                    // going; stop this branch instead.
+                    stack.clear();
+                    break;
+                }
+            }
+        }
+    }
+    if groups.is_empty() {
+        return false;
+    }
+    for &child in SLOTS[target - 1].children {
+        if groups.iter().any(|g| g.nodes[child].is_some()) {
+            prune_slot(body, child, coverage, groups);
+        }
+    }
+    let bit = slot_bit(target);
+    for slot in 1..=18 {
+        if groups.iter().any(|g| g.nodes[slot].is_some()) && visibility[slot - 1] & bit != 0 {
+            chosen[slot] = groups.last().and_then(|g| g.nodes[slot]);
+        }
+    }
+    true
+}
+
+/// Prunes a slot's groups (`0x1000e8730`): each group's node in `slot` is
+/// looked under for a better child, else the related-slot fallback supplies
+/// one; the group's score grows by it. Groups below the best total are
+/// dropped, groups with no node in the slot go once one has a node, and the
+/// child slots are pruned in turn.
+pub fn prune_slot(
+    body: &crate::runtime::Body,
+    slot: usize,
+    coverage: &[u64; 19],
+    groups: &mut Vec<SlotGroup>,
+) {
+    if !(1..=SLOTS.len()).contains(&slot) || groups.is_empty() {
+        return;
+    }
+    let mut best = i32::MIN;
+    for group in groups.iter_mut() {
+        let Some(node) = group.nodes[slot] else {
+            continue;
+        };
+        let mut found = (i32::MIN, None);
+        for &c in &body.nodes[node].children {
+            if body.nodes[c].slot == slot {
+                let score = layer_score(body.nodes[c].layer, coverage[slot]);
+                if score > found.0 {
+                    found = (score, Some(c));
+                }
+            }
+        }
+        let (score, node) = match found.1 {
+            Some(c) => (found.0, Some(c)),
+            None => {
+                let wanted = body.nodes[node].layer;
+                match related_search(body, slot, wanted, coverage) {
+                    Some(c) => (layer_score(body.nodes[c].layer, coverage[slot]), Some(c)),
+                    None => (0, None),
+                }
+            }
+        };
+        if let Some(c) = node {
+            group.nodes[slot] = Some(c);
+            group.score += score;
+            best = best.max(group.score);
+        }
+    }
+    groups.retain(|g| g.score >= best);
+    if groups.iter().any(|g| g.nodes[slot].is_some()) {
+        groups.retain(|g| g.nodes[slot].is_some());
+    }
+    for &child in SLOTS[slot - 1].children {
+        if groups.iter().any(|g| g.nodes[child].is_some()) {
+            prune_slot(body, child, coverage, groups);
+        }
+    }
+}
+
+/// Assembles the whole body from slot 1, the pelvis, and returns the chosen
+/// node per slot.
+pub fn assemble_all(
+    body: &crate::runtime::Body,
+    roots: &[usize],
+    coverage: &[u64; 19],
+    visibility: &[u32; 18],
+) -> Selection {
+    let mut groups = Vec::new();
+    let mut chosen = [None; 19];
+    assemble_slot(
+        body,
+        roots,
+        1,
+        coverage,
+        visibility,
+        &mut groups,
+        &mut chosen,
+    );
+    let mut words = [0u64; 18];
+    words.copy_from_slice(&coverage[1..19]);
+    let mut out = Selection { chosen, visible: 0 };
+    out.visible = visible_body_slots(&words);
+    out
 }
 
 #[cfg(test)]
@@ -601,6 +837,92 @@ mod tests {
         assert_ne!(visible(by_id(1)) & slot_bit(9), 0);
         // The helm's coverage word has the hide bit on every layer.
         assert_eq!(by_id(3).slot_word(10), 0x0083_8383_8383_8383);
+    }
+
+    /// A child under its related slot supplies a garment node when the
+    /// garment has none for the slot itself.
+    #[test]
+    fn the_related_slot_search_finds_a_child() {
+        use crate::runtime::{Body, Node};
+        let mut nodes = vec![
+            Node {
+                name: "13RFArm".into(),
+                slot: 13,
+                layer: 1,
+                ..Node::default()
+            },
+            Node {
+                name: "1700RHand".into(),
+                slot: 17,
+                layer: 0,
+                parent: Some(0),
+                ..Node::default()
+            },
+        ];
+        nodes[0].children = vec![1];
+        let body = Body::new(nodes);
+        let mut coverage = [0u64; 19];
+        coverage[17] = 0x03;
+        assert_eq!(related_search(&body, 17, 4, &coverage), Some(1));
+        // The search wants a layer other than the parent's.
+        assert_eq!(related_search(&body, 17, 1, &coverage), None);
+    }
+
+    /// The assembler picks the higher-scoring of two chest nodes and fills
+    /// the chosen slot from it.
+    #[test]
+    fn the_assembler_keeps_the_best_group() {
+        use crate::runtime::{Body, Node};
+        let mut nodes = vec![
+            Node {
+                name: "00Root".into(),
+                ..Node::default()
+            },
+            Node {
+                name: "0902Chest".into(),
+                slot: 9,
+                layer: 2,
+                parent: Some(0),
+                ..Node::default()
+            },
+            Node {
+                name: "0906Chest".into(),
+                slot: 9,
+                layer: 6,
+                parent: Some(0),
+                ..Node::default()
+            },
+        ];
+        nodes[0].children = vec![1, 2];
+        let body = Body::new(nodes);
+        let mut coverage = [0u64; 19];
+        coverage[9] = 0x06;
+        let mut groups = Vec::new();
+        let mut chosen = [None; 19];
+        let visibility = [!0u32; 18];
+        assert!(assemble_slot(
+            &body,
+            &[0],
+            9,
+            &coverage,
+            &visibility,
+            &mut groups,
+            &mut chosen
+        ));
+        assert_eq!(groups.len(), 1);
+        assert_eq!(chosen[9], Some(2));
+    }
+
+    /// The cull pass gives a slot no bits when its masks meet the visible
+    /// body mask, and one bit for each mask that does not.
+    #[test]
+    fn the_cull_bits_follow_the_visible_mask() {
+        assert_eq!(cull_bits(1, !0), 0);
+        assert_eq!(cull_bits(1, 0), 0x60_0000);
+        assert_eq!(cull_bits(2, 0), 0x60_0000);
+        assert_eq!(cull_bits(9, 0x100), 0x40_0000);
+        assert_eq!(cull_bits(0, 0), 0);
+        assert_eq!(cull_bits(19, 0), 0);
     }
 
     /// The outermost garment layer is the largest any slot holds: braies
