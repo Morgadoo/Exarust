@@ -7,8 +7,9 @@
 //! either is NaN, the "round" helpers set the SIMD rounding mode (floor or
 //! ceiling) before `CVTSS2SI`, integer conversions round ties to even, and
 //! the float sums keep the original's association. Matrices are stored as
-//! the three rows the original writes; a [`Mat3A`] holds them as its three
-//! columns, which is the same rotation for column vectors.
+//! the rows the original writes, one after another; a [`Mat3A`] or
+//! [`Mat4`] holds them as its columns (the same memory layout), so glam's
+//! `m * v` is the original's row vector times the matrix.
 //!
 //! Evidence: the engine's fast-function and algebra routines in the
 //! component map (Engine math: vectors, matrices, fast trig), with their
@@ -20,7 +21,8 @@
 
 use bevy::math::{Mat3A, Mat4, Quat, Vec3, Vec3A, Vec4};
 
-/// The threshold below which an axis has no direction (single precision).
+/// The squared length at or below which an axis has no direction (single
+/// precision).
 pub const AXIS_EPSILON: f32 = 1.192_089_98e-7;
 /// The absolute roll cosine above which [`mat3_to_euler`] separates the
 /// pitch from the yaw (double).
@@ -51,7 +53,8 @@ pub fn clamp(a: f32, lo: f32, hi: f32) -> f32 {
     min(max(a, lo), hi)
 }
 
-/// `CVTSS2SI` with the rounding mode set downward: the floor, and the
+/// `CVTSS2SI` with the rounding control set to round down (the mode's
+/// other bits kept, the caller's mode restored after): the floor, and the
 /// processor's integer indefinite (`i32::MIN`) for a NaN or out-of-range
 /// value.
 pub fn floor_to_i32(x: f32) -> i32 {
@@ -93,8 +96,8 @@ pub fn reciprocal_sqrt(value: f32) -> f32 {
     }
 }
 
-/// The same with the rounding mode set upward: the ceiling. NaN and
-/// out-of-range values give `i32::MIN`.
+/// The same with the rounding control set to round up (and restored
+/// after): the ceiling. NaN and out-of-range values give `i32::MIN`.
 pub fn ceil_to_i32(x: f32) -> i32 {
     let rounded = x.ceil();
     if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
@@ -115,10 +118,10 @@ pub fn round_to_i32(x: f32) -> i32 {
     }
 }
 
-/// The fast natural logarithm: the exponent bits, the mantissa scaled to
-/// one, a cubic on its square, and a constant per sign. A negative input
-/// gives minus infinity, zero or a NaN the bit pattern of zero read the
-/// mantissa way.
+/// The fast natural logarithm: the biased exponent bits (with the sign bit
+/// above them), the mantissa scaled into `[1, 2)`, a polynomial in it, and
+/// a constant term that is −∞ for zero or a negative input (so those give
+/// −∞). A NaN takes the finite constant and gives a finite value.
 pub fn ln(x: f32) -> f32 {
     let bits = x.to_bits();
     let exponent = ((bits >> 23) as i32) as f32;
@@ -139,7 +142,8 @@ pub fn ln(x: f32) -> f32 {
 
 /// The fast exponential: scale by log2(e), clamp, split into integer and
 /// mantissa, and a quartic on the mantissa read as a float with the integer
-/// exponent's bits. Negative-of-large gives zero; NaN follows the clamp.
+/// exponent's bits. A large negative input gives zero; a NaN or a large
+/// positive one clamps to the infinity's exponent and gives +∞.
 pub fn exp(x: f32) -> f32 {
     let top = f32::from_bits(0x4EFF_0000);
     let scaled = x * f32::from_bits(0x4B38_AA3B) + f32::from_bits(0x4E7E_0000);
@@ -305,9 +309,10 @@ pub fn euler_of(m: &Mat3A) -> Vec3 {
     mat3_to_euler(m)
 }
 
-/// The difference of two angles wrapped into `[−π, π]`: the compares are in
-/// double precision, the correction is the single-precision `2π`, and NaN
-/// passes through.
+/// The difference of two angles moved by one turn when it lies outside
+/// `[−π, π]` (once only, so a difference beyond 3π stays outside): the
+/// compares are in double precision against π, the correction is the
+/// single-precision `2π`, and NaN passes through.
 pub fn angle_difference(a: f32, b: f32) -> f32 {
     let d = a - b;
     let wide = f64::from(d);
@@ -425,13 +430,13 @@ pub fn quaternion_from_axis_angle(axis: Vec3, angle: f32) -> Quat {
     }
 }
 
-/// Four three-vectors widened to four-vectors with `w = 1`.
+/// The four rows of a 4×3 matrix widened to a 4×4's with `w = 1` each.
 pub fn widen4(vectors: [Vec3; 4]) -> [Vec4; 4] {
     vectors.map(|v| v.extend(1.0))
 }
 
-/// A 4×4 affine matrix from a 3×3 turn and a translation: the three rows
-/// copied, `w = 0`, and the translation in the fourth column.
+/// A 4×4 affine matrix from a 4×3 one (a 3×3 turn and a translation row):
+/// the three turn rows with `w = 0`, then the translation with `w = 1`.
 pub fn affine4(turn: &Mat3A, translation: Vec3) -> Mat4 {
     Mat4::from_cols(
         turn.x_axis.extend(0.0),
@@ -441,16 +446,17 @@ pub fn affine4(turn: &Mat3A, translation: Vec3) -> Mat4 {
     )
 }
 
-/// The turn of a yaw and a pitch, as the original writes its three rows:
-/// `[cos p, 0, −sin p]`, `[sin y·sin p, cos y, sin y·cos p]`,
-/// `[cos y·sin p, −sin y, cos y·cos p]`.
-pub fn basis_from_yaw_pitch(yaw: f32, pitch: f32) -> Mat3A {
-    let (sin_y, cos_y) = sin_cos(yaw);
+/// The turn about X by `pitch` composed with the turn about Y by `yaw`
+/// (the engine's fast sine and cosine), as the original writes its three
+/// rows: `[cos y, 0, −sin y]`, `[sin p·sin y, cos p, sin p·cos y]`,
+/// `[cos p·sin y, −sin p, cos p·cos y]`.
+pub fn basis_from_pitch_yaw(pitch: f32, yaw: f32) -> Mat3A {
     let (sin_p, cos_p) = sin_cos(pitch);
+    let (sin_y, cos_y) = sin_cos(yaw);
     Mat3A::from_cols(
-        Vec3A::new(cos_p, 0.0, -sin_p),
-        Vec3A::new(sin_y * sin_p, cos_y, sin_y * cos_p),
-        Vec3A::new(cos_y * sin_p, -sin_y, cos_y * cos_p),
+        Vec3A::new(cos_y, 0.0, -sin_y),
+        Vec3A::new(sin_p * sin_y, cos_p, sin_p * cos_y),
+        Vec3A::new(cos_p * sin_y, -sin_p, cos_p * cos_y),
     )
 }
 
@@ -553,7 +559,9 @@ pub fn axis_angle_to_mat3(axis: Vec3, angle: f32) -> Mat3A {
     )
 }
 
-/// `v` rotated `angle` about the unit `axis`, in the original's sum order.
+/// `v` rotated `angle` about the unit `axis` (the engine's fast sine and
+/// cosine): each component is a row of [`axis_angle_to_mat3`] dotted with
+/// `v`, summed `r2·v.z + (r1·v.y + r0·v.x)` in the row's own index order.
 pub fn rotate_about(axis: Vec3, v: Vec3, angle: f32) -> Vec3 {
     let (sin, cos) = sin_cos(angle);
     let one_minus = 1.0 - cos;
@@ -849,6 +857,16 @@ mod tests {
         assert_eq!(floor_to_i32(f32::NAN), i32::MIN);
         assert_eq!(round_to_i32(2.5), 2);
         assert_eq!(round_to_i32(3.5), 4);
+        assert_eq!(round_to_i32(-0.5), 0);
+        assert_eq!(round_to_i32(1e10), i32::MIN);
+        assert_eq!(round_to_i64(2.5), 2);
+        assert_eq!(round_to_i64(3.5), 4);
+        assert_eq!(round_to_i64(-2.5), -2);
+        assert_eq!(round_to_i64(f32::NAN), i64::MIN);
+        assert_eq!(round_to_i64(f32::INFINITY), i64::MIN);
+        assert_eq!(ceil_to_i32(f32::NAN), i32::MIN);
+        assert_eq!(floor_to_i32(3e9), i32::MIN);
+        assert_eq!(floor_to_i32(-2_147_483_648.5), i32::MIN);
     }
 
     #[test]
@@ -859,12 +877,30 @@ mod tests {
         assert_eq!(exp(0.0).to_bits(), 0x3F80_0016);
         assert_eq!(exp(1.0).to_bits(), 0x402D_F826);
         assert_eq!(exp(-1000.0), 0.0);
+        assert_eq!(exp(f32::NAN), f32::INFINITY);
+        assert_eq!(exp(1000.0), f32::INFINITY);
+        assert_eq!(ln(-1.0), f32::NEG_INFINITY);
+        assert!(ln(f32::NAN).is_finite());
         assert!((ln(3.0) - 3.0f32.ln()).abs() < 1e-3);
     }
 
     #[test]
     fn the_fast_trigonometry_and_its_wrapping() {
         assert_eq!(sin(0.0), 0.0);
+        // Past the reduction's range the sine polynomial overflows and the
+        // paired cosine is NaN, as the original's mask arithmetic gives.
+        assert_eq!(sin(2.0e9), f32::NEG_INFINITY);
+        let (s, c) = sin_cos(2.0e9);
+        assert_eq!(s, f32::NEG_INFINITY);
+        assert!(c.is_nan());
+        let (s, c) = sin_cos(-2.0e9);
+        assert_eq!(s, f32::INFINITY);
+        assert!(c.is_nan());
+        assert!(sin_cos(f32::NAN).0.is_nan() && sin_cos(f32::INFINITY).1.is_nan());
+        for i in -40..40 {
+            let x = i as f32 * 0.37;
+            assert_eq!(sin(x).to_bits(), sin_cos(x).0.to_bits(), "{x}");
+        }
         assert_eq!(sin_cos(0.0), (0.0, 1.0));
         for i in -40..40 {
             let x = i as f32 * 0.37;
@@ -998,11 +1034,13 @@ mod tests {
             a.z_axis.dot(Vec3::new(1.0, 2.0, 3.0).into()),
         );
         assert!((r - by_matrix).length() < 1e-5, "{r:?} {by_matrix:?}");
-        // The yaw+pitch rows follow the original's signs.
-        let m = basis_from_yaw_pitch(0.0, 0.5);
-        let (sin_p, cos_p) = sin_cos(0.5);
-        assert!(close(m.x_axis.x, cos_p));
-        assert!(close(m.x_axis.z, -sin_p));
+        // The pitch+yaw rows follow the original's signs.
+        let m = basis_from_pitch_yaw(0.25, 0.5);
+        let (sin_p, cos_p) = sin_cos(0.25);
+        let (sin_y, cos_y) = sin_cos(0.5);
+        assert_eq!(m.x_axis, Vec3A::new(cos_y, 0.0, -sin_y));
+        assert_eq!(m.y_axis, Vec3A::new(sin_p * sin_y, cos_p, sin_p * cos_y));
+        assert_eq!(m.z_axis, Vec3A::new(cos_p * sin_y, -sin_p, cos_p * cos_y));
         // The look rotation's forward is its last axis; the up and side
         // carry the approximate reciprocal square root.
         let look = look_rotation(Vec3::new(0.0, 0.0, -1.0));
