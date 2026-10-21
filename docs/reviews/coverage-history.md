@@ -83,3 +83,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | cba047ba | clean | 26.1% | 5.7% | 22.1% | 27.3% | mechanism routines: doors, levers, plates, dispatch and relays |
 | 2026-10-21 | ed0310c9 | clean | 26.3% | 5.7% | 22.3% | 27.3% | scene environment: TSceneEnvironment 15->55, RFE_GridEnvs (unit routines) 45->50 |
 | 2026-10-21 | 9f6d8b46 | clean | 26.8% | 5.7% | 22.7% | 27.3% | small effect nodes |
+| 2026-10-21 | d8e9153f | clean | 35.3% | 5.7% | 30.0% | 27.3% | wave 1: salvage (locomotion, grid, clip clocks), role scripts and dialogue, roles and search, mesh smoothing, thaumaturgy effects, GUI widgets, item possessions and windows |
