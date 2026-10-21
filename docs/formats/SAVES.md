@@ -394,9 +394,10 @@ global experience worth, memory flags and transition state), and
 work: open, scan, load (`load_package`, with the arena conversion and the
 forced transition locale), the character screen's load
 (`load_character_screen`), save (`save_full` in the writer's section
-order), checked save, checkpoint, death, delete, legacy removal and
-transition save. `create_empty` is the original's new-slot path (an empty
-package); `create` also writes a session into it.
+order), checked save, checkpoint (`checkpoint_full`), death, delete,
+legacy removal and transition save (`transition_save_full`).
+`create_empty` is the original's new-slot path (an empty package);
+`create` also writes a session into it.
 
 **Compatibility.** A package Exarust writes is laid out as the original's
 writer lays it out, and a retail save read and written back is unchanged.

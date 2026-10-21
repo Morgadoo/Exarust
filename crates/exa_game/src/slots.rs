@@ -105,6 +105,12 @@ pub struct LoadedSave {
 }
 
 impl LoadedSave {
+    /// The locale the load uses as text, cut at its first zero, for the
+    /// `<locale>.rfc` archive fallback.
+    pub fn level_locale_name(&self) -> String {
+        save_package::name_text(&self.level_locale)
+    }
+
     /// The player's character record, as the character screen loads it: the
     /// placement's reference names a record in the save's world character
     /// database. None when the reference points at the other database, the
@@ -608,10 +614,22 @@ impl Slots {
     /// Writes a checkpoint when there is none: saves the slot, then copies
     /// the save over the checkpoint. Returns whether it wrote one.
     pub fn checkpoint(&self, number: u32, session: &Session) -> io::Result<bool> {
+        self.checkpoint_full(number, session, &SaveWorld::default())
+    }
+
+    /// A checkpoint over a full save ([`Slots::save_full`]). With the
+    /// "saving disabled" flag the save part is skipped but the old save is
+    /// still copied over the checkpoint, as the original does.
+    pub fn checkpoint_full(
+        &self,
+        number: u32,
+        session: &Session,
+        world: &SaveWorld<'_>,
+    ) -> io::Result<bool> {
         if !save_chunk::checkpoint_due(self.has_checkpoint(number)) {
             return Ok(false);
         }
-        self.save(number, session)?;
+        self.save_full(number, session, world)?;
         fs::copy(
             self.file(number, SlotKind::Save),
             self.file(number, SlotKind::Checkpoint),
@@ -623,12 +641,24 @@ impl Slots {
     /// checkpoint whether or not one exists (the original's save button
     /// refreshes the checkpoint unconditionally).
     pub fn save_and_checkpoint(&self, number: u32, session: &Session) -> io::Result<()> {
-        self.save(number, session)?;
+        self.save_and_checkpoint_full(number, session, &SaveWorld::default())?;
+        Ok(())
+    }
+
+    /// A manual save with the world sections. Returns whether the save
+    /// itself ran; the checkpoint refresh happens either way.
+    pub fn save_and_checkpoint_full(
+        &self,
+        number: u32,
+        session: &Session,
+        world: &SaveWorld<'_>,
+    ) -> io::Result<bool> {
+        let saved = self.save_full(number, session, world)?;
         fs::copy(
             self.file(number, SlotKind::Save),
             self.file(number, SlotKind::Checkpoint),
         )?;
-        Ok(())
+        Ok(saved)
     }
 
     /// The permadeath rule, run when the player is dead (health below 0.01
@@ -712,6 +742,18 @@ impl Slots {
         locale: &str,
         session: &Session,
     ) -> io::Result<bool> {
+        self.transition_save_full(number, locale, session, &SaveWorld::default())
+    }
+
+    /// The transition save with the world sections of
+    /// [`Slots::save_full`].
+    pub fn transition_save_full(
+        &self,
+        number: u32,
+        locale: &str,
+        session: &Session,
+        world: &SaveWorld<'_>,
+    ) -> io::Result<bool> {
         let path = self.file(number, SlotKind::Save);
         let package = fs::read(&path)
             .ok()
@@ -722,7 +764,7 @@ impl Slots {
         {
             return Ok(false);
         }
-        self.save(number, session)?;
+        self.save_full(number, session, world)?;
         fs::copy(&path, self.file(number, SlotKind::Checkpoint))?;
         Ok(true)
     }
@@ -1434,6 +1476,7 @@ mod tests {
         let loaded = slots.load_package(number, false).unwrap();
         assert_eq!(loaded.forced_locale, Some(save_package::name("exanima05")));
         assert_eq!(loaded.level_locale, save_package::name("exanima05"));
+        assert_eq!(loaded.level_locale_name(), "exanima05");
         assert!(!loaded.has_level_section);
         assert!(!loaded.has_world_characters);
         assert!(!loaded.has_world_objects);
@@ -1560,6 +1603,32 @@ mod tests {
         // Opening the checkpoint reset its bad header; the save was created
         // fresh as well, and the checkpoint was not copied over it.
         assert_eq!(fs::read(slots.file(3, SlotKind::Checkpoint)).unwrap(), save);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_writes_every_section_and_copies_the_file() {
+        let dir = folder("checkpoint-full");
+        let slots = Slots::story(&dir);
+        let number = slots.create_empty().unwrap();
+        let world = SaveWorld {
+            world_characters: Some(b"characters"),
+            world_objects: Some((b"objects", b"manager")),
+            level: Some(("exanima01", b"level")),
+            disabled: false,
+        };
+        assert!(
+            slots
+                .checkpoint_full(number, &Session::story(), &world)
+                .unwrap()
+        );
+        let save = fs::read(slots.file(number, SlotKind::Save)).unwrap();
+        let checkpoint = fs::read(slots.file(number, SlotKind::Checkpoint)).unwrap();
+        assert_eq!(save, checkpoint);
+        let package = PackageImage::read(&save).unwrap();
+        assert!(package.has_section(save_package::WORLD_CHARACTER_DB));
+        assert!(package.has_section(save_package::WORLD_OBJECT_DB));
+        assert!(package.has_section(&save_package::name("exanima01")));
         let _ = fs::remove_dir_all(&dir);
     }
 
