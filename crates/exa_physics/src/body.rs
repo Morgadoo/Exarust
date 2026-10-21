@@ -95,8 +95,8 @@ pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// balance b. A living limb keeps the fast retention × u², and a human's r
 /// of 1 makes u 1 at any balance.
 const HUMAN_LIMB_DAMPING: f32 = 1.0;
-const LINK_ITERATIONS: usize = 20;
-const FRICTION_PASSES: usize = 8;
+pub(crate) const LINK_ITERATIONS: usize = 20;
+pub(crate) const FRICTION_PASSES: usize = 8;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -329,7 +329,8 @@ impl Part {
             &rest_inverse,
             &spheres,
             inverse_mass * pairs::LIMB_CONTACT_SCALE,
-        );
+        )
+        .with_mesh_box(centre, s.half);
         Self {
             bone,
             entity,

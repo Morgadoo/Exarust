@@ -8,6 +8,7 @@ use bevy::math::Affine3A;
 use super::super::tests::floor_quad;
 use super::super::{BodyPlugin, PartSetup, Ragdoll, Sleep, SolverStage, SolverStages, WAKE_COUNT};
 use super::*;
+use crate::sector::Bounds;
 
 const NONE: &[[Vec3; 3]] = &[];
 
@@ -590,6 +591,57 @@ fn the_body_plugin_adds_the_pairs() {
             .get::<Pairs>()
             .is_some()
     );
+}
+
+/// The all-pairs broad phase (the original's small-sector step) finds the
+/// same meeting as the cell grid when the awake body is listed first, and
+/// also stops the two limbs.
+#[test]
+fn the_all_pairs_sector_finds_the_same_meeting() {
+    let scene = || {
+        let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
+        a.set_velocity(Vec3::X * 2.0);
+        b.set_velocity(Vec3::NEG_X * 2.0);
+        (a, b)
+    };
+    for phase in [BroadPhase::Cells, BroadPhase::AllPairs] {
+        let (mut a, mut b) = scene();
+        let mut stages: Vec<Box<dyn SolverStage>> = vec![Box::new(match phase {
+            BroadPhase::Cells => Pairs::default(),
+            BroadPhase::AllPairs => Pairs::all_pairs(),
+        })];
+        let mut met = false;
+        for _ in 0..30 {
+            step(&mut [&mut a, &mut b], NONE, &mut stages);
+            met |= !the_pairs(&stages).touches().is_empty();
+        }
+        assert!(met, "{phase:?}");
+        assert!(centre(&a).distance(centre(&b)) > 0.19, "{phase:?}");
+    }
+}
+
+/// The meet test is the original's two-way box pre-test, not only the
+/// bounding spheres: two overlapping spheres whose mesh boxes are tiny
+/// never meet, so no contact is generated.
+#[test]
+fn the_box_meet_test_gates_the_pair() {
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    let mut b = ball(2, 11, Vec3::new(0.19, 2.0, 0.0), 0.1);
+    a.parts[0].pairing.mesh = Bounds::of_box(Vec3::ZERO, Vec3::splat(0.01));
+    b.parts[0].pairing.mesh = Bounds {
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.01),
+        radius: 0.1,
+    };
+    let mut stages = pairs();
+    stages[0].detect(&mut [&mut a, &mut b], &mut []);
+    assert!(the_pairs(&stages).touches().is_empty());
+    // With their real mesh boxes the same two parts touch.
+    let mut a = ball(1, 11, Vec3::new(0.0, 2.0, 0.0), 0.1);
+    let mut b = ball(2, 11, Vec3::new(0.19, 2.0, 0.0), 0.1);
+    stages[0].detect(&mut [&mut a, &mut b], &mut []);
+    assert_eq!(the_pairs(&stages).touches().len(), 1);
 }
 
 /// A pair keeps four points: a fifth replaces one of the closest two in

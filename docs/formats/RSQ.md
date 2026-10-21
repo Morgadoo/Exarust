@@ -431,11 +431,15 @@ prop). Rules in cm and ticks:
   the level does.
 - **Who meets whom.** Every awake part meets the parts in the 3 × 3 cells
   (600 cm) around it that it has not met yet this tick, awake or asleep,
-  so a sleeper is touched but two sleepers never meet. The spheres around
-  each part's spheres must overlap. A character's feet never meet other
-  parts (the original puts a foot out of body–body contacts when it is
-  registered and every tick its leg finds the ground; nothing takes it
-  back).
+  so a sleeper is touched but two sleepers never meet. The first part's
+  sphere around its spheres must overlap the second's mesh sphere; then
+  the original's two-way meet test compares each part's swept bounding
+  sphere against the other's mesh box (the slab test of
+  `exa_physics::sector`; touching counts as meeting). A small sector with
+  no grid walks every later pair instead (`body::Pairs::all_pairs`). A
+  character's feet never meet other parts (the original puts a foot out of
+  body–body contacts when it is registered and every tick its leg finds
+  the ground; nothing takes it back).
 - **Group masks** (two parts of one tree). From the root, with a bit
   counter from 0 (wrapping at 32), a part with children takes the next
   bit, its parent's bit and the two bits its parent was given; a leaf takes

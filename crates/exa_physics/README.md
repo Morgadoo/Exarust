@@ -49,7 +49,14 @@ spheres against the other's, with an immediate push by mobility shares
 and φ; up to four points per pair are solved in the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
 dropped once satisfied) and rub in the friction passes; a contact
-equalises the two bodies' sleep countdowns (`body::equalise_sleep`).
+equalises the two bodies' sleep countdowns (`body::equalise_sleep`). The
+sector's bookkeeping (`src/sector.rs`) holds the original's 600 cm grid,
+the rounded-to-even cell span with its one-cell margin and row-overflow
+guard, the static and swept sphere–box meet test that gates a pair before
+contact generation (`intersect::swept_sphere_aabb_hit`), the placement
+and static overlap pre-tests, and the step's stages and budgets; the pair
+stage uses its cells, or the all-pairs walk of a small sector
+(`body::Pairs::all_pairs`).
 Blows are queued for the next tick, and parts are drawn between their last
 two ticks (`body::BodyPlugin`). Every part is
 pinned at its origin to its parent, and the skeleton's links bound each

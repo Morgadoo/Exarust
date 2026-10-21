@@ -33,6 +33,7 @@ use bevy::prelude::*;
 use super::balance::cm;
 use super::{CM, PUSH_STRAIN, Part, Ragdoll, SolverStage, equalise_sleep, keep_rigid, weights};
 use crate::contact::evicted;
+use crate::sector::{self, Bounds, Meeting};
 
 /// A character limb's contact mobility per unit of its relative inverse
 /// mass: n/((20·size³ + V/10⁴)·d) for a human's 18 parts, size 1, mass
@@ -43,8 +44,6 @@ pub const LIMB_CONTACT_SCALE: f32 = 2.0 / 3.0;
 /// A part's order key is this over its mobility, rounded: the part with the
 /// smaller key (the more mobile one) brings its spheres.
 const KEY_NUMERATOR: f32 = 100.0;
-/// Side (m) of the grid's cells (the original's 600 cm).
-const CELL: f32 = 6.0;
 /// Squared travel (cm²) of a sphere relative to the other part over a tick
 /// above which it is swept from where the last tick left it.
 const SWEEP_TRAVEL2: f32 = 0.1;
@@ -93,46 +92,50 @@ pub struct Pairing {
     /// Contact mobility (larger moves more): it shares a contact's push and
     /// picks the side that brings its spheres.
     pub mobility: f32,
-    /// The centre of the box around the part's spheres, as weights on its
-    /// particles, and the radius (m) of the sphere about it holding them
-    /// all (0 without spheres).
+    /// The box and sphere around the part's collision spheres, in its space.
+    pub sphere: Bounds,
+    /// The node's mesh box and bounding sphere, in the part's space: the
+    /// other side of the original's meet test (Exarust's parts are met
+    /// through their spheres, so this only feeds the pre-test).
+    pub mesh: Bounds,
+    /// The centre of the sphere around all the part's spheres, as weights
+    /// on its particles.
     centre: [f32; 4],
-    radius: f32,
 }
 
 impl Pairing {
     /// A part's pairing from its rest points, their inverse edge matrix
-    /// and its spheres, with no masks.
+    /// and its spheres, with no masks. The mesh bound starts as the sphere
+    /// bound; a character part replaces it with its node box
+    /// ([`Pairing::with_mesh_box`]).
     pub(crate) fn new(
         rest: &[Vec3; 4],
         rest_inverse: &Mat3,
         spheres: &[(Vec3, f32)],
         mobility: f32,
     ) -> Self {
-        let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
-        for &(c, r) in spheres {
-            lo = lo.min(c - Vec3::splat(r));
-            hi = hi.max(c + Vec3::splat(r));
-        }
-        let (centre, radius) = if spheres.is_empty() {
-            (Vec3::ZERO, 0.0)
-        } else {
-            let centre = (lo + hi) * 0.5;
-            let radius = spheres
-                .iter()
-                .map(|&(c, r)| c.distance(centre) + r)
-                .fold(0.0, f32::max);
-            (centre, radius)
-        };
-        let w = *rest_inverse * (centre - rest[0]);
+        let sphere = Bounds::of_spheres(spheres);
+        let w = *rest_inverse * (sphere.centre - rest[0]);
         Self {
             group: 0,
             layer: 0,
             out: false,
             mobility,
+            sphere,
+            mesh: sphere,
             centre: [1.0 - w.x - w.y - w.z, w.x, w.y, w.z],
-            radius,
         }
+    }
+
+    /// Sets the part's mesh box from its node box in its own space.
+    pub(crate) fn with_mesh_box(mut self, centre: Vec3, half: Vec3) -> Self {
+        self.mesh = Bounds::of_box(centre, half);
+        self
+    }
+
+    /// The radius (m) of the sphere holding all of the part's spheres.
+    pub fn radius(&self) -> f32 {
+        self.sphere.radius
     }
 
     /// The order key: 100 over the mobility, rounded half to even, as a
@@ -144,11 +147,6 @@ impl Pairing {
         } else {
             0
         }
-    }
-
-    /// The radius (m) of the sphere holding all of the part's spheres.
-    pub fn radius(&self) -> f32 {
-        self.radius
     }
 }
 
@@ -269,7 +267,7 @@ fn body_key(body: &Ragdoll) -> Entity {
 
 /// Whether a part takes part in contacts with other parts at all.
 fn meets(p: &Part) -> bool {
-    !p.pairing.out && p.pairing.radius > 0.0 && !p.spheres.is_empty()
+    !p.pairing.out && p.pairing.radius() > 0.0 && !p.spheres.is_empty()
 }
 
 /// The world centre of the sphere around a part's spheres.
@@ -277,9 +275,25 @@ fn bound_centre(p: &Part) -> Vec3 {
     p.point(&p.pairing.centre)
 }
 
+/// The world centre of the part's mesh bound.
+fn mesh_centre(p: &Part) -> Vec3 {
+    p.transform().transform_point3(p.pairing.mesh.centre)
+}
+
+/// A part as the meet test sees it: its bounds and where this tick and the
+/// last left it.
+fn meeting(p: &Part) -> Meeting {
+    Meeting {
+        sphere: p.pairing.sphere,
+        mesh: p.pairing.mesh,
+        previous: p.settled,
+        current: p.transform(),
+    }
+}
+
 /// The grid cell (x, z) of a point.
 fn cell_of(x: Vec3) -> (i32, i32) {
-    ((x.x / CELL).floor() as i32, (x.z / CELL).floor() as i32)
+    sector::cell_of(x * 100.0, (0, 0))
 }
 
 /// The shares of a push or correction two parts of mobilities `a` and `b`
@@ -298,15 +312,7 @@ fn shares(a: f32, b: f32) -> (f32, f32) {
 /// second value, φ = 1/(largest share), is 1 for a point on one particle
 /// and 4 at the centroid. None when no weight is positive.
 pub(super) fn spread(w: [f32; 4]) -> Option<([f32; 4], f32)> {
-    let clamped = w.map(|x| x.max(0.0));
-    let sum: f32 = clamped.iter().sum();
-    if sum.is_nan() || sum <= 0.0 {
-        return None;
-    }
-    let share = clamped.map(|x| x / sum);
-    let top = share.iter().copied().fold(0.0, f32::max);
-    let phi = 1.0 / top;
-    Some((share.map(|x| x * phi), phi))
+    crate::sector::normalise_to_max(w)
 }
 
 /// The immediate push of a hit, `delta` (m, world) on the sphere side A
@@ -471,6 +477,20 @@ pub struct Touch {
     pub deepest: f32,
 }
 
+/// How the pair stage finds the parts that may meet: the original's 3 × 3
+/// cells of its 600 cm grid, or, in a sector too small for a grid, every
+/// later part (the all-pairs sector step). The all-pairs walk visits only
+/// pairs in list order, as the original's does; Exarust lists awake parts
+/// before sleeping ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BroadPhase {
+    /// Bucketed by cell and searched over the 3 × 3 cells around a part.
+    #[default]
+    Cells,
+    /// Every awake part against every later part.
+    AllPairs,
+}
+
 /// The pair stage of the solver ([`SolverStage`]): body–body detection
 /// after the iterations, the pair pass at the start of each of the next
 /// tick's iterations, the pair friction at the start of each friction
@@ -480,9 +500,24 @@ pub struct Touch {
 pub struct Pairs {
     pairs: Vec<Pair>,
     touches: Vec<Touch>,
+    /// How parts are found.
+    phase: BroadPhase,
 }
 
 impl Pairs {
+    /// A pair stage that searches every pair instead of the grid (the
+    /// original's all-pairs sector).
+    pub fn all_pairs() -> Self {
+        Self {
+            phase: BroadPhase::AllPairs,
+            ..Self::default()
+        }
+    }
+
+    /// How this stage finds the parts that may meet.
+    pub fn phase(&self) -> BroadPhase {
+        self.phase
+    }
     /// The contacts found in the last detection, one per pair of parts.
     pub fn touches(&self) -> &[Touch] {
         &self.touches
@@ -522,27 +557,48 @@ impl Pairs {
     /// only, the sleeping ones near them.
     fn find(&mut self, bodies: &mut [&mut Ragdoll], awake: usize) {
         self.touches.clear();
-        // Awake parts first, body by body, then the sleeping parts in the
-        // cells around them.
+        // Awake parts first, body by body, then (all, or those in the cells
+        // around them) the sleeping parts.
         let mut found: Vec<(usize, usize, (i32, i32))> = Vec::new();
-        let mut near: HashSet<(i32, i32)> = HashSet::new();
         for (b, body) in bodies[..awake].iter().enumerate() {
             for (k, p) in body.parts.iter().enumerate() {
-                if !meets(p) {
-                    continue;
-                }
-                let (x, z) = cell_of(bound_centre(p));
-                found.push((b, k, (x, z)));
-                for dx in -1..=1 {
-                    for dz in -1..=1 {
-                        near.insert((x + dx, z + dz));
-                    }
+                if meets(p) {
+                    found.push((b, k, cell_of(bound_centre(p))));
                 }
             }
         }
         let movers = found.len();
         if movers == 0 {
             return;
+        }
+        match self.phase {
+            BroadPhase::AllPairs => {
+                for (b, body) in bodies.iter().enumerate().skip(awake) {
+                    for (k, p) in body.parts.iter().enumerate() {
+                        if meets(p) {
+                            found.push((b, k, cell_of(bound_centre(p))));
+                        }
+                    }
+                }
+                let _span = bevy::log::info_span!("pairs: meet all").entered();
+                for x in 0..movers {
+                    for y in x + 1..found.len() {
+                        let (bx, px, _) = found[x];
+                        let (by, py, _) = found[y];
+                        self.meet(bodies, (bx, px), (by, py));
+                    }
+                }
+                return;
+            }
+            BroadPhase::Cells => {}
+        }
+        let mut near: HashSet<(i32, i32)> = HashSet::new();
+        for &(_, _, (x, z)) in &found {
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    near.insert((x + dx, z + dz));
+                }
+            }
         }
         let span = bevy::log::info_span!("pairs: gather sleepers").entered();
         for (b, body) in bodies.iter().enumerate().skip(awake) {
@@ -558,9 +614,9 @@ impl Pairs {
         }
         drop(span);
         let _span = bevy::log::info_span!("pairs: meet").entered();
-        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        let mut grid = sector::CellGrid::new();
         for (i, &(_, _, cell)) in found.iter().enumerate() {
-            grid.entry(cell).or_default().push(i);
+            grid.insert(cell, i);
         }
         // Each awake part in turn meets the parts of its 3 × 3 cells it has
         // not met yet: every pair once.
@@ -569,13 +625,8 @@ impl Pairs {
         for x in 0..movers {
             met[x] = true;
             others.clear();
-            let (cx, cz) = found[x].2;
-            for dx in -1..=1 {
-                for dz in -1..=1 {
-                    if let Some(list) = grid.get(&(cx + dx, cz + dz)) {
-                        others.extend(list.iter().copied().filter(|&y| !met[y]));
-                    }
-                }
+            for (_, list) in grid.near(found[x].2) {
+                others.extend(list.iter().copied().filter(|&y| !met[y]));
             }
             others.sort_unstable();
             for &y in &others {
@@ -586,9 +637,10 @@ impl Pairs {
         }
     }
 
-    /// Two parts that may touch: the group or layer rule, then the spheres
-    /// around their spheres, then contacts with the more mobile one's
-    /// spheres (on a tie, the awake one's).
+    /// Two parts that may touch: the group or layer rule, the awake part's
+    /// sphere against the other's mesh sphere, then the original's two-way
+    /// box meet test, and contacts with the more mobile one's spheres (on a
+    /// tie, the first part's).
     fn meet(&mut self, bodies: &mut [&mut Ragdoll], x: (usize, usize), y: (usize, usize)) {
         let (px, py) = (&bodies[x.0].parts[x.1], &bodies[y.0].parts[y.1]);
         let skip =
@@ -600,8 +652,10 @@ impl Pairs {
         if skip {
             return;
         }
-        let reach = px.pairing.radius + py.pairing.radius;
-        let d2 = bound_centre(px).distance_squared(bound_centre(py));
+        // The broad phase's first look: the first part's sphere against
+        // the second's mesh sphere, as the original walks the pair.
+        let reach = px.pairing.sphere.radius + py.pairing.mesh.radius;
+        let d2 = bound_centre(px).distance_squared(mesh_centre(py));
         if d2.is_nan() || d2 >= reach * reach {
             return;
         }
@@ -610,6 +664,12 @@ impl Pairs {
         } else {
             (x, y)
         };
+        if !sector::meet(
+            &meeting(&bodies[a.0].parts[a.1]),
+            &meeting(&bodies[b.0].parts[b.1]),
+        ) {
+            return;
+        }
         self.generate(bodies, a, b);
     }
 
@@ -677,7 +737,7 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
     let before = pb.settled.inverse() * pa.settled;
-    let (b_centre, b_radius) = (pb.rest_point(&pb.pairing.centre), pb.pairing.radius);
+    let (b_centre, b_radius) = (pb.pairing.sphere.centre, pb.pairing.radius());
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
         let start = before.transform_point3(c);
