@@ -585,7 +585,7 @@ mod tests {
             save_package::Flavour::Arena,
         )
         .unwrap();
-        data.character = Some(vec![7, 7, 7]);
+        data.character = Some(vec![7, 7, 7, 7]);
         package.put_section(PLAYER_DATA, &data.write());
         fs::write(&path, package.to_bytes()).unwrap();
         // A save without a character of its own keeps the old placement.
@@ -598,8 +598,10 @@ mod tests {
             save_package::Flavour::Arena,
         )
         .unwrap();
-        assert_eq!(data.character, Some(vec![7, 7, 7]));
+        assert_eq!(data.character, Some(vec![7, 7, 7, 7]));
         assert_eq!(data.header.clock(), 3);
+        let info = session::slot_info(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(info.player_record, Some(0x0707_0707));
         let _ = fs::remove_dir_all(&dir);
     }
 

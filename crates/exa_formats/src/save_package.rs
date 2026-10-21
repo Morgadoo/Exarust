@@ -803,6 +803,19 @@ impl PlayerData {
         }
     }
 
+    /// The character reference the placement chunk starts with: bit 31 says
+    /// the record is not in the database yet, the low 28 bits are its id.
+    pub fn character_reference(&self) -> Option<u32> {
+        let word = self.character.as_ref()?.get(0..4)?;
+        Some(u32::from_le_bytes(word.try_into().ok()?))
+    }
+
+    /// The id of the player's character record, as the placement chunk
+    /// stores it.
+    pub fn character_record_id(&self) -> Option<u32> {
+        self.character_reference().map(|word| word & 0x0FFF_FFFF)
+    }
+
     /// The mask the character screen loads a save with: the journal and the
     /// global experience snapshot only.
     pub const CHARACTER_SCREEN_MASK: u32 = 0x10_0010;
@@ -1182,7 +1195,7 @@ mod tests {
         header.clock = 900;
         header.camera = [1.0, 2.0, 3.0];
         header.zoom = 1.5;
-        data.character = Some(vec![9, 8, 7]);
+        data.character = Some(vec![0x2A, 0, 0, 0x80]);
         data.set_journal(&[JournalRecord {
             id: 4,
             title: "Day one".to_string(),
@@ -1206,7 +1219,9 @@ mod tests {
         assert_eq!(header.flags & 0xFF, 3);
         assert_eq!((header.flags & 0xFF_0000) >> 16, 1);
         assert_eq!(header.clock, 900);
-        assert_eq!(read.character, Some(vec![9, 8, 7]));
+        assert_eq!(read.character, Some(vec![0x2A, 0, 0, 0x80]));
+        assert_eq!(read.character_reference(), Some(0x8000_002A));
+        assert_eq!(read.character_record_id(), Some(42));
         assert_eq!(
             read.journal().unwrap().unwrap(),
             vec![JournalRecord {

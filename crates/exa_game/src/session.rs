@@ -88,6 +88,8 @@ pub struct SlotInfo {
     pub day: u32,
     /// How many journal entries the save holds.
     pub journal: usize,
+    /// The player's character record id, when a placement chunk is stored.
+    pub player_record: Option<u32>,
 }
 
 /// Why a file is not a session.
@@ -206,6 +208,7 @@ fn info_of(data: &PlayerData) -> SlotInfo {
             .flatten()
             .map(|records| records.len())
             .unwrap_or(0),
+        player_record: data.character_record_id(),
     }
 }
 

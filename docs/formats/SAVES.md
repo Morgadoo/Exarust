@@ -200,9 +200,12 @@ Exarust stores the company's copper there and also in its own chunk.
 
 Every chunk is `u32 id, u32 size, payload`. The character is a chunk too:
 its tag is `0xCAC0CA00` and its payload is the character placement the
-level exporter defines ([RFC.md](RFC.md)). The reader takes the chunk
-headers while at least eight bytes remain, so a tail of up to seven bytes
-after the last chunk is ignored. Unknown ids are skipped by size.
+level exporter defines ([RFC.md](RFC.md)); its first word is the player's
+character reference — bit 31 set while the record is not in the database
+yet, the low 28 bits its id — so a slot's player can be looked up in
+`#worldchrdb`. The reader takes the chunk headers while at least eight
+bytes remain, so a tail of up to seven bytes after the last chunk is
+ignored. Unknown ids are skipped by size.
 
 | id | mode | payload |
 |---|---|---|
