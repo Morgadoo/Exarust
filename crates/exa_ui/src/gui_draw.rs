@@ -429,6 +429,10 @@ pub struct GuiCanvas {
     size: (u32, u32),
     /// The frame counter the canvas was last drawn at.
     drawn: u64,
+    /// The frames the canvas image shows. A screen that paints the same
+    /// frames again keeps the image instead of rasterising and uploading a
+    /// window-sized one every frame.
+    last: Vec<GuiFrame>,
 }
 
 /// Draws every submitted frame over the 3-D view, once a frame.
@@ -853,8 +857,17 @@ fn render_frames(
         frames.clear();
         return;
     }
+    if canvas.size == (width, height) && canvas.image.is_some() && canvas.last == frames.frames {
+        frames.clear();
+        if let Some(entity) = canvas.entity
+            && let Ok((_, _, mut visibility)) = nodes.get_mut(entity)
+        {
+            *visibility = Visibility::Inherited;
+        }
+        return;
+    }
     let pixels = rasterise(&frames.frames, &textures, width, height);
-    frames.clear();
+    canvas.last = std::mem::take(&mut frames.frames);
     let image = Image::new(
         Extent3d {
             width,
@@ -1285,6 +1298,51 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<GuiFrames>().frames.is_empty());
+    }
+
+    #[test]
+    fn the_same_frames_keep_the_canvas_image_instead_of_drawing_again() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins).add_plugins(GuiDrawPlugin);
+        app.init_resource::<Assets<Image>>();
+        app.world_mut().spawn((
+            Window {
+                resolution: bevy::window::WindowResolution::new(8, 8),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        let frame = solid_frame(
+            vec![
+                vertex(0.0, 0.0, [255, 0, 0, 255]),
+                vertex(0.0, 4.0, [255, 0, 0, 255]),
+                vertex(4.0, 4.0, [255, 0, 0, 255]),
+                vertex(4.0, 0.0, [255, 0, 0, 255]),
+            ],
+            BLEND_ALPHA,
+        );
+        app.world_mut()
+            .resource_mut::<GuiFrames>()
+            .push(frame.clone());
+        app.update();
+        let drawn = app.world().resource::<GuiCanvas>().drawn;
+        assert_eq!(drawn, 1);
+        app.world_mut().resource_mut::<GuiFrames>().push(frame);
+        app.update();
+        assert_eq!(app.world().resource::<GuiCanvas>().drawn, drawn);
+        assert!(app.world().resource::<GuiFrames>().frames.is_empty());
+        let changed = solid_frame(
+            vec![
+                vertex(0.0, 0.0, [0, 255, 0, 255]),
+                vertex(0.0, 4.0, [0, 255, 0, 255]),
+                vertex(4.0, 4.0, [0, 255, 0, 255]),
+                vertex(4.0, 0.0, [0, 255, 0, 255]),
+            ],
+            BLEND_ALPHA,
+        );
+        app.world_mut().resource_mut::<GuiFrames>().push(changed);
+        app.update();
+        assert_eq!(app.world().resource::<GuiCanvas>().drawn, drawn + 1);
     }
 
     #[test]
