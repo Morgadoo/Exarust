@@ -8,11 +8,11 @@
 //! - **Intensity** ([`Rain::set_intensity`]): the intensity itself is kept,
 //!   and the drawn count becomes `round(4096·intensity)`.
 //! - **Gusts** ([`Rain::step`]): a value walks between -1 and 1. Above 1 it
-//!   falls by `intensity·0.0015·r`; from 0 to 1 it rises by
-//!   `intensity·(0.003·r − 0.0015)`; below 0 it rises by
-//!   `intensity·0.0015·r` (all in double precision, `r` a unit draw). The
-//!   fall speed is `(gust·0.5 + 0.9)·intensity + 0.4` and the sideways drift
-//!   `(gust·0.3 + 0.15)·intensity²`.
+//!   falls by `f·0.0015·r`; from 0 to 1 it rises by
+//!   `f·(0.003·r − 0.0015)`; below 0 it rises by `f·0.0015·r` (all in
+//!   double precision, `r` a unit draw, `f` the frame's fall figure, capped
+//!   at 30). The fall speed is `(gust·0.5 + 0.9)·intensity + 0.4` and the
+//!   sideways drift `(gust·0.3 + 0.15)·intensity²`.
 //! - **Each drop**: it moves by the frame's fall, which is
 //!   `(8·intensity + 8)·(dt⁴ + 0.2) / min(f, 30)` times a streak of
 //!   `1.5·f` cm, where `f = (0.4·intensity + 0.25)·ms` is the time since the
@@ -314,19 +314,21 @@ mod tests {
     fn the_gust_walks_the_three_branches_in_double() {
         let mut rain = rain();
         rain.intensity = 1.0;
+        // f = (0.4 + 0.25)·12 = 7.8: the walk is scaled by f.
+        let walk = 7.8 * 0.0015 + 1e-6;
         rain.gust = 2.0;
         let mut rng = Mt19937::new(1);
-        rain.step(0, 0.012, &mut rng);
-        assert!(rain.gust < 2.0 && rain.gust > 2.0 - 0.0015 - 1e-6);
+        rain.step(12, 0.012, &mut rng);
+        assert!(rain.gust < 2.0 && rain.gust > 2.0 - walk);
         rain.gust = 0.5;
-        rain.step(0, 0.012, &mut rng);
-        assert!(rain.gust >= 0.5 - 0.0015 && rain.gust <= 0.5 + 0.0015);
+        rain.step(12, 0.012, &mut rng);
+        assert!(rain.gust >= 0.5 - walk && rain.gust <= 0.5 + walk);
         rain.gust = -0.5;
-        rain.step(0, 0.012, &mut rng);
+        rain.step(12, 0.012, &mut rng);
         assert!(rain.gust > -0.5);
         // The fall and drift figures.
         rain.gust = 0.5;
-        rain.step(0, 0.012, &mut rng);
+        rain.step(12, 0.012, &mut rng);
         let expected_fall = (f64::from(rain.gust) * 0.5 + 0.9) * 1.0 + 0.4;
         assert!((f64::from(rain.fall_speed) - expected_fall).abs() < 1e-6);
         let expected_drift = (f64::from(rain.gust) * 0.3 + 0.15) * 1.0;
