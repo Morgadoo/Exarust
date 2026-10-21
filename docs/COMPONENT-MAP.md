@@ -5,28 +5,28 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **42.4% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 37.0% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
-- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **32.3%** reproduced.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **44.1% reimplemented** by Exarust's own code and **5.7% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 38.3% and 12.5%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
 
 ## By section
 
 | section | functions | KB | components | reimplemented | by engine | largest missing |
 |---|---:|---:|---:|---:|---:|---|
 | Runtime & platform | 2,407 | 293 | 26 | 4% | 72% | Steam Input action bindings, Win32 clipboard image/icon glue, Steam API glue |
-| Core, math & threading | 282 | 37 | 11 | 59% | 1% |  |
+| Core, math & threading | 282 | 37 | 11 | 60% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 56% | 0% | TStringLibrary, RF_DataManager, RFG_Locales routines (RFE_Export_RFC2 by address) |
 | Rendering & GPU | 823 | 334 | 63 | 58% | 3% | FLX_IconRender, Shading-mask GLSL snippets, Screen-quad GLSL snippets |
 | World, levels & terrain | 454 | 174 | 31 | 52% | 7% | TSector, Scene node despawn and viewport step (TSceneTaskInt by address), TTerrainPlugin |
-| Physics, bodies & cloth | 363 | 242 | 13 | 45% | 0% | RFE_Dynamics_Cloth, TSimObject |
-| Characters, motion & animation | 506 | 198 | 23 | 41% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
+| Physics, bodies & cloth | 363 | 242 | 13 | 46% | 0% | RFE_Dynamics_Cloth, TSimObject |
+| Characters, motion & animation | 506 | 198 | 23 | 42% | 0% | TCharDecomp2, TKFCCatRom3f, SG_CharacterMorph |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 51% | 0% | TCharLoot, TItemRenderer, TPopUpDesc |
-| AI & behaviour | 437 | 206 | 17 | 40% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
+| AI & behaviour | 437 | 206 | 17 | 50% | 0% | TCharViewBehaviour, TObjectEntity, FLXG_Pathfinding |
 | Thaumaturgy & effects | 697 | 296 | 83 | 35% | 0% | RF_Env_Effects, TForceBubbleEffect, SG_Thaumaturgy |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 61% | 0% | TDialogueChoices, TScriptRole, TGameTips |
-| Game modes, arena & session | 646 | 193 | 23 | 34% | 0% | TLoadoutForm, TDivCardForm, TCharCreation |
+| Game modes, arena & session | 646 | 193 | 23 | 41% | 0% | TLoadoutForm, TDivCardForm, TCharCreation |
 | UI | 959 | 312 | 63 | 38% | 0% | TCharacterView, TCompactSkillUI, RF_GUI_Text_Edit |
 | Other, tools & editor | 171 | 33 | 8 | 0% | 0% | Debug command registry (unit before RF_Dynamics) |
 
@@ -53,7 +53,6 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | functions | KB | coverage |
 |---|---|---:|---:|---:|
-| SG_PlayerControls | AI & behaviour | 122 | 47 | 10% |
 | SG_GameGUI | UI | 62 | 22 | 8% |
 | SG_Thaum_Mind | Thaumaturgy & effects | 45 | 21 | 13% |
 | TGUIForm | UI | 77 | 20 | 16% |
@@ -78,11 +77,14 @@ Ordered by code size; these are where most of the original still has no counterp
 | RF_Env_Effects | Thaumaturgy & effects | 6 | 3 | 0% |
 | SG_Character_DBs | Data, assets & I/O | 15 | 3 | 10% |
 | TSplashScreen | UI | 7 | 3 | 4% |
+| FLX_IconRender | Rendering & GPU | 13 | 3 | 0% |
 
 ## Best covered components
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
+| XA_Arena | Game modes, arena & session | 71 | 50% | exa_game/src/manage.rs; exa_game/src/tournament.rs |
+| TMotileAI | AI & behaviour | 60 | 50% | exa_ai/src/combat.rs; exa_ai/src/combat_test.rs |
 | TGUIDrawSkin | UI | 35 | 85% | exa_ui/src/skin.rs; exa_ui/src/lib.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 81% | exa_physics/src/cloth.rs; exa_world/src/cloth_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 75% | exa_world/src/nav/walkable.rs; exa_world/src/nav/query.rs |
@@ -101,23 +103,21 @@ Ordered by code size; these are where most of the original still has no counterp
 | RFE_MeshTools | Rendering & GPU | 19 | 70% | exa_assets/src/mesh_edit.rs; exa_assets/src/vertex_cache.rs |
 | RF_Dynamics_Volumes | Physics, bodies & cloth | 14 | 90% | exa_physics/src/volume.rs; exa_physics/src/volume/tests.rs |
 | RF_Morphing | Characters, motion & animation | 16 | 76% | exa_formats/src/morph.rs; exa_assets/src/morph_controller.rs |
-| TAudioEnvironment | Audio | 13 | 93% | exa_audio/src/ambience.rs; exa_audio/src/bank.rs |
-| RFG_Dialogue | Script, dialogue & story | 18 | 65% | exa_script/src/dialogue.rs; exa_script/src/bubbles.rs |
 
 ## Combat rules
 
 | rule | inside | bytes | coverage |
 |---|---|---:|---:|
 | NPC combat state | TMotileAI | 18,453 | 5% |
-| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 40% |
+| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 70% |
 | per-part weapon stat bytes of factory weapons | FLX_ItemFactory | 3,692 | 90% |
-| armour layers from equipped apparel | SG_CharacterGen | 3,680 | 40% |
+| armour layers from equipped apparel | SG_CharacterGen | 3,680 | 60% |
 | weapon mesh assembly (feeds striking-part extent) | FLX_ItemFactory | 3,282 | 40% |
 | combat positioning score (spacing/reach) | TCombatant | 3,152 | 85% |
 | factory weapon spawn, striking-part extent | FLX_ItemFactory | 1,349 | 30% |
 | builds the weapon stat record from the item weapon section | TMotilePart | 1,284 | 55% |
-| grip/owner pass over the weapon stat record | TMotilePart | 1,244 | 0% |
-| re-runs the grip pass for each held weapon | TMotilePart | 798 | 0% |
+| grip/owner pass over the weapon stat record | TMotilePart | 1,244 | 80% |
+| re-runs the grip pass for each held weapon | TMotilePart | 798 | 80% |
 | apparel instance quality/condition | Item description phrases | 780 | 40% |
 | factory item condition | Item description phrases | 532 | 60% |
 | applies damage to a body | TMotileDynamics | 481 | 50% |
