@@ -175,16 +175,23 @@ impl Slots {
             .join(save_package::slot_file_name(self.prefix(), number, kind))
     }
 
+    /// Whether a slot file can be opened for reading, the original's
+    /// existence test (`CreateFile` with read access); a directory or an
+    /// unreadable file is not there.
+    fn opens(&self, number: u32, kind: SlotKind) -> bool {
+        let path = self.file(number, kind);
+        fs::metadata(&path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+            && fs::File::open(path).is_ok()
+    }
+
     /// Whether a checkpoint file for the slot exists. The original's test
     /// only opens the file for reading, so an unreadable file is not a
     /// checkpoint; a directory is not one either (Windows' create call
     /// without the backup flag fails on it).
     pub fn has_checkpoint(&self, number: u32) -> bool {
-        let path = self.file(number, SlotKind::Checkpoint);
-        fs::metadata(&path)
-            .map(|meta| meta.is_file())
-            .unwrap_or(false)
-            && fs::File::open(path).is_ok()
+        self.opens(number, SlotKind::Checkpoint)
     }
 
     /// Every slot file found by name, in directory order.
@@ -369,8 +376,7 @@ impl Slots {
         number: u32,
         prefer_checkpoint: bool,
     ) -> Result<LoadedSave, SaveError> {
-        let save = self.file(number, SlotKind::Save).is_file()
-            && fs::File::open(self.file(number, SlotKind::Save)).is_ok();
+        let save = self.opens(number, SlotKind::Save);
         let checkpoint = self.has_checkpoint(number);
         // The original's branch: with a checkpoint and either an explicit
         // checkpoint request or no save, open the checkpoint; otherwise a
@@ -401,7 +407,7 @@ impl Slots {
         };
         let kind = order
             .into_iter()
-            .find(|kind| self.file(number, *kind).is_file())
+            .find(|kind| self.opens(number, *kind))
             .ok_or(SaveError::Malformed)?;
         let loaded = self.load_file(number, kind, mask);
         // A failed full load from a checkpoint switches the package back to
@@ -729,6 +735,18 @@ impl Slots {
             return false;
         };
         package.has_section(&save_package::name(locale))
+    }
+
+    /// Whether a level is loadable: the save's section for the locale, or
+    /// otherwise the game archive's lookup (the caller reports whether
+    /// `<locale>.rfc` exists). The original asks the save first.
+    pub fn level_available(
+        &self,
+        number: u32,
+        locale: &str,
+        archive_has: impl FnOnce(&str) -> bool,
+    ) -> bool {
+        self.has_saved_level(number, locale) || archive_has(locale)
     }
 
     /// The transition save: when the save has **neither** an `exanima04`
@@ -1074,6 +1092,8 @@ mod tests {
         // A fresh save has neither the target level nor `exanima04`: the
         // transition saves and refreshes the checkpoint.
         assert!(!slots.has_saved_level(number, "exanima02"));
+        // The archive fallback only runs when the save has no section.
+        assert!(slots.level_available(number, "exanima02", |locale| locale == "exanima02"));
         let mut later = session.clone();
         later.clock = 55;
         assert!(slots.transition_save(number, "exanima02", &later).unwrap());
@@ -1087,6 +1107,8 @@ mod tests {
         package.put_section(&save_package::name("exanima02"), &[]);
         fs::write(slots.file(number, SlotKind::Save), package.to_bytes()).unwrap();
         assert!(slots.has_saved_level(number, "exanima02"));
+        // The save's own section is enough; the archive is not asked.
+        assert!(slots.level_available(number, "exanima02", |_| false));
         later.clock = 66;
         assert!(!slots.transition_save(number, "exanima02", &later).unwrap());
         // Once `exanima04` is in the save no transition saves, even to a

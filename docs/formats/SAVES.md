@@ -152,8 +152,9 @@ player, its package is created empty, and it becomes the current slot.
 index, deletes the `.rsg` and then the `.rcp`, and shifts the rest down.
 
 **Loading a slot** moves it to the front of the order, then opens the
-first of its files that **exists**: the `.rsg` and then the `.rcp`, or the
-`.rcp` first when the caller asks for the checkpoint. A file that exists
+first of its files that **exists** (opens for reading): the `.rsg` and
+then the `.rcp`, or the `.rcp` first when the caller asks for the
+checkpoint. A file that exists
 but does not read is a failed load; the other file is not tried. The full
 load reads `#worldobjdb`, `#worldchrdb`, the player data with every chunk,
 and the locale's section (or `<locale>.rfc` from the game archive). An old
