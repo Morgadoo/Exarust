@@ -190,8 +190,10 @@ their flat tint (e.g. black `Mat STint`, which fills unseen ground).
 
 The original bakes this into per-tile colour, normal, gloss, mask, height and
 displacement textures, using up to 32 materials in groups of four, and draws
-the tile as one 6 m block mesh at a time. Exarust evaluates the same weights
-per vertex and layers every material of a tile
+the tile as one 6 m block mesh at a time. A worker thread builds a tile's
+geometry and material masks. Exarust builds the same per-vertex weights and
+the tile's block meshes on the async compute pool, and layers every material
+of a tile
 (up to 16) in a shader, in palette order; each vertex's over opacities go to
 the shader in a per-tile texture, one texel per vertex. Shipped tiles use up
 to 12 materials (11 in one 6 m block, 10 in one quad): 11 of `exanima01`'s

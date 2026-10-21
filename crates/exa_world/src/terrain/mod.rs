@@ -38,7 +38,7 @@ use crate::room_view::InRoom;
 use crate::rooms::{CELL_TERRAIN, Rooms};
 use height::{HeightLayer, Plane, displacement, vegetation as vegetation_density};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Materials a tile stacks: every one it uses, as the original stacks them
 /// (the shipped tiles use up to 12).
@@ -531,15 +531,20 @@ pub fn spawn_terrain(
 /// palette material's textures (loaded the first time a tile uses it), or
 /// spawning a built tile with its plants.
 pub struct TerrainBuild {
-    terrain: Terrain,
-    palette: Palette,
-    tree: RuleTree,
-    noise: NoiseMaps,
+    terrain: Arc<Terrain>,
+    palette: Arc<Palette>,
+    tree: Arc<RuleTree>,
+    noise: Arc<NoiseMaps>,
     environment: Option<Handle<Image>>,
     /// The stand-in image carrying the layers' repeating sampler.
     layer_sampler: Handle<Image>,
-    /// Height and mask planes by texture name (lower case).
-    planes: HashMap<String, Option<Arc<Plane>>>,
+    /// The palette's height and mask textures, by lower-case name, for the
+    /// tile worker to decode.
+    texture_bytes: Arc<HashMap<String, Vec<u8>>>,
+    /// Height and mask planes decoded by the worker, by texture name.
+    plane_cache: Arc<Mutex<HashMap<String, Option<Arc<Plane>>>>>,
+    /// The next tile's geometry and masks, being built on the async pool.
+    building: Option<Task<BuiltTile>>,
     plants: Option<Plants>,
     /// Each palette material's diffuse, surface and normal textures.
     textures: HashMap<usize, MaterialTextures>,
@@ -649,14 +654,30 @@ impl TerrainBuild {
         let layer_sampler = loader.images.add(layer_sampler_image());
         let plants = Plants::load(loader, &palette);
         let tile_count = terrain.tiles.len();
+        // The tile worker decodes height and mask planes itself; copy their
+        // bytes now, while the install is at hand.
+        let mut texture_bytes = HashMap::new();
+        for material in &palette.materials {
+            for slot in [TerrainTexture::Height, TerrainTexture::Mask] {
+                if let Some(name) = material.texture(slot)
+                    && let Some(bytes) = loader.game.texture(name)
+                {
+                    texture_bytes
+                        .entry(name.to_ascii_lowercase())
+                        .or_insert_with(|| bytes.to_vec());
+                }
+            }
+        }
         Some(Self {
-            terrain,
-            palette,
-            tree,
-            noise: NoiseMaps::default(),
+            terrain: Arc::new(terrain),
+            palette: Arc::new(palette),
+            tree: Arc::new(tree),
+            noise: Arc::new(NoiseMaps::default()),
             environment,
             layer_sampler,
-            planes: HashMap::new(),
+            texture_bytes: Arc::new(texture_bytes),
+            plane_cache: Arc::new(Mutex::new(HashMap::new())),
+            building: None,
             plants,
             textures: HashMap::new(),
             surfaces: HashMap::new(),
@@ -729,38 +750,71 @@ impl TerrainBuild {
     /// One part of the next tile: its heightfield, a material's textures,
     /// or the tile itself; `false` when it waits for a surface map.
     fn part(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> bool {
-        let tile = &self.terrain.tiles[self.next];
-        let blocks = self.blocks.as_ref().map(|b| &b[self.next]);
-        // A tile without a block in a grid level is not built at all.
-        if blocks.is_some_and(|b| !b.any()) {
-            self.next += 1;
-            return true;
-        }
-        let Some(built) = &mut self.built else {
-            let game = loader.game;
-            let (planes, palette) = (&mut self.planes, &self.palette);
-            let mut height_layers = |used: &[usize]| height_layers(game, palette, planes, used);
-            let built = build_tile(
-                &self.terrain,
-                tile,
-                &self.palette,
-                &self.tree,
-                &self.noise,
-                &mut height_layers,
-                blocks,
-            );
-            self.stats.unresolved_layers += built.unresolved;
-            self.stats.truncated_tiles += usize::from(built.truncated);
+        if self.built.is_none() {
+            // The original's terrain worker builds a tile's geometry and
+            // masks off the main thread; the loading screen keeps drawing
+            // while it does.
+            if let Some(task) = self.building.as_mut() {
+                let Some(built) = block_on(poll_once(task)) else {
+                    return false;
+                };
+                self.building = None;
+                self.built = Some(built);
+            } else {
+                // A tile without a block in a grid level is not built.
+                if self.blocks.as_ref().is_some_and(|b| !b[self.next].any()) {
+                    self.next += 1;
+                    return true;
+                }
+                let index = self.next;
+                let terrain = self.terrain.clone();
+                let palette = self.palette.clone();
+                let tree = self.tree.clone();
+                let noise = self.noise.clone();
+                let blocks = self.blocks.as_ref().map(|b| b[index].clone());
+                let bytes = self.texture_bytes.clone();
+                let cache = self.plane_cache.clone();
+                let build = move || {
+                    let tile = &terrain.tiles[index];
+                    let mut planes = cache.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut height_layers =
+                        |used: &[usize]| height_layers(&palette, &mut planes, &bytes, used);
+                    build_tile(
+                        &terrain,
+                        tile,
+                        &palette,
+                        &tree,
+                        &noise,
+                        &mut height_layers,
+                        blocks.as_ref(),
+                    )
+                };
+                match AsyncComputeTaskPool::try_get() {
+                    Some(pool) => {
+                        self.building = Some(pool.spawn(async move { build() }));
+                        return false;
+                    }
+                    None => self.built = Some(build()),
+                }
+            }
+            let (unresolved, truncated, materials) = {
+                let built = self.built.as_ref().expect("tile just built");
+                (built.unresolved, built.truncated, built.materials.clone())
+            };
+            self.stats.unresolved_layers += unresolved;
+            self.stats.truncated_tiles += usize::from(truncated);
             // Its new materials' surface maps are packed meanwhile.
-            for &m in &built.materials {
+            for m in materials {
                 if !self.textures.contains_key(&m) && !self.surfaces.contains_key(&m) {
                     let surface = Surface::start(loader.game, &self.palette.materials[m]);
                     self.surfaces.insert(m, surface);
                 }
             }
-            self.built = Some(built);
             return true;
-        };
+        }
+        let tile = &self.terrain.tiles[self.next];
+        let blocks = self.blocks.as_ref().map(|b| &b[self.next]);
+        let built = self.built.as_mut().expect("tile built");
         if let Some(&m) = built
             .materials
             .iter()
@@ -904,22 +958,24 @@ impl TerrainBuild {
 /// The height layers of the palette materials `used`, their height and mask
 /// planes decoded once by name.
 fn height_layers(
-    game: &exa_assets::GameData,
     palette: &Palette,
     planes: &mut HashMap<String, Option<Arc<Plane>>>,
+    bytes: &HashMap<String, Vec<u8>>,
     used: &[usize],
 ) -> Vec<HeightLayer> {
     let mut plane = |name: Option<&str>| -> Option<Arc<Plane>> {
-        let name = name?;
-        planes
-            .entry(name.to_ascii_lowercase())
-            .or_insert_with(|| {
-                let rfi = Rfi::parse(game.texture(name)?).ok()?;
-                let rgba = rfi.decode_rgba8().ok()?;
-                let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
-                Plane::from_rgba(w, h, &rgba).map(Arc::new)
-            })
-            .clone()
+        let name = name?.to_ascii_lowercase();
+        if let Some(plane) = planes.get(&name) {
+            return plane.clone();
+        }
+        let plane = bytes.get(&name).and_then(|bytes| {
+            let rfi = Rfi::parse(bytes).ok()?;
+            let rgba = rfi.decode_rgba8().ok()?;
+            let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
+            Plane::from_rgba(w, h, &rgba).map(Arc::new)
+        });
+        planes.insert(name, plane.clone());
+        plane
     };
     used.iter()
         .map(|&m| {
@@ -1799,5 +1855,57 @@ mod tests {
             }
         }
         assert_eq!(levels, 17);
+    }
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+    use bevy::ecs::world::CommandQueue;
+    use bevy::prelude::World;
+    use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
+    use exa_assets::{ModelCache, ModelLoader};
+
+    /// A whole level's terrain builds through the tile worker on the async
+    /// pool and ends with every tile spawned (skipped without the game).
+    #[test]
+    fn the_tile_worker_builds_a_shipped_level() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        AsyncComputeTaskPool::get_or_init(TaskPool::default);
+        let mut world = World::new();
+        let root = world.spawn_empty().id();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        let stats = {
+            let mut commands = Commands::new(&mut queue, &world);
+            let mut build = TerrainBuild::begin(&mut loader, "exanima01", root, None).unwrap();
+            let mut steps = 0;
+            while !build.step(&mut commands, &mut loader, std::time::Duration::ZERO) {
+                steps += 1;
+                assert!(steps < 10_000, "terrain never finished");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            build.stats().clone()
+        };
+        queue.apply(&mut world);
+        assert_eq!(stats.tiles, 20);
+        assert!(stats.plants > 0);
+        assert!(world.get_resource::<ground::TerrainGround>().is_some());
+        let ground = world.get_resource::<ground::TerrainGround>().unwrap();
+        assert!(ground.height(0.0, 0.0).is_some());
     }
 }
