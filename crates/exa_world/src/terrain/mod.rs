@@ -1,12 +1,16 @@
-//! Terrain: one heightfield mesh per `.rft` tile, textured by layering the
-//! palette materials its painted layers resolve to.
+//! Terrain: one heightfield grid per `.rft` tile, drawn as one mesh per 6 m
+//! block and textured by layering the palette materials its painted layers
+//! resolve to.
 //!
 //! Layers name a palette material or a blend rule; [`blend`] evaluates rules
 //! per vertex into material weights. A tile stacks every material it uses
 //! (up to 16) in palette order, like the original: the first is opaque and
 //! each later one covers what is below by an "over" opacity, sharpened by
 //! the material's blend mask. The opacities travel to the shader in a
-//! per-tile splat texture, one texel per vertex.
+//! per-tile splat texture, one texel per vertex. A tile's geometry and masks
+//! are built on the async compute pool, as the original's terrain worker
+//! does them; [`patch`] is the original's shared triangle list, [`ground`]
+//! its world height query, and [`stream`] its streaming decisions.
 
 pub mod blend;
 pub mod frame;
@@ -527,9 +531,10 @@ pub fn spawn_terrain(
 }
 
 /// A level's terrain spawned a part at a time, so a level load can keep its
-/// frames short. Each part is one tile's heightfield and weights, one
-/// palette material's textures (loaded the first time a tile uses it), or
-/// spawning a built tile with its plants.
+/// frames short. Each part is one tile's heightfield and weights (built on
+/// the async compute pool), one palette material's textures (loaded the
+/// first time a tile uses it), or spawning a built tile with its blocks and
+/// plants.
 pub struct TerrainBuild {
     terrain: Arc<Terrain>,
     palette: Arc<Palette>,
@@ -956,7 +961,7 @@ impl TerrainBuild {
 }
 
 /// The height layers of the palette materials `used`, their height and mask
-/// planes decoded once by name.
+/// planes decoded once by name into the worker's shared cache.
 fn height_layers(
     palette: &Palette,
     planes: &mut HashMap<String, Option<Arc<Plane>>>,
@@ -1740,6 +1745,33 @@ mod tests {
             // exanima01's dirt rooms stack eight; one exanima67 tile twelve.
             assert!(most > 4, "{level}: {most}");
         }
+    }
+
+    /// Every shipped material's tiling factor is a whole number of 4/48 m
+    /// repeats, so the original's tile-corner UV phase and Exarust's world
+    /// space sample the same texels (the corner is 24 m from the origin, a
+    /// whole 2·f0 repeats away). A fractional factor would need the tile
+    /// corner folded in (skipped without the game).
+    #[test]
+    fn shipped_material_tiling_is_whole() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Resource).unwrap();
+        let mut materials = 0;
+        for entry in pack.entries() {
+            if !entry.name.to_ascii_lowercase().ends_with(".ftb") {
+                continue;
+            }
+            let palette = Palette::parse(pack.bytes(entry)).unwrap();
+            for material in &palette.materials {
+                materials += 1;
+                let f0 = material.params.first().copied().unwrap_or(0.0);
+                assert_eq!(f0.fract(), 0.0, "{} {}", entry.name, material.name);
+            }
+        }
+        assert!(materials > 100, "{materials}");
     }
 
     /// The palette's two header floats: every shipped palette is dry but
