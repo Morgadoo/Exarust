@@ -139,7 +139,20 @@ rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
 tag; the box with a one-cell border, one word per cell, Z fastest; two fill
 bytes per cell; the extracted spheres; the array release that frees the
 cells and fill bytes but keeps the spheres) and the two routines that
-sample a mesh into a fine grid. `floor_points` is the floor heightfield,
+sample a mesh into a fine grid. `volume` is the dynamics volume and the
+shape builders' sphere fit over that map: the grid's cell counts (the
+longest half extent rounds to even, made even, at least 6 or 8 and at most
+96 cells; the other axes floor their proportions), the near-surface fill
+(a sphere query of half a cell, or 0.707 of it with the precise flag, and
+the provisional inner cells with more than four surface neighbours), the
+six-ray solid fill, the corner masks, and the sphere extraction (candidate
+radii to the nearest cell that is not full, the coverage count and
+redundancy pruning in the original's quicksort order, a final coverage
+pass, corner spheres for surface cells whose corners no candidate covers,
+and the thin-mesh fallback). Its `VolumeSummary` weighs a body: mobility
+10 000 over the volume, and four point masses 4 over the barycentric
+weights of the centre of mass on the rest tetrahedron. The original has no
+buoyancy or drag, so none is modelled. `floor_points` is the floor heightfield,
 run on a grid cell's merged floor in the cell's space: 10 cm columns, a ray
 down each with the highest upward face winning, a mark in the 10 cm cell
 under it, and a point at the centre of every 20 cm cell holding four marks.
@@ -159,7 +172,16 @@ registers them, asleep (countdown 0) where the level placed them, with
 their stored mobility over their material's divisor, gravity shared by
 the point masses so it acts at the centre of mass (`Part::gravity`, 1 on
 limbs), the stored spheres against the level (friction 0.75), articulated
-children joined by their stored links and an origin pivot. `prop` registers
+children joined by their stored links and an origin pivot. The body also
+keeps the original's other placements: `body::Ragdoll::place_at` puts its
+particles at a node's matrix times the rest points, at rest and with no
+stale contacts (an item put back into the world), `translate` moves them
+by an offset with the 0.1 cm edge-restore budget (a teleport), and
+`settle_for` runs the original's temporary state where gravity acts with
+no inertia (a re-placed character). The integration keeps the velocity by
+the motion band's retention (0.426, 0.25, 0.05 a second; nothing else
+damps a body), and the sleep countdown is the original's: 256 on fast
+motion, held at 30–32 on slow motion, two off a tick at rest. `prop` registers
 them from what the level loader gives (`prop::PendingProp`, `prop::BodyNode`)
 once transforms propagate; the static build keeps their meshes as
 stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
@@ -263,6 +285,10 @@ sets the instability counter (the barricade sets it to 100).
 - The mesh voxeliser and its voxel map (`voxel`): the floor heightfield and
   general surface generators, their fine cell grids, rounding and ray and
   sphere queries, and the map of a rigid-body mesh.
+- The dynamics volume and the shape builders' fit (`volume`): the cell
+  counts, the near-surface and six-ray solid fills, the corner masks, the
+  candidate and corner sphere extraction with its coverage pruning and
+  fallback, and the volume, centre and point masses that weigh a body.
 - The cloth's start seeds its fields, installs an identity matrix and derives its step from the particle count; its frame swap rotates three vertex buffers.
 - Activation sets the cloth's flag words, phase and 0.4 scale; the transform visits all three particle buffers plus the object's origin and extent.
 - The rebuild copies the origin, rejects a mismatched override and transforms every particle point into a fresh submitted buffer.
