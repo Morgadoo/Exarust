@@ -260,6 +260,21 @@ pub fn bytes_per_pixel(format_word: u32) -> usize {
 /// Copies whole rows of `dst_width` texels from `src`, the first source row
 /// at `first_row` and the first source byte at `byte_column` (the
 /// original's sub-image copy). Returns whether the rectangles fit.
+/// Normalises the first three floats of every RGBA texel to unit length, as
+/// the original does to a filtered level of an image whose flag `0x4000000`
+/// asks for it (normal maps). A zero-length vector is left alone; the
+/// original divides it to NaN.
+pub fn renormalise_texels(texels: &mut [f32]) {
+    for texel in texels.as_chunks_mut::<4>().0 {
+        let length = (texel[0] * texel[0] + texel[1] * texel[1] + texel[2] * texel[2]).sqrt();
+        if length > 0.0 {
+            texel[0] /= length;
+            texel[1] /= length;
+            texel[2] /= length;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn blit_rows(
     dst: &mut [u8],
@@ -614,6 +629,32 @@ pub fn build_mip_chain_rgba8_between(
     wrap: bool,
     conversion: MipConversion,
 ) -> (Vec<u8>, u32) {
+    build_mip_chain_rgba8_between_flagged(
+        base,
+        width,
+        height,
+        first_level,
+        last_level,
+        wrap,
+        conversion,
+        false,
+    )
+}
+
+/// [`build_mip_chain_rgba8_between`] with the image's normal-map flag: every
+/// filtered level has each texel's first three channels normalised before it
+/// is converted back to bytes (flag `0x4000000`).
+#[allow(clippy::too_many_arguments)]
+pub fn build_mip_chain_rgba8_between_flagged(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    first_level: u32,
+    last_level: u32,
+    wrap: bool,
+    conversion: MipConversion,
+    renormalise: bool,
+) -> (Vec<u8>, u32) {
     if width == 0 || height == 0 || base.len() < width * height * 4 {
         return (base.to_vec(), 1);
     }
@@ -625,6 +666,7 @@ pub fn build_mip_chain_rgba8_between(
         last_level,
         wrap,
         conversion,
+        renormalise,
     );
     if count == 0 {
         // A chain that stops before `first_level` (a tiny image): the caller
@@ -635,6 +677,7 @@ pub fn build_mip_chain_rgba8_between(
 }
 
 /// The chain levels from `first_level` up, without the levels before it.
+#[allow(clippy::too_many_arguments)]
 fn build_chain_from_floats(
     base: &[u8],
     width: usize,
@@ -643,6 +686,7 @@ fn build_chain_from_floats(
     last_level: u32,
     wrap: bool,
     conversion: MipConversion,
+    renormalise: bool,
 ) -> (Vec<u8>, u32) {
     let first = first_level.max(1);
     let mut floats = vec![0.0f32; width * height * 4];
@@ -788,6 +832,9 @@ fn build_chain_from_floats(
             }
         }
         let mut level = vec![0u8; texels.len()];
+        if renormalise {
+            renormalise_texels(&mut texels);
+        }
         match conversion {
             MipConversion::Linear => pixel::unit_bytes(&texels, &mut level),
             MipConversion::Gamma => pixel::gamma_bytes(&texels, &mut level),
@@ -807,6 +854,7 @@ fn build_chain_from_floats(
 /// space the format word picks. The result is the converted destination
 /// level. This is the original's resample-to-size path (icons, cursors,
 /// terrain and GUI images), not the mip chain.
+#[allow(clippy::too_many_arguments)]
 pub fn resample_rgba8_to_size(
     base: &[u8],
     width: usize,
@@ -815,6 +863,7 @@ pub fn resample_rgba8_to_size(
     dst_height: usize,
     wrap: bool,
     conversion: MipConversion,
+    renormalise: bool,
 ) -> Vec<u8> {
     if width == 0 || height == 0 || dst_width == 0 || dst_height == 0 {
         return Vec::new();
@@ -858,6 +907,9 @@ pub fn resample_rgba8_to_size(
         }
     }
     let mut out = vec![0u8; texels.len()];
+    if renormalise {
+        renormalise_texels(&mut texels);
+    }
     match conversion {
         MipConversion::Linear => pixel::unit_bytes(&texels, &mut out),
         MipConversion::Gamma => pixel::gamma_bytes(&texels, &mut out),
@@ -1006,6 +1058,28 @@ mod rgba_chain_tests {
         assert!((179..=181).contains(&level(MipConversion::Gamma)[3]));
     }
 
+    /// The normal-map flag normalises every filtered level's texels before
+    /// the bytes are written: a signed (1, 1, −1) filters to unit
+    /// (0.577, 0.577, −0.577), bytes 201, 201, 54, instead of clamping.
+    #[test]
+    fn a_normal_map_level_is_renormalised() {
+        let base = [255u8, 255, 0, 255].repeat(4 * 4);
+        let (out, _) = build_mip_chain_rgba8_between_flagged(
+            &base,
+            4,
+            4,
+            0,
+            1,
+            true,
+            MipConversion::Signed,
+            true,
+        );
+        assert_eq!(&out[64..68], &[201, 201, 54, 255]);
+        let (plain, _) =
+            build_mip_chain_rgba8_between(&base, 4, 4, 0, 1, true, MipConversion::Signed);
+        assert_eq!(&plain[64..68], &[255, 255, 0, 255]);
+    }
+
     /// A non-power-of-two image gets a chain too; the level dimensions shift
     /// right with a floor of one.
     #[test]
@@ -1023,13 +1097,13 @@ mod rgba_chain_tests {
     #[test]
     fn resampling_to_a_new_size_keeps_a_constant() {
         let base = vec![200u8; 8 * 8 * 4];
-        let out = resample_rgba8_to_size(&base, 8, 8, 5, 3, true, MipConversion::Linear);
+        let out = resample_rgba8_to_size(&base, 8, 8, 5, 3, true, MipConversion::Linear, false);
         assert_eq!(out.len(), 5 * 3 * 4);
         assert!(
             out.iter().all(|&value| (199..=200).contains(&value)),
             "{out:?}"
         );
-        let out = resample_rgba8_to_size(&base, 8, 8, 13, 11, false, MipConversion::Linear);
+        let out = resample_rgba8_to_size(&base, 8, 8, 13, 11, false, MipConversion::Linear, false);
         assert_eq!(out.len(), 13 * 11 * 4);
         assert!(out.iter().all(|&value| (199..=200).contains(&value)));
     }

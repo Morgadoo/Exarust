@@ -58,6 +58,9 @@ pub mod flags {
     pub const TARGET_CUBE_ARRAY: u32 = 0x4000_0000;
     /// The anisotropy mode, subtracted from the quality's level.
     pub const ANISOTROPY_MASK: u32 = 0x3;
+    /// The filtered image's texels are vectors: every generated mip level
+    /// normalises each texel's first three channels (normal maps).
+    pub const NORMALISE: u32 = 0x0400_0000;
 }
 
 /// The texture settings the original reads from its globals.
@@ -441,7 +444,7 @@ pub fn rfi_to_texture(
                 // the chosen level is generated, or the base when the
                 // chosen level is 0.
                 let last = if mipmapped { u32::MAX } else { first };
-                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_between(
+                let (chain, levels) = exa_render::mipmap::build_mip_chain_rgba8_between_flagged(
                     &rgba,
                     w as usize,
                     h as usize,
@@ -449,6 +452,7 @@ pub fn rfi_to_texture(
                     last,
                     true,
                     mip_conversion(rfi.header.format_word),
+                    rfi.header.flags & flags::NORMALISE != 0,
                 );
                 if levels > 0 {
                     rgba = chain;
