@@ -330,6 +330,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<CursorLook>()
             .init_resource::<crate::gamepad::PlayPad>()
             .init_resource::<crate::gamepad::PadStatus>()
+            .init_resource::<AimCursor>()
+            .init_resource::<crate::player_controls::PlaySession>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
