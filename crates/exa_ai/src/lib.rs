@@ -80,6 +80,11 @@ pub struct Duellist {
     /// It stands its ground: it faces its target and takes its stance, but
     /// neither steps nor strikes (a debug aid for still comparisons).
     pub holds_ground: bool,
+    /// How long after the fight starts it waits before engaging, in
+    /// milliseconds (the original's practice opponent waits three seconds).
+    pub reaction_ms: u32,
+    /// When it engages, set when the fight starts with a reaction delay.
+    pub engage_at_ms: Option<u64>,
     /// It has entered combat (taken its guard).
     in_combat: bool,
     /// The combat state's fields.
@@ -138,6 +143,8 @@ impl Duellist {
             roll: 0,
             engaged: false,
             holds_ground: false,
+            reaction_ms: 0,
+            engage_at_ms: None,
             in_combat: false,
             mind: combat::CombatMind::default(),
             last_tick: None,
@@ -405,6 +412,13 @@ fn duellist(
         // nothing.
         if condition.fallen_or_dying() || fallen {
             continue;
+        }
+        if let Some(at) = ai.engage_at_ms {
+            if now < at {
+                continue;
+            }
+            ai.engage_at_ms = None;
+            ai.engaged = true;
         }
         if !ai.engaged
             && let Ok(mut mind) = minds.get_mut(entity)

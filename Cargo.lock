@@ -2501,6 +2501,7 @@ dependencies = [
  "exa_items",
  "exa_physics",
  "exa_render",
+ "exa_rpk",
  "exa_script",
  "exa_ui",
  "exa_world",

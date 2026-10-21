@@ -30,7 +30,7 @@ use std::sync::Arc;
 use bevy::image::CompressedImageFormatSupport;
 use bevy::prelude::*;
 use exa_formats::rfi::Rfi;
-pub use exa_rpk::{GameData, PackKind, locate_install};
+pub use exa_rpk::{Archive, GameData, PackKind, locate_install};
 
 pub use model::{
     Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo, transform_from_rows,

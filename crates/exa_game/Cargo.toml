@@ -21,5 +21,9 @@ exa_ui.workspace = true
 exa_assets.workspace = true
 exa_formats.workspace = true
 
+[dev-dependencies]
+# Real-data checks read the installed packs and skip without them.
+exa_rpk.workspace = true
+
 [lints]
 workspace = true

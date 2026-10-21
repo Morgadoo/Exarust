@@ -889,6 +889,12 @@ fn spawn_players(
         } else {
             start.foes.clone()
         };
+        // The original's practice opponent comes from an actors.rpk template
+        // (the first opponent), with its practice traits, team 0x10 and
+        // three-second reaction delay. Without the template, the debug
+        // duellist keeps its fixed outfit.
+        let mut actors = exa_game::prelude::ActorCache::new();
+        let template = actors.template(game, "opponent01", true);
         for foe_at in foes {
             let foe_root = commands
                 .spawn((
@@ -904,25 +910,67 @@ fn spawn_players(
             let anim = exa_anim::Animator::new(exa_character::held::DEFAULT_MOVESET, "Idle");
             let mut duellist = exa_ai::Duellist::new(player);
             duellist.holds_ground = options.still_opponent;
-            let outfit = ["leathjac_a", "trouser_a", "boots_b", "helm_b"].map(String::from);
-            let stats = new_human(0.0).with_encumbrance(outfit_encumbrance(&outfit));
+            let practice = template.clone().map(exa_game::prelude::practice_opponent);
+            let outfit: Vec<String> = practice
+                .as_ref()
+                .map(|opponent| {
+                    opponent
+                        .record
+                        .worn
+                        .iter()
+                        .filter_map(|worn| {
+                            let item = items.iter().find(|item| item.id == worn.index())?;
+                            (!item.worn_model.is_empty()).then(|| item.worn_model.clone())
+                        })
+                        .collect()
+                })
+                .filter(|models: &Vec<String>| !models.is_empty())
+                .unwrap_or_else(|| {
+                    ["leathjac_a", "trouser_a", "boots_b", "helm_b"]
+                        .map(String::from)
+                        .to_vec()
+                });
+            let weapon = practice
+                .as_ref()
+                .and_then(|opponent| {
+                    let hand = opponent.record.hands[0];
+                    let item = items.iter().find(|item| item.id == hand.index())?;
+                    (!item.model.is_empty()).then(|| item.model.clone())
+                })
+                .or_else(|| options.weapon.clone())
+                .unwrap_or_else(|| "ub05ssworda".into());
+            let stats = match &practice {
+                Some(opponent) => {
+                    let race = exa_formats::races::of_character(&races, opponent.record.race);
+                    CharacterStats::derive(
+                        &opponent.record,
+                        race,
+                        Spawn {
+                            story: false,
+                            dead: false,
+                        },
+                    )
+                }
+                None => new_human(0.0),
+            }
+            .with_encumbrance(outfit_encumbrance(&outfit));
             log_encumbrance("duellist", &stats);
+            if let Some(opponent) = &practice {
+                duellist.reaction_ms = opponent.reaction_ms;
+            }
             commands.entity(foe).insert((
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
                 exa_character::held::Hands::default(),
                 exa_character::Outfit::of_models(&outfit),
-                exa_character::Wielded::model(
-                    options
-                        .weapon
-                        .clone()
-                        .unwrap_or_else(|| "ub05ssworda".into()),
-                ),
+                exa_character::Wielded::model(weapon),
                 exa_combat::Fighter::of_stats(None, stats),
                 exa_physics::body::Physical {
                     stats: body_stats(&stats),
                     ..default()
                 },
+                // The arena's Unaligned role, team 0x10.
+                exa_ai::roles::Roles::arena(&book),
                 duellist,
                 ChildOf(foe_root),
             ));
@@ -1297,6 +1345,7 @@ fn shove_props_at_frame(
 fn start_fight(
     view: Res<View>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut started: Local<bool>,
     mut duellists: Query<&mut exa_ai::Duellist, Without<exa_ai::brain::Npc>>,
     mut players: Query<&mut exa_game::player::PlayerBody>,
@@ -1306,8 +1355,15 @@ fn start_fight(
         return;
     }
     *started = true;
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis());
     for mut duellist in &mut duellists {
-        duellist.engaged = true;
+        if duellist.reaction_ms == 0 {
+            duellist.engaged = true;
+        } else {
+            // The original's practice opponent waits its reaction delay in
+            // the AI's two millisecond timers.
+            duellist.engage_at_ms = Some(now.saturating_add(u64::from(duellist.reaction_ms)));
+        }
     }
     if fight_level(level) {
         for mut player in &mut players {

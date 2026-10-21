@@ -60,6 +60,7 @@ pub mod player_controls;
 pub mod player_light;
 pub mod power_screen;
 pub mod practice;
+pub mod prelude;
 pub mod report;
 pub mod session;
 pub mod shell_draw;
@@ -101,6 +102,7 @@ impl Plugin for GamePlugin {
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
         ))
+        .init_resource::<prelude::Tips>()
         .add_plugins((
             limp::LimpPlugin,
             balance::BalancePlugin,
