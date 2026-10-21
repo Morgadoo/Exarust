@@ -32,7 +32,7 @@ notice drops the sleep role and wakes.
 | `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move), the attitude of one character toward another, encounter scripts, corpse scripts, the interaction-condition and dialogue wrappers, the entry finder, and the `StartDialogue`/`ChangeRole` registration |
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
-| `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming and tidying |
+| `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert and the approach clamp |
 | `brain` | the components and systems that carry roles into the running game |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
@@ -94,8 +94,8 @@ slots); encounter, corpse, dialogue and condition scripts and
 `StartDialogue` are found and modelled, not run from the AI; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol walk only
-once the running game has a navigation grid, and the search has no item
-instances, containers or corpses to act on there.
+once the running game has a navigation grid, and the search's deeds have no
+item instances, containers or corpses to act on there yet.
 
 ## The combatant
 

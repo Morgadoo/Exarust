@@ -52,6 +52,14 @@
 //! carried; a weapon (not of the `0x06000000` kinds) worth more than 1.05 is
 //! carried, and the best weapons are taken in hand again.
 //!
+//! The world edits the tick returns as deeds are carried out by
+//! [`apply_deed`]: taking a loose item despawns its object, taking from a
+//! container removes its first matching entry, taking a corpse's worn item
+//! removes it from the worn list and from a hand that held it, and taking a
+//! carried entry drops that entry. Carrying, wearing, wielding and stowing
+//! change the pack; dropping appends to a container while its known
+//! capacity has room. Comments change no state.
+//!
 //! Evidence: the original's search activity (its tick, gathering, picking,
 //! look sweep, item weighing, comments, re-equipping and tidying), the item
 //! value routines it calls, and its unit's registration and phrase tables.
@@ -181,6 +189,10 @@ pub struct Corpse {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Container {
     pub items: Vec<u32>,
+    /// The item records' capacity the container is limited by. Zero is
+    /// treated as unlimited (the shipped records' own values are not read
+    /// into the scene yet).
+    pub capacity: u32,
 }
 
 /// The 600 cm room grid.
@@ -1436,6 +1448,150 @@ impl Search {
             }
             Loot::Other => 0,
         }
+    }
+}
+
+/// Carries out one world edit the search asked for. True when it happened.
+///
+/// Taking a loose item despawns its object; taking from a container removes
+/// the first matching entry and compacts the list; taking a corpse's worn
+/// item removes it from the worn list and from a hand that held it; taking
+/// a carried entry removes that entry. Carrying adds to the pack, wearing
+/// adds to the worn list after taking it out of its source, wielding fills
+/// the main hand and stowing the first stowed slot. Dropping into a
+/// container refuses when its capacity is known and full. A comment changes
+/// no state.
+pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
+    match deed {
+        Deed::Take {
+            object,
+            source,
+            item,
+        } => take(scene, *object, *source, *item),
+        Deed::Carry { item } => {
+            if !pack.carried.iter().any(|c| c.item == *item) {
+                pack.carried.push(Carried {
+                    item: *item,
+                    flags: 0,
+                });
+            }
+            true
+        }
+        Deed::Wear {
+            object,
+            source,
+            item,
+        } => {
+            if !take(scene, *object, *source, *item) {
+                return false;
+            }
+            if !pack.worn.contains(item) {
+                pack.worn.push(*item);
+            }
+            true
+        }
+        Deed::Wield { item } => {
+            remove_from_pack(pack, *item);
+            pack.hands[0] = *item;
+            true
+        }
+        Deed::Stow { item } => {
+            remove_from_pack(pack, *item);
+            pack.hands[2] = *item;
+            true
+        }
+        Deed::Drop { item, container } => {
+            let Some(c) = scene.containers.get_mut(container) else {
+                return false;
+            };
+            if c.capacity != 0 && c.items.len() as u32 >= c.capacity {
+                return false;
+            }
+            c.items.push(*item);
+            true
+        }
+        Deed::Comment { .. } => true,
+    }
+}
+
+/// Carries out a list of world edits, answering how many happened.
+pub fn apply_deeds(scene: &mut Scene, pack: &mut Pack, deeds: &[Deed]) -> usize {
+    deeds
+        .iter()
+        .filter(|deed| apply_deed(scene, pack, deed))
+        .count()
+}
+
+fn remove_from_pack(pack: &mut Pack, item: u32) {
+    pack.carried.retain(|c| c.item != item);
+    pack.worn.retain(|w| *w != item);
+    for hand in 0..pack.hands.len() {
+        if pack.hands[hand] == item {
+            pack.hands[hand] = 0;
+        }
+    }
+}
+
+fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {
+    match source {
+        Source::Item => {
+            let Some(o) = scene.objects.get_mut(object) else {
+                return false;
+            };
+            o.kind &= !object::PRESENT;
+            despawn(scene, object);
+            true
+        }
+
+        Source::Container => {
+            let Some(id) = scene.objects.get(object).map(|o| o.id) else {
+                return false;
+            };
+            let Some(c) = scene.containers.get_mut(&id) else {
+                return false;
+            };
+            let Some(at) = c.items.iter().position(|i| *i == item) else {
+                return false;
+            };
+            c.items.remove(at);
+            true
+        }
+        Source::Worn | Source::Carried => {
+            let Some(at) = scene.objects.get(object).and_then(|o| o.corpse) else {
+                return false;
+            };
+            let Some(corpse) = scene.corpses.get_mut(at) else {
+                return false;
+            };
+            match source {
+                Source::Worn => {
+                    let Some(at) = corpse.pack.worn.iter().position(|w| *w == item) else {
+                        return false;
+                    };
+                    corpse.pack.worn.remove(at);
+                    for hand in 0..corpse.pack.hands.len() {
+                        if corpse.pack.hands[hand] == item {
+                            corpse.pack.hands[hand] = 0;
+                        }
+                    }
+                    true
+                }
+                _ => {
+                    let Some(at) = corpse.pack.carried.iter().position(|c| c.item == item) else {
+                        return false;
+                    };
+                    corpse.pack.carried.remove(at);
+                    true
+                }
+            }
+        }
+    }
+}
+
+/// Removes a despawned object from the room grid's cell lists.
+fn despawn(scene: &mut Scene, object: usize) {
+    for cell in &mut scene.grid.objects {
+        cell.retain(|o| *o != object);
     }
 }
 

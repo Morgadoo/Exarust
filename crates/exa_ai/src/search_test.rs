@@ -607,7 +607,13 @@ fn looted_scene() -> Scene {
     };
     scene.objects.push(chest(40, Vec3::new(0.0, 0.0, 150.0)));
     scene.grid.objects[4 * 9 + 4].push(0);
-    scene.containers.insert(40, Container { items: vec![41] });
+    scene.containers.insert(
+        40,
+        Container {
+            items: vec![41],
+            capacity: 0,
+        },
+    );
     scene.items.insert(41, apparel_loot(piece(0, 100, 10, 1)));
     scene
 }
@@ -915,4 +921,180 @@ fn the_leader_is_a_living_player_in_sight() {
     ];
     assert_eq!(find_leader(&contacts), Some(2));
     assert_eq!(find_leader(&[c(80.0, false, false)]), None);
+}
+
+fn scene_object(id: u32, kind: u32, corpse: Option<usize>) -> SceneObject {
+    SceneObject {
+        id,
+        kind,
+        searchable: true,
+        fixed: false,
+        at: Vec3::ZERO,
+        half: Vec3::ONE,
+        reserved: 0,
+        corpse,
+    }
+}
+
+/// A container, a corpse and a loose item, all in one room cell.
+fn executor_scene() -> Scene {
+    let mut scene = Scene::default();
+    scene.grid.width = 1;
+    scene.grid.height = 1;
+    scene.grid.objects = vec![vec![0, 1, 2]];
+    scene.objects.push(scene_object(
+        40,
+        object::CONTAINER_KIND | object::PRESENT,
+        None,
+    ));
+    scene
+        .objects
+        .push(scene_object(60, object::PRESENT, Some(0)));
+    scene.objects.push(scene_object(70, object::PRESENT, None));
+    scene.containers.insert(
+        40,
+        Container {
+            items: vec![7, 8],
+            capacity: 0,
+        },
+    );
+    scene.corpses.push(Corpse {
+        character: true,
+        dead: true,
+        pack_id: 60,
+        pack: Pack {
+            carried: vec![Carried { item: 10, flags: 0 }],
+            worn: vec![9],
+            hands: [9, 0, 0, 0],
+            locked: false,
+        },
+        object: 1,
+    });
+    scene.items.insert(8, Loot::Other);
+    scene
+}
+
+/// A take removes the first matching entry from its container, the worn
+/// list (and a hand holding it), the carried list, or despawns a loose
+/// object from the scene and its room cell.
+#[test]
+fn the_executors_take_from_each_source() {
+    let mut scene = executor_scene();
+    let mut pack = Pack::default();
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Take {
+            object: 0,
+            source: Source::Container,
+            item: 7,
+        }
+    ));
+    assert_eq!(scene.containers[&40].items, vec![8]);
+    assert!(!apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Take {
+            object: 0,
+            source: Source::Container,
+            item: 7,
+        }
+    ));
+
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Take {
+            object: 1,
+            source: Source::Worn,
+            item: 9,
+        }
+    ));
+    assert!(scene.corpses[0].pack.worn.is_empty());
+    assert_eq!(scene.corpses[0].pack.hands[0], 0);
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Take {
+            object: 1,
+            source: Source::Carried,
+            item: 10,
+        }
+    ));
+    assert!(scene.corpses[0].pack.carried.is_empty());
+
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Take {
+            object: 2,
+            source: Source::Item,
+            item: 70,
+        }
+    ));
+    assert_eq!(scene.objects[2].kind & object::PRESENT, 0);
+    assert_eq!(scene.grid.objects[0], vec![0, 1]);
+}
+
+/// Wearing takes an item out of its source and adds it to the worn list;
+/// carrying adds an entry; wielding fills the main hand; stowing the first
+/// stowed slot.
+#[test]
+fn the_executors_carry_wear_wield_and_stow() {
+    let mut scene = executor_scene();
+    let mut pack = Pack::default();
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Wear {
+            object: 0,
+            source: Source::Container,
+            item: 8,
+        }
+    ));
+    assert_eq!(scene.containers[&40].items, vec![7]);
+    assert_eq!(pack.worn, vec![8]);
+    assert!(apply_deed(&mut scene, &mut pack, &Deed::Carry { item: 11 }));
+    assert_eq!(pack.carried.len(), 1);
+    assert!(apply_deed(&mut scene, &mut pack, &Deed::Wield { item: 11 }));
+    assert_eq!(pack.hands[0], 11);
+    assert!(pack.carried.is_empty());
+    assert!(apply_deed(&mut scene, &mut pack, &Deed::Stow { item: 12 }));
+    assert_eq!(pack.hands[2], 12);
+}
+
+/// Dropping into a container appends while its known capacity has room.
+#[test]
+fn dropping_into_a_container_respects_its_capacity() {
+    let mut scene = executor_scene();
+    scene.containers.get_mut(&40).unwrap().capacity = 1;
+    scene.containers.get_mut(&40).unwrap().items.clear();
+    let mut pack = Pack::default();
+    assert!(apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Drop {
+            item: 1,
+            container: 40,
+        }
+    ));
+    assert!(!apply_deed(
+        &mut scene,
+        &mut pack,
+        &Deed::Drop {
+            item: 2,
+            container: 40,
+        }
+    ));
+    assert_eq!(scene.containers[&40].items, vec![1]);
+    assert_eq!(
+        apply_deeds(
+            &mut scene,
+            &mut pack,
+            &[Deed::Comment {
+                phrase: "Look.".into()
+            }]
+        ),
+        1
+    );
 }
