@@ -660,8 +660,8 @@ pub fn sort_by_abs_x<T>(items: &mut [T], x: impl Fn(&T) -> f32) {
     for slot in 0..items.len() {
         let mut best = 0;
         let mut best_x = bound;
-        for i in slot..items.len() {
-            let ax = x(&items[i]).abs();
+        for (i, item) in items.iter().enumerate().skip(slot) {
+            let ax = x(item).abs();
             if ax < best_x {
                 best = i;
                 best_x = ax;
