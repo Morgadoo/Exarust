@@ -316,6 +316,11 @@ pub fn rfi_to_texture(
     let mut first = rfi
         .header
         .first_mip_level(settings.texture_detail, settings.max_texture_size);
+    if rfi.header.has_mip_chain() {
+        // A chosen level past the stored chain uploads the smallest stored
+        // one (retail data never asks for this).
+        first = first.min(rfi.mip_count.saturating_sub(1));
+    }
     let mipmapped = word & flags::MIPMAP != 0;
     let block_format = match rfi.format {
         PixelFormat::Bc1 if srgb => Some(TextureFormat::Bc1RgbaUnormSrgb),
@@ -333,11 +338,7 @@ pub fn rfi_to_texture(
             // A stored chain is uploaded from the chosen level; a compressed
             // image without one cannot be downsampled on the CPU, so the
             // original uploads its base level as it is.
-            let first = if rfi.header.has_mip_chain() {
-                first.min(rfi.mip_count.saturating_sub(1))
-            } else {
-                0
-            };
+            let first = if rfi.header.has_mip_chain() { first } else { 0 };
             let last = if mipmapped && rfi.header.has_mip_chain() {
                 rfi.mip_count.saturating_sub(1)
             } else {
@@ -350,7 +351,6 @@ pub fn rfi_to_texture(
             // generated, starting at the level the detail setting chose.
             let mut mip_count = 1u32;
             let mut rgba = if rfi.header.has_mip_chain() {
-                let first = first.min(rfi.mip_count.saturating_sub(1));
                 let last = if mipmapped {
                     rfi.mip_count.saturating_sub(1)
                 } else {
@@ -361,7 +361,7 @@ pub fn rfi_to_texture(
                 for level in first..=last {
                     out.extend(rfi.decode_level_rgba8(&pixels, level)?);
                 }
-                mip_count = last - first + 1;
+                mip_count = last + 1 - first;
                 out
             } else {
                 rfi.decode_rgba8()?
@@ -691,6 +691,37 @@ mod level_tests {
             rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
         assert_eq!(chained.texture_descriptor.mip_level_count, 2);
         assert_eq!(chained.data.as_ref().unwrap().len(), 4 * 4 * 4 + 2 * 2 * 4);
+    }
+
+    /// A chosen level past a stored chain clamps to its smallest level.
+    #[test]
+    fn a_chosen_level_past_a_stored_chain_clamps() {
+        let (data, mut header) = rgba_image(2, 2, 2, 3 << 22);
+        header.flags |= 3 << 22;
+        let mut bytes = Vec::new();
+        for v in [
+            exa_formats::rfi::RFI_MAGIC,
+            header.width,
+            header.height,
+            header.depth,
+            header.format_word,
+            header.flags,
+            header.storage,
+            header.data_size,
+        ] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(&data);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        assert_eq!(rfi.mip_count, 2);
+        let settings = TextureSettings {
+            texture_detail: 2,
+            ..TextureSettings::default()
+        };
+        let image =
+            rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
+        assert_eq!(image.texture_descriptor.size.width, 1);
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
     }
 
     /// A detail skip past the end of a tiny image falls back to its base:
