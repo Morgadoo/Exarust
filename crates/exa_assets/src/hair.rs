@@ -10,10 +10,11 @@
 //! setup, instruction by instruction.
 
 use crate::human_skin::{hsv_to_rgb, srgb_decode, srgb_encode};
+use exa_formats::palette::rgb_to_hsv;
 
 /// The picker's hue anchors in stored sRGB bytes: dark red, blonde, reddish,
 /// dark red and grey (the last beyond the three the interpolation reaches).
-const HAIR_HUES: [[u8; 3]; 5] = [
+pub const HAIR_HUES: [[u8; 3]; 5] = [
     [164, 98, 48],
     [170, 130, 82],
     [152, 75, 54],
@@ -135,41 +136,6 @@ pub fn desaturate(c: [f32; 3], t: f32) -> [f32; 3] {
     c.map(|x| x + (luma - x) * t)
 }
 
-/// RGB to hue, saturation and value as the engine's colour helper does.
-pub fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
-    let [r, g, b] = c;
-    let mut imax = if g > r { 1 } else { 0 };
-    if c[imax] < b {
-        imax = 2;
-    }
-    let mut imin = if g < r { 1 } else { 0 };
-    if c[imin] > b {
-        imin = 2;
-    }
-    let v = c[imax];
-    let floor = 0.001_960_784_4;
-    if v < floor {
-        return [0.0, 0.0, v];
-    }
-    let s = 1.0 - c[imin] / v;
-    if s < floor {
-        return [0.0, s, v];
-    }
-    // Each channel's distance above the least, over the spread, in single
-    // precision; the green and blue sextants add their third in double.
-    let inv = 1.0 / (c[imax] - c[imin]);
-    let t = c.map(|x| (x - c[imin]) * inv);
-    let h = match imax {
-        0 => {
-            let h = (t[1] - t[2]) / 6.0;
-            if h < 0.0 { 1.0 + h } else { h }
-        }
-        1 => (f64::from((t[2] - t[0]) / 6.0) + 1.0 / 3.0) as f32,
-        _ => (f64::from((t[0] - t[1]) / 6.0) + 2.0 / 3.0) as f32,
-    };
-    [h, s, v]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,17 +188,6 @@ mod tests {
         let hue_of = |c: [f32; 3]| rgb_to_hsv(c)[0];
         assert!((hue_of(d) - hue_of(first)).abs() < 0.02, "{d:?} {first:?}");
         assert_eq!(HAIR_HUES[4], [128, 128, 128]);
-    }
-
-    #[test]
-    fn rgb_to_hsv_reads_the_sextants() {
-        assert_eq!(rgb_to_hsv([1.0, 0.0, 0.0]), [0.0, 1.0, 1.0]);
-        let green = rgb_to_hsv([0.0, 1.0, 0.0]);
-        assert!((green[0] - 1.0 / 3.0).abs() < 1e-6);
-        let blue = rgb_to_hsv([0.0, 0.0, 1.0]);
-        assert!((blue[0] - 2.0 / 3.0).abs() < 1e-6);
-        assert_eq!(rgb_to_hsv([0.5, 0.5, 0.5]), [0.0, 0.0, 0.5]);
-        assert_eq!(rgb_to_hsv([0.0, 0.0, 0.0]), [0.0, 0.0, 0.0]);
     }
 
     #[test]

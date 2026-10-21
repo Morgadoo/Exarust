@@ -37,24 +37,21 @@ pub const PICK_ANSWER: u32 = 3;
 /// white. The picker blends within the hue run; a point at the field's
 /// right edge reads the grey after it with weight 0, and the original
 /// reads on unchecked for points the set slot puts outside 0–1.
-pub const HAIR_TABLE: [[u8; 3]; 16] = [
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-    [0, 0, 0],
-    [164, 98, 48],
-    [170, 130, 82],
-    [152, 75, 54],
-    [164, 98, 48],
-    [128, 128, 128],
-    [128, 128, 128],
-    [128, 128, 128],
-    [128, 128, 128],
-    [255, 255, 255],
-    [255, 255, 255],
-    [255, 255, 255],
-    [255, 255, 255],
-];
+pub const HAIR_TABLE: [[u8; 3]; 16] = {
+    use exa_assets::hair::HAIR_HUES;
+    let mut table = [[0u8; 3]; 16];
+    let mut i = 0;
+    while i < 16 {
+        table[i] = match i {
+            0..=3 => [0, 0, 0],
+            4..=8 => HAIR_HUES[i - 4],
+            9..=11 => HAIR_HUES[4],
+            _ => [255, 255, 255],
+        };
+        i += 1;
+    }
+    table
+};
 /// Where the hue run starts in [`HAIR_TABLE`].
 const HUE_RUN: usize = 4;
 /// The marker's grey per unit of the point's `v`.
@@ -333,6 +330,14 @@ impl HairColPicker {
         Some((self.point.u, self.point.v, value))
     }
 
+    /// The colours the attached material takes: the hair routine's diffuse
+    /// and its specular boosted by 1.3, both encoded sRGB.
+    pub fn material_shading(&self) -> Option<([f32; 3], [f32; 3])> {
+        let (hue, saturation, value) = self.material_inputs()?;
+        let (diffuse, specular) = exa_assets::hair::pick(hue, saturation, value);
+        Some((diffuse, specular.map(|c| c * 1.3)))
+    }
+
     /// The refresh slot: the refresh, then the owner's callback when set.
     /// Answers whether the owner is called.
     pub fn refresh_with(&mut self) -> bool {
@@ -549,9 +554,26 @@ mod tests {
         picker.material = true;
         assert!(picker.set(PickPoint { u: 0.0, v: 0.0 }, 0.6));
         assert_eq!(picker.material_inputs(), Some((0.0, 0.0, 0.6)));
+        let (diffuse, specular) = exa_assets::hair::pick(0.0, 0.0, 0.6);
+        assert_eq!(
+            picker.material_shading(),
+            Some((diffuse, specular.map(|c| c * 1.3)))
+        );
+        picker.material = false;
+        assert_eq!(picker.material_shading(), None);
+        picker.material = true;
         picker.callback = true;
         assert!(picker.child_refresh(0.3));
         assert_eq!(picker.attached.unwrap().value, 0.3);
+    }
+
+    /// The table is the picker's anchors in a frame of black, grey and white.
+    #[test]
+    fn the_hair_table_wraps_the_hue_anchors() {
+        assert_eq!(&HAIR_TABLE[4..9], &exa_assets::hair::HAIR_HUES);
+        assert_eq!(HAIR_TABLE[0], [0, 0, 0]);
+        assert_eq!(HAIR_TABLE[9..12], [[128, 128, 128]; 3]);
+        assert_eq!(HAIR_TABLE[12..], [[255, 255, 255]; 4]);
     }
 
     #[test]
