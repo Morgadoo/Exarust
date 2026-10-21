@@ -1,9 +1,9 @@
 //! The carry and the lift: the original's rules, each pinned to its numbers
 //! (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body_lift.rs: `#[path = "body_lift_test.rs"] mod tests;`)
+use super::super::Drive;
 use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
 use super::super::tests::floor_quad;
-use super::super::{Drive, ENERGY_RECOVERY};
 use super::*;
 
 const NONE: &[[Vec3; 3]] = &[];
@@ -359,8 +359,8 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
         // Outside both plant windows, so the lift is what holds the feet up.
         body.drive.as_mut().unwrap().bearing.progress = 0.85;
         for _ in 0..800 {
-            // The tick recovers 0.005 before the parts take the carry.
-            body.drive.as_mut().unwrap().energy = energy - ENERGY_RECOVERY;
+            // The tick recovers the double 0.005 before the parts take the carry.
+            body.drive.as_mut().unwrap().energy = energy - 0.005;
             stand(&mut body, &pose, &floor);
         }
         let lowest = body

@@ -573,8 +573,9 @@ fn a_body_that_rolls_over_changes_its_get_up() {
     assert_eq!(world.get::<Animator>(id).unwrap().action, "Get up");
 }
 
-/// Getting up (by last tick's condition), its energy gains 0.01 × (1 −
-/// progress) in the readiness stage: 0.005 halfway through Get up.
+/// Getting up (by last tick's condition), its energy gains the 0.005
+/// recovery and 0.01 × (1 − progress) in one double sum: 0.51 halfway
+/// through Get up. Standing, the next tick adds only the 0.005.
 #[test]
 fn getting_up_energy_rises_faster() {
     let mut body = pelvis(Quat::IDENTITY);
@@ -589,7 +590,8 @@ fn getting_up_energy_rises_faster() {
         .as_ref()
         .unwrap()
         .energy;
-    assert!((energy - 0.505).abs() < 1e-6, "{energy}");
+    let halfway = exa_physics::body::recover_energy(0.5, 1.0, true, 0.5);
+    assert_eq!(energy, halfway);
     *world.get_mut::<Condition>(id).unwrap() = Condition::NORMAL;
     world.run_system_once(recover_rising).unwrap();
     let again = world
@@ -599,5 +601,8 @@ fn getting_up_energy_rises_faster() {
         .as_ref()
         .unwrap()
         .energy;
-    assert_eq!(again, energy);
+    assert_eq!(
+        again,
+        exa_physics::body::recover_energy(halfway, 1.0, false, 0.5)
+    );
 }

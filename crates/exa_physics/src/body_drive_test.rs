@@ -362,7 +362,8 @@ fn the_horizontal_stance_hold_does_not_run() {
 /// dazed (energy more than 0.05 under its most), 1 − (1 − S)²·(1 − s)·
 /// (E/Emax)⁴, so a dazed body standing on its feet holds its pose in full
 /// and one lying (E = 0.5) 0.9375; alert, (1 − S)·s, nothing without a
-/// blow sag. The sag fades 0.01 a tick, and is gone once the body falls.
+/// blow sag. The sag fades 0.01 a tick in double precision, and is 0 while
+/// the body is down.
 #[test]
 fn a_dazed_body_holds_its_pose() {
     let mut d = Drive {
@@ -390,14 +391,22 @@ fn a_dazed_body_holds_its_pose() {
     assert!(d.holds_pose());
     d.support = 1.0;
     assert!(!d.holds_pose());
-    // The sag fades with the ticks, and goes with a fall.
+    // The sag fades 0.01 in double precision. Leaving the feet does not
+    // clear it; the down condition does.
     let (mut body, targets) = standing();
     let floor = floor_quad(0.0, 5.0);
     body.aim(Affine3A::IDENTITY, targets);
     body.drive.as_mut().unwrap().sag = 0.5;
     body.tick(floor.as_slice());
-    assert!(close(body.drive.as_ref().unwrap().sag, 0.49, 1e-6));
+    let faded = super::fade_sag(0.5, false);
+    assert_eq!(body.drive.as_ref().unwrap().sag, faded);
     body.fall();
+    body.tick(floor.as_slice());
+    assert_eq!(
+        body.drive.as_ref().unwrap().sag,
+        super::fade_sag(faded, false)
+    );
+    body.drive.as_mut().unwrap().bearing.off_feet = true;
     body.tick(floor.as_slice());
     assert_eq!(body.drive.as_ref().unwrap().sag, 0.0);
 }

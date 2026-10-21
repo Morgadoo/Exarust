@@ -941,8 +941,9 @@ the branch come first ([Condition](#condition)). Thresholds marked
   stage starts the get-up again while it is under 40 % (double), so a body
   that rolls over changes clip with the same blend and capture, and one
   still in its first quarter re-anchors; the balance rises 0.05 a tick
-  (above); the energy gains 0.01 × (1 − progress) more a tick (double, by
-  last tick's progress); the clip ends into the stance with no blend and
+  (above); the energy gains 0.01 × (1 − progress) more a tick, in the same
+  double sum as the 0.005 recovery (by last tick's progress); the clip
+  ends into the stance with no blend and
   the condition normal.
 - **Unsteady on its feet** (balance 0.6–0.8, double, at full tone, playing
   a plain clip: not an attack, the combat idle, the walk or run, the kick,
@@ -1666,7 +1667,8 @@ not landed is the identity and says which:
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
 w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
 its most), else (1 − S)·s, when w is over 1.19e-7 (S support, s blow sag,
-which fades 0.01 a tick and is 0 down; a blow on a limb sets it to
+which fades 0.01 a tick in double precision and is 0 while down, getting
+up, dormant, collapsing or dead; a blow on a limb sets it to
 min(2·I, 1), I the blow's impact at the hit, [OTHER.md](OTHER.md),
 Damage). The held pose
 is the pelvis's and legs' current targets and every other bone's physical

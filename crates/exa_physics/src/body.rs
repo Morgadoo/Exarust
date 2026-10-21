@@ -169,9 +169,8 @@ const TRUNK_GAIN: f32 = 0.03;
 const HEAD_GAIN: f32 = 0.01;
 /// The share of a pose push's vertical component that is kept.
 const VERTICAL_PUSH: f32 = 0.1;
-/// Energy regained per tick after a daze, up to the body's most energy
-/// ([`BodyStats::max_energy`]), and its floor.
-const ENERGY_RECOVERY: f32 = 0.005;
+/// The least energy a blow leaves ([`daze_energy`]). Recovery adds the
+/// double 0.005 each tick, up to the body's most ([`recover_energy`]).
 const MIN_ENERGY: f32 = 0.05;
 /// The most energy of a body that is not feral (a feral body's is less,
 /// [`BodyStats::max_energy`]).
@@ -189,8 +188,6 @@ const PIN_RECOVERY: f64 = 0.001;
 /// compared in double precision as the original does (so an energy of
 /// 0.95f is dazed).
 const DAZED_BELOW_MAX: f64 = 0.05;
-/// The blow sag fades by this a tick.
-const SAG_FADE: f32 = 0.01;
 /// Friction of a limb against the level.
 const LIMB_FRICTION: f32 = 2.5;
 /// Friction of a foot (bones 4 and 7) as a body is built; a living body's
@@ -1218,6 +1215,9 @@ pub struct Drive {
     /// Daze: 1 when alert; blows lower it and it recovers over time. The
     /// pose drive follows its fourth power, the link muscles its root.
     pub energy: f32,
+    /// The character tick already wrote this tick's recovery, so the
+    /// integration step leaves the energy.
+    energy_recovered: bool,
     /// Standing on its controller, which carries it across the ground and
     /// turns it. The support pins hold it over its feet. A fallen body is
     /// not carried, and its balance is measured lying.
@@ -1256,8 +1256,8 @@ pub struct Drive {
     lift_raw: f32,
     /// Blow sag s, 0..=1: how much an unsteady body's targets give way to
     /// the pose it holds after a blow (the damage routine sets it through
-    /// [`Shove::sag`]); it fades 0.01 a tick, and is 0 while the body is
-    /// down.
+    /// [`Shove::sag`]); it fades 0.01 a tick in double precision, and is 0
+    /// while the condition is down, getting up, dormant, collapsing or dead.
     pub sag: f32,
     /// The support pins' gain factor (the 0.08 of the pins' gain
     /// S²·pin-gain·P·pin factor): it recovers toward 0.08 every tick while
@@ -1287,6 +1287,35 @@ pub struct Drive {
     arm_drive: (f32, f32),
 }
 
+/// One tick of energy. The add is the double 0.005, and while getting up
+/// also 0.01 × (1 − progress) with that difference taken in single
+/// precision. The sum narrows to single precision and a value above
+/// `max_energy` becomes it; a NaN stays.
+pub fn recover_energy(energy: f32, max_energy: f32, getting_up: bool, progress: f32) -> f32 {
+    let sum = if getting_up {
+        f64::from(1.0 - progress) * 0.01 + f64::from(energy) + 0.005
+    } else {
+        f64::from(energy) + 0.005
+    };
+    let next = sum as f32;
+    if next > max_energy { max_energy } else { next }
+}
+
+/// One tick of blow sag. Above 0 it is 0 while `down` (the condition is
+/// down, getting up, dormant, collapsing or dead), and otherwise loses the
+/// double 0.01, floored at 0. A NaN, and a sag that is not above 0, stays.
+pub fn fade_sag(sag: f32, down: bool) -> f32 {
+    // A NaN, like a sag that does not compare above 0, stays.
+    if sag.is_nan() || sag <= 0.0 {
+        return sag;
+    }
+    if down {
+        return 0.0;
+    }
+    let next = (f64::from(sag) - 0.01) as f32;
+    if next < 0.0 { 0.0 } else { next }
+}
+
 /// One tick of the support pins' gain factor: under 0.08 (in double
 /// precision) it gains 0.001, unless the body collapses.
 pub fn recover_pins(gain: f32, collapsing: bool) -> f32 {
@@ -1312,6 +1341,7 @@ impl Default for Drive {
             frame: None,
             tone: 1.0,
             energy: 1.0,
+            energy_recovered: false,
             supported: true,
             race: RaceMuscles::HUMAN,
             stats: BodyStats::HUMAN,
@@ -1444,6 +1474,13 @@ impl Drive {
     /// ([`BodyStats::max_energy`]), 1 unless feral.
     pub fn max_energy(&self) -> f32 {
         self.stats.max_energy
+    }
+
+    /// Writes this tick's energy recovery. The integration step then leaves
+    /// it, so the pose drive and the link muscles read the same value.
+    pub fn write_energy(&mut self, getting_up: bool, progress: f32) {
+        self.energy = recover_energy(self.energy, self.max_energy(), getting_up, progress);
+        self.energy_recovered = true;
     }
 
     /// Its energy as a share of its most, E/Emax.
@@ -2428,12 +2465,18 @@ impl Ragdoll {
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
-            drive.energy = (drive.energy + ENERGY_RECOVERY).min(drive.stats.max_energy);
-            drive.sag = if drive.supported {
-                (drive.sag - SAG_FADE).max(0.0)
+            if drive.energy_recovered {
+                drive.energy_recovered = false;
             } else {
-                0.0
-            };
+                drive.energy = recover_energy(
+                    drive.energy,
+                    drive.stats.max_energy,
+                    drive.bearing.getting_up,
+                    drive.bearing.progress,
+                );
+            }
+            let down = drive.bearing.off_feet || drive.bearing.collapsing;
+            drive.sag = fade_sag(drive.sag, down);
         }
         self.integrate();
         if self.drive.is_some() {

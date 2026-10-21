@@ -171,11 +171,7 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
     }
     assert!(app.world().resource::<ShoveQueue>().0.is_empty());
     // Halved by the daze, then one tick's recovery.
-    assert!(
-        (energy(&app) - (0.5 + ENERGY_RECOVERY)).abs() < 1e-6,
-        "energy {}",
-        energy(&app)
-    );
+    assert_eq!(energy(&app), recover_energy(0.5, 1.0, false, 0.0));
 }
 
 /// A body model root that a frame system moves and turns every frame, as

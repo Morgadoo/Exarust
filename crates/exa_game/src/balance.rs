@@ -28,7 +28,8 @@
 //! with a blend of 20 from its whole physical pose. The movement stage
 //! picks again while the get-up is under 40 % (a body that rolled over
 //! changes clip). While getting up its energy gains 0.01 × (1 − progress)
-//! a tick more. Under a balance of 0.8, not getting up, a body whose pelvis
+//! a tick more, in the same double sum as the 0.005 recovery. Under a
+//! balance of 0.8, not getting up, a body whose pelvis
 //! has turned more than 45° from its clip's turns its heading toward its
 //! fall when that is more than 37° off.
 //!
@@ -752,8 +753,10 @@ fn turn_toward_fall(
     }
 }
 
-/// The ticked body's extra energy while getting up, in its readiness stage
-/// (by last tick's condition and clock): 0.01 × (1 − progress).
+/// The ticked body's energy recovery, in its readiness stage (by last
+/// tick's condition and clock). Getting up adds 0.01 × (1 − progress) in
+/// the same double sum as the 0.005; anything else adds only that 0.005.
+/// The integration step then leaves the energy.
 fn recover_rising(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
@@ -763,14 +766,11 @@ fn recover_rising(
     let Ok((mut body, anim, condition)) = bodies.get_mut(ticked.body) else {
         return;
     };
-    if *condition != Condition::GETTING_UP {
-        return;
-    }
     let progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
     if let Some(d) = body.drive.as_mut() {
-        d.energy += rising_energy(progress);
+        d.write_energy(*condition == Condition::GETTING_UP, progress);
     }
 }
 
