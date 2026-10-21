@@ -229,15 +229,16 @@ pub fn aim_point_step(current: Vec3, want: Vec3, aim_speed: f32) -> Vec3 {
 }
 
 /// The aim point's height when an opponent's bone shows within reach of the
-/// cursor: `bone` is the bone's height, `distance` its screen distance and
-/// `radius` the pixel radius. Within the radius the height is the bone's;
-/// within twice it, the two blend by `(d − r) / r`; beyond, the plane's.
-pub fn aim_lock_height(plane: f32, bone: f32, distance: f32, radius: f32) -> f32 {
-    if distance < radius * AIM_LOCK_RADII * radius * AIM_LOCK_RADII {
-        if distance <= radius * radius {
+/// cursor: `bone` is the bone's height, `distance2` its squared screen
+/// distance and `radius` the pixel radius. Within the radius the height is
+/// the bone's; within twice it, the two blend by `(d − r) / r`; beyond, the
+/// plane's.
+pub fn aim_lock_height(plane: f32, bone: f32, distance2: f32, radius: f32) -> f32 {
+    if distance2 < radius * AIM_LOCK_RADII * radius * AIM_LOCK_RADII {
+        if distance2 <= radius * radius {
             bone
         } else {
-            let blend = (distance.sqrt() - radius) / radius;
+            let blend = (distance2.sqrt() - radius) / radius;
             plane * blend + (1.0 - blend) * bone
         }
     } else {

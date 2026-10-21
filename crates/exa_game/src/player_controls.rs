@@ -571,12 +571,6 @@ pub fn turns_when_blocked(turn: CameraTurn, idle: bool) -> bool {
     !turn.modal && !turn.window_open && !turn.button_held && (turn.blocked || idle)
 }
 
-/// The camera-orbit sensitivity per pixel: 3.6 rad over the screen width
-/// (the original's unit init's `3.6 / width`).
-pub fn orbit_per_pixel(width: f32) -> f64 {
-    3.6 / f64::from(width.max(1.0))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,11 +952,5 @@ mod tests {
         assert!((goal.z - 1.5).abs() < 1e-5, "{goal}");
         assert_eq!(walk_stop(at, Vec3::new(0.0, 0.0, 2.45), false), None);
         assert_eq!(walk_stop(at, Vec3::new(0.0, 0.0, 2.0), false), None);
-    }
-
-    #[test]
-    fn the_orbit_sensitivity_is_three_point_six_over_the_width() {
-        assert!((orbit_per_pixel(1600.0) - 0.00225).abs() < 1e-9);
-        assert!((orbit_per_pixel(0.0) - 3.6).abs() < 1e-9);
     }
 }
