@@ -39,6 +39,10 @@
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
+//!          --arena-match <id>         in an arena, lay the match out as the original's template <id> does (1 duel, 2 doubles,
+//!                                     3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain,
+//!                                     12 brawl, 13 valiance, 14 valour): the player takes the company's first place and a
+//!                                     duellist stands on each opponent's place; the match tick ends its rounds
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
@@ -183,6 +187,8 @@ pub struct Options {
     pub opponent: bool,
     /// The opponent stands its ground (no steps, no strikes).
     pub still_opponent: bool,
+    /// Lay an arena match out as the original's template of this id does.
+    pub arena_match: Option<i32>,
     /// Write the body state after every tick here (CSV).
     pub trace: Option<PathBuf>,
     /// Start with the body overlay shown.
@@ -451,6 +457,10 @@ fn main() -> AppExit {
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
+            "--arena-match" => {
+                options.opponent = true;
+                options.arena_match = args.next().and_then(|v| v.parse().ok());
+            }
             "--still-opponent" => {
                 options.opponent = true;
                 options.still_opponent = true;

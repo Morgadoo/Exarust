@@ -395,6 +395,16 @@ impl Default for MatchRounds {
 }
 
 impl MatchRounds {
+    /// The rounds a template's setup sets: Elimination (7) and Reserve (5)
+    /// their own, every other template the default.
+    pub fn for_template(template: i32) -> Self {
+        match template {
+            7 => Self::elimination(),
+            5 => Self::reserve(),
+            _ => Self::default(),
+        }
+    }
+
     /// Elimination's rounds: five wins in a row.
     pub fn elimination() -> Self {
         Self {
@@ -807,12 +817,13 @@ pub struct ArenaMatch {
 }
 
 impl ArenaMatch {
-    /// A standard match of `template` with one round and one life.
+    /// A match of `template`: Elimination's and Reserve's rounds, else one
+    /// round and one life.
     pub fn begin(template: i32) -> Self {
         Self {
             started_ms: None,
             template,
-            rounds: MatchRounds::default(),
+            rounds: MatchRounds::for_template(template),
             state: MatchState::Fighting,
             physician: false,
             log: ArenaLog::default(),
@@ -1065,6 +1076,10 @@ mod tests {
         assert_eq!(MatchState::NextFight.word(), 8);
         assert_eq!(MatchState::Won.word(), 4);
         assert_eq!(MatchState::Lost.word(), 5);
+        assert_eq!(MatchRounds::for_template(7), MatchRounds::elimination());
+        assert_eq!(MatchRounds::for_template(5).lives, 3);
+        assert_eq!(MatchRounds::for_template(1), MatchRounds::default());
+        assert_eq!(ArenaMatch::begin(7).rounds.extra_rounds, 4);
     }
 
     #[test]

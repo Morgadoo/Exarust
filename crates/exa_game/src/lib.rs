@@ -33,6 +33,7 @@ pub mod joint_trace;
 pub mod limp;
 pub mod loadout;
 pub mod look_overlay;
+pub mod match_layout;
 pub mod menu;
 pub mod menu_pages;
 pub mod menu_screen;

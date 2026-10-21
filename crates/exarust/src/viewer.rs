@@ -258,6 +258,7 @@ fn setup(
                     position: Vec3::ZERO,
                     yaw: 0.0,
                     characters: Vec::new(),
+                    foes: Vec::new(),
                 };
                 place_chase_camera(&mut commands, camera, &start, &options);
                 spawn_players(&mut commands, &mut loader, &game, name, &start, &options);
@@ -514,6 +515,9 @@ struct PlayStart {
     position: Vec3,
     yaw: f32,
     characters: Vec<exa_world::PlacedCharacter>,
+    /// An arena match's opponent places (`--arena-match`); empty for the
+    /// one duellist of `--opponent`.
+    foes: Vec<exa_world::start::Start>,
 }
 
 /// Play mode around a loaded level: its music, the player's start and the
@@ -546,9 +550,19 @@ fn play_level(
     };
     commands.insert_resource(exa_audio::LevelMusic(track));
     commands.insert_resource(exa_audio::LevelMusicVolume(volume));
-    if exa_game::arena_match::arena_index(name).is_some() && options.opponent {
-        // A duel (template 1): one round, one life.
-        commands.insert_resource(exa_game::arena_match::ArenaMatch::begin(1));
+    // An arena match: a duel with `--opponent`, or the template that
+    // `--arena-match` names, laid out around the arena's spawn spot.
+    let arena = exa_game::arena_match::arena_index(name);
+    let template = options.arena_match.unwrap_or(1);
+    let layout = match arena {
+        Some(index) if options.opponent => {
+            let spawn = exa_game::arena_match::ARENA_MAPS[index].spawn;
+            exa_game::match_layout::layout(template, 0, 0, spawn)
+        }
+        _ => Vec::new(),
+    };
+    if arena.is_some() && options.opponent {
+        commands.insert_resource(exa_game::arena_match::ArenaMatch::begin(template));
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
     }
@@ -570,6 +584,32 @@ fn play_level(
             0.0,
         ),
     };
+    let mut yaw = yaw;
+    let mut foes = Vec::new();
+    if options.arena_match.is_some() {
+        use exa_game::match_layout::Fighter;
+        let start_of = |place: &exa_game::match_layout::Place| exa_world::start::Start {
+            position: Vec3::from_array(place.position) / 100.0,
+            yaw: place.forward[0].atan2(place.forward[2]),
+        };
+        for slot in &layout {
+            match slot.who {
+                Fighter::Ours(0) => {
+                    let at = start_of(&slot.place);
+                    position = at.position;
+                    yaw = at.yaw;
+                }
+                Fighter::Ours(other) => {
+                    info!("arena match: the company's entrant {other} is not spawned")
+                }
+                Fighter::Opponent { .. } => foes.push(start_of(&slot.place)),
+                Fighter::Beast { .. } => warn!("arena match: the beast is not spawned"),
+            }
+        }
+        if layout.is_empty() {
+            warn!("arena match: template {template} lays out nobody here");
+        }
+    }
     if let Some(at) = options.at {
         position = Vec3::from_array(at);
     }
@@ -578,6 +618,7 @@ fn play_level(
         position,
         yaw,
         characters: info.characters,
+        foes,
     };
     if let Some(camera) = camera {
         place_chase_camera(commands, camera, &start, options);
@@ -818,10 +859,19 @@ fn spawn_players(
                 .entity(model)
                 .insert(exa_character::Wielded::model(w.clone()));
         }
-        if options.opponent {
-            // Its ring slot, else in front of the player, facing it.
-            let foe_at =
-                exa_world::start::duel_opponent(name, exa_world::start::Start { position, yaw });
+        // An arena match's opponent places, else the duellist's ring slot,
+        // else in front of the player, facing it.
+        let foes = if !options.opponent {
+            Vec::new()
+        } else if start.foes.is_empty() {
+            vec![exa_world::start::duel_opponent(
+                name,
+                exa_world::start::Start { position, yaw },
+            )]
+        } else {
+            start.foes.clone()
+        };
+        for foe_at in foes {
             let foe_root = commands
                 .spawn((
                     Transform::from_translation(foe_at.position + Vec3::Y * 0.2),

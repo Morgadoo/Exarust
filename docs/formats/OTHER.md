@@ -1896,6 +1896,14 @@ their volumes are in the same module; their names are the sound bank's
 `openspec/specs/arena-career`. The hire list is `exa_game::hirelings`, the
 arsenal's shelves `exa_game::arsenal`.
 
+`exa_game::match_layout` holds where each template's fighters stand around
+the spawn spot: one opponent 2 m ahead (5 cm up) and the company 2 m behind
+for the one-on-one matches; a 3.5 m ring at fractions of a turn for the team
+matches (Doubles ∓0.05 against 0.55 and 0.45, Valiance ∓1/15, Valour and
+Captain −1/12, 0, 1/12, Skirmish and the Beast's company at 7/12, 0.5,
+5/12); six places a sixth of a turn apart for a fray or a brawl, each
+opponent its own team.
+
 The staff (`exa_game::staff`) keeps the original's 56-byte employee
 records reduced to what its routines read: a class byte (1 a recruit, 2 a
 combatant, 4 a merchant, 8 a physician, 0x10 a trainer), the name's sixteen
