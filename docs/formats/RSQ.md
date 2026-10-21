@@ -1323,20 +1323,23 @@ and down. h is the heading.
   quarters the leg limit's standing target; a stepping foot that is
   anchored blends its limit s ← 0.8s + 0.04 instead of following the leg
   mode.
-- The foot pitch (`0x100168f50`) is `exa_physics::body::foot_pitch_turn`:
-  five degrees alternating by leg about (−0.2, 0, 0.8), or
-  (1 − record height)·−1.5°, applied to the foot parts by the sampler. The
-  swing routine's body side is reproduced piece by piece: the weapon-in-hand
-  gate, the attack arms' stiffness, the swing sound, the fatigue ramp, the
-  aim nudges (fist, edge, overhead, homing), the two-hand group bit, Break
-  Tangle and the clinch clear (`exa_combat::swing`, `strike_body`); the
-  parry trigger and its counter (`parry`); the held weapon's handling pushes
-  (`weapon`); a blow's stagger and recoil (`exa_physics::stagger`); and
-  burning (`exa_combat::burn`). Not reproduced: the start callback itself (no
+- **Femur posture.** In the combat behaviour's conditions each thigh's clip
+  turn is multiplied by a small turn about the axis (0, 0, 1) lerped 0.4
+  toward (−1, 0, 0) by (1 − record height)·−1.5° (a body with the splay
+  flag, which nothing sets yet, gets 5°); the sign alternates by leg and
+  the thigh keeps the clip's turn otherwise
+  (`exa_physics::body::femur_posture_turn`, applied by the sampler).
+- **The swing routine's body side** is reproduced piece by piece, but none
+  of it runs in the game yet: the weapon-in-hand gate, the attack arms'
+  stiffness, the swing sound, the fatigue ramp, the aim nudges (fist, edge,
+  overhead, homing), the two-hand group bit, Break Tangle and the clinch
+  clear (`exa_combat::swing`, `strike_body`); the parry trigger and its
+  counter (`parry`); the held weapon's handling pushes (`weapon`); a
+  blow's stagger and recoil (`exa_physics::body::stagger`); and burning
+  (`exa_combat::burn`). Not reproduced: the start callback itself (no
   callback is registered), the grip link bodies and their collision
-  consumers (another lane's `exa_physics::grip`; the drop/clinch logic is
-  here), the femur posture, the full three-bone IK, and the
-  reciprocal-square-root approximations (Exarust normalises exactly).
+  consumers (the drop/clinch logic is here), the full three-bone IK, and
+  the reciprocal-square-root approximations (Exarust normalises exactly).
 
 Per-tick trace. `exarust --trace <file.csv>` writes one row per traced body
 after every tick. It traces the player's body, or every simulated body when
@@ -1604,7 +1607,7 @@ not landed is the identity and says which:
 | 1 | the keys blended: each turn slerped from the source (a key, or the start's capture) to the target key, the root lerped | `Animator::blend_keys` |
 | 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend with the sprint latch) | `exa_anim::overlay_toward`, fed by the Run clip and its weight |
 | 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
-| 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | identity until C13 |
+| 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | `femur_posture_turn`, applied by the sampler in the combat conditions; identity otherwise |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
@@ -1800,7 +1803,7 @@ look target), and the head step's other relative frame for a clip from
 Not reproduced yet: the swing's weapon-in-hand wait (weapons are bodies
 with M24), the recoil's stance blend and arm stiffness (C21, M26); the
 attack arm stiffness; the twist in the captures and the run lean's
-exertion; the femur posture
+exertion; the femur posture outside the combat conditions
 and the foot pitch (C13); the foot contacts' flag in the capture; the
 weak branch's rate kept from last tick (Exarust reads the base); the
 creature classes' own clock bases.
