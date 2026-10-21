@@ -42,10 +42,10 @@ Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),
 cached per race, tone and sex. The tone multiplier is the original's, bit
 for bit: its HSV tone table, grid halves and fast power. The creator's
-picker grid is `tone_grid_linear` (nine linear colours) and its three mode
-scales are `tone_grid_scales` (the darkest column over the base skin's
-linear colour, times 0.8 in double precision), the grid the unit's init
-precomputes.
+picker grid is `tone_grid_linear` (nine linear colours), the grid the
+unit's init precomputes; the three scales it derives after the grid (the
+darkest column over the base skin's linear colour, divided in single
+precision and times 0.8 in double) are `tone_blend_target`.
 
 The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
 and `_n` programs evaluated per texel for a corpse's or undead's skin —
@@ -55,7 +55,7 @@ colour and the amount; `DIFFUSE_MAPS`, `SPECULAR_MAPS` and `NORMAL_MAPS`
 name the maps the passes bind (read from the unit's binding loops).
 
 The character-creation sliders (`morph_controller`): a centred slider reads
-its position as `0.5 − position`, a direct one as itself; `morph_slider`
+its position as `(position − 0.5) · −1`, a direct one as itself; `morph_slider`
 writes that float into one morph target's weight and returns it for the
 caller's apply, and refuses an index past the targets instead of writing
 past the array.

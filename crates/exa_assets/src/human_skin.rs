@@ -234,14 +234,6 @@ pub fn tone_grid_linear() -> [[[f32; 3]; 3]; 3] {
     std::array::from_fn(|row| std::array::from_fn(|column| tone_grid(row, column)))
 }
 
-/// The three mode scales the unit's init derives after the grid: the last
-/// column's linear colour over the base texture's linear colour, times 0.8
-/// (the multiplication is done in double precision, as the original does).
-pub fn tone_grid_scales() -> [f32; 3] {
-    let reference = TONE_REFERENCE.map(srgb_decode);
-    let dark = tone_grid(0, 2);
-    [0, 1, 2].map(|i| ((f64::from(dark[i]) / f64::from(reference[i])) * 0.8) as f32)
-}
 /// The share of the diffuse colour that scatters under a human's skin (sRGB).
 pub const SCATTER: [f32; 3] = [1.0, 0.8, 0.46];
 /// The share that scatters under an ancient's skin (sRGB).
@@ -368,8 +360,8 @@ pub fn skin_material_of(
 mod tests {
     use super::*;
 
-    /// The picker's grid in linear light and its three mode scales: the
-    /// middle tone's HSV (0.062, 0.3, 0.33) decodes to about (0.089, 0.058,
+    /// The picker's grid in linear light and the blend target derived from
+    /// its darkest column ([`tone_blend_target`]): the middle tone's HSV (0.062, 0.3, 0.33) decodes to about (0.089, 0.058,
     /// 0.044), and the darkest column over the base's linear colour, times
     /// 0.8, gives about (0.158, 0.200, 0.237).
     #[test]
@@ -381,7 +373,7 @@ mod tests {
         }
         // The grid is the stored table decoded, row by row.
         assert_eq!(tone_grid(1, 1), hsv_to_rgb(TONE_HSV[1][1]).map(srgb_decode));
-        let scales = tone_grid_scales();
+        let scales = tone_blend_target();
         for (got, want) in scales.iter().zip([0.1581, 0.2005, 0.2369]) {
             assert!((got - want).abs() < 3e-3, "{scales:?}");
         }
