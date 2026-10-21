@@ -290,12 +290,6 @@ pub struct CombatMind {
     pub estimate: Vec3,
     /// The foe changed this tick.
     pub fresh_target: bool,
-    /// A look timer the idle states clear when they take the guard [?].
-    pub look_timer: f32,
-    /// Its walk state follows a route.
-    pub following: bool,
-    /// Its route goal is set.
-    pub goal_set: bool,
     /// The cast in progress runs from this clock (ms).
     pub cast_start_ms: u32,
     /// The per-slot cast cooldowns.
@@ -331,9 +325,6 @@ impl Default for CombatMind {
             alert: 0.0,
             estimate: Vec3::ZERO,
             fresh_target: false,
-            look_timer: 0.0,
-            following: false,
-            goal_set: false,
             cast_start_ms: 0,
             casts: cast::Casting::default(),
         }
@@ -475,6 +466,9 @@ pub struct Body {
     pub power_pool: f32,
     /// The record's ten power slots (0 empty).
     pub power_slots: [u32; cast::SLOTS],
+    /// The body's power word has its busy bit (0x10), so no power is
+    /// chosen [guess: what the bit means].
+    pub power_busy: bool,
     /// How firmly the body holds on, at least 0.7 to act [guess: name].
     pub grip: f32,
     /// Awareness above 0.7 to act [guess: name].
@@ -539,6 +533,7 @@ impl Default for Body {
             can_attack: true,
             power_pool: 0.0,
             power_slots: [0; cast::SLOTS],
+            power_busy: false,
             grip: 1.0,
             awareness: 1.0,
             blocking: 0,
@@ -616,7 +611,10 @@ pub trait Field {
     fn powers(&mut self) -> Option<&mut dyn cast::Powers> {
         None
     }
-    /// The power system is still running the cast the body is in.
+    /// The power system is still running the cast the body is in (the
+    /// original asks the power system for the body's current power and the
+    /// body's cast callback; the cast ends when the first answers nothing
+    /// and the second a negative).
     fn cast_running(&mut self) -> bool {
         false
     }
@@ -1766,16 +1764,16 @@ pub struct Stopped {
     pub step_goal: Vec3,
 }
 
-/// Stops a run: the run bit clears and the stopping flag sets, the walk
-/// state, follow and goal marks clear, and a step goal farther than
-/// 8·speed + 20 cm from the feet is pulled back to that radius and walked
-/// to the ground with the navigation line walk.
+/// Stops a run: the run bit clears and the stopping flag sets (the walk
+/// state, follow and goal marks clear with them), and a step goal farther
+/// than `8·speed + 20` cm from the body is put that far along the body's
+/// facing (not toward the old goal), then walked from the ground point with
+/// the navigation line walk.
 pub fn stop_run(me: &Body, flags: u32, step_goal: Vec3, field: &mut dyn Field) -> Stopped {
-    let radius = me.scale * 8.0 + 20.0;
+    let radius = me.forward_speed * 8.0 + 20.0;
     let mut goal = step_goal;
-    let delta = goal - me.position;
     if radius * radius < distance2(me.position, goal) {
-        goal = me.position + unit(delta) * radius;
+        goal = me.position + me.facing * radius;
     }
     let from = Vec3::new(me.position.x, me.ground_y, me.position.z);
     field.walk_line(from, &mut goal);
@@ -1875,6 +1873,12 @@ pub fn tick(
         out.exit = Some(Exit::Chase);
         return out;
     }
+    // A running body stops its run before the drives (the original also
+    // stops it on the chase count's reachable branch; the second stop finds
+    // the goal already inside).
+    if me.running {
+        out.stop_run = Some(stop_run(me, 0, me.step_goal, world.field));
+    }
     let d = drives(mind, me, foe, traits, roll);
     out.blow.set_flags |= d.set_flags;
     if me.running && 3.0 < me.forward_speed {
@@ -1883,25 +1887,30 @@ pub fn tick(
         out.exit = Some(Exit::Charge);
         return out;
     }
-    if me.running {
-        out.stop_run = Some(stop_run(me, 0, me.step_goal, world.field));
-    }
-    // The cast is chosen after the first place is weighed in the original;
-    // Exarust chooses it before the search, so its cleared attack drive
-    // also reaches the first place's strike gain (the only difference).
-    if me.condition == CASTING {
-        if me.now_ms.wrapping_sub(mind.cast_start_ms) > 1000 && !world.field.cast_running() {
-            mind.casting = false;
-            out.cast_stopped = true;
+    // The cast, at the first place in the original, after that place's
+    // contact pass: no place term before it reads the attack drive, so
+    // clearing the drive here is the same. Only a body that is not
+    // attacking and has a foe looks at it. A cast running for more than a
+    // second (64-bit compare, no wrap) is torn down once the power system
+    // is done with it; otherwise a fighter not yet casting may choose one.
+    // [Not kept: the original's place pass may drop the foe first, and then
+    // casts nothing.]
+    if me.condition != ATTACKING && foe.is_some() {
+        if me.condition == CASTING {
+            if u64::from(mind.cast_start_ms) + 1000 < u64::from(me.now_ms)
+                && !world.field.cast_running()
+            {
+                mind.casting = false;
+                out.cast_stopped = true;
+            }
+        } else if !mind.casting
+            && let Some(powers) = world.field.powers()
+            && let Some(choice) = cast::choose(&mut mind.casts, &me.power_slots, me, powers, roll)
+        {
+            mind.casting = true;
+            mind.cast_start_ms = me.now_ms;
+            out.cast = Some(choice);
         }
-    } else if foe.is_some()
-        && !mind.casting
-        && let Some(powers) = world.field.powers()
-        && let Some(choice) = cast::choose(&mut mind.casts, &me.power_slots, me, powers, roll)
-    {
-        mind.casting = true;
-        mind.cast_start_ms = me.now_ms;
-        out.cast = Some(choice);
     }
     let d = if out.cast.is_some() {
         Drives { attack: 0.0, ..d }

@@ -1,4 +1,4 @@
-//! Choosing a power to cast, and the stop of a cast that goes down.
+//! Choosing a power to cast.
 //!
 //! A fighter has ten power slots, each with its own cooldown. A slot whose
 //! cooldown is still running is skipped. An empty slot's cooldown is pushed
@@ -8,26 +8,27 @@
 //! low byte is its weight, bits 8–15 its cost, [`USABLE`] marks it usable
 //! and [`DENIED`] its refusal.
 //!
-//! The pool gives `round(pool · 200)`; the costliest usable power's cost is
-//! taken off it, and a power whose own cost passes that budget is dropped.
-//! Every power left keeps a flat 20 of weight and five times its low byte.
-//! The last of them is not in the cumulative table the draw walks: it never
-//! wins, though its flat 20 still widens the draw. A draw below the flat
-//! part casts nothing; the rest walks the cumulative table. A chosen power
-//! that carries under 11 of its own weight is put away for 6 s after the
-//! cast.
+//! The pool gives `round(pool · 200)` (ties to even); the costliest usable
+//! power's cost is taken off it, and a power whose own cost passes that
+//! budget weighs nothing. Every power weighed keeps a flat 20 of the draw
+//! and five times its low byte. A draw below the flat part casts nothing;
+//! the rest walks the cumulative table to the first power whose running
+//! total is not below it (a dropped first power is taken by a draw of
+//! exactly the flat part). A chosen power whose own share (its running
+//! total less the entry before it) is under 11 puts away the slot whose
+//! number is the chosen power's place in the table, not its own slot, for
+//! 6 s after the cast.
 //!
-//! A body that goes down while casting stands in its guard facing the way
-//! its body faces, and holds that heading; a body that was already lying
-//! and is late in its fall keeps the pose it had.
+//! The combat state asks for a cast at its first place when the body is not
+//! attacking and has a foe; a cast running for more than a second is torn
+//! down once the power system is done with it ([`crate::combat::tick`]).
 //!
 //! Evidence: the original's cast chooser and casting stop, read from the
 //! instructions (draws on the engine's generator, the pool compared after
-//! a round to even, the cumulative table's last entry left out).
+//! a round to even, the walk's unsigned compare, the rest written by the
+//! table's index).
 
-use bevy::math::Vec3;
-
-use crate::combat::{Body, CombatMind, GUARD, yaw};
+use crate::combat::Body;
 
 /// The power system's word: the power may be cast.
 pub const USABLE: u32 = 0x0800_0000;
@@ -52,17 +53,6 @@ pub const FLAT_SHARE: i32 = 20;
 pub const WEIGHT_SCALE: i32 = 5;
 /// A power whose low byte is under this is too weak to weigh now.
 pub const WEAK_BELOW: u32 = 4;
-/// The body word that stops casting (busy).
-pub const CAST_BUSY: u32 = 0x10;
-/// The body condition bit of a downed body.
-pub const DOWN: u32 = 0x200;
-/// The condition word of a body lying down.
-pub const LYING: u32 = 0x300;
-/// The clock past which a lying body keeps its pose.
-pub const KEEP_POSE_CLOCK: f32 = 0.9;
-/// The pose a downed caster holds, and the pose a late fall keeps.
-pub const DOWN_POSE: i32 = 4;
-pub const KEPT_POSE: i32 = 0;
 
 /// The power system the chooser asks: a power's word, and the cast itself.
 pub trait Powers {
@@ -73,25 +63,11 @@ pub trait Powers {
     fn cast(&mut self, power: u32);
 }
 
-/// Per-slot cooldowns and the cast in progress.
-#[derive(Debug, Clone, PartialEq)]
+/// The per-slot cooldowns (the cast in progress is the combat mind's).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Casting {
     /// Each slot's cooldown ends at this clock (ms).
     pub cooldowns: [u32; SLOTS],
-    /// A cast is running.
-    pub casting: bool,
-    /// When it started (ms).
-    pub started_ms: u32,
-}
-
-impl Default for Casting {
-    fn default() -> Self {
-        Self {
-            cooldowns: [0; SLOTS],
-            casting: false,
-            started_ms: 0,
-        }
-    }
 }
 
 /// A power that may be weighed: its slot, its weight and its cost.
@@ -127,7 +103,7 @@ pub fn choose(
     powers: &mut dyn Powers,
     roll: &mut u32,
 ) -> Option<Choice> {
-    if body.condition & CAST_BUSY != 0 {
+    if body.power_busy {
         return None;
     }
     let now = body.now_ms;
@@ -168,14 +144,17 @@ pub fn choose(
     if weighed.is_empty() {
         return None;
     }
-    let budget = (body.power_pool * POOL_SCALE).round_ties_even() as i32
-        - i32::try_from(most_cost).unwrap_or(i32::MAX);
-    // The cumulative table is built over every power but the last, so the
-    // last can never be drawn.
+    // The pool converts to a 64-bit integer; the compare reads the low 32
+    // bits of the difference.
+    let budget = i64::from(
+        ((body.power_pool * POOL_SCALE).round_ties_even() as i64).wrapping_sub(i64::from(most_cost))
+            as i32,
+    );
+    // The cumulative table: a power whose cost passes the budget is zeroed
+    // and adds nothing.
     let mut total = 0;
-    let last = weighed.len() - 1;
-    for candidate in &mut weighed[..last] {
-        if i32::try_from(candidate.cost).unwrap_or(i32::MAX) <= budget {
+    for candidate in &mut weighed {
+        if i64::from(candidate.cost) <= budget {
             total += candidate.weight;
             candidate.weight = total;
         } else {
@@ -187,9 +166,11 @@ pub fn choose(
     if drawn < flat {
         return None;
     }
+    // The draw is under the total here, which the last kept power's running
+    // total reaches, so the walk stops inside the table.
     let target = drawn - flat;
     let mut at = 0;
-    while at < weighed.len() - 1 && weighed[at].weight < target {
+    while weighed[at].weight < target {
         at += 1;
     }
     let own = if at == 0 {
@@ -199,56 +180,15 @@ pub fn choose(
     };
     let chosen = weighed[at];
     if own < LIGHT_WEIGHT {
-        state.cooldowns[chosen.slot] = now.wrapping_add(CAST_MS);
+        // The original writes the rest by the table's index.
+        state.cooldowns[at] = now.wrapping_add(CAST_MS);
     }
     powers.cast(slots[chosen.slot]);
-    state.casting = true;
-    state.started_ms = now;
     Some(Choice {
         slot: chosen.slot,
         power: slots[chosen.slot],
         weight: own,
     })
-}
-
-/// A caster that goes down: the pose it holds, and the heading it faces.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Stopped {
-    /// The pose the body's base holds: 4 for a fresh down, 0 for a late
-    /// lying fall [guess: what the field drives].
-    pub pose: i32,
-    /// The body motion the stop sets: the guard.
-    pub motion: i32,
-    /// The heading, aim and look, all the body's facing yaw.
-    pub yaw: f32,
-}
-
-/// Stops a cast (and the tick) for a downed body: the guard motion, the
-/// look, heading and aim set to the body's facing, and the caster's aim and
-/// yaw follow. Returns `None` when the body is not down.
-pub fn stop(mind: &mut CombatMind, body: &Body) -> Option<Stopped> {
-    if body.condition & DOWN == 0 {
-        return None;
-    }
-    let pose = if body.condition != LYING || body.clock <= KEEP_POSE_CLOCK {
-        DOWN_POSE
-    } else {
-        KEPT_POSE
-    };
-    let facing = yaw(body.facing);
-    mind.heading = facing;
-    mind.aim = facing;
-    mind.look_timer = 0.0;
-    Some(Stopped {
-        pose,
-        motion: GUARD,
-        yaw: facing,
-    })
-}
-
-/// The direction a body faces, as the stop leaves it on the body's look.
-pub fn facing_of(body: &Body) -> Vec3 {
-    body.facing
 }
 
 #[cfg(test)]
@@ -279,70 +219,96 @@ mod tests {
         }
     }
 
-    /// Slot 1 is a usable power of weight 5, slot 2 a usable power of
-    /// weight 1; slot 3 is empty and slot 4 refused.
-    fn table() -> Table {
+    /// The generator state whose next draw below `n` is `want`.
+    fn seed_for(n: i32, want: i32) -> u32 {
+        (0..u32::MAX)
+            .find(|&s| {
+                let mut r = s;
+                draw(&mut r, n) == want
+            })
+            .unwrap()
+    }
+
+    /// A lone usable power of weight 5 weighs 25 over a flat 20: a draw
+    /// under 20 casts nothing, any other casts it.
+    #[test]
+    fn a_lone_power_is_cast_past_the_flat_share() {
+        let mut slots = [0; SLOTS];
+        slots[0] = 1;
         let mut answers = [0; SLOTS];
         answers[0] = USABLE | 5;
-        answers[1] = USABLE | 1;
-        answers[3] = DENIED;
-        Table {
+        let mut powers = Table {
             answers,
             cast: None,
-        }
-    }
-
-    /// A single weighed power is the last entry of the draw's table, so it
-    /// never wins: the draw's flat part always covers the whole range.
-    #[test]
-    fn a_lone_power_is_never_cast() {
+        };
         let mut state = Casting::default();
-        let mut slots = [0; SLOTS];
-        slots[0] = 1;
-        let mut powers = table();
-        let mut roll = 0;
-        for _ in 0..1000 {
-            assert_eq!(
-                choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll),
-                None
-            );
-        }
-        assert_eq!(powers.cast, None);
-        assert!(!state.casting);
-    }
-
-    /// Two usable powers: the first is the only one the cumulative table
-    /// holds, so every cast picks it (never the last). The draw's flat part
-    /// (40 of 65) casts nothing.
-    #[test]
-    fn the_draw_casts_nothing_below_the_flat_share_and_never_the_last() {
-        let mut state = Casting::default();
-        let mut slots = [0; SLOTS];
-        slots[0] = 1;
-        slots[1] = 2;
-        let mut powers = table();
-        powers.answers[1] = USABLE | 5;
-        let mut roll = 0;
-        // Seed 0 draws 0: below the 40 of flat share.
+        let mut roll = seed_for(45, 19);
         assert_eq!(
             choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll),
             None
         );
-        assert_eq!(roll, 1);
-        let mut casts = 0;
-        for _ in 0..1000 {
-            if let Some(choice) = choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll)
-            {
-                assert_eq!((choice.slot, choice.power, choice.weight), (0, 1, 25));
-                casts += 1;
-            }
-            state.casting = false;
-        }
-        assert!(casts > 0);
+        let mut roll = seed_for(45, 20);
+        let choice = choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll).unwrap();
+        assert_eq!((choice.slot, choice.power, choice.weight), (0, 1, 25));
+        assert_eq!(powers.cast, Some(1));
+        // A share of 25 rests no longer.
+        assert_eq!(state.cooldowns[0], 0);
     }
 
-    /// An empty slot rests 30 s; a refused one also does when the power
-    /// system says so; a weak power rests 3 s and still weighs.
+    /// Two powers of 25: the cumulative table holds 25 and 50 over a flat
+    /// 40. The walk takes the first total not below the draw's rest, so a
+    /// rest of 25 is still the first power and 26 the second.
+    #[test]
+    fn the_walk_takes_the_first_total_not_below_the_draw() {
+        let mut slots = [0; SLOTS];
+        slots[0] = 1;
+        slots[1] = 2;
+        let mut answers = [0; SLOTS];
+        answers[0] = USABLE | 5;
+        answers[1] = USABLE | 5;
+        let mut powers = Table {
+            answers,
+            cast: None,
+        };
+        let mut state = Casting::default();
+        let pick = |rest: i32, state: &mut Casting, powers: &mut Table| {
+            let mut roll = seed_for(90, 40 + rest);
+            choose(state, &slots, &body(1.0, 0), powers, &mut roll).map(|c| c.slot)
+        };
+        assert_eq!(pick(25, &mut state, &mut powers), Some(0));
+        assert_eq!(pick(26, &mut state, &mut powers), Some(1));
+        assert_eq!(pick(49, &mut state, &mut powers), Some(1));
+    }
+
+    /// A light power (share under 11) rests 6 s after its cast, written to
+    /// the slot numbered by its place in the table: the power in slot 3 is
+    /// the table's second entry, so slot 1 rests.
+    #[test]
+    fn a_light_cast_rests_the_slot_of_its_table_place() {
+        let mut slots = [0; SLOTS];
+        slots[0] = 1;
+        slots[3] = 4;
+        let mut answers = [0; SLOTS];
+        answers[0] = USABLE | 4;
+        answers[3] = USABLE | 2;
+        let mut powers = Table {
+            answers,
+            cast: None,
+        };
+        let mut state = Casting::default();
+        // Table 20 and 30 (shares 20 and 10), flat 40: a rest of 21 takes
+        // the second.
+        let mut roll = seed_for(70, 61);
+        let choice = choose(&mut state, &slots, &body(1.0, 500), &mut powers, &mut roll).unwrap();
+        assert_eq!((choice.slot, choice.power, choice.weight), (3, 4, 10));
+        assert_eq!(state.cooldowns[1], 500 + CAST_MS);
+        // Slot 3's own rest is the 3 s of a weak power (low byte under 4).
+        assert_eq!(state.cooldowns[3], 500 + WEAK_MS);
+    }
+
+    /// An empty slot rests 30 s, a refused power with no weight also does,
+    /// a weightless power without the refusal does not, and a weak power
+    /// rests 3 s and still weighs.
     #[test]
     fn empty_refused_and_weak_powers_rest() {
         let mut state = Casting::default();
@@ -352,122 +318,74 @@ mod tests {
         slots[2] = 3;
         let mut answers = [0; SLOTS];
         answers[0] = USABLE | 2;
-        answers[2] = USABLE | 2;
+        answers[2] = DENIED;
         let mut powers = Table {
             answers,
             cast: None,
         };
         let mut roll = 0;
-        // Slot 0 is the weak usable power, slot 1 has no power id, slot 2 a
-        // refused power, slot 3 an empty one.
         let _ = choose(&mut state, &slots, &body(1.0, 100), &mut powers, &mut roll);
         assert_eq!(state.cooldowns[0], 100 + WEAK_MS);
         assert_eq!(state.cooldowns[1], 0);
-        assert_eq!(state.cooldowns[2], 100 + WEAK_MS);
+        assert_eq!(state.cooldowns[2], 100 + UNUSABLE_MS);
         assert_eq!(state.cooldowns[3], 100 + UNUSABLE_MS);
-        // A weak usable power: 3 s of rest, and it still weighs.
-        let mut state = Casting::default();
-        let mut slots = [0; SLOTS];
-        slots[0] = 1;
-        let mut answers = [0; SLOTS];
-        answers[0] = USABLE | 2;
-        let mut powers = Table {
-            answers,
-            cast: None,
-        };
-        let mut roll = 0;
-        for _ in 0..100 {
-            let _ = choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll);
-            state.casting = false;
-        }
-        assert_eq!(state.cooldowns[0], WEAK_MS);
+        // A slot still resting is not asked.
+        let before = state.clone();
+        let _ = choose(&mut state, &slots, &body(1.0, 200), &mut powers, &mut roll);
+        assert_eq!(state.cooldowns[2], before.cooldowns[2]);
     }
 
-    /// The pool's budget drops the powers whose cost passes it; with every
-    /// power dropped the draw is all flat and nothing casts.
+    /// The pool's budget zeroes the powers whose cost passes it; with every
+    /// power zeroed the draw is all flat and nothing casts.
     #[test]
     fn the_pool_budget_drops_the_costliest_powers() {
-        let mut state = Casting::default();
         let mut slots = [0; SLOTS];
         slots[0] = 1;
         slots[1] = 2;
         let mut answers = [0; SLOTS];
-        // Usable with cost 50, and a costly power of cost 10.
+        // Usable with cost 50 (its own cost counts 0), and an unusable
+        // power of cost 10.
         answers[0] = USABLE | (50 << 8) | 5;
         answers[1] = (10 << 8) | 5;
         let mut powers = Table {
             answers,
             cast: None,
         };
+        // Pool 0.1 → 20; less the costliest usable cost 50 → budget −30:
+        // the usable power (cost 0) is dropped too.
+        let mut state = Casting::default();
         let mut roll = 0;
-        // Pool 0.1 → 20; less the costliest usable cost 50 → budget −30.
         for _ in 0..100 {
             assert_eq!(
                 choose(&mut state, &slots, &body(0.1, 0), &mut powers, &mut roll),
                 None
             );
         }
-        // Pool 1.0 → 200; budget 150 keeps both: the first weighs 25 of 65.
-        let mut state = Casting::default();
-        let mut casts = 0;
-        for _ in 0..100 {
-            if choose(&mut state, &slots, &body(1.0, 0), &mut powers, &mut roll).is_some() {
-                casts += 1;
-            }
-            state.casting = false;
-        }
-        assert!(casts > 0);
+        // Pool 0.25 → 50: budget 0 keeps the usable power only (25 of 65).
+        let mut roll = seed_for(65, 40 + 24);
+        let choice = choose(&mut state, &slots, &body(0.25, 0), &mut powers, &mut roll);
+        assert_eq!(choice.map(|c| c.slot), Some(0));
     }
 
-    /// A busy body asks for no power at all.
+    /// A body whose power word is busy asks for no power at all.
     #[test]
     fn a_busy_body_does_not_choose() {
         let mut state = Casting::default();
         let mut slots = [0; SLOTS];
         slots[0] = 1;
-        let mut powers = table();
+        let mut answers = [0; SLOTS];
+        answers[0] = USABLE | 5;
+        let mut powers = Table {
+            answers,
+            cast: None,
+        };
         let mut roll = 0;
         let mut me = body(1.0, 0);
-        me.condition = CAST_BUSY;
+        me.power_busy = true;
         assert_eq!(
             choose(&mut state, &slots, &me, &mut powers, &mut roll),
             None
         );
         assert_eq!(roll, 0);
-    }
-
-    /// A downed caster holds the guard facing its body's facing, its aim and
-    /// heading the same; a late lying fall keeps the old pose.
-    #[test]
-    fn a_fall_stops_the_cast_facing_the_body() {
-        let mut mind = CombatMind {
-            heading: 1.0,
-            aim: 2.0,
-            casting: true,
-            ..CombatMind::default()
-        };
-        let me = Body {
-            condition: DOWN,
-            clock: 0.5,
-            facing: Vec3::NEG_Z,
-            ..Body::default()
-        };
-        let held = stop(&mut mind, &me).unwrap();
-        assert_eq!((held.pose, held.motion), (DOWN_POSE, GUARD));
-        assert_eq!(held.yaw, yaw(Vec3::NEG_Z));
-        assert_eq!((mind.heading, mind.aim), (held.yaw, held.yaw));
-        let lying = Body {
-            condition: LYING,
-            clock: 0.95,
-            ..me
-        };
-        assert_eq!(stop(&mut mind, &lying).unwrap().pose, KEPT_POSE);
-        let early = Body {
-            clock: 0.9,
-            ..lying
-        };
-        assert_eq!(stop(&mut mind, &early).unwrap().pose, DOWN_POSE);
-        let standing = Body::default();
-        assert_eq!(stop(&mut mind, &standing), None);
     }
 }

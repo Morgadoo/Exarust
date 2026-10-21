@@ -1049,14 +1049,16 @@ fn the_can_act_gate_reads_the_grip_the_awareness_and_the_block() {
 }
 
 #[test]
-fn a_run_stop_pulls_the_step_goal_inside_eight_speeds_and_a_line_walk() {
+fn a_run_stop_puts_the_step_goal_eight_speeds_along_the_facing() {
     let me = Body {
         position: Vec3::new(0.0, 90.0, 0.0),
         ground_y: 90.0,
-        scale: 1.0,
+        forward_speed: 1.0,
+        facing: Vec3::X,
         ..Body::default()
     };
-    // 8·1 + 20 = 28 cm: a goal a metre ahead is pulled back to 28 cm.
+    // 8·1 + 20 = 28 cm: a goal a metre ahead is put 28 cm along the
+    // facing (+x), not toward the goal (+z).
     let stopped = stop_run(
         &me,
         0,
@@ -1064,7 +1066,7 @@ fn a_run_stop_pulls_the_step_goal_inside_eight_speeds_and_a_line_walk() {
         &mut Flat::new(Vec3::ZERO),
     );
     assert_eq!(stopped.flags, super::LOCO_STOP);
-    assert!((stopped.step_goal - Vec3::new(0.0, 90.0, 28.0)).length() < 0.05);
+    assert_eq!(stopped.step_goal, Vec3::new(28.0, 90.0, 0.0));
     // Inside the radius it stays, and the stop clears the run bit.
     let near = stop_run(
         &me,
@@ -1140,7 +1142,8 @@ fn a_fighter_with_powers_casts_at_the_first_place_and_stops_the_cast() {
         mind.casting = false;
     }
     let choice = cast.expect("a cast in 400 ticks");
-    assert_eq!((choice.slot, choice.power), (0, 1));
+    // Either power may win (the last of the table is drawn too).
+    assert!(choice.slot < 2 && choice.power == choice.slot as u32 + 1);
     assert!(mind.casting);
     // A second tick does not choose again while the cast runs.
     let t = tick(
