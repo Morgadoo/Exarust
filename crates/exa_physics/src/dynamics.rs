@@ -33,6 +33,15 @@ pub const STEP_MS: u32 = 12;
 pub const MAX_STEPS_BEHIND: u32 = 4;
 /// The longest the driver waits when no simulation is due (ms).
 pub const IDLE_WAIT_MS: u32 = 100;
+/// The simulation's default tick rate (ticks a second).
+pub const TICK_HZ: u32 = 83;
+/// The step the simulation constructor rounds `1000/83` to.
+pub const DEFAULT_STEP_MS: u32 = 12;
+/// The backlog the constructor allows: `1000/83` truncated, less one.
+pub const MAX_BACKLOG_STEPS: u32 = 1000 / TICK_HZ - 1;
+/// The default environments the constructor creates (the normal one and
+/// the inert one; the count field holds the original's 5 or 1 by option).
+pub const DEFAULT_ENVIRONMENTS: u32 = 5;
 /// The grids' cell (cm).
 pub const CELL_CM: f32 = 600.0;
 /// One over the cell as the original multiplies by it (a float, so a
@@ -214,6 +223,29 @@ impl Environment {
     /// `moved` cm in the last tick: fast above 40 cm/s, slow above 20,
     /// else resting, each its per-second value raised to a tick (none for
     /// a retention at or under zero).
+    /// The environment's per-step table as the original's conversion
+    /// writes it: each per-second retention raised to `1/step`, the gravity
+    /// per tick (g/step², metres), and the two speed thresholds squared
+    /// after their per-tick conversion. A non-positive retention gives 0.
+    pub fn configure_step(&self, tick_rate: u32) -> StepEnvironment {
+        let s = f64::from(tick_rate);
+        let raise = |r: f32| {
+            if r <= 0.0 {
+                0.0
+            } else {
+                ((f64::from(r).ln()) / s).exp() as f32
+            }
+        };
+        StepEnvironment {
+            retention: [raise(self.fast), raise(self.slow), raise(self.resting)],
+            gravity: Vec3::Y * (self.gravity / (tick_rate.wrapping_mul(tick_rate) as f32)),
+            fast_speed: ((self.fast_speed / tick_rate as f32)
+                * (self.fast_speed / tick_rate as f32)),
+            slow_speed: ((self.slow_speed / tick_rate as f32)
+                * (self.slow_speed / tick_rate as f32)),
+        }
+    }
+
     pub fn retention(&self, moved: f32) -> f32 {
         let per_second = if moved > self.fast_speed / 83.0 {
             self.fast
@@ -223,6 +255,71 @@ impl Environment {
             self.resting
         };
         per_tick(per_second)
+    }
+}
+
+/// An environment's values for one step, as the original's conversion
+/// leaves them on the environment object.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepEnvironment {
+    /// The retentions per tick: fast, slow and resting.
+    pub retention: [f32; 3],
+    /// Gravity per tick, g/step² (the original's centimetres, here m/s²).
+    pub gravity: Vec3,
+    /// The fast band's speed threshold, per tick and squared.
+    pub fast_speed: f32,
+    /// The slow band's speed threshold, per tick and squared.
+    pub slow_speed: f32,
+}
+
+/// The simulation's per-frame interpolation fraction: the original's
+/// `1 + (elapsed − previous)/step` when the elapsed time is above the
+/// previous one, else `1 − (previous − elapsed)/step`, clamped to
+/// [−2, 2]. Both differences are unsigned 32-bit differences widened to
+/// double, and the result is rounded to an `f32` as the original stores
+/// it.
+pub fn frame_fraction(since_update: u32, previous: u32, step: u32) -> f32 {
+    let f = if previous < since_update {
+        let x = f64::from(since_update - previous) / f64::from(step) + 1.0;
+        x as f32
+    } else {
+        let x = 1.0 - f64::from(previous - since_update) / f64::from(step);
+        x as f32
+    };
+    f.clamp(-2.0, 2.0)
+}
+
+/// The per-frame timing state the simulation keeps: the game time of its
+/// last update, the previous frame's elapsed time and the last fraction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameTiming {
+    pub last_update: u32,
+    pub previous: u32,
+    pub fraction: f32,
+}
+
+impl Default for FrameTiming {
+    fn default() -> Self {
+        Self {
+            last_update: 0,
+            previous: 0,
+            fraction: 1.0,
+        }
+    }
+}
+
+impl FrameTiming {
+    /// The frame pass: with a time scale below 1 the simulation is held,
+    /// so nothing moves; otherwise the elapsed game time since the last
+    /// update gives the new fraction and becomes the previous value.
+    pub fn update(&mut self, now: u32, step: u32, time_scale: f32) -> Option<f32> {
+        if time_scale >= 1.0 {
+            return None;
+        }
+        let elapsed = now.wrapping_sub(self.last_update);
+        self.fraction = frame_fraction(elapsed, self.previous, step);
+        self.previous = elapsed;
+        Some(self.fraction)
     }
 }
 
@@ -1142,6 +1239,13 @@ impl Sector {
     /// static nodes, bodies, pairs and objects. No node is noticed.
     pub fn purge_scene(&mut self, world: &mut World, grids: &mut Grids, scene: u32) -> Purged {
         self.sweep(world, grids, |_, s| s == scene, |_, s| s == scene, false)
+    }
+
+    /// Appends a batch of nodes to the pending list and asks the update to
+    /// register them (the original's sector list append).
+    pub fn add_nodes(&mut self, nodes: &[usize]) {
+        self.pending.extend_from_slice(nodes);
+        self.flags |= sector::PENDING;
     }
 
     /// Takes the sector's pending nodes for registration (the

@@ -7,6 +7,7 @@
 pub mod body;
 pub mod cloth;
 pub mod contact;
+pub mod controller;
 pub mod door;
 pub mod dynamics;
 pub mod engine_math;
@@ -26,6 +27,7 @@ pub mod sector;
 pub mod shape;
 pub mod shock;
 pub mod signal;
+pub mod sim_object;
 pub mod volume;
 pub mod voxel;
 

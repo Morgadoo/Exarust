@@ -563,3 +563,14 @@ capsule overlap, closest-point projection, and the 30 × 30 cell block tree
 whose leaves list two triangles per cell and whose split planes move with
 a block's translation. The game still takes the level's collision from
 rapier's trimesh BVH; this module has tests of its own and no game path yet.
+
+`controller` and `sim_object` are the original's two abstract bases: the
+physics controller (kind word, attached node, flag reset that clears bits 0
+and 3, no-op step/post-step/wake/translate/interpolate slots and a render
+fraction of 0.0) and the non-rigid simulated object (an empty
+after-collisions stub plus the static/body/object contact hooks). `dynamics`
+gains the environment's per-tick conversion (`configure_step`: retention
+raised to 1/83, gravity over 83², the squared per-tick speed bands), the
+simulation constructor's constants (12 ms step, 11-step backlog), the
+per-frame interpolation fraction with its [−2, 2] clamp and the sector's
+pending-batch append.

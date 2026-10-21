@@ -658,3 +658,58 @@ fn the_watch_list_removes_by_swap() {
     assert_eq!(sim.watch, [5, 4]);
     assert_eq!(sim.watch_remove(7), (false, Vec::new()));
 }
+
+/// The environment conversion raises each per-second retention to 1/83,
+/// divides gravity by 83² and squares the per-tick speed thresholds.
+#[test]
+fn the_environment_converts_to_a_tick() {
+    let env = Environment::DEFAULT.configure_step(83);
+    assert_eq!(env.retention[0], 0.989_771_7);
+    assert_eq!(env.retention[1], 0.983_436_35);
+    assert_eq!(env.retention[2], 0.964_550_44);
+    assert_eq!(env.gravity, Vec3::Y * -0.001_423_523_1);
+    assert_eq!(env.fast_speed, 0.232_254_33);
+    assert_eq!(env.slow_speed, 0.058_063_58);
+    let inert = Environment::INERT.configure_step(83);
+    assert_eq!(inert.retention, [0.0; 3]);
+    assert_eq!(inert.gravity, Vec3::ZERO);
+}
+
+/// The frame fraction is one plus the frame's excess over the previous
+/// one, in steps, clamped to [−2, 2]; a time scale of one holds.
+#[test]
+fn the_frame_fraction_extrapolates_and_clamps() {
+    assert_eq!(frame_fraction(12, 11, 12), 1.083_333_4);
+    assert_eq!(frame_fraction(10, 11, 12), 0.916_666_7);
+    assert_eq!(frame_fraction(100, 0, 12), 2.0);
+    assert_eq!(frame_fraction(0, 100, 12), -2.0);
+    let mut timing = FrameTiming {
+        last_update: 12,
+        previous: 11,
+        ..FrameTiming::default()
+    };
+    assert_eq!(timing.update(20, 12, 1.0), None);
+    assert_eq!(timing.fraction, 1.0);
+    assert_eq!(timing.update(24, 12, 0.5), Some(1.083_333_4));
+    assert_eq!(timing.previous, 12);
+}
+
+/// A sector's batch append sets the pending flag and keeps the nodes in
+/// order for the update.
+#[test]
+fn a_sector_appends_a_batch_of_nodes() {
+    let mut s = Sector::new(1);
+    s.add_nodes(&[4, 5, 6]);
+    assert_eq!(s.pending, [4, 5, 6]);
+    assert_ne!(s.flags & sector::PENDING, 0);
+    assert_eq!(s.take_pending(), [4, 5, 6]);
+    assert_eq!(s.flags & sector::PENDING, 0);
+}
+
+/// The constructor's default backlog is 1000/83 − 1 = 11 steps of 12 ms.
+#[test]
+fn the_constructor_constants() {
+    assert_eq!(MAX_BACKLOG_STEPS, 11);
+    assert_eq!(DEFAULT_STEP_MS, 12);
+    assert_eq!(DEFAULT_ENVIRONMENTS, 5);
+}
