@@ -478,17 +478,17 @@ fn the_topic_builtins_take_their_arguments_in_order() {
 }
 
 /// `InZone` needs the wanted locale, a marker of the zone type with the
-/// wanted id, the character inside its horizontal radius, and no more than
-/// 10 cm above or below it.
+/// wanted id, the character within its radius (squared 3D distance) and at
+/// most 0.1 (squared) outside its box.
 #[test]
 fn zone_markers_match_by_locale_radius_height_and_id() {
-    use crate::builtins::{ZONE_HEIGHT, ZONE_MARKER_TYPE, ZoneMarker, zone_match};
+    use crate::builtins::{ZONE_MARKER_TYPE, ZONE_SLACK_SQ, ZoneMarker, zone_match};
     let marker = ZoneMarker {
         kind: ZONE_MARKER_TYPE,
         id: 9,
-        horizontal_sq: 40_000.0,
+        distance_sq: 40_000.0,
         radius: 200.0,
-        vertical: ZONE_HEIGHT,
+        outside_sq: ZONE_SLACK_SQ,
     };
     assert!(zone_match(2, 2, 9, &[marker]));
     assert!(!zone_match(1, 2, 9, &[marker]), "locale");
@@ -506,7 +506,7 @@ fn zone_markers_match_by_locale_radius_height_and_id() {
             2,
             9,
             &[ZoneMarker {
-                horizontal_sq: 40_001.0,
+                distance_sq: 40_001.0,
                 ..marker
             }]
         ),
@@ -518,11 +518,11 @@ fn zone_markers_match_by_locale_radius_height_and_id() {
             2,
             9,
             &[ZoneMarker {
-                vertical: 0.11,
+                outside_sq: 0.11,
                 ..marker
             }]
         ),
-        "above the height"
+        "outside the box"
     );
     assert!(!zone_match(
         2,
@@ -585,9 +585,9 @@ fn in_zone_reads_the_locale_and_the_marker() {
         vec![builtins::ZoneMarker {
             kind: builtins::ZONE_MARKER_TYPE,
             id: 9,
-            horizontal_sq: 100.0,
+            distance_sq: 100.0,
             radius: 10.0,
-            vertical: 0.0,
+            outside_sq: 0.0,
         }],
     );
     let mut c = ctx();

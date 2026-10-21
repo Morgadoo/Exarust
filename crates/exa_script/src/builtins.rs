@@ -378,8 +378,8 @@ pub fn witnesses<'a>(
 /// Type word of a zone marker object, as `InZone` looks it up in the object
 /// database.
 pub const ZONE_MARKER_TYPE: u32 = 0x8000_AC07;
-/// The vertical slack of the zone-marker test.
-pub const ZONE_HEIGHT: f32 = 0.1;
+/// How far (squared) the character may stand outside a zone marker's box.
+pub const ZONE_SLACK_SQ: f32 = 0.1;
 
 /// One zone marker as `InZone` tests it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -388,31 +388,34 @@ pub struct ZoneMarker {
     pub kind: u32,
     /// The marker's zone id.
     pub id: u32,
-    /// Horizontal distance from the character, squared.
-    pub horizontal_sq: f32,
-    /// The marker's horizontal radius.
+    /// The squared 3D distance from the character to the marker's origin.
+    pub distance_sq: f32,
+    /// The marker's radius.
     pub radius: f32,
-    /// Vertical distance from the character.
-    pub vertical: f32,
+    /// The squared distance by which the character stands outside the
+    /// marker's box (0 inside it; the original's point-to-box helper sums
+    /// the squared excess over each half-extent in the marker's frame).
+    pub outside_sq: f32,
 }
 
 /// The original's `InZone(wanted_locale, zone)`: the current locale must be
 /// the wanted one, and some marker of type [`ZONE_MARKER_TYPE`] with the
-/// wanted id must have the character within its horizontal radius and no
-/// more than [`ZONE_HEIGHT`] above or below it.
+/// wanted id must have the character within its radius (the squared 3D
+/// distance against the radius squared) and no more than
+/// [`ZONE_SLACK_SQ`] (squared) outside its box.
 pub fn zone_match(locale: u32, wanted_locale: i32, zone: i32, markers: &[ZoneMarker]) -> bool {
     same_id(locale, wanted_locale) && zone_marker_matches(zone, markers)
 }
 
 /// The marker part of `InZone` (the locale is checked before this): some
 /// marker of type [`ZONE_MARKER_TYPE`] with `zone`'s id has the character
-/// within its radius and height.
+/// within its radius and its box.
 pub fn zone_marker_matches(zone: i32, markers: &[ZoneMarker]) -> bool {
     markers.iter().any(|m| {
-        m.kind == ZONE_MARKER_TYPE
+        m.distance_sq <= m.radius * m.radius
+            && m.outside_sq <= ZONE_SLACK_SQ
+            && m.kind == ZONE_MARKER_TYPE
             && same_id(m.id, zone)
-            && m.horizontal_sq <= m.radius * m.radius
-            && m.vertical <= ZONE_HEIGHT
     })
 }
 
