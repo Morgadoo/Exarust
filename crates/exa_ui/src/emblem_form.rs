@@ -16,7 +16,7 @@
 pub const FORM_WIDTH: i32 = 0x268;
 /// The form's height in pixels.
 pub const FORM_HEIGHT: i32 = 600;
-/// The preview's centre is this many units below the top.
+/// The preview's top is this many units below the form's top.
 pub const PREVIEW_Y_UNITS: i64 = 40;
 /// The preview is this many units square.
 pub const PREVIEW_UNITS: i64 = 64;
@@ -42,6 +42,8 @@ pub const COLOUR_UNIFORMS: [&str; 4] = ["Colour1", "Colour2", "Colour3", "Colour
 pub const MIRROR_UNIFORM: &str = "Mirror";
 pub const ALPHA_UNIFORM: &str = "Alpha";
 pub const TEXTURE_UNIFORMS: [&str; 4] = ["Tex0", "Tex1", "Tex2", "Tex3"];
+/// The palette indices a new form starts with.
+pub const INITIAL_PALETTE: [u8; 4] = [0xd3, 0x72, 0x5a, 0x4e];
 /// The alpha the preview is drawn with.
 pub const PREVIEW_ALPHA: f32 = 1.0;
 
@@ -128,7 +130,7 @@ impl EmblemRecord {
 pub fn picture(stem: &str, index: u32) -> String {
     format!(
         "{stem}0{}{}",
-        char::from(b'0' + ((index / 10) % 10) as u8),
+        char::from(b'0'.wrapping_add((index / 10) as u8)),
         char::from(b'0' + (index % 10) as u8)
     )
 }
@@ -239,7 +241,7 @@ impl Default for EmblemEditor {
                 layers: 0,
                 background: 1,
                 design: 1,
-                colours: [0; 4],
+                colours: INITIAL_PALETTE.map(|index| u32::from(index) << 24),
             },
             history: Vec::new(),
             mode: 1,
@@ -248,8 +250,8 @@ impl Default for EmblemEditor {
 }
 
 impl EmblemEditor {
-    /// The constructor's state: the first record is background 1, design 1,
-    /// four dark colours.
+    /// The constructor's state: background 1, design 1, no mirror, and the
+    /// palette indices 0xd3, 0x72, 0x5a and 0x4e.
     pub fn new() -> Self {
         Self::default()
     }
@@ -311,11 +313,17 @@ impl EmblemEditor {
             self.history.remove(0);
         }
         self.history.push(self.record);
-        let mut record = EmblemRecord::default();
+        // Only each colour's palette byte is rolled; its colour bytes stay
+        // until the renderer's colours are taken back.
+        let mut record = self.record;
+        let set = |colour: &mut u32, index: u8| {
+            *colour = (*colour & 0x00ff_ffff) | (u32::from(index) << 24);
+        };
         let first = random.high(255) as u8;
-        let mut second = random.high(255) as u8;
-        record.colours[0] = u32::from_le_bytes([0, 0, 0, first]);
-        let low = (first & 7) as u32;
+        set(&mut record.colours[0], first);
+        let second = random.high(255) as u8;
+        set(&mut record.colours[1], second);
+        let low = u32::from(first & 7);
         let bend = if low < 4 {
             (random.high(5 - low) as u8)
                 .wrapping_add(low as u8)
@@ -323,25 +331,26 @@ impl EmblemEditor {
         } else {
             random.high(low - 2) as u8
         };
-        second = (second & 0xf8) | (bend & 7);
-        record.colours[1] = u32::from_le_bytes([0, 0, 0, second]);
+        set(&mut record.colours[1], (second & 0xf8) | bend);
         let third = COLOUR_THREE_TABLE
             .get(random.high(COLOUR_THREE_TABLE.len() as u32) as usize)
             .copied()
             .unwrap_or(0)
             << 3;
         let third = (random.high(4) as u8) | (third & 0xf8);
-        record.colours[2] = u32::from_le_bytes([0, 0, 0, third]);
-        let fourth = (third & 0xf8) | ((random.high(2) as u8).wrapping_add(6));
-        record.colours[3] = u32::from_le_bytes([0, 0, 0, fourth]);
+        set(&mut record.colours[2], third);
+        let fourth = (third & 0xf8) | (random.high(2) as u8).wrapping_add(6);
+        set(&mut record.colours[3], fourth);
+        record.layers = 0;
         if random.bit() {
             record.layers |= MIRROR_X;
         }
         if random.bit() {
             record.layers |= MIRROR_Y;
         }
-        record.background = random.high(BACKGROUND_MAX as u32) + 1;
-        record.design = random.high(DESIGN_MAX as u32) + 1;
+        record.background =
+            select_background(random.high(BACKGROUND_MAX as u32) as i32 + 1).index as u32;
+        record.design = select_design(random.high(DESIGN_MAX as u32) as i32 + 1).index as u32;
         self.record = record;
     }
 }
@@ -399,11 +408,12 @@ pub fn draw_order() -> [EmblemDraw; 5] {
     ]
 }
 
-/// The preview's quad: left, top, right, bottom, in pixels.
-pub fn preview_quad(form_width: i32, unit: i32) -> [f32; 4] {
-    let size = (unit as i64 * PREVIEW_UNITS) as f32;
-    let left = form_width as f32 / 2.0 - size * 0.5;
-    let top = (unit as i64 * PREVIEW_Y_UNITS) as f32;
+/// The preview's quad: left, top, right, bottom, in pixels. The left is
+/// the form's half width less half the size, each halved as an integer.
+pub fn preview_quad(form_width: i32, unit: i32) -> [i32; 4] {
+    let size = unit * PREVIEW_UNITS as i32;
+    let left = form_width / 2 - size / 2;
+    let top = unit * PREVIEW_Y_UNITS as i32;
     [left, top, left + size, top + size]
 }
 
@@ -487,6 +497,13 @@ mod tests {
         assert_eq!(editor.record.design, 7);
         assert_eq!(editor.history.len(), 1);
         assert_eq!(editor.history[0], EmblemEditor::new().record);
+        assert_eq!(EmblemEditor::new().record.palette(0), 0xd3);
+        assert_eq!(EmblemEditor::new().record.palette(3), 0x4e);
+        // The colour bytes under the palette index are kept.
+        let mut editor = EmblemEditor::new();
+        editor.record.colours[0] = 0xd3_112233;
+        editor.randomise(&mut EmblemRandom::new(1));
+        assert_eq!(editor.record.colours[0], 0x08_112233);
     }
 
     #[test]
@@ -516,7 +533,9 @@ mod tests {
                 EmblemDraw::ClearUnit(3),
             ]
         );
-        assert_eq!(preview_quad(616, 4), [180.0, 160.0, 436.0, 416.0]);
+        assert_eq!(preview_quad(616, 4), [180, 160, 436, 416]);
+        // An odd width halves down.
+        assert_eq!(preview_quad(617, 3)[0], 212);
         assert_eq!(PREVIEW_Y_UNITS, 40);
         assert_eq!(PREVIEW_UNITS, 64);
         assert_eq!(FORM_WIDTH, 616);
