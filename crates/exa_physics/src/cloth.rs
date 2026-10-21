@@ -771,10 +771,16 @@ pub fn submit_cloth_frame(pending: i32, frame: i32) -> ClothFrame {
 /// The cloth activation's inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClothActivateInput {
-    pub flags_300: u32,
-    pub flags_8: u32,
-    pub flags_c: u32,
-    pub flags_188: u32,
+    /// The mesh node's deform flags; 0x2000_0000 marks the mesh as
+    /// dynamically deformed.
+    pub mesh_flags: u32,
+    /// The mesh node's first flags word (the activation sets 0x1_0000; its
+    /// meaning is a guess).
+    pub node_flags: u32,
+    /// The mesh node's class flags (the activation sets 0x20_4030).
+    pub class_flags: u32,
+    /// The mesh node's skinning flags (the activation sets 0x6000).
+    pub skin_flags: u32,
     pub has_handle: bool,
     pub is_root: bool,
     pub slow_global: bool,
@@ -783,10 +789,10 @@ pub struct ClothActivateInput {
 /// The cloth activation's new words and calls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClothActivate {
-    pub flags_300: u32,
-    pub flags_8: u32,
-    pub flags_c: u32,
-    pub flags_188: u32,
+    pub mesh_flags: u32,
+    pub node_flags: u32,
+    pub class_flags: u32,
+    pub skin_flags: u32,
     pub phase: i32,
     pub scale: f32,
     pub handle_written: bool,
@@ -797,10 +803,10 @@ pub struct ClothActivate {
 /// Sets the cloth's activation bits, phase and scale.
 pub fn activate_cloth(input: ClothActivateInput) -> ClothActivate {
     ClothActivate {
-        flags_300: input.flags_300 | 0x2000_0000,
-        flags_8: input.flags_8 | 0x1_0000,
-        flags_c: input.flags_c | 0x20_4030,
-        flags_188: input.flags_188 | 0x6000,
+        mesh_flags: input.mesh_flags | 0x2000_0000,
+        node_flags: input.node_flags | 0x1_0000,
+        class_flags: input.class_flags | 0x20_4030,
+        skin_flags: input.skin_flags | 0x6000,
         phase: 2,
         scale: 0.4,
         handle_written: input.has_handle,
@@ -1094,20 +1100,27 @@ pub fn collide_cloth(input: ClothCollideInput) -> ClothCollide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClothClone {
     pub created: bool,
-    pub field_20: u64,
-    pub field_140: u32,
-    pub field_144: u32,
-    pub field_148: u64,
+    /// The template cloth whose constraint data the clone shares (a new
+    /// cloth is its own template).
+    pub template: u64,
+    /// A word of the base simulation object; nothing in the cloth reads it,
+    /// so its meaning is unknown.
+    pub base_word: u32,
+    /// The parameter record's flags (bits 0xF00 the mode, 0x7000 collision
+    /// with bodies, 4 the double-sided draw).
+    pub param_flags: u32,
+    /// The parameter record (the node's cloth chunk or the built-in default).
+    pub params: u64,
 }
 
 /// Creates a new cloth and copies its four fields.
-pub fn clone_cloth(field_20: u64, field_140: u32, field_144: u32, field_148: u64) -> ClothClone {
+pub fn clone_cloth(template: u64, base_word: u32, param_flags: u32, params: u64) -> ClothClone {
     ClothClone {
         created: true,
-        field_20,
-        field_140,
-        field_144,
-        field_148,
+        template,
+        base_word,
+        param_flags,
+        params,
     }
 }
 
@@ -1455,18 +1468,18 @@ mod tests {
     #[test]
     fn the_cloth_activates_and_transforms() {
         let active = activate_cloth(ClothActivateInput {
-            flags_300: 0,
-            flags_8: 0,
-            flags_c: 0,
-            flags_188: 0,
+            mesh_flags: 0,
+            node_flags: 0,
+            class_flags: 0,
+            skin_flags: 0,
             has_handle: true,
             is_root: true,
             slow_global: true,
         });
-        assert_eq!(active.flags_300, 0x2000_0000);
-        assert_eq!(active.flags_8, 0x1_0000);
-        assert_eq!(active.flags_c, 0x20_4030);
-        assert_eq!(active.flags_188, 0x6000);
+        assert_eq!(active.mesh_flags, 0x2000_0000);
+        assert_eq!(active.node_flags, 0x1_0000);
+        assert_eq!(active.class_flags, 0x20_4030);
+        assert_eq!(active.skin_flags, 0x6000);
         assert_eq!(active.phase, 2);
         assert_eq!(active.scale.to_bits(), 0.4f32.to_bits());
         assert!(active.handle_written);
@@ -1474,15 +1487,15 @@ mod tests {
         assert_eq!(active.slow_or, 0x8000);
 
         let quiet = activate_cloth(ClothActivateInput {
-            flags_300: 1,
-            flags_8: 2,
-            flags_c: 4,
-            flags_188: 8,
+            mesh_flags: 1,
+            node_flags: 2,
+            class_flags: 4,
+            skin_flags: 8,
             has_handle: false,
             is_root: false,
             slow_global: false,
         });
-        assert_eq!(quiet.flags_300, 1 | 0x2000_0000);
+        assert_eq!(quiet.mesh_flags, 1 | 0x2000_0000);
         assert_eq!(quiet.slow_or, 0);
         assert!(!quiet.handle_written);
 
@@ -1687,9 +1700,9 @@ mod tests {
     fn the_cloth_clone_copies_its_fields() {
         let cloned = clone_cloth(0x1122, 0x33, 0x44, 0x55);
         assert!(cloned.created);
-        assert_eq!(cloned.field_20, 0x1122);
-        assert_eq!(cloned.field_140, 0x33);
-        assert_eq!(cloned.field_144, 0x44);
-        assert_eq!(cloned.field_148, 0x55);
+        assert_eq!(cloned.template, 0x1122);
+        assert_eq!(cloned.base_word, 0x33);
+        assert_eq!(cloned.param_flags, 0x44);
+        assert_eq!(cloned.params, 0x55);
     }
 }

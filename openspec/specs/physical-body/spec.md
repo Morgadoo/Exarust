@@ -1458,7 +1458,7 @@ The system SHALL compute the arm floor, parry ramp, gait clamp, auto-parry deadl
 - **THEN** the ramp is 0.04
 - **WHEN** the gait is 6.334
 - **THEN** the gait arm is 0.05
-- **WHEN** the 0x20 flag is set with ea4 1000
+- **WHEN** the 0x20 impact flag is set with the recoil stamp at 1000
 - **THEN** the deadline is 1400
 - **WHEN** progress is 0.6
 - **THEN** the phase is 0x10004

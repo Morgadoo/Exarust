@@ -257,8 +257,10 @@ pub struct Gate {
     pub dazed: bool,
     pub n80: i32,
     pub n20: i32,
-    /// Set to 5.0 when a dazed body fails the clarity test.
-    pub c78: f32,
+    /// The daze sway, set to 5.0 when a dazed body fails the clarity test;
+    /// the body tick spends it down while it sways the body (what the sway
+    /// moves is a guess).
+    pub daze_sway: f32,
 }
 
 /// Whether the body is ready to act. A dazed body needs 0.9 clarity and
@@ -278,7 +280,7 @@ pub fn action_ready(gate: &mut Gate) -> bool {
     if gate.dazed {
         if !at_least(gate.clarity as f64, 0.9) {
             gate.cooldown = 40;
-            gate.c78 = 5.0;
+            gate.daze_sway = 5.0;
             return false;
         }
     } else {
@@ -477,7 +479,7 @@ mod tests {
         gate.clarity = 0.89;
         assert!(!action_ready(&mut gate));
         assert_eq!(gate.cooldown, 40);
-        assert_eq!(gate.c78, 5.0);
+        assert_eq!(gate.daze_sway, 5.0);
         gate.cooldown = 0;
         gate.dazed = false;
         gate.clarity = 0.995;
@@ -815,15 +817,24 @@ pub fn lying_still(balance: f32, motion: f32) -> bool {
     (balance as f64) < 0.3 && motion < 25.0
 }
 
-/// The auto-parry deadline: `0x1018 & 0x20` uses `ea4+400`, `0xC40 & 4`
-/// uses 0, otherwise `d34+400`; all in wrapping 32-bit arithmetic.
-pub fn auto_parry_deadline(flags_1018: u32, flags_c40: u32, ea4: u32, d34: u32) -> i32 {
-    if flags_1018 & 0x20 != 0 {
-        ea4.wrapping_add(400) as i32
-    } else if flags_c40 & 4 != 0 {
+/// The auto-parry deadline: impact flag 0x20 uses `recoil_ms + 400`, skill
+/// flag 4 uses 0, otherwise `attack_start_ms + 400`; all in wrapping 32-bit
+/// arithmetic. `impact_flags` is the swing's impact word (clash, recoil),
+/// `skill_flags` the flags the body builds from its character's learned
+/// skills, `recoil_ms` the recoil stamp and `attack_start_ms` the time
+/// the last attack started.
+pub fn auto_parry_deadline(
+    impact_flags: u32,
+    skill_flags: u32,
+    recoil_ms: u32,
+    attack_start_ms: u32,
+) -> i32 {
+    if impact_flags & 0x20 != 0 {
+        recoil_ms.wrapping_add(400) as i32
+    } else if skill_flags & 4 != 0 {
         0
     } else {
-        d34.wrapping_add(400) as i32
+        attack_start_ms.wrapping_add(400) as i32
     }
 }
 
