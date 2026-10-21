@@ -13,7 +13,8 @@
 
 use exa_audio::Lcg;
 use exa_formats::characters::{
-    ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, Pools, SHIELDS, SKILLS, Skill, TECHNIQUE_SLOTS,
+    ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, ItemRef, Pools, SHIELDS, SKILLS, Skill,
+    TECHNIQUE_SLOTS,
 };
 
 use crate::experience::{LEVEL_STEP, global_xp_for_worth, global_xp_worth, training_skill};
@@ -34,6 +35,11 @@ impl GearSlot {
     /// An item reference with no flags.
     pub fn new(item: u32) -> Self {
         Self { item, flags: 0 }
+    }
+
+    /// The record's form of the reference.
+    pub fn item_ref(self) -> ItemRef {
+        ItemRef::new(self.item, self.flags)
     }
 }
 
@@ -61,9 +67,8 @@ pub fn move_creation_gear(source: &mut CreationGear) -> CreationGear {
 
 /// Writes the creator's fields into the record the character spawns from.
 ///
-/// The hand slots and the worn list keep item ids (their per-instance flags
-/// belong to the equipped instances), the carried list keeps its flags, and
-/// a new character's three pools are set full.
+/// The hand slots, the worn list and the carried list keep each item with
+/// its flags, and a new character's three pools are set full.
 pub fn write_created_record(
     record: &mut CharacterRecord,
     name: &str,
@@ -72,8 +77,8 @@ pub fn write_created_record(
     full_health: bool,
 ) {
     record.name = name.to_string();
-    record.hands = gear.hands.map(|slot| slot.item);
-    record.worn = gear.worn.iter().map(|slot| slot.item).collect();
+    record.hands = gear.hands.map(GearSlot::item_ref);
+    record.worn = gear.worn.iter().map(|slot| slot.item_ref()).collect();
     record.inventory = gear
         .carried
         .iter()
@@ -3188,7 +3193,10 @@ mod tests {
         let gear = CreationGear {
             hands: [
                 GearSlot::new(1),
-                GearSlot::new(2),
+                GearSlot {
+                    item: 2,
+                    flags: 0x0100_0000,
+                },
                 GearSlot::new(3),
                 GearSlot::new(4),
             ],
@@ -3198,8 +3206,9 @@ mod tests {
         let skills = starting_skills();
         write_created_record(&mut record, "Mira", &gear, &skills, true);
         assert_eq!(record.name, "Mira");
-        assert_eq!(record.hands, [1, 2, 3, 4]);
-        assert_eq!(record.worn, vec![8]);
+        assert_eq!(record.hands.map(|slot| slot.id), [1, 2, 3, 4]);
+        assert_eq!(record.hands[1], ItemRef::new(2, 0x0100_0000));
+        assert_eq!(record.worn, vec![ItemRef::new(8, 0)]);
         assert_eq!(
             record.inventory,
             vec![Carried {
