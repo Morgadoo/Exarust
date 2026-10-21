@@ -209,21 +209,6 @@ fn world_correction(
         return Some(pull);
     }
     let len2 = gap.length_squared();
-    if link.flags & WORLD_SOFT_WELD != 0 {
-        if len2 < GENERAL_EPSILON {
-            return None;
-        }
-        let len = len2.sqrt();
-        let mut pull = gap * (0.1 * link.strength);
-        // The original normalises the scaled spring, not the raw gap.
-        let unit = pull * (1.0 / len);
-        let toward = moved.dot(unit);
-        if toward > GENERAL_EPSILON {
-            pull -= unit * toward;
-        }
-        pull -= moved * 0.4;
-        return Some(pull);
-    }
     if link.flags & WORLD_SLIDER != 0 {
         let anchor = link.frame.transform_point3(link.on_parent);
         let axis = link.frame.transform_vector3(link.axis);
@@ -240,6 +225,21 @@ fn world_correction(
         link.state = t;
         let slid = anchor + axis * t;
         return Some(((slid - q) + (target - p) * link.smoothing) * CM);
+    }
+    if link.flags & WORLD_SOFT_WELD != 0 {
+        if len2 < GENERAL_EPSILON {
+            return None;
+        }
+        let len = len2.sqrt();
+        let mut pull = gap * (0.1 * link.strength);
+        // The original normalises the scaled spring, not the raw gap.
+        let unit = pull * (1.0 / len);
+        let toward = moved.dot(unit);
+        if toward > GENERAL_EPSILON {
+            pull -= unit * toward;
+        }
+        pull -= moved * 0.4;
+        return Some(pull);
     }
     let mut gap = gap;
     if link.flags & WORLD_PLANE != 0 {
