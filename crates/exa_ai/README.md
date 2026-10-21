@@ -36,11 +36,8 @@ notice drops the sleep role and wakes.
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6) |
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
-| `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), and the approach clamp |
-
-| `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert, the approach clamp and the level bootstrap's dormant holder (`_Temp`, flag `0x100000`) |
-| `executor` | the AI's action executor: when an attack, parry, block or release starts (the ready gate, the reaction window, the cooldown, the motion guards), the six-attack queue and the block's start sound |
-| `lookup` | a simulation's character by record id and a status effect by a masked word |
+| `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
+| `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
 | `brain` | the components and systems that carry roles into the running game |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |

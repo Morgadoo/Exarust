@@ -446,6 +446,19 @@ pub fn start_blend(motion: AttackMotion, primary_blend: Option<i32>, given: u32)
     }
 }
 
+/// The sound a free main-side start plays at the fighter's hip, unless the
+/// body's quiet byte is set: two uniform draws, the first for the pitch
+/// (0.2·u + 0.8) / √scale, the second for the gain 0.4·v + 0.6, each
+/// worked in double precision and stored as single (the executor's
+/// sequence). The busy branch's Feint start plays none. Returns
+/// (gain, pitch). Not yet played by the running game: the sound handle
+/// the original passes is not identified.
+pub fn main_start_sound(first: f32, second: f32, size_root: f32) -> (f32, f32) {
+    let pitch = ((f64::from(first) * 0.2 + 0.8) / f64::from(size_root)) as f32;
+    let gain = (f64::from(second) * 0.4 + 0.6) as f32;
+    (gain, pitch)
+}
+
 /// The attack a fighter plays: its attack's motion while its clip plays
 /// once.
 pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackMotion> {
@@ -455,6 +468,16 @@ pub fn playing(attacking: Option<&Attacking>, anim: &Animator) -> Option<AttackM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The main-side start's sound: the first draw sets the pitch, the
+    /// second the gain, in double precision.
+    #[test]
+    fn the_main_start_sound_takes_pitch_then_gain() {
+        let (gain, pitch) = main_start_sound(0.5, 0.25, 2.0);
+        assert_eq!(pitch, ((0.5f64 * 0.2 + 0.8) / 2.0) as f32);
+        assert_eq!(gain, (0.25f64 * 0.4 + 0.6) as f32);
+        assert!((pitch - 0.45).abs() < 1e-7 && (gain - 0.7).abs() < 1e-7);
+    }
     use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
     use exa_physics::body::BodyTicks;
 

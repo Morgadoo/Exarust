@@ -32,7 +32,6 @@ pub mod chase;
 pub mod combat;
 pub mod combatant;
 pub mod contacts;
-pub mod executor;
 pub mod fight;
 pub mod flee;
 pub mod golem;

@@ -57,10 +57,11 @@ pub const ALERT_HOLD_MS: u32 = 10_000;
 pub const ZONE_INSIDE: f32 = 0.1;
 /// The circle around the target is this many times its speed, cm.
 pub const CIRCLE_PER_SPEED: f32 = 60.0;
-/// The scene node a level's bootstrap makes to hold its dormant characters.
-pub const DORMANT_NODE: &str = "_Temp";
-/// The flag word that node carries (`0x100000`).
-pub const DORMANT_NODE_FLAGS: u32 = 0x10_0000;
+/// The scene node the AI start-up gives a scene that has none (what the
+/// scene keeps under it is not established here).
+pub const TEMP_NODE: &str = "_Temp";
+/// The flag bit that node's flag word gets.
+pub const TEMP_NODE_FLAGS: u32 = 0x10_0000;
 /// A cut step must head at least this much away from the target (cosine).
 pub const CUT_HEADING: f32 = 0.75;
 
@@ -109,21 +110,26 @@ pub fn frame(state: FrameState) -> Frame {
     }
 }
 
-/// The node a level's AI bootstrap makes once, and the flags it gives it.
+/// What the AI start-up of a scene does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bootstrap {
-    pub node: &'static str,
-    pub flags: u32,
+    /// The scene has no `_Temp` node yet: one is made ([`TEMP_NODE`],
+    /// flags [`TEMP_NODE_FLAGS`]), sharing the scene's own link.
+    pub make_temp_node: bool,
+    /// No AI manager runs yet: the start-up creates it (with the weapon
+    /// blood list and the input bindings if they are missing) and hooks
+    /// its frame into the frame loop.
+    pub start_manager: bool,
 }
 
-/// The AI bootstrap: with no manager yet it creates the dormant holder and
-/// the manager; with one it does nothing. The holder's name and flags are
-/// all a level build needs (the manager itself is Exarust's plugin state).
-pub fn bootstrap(manager_exists: bool) -> Option<Bootstrap> {
-    (!manager_exists).then_some(Bootstrap {
-        node: DORMANT_NODE,
-        flags: DORMANT_NODE_FLAGS,
-    })
+/// The AI start-up a level, the creation preview or a load runs on its
+/// scene: the two steps are independent (the node is per scene, the
+/// manager is one for the game).
+pub fn bootstrap(scene_has_temp_node: bool, manager_exists: bool) -> Bootstrap {
+    Bootstrap {
+        make_temp_node: !scene_has_temp_node,
+        start_manager: !manager_exists,
+    }
 }
 
 /// Whether a character moved enough since the last zone check, positions
@@ -344,17 +350,33 @@ mod tests {
         assert!(!stay(z(0x110), true));
     }
 
-    /// The level bootstrap makes the dormant holder once.
+    /// The start-up makes the scene's `_Temp` node and the manager each
+    /// only when it is missing.
     #[test]
-    fn the_bootstrap_makes_the_dormant_holder_once() {
+    fn the_bootstrap_makes_what_is_missing() {
         assert_eq!(
-            bootstrap(false),
-            Some(Bootstrap {
-                node: "_Temp",
-                flags: 0x10_0000
-            })
+            bootstrap(false, false),
+            Bootstrap {
+                make_temp_node: true,
+                start_manager: true
+            }
         );
-        assert_eq!(bootstrap(true), None);
+        assert_eq!(
+            bootstrap(true, false),
+            Bootstrap {
+                make_temp_node: false,
+                start_manager: true
+            }
+        );
+        assert_eq!(
+            bootstrap(false, true),
+            Bootstrap {
+                make_temp_node: true,
+                start_manager: false
+            }
+        );
+        assert_eq!(TEMP_NODE, "_Temp");
+        assert_eq!(TEMP_NODE_FLAGS, 0x10_0000);
     }
 
     #[test]
