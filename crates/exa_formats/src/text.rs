@@ -129,9 +129,9 @@ pub fn format_int(value: i32) -> String {
     out
 }
 
-/// An integer as two decimal digits (the original's clock-style formatter):
-/// zero is `"00"`, a one-digit value takes a leading zero, and any value
-/// that produces no digits (a negative one) is `"00"`.
+/// An integer as at least two decimal digits (the original's clock-style
+/// formatter): zero is `"00"` and a one-digit value takes a leading zero.
+/// A negative value writes no digits and gets the one zero: `"0"`.
 pub fn format_int_two(value: i32) -> String {
     if value == 0 {
         return "00".to_string();
@@ -279,8 +279,10 @@ pub fn format_float(value: f32, decimals: i32, keep_zeros: bool) -> String {
     prefix + &out.iter().map(|&byte| char::from(byte)).collect::<String>()
 }
 
-/// An integer from decimal text: an optional leading minus, then digits up
-/// to the first non-digit. A string with no digits is 0.
+/// An integer from decimal text (the original's own loop, not an RTL
+/// conversion): an optional leading minus, then digits up to the first
+/// non-digit, accumulated as a wrapping 64-bit `value·10 + byte − 48`. No
+/// digits (including a bare minus) is 0; trailing garbage is ignored.
 pub fn int_from_text(text: &[u8]) -> i64 {
     let start = usize::from(text.first() == Some(&b'-'));
     let mut value: i64 = 0;
@@ -297,7 +299,9 @@ pub fn int_from_text(text: &[u8]) -> i64 {
     }
 }
 
-/// An integer from at most `len` bytes of decimal text ([`int_from_text`]).
+/// An integer from the first `len` bytes of decimal text, the same loop as
+/// [`int_from_text`] over a pointer and a length. The original reads `len`
+/// bytes whatever the text holds; a slice shorter than `len` is read whole.
 pub fn int_from_bytes(text: &[u8], len: usize) -> i64 {
     int_from_text(text.get(..len).unwrap_or(text))
 }
@@ -333,7 +337,8 @@ pub fn float_from_text(text: &[u8]) -> f32 {
 }
 
 /// An integer from hexadecimal text, upper or lower case, up to the first
-/// byte that is not a hex digit.
+/// byte that is not a hex digit, as a wrapping 32-bit `value·16 + digit`.
+/// No sign is read; no digits is 0.
 pub fn hex_from_text(text: &[u8]) -> i32 {
     let mut value: i32 = 0;
     for &byte in text {
@@ -348,27 +353,31 @@ pub fn hex_from_text(text: &[u8]) -> i32 {
     value
 }
 
-/// An integer from at most `len` bytes of hexadecimal text.
+/// An integer from the first `len` bytes of hexadecimal text
+/// ([`hex_from_text`] over a pointer and a length; a shorter slice is read
+/// whole).
 pub fn hex_from_bytes(text: &[u8], len: usize) -> i32 {
     hex_from_text(text.get(..len).unwrap_or(text))
 }
 
-/// A colour from six hexadecimal digits: three bytes, pairs from the most
-/// significant. Fewer than six digits leave the higher bytes zero; a digit
-/// count that does not pair up leaves the last partial byte zero. The
-/// fourth byte (alpha) is left zero.
+/// A colour from six hexadecimal digits: three bytes in text order, each
+/// written after its second digit. The four output bytes start at zero; the
+/// first byte that is not a hex digit ends the read, so the bytes not
+/// reached stay zero and a lone last digit is dropped. The fourth byte
+/// (alpha) is never written and stays zero.
 pub fn colour_from_hex6(text: &[u8]) -> [u8; 4] {
     colour_from_hex(text, 5)
 }
 
-/// A colour from eight hexadecimal digits: four bytes. The original reads
-/// at most seven digits' worth of pairs, so an eighth digit is ignored.
+/// A colour from eight hexadecimal digits: four bytes in text order, the
+/// fourth from the seventh and eighth digits ([`colour_from_hex6`]'s rules
+/// otherwise).
 pub fn colour_from_hex8(text: &[u8]) -> [u8; 4] {
     colour_from_hex(text, 7)
 }
 
-/// The original's hex-colour loop: at most `last` digit indices, a byte is
-/// written after every second digit.
+/// The original's hex-colour loop: digit indices 0 to `last`, a byte
+/// written after each odd index.
 fn colour_from_hex(text: &[u8], last: usize) -> [u8; 4] {
     let mut out = [0u8; 4];
     let mut byte = 0u8;
@@ -495,7 +504,9 @@ pub fn directory_of(path: &str) -> &str {
 }
 
 /// Three bytes read as a decimal number the original's way, with no digit
-/// check: `(b0 − '0')·100 + (b1 − '0')·10 + b2 − '0'`, wrapping.
+/// check: `(b0 − '0')·100 + (b1 − '0')·10 + b2 − '0'`, wrapping. The
+/// original reads three bytes unconditionally; a missing byte counts as
+/// zero here.
 pub fn three_digits(bytes: &[u8]) -> i32 {
     let byte = |at: usize| i32::from(bytes.get(at).copied().unwrap_or(0));
     byte(0)
@@ -507,7 +518,9 @@ pub fn three_digits(bytes: &[u8]) -> i32 {
 }
 
 /// Whether `word` starts with a letter the original counts as a vowel
-/// (lower-case a, e, i, o or u) and so takes "an".
+/// (lower-case a, e, i, o or u, nothing else) and so takes "an". The
+/// original tests one byte; this tests the first byte of `word`, and an
+/// empty word is false.
 pub fn takes_an(word: &str) -> bool {
     matches!(
         word.as_bytes().first(),
@@ -515,31 +528,37 @@ pub fn takes_an(word: &str) -> bool {
     )
 }
 
-/// The indefinite article for `word`: `"an"` before a vowel the original
-/// counts, else `"a"`.
+/// The indefinite article for `word`: `"an"` when [`takes_an`], else
+/// `"a"`. Exarust's convenience over the original's test.
 pub fn article(word: &str) -> &'static str {
     if takes_an(word) { "an" } else { "a" }
 }
 
-/// Title-cases ASCII text the original's way: every lower-case letter at
-/// the start or after a space or underscore becomes upper case; every other
-/// byte is kept. A zero byte ends the text there.
-pub fn title_case(text: &[u8]) -> String {
+/// Title-cases text the original's way: a lower-case ASCII letter at the
+/// start or right after a space or underscore becomes upper case (byte
+/// minus 32); every other byte is copied, and any byte but a space or
+/// underscore ends the word. A zero byte cuts the result there. Bytes, not
+/// UTF-8: the game's text is single-byte.
+pub fn title_case(text: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
     let mut start = true;
     for &byte in text {
-        if byte == 0 {
-            break;
-        }
         if start && byte.is_ascii_lowercase() {
-            out.push(byte.to_ascii_uppercase());
+            out.push(byte - 0x20);
             start = false;
-        } else {
-            out.push(byte);
-            start = matches!(byte, b' ' | b'_');
+            continue;
+        }
+        out.push(byte);
+        match byte {
+            b' ' | b'_' => start = true,
+            0 => {
+                out.pop();
+                break;
+            }
+            _ => start = false,
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 #[cfg(test)]
@@ -676,10 +695,10 @@ mod tests {
     fn hex_colours_pack_pairs() {
         assert_eq!(colour_from_hex6(b"FF8000"), [0xFF, 0x80, 0x00, 0]);
         assert_eq!(colour_from_hex6(b"f0a"), [0xF0, 0, 0, 0]);
-        // The original's loop stops after six digit indices.
+        // The six-digit loop reads indices 0 to 5 only.
         assert_eq!(colour_from_hex6(b"11223344"), [0x11, 0x22, 0x33, 0]);
         assert_eq!(colour_from_hex8(b"11223344"), [0x11, 0x22, 0x33, 0x44]);
-        // Seven digits leave the third pair as the lone digit.
+        // Five digits leave the fifth as a lone digit, dropped.
         assert_eq!(colour_from_hex6(b"FF800"), [0xFF, 0x80, 0, 0]);
     }
 
@@ -742,9 +761,11 @@ mod tests {
         assert!(!takes_an(""));
         assert_eq!(article("apple"), "an");
         assert_eq!(article("boot"), "a");
-        assert_eq!(title_case(b"hello world_again"), "Hello World_Again");
-        assert_eq!(title_case(b"a  b"), "A  B");
-        assert_eq!(title_case(b"abc\0def"), "Abc");
-        assert_eq!(title_case(b"1st place"), "1st Place");
+        assert_eq!(title_case(b"hello world_again"), b"Hello World_Again");
+        assert_eq!(title_case(b"a  b"), b"A  B");
+        assert_eq!(title_case(b"abc\0def"), b"Abc");
+        assert_eq!(title_case(b"1st place"), b"1st Place");
+        assert_eq!(title_case(b"\xE9t\xE9 ok"), b"\xE9t\xE9 Ok");
+        assert!(!takes_an("Apple"));
     }
 }
