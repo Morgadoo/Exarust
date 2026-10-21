@@ -936,6 +936,7 @@ mod tests {
             spheres: vec![(Vec3::ZERO, 0.2)],
             origin: Vec3::ZERO,
             links: Vec::new(),
+            mesh: None,
         }])
     }
 
