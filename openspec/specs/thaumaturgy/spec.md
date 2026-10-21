@@ -76,7 +76,7 @@ A chunk SHALL grow by the tick times 0.7 of its speed plus 3, times 0.0006. Two 
 - **THEN** the still chunk is 0.0018, the close pair is at -0.5 and 1.5, and the other two pairs stay
 
 ### Requirement: Barrier ripple
-A barrier ripple SHALL lose 0.05 of strength each step, and the shown value SHALL move toward that strength by at most 0.04. Below 0.07 on both it SHALL be gone. While it remains, its place SHALL ease 0.05 of the way toward the hit. The dome extent SHALL be 30 plus 1.25 times the ripple count.
+A barrier ripple SHALL lose 0.05 of strength each step, the subtraction taken in double precision, and the shown value SHALL move toward that strength by at most 0.04. Below 0.07 on both it SHALL be gone. While it remains, its place SHALL ease 0.05 of the way toward the hit. The dome extent SHALL be 30 plus 1.25 times the ripple count.
 
 #### Scenario: A held ripple and an empty dome
 - **WHEN** a ripple at shown 1 and strength 1 is stepped toward a hit 10 ahead, ripples at 0.06 and at 0.07 are stepped, and the extent of no ripples and of four ripples is read
@@ -535,17 +535,17 @@ The pose advance SHALL make the current pairs previous, the next pairs current, 
 - **THEN** the new first is (2, 0, 0), its previous (1, 0, 0) and the frame 7
 
 ### Requirement: Barrier update fraction
-The barrier update SHALL compute its fraction as (target frame − base frame) + extra and its position as a + (b − a)·t, with a the current pair and b the previous pair.
+The barrier update SHALL compute its fraction as (target frame − base frame) + extra and its position as a + (b − a)·t, with a the previous snapshot's point and b the current one.
 
 #### Scenario: One tick
-- **WHEN** the current is (0, 0, 0), the previous (10, 0, 0), the frames 5 and 3, and the extra 0.1
+- **WHEN** the previous point is (0, 0, 0), the current (10, 0, 0), the frames 5 and 3, and the extra 0.1
 - **THEN** the fraction is 2.1 and the position (21, 0, 0)
 
-### Requirement: Barrier padding
-The barrier's stored padding SHALL be 0.2.
+### Requirement: Barrier cast volume
+The Barrier's cast sound SHALL play at volume 0.2.
 
 #### Scenario: The constant
-- **WHEN** the padding is read
+- **WHEN** the cast volume is read
 - **THEN** it is 0.2
 
 ### Requirement: Cast state gate
