@@ -25,7 +25,6 @@ pub mod emissive;
 pub mod fire_node;
 pub mod fire_row;
 pub mod force_dome;
-pub mod force_draw;
 pub mod force_wave;
 pub mod portal;
 pub mod portal_effect;
@@ -121,14 +120,7 @@ impl Plugin for EffectsPlugin {
             )
                 .chain(),
         );
-        app.add_systems(
-            Update,
-            (
-                fire_row::frame_rows,
-                portal::light_portals,
-                force_draw::draw_new_shells,
-            ),
-        );
+        app.add_systems(Update, (fire_row::frame_rows, portal::light_portals));
     }
 }
 

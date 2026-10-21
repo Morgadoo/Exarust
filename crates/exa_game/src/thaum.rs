@@ -496,14 +496,15 @@ pub fn dome_extent(ripples: u32) -> f32 {
     ripples as f32 * 1.25 + 30.0
 }
 
-/// One step of a barrier ripple. `None` means it has faded off the dome.
+/// One step of a barrier ripple: the strength loses 0.05 in double
+/// precision. `None` means it has faded off the dome.
 pub fn step_ripple(
     shown: f32,
     strength: f32,
     at: [f32; 3],
     toward: [f32; 3],
 ) -> Option<DomeRipple> {
-    let strength = strength - 0.05;
+    let strength = (f64::from(strength) - 0.05) as f32;
     let gap = (strength - shown).clamp(-0.04, 0.04);
     let shown = shown + gap;
     if shown < 0.07 && strength < 0.07 {
