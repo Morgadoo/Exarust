@@ -636,6 +636,97 @@ pub fn is_grey_upload(rfi: &Rfi, bc_supported: bool) -> bool {
         && !rfi.is_packed()
 }
 
+/// One texture as the unit cache sees it: its GL object, its shared sampler
+/// object and its word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextureBinding {
+    pub texture: u32,
+    pub sampler: u32,
+    pub flags: u32,
+}
+
+/// What a bind changed. `None` fields are GL calls the bind skipped.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BindOps {
+    pub active_unit: Option<u32>,
+    pub sampler: Option<u32>,
+    pub texture: Option<u32>,
+    pub lod_bias: Option<f32>,
+}
+
+impl BindOps {
+    pub fn is_empty(&self) -> bool {
+        self.active_unit.is_none()
+            && self.sampler.is_none()
+            && self.texture.is_none()
+            && self.lod_bias.is_none()
+    }
+}
+
+/// The per-unit texture bind cache: the active unit, each unit's texture and
+/// sampler, and the global LOD bias. A bind of the texture already on the
+/// unit does nothing; a different texture makes the unit active, binds its
+/// sampler when that changed, binds the texture and sets the bias unless the
+/// texture word asks to skip it (`0x200`). Binding nothing clears the
+/// sampler.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextureUnitCache {
+    active: Option<u32>,
+    units: Vec<Option<TextureBinding>>,
+}
+
+impl TextureUnitCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The texture currently bound to `unit`.
+    pub fn bound(&self, unit: u32) -> Option<TextureBinding> {
+        self.units.get(unit as usize).copied().flatten()
+    }
+
+    /// Binds `texture` (or nothing) to `unit`, applying the global
+    /// `lod_bias`.
+    pub fn bind(&mut self, unit: u32, texture: Option<TextureBinding>, lod_bias: f32) -> BindOps {
+        let slot = unit as usize;
+        if self.units.len() <= slot {
+            self.units.resize(slot + 1, None);
+        }
+        if self.units[slot] == texture {
+            return BindOps::default();
+        }
+        let mut ops = BindOps::default();
+        if self.active != Some(unit) {
+            self.active = Some(unit);
+            ops.active_unit = Some(unit);
+        }
+        match texture {
+            None => {
+                if self.units[slot].is_some_and(|bound| bound.sampler != 0) {
+                    ops.sampler = Some(0);
+                }
+                self.units[slot] = None;
+            }
+            Some(binding) => {
+                if self.units[slot].map(|bound| bound.sampler) != Some(binding.sampler) {
+                    ops.sampler = Some(binding.sampler);
+                }
+                ops.texture = Some(binding.texture);
+                if binding.flags & flags::NO_LOD_BIAS == 0 {
+                    ops.lod_bias = Some(lod_bias);
+                }
+                self.units[slot] = Some(binding);
+            }
+        }
+        ops
+    }
+
+    /// Whether a bind of `texture` on `unit` would bind the object again.
+    pub fn binds_again(&self, unit: u32, texture: u32) -> bool {
+        self.bound(unit).map(|bound| bound.texture) != Some(texture)
+    }
+}
+
 #[cfg(test)]
 mod sampler_tests {
     use super::*;
@@ -857,6 +948,52 @@ mod sampler_tests {
         };
         assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
         assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
+    }
+}
+
+#[cfg(test)]
+mod unit_cache_tests {
+    use super::*;
+
+    fn binding(texture: u32, sampler: u32, flags: u32) -> TextureBinding {
+        TextureBinding {
+            texture,
+            sampler,
+            flags,
+        }
+    }
+
+    #[test]
+    fn a_bind_skips_the_texture_already_on_the_unit() {
+        let mut cache = TextureUnitCache::new();
+        let first = cache.bind(2, Some(binding(7, 3, 0)), -0.75);
+        assert_eq!(first.active_unit, Some(2));
+        assert_eq!(first.sampler, Some(3));
+        assert_eq!(first.texture, Some(7));
+        assert_eq!(first.lod_bias, Some(-0.75));
+        // The same texture and word: no GL calls at all.
+        assert!(cache.bind(2, Some(binding(7, 3, 0)), -0.75).is_empty());
+        assert!(!cache.binds_again(2, 7));
+    }
+
+    #[test]
+    fn a_new_texture_binds_its_sampler_and_bias_unless_it_opts_out() {
+        let mut cache = TextureUnitCache::new();
+        cache.bind(0, Some(binding(1, 5, 0)), -0.5);
+        // A different texture with the same sampler only binds the texture.
+        let ops = cache.bind(0, Some(binding(2, 5, 0)), -0.5);
+        assert_eq!((ops.sampler, ops.texture), (None, Some(2)));
+        assert_eq!(ops.lod_bias, Some(-0.5));
+        // The skip-bias flag suppresses the bias call.
+        let ops = cache.bind(0, Some(binding(3, 6, flags::NO_LOD_BIAS)), -0.5);
+        assert_eq!(ops.sampler, Some(6));
+        assert_eq!(ops.lod_bias, None);
+        // Unbinding clears the sampler, not the texture.
+        let ops = cache.bind(0, None, -0.5);
+        assert_eq!(ops.sampler, Some(0));
+        assert_eq!(ops.texture, None);
+        assert!(!ops.is_empty());
+        assert!(cache.bind(0, None, -0.5).is_empty());
     }
 }
 
