@@ -97,11 +97,11 @@ The look-ahead SHALL be 75 cm + 6·v² forward, 45 cm + 6·v² in combat, and 70
 - **THEN** the look-ahead is 70 cm behind the facing
 
 ### Requirement: Path around a wall
-A search on the grid SHALL return cell-centre points from the start cell to the goal cell that do not enter a blocked cell. When a wall sits between them, the path SHALL be longer than the straight line.
+A search on the grid SHALL return cell-centre points from the start cell to the goal cell that do not enter a blocked cell. When a wall sits between them, the path SHALL be longer than the straight line and keep a corner.
 
 #### Scenario: A wall across the straight line
 - **WHEN** a flat grid has a wall between two walkable cells and a gap at the wall's end
-- **THEN** the search reaches the goal, no point of the path is on the wall, and the path is longer than the straight line
+- **THEN** the search reaches the goal, the path has more than two points, no point of the path is on the wall, and the path is longer than the straight line
 
 ### Requirement: Line walk
 A line walk SHALL step from the cell after the start along the longer axis. A floor more than four above the current height, whose underside is within ten, SHALL block. The first blocked step SHALL keep the start. A later one SHALL stop before that cell and keep the asked height. A clear line SHALL keep the asked end.
@@ -172,11 +172,11 @@ A plan SHALL lift the footprint at the standing point, search from there, and st
 - **THEN** the plan costs less than the search with the footprint still down, the centre is 63, and a neighbour is 32
 
 ### Requirement: Dirty rectangle
-A rectangle SHALL merge when its padded union is strictly smaller than the two padded rectangles, and the queue SHALL keep sixteen. A refresh SHALL grow each side by three cells. A sample from 1 to 254 SHALL raise the lower floor when it is 0 or within fifteen, and the upper floor when higher. One at or under the lower floor and its underside SHALL raise an empty upper floor. A changed floor SHALL be written and the costs SHALL run again. A zero-extent box SHALL cover its cell and a neighbour.
+A moved box SHALL mark the cells `W/2 + round((c ∓ e) · (1/30) ∓ 2.5)` on each axis, clamped to three from the edges. A rectangle SHALL merge when its padded union is strictly smaller than the two padded rectangles, else be appended. The scene-wide countdown SHALL hold the merge but not the sixteen-slot ring. A refresh SHALL raise floors from samples as the mover refresh does.
 
 #### Scenario: Close rectangles join, and a sample raises the floor
-- **WHEN** a zero-extent box is taken around cell 12, cell 12 is queued after cell 10, cell 17 is queued after cell 10, seventeen separated rectangles are queued, and a refresh is given voxels 20, 30 and 12, plus 255, 0 and a voxel outside
-- **THEN** the box covers cell 12 and a neighbour inside the margin of three, the close pair is one rectangle, the far pair is two, seventeen keep the newest sixteen, voxel 20 raises the lower floor to 20 and its roughness is no longer 0, voxel 30 raises the upper floor to 30, voxel 12 raises an empty upper floor to 12, and voxel 255 and the outside floor stay as they were
+- **WHEN** a zero-extent box is taken around cell 12, close and far rectangles are queued, and a refresh is given voxels 20, 30 and 12, plus 255, 0 and a voxel outside
+- **THEN** the box covers cells 10 to 15, the close pair is one rectangle and the far pair two, voxel 20 raises the lower floor to 20, voxel 30 the upper floor to 30, voxel 12 an empty upper floor under a slab at 15, and the others change nothing
 
 ### Requirement: Pathfinder metrics
 The constructor SHALL store cell size 30, depth 10, inverse 1/30, a zero counter and the seed byte, then run the base once.
@@ -209,96 +209,79 @@ The planner SHALL merge a footprint into the first rectangle whose padded union 
 - **WHEN** the length has reached a capacity of 1
 - **THEN** appending raises the capacity to 9
 
-### Requirement: Path coordinates
-A world coordinate SHALL map to a cell as `trunc(world × inverse unit + 0.5)`, and a cell back to the world as `(cell − 0.5) × unit`.
+### Requirement: Planner cells
+The planner SHALL turn the start and goal into cells by rounding `cm · (1/30) + ½` ties to even in single precision. It SHALL answer no path when either lies more than the grid's half size less ten from its middle, or they lie more than 253 cells apart on an axis. It SHALL search a 256-cell window centred between them and never enter the window's border.
 
-#### Scenario: Round trip
-- **WHEN** the world 0.5 maps with inverse unit 1
-- **THEN** the cell is 1 and its world is 0.5
-- **WHEN** the world −0.5 maps
-- **THEN** the cell is 0 and its world is −0.5
+#### Scenario: Rounding and the margin
+- **WHEN** points at 0, 15, 30, −15 and −45 cm are turned into cells, and a plan starts at the eleventh cell from a 40-cell grid's middle
+- **THEN** the cells are 0, 1, 2, 0 and −1, and the plan has no points
 
-### Requirement: Path step pricing
-The eight neighbours SHALL be NW, N, NE, W, E, SW, S, SE with costs 7, 5, 7, 5, 5, 7, 5, 7. A step SHALL enter only a set floor with a rise of −20 through +4, A at most 180/(quality+1) and shifted B at most 600. Its cost SHALL add 10·dz², the direction cost, twice A and the shifted B; the heuristic SHALL be ten times the 3D distance, truncated.
+### Requirement: Planner heights
+Heights SHALL be `(y − base) · 0.1` in centimetres, rounded ties to even. The start SHALL take the upper layer when its height lies above that layer's underside less three and below its floor plus fifteen, else the lower layer.
 
-#### Scenario: Accepted and refused steps
-- **WHEN** the current floor is 10, the next is 12, A is 50 and B is 0
-- **THEN** the step is accepted and costs 10·dz² + direction + 2A + shifted B
-- **WHEN** the next floor is 0 or 32, A is 181 or shifted B is above 600
-- **THEN** the step is refused
+#### Scenario: Ties
+- **WHEN** heights of 5, 15, 25 and −15 cm are turned into voxels
+- **THEN** they are 0, 2, 2 and −2
 
-### Requirement: Path search
-The search SHALL pop a LIFO open list by the smallest f (newest wins a tie), stop at the acceptance distance, an empty list or 4095 nodes, re-parent an open neighbour to a smaller f, and rebuild the path as the parent chain collapsed through collinear runs. It SHALL count the goal as reached only when the best node is the goal cell.
+### Requirement: Planner steps
+A step SHALL go from the floor of the node it leaves, on that node's layer, to the eight neighbours in the order north-west, north, north-east, west, east, south-west, south, south-east. A cell without a lower floor SHALL be refused. A lower floor more than four above SHALL be refused unless ten lie under its slab, and then only the upper floor SHALL take the step. An upper floor within four and above the lower floor SHALL be entered.
 
-#### Scenario: Straight, detour and sealed
-- **WHEN** a clear five-by-five grid is searched between (0, 2) and (4, 2)
-- **THEN** the path runs straight along y = 2 from the start to the goal and the goal is reached
-- **WHEN** a wall blocks the direct row
-- **THEN** the path detours around it and every point is walkable
-- **WHEN** the goal is sealed by all its in-bounds neighbours
-- **THEN** the search reports the goal as not reached
+#### Scenario: Floors in reach
+- **WHEN** a step from floor 10 meets a cell with no lower floor, a lower floor of 12, a lower floor of 15 with its slab at 15 or 25 and no upper floor, and a lower floor of 2 under an upper floor of 13
+- **THEN** it is refused, takes 12, is refused twice, and takes the upper 13
 
-### Requirement: Walkable snap
-The snap SHALL return the start cell when it has a floor and its A and B bytes sum under 80, with height base + floor·10. Otherwise it SHALL sweep the 32×32 window in distance order, up to 220 nodes, and return the nearest walkable cell or nothing.
+### Requirement: Planner upper slab
+An upper floor more than four above SHALL refuse the cell when less than ten lie under its slab, unless nothing is measured there and the floor is not below the lower floor; otherwise the lower floor SHALL be kept.
 
-#### Scenario: Walkable, nearby and none
-- **WHEN** the start cell is walkable
-- **THEN** it is returned at once with the snapped height
-- **WHEN** the start is blocked and one cell in the window is walkable
-- **THEN** the sweep returns that cell
-- **WHEN** every cell in the window is blocked
-- **THEN** the snap returns nothing within the node cap
+#### Scenario: Slabs over the floor
+- **WHEN** a step from floor 10 onto a lower floor of 10 meets an upper floor of 20 with its slab at 15, at 25, and with nothing measured under it
+- **THEN** it is refused, then takes the lower floor twice
 
-### Requirement: Path shortcut
-The shortcut SHALL keep the first point, drop each point whose direct line from the last kept point to the following point is clear, keep it otherwise, and always keep the last point.
+### Requirement: Planner step cost
+A step's rise SHALL be −20 to +4 and the entered layer's clearance at most `180/(size + 1)`. It SHALL cost `10·Δ² + 5 or 7 + 2·clearance + (penalty << shift)`, the shift masked to 31, and SHALL be refused when the shifted penalty is over 600.
 
-#### Scenario: Clear and blocked lines
-- **WHEN** every line is clear on a four-point straight path
-- **THEN** only the first and last points remain
-- **WHEN** a line is blocked at a bend
-- **THEN** the bend is kept and the smooth run after it is shortened
-- **WHEN** the path has two points
-- **THEN** it is returned unchanged
+#### Scenario: A corridor and its penalty
+- **WHEN** a plan walks five cells along a corridor, then with a penalty byte of 4 on one cell, unshifted, shifted by 1, by 8 and by 33
+- **THEN** it costs 25, then 29, 33, ends at the cell before the penalised one, and 33
 
-### Requirement: Path endpoint fix-up
-The endpoint fix-up SHALL drop up to eight points from the path's end whose penalty byte is above 64/(quality+1), always keep the first point, and report how many remain.
+### Requirement: Planner order
+New nodes SHALL go in front of a LIFO list; the node of least total, compared unsigned, SHALL be taken next, of equals the newest. A node met again more cheaply SHALL take the new cost and parent and keep its place; a taken node SHALL not be put back. A new node's heuristic SHALL be `round(10·√(Δx² + Δz² + Δh²))`, `Δh` its floor less the goal's height.
 
-#### Scenario: High penalties and the eight cap
-- **WHEN** the last three of five points carry penalty 100 at quality 0
-- **THEN** two points remain
-- **WHEN** eleven points carry high penalties in a row
-- **THEN** only eight are dropped and four remain
-- **WHEN** the quality is 1
-- **THEN** a penalty of 40 is dropped
+#### Scenario: The height leg runs to the goal
+- **WHEN** a goal stands 50 cm over the corridor's floor and the accept distance is 55
+- **THEN** the plan ends two cells short of the goal at cost 15
 
-### Requirement: Budgeted path shortcut
-The budgeted shortcut SHALL pass the clear predicate a budget of the later cost minus the kept cost plus ten, and otherwise SHALL shorten like the unbudgeted shortcut, keeping the first and last points.
+### Requirement: Planner end
+The search SHALL stop when the closest node's heuristic is under the accept distance, when nothing waits, or at the 4096th node, the accept test still running. A search that did not reach the goal SHALL count as reached when the closest node's centre lies within 100 cm of the goal; otherwise its path SHALL end at the parent of the rough node (clearance over `64/(size + 1)`) nearest the start.
 
-#### Scenario: Short and long jumps
-- **WHEN** the costs are 0, 100, 101 and 102 and only a budget of at most 20 is clear
-- **THEN** the jump from 0 to 2 is blocked and the jump from 1 to 3 is clear, leaving points 0, 1 and 3
-- **WHEN** every budget is clear
-- **THEN** only the first and last points remain
+#### Scenario: 100 cm and rough ground
+- **WHEN** a gap leaves the closest node 120 cm from the goal, with and without clearance 70 on it and on the start's neighbour
+- **THEN** the plan is not reached and ends at the closest node, one cell back from it, or has no points
 
-### Requirement: Path layer choice
-The layer choice SHALL take layer 0 when its floor is set and at most four above the current floor, or mark no layer when its floor is five through ten above; a floor more than ten above SHALL be refused. A set layer 1 SHALL win when it is higher and within four. The chosen rise SHALL stay within −20 through +4.
+### Requirement: Planner corners
+The path SHALL keep the end, the last node of each run of one direction on one layer, and the start. From the start, each corner after the next SHALL be tested with the line walk back to the last point kept, and the corner before it SHALL be kept when the line is blocked. Points SHALL be cell centres on their layer's floor, none when fewer than two corners remain.
 
-#### Scenario: Layer zero, layer one and refusals
-- **WHEN** layer 0's floor is the current floor and layer 1 is unset
-- **THEN** layer 0 is chosen at that floor
-- **WHEN** layer 0's floor is the current floor and layer 1's is three above
-- **THEN** layer 1 is chosen
-- **WHEN** layer 0's floor is seven above and layer 1 is unset
-- **THEN** no layer is chosen
-- **WHEN** the chosen rise is outside −20 through +4
-- **THEN** no layer is chosen
+#### Scenario: A straight corridor
+- **WHEN** a plan walks five cells straight along a corridor
+- **THEN** it has two points, the start's and the goal's cell centres on the floor
 
-### Requirement: Path stamp clear
-The stamp clear SHALL fill the first 256 entries, the entries 0xfeff through 0xffff and both edge entries of rows 1 through 254 with the blocked value, leaving the interior to the caller. A short table SHALL be left alone.
+### Requirement: Planner line walk
+The line walk SHALL hold the far corner's floor, step every cell of the longer axis to the kept point, refuse a cell as a step does, and pay the step cost with the penalty shifted once more. It SHALL be blocked by a refused cell or a cost over what the search paid between the two plus ten.
 
-#### Scenario: The border ring
-- **WHEN** a 256×256 table of zeroes is cleared
-- **THEN** the first and last rows, the first and last columns and the entry at 0xfeff hold the blocked value
-- **THEN** the interior, such as 0xfe01, stays zero
-- **WHEN** the table is shorter than 65,536 entries
-- **THEN** it is unchanged
+#### Scenario: The line walk's budget
+- **WHEN** a line walks five flat cells with budgets 15 and 14, then with a penalty of 3 on one cell and budgets 21 and 20, then onto floors two higher with budgets 221 and 220, then over a gap
+- **THEN** it is clear, blocked, clear, blocked, clear, blocked, and blocked
+
+### Requirement: Mover refresh
+A refresh SHALL drain the ring, grow each side by three cells and start the working floors from the floors as built. A sample voxel `y·0.1 + ½ − base·0.1` from 1 to 254 SHALL raise a missing working floor; one less than fifteen above SHALL take it; one fifteen or more above, or at or under the lower slab's underside, SHALL raise the upper floor when it is missing or less than fifteen below. Changed floors SHALL be written and the costs run again.
+
+#### Scenario: A mover gone
+- **WHEN** a sample at 2 m raises a cell's floor of 10 and a later refresh of that cell has no sample, and samples at 2.0, 2.04 and 1.96 m are rounded
+- **THEN** the floor is 20, then 10 again with no roughness, and the voxels are 20, 21 and 20
+
+### Requirement: Plan timing on the shipped levels
+A plan as an NPC's (size class 3, penalties doubled) from each installed level's start to the farthest reached cell within the window SHALL give a path in under 250 ms.
+
+#### Scenario: Arena, arenao1, exanima01
+- **WHEN** the installation is present and the three levels' grids are built
+- **THEN** each plan gives at least two points (0.3 to 1.1 ms on the worker)
