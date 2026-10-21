@@ -43,6 +43,9 @@ pub struct CharacterData {
     /// The second item list the game keeps beside the inventory (its staged
     /// or trade items); `None` when it has none. Not saved.
     pub staged: Option<Vec<Carried>>,
+    /// A value the save copies from the body into the record. It is not
+    /// stored in the record file, so its meaning is not traced.
+    pub body_value: f32,
 }
 
 impl Default for CharacterData {
@@ -72,6 +75,7 @@ impl CharacterData {
             record: CharacterRecord::new(),
             refs: 1,
             staged: None,
+            body_value: 0.0,
         }
     }
 
@@ -82,6 +86,7 @@ impl CharacterData {
             record: CharacterRecord::reset(),
             refs: 1,
             staged: None,
+            body_value: 0.0,
         }
     }
 
@@ -91,6 +96,7 @@ impl CharacterData {
             record,
             refs: 1,
             staged: None,
+            body_value: 0.0,
         }
     }
 
@@ -501,6 +507,110 @@ impl CharacterData {
         }
     }
 
+    /// Appends an item to the worn list (the underwear rule's append and
+    /// every equip).
+    pub fn add_worn(&mut self, item: ItemRef) {
+        self.record.worn.push(item);
+    }
+
+    /// Takes the first worn copy of `id` off. Returns whether it was worn.
+    pub fn remove_worn(&mut self, id: u32) -> bool {
+        match self.record.worn.iter().position(|worn| worn.id == id) {
+            Some(at) => {
+                self.record.worn.remove(at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Appends an inventory entry: the item, its flags, and the game's
+    /// default third word.
+    pub fn push_carried(&mut self, item: u32, flags: u32) {
+        self.record.inventory.push(Carried {
+            item,
+            flags,
+            ..Carried::default()
+        });
+    }
+
+    /// Appends an inventory entry when the character does not already carry
+    /// that item; returns whether it was added.
+    pub fn add_carried_unique(&mut self, item: u32, flags: u32) -> bool {
+        if self.record.inventory.iter().any(|entry| entry.item == item) {
+            return false;
+        }
+        self.push_carried(item, flags);
+        true
+    }
+
+    /// Picks an item up: it goes into the inventory unless it is the
+    /// underwear, which is never carried.
+    pub fn pick_up(&mut self, item: ItemRef) {
+        if item.id != UNDERWEAR_ITEM {
+            self.push_carried(item.id, item.flags);
+        }
+    }
+
+    // ---- saved health -----------------------------------------------
+
+    /// Writes the body's health back into the record as the game saves it:
+    /// yellow and red as shares of the maximum (red 0 when it is not
+    /// positive), focus as its own share, the seed as 0xFFFF, and the saved
+    /// entries for a heal pool still owed and a potion's expiry.
+    pub fn save_health(&mut self, health: Health) {
+        let unit = 65535.0f32;
+        self.record.pools.yellow = shares(health.yellow / health.max * unit);
+        self.record.pools.red = if health.red <= 0.0 {
+            0
+        } else {
+            shares(health.red / health.max * unit)
+        };
+        self.record.pools.focus = shares(health.focus * unit);
+        self.record.seed = 0xFFFF;
+        self.record.saved.clear();
+        if health.heal_pool > 0.0 {
+            self.record.saved.push(exa_formats::characters::SavedState {
+                tag: exa_formats::characters::SAVED_HEAL_POOL,
+                value: health.heal_pool.to_bits(),
+            });
+        }
+        if let Some(expiry) = health.potion {
+            self.record.saved.push(exa_formats::characters::SavedState {
+                tag: exa_formats::characters::SAVED_POTION,
+                value: expiry,
+            });
+        }
+        self.body_value = health.body_value;
+    }
+
+    /// The health a load gives the body: the saved shares times `max`, the
+    /// focus share on its own, and the saved entries. The game's loop reads
+    /// the *last* entry's value for both tags (harmless with one entry);
+    /// with both present the heal pool takes the potion's expiry too.
+    pub fn restore_health(&self, max: f32) -> Health {
+        let unit = 1.525_902_2e-05;
+        let last = self.record.saved.last().map(|saved| saved.value);
+        let has = |tag: u32| self.record.saved.iter().any(|saved| saved.tag == tag);
+        let heal_pool = match (has(exa_formats::characters::SAVED_HEAL_POOL), last) {
+            (true, Some(value)) => f32::from_bits(value),
+            _ => 0.0,
+        };
+        Health {
+            yellow: max * f32::from(self.record.pools.yellow) * unit,
+            red: max * f32::from(self.record.pools.red) * unit,
+            max,
+            focus: f32::from(self.record.pools.focus) * unit,
+            heal_pool,
+            potion: if has(exa_formats::characters::SAVED_POTION) {
+                last
+            } else {
+                None
+            },
+            body_value: self.body_value,
+        }
+    }
+
     // ---- skills -----------------------------------------------------
 
     /// The total levels the six skills hold (one per 5000 points).
@@ -614,3 +724,40 @@ fn overlaps(a: &Item, b: &Item) -> bool {
 #[cfg(test)]
 #[path = "record_test.rs"]
 mod tests;
+
+/// A body's health, as the save hook reads it and the load hook writes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Health {
+    pub yellow: f32,
+    pub red: f32,
+    pub max: f32,
+    /// 0…1.
+    pub focus: f32,
+    /// Red health still to heal from bandages.
+    pub heal_pool: f32,
+    /// A drunk potion's expiry on the game clock.
+    pub potion: Option<u32>,
+    /// The value the save copies out of the body (not part of the record
+    /// file).
+    pub body_value: f32,
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        Self {
+            yellow: 0.0,
+            red: 0.0,
+            max: 1.0,
+            focus: 0.0,
+            heal_pool: 0.0,
+            potion: None,
+            body_value: 0.0,
+        }
+    }
+}
+
+/// A share written as the game writes it: rounded to the nearest even
+/// integer (the Free Pascal runtime's rounding), then cut to 16 bits.
+fn shares(value: f32) -> u16 {
+    f64::from(value).round_ties_even() as i64 as u16
+}

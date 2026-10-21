@@ -536,3 +536,87 @@ fn a_record_keeps_its_reference_count_and_its_scope() {
     });
     assert_eq!(world.release(), Some(RecordScope::World(8)));
 }
+
+#[test]
+fn worn_items_append_and_come_off_one_copy() {
+    let mut data = CharacterData::new();
+    data.add_worn(ItemRef::new(8, 0));
+    data.add_worn(ItemRef::new(144, 1));
+    data.add_worn(ItemRef::new(8, 0));
+    // The first copy only.
+    assert!(data.remove_worn(8));
+    assert_eq!(data.record.worn, [ItemRef::new(144, 1), ItemRef::new(8, 0)]);
+    assert!(data.remove_worn(8));
+    assert!(!data.remove_worn(8));
+    // The picked-up underwear is never carried; anything else is.
+    data.pick_up(ItemRef::new(UNDERWEAR_ITEM, 0));
+    assert!(data.record.inventory.is_empty());
+    data.pick_up(ItemRef::new(35, 2));
+    assert_eq!(
+        data.record.inventory,
+        [Carried {
+            item: 35,
+            flags: 2,
+            ..Carried::default()
+        }]
+    );
+    // A unique pickup adds one copy only.
+    assert!(!data.add_carried_unique(35, 2));
+    assert!(data.add_carried_unique(36, 0));
+    assert_eq!(data.record.inventory.len(), 2);
+}
+
+#[test]
+fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
+    let mut data = CharacterData::new();
+    data.save_health(Health {
+        yellow: 0.5,
+        red: 0.25,
+        max: 1.0,
+        focus: 0.75,
+        heal_pool: 0.125,
+        potion: Some(1800),
+        body_value: 2.5,
+    });
+    assert_eq!(data.record.pools.yellow, 32768);
+    assert_eq!(data.record.pools.red, 16384);
+    assert_eq!(data.record.pools.focus, 49151);
+    assert_eq!(data.record.seed, 0xFFFF);
+    assert_eq!(
+        data.record.saved,
+        [
+            exa_formats::characters::SavedState {
+                tag: exa_formats::characters::SAVED_HEAL_POOL,
+                value: 0.125f32.to_bits()
+            },
+            exa_formats::characters::SavedState {
+                tag: exa_formats::characters::SAVED_POTION,
+                value: 1800
+            },
+        ]
+    );
+    // The load: shares times the maximum, the focus share on its own; both
+    // saved entries report the last entry's value, as the original's loop
+    // does.
+    let health = data.restore_health(2.0);
+    assert!((health.yellow - 1.0).abs() < 1e-4);
+    assert!((health.red - 0.5).abs() < 1e-4);
+    assert!((health.focus - 0.749_98).abs() < 1e-4);
+    assert_eq!(health.potion, Some(1800));
+    assert_eq!(health.heal_pool, f32::from_bits(1800));
+    assert_eq!(health.body_value, 2.5);
+
+    // Red that is not positive saves as 0; an empty heal pool writes no
+    // entry.
+    let mut dead = CharacterData::new();
+    dead.save_health(Health {
+        yellow: 1.0,
+        red: -1.0,
+        max: 1.0,
+        focus: 0.0,
+        ..Health::default()
+    });
+    assert_eq!(dead.record.pools.red, 0);
+    assert!(dead.record.saved.is_empty());
+    assert_eq!(dead.restore_health(1.0).heal_pool, 0.0);
+}

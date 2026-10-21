@@ -1104,7 +1104,9 @@ impl CharacterRecord {
         put_f32(out, self.combat_skill);
         out.extend_from_slice(&self.undead_voice.to_le_bytes());
         for t in self.traits {
-            let biased = (t.round() as i64 + i64::from(TRAIT_BIAS)) & 0xFF;
+            // The game rounds to the nearest even integer (the runtime's
+            // rounding) before the byte bias.
+            let biased = (f64::from(t).round_ties_even() as i64 + i64::from(TRAIT_BIAS)) & 0xFF;
             out.push(biased as u8);
         }
         out.extend_from_slice(&self.search_seed.to_le_bytes());

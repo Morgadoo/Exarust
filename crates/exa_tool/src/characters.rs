@@ -124,6 +124,17 @@ fn print_record(
         r.age,
         r.physique
     );
+    println!(
+        "    skin {:04x}/{:04x}  hair style {} colour {:02x?}  face {:04x}/{:04x}  locale {}  profession {:#010x}",
+        r.skin[0],
+        r.skin[1],
+        r.hair_style,
+        r.hair_colour,
+        r.face[0],
+        r.face[1],
+        r.locale,
+        r.profession()
+    );
     let [yellow, red, focus] = r.pools.shares();
     println!(
         "    pools {yellow:.3} / {red:.3} / {focus:.3}  combat skill {}  experience {}  traits {:?}  voice {} ({}) pitch {} undead {}",
@@ -201,12 +212,26 @@ fn print_record(
             tag => format!("{tag:#x} {}", s.value),
         })
         .collect();
+    let hands: Vec<String> = r
+        .hands
+        .iter()
+        .map(|hand| {
+            if hand.is_some() {
+                format!("{:#x}/{:#x}", hand.id, hand.flags)
+            } else {
+                "-".to_string()
+            }
+        })
+        .collect();
     println!(
-        "    roles [{}]  worn {}  inventory {}  relations {}  saved [{}]  powers {}",
+        "    roles [{}]  hands [{}]  worn {}  inventory {}  relations {} ({} levels)  loadouts {}  saved [{}]  powers {}",
         roles.join(" "),
+        hands.join(" "),
         r.worn.len(),
         r.inventory.len(),
         r.relation_count(),
+        r.level_relations.len(),
+        r.loadouts.len(),
         saved.join(", "),
         r.powers.as_ref().map_or(0, |p| p.known.len())
     );
