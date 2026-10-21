@@ -138,8 +138,8 @@ const LUMA: Vec3 = Vec3::new(0.299, 0.587, 0.114);
 /// A link below this weight is dropped.
 const LINK_WEIGHT: f32 = 0.01;
 /// The flood's reach for a light without the range flag: the original's
-/// largest float, so only walls and the stack's limit stop the walk.
-const UNLIMITED_REACH: f32 = 3.4e38;
+/// 3.4e38 cm (3.4e36 m), so only walls and the stack's limit stop the walk.
+const UNLIMITED_REACH: f32 = 3.4e36;
 /// The first render layer given to a light: 0 is the world's, and the
 /// layers up to the supersampling resolve layer are taken.
 pub const FIRST_LIGHT_LAYER: usize = exa_render::supersample::RESOLVE_LAYER + 1;
