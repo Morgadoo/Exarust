@@ -403,6 +403,75 @@ impl CharacterDb {
     }
 }
 
+/// The two databases together, as the original's unit keeps them: ids with
+/// the world tag go to the world store, every other id to the local one.
+#[derive(Debug)]
+pub struct CharacterDbs {
+    pub local: CharacterDb,
+    pub world: CharacterDb,
+}
+
+impl Default for CharacterDbs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CharacterDbs {
+    /// The local and world stores, both empty, with the original's tags.
+    pub fn new() -> Self {
+        Self {
+            local: CharacterDb::new(LOCAL_TAG),
+            world: CharacterDb::new(WORLD_TAG),
+        }
+    }
+
+    /// The database a tagged id names: the world store for bit `0x40000000`,
+    /// the local one otherwise.
+    pub fn store_of(&self, id: u32) -> &CharacterDb {
+        if id & WORLD_TAG != 0 {
+            &self.world
+        } else {
+            &self.local
+        }
+    }
+
+    /// Looks a tagged id up in its store.
+    pub fn get(&mut self, id: u32) -> Option<Arc<SharedCharacter>> {
+        if id & WORLD_TAG != 0 {
+            self.world.get(id & ID_MASK)
+        } else {
+            self.local.get(id & ID_MASK)
+        }
+    }
+
+    /// Adds a record to the store `tag` names (0 is the local store).
+    pub fn add(&mut self, tag: u32, id: u32, record: CharacterRecord) -> Option<u32> {
+        let id = if tag & WORLD_TAG != 0 {
+            self.world.add(id, record)?
+        } else {
+            self.local.add(id, record)?
+        };
+        Some(
+            id | if tag & WORLD_TAG != 0 {
+                WORLD_TAG
+            } else {
+                LOCAL_TAG
+            },
+        )
+    }
+
+    /// Releases a character by its tagged id from its store. The record's
+    /// id is cleared, as the original's release does.
+    pub fn release(&mut self, id: u32) -> bool {
+        if id & WORLD_TAG != 0 {
+            self.world.release(id & ID_MASK)
+        } else {
+            self.local.release(id & ID_MASK)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +591,25 @@ mod tests {
         // The first entry's payload length runs past the payload.
         bad[8 + ENTRY - 4..8 + ENTRY].copy_from_slice(&0xFFFFu32.to_le_bytes());
         assert!(CharacterDb::load(LOCAL_TAG, &bad).is_err());
+    }
+
+    /// The two stores route by the world bit: a world id is not in the
+    /// local store, and a release clears the one it names.
+    #[test]
+    fn the_two_databases_route_by_the_world_bit() {
+        let mut dbs = CharacterDbs::new();
+        let local = dbs.add(0, 0, record("local")).unwrap();
+        let world = dbs.add(WORLD_TAG, 0, record("world")).unwrap();
+        assert_eq!(local, LOCAL_TAG | 1);
+        assert_eq!(world, WORLD_TAG | 1);
+        assert_eq!(dbs.store_of(local).tag(), LOCAL_TAG);
+        assert_eq!(dbs.store_of(world).tag(), WORLD_TAG);
+        assert_eq!(dbs.store_of(local).len(), 1);
+        assert_eq!(dbs.store_of(world).len(), 1);
+        assert_eq!(dbs.get(local).unwrap().record().name, "local");
+        assert_eq!(dbs.get(world).unwrap().record().name, "world");
+        assert!(dbs.release(world));
+        assert!(!dbs.world.release(1));
+        assert!(dbs.local.contains(1));
     }
 }
