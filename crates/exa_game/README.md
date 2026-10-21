@@ -591,15 +591,24 @@ tick, but nothing answers it in the live game: Exarust's level colliders
 include ceilings, which the original's mesh filter leaves out, so the tilt
 stays 0. The pitch ease (in double, only over a gap above 2e-6), the eye
 blend and the field of view are the original's.
-`scene_editor` is the live scene runner's model (`RF_SceneEditor`,
-`TSceneTaskInt`, and the paper-doll viewport step): the viewport rectangle
-and 15-character title, the run-scene options (physics start, maximised
-view, task bar, wireframe, audio, camera record, renderer minimum, render
-flags), the camera-mode switch that creates the navigation controller once,
-flips the viewport's mode word and notifies the GUI, the maximised-viewport
-scroll count, the `.rfc` entry name, the frame cap at 1/60 s with its time
-scale and half-step audio mark, the task's paused tick and its repaint and
-message asks, the destroy that unhooks and reports the viewport decrement,
-and the scene-node despawn that reports the released character or database
-owner. The actual camera, level and listener stay in `exarust::viewer` and
-`crate::player`.
+
+`scene_editor` is a model of the scene runner's task (`RF_SceneEditor`,
+`TSceneTaskInt`): nothing draws from it yet and no other module uses it. It
+holds the camera-mode switch (a plain mode word; modes from 3 up run a leave
+callback, a controller is created once and a record sets or drops its
+target), the frame step (the step is `now - base` less the last stamp as a
+signed 64-bit word; a step over 50/3 ms, compared in double, stores the f32
+`0x41855555` and a scale of the cap over the step, otherwise the scale is 1
+and a negative step becomes 0; the audio mark subtracts half the step,
+rounded to even, from the audio clock when the viewport count is positive),
+the task tick's repaint and message rules (a cleared flag posts to the GUI
+task and repaints, all of the low three bits across the two message words
+repaint, message 2 follows while the pending count is under its limit and the
+primary word has none of `0xf0`), the maximised-viewport count, the
+run-scene set-up (viewport rectangle, flags and 15-character title, the
+renderer minimum that only rises, the camera record, the weather option bits
+and the audio listener with its global fallback) and the scene-node despawn
+over `Scene::release_node`. Not modelled: the tick's copy of the camera pose
+into the listener, the weather option calls, and five option bytes whose
+callees were not identified. The actual camera, level and listener stay in
+`exarust::viewer` and `crate::player`.
