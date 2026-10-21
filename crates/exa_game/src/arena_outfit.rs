@@ -16,6 +16,9 @@
 //! Evidence: the arena's outfit generation routines, read from
 //! `Exanima.exe` 0.9.5 (see the arena research notes).
 
+use crate::arena_outfit_data as data;
+use std::collections::BTreeMap;
+
 /// Number of bonus words and bonus floats an item carries.
 pub const BONUS_SLOTS: usize = 20;
 
@@ -351,6 +354,12 @@ impl OutfitPool {
         &self.candidates
     }
 
+    /// The candidates currently held, mutably. The outfit sequence halves
+    /// every weight after its first weapon pass.
+    fn candidates_mut(&mut self) -> &mut [Candidate] {
+        &mut self.candidates
+    }
+
     /// How many candidates are held.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -581,6 +590,1007 @@ impl OutfitPool {
         *points = points.wrapping_sub(candidate.cost);
         Some(candidate.id)
     }
+}
+
+/// The fixed item the profile sequence equips directly when the rank is five
+/// or when max-rank mode reaches above rank one. The slot is a guess: the
+/// original reads the id out of a direct table row rather than a named slot.
+pub const ITEM_402: ItemId = ItemId(402);
+/// The second direct fixed item (see [`ITEM_402`]).
+pub const ITEM_1359: ItemId = ItemId(1359);
+/// The third direct fixed item used by the profile sequence.
+pub const ITEM_251: ItemId = ItemId(251);
+/// The third direct fixed item used by the numeric-level sequence. It stands
+/// in the same slot as [`ITEM_251`] in the profile sequence.
+pub const ITEM_285: ItemId = ItemId(285);
+
+/// First direct fixed item of the level-five premade suit.
+pub const ITEM_439: ItemId = ItemId(439);
+/// Second direct fixed item of the level-five premade suit.
+pub const ITEM_436: ItemId = ItemId(436);
+/// Third direct fixed item of the level-five premade suit.
+pub const ITEM_85: ItemId = ItemId(85);
+/// Fourth direct fixed item of the level-five premade suit.
+pub const ITEM_435: ItemId = ItemId(435);
+
+/// The direct fixed ids, so a table build can cache their facts too.
+const FIXED_ITEMS: [ItemId; 8] = [
+    ITEM_402, ITEM_1359, ITEM_251, ITEM_285, ITEM_439, ITEM_436, ITEM_85, ITEM_435,
+];
+
+/// The ten-qword float preset copied by most early branches (0x1002c78d0).
+///
+/// The original copies the twenty floats into the worn-float block the fit
+/// score starts from. They are also reported as the fixed preset values, in
+/// order, because the original gives the fields no names here.
+pub const LOOK_PRESET_ROUGH: [f32; 20] = [
+    1.5, 2.0, 4.0, 3.0, 2.0, 4.0, 3.0, 1.0, 1.0, 1.0, 8.0, 8.0, 4.0, 8.0, 8.0, 4.0, 4.0, 4.0, 1.0,
+    1.0,
+];
+
+/// The ten-qword look preset copied by the shield branch (0x1002c7920).
+pub const LOOK_PRESET_ARMED: [f32; 20] = [
+    1.5, 2.0, 1.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0, 1.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 1.0,
+    1.0,
+];
+
+/// The bit the premade-skill probe looks for in the character's skill word.
+///
+/// The original scans the character's skill records for technique byte eight
+/// and enough points. The caller supplies the already-reduced low skill word;
+/// this module treats bit three of that word as "the premade skill is present".
+pub const PREMADE_SKILL_BIT: u16 = 0x0008;
+
+/// The character state the two outfit sequences read.
+///
+/// The original reaches into the character record for these fields. They are
+/// separated here so the generators stay pure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutfitCharacter {
+    /// The low skill word. Bit three stands in for the original's premade
+    /// skill probe.
+    pub skill_word: u16,
+    /// The character's experience word at record offset `0xd8`.
+    pub experience: u32,
+    /// The character's warmth at record offset `0x90`; it is blended into the
+    /// skin look value when positive.
+    pub warmth: f32,
+    /// The record flags word at offset `0x54`. Its low bit, when not one,
+    /// gives the character bonus mask one.
+    pub record_flags: u32,
+}
+
+impl Default for OutfitCharacter {
+    fn default() -> Self {
+        Self {
+            skill_word: 0,
+            experience: 0,
+            warmth: 0.0,
+            record_flags: 1,
+        }
+    }
+}
+
+impl OutfitCharacter {
+    /// The bonus mask: one unless the record's low flag bit is one.
+    #[must_use]
+    pub const fn bonus_mask(self) -> u32 {
+        (self.record_flags & 1 != 1) as u32
+    }
+
+    /// Whether the premade-skill probe succeeds.
+    #[must_use]
+    pub const fn has_premade_skill(self) -> bool {
+        self.skill_word & PREMADE_SKILL_BIT != 0
+    }
+}
+
+/// One item the outfit sequence equipped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EquippedItem {
+    /// The item id.
+    pub id: ItemId,
+    /// The points taken off the character's remaining points.
+    pub cost: i32,
+    /// The bonus merged into the worn set. Weapons and shields carry none.
+    pub bonus: Bonus,
+    /// The dressing mode in force when the item was equipped.
+    pub source: GenerationMode,
+    /// The item's quality byte.
+    pub quality: u8,
+    /// The item's condition byte.
+    pub condition: u8,
+}
+
+/// The look values the outfit routine computes or copies.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutfitLook {
+    /// The height-like value at 0x1002c7890, clamped to one.
+    pub height: f32,
+    /// The skin-like value at 0x1002c78a0.
+    pub skin: f32,
+    /// The condition seed at 0x1004f1cd0.
+    pub condition_seed: f32,
+    /// The twenty base floats copied from one of the fixed presets. They seed
+    /// the worn bonus floats before the apparel picks add to them.
+    pub preset: [f32; 20],
+}
+
+impl Default for OutfitLook {
+    fn default() -> Self {
+        Self {
+            height: 0.0,
+            skin: 0.0,
+            condition_seed: 0.0,
+            preset: [0.0; 20],
+        }
+    }
+}
+
+/// A generated outfit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeneratedOutfit {
+    /// Hand zero (record offset 0x64) and hand one (offset 0x6c).
+    pub hands: [Option<HeldWeapon>; 2],
+    /// Every piece the sequence equipped, in call order.
+    pub items: Vec<EquippedItem>,
+    /// The points left after the sequence.
+    pub points: i32,
+    /// The merged bonus of every apparel piece.
+    pub worn: WornBonus,
+    /// The final generation mode byte.
+    pub mode: u8,
+    /// The quality byte of the last apparel piece.
+    pub quality: u8,
+    /// The condition byte of the last apparel piece.
+    pub condition: u8,
+    /// The computed and fixed look values.
+    pub look: OutfitLook,
+}
+
+/// The outfit item tables, converted from the raw arena data with an
+/// item-facts pass.
+///
+/// Large tables carry rank, cost and bonus from [`ItemFacts`]. Small rank
+/// tables carry the same three fields; their raw weight is kept unchanged.
+/// A zero weight in a large table becomes the original's default of ten.
+#[derive(Clone, Debug, Default)]
+pub struct OutfitTables {
+    /// Alt A pool.
+    pub alt_a: Vec<PoolEntry>,
+    /// Alt B pool.
+    pub alt_b: Vec<PoolEntry>,
+    /// Alt C pool.
+    pub alt_c: Vec<PoolEntry>,
+    /// Alt D pool.
+    pub alt_d: Vec<PoolEntry>,
+    /// Armour A pool.
+    pub armour_a: Vec<PoolEntry>,
+    /// Armour B pool.
+    pub armour_b: Vec<PoolEntry>,
+    /// Belt pool.
+    pub belt: Vec<PoolEntry>,
+    /// Body pool.
+    pub body_pool: Vec<PoolEntry>,
+    /// Cloak pool.
+    pub cloak: Vec<PoolEntry>,
+    /// Coat pool.
+    pub coat: Vec<PoolEntry>,
+    /// Feet pool.
+    pub feet: Vec<PoolEntry>,
+    /// Full-set pool.
+    pub full_set: Vec<PoolEntry>,
+    /// Hands pool.
+    pub hands: Vec<PoolEntry>,
+    /// Head pool.
+    pub head: Vec<PoolEntry>,
+    /// Hood pool.
+    pub hood: Vec<PoolEntry>,
+    /// Jewel pool.
+    pub jewel: Vec<PoolEntry>,
+    /// Main A pool.
+    pub main_a: Vec<PoolEntry>,
+    /// Main B pool.
+    pub main_b: Vec<PoolEntry>,
+    /// Main C pool.
+    pub main_c: Vec<PoolEntry>,
+    /// Neck pool.
+    pub neck: Vec<PoolEntry>,
+    /// Ranked armour small table.
+    pub ranked_armour: Vec<PoolEntry>,
+    /// Shield small table.
+    pub shields: Vec<PoolEntry>,
+    /// Torso A pool.
+    pub torso_a: Vec<PoolEntry>,
+    /// Torso B pool.
+    pub torso_b: Vec<PoolEntry>,
+    /// Torso C pool.
+    pub torso_c: Vec<PoolEntry>,
+    /// Torso D pool.
+    pub torso_d: Vec<PoolEntry>,
+    /// Torso E pool.
+    pub torso_e: Vec<PoolEntry>,
+    /// Torso F pool.
+    pub torso_f: Vec<PoolEntry>,
+    /// Torso G pool.
+    pub torso_g: Vec<PoolEntry>,
+    /// Torso H pool.
+    pub torso_h: Vec<PoolEntry>,
+    /// Torso I pool.
+    pub torso_i: Vec<PoolEntry>,
+    /// Underwear pool.
+    pub underwear: Vec<PoolEntry>,
+    /// Weapon A small table.
+    pub weapons_a: Vec<PoolEntry>,
+    /// Weapon B small table.
+    pub weapons_b: Vec<PoolEntry>,
+    /// Weapon C small table.
+    pub weapons_c: Vec<PoolEntry>,
+    /// Weapon D small table.
+    pub weapons_d: Vec<PoolEntry>,
+    facts: BTreeMap<u32, ItemFacts>,
+}
+
+impl OutfitTables {
+    /// Build every table and cache the facts the generators need.
+    ///
+    /// Missing items still produce a row, with rank, cost and bonus zero, so
+    /// the table lengths always match the shipped data.
+    #[must_use]
+    pub fn build<F>(mut lookup: F) -> Self
+    where
+        F: FnMut(ItemId) -> Option<ItemFacts>,
+    {
+        let mut facts = BTreeMap::new();
+        for id in FIXED_ITEMS {
+            if let Some(item) = lookup(id) {
+                facts.insert(id.0, item);
+            }
+        }
+        let alt_a = pool_entries(&data::ALT_A, &mut lookup, &mut facts);
+        let alt_b = pool_entries(&data::ALT_B, &mut lookup, &mut facts);
+        let alt_c = pool_entries(&data::ALT_C, &mut lookup, &mut facts);
+        let alt_d = pool_entries(&data::ALT_D, &mut lookup, &mut facts);
+        let armour_a = pool_entries(&data::ARMOUR_A, &mut lookup, &mut facts);
+        let armour_b = pool_entries(&data::ARMOUR_B, &mut lookup, &mut facts);
+        let belt = pool_entries(&data::BELT, &mut lookup, &mut facts);
+        let body_pool = pool_entries(&data::BODY_POOL, &mut lookup, &mut facts);
+        let cloak = pool_entries(&data::CLOAK, &mut lookup, &mut facts);
+        let coat = pool_entries(&data::COAT, &mut lookup, &mut facts);
+        let feet = pool_entries(&data::FEET, &mut lookup, &mut facts);
+        let full_set = pool_entries(&data::FULL_SET, &mut lookup, &mut facts);
+        let hands = pool_entries(&data::HANDS, &mut lookup, &mut facts);
+        let head = pool_entries(&data::HEAD, &mut lookup, &mut facts);
+        let hood = pool_entries(&data::HOOD, &mut lookup, &mut facts);
+        let jewel = pool_entries(&data::JEWEL, &mut lookup, &mut facts);
+        let main_a = pool_entries(&data::MAIN_A, &mut lookup, &mut facts);
+        let main_b = pool_entries(&data::MAIN_B, &mut lookup, &mut facts);
+        let main_c = pool_entries(&data::MAIN_C, &mut lookup, &mut facts);
+        let neck = pool_entries(&data::NECK, &mut lookup, &mut facts);
+        let torso_a = pool_entries(&data::TORSO_A, &mut lookup, &mut facts);
+        let torso_b = pool_entries(&data::TORSO_B, &mut lookup, &mut facts);
+        let torso_c = pool_entries(&data::TORSO_C, &mut lookup, &mut facts);
+        let torso_d = pool_entries(&data::TORSO_D, &mut lookup, &mut facts);
+        let torso_e = pool_entries(&data::TORSO_E, &mut lookup, &mut facts);
+        let torso_f = pool_entries(&data::TORSO_F, &mut lookup, &mut facts);
+        let torso_g = pool_entries(&data::TORSO_G, &mut lookup, &mut facts);
+        let torso_h = pool_entries(&data::TORSO_H, &mut lookup, &mut facts);
+        let torso_i = pool_entries(&data::TORSO_I, &mut lookup, &mut facts);
+        let underwear = pool_entries(&data::UNDERWEAR, &mut lookup, &mut facts);
+        let ranked_armour = rank_entries(&data::RANKED_ARMOUR, &mut lookup, &mut facts);
+        let shields = rank_entries(&data::SHIELDS, &mut lookup, &mut facts);
+        let weapons_a = rank_entries(&data::WEAPONS_A, &mut lookup, &mut facts);
+        let weapons_b = rank_entries(&data::WEAPONS_B, &mut lookup, &mut facts);
+        let weapons_c = rank_entries(&data::WEAPONS_C, &mut lookup, &mut facts);
+        let weapons_d = rank_entries(&data::WEAPONS_D, &mut lookup, &mut facts);
+        Self {
+            alt_a,
+            alt_b,
+            alt_c,
+            alt_d,
+            armour_a,
+            armour_b,
+            belt,
+            body_pool,
+            cloak,
+            coat,
+            feet,
+            full_set,
+            hands,
+            head,
+            hood,
+            jewel,
+            main_a,
+            main_b,
+            main_c,
+            neck,
+            ranked_armour,
+            shields,
+            torso_a,
+            torso_b,
+            torso_c,
+            torso_d,
+            torso_e,
+            torso_f,
+            torso_g,
+            torso_h,
+            torso_i,
+            underwear,
+            weapons_a,
+            weapons_b,
+            weapons_c,
+            weapons_d,
+            facts,
+        }
+    }
+
+    /// The facts cached for an item, if the build lookup knew it.
+    #[must_use]
+    pub fn facts(&self, id: ItemId) -> Option<ItemFacts> {
+        self.facts.get(&id.0).cloned()
+    }
+
+    /// Cached facts exposed as the lookup the pool methods take.
+    pub fn lookup(&self) -> impl FnMut(ItemId) -> Option<ItemFacts> + '_ {
+        |id| self.facts(id)
+    }
+}
+
+/// Convert one large raw pool row.
+fn convert_pool_entry(row: &data::RawPoolEntry, facts: Option<ItemFacts>) -> PoolEntry {
+    let id = ItemId(row.id);
+    let (rank, cost, bonus) = match facts {
+        Some(facts) => (
+            i32::from((facts.rank_word as u8) >> 5),
+            i32::from(facts.rank_word & BULK_MASK),
+            Bonus {
+                words: facts.bonus_words,
+                floats: facts.bonus_floats,
+            },
+        ),
+        None => (0, 0, Bonus::default()),
+    };
+    PoolEntry {
+        id,
+        weight: if row.weight == 0 { 10 } else { row.weight },
+        wanted: row.wanted,
+        forbidden: row.forbidden,
+        rank,
+        cost,
+        bonus,
+    }
+}
+
+/// Convert a large raw pool table, recording item facts.
+fn pool_entries<F>(
+    raw: &[data::RawPoolEntry],
+    lookup: &mut F,
+    cache: &mut BTreeMap<u32, ItemFacts>,
+) -> Vec<PoolEntry>
+where
+    F: FnMut(ItemId) -> Option<ItemFacts>,
+{
+    raw.iter()
+        .map(|row| {
+            let id = ItemId(row.id);
+            let item = lookup(id);
+            if let Some(facts) = &item {
+                cache.insert(row.id, facts.clone());
+            }
+            convert_pool_entry(row, item)
+        })
+        .collect()
+}
+
+/// Convert a small rank table, keeping its raw weight.
+fn rank_entries<F>(
+    raw: &[data::RawRankEntry],
+    lookup: &mut F,
+    cache: &mut BTreeMap<u32, ItemFacts>,
+) -> Vec<PoolEntry>
+where
+    F: FnMut(ItemId) -> Option<ItemFacts>,
+{
+    raw.iter()
+        .map(|row| {
+            let id = ItemId(row.id);
+            let item = lookup(id);
+            if let Some(facts) = &item {
+                cache.insert(row.id, facts.clone());
+            }
+            let (rank, cost, bonus) = match item {
+                Some(facts) => (
+                    i32::from((facts.rank_word as u8) >> 5),
+                    i32::from(facts.rank_word & BULK_MASK),
+                    Bonus {
+                        words: facts.bonus_words,
+                        floats: facts.bonus_floats,
+                    },
+                ),
+                None => (0, 0, Bonus::default()),
+            };
+            PoolEntry {
+                id,
+                weight: row.weight,
+                wanted: 0,
+                forbidden: 0,
+                rank,
+                cost,
+                bonus,
+            }
+        })
+        .collect()
+}
+
+/// Mutable state while one outfit is dressed.
+struct Dresser<'a> {
+    lcg: &'a mut Lcg,
+    points: i32,
+    worn: WornBonus,
+    mode: u8,
+    items: Vec<EquippedItem>,
+    hands: [Option<HeldWeapon>; 2],
+    quality: u8,
+    condition: u8,
+    condition_value: f32,
+    rank_limit: i32,
+    character_bonus: u32,
+    pool: OutfitPool,
+}
+
+impl<'a> Dresser<'a> {
+    fn new(lcg: &'a mut Lcg, rank_limit: i32, character_bonus: u32) -> Self {
+        let rank = usize::try_from(rank_limit.clamp(0, 5)).unwrap_or(0);
+        const POINTS_BY_RANK: [i32; 6] = [5, 10, 15, 20, 30, 40];
+        Self {
+            lcg,
+            points: POINTS_BY_RANK[rank] << 1,
+            worn: WornBonus::default(),
+            mode: 0,
+            items: Vec::new(),
+            hands: [None, None],
+            quality: 0,
+            condition: 0,
+            condition_value: 0.0,
+            rank_limit,
+            character_bonus,
+            pool: OutfitPool::new(),
+        }
+    }
+
+    fn add_masked(&mut self, entries: &[PoolEntry], wanted: u32, max_rank: bool) -> usize {
+        let query = MaskQuery {
+            character_bonus: self.character_bonus,
+            wanted,
+            rank_limit: self.rank_limit,
+            max_rank,
+        };
+        self.pool.add_masked(
+            entries,
+            query,
+            self.points,
+            GenerationMode(u32::from(self.mode)),
+        )
+    }
+
+    fn add_ranked(&mut self, entries: &[PoolEntry]) -> usize {
+        self.pool.add_ranked(
+            entries,
+            self.rank_limit,
+            self.points,
+            GenerationMode(u32::from(self.mode)),
+        )
+    }
+
+    fn add_unranked(&mut self, entries: &[PoolEntry]) -> usize {
+        self.pool
+            .add_unranked(entries, self.points, GenerationMode(u32::from(self.mode)))
+    }
+
+    fn halve_candidates(&mut self) {
+        for candidate in self.pool.candidates_mut() {
+            candidate.weight >>= 1;
+        }
+    }
+
+    fn equip_apparel_id(&mut self, tables: &OutfitTables, id: ItemId, source: GenerationMode) {
+        let Some(facts) = tables.facts(id) else {
+            return;
+        };
+        let before = self.points;
+        let condition = (f64::from(self.condition_value) * 255.0).round_ties_even() as u8;
+        let fit = equip_apparel(&self.worn, self.points, &facts, |_| condition);
+        self.points = fit.points;
+        self.worn = fit.bonus;
+        self.quality = fit.quality;
+        self.condition = fit.condition;
+        self.items.push(EquippedItem {
+            id,
+            cost: before.wrapping_sub(fit.points),
+            bonus: Bonus {
+                words: facts.bonus_words,
+                floats: facts.bonus_floats,
+            },
+            source,
+            quality: fit.quality,
+            condition: fit.condition,
+        });
+    }
+
+    fn pick_and_equip(&mut self, tables: &OutfitTables) -> Option<CandidatePick> {
+        let pick = self.pool.pick_and_equip(
+            self.lcg,
+            self.points,
+            &self.worn,
+            |id| tables.facts(id),
+            |_| {},
+        );
+        if let Some(pick) = &pick {
+            self.equip_apparel_id(tables, pick.id, pick.source);
+        }
+        pick
+    }
+
+    fn pick_masked(
+        &mut self,
+        tables: &OutfitTables,
+        entries: &[PoolEntry],
+        wanted: u32,
+        max_rank: bool,
+    ) -> Option<ItemId> {
+        let query = MaskQuery {
+            character_bonus: self.character_bonus,
+            wanted,
+            rank_limit: self.rank_limit,
+            max_rank,
+        };
+        let mut picked = None;
+        let result = pick_masked(self.lcg, entries, query, |id, _| picked = Some(id));
+        if let Some(id) = picked {
+            let source = GenerationMode(u32::from(self.mode));
+            self.equip_apparel_id(tables, id, source);
+        }
+        result
+    }
+
+    fn pick_without_overlap(
+        &mut self,
+        tables: &OutfitTables,
+        entries: &[PoolEntry],
+        wanted: u32,
+    ) -> Option<ItemId> {
+        let query = MaskQuery {
+            character_bonus: self.character_bonus,
+            wanted,
+            rank_limit: self.rank_limit,
+            max_rank: false,
+        };
+        let mut picked = None;
+        let result = pick_without_overlap(
+            self.lcg,
+            entries,
+            query,
+            &self.worn,
+            |id| tables.facts(id),
+            |id, _| picked = Some(id),
+        );
+        if let Some(id) = picked {
+            let source = GenerationMode(u32::from(self.mode));
+            self.equip_apparel_id(tables, id, source);
+        }
+        result
+    }
+
+    fn pick_shield(&mut self, entries: &[PoolEntry]) -> Option<RankPick> {
+        let pick = pick_in_rank_window(self.lcg, entries, self.rank_limit);
+        if let Some(pick) = pick {
+            self.points = self.points.wrapping_sub(pick.cost);
+            self.hands[1] = Some(HeldWeapon {
+                id: pick.id,
+                variant: pick.id.0,
+            });
+            self.items.push(EquippedItem {
+                id: pick.id,
+                cost: pick.cost,
+                bonus: Bonus::default(),
+                source: GenerationMode(u32::from(self.mode)),
+                quality: 0,
+                condition: 0,
+            });
+        }
+        pick
+    }
+
+    fn pick_weapon(&mut self, hand: usize) -> Option<ItemId> {
+        let before = self.points;
+        let picked =
+            self.pool
+                .pick_weapon(self.lcg, &mut self.hands[hand], &mut self.points, |id| id.0);
+        if let Some(id) = picked {
+            self.items.push(EquippedItem {
+                id,
+                cost: before.wrapping_sub(self.points),
+                bonus: Bonus::default(),
+                source: GenerationMode(u32::from(self.mode)),
+                quality: 0,
+                condition: 0,
+            });
+        }
+        picked
+    }
+
+    fn finish(self, look: OutfitLook) -> GeneratedOutfit {
+        GeneratedOutfit {
+            hands: self.hands,
+            items: self.items,
+            points: self.points,
+            worn: self.worn,
+            mode: self.mode,
+            quality: self.quality,
+            condition: self.condition,
+            look,
+        }
+    }
+}
+
+/// Draw a stepped high word in `0..range`.
+fn roll(lcg: &mut Lcg, range: u32) -> u32 {
+    lcg.step();
+    lcg.high(range)
+}
+
+/// The low-tier branch (the original's first `bVar8`): rank five is false,
+/// below three is true, rank three is a half chance, and above three is an
+/// eighth chance unless max-rank mode is on.
+fn low_tier(lcg: &mut Lcg, rank: i32, max_rank: bool) -> bool {
+    if rank == 5 {
+        return false;
+    }
+    if rank < 3 {
+        return true;
+    }
+    if rank == 3 {
+        return roll(lcg, 2) == 0;
+    }
+    if max_rank {
+        return false;
+    }
+    roll(lcg, 8) == 0
+}
+
+/// The fixed look preset selection, with the computed height, skin and
+/// condition seed.
+fn finish_look(preset: [f32; 20], height: f32, skin: f32, condition_seed: f32) -> OutfitLook {
+    OutfitLook {
+        height: if height > 1.0 { 1.0 } else { height },
+        skin,
+        condition_seed,
+        preset,
+    }
+}
+
+/// Dress a full outfit from an eight-byte profile.
+///
+/// Byte zero is the low flag byte: bit one enables max-rank mode, bit two
+/// skips the early weapon/suit branch, bits three and four change the
+/// description mode and the hood/jewel pass. Byte one is the rank limit.
+/// Bytes two and three feed the height and skin look values.
+///
+/// `unit` supplies the original's separate look randomiser; the outfit rolls
+/// themselves come from `lcg` in the original's order.
+pub fn generate_profile(
+    profile: &[u8; 8],
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+    mut unit: impl FnMut() -> f32,
+) -> GeneratedOutfit {
+    let rank = i32::from(profile[1]);
+    let max_rank = profile[0] & 2 != 0;
+    let flags = profile[0];
+    let mut dresser = Dresser::new(lcg, rank, character.bonus_mask());
+    let preset;
+
+    if flags & 4 == 0 {
+        dresser.pool.clear();
+        if rank < 5 && character.has_premade_skill() && roll(dresser.lcg, 3) == 0 {
+            dresser.add_ranked(&tables.weapons_a);
+            dresser.pick_weapon(0);
+            dresser.pick_weapon(1);
+            preset = LOOK_PRESET_ROUGH;
+        } else {
+            let draw = roll(dresser.lcg, 2);
+            let experience = u64::from(character.experience as u16);
+            let threshold = (u64::from(draw) + ((rank + 1) / 2) as u64) * 5000;
+            if rank == 0 || experience <= threshold {
+                dresser.add_ranked(&tables.weapons_a);
+                dresser.halve_candidates();
+                dresser.add_ranked(&tables.weapons_b);
+                dresser.add_ranked(&tables.weapons_c);
+                if rank == 5 {
+                    dresser.add_unranked(&tables.weapons_d);
+                }
+                preset = LOOK_PRESET_ROUGH;
+            } else {
+                dresser.pick_shield(&tables.shields);
+                if rank == 5 {
+                    dresser.add_ranked(&tables.ranked_armour);
+                } else {
+                    dresser.add_ranked(&tables.weapons_a);
+                }
+                preset = LOOK_PRESET_ARMED;
+            }
+            dresser.pick_weapon(0);
+        }
+    } else {
+        preset = LOOK_PRESET_ROUGH;
+    }
+    dresser.worn.floats = preset;
+
+    let low_tier = low_tier(dresser.lcg, rank, max_rank);
+    let wanted = if low_tier { 0x16 } else { 0x44 };
+
+    let rank_scale = (f64::from(rank) * 0.05) as f32;
+    let smooth = smooth_unit(unit());
+    let height = ((1.0 - rank_scale) * smooth + rank_scale) as f64;
+    let height = (height + f64::from(profile[2]) * 0.01) as f32;
+    let mut skin = (f64::from(profile[3]) * 0.01) as f32;
+    if character.warmth > 0.0 {
+        skin = (f64::from(skin) * 0.3 + f64::from(character.warmth) * 0.7) as f32;
+    }
+    dresser.condition_value = skin;
+    let condition_seed = (f64::from(unit()) + f64::from(rank) * 0.4) as f32;
+
+    if flags & 8 != 0 {
+        dresser.mode = 2;
+    }
+    let family = rank == 5 && dresser.hands[1].is_none();
+    if rank == 5 || (max_rank && rank > 1) {
+        dresser.equip_apparel_id(tables, ITEM_402, GenerationMode(u32::from(dresser.mode)));
+        dresser.equip_apparel_id(tables, ITEM_1359, GenerationMode(u32::from(dresser.mode)));
+        dresser.equip_apparel_id(tables, ITEM_251, GenerationMode(u32::from(dresser.mode)));
+    } else {
+        dresser.pick_masked(tables, &tables.neck, wanted, max_rank);
+        dresser.pick_masked(tables, &tables.head, 0xffff, max_rank);
+        dresser.pick_masked(tables, &tables.feet, 0xffff, max_rank);
+    }
+    if flags & 8 != 0 {
+        dresser.mode = 1;
+    }
+    if flags & 0x10 != 0 && roll(dresser.lcg, 4) == 0 {
+        dresser.pick_masked(tables, &tables.hood, 0xffff, max_rank);
+    }
+    if !family {
+        dresser.pick_masked(tables, &tables.cloak, 0xffff, max_rank);
+        dresser.pick_masked(tables, &tables.hands, 0xffff, max_rank);
+        dresser.pick_masked(tables, &tables.torso_g, 0xffff, max_rank);
+    }
+
+    dresser.pool.clear();
+    if family {
+        if roll(dresser.lcg, 10) == 0 {
+            dresser.equip_apparel_id(tables, ITEM_439, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_436, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_85, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_435, GenerationMode(u32::from(dresser.mode)));
+        } else {
+            dresser.add_masked(&tables.main_a, 0xffff, max_rank);
+            dresser.add_masked(&tables.main_b, 0xffff, max_rank);
+            dresser.add_masked(&tables.main_c, 0xffff, max_rank);
+            if roll(dresser.lcg, 4) == 0 {
+                dresser.add_masked(&tables.alt_d, 0xffff, max_rank);
+                dresser.add_masked(&tables.underwear, 0xffff, max_rank);
+                for _ in 0..6 {
+                    dresser.pick_and_equip(tables);
+                }
+            } else if roll(dresser.lcg, 4) == 0 {
+                dresser.add_masked(&tables.alt_c, 0xffff, max_rank);
+                for _ in 0..5 {
+                    dresser.pick_and_equip(tables);
+                }
+            } else {
+                dresser.add_masked(&tables.alt_a, 0xffff, max_rank);
+                dresser.add_masked(&tables.alt_b, 0xffff, max_rank);
+                for _ in 0..6 {
+                    dresser.pick_and_equip(tables);
+                }
+            }
+        }
+    } else {
+        if rank > 2 || roll(dresser.lcg, 3) == 0 {
+            dresser.add_masked(&tables.body_pool, 0xffff, false);
+        }
+        if flags & 8 != 0 {
+            dresser.mode = 3;
+        }
+        dresser.add_masked(&tables.torso_a, wanted, max_rank);
+        if flags & 8 != 0 {
+            dresser.mode = 1;
+        }
+        dresser.add_masked(&tables.torso_c, wanted, max_rank);
+        dresser.add_masked(&tables.torso_e, wanted, max_rank);
+        dresser.add_masked(&tables.torso_d, wanted, max_rank);
+        if roll(dresser.lcg, 2) == 0 {
+            dresser.add_masked(&tables.torso_i, wanted, max_rank);
+        }
+        dresser.add_masked(&tables.torso_h, wanted, max_rank);
+        dresser.add_masked(&tables.torso_f, 0xffff, max_rank);
+        for _ in 0..6 {
+            dresser.pick_and_equip(tables);
+        }
+        if flags & 8 != 0 {
+            dresser.mode = 1;
+        }
+        if max_rank || roll(dresser.lcg, 3) == 0 {
+            dresser.pick_without_overlap(tables, &tables.full_set, 0xffff);
+        }
+        dresser.pick_without_overlap(tables, &tables.coat, 0xffff);
+        dresser.pick_without_overlap(tables, &tables.torso_b, 0xffff);
+        if flags & 0x10 == 0 {
+            dresser.pick_without_overlap(tables, &tables.jewel, 0xffff);
+        }
+    }
+    dresser.pick_masked(tables, &tables.belt, 0xffff, max_rank);
+    if max_rank {
+        if flags & 8 != 0 {
+            dresser.mode = 3;
+        }
+        dresser.pick_masked(tables, &tables.armour_b, 0xffff, max_rank);
+    } else {
+        dresser.pick_masked(tables, &tables.armour_a, 0xffff, max_rank);
+    }
+
+    dresser.finish(finish_look(preset, height, skin, condition_seed))
+}
+
+/// Dress a full outfit from a numeric level.
+///
+/// `warmth` is the height bias the original callers pass (`level * 0.05`);
+/// it is added to the height value. `mode_flags` bit eight skips the early
+/// weapon/suit branch; its low byte is stored as the mode flag byte.
+pub fn generate_by_level(
+    level: i32,
+    warmth: f32,
+    mode_flags: u32,
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+    mut unit: impl FnMut() -> f32,
+) -> GeneratedOutfit {
+    let rank = level.max(0);
+    let max_rank = false;
+    let mut dresser = Dresser::new(lcg, rank, character.bonus_mask());
+    let mut preset = LOOK_PRESET_ROUGH;
+
+    if mode_flags & 0x100 == 0 && level >= 0 {
+        dresser.pool.clear();
+        if level < 5 && character.has_premade_skill() && roll(dresser.lcg, 3) == 0 {
+            dresser.add_ranked(&tables.weapons_a);
+            dresser.pick_weapon(0);
+            dresser.pick_weapon(1);
+            preset = LOOK_PRESET_ROUGH;
+        } else {
+            let draw = roll(dresser.lcg, 2);
+            let experience = u64::from(character.experience as u16);
+            let threshold = (u64::from(draw) + ((rank + 1) / 2) as u64) * 5000;
+            if level < 1 || experience <= threshold {
+                dresser.add_ranked(&tables.weapons_a);
+                dresser.halve_candidates();
+                dresser.add_ranked(&tables.weapons_b);
+                dresser.add_ranked(&tables.weapons_c);
+                if level == 5 {
+                    dresser.add_unranked(&tables.weapons_d);
+                }
+                preset = LOOK_PRESET_ROUGH;
+            } else {
+                dresser.pick_shield(&tables.shields);
+                if level == 5 {
+                    dresser.add_ranked(&tables.ranked_armour);
+                } else {
+                    dresser.add_ranked(&tables.weapons_a);
+                }
+                preset = LOOK_PRESET_ARMED;
+            }
+            dresser.pick_weapon(0);
+        }
+    }
+    dresser.worn.floats = preset;
+
+    let low_tier = low_tier(dresser.lcg, rank, max_rank);
+    let wanted = if low_tier { 0x16 } else { 0x44 };
+
+    let rank_scale = (f64::from(rank) * 0.05) as f32;
+    let smooth = smooth_unit(unit());
+    let mut height = (1.0 - rank_scale) * smooth;
+    height += rank_scale;
+    height += warmth;
+    let mut skin = (0.7 - f64::from(height) * 0.6) as f32;
+    if character.warmth > 0.0 {
+        skin = (f64::from(skin) * 0.3 + f64::from(character.warmth) * 0.7) as f32;
+    }
+    dresser.condition_value = skin;
+    let condition_seed = (f64::from(unit()) + f64::from(rank) * 0.4) as f32;
+
+    let family = level == 5 && dresser.hands[1].is_none();
+    if level == 5 || (max_rank && level > 1) {
+        dresser.equip_apparel_id(tables, ITEM_402, GenerationMode(u32::from(dresser.mode)));
+        dresser.equip_apparel_id(tables, ITEM_1359, GenerationMode(u32::from(dresser.mode)));
+        dresser.equip_apparel_id(tables, ITEM_285, GenerationMode(u32::from(dresser.mode)));
+    } else {
+        dresser.pick_masked(tables, &tables.neck, wanted, false);
+        dresser.pick_masked(tables, &tables.head, 0xffff, false);
+        dresser.pick_masked(tables, &tables.feet, 0xffff, false);
+    }
+    if !family {
+        dresser.pick_masked(tables, &tables.cloak, 0xffff, false);
+        dresser.pick_masked(tables, &tables.hands, 0xffff, false);
+        dresser.pick_masked(tables, &tables.torso_g, 0xffff, false);
+    }
+
+    dresser.pool.clear();
+    if family {
+        let smooth = smooth_unit(unit());
+        skin = (0.4 - f64::from(smooth * 0.375)) as f32;
+        dresser.condition_value = skin;
+        if roll(dresser.lcg, 10) == 0 {
+            dresser.equip_apparel_id(tables, ITEM_439, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_436, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_85, GenerationMode(u32::from(dresser.mode)));
+            dresser.equip_apparel_id(tables, ITEM_435, GenerationMode(u32::from(dresser.mode)));
+        } else {
+            dresser.add_masked(&tables.main_a, 0xffff, false);
+            dresser.add_masked(&tables.main_b, 0xffff, false);
+            dresser.add_masked(&tables.main_c, 0xffff, false);
+            if roll(dresser.lcg, 4) == 0 {
+                dresser.add_masked(&tables.alt_d, 0xffff, false);
+                dresser.add_masked(&tables.underwear, 0xffff, false);
+                for _ in 0..6 {
+                    dresser.pick_and_equip(tables);
+                }
+            } else if roll(dresser.lcg, 4) == 0 {
+                dresser.add_masked(&tables.alt_c, 0xffff, false);
+                for _ in 0..5 {
+                    dresser.pick_and_equip(tables);
+                }
+            } else {
+                dresser.add_masked(&tables.alt_a, 0xffff, false);
+                dresser.add_masked(&tables.alt_b, 0xffff, false);
+                for _ in 0..6 {
+                    dresser.pick_and_equip(tables);
+                }
+            }
+        }
+    } else {
+        if level > 2 || roll(dresser.lcg, 3) == 0 {
+            dresser.add_masked(&tables.body_pool, 0xffff, false);
+        }
+        dresser.add_masked(&tables.torso_a, wanted, false);
+        dresser.add_masked(&tables.torso_c, wanted, false);
+        dresser.add_masked(&tables.torso_e, wanted, false);
+        dresser.add_masked(&tables.torso_d, wanted, false);
+        if roll(dresser.lcg, 2) == 0 {
+            dresser.add_masked(&tables.torso_i, wanted, false);
+        }
+        dresser.add_masked(&tables.torso_h, wanted, false);
+        dresser.add_masked(&tables.torso_f, 0xffff, false);
+        for _ in 0..6 {
+            dresser.pick_and_equip(tables);
+        }
+        if max_rank || roll(dresser.lcg, 3) == 0 {
+            dresser.pick_without_overlap(tables, &tables.full_set, 0xffff);
+        }
+        dresser.pick_without_overlap(tables, &tables.coat, 0xffff);
+        dresser.pick_without_overlap(tables, &tables.torso_b, 0xffff);
+        dresser.pick_without_overlap(tables, &tables.jewel, 0xffff);
+    }
+    dresser.pick_masked(tables, &tables.belt, 0xffff, false);
+    if max_rank {
+        dresser.pick_masked(tables, &tables.armour_b, 0xffff, false);
+    } else {
+        dresser.pick_masked(tables, &tables.armour_a, 0xffff, false);
+    }
+
+    dresser.finish(finish_look(preset, height, skin, condition_seed))
 }
 
 /// The smooth unit draw: fold a uniform value around its middle so draws
@@ -1997,5 +3007,324 @@ mod tests {
         assert_eq!(fit.bonus.floats[19], 1.75);
         assert_eq!(fit.quality, 42);
         assert_eq!(fit.condition, 77);
+    }
+    fn synthetic_item(id: ItemId) -> Option<ItemFacts> {
+        let mut facts = ItemFacts {
+            id,
+            rank_word: (2 << 5) | 1,
+            ..ItemFacts::default()
+        };
+        facts.bonus_floats[0] = 1.0;
+        Some(facts)
+    }
+
+    fn synthetic_tables() -> OutfitTables {
+        OutfitTables::build(synthetic_item)
+    }
+
+    fn ids(outfit: &GeneratedOutfit) -> Vec<u32> {
+        outfit.items.iter().map(|item| item.id.0).collect()
+    }
+
+    fn unit_half() -> f32 {
+        0.5
+    }
+
+    macro_rules! assert_table_len {
+        ($tables:expr, $field:ident, $raw:ident) => {
+            assert_eq!($tables.$field.len(), data::$raw.len(), stringify!($field));
+        };
+    }
+
+    #[test]
+    fn outfit_tables_match_the_data_lengths() {
+        let tables = synthetic_tables();
+        assert_table_len!(tables, alt_a, ALT_A);
+        assert_table_len!(tables, alt_b, ALT_B);
+        assert_table_len!(tables, alt_c, ALT_C);
+        assert_table_len!(tables, alt_d, ALT_D);
+        assert_table_len!(tables, armour_a, ARMOUR_A);
+        assert_table_len!(tables, armour_b, ARMOUR_B);
+        assert_table_len!(tables, belt, BELT);
+        assert_table_len!(tables, body_pool, BODY_POOL);
+        assert_table_len!(tables, cloak, CLOAK);
+        assert_table_len!(tables, coat, COAT);
+        assert_table_len!(tables, feet, FEET);
+        assert_table_len!(tables, full_set, FULL_SET);
+        assert_table_len!(tables, hands, HANDS);
+        assert_table_len!(tables, head, HEAD);
+        assert_table_len!(tables, hood, HOOD);
+        assert_table_len!(tables, jewel, JEWEL);
+        assert_table_len!(tables, main_a, MAIN_A);
+        assert_table_len!(tables, main_b, MAIN_B);
+        assert_table_len!(tables, main_c, MAIN_C);
+        assert_table_len!(tables, neck, NECK);
+        assert_table_len!(tables, ranked_armour, RANKED_ARMOUR);
+        assert_table_len!(tables, shields, SHIELDS);
+        assert_table_len!(tables, torso_a, TORSO_A);
+        assert_table_len!(tables, torso_b, TORSO_B);
+        assert_table_len!(tables, torso_c, TORSO_C);
+        assert_table_len!(tables, torso_d, TORSO_D);
+        assert_table_len!(tables, torso_e, TORSO_E);
+        assert_table_len!(tables, torso_f, TORSO_F);
+        assert_table_len!(tables, torso_g, TORSO_G);
+        assert_table_len!(tables, torso_h, TORSO_H);
+        assert_table_len!(tables, torso_i, TORSO_I);
+        assert_table_len!(tables, underwear, UNDERWEAR);
+        assert_table_len!(tables, weapons_a, WEAPONS_A);
+        assert_table_len!(tables, weapons_b, WEAPONS_B);
+        assert_table_len!(tables, weapons_c, WEAPONS_C);
+        assert_table_len!(tables, weapons_d, WEAPONS_D);
+    }
+
+    #[test]
+    fn outfit_tables_pin_converted_rows() {
+        let tables = synthetic_tables();
+        let main = &tables.main_a[0];
+        assert_eq!(main.id, ItemId(81));
+        assert_eq!(main.weight, 50);
+        assert_eq!(main.wanted, 0x100);
+        assert_eq!(main.forbidden, 0);
+        assert_eq!(main.rank, 2);
+        assert_eq!(main.cost, 1);
+        assert_eq!(main.bonus.floats[0], 1.0);
+
+        let shield = &tables.shields[0];
+        assert_eq!(shield.id, ItemId(80));
+        assert_eq!(shield.weight, 10);
+        assert_eq!(shield.rank, 2);
+        assert_eq!(shield.cost, 1);
+
+        let weapon = &tables.weapons_a[0];
+        assert_eq!(weapon.id, ItemId(23));
+        assert_eq!(weapon.weight, 0);
+        assert_eq!(weapon.rank, 2);
+        assert_eq!(weapon.cost, 1);
+
+        let full_set = &tables.full_set[1];
+        assert_eq!(full_set.id, ItemId(621));
+        assert_eq!(full_set.weight, 10);
+        assert_eq!(full_set.wanted, 0);
+    }
+
+    #[test]
+    fn outfit_tables_without_facts_keep_the_raw_lengths() {
+        let tables = OutfitTables::build(|_| None);
+        assert_eq!(tables.body_pool.len(), data::BODY_POOL.len());
+        assert_eq!(tables.weapons_a.len(), data::WEAPONS_A.len());
+        assert_eq!(tables.body_pool[0].weight, 150);
+        assert_eq!(tables.body_pool[0].rank, 0);
+        assert_eq!(tables.body_pool[0].cost, 0);
+        assert_eq!(tables.weapons_a[0].weight, 0);
+        assert_eq!(tables.weapons_a[0].rank, 0);
+    }
+
+    #[test]
+    fn generate_profile_level_zero_flags_zero_pins() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit = generate_profile(
+            &[0, 0, 0, 0, 0, 0, 0, 0],
+            &mut Lcg::new(0),
+            &tables,
+            &character,
+            unit_half,
+        );
+        assert!(ids(&outfit).is_empty());
+        assert_eq!(outfit.hands, [None, None]);
+        assert_eq!(outfit.points, 10);
+        assert_eq!(outfit.mode, 0);
+        assert_eq!(outfit.look.height, 0.5);
+        assert_eq!(outfit.look.skin, 0.0);
+        assert_eq!(outfit.look.condition_seed, 0.5);
+        assert_eq!(outfit.look.preset, LOOK_PRESET_ROUGH);
+    }
+
+    #[test]
+    fn generate_profile_level_five_flags_two_pins() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit = generate_profile(
+            &[2, 5, 0, 0, 0, 0, 0, 0],
+            &mut Lcg::new(0),
+            &tables,
+            &character,
+            unit_half,
+        );
+        assert_eq!(
+            ids(&outfit),
+            vec![420, 402, 1359, 251, 510, 398, 511, 391, 512, 513]
+        );
+        assert_eq!(
+            outfit.hands,
+            [
+                Some(HeldWeapon {
+                    id: ItemId(420),
+                    variant: 420
+                }),
+                None
+            ]
+        );
+        assert_eq!(outfit.points, 70);
+        assert_eq!(outfit.mode, 0);
+        assert_eq!(outfit.look.height, 0.625);
+        assert_eq!(outfit.look.skin, 0.0);
+        assert_eq!(outfit.look.condition_seed, 2.5);
+    }
+
+    #[test]
+    fn generate_by_level_three_pins() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit =
+            generate_by_level(3, 0.25, 0, &mut Lcg::new(0), &tables, &character, unit_half);
+        assert_eq!(ids(&outfit), vec![210, 280]);
+        assert_eq!(
+            outfit.hands,
+            [
+                Some(HeldWeapon {
+                    id: ItemId(210),
+                    variant: 210
+                }),
+                None
+            ]
+        );
+        assert_eq!(outfit.points, 38);
+        assert!(close(outfit.look.height, 0.825));
+        assert!(close(outfit.look.skin, 0.205));
+        assert!(close(outfit.look.condition_seed, 1.7));
+    }
+
+    #[test]
+    fn generate_by_level_five_pins_the_fixed_equips() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit =
+            generate_by_level(5, 0.25, 0, &mut Lcg::new(0), &tables, &character, unit_half);
+        assert_eq!(
+            ids(&outfit),
+            vec![420, 402, 1359, 285, 510, 398, 511, 391, 512, 513]
+        );
+        assert_eq!(
+            outfit.hands,
+            [
+                Some(HeldWeapon {
+                    id: ItemId(420),
+                    variant: 420
+                }),
+                None
+            ]
+        );
+        assert_eq!(outfit.points, 70);
+        assert!(ids(&outfit).contains(&ITEM_402.0));
+        assert!(ids(&outfit).contains(&ITEM_1359.0));
+        assert!(ids(&outfit).contains(&ITEM_285.0));
+    }
+
+    #[test]
+    fn profile_flag_four_pins_the_fixed_items() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit = generate_profile(
+            &[4, 5, 0, 0, 0, 0, 0, 0],
+            &mut Lcg::new(0),
+            &tables,
+            &character,
+            unit_half,
+        );
+        assert_eq!(ids(&outfit), vec![402, 1359, 251, 439, 436, 85, 435]);
+        assert_eq!(outfit.hands, [None, None]);
+        assert_eq!(outfit.points, 73);
+        assert_eq!(outfit.mode, 0);
+    }
+
+    #[test]
+    fn premade_and_random_early_branches_differ() {
+        let tables = synthetic_tables();
+        let premade = OutfitCharacter {
+            skill_word: PREMADE_SKILL_BIT,
+            ..OutfitCharacter::default()
+        };
+        let random = OutfitCharacter::default();
+        let profile = [0, 3, 0, 0, 0, 0, 0, 0];
+        let with_skill = generate_profile(&profile, &mut Lcg::new(0), &tables, &premade, unit_half);
+        let without_skill =
+            generate_profile(&profile, &mut Lcg::new(0), &tables, &random, unit_half);
+        assert_eq!(
+            with_skill.hands,
+            [
+                Some(HeldWeapon {
+                    id: ItemId(210),
+                    variant: 210
+                }),
+                Some(HeldWeapon {
+                    id: ItemId(65),
+                    variant: 65
+                })
+            ]
+        );
+        assert_eq!(ids(&with_skill), vec![210, 65, 149]);
+        assert_eq!(
+            without_skill.hands,
+            [
+                Some(HeldWeapon {
+                    id: ItemId(210),
+                    variant: 210
+                }),
+                None
+            ]
+        );
+        assert_eq!(ids(&without_skill), vec![210, 280]);
+    }
+    #[test]
+    fn rich_profile_branch_puts_the_shield_in_hand_one() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter {
+            experience: 65_535,
+            ..OutfitCharacter::default()
+        };
+        let outfit = generate_profile(
+            &[0, 3, 0, 0, 0, 0, 0, 0],
+            &mut Lcg::new(0),
+            &tables,
+            &character,
+            unit_half,
+        );
+        assert!(outfit.hands[0].is_some());
+        let shield = outfit.hands[1].expect("the rich branch picks a shield");
+        assert!(tables.shields.iter().any(|row| row.id == shield.id));
+        assert_eq!(outfit.look.preset, LOOK_PRESET_ARMED);
+    }
+
+    #[test]
+    fn level_five_family_recomputes_the_skin_value() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit =
+            generate_by_level(5, 0.25, 0, &mut Lcg::new(0), &tables, &character, unit_half);
+        assert!(close(outfit.look.height, 0.875));
+        assert!(close(outfit.look.skin, 0.2125));
+        assert!(close(outfit.look.condition_seed, 2.5));
+        assert_eq!(outfit.condition, 54);
+    }
+
+    #[test]
+    fn flag_eight_sets_the_generation_mode_and_description_pass() {
+        let tables = synthetic_tables();
+        let character = OutfitCharacter::default();
+        let outfit = generate_profile(
+            &[0x0a, 5, 0, 0, 0, 0, 0, 0],
+            &mut Lcg::new(0),
+            &tables,
+            &character,
+            unit_half,
+        );
+        assert_eq!(outfit.mode, 3);
+        let direct = outfit
+            .items
+            .iter()
+            .find(|item| item.id == ITEM_402)
+            .expect("the fixed item is equipped");
+        assert_eq!(direct.source, GenerationMode(2));
     }
 }
