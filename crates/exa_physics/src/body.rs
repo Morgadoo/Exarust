@@ -1261,6 +1261,9 @@ pub struct Drive {
     pub posture_wait: i32,
     /// Its recovery step, if the chest has left the feet.
     steps: steps::Steps,
+    /// The clip rate the posture block last wrote. A weak tick, and a walk
+    /// or a run, leave it; the clock reads it. It starts at the human base.
+    pub posture_rate: f32,
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -1304,6 +1307,7 @@ impl Default for Drive {
             pin_gain: PIN_GAIN,
             posture_wait: 0,
             steps: steps::Steps::default(),
+            posture_rate: RaceMuscles::HUMAN.clip_rate,
         }
     }
 }

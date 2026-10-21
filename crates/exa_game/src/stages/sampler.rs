@@ -114,7 +114,7 @@ pub(crate) fn sample_clip(
         still: condition.as_deref().is_some_and(|c| c.clip_stands_still()),
     };
     let once = !anim.looping;
-    let hold = clip_tick(&motions, &mut anim, &body, &pace, |body| {
+    let hold = clip_tick(&motions, &mut anim, &mut body, &pace, |body| {
         physical_turns(
             body,
             root,

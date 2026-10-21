@@ -1548,15 +1548,16 @@ from the installation. Exarust: `exa_anim` (`Animator`, its `clock`),
 **Clock.** A clip's clock counts frames; each body tick adds frames from
 a rate. The base is the race's clip rate (`races.rdb` `0x5C`: 1.0, the
 ghouls 1.5; the character init first stores (80/83)/scale, then
-overwrites it). The posture rules set the rate each tick, in this order,
-the last line overriding whatever came before:
+overwrites it). The posture rules set the rate each tick. The first matching branch
+writes it and the rest are skipped; the block's end then resets it to
+the base while the clip playing is the body's stance:
 
 | the body | rate |
 |---|---|
 | off balance (balance under 0.6: falling, lying; a get-up's first tick, set before its start) | 1.25 × base |
 | getting up | (1.5 − 0.5 × encumbrance) × base |
-| kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, Exarust reads the base) | 2 × base |
-| the combat idle, a weapon switch, a power, any other clip (the walk and the run write none) | 1 × base |
+| kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, so the clock keeps the rate the posture block last wrote) | 2 × base |
+| the combat idle, a weapon switch, a power, any other clip (the walk and the run write none, so they keep the last rate too) | 1 × base |
 | an attack (actions 5–12), balanced | the swing's rate (below) |
 | the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance) | 1 × base |
 
@@ -1831,7 +1832,6 @@ with M24), the recoil's stance blend and arm stiffness (C21, M26); the
 attack arm stiffness; the twist in the captures and the run lean's
 exertion; the femur posture outside the combat conditions
 and the foot pitch (C13); the foot contacts' flag in the capture; the
-weak branch's rate kept from last tick (Exarust reads the base); the
 creature classes' own clock bases.
 
 ## Skinning
