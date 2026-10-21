@@ -117,6 +117,22 @@ impl TextureSettings {
         self
     }
 
+    /// The values the settings screen's `TextureQuality`, `TextureDetail`
+    /// and `Supersample` write, keeping the device limits. A detail below
+    /// zero is no detail setting (the original's loader takes any value).
+    pub fn with_settings(self, quality: i32, detail: i32, supersample: i32) -> Self {
+        let mut settings = self.with_quality(quality);
+        settings.texture_detail = detail.max(0) as u32;
+        settings.supersample = supersample;
+        settings
+    }
+
+    /// The LOD bias these settings write (the value the original sets per
+    /// bind and a material carries to the shader).
+    pub fn lod_bias(&self) -> f32 {
+        lod_bias(self.lod_bias_base, self.supersample)
+    }
+
     /// The values the original forces when its window gets a generic
     /// (software) pixel format: mask 3, detail 1, anisotropy level 0.
     pub fn fallback() -> Self {
@@ -693,6 +709,25 @@ mod sampler_tests {
         assert_eq!(q(7), (0xF0, 4, -0.75));
         assert_eq!(q(-1), (0xF0, 4, -0.75));
         assert_eq!(base, TextureSettings::default().with_quality(5));
+    }
+
+    #[test]
+    fn the_screen_settings_write_quality_detail_and_supersampling() {
+        // The settings screen's live values; the device limits stay.
+        let mut settings = TextureSettings::default().with_settings(4, 2, 4);
+        settings.apply_driver_limits(16_384, 8);
+        assert_eq!(settings.quality_mask, 0xF0);
+        assert_eq!(settings.anisotropy_level, 2);
+        assert_eq!(settings.lod_bias_base, -0.5);
+        assert_eq!(settings.texture_detail, 2);
+        assert_eq!(settings.supersample, 4);
+        assert_eq!(settings.lod_bias(), -0.5);
+        assert_eq!(settings.max_texture_size, 16_384);
+        assert_eq!(settings.max_units, 8);
+        // A detail below zero is no detail setting rather than a wrap.
+        assert_eq!(settings.with_settings(5, -1, 4).texture_detail, 0);
+        assert_eq!(settings.with_settings(5, 3, 4).texture_detail, 3);
+        assert_eq!(settings.with_settings(5, 3, 4).lod_bias(), -0.75);
     }
 
     #[test]

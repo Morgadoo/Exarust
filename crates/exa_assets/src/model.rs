@@ -628,6 +628,7 @@ impl ModelLoader<'_> {
             },
             ..default()
         };
+        mat.params.texture_bias = self.cache.textures.settings().lod_bias();
         // The record's texture load flags, with the mode bits the original
         // adds per slot: normal, gloss and height maps (and the specular map
         // of a material whose kind has bit 0) are data, and a diffuse with a

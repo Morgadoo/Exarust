@@ -259,7 +259,10 @@ pub struct ExaParams {
     /// opacity, for unlit materials.
     pub emissive: Vec4,
     pub flags: u32,
-    pub pad0: u32,
+    /// The LOD bias the shader adds to its colour-texture samples: the
+    /// texture settings' value at the material's build (−0.75 at the retail
+    /// texture quality with 4x supersampling).
+    pub texture_bias: f32,
     pub pad1: u32,
     pub pad2: u32,
     /// The GI volume's lowest corner (m), and its size (m).
@@ -304,7 +307,7 @@ impl Default for ExaParams {
             specular: Vec4::new(0.04, 0.04, 0.04, 0.3),
             emissive: Vec4::new(0.0, 0.0, 0.0, 1.0),
             flags: flags::LIT,
-            pad0: 0,
+            texture_bias: -0.75,
             pad1: 0,
             pad2: 0,
             gi_origin: Vec4::ZERO,

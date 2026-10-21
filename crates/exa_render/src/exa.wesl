@@ -25,7 +25,8 @@ struct ExaParams {
     // Linear rgb (×2 lit with an emissive map); a = unlit opacity.
     emissive: vec4<f32>,
     flags: u32,
-    pad0: u32,
+    // The LOD bias on colour-texture samples (`ExaParams::texture_bias`).
+    texture_bias: f32,
     pad1: u32,
     pad2: u32,
     gi_origin: vec4<f32>,
@@ -84,7 +85,6 @@ const SHADOW_STEPS: i32 = 16;
 // The original's texture LOD bias at its top texture quality with 4×
 // supersampling, −0.75 × (4 − 1)/3, on colour textures only (not normal,
 // gloss or packed specular maps). Rules: docs/RENDERING.md (Textures).
-const TEXTURE_BIAS: f32 = -0.75;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> material: ExaParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var diffuse_map: texture_2d<f32>;
@@ -187,7 +187,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 }
     var dif_tex = vec4(1.0);
     if has(DIFFUSE_MAP) {
-        dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, TEXTURE_BIAS);
+        dif_tex = textureSampleBias(diffuse_map, diffuse_sampler, uv, material.texture_bias);
         if has(GREY_DIFFUSE) {
             // A BC4 diffuse is the original's single-channel luminance
             // format: one grey channel, never sRGB-decoded by the hardware.
@@ -196,7 +196,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     var alpha = material.diffuse.a * dif_tex.a;
     if has(OPACITY_MAP) {
-        let o = textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
+        let o = textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
         alpha = material.diffuse.a * o * o;
     }
 
@@ -207,7 +207,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var e = material.emissive.rgb;
         var a = material.emissive.a;
         if has(EMISSIVE_MAP) {
-            let em = textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS);
+            let em = textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias);
             e *= em.rgb;
             if has(OPACITY_FALLOFF) {
                 // The opacity fall-off with the view angle: a salve's glow is
@@ -218,7 +218,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 a *= em.a;
             }
         } else if has(OPACITY_MAP) {
-            a *= textureSampleBias(opacity_map, opacity_sampler, uv, TEXTURE_BIAS).a;
+            a *= textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
         }
         out.color = blended(e, a);
         return out;
@@ -284,7 +284,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.f0 = material.specular.rgb;
     s.legacy = !has(PACKED_SPECULAR);
     if has(SPECULAR_MAP) {
-        let rgm = textureSampleBias(specular_map, specular_sampler, uv, select(TEXTURE_BIAS, 0.0, has(PACKED_SPECULAR)));
+        let bias = select(material.texture_bias, 0.0, has(PACKED_SPECULAR));
+        let rgm = textureSampleBias(specular_map, specular_sampler, uv, bias);
         if has(PACKED_SPECULAR) {
             let metal = rgm.b;
             if has(DIFFUSE_MAP) {
@@ -485,7 +486,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     var e = material.emissive.rgb;
     if has(EMISSIVE_MAP) {
-        e *= textureSampleBias(emissive_map, emissive_sampler, uv, TEXTURE_BIAS).rgb * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
+        e *= textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias).rgb * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
     }
     colour += e;
     // The character screen's fade: black by FADE_RADIUS from the origin.

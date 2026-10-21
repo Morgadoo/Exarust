@@ -381,6 +381,12 @@ surface shader repeats its red over the whole colour
 (`GREY_DIFFUSE`), which is what the 4 600 BC4 apparel and item diffuse maps
 show. Without GPU BC support every image decodes to RGBA8 instead.
 
+The settings screen's `TextureQuality`, `TextureDetail` and `Supersample`
+reach these rules (`TextureSettings::with_settings`: the filter mask, the
+anisotropy level, the bias base and the detail level). A material carries
+the LOD bias it was built with, so a quality change applies to the materials
+built after it; the original re-binds every texture with the new global.
+
 Uncompressed RGB8 and RGBA8 textures reach the shaders red first, as
 stored, raw or packed (`formats/RFI.md`). The original uploads them as RGB
 and RGBA, so the embers' glow map is orange, foliage green and RGB8 normal
