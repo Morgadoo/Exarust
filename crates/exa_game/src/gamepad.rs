@@ -1022,16 +1022,16 @@ impl FocusStack {
     }
 }
 
-/// The gameplay stick's mode: the original's `0x10056a370` flag reads the
-/// move stick's horizontal axis as left/right steps, and its `0x100569fe0`
-/// flag reads the vertical axis as forward/back steps; with neither set the
-/// stick is analog. Their owners are outside this component; Exarust leaves
-/// both off and uses the analog stick everywhere.
+/// The gameplay stick's mode: the game's across-steps flag reads the move
+/// stick's horizontal axis as left/right steps, and its along-steps flag
+/// reads the vertical axis as forward/back steps; with neither set the stick
+/// is analog. Their owners are outside this component; Exarust leaves both
+/// off and uses the analog stick everywhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StepModes {
-    /// `0x10056a370`: the horizontal axis steps left and right.
+    /// The horizontal axis steps left and right.
     pub across: bool,
-    /// `0x100569fe0`: the vertical axis steps forward and back.
+    /// The vertical axis steps forward and back.
     pub along: bool,
 }
 
@@ -1205,8 +1205,8 @@ pub struct PlayContext {
     pub variant: Variant,
     /// The step modes.
     pub modes: StepModes,
-    /// The original's `0x1004efd00`: the aim stick is kept as a raw pair
-    /// instead of being turned into the camera's frame.
+    /// The game's raw-aim mode: the aim stick is kept as a raw pair instead
+    /// of being turned into the camera's frame.
     pub aim_in_world: bool,
     /// The live aim speed (0 to 1 and beyond; the setting's default 0.29).
     pub aim_speed: f32,
