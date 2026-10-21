@@ -2224,7 +2224,7 @@ mod container_tests {
         assert_eq!((r.index, r.added), (1, None));
         assert_eq!(panel.entries[1].id, 5);
         assert_eq!(panel.entries[1].drag, 0);
-        assert_eq!(panel.entries[1].cell, Cell::new(-40, -60));
+        assert_eq!(panel.entries[1].cell, Cell::new(0, -60));
         assert_eq!(panel.used, 0);
         // From the linked panel with no held entry: appended, no bulk.
         let linked = DropDrag {
