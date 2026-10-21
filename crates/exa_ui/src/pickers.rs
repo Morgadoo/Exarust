@@ -254,6 +254,29 @@ impl Default for TonePicker {
     }
 }
 
+/// The preview node a hair picker attaches to: the colour it shows, the
+/// owner and callback marks, its place and its version.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HairPreviewNode {
+    pub colour: [u8; 3],
+    pub owner: bool,
+    pub callback: bool,
+    pub place: (i32, i32, i32, i32),
+    pub version: f32,
+}
+
+impl Default for HairPreviewNode {
+    fn default() -> Self {
+        Self {
+            colour: [0; 3],
+            owner: false,
+            callback: false,
+            place: (0, 0, 0, 0),
+            version: 0.0,
+        }
+    }
+}
+
 /// The hair-colour picker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HairColPicker {
@@ -366,6 +389,22 @@ impl HairColPicker {
     pub fn attach(&mut self, version: f32) -> [u8; 3] {
         self.version = version;
         self.refresh();
+        self.colour
+    }
+
+    /// Attaches a preview node: the node takes the picker's colour, the
+    /// picker as its owner, the child callback and the version 0.25, and
+    /// its place follows the picker's (x, y, width, 0x28 tall). The node's
+    /// callback then hears the picker's colour.
+    pub fn attach_node(&mut self, node: &mut HairPreviewNode) -> [u8; 3] {
+        node.colour = self.colour;
+        node.owner = true;
+        node.callback = true;
+        node.place = (self.size.0 / 2, self.size.1 / 2, 0x28, 0x28);
+        node.version = 0.25;
+        self.version = 0.25;
+        self.refresh();
+        node.colour = self.colour;
         self.colour
     }
 
@@ -628,6 +667,14 @@ mod tests {
         assert_eq!(cells[0][0].colour, HAIR_TABLE[0][0]);
         assert_eq!(cells[0][3].colour, HAIR_TABLE[0][1]);
         assert_eq!((cells[0][0].at, cells[0][3].at), ((0, 0), (53, 0)));
+        // Attaching a node copies the colour, the two marks, the place and
+        // the version.
+        let mut node = HairPreviewNode::default();
+        let colour = picker.attach_node(&mut node);
+        assert_eq!(node.colour, colour);
+        assert!(node.owner && node.callback);
+        assert_eq!(node.place, (80, 56, 0x28, 0x28));
+        assert_eq!((node.version, picker.version), (0.25, 0.25));
         // The shading's two buffers: the table's first colour at u = 0
         // with v = 0.5 and version 0.5.
         let (light, shaded) = hair_shading(0.0, 0.5, 0.5);

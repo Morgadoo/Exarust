@@ -394,6 +394,14 @@ impl IconCache {
         handle != 0 && handle <= self.entries.len() && covered(point.0, point.1)
     }
 
+    /// The manager's destructor: the entries and the two renderer objects
+    /// go (the original frees the item renderer and the atlas; Exarust's
+    /// atlas-free cache just drops its entries).
+    pub fn destroy(&mut self) {
+        self.clear();
+        self.errors.clear();
+    }
+
     /// A level or save load empties the cache.
     pub fn clear(&mut self) {
         self.entries.clear();

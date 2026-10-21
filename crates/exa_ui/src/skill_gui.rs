@@ -88,6 +88,14 @@ impl SkillResources {
         self.built = true;
         self.builds += 1;
     }
+
+    /// The unit's finalisation: the flags and the tables are dropped (the
+    /// original frees the two icon managers and the background texture's
+    /// name).
+    pub fn finalize(&mut self) {
+        self.built = false;
+        self.hook_installed = false;
+    }
 }
 
 /// The eight cells of one skill group at an atlas origin: four across at
@@ -170,6 +178,12 @@ pub struct SkillWindowPlan {
 }
 
 impl SkillWindowPlan {
+    /// The destructor: the tables and the window's link go.
+    pub fn destroy(&mut self) {
+        self.shown = false;
+        self.mode = 0;
+    }
+
     /// The constructor: the tables and the layout flag always, the mode and
     /// the ring geometry only for a positive mode. `inset` is the
     /// original's global inset-layout flag.
