@@ -3,24 +3,29 @@
 //! 0.1 off it when the strength is gone); the body's yellow health falls by
 //! the timer × 0.00004, its red by (timer × 0.002)², and yellow is then
 //! scaled by the red's new share of its old value. A timer over 1 makes a
-//! sound every 800 ms at most; yellow under 0 collapses the body (yellow
-//! and red 0). The body's condition bit 0x200 (down) and 0x800 (dying) stop
+//! sound once the clock is 800 ms past the one drawn after the last (a random
+//! share of 800 ms past that sound); yellow under 0, after red has scaled it,
+//! collapses the body (yellow and red 0). A red already near 0 takes all of
+//! yellow. The body's condition bit 0x200 (down) and 0x800 (dying) stop
 //! it.
 //!
-//! The original's fields are [`Burn`] here (`+0x10d4` strength, `+0x10dc`
-//! timer, `+0x10d8` the sound's clock, `+0xd58`/`+0xd5c` yellow and red).
+//! The original keeps these as the burning body's strength, timer and sound
+//! clock, and the yellow and red flame levels; [`Burn`] holds the first three.
 //! Evidence: the burning routine's assembly and the damage model notes.
 //! Constants are the original's.
 
 /// The timer gains this share of the strength a tick, up to 20; gone, it
 /// loses 0.1.
-const TIMER_GAIN: f32 = 0.03;
+const TIMER_GAIN: f64 = 0.03;
 const TIMER_MOST: f32 = 20.0;
-const TIMER_FALL: f32 = 0.1;
+const TIMER_FALL: f64 = 0.1;
 /// Yellow loses timer × this, red (timer × 0.002)².
-const YELLOW_LOSS: f32 = 0.000_04;
-const RED_LOSS: f32 = 0.002;
-/// A sound after this many ms at most.
+const YELLOW_LOSS: f64 = 0.000_04;
+const RED_LOSS: f64 = 0.002;
+/// The red below which yellow is taken whole instead of scaled.
+const RED_LEAST: f32 = 1.192_09e-7;
+/// A sound waits this many ms past the clock the last one drew, which is
+/// itself a random share of this many ms.
 pub const BURN_SOUND_MS: u64 = 800;
 /// The timer over which the burn crackles.
 const SOUND_FROM: f32 = 1.0;
@@ -28,12 +33,12 @@ const SOUND_FROM: f32 = 1.0;
 /// A body's burn.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Burn {
-    /// The burn's strength this tick (`+0x10d4`).
+    /// The burn's strength this tick.
     pub strength: f32,
-    /// The timer it builds (`+0x10dc`).
+    /// The timer it builds.
     pub timer: f32,
-    /// The next sound's earliest game clock (`+0x10d8`).
-    pub next_sound: u64,
+    /// The next sound's earliest game clock.
+    pub next_sound: u32,
 }
 
 impl Default for Burn {
@@ -58,7 +63,9 @@ pub struct BurnStep {
 
 /// One burning tick of a body not off its feet (`condition` & 0xA00 clear),
 /// with `yellow`, `red`, the burn and the game clock `now_ms`; `roll` is the
-/// sound cooldown's random draw (0..1).
+/// sound cooldown's random draw (0..1). The sound's own volume and pitch
+/// draws, and the body's staggering reset the original makes here, are not
+/// reproduced.
 pub fn burn_tick(
     condition: u32,
     yellow: f32,
@@ -72,31 +79,31 @@ pub fn burn_tick(
     }
     let mut sound_at = None;
     if burn.strength > 0.0 {
-        burn.timer += burn.strength * TIMER_GAIN;
+        // The original works these in double and narrows each result.
+        burn.timer += (f64::from(burn.strength) * TIMER_GAIN) as f32;
         if burn.timer > TIMER_MOST {
             burn.timer = TIMER_MOST;
         }
-        let mut yellow = yellow - burn.timer * YELLOW_LOSS;
+        let timer = f64::from(burn.timer);
+        let mut yellow = (f64::from(yellow) - timer * YELLOW_LOSS) as f32;
         let old_red = red;
         let mut red = red;
         if burn.timer > SOUND_FROM {
-            let loss = burn.timer * RED_LOSS;
-            red -= loss * loss;
+            let loss = timer * RED_LOSS;
+            red = (f64::from(red) - loss * loss) as f32;
+            if u64::from(burn.next_sound) + BURN_SOUND_MS < now_ms {
+                sound_at = Some(now_ms);
+                burn.next_sound = (now_ms + (roll * BURN_SOUND_MS as f32) as u64) as u32;
+            }
         }
-        if burn.timer > SOUND_FROM && now_ms > burn.next_sound {
-            sound_at = Some(now_ms);
-            burn.next_sound = now_ms + (roll * BURN_SOUND_MS as f32) as u64;
+        // The share of red left scales yellow, by the red the tick began
+        // with: none worth dividing by takes all of it.
+        if old_red > RED_LEAST {
+            yellow = red / old_red * yellow;
+        } else {
+            yellow = 0.0;
         }
         let mut collapse = false;
-        if yellow < 0.0 {
-            yellow = 0.0;
-            red = 0.0;
-            collapse = true;
-        } else if red <= 1.192_09e-7 {
-            yellow = 0.0;
-        } else {
-            yellow *= red / old_red;
-        }
         if yellow < 0.0 {
             yellow = 0.0;
             red = 0.0;
@@ -110,7 +117,10 @@ pub fn burn_tick(
             collapse,
         });
     }
-    burn.timer = (burn.timer - TIMER_FALL).max(0.0);
+    burn.timer = (f64::from(burn.timer) - TIMER_FALL) as f32;
+    if burn.timer < 0.0 {
+        burn.timer = 0.0;
+    }
     burn.strength = 0.0;
     Some(BurnStep {
         yellow,
@@ -143,12 +153,21 @@ mod tests {
             timer: 1.5,
             ..Burn::default()
         };
-        let step = burn_tick(0, 1.0, 1.0, &mut b, 100, 0.5).unwrap();
+        let step = burn_tick(0, 1.0, 1.0, &mut b, 1000, 0.5).unwrap();
         assert_eq!(b.timer, 20.0);
         let red_loss = (20.0f32 * 0.002).powi(2);
         assert!((step.red - (1.0 - red_loss)).abs() < 1e-6);
-        assert!(step.sound_at == Some(100));
-        assert_eq!(b.next_sound, 100 + 400);
+        assert!(step.sound_at == Some(1000));
+        assert_eq!(b.next_sound, 1000 + 400);
+        // Too soon after the draw: 1400 + 800 is not yet past 2000.
+        let mut quiet = Burn {
+            strength: 1000.0,
+            timer: 1.5,
+            next_sound: 1400,
+        };
+        let step = burn_tick(0, 1.0, 1.0, &mut quiet, 2000, 0.5).unwrap();
+        assert_eq!(step.sound_at, None);
+        assert_eq!(quiet.next_sound, 1400);
         let mut b = Burn {
             strength: 0.0,
             timer: 0.25,
@@ -171,6 +190,16 @@ mod tests {
         let step = burn_tick(0, 0.0005, 1.0, &mut b, 0, 0.0).unwrap();
         assert!(step.collapse);
         assert_eq!((step.yellow, step.red), (0.0, 0.0));
+        // A red the tick began with near 0 takes yellow whole, without a
+        // collapse, even when the timer's loss already left yellow below 0.
+        let mut b = Burn {
+            strength: 1.0,
+            timer: 19.0,
+            ..Burn::default()
+        };
+        let step = burn_tick(0, 0.0001, 0.0, &mut b, 0, 0.0).unwrap();
+        assert!(!step.collapse);
+        assert_eq!(step.yellow, 0.0);
         let mut b = Burn::default();
         assert!(burn_tick(0x200, 1.0, 1.0, &mut b, 0, 0.0).is_none());
         assert!(burn_tick(0x800, 1.0, 1.0, &mut b, 0, 0.0).is_none());
