@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
-/// Centimetres per height step, before the slope factor.
-const CM_PER_STEP: f32 = 1.25;
+use super::manager::detail_offset;
+
 /// Opacity boost of the height pass.
 const OPACITY_BOOST: f32 = 1.5;
 
@@ -98,7 +98,7 @@ pub fn displacement(layers: &[HeightLayer], alphas: &[f32], x: f32, z: f32, up: 
         total = total * (1.0 - op) + value * op;
     }
     let byte = (total * 255.0).round().clamp(0.0, 255.0);
-    (byte - 127.0) * CM_PER_STEP * (2.0 - up) / 100.0
+    detail_offset(byte, up) / 100.0
 }
 
 /// Vegetation density at world (`x`, `z`): the materials' mask-pass green

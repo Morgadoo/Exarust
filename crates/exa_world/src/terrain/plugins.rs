@@ -8,16 +8,13 @@
 //! same outcome as the original's new-terrain hook; this list is the
 //! original's registry, kept so a second extension can attach in order.
 //!
-//! The static set-up creates the manager once per scene, marks the scene as
-//! having terrain, applies the palette, builds the per-block shadow
-//! receivers (the room-mode variant when the scene is in room mode) and
-//! activates it. The Bevy terrain builder performs the corresponding work;
-//! the counts and order are modelled here.
+//! The static set-up creates the manager once (a global), attaches it to the
+//! scene and marks the scene as having terrain only when it creates it, then
+//! builds one shadow receiver per tile and block (none in room mode, which
+//! sizes a pool instead) and activates the manager. The Bevy terrain builder
+//! performs the corresponding work; the order and counts are modelled here.
 
-use super::manager::{BlockTrees, ManagerConfig, TILE_CELLS};
-
-/// The blocks of receivers per 6 m block row and column.
-pub const RECEIVER_BLOCKS: usize = 8;
+use super::manager::{BLOCK_SIDE, ManagerConfig, ManagerSettings};
 
 /// A terrain extension: the original's empty hooks.
 pub trait TerrainExtension {
@@ -39,7 +36,8 @@ impl TerrainExtensions {
         Self::default()
     }
 
-    /// Attaches `plugin`, last (the original's slot 13).
+    /// Attaches `plugin`: the manager's count goes up by one and the plugin
+    /// takes the new last slot.
     pub fn attach(&mut self, plugin: Box<dyn TerrainExtension>) {
         self.plugins.push(plugin);
     }
@@ -59,7 +57,8 @@ impl TerrainExtensions {
         }
     }
 
-    /// Deactivates every extension in reverse attach order.
+    /// Deactivates every extension in reverse attach order (Exarust's choice:
+    /// the base hooks are empty, so the order is not read from the original).
     pub fn deactivate(&mut self) {
         for plugin in self.plugins.iter_mut().rev() {
             plugin.deactivate();
@@ -67,13 +66,25 @@ impl TerrainExtensions {
     }
 }
 
-/// One block's shadow receiver: the tile, the receiver's block column and
-/// row, and the receiver's side in cells.
+/// One block's shadow receiver: the tile and the block's column and row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowReceiver {
     pub tile: usize,
     pub block: (usize, usize),
-    pub cells: usize,
+}
+
+/// The scene the static terrain is brought up in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneInfo {
+    /// Scene identity.
+    pub id: u32,
+    /// The scene is in room mode (flag bit 0x2000000 of its second word).
+    pub room_mode: bool,
+    /// Tiles the manager has loaded.
+    pub tiles: usize,
+    /// The room-mode pool's two factors (the manager's words at +0x170 and
+    /// +0x174).
+    pub room_pool: (usize, usize),
 }
 
 /// What bringing the static terrain up produced.
@@ -81,69 +92,65 @@ pub struct ShadowReceiver {
 pub struct TerrainSetup {
     /// Whether the singleton manager was created (false when reused).
     pub created: bool,
-    /// The scene's "has terrain" word was set.
+    /// The scene's "has terrain" word was set: only when the manager was
+    /// created.
     pub scene_marked: bool,
-    /// The palette was applied.
-    pub palette_applied: bool,
-    /// The per-block shadow receivers, tile by tile.
+    /// The shared data stream was created (the first time only).
+    pub stream_created: bool,
+    /// The per-block shadow receivers, tile by tile (empty in room mode).
     pub receivers: Vec<ShadowReceiver>,
-    /// The room-mode receiver variant was used.
-    pub room_mode: bool,
-    /// The composite pools were allocated.
-    pub pools: bool,
+    /// The room-mode pool length, in room mode.
+    pub room_pool: Option<usize>,
     /// The manager was activated.
     pub activated: bool,
 }
 
 /// The singleton manager a scene reuses: the original keeps one global
-/// terrain manager pointer and creates it only when it is null.
+/// terrain manager pointer and one global data stream, each created only
+/// when null.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StaticTerrain {
     config: Option<ManagerConfig>,
+    stream: bool,
     /// The scene the manager attached to, once any.
     pub scene: Option<u32>,
-    /// The palette scale the manager was configured with.
-    pub palette_scale: f32,
 }
 
 impl StaticTerrain {
-    /// Creates or reuses the singleton and performs the set-up: the scene
-    /// is marked, the palette applied, one 8 × 8 receiver set per tile, the
-    /// pools allocated and the manager activated. `room_mode` selects the
-    /// room receiver variant. `tiles` is the tile count; `scene` the scene
-    /// identity.
-    pub fn bring_up(
-        &mut self,
-        config: ManagerConfig,
-        scene: u32,
-        tiles: usize,
-        room_mode: bool,
-    ) -> TerrainSetup {
+    /// Creates or reuses the singleton and performs the set-up. A new
+    /// manager is built with the static configuration record, attached to
+    /// the scene and marks it; a reused one does neither. Then, outside room
+    /// mode, one receiver per tile and block (column in the low bits of the
+    /// block number, row above); in room mode the pool is sized instead.
+    pub fn bring_up(&mut self, scene: SceneInfo) -> TerrainSetup {
         let created = self.config.is_none();
         if created {
-            self.config = Some(config);
-            self.palette_scale = config.palette_scale;
+            self.config = Some(ManagerConfig::new(&ManagerSettings::STATIC));
+            self.scene = Some(scene.id);
         }
-        self.scene = Some(scene);
-        let mut receivers = Vec::with_capacity(tiles * RECEIVER_BLOCKS * RECEIVER_BLOCKS);
-        for tile in 0..tiles {
-            for row in 0..RECEIVER_BLOCKS {
-                for col in 0..RECEIVER_BLOCKS {
+        let stream_created = !self.stream;
+        self.stream = true;
+        let mut receivers = Vec::new();
+        let mut room_pool = None;
+        if scene.room_mode {
+            room_pool = Some(scene.room_pool.0 * scene.room_pool.1);
+        } else {
+            receivers.reserve(scene.tiles * BLOCK_SIDE * BLOCK_SIDE);
+            for tile in 0..scene.tiles {
+                for block in 0..BLOCK_SIDE * BLOCK_SIDE {
                     receivers.push(ShadowReceiver {
                         tile,
-                        block: (col, row),
-                        cells: TILE_CELLS / RECEIVER_BLOCKS,
+                        block: (block & 7, block >> 3),
                     });
                 }
             }
         }
         TerrainSetup {
             created,
-            scene_marked: true,
-            palette_applied: true,
+            scene_marked: created,
+            stream_created,
             receivers,
-            room_mode,
-            pools: true,
+            room_pool,
             activated: true,
         }
     }
@@ -152,32 +159,6 @@ impl StaticTerrain {
     pub fn config(&self) -> Option<&ManagerConfig> {
         self.config.as_ref()
     }
-
-    /// Attaches the manager to a scene: the extension is registered, the
-    /// scene keeps it as its terrain and it is activated. False when there
-    /// is no manager yet.
-    pub fn attach(&mut self, scene: u32, extensions: &mut TerrainExtensions) -> bool {
-        if self.config.is_none() {
-            return false;
-        }
-        self.scene = Some(scene);
-        extensions.activate();
-        true
-    }
-
-    /// The manager's destroy: the stop flag is set, the worker is woken and
-    /// waited for, and the configuration drops.
-    pub fn shutdown(&mut self) -> bool {
-        let was_running = self.config.is_some();
-        self.config = None;
-        was_running
-    }
-}
-
-/// The block trees a static terrain keeps, one per 6 m block (the shared
-/// manager trees).
-pub fn block_trees() -> BlockTrees {
-    BlockTrees::new()
 }
 
 #[cfg(test)]
@@ -199,6 +180,15 @@ mod tests {
         }
     }
 
+    fn scene(id: u32, tiles: usize, room_mode: bool) -> SceneInfo {
+        SceneInfo {
+            id,
+            room_mode,
+            tiles,
+            room_pool: (3, 5),
+        }
+    }
+
     #[test]
     fn extensions_attach_and_activate_in_order() {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -214,37 +204,34 @@ mod tests {
     #[test]
     fn the_static_terrain_is_created_once_and_reused() {
         let mut terrain = StaticTerrain::default();
-        let config = ManagerConfig::new(0, 0.0);
-        let first = terrain.bring_up(config, 7, 2, false);
-        assert!(first.created && first.pools && first.activated);
-        assert!(first.scene_marked && first.palette_applied);
+        assert!(terrain.config().is_none());
+        let first = terrain.bring_up(scene(7, 2, false));
+        assert!(first.created && first.scene_marked && first.stream_created);
+        assert!(first.activated);
         assert_eq!(first.receivers.len(), 2 * 64);
         assert_eq!(first.receivers[0].block, (0, 0));
-        assert_eq!(first.receivers[0].cells, 30);
+        assert_eq!(first.receivers[1].block, (1, 0));
+        assert_eq!(first.receivers[8].block, (0, 1));
+        assert_eq!(first.receivers[63].block, (7, 7));
         assert_eq!(first.receivers[64].tile, 1);
-        assert!(!first.room_mode);
-        let second = terrain.bring_up(config, 8, 1, true);
-        assert!(!second.created);
-        assert!(second.room_mode);
+        assert_eq!(first.room_pool, None);
+        assert_eq!(terrain.scene, Some(7));
+        // The static record gives the manager its palette scale of 4.
+        assert_eq!(terrain.config().unwrap().palette_scale, 4.0);
+        // A second scene reuses the manager: no mark, no new stream, and the
+        // manager keeps the first scene.
+        let second = terrain.bring_up(scene(8, 1, false));
+        assert!(!second.created && !second.scene_marked && !second.stream_created);
         assert_eq!(second.receivers.len(), 64);
-        assert_eq!(terrain.scene, Some(8));
-        assert_eq!(terrain.palette_scale, 2.0);
+        assert_eq!(terrain.scene, Some(7));
     }
 
     #[test]
-    fn the_manager_attaches_and_shuts_down() {
+    fn room_mode_sizes_a_pool_and_builds_no_receivers() {
         let mut terrain = StaticTerrain::default();
-        let mut extensions = TerrainExtensions::new();
-        assert!(!terrain.attach(3, &mut extensions));
-        terrain.bring_up(ManagerConfig::new(0, 0.0), 3, 0, false);
-        assert!(terrain.attach(3, &mut extensions));
-        assert_eq!(terrain.scene, Some(3));
-        assert!(terrain.shutdown());
-        assert!(!terrain.shutdown());
-    }
-
-    #[test]
-    fn block_trees_are_the_shared_eight_by_eight() {
-        assert_eq!(block_trees().trees.len(), 64);
+        let setup = terrain.bring_up(scene(1, 4, true));
+        assert!(setup.receivers.is_empty());
+        assert_eq!(setup.room_pool, Some(15));
+        assert!(setup.created && setup.scene_marked && setup.activated);
     }
 }
