@@ -113,11 +113,15 @@ The system SHALL compute the homeward delay as distance + π + roll − 0.5 and 
 - **THEN** the delay is 10 + π and the reach for an offset of 5 is 205
 
 ### Requirement: Init assignments
-Applying roles SHALL start from Activity 1 and IdleActivity 0 and run each role's init assignments newest role first, so an older role wins. A value SHALL be an integer, a `$hex` integer or a role variable (0 when the held role stores none). Any other statement SHALL be reported unrun.
+Applying roles SHALL start from Activity 1 and IdleActivity 0 and run each role's init script through the script interpreter, newest role first, so an older role wins; the script SHALL see the two activity slots and the held role's variables (0 for a variable the held role stores none of). Statements the interpreter reports an error for SHALL be returned with the role.
 
 #### Scenario: Older wins
-- **WHEN** Activity Wait is newer than Activity Patrol, and a role's script adds a concern
-- **THEN** the character patrols, and the concern statement is reported unrun
+- **WHEN** Activity Wait is newer than Activity Patrol, a role's script adds a concern, and another names an unknown class
+- **THEN** the character patrols, the concern statement runs without effect, and the unknown class is reported as "Script Error: Invalid class identifier."
+
+#### Scenario: The shipped init scripts
+- **WHEN** every init script of the installed `charroles.rdb` runs with its variables at 0 and at 9
+- **THEN** the activities equal the scripts' plain assignments and nothing is reported
 
 ### Requirement: Activity to idle state
 An active controlling effect SHALL force Activity 4 unless resisted. Activity 1 SHALL roam, 2 wait, 3 sleep, 4 follow (joining the party with a 400 cm band), 5 stand sentry and 7 patrol; 0, 6 and any other SHALL wait. A follower that no longer follows SHALL leave the party.
