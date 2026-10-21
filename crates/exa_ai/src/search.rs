@@ -55,10 +55,12 @@
 //! The world edits the tick returns as deeds are carried out by
 //! [`apply_deed`]: taking a loose item despawns its object, taking from a
 //! container removes its first matching entry, taking a corpse's worn item
-//! removes it from the worn list and from a hand that held it, and taking a
-//! carried entry drops that entry. Carrying, wearing, wielding and stowing
-//! change the pack; dropping appends to a container while its known
-//! capacity has room. Comments change no state.
+//! releases it from the corpse's grip when it holds it there and otherwise
+//! removes it from the worn list, and taking a carried entry drops that
+//! entry. Wearing puts the item on before taking it from its source;
+//! carrying, wielding and stowing change the pack; dropping waits on a
+//! locked pack and needs the item's size within the container's largest
+//! item. Comments change no state.
 //!
 //! Evidence: the original's search activity (its tick, gathering, picking,
 //! look sweep, item weighing, comments, re-equipping and tidying), the item
@@ -189,10 +191,9 @@ pub struct Corpse {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Container {
     pub items: Vec<u32>,
-    /// The item records' capacity the container is limited by. Zero is
-    /// treated as unlimited (the shipped records' own values are not read
-    /// into the scene yet).
-    pub capacity: u32,
+    /// The largest single item it takes (its container section's word at
+    /// `0xA`, `exa_formats::containers::Container::max_item`).
+    pub max_item: u16,
 }
 
 /// The 600 cm room grid.
@@ -250,6 +251,9 @@ pub struct Scene {
     pub grid: RoomGrid,
     pub items: BTreeMap<u32, Loot>,
     pub containers: BTreeMap<u32, Container>,
+    /// The size byte of an item that can go in a container (its record's
+    /// storable section); an item without one is never dropped into one.
+    pub sizes: BTreeMap<u32, u8>,
     /// The packs and containers open in the player's window.
     pub open: Vec<u32>,
 }
@@ -1455,12 +1459,15 @@ impl Search {
 ///
 /// Taking a loose item despawns its object; taking from a container removes
 /// the first matching entry and compacts the list; taking a corpse's worn
-/// item removes it from the worn list and from a hand that held it; taking
-/// a carried entry removes that entry. Carrying adds to the pack, wearing
-/// adds to the worn list after taking it out of its source, wielding fills
-/// the main hand and stowing the first stowed slot. Dropping into a
-/// container refuses when its capacity is known and full, and otherwise
-/// takes the item out of the pack. A comment changes no state.
+/// item releases it from the corpse's grip when it holds it there (main
+/// hand, and its carried entry), and otherwise removes it from the worn
+/// list; taking a carried entry removes that entry. Carrying adds to the
+/// pack; wearing puts the item on, takes it out of the carried list and
+/// then out of its source; wielding fills the main hand and stowing the
+/// first stowed slot. Dropping waits while the pack is locked, needs the
+/// item carried (or in a hand) and refuses when the item's size is unknown
+/// or over the container's largest item; it then appends the item and
+/// takes it out of the pack. A comment changes no state.
 pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
     match deed {
         Deed::Take {
@@ -1482,12 +1489,13 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             source,
             item,
         } => {
-            if !take(scene, *object, *source, *item) {
-                return false;
-            }
             if !pack.worn.contains(item) {
                 pack.worn.push(*item);
             }
+            if let Some(at) = pack.carried.iter().position(|c| c.item == *item) {
+                pack.carried.remove(at);
+            }
+            take(scene, *object, *source, *item);
             true
         }
         Deed::Wield { item } => {
@@ -1501,14 +1509,31 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             true
         }
         Deed::Drop { item, container } => {
+            if pack.locked {
+                return false;
+            }
+            let carried = pack.carried.iter().position(|c| c.item == *item);
+            let hand = pack.hands.iter().position(|h| *h == *item);
+            if carried.is_none() && hand.is_none() {
+                return false;
+            }
+            let Some(&size) = scene.sizes.get(item) else {
+                return false;
+            };
             let Some(c) = scene.containers.get_mut(container) else {
                 return false;
             };
-            if c.capacity != 0 && c.items.len() as u32 >= c.capacity {
+            if c.max_item < u16::from(size) {
                 return false;
             }
             c.items.push(*item);
-            remove_from_pack(pack, *item);
+            match (carried, hand) {
+                (Some(at), _) => {
+                    pack.carried.remove(at);
+                }
+                (None, Some(at)) => pack.hands[at] = 0,
+                (None, None) => {}
+            }
             true
         }
         Deed::Comment { .. } => true,
@@ -1564,27 +1589,29 @@ fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {
             let Some(corpse) = scene.corpses.get_mut(at) else {
                 return false;
             };
-            match source {
-                Source::Worn => {
-                    let Some(at) = corpse.pack.worn.iter().position(|w| *w == item) else {
-                        return false;
-                    };
-                    corpse.pack.worn.remove(at);
-                    for hand in 0..corpse.pack.hands.len() {
-                        if corpse.pack.hands[hand] == item {
-                            corpse.pack.hands[hand] = 0;
-                        }
+            let pack = &mut corpse.pack;
+            let carried = pack.carried.iter().position(|c| c.item == item);
+            if source == Source::Worn {
+                if pack.hands[0] == item {
+                    // Released from the grip: the hand and its carried
+                    // entry, not the worn list.
+                    pack.hands[0] = 0;
+                    if let Some(at) = carried {
+                        pack.carried.remove(at);
                     }
-                    true
+                    return true;
                 }
-                _ => {
-                    let Some(at) = corpse.pack.carried.iter().position(|c| c.item == item) else {
-                        return false;
-                    };
-                    corpse.pack.carried.remove(at);
-                    true
-                }
+                let Some(at) = pack.worn.iter().position(|w| *w == item) else {
+                    return false;
+                };
+                pack.worn.remove(at);
+                return true;
             }
+            let Some(at) = carried else {
+                return false;
+            };
+            pack.carried.remove(at);
+            true
         }
     }
 }
