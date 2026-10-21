@@ -123,10 +123,9 @@ fn compact_data(data: &mut StreamData, remap: &[i64], count: usize) {
 }
 
 /// The sort key an element is ordered by: its first component. The
-/// texture-coordinate accessor sorts by x too (its separate helper differs
-/// from the vec3 one only in the element stride); that is a guess, since
-/// the tiny accessor at the start of the tool unit is not part of the
-/// exported functions.
+/// original has one accessor per element size; the texture-coordinate one
+/// (an unlisted routine next to the vec3 one) reads the first float of an
+/// 8-byte element, as its bytes in the executable show.
 fn key(data: &StreamData, element: usize) -> f32 {
     match data {
         StreamData::Vec3(v) => v.get(element).map_or(0.0, |e| e[0]),
@@ -223,10 +222,12 @@ fn merge_rings(data: &StreamData, rings: &mut [Vec<Corner>]) -> Vec<i64> {
         }
         for &b in &order[oi + 1..] {
             let b = b as usize;
-            if rings[b].is_empty() {
-                continue;
-            }
             if within(data, a, b) {
+                // A dead element within reach is passed over; only a live
+                // one merges.
+                if rings[b].is_empty() {
+                    continue;
+                }
                 let head = rings[a][rings[a].len() - 1];
                 let mut joined = Vec::with_capacity(rings[a].len() + rings[b].len());
                 joined.extend_from_slice(&rings[a][..rings[a].len() - 1]);
@@ -361,9 +362,9 @@ fn merge_influences(data: &mut StreamData, remap: &[i64]) {
 
 impl EditMesh {
     /// Welds duplicate elements of every stream and compacts the channels,
-    /// as the original does on merged item and grid meshes: positions and
-    /// texture coordinates within 0.01 cm weld, streams sharing a channel
-    /// are compacted with their owner. Influences are not merged; see
+    /// as the original does on merged item and grid meshes: positions within
+    /// 0.01 cm and texture coordinates within √1e-9 weld, streams sharing a
+    /// channel are compacted with their owner. Influences are not merged; see
     /// [`EditMesh::weld_influences`] for the character pass.
     pub fn weld(&mut self) -> Result<(), MeshError> {
         self.weld_impl(false)

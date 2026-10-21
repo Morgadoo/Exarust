@@ -173,7 +173,7 @@ fn shared_skin_weights_fold_into_their_survivor_and_normalise() {
     assert!((weights[0].weights[0] - 2.0 / 3.0).abs() < 1e-6);
     assert!((weights[0].weights[1] - 1.0 / 3.0).abs() < 1e-6);
     assert_eq!(weights[1].bones[0], 3);
-    // The dropped position's own slot is the third old influence.
+    // The last position renumbers to 2 and keeps its own influence.
     assert_eq!(weights[2].bones[0], 3);
 }
 
