@@ -1410,6 +1410,23 @@ mod tests {
     }
 
     #[test]
+    fn a_sector_reads_its_30_columns() {
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        let mut floors = vec![255u8; 256 * 256];
+        for z in 8 + 30 * 5..8 + 30 * 6 {
+            for x in 8 + 30 * 3..8 + 30 * 4 {
+                floors[x + z * 256] = 12;
+            }
+        }
+        t.floors = Arc::new(floors);
+        assert_eq!(t.sector_floor(3, 5), 12);
+        assert_eq!(t.sector_floor(2, 5), 255);
+        assert_eq!(t.sector_floor(3, 4), 255);
+        assert_eq!(t.sector_floor(8, 0), 255);
+    }
+
+    #[test]
     fn the_propagation_shader_validates() {
         let module =
             naga::front::wgsl::parse_str(include_str!("gi.wesl")).expect("gi.wesl parses as WGSL");
@@ -1419,5 +1436,8 @@ mod tests {
         )
         .validate(&module)
         .expect("gi.wesl validates");
+        // The whole uniform block fits wgpu's default 64 KiB binding.
+        let size = <GiParams as ShaderType>::min_size().get();
+        assert!(size > 0 && size <= 64 * 1024, "{size} bytes");
     }
 }

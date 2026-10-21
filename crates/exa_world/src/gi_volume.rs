@@ -754,7 +754,7 @@ impl TerrainColumns {
                 if surface < o.depth {
                     let frac = g - surface as f32;
                     o.cells[x + z * SIDE + surface * SIDE * SIDE] =
-                        (frac * TERRAIN_SOLID as f32).round() as u8;
+                        (frac * TERRAIN_SOLID as f32).round_ties_even() as u8;
                 }
                 let column = &mut o.lowest[x + z * SIDE];
                 *column = (*column).min(surface.min(o.depth - 1) as u8);
@@ -847,7 +847,7 @@ impl Occupancy {
 
     fn add(&mut self, x: usize, y: usize, z: usize, w: f32) {
         let i = x + z * SIDE + y * SIDE * SIDE;
-        self.cells[i] = (self.cells[i] as i32 + w.round() as i32).clamp(0, 255) as u8;
+        self.cells[i] = (self.cells[i] as i32 + w.round_ties_even() as i32).clamp(0, 255) as u8;
     }
 
     /// Splats one sample point (world, metres) into its eight neighbouring
@@ -863,10 +863,14 @@ impl Occupancy {
             return;
         }
         let (x, y, z) = (x as usize, y as usize, z as usize);
+        // Each layer's weight is (1 − fy)·w or fy·w, and each corner's share
+        // is (1 − fx)(1 − fz) (or fx, fz) times it, as the original forms
+        // the two products.
         for (dy, wy) in [(0, 1.0 - f.y), (1, f.y)] {
+            let layer = wy * POINT_WEIGHT;
             for (dz, wz) in [(0, 1.0 - f.z), (1, f.z)] {
                 for (dx, wx) in [(0, 1.0 - f.x), (1, f.x)] {
-                    self.add(x + dx, y + dy, z + dz, POINT_WEIGHT * wx * wy * wz);
+                    self.add(x + dx, y + dy, z + dz, (wx * wz) * layer);
                 }
             }
         }
@@ -1044,6 +1048,27 @@ mod tests {
             o.splat(centre);
         }
         assert_eq!(o.at(centre), Some(255));
+    }
+
+    #[test]
+    fn a_splat_share_rounds_ties_to_even() {
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        // A point halfway between two cells on every axis splits its 20 into
+        // eight shares of 2.5, each stored as 2.
+        let p = o.origin + Vec3::new(50.0, 10.0, 50.0) * VOXEL;
+        o.splat(p);
+        let base = ((p - o.origin) / VOXEL - Vec3::splat(0.5))
+            .trunc()
+            .as_ivec3();
+        for dy in 0..2 {
+            for dz in 0..2 {
+                for dx in 0..2 {
+                    let cell = base + IVec3::new(dx, dy, dz);
+                    let at = o.origin + (cell.as_vec3() + Vec3::splat(0.5)) * VOXEL;
+                    assert_eq!(o.at(at), Some(2), "cell {cell}");
+                }
+            }
+        }
     }
 
     #[test]
