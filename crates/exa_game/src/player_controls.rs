@@ -508,7 +508,7 @@ pub const DEBUG_SECOND: f32 = 600.0;
 pub struct PlaySession {
     pub activation_centre: Vec3,
     pub activation_radius2: f32,
-    /// The player's controls run (`0x10049a380`).
+    /// The player's controls run (the original's playing flag).
     pub playing: bool,
     /// The camera zoom and its range.
     pub zoom: f32,
