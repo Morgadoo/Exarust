@@ -215,14 +215,15 @@ pub struct PowerRecord {
     pub skills: SkillTiers,
 }
 
-/// The two default pairs of a tree opened with no record.
+/// The two default pairs of a tree opened with no record (the original's
+/// table of two sixteen-byte entries).
 pub const DEFAULT_PAIRS: [KnownPower; 2] = [
     KnownPower {
         power: 0x101,
         flags: LEARNED,
     },
     KnownPower {
-        power: 0x1002_0101,
+        power: 0x0102_0101,
         flags: NEW | 0x800,
     },
 ];
@@ -556,13 +557,18 @@ pub struct PressInput {
     pub hidden: bool,
 }
 
-/// A key with the screen's hide state.
+/// A key with the form's state: the original keeps two bits in one byte,
+/// bit 0 for the opening guard and bit 1 for hidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyInput {
     pub key: i32,
     pub flags: u32,
+    /// Bit 0 of the form byte: the form has a stamp that guards its keys.
+    pub guarded: bool,
+    /// Bit 1 of the form byte: the screen is hidden.
     pub hidden: bool,
-    pub hide_until: u32,
+    /// The form's stamp in milliseconds.
+    pub stamp: u32,
     pub now: u32,
 }
 
@@ -1318,8 +1324,11 @@ impl TreeScreen {
     }
 
     /// The bar cycle on the right (0x27) and left (0x25) keys, and the
-    /// tree opening on the key that is neither. A hidden screen with a
-    /// future hide stamp ignores keys until its 950 ms guard has passed.
+    /// tree opening on the key that is neither. A guarded form ignores keys
+    /// until 950 ms before its stamp has passed (signed, in 64 bits: a stamp
+    /// under 950 never guards); a hidden form does not open. The original
+    /// hands a screen that is not the play screen to the base form's key
+    /// handler, which is not modelled.
     pub fn key(
         &mut self,
         input: KeyInput,
@@ -1329,15 +1338,16 @@ impl TreeScreen {
         let KeyInput {
             key,
             flags,
+            guarded,
             hidden,
-            hide_until,
+            stamp,
             now,
         } = input;
         let mut out = KeyResult::default();
         if self.mode != TreeMode::Play {
             return out;
         }
-        if hidden && now < hide_until.wrapping_sub(0x3b6) {
+        if guarded && i64::from(stamp) - 0x3b6 > i64::from(now) {
             return out;
         }
         if flags & 2 == 0 {
@@ -3306,6 +3316,40 @@ mod tests {
     }
 
     #[test]
+    fn a_key_cycles_the_bar_or_opens_the_tree() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        let input = |key, flags, guarded, hidden, stamp, now| KeyInput {
+            key,
+            flags,
+            guarded,
+            hidden,
+            stamp,
+            now,
+        };
+        // Any other key opens the tree, unless the form is hidden.
+        let out = screen.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
+        assert!(out.open && !out.cycled);
+        let out = screen.key(input(0x50, 0, false, true, 0, 0), &mut bar, None);
+        assert!(!out.open);
+        // A key with bit 1 set in its flags never cycles.
+        let out = screen.key(input(0x27, 2, false, false, 0, 0), &mut bar, None);
+        assert!(out.open && !out.cycled);
+        // The guard holds keys until 950 ms before the stamp is past.
+        let out = screen.key(input(0x50, 0, true, false, 2000, 1049), &mut bar, None);
+        assert!(!out.open);
+        let out = screen.key(input(0x50, 0, true, false, 2000, 1050), &mut bar, None);
+        assert!(out.open);
+        // A stamp under 950 reads negative and never guards.
+        let out = screen.key(input(0x50, 0, true, false, 100, 0), &mut bar, None);
+        assert!(out.open);
+        // A screen that is not the play screen takes no key.
+        let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
+        let out = create.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
+        assert!(!out.open && !out.cycled);
+    }
+
+    #[test]
     fn the_creation_screen_takes_the_buttons() {
         let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
         let mut bar = PowerBar::default();
@@ -3696,6 +3740,12 @@ mod tests {
         let mut record = PowerRecord::empty(4.0);
         assert!(seed_defaults(&mut record));
         assert_eq!(record.pairs, DEFAULT_PAIRS);
+        // The table the open copies: the first mind power learnt, and the
+        // persistent second one new, each with its stored flags.
+        assert_eq!(DEFAULT_PAIRS[0].power, 0x101);
+        assert_eq!(DEFAULT_PAIRS[0].flags, 0x1000);
+        assert_eq!(DEFAULT_PAIRS[1].power, 0x0102_0101);
+        assert_eq!(DEFAULT_PAIRS[1].flags, 0x2800);
         assert!(!seed_defaults(&mut record));
         let mut known = PowerRecord::starter();
         assert!(!seed_defaults(&mut known));
