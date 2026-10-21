@@ -108,8 +108,8 @@ pub trait DropDownOwner {
     /// The selection is written back: the list's own callback when one is
     /// set, else the owner record's 0x200 message with the row.
     fn row_chosen(&mut self, row: i32);
-    /// The list closes: the owner record's state word loses its 0x20 and
-    /// 0x40 bits.
+    /// The list closes: the owner record's state word loses its on and lit
+    /// bits ([`crate::gui_controls::state::ON`] and `LIT`).
     fn drop_closed(&mut self);
 }
 
