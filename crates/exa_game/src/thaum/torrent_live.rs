@@ -406,7 +406,10 @@ mod tests {
         body.release = true;
         tick_torrent(&mut torrent, &mut body, &view(), &mut draws, &mut roll);
         assert_eq!(torrent.torrent.state, ENDING);
-        assert_eq!((body.casting, body.cast_hook, body.release), (0, None, false));
+        assert_eq!(
+            (body.casting, body.cast_hook, body.release),
+            (0, None, false)
+        );
         let mut ticks = 0;
         while !torrent.torrent.builds_nothing() {
             tick_torrent(&mut torrent, &mut body, &view(), &mut draws, &mut roll);

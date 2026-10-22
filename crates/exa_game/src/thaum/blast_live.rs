@@ -332,7 +332,10 @@ mod tests {
             ..CastBody::default()
         };
         assert!(!start_blast(&mut busy, &BLAST_SETUP));
-        assert_eq!((busy.casting, busy.cast_hook), (0x401, Some(CastHook { keeps: 0x20 })));
+        assert_eq!(
+            (busy.casting, busy.cast_hook),
+            (0x401, Some(CastHook { keeps: 0x20 }))
+        );
     }
 
     fn live(body: &mut CastBody) -> LiveBlast {
