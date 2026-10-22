@@ -707,6 +707,42 @@ pub struct Throw {
     /// The last tick's velocity for the body (cm a tick), and whether it
     /// was steered (the original then adds [`kinesis_spin`]).
     pub push: Option<([f32; 3], bool)>,
+    /// The body came from a kinesis: the lift keeps the body's centre as
+    /// the aim and, its cost never stored, spends nothing a tick.
+    pub handed: bool,
+    /// The sounds the game still has to play or fade.
+    pub sound: ThrowSound,
+}
+
+/// A throw's sounds: the pick's at the body when the cursor's throw starts,
+/// the lift's, and the fade of the lift's voice when the throw ends before
+/// its drop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThrowSound {
+    pub pick: bool,
+    pub lift: bool,
+    pub fade: bool,
+    /// The lift's voice.
+    pub voice: Option<u32>,
+}
+
+/// The pick's sound (`thmfrc_knsst`): at volume 0.3, a pitch of
+/// `0.8 + 0.4·roll`.
+pub const THROW_PICK_SOUND: &str = "thmfrc_knsst";
+pub const THROW_PICK_VOLUME: f32 = 0.3;
+/// The lift's sound (`thmfrc_throw`): at volume 0.6, a pitch of
+/// `1 + 0.2·roll`.
+pub const THROW_LIFT_SOUND: &str = "thmfrc_throw";
+pub const THROW_LIFT_VOLUME: f32 = 0.6;
+
+/// The pick sound's pitch for a unit `roll`, in double.
+pub fn throw_pick_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.4 + 0.8) as f32
+}
+
+/// The lift sound's pitch for a unit `roll`, in double.
+pub fn throw_lift_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.2 + 1.0) as f32
 }
 
 impl Throw {
@@ -722,18 +758,23 @@ impl Throw {
             hooked: false,
             body: None,
             push: None,
+            handed: false,
+            sound: ThrowSound::default(),
         }
     }
 
     /// The lift: the per-tick cost becomes the tick in milliseconds times
     /// the cost times 0.00125 (single, in that order), the aim the body's
-    /// position 100 cm up, and the throw steers. The loop sound starts at
-    /// volume 0.6 with a pitch of `1 + 0.2·roll`.
+    /// position, 100 cm up unless the body was handed from a kinesis, and
+    /// the throw steers.
     pub fn lift(&mut self, target_at: [f32; 3], tick_ms: u32) {
-        self.tick_cost = Self::tick_cost(tick_ms, self.cost);
+        let cost = if self.handed { 0.0 } else { self.cost };
+        self.tick_cost = Self::tick_cost(tick_ms, cost);
         self.aim = target_at;
         self.phase = THROW_FLY;
-        self.aim[1] += THROW_LIFT_HEIGHT;
+        if !self.handed {
+            self.aim[1] += THROW_LIFT_HEIGHT;
+        }
     }
 
     /// The focus a steered tick spends.
@@ -769,9 +810,10 @@ pub struct ThrowStep {
     pub velocity: Option<[f32; 3]>,
     /// The shell drops now.
     pub drop_shell: bool,
-    /// The body's materials come back (and, before the drop, the loop sound
-    /// stops; the shell closes).
+    /// The body's materials come back (and the shell closes).
     pub restore: bool,
+    /// The throw ends before its drop: the lift's voice fades.
+    pub fade: bool,
     /// The held bodies take the caster as their user until
     /// [`hold_until`].
     pub hold: bool,
@@ -801,6 +843,7 @@ impl Throw {
             velocity: None,
             drop_shell: false,
             restore: false,
+            fade: false,
             hold: false,
         };
         if self.hooked && (body.casting != THROW || body.cast_hook != Some(THROW_HOOK)) {
@@ -813,6 +856,7 @@ impl Throw {
         if self.state == super::ENDING {
             step.result = 2;
             step.restore = true;
+            step.fade = self.phase < THROW_FALL;
             return step;
         }
         if self.state == super::READY {
@@ -1151,8 +1195,17 @@ mod tests {
         let mut ending = Throw::new(0.1);
         let end = ending.control(2, 0, &view, &mut body);
         assert_eq!(end.result, 2);
-        assert!(end.restore);
+        assert!(end.restore && end.fade, "before the drop the lift fades");
         assert_eq!(body.reserved, 0.1);
+        assert!(!power.control(2, 2004, &view, &mut body).fade);
+        // A body handed from a kinesis is steered at its centre for nothing.
+        let mut handed = Throw::new(0.1);
+        handed.handed = true;
+        assert!(handed.control(0, 0, &view, &mut body).lift);
+        assert_eq!(handed.aim, view.target_at);
+        assert_eq!(handed.tick_cost, 0.0);
+        assert_eq!(throw_pick_pitch(0.5), 1.0);
+        assert_eq!(throw_lift_pitch(1.0), 1.2);
         // A drop near the caster's point ends the throw on that tick.
         let mut short = Throw::new(0.1);
         let beside = ThrowView {

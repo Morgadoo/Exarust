@@ -711,7 +711,7 @@ While the player's kinesis runs, a press that would lift a prop SHALL hand it to
 - **THEN** the kinesis holds the crate and aims at its centre, and the hook goes when the kinesis ends
 
 ### Requirement: Throw flight
-Throw SHALL hold no reserve. Its lift SHALL aim 100 cm above the body and spend tick ms × cost × 0.00125 every steered tick at `mass/(0.1+mass)` of the unit direction; 800 ms after the lift it SHALL drop the shell and coast at six times that share toward the caster's aim point, ending at once when that point is within 100 cm, and restore the body's materials 200 ms after the drop.
+Throw SHALL hold no reserve. Its lift SHALL aim 100 cm above the body (at its centre, spending nothing, when a kinesis handed it) and spend tick ms × cost × 0.00125 every steered tick at `mass/(0.1+mass)` of the unit direction; 800 ms after the lift it SHALL drop the shell and coast at six times that share toward the caster's aim point, ending at once when that point is within 100 cm, and restore the body's materials 200 ms after the drop.
 
 #### Scenario: A throw's flight
 - **WHEN** a throw of cost 0.1 lifts a body of mass 0.9 at 1000 ms with a 12 ms tick and its caster aims 500 cm away along x
@@ -722,7 +722,14 @@ A throw SHALL take the body a charging kinesis holds, else the first body under 
 
 #### Scenario: A kinesis crate thrown
 - **WHEN** a throw is cast while the player's kinesis holds a crate
-- **THEN** the kinesis ends, the throw holds the crate, aims 100 cm above it and moves it up
+- **THEN** the kinesis ends and the throw holds the crate, aiming at its centre and spending nothing a tick
+
+### Requirement: Throw sounds
+A throw from the cursor SHALL play `thmfrc_knsst` at its body at volume 0.3 and pitch `0.8 + 0.4·roll`, and every lift `thmfrc_throw` there at 0.6 and `1 + 0.2·roll`, each roll in double before the variant. A throw that ends before its drop SHALL fade the lift's voice.
+
+#### Scenario: A throw ended in flight
+- **WHEN** a throw from the cursor lifts its body and is ended before 800 ms
+- **THEN** both sounds have played at the body and the lift's voice fades
 
 ### Requirement: Energy power classes
 Shock's first control tick SHALL install its cast hook and play the charge; each later tick SHALL add the charge rate, spend the tick's focus while charging when the charge is not past 1, and past 1 fire one arc burst and clear the hand's arcs, the cast hook and the cast id; a second charge past 1 SHALL answer 2. Shock Weapons SHALL start cast motion 0x25 and clear its weapon arcs when it ends.

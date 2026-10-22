@@ -370,8 +370,8 @@ fn spawn_crate(app: &mut App, at: Vec3) -> Entity {
 }
 
 /// A throw cast while a kinesis holds a crate takes the crate: the kinesis
-/// ends, and the throw lifts its aim 100 cm over the crate and steers the
-/// crate up toward it.
+/// ends, and the throw lifts with its aim on the crate's centre, spending
+/// nothing a tick.
 #[test]
 fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
     use super::super::kinesis_live::KinesisPicked;
@@ -427,18 +427,13 @@ fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
         panic!("no throw");
     };
     assert_eq!(t.phase, crate::thaum::power::force::THROW_FLY);
+    assert!(t.handed && !t.sound.pick);
     assert!(
-        (t.aim[1] - (before.y * 100.0 + 100.0)).abs() < 1e-2,
+        (Vec3::from(t.aim) - before * 100.0).length() < 1e-2,
         "{:?}",
         t.aim
     );
-    let after = app
-        .world()
-        .get::<Ragdoll>(prop)
-        .unwrap()
-        .origin_at(0)
-        .unwrap();
-    assert!(after.y > before.y, "{before} -> {after}");
+    assert_eq!(t.tick_cost, 0.0);
 }
 
 /// A running kinesis waits for the hand's pick, takes the prop handed to

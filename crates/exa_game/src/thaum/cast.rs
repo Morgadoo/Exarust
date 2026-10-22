@@ -313,6 +313,7 @@ impl Plugin for CastPlugin {
             .add_message::<exa_ai::presence::Entered>()
             .add_message::<AttackAskedHook>()
             .add_message::<super::kinesis_live::KinesisPicked>()
+            .add_message::<super::throw_live::ThrowFade>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
@@ -356,6 +357,7 @@ impl Plugin for CastPlugin {
                     tick_casters,
                     super::kinesis_live::steer_kinesis,
                     super::throw_live::push_throws,
+                    super::throw_live::sound_throws,
                     super::kinesis_live::arm_kinesis_pick,
                     super::blast_live::tick_blasts,
                     super::barrier_live::tick_barriers,
@@ -1211,6 +1213,8 @@ fn create_force(
         ForceStart::Throw { cost, from_kinesis } => {
             let mut cast_id = THROW;
             let mut power = Throw::new(cost);
+            power.handed = from_kinesis;
+            power.sound.pick = !from_kinesis;
             if from_kinesis {
                 let PowerCaster { body, active, .. } = &mut *caster;
                 for entry in active.iter_mut() {
@@ -1543,6 +1547,7 @@ fn tick_casters(
     mut bubbles: Query<&mut LiveBubble>,
     ticks: Option<Res<BodyTicks>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
+    mut faded: MessageWriter<super::throw_live::ThrowFade>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (mut caster, condition, swing, locomotion, locomotor, ragdoll, mut animator, player) in
@@ -1619,6 +1624,8 @@ fn tick_casters(
                         let steered = power.phase == super::power::force::THROW_FLY;
                         let step = power.control(event, now, &view, body);
                         power.push = step.velocity.map(|v| (v, steered));
+                        power.sound.lift |= step.lift;
+                        power.sound.fade |= step.fade;
                         result = step.result;
                     }
                 }
@@ -1690,6 +1697,12 @@ fn tick_casters(
                     body.condition &= !casting::CASTING;
                 }
                 let entry = active.swap_remove(index);
+                if let ActiveClass::Throw(throw) = &entry.class
+                    && throw.sound.fade
+                    && let Some(voice) = throw.sound.voice
+                {
+                    faded.write(super::throw_live::ThrowFade(voice));
+                }
                 if let Some(entity) = entry.entity
                     && let Ok(mut bubble) = bubbles.get_mut(entity)
                 {
