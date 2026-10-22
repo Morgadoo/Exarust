@@ -269,7 +269,8 @@ pub struct Bearing {
     pub idle: bool,
     /// Its head looks this tick (its sampler's head look ran): the head's
     /// link anchors are placed relative to the thorax where it physically
-    /// is, not where its pose puts it.
+    /// is, not where its pose puts it. While it does not, they follow its
+    /// pose relative to its parent's pose from before the torso twist.
     pub head_looks: bool,
     /// The locomotion drive this tick (cm a tick²) and its push gain (the
     /// gait table's push column), which the carry adds to every part while
@@ -853,6 +854,7 @@ impl Ragdoll {
             &drive.targets,
             drive.race.arm_relaxation,
             bearing.head_looks,
+            drive.head_pose_parent(),
         );
         if drive.support > 0.0 {
             relax_legs(parts);
@@ -879,9 +881,11 @@ impl Ragdoll {
 /// Samples each slack link's anchor from this tick's pose: the part's point
 /// placed by its animated transform relative to its parent's (the clip's
 /// turn, at the part's origin; a looking head's relative to its parent's
-/// physical transform), as weights on the parent. Each part's λ then
-/// moves toward 0.6 − 32|Δa|² (the most one of its anchors moved since the
-/// last tick, cm²) times the race's factor, capped by the part's cap.
+/// physical transform; a head that does not look, relative to its parent's
+/// pose from before the torso twist, when one was named), as weights on
+/// the parent. Each part's λ then moves toward 0.6 − 32|Δa|² (the most one
+/// of its anchors moved since the last tick, cm²) times the race's factor,
+/// capped by the part's cap.
 fn sample_anchors(
     parts: &mut [Part],
     links: &mut [Link],
@@ -889,6 +893,7 @@ fn sample_anchors(
     targets: &[Affine3A],
     relaxation: f32,
     head_looks: bool,
+    head_pose_parent: Option<Affine3A>,
 ) {
     if targets.len() != parts.len() {
         return;
@@ -897,10 +902,10 @@ fn sample_anchors(
         let Some(j) = parts[i].parent.filter(|&j| j < parts.len() && j != i) else {
             continue;
         };
-        let parent = if head_looks && role(parts[i].bone) == Role::Head {
-            parts[j].transform()
-        } else {
-            targets[j]
+        let parent = match role(parts[i].bone) {
+            Role::Head if head_looks => parts[j].transform(),
+            Role::Head => head_pose_parent.unwrap_or(targets[j]),
+            _ => targets[j],
         };
         let relative = parent.inverse() * targets[i];
         let (_, turn, _) = relative.to_scale_rotation_translation();

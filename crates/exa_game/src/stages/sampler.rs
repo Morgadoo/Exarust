@@ -24,7 +24,8 @@
 //!    ([`foot_pitch`]: a 20 cm toe, eased 0.01 rad a tick; a placement
 //!    stores the angle and clears the rate);
 //! 9. the anchors and the pelvis height: the drive's, in the carry stage
-//!    (`Ragdoll::aim`);
+//!    (`Ragdoll::aim`); a head that does not look reads its parent's pose
+//!    from before the twist;
 //! 10. the foot contacts: the feet routine's.
 
 use bevy::math::Affine3A;
@@ -161,7 +162,7 @@ pub(crate) fn sample_clip(
     } else {
         FemurPosture::Level
     };
-    sampled.0 = sample_parts(
+    let posed = sample_parts(
         &mut anim,
         clip,
         still,
@@ -177,12 +178,24 @@ pub(crate) fn sample_clip(
         &parents,
         &nodes,
     );
-    // The head's link anchors follow the physical thorax while it looks.
+    // The head's link anchors follow the physical thorax while it looks,
+    // and its parent's pose from before the twist while it does not.
     let head_looks = look.is_some();
     if let (Some(look), Some((_, l))) = (look, locomotion.as_mut()) {
         l.head_yaw = look.yaw;
     }
-    if let Some(d) = body.drive.as_mut() {
+    if let Some((parts, head_parent)) = posed {
+        sampled.0 = Some(parts);
+        if let Some(d) = body.drive.as_mut() {
+            d.bearing.head_looks = head_looks;
+            let parent = if head_looks {
+                None
+            } else {
+                head_parent.map(|p| root_world * p)
+            };
+            d.note_head_pose_parent(parent);
+        }
+    } else if let Some(d) = body.drive.as_mut() {
         d.bearing.head_looks = head_looks;
     }
 }
@@ -245,7 +258,8 @@ const LOOK_RISE: f64 = 0.01;
 /// scaled by `stature`, the femur posture, the thorax hunch (when
 /// `recovery` is over 0.1), the clip chain, the IK chain,
 /// the `twist` of the spine, the head's `look` and the foot pitch;
-/// returns each part's placement.
+/// returns each part's placement and the head's parent as posed before
+/// the twist (none when the body has no head).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_parts(
     anim: &mut Animator,
@@ -262,7 +276,7 @@ pub(crate) fn sample_parts(
     recovery: f32,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
-) -> Option<Vec<Affine3A>> {
+) -> Option<(Vec<Affine3A>, Option<Affine3A>)> {
     let bracket = anim.bracket(clip)?;
     let mut pose = anim.blend_keys(clip, &bracket, in_place);
     overlay(&mut pose, gait, &bracket);
@@ -272,9 +286,19 @@ pub(crate) fn sample_parts(
     let pose = pitch_thorax(pose, body, recovery);
     let chain = clip_chain(body, root, &pose, parents, nodes);
     let mut parts = ik_chain(chain);
+    let head_parent = head_parent_before_twist(body, &parts);
     twist_spine(&mut parts, &spine(body, nodes), twist);
     look_with_head(&mut parts, body, look);
-    Some(foot_pitch(parts, body))
+    Some((foot_pitch(parts, body), head_parent))
+}
+
+/// The head's parent in the chain before the torso twist, in the same
+/// space as that chain. The head's anchors read it while the head is not
+/// looking.
+fn head_parent_before_twist(body: &Ragdoll, chain: &[Affine3A]) -> Option<Affine3A> {
+    let head = body.parts.iter().position(|p| p.bone == HEAD)?;
+    let parent = body.parts[head].parent?;
+    chain.get(parent).copied()
 }
 
 /// Step 2, the gait overlay: a moving body's walk is slerped toward its

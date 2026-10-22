@@ -1732,7 +1732,7 @@ not landed is the identity and says which:
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
 | 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick; a placement stores the angle and clears the rate). While an unnamed flag is set the original eases 0.1 rad a tick instead; that flag is not ported. |
-| 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
+| 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
@@ -1916,10 +1916,10 @@ above (the original adds a pitch offset nothing writes); its roll a
 tenth of the yaw. The head's place keeps the pose. While it looks, its
 link muscles' anchors are placed relative to the thorax where it
 physically is, not where its pose puts it, so the head keeps looking
-whatever the chest does. Not reproduced: a target's eye point while the
-character has one and its look timer runs (Exarust gives the player no
-look target), and the head step's other relative frame for a clip from
-0x2C on.
+whatever the chest does. While it does not look, those anchors follow
+its pose relative to its parent's pose from before the twist. Not
+reproduced: a target's eye point while the character has one and its
+look timer runs (Exarust gives the player no look target).
 
 Not reproduced yet: the swing's weapon-in-hand wait (weapons are bodies
 with M24), the recoil's stance blend and arm stiffness (C21, M26); the

@@ -514,6 +514,13 @@ While the head looks, its link muscles' anchors SHALL be placed relative to the 
 - **WHEN** the whole pose is turned 0.5 rad about the thorax and the head looks
 - **THEN** the head's anchors take the turn, which they do not when it does not look
 
+### Requirement: Anchors of a head that does not look
+While the head is not looking, its link anchors SHALL be placed from its pose relative to its parent's pose before the torso twist. The same twist on both SHALL leave those anchors where the untwisted pose puts them.
+
+#### Scenario: A twisted thorax
+- **WHEN** the thorax is twisted 0.5 rad about the vertical and the head keeps the untwisted pose
+- **THEN** the head's anchors match the untwisted pose, which they do not when the anchors read the twisted thorax
+
 ### Requirement: Reach under the cursor
 A point under the cursor SHALL be within reach when the point the pick hit is at most 245 cm high in the world and its offset from the player's hip is at most 300 cm up or down and 300 cm across the ground; a door SHALL be measured from its own place with 300 cm of height and 350 cm across. A comparison with a NaN SHALL pass.
 

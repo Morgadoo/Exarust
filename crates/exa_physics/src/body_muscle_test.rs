@@ -829,6 +829,79 @@ fn a_looking_heads_anchors_follow_the_physical_thorax() {
     assert_eq!(anchors(true, &still).len(), rest.len());
 }
 
+/// A head that does not look places its anchors from its pose relative to
+/// its parent's pose before the torso twist. Twisting only the thorax
+/// 0.5 rad about the vertical, and naming the untwisted thorax, leaves
+/// the anchors of the untwisted pose; the same targets without that parent
+/// take the inverse twist.
+#[test]
+fn a_head_that_does_not_look_anchors_on_the_untwisted_thorax() {
+    let thorax = Affine3A::from_translation(Vec3::new(0.0, 1.4, 0.0));
+    let neck = cm(0.0, 20.0, 0.0);
+    let setup = [
+        PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: thorax,
+            centre: Vec3::ZERO,
+            half: cm(15.0, 15.0, 10.0),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        },
+        PartSetup {
+            bone: 10,
+            entity: Entity::PLACEHOLDER,
+            parent: Some(0),
+            world: thorax * Affine3A::from_translation(neck),
+            centre: cm(0.0, 10.0, 0.0),
+            half: cm(8.0, 10.0, 8.0),
+            origin: neck,
+            links: vec![(cm(0.0, 0.0, 10.0), cm(0.0, 20.0, 10.0), 0.05)],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        },
+    ];
+    let head = thorax * Affine3A::from_translation(neck);
+    let still = vec![thorax, head];
+    let mut twisted = thorax;
+    twisted.matrix3 = Affine3A::from_rotation_y(0.5).matrix3 * thorax.matrix3;
+    let targets = vec![twisted, head];
+    let anchors = |note: bool| {
+        let mut body = Ragdoll::new(&setup).with_drive();
+        body.set_bearing(Bearing {
+            head_looks: false,
+            ..Bearing::default()
+        });
+        if note {
+            body.drive
+                .as_mut()
+                .unwrap()
+                .note_head_pose_parent(Some(thorax));
+        }
+        body.aim(Affine3A::IDENTITY, targets.clone());
+        body.links
+            .iter()
+            .filter_map(|l| l.anchor)
+            .collect::<Vec<[f32; 4]>>()
+    };
+    let mut rest_body = Ragdoll::new(&setup).with_drive();
+    rest_body.aim(Affine3A::IDENTITY, still);
+    let rest: Vec<[f32; 4]> = rest_body.links.iter().filter_map(|l| l.anchor).collect();
+    assert!(!rest.is_empty());
+    assert_eq!(anchors(true), rest);
+    let twisted_anchors = anchors(false);
+    let moved = twisted_anchors
+        .iter()
+        .zip(&rest)
+        .any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-3));
+    assert!(moved, "{twisted_anchors:?} {rest:?}");
+}
+
 /// A powered golem suit halves the standing thigh factor and quarters the
 /// leg limit's target; a stepping foot that is anchored eases the limit to
 /// 0.2 (0.8s + 0.04) whatever the leg mode.

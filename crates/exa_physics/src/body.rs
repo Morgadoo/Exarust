@@ -1238,6 +1238,16 @@ pub struct Drive {
     /// number until the turn writes one, and then the spots stay in the
     /// character frame.
     stance_yaw: f32,
+    /// The head's parent as posed before the torso twist, in the same
+    /// space as [`Drive::targets`]. While the head is not looking, its
+    /// link anchors are placed from its pose relative to this, so the
+    /// twist in the parent's target does not turn them. None while the
+    /// head looks (its anchors follow the physical thorax) and before a
+    /// sample names one.
+    head_pose_parent: Option<Affine3A>,
+    /// [`Drive::note_head_pose_parent`] stored this tick's placement, so
+    /// the carry leaves it where it was put.
+    head_parent_fresh: bool,
     /// Muscle tone, 0..=1: muscle strength and gravity compensation. A
     /// fall leaves it as it is.
     pub tone: f32,
@@ -1395,6 +1405,8 @@ impl Default for Drive {
             anchor: None,
             frame: None,
             stance_yaw: f32::NAN,
+            head_pose_parent: None,
+            head_parent_fresh: false,
             tone: 1.0,
             energy: 1.0,
             energy_recovered: false,
@@ -1441,6 +1453,19 @@ impl Drive {
     /// spots from the character frame onto it.
     pub fn note_stance_yaw(&mut self, yaw: f32) {
         self.stance_yaw = yaw;
+    }
+
+    /// The head's parent before the torso twist, in the same space as the
+    /// targets the next aim installs. While the head is not looking, its
+    /// anchors are placed against this. `None` while it looks.
+    pub fn note_head_pose_parent(&mut self, parent: Option<Affine3A>) {
+        self.head_pose_parent = parent;
+        self.head_parent_fresh = true;
+    }
+
+    /// The head's parent before the twist, once a sample named one.
+    pub(super) fn head_pose_parent(&self) -> Option<Affine3A> {
+        self.head_pose_parent
     }
 
     /// Each part's animated world transform this tick (none before the
@@ -2337,6 +2362,8 @@ impl Ragdoll {
         if !drive.supported {
             drive.root = None;
         }
+        let fresh = drive.head_parent_fresh;
+        drive.head_parent_fresh = false;
         let Some(previous) = drive.root.replace(root) else {
             return;
         };
@@ -2366,6 +2393,9 @@ impl Ragdoll {
         }
         for t in &mut drive.targets {
             *t = carry * *t;
+        }
+        if !fresh && let Some(parent) = drive.head_pose_parent.as_mut() {
+            *parent = carry * *parent;
         }
         // The anchor is kept from tick to tick, so it is carried relative
         // to the root: a root that has not moved leaves it exactly where
