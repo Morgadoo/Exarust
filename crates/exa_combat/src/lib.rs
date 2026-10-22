@@ -36,6 +36,7 @@ pub mod fall;
 pub mod fast_math;
 pub mod fighter;
 pub mod grip;
+pub mod impact;
 pub mod parry;
 pub mod regen;
 pub mod remedy;
@@ -86,6 +87,7 @@ impl Plugin for CombatPlugin {
                 condition::ConditionPlugin,
                 collapse::CollapsePlugin,
                 regen::RegenerationPlugin,
+                impact::plugin,
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()

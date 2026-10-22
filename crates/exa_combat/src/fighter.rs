@@ -28,7 +28,8 @@ use exa_physics::part::WoundTally;
     Condition,
     StateFlags,
     PostureBranch,
-    FallDeath
+    FallDeath,
+    crate::impact::ImpactBook
 )]
 pub struct Fighter {
     pub health: Health,

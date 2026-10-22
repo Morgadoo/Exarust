@@ -39,3 +39,10 @@ A character's attack reach SHALL be size × ((1 − 0.3·age) × base) in double
 #### Scenario: Human at age 0.5
 - **WHEN** a human of scale 1 and no encumbrance has age 0.5
 - **THEN** the reach is 1 × ((1 − 0.15) × 80) = 68 cm
+
+### Requirement: Live limb impact
+A struck limb of a fighter SHALL take the part's impact damage only when the other side is not a striking limb and the root's sound clock has passed; a hurt SHALL add to the root's taken damage, take half as yellow health (vital over 0.6 of total), daze by half and move the clock to 220 + rand(100) − round(170·volume) ms on. The taken damage SHALL fall 0.01 a tick.
+
+#### Scenario: A thrown ball hits an arm
+- **WHEN** a fast ball strikes a fighter's limb
+- **THEN** the limb takes impact damage and the root's clock waits before the next

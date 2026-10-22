@@ -800,6 +800,19 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   swing sounds, the AI's own release and attack choice (L11), recoil and the
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).
+- **Bodies striking limbs** (`exa_combat::impact`). A body pair whose
+  fastest relative travel at its hits passes 1 cm² a tick² measures its
+  impact as that times the negated cosine against its summed push; over
+  0.5 it strikes each side with the impact over 2·m + 1 of the other
+  side's contact mobility. A struck limb of a fighter, not met by a
+  striking limb, past its root's sound clock, takes the part's impact
+  damage from its volume, the root's damage multiplier, its sinking speed
+  and the damage it has already taken from impacts; a hurt takes half the
+  amount as yellow health (vital over 0.6 of total) and dazes by half of
+  it. The clock then waits 220 + rand(100) − round(170·volume) ms. The
+  taken damage falls 0.01 a tick, and the sinking speed follows the
+  root's fall at once and its rise by 0.5 % a tick. The impact's sound,
+  voice and the level's own impacts are not wired.
 
 ### The behaviour's aim and contact rules
 

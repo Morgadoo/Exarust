@@ -712,6 +712,9 @@ pub struct Throw {
     pub handed: bool,
     /// The sounds the game still has to play or fade.
     pub sound: ThrowSound,
+    /// The body takes the caster as its user until then
+    /// ([`ThrowStep::hold`]); the game stamps it.
+    pub held_until: Option<u32>,
 }
 
 /// A throw's sounds: the pick's at the body when the cursor's throw starts,
@@ -760,6 +763,7 @@ impl Throw {
             push: None,
             handed: false,
             sound: ThrowSound::default(),
+            held_until: None,
         }
     }
 

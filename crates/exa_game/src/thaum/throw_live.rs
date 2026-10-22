@@ -34,10 +34,13 @@
 //! [inf: the original lifts a handed throw at its cast and plays the pick
 //! sound there; Exarust does both on the throw's first tick. A faded voice
 //! that has already freed itself is left alone.]
-//! The throw's shell, the special material and the 2 s user stamp are not
-//! wired.
+//! Each tick it coasts after the shell drops it stamps the body with the
+//! caster for 2 s ([`super::user_stamp`]).
+//! The throw's shell and the special material are not wired.
 
 use bevy::prelude::*;
+
+use super::user_stamp::UserStamp;
 use exa_assets::Game;
 use exa_audio::{AudioEnvironment, SoundBank, voice_flags};
 use exa_combat::Condition;
@@ -281,12 +284,22 @@ pub(super) fn sound_throws(
 }
 
 /// After each tick, each throw's velocity moves its body.
-pub(super) fn push_throws(mut casters: Query<&mut PowerCaster>, mut bodies: Query<&mut Ragdoll>) {
-    for mut caster in &mut casters {
+pub(super) fn push_throws(
+    mut commands: Commands,
+    mut casters: Query<(Entity, &mut PowerCaster)>,
+    mut bodies: Query<&mut Ragdoll>,
+) {
+    for (user, mut caster) in &mut casters {
         for entry in caster.active.iter_mut() {
             let ActiveClass::Throw(power) = &mut entry.class else {
                 continue;
             };
+            if let Some(until_ms) = power.held_until.take()
+                && let Some(body) = power.body.and_then(Entity::try_from_bits)
+                && bodies.contains(body)
+            {
+                commands.entity(body).insert(UserStamp { user, until_ms });
+            }
             let Some((velocity, steered)) = power.push.take() else {
                 continue;
             };

@@ -29,13 +29,17 @@
 //! scene's kinesis nodes; Exarust takes the physics world's fixed hit.
 //! The key bits are taken in the binding order (forward 1, left 2, back 4,
 //! right 8), and the turn as the camera-axis turn times the vertical one.]
-//! The held body's material, its 2 s user stamp, the pick's shell and its
-//! sound are not wired.
+//! The pick stamps the body with the caster for 2 s
+//! ([`super::user_stamp`]). The held body's material, the pick's shell and
+//! its sound are not wired.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_physics::Physics;
-use exa_physics::body::Ragdoll;
+use exa_physics::body::{BodyTicks, Ragdoll};
+
+use super::power::force::hold_until;
+use super::user_stamp::UserStamp;
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
@@ -107,7 +111,9 @@ pub fn pick_depth(extents: Vec3) -> f32 {
 
 /// The kinesis takes what the hand lifted.
 pub(super) fn take_kinesis_picks(
+    mut commands: Commands,
     mut picked: MessageReader<KinesisPicked>,
+    ticks: Option<Res<BodyTicks>>,
     mut casters: Query<&mut PowerCaster>,
     props: Query<&Ragdoll, With<PropBody>>,
     physics: Option<Res<Physics>>,
@@ -135,6 +141,11 @@ pub(super) fn take_kinesis_picks(
         }
         let extents = bounds.map_or(Vec3::ZERO, |(lo, hi)| (hi - lo) * CM);
         kinesis.target = Some(pick.body.to_bits());
+        let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+        commands.entity(pick.body).insert(UserStamp {
+            user: pick.caster,
+            until_ms: hold_until(now),
+        });
         kinesis.depth = pick_depth(extents);
         kinesis.aim = (centre * CM).to_array();
         info!(

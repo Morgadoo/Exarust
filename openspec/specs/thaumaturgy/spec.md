@@ -1150,3 +1150,10 @@ A casting duellist's combat state, past 1000 ms from its cast's start, SHALL ask
 #### Scenario: A shock the evaluator no longer answers
 - **WHEN** the combat state asks while the shock's evaluator answers, then once the target is out of its reach
 - **THEN** the hook is not asked first, and then the cast ends with its hook
+
+### Requirement: A body's user stamp
+A kinesis pick, and each tick a throw coasts after its shell drops, SHALL stamp the body with the caster until 2 s on. A limb the body hurts while the stamp holds SHALL add to the struck brain's concern toward the caster with amount 0.9 and gain three times the damage, when the caster is a contact.
+
+#### Scenario: A thrown crate hurts a guard
+- **WHEN** a body thrown within the last 2 s hurts a character who knows the caster
+- **THEN** that character's concern toward the caster grows

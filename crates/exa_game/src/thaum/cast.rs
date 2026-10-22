@@ -314,6 +314,7 @@ impl Plugin for CastPlugin {
             .add_message::<AttackAskedHook>()
             .add_message::<super::kinesis_live::KinesisPicked>()
             .add_message::<super::throw_live::ThrowFade>()
+            .add_message::<exa_combat::impact::LimbImpact>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
@@ -349,6 +350,7 @@ impl Plugin for CastPlugin {
                     super::throw_live::sense_throws
                         .before(tick_casters)
                         .after(super::kinesis_live::take_kinesis_picks),
+                    super::user_stamp::blame_impacts.after(exa_combat::impact::strike_limbs),
                 ),
             )
             .add_systems(
@@ -1626,6 +1628,9 @@ fn tick_casters(
                         power.push = step.velocity.map(|v| (v, steered));
                         power.sound.lift |= step.lift;
                         power.sound.fade |= step.fade;
+                        if step.hold {
+                            power.held_until = Some(super::power::force::hold_until(now));
+                        }
                         result = step.result;
                     }
                 }

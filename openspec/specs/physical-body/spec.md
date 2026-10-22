@@ -725,6 +725,10 @@ Each leg's height SHALL be ground + crouch·60·scale + (1 − crouch)·(clip-ro
 ### Requirement: Moving pelvis spread
 Moving, the two-foot spread SHALL be (1 − k)·lowest ground + k·(lowest contact + other contact − other ground), where k = min(1, 0.2·speed) and speed is the cm a tick along the heading. Standing, k SHALL be 1, so the spread stays the contact test. A NaN speed SHALL saturate k.
 
+#### Scenario: Partial mix
+- **WHEN** contacts sit 30 and 20 cm over grounds at 0 and the body moves at 2.5, 4 or 5 cm a tick
+- **THEN** the spread is 25, 40 or 50 cm, so a planted pair blends by 0.28125, a lifted lowest foot keeps its full weight, or the slope leaves half
+
 ### Requirement: Falling chest blend
 While a body moves, a negative slow vertical chest speed v (cm a tick) SHALL multiply the two-foot blend weight by max(0, 1 + 0.5·v). A rise, a hold and a NaN SHALL leave that weight, and a standing body SHALL ignore v.
 
@@ -739,10 +743,6 @@ While a body moves, a negative slow vertical chest speed v (cm a tick) SHALL mul
 #### Scenario: Rising or standing
 - **WHEN** the slow speed is 1 cm a tick, or the body stands with it at −4
 - **THEN** the moving target stays 60 cm, or the standing target stays 65 cm
-
-#### Scenario: Partial mix
-- **WHEN** contacts sit 30 and 20 cm over grounds at 0 and the body moves at 2.5, 4 or 5 cm a tick
-- **THEN** the spread is 25, 40 or 50 cm, so a planted pair blends by 0.28125, a lifted lowest foot keeps its full weight, or the slope leaves half
 
 ### Requirement: Climbing with the controller
 The lift SHALL read each foot's own ground. The character controller's floor SHALL NOT raise that ground, on level ground, on stairs, perched or fallen.
@@ -1788,3 +1788,10 @@ The physical body reader SHALL keep the body chunk's first word as the part's fl
 #### Scenario: The shipped humanoid
 - **WHEN** `humanoid.rsq` is read from the installation
 - **THEN** its 18 bodies hold no stored spheres
+
+### Requirement: Pair impact
+A body pair SHALL keep the greatest squared relative travel of its hits, measured before each push; when it passes 1 between two trees its impact SHALL be that times the negated cosine of the travel against the summed push, the cosine of a degenerate pair being the push's planar square. Over 0.5 it SHALL strike each side with the impact over 2·m + 1 of the other side's contact mobility m.
+
+#### Scenario: Two limbs meeting fast
+- **WHEN** two bodies' limbs meet head-on at speed
+- **THEN** each side is struck with the impact scaled by the other's mobility

@@ -259,9 +259,13 @@ the hook with 0x10; a negative answer ends the cast and the AI lets it
 go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
 player swap, the spirit body's character generation and the effect meshes are descriptions here, not
-spawned entities; the kinesis's held material, user stamp, pick shell and
-pick sound, and the throw's shell, material and user stamp, are not
-wired.
+spawned entities; the kinesis's held material, pick shell and pick
+sound, and the throw's shell and material, are not wired. A kinesis pick,
+and each tick a throw coasts after its shell drops, stamp the body with
+the caster for 2 s (`thaum::user_stamp`): a limb the body hurts while the
+stamp holds adds the script's concern toward the caster (amount 0.9, gain
+three times the damage) when the caster is one of the struck brain's
+contacts.
 
 ## Force
 
