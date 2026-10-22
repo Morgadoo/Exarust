@@ -104,7 +104,8 @@ standing tick eases back up, each arm on its own, instead of the
 stance's recovery blend. A
 wound on a boned limb adds its size to the struck fighter's bleeding tally
 (`Fighter::bleeding`, the part's slot 39), which the body tick turns into
-damage over time.
+damage over time (`bleed`, in the upkeep stage: the level, the health and
+a collapse when yellow falls below 0).
 A Force effect's interrupt (`SwingState::force_interrupt`) breaks an
 attack into a full-strength stall with no drain, cleaving and recoiled,
 its window shut and the stance 600 ms on. The debug barricade calls it

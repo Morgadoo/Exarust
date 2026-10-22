@@ -26,6 +26,7 @@
 pub mod aim;
 pub mod attack;
 pub mod bite;
+pub mod bleed;
 pub mod burn;
 pub mod collapse;
 pub mod condition;
@@ -107,9 +108,15 @@ impl Plugin for CombatPlugin {
             )
             .add_systems(
                 CharacterTick,
-                burn::burn_upkeep
-                    .in_set(CharacterStage::Upkeep)
-                    .after(regen::regenerate_red),
+                (
+                    bleed::bleed_upkeep
+                        .in_set(CharacterStage::Upkeep)
+                        .after(regen::regenerate_red)
+                        .before(burn::burn_upkeep),
+                    burn::burn_upkeep
+                        .in_set(CharacterStage::Upkeep)
+                        .after(regen::regenerate_red),
+                ),
             )
             .add_systems(
                 PostUpdate,

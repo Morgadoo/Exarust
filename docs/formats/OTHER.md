@@ -1758,11 +1758,19 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   eases back up; a released swing, a wound or a new attack drops the
   rest.
 - A wound on a boned limb (`bone > 0`) adds its size to the character's
-  bleeding tally, which its body tick turns into damage over
-  time: each tick the tally × 0.03 raises a bleeding level at most 20,
-  yellow loses level × 4e-5 and, over 1, red loses (0.002·level)². The
-  tally is cleared each tick. Exarust keeps the tally on the fighter
-  (`Fighter::bleeding`); the bleeding tick is the kernel lane's.
+  bleeding tally, which its body tick turns into damage over time
+  (`exa_combat::bleed`, in the upkeep stage). While the condition word
+  holds the down bit or the dying bit (down, getting up, dormant,
+  collapsing, dead) the tick changes nothing. Otherwise a positive tally
+  raises the bleeding level by 0.03 of itself (the product in double, the
+  sum in single), capped at 20 when the level compares above it; yellow
+  loses level × 4e-5 and, over 1, red loses (0.002·level)², both in
+  double; yellow then scales by the red left, or becomes 0 when the red
+  the tick began with does not compare above the least red; the
+  regeneration rate clears; yellow under 0 zeroes both bars and starts the
+  collapse. Without a positive tally the level falls by 0.1, floored at 0.
+  The tally clears either way. A tick whose tally and level are not
+  positive does not run. The groan and the burn sample are not played.
 - A clash and a block set the swing's weapon-sound bit 0x1000 (the
   weapon's hit sound once a swing); a block sets the shield-sound bit
   0x200 once a swing (a wound's bits already hold it) and then draws the

@@ -802,3 +802,10 @@ The fighter's guard SHALL be the parry's only while it parries or counters a mot
 #### Scenario: A shield held
 - **WHEN** a fighter holding a shield parries
 - **THEN** its guard stays the shield's
+
+### Requirement: Bleeding damages over time
+Down or dying, or neither tally nor level positive, a tick SHALL change nothing. A positive tally SHALL add 0.03 of itself to the level (double product, single sum), cap 20, take level times 0.00004 off yellow, and above 1 take (level times 0.002) squared off red. Yellow SHALL scale by red left, or be 0 if starting red is not above the least. The rate SHALL clear. Yellow under 0 SHALL zero both bars and collapse. Else the level SHALL fall 0.1, floored at 0, and the tally SHALL clear.
+
+#### Scenario: A tally of 1, then none
+- **WHEN** a standing fighter with yellow 0.9 and red 1 takes a tally of 1, and the next tick has tally 0 and the level that tick left
+- **THEN** the first tick leaves the level at the single-precision 0.03, yellow just under 0.9, red 1, the rate 0 and the tally clear, and the next tick lowers the level by 0.1 and leaves the health

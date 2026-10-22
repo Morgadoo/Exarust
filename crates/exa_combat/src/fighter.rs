@@ -57,8 +57,11 @@ pub struct Fighter {
     pub parry: ParryState,
     /// The bleeding the struck limbs added up since the body's last tick:
     /// a boned limb's wound adds its size, and the body tick
-    /// turns the tally into damage over time.
+    /// turns the tally into damage over time ([`crate::bleed`]).
     pub bleeding: WoundTally,
+    /// The bleeding level the tally feeds. A positive tally raises it; with
+    /// none it falls 0.1 a tick, and yellow and red lose by it.
+    pub bleed_level: f32,
     /// The armour that grants a second wind, and when it may fire again.
     pub second_wind: SecondWind,
     /// The game clock at which a drunk elixir's potion flag ends
@@ -97,6 +100,7 @@ impl Fighter {
             guard: Guard::Open,
             parry: ParryState::default(),
             bleeding: WoundTally::default(),
+            bleed_level: 0.0,
             second_wind: SecondWind::default(),
             potion_until: 0,
         }
