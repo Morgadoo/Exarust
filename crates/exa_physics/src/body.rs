@@ -96,9 +96,9 @@ pub const RETENTION: [f32; 3] = [0.426, 0.25, 0.05];
 /// Speeds (cm/s) a limp part's last tick must exceed to be fast, or slow.
 pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// u = (1 − b)(1 − r) + r, from a race's limb damping ratio r and the
-/// balance b. A living limb keeps the fast retention × u², and a human's r
-/// of 1 makes u 1 at any balance.
-const HUMAN_LIMB_DAMPING: f32 = 1.0;
+/// balance b. A living limb keeps the fast retention times [`retention_factor`]:
+/// u² standing, and 0.5·u + 0.5 while walking or off its feet. A human's r
+/// of 1 makes both 1 at any balance.
 pub(crate) const LINK_ITERATIONS: usize = 20;
 pub(crate) const FRICTION_PASSES: usize = 8;
 /// A held item body's motion flag: a walk's start clears it.
@@ -964,11 +964,22 @@ pub enum Sleep {
 /// A dormant statue or golem keeps this share of the living retention.
 const DORMANT_KEEP: f32 = 0.95;
 
+/// The factor a living limb's fast retention is multiplied by. `u` is
+/// (1 − balance)(1 − r) + r, all in single precision. Standing it is u².
+/// While `eased` (the condition is walking, or it holds bit 0x200: down,
+/// getting up, dormant or dead) it is 0.5·u + 0.5. A NaN balance or ratio
+/// stays NaN.
+pub(crate) fn retention_factor(balance: f32, ratio: f32, eased: bool) -> f32 {
+    let u = (1.0 - balance) * (1.0 - ratio) + ratio;
+    if eased { u * 0.5 + 0.5 } else { u * u }
+}
+
 /// The velocity a living body's limbs keep each tick, whatever their
-/// speed: the fast retention × u², × [`DORMANT_KEEP`] while `dormant`.
-fn living_retention(u: f32, dormant: bool) -> f32 {
+/// speed: the fast retention × `factor` ([`retention_factor`]), ×
+/// [`DORMANT_KEEP`] while `dormant`.
+fn living_retention(factor: f32, dormant: bool) -> f32 {
     let keep = if dormant { DORMANT_KEEP } else { 1.0 };
-    per_tick(RETENTION[0]) * u * u * keep
+    per_tick(RETENTION[0]) * factor * keep
 }
 
 /// The original's smoothing for a link point `r` (m) from its part's origin.
@@ -2601,12 +2612,13 @@ impl Ragdoll {
             .as_ref()
             .map(|d| (d.tone, d.energy, d.carry, d.stats.scale));
         // A limp part keeps its velocity by how fast it moved last tick; a
-        // living limb keeps the fast retention whatever its speed.
-        let dormant = self.drive.as_ref().is_some_and(|d| d.dormant);
-        let living = self
-            .drive
-            .is_some()
-            .then(|| living_retention(HUMAN_LIMB_DAMPING, dormant));
+        // living limb keeps the fast retention times its race's factor,
+        // whatever its speed.
+        let living = self.drive.as_ref().map(|d| {
+            let eased = d.bearing.walking || d.bearing.off_feet;
+            let factor = retention_factor(d.balance.value, d.race.damping_ratio, eased);
+            living_retention(factor, d.dormant)
+        });
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
@@ -3338,8 +3350,9 @@ mod tests {
     /// 0.426, 0.25 and 0.05 per second, 0.98977, 0.98344 and 0.96455 per
     /// tick. A limp part takes its band from the farthest one of its
     /// particles moved last tick, strictly over 40/83 cm (fast) or 20/83 cm
-    /// (slow); a living limb keeps the fast retention × u², 0.98977 for a
-    /// human, whatever its speed.
+    /// (slow); a living limb keeps the fast retention times its factor,
+    /// 0.98977 for a human, whatever its speed. A golem (r = 0.95) at full
+    /// balance keeps r² standing and 0.5·r + 0.5 while walking or down.
     #[test]
     fn velocity_is_kept_as_the_default_environment_gives_it() {
         let close = |a: f32, b: f32| (a - b).abs() < 5e-6;
@@ -3355,11 +3368,22 @@ mod tests {
         ] {
             assert_eq!(limp_retention(moved), want, "{moved} cm in a tick");
         }
-        assert!(close(living_retention(HUMAN_LIMB_DAMPING, false), 0.98977));
-        assert!(close(
-            living_retention(HUMAN_LIMB_DAMPING, true),
-            0.98977 * DORMANT_KEEP
-        ));
+        assert!(close(living_retention(1.0, false), 0.98977));
+        assert!(close(living_retention(1.0, true), 0.98977 * DORMANT_KEEP));
+        let golem = 0.95f32;
+        let standing = retention_factor(1.0, golem, false);
+        let walking = retention_factor(1.0, golem, true);
+        assert_eq!(standing.to_bits(), (golem * golem).to_bits());
+        assert_eq!(walking.to_bits(), (golem * 0.5 + 0.5).to_bits());
+        // Lost balance makes u 1, so both factors are 1.
+        assert_eq!(retention_factor(0.0, golem, false), 1.0);
+        assert_eq!(retention_factor(0.0, golem, true), 1.0);
+        // A human's ratio of 1 leaves the factor at 1, walking or not.
+        assert_eq!(retention_factor(0.4, 1.0, false), 1.0);
+        assert_eq!(retention_factor(0.4, 1.0, true), 1.0);
+        assert!(retention_factor(f32::NAN, golem, false).is_nan());
+        assert!(retention_factor(f32::NAN, golem, true).is_nan());
+        assert!(retention_factor(1.0, f32::NAN, false).is_nan());
         let mut awake = Ragdoll::new(&[]).with_drive();
         awake.countdown = 10;
         awake.tick_countdown();
@@ -3401,6 +3425,40 @@ mod tests {
                 "{speed} m/s, living {living}: kept {kept}"
             );
         }
+        // A golem (r = 0.95) at full balance keeps that fast share times r²
+        // standing, and times 0.5·r + 0.5 while walking, even when slow.
+        let mut golem_body = Ragdoll::new(&[PartSetup {
+            bone: 11,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.06),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }])
+        .with_drive();
+        golem_body.drive.as_mut().unwrap().race.damping_ratio = golem;
+        let expect = |body: &mut Ragdoll, eased: bool| {
+            body.drive.as_mut().unwrap().bearing.walking = eased;
+            body.set_velocity(Vec3::X * 0.06);
+            let x = body.parts[0].positions[0].x;
+            body.integrate();
+            (body.parts[0].positions[0].x - x) / (0.06 / BODY_HZ)
+        };
+        let standing_kept = expect(&mut golem_body, false);
+        assert!(
+            (standing_kept - fast * golem * golem).abs() < 1e-4,
+            "standing golem kept {standing_kept}"
+        );
+        let walking_kept = expect(&mut golem_body, true);
+        assert!(
+            (walking_kept - fast * (golem * 0.5 + 0.5)).abs() < 1e-4,
+            "walking golem kept {walking_kept}"
+        );
     }
 
     /// A legless body has no lift: it lies on the floor while its pose

@@ -72,8 +72,10 @@ How the original simulates a body (`exa_physics::body`):
   moved over 40/83 cm, over 20/83 cm, or less in the last tick (strictly
   over). A living limb keeps the fast value × u² whatever its speed, with
   u = (1 − balance)(1 − r) + r and r the race's limb damping ratio (1 for
-humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
-(`Drive::dormant`). The original also builds a 0.6× environment
+  humans, so 0.98977). While its condition is walking, or holds bit 0x200
+  (down, getting up, dormant or dead), that factor is 0.5·u + 0.5 instead.
+  A dormant statue or golem keeps 0.95 of that
+  (`Drive::dormant`). The original also builds a 0.6× environment
 (0.2556 / 0.15 / 0.03) that no body ever uses. Exarust caps particles at
 25 m/s, a guard the original lacks.
 - Joints (`Ragdoll::new`). Every part with a parent part takes its stored

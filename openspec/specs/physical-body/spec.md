@@ -425,7 +425,7 @@ Inside its slack a limp link SHALL update its smoothed length L ← s·L + (1 �
 - **THEN** that link's smoothed length is its slack
 
 ### Requirement: Velocity retention
-A limp part SHALL keep its velocity as the original's default environment gives it: 0.426, 0.25 or 0.05 per second (0.98977, 0.98344 or 0.96455 per tick) when the farthest of its particles moved over 40/83 cm, over 20/83 cm, or less in the last tick. A living body's limbs SHALL keep the fast retention times u², u being 1 for a human, whatever their speed.
+A limp part SHALL keep its velocity as the original's default environment gives it: 0.426, 0.25 or 0.05 per second (0.98977, 0.98344 or 0.96455 per tick) when the farthest of its particles moved over 40/83 cm, over 20/83 cm, or less in the last tick. A living body's limbs SHALL keep the fast retention times u², where u = (1 − balance)(1 − r) + r and r is the race's limb damping ratio (1 for a human), or times 0.5·u + 0.5 while walking or off its feet (condition bit 0x200), whatever their speed.
 
 #### Scenario: Limp bands
 - **WHEN** a limp part's farthest particle moved 0.49 cm, exactly 40/83 cm, or exactly 20/83 cm in the last tick

@@ -121,6 +121,11 @@ pub struct RaceMuscles {
     pub arm_relaxation: f32,
     /// Adds 0.05 × it to the balance score (1 in every race record).
     pub balance_bonus: f32,
+    /// Limb damping ratio r (`races.rdb` +0x80). A living limb's fast
+    /// retention is multiplied by u², or by 0.5·u + 0.5 while walking or
+    /// off its feet, with u = (1 − balance)(1 − r) + r (1 for a human,
+    /// 0.95 for a golem).
+    pub damping_ratio: f32,
     /// The base rate of the clip clock: frames a tick before what the body
     /// does multiplies it (1 for a human).
     pub clip_rate: f32,
@@ -135,6 +140,7 @@ impl RaceMuscles {
         stance: 0.5,
         arm_relaxation: 1.0,
         balance_bonus: 1.0,
+        damping_ratio: 1.0,
         clip_rate: 1.0,
         gaits: GaitTable::HUMAN_ROWS,
     };
