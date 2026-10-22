@@ -563,6 +563,7 @@ pub(crate) fn steer_player(
         Option<&Condition>,
         Has<Fallen>,
         Option<&Fighter>,
+        Option<&Ragdoll>,
     )>,
 ) {
     let dt = 1.0 / TICK_HZ;
@@ -586,7 +587,7 @@ pub(crate) fn steer_player(
     };
     for (capsule, mut at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen, fighter)) =
+            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen, fighter, ragdoll)) =
                 bodies.get_mut(child)
             else {
                 continue;
@@ -650,25 +651,22 @@ pub(crate) fn steer_player(
             if pb.combat {
                 steering.aim(&mut req, to_cursor, state.off_feet());
                 steering.fight(&mut req, body, standing, &line);
-                // A tap step's length (m), the step reach × √scale, and the
-                // long step a held key aims: (1.5 − 0.3·encumbrance) × the
-                // reach, one double product, then the same √scale.
+                // A tap step's length (m) and the long step a held key aims.
+                // The reach already includes one √scale. The legs' extension
+                // scales it, then the same √scale again.
+                let extension = ragdoll
+                    .and_then(|r| r.drive.as_ref())
+                    .map(|d| d.balance().extension())
+                    .unwrap_or(1.0);
                 let (step, long_step) = fighter.map_or(
-                    (
-                        STEP_LENGTH,
-                        long_step_length(STEP_LENGTH * 100.0, 0.0) / 100.0,
-                    ),
+                    footwork_lengths(STEP_LENGTH * 100.0, 0.0, 1.0, extension),
                     |f| {
                         let cm = exa_formats::weapon_record::step_reach(
                             f.stats.scale,
                             f.stats.feral,
                             f.stats.encumbrance,
                         );
-                        let root = f.stats.scale.sqrt();
-                        (
-                            f.stats.step_reach(f.stats.encumbrance) * root,
-                            long_step_length(cm, f.stats.encumbrance) / 100.0 * root,
-                        )
+                        footwork_lengths(cm, f.stats.encumbrance, f.stats.scale, extension)
                     },
                 );
                 let footing = Footwork {
@@ -800,6 +798,22 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 /// A tap step's length (m) for a character without stats: a human's step
 /// reach.
 const STEP_LENGTH: f32 = 0.8;
+
+/// A tap and a held step (m). `reach_cm` is the stored step reach: 80·√scale
+/// shortened by feral level and encumbrance, so it already includes one
+/// √scale. The legs' `extension` scales that reach (1 with the legs as
+/// straight as the pose's), then the same √scale scales the displacement
+/// again. The long step is (1.5 − 0.3·encumbrance) × the reach, one double
+/// product narrowed once, before those two single-precision factors. A
+/// character without stats is a human at scale 1.
+fn footwork_lengths(reach_cm: f32, encumbrance: f32, scale: f32, extension: f32) -> (f32, f32) {
+    let root = scale.sqrt();
+    let long = long_step_length(reach_cm, encumbrance);
+    (
+        (reach_cm * extension) * root / 100.0,
+        (long * extension) * root / 100.0,
+    )
+}
 /// A side key weighs this share of the facing. The sum is normalised, so
 /// a diagonal aims 0.8 as far sideways as forward and a pure side step
 /// stays a full step.
@@ -809,9 +823,9 @@ const SIDE_SHARE: f32 = 0.8;
 /// the grid's line walk that clamps the target.
 struct Footwork<'a> {
     standing: Vec3,
-    /// A fresh press: one step reach (m).
+    /// A fresh press: one step reach, times the legs' extension and √scale (m).
     step: f32,
-    /// Keys already held 200 ms: (1.5 − 0.3·encumbrance) step reaches (m).
+    /// Keys already held 200 ms: (1.5 − 0.3·encumbrance) of that length (m).
     long_step: f32,
     line: LineWalk<'a>,
 }
@@ -826,15 +840,15 @@ struct Footwork<'a> {
 /// before the direction is normalised, and it goes only while the target
 /// of a step (a step's length along the keys, clamped by the grid's line
 /// walk) lies over 400 cm² away, in three dimensions. A fresh press aims
-/// one step reach. Keys already held 200 ms aim (1.5 − 0.3·encumbrance)
-/// step reaches, the
-/// product narrowed once from double; the original also keeps the short
-/// step while an unnamed support value is at least 0.1, which Exarust
-/// does not keep, so a held key takes the long step. A walk, run or
-/// backpedal of the exploration
-/// steering still playing when combat mode turned on ends in the stance
-/// once the body stands (`moving` false). A walk or a run blends over 20
-/// frames, as the original's walk ends.
+/// one step reach times the legs' extension. Keys already held 200 ms aim
+/// (1.5 − 0.3·encumbrance) of that length, the
+/// product narrowed once from double before the extension; the original
+/// also keeps the short step while an unnamed support value is at least
+/// 0.1, which Exarust does not keep, so a held key takes the long step.
+/// A walk, run or backpedal of the exploration steering still playing
+/// when combat mode turned on ends in the stance once the body stands
+/// (`moving` false). A walk or a run blends over 20 frames, as the
+/// original's walk ends.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
@@ -1905,6 +1919,23 @@ mod tests {
         assert_eq!(held.z.to_bits(), 0x3f99_999a);
         let worn = aim(STEP_HOLD, 72.0 / 100.0, long_step_length(72.0, 0.5) / 100.0);
         assert_eq!(worn.z.to_bits(), 0x3f78_d4fd);
+    }
+
+    /// The legs' extension scales the tap and the held step after the long
+    /// step is narrowed. Full extension keeps 80 cm and 120 cm. Half
+    /// extension halves both. A scale of 4 still applies √scale a second
+    /// time, so half extension of a 160 cm reach aims 160 cm.
+    #[test]
+    fn the_legs_extension_scales_the_footwork_step() {
+        let (tap, held) = footwork_lengths(80.0, 0.0, 1.0, 1.0);
+        assert_eq!(tap.to_bits(), STEP_LENGTH.to_bits());
+        assert_eq!(held.to_bits(), 0x3f99_999a);
+        let (half, half_held) = footwork_lengths(80.0, 0.0, 1.0, 0.5);
+        assert_eq!(half.to_bits(), 0.4f32.to_bits());
+        assert_eq!(half_held.to_bits(), 0.6f32.to_bits());
+        let (scaled, _) = footwork_lengths(160.0, 0.0, 4.0, 0.5);
+        assert_eq!(scaled.to_bits(), 1.6f32.to_bits());
+        assert!(footwork_lengths(80.0, 0.0, 1.0, f32::NAN).0.is_nan());
     }
 
     /// W and A together, facing +Z, aim 0.8 as far sideways as forward. A

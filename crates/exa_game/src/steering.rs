@@ -26,10 +26,10 @@
 //! - **The spawn.** On its third behaviour tick (unless down) the
 //!   character is moved onto the nearest walkable point of the grid.
 //! - **Footwork.** In combat mode a step's target, a step's length along
-//!   its keys (a long step once they have been held 200 ms), is clamped
-//!   by the line walk too. A side key weighs 0.8 of the facing. The step
-//!   is taken only when the clamped target is over 400 cm² away, in three
-//!   dimensions.
+//!   its keys (a long step once they have been held 200 ms, both scaled
+//!   by the legs' extension), is clamped by the line walk too. A side key
+//!   weighs 0.8 of the facing. The step is taken only when the clamped
+//!   target is over 400 cm² away, in three dimensions.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};

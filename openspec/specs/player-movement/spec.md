@@ -331,7 +331,7 @@ On the player's third behaviour tick with a navigation grid, unless it is down, 
 - **THEN** it is not moved, then or later
 
 ### Requirement: Footwork step targets
-In combat mode a footwork step SHALL aim a step's length along its keys (step reach × √scale, 80 cm for a human; held 200 ms, (1.5 − 0.3·encumbrance) times that reach, one double product narrowed once, then the same √scale), clamped by the line walk. A side key SHALL weigh 0.8 of the facing before the direction is normalised. The step SHALL be taken only when the clamped target's three-dimensional squared distance is over 400 cm². The interim footwork SHALL walk only while that step is taken.
+In combat mode a footwork step SHALL aim along its keys for step reach × the legs' extension × √scale (80 cm at full extension; held 200 ms, (1.5 − 0.3·encumbrance) × that reach, one double product narrowed once, then those two factors), clamped by the line walk. A side key SHALL weigh 0.8 of the facing before normalisation. The step SHALL be taken only when the clamped target's three-dimensional squared distance is over 400 cm². The interim footwork SHALL walk only while that step is taken.
 
 #### Scenario: Footwork at a wall
 - **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead on the level, then 21 cm ahead
@@ -348,6 +348,10 @@ In combat mode a footwork step SHALL aim a step's length along its keys (step re
 #### Scenario: A held step is a long step
 - **WHEN** a combat step's keys have already been held 200 ms, on open ground, for a human step reach and for a reach of 72 cm at encumbrance 0.5
 - **THEN** the target is 120 cm and 97.2 cm along the keys, and a fresh press of the same reach stays at 80 cm
+
+#### Scenario: A shortened extension halves the step
+- **WHEN** the legs' extension is 0.5, on open ground, for a human's fresh press and for the same keys held 200 ms
+- **THEN** the targets are 40 cm and 60 cm along the keys
 
 ### Requirement: Camera yaw wrap
 Cursor Look SHALL keep the camera's target yaw within half a turn of the camera's present yaw, adding or subtracting a whole turn when the difference, compared in double precision, exceeds π.
