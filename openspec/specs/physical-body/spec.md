@@ -1256,6 +1256,13 @@ Standing with support, the footwork SHALL move at most one foot: the highest of 
 - **WHEN** one free foot's spot is on its anchor and the other's is 6 cm off
 - **THEN** neither steps while both are under 5 cm, and the foot 6 cm off steps
 
+### Requirement: Stand-still score
+Leaving the walk SHALL stamp the step clock the next score reads, and that clock plus 100 ms. An anchored foot's base SHALL then be 11.5 while the score's clock is under the later stamp plus 100 ms, 3.5 while under the first stamp plus 300 ms, and 2 while under the later stamp plus 600 ms. After that window its own landing stamps decide.
+
+#### Scenario: Just planted
+- **WHEN** leaving the walk stamps T and T plus 100 ms
+- **THEN** an anchored foot's base is 11.5 at clock T and 3.5 at T plus 250 ms
+
 ### Requirement: Stance score
 The stance score of two feet SHALL be 2(1 − C²) + (1 − W²) + A. A SHALL be 1 minus the chest reference's horizontal distance to the foot segment, divided by 30. W SHALL be the absolute difference of the separation from 60·scale, divided by 60·scale. C SHALL be the same for 55·scale and the side separation, and that separation SHALL be its square root when it is positive.
 

@@ -1411,7 +1411,11 @@ and down. h is the heading.
   The controller follows the body's frame instead of walking it.
 - **Leaving the walk** plants the rearmost foot (the smallest projection of
   its animated contact along the frame's forward) at its stance spot under
-  the frame, keeping its height; the other foot lands where it is.
+  the frame, keeping its height; the other foot lands where it is. The same
+  pass stamps the step clock the next score reads, and that clock plus 100
+  ms. While the later stamp plus 600 ms is still ahead, an anchored foot's
+  base is 11.5 for the first 200 ms, 3.5 until 300 ms, and 2 until 700 ms
+  after the plant; after that its own landing stamps decide.
 - **Leg gains.** A powered golem suit halves the standing thigh factor and
   quarters the leg limit's standing target; a stepping foot that is
   anchored blends its limit s ← 0.8s + 0.04 instead of following the leg

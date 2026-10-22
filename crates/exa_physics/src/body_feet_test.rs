@@ -922,6 +922,9 @@ fn the_trailing_foot_is_planted_on_leaving_the_walk() {
         *x -= Vec3::Z * 0.2;
     }
     body.plant_trailing_foot();
+    let tick = 1000.0 / 83.0;
+    assert!(close(drive(&body).steps.still_at, tick, 1e-4));
+    assert!(close(drive(&body).steps.still_plus, tick + 100.0, 1e-4));
     assert!(body.legs[1].state.has(FootState::ANCHORED));
     assert!(body.legs[1].state.has(FootState::RAMP_SLOW));
     assert!(body.legs[0].state.has(FootState::TOUCHING));

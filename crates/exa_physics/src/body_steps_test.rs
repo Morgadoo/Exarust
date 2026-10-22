@@ -188,7 +188,42 @@ fn ctx() -> ScoreCtx {
         step: 80.0,
         episode: false,
         size: 1.0,
+        still_at: f32::NAN,
+        still_plus: f32::NAN,
     }
+}
+
+/// Leaving the walk stamps T and T+100. An anchored foot's base is then
+/// 11.5 under T+200, 3.5 under T+300 and 2 under T+700. A boundary is the
+/// next band. NaN stamps, and a clock at T+700, leave the base to the
+/// foot's own landing.
+#[test]
+fn a_stand_still_window_sets_the_anchored_base() {
+    let t = 1_000.0;
+    let plus = t + 100.0;
+    assert_eq!(still_base(plus, t, t), Some(11.5));
+    assert_eq!(still_base(plus, t, t + 100.0), Some(11.5));
+    assert_eq!(still_base(plus, t, t + 200.0), Some(3.5));
+    assert_eq!(still_base(plus, t, t + 250.0), Some(3.5));
+    assert_eq!(still_base(plus, t, t + 300.0), Some(2.0));
+    assert_eq!(still_base(plus, t, t + 400.0), Some(2.0));
+    assert_eq!(still_base(plus, t, t + 700.0), None);
+    assert_eq!(still_base(f32::NAN, t, t), None);
+    assert_eq!(still_base(plus, f32::NAN, t), None);
+
+    let mut feet = [foot(Vec3::ZERO), foot(Vec3::X * 60.0)];
+    feet[0].anchored = true;
+    feet[0].landed_ms = t + 250.0;
+    let spots = [Vec3::ZERO, Vec3::X * 60.0];
+    let mut c = ctx();
+    c.now_ms = t + 250.0;
+    c.still_at = t;
+    c.still_plus = plus;
+    let windowed = foot_score(0, &feet, &spots, &c);
+    c.still_at = f32::NAN;
+    c.still_plus = f32::NAN;
+    let per_leg = foot_score(0, &feet, &spots, &c);
+    assert!(close(per_leg - windowed, 8.0), "{per_leg} {windowed}");
 }
 
 /// The episode ends on its four rules and not while it is young and closing.

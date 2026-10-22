@@ -766,6 +766,8 @@ impl Ragdoll {
             },
             chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
             size: 1.0,
+            still_at: drive.steps.still_at,
+            still_plus: drive.steps.still_plus,
         };
         // The feet's states, from last tick's support.
         let met: Vec<bool> = legs

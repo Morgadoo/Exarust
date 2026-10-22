@@ -137,6 +137,10 @@ pub(super) struct Steps {
     /// A blow started this step. It is not the balance trigger, and walking
     /// does not clear it.
     pub knockback: bool,
+    /// Stand-still stamps from leaving the walk: the step clock the next
+    /// score reads, and that clock plus 100 ms. NaN until a plant stamps them.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 impl Default for Steps {
@@ -153,6 +157,8 @@ impl Default for Steps {
             near: 0,
             landed_from: 0,
             knockback: false,
+            still_at: f32::NAN,
+            still_plus: f32::NAN,
         }
     }
 }
@@ -458,6 +464,9 @@ pub(super) struct Work {
     /// The chest's horizontal distance to the step target (cm).
     pub chest_to_target_cm: f32,
     pub size: f32,
+    /// Stand-still stamps (ms). NaN until leaving the walk.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 impl Work {
@@ -476,6 +485,8 @@ impl Work {
             episode_ms: 0.0,
             chest_to_target_cm: f32::MAX,
             size: 1.0,
+            still_at: f32::NAN,
+            still_plus: f32::NAN,
         }
     }
 }
@@ -492,6 +503,9 @@ pub(super) struct ScoreCtx {
     pub step: f32,
     pub episode: bool,
     pub size: f32,
+    /// Stand-still stamps (ms). NaN until leaving the walk.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 /// The footwork's choice for two feet: the highest of stay, foot 0 and
@@ -595,7 +609,9 @@ fn foot_score(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx)
     }
     let mut score = MOVE_SCORE;
     if feet[i].anchored {
-        if recent(feet[i].landed_ms, ctx.now_ms, FRESH_MS) {
+        if let Some(base) = still_base(ctx.still_plus, ctx.still_at, ctx.now_ms) {
+            score = base;
+        } else if recent(feet[i].landed_ms, ctx.now_ms, FRESH_MS) {
             score += FRESH_BONUS;
         } else if recent(feet[i].started_ms, ctx.now_ms, EARLY_MS) {
             score += EARLY_BONUS;
@@ -604,6 +620,24 @@ fn foot_score(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx)
         }
     }
     score + common(i, feet, spots, ctx)
+}
+
+/// The anchored base while a stand-still window is open. `plus` is the
+/// plant's clock plus 100 ms and `at` is that clock. Under `plus` plus
+/// 100 ms the base is 11.5, under `at` plus 300 ms it is 3.5, and under
+/// `plus` plus 600 ms it is 2. Each bound is strict. Outside that window,
+/// or when a stamp is not finite, the foot's own landing stamps decide.
+pub(super) fn still_base(plus: f32, at: f32, now: f32) -> Option<f32> {
+    if !plus.is_finite() || !at.is_finite() || !now.is_finite() || now >= plus + LATE_MS {
+        return None;
+    }
+    Some(if now < plus + FRESH_MS {
+        MOVE_SCORE + FRESH_BONUS
+    } else if now < at + EARLY_MS {
+        MOVE_SCORE + EARLY_BONUS
+    } else {
+        MOVE_SCORE + LATE_BONUS
+    })
 }
 
 fn common(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx) -> f32 {

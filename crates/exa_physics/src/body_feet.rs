@@ -573,6 +573,8 @@ pub fn walk_stagger(
             episode_ms: 0.0,
             chest_to_target_cm: cm((target - frame).with_y(0.0)).length(),
             size: 1.0,
+            still_at: f32::NAN,
+            still_plus: f32::NAN,
         },
     );
     let foot = legs
@@ -631,6 +633,8 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
             step: work.step_cm,
             episode: work.episode,
             size: work.size,
+            still_at: work.still_at,
+            still_plus: work.still_plus,
         },
     );
     let Some(k) = chosen else {
@@ -673,14 +677,14 @@ impl Ragdoll {
     /// ones, and the first when none is under 3.4e38 or all are NaN) is
     /// anchored at its stance spot under the frame, keeping its height,
     /// and every other foot lands where it is (whether or not it was
-    /// anchored). Both keep their slow ramp bit. (The original also stamps
-    /// two stand-still timers, the clock plus 100 ms and the clock; they
-    /// are not modelled.)
+    /// anchored). Both keep their slow ramp bit. It stamps the step clock
+    /// the next score reads (that clock advances before the score) and
+    /// that clock plus 100 ms.
     pub fn plant_trailing_foot(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
         } = self;
-        let Some(drive) = drive.as_ref() else {
+        let Some(drive) = drive.as_mut() else {
             return;
         };
         let Some(frame) = drive.frame else {
@@ -689,6 +693,9 @@ impl Ragdoll {
         if legs.is_empty() || drive.targets.len() != parts.len() {
             return;
         }
+        let now = drive.steps.clock.saturating_add(1) as f32 * steps::MS_PER_TICK;
+        drive.steps.still_at = now;
+        drive.steps.still_plus = now + 100.0;
         let forward = Vec3::from(frame.matrix3.z_axis);
         // A strict compare against the running smallest: a NaN never wins.
         let mut smallest = REAR_START;
