@@ -104,6 +104,11 @@ impl Plugin for CombatPlugin {
                         .in_set(CharacterStage::Attack)
                         .after(swing::run_swings)
                         .run_if(condition::ticked_lives),
+                    // The body tick reads the flag after the check.
+                    parry::remember_parry
+                        .in_set(CharacterStage::Attack)
+                        .after(parry::run_parries)
+                        .run_if(condition::ticked_lives),
                 ),
             )
             .add_systems(

@@ -367,8 +367,12 @@ How the original simulates a body (`exa_physics::body`):
       is not floored. An idle arm pulls at
       σ = 0.25, walking 0.175, off balance 0.31. An attack tick replaces
       both with the swing's pair and stores them (the swing routine's
-      body side, below). Not reproduced on this path: the parry blend and
-      the clinch.
+      body side, below). While it parries, and it is not collapsing, off
+      balance, kicking or attacking, each stored stiffness eases by
+      0.8x + 0.04 in double (toward 0.2) with that same floor, cap and
+      saturation, ahead of the walk, the daze, a power and a weapon
+      switch. Not reproduced on this path: the clinch latch that sets the
+      same flag, and the tangle counter's 0.5.
     - A leg limit link's strength s ← 0.9s + 0.1t each tick (double
       precision), t = 0.4 walking or running, 0.5·S² standing or
       backpedalling (0.2 → 0.5 standing); kept while the body collapses.

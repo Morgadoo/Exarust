@@ -8,7 +8,8 @@
 //! branch, getting up and rising through its get-up's first quarter,
 //! carried by its controller, turning unless its condition is helpless,
 //! collapsing, kicking, casting, switching weapons, walking and off its
-//! feet by its condition, its clip's progress.
+//! feet by its condition, its clip's progress. The attack stage copies
+//! the parry flag onto that bearing after the parry check.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};

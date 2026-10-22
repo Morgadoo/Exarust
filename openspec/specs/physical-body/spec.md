@@ -507,6 +507,17 @@ The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (bala
 - **WHEN** a body collapses, off balance, at tone 0.6
 - **THEN** its arms' stiffness is 0.2
 
+### Requirement: Parry arm blend
+While a fighter parries, and the body is not collapsing, off balance, kicking or having its arms set by an attack, each stored arm stiffness SHALL ease by 0.8x + 0.04 in double precision and then take the arm floor. A walk, a daze, a power and a weapon switch SHALL not replace that ease.
+
+#### Scenario: A parry eases toward a fifth
+- **WHEN** a standing fighter parries with its arms at 0 and at 0.5
+- **THEN** those stiffnesses are 0.04 and 0.44
+
+#### Scenario: Off balance keeps its arms
+- **WHEN** a parrying fighter is off balance
+- **THEN** its arms' stiffness is 0.5
+
 ### Requirement: Anchor relaxation
 Each tick a part with link muscles SHALL move its relaxation λ toward 0.6 − 32|Δa|² (cm², the most one of its anchors moved since the last tick) × the race's arm relaxation, capped by the part: up by 0.015 a tick, down at once, and not at all for a negative target. A supported lower leg and its thigh SHALL instead take clamp(0.6 − 0.001·| |hip − foot contact|² − (2r)² |, 0, 0.2), r the contact's (the ankle's) distance from the knee, rising 0.01.
 

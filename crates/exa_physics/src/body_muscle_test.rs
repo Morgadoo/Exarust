@@ -997,5 +997,83 @@ fn a_standing_tick_eases_the_two_stored_stiffnesses() {
     assert_eq!(rest, other);
     assert_eq!(body.arm_stiffness(), Some(rest));
     assert_eq!(body.parts[0].factor, rest * limbs);
-    assert_eq!(body.parts[2].factor, rest * limbs);
+
+    // A parry eases each stored arm by 0.8x + 0.04, then the floor.
+    let pose = vec![Affine3A::IDENTITY; 3];
+    let mut body = both_arms();
+    body.drive.as_mut().unwrap().arms = (0.0, 0.5);
+    body.set_bearing(Bearing {
+        parrying: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let right = crate::motile::parry_blend(0.0);
+    let left = crate::motile::parry_blend(0.5);
+    assert_eq!(right, 0.04);
+    assert_eq!(body.arm_stiffness(), Some(right));
+    assert_eq!(body.parts[0].factor, right * limbs);
+    assert_eq!(body.parts[2].factor, left * limbs);
+    assert_eq!(body.parts[0].relax_cap, attack_relax_cap(right));
+    assert_eq!(body.parts[2].relax_cap, attack_relax_cap(left));
+    assert_eq!(body.parts[0].saturation, attack_saturation(0.0));
+    // Two radians of turn floors the eased 0.04 up to 0.4.
+    body.set_bearing(Bearing {
+        parrying: true,
+        turn: 2.0,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.arm_stiffness(), Some(0.4));
+    assert_eq!(body.parts[2].factor, 0.4 * limbs);
+    // A walk, a daze and a power do not replace the blend.
+    body.set_arm_stiffness(0.5);
+    body.drive.as_mut().unwrap().tone = 0.8;
+    body.set_bearing(Bearing {
+        parrying: true,
+        striding: true,
+        casting: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    let blended = crate::motile::parry_blend(0.5);
+    assert_eq!(body.arm_stiffness(), Some(blended));
+    assert_ne!(blended, 0.2);
+    assert_ne!(blended, 0.3);
+    // Off balance, a collapse, a kick and an attack do.
+    body.set_arm_stiffness(0.5);
+    body.set_bearing(Bearing {
+        parrying: true,
+        off_balance: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.arm_stiffness(), Some(0.5));
+    body.set_arm_stiffness(0.8);
+    body.set_bearing(Bearing {
+        parrying: true,
+        collapsing: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.arm_stiffness(), Some(0.2));
+    body.set_arm_stiffness(0.55);
+    body.drive.as_mut().unwrap().tone = 1.0;
+    body.set_bearing(Bearing {
+        parrying: true,
+        kicking: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(body.arm_stiffness(), Some(0.55));
+    body.set_attack_arms(Some(AttackArmTune {
+        stiffness: (0.8, 0.2),
+        drive: (1.0, 0.0),
+    }));
+    body.set_bearing(Bearing {
+        parrying: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(body.parts[0].factor, 0.8 * limbs);
+    assert_eq!(body.parts[2].factor, 0.2 * limbs);
 }

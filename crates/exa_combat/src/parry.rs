@@ -1170,6 +1170,21 @@ pub(crate) fn run_parries(
     }
 }
 
+/// Copies the parry flag onto the body's bearing after [`run_parries`],
+/// which is what the muscle tune reads. The posture stage clears it; a
+/// body that is not fighting keeps that.
+pub(crate) fn remember_parry(
+    ticked: Res<TickedCharacter>,
+    mut bodies: Query<(&Fighter, &mut Ragdoll)>,
+) {
+    let Ok((fighter, mut body)) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    if let Some(drive) = body.drive.as_mut() {
+        drive.bearing.parrying = fighter.parry.active;
+    }
+}
+
 #[cfg(test)]
 mod stance_tests {
     use super::*;

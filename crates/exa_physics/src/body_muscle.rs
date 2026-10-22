@@ -287,6 +287,10 @@ pub struct Bearing {
     /// It plays a kick, at the tone a standing body keeps. The arms are
     /// left as the last tick wrote them.
     pub kicking: bool,
+    /// It is parrying. Each stored arm eases by 0.8x + 0.04 unless the
+    /// body is collapsing, off balance, kicking, or an attack is setting
+    /// the arms. A walk, a daze, a power and a weapon switch do not.
+    pub parrying: bool,
     /// It plays a power. Both arms are set to 0.3.
     pub casting: bool,
     /// It plays a weapon switch. Both arms are set to 0.4.
@@ -330,6 +334,7 @@ impl Default for Bearing {
             facing: Vec3::Z,
             stepping: false,
             kicking: false,
+            parrying: false,
             casting: false,
             switching: false,
             golem_powered: false,
@@ -677,6 +682,15 @@ impl Ragdoll {
         let hold_arms = posed && unsteady.kicking;
         let snap = posed && (unsteady.casting || unsteady.switching);
         let easing = posed && !unsteady.kicking && !unsteady.casting && !unsteady.switching;
+        // A parry eases each stored arm by 0.8x + 0.04. It is ahead of the
+        // walk, the daze, a power and a weapon switch, and it does not run
+        // while the body collapses, is off balance, kicks, or an attack
+        // sets the arms.
+        let parry_ease = bearing.parrying
+            && !unsteady.collapsing
+            && !unsteady.off_balance
+            && !unsteady.kicking
+            && drive.attack_arms.is_none();
         // An attack's drives stay on the body: a later power, weapon
         // switch or standing tick saturates each arm from the one it stored.
         if let Some(tune) = drive.attack_arms {
@@ -687,6 +701,13 @@ impl Ragdoll {
         } else if let Some(tune) = drive.attack_arms {
             let right = attack_stiffness_floor(tune.stiffness.0, unsteady.turn);
             let left = attack_stiffness_floor(tune.stiffness.1, unsteady.turn);
+            drive.arms = (right, left);
+            drive.arm = right;
+        } else if parry_ease {
+            let right =
+                attack_stiffness_floor(crate::motile::parry_blend(drive.arms.0), unsteady.turn);
+            let left =
+                attack_stiffness_floor(crate::motile::parry_blend(drive.arms.1), unsteady.turn);
             drive.arms = (right, left);
             drive.arm = right;
         } else if easing {
@@ -754,7 +775,10 @@ impl Ragdoll {
                         p.factor = stiff * limbs;
                         p.relax_cap = attack_relax_cap(stiff);
                         p.saturation = attack_saturation(drv);
-                    } else if snap && let Some(side) = attack_side(bone) {
+                    } else if snap
+                        && !parry_ease
+                        && let Some(side) = attack_side(bone)
+                    {
                         let drv = if side == 0 {
                             drive.arm_drive.0
                         } else {
@@ -763,7 +787,9 @@ impl Ragdoll {
                         p.factor = drive.arm * limbs;
                         p.relax_cap = attack_relax_cap(drive.arm);
                         p.saturation = attack_saturation(drv);
-                    } else if easing && let Some(side) = attack_side(bone) {
+                    } else if (easing || parry_ease)
+                        && let Some(side) = attack_side(bone)
+                    {
                         // Each stored stiffness, eased this tick, with the
                         // attack setter's cap and the drive the last attack
                         // stored. Until an attack writes one, that drive is
