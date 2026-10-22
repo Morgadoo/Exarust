@@ -43,6 +43,7 @@ pub mod displacement;
 pub mod energy;
 pub mod engine;
 pub mod force;
+pub mod kinesis_live;
 pub mod live;
 pub mod power;
 pub mod torrent_live;

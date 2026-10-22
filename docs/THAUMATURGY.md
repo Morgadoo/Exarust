@@ -108,11 +108,21 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   more than 20 m from the caster; Strikes sets the strike factor 1.0 and
   the swing factor 3.0, keeps at most four weapon auras, ripples an aura
   at half a swing's strength and plays `thmfrc_brf` as it ends; Kinesis
-  steers its held body at its reach (half its radius plus one) along the
-  unit direction to the aim (the direction times 0.02 within 50 cm or for
-  a distance that is not a number), turns it by `reach²` times the double
-  0.001 a tick by the stick or the key pairs (each pair if/else), holds a
-  pick at a third of its extents' sum and stamps its user for 2 s; Throw
+  waits on the hand for its pick while it runs (a press that would lift a
+  prop hands it the prop, and the cursor is in reach wherever it is),
+  holds a pick at a third of its extents' sum and aims at its centre.
+  Each tick, when the cursor's ray (passing over the held body) hits
+  within 40 m, the aim is that hit raised `100 − depth` (at least 10) back
+  along the ray and, when the line from the caster's head to it is clear,
+  settled by `h/(|h| + 1)·200` of its height over the caster (`h` that
+  height times 0.005); the held part's origin is pushed at its reach (half
+  its node's child count plus one) along the unit direction to the aim
+  (the direction times 0.02 within 50 cm or for a distance that is not a
+  number) less a fifth of its own motion, each particle by its origin
+  weight, and the body wakes. It turns by `reach²` times the double 0.001
+  a tick by the stick or the key pairs (each pair if/else), about the
+  camera's right axis and the vertical, and stamps its user for 2 s
+  (`exa_game::thaum::kinesis_live`); Throw
   holds no reserve: its lift aims 100 cm above the body and spends
   `tick·cost·0.00125` every steered tick at `mass/(0.1 + mass)` of the
   unit direction, drops the shell after 800 ms and coasts at six times
@@ -237,8 +247,9 @@ the body's power id's domain evaluator and, when that answers nothing,
 the hook with 0x10; a negative answer ends the cast and the AI lets it
 go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
-player swap, the spirit body's character generation, the kinesis aim sweep and the effect meshes are descriptions here, not
-spawned entities.
+player swap, the spirit body's character generation and the effect meshes are descriptions here, not
+spawned entities; the kinesis's held material, user stamp, pick shell and
+pick sound are not wired.
 
 ## Force
 

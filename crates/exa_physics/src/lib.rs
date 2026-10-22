@@ -118,6 +118,20 @@ impl Physics {
         self.0.cast_ray(&ray, max, true, QueryFilter::only_fixed())
     }
 
+    /// [`Self::fixed_pick`] passing over the colliders `skip` names.
+    pub fn fixed_pick_except(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        skip: &dyn Fn(ColliderHandle) -> bool,
+    ) -> Option<(ColliderHandle, f32)> {
+        let ray = Ray::new(origin, direction);
+        let keep = |h: ColliderHandle, _: &Collider| !skip(h);
+        let filter = QueryFilter::only_fixed().predicate(&keep);
+        self.0.cast_ray(&ray, max, true, filter)
+    }
+
     /// How far along `direction` (unit) from `origin` a ball of `radius`
     /// first meets the level (fixed colliders but the props' stand-ins),
     /// within `max` metres.

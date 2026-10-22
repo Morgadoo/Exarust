@@ -697,11 +697,18 @@ Strikes SHALL set the strike factor 1.0 and the swing factor 3.0, keep at most f
 - **THEN** its aura ripples at 1.5
 
 ### Requirement: Kinesis steering
-Kinesis SHALL steer its body at its reach (half its radius plus one) along the unit direction to the aim, or the direction times 0.02 within 50 cm or for a distance that is not a number, and SHALL turn it by `reach²` times the double 0.001 a tick, each key pair tested if/else.
+Kinesis SHALL steer its body at its reach (half its node's child count plus one) along the unit direction to the aim, or the direction times 0.02 within 50 cm or for a distance that is not a number, and SHALL turn it by `reach²` times the double 0.001 a tick, each key pair tested if/else.
 
 #### Scenario: Both turn keys
-- **WHEN** a kinesis body of radius 100 has all four turn keys held
+- **WHEN** a kinesis body whose node has 100 children has all four turn keys held
 - **THEN** it turns forward on both axes by 2601 times the double 0.001, narrowed
+
+### Requirement: Kinesis pick and aim
+While the player's kinesis runs, a press that would lift a prop SHALL hand it to the kinesis, at any reach. Each tick a cursor hit within 40 m SHALL aim `100 − depth` (at least 10) above it along the ray, settled when the head's line to it is clear; without a hit nothing SHALL move.
+
+#### Scenario: A lifted crate
+- **WHEN** the player's kinesis runs and the hand lifts a crate
+- **THEN** the kinesis holds the crate and aims at its centre, and the hook goes when the kinesis ends
 
 ### Requirement: Throw flight
 Throw SHALL hold no reserve. Its lift SHALL aim 100 cm above the body and spend tick ms × cost × 0.00125 every steered tick at `mass/(0.1+mass)` of the unit direction; 800 ms after the lift it SHALL drop the shell and coast at six times that share toward the caster's aim point, ending at once when that point is within 100 cm, and restore the body's materials 200 ms after the drop.

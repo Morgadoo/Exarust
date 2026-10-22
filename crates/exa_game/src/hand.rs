@@ -10,7 +10,10 @@
 //! Ctrl is held or the hand already holds something), while the point under
 //! the cursor is out of reach, or while the player is down. Otherwise the
 //! pick at the pressed point is named ([`crate::pick::classify`]):
-//! - a prop or item the hand can move, not while the player locomotes: it
+//! - a prop or item the hand can move, not while the player locomotes:
+//!   while the player's kinesis waits for its pick (when the point is in
+//!   reach wherever it is), the lift hands the prop to the kinesis instead
+//!   (`crate::thaum::kinesis_live`). Otherwise it
 //!   holds an object (the standing quarter turns stop) and, with Ctrl held,
 //!   drags it: a grab on the part the pick hit, at the hit point, strength
 //!   1, in the tick's first two passes. Without Ctrl the original lifts it
@@ -66,6 +69,7 @@ use exa_ui::ScriptedPointer;
 use crate::bindings::{Action, Bindings};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
+use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -516,7 +520,10 @@ fn press_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    kinesis: Option<Res<KinesisPickHook>>,
+    mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
 ) {
+    let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
     let pointer = windows.single().ok().and_then(|w| {
         scripted
@@ -563,7 +570,7 @@ fn press_hand(
     );
     let state = PressState {
         kept_for_combat: pb.combat && !ctrl && hand.holding == Holding::Nothing,
-        out_of_reach: hand.out_of_reach,
+        out_of_reach: hand.out_of_reach && kinesis.is_none(),
         down: condition.off_feet(),
         ctrl,
         moving: locomotor.is_some_and(Locomotor::moving),
@@ -589,6 +596,19 @@ fn press_hand(
         Press::Mechanism(pick) => hand.holding = Holding::Mechanism(pick),
         Press::Refused => hand.holding = Holding::Refused,
         Press::Lift => {
+            if let (
+                Some(caster),
+                Some(Picked {
+                    hit: Hit::Prop { body, .. },
+                    ..
+                }),
+            ) = (kinesis, picked)
+            {
+                if let Some(messages) = kinesis_picks.as_deref_mut() {
+                    messages.write(KinesisPicked { caster, body });
+                }
+                return;
+            }
             pb.hold_object(true);
             hand.holding = Holding::Lift;
         }

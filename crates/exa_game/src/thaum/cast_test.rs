@@ -335,6 +335,73 @@ fn pressing_vanish_again_releases_it() {
     assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
 }
 
+/// A running kinesis waits for the hand's pick, takes the prop handed to
+/// it (aiming at its centre) and takes the pick back when it ends.
+#[test]
+fn a_running_kinesis_takes_the_hands_pick() {
+    use super::super::kinesis_live::{KinesisPickHook, KinesisPicked};
+    use exa_physics::body::RigidPart;
+    use exa_physics::prop::{PendingProp, PropPlugin};
+    let mut app = new_app();
+    app.add_plugins(PropPlugin)
+        .insert_resource(exa_physics::Physics::default());
+    let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    let at = Vec3::new(1.0, 0.5, 0.0);
+    let prop = app
+        .world_mut()
+        .spawn((
+            Transform::from_translation(at),
+            GlobalTransform::from_translation(at),
+        ))
+        .id();
+    app.world_mut()
+        .entity_mut(prop)
+        .insert(PendingProp(vec![RigidPart {
+            entity: prop,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+        }]));
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(
+        app.world().resource::<KinesisPickHook>().0,
+        Some(caster),
+        "the pick waits"
+    );
+    app.world_mut()
+        .write_message(KinesisPicked { caster, body: prop });
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    let Some(ActiveClass::Kinesis(k)) = state.active.first().map(|e| &e.class) else {
+        panic!("no kinesis");
+    };
+    assert_eq!(k.target, Some(prop.to_bits()));
+    let aim = Vec3::from(k.aim);
+    assert!((aim - at * 100.0).length() < 1e-3, "{aim}");
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(app.world().resource::<KinesisPickHook>().0, None);
+}
+
 /// A running vanish's hook keeps an attack's event 0x100, so the attack is
 /// refused, but being asked lets the vanish go.
 #[test]

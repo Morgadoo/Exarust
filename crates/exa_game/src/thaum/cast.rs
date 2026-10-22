@@ -312,9 +312,14 @@ impl Plugin for CastPlugin {
         app.add_message::<BarCommand>()
             .add_message::<exa_ai::presence::Entered>()
             .add_message::<AttackAskedHook>()
+            .add_message::<super::kinesis_live::KinesisPicked>()
+            .init_resource::<super::kinesis_live::KinesisPickHook>()
+            .init_resource::<super::kinesis_live::KinesisCursor>()
+            .init_resource::<super::kinesis_live::KinesisKeys>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_systems(Update, super::kinesis_live::read_kinesis_input)
             .add_systems(
                 Update,
                 (
@@ -330,12 +335,15 @@ impl Plugin for CastPlugin {
                 (
                     reset_entered_casts.after(exa_ai::presence::check_presence),
                     answer_attack_asks.before(tick_casters),
+                    super::kinesis_live::take_kinesis_picks.before(tick_casters),
                 ),
             )
             .add_systems(
                 FixedUpdate,
                 (
                     tick_casters,
+                    super::kinesis_live::steer_kinesis,
+                    super::kinesis_live::arm_kinesis_pick,
                     super::blast_live::tick_blasts,
                     super::barrier_live::tick_barriers,
                     super::bubble_live::tick_bubbles,

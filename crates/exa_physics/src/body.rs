@@ -2479,6 +2479,37 @@ impl Ragdoll {
         self.parts.get(part).map(|p| p.point(w))
     }
 
+    /// Where the part's own origin is now (m).
+    pub fn origin_at(&self, part: usize) -> Option<Vec3> {
+        self.parts.get(part).map(|p| p.point(&p.own_origin))
+    }
+
+    /// How far the part's own origin moved over the last tick (m): each
+    /// particle's displacement times its origin weight.
+    pub fn origin_moved(&self, part: usize) -> Option<Vec3> {
+        self.parts
+            .get(part)
+            .map(|p| (0..4).map(|k| p.moved[k] * p.own_origin[k]).sum())
+    }
+
+    /// Moves each of the part's particles by `delta` (m) times its origin
+    /// weight.
+    pub fn push_origin(&mut self, part: usize, delta: Vec3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            let w = p.own_origin;
+            p.push(&w, delta);
+        }
+    }
+
+    /// Turns the part's particles about `centre` (m) by `turn`.
+    pub fn turn_part(&mut self, part: usize, centre: Vec3, turn: Mat3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            for x in &mut p.positions {
+                *x = turn * (*x - centre) + centre;
+            }
+        }
+    }
+
     /// A part's link mobility: its inverse mass times the link share
     /// ([`LINK_MOBILITY`]), as the original keeps it on a living limb.
     pub fn link_mobility(&self, part: usize) -> Option<f32> {

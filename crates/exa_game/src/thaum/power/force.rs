@@ -27,7 +27,7 @@
 //!   hook then also keeps a cast's start, so the throw plays on in its
 //!   motion. The velocity is the unit
 //!   direction to the aim (the direction times 0.02 within 50 cm) times the
-//!   body's reach (half its radius plus one); the stick or the turn keys
+//!   body's reach (half its node's child count plus one); the stick or the turn keys
 //!   rotate it by `reach² · 0.001` a tick; a held body remembers its user
 //!   for 2 s. A pick holds the body at a third of its extents' sum.
 //! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23, with a
@@ -41,6 +41,8 @@
 //!
 //! Evidence: the Force classes' control handlers, the Strike callbacks, the
 //! Kinesis steering and the Throw phases, read from `Exanima.exe`.
+
+use bevy::math::Vec3;
 
 use super::PowerBase;
 use crate::thaum::casting::{CastBody, CastHook, end_cast, spend_tick, start_cast};
@@ -94,7 +96,7 @@ pub fn strikes_end_pitch(roll: f32) -> f32 {
 
 /// How many weapons can carry a strike aura.
 pub const MOST_AURAS: usize = 4;
-/// A kinesis object's reach: half its radius plus one.
+/// A kinesis object's reach: half its node's child count plus one.
 pub const KINESIS_REACH_BIAS: f32 = 1.0;
 /// The squared distance under which a kinesis or throw direction is not
 /// unit-scaled.
@@ -370,12 +372,12 @@ impl Default for Strikes {
     }
 }
 
-/// Kinesis' one target: where its centre is and how large it is.
+/// Kinesis' one target: where its centre is and how many child nodes its
+/// node has.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KinesisTarget {
     pub position: [f32; 3],
-    /// The held body's largest radius, in cm.
-    pub radius: f32,
+    pub children: f32,
 }
 
 /// Kinesis' control answer.
@@ -401,6 +403,11 @@ pub struct Kinesis {
     /// The held body went to a throw: the hook keeps the cast motion for
     /// it, and the kinesis's end leaves the cast running.
     pub handed: bool,
+    /// The depth the pick holds its body at (cm).
+    pub depth: f32,
+    /// Where the held body is steered (cm): the pick's centre until a clear
+    /// cursor aim replaces it.
+    pub aim: [f32; 3],
 }
 
 impl Kinesis {
@@ -416,6 +423,8 @@ impl Kinesis {
             target: None,
             hooked: false,
             handed: false,
+            depth: 0.0,
+            aim: [0.0; 3],
         }
     }
 
@@ -505,9 +514,9 @@ impl Default for Kinesis {
     }
 }
 
-/// A kinesis object's reach: half its largest radius plus one.
-pub fn kinesis_reach(radius: f32) -> f32 {
-    radius * 0.5 + KINESIS_REACH_BIAS
+/// A kinesis object's reach: half its node's child count plus one.
+pub fn kinesis_reach(children: f32) -> f32 {
+    children * 0.5 + KINESIS_REACH_BIAS
 }
 
 /// The steering factor a kinesis or throw direction is scaled by: one over
@@ -532,8 +541,38 @@ pub fn kinesis_velocity(target: &KinesisTarget, aim: [f32; 3]) -> [f32; 3] {
         aim[2] - target.position[2],
     ];
     let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-    let scale = steer_factor(dist_sq) * kinesis_reach(target.radius);
+    let scale = steer_factor(dist_sq) * kinesis_reach(target.children);
     [delta[0] * scale, delta[1] * scale, delta[2] * scale]
+}
+
+/// The height a kinesis aim takes over the cursor's hit, less the held
+/// body's depth (cm), and the least it takes.
+pub const AIM_RISE: f32 = 100.0;
+pub const AIM_RISE_LEAST: f32 = 10.0;
+/// The share of its height over the caster an aim gives up, per cm.
+pub const AIM_SETTLE: f64 = 0.005;
+/// The most an aim's height over the caster is kept (cm).
+pub const AIM_SETTLE_MOST: f32 = 200.0;
+
+/// Where the cursor aims a held body (cm): back along the unit ray from
+/// `origin` through its hit `t` cm along until it is `100 − depth` (at
+/// least 10, also for a depth that is not a number) higher.
+pub fn cursor_aim(origin: Vec3, dir: Vec3, t: f32, depth: f32) -> Vec3 {
+    let mut rise = AIM_RISE - depth;
+    if rise.is_nan() || rise < AIM_RISE_LEAST {
+        rise = AIM_RISE_LEAST;
+    }
+    origin + dir * (t + rise / dir.y)
+}
+
+/// A clear cursor aim `point` (cm) moved along the ray's `dir` by its
+/// height over the caster's `caster_y` less that height eased:
+/// `h/(|h| + 1)·200` of `h = (y − caster_y)·0.005`, the product in double.
+pub fn settle_aim(point: Vec3, dir: Vec3, caster_y: f32) -> Vec3 {
+    let h = (f64::from(point.y - caster_y) * AIM_SETTLE) as f32;
+    let eased = h / (h.abs() + 1.0) * AIM_SETTLE_MOST;
+    let s = point.y - (caster_y + eased);
+    point + dir * s
 }
 
 /// The stick length past which the gamepad turns a kinesis object instead
@@ -546,8 +585,8 @@ pub const STICK_DEAD_ZONE: f64 = 0.1;
 /// give, compared in double) turns by its y and x times the step; otherwise key 1 turns the
 /// first axis forward or else key 4 back, and key 2 the second forward or
 /// else key 8 back (the original tests each pair as if/else).
-pub fn kinesis_turn(keys: u32, stick: [f32; 2], radius: f32) -> [f32; 2] {
-    let reach = kinesis_reach(radius);
+pub fn kinesis_turn(keys: u32, stick: [f32; 2], children: f32) -> [f32; 2] {
+    let reach = kinesis_reach(children);
     let step = (f64::from(reach * reach) * KINESIS_TURN_STEP) as f32;
     let mut x = 0.0f32;
     let mut y = 0.0f32;
@@ -926,7 +965,7 @@ mod tests {
         assert_eq!(kinesis_reach(100.0), 51.0);
         let target = KinesisTarget {
             position: [0.0; 3],
-            radius: 100.0,
+            children: 100.0,
         };
         let far = kinesis_velocity(&target, [100.0, 0.0, 0.0]);
         assert!((far[0] - 51.0).abs() < 1e-5);
@@ -957,6 +996,19 @@ mod tests {
         assert_eq!(pick.depth, (180.0f64 * 0.333) as f32);
         assert_eq!(kinesis_pick(None, 2.0, [0.0; 3], 100), None);
         assert_eq!(pick_pitch(0.5), 1.0);
+    }
+
+    /// 30 cm under the caster, the aim gives up 0.15/1.15 of 200 cm of the
+    /// height it is under: it moves 3.91 cm back along a downward ray.
+    #[test]
+    fn the_kinesis_aim_rises_and_settles() {
+        let hit = cursor_aim(Vec3::new(0.0, 500.0, 0.0), Vec3::NEG_Y, 450.0, 120.0);
+        assert_eq!(hit, Vec3::new(0.0, 60.0, 0.0));
+        let settled = settle_aim(Vec3::new(0.0, 70.0, 0.0), Vec3::NEG_Y, 100.0);
+        let h = (-30.0f64 * 0.005) as f32;
+        let s = 70.0 - (100.0 + h / (h.abs() + 1.0) * 200.0);
+        assert_eq!(settled, Vec3::new(0.0, 70.0 - s, 0.0));
+        assert!((settled.y - 73.913).abs() < 1e-3);
     }
 
     #[test]

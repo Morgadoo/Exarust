@@ -600,7 +600,9 @@ there:
   hit point, strength 1, in the first two of the tick's 20 passes. Without
   Ctrl the original lifts it onto the cursor as an inventory item; Exarust
   has no item cursor yet, so that press only holds until the release, whose
-  end also ends the object's hold.
+  end also ends the object's hold. While the player's kinesis waits for its
+  pick, that lift hands the prop to the kinesis instead, and the point under
+  the cursor is in reach wherever it is (`docs/THAUMATURGY.md`, Force).
 - **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
