@@ -1,7 +1,8 @@
 //! The support pins. In each solver iteration a living body with support
-//! pulls its two thorax pins and its pelvis pin horizontally toward targets
-//! on the character frame, clamped near the feet centre. With no support
-//! the pull is zero and the targets only shift forward.
+//! pulls its two thorax pins once, and its pelvis pin twice, horizontally
+//! toward targets on the character frame, clamped near the feet centre.
+//! The second pelvis pull sees the first push. With no support the pull
+//! is zero and the targets only shift forward.
 //!
 //! One application, in the original's centimetres ([`cm`]): after the
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
@@ -14,6 +15,7 @@
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
@@ -68,6 +70,7 @@ pub(super) fn power(energy: f32, tone_target: f32, shock_stagger: bool) -> f32 {
 }
 
 /// The gains one pin application scales by.
+#[derive(Clone, Copy)]
 pub(super) struct Factors {
     pub has_support: bool,
     pub support: f32,
@@ -181,8 +184,9 @@ fn side_axis(drive: &Drive) -> Vec3 {
 }
 
 impl Ragdoll {
-    /// One pass of the support pins: the two thorax pins and the pelvis
-    /// pin, each by [`pull`] toward [`target`].
+    /// One pass of the support pins: the two thorax pins once and the
+    /// pelvis pin twice, each by [`pull`] toward [`target`]. The second
+    /// pelvis pull is read after the first push.
     pub(super) fn pull_support_pins(&mut self) {
         let Some(drive) = self.drive.as_ref() else {
             return;
@@ -243,36 +247,81 @@ impl Ragdoll {
         if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
             pins.push((i, self.parts[i].own_origin, pelvis, false));
         }
-        // Read every pin before any push, so each application sees the
-        // same tick and not a sibling pin's correction.
+        let pass = Pass {
+            centre,
+            forward,
+            scale,
+            has_support,
+            gain: Factors {
+                has_support,
+                support,
+                pin_gain,
+                power,
+                pin_factor: factor,
+            },
+            lead: lead.as_ref(),
+        };
+        // The thorax pins and the first pelvis pull are read before any
+        // push, so none of them sees a sibling's correction. The pelvis
+        // origin is then pulled again, and that second pull sees the first.
         let planned: Vec<(usize, [f32; 4], Vec3)> = pins
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|(i, _, _, _)| *i < targets.len())
             .map(|(i, w, radius, thorax)| {
-                let at = self.parts[i].point(&w);
-                let mut posed = targets[i].transform_point3(self.parts[i].rest_point(&w));
-                if thorax && let Some((step_at, standing, chest)) = &lead {
-                    posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
-                }
-                let goal = target(posed, centre, radius, has_support, forward, scale);
-                let disp = self.parts[i].slip(&w);
-                let corr = pull(
-                    cm((goal - at).with_y(0.0)),
-                    cm(disp.with_y(0.0)),
-                    Factors {
-                        has_support,
-                        support,
-                        pin_gain,
-                        power,
-                        pin_factor: factor,
-                    },
-                );
+                let corr = pin_correction(&self.parts[i], &targets[i], w, radius, thorax, &pass);
                 (i, w, corr)
             })
             .filter(|(_, _, c)| c.is_finite() && c.length_squared() > 0.0)
             .collect();
+        let pelvis = pins.iter().copied().find(|(_, _, _, thorax)| !thorax);
         for (i, w, corr) in planned {
             self.parts[i].push(&w, corr / CM);
         }
+        if let Some((i, w, radius, _)) = pelvis
+            && i < targets.len()
+        {
+            let corr = pin_correction(&self.parts[i], &targets[i], w, radius, false, &pass);
+            if corr.is_finite() && corr.length_squared() > 0.0 {
+                self.parts[i].push(&w, corr / CM);
+            }
+        }
     }
+}
+
+/// What one iteration's pin pulls share. A thorax pin reads `lead`; the
+/// pelvis pin does not.
+struct Pass<'a> {
+    centre: Vec3,
+    forward: Vec3,
+    scale: f32,
+    has_support: bool,
+    gain: Factors,
+    lead: Option<&'a (Vec3, Vec3, steps::ChestLead)>,
+}
+
+/// One pin's horizontal correction, in centimetres.
+fn pin_correction(
+    part: &Part,
+    pose: &Affine3A,
+    weights: [f32; 4],
+    radius: f32,
+    thorax: bool,
+    pass: &Pass<'_>,
+) -> Vec3 {
+    let at = part.point(&weights);
+    let mut posed = pose.transform_point3(part.rest_point(&weights));
+    if thorax && let Some((step_at, standing, chest)) = pass.lead {
+        posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
+    }
+    let goal = target(
+        posed,
+        pass.centre,
+        radius,
+        pass.has_support,
+        pass.forward,
+        pass.scale,
+    );
+    let disp = part.slip(&weights);
+    pull(cm((goal - at).with_y(0.0)), cm(disp.with_y(0.0)), pass.gain)
 }

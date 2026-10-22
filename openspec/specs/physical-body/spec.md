@@ -787,7 +787,7 @@ A living body's targets SHALL be its clip pose on a frame that turns with the bo
 
 #### Scenario: Unsteady body
 - **WHEN** a standing body at support 0.95 is pushed 14 cm across the floor
-- **THEN** its frame follows it, and it comes to rest no more than 5 cm back from the farthest it went, within 2 cm of where its frame puts its pelvis
+- **THEN** its frame follows it, and it comes to rest no more than 6 cm back from the farthest it went, within 2 cm of where its frame puts its pelvis
 
 #### Scenario: Support threshold
 - **WHEN** a standing body's support is 0.95 as a float, which is under the double 0.95, or the next float up
@@ -1105,7 +1105,11 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor. A gap under 1.19e-7 cm², and walking or off its feet (down, getting up, dormant or dead), pulls nothing. P is √E·T·E⁴, or 1 in a shock stagger (a NaN root stays). Pin-gain starts at 0.08.
+In each iteration a supported living body SHALL pull its two thorax pins once and its pelvis pin twice (the second after the first push), in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor. A gap under 1.19e-7 cm², and walking or off its feet (down, getting up, dormant or dead), pulls nothing. P is √E·T·E⁴, or 1 in a shock stagger (a NaN root stays). Pin-gain starts at 0.08.
+
+#### Scenario: Pelvis origin twice
+- **WHEN** a supported pelvis origin and a thorax pin are each 10 cm from their clamped targets and have not moved this tick
+- **THEN** the thorax pin takes one application and the pelvis origin takes a second after the first push has moved it
 
 #### Scenario: One application inside 60 cm
 - **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up

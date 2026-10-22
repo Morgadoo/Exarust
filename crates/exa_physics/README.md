@@ -143,7 +143,7 @@ carries a standing body only across the ground and turns it, and follows
 the frame (`CharacterBody::follow`, a tenth of the way a step,
 at most 2 cm), leaving its follow out of the carry. In each solver
 iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
-and the pelvis pin horizontally toward the frame's targets, clamped near
+once and the pelvis pin twice horizontally toward the frame's targets, clamped near
 the feet centre. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a

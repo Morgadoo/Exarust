@@ -169,8 +169,9 @@ fn pushed(support: f32) -> (bool, f32, f32, f32, f32) {
 /// A steady standing body (support 1) keeps its stance spot: pushed 9 cm
 /// across the floor, its frame stays put and the feet hold it back onto
 /// it. An unsteady one (support 0.95) stays where it is pushed: pushed 14
-/// cm, its frame follows its pelvis once it is 5 cm off, so it is drawn
-/// back no more than 5 cm. The support pins, not a rigid pelvis spring,
+/// cm, its frame follows its pelvis once it is 5 cm off. The second
+/// pelvis pull draws it about 5 cm back, just past that deadband, and no
+/// more than 6. The support pins, not a rigid pelvis spring,
 /// bring it to the frame: a planted foot does not step again while its
 /// spot is under 5 cm off, and the pelvis rests within 2 cm of where the
 /// frame puts it.
@@ -183,7 +184,7 @@ fn a_body_shoved_standing_stays_where_it_was_pushed() {
     let (stayed, far, end, moved, gap) = pushed(0.95);
     assert!(!stayed);
     assert!(
-        far > 12.0 && end > far - 5.0,
+        far > 12.0 && end > far - 6.0,
         "pushed {far} cm, rests {end}"
     );
     assert!((moved - end).abs() < 2.0, "frame {moved} cm, pelvis {end}");

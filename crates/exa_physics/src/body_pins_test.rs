@@ -35,6 +35,18 @@ fn law(error: Vec3, displacement: Vec3, has_support: bool) -> Vec3 {
     corr * scale
 }
 
+/// The pelvis origin is pulled twice. The second pull sees the first
+/// push: the point moves by the sum of the squared weights, which shortens
+/// the gap and adds that much to this tick's displacement. `scale` is 2
+/// while a shock stagger sets P to 1.
+fn pelvis_twice(error: Vec3, displacement: Vec3, weights: [f32; 4], scale: f32) -> Vec3 {
+    let first = law(error, displacement, true) * scale;
+    let share: f32 = weights.iter().map(|c| c * c).sum();
+    let moved = first * share;
+    let second = law(error - moved, displacement + moved, true) * scale;
+    first + second
+}
+
 fn human(error: Vec3, displacement: Vec3, has_support: bool) -> Vec3 {
     pull(
         error,
@@ -212,15 +224,93 @@ fn one_pass_on_a_body_applies_the_law() {
         let disp = (0..4)
             .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
             .sum::<Vec3>();
-        let corr = law(
-            ((goal - at).with_y(0.0)) * 100.0,
-            disp.with_y(0.0) * 100.0,
-            true,
-        );
+        let error = ((goal - at).with_y(0.0)) * 100.0;
+        let moved = disp.with_y(0.0) * 100.0;
+        let corr = if i == pelvis {
+            pelvis_twice(error, moved, w, 1.0)
+        } else {
+            law(error, moved, true)
+        };
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
         }
     }
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.pull_support_pins();
+    for (i, p) in body.parts.iter().enumerate() {
+        for k in 0..4 {
+            let delta = p.positions[k] - before[i][k];
+            assert!(
+                delta.abs_diff_eq(expected[i][k], 1e-6),
+                "part {i} particle {k}: {delta} vs {}",
+                expected[i][k]
+            );
+        }
+    }
+}
+
+/// The pelvis origin is pulled a second time after the first push. A
+/// thorax pin in the same pass is pulled once. Shifting both 10 cm, with
+/// no displacement yet, the pelvis particles move by the two sequential
+/// applications and the thorax particles by one.
+#[test]
+fn the_pelvis_origin_is_pulled_twice() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose);
+    let thorax = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    let pelvis = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    shift(&mut body.parts[thorax], Vec3::X * 0.10);
+    shift(&mut body.parts[pelvis], Vec3::X * 0.10);
+    let centre = feet_centre(&body);
+    let targets = body.drive.as_ref().unwrap().targets().to_vec();
+    let mut expected = vec![[Vec3::ZERO; 4]; body.parts.len()];
+    for (i, w, radius) in
+        body.chest
+            .iter()
+            .copied()
+            .map(|(i, w)| (i, w, 36.0))
+            .chain(std::iter::once((
+                pelvis,
+                body.parts[pelvis].own_origin,
+                60.0,
+            )))
+    {
+        let posed = targets[i].transform_point3(body.parts[i].rest_point(&w));
+        let goal = clamped(posed, centre, radius);
+        let at = body.parts[i].point(&w);
+        let error = ((goal - at).with_y(0.0)) * 100.0;
+        let corr = if i == pelvis {
+            pelvis_twice(error, Vec3::ZERO, w, 1.0)
+        } else {
+            law(error, Vec3::ZERO, true)
+        };
+        for k in 0..4 {
+            expected[i][k] += corr / 100.0 * w[k];
+        }
+    }
+    let once = {
+        let w = body.parts[pelvis].own_origin;
+        let posed = targets[pelvis].transform_point3(body.parts[pelvis].rest_point(&w));
+        let goal = clamped(posed, centre, 60.0);
+        let at = body.parts[pelvis].point(&w);
+        law(((goal - at).with_y(0.0)) * 100.0, Vec3::ZERO, true)
+    };
+    let twice = pelvis_twice(
+        {
+            let w = body.parts[pelvis].own_origin;
+            let posed = targets[pelvis].transform_point3(body.parts[pelvis].rest_point(&w));
+            let goal = clamped(posed, centre, 60.0);
+            let at = body.parts[pelvis].point(&w);
+            ((goal - at).with_y(0.0)) * 100.0
+        },
+        Vec3::ZERO,
+        body.parts[pelvis].own_origin,
+        1.0,
+    );
+    assert!(
+        (twice.length() - once.length()).abs() > 1e-4,
+        "the second pull matched the first: {twice} vs {once}"
+    );
     let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
     body.pull_support_pins();
     for (i, p) in body.parts.iter().enumerate() {
@@ -261,11 +351,13 @@ fn a_shock_stagger_pulls_the_pins_at_full_power() {
         let disp = (0..4)
             .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
             .sum::<Vec3>();
-        let corr = law(
-            ((goal - at).with_y(0.0)) * 100.0,
-            disp.with_y(0.0) * 100.0,
-            true,
-        ) * 2.0;
+        let error = ((goal - at).with_y(0.0)) * 100.0;
+        let moved = disp.with_y(0.0) * 100.0;
+        let corr = if i == pelvis {
+            pelvis_twice(error, moved, w, 2.0)
+        } else {
+            law(error, moved, true) * 2.0
+        };
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
         }
@@ -367,11 +459,13 @@ fn walking_or_off_its_feet_the_pins_stay() {
         let disp = (0..4)
             .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
             .sum::<Vec3>();
-        let corr = law(
-            ((goal - at).with_y(0.0)) * 100.0,
-            disp.with_y(0.0) * 100.0,
-            true,
-        );
+        let error = ((goal - at).with_y(0.0)) * 100.0;
+        let moved = disp.with_y(0.0) * 100.0;
+        let corr = if i == pelvis {
+            pelvis_twice(error, moved, w, 1.0)
+        } else {
+            law(error, moved, true)
+        };
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
         }

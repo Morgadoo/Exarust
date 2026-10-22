@@ -726,9 +726,10 @@ Exarust's own, for a body whose capsule still moves it across the ground
   lying clip (Unconcious 1, until C11) keeps its pelvis 57 cm off its
   root, and the controller stands at the frame's origin while the body
   lies.
-- The support pins, in each solver iteration: the two thorax pins and the
-  pelvis pin (its origin) are pulled horizontally toward their points on
-  the frame. With support the target stays near the feet centre, the mean
+- The support pins, in each solver iteration: the two thorax pins once,
+  and the pelvis pin (its origin) twice, are pulled horizontally toward
+  their points on the frame. The second pelvis pull sees the first push.
+  With support the target stays near the feet centre, the mean
   of the ankles: a thorax target within (60 − 60·crouch)·0.6·scale cm, or
   (60 − 30·crouch)·0.6·scale cm while a foot is stepping, and the pelvis
   within 60·scale cm. Crouch stays 0 until a crouch exists, so a standing
