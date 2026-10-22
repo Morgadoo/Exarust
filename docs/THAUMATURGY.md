@@ -123,11 +123,18 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   a tick by the stick or the key pairs (each pair if/else), about the
   camera's right axis and the vertical, and stamps its user for 2 s
   (`exa_game::thaum::kinesis_live`); Throw
-  holds no reserve: its lift aims 100 cm above the body and spends
-  `tick·cost·0.00125` every steered tick at `mass/(0.1 + mass)` of the
-  unit direction, drops the shell after 800 ms and coasts at six times
-  that share toward the caster's aim point (ending at once within 100 cm),
-  and restores the materials 200 ms later.
+  takes the body a charging kinesis holds, else the first body the
+  cursor's ray meets passing over the level: a dead character, or a prop
+  whose mobility widened to double is at least 0.01 (a single 0.01 is
+  not), that the hand does not hold. It holds no reserve: its lift aims
+  100 cm above the body and spends `tick·cost·0.00125` every steered tick
+  at `mass/(0.1 + mass)` of the unit direction (less a fifth of the
+  body's own motion), drops the shell after 800 ms and coasts at six
+  times that share toward the caster's aim point (the player's cursor;
+  ending at once within 100 cm), and restores the materials 200 ms
+  later. Each tick moves the body's first part, each particle by its
+  origin weight, and wakes it; a body gone ends the throw
+  (`exa_game::thaum::throw_live`).
 - **Energy**: Shock's first tick installs its cast hook and plays the
   charge; it charges by its rate, spends its focus while charging, fires
   one arc burst when it passes 1 (clearing the cast hook and id) and
@@ -249,7 +256,8 @@ go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
 player swap, the spirit body's character generation and the effect meshes are descriptions here, not
 spawned entities; the kinesis's held material, user stamp, pick shell and
-pick sound are not wired.
+pick sound, and the throw's sound, shell, material and user stamp, are
+not wired.
 
 ## Force
 

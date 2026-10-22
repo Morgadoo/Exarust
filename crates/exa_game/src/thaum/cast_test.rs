@@ -335,23 +335,10 @@ fn pressing_vanish_again_releases_it() {
     assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
 }
 
-/// A running kinesis waits for the hand's pick, takes the prop handed to
-/// it (aiming at its centre) and takes the pick back when it ends.
-#[test]
-fn a_running_kinesis_takes_the_hands_pick() {
-    use super::super::kinesis_live::{KinesisPickHook, KinesisPicked};
+/// A 40 cm crate with its origin at `at` (m), made into a prop body.
+fn spawn_crate(app: &mut App, at: Vec3) -> Entity {
     use exa_physics::body::RigidPart;
-    use exa_physics::prop::{PendingProp, PropPlugin};
-    let mut app = new_app();
-    app.add_plugins(PropPlugin)
-        .insert_resource(exa_physics::Physics::default());
-    let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
-    app.world_mut()
-        .get_mut::<PowerCaster>(caster)
-        .unwrap()
-        .body
-        .focus = 1.0;
-    let at = Vec3::new(1.0, 0.5, 0.0);
+    use exa_physics::prop::PendingProp;
     let prop = app
         .world_mut()
         .spawn((
@@ -379,6 +366,98 @@ fn a_running_kinesis_takes_the_hands_pick() {
             links: Vec::new(),
             mesh: None,
         }]));
+    prop
+}
+
+/// A throw cast while a kinesis holds a crate takes the crate: the kinesis
+/// ends, and the throw lifts its aim 100 cm over the crate and steers the
+/// crate up toward it.
+#[test]
+fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
+    use super::super::kinesis_live::KinesisPicked;
+    use crate::thaum::force::KINESIS;
+    use crate::thaum::power::force::THROW;
+    use exa_physics::body::Ragdoll;
+    use exa_physics::prop::PropPlugin;
+    let mut app = new_app();
+    app.add_plugins(PropPlugin)
+        .insert_resource(exa_physics::Physics::default());
+    let caster = caster(&mut app, &[KINESIS, THROW]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    let prop = spawn_crate(&mut app, Vec3::new(1.0, 0.5, 0.0));
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut()
+        .write_message(KinesisPicked { caster, body: prop });
+    app.world_mut().run_schedule(FixedUpdate);
+    let before = app
+        .world()
+        .get::<Ragdoll>(prop)
+        .unwrap()
+        .origin_at(0)
+        .unwrap();
+    command(&mut app, caster, BarAction::Toggle);
+    app.update();
+    command(&mut app, caster, BarAction::Pick(1));
+    app.update();
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    let throw = state.active.iter().find_map(|e| match &e.class {
+        ActiveClass::Throw(t) => Some(t),
+        _ => None,
+    });
+    assert_eq!(throw.and_then(|t| t.body), Some(prop.to_bits()));
+    for _ in 0..4 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert!(
+        !state
+            .active
+            .iter()
+            .any(|e| matches!(e.class, ActiveClass::Kinesis(_))),
+        "the kinesis ended"
+    );
+    let Some(ActiveClass::Throw(t)) = state.active.first().map(|e| &e.class) else {
+        panic!("no throw");
+    };
+    assert_eq!(t.phase, crate::thaum::power::force::THROW_FLY);
+    assert!(
+        (t.aim[1] - (before.y * 100.0 + 100.0)).abs() < 1e-2,
+        "{:?}",
+        t.aim
+    );
+    let after = app
+        .world()
+        .get::<Ragdoll>(prop)
+        .unwrap()
+        .origin_at(0)
+        .unwrap();
+    assert!(after.y > before.y, "{before} -> {after}");
+}
+
+/// A running kinesis waits for the hand's pick, takes the prop handed to
+/// it (aiming at its centre) and takes the pick back when it ends.
+#[test]
+fn a_running_kinesis_takes_the_hands_pick() {
+    use super::super::kinesis_live::{KinesisPickHook, KinesisPicked};
+    use exa_physics::prop::PropPlugin;
+    let mut app = new_app();
+    app.add_plugins(PropPlugin)
+        .insert_resource(exa_physics::Physics::default());
+    let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    let at = Vec3::new(1.0, 0.5, 0.0);
+    let prop = spawn_crate(&mut app, at);
     cast(&mut app, caster);
     app.world_mut().run_schedule(FixedUpdate);
     assert_eq!(

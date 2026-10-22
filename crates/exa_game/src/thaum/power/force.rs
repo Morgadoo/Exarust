@@ -702,6 +702,11 @@ pub struct Throw {
     pub coast: [f32; 3],
     /// The caster's cast hook is this throw's.
     pub hooked: bool,
+    /// The thrown body.
+    pub body: Option<u64>,
+    /// The last tick's velocity for the body (cm a tick), and whether it
+    /// was steered (the original then adds [`kinesis_spin`]).
+    pub push: Option<([f32; 3], bool)>,
 }
 
 impl Throw {
@@ -715,6 +720,8 @@ impl Throw {
             aim: [0.0; 3],
             coast: [0.0; 3],
             hooked: false,
+            body: None,
+            push: None,
         }
     }
 

@@ -99,7 +99,7 @@ const CM: f32 = 100.0;
 /// The right hand's bone.
 const RIGHT_HAND: usize = 17;
 /// The body tick the focus and the clip lengths are read at.
-const TICK_MS: u32 = 12;
+pub(super) const TICK_MS: u32 = 12;
 /// The cast clip's length when no motion set says otherwise, in ms.
 const DEFAULT_CLIP_MS: u32 = 1200;
 /// The status bit of a body that controls another: its bar casts nothing.
@@ -140,9 +140,9 @@ pub struct ActiveEntry {
     pub tick_cost: f32,
     /// The live entity (arcs, wall, wisps), when one exists.
     pub entity: Option<Entity>,
-    /// A throw's target: its centre (cm) and mass. None leaves the throw
-    /// waiting: the running game has no cursor body pick yet.
-    pub throw_target: Option<([f32; 3], f32)>,
+    /// What a throw's body is doing, read before each tick. None leaves the
+    /// throw waiting.
+    pub throw_view: Option<super::power::force::ThrowView>,
 }
 
 /// The active power classes the casts create.
@@ -316,10 +316,19 @@ impl Plugin for CastPlugin {
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
+            .init_resource::<super::throw_live::ThrowPick>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
-            .add_systems(Update, super::kinesis_live::read_kinesis_input)
+            .add_systems(
+                Update,
+                (
+                    super::kinesis_live::read_kinesis_input,
+                    super::throw_live::pick_throw,
+                )
+                    .chain()
+                    .before(run_bar_commands),
+            )
             .add_systems(
                 Update,
                 (
@@ -336,6 +345,9 @@ impl Plugin for CastPlugin {
                     reset_entered_casts.after(exa_ai::presence::check_presence),
                     answer_attack_asks.before(tick_casters),
                     super::kinesis_live::take_kinesis_picks.before(tick_casters),
+                    super::throw_live::sense_throws
+                        .before(tick_casters)
+                        .after(super::kinesis_live::take_kinesis_picks),
                 ),
             )
             .add_systems(
@@ -343,6 +355,7 @@ impl Plugin for CastPlugin {
                 (
                     tick_casters,
                     super::kinesis_live::steer_kinesis,
+                    super::throw_live::push_throws,
                     super::kinesis_live::arm_kinesis_pick,
                     super::blast_live::tick_blasts,
                     super::barrier_live::tick_barriers,
@@ -406,6 +419,8 @@ struct CastContext {
     /// The caster's own place (cm), at its feet: its transform's, else the
     /// body's root.
     standing: Vec3,
+    /// The throwable body and part under the player's cursor.
+    throw_pick: Option<Entity>,
 }
 
 /// One caster's bar command.
@@ -426,6 +441,7 @@ fn run_bar_commands(
     )>,
     hand: Option<Res<Hand>>,
     ground: Option<Res<CursorGround>>,
+    throw_pick: Option<Res<super::throw_live::ThrowPick>>,
     physics: Option<Res<Physics>>,
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
@@ -482,12 +498,17 @@ fn run_bar_commands(
                     .as_deref()
                     .is_some_and(|h| h.holding != Holding::Nothing);
                 let possessing = caster.body.status_bits & CONTROLLING != 0;
+                let picked = throw_pick.as_deref().and_then(|p| p.0);
+                let kinesis_holds = caster.active.iter().any(|entry| {
+                    matches!(&entry.class, ActiveClass::Kinesis(k)
+                        if entry.state != ENDING && k.target.is_some())
+                });
                 let world = ForceWorld {
                     controls_busy: busy,
                     possessing,
                     cursor_on_barricade: false,
-                    throw_pick: false,
-                    kinesis_holds: false,
+                    throw_pick: picked.is_some(),
+                    kinesis_holds,
                 };
                 let aim = DisplacementAim {
                     player: true,
@@ -549,6 +570,7 @@ fn run_bar_commands(
                     clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
                     target: None,
                     standing: None,
+                    throw_pick: picked,
                 };
                 begin_cast(
                     &mut commands,
@@ -581,6 +603,7 @@ struct CastPlace<'a> {
     target: Option<Entity>,
     /// The caster's transform's place (cm), when it has one.
     standing: Option<Vec3>,
+    throw_pick: Option<Entity>,
 }
 
 /// After a domain's front end: a started power gets the class its creator makes, and the body's power
@@ -608,6 +631,7 @@ fn begin_cast(
             clip_ms: place.clip_ms,
             target: place.target,
             standing: place.standing.unwrap_or(root),
+            throw_pick: place.throw_pick,
         };
         let made = create_active(
             commands,
@@ -821,6 +845,7 @@ fn cast_for_duellists(
             clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
             target: Some(duellist.target),
             standing: Some(at.translation() * CM),
+            throw_pick: None,
         };
         begin_cast(
             &mut commands,
@@ -1181,33 +1206,40 @@ fn create_force(
                 cost,
                 None,
             );
-            debug!("force kinesis: the pick and aim sweep are not wired");
             None
         }
         ForceStart::Throw { cost, from_kinesis } => {
             let mut cast_id = THROW;
+            let mut power = Throw::new(cost);
             if from_kinesis {
                 let PowerCaster { body, active, .. } = &mut *caster;
                 for entry in active.iter_mut() {
                     if let ActiveClass::Kinesis(kinesis) = &mut entry.class
                         && kinesis.state != ENDING
                     {
-                        kinesis.hand_off(body);
+                        if let Some(target) = kinesis.hand_off(body) {
+                            power.body = Some(target);
+                        }
                         entry.state = ENDING;
                         cast_id = KINESIS;
                     }
                 }
+            } else {
+                power.body = context.throw_pick.map(Entity::to_bits);
             }
+            debug!(
+                "force throw (from kinesis: {from_kinesis}) of {:?}",
+                power.body
+            );
             push_active(
                 caster,
                 THROW,
                 cast_id,
                 READY,
-                ActiveClass::Throw(Throw::new(cost)),
+                ActiveClass::Throw(power),
                 0.0,
                 None,
             );
-            debug!("force throw (from kinesis: {from_kinesis}): no target body pick");
             None
         }
         ForceStart::Strikes { motion: false, .. } => None,
@@ -1380,7 +1412,7 @@ fn push_active(
         class,
         tick_cost,
         entity,
-        throw_target: None,
+        throw_view: None,
     });
     caster.sync_body();
 }
@@ -1576,14 +1608,17 @@ fn tick_casters(
                     result = step.result;
                 }
                 ActiveClass::Throw(power) => {
-                    if let Some((target, mass)) = entry.throw_target {
-                        let view = super::power::force::ThrowView {
-                            target_at: target,
-                            mass,
+                    let ending = event & 0xa != 0 || power.state == ENDING;
+                    if entry.throw_view.is_some() || ending {
+                        let view = entry.throw_view.unwrap_or(super::power::force::ThrowView {
+                            target_at: at,
+                            mass: 0.0,
                             caster_point: at,
                             tick_ms: TICK_MS,
-                        };
+                        });
+                        let steered = power.phase == super::power::force::THROW_FLY;
                         let step = power.control(event, now, &view, body);
+                        power.push = step.velocity.map(|v| (v, steered));
                         result = step.result;
                     }
                 }

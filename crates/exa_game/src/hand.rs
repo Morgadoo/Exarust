@@ -339,7 +339,7 @@ fn ray_sphere(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, max: f32) -> O
 
 /// The nearest character sphere along the ray: the distance, the body, the
 /// part and whether it is dead.
-fn character_hit<'a>(
+pub(crate) fn character_hit<'a>(
     origin: Vec3,
     dir: Vec3,
     max: f32,

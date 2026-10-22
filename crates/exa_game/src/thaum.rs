@@ -46,6 +46,7 @@ pub mod force;
 pub mod kinesis_live;
 pub mod live;
 pub mod power;
+pub mod throw_live;
 pub mod torrent_live;
 pub mod tree;
 pub mod veil;

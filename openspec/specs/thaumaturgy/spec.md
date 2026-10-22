@@ -717,6 +717,13 @@ Throw SHALL hold no reserve. Its lift SHALL aim 100 cm above the body and spend 
 - **WHEN** a throw of cost 0.1 lifts a body of mass 0.9 at 1000 ms with a 12 ms tick and its caster aims 500 cm away along x
 - **THEN** it aims 100 cm above the body, spends 0.0015 on each steered tick, drops the shell at 1801 ms, coasts at six times the mass share along x and restores the materials at 2002 ms
 
+### Requirement: Throw body
+A throw SHALL take the body a charging kinesis holds, else the first body under the cursor past the level: a dead character, or an unheld prop whose mobility in double is at least 0.01. Each tick its velocity SHALL move the body's first part by its origin weights, less a fifth of its motion while steered, and wake it; a body gone SHALL end the throw.
+
+#### Scenario: A kinesis crate thrown
+- **WHEN** a throw is cast while the player's kinesis holds a crate
+- **THEN** the kinesis ends, the throw holds the crate, aims 100 cm above it and moves it up
+
 ### Requirement: Energy power classes
 Shock's first control tick SHALL install its cast hook and play the charge; each later tick SHALL add the charge rate, spend the tick's focus while charging when the charge is not past 1, and past 1 fire one arc burst and clear the hand's arcs, the cast hook and the cast id; a second charge past 1 SHALL answer 2. Shock Weapons SHALL start cast motion 0x25 and clear its weapon arcs when it ends.
 
