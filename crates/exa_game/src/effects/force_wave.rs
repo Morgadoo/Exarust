@@ -214,8 +214,22 @@ impl Wave {
         }
     }
 
-    /// One tick, the caster at `caster`.
+    /// One tick, the caster at `caster`, paying nothing.
     pub fn tick(&mut self, caster: Vec3, random: &mut Mt19937) -> WaveEvent {
+        self.tick_paying(caster, random, || false)
+    }
+
+    /// One tick, the caster at `caster`. A charging wave pays its drain
+    /// through `spend` once its chunks are placed and before its charge
+    /// steps; `spend` answering true (the caster's focus fell short, so its
+    /// hook was called) fizzles it, and the charge passing 1 that tick then
+    /// releases nothing.
+    pub fn tick_paying(
+        &mut self,
+        caster: Vec3,
+        random: &mut Mt19937,
+        spend: impl FnOnce() -> bool,
+    ) -> WaveEvent {
         let mut event = WaveEvent::None;
         if (self.state as i32) < 1 {
             for chunk in &mut self.chunks {
@@ -249,6 +263,9 @@ impl Wave {
                     event = WaveEvent::Removed;
                 }
             } else {
+                if spend() {
+                    self.state = WaveState::Fizzling;
+                }
                 self.charge = charge.amount;
                 if charge.released && self.state == WaveState::Charging {
                     self.aim = Vec3::ZERO;

@@ -630,6 +630,77 @@ fn a_duellists_bubble_grows_pushes_and_breaks_when_cast_again() {
     assert_eq!(count::<LiveBubble>(&mut app), 0);
 }
 
+/// A duellist's wave charges round it on the blast's hook, is thrown with
+/// the hook and power id cleared, pushes a body its ring reaches and leaves
+/// once its chunks are spent.
+#[test]
+fn a_duellists_wave_charges_throws_and_strikes() {
+    use crate::effects::force_wave::WaveState;
+    use crate::thaum::blast_live::BLAST_HOOK;
+    use crate::thaum::wave_live::{LiveWave, WAVE, WAVE_MOTION};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.3, 1.3)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[WAVE]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(WAVE);
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, WAVE);
+    assert_eq!(body.cast_motion, Some(WAVE_MOTION));
+    assert_eq!(body.cast_hook, Some(BLAST_HOOK));
+    assert_eq!(count::<LiveWave>(&mut app), 1);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveWave>();
+        q.iter(app.world()).next().map(|w| w.wave.state)
+    };
+    let start = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    let mut ticks = 0;
+    while state(&mut app) == Some(WaveState::Charging) {
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 100);
+    }
+    assert_eq!(state(&mut app), Some(WaveState::Thrown));
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    for _ in 0..20 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert_ne!(
+        app.world().get::<Ragdoll>(target).unwrap().parts[0].positions,
+        start
+    );
+    for _ in 0..60 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert_eq!(count::<LiveWave>(&mut app), 0);
+}
+
 /// A record's powers make its caster: the known pairs and the slots.
 #[test]
 fn a_records_powers_make_its_caster() {

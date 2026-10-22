@@ -45,8 +45,8 @@ use super::casting::{self, CastBody};
 use super::force::{BLAST_MOTION, BlastSetup};
 use super::live::EffectDraws;
 use crate::effects::blast::{
-    Blast, BlastView, CHARGING, THROWN, character_knock, contact_reach, contact_weight, limb_push,
-    limb_terms,
+    Blast, BlastChunk, BlastView, CHARGING, THROWN, character_knock, contact_reach, contact_weight,
+    limb_push, limb_terms,
 };
 use crate::player::CursorGround;
 
@@ -122,7 +122,7 @@ pub fn blast_view(caster: &Ragdoll, facing: Vec3, target: Option<Vec3>) -> Optio
 }
 
 /// A body's mass: its parts' masses summed.
-fn body_mass(body: &Ragdoll) -> f32 {
+pub(crate) fn body_mass(body: &Ragdoll) -> f32 {
     body.parts
         .iter()
         .filter(|p| p.inverse_mass > 0.0)
@@ -134,16 +134,27 @@ fn body_mass(body: &Ragdoll) -> f32 {
 /// pushes the limb spheres it reaches. Returns the impulse a character
 /// gathered, `None` when nothing was struck.
 pub fn strike_bodies(blast: &mut Blast, body: &mut Ragdoll) -> Option<Vec3> {
+    let alive: Vec<bool> = blast.lives.iter().map(|l| l.ticks >= 1).collect();
+    strike_chunks(&mut blast.chunks, &alive, &blast.setup, body)
+}
+
+/// The chunks marked alive against `body`'s limb spheres, as
+/// [`strike_bodies`] does for a blast.
+pub fn strike_chunks(
+    chunks: &mut [BlastChunk],
+    alive: &[bool],
+    setup: &BlastSetup,
+    body: &mut Ragdoll,
+) -> Option<Vec3> {
     let character = body.drive.is_some();
     let mass = body_mass(body);
-    let setup = blast.setup;
+    let setup = *setup;
     let mut gathered = Vec3::ZERO;
     let mut struck = false;
-    for (index, life) in blast.lives.iter().enumerate() {
-        if life.ticks < 1 {
+    for (index, chunk) in chunks.iter_mut().enumerate() {
+        if !alive.get(index).copied().unwrap_or(false) {
             continue;
         }
-        let chunk = &mut blast.chunks[index];
         for k in 0..body.parts.len() {
             let part = &body.parts[k];
             let inverse = part.inverse_mass;

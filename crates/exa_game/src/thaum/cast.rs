@@ -82,6 +82,7 @@ use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
     TreeScreen, domain_of, word,
 };
+use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
 use crate::hand::{Hand, Holding};
@@ -311,6 +312,7 @@ impl Plugin for CastPlugin {
                     super::blast_live::tick_blasts,
                     super::barrier_live::tick_barriers,
                     super::bubble_live::tick_bubbles,
+                    super::wave_live::tick_waves,
                     play_cast_motions,
                 )
                     .chain()
@@ -954,9 +956,21 @@ fn create_force(
             );
             Some(entity)
         }
-        ForceStart::Blast { .. } => {
-            debug!("force wave: the effect entity is not ported");
-            None
+        ForceStart::Blast { cost, .. } => {
+            let root = ragdoll.and_then(root_of).unwrap_or(context.caster);
+            let live = new_wave(
+                &mut caster.body,
+                caster_entity,
+                cost,
+                root,
+                context.heading,
+                TICK_MS,
+                draws,
+            );
+            let hooked = live.hooked;
+            let entity = commands.spawn((Name::new("_ForceWave"), live)).id();
+            debug!("force wave: motion {hooked}, entity {entity:?}");
+            Some(entity)
         }
         ForceStart::Torrent { .. } => {
             debug!("force torrent: the effect entity is not ported");
