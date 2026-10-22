@@ -1209,6 +1209,11 @@ pub struct Ragdoll {
     /// models, so the word is kept for them; no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
+    /// The footstep phase the last post-step left, and the phase the
+    /// previous tick left. The root part's origin travel advances them
+    /// ([`step_phase`]).
+    pub step_phase: f32,
+    pub step_phase_previous: f32,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1798,6 +1803,8 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            step_phase: 0.0,
+            step_phase_previous: 0.0,
         }
     }
 
@@ -2652,8 +2659,9 @@ impl Ragdoll {
         self.countdown = count_down(self.countdown, band);
     }
 
-    /// The post-step: where the tick leaves each part, and sleep once the
-    /// countdown is down to 1 (a living body's never is).
+    /// The post-step: where the tick leaves each part, the footstep phase
+    /// from the root origin's travel since the tick before, and sleep once
+    /// the countdown is down to 1 (a living body's never is).
     fn post_step(&mut self) {
         for p in &mut self.parts {
             p.settled = p.transform();
@@ -2661,6 +2669,7 @@ impl Ragdoll {
             p.drawn_particles.0 = p.drawn_particles.1;
             p.drawn_particles.1 = p.positions;
         }
+        self.advance_step_phase();
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
@@ -2673,6 +2682,20 @@ impl Ragdoll {
         self.ticks += 1;
         // Next tick's bend. The pose this tick's muscles followed stays.
         self.bend_legs();
+    }
+
+    /// The footstep phase, from the root part's origin since the tick
+    /// before (the two transforms the post-step just stored). The travel
+    /// is in centimetres, squared, as the original measures it.
+    fn advance_step_phase(&mut self) {
+        let Some(&root) = self.outward.first() else {
+            return;
+        };
+        let pelvis = &self.parts[root];
+        let delta = Vec3::from(pelvis.shown.1.translation - pelvis.shown.0.translation) * CM;
+        let (previous, now) = step_phase(self.step_phase, delta.length_squared());
+        self.step_phase_previous = previous;
+        self.step_phase = now;
     }
 
     /// Whether the body's root part fell below [`FALL_OUT_HEIGHT`] (the
@@ -3388,6 +3411,35 @@ mod tests {
                 spheres: None,
             },
         ])
+    }
+
+    /// The post-step advances the footstep phase by the root origin's
+    /// travel in centimetres, and a still body leaves it.
+    #[test]
+    fn the_post_step_advances_the_footstep_phase() {
+        let mut body = two_parts(0.0);
+        body.post_step();
+        assert_eq!(body.step_phase, 0.0);
+        assert_eq!(body.step_phase_previous, 0.0);
+        let shift = Vec3::X * 0.1;
+        for p in &mut body.parts[0].positions {
+            *p += shift;
+        }
+        body.post_step();
+        let (previous, now) = step_phase(0.0, (shift * CM).length_squared());
+        assert_eq!(body.step_phase_previous, previous);
+        assert!((body.step_phase - now).abs() < 1e-6, "{}", body.step_phase);
+        // A metre of travel from just under 1 wraps both phases.
+        body.step_phase = 0.99995;
+        let metre = Vec3::X;
+        for p in &mut body.parts[0].positions {
+            *p += metre;
+        }
+        body.post_step();
+        let (previous, now) = step_phase(0.99995, (metre * CM).length_squared());
+        assert!(now < 1.0 && previous < 0.99995, "{previous} {now}");
+        assert!((body.step_phase - now).abs() < 1e-5, "{}", body.step_phase);
+        assert!((body.step_phase_previous - previous).abs() < 1e-5);
     }
 
     #[test]

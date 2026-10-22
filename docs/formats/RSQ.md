@@ -482,6 +482,9 @@ tick, in this order (REA and `exe.asm` of its sector step and body tick):
 6. 8 friction passes, each the pairs' friction, then every body's against
    the level.
 7. The post-step (for a character: its pending hit and its damage first).
+   It advances the footstep phase by √(the root origin's travel in cm²) ×
+   0.0002, in double, and both the phase and the one the previous tick
+   left wrap by subtracting 1 above 1.
 
 Exarust runs the same order in its fixed step: `BodyPreStep`, then
 `CharacterTicks`, `BodySystems` and `BodyPostStep`. The character

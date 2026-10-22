@@ -302,6 +302,8 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            step_phase: 0.0,
+            step_phase_previous: 0.0,
         }
     }
 }
