@@ -632,13 +632,16 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   the lower leg's forward axis from the ankle (an anchored foot's moved
   toward its anchor by a share that grows 0.05 a tick to 0.5), 70 cm above
   it, 2000 cm down; while the body is down (lying or getting up) it starts
-  at the ankle. Its sphere is 10 cm while the body walks (its condition 1,
-  the walk or the run playing), else 5 cm plus 10 cm × that share. Living
+  at the ankle. Its sphere is 10 cm while the body walks (its condition 1),
+  widened by the gait bump up to 20 cm, else 5 cm plus 10 cm × that share.
+  The phase is the fraction of 2 − 0.5·leg − progress. From it,
+  s = max(0, 16p² − 64p⁴) and the bump is (2 − s)·s, so the sphere is
+  10 + 10·bump cm. The probe sways s·(36·scale + 8·the drive's length) cm
+  along the facing, the other way when walking backwards. A lower ground
+  is taken by 1 − 0.95·(2 − r)·r, r = 0.12·max(0, 24p − 2048p⁸), each of
+  those two products one double multiply narrowed once. Living
   bodies are not part of the level (Exarust's level is its static
-  colliders, so dead bodies and loose props are not either). A walking
-  body's probe also sways forward by the gait phase and widens to 20 cm,
-  and its ground falls by a share of the gait; Exarust leaves these for the
-  gait (C19).
+  colliders, so dead bodies and loose props are not either).
 - Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
   (the foot is lifted over it), except getting up. A foot is grounded when
   its ankle is within 20 cm (30 cm moving) of its ground plus its ground

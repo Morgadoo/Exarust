@@ -95,7 +95,6 @@ const PROBE_BLEND: f64 = 0.05;
 const PROBE_BLEND_MAX: f32 = 0.5;
 const PROBE_RADIUS: f32 = 5.0;
 const PROBE_RADIUS_BLEND: f32 = 10.0;
-const WALKING_RADIUS: f32 = 10.0;
 /// The stance's level follows 1 − v² by this share a tick (double).
 const LEVEL_KEEP: f64 = 0.9;
 const LEVEL_TAKE: f64 = 0.1;
@@ -710,18 +709,63 @@ pub(super) fn probe_blend(leg: &Leg) -> f32 {
     }
 }
 
-/// The radius (cm) of a foot's ground probe: a walking foot's 10 cm (its
-/// gait's bump is not ported), otherwise 5 cm plus 10 times its blend.
-pub(super) fn probe_radius(walking: bool, blend: f32) -> f32 {
-    if walking {
-        WALKING_RADIUS
-    } else {
-        PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
+/// The radius (cm) of a foot's ground probe when the body is not walking:
+/// 5 cm plus 10 times its blend. A walking foot uses [`gait_probe`].
+pub(super) fn probe_radius(blend: f32) -> f32 {
+    PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
+}
+
+/// One walking foot's ground probe, from the leg's index and the clip
+/// progress. The phase is the fraction of 2 − 0.5·index − progress
+/// (truncating toward zero). From it, s = max(0, 16p² − 64p⁴) and the
+/// bump is (2 − s)·s: the sphere is 10 + 10·bump cm (20 at the peak). The
+/// probe sways s·(36·scale + 8·speed) cm along the facing, the other way
+/// when walking backwards. A ground higher than the smoothed one is taken
+/// at once; a lower one is taken by the fall share
+/// 1 − 0.95·(2 − r)·r, r = 0.12·max(0, 24p − 2048p⁸), the two products
+/// in double precision and narrowed once.
+pub(super) fn gait_probe(
+    leg: usize,
+    progress: f32,
+    scale: f32,
+    speed: f32,
+    backwards: bool,
+) -> GaitProbe {
+    let half = (leg as f32) * 0.5;
+    let phase = super::locomotion::fraction((2.0 - half) - progress);
+    let p2 = phase * phase;
+    let four = p2 * 4.0;
+    let fourth = four * four;
+    let raised_raw = phase * 24.0 - (fourth * fourth) * 8.0;
+    let raised_raw = if raised_raw > 0.0 { raised_raw } else { 0.0 };
+    let raised = (f64::from(raised_raw) * 0.12) as f32;
+    let shaped = (2.0 - raised) * raised;
+    let fall = (1.0 - f64::from(shaped) * 0.95) as f32;
+    let wide_raw = p2 * 16.0 - fourth * 4.0;
+    let share = (if wide_raw > 0.0 { wide_raw } else { 0.0 }) * 1.0;
+    let bump = (2.0 - share) * share;
+    let mut reach = speed * 8.0 + 36.0 * scale;
+    if backwards {
+        reach = -reach;
+    }
+    GaitProbe {
+        radius: 10.0 * bump + 10.0,
+        fall,
+        sway: reach * share,
     }
 }
 
+/// A walking foot's ground probe: the sphere's radius (cm), how much of a
+/// lower ground it takes this tick, and the sway along the facing (cm).
+pub(super) struct GaitProbe {
+    pub radius: f32,
+    pub fall: f32,
+    pub sway: f32,
+}
+
 /// A foot's smoothed ground (cm) from the last one and the ground found
-/// now: it rises at once and falls by `fall` (1 outside walking).
+/// now: it rises at once and falls by `fall` (1 outside a walk; a walk's
+/// is the gait's).
 pub(super) fn smooth_ground(last: f32, found: f32, fall: f32) -> f32 {
     if last <= found {
         found

@@ -13,7 +13,8 @@
 //!
 //! Then the feet's states are set (`feet`), and each leg takes its
 //! friction from its foot's state, asks the level how high the ground is
-//! under its foot (the Height Query: a 10 cm sphere walking, 5 cm standing),
+//! under its foot (the Height Query: a walking sphere of 10 cm widened by
+//! the gait up to 20 cm and swayed along the facing, 5 cm standing),
 //! anchors its foot at that ground plus the sole height, and is grounded
 //! when its contact is within 20 cm of it (30 cm moving), its ground offset
 //! included (its sole height standing; moving, its ankle's lift in the walk
@@ -802,31 +803,47 @@ impl Ragdoll {
         b.pelvis = pelvis.y;
         let under = b.under;
         let mut grounded = 0;
-        for ((leg, &c), &axis) in legs.iter_mut().zip(&contacts).zip(&ahead) {
+        for (i, ((leg, &c), &axis)) in legs.iter_mut().zip(&contacts).zip(&ahead).enumerate() {
             let friction = feet::leg_friction(leg.state);
             parts[leg.shin].friction = friction;
             if let Some(f) = leg.foot {
                 parts[f].friction = friction;
             }
-            // A walking foot's probe is at its ankle with a 10 cm sphere (its
-            // gait's bump not ported); any other's at its ankle, or toward
-            // its anchor while anchored, 5 cm wide and more so.
+            // A walking foot's probe is at its ankle, swayed along the
+            // facing, its sphere 10 cm widened by the gait up to 20. Any
+            // other's is at its ankle, or toward its anchor while anchored,
+            // 5 cm wide and more so.
             leg.blend = feet::probe_blend(leg);
+            let gait = (bearing.walking && !down).then(|| {
+                feet::gait_probe(
+                    i,
+                    drive.gait_progress,
+                    scale,
+                    drive.gait_speed,
+                    drive.gait_back,
+                )
+            });
             let mut probe = if bearing.walking {
                 c
             } else {
                 c.lerp(leg.anchor, leg.blend)
             };
+            if let Some(gait) = &gait {
+                probe += forward * (gait.sway / CM);
+            }
             probe += axis * (PROBE_AHEAD * scale / CM);
-            let radius = feet::probe_radius(bearing.walking && !down, leg.blend);
+            let radius = gait
+                .as_ref()
+                .map_or_else(|| feet::probe_radius(leg.blend), |g| g.radius);
             probe.y = c.y + if down { 0.0 } else { PROBE_ABOVE / CM };
             let found = level
                 .height_below(probe, radius / CM, PROBE_DEPTH / CM)
                 .map_or(NO_GROUND, cm);
             if within_reach(found, cm(pelvis.y), cm(leg.length), bearing.getting_up) {
                 leg.state.0 &= !FootState::NO_GROUND;
-                // The walk's share is its gait's (not ported): at once.
-                let ground = feet::smooth_ground(cm(leg.smoothed), found, 1.0);
+                // A walk falls by the gait's share; any other ground at once.
+                let fall = gait.as_ref().map_or(1.0, |g| g.fall);
+                let ground = feet::smooth_ground(cm(leg.smoothed), found, fall);
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;

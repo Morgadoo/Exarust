@@ -556,7 +556,7 @@ The level SHALL answer the original's Height Query: a sphere whose lowest point 
 - **THEN** the first is passed through, and nothing is found
 
 ### Requirement: Support
-Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it down or getting up) with a 10 cm sphere walking, else 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
+Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it down or getting up) with a walking sphere of 10 cm widened by the gait bump up to 20 cm and swayed along the facing, else 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -581,6 +581,10 @@ Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ank
 #### Scenario: Down
 - **WHEN** a body lying or getting up has a shelf 40 cm over its ankle, and a 5 cm step's edge 7 cm beside its probe
 - **THEN** its leg finds the floor under both, where a standing body finds the shelf and the floor, and a walking body the shelf and the step's edge (2.14 cm)
+
+#### Scenario: Walking gait probe
+- **WHEN** a walking body's clip progress puts its first foot at the gait bump's peak, at scale 1 with no drive
+- **THEN** that foot's sphere is 20 cm and its probe is 36 cm further along the facing than the 5 cm offset
 
 ### Requirement: Joint measurements
 The system SHALL measure each joint of a simulated body where the last tick left it: its turn from the model's rest pose relative to its parent, split into a twist about the part's bone axis and a swing of that axis (with the swing's axis); in a living body, the angle to the clip's turn; and each link's gap against its slack, the largest share of slack a slack link uses, and the pivot's gap. A joint in its rest pose SHALL measure 0.

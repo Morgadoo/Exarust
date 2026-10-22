@@ -328,18 +328,25 @@ fn start_walk(motions: Option<&Motions>, anim: &mut Animator, start: Option<Star
 
 /// Gives the ticked body its gait floor while it moves, takes its
 /// controller's step out of its carry and measures its balance and ground.
+#[allow(clippy::type_complexity)]
 pub(crate) fn measure_ground(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     physics: Option<Res<Physics>>,
     controllers: Query<&CharacterBody>,
-    mut bodies: Query<(&mut Ragdoll, &Animator, Option<&Stature>)>,
+    mut bodies: Query<(
+        &mut Ragdoll,
+        &Animator,
+        Option<&Stature>,
+        Option<&Locomotor>,
+        Option<&Locomotion>,
+    )>,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
 ) {
     let Some(motions) = motions else { return };
     let root = ticked.body;
-    let Ok((mut body, anim, stature)) = bodies.get_mut(root) else {
+    let Ok((mut body, anim, stature, locomotor, locomotion)) = bodies.get_mut(root) else {
         return;
     };
     let stature = stature.map_or(1.0, |s| s.0);
@@ -351,6 +358,11 @@ pub(crate) fn measure_ground(
     }
     if let Some(c) = ticked.character.and_then(|c| controllers.get(c).ok()) {
         body.followed(c.followed());
+    }
+    if let Some(drive) = body.drive.as_mut() {
+        let speed = locomotor.map(|l| l.drive.length()).unwrap_or(0.0);
+        let backwards = locomotion.is_some_and(|r| r.has(flags::BACK));
+        drive.note_gait(anim.progress, speed, backwards);
     }
     if let Some(physics) = &physics {
         body.measure_balance(&physics.0);

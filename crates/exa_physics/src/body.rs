@@ -1285,6 +1285,13 @@ pub struct Drive {
     /// then left. A power and a weapon switch keep using it. Zero until
     /// an attack writes one.
     arm_drive: (f32, f32),
+    /// The clip progress the walking ground probe reads (the last
+    /// sample's), the locomotion drive's length (cm a tick²) and whether
+    /// that walk is backwards. [`feet::gait_probe`] turns them into the
+    /// sphere, the sway and the ground's fall.
+    gait_progress: f32,
+    gait_speed: f32,
+    gait_back: bool,
 }
 
 /// One tick of energy. The add is the double 0.005, and while getting up
@@ -1363,11 +1370,23 @@ impl Default for Drive {
             dormant: false,
             attack_arms: None,
             arm_drive: (0.0, 0.0),
+            gait_progress: 0.0,
+            gait_speed: 0.0,
+            gait_back: false,
         }
     }
 }
 
 impl Drive {
+    /// What the walking ground probe reads this tick: the clip `progress`
+    /// (the last sample's), the locomotion drive's `speed` (its length, cm
+    /// a tick²) and whether the walk is `backwards`.
+    pub fn note_gait(&mut self, progress: f32, speed: f32, backwards: bool) {
+        self.gait_progress = progress;
+        self.gait_speed = speed;
+        self.gait_back = backwards;
+    }
+
     /// Each part's animated world transform this tick (none before the
     /// first aim): the clip's pose on the character frame.
     pub fn targets(&self) -> &[Affine3A] {

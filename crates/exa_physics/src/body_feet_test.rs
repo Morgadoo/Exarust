@@ -503,8 +503,7 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
 /// The smoothed ground rises at once and falls by its share (at once
 /// outside the walk); an anchor sits on it plus the sole height, at most
 /// 1 m over the ankle; an anchored foot's probe moves 0.05 a tick toward
-/// its anchor up to 0.5, its sphere 5 cm plus 10 times that (10 cm
-/// walking).
+/// its anchor up to 0.5, its sphere 5 cm plus 10 times that.
 #[test]
 fn anchors_sit_on_the_smoothed_ground() {
     assert_eq!(smooth_ground(0.0, 5.0, 0.05), 5.0);
@@ -520,9 +519,33 @@ fn anchors_sit_on_the_smoothed_ground() {
     assert_eq!(probe_blend(leg), 0.5);
     leg.blend = 0.1;
     assert!(close(probe_blend(leg), 0.15, 1e-6));
-    assert_eq!(probe_radius(false, 0.0), 5.0);
-    assert_eq!(probe_radius(false, 0.5), 10.0);
-    assert_eq!(probe_radius(true, 0.5), 10.0);
+    assert_eq!(probe_radius(0.0), 5.0);
+    assert_eq!(probe_radius(0.5), 10.0);
+}
+
+/// A walking foot's phase is the fraction of 2 − 0.5·leg − progress. At
+/// the bump's peak the sphere is 20 cm and the sway is
+/// (36·scale + 8·speed) cm (the other way backwards). The fall share is
+/// one double product narrowed once: at phase 0.5 it is 0.30688005685806274.
+#[test]
+fn a_walking_probe_widens_and_sways_with_the_gait() {
+    let peak = 0.125f32.sqrt();
+    let wide = gait_probe(0, 2.0 - peak, 1.0, 1.5, false);
+    assert_eq!(wide.radius, 20.0);
+    assert_eq!(wide.sway, 48.0);
+    assert_eq!(wide.fall.to_bits(), 0x3d53_9678);
+    let back = gait_probe(0, 2.0 - peak, 1.0, 1.5, true);
+    assert_eq!(back.sway, -48.0);
+    // Phase 0.5 (the second leg at progress 0): the sphere stays 10 cm
+    // and the sway is 0, but the ground no longer falls at once.
+    let half = gait_probe(1, 0.0, 1.0, 0.0, false);
+    assert_eq!((half.radius, half.sway), (10.0, 0.0));
+    assert_eq!(half.fall.to_bits(), 0x3e9d_1f62);
+    // A phase of 0, and a NaN progress, keep the plain 10 cm sphere.
+    let still = gait_probe(0, 0.0, 1.0, 4.0, false);
+    assert_eq!((still.radius, still.sway, still.fall), (10.0, 0.0, 1.0));
+    let nan = gait_probe(0, f32::NAN, 1.0, 1.0, false);
+    assert_eq!((nan.radius, nan.sway, nan.fall), (10.0, 0.0, 1.0));
 }
 
 /// The stance's level keeps 0.9 of itself and takes 0.1 of 1 − v², v the

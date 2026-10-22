@@ -589,6 +589,37 @@ fn down_the_query_starts_at_the_ankle_5_cm_wide() {
     }
 }
 
+/// At the gait bump's peak the first foot's sphere is 20 cm and its probe
+/// sits 36 cm further along the facing than the plain 5 cm offset, so a
+/// platform there is the ground. At a phase with no bump the same platform
+/// is missed and the foot finds the floor.
+#[test]
+fn a_walking_probe_sways_forward_and_widens() {
+    let peak = 0.125f32.sqrt();
+    let swayed = Vec2::new(-0.078, 0.062 + 0.36);
+    let mut level = floor();
+    level.extend(square(swayed, 0.2, 0.04));
+    let ground = |progress: f32| {
+        let mut body = biped();
+        bearing(
+            &mut body,
+            Bearing {
+                walking: true,
+                ..Bearing::default()
+            },
+        );
+        body.drive.as_mut().unwrap().note_gait(progress, 0.0, false);
+        body.measure_balance(level.as_slice());
+        body.legs()[0].ground.unwrap()
+    };
+    assert!(
+        (ground(2.0 - peak) - 0.2).abs() < 1e-4,
+        "{}",
+        ground(2.0 - peak)
+    );
+    assert!(ground(0.0).abs() < 1e-4);
+}
+
 /// Getting up, balance rises 0.05 a tick and the counter falls by 5 while
 /// above 2; a body with no foot grounded and its pelvis within 30 cm of the
 /// ground under it has support at half its balance.
