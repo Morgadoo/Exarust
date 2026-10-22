@@ -58,7 +58,7 @@ use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, PowerFactors};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
-use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
+use exa_physics::body::{BodySystems, BodyTicks, OutOfScene, Ragdoll};
 
 use super::arcs::{ArcEmitter, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{Barricade, WallFrame, state as wall_state};
@@ -310,6 +310,7 @@ pub struct CastPlugin;
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<BarCommand>()
+            .add_message::<exa_ai::presence::Entered>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
@@ -322,6 +323,10 @@ impl Plugin for CastPlugin {
                         .after(cast_for_duellists)
                         .after(run_bar_commands),
                 ),
+            )
+            .add_systems(
+                FixedUpdate,
+                reset_entered_casts.after(exa_ai::presence::check_presence),
             )
             .add_systems(
                 FixedUpdate,
@@ -1427,18 +1432,35 @@ fn bone_part(body: &Ragdoll, bone: usize) -> Option<usize> {
 
 /// Walk every caster's active list as the original's body tick does.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+/// A character entering the scene resets its body: the cast hook is asked
+/// event −1 and cleared with the power id.
+fn reset_entered_casts(
+    mut entered: MessageReader<exa_ai::presence::Entered>,
+    mut casters: Query<&mut PowerCaster>,
+) {
+    for exa_ai::presence::Entered(entity) in entered.read() {
+        if let Ok(mut caster) = casters.get_mut(*entity) {
+            casting::reset_body(&mut caster.body);
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
 fn tick_casters(
     mut commands: Commands,
-    mut casters: Query<(
-        &mut PowerCaster,
-        Option<&Condition>,
-        Option<&SwingState>,
-        Option<&Locomotion>,
-        Option<&Locomotor>,
-        Option<&Ragdoll>,
-        Option<&mut Animator>,
-        Option<&PlayerBody>,
-    )>,
+    mut casters: Query<
+        (
+            &mut PowerCaster,
+            Option<&Condition>,
+            Option<&SwingState>,
+            Option<&Locomotion>,
+            Option<&Locomotor>,
+            Option<&Ragdoll>,
+            Option<&mut Animator>,
+            Option<&PlayerBody>,
+        ),
+        Without<OutOfScene>,
+    >,
     walls: Query<&LiveBarricade>,
     mut bubbles: Query<&mut LiveBubble>,
     ticks: Option<Res<BodyTicks>>,

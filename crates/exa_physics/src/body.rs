@@ -1646,6 +1646,11 @@ pub struct DealtShoves(pub Vec<Shove>);
 #[derive(Resource, Debug, Default, Clone, Copy)]
 pub struct BodyTicks(pub u64);
 
+/// A body taken out of the scene (an AI character out of its activation
+/// range): the solver, its character tick and the drawing leave it.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OutOfScene;
+
 /// The original's game clock advances this many milliseconds a body tick
 /// (12 ms, the 83 Hz tick rounded), however long the tick took: its timers
 /// in milliseconds (attack cooldowns, the double click) run on it, so they
@@ -3271,7 +3276,7 @@ pub fn world_with(
 fn begin_frame(
     mut shoves: MessageReader<Shove>,
     mut queue: ResMut<ShoveQueue>,
-    mut bodies: Query<&mut Ragdoll>,
+    mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
 ) {
     queue.0.extend(shoves.read().copied());
     for mut body in &mut bodies {
@@ -3292,7 +3297,7 @@ pub fn step_bodies(
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
-    mut bodies: Query<&mut Ragdoll>,
+    mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
 ) {
     dealt.0.clear();
     for s in queue.0.drain(..) {

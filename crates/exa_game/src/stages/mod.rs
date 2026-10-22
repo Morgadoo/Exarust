@@ -43,7 +43,8 @@ use exa_anim::{Animator, TickedClips};
 use exa_combat::condition::ticked_lives;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
-    CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter, run_character_ticks,
+    CharacterStage, CharacterTick, CharacterTicks, OutOfScene, Ragdoll, TickedCharacter,
+    run_character_ticks,
 };
 
 use crate::player::PlayerBody;
@@ -90,7 +91,7 @@ fn tick_characters(
     world: &mut World,
     bodies: &mut QueryState<
         (Entity, &Ragdoll, Has<PlayerBody>),
-        (With<Animator>, With<TickedClips>),
+        (With<Animator>, With<TickedClips>, Without<OutOfScene>),
     >,
     mut order: Local<Vec<(bool, Entity)>>,
 ) {

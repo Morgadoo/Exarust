@@ -358,6 +358,8 @@ pub mod hook_event {
     pub const CAST_START: u32 = 0x20;
     /// The cast's focus falls short.
     pub const SHORTFALL: u32 = 0x80;
+    /// The body's reset, when its character enters the scene (−1).
+    pub const RESET: u32 = u32::MAX;
 }
 
 /// A cast hook as its callers see it: 0 to an event carrying any of its
@@ -424,6 +426,15 @@ pub fn end_cast(body: &mut CastBody) {
     if body.condition == CASTING {
         body.condition = 0;
     }
+}
+
+/// The body's reset: its hook is asked event −1, its answer ignored, then
+/// the hook and the power id go and the condition clears.
+pub fn reset_body(body: &mut CastBody) {
+    let _ = ask_hook(body, hook_event::RESET);
+    body.cast_hook = None;
+    body.casting = 0;
+    body.condition = 0;
 }
 
 /// The body tick's release: with the condition casting (a cast motion
@@ -826,6 +837,22 @@ mod tests {
             (false, hook_event::RELEASE)
         );
         assert!(!release_cast(&mut body));
+    }
+
+    #[test]
+    fn the_reset_asks_the_hook_minus_one_and_clears_the_cast() {
+        let mut body = CastBody {
+            casting: 0x10601,
+            cast_hook: Some(CastHook { keeps: !0 }),
+            condition: CASTING,
+            ..CastBody::default()
+        };
+        reset_body(&mut body);
+        assert_eq!((body.casting, body.cast_hook, body.condition), (0, None, 0));
+        assert_eq!(body.hook_asked, u32::MAX);
+        let mut idle = CastBody::default();
+        reset_body(&mut idle);
+        assert_eq!(idle.hook_asked, 0, "no hook, nothing asked");
     }
 
     #[test]

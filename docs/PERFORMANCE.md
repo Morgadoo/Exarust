@@ -194,9 +194,9 @@ From the 2026-10-20 measurements, largest gain first:
    7.6 ms a frame; the frame is now bound by the main thread.
 2. Done (`step-bodies-in-parallel`): the body solver's per-body work runs
    in parallel, bodies no pair touches running their 20 iterations and 8
-   friction passes at once, with identical results. The original's 200 m
-   activation would not help here: it loads levels whole and simulates every
-   character within 200 m, which in a dungeon is all of them. Play mode went
+   friction passes at once, with identical results. The original's
+   activation range (`exa_ai::presence`) was not in yet; it is 200 m
+   outside play and 40 m around the player during play. Play mode went
    from 34 to 51–54 FPS; the fixed step from 18.1 to 8.5 ms a frame.
 3. Done (`relink-lights-by-cell`): a moved light (the carried torch, every
    frame) is relinked only against the casters filed in the cells it

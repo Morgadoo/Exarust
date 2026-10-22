@@ -544,7 +544,10 @@ that picks the target.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
-(`player_controls::PlaySession`; nothing in Exarust reads it yet).
+(`player_controls::PlaySession`). While play runs the player controller
+moves the centre to the player every tick, and the AI's presence
+(`exa_ai::presence`) reads the area: a character out of range leaves the
+scene, and one that comes back into range enters it again, reset.
 
 ### The reach
 

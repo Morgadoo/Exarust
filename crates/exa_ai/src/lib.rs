@@ -45,6 +45,7 @@ pub mod order;
 pub mod path;
 pub mod personality;
 pub mod place;
+pub mod presence;
 pub mod roles;
 pub mod route;
 pub mod search;
@@ -62,14 +63,20 @@ pub struct DuelSystems;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                (brain::apply_new_roles, brain::rate_the_player).chain(),
-                duellist.in_set(DuelSystems),
+        app.init_resource::<presence::ActivationArea>()
+            .add_message::<presence::Entered>()
+            .add_systems(
+                FixedUpdate,
+                presence::check_presence.before(exa_physics::body::CharacterTicks),
             )
-                .chain(),
-        );
+            .add_systems(
+                Update,
+                (
+                    (brain::apply_new_roles, brain::rate_the_player).chain(),
+                    duellist.in_set(DuelSystems),
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -114,7 +121,7 @@ impl cast::Powers for DuelPowers {
 /// `CharacterBody`) that duels `target` (a world-space entity, e.g. the
 /// player's physics root).
 #[derive(Component, Debug, Clone)]
-#[require(Stance, Combatant)]
+#[require(Stance, Combatant, presence::Presence)]
 pub struct Duellist {
     pub target: Entity,
     /// The combat state's generator.
@@ -434,7 +441,7 @@ fn duellist(
         &GlobalTransform,
         Option<&Ragdoll>,
         &Fighter,
-        Option<&mut DuelPowers>,
+        (Option<&mut DuelPowers>, Option<&presence::Presence>),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
     mut planning: Local<(PlanTurn, u32)>,
@@ -460,7 +467,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        mut powers,
+        (mut powers, presence),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -968,6 +975,10 @@ fn duellist(
                     stance.action(),
                 );
             }
+        }
+        // Only a character in the scene moves its body.
+        if presence.is_some_and(|p| !p.moves()) {
+            continue;
         }
         // It turns to the heading its look follows.
         t.rotation = Quat::from_rotation_y(ai.mind.heading);

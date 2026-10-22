@@ -350,6 +350,7 @@ impl Plugin for PlayerPlugin {
                 )
                     .chain(),
             )
+            .add_systems(FixedPreUpdate, follow_activation_centre)
             .add_systems(Update, (begin_play_session, end_play_session))
             .add_systems(
                 Update,
@@ -383,6 +384,24 @@ fn end_play_session(
     }
     session.end();
     info!("end of play: activation radius 200 m");
+}
+
+/// The player controller's tick: while play runs, the AI's activation
+/// centre follows the player, and the AI takes the session's area.
+fn follow_activation_centre(
+    mut session: ResMut<crate::player_controls::PlaySession>,
+    area: Option<ResMut<exa_ai::presence::ActivationArea>>,
+    players: Query<&GlobalTransform, With<Player>>,
+) {
+    if session.playing
+        && let Some(at) = players.iter().next()
+    {
+        session.activation_centre = at.translation();
+    }
+    if let Some(mut area) = area {
+        area.centre_cm = session.activation_centre * 100.0;
+        area.radius2 = session.activation_radius2;
+    }
 }
 
 /// One tick of the crouch: it falls by 0.02 while above 0 (the body

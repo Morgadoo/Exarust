@@ -20,8 +20,9 @@
 //!
 //! Not in Exarust: the click and double-click handlers (the item card, the
 //! narrator's line, the inventory, loot and talk windows they open), the
-//! dispatcher that picks the target of a use, and a consumer for the
-//! activation centre.
+//! dispatcher that picks the target of a use. While play runs the player
+//! controller moves the centre to the player each tick, and the AI's
+//! presence (`exa_ai::presence`) reads it.
 //!
 //! Evidence: the use routines, the timed list and the start and end of
 //! play, read in the instructions (`context/re/player-control-hand.md`).

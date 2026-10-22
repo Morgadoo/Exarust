@@ -99,3 +99,10 @@ Only one brain SHALL plan a route a frame: another brain asking SHALL record its
 #### Scenario: Waits and spans
 - **WHEN** two brains ask on frames 1 and 2 and a third asks with an equal wait; and a route 5.1 m long and one 30 cm long are planned
 - **THEN** the second brain plans next, the long route is followed and the short one only when forced
+
+### Requirement: Presence in the scene
+An AI character's presence SHALL be checked each body tick unless its condition carries bit 0x800 or its state flags carry 0x10. After a change it SHALL hold 80 ticks. Out of the activation range a present character SHALL leave the scene, and in range a dormant one SHALL enter it with its condition cleared, its stance taken and its cast hook asked -1 and cleared. Only a present character's body SHALL move, and a body out of the scene SHALL not be solved, ticked or drawn.
+
+#### Scenario: A far character leaves and comes back reset
+- **WHEN** a casting duellist stands 300 m from the centre of a 200 m area, and after it has gone the centre moves onto it
+- **THEN** it leaves on the first tick and is out of the scene and hidden on the next; it stays dormant 80 ticks, then enters with its condition normal and an entry message, and is present and in the scene a tick later
