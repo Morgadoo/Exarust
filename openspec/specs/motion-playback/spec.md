@@ -268,7 +268,7 @@ A clip started a few keys in SHALL have its capture meant for that key and its c
 - **THEN** its start is unchanged
 
 ### Requirement: Clip rate by posture
-The posture rules SHALL set a clip's rate each body tick from the race's clip-rate base: × 1.25 off balance (falling, lying, a get-up's first tick), × (1.5 − 0.5 × encumbrance) getting up, × 2 kicking at the tone a standing body keeps (0.85), else × 1; then × 1 while the clip playing is the body's stance, whatever its balance. The walking clock SHALL ignore the rate.
+The posture rules SHALL set a clip's rate each body tick from the race's clip-rate base: × 1.25 off balance (falling, lying, a get-up's first tick), × (1.5 − 0.5 × encumbrance) getting up, × 2 kicking at the tone a standing body keeps (0.85), else × 1; then × 1 while the clip playing is the body's stance, whatever its balance. While parrying, unless off balance, getting up, attacking or weak, the rate SHALL be × 2 and that stance reset SHALL not apply. The walking clock SHALL ignore the rate.
 
 #### Scenario: Dazed in the Defence stance
 - **WHEN** a human off balance plays its Defence stance, or any clip that is not its stance
@@ -277,6 +277,14 @@ The posture rules SHALL set a clip's rate each body tick from the race's clip-ra
 #### Scenario: Kicking
 - **WHEN** a human kicks at full tone, or weak (tone 0.8)
 - **THEN** its clock gains 1.2 frames a tick, or 0.6
+
+#### Scenario: A parry doubles the rate
+- **WHEN** a human parries at full tone, including while its stance plays
+- **THEN** its clock gains 1.2 frames a tick
+
+#### Scenario: Off balance a parry keeps the fall rate
+- **WHEN** a parrying human off balance plays its stance
+- **THEN** its clock gains 0.75 frames a tick
 
 #### Scenario: An attack off balance
 - **WHEN** a human off balance plays an attack's clip

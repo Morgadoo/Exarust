@@ -290,6 +290,8 @@ pub struct Bearing {
     /// It is parrying. Each stored arm eases by 0.8x + 0.04 unless the
     /// body is collapsing, off balance, kicking, or an attack is setting
     /// the arms. A walk, a daze, a power and a weapon switch do not.
+    /// The clip rate is twice the race base unless the body is off
+    /// balance, getting up, attacking or weak.
     pub parrying: bool,
     /// It plays a power. Both arms are set to 0.3.
     pub casting: bool,

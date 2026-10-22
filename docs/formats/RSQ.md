@@ -1636,9 +1636,10 @@ the base while the clip playing is the body's stance:
 | off balance (balance under 0.6: falling, lying; a get-up's first tick, set before its start) | 1.25 × base |
 | getting up | (1.5 − 0.5 × encumbrance) × base |
 | kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, so the clock keeps the rate the posture block last wrote) | 2 × base |
+| parrying, unless off balance, getting up, attacking or weak (a walk takes this too; the stance reset does not) | 2 × base |
 | the combat idle, a weapon switch, a power, any other clip (the walk and the run write none, so they keep the last rate too) | 1 × base |
 | an attack (actions 5–12), balanced | the swing's rate (below) |
-| the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance) | 1 × base |
+| the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance), unless it parries | 1 × base |
 
 Then the clock block adds the frames:
 
@@ -1648,7 +1649,7 @@ Then the clock block adds the frames:
 | getting up | tone × rate × 0.6, only above half tone | 0.9 (0.75 on its first tick) |
 | an attack (actions 5–12) | the rate, without the 0.6 | ≈ 1.0–1.3; 1.25 off balance (no swing routine runs) |
 | shocked (the condition's bit 0x80) | none | 0 |
-| otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking |
+| otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking, 1.2 parrying |
 
 The standing product and the get-up's (tone included) are each one double-precision multiply, narrowed once: a rate of 1.5 at full tone gains 0.8999999761581421 frames, and a get-up in encumbrance 0.625 gains 0.7124999761581421.
 

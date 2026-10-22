@@ -375,15 +375,17 @@ const KICK: usize = 0x0D;
 /// The rate the original's posture block sets a living body's clip clock
 /// this tick, from its race's base: × 1.25 off balance (falling, lying,
 /// a get-up's first tick) and × (1.5 − 0.5 × encumbrance) getting up, the
-/// swing's rate for a balanced attack, × 2 kicking at full tone, else × 1
-/// (the combat idle, a weapon switch, a power, every other clip). The
-/// weak branch and the walk and the run write nothing, so this returns
-/// the rate the block last wrote. Whatever the branch, the block's end
-/// resets it to × 1 while the clip `playing` is the body's stance (a
+/// swing's rate for a balanced attack, × 2 kicking at full tone, × 2
+/// while parrying (unless off balance, getting up, attacking or weak),
+/// else × 1 (the combat idle, a weapon switch, a power, every other clip).
+/// The weak branch and, unless it parries, the walk and the run write
+/// nothing, so this returns the rate the block last wrote. The block's
+/// end resets it to × 1 while the clip `playing` is the body's stance (a
 /// dazed body in its Defence stance plays it at the standing pace though
-/// off balance). A walking body's locomotion clock ignores the rate. A
-/// shock skips the block, so a tick that holds the clock still keeps the
-/// last rate except for an attack, whose routine still writes.
+/// off balance), except while it parries. A walking body's locomotion
+/// clock ignores the rate. A shock skips the block, so a tick that holds
+/// the clock still keeps the last rate except for an attack, whose
+/// routine still writes.
 fn clip_rate(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
     let base = drive.race.clip_rate;
     let bearing = &drive.bearing;
@@ -391,7 +393,10 @@ fn clip_rate(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) 
     if pace.still && !attack {
         return drive.posture_rate;
     }
-    if playing.is_some() && playing == pace.stance {
+    // The block's end resets a stance to the base, and skips that reset
+    // while the body parries, so a parry in its stance keeps the rate
+    // the branch wrote.
+    if playing.is_some() && playing == pace.stance && !drive.bearing.parrying {
         return base;
     }
     if bearing.getting_up {
@@ -410,10 +415,16 @@ fn clip_rate(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) 
                 .frames(playing, progress, base, drive.energy_share())
         });
     }
-    if drive.tone < WEAK_BELOW || playing == Some(action::WALK) || playing == Some(action::RUN) {
+    // A walk or a run writes nothing, unless the body parries: that
+    // branch is earlier and sets twice the base. Weak still writes
+    // nothing, parry or not.
+    if drive.tone < WEAK_BELOW
+        || ((playing == Some(action::WALK) || playing == Some(action::RUN))
+            && !drive.bearing.parrying)
+    {
         return drive.posture_rate;
     }
-    if playing == Some(KICK) {
+    if playing == Some(KICK) || drive.bearing.parrying {
         return KICK_RATE * base;
     }
     base
@@ -1462,6 +1473,28 @@ pub(crate) mod tests {
         assert!(close(frames(0x14, &doing(still, 1.0), &guarding), 0.6));
         assert!(close(frames(0x0D, &doing(still, 1.0), &pace), 1.2));
         assert!(close(frames(0x0D, &doing(still, 0.8), &pace), 0.6));
+        // A parry is twice the base, including in its stance and on a
+        // walk. Off balance the fall rate stands (the stance reset does
+        // not run), and a weak tick keeps the rate last written.
+        let parrying = Bearing {
+            parrying: true,
+            ..still
+        };
+        assert!(close(frames(0x13, &doing(parrying, 1.0), &pace), 1.2));
+        assert!(close(frames(0x14, &doing(parrying, 1.0), &guarding), 1.2));
+        assert!(close(frames(0x00, &doing(parrying, 1.0), &pace), 1.2));
+        let falling_parry = Bearing {
+            parrying: true,
+            ..falling
+        };
+        assert!(close(
+            frames(0x14, &doing(falling_parry, 1.0), &guarding),
+            0.75
+        ));
+        let mut weak_parry = doing(parrying, 0.8);
+        weak_parry.posture_rate = 1.5;
+        assert!(close(frames(0x13, &weak_parry, &pace), 0.9));
+        assert!(close(frames(5, &doing(parrying, 1.0), &pace), 1.62));
         // A weak kick keeps the rate the posture block last wrote. After a
         // full-tone kick that is 2 × base, so the clock stays at 1.2; the
         // walk and the run keep it too. The stance reset still writes the
