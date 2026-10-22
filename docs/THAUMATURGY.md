@@ -552,7 +552,11 @@ before its combat state runs, each record slot is answered by its domain's
 AI evaluator (distance and bearing to its target, the target's condition
 and status, the caster's focus as the pool), and the power the combat
 state's chooser picks starts through its domain's front end as an AI
-caster, with no cursor and its hands free. A caster's running shell and
+caster, with no cursor and its hands free. Its body's technique word
+(sustain, regeneration, reserve, repeat and the resist bit) is built from
+the record's learnt techniques, and its persistent slots are
+Concentration's highest Continuity tier ([formats/RFC.md](formats/RFC.md),
+Techniques and perks). A caster's running shell and
 Force Strikes put their factors on its fighter (`exa_combat::PowerFactors`):
 a blow it takes keeps 1 − 0.5 of its impact, and a blow it deals is
 multiplied by 1 + 0.5 · 1. Every caster's body tick runs the two focus

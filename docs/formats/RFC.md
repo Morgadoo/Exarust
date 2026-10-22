@@ -1005,7 +1005,12 @@ own item database).
 perks its combat and body read: Close Combat 1–4 Remise, Feint, Fend,
 Riposte; Armour 5 Security; Shields 1–6 Counter, Synchrony, Ward, Persist,
 Endure, Mobility; Insight 6 Iteration; Concentration 1, 5, 6, 8 Sustain,
-Abstraction, Clarity, Volition. Close Combat 5–8 (Draw, Impel, Brace, Dual
+Abstraction, Clarity, Volition. A body packs them into its technique word,
+rebuilt from the record (each skill's techniques read one per 5000
+points): Close Combat's four at bits 0x1 to 0x8, Security 0x1000, Shields'
+six at 0x100_0000 to 0x2000_0000, Iteration 0x80_0000, Sustain 0x10_0000,
+Abstraction 0x40_0000, Clarity 0x20_0000 and Volition 0x1_0000; the
+powers read those last five. Close Combat 5–8 (Draw, Impel, Brace, Dual
 Wield) give none (the first three are marked unavailable; 37 level records
 learn Dual Wield). Armour 1–3 are the Manoeuvring in Armour tiers: the
 armour builder takes the highest learnt and lowers encumbrance by 0.3 per

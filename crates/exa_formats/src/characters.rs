@@ -706,6 +706,33 @@ impl Perk {
         technique_name(skill, technique).unwrap_or_default()
     }
 
+    /// The bit the body's technique word carries for it, as the game builds
+    /// the word from the record's learnt techniques: Close Combat's four
+    /// from bit 0, Security 0x1000, Shields' six from 0x100_0000, Iteration
+    /// 0x80_0000 (the repeat cost), Sustain 0x10_0000, Abstraction
+    /// 0x40_0000 (the reserve), Clarity 0x20_0000 (the regeneration) and
+    /// Volition 0x1_0000.
+    pub const fn body_bit(self) -> u32 {
+        match self {
+            Perk::Remise => 0x1,
+            Perk::Feint => 0x2,
+            Perk::Fend => 0x4,
+            Perk::Riposte => 0x8,
+            Perk::Security => 0x1000,
+            Perk::Counter => 0x0100_0000,
+            Perk::Synchrony => 0x0200_0000,
+            Perk::Ward => 0x0400_0000,
+            Perk::Persist => 0x0800_0000,
+            Perk::Endure => 0x1000_0000,
+            Perk::Mobility => 0x2000_0000,
+            Perk::Iteration => 0x80_0000,
+            Perk::Sustain => 0x10_0000,
+            Perk::Abstraction => 0x40_0000,
+            Perk::Clarity => 0x20_0000,
+            Perk::Volition => 0x1_0000,
+        }
+    }
+
     const fn bit(self) -> u32 {
         1 << self as u32
     }
@@ -737,6 +764,11 @@ impl Perks {
 
     pub fn iter(self) -> impl Iterator<Item = Perk> {
         Perk::ALL.into_iter().filter(move |&p| self.has(p))
+    }
+
+    /// The body's technique word: each perk's [`Perk::body_bit`].
+    pub fn body_word(self) -> u32 {
+        self.iter().fold(0, |word, perk| word | perk.body_bit())
     }
 }
 

@@ -982,8 +982,8 @@ fn spawn_players(
                 duellist,
                 ChildOf(foe_root),
             ));
-            if let Some(powers) = practice.as_ref().and_then(|o| o.record.powers.as_ref()) {
-                insert_duel_powers(commands, foe, powers);
+            if let Some(options) = practice.as_ref() {
+                insert_duel_powers(commands, foe, &options.record);
             }
         }
     }
@@ -1033,19 +1033,24 @@ fn spawn_players(
 }
 
 /// Gives a duellist its record's powers: a caster the combat state may
-/// cast through. A record without a known power casts nothing.
+/// cast through, with the record's techniques and persistent slots. A
+/// record without a known power casts nothing.
 fn insert_duel_powers(
     commands: &mut Commands,
     fighter: Entity,
-    powers: &exa_formats::characters::Powers,
+    record: &exa_formats::characters::CharacterRecord,
 ) {
-    if powers.known.is_empty() {
+    let Some(caster) = exa_game::thaum::cast::PowerCaster::of_character(record) else {
+        return;
+    };
+    if caster.known.is_empty() {
         return;
     }
-    let caster = exa_game::thaum::cast::PowerCaster::of_record(powers);
     info!(
-        "duellist {fighter:?} knows powers: {:x?}",
-        caster.known.iter().map(|p| p.id).collect::<Vec<_>>()
+        "duellist {fighter:?} knows powers: {:x?}, techniques {:#x}, {} persistent slots",
+        caster.known.iter().map(|p| p.id).collect::<Vec<_>>(),
+        caster.body.techniques,
+        caster.body.slots
     );
     commands
         .entity(fighter)
@@ -1690,9 +1695,7 @@ fn spawn_placed_characters(
                     exa_ai::Mind::new(0.0),
                     exa_ai::Duellist::new(placing.player),
                 ));
-                if let Some(powers) = &c.record.powers {
-                    insert_duel_powers(commands, model, powers);
-                }
+                insert_duel_powers(commands, model, &c.record);
             }
         }
         spawned += 1;

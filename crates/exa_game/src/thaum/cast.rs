@@ -243,6 +243,22 @@ impl PowerCaster {
         caster
     }
 
+    /// A character's caster: its record's powers, with the body's technique
+    /// word built from the learnt techniques and its persistent slots from
+    /// Concentration's ([`casting::slot_count`]).
+    pub fn of_character(record: &exa_formats::characters::CharacterRecord) -> Option<Self> {
+        let powers = record.powers.as_ref()?;
+        let mut caster = Self::of_record(powers);
+        caster.body.techniques = record.perks().body_word();
+        let concentration = &record.skills[exa_formats::characters::CONCENTRATION];
+        caster.body.slots = casting::slot_count(
+            concentration.points,
+            &concentration.techniques,
+            caster.record.focus_item,
+        );
+        Some(caster)
+    }
+
     /// Rebuild the body's power view from the active list, in its order.
     fn sync_body(&mut self) {
         self.body.powers = self

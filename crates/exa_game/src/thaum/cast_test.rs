@@ -414,6 +414,27 @@ fn a_records_powers_make_its_caster() {
     assert_eq!(caster.record.slots, slots);
     assert_eq!(caster.known.len(), 1);
     assert_eq!(caster.known[0].id, SHOCK);
+
+    // A character's caster takes the body's technique word from its learnt
+    // techniques and its persistent slots from Concentration: Sustain,
+    // Continuity II and Abstraction over 15000 points give the sustain and
+    // reserve bits and three slots with the focus item.
+    use exa_formats::characters::{CONCENTRATION, CharacterRecord};
+    let mut character = CharacterRecord::new();
+    assert!(PowerCaster::of_character(&character).is_none());
+    character.powers = Some(record);
+    character.skills[CONCENTRATION].points = 15_000;
+    character.skills[CONCENTRATION].techniques = [1, 3, 5, 0, 0, 0];
+    let caster = PowerCaster::of_character(&character).unwrap();
+    assert_eq!(
+        caster.body.techniques,
+        casting::SUSTAIN_TECHNIQUE | casting::RESERVE_TECHNIQUE
+    );
+    assert_eq!(caster.body.slots, 3);
+    character.skills[CONCENTRATION].points = 10_000;
+    assert_eq!(PowerCaster::of_character(&character).unwrap().body.slots, 3);
+    character.skills[CONCENTRATION].points = 5_000;
+    assert_eq!(PowerCaster::of_character(&character).unwrap().body.slots, 0);
 }
 
 /// A running shell puts its damping on the caster's fighter for the hit

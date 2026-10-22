@@ -1043,3 +1043,10 @@ The player's HUD focus bar SHALL show its caster's pool and capacity, and 1 and 
 #### Scenario: A caster's bar
 - **WHEN** the player's caster has a pool of 0.4 and a capacity of 0.75
 - **THEN** the HUD's focus is 0.4 and its capacity 0.75
+
+### Requirement: A character's caster
+A character's caster SHALL take its body's technique word from the record's learnt techniques, each perk at the bit the original assigns it (Sustain 0x10_0000, Clarity 0x20_0000, Abstraction 0x40_0000, Iteration 0x80_0000, Volition 0x1_0000), and its persistent slots from Concentration's points and techniques by the slot count. A record without powers SHALL make no caster.
+
+#### Scenario: Concentration's techniques
+- **WHEN** a record with powers has 15000 Concentration points and Sustain, Continuity II and Abstraction
+- **THEN** its caster's technique word is 0x50_0000 and it has three persistent slots with the focus item, and with 5000 points none
