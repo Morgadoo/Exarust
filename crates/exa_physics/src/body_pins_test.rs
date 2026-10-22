@@ -9,12 +9,17 @@ use super::*;
 /// 0.2·e·|e|/60 under 60 cm and 12 cm along the error otherwise, less the
 /// horizontal displacement, capped at 8 cm, times S²·pin-gain·P·pin factor.
 /// An alert human is S = 1, pin-gain 0.08, P = 0.5, pin factor 1.25, so
-/// the scale is 0.05. Walking and off its feet never reach this function.
+/// the scale is 0.05. A horizontal gap under 1.19e-7 cm² is zero, damper
+/// included. Walking and off its feet never reach this function.
 fn law(error: Vec3, displacement: Vec3, has_support: bool) -> Vec3 {
     if !has_support {
         return Vec3::ZERO;
     }
     let e = error.with_y(0.0);
+    let len2 = e.z * e.z + (e.y * e.y + e.x * e.x);
+    if len2 < f32::from_bits(0x33ff_ffd7) {
+        return Vec3::ZERO;
+    }
     let len = e.length();
     let raw = if len < 60.0 {
         e * (0.2 * len / 60.0)
@@ -83,6 +88,34 @@ fn one_application_is_the_law() {
     );
 
     assert_eq!(human(near, along, false), Vec3::ZERO);
+}
+
+/// A horizontal gap under 1.19e-7 cm² leaves the pin. The damper does not
+/// run either: 1 cm of displacement on a zero gap, or on a gap whose square
+/// is under the epsilon, is zero. A NaN gap is zero. A gap just over the
+/// epsilon still damps.
+#[test]
+fn a_tiny_gap_skips_the_damper() {
+    let moved = Vec3::X;
+    assert_eq!(human(Vec3::ZERO, moved, true), Vec3::ZERO);
+    assert_eq!(law(Vec3::ZERO, moved, true), Vec3::ZERO);
+
+    let eps = f32::from_bits(0x33ff_ffd7);
+    let under = Vec3::X * (eps.sqrt() * 0.5);
+    assert!(under.x * under.x < eps, "{}", under.x * under.x);
+    assert_eq!(human(under, moved, true), Vec3::ZERO);
+    assert_eq!(law(under, moved, true), Vec3::ZERO);
+
+    assert_eq!(
+        human(Vec3::new(f32::NAN, 0.0, 0.0), moved, true),
+        Vec3::ZERO
+    );
+
+    let over = Vec3::X * 0.001;
+    assert!(over.x * over.x > eps);
+    let got = human(over, moved, true);
+    assert!(got.abs_diff_eq(law(over, moved, true), 1e-6), "{got}");
+    assert!(got.x < -0.04, "{got}");
 }
 
 /// Thorax targets stay within 36·scale cm of the feet centre standing

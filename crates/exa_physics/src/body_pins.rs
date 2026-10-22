@@ -7,8 +7,9 @@
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
 //! otherwise; subtract the point's horizontal displacement this tick; cap
 //! the length at 8 cm; multiply by S² · pin-gain · P · the spawned pin
-//! factor. The pull does not run while the body is walking or off its feet
-//! (down, getting up, dormant or dead). P is √E·T·E⁴, or 1 while the
+//! factor. A horizontal gap under 1.19e-7 cm² leaves the pin, damper
+//! included. The pull does not run while the body is walking or off its
+//! feet (down, getting up, dormant or dead). P is √E·T·E⁴, or 1 while the
 //! shock-stagger flag is set.
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
@@ -26,6 +27,9 @@ const SOFT_GAIN: f32 = 0.2;
 const FAR_PULL: f32 = 12.0;
 /// The correction (cm), before the gains, is no longer than this.
 const CAP: f32 = 8.0;
+/// A horizontal gap whose squared length is below this (cm², the
+/// single-precision epsilon) skips the spring and the damper.
+const GAP_EPSILON2: f32 = f32::from_bits(0x33ff_ffd7);
 /// With no support a target shifts this far (cm) forward, times scale.
 const UNSUPPORTED_AHEAD: f32 = 5.0;
 /// The pelvis pin stays within this (cm) of the feet centre, times scale.
@@ -75,13 +79,20 @@ pub(super) struct Factors {
 /// One application of a support pin's horizontal pull, in centimetres.
 /// `error` is the gap from the point to its clamped target and
 /// `displacement` is how far the point has moved this tick, both
-/// horizontal. Nothing without support, and nothing that is not finite.
+/// horizontal. A gap under 1.19e-7 cm² leaves it, damper included.
+/// Nothing without support, and nothing that is not finite.
 pub(super) fn pull(error: Vec3, displacement: Vec3, gain: Factors) -> Vec3 {
     if !gain.has_support {
         return Vec3::ZERO;
     }
     let e = error.with_y(0.0);
     let moved = displacement.with_y(0.0);
+    // z² + (y² + x²), and only a gap ordered below the epsilon returns.
+    // A NaN is not below it.
+    let len2 = e.z * e.z + (e.y * e.y + e.x * e.x);
+    if len2 < GAP_EPSILON2 {
+        return Vec3::ZERO;
+    }
     let len = e.length();
     if !len.is_finite() || !moved.is_finite() {
         return Vec3::ZERO;

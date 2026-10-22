@@ -1105,7 +1105,7 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor. While it is walking, or off its feet (down, getting up, dormant or dead), that pull is zero. P is √E·T·E⁴, or 1 while the shock-stagger flag is set (a NaN root stays). Pin-gain starts at 0.08. Collapsing still pulls.
+In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor. A gap under 1.19e-7 cm², and walking or off its feet (down, getting up, dormant or dead), pulls nothing. P is √E·T·E⁴, or 1 in a shock stagger (a NaN root stays). Pin-gain starts at 0.08.
 
 #### Scenario: One application inside 60 cm
 - **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up
@@ -1114,6 +1114,10 @@ In each iteration a supported living body SHALL pull its two thorax pins and its
 #### Scenario: One application past 60 cm
 - **WHEN** the same pin is 80 cm from its target and has not moved this tick
 - **THEN** one application is 12 cm along the error, capped at 8 cm, times 0.05, which is 0.4 cm
+
+#### Scenario: A tiny gap
+- **WHEN** a supported pin's horizontal gap is 0, then under 1.19e-7 cm², and it moved 1 cm this tick
+- **THEN** one application is zero both times
 
 #### Scenario: Walking or off its feet
 - **WHEN** a supported body with its chest 10 cm off the feet centre is walking, then off its feet while getting up, then walking in a shock stagger

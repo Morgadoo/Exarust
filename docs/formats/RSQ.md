@@ -735,7 +735,8 @@ Exarust's own, for a body whose capsule still moves it across the ground
   thorax reach is 36·scale cm. One application, in centimetres: raw is
   0.2·e·|e|/60 when |e| is under 60 cm and 12 cm along the error otherwise,
   less the point's horizontal displacement this tick, capped at 8 cm,
-  times S²·pin-gain·P·the spawned pin factor. While the body is walking,
+  times S²·pin-gain·P·the spawned pin factor. A horizontal gap under
+  1.19e-7 cm² leaves the pin, damper included. While the body is walking,
   or off its feet (down, getting up, dormant or dead), the pull is zero.
   While a recovery step runs and the chest is not past the trigger,
   each thorax target is first shifted by the horizontal error from the
