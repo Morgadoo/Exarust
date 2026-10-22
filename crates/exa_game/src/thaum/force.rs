@@ -1001,7 +1001,7 @@ mod tests {
         assert_eq!(armed.cast_motion, Some(STRIKES_MOTION));
         let mut held = standing(1.0);
         held.weapon_class = 0x20;
-        held.cast_hook = Some(0);
+        held.cast_hook = Some(crate::thaum::casting::CastHook { keeps: 0x20 });
         assert_eq!(
             force_front_end(STRIKES, &mut held, &world).1,
             Some(ForceStart::Strikes {

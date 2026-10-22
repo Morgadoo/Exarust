@@ -835,3 +835,54 @@ fn a_shell_reaches_the_hit_formula() {
     app.update();
     assert_eq!(factors(&app).shell, 0.0);
 }
+
+/// A caster whose animator leaves the action its hook saw has the hook
+/// asked with event 4, except leaving the walk, the run or an attack.
+#[test]
+fn leaving_the_cast_action_calls_the_hook() {
+    use crate::thaum::casting::CastHook;
+    use exa_formats::rsq::{Action, MotionSet};
+    let mut app = new_app();
+    let action = |name: &str| Action {
+        name: name.into(),
+        params: [0, 0],
+    };
+    let set = MotionSet {
+        bone_count: 0,
+        actions: ["Walk", "Run", "Idle", "Force Raise", "Attack Mid"]
+            .into_iter()
+            .map(action)
+            .collect(),
+        movesets: Vec::new(),
+    };
+    app.insert_resource(Motions::new(
+        std::sync::Arc::new(set),
+        std::sync::Arc::default(),
+        0.0,
+    ));
+    let mut caster = PowerCaster::new(&[SHELL]);
+    caster.body.casting = SHELL;
+    caster.body.cast_hook = Some(CastHook { keeps: 0x29 });
+    caster.seen_action = Some("Force Raise".into());
+    let npc = app
+        .world_mut()
+        .spawn((caster, Animator::new("Default", "Force Raise")))
+        .id();
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(cast_body(&app, npc).cast_hook, Some(CastHook { keeps: 0x29 }));
+    app.world_mut().get_mut::<Animator>(npc).unwrap().action = "Idle".into();
+    app.world_mut().run_schedule(FixedUpdate);
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+
+    let mut caster = PowerCaster::new(&[SHELL]);
+    caster.body.casting = SHELL;
+    caster.body.cast_hook = Some(CastHook::NEVER_KEEPS);
+    caster.seen_action = Some("Walk".into());
+    let walker = app
+        .world_mut()
+        .spawn((caster, Animator::new("Default", "Idle")))
+        .id();
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(cast_body(&app, walker).casting, SHELL);
+}

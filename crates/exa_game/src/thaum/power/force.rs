@@ -38,7 +38,7 @@
 //! Kinesis steering and the Throw phases, read from `Exanima.exe`.
 
 use super::PowerBase;
-use crate::thaum::casting::{CastBody, start_cast};
+use crate::thaum::casting::{CastBody, CastHook, start_cast};
 use crate::thaum::engine::dist_sq;
 
 pub use crate::thaum::force::{BARRICADE, BARRICADE_MOTION, KINESIS, STRIKES, STRIKES_MOTION};
@@ -53,6 +53,10 @@ pub const SHELL_MOTION: u32 = 0x24;
 pub const BUBBLE_MOTION: u32 = 0x24;
 pub const KINESIS_MOTION: u32 = 0x23;
 pub const THROW_MOTION: u32 = 0x23;
+
+/// The shell's cast hook: 0 to an event carrying bits 0x29, so no other
+/// cast starts while it is set; the raise clip's end drops it.
+pub const SHELL_HOOK: CastHook = CastHook { keeps: 0x29 };
 
 /// The squared distance at which a bubble or a barricade ends (20 m, cm²).
 pub const REMOTE_RANGE_SQ: f32 = 4.0e6;
@@ -171,6 +175,9 @@ impl Shell {
             }
         } else if self.state == super::READY {
             let motion = start_cast(body, SHELL_MOTION, SHELL);
+            if motion {
+                body.cast_hook = Some(SHELL_HOOK);
+            }
             self.state = super::RUNNING;
             ShellStep { motion, ..quiet }
         } else {
@@ -779,6 +786,12 @@ mod tests {
         let first = shell.control(0, &mut body);
         assert!(first.motion);
         assert_eq!(shell.state, super::super::RUNNING);
+        // Its hook keeps the raise through another cast's start and lets
+        // the clip's end drop it.
+        assert_eq!(body.cast_hook, Some(SHELL_HOOK));
+        assert!(!start_cast(&mut body, 0x22, 0x201));
+        assert!(crate::thaum::casting::motion_replaced(&mut body));
+        assert_eq!((body.casting, body.cast_hook), (0, None));
         let end = shell.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.released);

@@ -38,7 +38,7 @@ use exa_physics::body::locomotion::Locomotor;
 use super::barricade::WAKE_TICKS;
 use super::blast_live::{blast_view, body_mass};
 use super::cast::PowerCaster;
-use super::casting::{self, CastBody, spend_tick};
+use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::live::{EffectDraws, EffectRoll};
 use crate::effects::blast::blast_aim;
 use crate::effects::torrent::{
@@ -52,8 +52,8 @@ const CM: f32 = 100.0;
 const CHEST: usize = 9;
 /// The torrent's power id.
 pub const TORRENT: u32 = 0x10203;
-/// What the torrent's hook answers.
-pub const TORRENT_HOOK: i32 = -1;
+/// The torrent's hook: −1 to every event.
+pub const TORRENT_HOOK: CastHook = CastHook::NEVER_KEEPS;
 
 /// A torrent in the scene.
 #[derive(Component)]

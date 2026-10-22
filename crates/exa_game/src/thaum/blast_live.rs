@@ -28,8 +28,9 @@
 //!
 //! Not wired: the alert, the sounds, the light, the stun, the hostility and
 //! the recoil a struck character takes, the simulated objects' points, the
-//! level's rebound, the fizzle when another motion replaces the cast motion
-//! (the motion start's hook call), and the draw.
+//! level's rebound and the draw. Another motion replacing the cast motion
+//! calls the hook (`cast::call_motion_hooks`), which fizzles a charging
+//! blast.
 //!
 //! Evidence: the blast's cast, creator, start and hook, the cast-motion
 //! start, the body tick's release, the spend and the cast end, read from
@@ -41,7 +42,7 @@ use exa_physics::body::locomotion::Locomotor;
 
 use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
-use super::casting::{self, CastBody};
+use super::casting::{self, CastBody, CastHook};
 use super::force::{BLAST_MOTION, BlastSetup};
 use super::live::EffectDraws;
 use crate::effects::blast::{
@@ -54,8 +55,8 @@ use crate::player::CursorGround;
 const CM: f32 = 100.0;
 const CHEST: usize = 9;
 const RIGHT_HAND: usize = 17;
-/// What the blast's hook answers.
-pub const BLAST_HOOK: i32 = -1;
+/// The blast's hook: −1 to every event.
+pub const BLAST_HOOK: CastHook = CastHook::NEVER_KEEPS;
 /// The extra reach a limb is tested with.
 const LIMB_EXTRA: f32 = 10.0;
 /// The aim point a caster with no target and no cursor looks at, cm ahead.
@@ -326,12 +327,12 @@ mod tests {
         assert!(casting::start_cast(&mut body, 0x23, 0x401));
         // A running cast whose hook answers 0 refuses the blast's motion.
         let mut busy = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(CastHook { keeps: 0x20 }),
             casting: 0x401,
             ..CastBody::default()
         };
         assert!(!start_blast(&mut busy, &BLAST_SETUP));
-        assert_eq!((busy.casting, busy.cast_hook), (0x401, Some(0)));
+        assert_eq!((busy.casting, busy.cast_hook), (0x401, Some(CastHook { keeps: 0x20 })));
     }
 
     fn live(body: &mut CastBody) -> LiveBlast {

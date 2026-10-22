@@ -164,9 +164,8 @@ pub struct CastBody {
     pub casting: u32,
     /// The next tick releases the charging power.
     pub release: bool,
-    /// What the running cast's hook answers when another cast asks to
-    /// start: 0 or more keeps the running cast. None without a hook.
-    pub cast_hook: Option<i32>,
+    /// The running cast's hook, None without one.
+    pub cast_hook: Option<CastHook>,
     /// The cast motion the last start played, for the caller to animate.
     pub cast_motion: Option<u32>,
     /// The powers the body runs and the effects on it.
@@ -337,10 +336,56 @@ pub fn free_slots(body: &mut CastBody, id: u32) -> Result<i32, i32> {
     Ok(free)
 }
 
+/// The events the engine calls a cast hook with.
+pub mod hook_event {
+    /// A motion replaces the cast motion, or a one-shot cast clip ends and
+    /// the body returns to its stance.
+    pub const MOTION: u32 = 0x4;
+    /// Another cast asks to start.
+    pub const CAST_START: u32 = 0x20;
+    /// The cast's focus falls short.
+    pub const SHORTFALL: u32 = 0x80;
+}
+
+/// A cast hook as its callers see it: 0 to an event carrying any of its
+/// `keeps` bits, −1 to every other. 0 or more keeps the running cast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CastHook {
+    pub keeps: u32,
+}
+
+impl CastHook {
+    /// A hook answering −1 to every event.
+    pub const NEVER_KEEPS: Self = Self { keeps: 0 };
+
+    pub fn answer(self, event: u32) -> i32 {
+        if event & self.keeps != 0 { 0 } else { -1 }
+    }
+}
+
+/// The hook's call when a motion replaces the cast motion or a one-shot
+/// cast clip ends: a negative answer drops the hook and the power id.
+/// Whether it was dropped.
+pub fn motion_replaced(body: &mut CastBody) -> bool {
+    let Some(hook) = body.cast_hook else {
+        return false;
+    };
+    if hook.answer(hook_event::MOTION) < 0 {
+        body.cast_hook = None;
+        body.casting = 0;
+        true
+    } else {
+        false
+    }
+}
+
 /// Starts a power's cast motion (`motion` 0 plays none). False when the
 /// running cast keeps it from starting.
 pub fn start_cast(body: &mut CastBody, motion: u32, id: u32) -> bool {
-    if body.cast_hook.is_some_and(|answer| answer >= 0) {
+    if body
+        .cast_hook
+        .is_some_and(|hook| hook.answer(hook_event::CAST_START) >= 0)
+    {
         return false;
     }
     body.cast_hook = None;
@@ -667,17 +712,37 @@ mod tests {
     #[test]
     fn a_running_hook_keeps_the_cast() {
         let mut body = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(CastHook { keeps: 0x28 }),
             ..CastBody::default()
         };
         assert!(!start_cast(&mut body, 0x22, 0x201));
-        body.cast_hook = Some(-1);
+        body.cast_hook = Some(CastHook::NEVER_KEEPS);
         assert!(start_cast(&mut body, 0x22, 0x201));
         assert_eq!((body.casting, body.condition), (0x201, CASTING));
         assert_eq!(body.cast_motion, Some(0x22));
         let mut still = CastBody::default();
         assert!(start_cast(&mut still, 0, 0x601));
         assert_eq!(still.condition, 0);
+    }
+
+    #[test]
+    fn a_hook_answers_by_the_events_bits() {
+        let shell = CastHook { keeps: 0x29 };
+        assert_eq!(shell.answer(hook_event::CAST_START), 0);
+        assert_eq!(shell.answer(hook_event::MOTION), -1);
+        assert_eq!(shell.answer(hook_event::SHORTFALL), -1);
+        assert_eq!(CastHook::NEVER_KEEPS.answer(u32::MAX), -1);
+        let mut body = CastBody {
+            casting: 0x20208,
+            cast_hook: Some(shell),
+            ..CastBody::default()
+        };
+        assert!(motion_replaced(&mut body));
+        assert_eq!((body.casting, body.cast_hook), (0, None));
+        body.cast_hook = Some(CastHook { keeps: 0x4 });
+        body.casting = 0x601;
+        assert!(!motion_replaced(&mut body));
+        assert_eq!(body.casting, 0x601);
     }
 
     #[test]
@@ -720,7 +785,7 @@ mod tests {
     fn a_sustained_tick_stops_the_cast_when_the_pool_runs_out() {
         let mut body = CastBody {
             focus: 0.5,
-            cast_hook: Some(-1),
+            cast_hook: Some(CastHook::NEVER_KEEPS),
             ..CastBody::default()
         };
         assert!(!spend_tick(&mut body, 0.25));

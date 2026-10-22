@@ -189,6 +189,8 @@ pub struct PowerCaster {
     /// The bar cast entry's answer (1 started, 0 released, 2 ended, negative
     /// refused/failed/not now; 0 before the first use).
     pub last_result: i32,
+    /// The animator's action when the cast hooks last looked.
+    pub seen_action: Option<String>,
 }
 
 impl PowerCaster {
@@ -229,6 +231,7 @@ impl PowerCaster {
             bar,
             bar_open: false,
             last_result: 0,
+            seen_action: None,
         }
     }
 
@@ -316,6 +319,7 @@ impl Plugin for CastPlugin {
                     super::wave_live::tick_waves,
                     super::torrent_live::tick_torrents,
                     play_cast_motions,
+                    call_motion_hooks,
                 )
                     .chain()
                     .after(BodySystems),
@@ -690,7 +694,9 @@ fn advise_duellists(
             answers,
             pool: caster.body.focus,
             casting,
-            running: casting || caster.body.cast_hook.is_some_and(|answer| answer >= 0),
+            running: casting || caster.body.cast_hook.is_some_and(|hook| {
+                    hook.answer(super::casting::hook_event::CAST_START) >= 0
+                }),
             chosen: powers.chosen,
         };
         powers.set_if_neq(advised);
@@ -1558,16 +1564,49 @@ fn play_cast_motions(
         } else {
             "Idle".to_string()
         };
-        match motions
-            .as_deref()
-            .and_then(|motions| motions.action_name(motion))
-        {
+        let Some(motions) = motions.as_deref() else {
+            continue;
+        };
+        match motions.action_name(motion) {
             Some(name) => {
                 let name = name.to_string();
-                animator.play_once(&name, &follow);
-                debug!("cast motion {motion:#x}: {name} then {follow}");
+                if motions.clip(&animator, &name).is_some_and(|c| c.loops()) {
+                    animator.start(&name, true, None, 0, exa_anim::Ease::Linear);
+                    debug!("cast motion {motion:#x}: {name}, looping");
+                } else {
+                    animator.play_once(&name, &follow);
+                    debug!("cast motion {motion:#x}: {name} then {follow}");
+                }
+                caster.seen_action = Some(name);
             }
             None => debug!("cast motion {motion:#x}: no action of that name"),
+        }
+    }
+}
+
+/// The original's motion start calls the cast hook with event 4 when the
+/// motion it replaces is not the walk, the run or an attack, and drops the
+/// hook and power id on a negative answer; a one-shot cast clip's end
+/// returns to the stance through it. Here, a caster's animator leaving
+/// the action the hooks last saw.
+fn call_motion_hooks(
+    mut casters: Query<(&mut PowerCaster, &Animator)>,
+    motions: Option<Res<Motions>>,
+) {
+    for (mut caster, animator) in &mut casters {
+        if caster.seen_action.as_deref() == Some(animator.action.as_str()) {
+            continue;
+        }
+        let left = caster.seen_action.replace(animator.action.clone());
+        let index = left.and_then(|name| {
+            motions
+                .as_deref()
+                .and_then(|motions| motions.0.action_index(&name))
+        });
+        let calls = index.is_some_and(|i| !matches!(i, 0 | 1 | 5..=12));
+        if calls && super::casting::motion_replaced(&mut caster.body) {
+            debug!("cast hook dropped: {} replaced", animator.action);
+            caster.sync_body();
         }
     }
 }

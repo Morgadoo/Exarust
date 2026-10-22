@@ -3,8 +3,9 @@
 //!
 //! - **Start** ([`new_bubble`]): the start plays cast motion 0x24 with the
 //!   power id 0x20207; when that motion starts the caster's cast hook
-//!   becomes the bubble's, which answers −1 to a cast's start (0 only to a
-//!   call carrying bits 0x28). The dome grows at the cast place, 120 cm
+//!   becomes the bubble's, which answers 0 to a call carrying bits 0x28 and
+//!   −1 to any other: no other cast starts (event 0x20) while it is set,
+//!   and the Force Raise clip's end (event 4) drops it. The dome grows at the cast place, 120 cm
 //!   across ([`Bubble::cast`]), and the power class holds its focus.
 //! - **Each tick** ([`Bubble::tick`]): the grow passing 1 stands the dome and
 //!   clears the caster's hook and power id; the power's ending tells the
@@ -33,15 +34,16 @@ use exa_physics::body::{BodyTicks, Ragdoll};
 
 use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
-use super::casting::{self, CastBody};
+use super::casting::{self, CastBody, CastHook};
 use super::live::{EffectDraws, EffectRoll};
 use super::power::force::{BUBBLE, BUBBLE_MOTION};
 use crate::effects::force_dome::{Bubble, CONTACT_PUSH, Dome, DomeHit, Phase};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
-/// What the bubble's hook answers a cast's start.
-pub const BUBBLE_HOOK: i32 = -1;
+/// The bubble's hook: 0 to an event carrying bits 0x28, so a cast's start
+/// (0x20) is refused while it is set.
+pub const BUBBLE_HOOK: CastHook = CastHook { keeps: 0x28 };
 /// The bubble's radius, cm.
 pub const BUBBLE_RADIUS: f32 = 120.0;
 
@@ -201,7 +203,11 @@ mod tests {
         assert_eq!(live.bubble.dome.radius, BUBBLE_RADIUS);
         assert_eq!(live.bubble.dome.at, at);
         assert_eq!(live.bubble.dome.phase, Phase::Growing);
-        // The hook answers −1, so a later cast still starts.
+        // The hook keeps the cast through another cast's start, and the
+        // raise clip's end drops it.
+        assert!(!casting::start_cast(&mut body, 0x22, 0x201));
+        assert!(casting::motion_replaced(&mut body));
+        assert_eq!((body.casting, body.cast_hook), (0, None));
         assert!(casting::start_cast(&mut body, 0x22, 0x201));
     }
 

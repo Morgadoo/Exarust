@@ -39,7 +39,7 @@ use exa_physics::body::{BodyTicks, Ragdoll};
 
 use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
-use super::casting::{self, CastBody, spend_tick};
+use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::live::{EffectDraws, EffectRoll};
 use crate::effects::force_dome::{Barrier, CONTACT_PUSH, DomeHit, Phase};
 
@@ -48,8 +48,8 @@ const CM: f32 = 100.0;
 /// The barrier's power id and its cast motion.
 pub const BARRIER: u32 = 0x10205;
 pub const BARRIER_MOTION: u32 = 0x23;
-/// What the barrier's hook answers.
-pub const BARRIER_HOOK: i32 = -1;
+/// The barrier's hook: −1 to every event.
+pub const BARRIER_HOOK: CastHook = CastHook::NEVER_KEEPS;
 /// The barrier's radius, cm.
 pub const BARRIER_RADIUS: f32 = 100.0;
 

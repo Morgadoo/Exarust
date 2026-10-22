@@ -906,7 +906,7 @@ mod tests {
     fn charging_follows_the_hand_and_releases_past_one() {
         let mut b = Blast::new(BLAST_SETUP, 0.1, 1300, &view(), &mut Mt19937::new(1));
         let mut caster = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook::NEVER_KEEPS),
             casting: 0x201,
             ..CastBody::default()
         };
@@ -932,7 +932,7 @@ mod tests {
         let mut b = blast();
         let mut caster = CastBody {
             focus: 0.0,
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook::NEVER_KEEPS),
             casting: 0x201,
             ..CastBody::default()
         };

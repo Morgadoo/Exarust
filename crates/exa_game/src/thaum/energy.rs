@@ -271,7 +271,7 @@ mod tests {
 
         let mut held = CastBody {
             focus: 1.0,
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook { keeps: 0x20 }),
             ..CastBody::default()
         };
         assert_eq!(energy_front_end(SHOCK, &mut held), (code::STARTED, None));

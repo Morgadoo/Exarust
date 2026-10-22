@@ -1145,7 +1145,7 @@ mod tests {
         assert!(wall.stamp.is_none() && !wall.voice);
         // A running cast keeps the hook off; there is no hum without a sound.
         let mut busy = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook { keeps: 0x20 }),
             ..CastBody::default()
         };
         let mut other = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
