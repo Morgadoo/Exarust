@@ -602,9 +602,9 @@ pub trait Field {
         None
     }
     /// The power system is still running the cast the body is in (the
-    /// original asks the power system for the body's current power and the
-    /// body's cast callback; the cast ends when the first answers nothing
-    /// and the second a negative).
+    /// original asks the body's current power's domain evaluator, then,
+    /// when that answers nothing, the body's cast hook with 0x10; the cast
+    /// ends on a negative answer).
     fn cast_running(&mut self) -> bool {
         false
     }

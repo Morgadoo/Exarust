@@ -86,8 +86,13 @@ pub struct DuelPowers {
     pub pool: f32,
     /// A cast motion runs: the body's condition reads casting.
     pub casting: bool,
-    /// The power system still runs the body's cast.
+    /// The power system still runs the body's cast: its domain's evaluator
+    /// answers the body's power id, or the hook keeps event 0x10.
     pub running: bool,
+    /// The combat state asked [`DuelPowers::running`]: the game then calls
+    /// the hook with 0x10 when the evaluator answered nothing, and ends the
+    /// cast on a negative answer.
+    pub probed: bool,
     /// The power the combat state chose, until the game casts it.
     pub chosen: Option<u32>,
 }
@@ -336,7 +341,10 @@ impl combat::Field for DuelField<'_> {
             .map(|powers| powers as &mut dyn cast::Powers)
     }
     fn cast_running(&mut self) -> bool {
-        self.powers.as_ref().is_some_and(|powers| powers.running)
+        self.powers.as_deref_mut().is_some_and(|powers| {
+            powers.probed = true;
+            powers.running
+        })
     }
 }
 
@@ -729,29 +737,22 @@ fn duellist(
             presses: false,
             other_skill: 0.0,
         };
-        // A chosen power the power system never started, or one done before
-        // the body read casting, leaves the cast [Exarust's: the running
-        // game keeps a cast on its caster, not in the body's condition, so
-        // the combat state's own stop may never see it].
-        if let Some(p) = powers.as_deref()
-            && ai.mind.casting
-            && !p.casting
-            && !p.running
-            && p.chosen.is_none()
+        // The AI tick, before its state: a cast whose body is not casting
+        // 500 ms after it began is let go (64-bit compare). A duellist runs
+        // only the combat state, so the other states' hook call with 0x10
+        // on a casting body does not arise.
+        if ai.mind.casting
+            && *condition != Condition::CASTING
+            && u64::from(ai.mind.cast_start_ms) + 500 < u64::from(now as u32)
         {
             ai.mind.casting = false;
         }
-        let casting = powers.as_deref().is_some_and(|p| p.casting);
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
             let mut me = combat::Body {
                 now_ms: now as u32,
-                condition: if casting && condition.0 == 0 {
-                    combat::CASTING
-                } else {
-                    condition.0
-                },
+                condition: condition.0,
                 power_pool: powers.as_deref().map_or(0.0, |p| p.pool),
                 power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
@@ -1207,8 +1208,8 @@ mod tests {
     }
 
     /// A duellist whose power system answers a usable power chooses it for
-    /// the game to cast; one never started leaves the cast, so it may
-    /// choose again.
+    /// the game to cast; one never started leaves the cast once 500 ms have
+    /// passed, so it may choose again.
     #[test]
     fn the_duellist_chooses_a_power_its_power_system_offers() {
         let (mut app, foe, _) = duel(3.0, true);
@@ -1240,6 +1241,7 @@ mod tests {
         }
         assert_eq!(first, Some(0x401));
         assert!(app.world().get::<Duellist>(foe).unwrap().mind.casting);
+        let started = app.world().resource::<BodyTicks>().millis();
         let mut again = None;
         for _ in 0..400 {
             step(&mut app);
@@ -1249,6 +1251,8 @@ mod tests {
             }
         }
         assert_eq!(again, Some(0x401));
+        // A body that never read casting lets the cast go past 500 ms.
+        assert!(app.world().resource::<BodyTicks>().millis() - started > 500);
     }
 
     /// The combat ticks follow the body ticks: four at most a frame.

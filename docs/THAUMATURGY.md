@@ -226,7 +226,12 @@ cast, and a casting body asks no attack. So outside combat mode a shock,
 a blast or a torrent ends on its first tick, while kinesis, the throw and
 the 0x29 hooks hold. With a cast motion playing, the body tick's release
 flag (pressing a running cast again) asks the hook with 0x10 and ends the
-cast whatever it answers (`casting::release_cast`). The
+cast whatever it answers (`casting::release_cast`). A duellist's combat
+state, a second after its cast began with the body still casting, asks
+the body's power id's domain evaluator and, when that answers nothing,
+the hook with 0x10; a negative answer ends the cast and the AI lets it
+go. Before its state the AI lets go of a cast whose body has not read
+casting 500 ms after it began. The
 player swap, the spirit body's character generation, the kinesis aim sweep and the effect meshes are descriptions here, not
 spawned entities.
 

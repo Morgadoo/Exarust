@@ -434,6 +434,37 @@ fn a_duellists_chosen_power_is_cast() {
     assert!(powers.casting);
 }
 
+/// The combat state's stop: with the body's power answering nothing from
+/// its evaluator, the hook is asked with 0x10 and a negative answer ends
+/// the cast; while the evaluator answers, the hook is not asked.
+#[test]
+fn a_duellists_stop_asks_the_hook_once_its_power_answers_nothing() {
+    let mut app = new_app();
+    let npc = duellist(&mut app);
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
+    app.update();
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(
+        cast_body(&app, npc).cast_hook,
+        Some(super::super::power::energy::SHOCK_HOOK)
+    );
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().probed = true;
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, SHOCK);
+    assert_eq!(body.hook_asked & casting::hook_event::RELEASE, 0);
+    assert!(app.world().get::<DuelPowers>(npc).unwrap().running);
+    let target = app.world().get::<Duellist>(npc).unwrap().target;
+    *app.world_mut().get_mut::<GlobalTransform>(target).unwrap() =
+        GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0));
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().probed = true;
+    app.update();
+    let powers = app.world().get::<DuelPowers>(npc).unwrap();
+    assert!(!powers.running && !powers.probed);
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+}
+
 /// A duellist's blast charges in its hand on its cast motion and hook,
 /// throws once the charge passes 1 (the hook and power id go), pushes the
 /// limb in front of it and leaves the scene when its chunks are spent.

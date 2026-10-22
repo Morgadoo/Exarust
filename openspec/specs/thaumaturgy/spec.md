@@ -1115,3 +1115,10 @@ Each tick the player's controller SHALL ask the hook with 1 while the left butto
 #### Scenario: A shock outside combat mode
 - **WHEN** the player leaves combat mode while a shock charges
 - **THEN** the controller's 8 ends the cast and the charge clears
+
+### Requirement: A duellist lets its cast go
+A casting duellist's combat state, past 1000 ms from its cast's start, SHALL ask its power id's domain evaluator and, only when that answers 0, the hook with 0x10; a negative answer SHALL end the cast and clear the AI's casting. Before its state the AI SHALL clear its casting when the body does not read casting past 500 ms from the start.
+
+#### Scenario: A shock the evaluator no longer answers
+- **WHEN** the combat state asks while the shock's evaluator answers, then once the target is out of its reach
+- **THEN** the hook is not asked first, and then the cast ends with its hook

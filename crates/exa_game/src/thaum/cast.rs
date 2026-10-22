@@ -201,6 +201,9 @@ pub struct PowerCaster {
     pub last_result: i32,
     /// The animator's action when the cast hooks last looked.
     pub seen_action: Option<String>,
+    /// The body's power id's domain evaluator answered nothing when the
+    /// duellist's answers were last written.
+    pub evaluator_idle: bool,
 }
 
 impl PowerCaster {
@@ -242,6 +245,7 @@ impl PowerCaster {
             bar_open: false,
             last_result: 0,
             seen_action: None,
+            evaluator_idle: false,
         }
     }
 
@@ -698,17 +702,21 @@ fn advise_duellists(
                 evaluate_domain(slot, &view)
             }
         });
-        let casting = caster.body.casting != 0;
+        // The combat state's stop asks the body's power id's evaluator, and
+        // the hook with 0x10 only when that answers nothing. [inf: a missing
+        // hook, which the original would call through, answers −1.]
+        caster.evaluator_idle = evaluate_domain(caster.body.casting, &view) == 0;
+        let keeps = caster
+            .body
+            .cast_hook
+            .is_some_and(|hook| hook.answer(casting::hook_event::RELEASE) >= 0);
         let advised = DuelPowers {
             slots,
             answers,
             pool: caster.body.focus,
-            casting,
-            running: casting
-                || caster
-                    .body
-                    .cast_hook
-                    .is_some_and(|hook| hook.answer(super::casting::hook_event::CAST_START) >= 0),
+            casting: caster.body.casting != 0,
+            running: !caster.evaluator_idle || keeps,
+            probed: powers.probed,
             chosen: powers.chosen,
         };
         powers.set_if_neq(advised);
@@ -732,7 +740,7 @@ fn cast_for_duellists(
         Option<&SwingState>,
         Option<&Locomotion>,
         Option<&Locomotor>,
-        Option<&Animator>,
+        Option<&mut Animator>,
         Option<&HeldMoveset>,
         Option<&Ragdoll>,
     )>,
@@ -753,15 +761,28 @@ fn cast_for_duellists(
         swing,
         locomotion,
         locomotor,
-        animator,
+        mut animator,
         held,
         ragdoll,
     ) in &mut duellists
     {
+        let caster = &mut *caster;
+        if std::mem::take(&mut powers.probed) && caster.evaluator_idle {
+            let was_casting = caster.body.condition == casting::CASTING;
+            if casting::ask_hook(&mut caster.body, casting::hook_event::RELEASE)
+                .is_some_and(|answer| answer < 0)
+                || caster.body.cast_hook.is_none()
+            {
+                casting::end_cast(&mut caster.body);
+                debug!("duellist {entity:?} lets its cast go");
+                if was_casting && let Some(animator) = animator.as_deref_mut() {
+                    play_follow(animator);
+                }
+            }
+        }
         let Some(asked) = powers.chosen.take() else {
             continue;
         };
-        let caster = &mut *caster;
         refresh_body(
             &mut caster.body,
             condition,
@@ -793,7 +814,7 @@ fn cast_for_duellists(
             ragdoll,
             yaw: facing.x.atan2(facing.z),
             cursor: None,
-            clip_ms: shot_clip_ms(motions.as_deref(), animator),
+            clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
             target: Some(duellist.target),
             standing: Some(at.translation() * CM),
         };
