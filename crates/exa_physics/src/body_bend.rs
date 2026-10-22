@@ -24,6 +24,8 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+use crate::engine_math::acos_approx;
+
 use super::balance::cm;
 use super::feet::FootState;
 use super::{CM, Leg, Part, Ragdoll};
@@ -37,6 +39,16 @@ const FLAT: f32 = 3.1415927;
 /// while a recovery step is on.
 const EASE_STANDING: f32 = 0.02;
 const EASE_STEPPING: f32 = 0.2;
+/// The foot pitch eases at most this far (rad) a tick, plus its rate.
+pub(super) const PITCH_STEP: f32 = 0.01;
+/// The toe the pitch levels sits this far (cm) ahead of the ankle, times
+/// the body scale.
+const PITCH_REACH: f32 = 20.0;
+/// The correction (cm) is held inside this, and under 0.1 it is none.
+const PITCH_LIMIT: f32 = 30.0;
+const PITCH_DEAD: f64 = 0.1;
+/// Squared lengths under this (the original's epsilon) are none.
+const PITCH_EPS: f32 = f32::from_bits(0x33ff_ffd7);
 /// The stored rate is kept by half, and never past this (rad).
 const RATE_KEEP: f32 = 0.5;
 const RATE_CAP: f32 = 0.1;
@@ -130,6 +142,52 @@ pub(super) fn ease(angle: f32, rate: f32, target: f32, step: f32) -> (f32, f32) 
     let angle = angle + advance;
     let rate = ((rate + advance) * RATE_KEEP).clamp(-RATE_CAP, RATE_CAP);
     (angle, rate)
+}
+
+/// The pitch (rad) that levels a toe `20·scale` cm ahead of the ankle.
+/// `up_y` and `forward_y` are the shin basis heights, `local_forward_y`
+/// the foot's own, `height` how far the contact sits over its ground and
+/// sole (cm). A correction of 0.1 cm or under, or a NaN, is none. The
+/// angle is the engine's arc cosine of the isosceles cosine, negated into
+/// the correction's sign.
+pub fn foot_pitch_target(
+    up_y: f32,
+    forward_y: f32,
+    local_forward_y: f32,
+    height: f32,
+    scale: f32,
+) -> f32 {
+    let length = PITCH_REACH * scale;
+    let length2 = length * length;
+    let remain = length2 - height * height;
+    let mut raw = if remain > PITCH_EPS {
+        let horiz = up_y * up_y + forward_y * forward_y;
+        if horiz > PITCH_EPS {
+            let along = (remain / horiz).sqrt();
+            -up_y * height - forward_y * along
+        } else {
+            0.0
+        }
+    } else {
+        -up_y * height
+    };
+    // Ordered compares: a NaN correction stays NaN and the dead zone drops it.
+    raw = raw.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    raw -= local_forward_y * length;
+    if f64::from(raw.abs()) > PITCH_DEAD {
+        let denom = 2.0 * length2;
+        let cos = (denom - raw * raw) / denom;
+        let angle = if cos <= -1.0 {
+            std::f32::consts::PI
+        } else if cos >= 1.0 {
+            0.0
+        } else {
+            acos_approx(cos)
+        };
+        -angle.copysign(raw)
+    } else {
+        0.0
+    }
 }
 
 /// The bend target (m). Anchored: the midpoint of `foot` and `anchor`, at

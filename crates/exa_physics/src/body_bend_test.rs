@@ -206,6 +206,27 @@ fn lying_down_releases_the_stored_bend() {
     assert_ne!(body.legs[leg].goal, kept.0);
 }
 
+/// A shin pointing straight up pitches the foot by the engine's arc cosine
+/// of 0.5. A level shin with the contact on its ground pitches none, and
+/// a correction under 0.1 cm is none. Half scale with the contact 10 cm
+/// high uses the shorter toe. A NaN scale pitches none.
+#[test]
+fn the_foot_pitch_levels_a_20_cm_toe() {
+    let up = foot_pitch_target(0.0, 1.0, 0.0, 0.0, 1.0);
+    let cos = 0.5_f32;
+    let expect = -crate::engine_math::acos_approx(cos).copysign(-20.0);
+    assert_eq!(up.to_bits(), expect.to_bits());
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.0, 0.0, 1.0), 0.0);
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.002, 0.0, 1.0), 0.0);
+    let high = foot_pitch_target(1.0, 0.0, 0.0, 10.0, 0.5);
+    let half = -crate::engine_math::acos_approx(0.5).copysign(-10.0);
+    assert_eq!(high.to_bits(), half.to_bits());
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.0, 0.0, f32::NAN), 0.0);
+    let (angle, rate) = ease(0.0, 0.0, up, PITCH_STEP);
+    assert_eq!(angle.to_bits(), 0.01_f32.to_bits());
+    assert_eq!(rate.to_bits(), (0.01_f32 * 0.5).to_bits());
+}
+
 /// A standing body with one foot's anchor on a 15 cm step meets that step
 /// with the knee bent, through the shipped character tick and solver.
 #[test]

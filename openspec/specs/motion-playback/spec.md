@@ -300,6 +300,13 @@ A pinned part SHALL pitch its local forward axis down by the thorax hunch before
 - **WHEN** the same part's weapon recovery is 0.05
 - **THEN** its turn stays the clip's
 
+### Requirement: Foot pitch
+A foot SHALL pitch about its side axis so a point 20 cm times the body scale ahead of the ankle meets the ground. Off its feet the foot SHALL keep the clip. A correction of 0.1 cm or under SHALL leave the pitch, and the angle SHALL ease by at most 0.01 rad a tick plus its stored rate.
+
+#### Scenario: Shin tipped up
+- **WHEN** a foot's shin points straight up, its contact is on its ground, and its pitch starts at 0
+- **THEN** the pitch is 0.01 rad on the first tick, toward the angle that levels that toe
+
 ### Requirement: Clocks without a body tick
 A body without a body tick (the character view's figure, a non-physical character) SHALL tick its clip clock by the same body ticks (83 a second), counted from the frames' time with what is under a tick owed to the next frame, each tick gaining 0.6 × the race's base as a standing body's. No clip clock SHALL run per frame.
 

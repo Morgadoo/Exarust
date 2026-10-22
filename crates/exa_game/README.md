@@ -283,8 +283,9 @@ original's per-part pipeline (the Run clip overlaid on the Walk by
 0.7 × the run blend, or by the blend with the sprint latch), the spine
 turned by the torso twist (the lumbar half), the head turned toward the
 look by its ramping weight (its anchors then on the physical thorax), the
-thorax hunch on its pinned part, with identity slots for the IK chain and
-the foot pitch; the
+thorax hunch on its pinned part, the foot pitched to the ground (a
+20 cm toe, eased 0.01 rad a tick), with an identity slot for the IK
+chain; the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character
 frame, and its lift, its controller told to follow the frame (carry); a body asked to go limp keeps its motion unless given a

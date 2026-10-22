@@ -169,6 +169,11 @@ pub struct Leg {
     pub(super) smoothed: f32,
     /// The leg's foot part, if it has one.
     pub foot: Option<usize>,
+    /// The foot's pitch (rad) toward the ground, and the rate the smoother
+    /// keeps: at most 0.01 rad a tick plus the rate, the rate then half of
+    /// that sum within ±0.1.
+    pub pitch: f32,
+    pub pitch_rate: f32,
     /// The toe: the foot's sole point 20 cm ahead of the ankle, as weights
     /// on the foot part.
     pub(super) toe: [f32; 4],
@@ -530,6 +535,8 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             posed_offset: Vec3::ZERO,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
+            pitch: 0.0,
+            pitch_rate: 0.0,
         });
     }
     for leg in &mut legs {

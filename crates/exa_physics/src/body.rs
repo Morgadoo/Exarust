@@ -50,7 +50,7 @@ mod balance;
 pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
-pub use bend::{FemurPosture, femur_posture_turn};
+pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
 #[path = "body_hunch.rs"]
 mod hunch;
 pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
@@ -1797,6 +1797,32 @@ impl Ragdoll {
             held_flags: [0; 2],
             held_count: 0,
         }
+    }
+
+    /// How far (cm) leg `leg`'s contact sits over its ground and sole.
+    /// None until a ground is measured, which leaves the pitch to the
+    /// shin's tilt alone.
+    pub fn foot_contact_height(&self, leg: usize) -> f32 {
+        let Some(leg) = self.legs.get(leg) else {
+            return 0.0;
+        };
+        match leg.ground {
+            Some(ground) => (leg.at.y - self.sole - ground) * CM,
+            None => 0.0,
+        }
+    }
+
+    /// One tick of leg `leg`'s foot pitch toward `target` (rad): at most
+    /// 0.01 plus the stored rate, never past the target, the rate then
+    /// half of that sum within ±0.1. Returns the pitch the foot takes.
+    pub fn step_foot_pitch(&mut self, leg: usize, target: f32) -> f32 {
+        let Some(leg) = self.legs.get_mut(leg) else {
+            return 0.0;
+        };
+        let (angle, rate) = bend::ease(leg.pitch, leg.pitch_rate, target, bend::PITCH_STEP);
+        leg.pitch = angle;
+        leg.pitch_rate = rate;
+        angle
     }
 
     /// Gives the body muscles following its animation. A living body never
