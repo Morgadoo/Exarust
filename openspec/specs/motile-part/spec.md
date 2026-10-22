@@ -46,3 +46,10 @@ A struck limb of a fighter SHALL take the part's impact damage only when the oth
 #### Scenario: A thrown ball hits an arm
 - **WHEN** a fast ball strikes a fighter's limb
 - **THEN** the limb takes impact damage and the root's clock waits before the next
+
+### Requirement: Limb impact sound
+A struck part's recent-impact counter SHALL rise by 2 while under 40, before any gate, and fall by 1 a tick down to 1. A limb impact past its gates SHALL sound at the character: through the character's foley, at the volume times the foley's own and pitch 0.5·volume + 0.6, when the root's counter is over 2, and nothing without a foley; else as the struck part's hit sound at the volume and pitch 0.6·volume + 0.5.
+
+#### Scenario: A crowded root
+- **WHEN** a character's root part has been struck twice within a tick and a limb is struck again
+- **THEN** the impact plays the character's foley rather than the bone's hit sound

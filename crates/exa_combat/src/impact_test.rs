@@ -69,6 +69,7 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .insert_resource(Physics::default())
             .insert_resource(BodyTicks(100))
             .add_message::<LimbImpact>()
+            .add_message::<ImpactSounded>()
             .add_message::<Weakened>()
             .add_message::<SecondWindFired>();
         let target = app
@@ -82,13 +83,18 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
         for _ in 0..60 {
             app.world_mut().run_system_once(step_bodies).unwrap();
             app.world_mut().run_system_once(strike_limbs).unwrap();
-            let book = *app.world().get::<ImpactBook>(target).unwrap();
+            let book = app.world().get::<ImpactBook>(target).unwrap().clone();
             if book.taken > 0.0 {
                 let f = app.world().get::<Fighter>(target).unwrap();
                 let lost = yellow - f.health.yellow;
                 let messages = app.world().resource::<Messages<LimbImpact>>();
                 let heard: Vec<LimbImpact> =
                     messages.iter_current_update_messages().copied().collect();
+                let sounded = app.world().resource::<Messages<ImpactSounded>>();
+                let sounded: Vec<ImpactSounded> =
+                    sounded.iter_current_update_messages().copied().collect();
+                assert_eq!(sounded.len(), 1);
+                assert!(!sounded[0].foley);
                 let body = app.world().get::<Ragdoll>(target).unwrap();
                 return Some((book, lost, heard, body.parts[0].sound_ready_ms, other));
             }
@@ -101,7 +107,27 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
     assert_eq!((hit.bone, hit.other), (1, other));
     // The tick's upkeep follows the impact.
     assert_eq!(book.taken, (f64::from(hit.amount) - 0.01) as f32);
+    // Struck once: the counter rose by 2 and fell by 1.
+    assert_eq!(book.count_of(0), 1);
     assert!(lost > 0.0, "{lost}");
     assert!(clock > 0, "{clock}");
     assert_eq!(run(0.5), None);
+}
+
+/// A part's counter rises by 2 to a cap of 40 and falls by 1 down to 1.
+#[test]
+fn the_recent_impact_counter_rises_and_settles() {
+    let mut book = ImpactBook::default();
+    assert_eq!(book.count(2), 2);
+    assert_eq!(book.count(2), 4);
+    for _ in 0..30 {
+        book.count(2);
+    }
+    assert_eq!(book.count_of(2), 40);
+    for _ in 0..50 {
+        book.settle_counts();
+    }
+    assert_eq!((book.count_of(2), book.count_of(0)), (1, 0));
+    book.counts[2] = 39;
+    assert_eq!(book.count(2), 41);
 }

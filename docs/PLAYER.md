@@ -811,8 +811,12 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
   amount as yellow health (vital over 0.6 of total) and dazes by half of
   it. The clock then waits 220 + rand(100) − round(170·volume) ms. The
   taken damage falls 0.01 a tick, and the sinking speed follows the
-  root's fall at once and its rise by 0.5 % a tick. The impact's sound,
-  voice and the level's own impacts are not wired.
+  root's fall at once and its rise by 0.5 % a tick. Each struck part's
+  recent-impact counter rises by 2 (under 40) and falls by 1 a tick to 1;
+  with the root's over 2 the impact sounds through the character's foley
+  (volume times the foley's, pitch 0.5·v + 0.6), else as the bone's hit
+  sound (pitch 0.6·v + 0.5), at the character. The impact's voice and the
+  level's own impacts are not wired.
 
 ### The behaviour's aim and contact rules
 
