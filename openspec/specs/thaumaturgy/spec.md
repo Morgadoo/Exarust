@@ -1092,3 +1092,7 @@ A cast hook SHALL answer 0 to an event carrying any of its kept bits and -1 to a
 #### Scenario: A shell's raise
 - **WHEN** a shell starts its raise and another cast asks to start before the Force Raise clip ends
 - **THEN** that cast is refused, and once the clip ends into the stance the hook and power id are dropped and casts start again
+
+#### Scenario: Strikes take their hook with the motion
+- **WHEN** Force Strikes or a barricade starts its cast motion
+- **THEN** its hook refuses another cast until the clip ends, and a strikes cast whose motion is refused makes no strikes

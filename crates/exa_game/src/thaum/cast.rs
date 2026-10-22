@@ -78,11 +78,11 @@ use super::power::force::{BUBBLE, Kinesis, RemotePower, SHELL, Shell, Strikes, T
 use super::power::{
     ENDING, KNOWN_WORD, KnownPower, PowerBase, READY, RUNNING, drain, evaluate_domain,
 };
+use super::torrent_live::{new_torrent, torrent_view};
 use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
     TreeScreen, domain_of, word,
 };
-use super::torrent_live::{new_torrent, torrent_view};
 use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
@@ -694,9 +694,11 @@ fn advise_duellists(
             answers,
             pool: caster.body.focus,
             casting,
-            running: casting || caster.body.cast_hook.is_some_and(|hook| {
-                    hook.answer(super::casting::hook_event::CAST_START) >= 0
-                }),
+            running: casting
+                || caster
+                    .body
+                    .cast_hook
+                    .is_some_and(|hook| hook.answer(super::casting::hook_event::CAST_START) >= 0),
             chosen: powers.chosen,
         };
         powers.set_if_neq(advised);
@@ -1126,12 +1128,15 @@ fn create_force(
             debug!("force throw (from kinesis: {from_kinesis}): no target body pick");
             None
         }
-        ForceStart::Strikes { cost, .. } => {
+        ForceStart::Strikes { motion: false, .. } => None,
+        ForceStart::Strikes { cost, motion: true } => {
             let mut power = Strikes::new();
             let held = {
                 let body = &mut caster.body;
                 power.apply(body, &[]);
-                PowerBase::new(super::force::STRIKES).accrue(body, cost)
+                let held = PowerBase::new(super::force::STRIKES).accrue(body, cost);
+                body.cast_hook = Some(super::force::STRIKES_HOOK);
+                held
             };
             power.held = held;
             push_active(

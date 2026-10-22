@@ -24,7 +24,8 @@
 //!   otherwise it is refused while the controls drag, and a pick that
 //!   finds nothing plays the failure sound but still returns 1.
 //!   **Strikes** need a weapon in hand and start cast motion 0x25 before
-//!   they are made; a refused motion still returns 1.
+//!   they are made, with a cast hook answering 0 to bits 0x29; a refused
+//!   motion makes nothing but still returns 1.
 //! - **AI evaluators**: blast 1 with 1.2 times the cost in focus, facing
 //!   within 1, the target within 6 m and on its feet; barrier 0x10 with
 //!   half the focus above the cost, facing 1 or more, the target within
@@ -47,8 +48,8 @@
 use bevy::math::Vec3;
 
 use super::casting::{
-    AiView, CastBody, ID_MASK, TickScale, WEAPON_IN_HAND, advice, body_gate, code, free_slots,
-    front_end_blocked, persistent_advice, price, start_cast, within,
+    AiView, CastBody, CastHook, ID_MASK, TickScale, WEAPON_IN_HAND, advice, body_gate, code,
+    free_slots, front_end_blocked, persistent_advice, price, start_cast, within,
 };
 
 /// What a Force row's cast does.
@@ -143,6 +144,12 @@ pub const BARRICADE: u32 = 0x20206;
 pub const BLAST_MOTION: u32 = 0x22;
 pub const STRIKES_MOTION: u32 = 0x25;
 pub const BARRICADE_MOTION: u32 = 0x24;
+
+/// The cast hook Force Strikes and the barricade install once their cast
+/// motion starts: 0 to an event carrying bits 0x29, so no other cast starts
+/// until the motion is replaced.
+pub const STRIKES_HOOK: CastHook = CastHook { keeps: 0x29 };
+pub const BARRICADE_HOOK: CastHook = CastHook { keeps: 0x29 };
 
 /// The blast family's tuning, as each creator leaves it on the blast
 /// simulation (the bolt and the wave change the blast's defaults); how

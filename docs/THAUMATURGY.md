@@ -200,9 +200,11 @@ asks it with 0x20 when another cast starts (0 or more refuses that cast),
 cast motion, which a one-shot cast clip's end does as it returns to the
 stance; a negative answer to 4 drops the hook and the power id
 (`cast::call_motion_hooks`, for any action left other than the walk, the
-run and the attacks). The shell's raise installs a hook answering 0 to
-bits 0x29, the bubble's to bits 0x28, so neither lets another cast start
-until the Force Raise clip ends; the blast, wave, torrent and barrier
+run and the attacks). The shell's raise, Force Strikes and the barricade
+install a hook answering 0 to bits 0x29 once their cast motion starts,
+and the bubble's answers to bits 0x28, so none lets another cast start
+until its cast clip ends (a strikes cast whose motion is refused makes no
+strikes, though it still answers 1); the blast, wave, torrent and barrier
 hooks answer −1 to everything, and their effect fizzles or ends when
 called. The
 combat factors the classes publish are still not read by `exa_combat`'s

@@ -759,7 +759,10 @@ fn a_duellists_torrent_charges_pours_and_ends_on_the_release() {
         app.world_mut().run_schedule(FixedUpdate);
     }
     let body = cast_body(&app, npc);
-    assert_eq!((body.casting, body.cast_hook), (TORRENT, Some(TORRENT_HOOK)));
+    assert_eq!(
+        (body.casting, body.cast_hook),
+        (TORRENT, Some(TORRENT_HOOK))
+    );
     assert_ne!(
         app.world().get::<Ragdoll>(target).unwrap().parts[0].positions,
         start
@@ -836,6 +839,48 @@ fn a_shell_reaches_the_hit_formula() {
     assert_eq!(factors(&app).shell, 0.0);
 }
 
+/// Force Strikes takes its hook with its cast motion, so a second cast is
+/// refused until the motion is replaced; a refused motion makes no strikes.
+#[test]
+fn strikes_take_their_hook_with_the_motion() {
+    use crate::thaum::casting::CastHook;
+    use crate::thaum::force::{STRIKES, STRIKES_HOOK, STRIKES_MOTION};
+    let armed_hands = || HeldMoveset {
+        weapon_class: 0x10,
+        ..HeldMoveset::default()
+    };
+    let mut app = new_app();
+    let armed = caster(&mut app, &[STRIKES]);
+    app.world_mut().entity_mut(armed).insert(armed_hands());
+    {
+        let mut caster = app.world_mut().get_mut::<PowerCaster>(armed).unwrap();
+        caster.body.focus = 1.0;
+    }
+    cast(&mut app, armed);
+    let body = cast_body(&app, armed);
+    assert_eq!(body.cast_motion, Some(STRIKES_MOTION));
+    assert_eq!(
+        (body.casting, body.cast_hook),
+        (STRIKES, Some(STRIKES_HOOK))
+    );
+    let active = |app: &App, who| app.world().get::<PowerCaster>(who).unwrap().active.len();
+    assert_eq!(active(&app, armed), 1);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(cast_body(&app, armed).cast_hook, Some(STRIKES_HOOK));
+
+    let busy = caster(&mut app, &[STRIKES]);
+    app.world_mut().entity_mut(busy).insert(armed_hands());
+    {
+        let mut caster = app.world_mut().get_mut::<PowerCaster>(busy).unwrap();
+        caster.body.focus = 1.0;
+        caster.body.cast_hook = Some(CastHook { keeps: 0x20 });
+    }
+    cast(&mut app, busy);
+    assert_eq!(app.world().get::<PowerCaster>(busy).unwrap().last_result, 1);
+    assert_eq!(active(&app, busy), 0);
+    assert_eq!(app.world().get::<PowerFactors>(busy).unwrap().strikes, 0.0);
+}
+
 /// A caster whose animator leaves the action its hook saw has the hook
 /// asked with event 4, except leaving the walk, the run or an attack.
 #[test]
@@ -869,7 +914,10 @@ fn leaving_the_cast_action_calls_the_hook() {
         .spawn((caster, Animator::new("Default", "Force Raise")))
         .id();
     app.world_mut().run_schedule(FixedUpdate);
-    assert_eq!(cast_body(&app, npc).cast_hook, Some(CastHook { keeps: 0x29 }));
+    assert_eq!(
+        cast_body(&app, npc).cast_hook,
+        Some(CastHook { keeps: 0x29 })
+    );
     app.world_mut().get_mut::<Animator>(npc).unwrap().action = "Idle".into();
     app.world_mut().run_schedule(FixedUpdate);
     let body = cast_body(&app, npc);
