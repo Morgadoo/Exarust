@@ -81,6 +81,9 @@ const GRID_CELL: f32 = 0.3;
 pub(crate) const AIM_HEIGHT: f32 = 0.8;
 /// Combat footwork held longer than this (s) walks on.
 const STEP_HOLD: f32 = 0.2;
+/// A held key takes the long step only while the crouch, promoted to
+/// double, is below this. The float 0.1 promotes to a double above it.
+const LONG_STEP_CROUCH: f64 = 0.1;
 /// In combat mode the heading turns to the cursor once it is further off
 /// than this (rad, 30°).
 const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
@@ -825,7 +828,8 @@ struct Footwork<'a> {
     standing: Vec3,
     /// A fresh press: one step reach, times the legs' extension and √scale (m).
     step: f32,
-    /// Keys already held 200 ms: (1.5 − 0.3·encumbrance) of that length (m).
+    /// Keys already held 200 ms, while the crouch widened is below 0.1:
+    /// (1.5 − 0.3·encumbrance) of that length (m).
     long_step: f32,
     line: LineWalk<'a>,
 }
@@ -841,13 +845,12 @@ struct Footwork<'a> {
 /// of a step (a step's length along the keys, clamped by the grid's line
 /// walk) lies over 400 cm² away, in three dimensions. A fresh press aims
 /// one step reach times the legs' extension. Keys already held 200 ms aim
-/// (1.5 − 0.3·encumbrance) of that length, the
-/// product narrowed once from double before the extension; the original
-/// also keeps the short step while an unnamed support value is at least
-/// 0.1, which Exarust does not keep, so a held key takes the long step.
-/// A walk, run or backpedal of the exploration steering still playing
-/// when combat mode turned on ends in the stance once the body stands
-/// (`moving` false). A walk or a run blends over 20 frames, as the
+/// (1.5 − 0.3·encumbrance) of that length, the product narrowed once from
+/// double before the extension, only while the crouch promoted to double
+/// is below 0.1. At 0.1, above it, or when it is NaN, the held key keeps
+/// the short reach. A walk, run or backpedal of the exploration steering
+/// still playing when combat mode turned on ends in the stance once the
+/// body stands (`moving` false). A walk or a run blends over 20 frames, as the
 /// original's walk ends.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
@@ -876,12 +879,15 @@ fn combat_steps(
     }
     let mut dir = dir.normalize_or_zero();
     // The hold is what the last ticks already accumulated: the press
-    // itself stays a tap, and the long step starts once 200 ms have passed.
-    let length = if dir != Vec3::ZERO && pb.held >= STEP_HOLD {
-        footing.long_step
-    } else {
-        footing.step
-    };
+    // itself stays a tap, and the long step starts once 200 ms have passed
+    // while the crouch, widened, is below 0.1. At 0.1, above it, or NaN,
+    // the held key keeps the short reach.
+    let length =
+        if dir != Vec3::ZERO && pb.held >= STEP_HOLD && f64::from(pb.crouch) < LONG_STEP_CROUCH {
+            footing.long_step
+        } else {
+            footing.step
+        };
     if dir != Vec3::ZERO
         && steering
             .step_target(footing.standing, dir, length, footing.line)
@@ -1919,6 +1925,48 @@ mod tests {
         assert_eq!(held.z.to_bits(), 0x3f99_999a);
         let worn = aim(STEP_HOLD, 72.0 / 100.0, long_step_length(72.0, 0.5) / 100.0);
         assert_eq!(worn.z.to_bits(), 0x3f78_d4fd);
+    }
+
+    /// A key held 200 ms keeps the short reach once the crouch, promoted
+    /// to double, is no longer below 0.1. The float 0.1 is above that
+    /// double, the float just under it is still below, and a NaN stays short.
+    #[test]
+    fn a_crouch_of_0_1_keeps_the_short_step() {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let aim = |crouch: f32| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0).crouching(crouch);
+            pb.held = STEP_HOLD;
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let footing = Footwork {
+                standing: Vec3::ZERO,
+                step: STEP_LENGTH,
+                long_step: long_step_length(80.0, 0.0) / 100.0,
+                line: &open,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &Keys {
+                    w: true,
+                    ..Keys::default()
+                },
+                &mut req,
+                &mut steering,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            steering.line.unwrap().to.z
+        };
+        let at = aim(0.1);
+        assert_eq!(at.to_bits(), STEP_LENGTH.to_bits());
+        let under = aim(f32::from_bits(0.1f32.to_bits() - 1));
+        assert_eq!(under.to_bits(), 0x3f99_999a);
+        assert_eq!(aim(f32::NAN).to_bits(), STEP_LENGTH.to_bits());
     }
 
     /// The legs' extension scales the tap and the held step after the long
