@@ -390,7 +390,9 @@ and on the run's first key while the sprint latch is set; a lifted
 lowest foot hands the two-foot blend its full weight and a lifted other
 foot none (the other wins when both are lifted); moving, that weight
 starts at min(0.5, 0.2·speed) and is multiplied by min(1, (0.3·speed)²),
-speed the cm a tick along the heading; the
+speed the cm a tick along the heading, and that spread is (1 − k)·lowest
+ground + k·(lowest contact + other contact − other ground), k = min(1,
+0.2·speed) moving and 1 standing; the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
 pins once and the pelvis pin twice toward the frame in each iteration. The

@@ -291,8 +291,10 @@ fn a_lifted_foot_sets_the_blend_weight() {
         target_height(&sloped(false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         55.0
     );
+    // 5 cm a tick saturates the spread's mix, so the 50 cm slope still
+    // applies and a lifted lowest foot blends by half.
     assert_eq!(
-        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0, 4.0),
+        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0, 5.0),
         60.0
     );
     // Spread 70 cm: the flag does not blend past 60.
@@ -361,6 +363,49 @@ fn the_moving_blend_follows_the_speed() {
     assert_eq!(
         target_height(&pair(false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         65.0
+    );
+}
+
+/// Moving, the spread is (1 − k)·lowest ground + k·(lowest contact + other
+/// contact − other ground), k = min(1, 0.2·speed). Contacts 30 and 20 cm
+/// over grounds at 0 are 50 cm apart, which the slope would cut; at 2.5 cm
+/// a tick k is 0.5 and the spread is 25, so the weight is not cut, and at
+/// 4 cm a tick the spread is 40, so a lifted lowest foot keeps its full
+/// weight. At 5 cm a tick k is 1 and the 50 cm slope returns. A NaN speed
+/// saturates k the same way. Standing keeps k at 1.
+#[test]
+fn the_moving_spread_follows_the_speed() {
+    let foot = |contact: f32, stance: f32, lifted: bool| LegHeight {
+        ground: Some(0.0),
+        contact,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    let pair = |lifted: bool| [foot(30.0, 40.0, lifted), foot(20.0, 80.0, false)];
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 2.5),
+        51.25
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 4.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 5.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, f32::NAN),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
+        55.0
     );
 }
 

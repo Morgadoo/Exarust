@@ -19,8 +19,10 @@
 //! length, plus 5 cm. The blend's weight is a half, all of it when the
 //! lowest foot is lifted and none when the other is. Moving, that half is
 //! min(0.5, 0.2·speed) and the weight is multiplied by min(1, (0.3·speed)²).
-//! A full crouch is 60
-//! cm times the body scale over that ground. The rules are the original's,
+//! The spread is (1 − k)·lowest ground + k·(lowest contact + other contact
+//! − other ground), k = min(1, 0.2·speed) moving and 1 standing.
+//! A full crouch is 60 cm times the body scale over that ground. The rules
+//! are the original's,
 //! in its centimetres and ticks (evidence: `docs/formats/RSQ.md`, Physical
 //! body). Each foot's ground is its own: the controller's floor does not
 //! raise it. The leg bend stores the lift term before clamping and lowers
@@ -60,7 +62,9 @@ const CROUCHED_HEIGHT: f32 = 60.0;
 /// flag wins when both are), by none once the feet's spread (cm) reaches
 /// the second, and by all of the weight under the first; between, by 0.05
 /// a cm times the weight. Moving, the half is min(0.5, 0.2·speed) and the
-/// weight is then multiplied by min(1, (0.3·speed)²).
+/// weight is then multiplied by min(1, (0.3·speed)²). The spread is
+/// (1 − k)·lowest ground + k·(lowest contact + other contact − other
+/// ground), k = min(1, 0.2·speed) moving and 1 standing.
 const STANDING_BLEND: f32 = 0.5;
 /// A lifted lowest foot hands the blend this weight before the slope.
 const LIFTED_LOWEST: f32 = 1.0;
@@ -176,9 +180,10 @@ pub(super) struct LegHeight {
 /// when both are; 0 as well when O has no ground). Moving, that half is
 /// min(0.5, 0.2·`speed`) and the weight is then multiplied by
 /// min(1, (0.3·`speed`)²), `speed` the cm a tick along the heading.
-/// The weight applies in full while O's contact height less its ground
-/// plus L's contact height is under 40 cm, by 0.05 a cm of it less over
-/// 40, not at all from 60 (the original's test, as read). Standing, it is
+/// The spread is (1 − k)·L's ground + k·(L's contact + O's contact − O's
+/// ground), k = min(1, 0.2·`speed`) moving and 1 standing. The weight
+/// applies in full while that spread is under 40 cm, by 0.05 a cm of it
+/// less over 40, not at all from 60. Standing, it is
 /// capped at L's ground plus sole plus leg length and raised 5 cm; moving,
 /// neither. [`NO_TARGET`] when no foot has ground.
 #[allow(clippy::too_many_arguments)]
@@ -224,7 +229,17 @@ pub(super) fn target_height(
             Some(g) => (base, g),
             None => (0.0, lowest),
         };
-        let spread = o.contact - ground + l.contact;
+        // k mixes the contact spread toward the lowest foot's ground.
+        // Standing, and a moving speed at or over 5 cm a tick, k is 1, so
+        // the spread stays the contact test. A NaN speed saturates k.
+        let mix = if moving {
+            ((f64::from(speed) * SPEED_BASE) as f32).min(1.0)
+        } else {
+            1.0
+        };
+        let lowest_mixed = (1.0 - mix) * lowest + mix * l.contact;
+        let other_mixed = (1.0 - mix) * ground + mix * o.contact;
+        let spread = other_mixed - (ground - lowest_mixed);
         if spread < BLEND_NONE {
             let mut weight = if spread > BLEND_FULL {
                 (f64::from((BLEND_NONE - spread) * weight) * BLEND_SLOPE) as f32

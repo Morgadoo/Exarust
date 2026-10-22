@@ -696,6 +696,13 @@ Each leg's height SHALL be ground + crouch·60·scale + (1 − crouch)·(clip-ro
 - **WHEN** a standing body of scale one half or 1.25 crouches fully, and that crouch term is under the leg's reach
 - **THEN** the target is 35 cm or 80 cm over the ground
 
+### Requirement: Moving pelvis spread
+Moving, the two-foot spread SHALL be (1 − k)·lowest ground + k·(lowest contact + other contact − other ground), where k = min(1, 0.2·speed) and speed is the cm a tick along the heading. Standing, k SHALL be 1, so the spread stays the contact test. A NaN speed SHALL saturate k.
+
+#### Scenario: Partial mix
+- **WHEN** contacts sit 30 and 20 cm over grounds at 0 and the body moves at 2.5, 4 or 5 cm a tick
+- **THEN** the spread is 25, 40 or 50 cm, so a planted pair blends by 0.28125, a lifted lowest foot keeps its full weight, or the slope leaves half
+
 ### Requirement: Climbing with the controller
 The lift SHALL read each foot's own ground. The character controller's floor SHALL NOT raise that ground, on level ground, on stairs, perched or fallen.
 

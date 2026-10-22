@@ -291,22 +291,24 @@ How the original simulates a body (`exa_physics::body`):
     picks by the same flags.     The target
     is the lowest foot's, blended toward the other's by half while the
     other's contact height over its ground plus the lowest foot's contact
-    height is under 40 cm, by 0.05 a cm less up to 60 (the original's test
-    as read: on a floor high in the world nothing is blended), and not when
-    the other foot has no ground. A lifted lowest foot uses 1 for that
-    weight and a lifted other foot uses 0 (its flag wins when both are
-    lifted); the slope scales whichever weight the flags leave. Moving,
-    that half is min(0.5, 0.2·speed) and the weight is then multiplied by
-    min(1, (0.3·speed)²), speed the cm a tick along the heading (a NaN
-    saturates both). Standing, it
+    height is under 40 cm, by 0.05 a cm less up to 60 (on a floor high in
+    the world nothing is blended), and not when the other foot has no
+    ground. A lifted lowest foot uses 1 for that weight and a lifted other
+    foot uses 0 (its flag wins when both are lifted); the slope scales
+    whichever weight the flags leave. Moving, that half is min(0.5,
+    0.2·speed) and the weight is then multiplied by min(1, (0.3·speed)²),
+    speed the cm a tick along the heading (a NaN saturates both). The
+    spread those thresholds read is (1 − k)·lowest ground + k·(lowest
+    contact + other contact − other ground), k = min(1, 0.2·speed) moving
+    and 1 standing (a NaN speed saturates k), so at rest it is the lowest
+    ground and at 5 cm a tick it is the contact test. Standing, it
     is capped at that ground + sole + leg length and raised 5 cm; moving,
     neither. With no ground under any foot it is −1000 m: no lift. An idle
     human (the clip root 91.4 cm over the ankle, sole 9.68 cm) is capped at
     ground + 99.83 cm and stands with its pelvis at ground + 101.5 cm. A
     full crouch is 60 cm times the body scale over that ground. Not
     reproduced: the stepping (h + 10, 70 cm crouched in place of 60) and
-    resting (h + 20) variants, the moving spread's mix of the two pin
-    heights, and the gait-smoothed ground (C19).
+    resting (h + 20) variants, and the gait-smoothed ground (C19).
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
