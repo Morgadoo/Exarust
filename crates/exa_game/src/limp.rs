@@ -23,8 +23,8 @@ use std::collections::HashMap;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, STANDING_PACE, TickedClips,
-    follow_up_blend,
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, TickedClips, follow_up_blend,
+    rising_frames, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
@@ -365,7 +365,6 @@ const OFF_BALANCE_RATE: f32 = 1.25;
 /// running tone × rate × 0.6 a tick, and only above half tone.
 const RISING_RATE: f32 = 1.5;
 const RISING_ARMOUR: f32 = 0.5;
-const RISING_TONE: f32 = 0.5;
 /// Kicking at the tone a standing body keeps (0.85 and over) its rate is
 /// twice the base. Under it the weak branch writes nothing, so the clock
 /// keeps [`Drive::posture_rate`].
@@ -427,11 +426,12 @@ fn clip_rate(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) 
 /// locomoting, the step its locomotion routine made (the original adds it
 /// in that routine, whatever the clip; 0.764 walking 1.687 cm a tick,
 /// `exa_physics::body::locomotion::locomote`); getting up,
-/// tone × the rate × 0.6 above half tone (0.9 unencumbered, 0.75 on the
-/// tick its posture stage starts the get-up); attacking, the rate its
-/// swing routine set (about 1.1; without one its swing's unstalled rate),
-/// or off balance the posture block's rate as it is (1.25: no routine
-/// runs); otherwise 0.6 × the rate (0.6 standing or in its stance, 0.75
+/// tone × the rate × 0.6 above half tone, one double product narrowed
+/// once (0.8999999761581421 unencumbered, 0.75 on the tick its posture
+/// stage starts the get-up); attacking, the rate its swing routine set
+/// (about 1.1; without one its swing's unstalled rate), or off balance
+/// the posture block's rate as it is (1.25: no routine runs); otherwise
+/// the same double 0.6 × the rate (0.6 standing or in its stance, 0.75
 /// off balance, 1.2 kicking), and none while its condition holds the
 /// clock still. A shock that is not an attack leaves the stored rate.
 fn clip_clock(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> (f32, f32) {
@@ -447,16 +447,10 @@ fn clip_clock(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace)
     } else {
         let bearing = &drive.bearing;
         match playing {
-            _ if bearing.getting_up => {
-                if drive.tone > RISING_TONE {
-                    drive.tone * rate * STANDING_PACE
-                } else {
-                    0.0
-                }
-            }
+            _ if bearing.getting_up => rising_frames(rate, drive.tone),
             Some(a) if ATTACKS.contains(&a) => rate,
             _ if pace.still => 0.0,
-            _ => STANDING_PACE * rate,
+            _ => standing_frames(rate),
         }
     };
     (frames, stored)
@@ -1311,6 +1305,10 @@ pub(crate) mod tests {
             getting_up: true,
             ..falling
         };
+        assert_eq!(
+            frames(0x0F, &doing(rising, 1.0), &pace).to_bits(),
+            0x3f66_6666
+        );
         assert!(close(frames(0x0F, &doing(rising, 1.0), &pace), 0.9));
         assert!(close(frames(0x0F, &doing(rising, 0.8), &pace), 0.72));
         assert_eq!(frames(0x0F, &doing(rising, 0.5), &pace), 0.0);
@@ -1318,6 +1316,10 @@ pub(crate) mod tests {
             encumbrance: 0.625,
             ..pace
         };
+        assert_eq!(
+            frames(0x0F, &doing(rising, 1.0), &plate).to_bits(),
+            0x3f36_6666
+        );
         assert!(close(frames(0x0F, &doing(rising, 1.0), &plate), 0.7125));
         // A get-up its posture stage starts this tick (from the floor, or
         // a stagger's) runs at the off-balance rate, whatever the armour.
@@ -1350,6 +1352,7 @@ pub(crate) mod tests {
         assert!(close(frames(5, &zombie, &pace), 0.81));
         let mut ghoul = doing(still, 1.0);
         ghoul.race.clip_rate = 1.5;
+        assert_eq!(frames(0x13, &ghoul, &pace).to_bits(), 0x3f66_6666);
         assert!(close(frames(0x13, &ghoul, &pace), 0.9));
         // An attack's clip runs at the rate its swing routine set (a
         // stalled swing's 0.4), whatever its energy.

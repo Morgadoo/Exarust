@@ -1599,6 +1599,8 @@ Then the clock block adds the frames:
 | shocked (the condition's bit 0x80) | none | 0 |
 | otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking |
 
+The standing product and the get-up's (tone included) are each one double-precision multiply, narrowed once: a rate of 1.5 at full tone gains 0.8999999761581421 frames, and a get-up in encumbrance 0.625 gains 0.7124999761581421.
+
 The clip ends when its clock less its blend reaches the last key's time. A
 looping clip (mode bit 0, or one Exarust loops) then wraps by the last
 key's time, and its frames before the first key blend from the last key

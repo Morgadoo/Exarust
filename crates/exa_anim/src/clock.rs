@@ -37,6 +37,24 @@ use super::{Animator, ClipPose, to_quat};
 /// second for a human. Getting up, attacking and walking have their own
 /// rates (`exa_game::limp`).
 pub const STANDING_PACE: f32 = 0.6;
+
+/// Frames a standing clock gains from `rate`: the double 0.6 times the
+/// rate, narrowed once. A rate of 1.5 gains 0.8999999761581421; the
+/// single-precision product is the next float up.
+pub fn standing_frames(rate: f32) -> f32 {
+    (f64::from(rate) * 0.6) as f32
+}
+
+/// Frames a get-up's clock gains above half tone: the double product
+/// rate × 0.6 × tone, narrowed once. At half tone and below, and for a
+/// NaN tone, none.
+pub fn rising_frames(rate: f32, tone: f32) -> f32 {
+    if tone > 0.5 {
+        (f64::from(rate) * 0.6 * f64::from(tone)) as f32
+    } else {
+        0.0
+    }
+}
 /// The walk, the run and the backpedal (action indices): played in place,
 /// their root's travel along z left out, since the body's own motion makes
 /// it.

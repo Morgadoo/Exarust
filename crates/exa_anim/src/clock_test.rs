@@ -617,3 +617,16 @@ fn the_installed_clips_loop_and_lead_in_as_the_original() {
         assert_eq!(blended, ticks, "{name}");
     }
 }
+
+/// The standing pace and a get-up's are one double product, narrowed once.
+/// A rate of 1.5 gains 0.8999999761581421, one float under the
+/// single-precision product; half tone and a NaN tone gain nothing.
+#[test]
+fn the_pace_is_a_double_product() {
+    assert_eq!(standing_frames(1.5).to_bits(), 0x3f66_6666);
+    assert_eq!(rising_frames(1.5, 1.0).to_bits(), 0x3f66_6666);
+    assert_eq!(rising_frames(1.1875, 1.0).to_bits(), 0x3f36_6666);
+    assert_ne!(standing_frames(1.5).to_bits(), (1.5f32 * 0.6).to_bits());
+    assert_eq!(rising_frames(1.5, 0.5), 0.0);
+    assert_eq!(rising_frames(1.5, f32::NAN), 0.0);
+}

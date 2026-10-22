@@ -87,7 +87,7 @@ The system SHALL draw a skinned body or apparel mesh only once it is bound to it
 - **THEN** that body part stays hidden after binding
 
 ### Requirement: Clip clocks
-A clip's clock SHALL gain frames each body tick from its rate (the race's clip-rate base × its posture's factor): 0.6 × rate standing; tone × rate × 0.6 getting up above half tone; the swing rate attacking (the rate itself off balance); the locomotion's step whenever it locomotes, whatever the clip; none while shocked. A clip SHALL end when its clock less its blend reaches its last key; a looping one SHALL then wrap by that key's time, frames before the first key blending from the last.
+A clip's clock SHALL gain frames each body tick from its rate (the race's clip-rate base × its posture's factor): 0.6 × rate standing; tone × rate × 0.6 getting up above half tone; the swing rate attacking (the rate itself off balance); the locomotion's step whenever it locomotes, whatever the clip; none while shocked. The standing product and the getting-up product SHALL each be one double-precision multiply, narrowed once. A clip SHALL end when its clock less its blend reaches its last key; a looping one SHALL then wrap by that key's time, frames before the first key blending from the last.
 
 #### Scenario: Standing human
 - **WHEN** a human stands in Idle
@@ -96,6 +96,10 @@ A clip's clock SHALL gain frames each body tick from its rate (the race's clip-r
 #### Scenario: Getting up and walking
 - **WHEN** a human at full tone gets up, or walks aligned 1.687 cm a tick
 - **THEN** its clock gains 0.9, or 0.764 frames a tick
+
+#### Scenario: Double-precision pace
+- **WHEN** a rate of 1.5 is paced at full tone, a standing clock uses that rate, or a get-up's rate is 1.1875
+- **THEN** the gains are 0.8999999761581421, the same, and 0.7124999761581421
 
 #### Scenario: Walk loop
 - **WHEN** the walk wraps from its last key (80) to frame 0
