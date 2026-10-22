@@ -354,8 +354,11 @@ How the original simulates a body (`exa_physics::body`):
     - Arm stiffness: 0.5 off balance (balance under 0.6, falling, lying,
       getting up); 0.2 at tone under 0.85; in the walk and run cycles the
       character's walking arms (0.2, or 0.2 − 0.15 × its feral level, at
-      least 0.05: a zombie's arms hang at 0.05). Those three write both
-      arms the same. A power sets both to 0.3 and a weapon switch both to
+      least 0.05: a zombie's arms hang at 0.05). Off balance and a daze
+      write both arms the same. In the walk and the run a shield's off
+      arm is twice the walking arms and the weapon arm keeps them;
+      without a shield both arms are the walking arms. A power sets both
+      to 0.3 and a weapon switch both to
       0.4 (the attack setter's floor, relaxation cap and saturation, the
       saturation from the drive the last attack stored, 0 until then). A
       kick leaves each arm as the last tick wrote it. Otherwise each

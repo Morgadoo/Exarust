@@ -378,9 +378,13 @@ pub struct Attacker {
     last_picks: [usize; 2],
     /// Stance class 1–6, copied from the held moveset when the hands
     /// change. 5 (unarmed) until then, so a swing before the first equip
-    /// still sets both arms.
+    /// still sets both arms. [`STANCE_SHIELD`] is a weapon and a shield.
     pub stance_class: u8,
 }
+
+/// Stance class of a weapon and a shield. While the body strides, the
+/// off arm's stiffness is twice the walking arms.
+pub const STANCE_SHIELD: u8 = 3;
 
 impl Default for Attacker {
     fn default() -> Self {

@@ -8,12 +8,14 @@
 //! branch, getting up and rising through its get-up's first quarter,
 //! carried by its controller, turning unless its condition is helpless,
 //! collapsing, kicking, casting, switching weapons, walking and off its
-//! feet by its condition, its clip's progress. The attack stage copies
-//! the parry flag onto that bearing after the parry check.
+//! feet by its condition, its clip's progress, and whether a shield is in
+//! the off hand. The attack stage copies the parry flag onto that bearing
+//! after the parry check.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
 use exa_combat::Condition;
+use exa_combat::attack::{self, Attacker};
 use exa_combat::condition::{PostureBranch, StateFlags};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
@@ -37,10 +39,11 @@ pub(crate) fn take_bearing(
         Option<&PostureBranch>,
         Option<&Condition>,
         Option<&StateFlags>,
+        Option<&Attacker>,
     )>,
 ) {
     let Some(motions) = motions else { return };
-    let Ok((mut body, anim, locomotion, player, branch, condition, flags)) =
+    let Ok((mut body, anim, locomotion, player, branch, condition, flags, attacker)) =
         bodies.get_mut(ticked.body)
     else {
         return;
@@ -56,6 +59,7 @@ pub(crate) fn take_bearing(
     bearing.full_stance =
         state == Condition::DORMANT || flags.map_or(0, |f| f.0) == StateFlags::SHOCK_STAGGER;
     bearing.shock_stagger = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
+    bearing.shield = attacker.is_some_and(|a| a.stance_class == attack::STANCE_SHIELD);
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));

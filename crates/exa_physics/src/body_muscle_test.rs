@@ -335,6 +335,73 @@ fn feral_arms_hang_loose_striding() {
     assert_eq!(arm_stiffness(0.4, &fallen, 1.0, &human, &zombie), 0.5);
 }
 
+/// A shield in the off hand doubles that arm while the body strides at
+/// full tone and on balance. The weapon arm keeps the walking arms. Off
+/// balance, a daze and a parry do not take the double.
+#[test]
+fn a_shield_stride_doubles_the_off_arm() {
+    let bare = |bone: usize| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[bare(12), bare(15)]).with_drive();
+    let pose = vec![Affine3A::IDENTITY; 2];
+    let factor =
+        |body: &Ragdoll, bone: usize| body.parts.iter().find(|p| p.bone == bone).unwrap().factor;
+    let stride = Bearing {
+        striding: true,
+        shield: true,
+        ..Bearing::default()
+    };
+    body.set_bearing(stride);
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    // Walking arms 0.2, times 1.25. The off arm (bone 15) is twice that.
+    assert_eq!(factor(&body, 12), 0.2 * 1.25);
+    assert_eq!(factor(&body, 15), 0.4 * 1.25);
+    body.set_bearing(Bearing {
+        striding: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body, 12), 0.2 * 1.25);
+    assert_eq!(factor(&body, 15), 0.2 * 1.25);
+    body.set_bearing(Bearing {
+        striding: true,
+        shield: true,
+        off_balance: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body, 12), 0.5 * 1.25);
+    assert_eq!(factor(&body, 15), 0.5 * 1.25);
+    body.set_bearing(stride);
+    body.drive.as_mut().unwrap().tone = 0.8;
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert_eq!(factor(&body, 12), 0.2 * 1.25);
+    assert_eq!(factor(&body, 15), 0.2 * 1.25);
+    body.drive.as_mut().unwrap().tone = 1.0;
+    body.set_arm_stiffness(0.5);
+    body.set_bearing(Bearing {
+        striding: true,
+        shield: true,
+        parrying: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    let eased = crate::motile::parry_blend(0.5) * 1.25;
+    assert_eq!(factor(&body, 12), eased);
+    assert_eq!(factor(&body, 15), eased);
+}
+
 /// Relaxation rises by its step and falls to its target at once; a
 /// negative target (an anchor moving faster than 0.137 cm a tick) leaves
 /// it where it was, as the original's does.

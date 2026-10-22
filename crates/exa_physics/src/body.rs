@@ -1256,7 +1256,9 @@ pub struct Drive {
     /// The two stored arm stiffnesses, right then left. A standing tick
     /// eases each; a kick leaves them; a collapse, a daze, a stride, a
     /// power and a weapon switch write both the same. An attack stores the
-    /// floored pair so the next standing tick starts there.
+    /// floored pair so the next standing tick starts there. A shielded
+    /// stride writes the walking arms on the weapon arm and twice that
+    /// on the off arm.
     arms: (f32, f32),
     /// Support S, 0..=1.
     support: f32,

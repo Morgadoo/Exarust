@@ -217,7 +217,8 @@ pub struct Bearing {
     pub full_stance: bool,
     /// The shock-stagger flag is set: the support pins' power is 1.
     pub shock_stagger: bool,
-    /// It plays the walk or the run cycle: its arms hang loosely.
+    /// It plays the walk or the run cycle: its arms hang loosely. A shield
+    /// in the off hand doubles that arm.
     pub striding: bool,
     /// It has lost its balance: falling, lying or getting up.
     pub off_balance: bool,
@@ -300,6 +301,11 @@ pub struct Bearing {
     /// Its golem suit is powered: the standing thigh factor and the leg
     /// limit's target are halved a second time.
     pub golem_powered: bool,
+    /// A shield is in the off hand. While the body strides at full tone
+    /// and on balance, that arm's stiffness is twice the walking arms and
+    /// the weapon arm keeps them. A parry, a daze, a kick and an attack
+    /// do not take this.
+    pub shield: bool,
     /// The jump flag and its timer: the original never writes either, so
     /// the leg mode's jump share is dead; kept for the rule.
     pub jump: bool,
@@ -340,6 +346,7 @@ impl Default for Bearing {
             casting: false,
             switching: false,
             golem_powered: false,
+            shield: false,
             jump: false,
             jump_progress: 0.0,
         }
@@ -675,7 +682,8 @@ impl Ragdoll {
         // the two stored stiffnesses, and a power or a weapon switch
         // writes both the same through the attack setter. Otherwise each
         // stored stiffness eases on its own. A collapse, a daze and a
-        // stride write both the same. An attack stores its floored pair
+        // stride write both the same, and a shielded stride doubles the
+        // off arm. An attack stores its floored pair
         // so the next standing tick starts there, unless a kick is holding.
         let posed = !unsteady.collapsing
             && !unsteady.off_balance
@@ -693,6 +701,17 @@ impl Ragdoll {
             && !unsteady.off_balance
             && !unsteady.kicking
             && drive.attack_arms.is_none();
+        // A shielded stride doubles the off arm. It is the walk's own
+        // branch: a parry, a daze, a kick, a collapse and lost balance
+        // are already taken.
+        let stride_shield = unsteady.striding
+            && unsteady.shield
+            && !unsteady.collapsing
+            && !unsteady.off_balance
+            && !unsteady.kicking
+            && drive.tone >= ARM_DAZED_TONE
+            && drive.attack_arms.is_none()
+            && !parry_ease;
         // An attack's drives stay on the body: a later power, weapon
         // switch or standing tick saturates each arm from the one it stored.
         if let Some(tune) = drive.attack_arms {
@@ -722,6 +741,11 @@ impl Ragdoll {
             );
             drive.arms = eased;
             drive.arm = eased.0;
+        } else if stride_shield {
+            let right = floor_arm(drive.stats.walking_arms, unsteady.turn);
+            let left = floor_arm(drive.stats.walking_arms * 2.0, unsteady.turn);
+            drive.arms = (right, left);
+            drive.arm = right;
         } else {
             let x = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
             drive.arms = (x, x);
@@ -805,8 +829,17 @@ impl Ragdoll {
                         p.relax_cap = attack_relax_cap(stiff);
                         p.saturation = attack_saturation(drv);
                     } else {
-                        p.factor = drive.arm * limbs;
-                        p.relax_cap = arm_relax_cap(drive.arm);
+                        let stiff = if stride_shield && let Some(side) = attack_side(bone) {
+                            if side == 0 {
+                                drive.arms.0
+                            } else {
+                                drive.arms.1
+                            }
+                        } else {
+                            drive.arm
+                        };
+                        p.factor = stiff * limbs;
+                        p.relax_cap = arm_relax_cap(stiff);
                         p.saturation = SATURATION;
                     }
                 }

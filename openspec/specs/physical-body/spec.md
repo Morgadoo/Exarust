@@ -489,7 +489,7 @@ Each tick the character tick SHALL set the legs' gains by the movement decision'
 - **THEN** its thighs and leg limits keep the gains they had
 
 ### Requirement: Arm stiffness
-The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
+The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). A shield's off arm SHALL be twice the walking arms while striding at full tone, on balance. An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
 
 #### Scenario: Idle human arms
 - **WHEN** an alert human stands still
@@ -498,6 +498,10 @@ The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (bala
 #### Scenario: Walking and off balance
 - **WHEN** the human walks, and later falls
 - **THEN** its arms pull with σ = 0.175 walking and 0.3125 off balance
+
+#### Scenario: A shield doubles the off arm
+- **WHEN** a shielded fighter walks at full tone
+- **THEN** its off arm's stiffness is twice its walking arms and its weapon arm keeps them
 
 #### Scenario: Zombie arms
 - **WHEN** a fully feral human walks, and is then dazed to tone 0.8
