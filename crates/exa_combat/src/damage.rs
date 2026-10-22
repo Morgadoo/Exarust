@@ -169,7 +169,7 @@ pub struct Strike {
     /// The striking body hangs from another striker of the same weapon (a
     /// flail's link); Exarust's weapons are one body, so never.
     pub hanging: bool,
-    /// The attacker's Force Strikes strength (no powers in Exarust: 0).
+    /// The attacker's Force Strikes strength ([`crate::PowerFactors`]).
     pub strikes: f32,
 }
 
@@ -180,7 +180,7 @@ pub struct Victim {
     /// Readiness g, 0..=1 ([`crate::Fighter::readiness`]): the wound's
     /// penetration, impact and stab energy are taken 1 − 0.5·g.
     pub readiness: f32,
-    /// Force Shell: 0.5 while the power holds (no powers in Exarust: 0).
+    /// Force Shell: 0.5 while the power holds ([`crate::PowerFactors`]).
     pub shell: f32,
     /// A blow dazes it a quarter as much and never stalls its swing (rule
     /// bit `BodyRules::STEADFAST`).

@@ -397,3 +397,19 @@ fn a_records_powers_make_its_caster() {
     assert_eq!(caster.known.len(), 1);
     assert_eq!(caster.known[0].id, SHOCK);
 }
+
+/// A running shell puts its damping on the caster's fighter for the hit
+/// formula, and its end takes it off.
+#[test]
+fn a_shell_reaches_the_hit_formula() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    let factors = |app: &App| *app.world().get::<PowerFactors>(caster).unwrap();
+    assert_eq!(factors(&app).shell, 0.5);
+    assert_eq!(factors(&app).strikes, 0.0);
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.update();
+    assert_eq!(factors(&app).shell, 0.0);
+}

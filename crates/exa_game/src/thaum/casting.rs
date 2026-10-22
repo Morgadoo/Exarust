@@ -158,11 +158,11 @@ pub struct CastBody {
     /// The simulation tick in milliseconds.
     pub tick_ms: u32,
     /// The share of a blow's energy a force shell keeps off the body: the
-    /// hit formula multiplies by `1 - hit_damping` (the shell's 0.5;
-    /// `context/re/combat-damage.md`, not yet read by `exa_combat`).
+    /// hit formula multiplies by `1 - hit_damping` (the shell's 0.5; the
+    /// caster's fighter carries it as `exa_combat::PowerFactors`).
     pub hit_damping: f32,
     /// The attacker's strike factor, which the hit formula adds half of
-    /// (Force Strikes' 1.0).
+    /// (Force Strikes' 1.0; carried as `exa_combat::PowerFactors`).
     pub strike_factor: f32,
     /// The swing factor Force Strikes sets beside its swing sound (3.0,
     /// else 1); what reads it is outside the power classes.

@@ -144,6 +144,16 @@ impl Plugin for CombatPlugin {
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CombatSystems;
 
+/// What a fighter's running powers give the hit formula: Force Shell's
+/// share of a blow's impact kept off it, and Force Strikes' factor on the
+/// blows it deals (half of it is added to the impact's multiplier). The
+/// power system keeps it on the fighter; without one both are 0.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct PowerFactors {
+    pub shell: f32,
+    pub strikes: f32,
+}
+
 /// A striker's segment along its entity's local +Y: a held weapon's, on the
 /// entity holding the weapon model, or a fist's, across the hand.
 #[derive(Component, Debug, Clone)]
@@ -354,10 +364,17 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(Entity, &Blade, &GlobalTransform)>,
-    mut attackers: Query<(&Animator, &mut Attacking, &SwingState, Option<&Fighter>)>,
+    mut attackers: Query<(
+        &Animator,
+        &mut Attacking,
+        &SwingState,
+        Option<&Fighter>,
+        Option<&PowerFactors>,
+    )>,
     fighters: Query<(Entity, &Condition), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
@@ -365,7 +382,8 @@ fn detect_hits(
 ) {
     let Some(motions) = motions else { return };
     for (striker, blade, gt) in &blades {
-        let Ok((anim, mut attack, swing, wielder)) = attackers.get_mut(blade.wielder) else {
+        let Ok((anim, mut attack, swing, wielder, powers)) = attackers.get_mut(blade.wielder)
+        else {
             continue;
         };
         // A striker whose window is open: the held items (the fists only
@@ -438,6 +456,7 @@ fn detect_hits(
                     clock: progress,
                     along,
                     unarmed: attack.weapon_class & HANDS == 0,
+                    strikes: powers.map_or(0.0, |p| p.strikes),
                     ..Strike::default()
                 };
                 hits.write(Hit {
@@ -534,6 +553,7 @@ fn react_to_hits(
         Option<&mut Ragdoll>,
         Option<&mut SwingState>,
         Option<&Swing>,
+        Option<&PowerFactors>,
     )>,
     attacks: Query<&Attacking>,
     slots: Query<&Blade>,
@@ -562,6 +582,7 @@ fn react_to_hits(
                 mut body,
                 state,
                 swing,
+                powers,
             )) = fighters.get_mut(hit.target)
             else {
                 break 'struck None;
@@ -576,6 +597,7 @@ fn react_to_hits(
                 steadfast: f.stats.rules.has(BodyRules::STEADFAST),
                 security: f.perks.has(Perk::Security),
                 potion: flags.has(StateFlags::POTION),
+                shell: powers.map_or(0.0, |p| p.shell),
                 ..damage::Victim::new(f.health.max, f.readiness)
             };
             // A guarded blow meets a shield or a weapon: no armour, no roll.
@@ -897,7 +919,7 @@ fn react_to_hits(
             Some(StrikerReaction::Wounded(outcome))
         };
         let shield_spread = if let Some(reaction) = reaction
-            && let Ok((_, f, .., Some(mut state), _)) = fighters.get_mut(hit.attacker)
+            && let Ok((_, f, .., Some(mut state), _, _)) = fighters.get_mut(hit.attacker)
         {
             let striker = swing::Striker {
                 class_word: attacks
@@ -915,7 +937,7 @@ fn react_to_hits(
         // The shield's first ring in a swing stamps the same clock. The
         // attacker is borrowed above, so the victim is stamped after.
         if let Some(spread) = shield_spread
-            && let Ok((_, _, _, _, _, _, _, Some(mut body), _, _)) = fighters.get_mut(hit.target)
+            && let Ok((_, _, _, _, _, _, _, Some(mut body), ..)) = fighters.get_mut(hit.target)
         {
             body.mark_part_sound(hit.bone, part_sound_ready(now as u32, spread));
         }
@@ -1283,6 +1305,51 @@ mod tests {
             assert!(found.is_empty());
         }
         assert!(damage::notices_damage(wound), "{:08x}", wound.to_bits());
+    }
+
+    /// A fighter whose shell holds 0.5 takes the blow with half its impact,
+    /// as the hit formula gives it, and loses less yellow than one without.
+    #[test]
+    fn a_shell_halves_the_blows_impact() {
+        let mut app = reactions();
+        let plain = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let shelled = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                PowerFactors {
+                    shell: 0.5,
+                    strikes: 0.0,
+                },
+            ))
+            .id();
+        strike(&mut app, plain, 9);
+        strike(&mut app, shelled, 9);
+        let yellow = |e| app.world().get::<Fighter>(e).unwrap().health.yellow;
+        let full = Fighter::default().health.yellow;
+        let (lost_plain, lost_shelled) = (full - yellow(plain), full - yellow(shelled));
+        assert!(
+            0.0 < lost_shelled && lost_shelled < lost_plain,
+            "{lost_plain} {lost_shelled}"
+        );
+        let blow = |shell| {
+            damage::resolve(
+                &damage::sword_a(),
+                &cut(),
+                Some((&PartArmour::default(), 0.5)),
+                9,
+                &damage::Victim {
+                    shell,
+                    ..damage::Victim::new(0.25, 0.0)
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(blow(0.5).impact, blow(0.0).impact * 0.5);
     }
 
     /// A granted second wind fires when the clock is past its ready time,

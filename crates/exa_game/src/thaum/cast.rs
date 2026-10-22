@@ -27,6 +27,9 @@
 //!   domain's AI evaluator over what it sees of its target; the power the
 //!   combat state's chooser picks is then started by its domain's front end
 //!   as an AI caster, and becomes an active power as the bar's do.
+//! - **The hit formula's factors** ([`PowerFactors`]): a caster's shell
+//!   damping and strike factor are put on its fighter, where the blows it
+//!   takes and deals read them.
 //! - **Live effects** ([`super::live`]): a shock's hand arcs, a barricade's
 //!   wall and a constant displacement's wisps are spawned with the power and
 //!   removed when it ends. Every other effect has no entity yet: the class
@@ -42,7 +45,7 @@ use exa_ai::{DuelPowers, DuelSystems, Duellist};
 use exa_anim::{Animator, Motions};
 use exa_character::held::HeldMoveset;
 use exa_combat::swing::SwingState;
-use exa_combat::{Condition, Fighter};
+use exa_combat::{Condition, Fighter, PowerFactors};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
@@ -272,6 +275,9 @@ impl Plugin for CastPlugin {
                 (
                     advise_duellists.before(DuelSystems),
                     cast_for_duellists.after(DuelSystems),
+                    publish_power_factors
+                        .after(cast_for_duellists)
+                        .after(run_bar_commands),
                 ),
             )
             .add_systems(
@@ -735,6 +741,28 @@ fn cast_for_duellists(
             &mut roll,
         );
         powers.casting = caster.body.casting != 0;
+    }
+}
+
+/// Puts each caster's shell damping and strike factor on its fighter for
+/// the hit formula.
+fn publish_power_factors(
+    mut commands: Commands,
+    mut casters: Query<(Entity, &PowerCaster, Option<&mut PowerFactors>)>,
+) {
+    for (entity, caster, factors) in &mut casters {
+        let now = PowerFactors {
+            shell: caster.body.hit_damping,
+            strikes: caster.body.strike_factor,
+        };
+        match factors {
+            Some(mut factors) => {
+                factors.set_if_neq(now);
+            }
+            None => {
+                commands.entity(entity).insert(now);
+            }
+        }
     }
 }
 

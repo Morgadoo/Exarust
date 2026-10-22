@@ -1007,3 +1007,14 @@ Before a duellist's combat state runs, the game SHALL answer each of its record'
 #### Scenario: The chosen shock
 - **WHEN** the combat state has chosen the shock
 - **THEN** the cast answers started, a Shock and its arcs exist, the choice is taken and the body reads casting
+
+### Requirement: Power factors on blows
+A caster's fighter SHALL carry its body's shell damping and strike factor, which the hit formula reads. A blow the fighter takes SHALL keep 1 minus the damping of its impact, and a blow it deals SHALL be multiplied by 1 plus half the strike factor. An ended shell or strikes SHALL leave 0.
+
+#### Scenario: A running shell
+- **WHEN** the shell is cast, and then cast again and the next tick ends it
+- **THEN** the fighter's shell factor is 0.5, and then 0
+
+#### Scenario: A shelled blow
+- **WHEN** the same cut lands on a fighter with a shell of 0.5 and on one without
+- **THEN** the shelled blow's impact is half, and the shelled fighter loses less yellow
