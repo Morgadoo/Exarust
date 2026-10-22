@@ -1815,6 +1815,8 @@ impl Ragdoll {
     /// One tick of leg `leg`'s foot pitch toward `target` (rad): at most
     /// 0.01 plus the stored rate, never past the target, the rate then
     /// half of that sum within ±0.1. Returns the pitch the foot takes.
+    /// A placement uses [`Self::place_foot_pitches`] instead, which stores
+    /// the angle at once and clears the rate.
     pub fn step_foot_pitch(&mut self, leg: usize, target: f32) -> f32 {
         let Some(leg) = self.legs.get_mut(leg) else {
             return 0.0;
@@ -1823,6 +1825,46 @@ impl Ragdoll {
         leg.pitch = angle;
         leg.pitch_rate = rate;
         angle
+    }
+
+    /// A placement's foot pitch: each foot on its feet stores the angle
+    /// that levels its toe, and the rate is cleared. The following ticks
+    /// ease from there. Off its feet the stored pitch stays.
+    pub fn place_foot_pitches(mut self) -> Self {
+        if self.drive.as_ref().is_some_and(|d| d.bearing.off_feet) {
+            return self;
+        }
+        let scale = self.drive.as_ref().map(|d| d.stats.scale).unwrap_or(1.0);
+        let count = self.legs.len();
+        for i in 0..count {
+            let (shin, foot) = {
+                let Some(leg) = self.legs.get(i) else {
+                    continue;
+                };
+                let Some(foot) = leg.foot else {
+                    continue;
+                };
+                (leg.shin, foot)
+            };
+            if shin >= self.parts.len() || foot >= self.parts.len() {
+                continue;
+            }
+            let parent = self.parts[shin].transform();
+            let placed = self.parts[foot].transform();
+            let local = parent.inverse() * placed;
+            let target = bend::foot_pitch_target(
+                parent.matrix3.y_axis.y,
+                parent.matrix3.z_axis.y,
+                local.matrix3.z_axis.y,
+                self.foot_contact_height(i),
+                scale,
+            );
+            if let Some(leg) = self.legs.get_mut(i) {
+                leg.pitch = target;
+                leg.pitch_rate = 0.0;
+            }
+        }
+        self
     }
 
     /// Gives the body muscles following its animation. A living body never

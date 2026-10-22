@@ -129,7 +129,8 @@ fn build_bodies(
                     .with_drive()
                     .with_race(race)
                     .with_stats(stats)
-                    .with_rest_turns(&rest_turns),
+                    .with_rest_turns(&rest_turns)
+                    .place_foot_pitches(),
                 TickedClips,
             ))
             .remove::<Physical>();
