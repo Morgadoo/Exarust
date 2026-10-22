@@ -392,7 +392,8 @@ and on the run's first key while the sprint latch is set; a lifted
 lowest foot hands the two-foot blend its full weight and a lifted other
 foot none (the other wins when both are lifted); moving, that weight
 starts at min(0.5, 0.2·speed) and is multiplied by min(1, (0.3·speed)²),
-speed the cm a tick along the heading, and that spread is (1 − k)·lowest
+speed the cm a tick along the heading, and by max(0, 1 + 0.5·v) while the
+chest's slow vertical speed v (cm a tick) is negative, and that spread is (1 − k)·lowest
 ground + k·(lowest contact + other contact − other ground), k = min(1,
 0.2·speed) moving and 1 standing; the
 capsule carries the body only across the ground and turns it. The

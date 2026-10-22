@@ -19,7 +19,9 @@
 //! length, plus 5 cm. The blend's weight is a half, all of it when the
 //! lowest foot is lifted and none when the other is. Moving, that half is
 //! min(0.5, 0.2·speed) and the weight is multiplied by min(1, (0.3·speed)²).
-//! The spread is (1 − k)·lowest ground + k·(lowest contact + other contact
+//! A negative slow vertical chest speed v (cm a tick) multiplies it once
+//! more by max(0, 1 + 0.5·v); a rise, a hold and a NaN leave it. The
+//! spread is (1 − k)·lowest ground + k·(lowest contact + other contact
 //! − other ground), k = min(1, 0.2·speed) moving and 1 standing.
 //! A full crouch is 60 cm times the body scale over that ground. The rules
 //! are the original's,
@@ -73,6 +75,9 @@ const LIFTED_LOWEST: f32 = 1.0;
 /// second share. Both are taken in double and narrowed once.
 const SPEED_BASE: f64 = 0.2;
 const SPEED_SQUARE: f64 = 0.3;
+/// A negative slow vertical chest speed (cm a tick) multiplies the moving
+/// blend by max(0, 1 + this × the speed). Zero, a rise and a NaN do not.
+const DROP_PER_CM: f32 = 0.5;
 const BLEND_FULL: f32 = 40.0;
 const BLEND_NONE: f32 = 60.0;
 const BLEND_SLOPE: f64 = 0.05;
@@ -180,6 +185,9 @@ pub(super) struct LegHeight {
 /// when both are; 0 as well when O has no ground). Moving, that half is
 /// min(0.5, 0.2·`speed`) and the weight is then multiplied by
 /// min(1, (0.3·`speed`)²), `speed` the cm a tick along the heading.
+/// A negative slow vertical chest speed `drop` (cm a tick) multiplies
+/// that weight by max(0, 1 + 0.5·`drop`); zero, a rise and a NaN leave
+/// it, and standing ignores it.
 /// The spread is (1 − k)·L's ground + k·(L's contact + O's contact − O's
 /// ground), k = min(1, 0.2·`speed`) moving and 1 standing. The weight
 /// applies in full while that spread is under 40 cm, by 0.05 a cm of it
@@ -195,6 +203,7 @@ pub(super) fn target_height(
     moving: bool,
     scale: f32,
     speed: f32,
+    drop: f32,
 ) -> f32 {
     let mut lowest = pelvis + LOWEST_ABOVE;
     let mut low = None;
@@ -249,6 +258,11 @@ pub(super) fn target_height(
             if moving {
                 let scaled = f64::from(speed) * SPEED_SQUARE;
                 weight *= ((scaled * scaled) as f32).min(1.0);
+                // A chest on the way down gives the other foot less say.
+                // Zero, a rise and a NaN compare as not under zero.
+                if drop < 0.0 {
+                    weight *= (drop * DROP_PER_CM + 1.0).max(0.0);
+                }
             }
             target = value(o, ground) * weight + (1.0 - weight) * target;
         }
@@ -333,6 +347,7 @@ impl Ragdoll {
             bearing.moving,
             drive.stats.scale,
             bearing.speed,
+            cm(drive.balance.slow_velocity().y),
         );
         drive.lift_target = Some(target / CM);
         if !drive.balance.has_support() {

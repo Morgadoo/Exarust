@@ -202,7 +202,8 @@ pub struct Bearing {
     pub run: f32,
     /// The speed along the heading (cm a tick). Moving, the two-foot
     /// blend starts at min(0.5, 0.2·speed) and is then multiplied by
-    /// min(1, (0.3·speed)²).
+    /// min(1, (0.3·speed)²), and by max(0, 1 + 0.5·v) while the chest's
+    /// slow vertical speed v (cm a tick) is negative.
     pub speed: f32,
     /// How its legs move this tick, its movement decision's leg mode
     /// (standing unless it locomotes): the thighs' factors and the leg

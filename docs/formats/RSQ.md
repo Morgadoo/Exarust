@@ -297,7 +297,10 @@ How the original simulates a body (`exa_physics::body`):
     foot uses 0 (its flag wins when both are lifted); the slope scales
     whichever weight the flags leave. Moving, that half is min(0.5,
     0.2·speed) and the weight is then multiplied by min(1, (0.3·speed)²),
-    speed the cm a tick along the heading (a NaN saturates both). The
+    speed the cm a tick along the heading (a NaN saturates both). A
+    negative slow vertical chest speed v (cm a tick) multiplies that
+    weight once more by max(0, 1 + 0.5·v); a rise, a hold and a NaN leave
+    it, and standing ignores v. The
     spread those thresholds read is (1 − k)·lowest ground + k·(lowest
     contact + other contact − other ground), k = min(1, 0.2·speed) moving
     and 1 standing (a NaN speed saturates k), so at rest it is the lowest
