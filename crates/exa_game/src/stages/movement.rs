@@ -371,6 +371,9 @@ pub(crate) fn measure_ground(
         let speed = locomotor.map(|l| l.drive.length()).unwrap_or(0.0);
         let backwards = locomotion.is_some_and(|r| r.has(flags::BACK));
         drive.note_gait(anim.progress, speed, backwards);
+        if let Some(l) = locomotor {
+            drive.note_stance_yaw(l.stance_facing);
+        }
     }
     if let Some(physics) = &physics {
         body.measure_balance(&physics.0);

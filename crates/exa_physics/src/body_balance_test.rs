@@ -760,6 +760,22 @@ fn a_sphere_drops_onto_a_triangle_where_it_first_touches() {
     assert!(hits > 300 && misses > 300, "{hits} hits, {misses} misses");
 }
 
+/// A stance facing a quarter turn from the frame swings an ankle that
+/// stood 1 m ahead around to 1 m toward +X, and keeps its height. The
+/// same yaw, and a yaw that is not finite, leave the clip's ankle.
+#[test]
+fn the_stance_facing_turns_the_spot() {
+    use std::f32::consts::FRAC_PI_2;
+    let spot = Vec3::new(0.0, 1.2, 1.0);
+    let turned = stance_spot(spot, Vec3::ZERO, 0.0, FRAC_PI_2);
+    assert!((turned.x - 1.0).abs() < 1e-5, "{}", turned.x);
+    assert!((turned.z).abs() < 1e-5, "{}", turned.z);
+    assert_eq!(turned.y, 1.2);
+    let same = stance_spot(spot, Vec3::ZERO, 0.4, 0.4);
+    assert!((same - spot).length() < 1e-5, "{same}");
+    assert_eq!(stance_spot(spot, Vec3::ZERO, 0.0, f32::NAN), spot);
+}
+
 /// A reset facing is the chest over the pelvis, flattened: a sloped
 /// direction keeps only its horizontal part; a vertical one is zero.
 #[test]

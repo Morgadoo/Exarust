@@ -11,6 +11,8 @@
 //! bonus. An instability counter grows while q ≤ 0.99 and sets the balance
 //! to q once it reaches 100; below 100 balance recovers slowly.
 //!
+//! The stance spots the feet read are the clip's ankles turned from the
+//! character frame's yaw onto the stance facing, keeping their height.
 //! Then the feet's states are set (`feet`), and each leg takes its
 //! friction from its foot's state, asks the level how high the ground is
 //! under its foot (the Height Query: a walking sphere of 10 cm widened by
@@ -31,6 +33,7 @@
 
 use std::ops::Mul;
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::feet::{self, FootState};
@@ -638,12 +641,23 @@ impl Ragdoll {
                 .with_y(0.0)
                 .normalize_or(Vec3::Z)
         });
-        // Where last tick's pose put each ankle: its stance spot.
+        // Where last tick's pose put each ankle: its stance spot, turned
+        // from the character frame's yaw onto the stance facing.
         let posed = drive.targets.len() == parts.len();
         let mut spots: Vec<Option<Vec3>> = legs
             .iter()
             .map(|l| posed.then(|| drive.targets[l.shin].transform_point3(l.point)))
             .collect();
+        if drive.stance_yaw.is_finite()
+            && let Some(frame) = drive.frame
+        {
+            let origin = Vec3::from(frame.translation);
+            let frame_yaw = horizontal_yaw(frame);
+            let stance_yaw = drive.stance_yaw;
+            for spot in spots.iter_mut().flatten() {
+                *spot = stance_spot(*spot, origin, frame_yaw, stance_yaw);
+            }
+        }
         let b = &mut drive.balance;
         b.follow_chest(chest);
 
@@ -970,6 +984,29 @@ fn end_step(
         steps.standing = ankles[i] - local;
         steps.placed = true;
     }
+}
+
+/// The yaw of a frame's horizontal forward. The model faces +Z, so a pure
+/// yaw's forward is (sin yaw, 0, cos yaw).
+fn horizontal_yaw(frame: Affine3A) -> f32 {
+    let z = Vec3::from(frame.matrix3.z_axis).with_y(0.0);
+    if z.length_squared() < 1e-12 {
+        0.0
+    } else {
+        z.x.atan2(z.z)
+    }
+}
+
+/// The footwork's stance spot: `spot` turned from the character frame's
+/// yaw onto the stance facing, about `origin`, keeping its height. A yaw
+/// that is not finite leaves the spot where the clip put it.
+pub(super) fn stance_spot(spot: Vec3, origin: Vec3, frame_yaw: f32, stance_yaw: f32) -> Vec3 {
+    if !(frame_yaw.is_finite() && stance_yaw.is_finite()) {
+        return spot;
+    }
+    let flat = (spot - origin).with_y(0.0);
+    let aimed = Quat::from_rotation_y(stance_yaw) * (Quat::from_rotation_y(-frame_yaw) * flat);
+    Vec3::new(origin.x + aimed.x, spot.y, origin.z + aimed.z)
 }
 
 /// The heading a reset takes from the chest over the pelvis:

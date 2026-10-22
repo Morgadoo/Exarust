@@ -1234,6 +1234,10 @@ pub struct Drive {
     /// The character frame: the body root's turn, at the anchor across the
     /// ground.
     frame: Option<Affine3A>,
+    /// The stance facing (a yaw) the footwork turns its spots onto. Not a
+    /// number until the turn writes one, and then the spots stay in the
+    /// character frame.
+    stance_yaw: f32,
     /// Muscle tone, 0..=1: muscle strength and gravity compensation. A
     /// fall leaves it as it is.
     pub tone: f32,
@@ -1390,6 +1394,7 @@ impl Default for Drive {
             root: None,
             anchor: None,
             frame: None,
+            stance_yaw: f32::NAN,
             tone: 1.0,
             energy: 1.0,
             energy_recovered: false,
@@ -1430,6 +1435,12 @@ impl Drive {
         self.gait_progress = progress;
         self.gait_speed = speed;
         self.gait_back = backwards;
+    }
+
+    /// The stance facing this tick (a yaw). The footwork turns its stance
+    /// spots from the character frame onto it.
+    pub fn note_stance_yaw(&mut self, yaw: f32) {
+        self.stance_yaw = yaw;
     }
 
     /// Each part's animated world transform this tick (none before the

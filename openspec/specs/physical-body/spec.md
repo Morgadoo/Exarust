@@ -1263,6 +1263,13 @@ Leaving the walk SHALL stamp the step clock the next score reads, and that clock
 - **WHEN** leaving the walk stamps T and T plus 100 ms
 - **THEN** an anchored foot's base is 11.5 at clock T and 3.5 at T plus 250 ms
 
+### Requirement: Stance spots
+The footwork SHALL turn each stance spot from the character frame's yaw onto the stance facing and keep its height. The same yaw SHALL leave the clip's ankle where it stands.
+
+#### Scenario: A quarter turn
+- **WHEN** the frame faces +Z and the stance facing is a quarter turn toward +X
+- **THEN** an ankle 1 m ahead across the ground stands 1 m toward +X
+
 ### Requirement: Stance score
 The stance score of two feet SHALL be 2(1 − C²) + (1 − W²) + A. A SHALL be 1 minus the chest reference's horizontal distance to the foot segment, divided by 30. W SHALL be the absolute difference of the separation from 60·scale, divided by 60·scale. C SHALL be the same for 55·scale and the side separation, and that separation SHALL be its square root when it is positive.
 

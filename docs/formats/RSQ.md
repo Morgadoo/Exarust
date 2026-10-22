@@ -1289,8 +1289,9 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 - **Turn** (held while the condition is helpless): the error is the
   heading less the yaw, brought once within ±π; the stance facing is the
   heading while it is within a quarter turn of the yaw, else the yaw a
-  quarter turn toward it (kept for the footwork's stance frame, which has
-  no reader in Exarust yet; a turn toward a fall snaps it with the yaw).
+  quarter turn toward it. The footwork turns its stance spots from the
+  character frame's yaw onto that facing and keeps their height. A turn
+  toward a fall snaps the facing with the yaw.
   The rate: free walk (1 −
   0.1·v)·B (v the speed in cm a tick, no floor); the slow turn 0.5·B
   (120°/s; the exploration behaviour asks for it, cleared by a far
