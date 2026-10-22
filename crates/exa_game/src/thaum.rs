@@ -45,6 +45,7 @@ pub mod engine;
 pub mod force;
 pub mod live;
 pub mod power;
+pub mod torrent_live;
 pub mod tree;
 pub mod veil;
 pub mod visuals;

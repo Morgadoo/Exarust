@@ -82,6 +82,7 @@ use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
     TreeScreen, domain_of, word,
 };
+use super::torrent_live::{new_torrent, torrent_view};
 use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
@@ -313,6 +314,7 @@ impl Plugin for CastPlugin {
                     super::barrier_live::tick_barriers,
                     super::bubble_live::tick_bubbles,
                     super::wave_live::tick_waves,
+                    super::torrent_live::tick_torrents,
                     play_cast_motions,
                 )
                     .chain()
@@ -972,9 +974,23 @@ fn create_force(
             debug!("force wave: motion {hooked}, entity {entity:?}");
             Some(entity)
         }
-        ForceStart::Torrent { .. } => {
-            debug!("force torrent: the effect entity is not ported");
-            None
+        ForceStart::Torrent { cost } => {
+            let body = ragdoll?;
+            let view = torrent_view(body, context.heading, context.cursor)?;
+            let live = new_torrent(
+                &mut caster.body,
+                caster_entity,
+                context.target,
+                cost,
+                &view,
+                TICK_MS,
+                draws,
+                roll,
+            );
+            let hooked = live.hooked;
+            let entity = commands.spawn((Name::new("_ForceTorrent"), live)).id();
+            debug!("force torrent: motion {hooked}, entity {entity:?}");
+            Some(entity)
         }
         ForceStart::Barrier { cost } => {
             let live = new_barrier(

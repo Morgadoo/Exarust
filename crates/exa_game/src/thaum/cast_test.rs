@@ -701,6 +701,84 @@ fn a_duellists_wave_charges_throws_and_strikes() {
     assert_eq!(count::<LiveWave>(&mut app), 0);
 }
 
+/// A duellist's torrent charges on its hook, pours into the body ahead of
+/// it while the hook stays, and the release ends it until it leaves.
+#[test]
+fn a_duellists_torrent_charges_pours_and_ends_on_the_release() {
+    use crate::effects::torrent::{CHARGING, ENDING, RUNNING, TORRENT_MOTION};
+    use crate::thaum::torrent_live::{LiveTorrent, TORRENT, TORRENT_HOOK};
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 0.6)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[TORRENT]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, TORRENT);
+    assert_eq!(body.cast_motion, Some(TORRENT_MOTION));
+    assert_eq!(body.cast_hook, Some(TORRENT_HOOK));
+    assert_eq!(count::<LiveTorrent>(&mut app), 1);
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveTorrent>();
+        q.iter(app.world()).next().map(|t| t.torrent.state)
+    };
+    let start = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    let mut ticks = 0;
+    while state(&mut app) == Some(CHARGING) {
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    assert_eq!(state(&mut app), Some(RUNNING));
+    for _ in 0..30 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (TORRENT, Some(TORRENT_HOOK)));
+    assert_ne!(
+        app.world().get::<Ragdoll>(target).unwrap().parts[0].positions,
+        start
+    );
+    app.world_mut()
+        .get_mut::<PowerCaster>(npc)
+        .unwrap()
+        .body
+        .release = true;
+    app.world_mut().run_schedule(FixedUpdate);
+    assert_eq!(state(&mut app), Some(ENDING));
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    for _ in 0..80 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert_eq!(count::<LiveTorrent>(&mut app), 0);
+}
+
 /// A record's powers make its caster: the known pairs and the slots.
 #[test]
 fn a_records_powers_make_its_caster() {
