@@ -345,6 +345,15 @@ pub mod hook_event {
     /// A motion replaces the cast motion, or a one-shot cast clip ends and
     /// the body returns to its stance.
     pub const MOTION: u32 = 0x4;
+    /// The player's controller, each tick the left mouse button is down.
+    pub const PRIMARY_HELD: u32 = 0x1;
+    /// The player's controller in combat mode with the body casting, each
+    /// tick the right mouse button is down.
+    pub const SECONDARY_HELD: u32 = 0x2;
+    /// The player's controller, each tick outside combat mode.
+    pub const OUT_OF_COMBAT: u32 = 0x8;
+    /// The body tick, while a cast motion plays with the release flag set.
+    pub const RELEASE: u32 = 0x10;
     /// Another cast asks to start.
     pub const CAST_START: u32 = 0x20;
     /// The cast's focus falls short.
@@ -415,6 +424,58 @@ pub fn end_cast(body: &mut CastBody) {
     if body.condition == CASTING {
         body.condition = 0;
     }
+}
+
+/// The body tick's release: with the condition casting (a cast motion
+/// plays) and the release flag set, the hook is called with
+/// [`hook_event::RELEASE`] and the cast ends whatever it answers; the flag
+/// clears. Whether it did.
+pub fn release_cast(body: &mut CastBody) -> bool {
+    if body.condition != CASTING || !body.release {
+        return false;
+    }
+    let _ = ask_hook(body, hook_event::RELEASE);
+    end_cast(body);
+    body.release = false;
+    true
+}
+
+/// The player's mouse as its controller reads it each tick: the left and
+/// right buttons down, and combat mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlayerHookInput {
+    pub primary: bool,
+    pub secondary: bool,
+    pub combat: bool,
+}
+
+/// The player's controller's hook calls, in its order: the left button
+/// down asks [`hook_event::PRIMARY_HELD`]; outside combat mode it asks
+/// [`hook_event::OUT_OF_COMBAT`]; in combat mode with the condition
+/// casting, the right button asks [`hook_event::SECONDARY_HELD`], else the
+/// left asks [`hook_event::PRIMARY_HELD`] again. Each negative answer ends
+/// the cast. Whether one did.
+pub fn player_hooks(body: &mut CastBody, input: PlayerHookInput) -> bool {
+    let mut ended = false;
+    let mut ask = |body: &mut CastBody, event| {
+        if ask_hook(body, event).is_some_and(|answer| answer < 0) {
+            end_cast(body);
+            ended = true;
+        }
+    };
+    if input.primary {
+        ask(body, hook_event::PRIMARY_HELD);
+    }
+    if !input.combat {
+        ask(body, hook_event::OUT_OF_COMBAT);
+    } else if body.condition == CASTING {
+        if input.secondary {
+            ask(body, hook_event::SECONDARY_HELD);
+        } else if input.primary {
+            ask(body, hook_event::PRIMARY_HELD);
+        }
+    }
+    ended
 }
 
 /// An instant cast's focus: added to the spent focus.
@@ -746,6 +807,60 @@ mod tests {
         let mut still = CastBody::default();
         assert!(start_cast(&mut still, 0, 0x601));
         assert_eq!(still.condition, 0);
+    }
+
+    #[test]
+    fn the_release_ends_a_cast_motion_whatever_the_hook_answers() {
+        let mut body = CastBody {
+            casting: 0x20207,
+            cast_hook: Some(CastHook { keeps: 0x10 }),
+            release: true,
+            ..CastBody::default()
+        };
+        assert!(!release_cast(&mut body));
+        body.condition = CASTING;
+        assert!(release_cast(&mut body));
+        assert_eq!((body.casting, body.cast_hook, body.condition), (0, None, 0));
+        assert_eq!(
+            (body.release, body.hook_asked),
+            (false, hook_event::RELEASE)
+        );
+        assert!(!release_cast(&mut body));
+    }
+
+    #[test]
+    fn the_players_buttons_ask_the_hook() {
+        let strikes = CastHook { keeps: 0x29 };
+        let mut body = CastBody {
+            casting: 0x10203,
+            cast_hook: Some(strikes),
+            condition: CASTING,
+            ..CastBody::default()
+        };
+        let left = PlayerHookInput {
+            primary: true,
+            ..PlayerHookInput::default()
+        };
+        assert!(!player_hooks(&mut body, left));
+        assert_eq!(body.hook_asked, 0x9);
+        let both = PlayerHookInput {
+            primary: true,
+            secondary: true,
+            combat: true,
+        };
+        assert!(player_hooks(&mut body, both));
+        assert_eq!(body.hook_asked, 0xb);
+        assert_eq!((body.casting, body.cast_hook, body.condition), (0, None, 0));
+        // Out of a cast motion combat mode asks nothing but the left button.
+        body.cast_hook = Some(strikes);
+        body.hook_asked = 0;
+        let right = PlayerHookInput {
+            secondary: true,
+            combat: true,
+            ..PlayerHookInput::default()
+        };
+        assert!(!player_hooks(&mut body, right));
+        assert_eq!(body.hook_asked, 0);
     }
 
     #[test]

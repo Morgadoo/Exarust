@@ -7,8 +7,8 @@
 //!   fizzles the wave when it is called while it charges. The drain a tick
 //!   is the power's cost times the tick in seconds; the ring stands round
 //!   the caster's body root and aims along its facing ([`Wave::new`]).
-//! - **The hook**: as the blast's ([`hook_called`]): a later cast's start or
-//!   the release flag calls it.
+//! - **The hook**: as the blast's ([`hook_called`]): a later cast's start,
+//!   the player's buttons or the body tick's release calls it.
 //! - **Each tick** ([`Wave::tick_paying`]): a charging wave pays its drain
 //!   once its chunks are placed; a shortfall calls the hook (it fizzles)
 //!   and ends the cast. The charge passing 1 throws the ring and clears the
@@ -87,23 +87,14 @@ pub fn new_wave(
     }
 }
 
-/// Whether the caster called the wave's hook since the last tick: another
-/// cast's start replaced it, or the release flag is set, which also ends
-/// the cast. A charging wave then fizzles.
+/// Whether the caster called the wave's hook since the last tick: it is no
+/// longer the wave's (a call answers −1 and ends the cast, or a later
+/// cast's start replaced it). A charging wave then fizzles.
 pub fn hook_called(live: &mut LiveWave, body: &mut CastBody) -> bool {
     if !live.hooked {
         return false;
     }
-    let called = if body.casting != WAVE || body.cast_hook != Some(BLAST_HOOK) {
-        true
-    } else if body.release {
-        body.release = false;
-        body.cast_hook = None;
-        body.casting = 0;
-        true
-    } else {
-        false
-    };
+    let called = body.casting != WAVE || body.cast_hook != Some(BLAST_HOOK);
     if called {
         live.hooked = false;
         fizzle(&mut live.wave);

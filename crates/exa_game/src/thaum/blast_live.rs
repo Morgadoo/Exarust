@@ -8,9 +8,9 @@
 //!   the blast still charges.
 //! - **The hook** ([`hook_called`]): any call of the hook while the blast
 //!   charges makes it fizzle. A later cast's start calls it (it replaces the
-//!   hook and the power id), and so does the body tick when the release flag
-//!   is set (pressing the blast again), which then ends the cast: the hook
-//!   and power id go and the flag clears.
+//!   hook and the power id), and so do the player's buttons and the body
+//!   tick's release ([`casting::player_hooks`], [`casting::release_cast`]),
+//!   which end the cast.
 //! - **Each tick** (after the body tick): the blast reads its view from the
 //!   caster's right hand, its facing and its aim point (the AI's target's
 //!   chest, else the player's cursor), pays its drain from the caster's
@@ -83,21 +83,14 @@ pub fn start_blast(body: &mut CastBody, setup: &BlastSetup) -> bool {
     started
 }
 
-/// Whether the caster called the blast's hook since the last tick: another
-/// cast's start replaced it, or the release flag is set, which also ends
-/// the cast. Either way the hook is no longer the blast's.
+/// Whether the caster called the blast's hook since the last tick: the hook
+/// is no longer the blast's, since every call of it answers −1 and so ends
+/// the cast or a later cast's start replaced it.
 pub fn hook_called(live: &mut LiveBlast, body: &mut CastBody) -> bool {
     if !live.hooked {
         return false;
     }
     if body.casting != live.blast.setup.power || body.cast_hook != Some(BLAST_HOOK) {
-        live.hooked = false;
-        return true;
-    }
-    if body.release {
-        body.release = false;
-        body.cast_hook = None;
-        body.casting = 0;
         live.hooked = false;
         return true;
     }
@@ -373,6 +366,8 @@ mod tests {
         let mut body = CastBody::default();
         let mut blast = live(&mut body);
         body.release = true;
+        assert!(!hook_called(&mut blast, &mut body));
+        assert!(casting::release_cast(&mut body));
         assert!(hook_called(&mut blast, &mut body));
         assert_eq!(
             (body.casting, body.cast_hook, body.release),

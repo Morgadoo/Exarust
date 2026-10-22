@@ -973,15 +973,15 @@ The game SHALL hand the chosen slot's word, unchanged, to the bar's cast entry, 
 - **THEN** the cast answers started, 0.25 of focus is reserved and spent, and one wall entity exists
 
 ### Requirement: Active power walk
-Each body tick SHALL pass control event 0 to every active power, and event 2 to a power marked ending, and SHALL take a power that answers with bit 2 out with the last entry in its place. The body's release flag SHALL NOT end a power.
+Each body tick SHALL pass control event 0 to every active power, and event 2 to a power marked ending, and SHALL take a power that answers with bit 2 out with the last entry in its place. The release flag SHALL end no power by itself; only through the cast hook while a cast motion plays.
 
 #### Scenario: A shell pressed again
 - **WHEN** the shell runs and is cast again
 - **THEN** the cast answers ended, the shell is marked ending and the next tick removes it, clears the cast id and returns its reserve
 
 #### Scenario: The release flag
-- **WHEN** the body's release flag is set while a shock runs
-- **THEN** the shock keeps running
+- **WHEN** the body's release flag is set while a shock runs, first without and then with its cast motion playing
+- **THEN** the shock keeps running, then its hook is called, the cast ends and the charge clears
 
 ### Requirement: Vanish pressed again
 Casting vanish while it runs SHALL answer released and tell the running vanish to let go.
@@ -1104,3 +1104,14 @@ A cast hook SHALL answer 0 to an event carrying any of its kept bits and -1 to a
 #### Scenario: A vanish's hook lets a cast through once it holds
 - **WHEN** another cast asks to start while a vanish runs
 - **THEN** it is refused before the vanish's hold and allowed from the hold on, and either way the vanish is let go
+
+### Requirement: The player's buttons and the release ask the hook
+Each tick the player's controller SHALL ask the hook with 1 while the left button is down, with 8 outside combat mode, and in combat mode with the body casting with 2 while the right button is down, else 1 for the left; a negative answer SHALL end the cast, and a casting body SHALL ask no attack. With a cast motion playing, a set release flag SHALL ask the hook with 0x10, end the cast whatever it answers and clear.
+
+#### Scenario: Strikes held through the buttons
+- **WHEN** a strikes hook is asked by the left button out of combat mode, then by both buttons in combat mode while casting
+- **THEN** it keeps the cast for 1 and 8, and the right button's 2 ends it
+
+#### Scenario: A shock outside combat mode
+- **WHEN** the player leaves combat mode while a shock charges
+- **THEN** the controller's 8 ends the cast and the charge clears

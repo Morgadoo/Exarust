@@ -33,9 +33,13 @@ fn new_app() -> App {
     app
 }
 
+/// The player in combat mode: outside it the controller asks the hook
+/// every tick.
 fn caster(app: &mut App, ids: &[u32]) -> Entity {
+    let mut player = PlayerBody::new(0.0);
+    player.set_combat(true);
     app.world_mut()
-        .spawn((PlayerBody::new(0.0), PowerCaster::new(ids), ragdoll()))
+        .spawn((player, PowerCaster::new(ids), ragdoll()))
         .id()
 }
 
@@ -253,23 +257,57 @@ fn a_slot_the_tree_filled_is_cast() {
     assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
 }
 
-/// The body tick passes event 0 to every running power: the body's release
-/// flag (set when a cast is pressed while one runs) does not end a shock.
+/// The body tick passes event 0 to every running power, so the release flag
+/// alone ends none; with the cast motion playing it calls the hook and ends
+/// the cast, and a charging shock's hook clears it.
 #[test]
-fn the_release_flag_does_not_end_a_running_power() {
+fn the_release_ends_the_cast_motion_through_its_hook() {
     let mut app = new_app();
     let caster = caster(&mut app, &[SHOCK]);
     cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    let mut state = app.world_mut().get_mut::<PowerCaster>(caster).unwrap();
+    assert_eq!(
+        state.body.cast_hook,
+        Some(super::super::power::energy::SHOCK_HOOK)
+    );
+    state.body.release = true;
+    state.body.condition = 0;
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert!(state.body.release);
+    assert_eq!(count::<LiveArcs>(&mut app), 1);
     app.world_mut()
         .get_mut::<PowerCaster>(caster)
         .unwrap()
         .body
-        .release = true;
-    app.world_mut().run_schedule(FixedUpdate);
+        .condition = casting::CASTING;
     app.world_mut().run_schedule(FixedUpdate);
     let state = app.world().get::<PowerCaster>(caster).unwrap();
-    assert_eq!(state.active.len(), 1);
-    assert_eq!(count::<LiveArcs>(&mut app), 1);
+    assert!(!state.body.release);
+    assert_eq!((state.body.casting, state.body.cast_hook), (0, None));
+    assert_eq!(count::<LiveArcs>(&mut app), 0);
+}
+
+/// Outside combat mode the player's controller asks the hook every tick: a
+/// shock's answers −1, so its cast ends and the charge clears.
+#[test]
+fn out_of_combat_mode_the_controller_ends_a_shock() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHOCK]);
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(cast_body(&app, caster).cast_hook.is_some());
+    app.world_mut()
+        .get_mut::<PlayerBody>(caster)
+        .unwrap()
+        .set_combat(false);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    let body = cast_body(&app, caster);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    assert_eq!(body.hook_asked & casting::hook_event::OUT_OF_COMBAT, 0x8);
+    assert_eq!(count::<LiveArcs>(&mut app), 0);
 }
 
 /// Vanish pressed while it runs tells the running vanish to let go.

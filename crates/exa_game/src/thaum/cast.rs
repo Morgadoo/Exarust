@@ -20,7 +20,11 @@
 //!   list in the original's order, passes control event 0 (or 2 when a power
 //!   was told to end), keeps a power that answers a result with bit 2 clear
 //!   and takes it out with the last entry in its place otherwise, releasing
-//!   the focus it held. A cast motion the classes start is played through
+//!   the focus it held. Before the walk the player's buttons ask the cast
+//!   hook ([`casting::player_hooks`]) and, with a cast motion playing, the
+//!   release flag ends the cast through it ([`casting::release_cast`]); a
+//!   cast that ends while the body casts returns it to its stance. A cast
+//!   motion the classes start is played through
 //!   [`exa_anim::Animator`] by its motion id's action name. The walk sits
 //!   between the body's two focus settles: the reserve's change moves into
 //!   the capacity before it, the spent focus leaves the pool (or the pool
@@ -1426,13 +1430,16 @@ fn tick_casters(
         Option<&Locomotor>,
         Option<&Ragdoll>,
         Option<&mut Animator>,
+        Option<&PlayerBody>,
     )>,
     walls: Query<&LiveBarricade>,
     mut bubbles: Query<&mut LiveBubble>,
     ticks: Option<Res<BodyTicks>>,
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (mut caster, condition, swing, locomotion, locomotor, ragdoll, mut animator) in &mut casters
+    for (mut caster, condition, swing, locomotion, locomotor, ragdoll, mut animator, player) in
+        &mut casters
     {
         let caster = &mut *caster;
         refresh_body(
@@ -1446,6 +1453,29 @@ fn tick_casters(
         caster.take_states();
         let at = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO).to_array();
         let PowerCaster { body, active, .. } = caster;
+        let was_casting = body.condition == casting::CASTING;
+        // [inf: the original's controller runs before the body tick and
+        // reads the buttons only while the game view has the pointer; here
+        // it runs with the casters, on the buttons as the window has them.]
+        if let Some(player) = player
+            && !condition.is_some_and(|c| c.dying())
+        {
+            let input = casting::PlayerHookInput {
+                primary: buttons
+                    .as_deref()
+                    .is_some_and(|b| b.pressed(MouseButton::Left)),
+                secondary: buttons
+                    .as_deref()
+                    .is_some_and(|b| b.pressed(MouseButton::Right)),
+                combat: player.combat,
+            };
+            if casting::player_hooks(body, input) {
+                debug!("cast ended by the player's buttons");
+            }
+        }
+        if casting::release_cast(body) {
+            debug!("cast released");
+        }
         casting::settle_capacity(body);
         let mut index = 0;
         while index < active.len() {
@@ -1548,9 +1578,6 @@ fn tick_casters(
                     body.casting = 0;
                     body.cast_hook = None;
                     body.condition &= !casting::CASTING;
-                    if let Some(animator) = animator.as_deref_mut() {
-                        play_follow(animator);
-                    }
                 }
                 let entry = active.swap_remove(index);
                 if let Some(entity) = entry.entity
@@ -1566,6 +1593,13 @@ fn tick_casters(
                 continue;
             }
             index += 1;
+        }
+        // The cast end returns a casting body to its stance.
+        if was_casting
+            && body.condition != casting::CASTING
+            && let Some(animator) = animator.as_deref_mut()
+        {
+            play_follow(animator);
         }
         casting::settle_focus(body);
         caster.sync_body();

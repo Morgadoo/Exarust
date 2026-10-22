@@ -8,9 +8,9 @@
 //!   2) and answers −1. The dome then rises over the caster
 //!   ([`Barrier::cast`]).
 //! - **The hook** ([`hook_called`]): a later cast's start calls it (it
-//!   replaces the hook and the power id), and so does the body tick when the
-//!   release flag is set (pressing the barrier again), which then ends the
-//!   cast: the hook and power id go and the flag clears.
+//!   replaces the hook and the power id), and so do the player's buttons and
+//!   the body tick's release (pressing the barrier again), which end the
+//!   cast: the hook and power id go.
 //! - **Each tick** (after the body tick): while under state 2 the barrier
 //!   pays its rate from the caster's focus, half of it once standing; when
 //!   what is left falls short the caster's hook is called (the barrier
@@ -77,24 +77,14 @@ fn call_hook(barrier: &mut Barrier) {
     barrier.dome.phase = Phase::Ending;
 }
 
-/// Whether the caster called the barrier's hook since the last tick: another
-/// cast's start replaced it, or the release flag is set, which also ends
-/// the cast. Either way the hook is no longer the barrier's and the barrier
-/// ends.
+/// Whether the caster called the barrier's hook since the last tick: it is
+/// no longer the barrier's (a call answers −1 and ends the cast, or a later
+/// cast's start replaced it), and the barrier ends.
 pub fn hook_called(live: &mut LiveBarrier, body: &mut CastBody) -> bool {
     if !live.hooked {
         return false;
     }
-    let called = if body.casting != BARRIER || body.cast_hook != Some(BARRIER_HOOK) {
-        true
-    } else if body.release {
-        body.release = false;
-        body.cast_hook = None;
-        body.casting = 0;
-        true
-    } else {
-        false
-    };
+    let called = body.casting != BARRIER || body.cast_hook != Some(BARRIER_HOOK);
     if called {
         live.hooked = false;
         call_hook(&mut live.barrier);
@@ -305,6 +295,7 @@ mod tests {
         let mut body = CastBody::default();
         let mut barrier = live(&mut body);
         body.release = true;
+        assert!(casting::release_cast(&mut body));
         assert!(hook_called(&mut barrier, &mut body));
         assert_eq!(
             (body.casting, body.cast_hook, body.release),

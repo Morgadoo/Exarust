@@ -1167,8 +1167,9 @@ fn request_attacks(
     ) in &mut bodies
     {
         let state_now = condition.as_deref().copied().unwrap_or_default();
-        // A helpless condition engages no attack (the original's 0xAC0).
-        let able = !fallen && !state_now.helpless() && pb.combat;
+        // A helpless condition engages no attack (the original's 0xAC0), and
+        // a casting one hands the buttons to the cast hook instead.
+        let able = !fallen && !state_now.helpless() && state_now != Condition::CASTING && pb.combat;
         let weapon_class = held.map_or(class::FISTS, |h| h.weapon_class);
         let other = other_side(pb.aim, body_turn.yaw, weapon_class);
         pb.attack.tick(able && down, now, other);
@@ -2602,6 +2603,16 @@ mod tests {
         // Not attacking, its state keeps the release.
         request_tick(&mut app, body, false);
         assert_eq!(swing_of(&app, body).flags, swing::flags::RELEASED);
+    }
+
+    /// A casting body's buttons go to its cast hook: no attack starts.
+    #[test]
+    fn a_casting_body_asks_no_attack() {
+        let (mut app, body) = attack_app();
+        set_condition(&mut app, body, Condition::CASTING);
+        let (clip, _) = request_tick(&mut app, body, true);
+        assert_ne!(clip, "Attack Up");
+        assert!(app.world().get::<Attacking>(body).is_none());
     }
 
     /// Held, the punch is never released: its swing does not stall.

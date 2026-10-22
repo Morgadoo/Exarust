@@ -9,7 +9,7 @@
 //!   ([`TORRENT_HOOK`]), which answers −1 and fizzles a charging torrent or
 //!   ends a running one ([`Torrent::release`]).
 //! - **The hook** ([`hook_called`]): a later cast's start calls it, and so
-//!   does the body tick when the release flag is set, which also ends the
+//!   do the player's buttons and the body tick's release, which end the
 //!   cast. Running does not clear the hook: the torrent pours until the
 //!   caster lets go or runs out.
 //! - **Each tick** ([`tick_torrent`]): the torrent pays its drain while it
@@ -112,23 +112,14 @@ pub fn new_torrent(
     }
 }
 
-/// Whether the caster called the torrent's hook since the last tick:
-/// another cast's start replaced it, or the release flag is set, which also
-/// ends the cast. The torrent then fizzles or ends.
+/// Whether the caster called the torrent's hook since the last tick: it is
+/// no longer the torrent's (a call answers −1 and ends the cast, or a later
+/// cast's start replaced it). The torrent then fizzles or ends.
 pub fn hook_called(live: &mut LiveTorrent, body: &mut CastBody) -> bool {
     if !live.hooked {
         return false;
     }
-    let called = if body.casting != TORRENT || body.cast_hook != Some(TORRENT_HOOK) {
-        true
-    } else if body.release {
-        body.release = false;
-        body.cast_hook = None;
-        body.casting = 0;
-        true
-    } else {
-        false
-    };
+    let called = body.casting != TORRENT || body.cast_hook != Some(TORRENT_HOOK);
     if called {
         live.hooked = false;
         live.torrent.release();
@@ -404,6 +395,7 @@ mod tests {
         assert_eq!(body.cast_hook, Some(TORRENT_HOOK));
         assert!(!torrent.torrent.builds_nothing());
         body.release = true;
+        assert!(casting::release_cast(&mut body));
         tick_torrent(&mut torrent, &mut body, &view(), &mut draws, &mut roll);
         assert_eq!(torrent.torrent.state, ENDING);
         assert_eq!(

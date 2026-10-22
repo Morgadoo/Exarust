@@ -218,7 +218,15 @@ with, for the hooks that act whatever they answer). A sustained tick
 whose focus falls short with a hook set ends the cast, as the engine's
 spend does. The blast, wave, torrent and barrier
 hooks answer −1 to everything, and their effect fizzles or ends when
-called. The
+called. The player's controller asks the hook every tick
+(`casting::player_hooks`): with 1 while the left button is down, with 8
+outside combat mode, and in combat mode with the body casting with 2
+while the right button is down (else 1 again); a negative answer ends the
+cast, and a casting body asks no attack. So outside combat mode a shock,
+a blast or a torrent ends on its first tick, while kinesis, the throw and
+the 0x29 hooks hold. With a cast motion playing, the body tick's release
+flag (pressing a running cast again) asks the hook with 0x10 and ends the
+cast whatever it answers (`casting::release_cast`). The
 player swap, the spirit body's character generation, the kinesis aim sweep and the effect meshes are descriptions here, not
 spawned entities.
 
