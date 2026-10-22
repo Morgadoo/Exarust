@@ -261,9 +261,11 @@ How the original simulates a body (`exa_physics::body`):
     gravity (−0.142 cm/tick²), then, with support only (a grounded foot),
     the **lift** takes g·f·S off it, in cm:
     1. h = target pelvis height − the pelvis origin's height;
-    2. standing, f = 0.075(h + 15), at most 1.5; a negative f lifts
+    2. standing, f = scale·0.075(h + 15), at most 1.5; a negative f lifts
        nothing (crouched deeper than 0.9 it may go down to −10). Moving,
-       f = (0.4·run + 0.2)(h + 5), nothing when negative, at most 2;
+       f = scale·(0.4·run + 0.2)(h + 5), nothing when negative, at most 2.
+       `scale` is the body scale. That product is taken in double and
+       narrowed once, before the clamp;
     3. f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis origin's vertical
        displacement over the last tick;
     4. over a tone t of a half f ×= 2(t − 0.5) and the carry is

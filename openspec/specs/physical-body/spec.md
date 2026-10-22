@@ -673,7 +673,7 @@ After its inertia each particle of a living part over half its tone t SHALL move
 - **THEN** its pelvis settles 0.3 cm over its target, 1.2 cm and 3.0 cm under it, where its weight balances the lift
 
 ### Requirement: Lift
-With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negative f lifts nothing, unless crouched past 0.9: down to −10), or f = (0.4·run + 0.2)(h + 5), at most 2, moving (none when negative); h = target − pelvis height, in cm. Then f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis's vertical displacement over the last tick, and f ×= 2(t − 0.5) over a tone of a half.
+With support the lift SHALL be f = (body scale)·0.075(h + 15), at most 1.5, standing (a negative f lifts nothing, unless crouched past 0.9: down to −10), or f = (body scale)·(0.4·run + 0.2)(h + 5), at most 2, moving (none when negative). That product SHALL be taken in double and narrowed once, before the clamp. h = target − pelvis height, in cm. Then f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis's vertical displacement over the last tick, and f ×= 2(t − 0.5) over a tone of a half.
 
 #### Scenario: Balance point
 - **WHEN** an alert body stands on its legs, its pelvis 1.7 cm over its target
@@ -686,6 +686,10 @@ With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negat
 #### Scenario: Tone
 - **WHEN** a standing body's tone is 0.75, then 0.5
 - **THEN** its lift is half, then nothing
+
+#### Scenario: Body scale
+- **WHEN** the body scale is a half, at h = 0 standing and walking, and 2 standing
+- **THEN** f is 0.5625, 0.5, and 1.5
 
 #### Scenario: Get-up
 - **WHEN** `exarust --trace t.csv --shove 60 play arena` gets the player up with `Get Up 2` into Idle

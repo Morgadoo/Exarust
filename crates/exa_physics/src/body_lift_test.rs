@@ -29,16 +29,19 @@ fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
     body.tick(level);
 }
 
-/// Standing, f = 0.075(h + 15), h the target less the pelvis height (cm):
-/// 1 when the pelvis is 1.7 cm over its target, 1.5 at most (5 cm under
-/// it), none once the pelvis is 15 cm over it, but down to −10 crouched
-/// deeper than 0.9. Moving, f = (0.4·run + 0.2)(h + 5): 1 at the target
-/// walking, 3.3 cm over it running, 2 at most, none 5 cm over it. Falling
-/// a cm a tick at f = 1 adds (1 − 1/3)·E², rising takes it off.
+/// Standing, f = scale·0.075(h + 15), h the target less the pelvis height
+/// (cm): 1 when the pelvis is 1.7 cm over its target at scale 1, 1.5 at
+/// most (5 cm under it), none once the pelvis is 15 cm over it, but down
+/// to −10 crouched deeper than 0.9. Moving, f = scale·(0.4·run + 0.2)(h + 5):
+/// 1 at the target walking, 3.3 cm over it running, 2 at most, none 5 cm
+/// over it. The scale product is a double narrowed once, before the clamp.
+/// Half scale gives 0.5625 standing at h = 0 and 0.5 walking there; scale 2
+/// clamps the standing term to 1.5. Falling a cm a tick at f = 1 adds
+/// (1 − 1/3)·E², rising takes it off.
 #[test]
 fn the_lift_is_the_originals() {
     let standing = Bearing::default();
-    let lift = |h: f32, rise: f32, energy: f32, b: &Bearing| lift_factor(h, rise, energy, b);
+    let lift = |h: f32, rise: f32, energy: f32, b: &Bearing| lift_factor(h, rise, energy, b, 1.0);
     let near = |f: Option<f32>, want: f32| f.is_some_and(|f| close(f, want, 1e-5));
     assert!(near(lift(-15.0, 0.0, 1.0, &standing), 0.0));
     assert!(near(lift(-5.0 / 3.0, 0.0, 1.0, &standing), 1.0));
@@ -69,6 +72,10 @@ fn the_lift_is_the_originals() {
     assert!(near(lift(at_one, 1.0, 1.0, &standing), 1.0 - 2.0 / 3.0));
     // At the clamp the damping is (1 − 1.5/3.5) of the speed.
     assert!(near(lift(30.0, 2.0, 1.0, &standing), 1.5 - 2.0 * 4.0 / 7.0));
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &standing, 0.5), Some(0.5625));
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &walking, 0.5), Some(0.5));
+    assert_eq!(lift_unclamped(0.0, &standing, 2.0), 2.25);
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &standing, 2.0), Some(1.5));
 }
 
 /// A part takes the carry by its tone times its support share: the pelvis

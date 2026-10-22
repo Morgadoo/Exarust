@@ -4,10 +4,11 @@
 //!
 //! The character tick resets the carry to gravity, then a pelvis-height
 //! servo (the lift) takes g·f·S off it, f growing as the pelvis sinks
-//! under its target height: f = 0.075(h + 15) standing, at most 1.5, or
-//! (0.4·run + 0.2)(h + 5) moving, at most 2, h the target less the pelvis
-//! height (cm), damped by the pelvis's vertical speed and scaled by the
-//! tone over a half. Each particle of a part whose tone is over a half then
+//! under its target height: f = scale·0.075(h + 15) standing, at most 1.5,
+//! or scale·(0.4·run + 0.2)(h + 5) moving, at most 2, h the target less the
+//! pelvis height (cm). The scale product is taken in double and narrowed
+//! once, before the clamp. f is then damped by the pelvis's vertical speed
+//! and scaled by the tone over a half. Each particle of a part whose tone is over a half then
 //! moves by g(1 − a) + carry·a: a = tone × the part's support share
 //! (pelvis and thighs 1, lower legs 0.5, feet 0.25) or tone × energy (the
 //! upper body). Standing at f = 1, 1.7 cm over its target, a body floats on
@@ -38,13 +39,13 @@ use super::balance::cm;
 use super::feet;
 use super::{BODY_HZ, Bearing, CM, GRAVITY, Ragdoll};
 
-/// Standing, f = 0.075 per cm of h + 15, at most 1.5.
-const LIFT_PER_CM: f32 = 0.075;
+/// Standing, f = 0.075 per cm of h + 15, at most 1.5, times the body scale.
+const LIFT_PER_CM: f64 = 0.075;
 const STANDING_LEAD: f32 = 15.0;
 const MAX_STANDING_LIFT: f32 = 1.5;
-/// Moving, f = (0.4·run + 0.2)(h + 5), at most 2.
-const RUN_LIFT: f32 = 0.4;
-const WALK_LIFT: f32 = 0.2;
+/// Moving, f = (0.4·run + 0.2)(h + 5), at most 2, times the body scale.
+const RUN_LIFT: f64 = 0.4;
+const WALK_LIFT: f64 = 0.2;
 const MOVING_LEAD: f32 = 5.0;
 const MAX_MOVING_LIFT: f32 = 2.0;
 /// The damping takes (1 − |f|/(|f| + 2))·E²·v_y off f.
@@ -127,24 +128,39 @@ pub(super) fn carry_share(bone: usize, tone: f32, energy: f32, scale: f32) -> Op
     Some(tone * share)
 }
 
-/// The lift term before clamping: standing, 0.075(h + 15); moving,
-/// (0.4·run + 0.2)(h + 5). The leg bend reads this number as centimetres.
-pub(super) fn lift_unclamped(h: f32, bearing: &Bearing) -> f32 {
-    if bearing.moving {
-        (RUN_LIFT * bearing.run + WALK_LIFT) * (h + MOVING_LEAD)
+/// The lift term before clamping, in centimetres: standing,
+/// scale·0.075(h + 15); moving, scale·(0.4·run + 0.2)(h + 5). `scale` is
+/// the body scale. The product is taken in double and narrowed once. The
+/// leg bend reads this number.
+pub(super) fn lift_unclamped(h: f32, bearing: &Bearing, scale: f32) -> f32 {
+    let lead = if bearing.moving {
+        MOVING_LEAD
     } else {
-        LIFT_PER_CM * (h + STANDING_LEAD)
-    }
+        STANDING_LEAD
+    };
+    let coeff = if bearing.moving {
+        f64::from(bearing.run) * RUN_LIFT + WALK_LIFT
+    } else {
+        LIFT_PER_CM
+    };
+    (f64::from(scale) * (coeff * f64::from(h + lead))) as f32
 }
 
 /// The lift f before the tone, in the original's cm and ticks: `h` the
 /// target less the pelvis height, `rise` the pelvis's vertical displacement
-/// over the last tick, `energy` E. Standing, f = 0.075(h + 15), none when
-/// negative (but down to −10 crouched deeper than 0.9), at most 1.5; moving,
-/// f = (0.4·run + 0.2)(h + 5), none when negative, at most 2. Then f −=
-/// (1 − |f|/(|f| + 2))·E²·rise.
-pub(super) fn lift_factor(h: f32, rise: f32, energy: f32, bearing: &Bearing) -> Option<f32> {
-    let raw = lift_unclamped(h, bearing);
+/// over the last tick, `energy` E, `scale` the body scale. Standing,
+/// f = scale·0.075(h + 15), none when negative (but down to −10 crouched
+/// deeper than 0.9), at most 1.5; moving, f = scale·(0.4·run + 0.2)(h + 5),
+/// none when negative, at most 2. The scale product is a double narrowed
+/// once, before that clamp. Then f −= (1 − |f|/(|f| + 2))·E²·rise.
+pub(super) fn lift_factor(
+    h: f32,
+    rise: f32,
+    energy: f32,
+    bearing: &Bearing,
+    scale: f32,
+) -> Option<f32> {
+    let raw = lift_unclamped(h, bearing, scale);
     let f = if bearing.moving {
         if raw < 0.0 || raw.is_nan() {
             return None;
@@ -355,12 +371,13 @@ impl Ragdoll {
         }
         let h = target - height;
         // Kept even when the clamped factor is none: the bend reads it.
-        drive.lift_raw = lift_unclamped(h, &bearing);
+        let scale = drive.stats.scale;
+        drive.lift_raw = lift_unclamped(h, &bearing, scale);
         let w = pelvis.own_origin;
         let rise: f32 = (0..4)
             .map(|k| (pelvis.positions[k].y - pelvis.previous[k].y) * w[k])
             .sum();
-        let Some(f) = lift_factor(h, cm(rise), drive.energy, &bearing) else {
+        let Some(f) = lift_factor(h, cm(rise), drive.energy, &bearing, scale) else {
             return;
         };
         if drive.tone > TONE_FLOOR {

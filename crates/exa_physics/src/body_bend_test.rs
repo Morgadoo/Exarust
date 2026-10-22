@@ -45,7 +45,7 @@ fn the_bend_target_drops_an_unanchored_foot() {
     assert!(close((mid - foot).length(), 0.1));
     assert!(close((mid - anchor).length(), 0.1));
     assert!(close(mid.y, anchor.y));
-    let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default());
+    let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default(), 1.0);
     assert!(close(raw, 1.125));
     let dropped = bend_target(foot, anchor, false, 2.0 * raw / super::super::CM);
     assert!(close(dropped.y, anchor.y - 0.0225));

@@ -383,6 +383,7 @@ keeps the tone and a fallen body is left to its link muscles
 original's carry: every limb particle falls by g(1 − a) + carry·a (a the
 tone times its support share, or times its energy above the legs), and a
 lift servo takes g·f·S off the carry to hold the pelvis at a target height
+(f times the body scale, that product a double narrowed once)
 over the ground under the feet, from the clip root's height over each
 ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); a
 full crouch is 60 cm times the body scale over that ground before the
