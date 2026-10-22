@@ -520,8 +520,11 @@ shock other fighters (their parts' spheres stand in for the character
 query): a shock lands once the game clock is within 150 ms of the
 fighter's next shock time, which then moves 500 ms plus a draw below
 200 ms of the engine's generator ahead, and a fighter that is not
-collapsing or dead loses the strength in yellow health (the rest of the
-shock reaction, its motion and stagger, is not wired); a barricade pushes
+collapsing or dead loses the strength in yellow health and takes the
+shock-stagger flag, which the next body tick spends by setting energy to
+its most minus 0.5 and starting Rebalance with no blend until the clock
+passes that next shock (the release, the stagger step and the sounds stay
+unwired); a barricade pushes
 the particles of every body part it holds (`Ragdoll::push_sphere`), wakes
 the body for 32 ticks, knocks a character back a step and sets its
 instability, each part it strikes in front lowers the character's energy

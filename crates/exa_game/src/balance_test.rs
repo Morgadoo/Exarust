@@ -606,3 +606,46 @@ fn getting_up_energy_rises_faster() {
         exa_physics::body::recover_energy(halfway, 1.0, false, 0.5)
     );
 }
+
+/// After the recovery, a shock stagger replaces the energy with the most
+/// minus 0.5 and starts Rebalance. The same clock as the next shock keeps
+/// the flag; a clock past it clears the flag and does not restart Rebalance.
+#[test]
+fn a_shock_stagger_pins_energy_after_the_recovery() {
+    let mut body = pelvis(Quat::IDENTITY);
+    body.drive.as_mut().unwrap().energy = 1.0;
+    let (mut world, id) = posed(body, "Idle", Branch::Standing, Condition::NORMAL);
+    world.get_mut::<StateFlags>(id).unwrap().0 = StateFlags::SHOCK_STAGGER;
+    world.entity_mut(id).insert(ShockReady(500));
+    world.insert_resource(BodyTicks(0));
+    world.run_system_once(recover_rising).unwrap();
+    world.run_system_once(pin_shock_stagger).unwrap();
+    let energy = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .energy;
+    let anim = world.get::<Animator>(id).unwrap();
+    assert_eq!(energy.to_bits(), 0x3f00_0000);
+    assert_eq!(
+        (anim.action.as_str(), anim.blend, anim.looping, anim.ease),
+        ("Rebalance", 0.0, true, Ease::Linear)
+    );
+    assert_eq!(
+        world.get::<StateFlags>(id).unwrap().0,
+        StateFlags::SHOCK_STAGGER
+    );
+    // Twelve ticks are 144 ms: still before 500, and Rebalance is not restarted.
+    let started = world.get::<Animator>(id).unwrap().time;
+    world.insert_resource(BodyTicks(12));
+    world.get_mut::<Animator>(id).unwrap().time = 4.0;
+    world.run_system_once(pin_shock_stagger).unwrap();
+    assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
+    assert_eq!(started, 0.0);
+    world.insert_resource(BodyTicks(42));
+    world.run_system_once(pin_shock_stagger).unwrap();
+    assert_eq!(world.get::<StateFlags>(id).unwrap().0, 0);
+    assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
+}

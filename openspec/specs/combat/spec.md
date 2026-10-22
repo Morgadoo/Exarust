@@ -292,7 +292,7 @@ An attack's clock SHALL gain speed × g × 1.125 × base frames a tick, g = 1 �
 - **THEN** each uninterrupted punch (110 frames) plays 67 ticks and ends into its stance on the 68th
 
 ### Requirement: Dazed stance
-While a fighter's energy is more than 0.05 under its most (in double precision), its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless its condition is helpless or attacking, its clip SHALL start the Defence stance when another clip plays, with a blend of round((1.05 − E) × 300) frames, eased smoothly. A daze SHALL be decided before the posture stage in the same tick, so a fall's clip wins.
+While a fighter's energy is more than 0.05 under its most (double precision), its stance SHALL be the Defence stance every body tick unless the shock-stagger flag is set, and the player's stance rule SHALL not give Cmbt - Idle. Unless helpless, attacking, or that flag is set, the Defence clip SHALL start when another plays, blend round((1.05 − E) × 300), eased smoothly. A daze is decided before the posture stage, so a fall's clip wins.
 
 #### Scenario: Struck in the combat idle
 - **WHEN** the player in combat mode, in Cmbt - Idle, is dazed to energy 0.62
@@ -313,6 +313,13 @@ While a fighter's energy is more than 0.05 under its most (in double precision),
 #### Scenario: Shoved over
 - **WHEN** `exarust --shove 60 --trace t.csv play arena` dazes the player to energy 0.13 and it falls
 - **THEN** the Defence stance starts (blend 276), Rebalance and then the fall replace it each tick until the player is down, and the get-up ends in Idle without a jump
+
+### Requirement: Shock stagger
+While the shock-stagger flag is set, a body tick SHALL set energy to its most minus 0.5 in single precision, start Rebalance with no blend when it is not already playing, and clear the flag once the game clock is past the next shock. The daze's Defence stance SHALL NOT start on that tick. A shock that lands on a fighter that is not collapsing or dead SHALL set the flag.
+
+#### Scenario: The flag holds, then the clock passes
+- **WHEN** a fighter with the flag, energy 1 and most 1, plays Idle, and the next shock is due at the same clock, then one millisecond later
+- **THEN** the first tick leaves energy at 0.5, starts Rebalance with blend 0 and keeps the flag, and the later tick clears the flag
 
 ### Requirement: Stance blends
 Each stance start SHALL blend from where the body is to the stance's first key: the set-stance helper (Tab, a duellist entering combat) 30 frames, smooth; the posture switch 30 frames, linear, once a Rebalance's wait has run out; a duellist's stance 40 frames without a primary striker, else twice its primary's stance blend, smooth, its ease set smooth on every pass even when nothing starts.

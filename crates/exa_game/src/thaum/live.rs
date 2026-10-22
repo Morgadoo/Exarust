@@ -9,7 +9,9 @@
 //!   a fighter once the game clock is within 150 ms of its next shock time
 //!   ([`ShockReady`]), which then moves to 500 ms plus a draw below 200 ms
 //!   of the engine's generator ahead; a fighter that is not collapsing or
-//!   dead loses the strength in yellow health (floored at 0). A barricade
+//!   dead loses the strength in yellow health (floored at 0) and takes the
+//!   shock-stagger flag, which the next body tick spends
+//!   ([`exa_physics::shock::shock_stagger_tick`]). A barricade
 //!   ticks on the game clock, ends once its caster is 20 m away, and
 //!   shoves every body part it holds: each sphere's push moves the part's
 //!   particles ([`exa_physics::body::Ragdoll::push_sphere`]), the body
@@ -42,7 +44,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_combat::swing::SwingState;
-use exa_combat::{Condition, Fighter};
+use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
@@ -281,9 +283,15 @@ fn segment_meets(a: Vec3, b: Vec3, c: Vec3, r: f32) -> bool {
     (a + d * t).distance_squared(c) <= r * r
 }
 
+#[allow(clippy::type_complexity)]
 fn shock_fighters(
     mut shocks: MessageReader<ArcShocked>,
-    mut fighters: Query<(&mut Fighter, Option<&mut ShockReady>, Option<&Condition>)>,
+    mut fighters: Query<(
+        &mut Fighter,
+        Option<&mut ShockReady>,
+        Option<&Condition>,
+        Option<&mut StateFlags>,
+    )>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut commands: Commands,
@@ -293,7 +301,7 @@ fn shock_fighters(
     // component arrives with the commands).
     let mut set: Vec<(Entity, u64)> = Vec::new();
     for shock in shocks.read() {
-        let Ok((mut fighter, ready, condition)) = fighters.get_mut(shock.body) else {
+        let Ok((mut fighter, ready, condition, flags)) = fighters.get_mut(shock.body) else {
             continue;
         };
         let dying = condition.is_some_and(|c| c.dying());
@@ -314,6 +322,9 @@ fn shock_fighters(
             continue;
         };
         fighter.health.yellow = yellow;
+        if !dying && let Some(mut flags) = flags {
+            flags.0 |= StateFlags::SHOCK_STAGGER;
+        }
         match ready {
             Some(mut ready) => ready.0 = next,
             None => {
@@ -924,6 +935,33 @@ mod tests {
             app.world().get::<ShockReady>(fighter),
             Some(&ShockReady(866))
         );
+        assert_eq!(
+            app.world().get::<StateFlags>(fighter).map(|f| f.0),
+            Some(StateFlags::SHOCK_STAGGER)
+        );
+    }
+
+    /// A collapsing fighter keeps its yellow and does not take the stagger.
+    #[test]
+    fn a_collapsing_fighter_is_not_staggered() {
+        let mut app = App::new();
+        app.add_message::<ArcShocked>()
+            .insert_resource(BodyTicks(0))
+            .insert_resource(EffectRoll(Roll(0)))
+            .add_systems(Update, shock_fighters);
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), Condition::COLLAPSING))
+            .id();
+        app.world_mut().write_message(ArcShocked {
+            body: fighter,
+            direction: Vec3::Y,
+            strength: 0.05,
+        });
+        app.update();
+        let yellow = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        assert!((yellow - 0.25).abs() < 1e-6);
+        assert_eq!(app.world().get::<StateFlags>(fighter).map(|f| f.0), Some(0));
     }
 
     #[test]

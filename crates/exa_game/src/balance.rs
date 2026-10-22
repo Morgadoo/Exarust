@@ -43,9 +43,13 @@ use exa_combat::Condition;
 use exa_combat::collapse::dying_tick;
 use exa_combat::condition::{Branch, PostureBranch, StateFlags, track_condition};
 use exa_combat::stance::Stance;
-use exa_physics::body::{CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter};
+use exa_physics::body::{
+    BodyTicks, CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter,
+};
+use exa_physics::shock::shock_stagger_tick;
 
 use crate::limp::CM;
+use crate::thaum::live::ShockReady;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 
 pub struct BalancePlugin;
@@ -56,6 +60,9 @@ impl Plugin for BalancePlugin {
             CharacterTick,
             (
                 recover_rising.in_set(CharacterStage::Readiness),
+                pin_shock_stagger
+                    .in_set(CharacterStage::Readiness)
+                    .after(recover_rising),
                 take_posture
                     .in_set(CharacterStage::Posture)
                     .after(track_condition)
@@ -771,6 +778,43 @@ fn recover_rising(
         .map_or(0.0, |c| anim.clip_progress(c));
     if let Some(d) = body.drive.as_mut() {
         d.write_energy(*condition == Condition::GETTING_UP, progress);
+    }
+}
+
+/// The shock stagger, after this tick's energy recovery: energy becomes
+/// the most minus 0.5, Rebalance starts with no blend unless it already
+/// plays, and the flag clears once the clock is past the next shock.
+fn pin_shock_stagger(
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    mut bodies: Query<(
+        &mut Ragdoll,
+        &mut Animator,
+        &mut StateFlags,
+        Option<&ShockReady>,
+    )>,
+) {
+    let Ok((mut body, mut anim, mut flags, ready)) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    let Some(drive) = body.drive.as_mut() else {
+        return;
+    };
+    let now = ticks.map_or(0, |t| t.millis());
+    let next = ready.map(|r| r.0).unwrap_or(0);
+    let Some(step) = shock_stagger_tick(
+        flags.0,
+        drive.max_energy(),
+        anim.action == "Rebalance",
+        now,
+        next,
+    ) else {
+        return;
+    };
+    drive.energy = step.energy;
+    flags.0 = step.flags;
+    if step.play_rebalance {
+        anim.start("Rebalance", true, None, 0, Ease::Linear);
     }
 }
 

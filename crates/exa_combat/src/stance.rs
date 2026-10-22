@@ -5,7 +5,8 @@
 //! behaviour in and out of combat mode ([`player_stance`]), a duellist by
 //! its distance to its target ([`duellist_stance`]), and a dazed fighter's
 //! body, which takes the Defence stance while its energy is more than 0.05
-//! under its most. Each change starts the stance's clip from where the
+//! under its most, unless the shock-stagger flag is set (that tick plays
+//! Rebalance instead). Each change starts the stance's clip from where the
 //! body is with the original's blend and ease: 30 frames, smooth, through
 //! the helper ([`set_stance`]); 30, linear, by the posture switch; 40 or
 //! twice the primary striker's stance blend, smooth, by a duellist
@@ -22,6 +23,7 @@ use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
+use crate::condition::StateFlags;
 use crate::fighter::failing;
 use crate::swing::{SwingState, flags};
 use crate::{Attacking, Condition, Fighter, attack};
@@ -283,10 +285,11 @@ fn take_stance(
         Option<&Ragdoll>,
         Option<&Attacking>,
         Option<&SwingState>,
+        Option<&StateFlags>,
         Has<Fallen>,
     )>,
 ) {
-    for (mut stance, mut anim, mut fighter, condition, body, attacking, swing, fallen) in
+    for (mut stance, mut anim, mut fighter, condition, body, attacking, swing, flags, fallen) in
         &mut bodies
     {
         let condition = condition.copied().unwrap_or_default();
@@ -311,7 +314,11 @@ fn take_stance(
         if parrying {
             continue;
         }
-        if let Some(drive) = body.and_then(|b| b.drive.as_ref())
+        // The shock stagger plays Rebalance and skips this daze for the
+        // tick, including the tick that clears the flag.
+        let staggered = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
+        if !staggered
+            && let Some(drive) = body.and_then(|b| b.drive.as_ref())
             && drive.dazed()
         {
             // The daze leaves a helpless or attacking fighter's clip alone,

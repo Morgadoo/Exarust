@@ -1016,7 +1016,11 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
 `0x10203` (no queued motion starts). State flags sit beside the word
 (dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
-`0x100`, a potion `0x800000`). Death (`exa_combat::condition::settle_death`),
+`0x100`, a potion `0x800000`). While the stagger flag is set, the body tick
+after the energy recovery sets energy to its most minus 0.5 and starts
+Rebalance with no blend unless it already plays, then clears the flag once
+the clock is past the next shock; that tick does not start the daze's
+Defence stance (`exa_physics::shock::shock_stagger_tick`). Death (`exa_combat::condition::settle_death`),
 called once the fall counter is past 1 and when a collapse's tone gives
 out, leaves a body that is already dead alone. Otherwise the word becomes
 dead. The may-rise rule (body rule bit `0x10`) is cleared when that
