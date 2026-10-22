@@ -1066,7 +1066,7 @@ A barrier cast SHALL make a dome entity of radius 100 that pays the power's cost
 - **THEN** the dome grows on the hook, drains focus, moves that limb and opens a ripple; the release clears the hook and the dome shrinks and leaves
 
 ### Requirement: A cast bubble
-A bubble cast SHALL make a dome entity of radius 120 at the cast place whose start plays cast motion 0x24 with power id 0x20207 and takes a hook answering -1 to a cast's start. Standing SHALL clear the hook and power id; the power's ending SHALL break the dome, which shrinks and leaves. It SHALL hold its caster's parts in and push other bodies' covered parts out.
+A bubble cast SHALL make a dome entity of radius 120 at the cast place whose start plays cast motion 0x24 with power id 0x20207 and takes a hook answering 0 to events with bits 0x28, refusing a cast's start (0x20). Standing SHALL clear the hook and power id; the power's ending SHALL break the dome, which shrinks and leaves. It SHALL hold its caster's parts in and push other bodies' covered parts out.
 
 #### Scenario: A duellist's bubble
 - **WHEN** a duellist with focus casts the bubble with a body's limb inside its reach, then casts it again once it stands
@@ -1085,3 +1085,10 @@ A torrent cast SHALL make a torrent entity at the caster's right hand whose star
 #### Scenario: A duellist's torrent
 - **WHEN** a duellist with focus casts the torrent at a body ahead of its hand, then lets go once it runs
 - **THEN** it charges and runs with the hook kept, moves that body's limb, ends on the release with the hook and power id cleared, and leaves the scene once its streams are spent
+
+### Requirement: Cast hooks answer by event
+A cast hook SHALL answer 0 to an event carrying any of its kept bits and -1 to any other; a cast SHALL NOT start while the running hook answers 0x20 with 0 or more. When a motion other than the walk, the run or an attack is replaced, including a one-shot cast clip ending into the stance, the hook SHALL be asked with event 4 and a negative answer SHALL drop it and the power id. A looping cast clip SHALL loop.
+
+#### Scenario: A shell's raise
+- **WHEN** a shell starts its raise and another cast asks to start before the Force Raise clip ends
+- **THEN** that cast is refused, and once the clip ends into the stance the hook and power id are dropped and casts start again

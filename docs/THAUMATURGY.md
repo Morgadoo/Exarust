@@ -166,8 +166,8 @@ z along the flattened facing) and one contact a body are Exarust's; the
 contact's balance drain and knock count, the sounds and the draw are not
 wired. A bubble cast makes its dome entity (`thaum::bubble_live`) at the
 cast place, 120 cm across: its start plays cast motion 0x24 with id
-0x20207 and takes the hook (−1 to a cast's start, 0 to a call carrying
-bits 0x28); the grow passing 1 clears the hook and power id, and the
+0x20207 and takes the hook (0 to a call carrying bits 0x28, so a cast's
+start, event 0x20, is refused while it is set); the grow passing 1 clears the hook and power id, and the
 power's ending (cast again, or the dome 20 m from its caster) breaks the
 dome, which shrinks over 700 ms and leaves. It holds its caster's limb
 spheres in and pushes other bodies' parts the shell covers out, with
@@ -192,7 +192,19 @@ character the torrent's energy loss), and it leaves the scene on the first
 frame that would build no triangles: fizzled, or no stream with more than
 two samples. The turned aim (the blast aim here) and the sphere test are
 Exarust's; the character knock, sounds, light and draw are not wired. A cast motion is played through
-the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
+the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
+looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
+cast hook answers by the event's bits (`casting::CastHook`): the engine
+asks it with 0x20 when another cast starts (0 or more refuses that cast),
+0x80 when the cast's focus falls short, and 4 when a motion replaces the
+cast motion, which a one-shot cast clip's end does as it returns to the
+stance; a negative answer to 4 drops the hook and the power id
+(`cast::call_motion_hooks`, for any action left other than the walk, the
+run and the attacks). The shell's raise installs a hook answering 0 to
+bits 0x29, the bubble's to bits 0x28, so neither lets another cast start
+until the Force Raise clip ends; the blast, wave, torrent and barrier
+hooks answer −1 to everything, and their effect fizzles or ends when
+called. The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,
 the kinesis aim sweep and the effect meshes are descriptions here, not

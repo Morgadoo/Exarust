@@ -193,7 +193,10 @@ ending with its power. A wave cast runs its wave from the caster's hand
 tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points pushing other
-bodies' limbs, and leaving once its frame would draw nothing.
+bodies' limbs, and leaving once its frame would draw nothing. Cast hooks answer by event
+(`thaum::casting::CastHook`): the shell's and the bubble's refuse another
+cast until their raise clip ends, and a caster's animator leaving its cast
+action asks the hook with event 4 (`thaum::cast::call_motion_hooks`).
 
 The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
 table, the front end (Control Mind's lock, the shared pricing), the 0.3
