@@ -708,7 +708,7 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick, as with its controller on the floor
 
 ### Requirement: Leg bend
-A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosines on the two bones: 30° when the cosine is above 0.866, and 180° when it is below −1. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it.
+A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosines on the two bones: 30° when the cosine is above 0.866, and 180° when it is below −1. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it. While lying down (down, dormant or dead) and not getting up, the stored knee and hip SHALL ease toward 0 by 0.02 rad a tick instead, and the bend target, the step lift and the thigh's extra turn SHALL stay as they were.
 
 #### Scenario: Folded to 40 cm
 - **WHEN** both bones are 40 cm and the hip-to-target distance is 40 cm
@@ -721,6 +721,10 @@ A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosin
 #### Scenario: Next tick
 - **WHEN** the stored correction and its rate are 0 and the new correction is past 0.02 rad
 - **THEN** the pose the muscles follow on that tick is unchanged, and the next tick's correction is 0.02 rad
+
+#### Scenario: Lying down
+- **WHEN** the body is down, dormant or dead, not getting up, and a stored knee of 0.2 rad and a hip of −0.2 rad have a zero rate
+- **THEN** the next stored knee is 0.18 rad and the hip is −0.18 rad, each rate half of that 0.02 rad step, and the bend target, the step lift and the thigh's extra turn are unchanged
 
 ### Requirement: Thigh turn
 While a leg is stepping, its thigh SHALL turn by 75% of the angle from its rest direction to the direction from the hip to the bend target, taken in the character frame. While it is not stepping, that extra turn SHALL lose 10% a tick.

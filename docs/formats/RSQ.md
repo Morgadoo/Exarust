@@ -751,7 +751,10 @@ Exarust's own, for a body whose capsule still moves it across the ground
   below −1. The correction from the clip advances at most 0.02 rad a tick
   (0.2 while a recovery step is on) plus its stored rate, never past the
   target, and the rate becomes half that sum, within ±0.1 rad. The
-  muscles follow it on the next tick. An unanchored bend target is the
+  muscles follow it on the next tick. Lying down (down, dormant or dead;
+  a get-up still folds) eases those stored angles toward 0 by 0.02 rad a
+  tick and leaves the bend target, the step lift and the thigh's extra
+  turn alone. An unanchored bend target is the
   anchor lowered by twice the lift term stored before clamping: 2.25 cm
   when a standing body is at its target height and not stepping. While
   stepping, the thigh turns 75% of the angle from its rest direction to

@@ -146,6 +146,66 @@ fn the_muscles_follow_the_bend_on_the_next_tick() {
     assert!(axis.x > 0.99, "axis {axis}, not the leg's x");
 }
 
+/// Lying down (off its feet, not getting up) eases a stored knee of 0.2
+/// and a hip of −0.2 toward 0 by 0.02, and leaves the bend target, the
+/// step lift and the thigh's extra turn. A get-up still writes a bend
+/// target.
+#[test]
+fn lying_down_releases_the_stored_bend() {
+    let level = step_under_the_right_foot();
+    let root = Affine3A::IDENTITY;
+    let prepare = |bearing: Bearing| {
+        let (mut body, pose) = standing_at(Vec3::ZERO);
+        let aimed: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
+        body.set_bearing(bearing);
+        body.measure_balance(level.as_slice());
+        body.aim(root, aimed);
+        let leg = right_leg(&body);
+        body.legs[leg].knee = 0.2;
+        body.legs[leg].knee_rate = 0.0;
+        body.legs[leg].hip = -0.2;
+        body.legs[leg].hip_rate = 0.0;
+        let kept = (
+            body.legs[leg].goal,
+            body.legs[leg].lift,
+            body.legs[leg].turn,
+        );
+        (body, leg, kept)
+    };
+    let lying = Bearing {
+        off_feet: true,
+        ..Bearing::default()
+    };
+    let (mut body, leg, kept) = prepare(lying);
+    body.bend_legs();
+    assert!(
+        close(body.legs[leg].knee, 0.18),
+        "knee {}",
+        body.legs[leg].knee
+    );
+    assert!(close(body.legs[leg].knee_rate, -0.01));
+    assert!(
+        close(body.legs[leg].hip, -0.18),
+        "hip {}",
+        body.legs[leg].hip
+    );
+    assert!(close(body.legs[leg].hip_rate, 0.01));
+    assert_eq!(body.legs[leg].goal, kept.0);
+    assert_eq!(body.legs[leg].lift, kept.1);
+    assert_eq!(body.legs[leg].turn, kept.2);
+
+    // A get-up still folds, so it writes a bend target. The release leaves
+    // the one it had.
+    let rising = Bearing {
+        off_feet: true,
+        getting_up: true,
+        ..Bearing::default()
+    };
+    let (mut body, leg, kept) = prepare(rising);
+    body.bend_legs();
+    assert_ne!(body.legs[leg].goal, kept.0);
+}
+
 /// A standing body with one foot's anchor on a 15 cm step meets that step
 /// with the knee bent, through the shipped character tick and solver.
 #[test]

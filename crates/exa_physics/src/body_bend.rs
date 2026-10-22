@@ -14,6 +14,11 @@
 //! body is at its target height. While the leg is not stepping, the reach
 //! still measures its height from the anchor and its horizontal reach from
 //! the clip, which is how the original builds the standing triangle.
+//!
+//! Lying down (down, dormant or dead: off its feet, and not getting up)
+//! does not retarget. The stored knee and hip ease toward 0 by the standing
+//! step, 0.02 rad a tick, and the bend target, the step lift and the
+//! thigh's extra turn stay as they were. A get-up still folds.
 //! (Included from body.rs: `#[path = "body_bend.rs"] mod bend;`)
 
 use bevy::math::Affine3A;
@@ -242,7 +247,10 @@ impl Ragdoll {
     }
 
     /// One tick of the leg bend, from where the solver left the body.
-    /// The pose the muscles just followed is not rewritten.
+    /// The pose the muscles just followed is not rewritten. Lying down
+    /// (off its feet, and not getting up) eases the stored knee and hip
+    /// toward 0 by 0.02 rad and leaves the target, the lift and the
+    /// thigh's extra turn alone.
     pub(super) fn bend_legs(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
@@ -251,6 +259,17 @@ impl Ragdoll {
             return;
         };
         if drive.targets.len() != parts.len() {
+            return;
+        }
+        if drive.bearing.off_feet && !drive.bearing.getting_up {
+            for leg in legs.iter_mut() {
+                let (knee, knee_rate) = ease(leg.knee, leg.knee_rate, 0.0, EASE_STANDING);
+                leg.knee = knee;
+                leg.knee_rate = knee_rate;
+                let (hip, hip_rate) = ease(leg.hip, leg.hip_rate, 0.0, EASE_STANDING);
+                leg.hip = hip;
+                leg.hip_rate = hip_rate;
+            }
             return;
         }
         let stepping = drive.steps.stepping;
