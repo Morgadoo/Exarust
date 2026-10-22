@@ -9,8 +9,8 @@
 //!   the long door 0x602 at 0.20, constant displacement 0x20603 and the
 //!   summoning 0x604 at 0.35. The player's front end refuses while status
 //!   bit 0x2_0000 is set or a possession runs.
-//! - **Vanish**: pressing it while it runs tells it to end (its hook gets
-//!   event 0x10); it needs 80 times its cost in focus, the instant gate
+//! - **Vanish**: pressing it while it runs asks the body's hook event 0x10
+//!   (its answer ignored), which the vanish's hook takes as its end; it needs 80 times its cost in focus, the instant gate
 //!   ([`super::casting::displacement_gate`]) and a cast start without a
 //!   motion. **The long door** needs 0.8 times its cost (in double
 //!   precision), the instant gate and, for the player, the ground under the
@@ -46,9 +46,9 @@
 use bevy::math::Vec3;
 
 use super::casting::{
-    AiView, CastBody, ID_MASK, OFF_FEET, TickScale, VANISHED, advice, code, displacement_gate,
-    displacement_hold_gate, free_slots, front_end_blocked, persistent_advice, price, spend,
-    start_cast, within,
+    AiView, CastBody, ID_MASK, OFF_FEET, TickScale, VANISHED, advice, ask_hook, code,
+    displacement_gate, displacement_hold_gate, free_slots, front_end_blocked, hook_event,
+    persistent_advice, price, spend, start_cast, within,
 };
 use super::engine::Roll;
 
@@ -86,8 +86,6 @@ pub const DISPLACEMENT_POWERS: [DisplacementRow; 4] = [
 
 /// The cast motion the summoning plays.
 pub const SUMMON_MOTION: u32 = 0x28;
-/// The event a running vanish's hook gets when vanish is pressed again.
-pub const VANISH_AGAIN: i32 = 0x10;
 pub const APPEAR_SOUND: &str = "thmdsp_apr";
 pub const VANISH_SOUND: &str = "thmdsp_vns";
 pub const CONSTANT_HUM: &str = "thmdsp_cns01";
@@ -115,8 +113,6 @@ pub enum DisplacementStart {
         cost: f32,
         at: Option<Vec3>,
     },
-    /// Vanish was pressed while it ran: its hook is told to end it.
-    EndVanish,
 }
 
 /// The cursor's ground hit, for the player's long door and summoning.
@@ -161,7 +157,8 @@ pub fn cast_displacement(
     match row.id {
         VANISH => {
             if body.casting == row.id {
-                return (code::RELEASED, Some(DisplacementStart::EndVanish));
+                let _ = ask_hook(body, hook_event::RELEASE);
+                return (code::RELEASED, None);
             }
             if !within(cost * 80.0, body.focus) {
                 return (code::REFUSED, None);
@@ -479,10 +476,12 @@ mod tests {
         assert_eq!(result, code::STARTED);
         assert_eq!(start, Some(DisplacementStart::Vanish { cost }));
         assert_eq!(body.condition, 0, "no motion");
+        body.cast_hook = Some(super::super::power::displacement::VANISH_HOOK);
         assert_eq!(
             displacement_front_end(VANISH, &mut body, &aim),
-            (code::RELEASED, Some(DisplacementStart::EndVanish))
+            (code::RELEASED, None)
         );
+        assert_eq!(body.hook_asked, super::super::casting::hook_event::RELEASE);
     }
 
     #[test]

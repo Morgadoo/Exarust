@@ -566,8 +566,7 @@ struct CastPlace<'a> {
     standing: Option<Vec3>,
 }
 
-/// After a domain's front end: a vanish asked again ends the running one,
-/// a started power gets the class its creator makes, and the body's power
+/// After a domain's front end: a started power gets the class its creator makes, and the body's power
 /// view follows the active list.
 #[allow(clippy::too_many_arguments)]
 fn begin_cast(
@@ -582,18 +581,6 @@ fn begin_cast(
     roll: &mut EffectRoll,
 ) {
     caster.take_states();
-    if matches!(
-        start,
-        Some(CastStart::Displacement(DisplacementStart::EndVanish))
-    ) {
-        // Vanish pressed while it runs: the running power's hook is told to
-        // end it.
-        for running in &mut caster.active {
-            if let ActiveClass::Vanish(power) = &mut running.class {
-                power.release();
-            }
-        }
-    }
     if started && let Some(start) = start {
         let root = place.ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO);
         let context = CastContext {
@@ -1323,7 +1310,6 @@ fn create_displacement(
             debug!("displacement summon: the demon spawn is not wired");
             None
         }
-        DisplacementStart::EndVanish => None,
     }
 }
 

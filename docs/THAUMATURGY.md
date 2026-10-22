@@ -430,7 +430,9 @@ The AI shocks within 5 m.
 `exa_game::thaum::displacement`. Vanish 0x10601 (0.10 a second), the long
 door 0x602 (0.20, to the cursor's point), constant displacement 0x20603
 (0.35, persistent), the summoning 0x604 (0.35, cast motion 0x28, spent at
-once). A constantly displaced body lets a blow through when a percentage
+once). Vanish pressed while it runs answers released, starts nothing and
+asks the body's hook event 0x10 (its answer ignored), which the vanish's
+own hook takes as its end on the next tick. A constantly displaced body lets a blow through when a percentage
 roll is at most `100 >> (s + 1)` (s ≥ 0) or `100 − (100 >> (1 − s))`
 (s < 0) for its streak s: 50 % at first, 25 % after a pass, 75 % after a
 miss. A passing weapon loses its collisions for 500 ms and leaves a wisp

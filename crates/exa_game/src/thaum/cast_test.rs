@@ -323,6 +323,15 @@ fn pressing_vanish_again_releases_it() {
     let state = app.world().get::<PowerCaster>(caster).unwrap();
     assert_eq!(state.last_result, code::RELEASED);
     assert_eq!(state.active.len(), 1);
+    assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if !v.base.released));
+    assert_eq!(
+        state.body.hook_asked & 0x10,
+        0x10,
+        "the press asks event 0x10"
+    );
+    // The vanish's own hook takes the event as its end on the next tick.
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
     assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
 }
 

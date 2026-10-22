@@ -984,11 +984,11 @@ Each body tick SHALL pass control event 0 to every active power, and event 2 to 
 - **THEN** the shock keeps running, then its hook is called, the cast ends and the charge clears
 
 ### Requirement: Vanish pressed again
-Casting vanish while it runs SHALL answer released and tell the running vanish to let go.
+Casting vanish while it runs SHALL answer released and ask the body's hook event 0x10, ignoring its answer and starting nothing; the running vanish's hook SHALL take the event as its end on its next tick.
 
 #### Scenario: Second press
-- **WHEN** vanish is cast twice
-- **THEN** the second answer is released and the running vanish is marked released
+- **WHEN** vanish is cast twice and a tick runs
+- **THEN** the second answer is released, the hook was asked event 0x10, and the running vanish is marked released after the tick
 
 ### Requirement: One record for the tree and the caster
 The caster SHALL take the screen's record and bar when the tree closes, and the screen's closed bar SHALL close the caster's bar.
