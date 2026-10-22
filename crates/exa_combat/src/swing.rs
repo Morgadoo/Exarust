@@ -17,8 +17,8 @@
 //! second, as it does.
 
 use bevy::prelude::*;
-use exa_anim::{Animator, Ease, Motions};
-use exa_physics::body::{AttackArmTune, BODY_HZ, BodyTicks, Ragdoll, TickedCharacter};
+use exa_anim::{ATTACKS, Animator, Ease, Motions};
+use exa_physics::body::{AttackArmTune, BODY_HZ, BodyTicks, Ragdoll, TickedCharacter, ease_hunch};
 
 use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
@@ -788,6 +788,17 @@ pub(crate) fn run_swings(
         body.set_attack_arms(None);
     }
     let Some(motions) = motions else { return };
+    // An attack clip (actions 5–12) eases the thorax hunch before the swing
+    // may start another clip.
+    if let Some(ragdoll) = body.as_deref_mut()
+        && motions
+            .0
+            .action_index(&anim.action)
+            .is_some_and(|a| ATTACKS.contains(&a))
+        && let Some(drive) = ragdoll.drive.as_mut()
+    {
+        drive.hunch = ease_hunch(drive.hunch);
+    }
     if anim.looping || AttackMotion::of_action(&anim.action).is_none() {
         return;
     }

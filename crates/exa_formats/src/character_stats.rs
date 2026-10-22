@@ -160,6 +160,9 @@ pub struct CharacterStats {
     pub max_energy: f32,
     /// The support pins' factor: the race's, less 0.25·feral².
     pub pin_factor: f32,
+    /// The race's weapon recovery (`0x90`; 1, golems 0.5). The thorax hunch
+    /// runs when this, widened to double, is over 0.1.
+    pub recovery: f32,
     /// Scales the head's pose-drive gain: 1 − feral (none at feral 1).
     pub head_gain: f32,
     /// Scales the head's muscle factor: 1 − 0.8·feral.
@@ -259,6 +262,7 @@ impl CharacterStats {
             } else {
                 body.pin_factor
             },
+            recovery: stats.recovery,
             head_gain: 1.0 - f,
             head_factor: (1.0 - f64::from(f) * FERAL_HEAD) as f32,
             walking_arms: clamp_f64(

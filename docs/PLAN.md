@@ -385,7 +385,10 @@ over the ground under the feet, from the clip root's height over each
 ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
-pins once and the pelvis pin twice toward the frame in each iteration. A
+pins once and the pelvis pin twice toward the frame in each iteration. The
+thorax hunch pitches that pinned part's local forward axis by a scalar that
+rises 0.01 a tick to 0.3 on its feet and falls 0.01 to 0 off them; an attack
+clip takes 0.02 more off. A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
 in 45–100 ticks, from 10.7 cm ringing 90). Done (change
 `bend-the-legs-to-the-ground`, C13): a standing leg bends onto its bend

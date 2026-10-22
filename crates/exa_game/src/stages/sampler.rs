@@ -15,7 +15,8 @@
 //! 3. the hold (`exa_anim::hold_toward`), the pose kept as the targets;
 //! 4. the femur posture ([`femur_posture`]; C13);
 //! 5. the clip chain ([`clip_chain`]): each part's placement from its
-//!    rest translation and posed turn under its parent's;
+//!    rest translation and posed turn under its parent's, the thorax
+//!    hunch on a pinned part's turn first ([`pitch_thorax`]);
 //! 6. the IK chain ([`ik_chain`]; C13, C19);
 //! 7. the torso twist: the spine turned toward the look ([`spine`],
 //!    `exa_physics::body::locomotion::twist_spine`);
@@ -38,7 +39,10 @@ use exa_formats::rsq::Clip;
 use exa_physics::body::locomotion::{
     Locomotion, Locomotor, flags, forward, head_look, twist_spine,
 };
-use exa_physics::body::{FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, world_with};
+use exa_physics::body::{
+    FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, hunch_applies, hunch_turn,
+    step_hunch, world_with,
+};
 
 use crate::limp::{Pace, clip_pose, clip_tick, physical_turns, run_overlay};
 
@@ -168,6 +172,7 @@ pub(crate) fn sample_clip(
         &body,
         root,
         posture,
+        fighter.map_or(1.0, |f| f.stats.recovery),
         &parents,
         &nodes,
     );
@@ -236,7 +241,8 @@ const LOOK_RISE: f64 = 0.01;
 /// module's list): the bracket (which writes the progress), the keys
 /// blended, the gait overlay (`gait`, the Run clip and its weight while
 /// Walk plays), the hold, the pose kept as the targets and
-/// scaled by `stature`, the femur posture, the clip chain, the IK chain,
+/// scaled by `stature`, the femur posture, the thorax hunch (when
+/// `recovery` is over 0.1), the clip chain, the IK chain,
 /// the `twist` of the spine, the head's `look` and the foot pitch;
 /// returns each part's placement.
 #[allow(clippy::too_many_arguments)]
@@ -252,6 +258,7 @@ pub(crate) fn sample_parts(
     body: &Ragdoll,
     root: Entity,
     posture: FemurPosture,
+    recovery: f32,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) -> Option<Vec<Affine3A>> {
@@ -261,6 +268,7 @@ pub(crate) fn sample_parts(
     let held = hold_toward(&mut pose, hold);
     anim.keep(&pose, held);
     let pose = femur_posture(pose.scaled(stature), body, posture);
+    let pose = pitch_thorax(pose, body, recovery);
     let chain = clip_chain(body, root, &pose, parents, nodes);
     let mut parts = ik_chain(chain);
     twist_spine(&mut parts, &spine(body, nodes), twist);
@@ -295,6 +303,44 @@ fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> C
         *turn *= femur_posture_turn(posture, leg);
     }
     pose
+}
+
+/// The thorax hunch, before the clip chain: a part that carries support
+/// pins pitches its local forward axis down by the hunch and the basis is
+/// rebuilt, when the race's weapon recovery is over 0.1. A hunch of 0
+/// leaves the clip's turn.
+fn pitch_thorax(mut pose: ClipPose, body: &Ragdoll, recovery: f32) -> ClipPose {
+    let Some(hunch) = body.drive.as_ref().map(|d| d.hunch) else {
+        return pose;
+    };
+    if hunch == 0.0 || !hunch_applies(recovery) {
+        return pose;
+    }
+    let Some(part) = body.support_pin_part() else {
+        return pose;
+    };
+    let Some(bone) = body.parts.get(part).map(|p| p.bone) else {
+        return pose;
+    };
+    let Some(turn) = bone.checked_sub(1).and_then(|i| pose.rotations.get_mut(i)) else {
+        return pose;
+    };
+    *turn = hunch_turn(*turn, hunch);
+    pose
+}
+
+/// One tick of the thorax hunch, from the bearing the posture stage left
+/// last tick: it rises 0.01 toward 0.3 on its feet and falls 0.01 to 0
+/// off them.
+pub(crate) fn rise_thorax_hunch(ticked: Res<TickedCharacter>, mut bodies: Query<&mut Ragdoll>) {
+    let Ok(mut body) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    let Some(drive) = body.drive.as_mut() else {
+        return;
+    };
+    let off_feet = drive.bearing.off_feet;
+    drive.hunch = step_hunch(drive.hunch, off_feet);
 }
 
 /// Step 5, the clip chain: each part's placement in the body root's space
@@ -512,5 +558,41 @@ mod tests {
         req.look_until = 200;
         let look = look_of(&body, &req, &mut l, true).unwrap();
         assert!((look.dir - forward(0.0)).length() < 1e-5, "{}", look.dir);
+    }
+
+    /// The part that carries the support pins pitches its forward axis by
+    /// the hunch. A recovery of 0.05, a hunch of 0, and a part with no pins
+    /// leave the clip's turn.
+    #[test]
+    fn a_pinned_part_pitches_its_forward_axis() {
+        let setup = |bone: usize, pins: Vec<Vec3>| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins,
+            spheres: None,
+        };
+        let mut body = Ragdoll::new(&[setup(1, vec![]), setup(8, vec![Vec3::Y])]).with_drive();
+        body.drive.as_mut().unwrap().hunch = 0.3;
+        let pose = ClipPose {
+            rotations: vec![Quat::IDENTITY; 8],
+            root: Vec3::ZERO,
+        };
+        let pitched = pitch_thorax(pose.clone(), &body, 1.0);
+        let forward = Mat3::from_quat(pitched.rotations[7]).z_axis;
+        assert!(forward.y < -0.25, "{forward}");
+        assert_eq!(pitched.rotations[0], Quat::IDENTITY);
+        assert_eq!(
+            pitch_thorax(pose.clone(), &body, 0.05).rotations[7],
+            Quat::IDENTITY
+        );
+        body.drive.as_mut().unwrap().hunch = 0.0;
+        assert_eq!(pitch_thorax(pose, &body, 1.0).rotations[7], Quat::IDENTITY);
     }
 }

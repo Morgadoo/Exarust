@@ -289,6 +289,17 @@ A living body's sampler SHALL take each sample in the original's steps, in order
 - **WHEN** a standing human samples Idle
 - **THEN** its parts' placements are the keys blended on the chain, and its trace's clip columns are as before the pipeline: the clock 0.6 a tick, no blend, no hold
 
+### Requirement: Thorax hunch
+A pinned part SHALL pitch its local forward axis down by the thorax hunch before the clip chain when the race's weapon recovery is over 0.1, then rebuild the basis from that forward, the up axis and their cross. The hunch rises 0.01 a tick in double precision to 0.3 on its feet and falls 0.01 to 0 off them. Actions 5 to 12 take a further 0.02 off.
+
+#### Scenario: Standing thorax
+- **WHEN** a pinned part's turn is identity and its hunch is 0.3, with weapon recovery 1
+- **THEN** its forward axis drops below −0.25 and the basis stays orthonormal
+
+#### Scenario: Low recovery
+- **WHEN** the same part's weapon recovery is 0.05
+- **THEN** its turn stays the clip's
+
 ### Requirement: Clocks without a body tick
 A body without a body tick (the character view's figure, a non-physical character) SHALL tick its clip clock by the same body ticks (83 a second), counted from the frames' time with what is under a tick owed to the next frame, each tick gaining 0.6 × the race's base as a standing body's. No clip clock SHALL run per frame.
 

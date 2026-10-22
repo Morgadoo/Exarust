@@ -1691,7 +1691,7 @@ not landed is the identity and says which:
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
-| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the foot pitch and the hunch identity until C13 |
+| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch identity |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 

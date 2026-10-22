@@ -4,7 +4,8 @@
 //! and Exarust's work in each stage, one module a stage.
 //!
 //! Exarust's parts of the original's body tick, by stage:
-//! - Upkeep: red regeneration (`exa_combat::regen`);
+//! - Upkeep: red regeneration (`exa_combat::regen`), the thorax hunch's
+//!   rise ([`sampler::rise_thorax_hunch`]);
 //! - Readiness: the daze's stance and readiness (`exa_combat::stance`, over
 //!   every character before the ticks), a get-up's extra energy
 //!   (`balance`);
@@ -15,7 +16,8 @@
 //!   tick (`exa_combat::collapse`), the falls, staggers and get-ups
 //!   (`balance`), the fall check (`fall`), and what the body does this tick
 //!   ([`posture`]); a body that dies here skips the stages after it;
-//! - Attack: the swing routine (`exa_combat::swing`), then the health
+//! - Attack: the thorax hunch's ease on an attack clip, the swing routine
+//!   (`exa_combat::swing`), then the health
 //!   bookkeeping (`exa_combat::regen`);
 //! - Movement: a get-up picked again and the turn toward a fall
 //!   (`balance`); the movement decision, the body turn and the alignment
@@ -71,6 +73,7 @@ impl Plugin for CharacterTickPlugin {
                     (movement::decide_movement, movement::measure_ground)
                         .chain()
                         .in_set(Movement),
+                    sampler::rise_thorax_hunch.in_set(Upkeep),
                     sampler::sample_clip.in_set(Sampler),
                     carry::aim_body.in_set(Carry),
                 ),

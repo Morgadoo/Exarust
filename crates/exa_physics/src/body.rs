@@ -51,6 +51,9 @@ pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
 pub use bend::{FemurPosture, femur_posture_turn};
+#[path = "body_hunch.rs"]
+mod hunch;
+pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 #[path = "body_feet.rs"]
 mod feet;
 #[path = "body_stagger.rs"]
@@ -1281,6 +1284,10 @@ pub struct Drive {
     /// the body lives ([`recover_pins`]) and fades while it collapses. The
     /// support pins read it each iteration.
     pub pin_gain: f32,
+    /// The thorax hunch: a pinned part's local forward axis loses this on
+    /// its height. It rises 0.01 a tick to 0.3 while the body is on its
+    /// feet and falls 0.01 to 0 off them; an attack clip takes 0.02 more off.
+    pub hunch: f32,
     /// Ticks the posture switch waits before it starts the body's stance
     /// again (it starts it only under 1): a Rebalance started off balance
     /// sets 41, one started unsteady 27, and every posture stage takes one
@@ -1394,6 +1401,7 @@ impl Default for Drive {
             lift_raw: 0.0,
             sag: 0.0,
             pin_gain: PIN_GAIN,
+            hunch: 0.0,
             posture_wait: 0,
             steps: steps::Steps::default(),
             posture_rate: RaceMuscles::HUMAN.clip_rate,
@@ -1800,6 +1808,12 @@ impl Ragdoll {
         self.drive = Some(Drive::default());
         self.wake();
         self
+    }
+
+    /// The part that carries the support pins (the thorax, the first part
+    /// whose setup has pins), if any. The thorax hunch pitches that part.
+    pub fn support_pin_part(&self) -> Option<usize> {
+        self.chest.first().map(|(i, _)| *i)
     }
 
     /// Sets both stored arm stiffnesses to `x`, as the original's recoil
