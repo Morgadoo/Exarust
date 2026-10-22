@@ -564,6 +564,41 @@ fn the_spawn_snaps_on_the_third_tick() {
     assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
 }
 
+/// A soft stop pulls a goal in when its squared distance, in centimetres
+/// and in three dimensions, is over (8·v + 20)². At speed 0 that reach is
+/// 20 cm: 10 cm ahead and 30 cm up is pulled to 20 cm along the facing at
+/// the standing height; 20 cm ahead on the level, and 10 cm ahead on the
+/// level, stay; a NaN component stays.
+#[test]
+fn a_soft_stop_measures_the_goal_in_three_dimensions() {
+    let (_s, mut req, body) = standing();
+    let at = Vec3::ZERO;
+    req.goal = Vec3::new(0.0, 0.30, 0.10);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.20)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(0.0, 0.0, 0.20);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.20)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(0.0, 0.0, 0.10);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.10)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(f32::NAN, 0.0, 1.0);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(req.goal.x.is_nan());
+}
+
 /// A footwork step's target: a step's length along its keys, clamped by
 /// the line walk. On the level, 20 cm is 400 cm² and is not taken; 25 cm
 /// is. A point 15 cm ahead and 15 cm up is 450 cm² and is taken; 15 cm

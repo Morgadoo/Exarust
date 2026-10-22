@@ -66,7 +66,7 @@ The system SHALL start the player where the original does for a new game in the 
 - **THEN** the player stands at (0, 0, 5) facing −Z and the opponent at (0, 0, 2.5) facing it, so the duellist's blows meet the player's front and land
 
 ### Requirement: Tank controls
-The system SHALL steer the player in exploration as the original does. W SHALL walk along the heading; A and D SHALL turn it 0.025 rad a tick while moving, or a quarter standing, once more than 1 s of the game clock has passed since any turn key. S SHALL backpedal, braking first above 1 cm a tick. A released walk SHALL go on to its walk's key segment 0 or 4, then stop softly 8·v + 20 cm ahead. Shift SHALL jog. Neither camera nor cursor SHALL change the heading.
+The system SHALL steer the player in exploration as the original does. W SHALL walk along the heading; A and D SHALL turn it 0.025 rad a tick while moving, or a quarter standing, once more than 1 s of the game clock has passed since any turn key. S SHALL backpedal, braking first above 1 cm a tick. A released walk SHALL go on to its walk's key segment 0 or 4, then stop softly 8·v + 20 cm ahead in three dimensions. Shift SHALL jog. Neither camera nor cursor SHALL change the heading.
 
 #### Scenario: Walking forward
 - **WHEN** W is held while the camera is orbited
@@ -272,11 +272,15 @@ The system SHALL set the player's crouch amount to 1 while the Crouch binding is
 - **THEN** the walk clip's clock runs at 0.9 of its rate
 
 ### Requirement: Grid look-ahead
-The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch. A soft stop's goal SHALL be clamped the same way.
+The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch. A soft stop SHALL pull its goal in when the squared distance in three dimensions is over (8·v + 20 cm)², then the line walk SHALL clamp that goal the same way.
 
 #### Scenario: Walking into a crate
 - **WHEN** the player walks toward a crate lower than its hip
 - **THEN** the player brakes to a stop in front of it instead of pushing into it
+
+#### Scenario: A raised soft-stop goal
+- **WHEN** a soft stop at speed 0 has a goal 10 cm ahead and 30 cm up, then one exactly 20 cm ahead on the level, then one with a NaN component
+- **THEN** the first is pulled to 20 cm along the facing at the standing height, and the other two stay
 
 ### Requirement: Locomotion request
 The player SHALL move through a locomotion request (heading, look, flag word, moving, free walk, goal) that its body tick decides each tick: a free walk never brakes; toward a goal a walking body SHALL brake within its stop distance (50/200/250/50 cm, blended by the run; the sprint row's only with the sprint latch, a stance level above 0.9 and over 3.5 cm a tick) and stop within 25 cm at 0.5 cm a tick or less; a running body never brakes. A body under its most energy SHALL not walk.

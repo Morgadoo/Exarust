@@ -26,8 +26,9 @@ decides from it each tick (below). Outside combat:
   playing walk reaches key segment 0 or 4 (its keys run every 10 frames
   from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
   after frame 40: the cycle's two double-support moments), then stops
-  softly: its goal 8·v + 20 cm ahead (v in cm a tick: 33.5 cm at a walk),
-  where it brakes to a stop.
+  softly: a goal farther than 8·v + 20 cm in three dimensions (v in cm a
+  tick: 33.5 cm at a walk) is brought back along the facing, where it
+  brakes to a stop.
 - **S** backpedals; faster than 1 cm a tick it first brakes, turning the
   brake into the backpedal once it is slower; released it also finishes
   its stride. It never turns the character about.

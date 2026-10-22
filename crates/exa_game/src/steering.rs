@@ -22,7 +22,7 @@
 //!   Shift sets the sprint latch: with the keys it is spent on a jog; the
 //!   mouse beyond 3 m runs and keeps it. Standing, A or D turns a quarter,
 //!   more than 1 s after any turn key; released, a free walk stops softly
-//!   8·v + 20 cm ahead.
+//!   8·v + 20 cm ahead in three dimensions.
 //! - **The spawn.** On its third behaviour tick (unless down) the
 //!   character is moved onto the nearest walkable point of the grid.
 //! - **Footwork.** In combat mode a step's target, a step's length along
@@ -67,7 +67,7 @@ const STEP_FROM_CM2: f32 = 400.0;
 /// getting up or dead).
 const SNAP_TICK: u8 = 3;
 const SNAP_HELD: u32 = 0x200;
-/// A soft stop's goal lies at most 8·v + 20 cm ahead.
+/// A soft stop pulls a goal farther than 8·v + 20 cm in three dimensions.
 const SOFT_STOP_SPEED: f32 = 8.0;
 const SOFT_STOP_MARGIN: f32 = 20.0;
 /// By the mouse, a wanted direction this far behind the facing (its dot
@@ -590,9 +590,9 @@ fn ease_look(look: f32, wanted: Vec3) -> f32 {
     yaw_of((from + (wanted - from) * LOOK_EASE).normalize_or(wanted))
 }
 
-/// The original's soft stop: free walk and run off, stopping on; the goal
-/// brought within 8·v + 20 cm ahead of where the character stands (along
-/// its facing), then clamped by the line walk (whose answer it records).
+/// The original's soft stop: free walk and run off, stopping on; a goal
+/// farther than 8·v + 20 cm in three dimensions is brought back along the
+/// facing, then clamped by the line walk (whose answer it records).
 pub(crate) fn soft_stop(
     req: &mut Locomotion,
     body: &Locomotor,
@@ -601,9 +601,10 @@ pub(crate) fn soft_stop(
 ) -> LineAsked {
     req.free_walk = false;
     req.flags = (req.flags & !flags::RUN) | flags::STOPPING;
-    let most = (body.speed * SOFT_STOP_SPEED + SOFT_STOP_MARGIN) / CM;
-    if (req.goal - standing).with_y(0.0).length() > most {
-        req.goal = standing + body.facing() * most;
+    let centimetres = (req.goal - standing) * CM;
+    let reach = body.speed * SOFT_STOP_SPEED + SOFT_STOP_MARGIN;
+    if centimetres.length_squared() > reach * reach {
+        req.goal = standing + body.facing() * (reach / CM);
     }
     let asked = ask(line, Asked::SoftStop, standing, req.goal);
     req.goal = asked.end;
