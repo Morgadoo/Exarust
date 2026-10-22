@@ -106,7 +106,8 @@ decides from it each tick (below). Outside combat:
   4 backwards, 5 or 8 turning hard one way, none the other), its clock at
   the key before; within 600 ms where its clock was. The steering also
   plays the walk while the body moves (a braking body keeps its gait) and
-  ends it in Idle when the body tick stops it. Its clock steps by the
+  ends it in Idle when the body tick stops it. A walk or a run blends into
+  that Idle over 20 frames; a backpedal ends at once. Its clock steps by the
   locomotion's gait clock, × (0.8·speed + 1) and the alignment's phase
   envelope ([formats/RSQ.md](formats/RSQ.md), Locomotion); backing (the
   backpedal leg mode) runs it backwards at the backpedal rate, and the

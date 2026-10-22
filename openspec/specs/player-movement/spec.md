@@ -14,11 +14,15 @@ The system SHALL turn the meshes of a level shown in play mode into static colli
 - **THEN** the player stands on the floor instead of falling through it
 
 ### Requirement: Clips follow movement
-The system SHALL play the walk clip whenever the player moves forward, walking or running: the body tick's locomotion SHALL start it in the tick it first moves the player, from any clip, and the steering SHALL end it in the idle clip when the player stops out of combat mode. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
+The system SHALL play the walk clip whenever the player moves forward, walking or running: the body tick's locomotion SHALL start it in the tick it first moves the player, from any clip, and the steering SHALL end it in the idle clip when the player stops out of combat mode. A walk or a run blends into idle over 20 frames. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
 
 #### Scenario: Start and stop
 - **WHEN** the player starts walking and then stops
 - **THEN** the clip changes from idle to walk in the tick the body first moves, and back to idle
+
+#### Scenario: A walk ends over twenty frames
+- **WHEN** the player stops a walk or a run out of combat mode
+- **THEN** idle starts with a linear blend of 20 frames
 
 #### Scenario: Combat idle after combat mode
 - **WHEN** Tab turns combat mode off while the player stands in Cmbt - Idle with the Defence stance, and it then turns in place, walks and stops
@@ -100,7 +104,7 @@ The system SHALL walk the player toward the cursor's point on the plane 80 cm ab
 - **THEN** the movement decisions see the run bit and the sprint latch both set
 
 ### Requirement: Combat footwork
-The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk from before combat mode SHALL stop softly and end in the stance.
+The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk or run from before combat mode SHALL stop softly and end in the stance over 20 frames.
 
 #### Scenario: Side step
 - **WHEN** A is held in combat mode

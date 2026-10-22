@@ -779,11 +779,11 @@ fn gait_of(body: &Locomotor, req: &Locomotion, playing: &str) -> Option<&'static
 /// The exploration steering's part in the clip, as the original's: moving,
 /// the gait starts from any looping clip; standing, a gait (or the interim
 /// combat walk left over from combat mode) ends in Idle, the exploration
-/// stance. The steering starts no other clip: the stance does, through the
-/// helper that sets it ([`stance::set_stance`]) and the body tick's
-/// posture switch, which never leaves Cmbt - Idle. So a player that turns
-/// combat mode off in the combat idle with the Defence stance keeps it
-/// until it walks.
+/// stance. A walk or a run blends into it over 20 frames. The steering
+/// starts no other clip: the stance does, through the helper that sets it
+/// ([`stance::set_stance`]) and the body tick's posture switch, which never
+/// leaves Cmbt - Idle. So a player that turns combat mode off in the combat
+/// idle with the Defence stance keeps it until it walks.
 fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     if !anim.looping {
         return;
@@ -791,7 +791,7 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
     match gait {
         Some(gait) if anim.action != gait => anim.play_loop(gait),
         None if GAITS.contains(&anim.action.as_str()) || anim.action == COMBAT_WALK => {
-            anim.play_loop(Stance::Idle.action())
+            end_gait(anim, Stance::Idle.action());
         }
         _ => {}
     }
@@ -827,8 +827,8 @@ struct Footwork<'a> {
 /// does not keep, so a held key takes the long step. A walk, run or
 /// backpedal of the exploration
 /// steering still playing when combat mode turned on ends in the stance
-/// once the body stands (`moving` false), as the original's walk ends in
-/// it.
+/// once the body stands (`moving` false). A walk or a run blends over 20
+/// frames, as the original's walk ends.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
@@ -889,10 +889,23 @@ fn combat_steps(
         anim.play_loop(&back);
     } else if GAITS.contains(&anim.action.as_str()) && !moving {
         pb.walk_from = None;
-        anim.play_loop(stance.action());
+        end_gait(anim, stance.action());
     }
 }
 
+/// A walk or a run (the actions that set the walking condition) returns to
+/// `action` over 20 frames, linear, as the body tick does when it leaves
+/// that condition. A backpedal ends at once.
+fn end_gait(anim: &mut Animator, action: &str) {
+    if anim.action == "Walk" || anim.action == "Run" {
+        anim.start(action, true, None, WALK_END_BLEND, Ease::Linear);
+    } else {
+        anim.play_loop(action);
+    }
+}
+
+/// Frames a walk or a run blends into the stance it ends in.
+const WALK_END_BLEND: u32 = 20;
 /// Exarust's interim combat footwork clip.
 const COMBAT_WALK: &str = "Combat Walk";
 /// The exploration steering's looping gaits, which only it ends.
@@ -1949,6 +1962,8 @@ mod tests {
                 false,
             );
             assert_eq!(anim.action, "Defence stance", "{gait}");
+            let blend = if gait == "Backpedal" { 0.0 } else { 20.0 };
+            assert_eq!((anim.blend, anim.ease), (blend, Ease::Linear), "{gait}");
         }
         let mut anim = Animator::new("Default", "Walk");
         steps(
@@ -2130,6 +2145,12 @@ mod tests {
             let mut anim = Animator::new("Torch", gait);
             explore_clip(&mut anim, None);
             assert_eq!(anim.action, "Idle", "{gait}");
+            let blend = if gait == "Walk" || gait == "Run" {
+                20.0
+            } else {
+                0.0
+            };
+            assert_eq!((anim.blend, anim.ease), (blend, Ease::Linear), "{gait}");
         }
         for kept in ["Cmbt - Idle", "Defence stance", "Idle"] {
             let mut anim = Animator::new("Torch", kept);
