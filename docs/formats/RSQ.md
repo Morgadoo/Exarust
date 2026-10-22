@@ -308,12 +308,14 @@ How the original simulates a body (`exa_physics::body`):
     1. the anchor is drawn toward the point by the part's relaxation λ;
        e = anchor − point;
     2. e += (how the gap changed since the tick began) × D·k/(0.5|e|² +
-       1.4), × 0.6 on the pelvis and legs (bones under 8). D = (E − 0.5)²,
-       0 below E = 0.5; k = 50 while the body moves, else 40 / the race's
+       1.4), × 0.6 on the pelvis and legs (bones under 8). D = (E − 0.5)²
+       unless that difference compares below 0, else 0 (a NaN is squared
+       and stays); k = 50 while the body moves, else 40 / the race's
        stance factor (80 for a human). Idle that is a gain of 14.3 (8.6 on
        the legs), walking 8.9. Under 1.19e-7 cm² the link does nothing;
     3. saturated e/(1 + c|e|), c = 0.1 per cm;
-    4. times σ = link strength × part factor × √E·T, plus the excess
+    4. times σ = link strength × part factor × √E·T (the root of a NaN
+       or a negative stays a NaN), plus the excess
        beyond the slack at full weight, cut to 80 cm, shared by the parts'
        mobilities.
     The damping acts on the joint's own motion, not the clip's, so a joint

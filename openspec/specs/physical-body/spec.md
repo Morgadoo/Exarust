@@ -436,7 +436,7 @@ A limp part SHALL keep its velocity as the original's default environment gives 
 - **THEN** it keeps 0.98977 of its velocity per tick
 
 ### Requirement: Link muscles
-In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)² (0 below E = 0.5), k = 50 moving, else 40 / stance factor, ×0.6 on the pelvis and legs; then e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T, the excess beyond the slack added at full weight.
+In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)², or 0 when E − 0.5 compares below 0 (a NaN stays), k = 50 moving, else 40 / stance factor, ×0.6 on the pelvis and legs; then e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T (a NaN or negative root stays NaN), the excess beyond the slack added at full weight.
 
 #### Scenario: Elbow swing
 - **WHEN** a living arm's clip swings the elbow 40° over 10 ticks and holds it

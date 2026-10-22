@@ -34,7 +34,7 @@ pub(super) const RELAX_CAP: f32 = 1.0;
 /// The damping gain is D·k/(0.5|e|² + 1.4), e in cm.
 const DAMPING_SPREAD: f32 = 0.5;
 const DAMPING_FLOOR: f32 = 1.4;
-/// D = (E − 0.5)², and 0 below this energy.
+/// D = (E − 0.5)² unless that difference compares below 0, when it is 0.
 const DAMPED_FROM: f32 = 0.5;
 /// k while the body moves, and the numerator of the standing k (divided by
 /// the race's stance factor: 80 for a human).
@@ -563,15 +563,14 @@ pub(super) fn muscle_pull(
 
 impl Drive {
     /// The strength scale A = √E·T and the damping gain D·k of this tick's
-    /// link muscles: D = (E − 0.5)² (0 below E = 0.5), k = 50 while moving,
-    /// else 40 over the race's stance factor.
+    /// link muscles. The root is taken as the energy is, so a NaN or a
+    /// negative stays a NaN. D = (E − 0.5)² unless that difference compares
+    /// below 0, when it is 0 (a NaN is squared and stays). k = 50 while
+    /// moving, else 40 over the race's stance factor.
     pub(super) fn muscle_gains(&self) -> (f32, f32) {
-        let strength = self.energy.max(0.0).sqrt() * self.tone_target();
-        let d = if self.energy >= DAMPED_FROM {
-            (self.energy - DAMPED_FROM).powi(2)
-        } else {
-            0.0
-        };
+        let strength = self.energy.sqrt() * self.tone_target();
+        let below = self.energy - DAMPED_FROM;
+        let d = if below < 0.0 { 0.0 } else { below * below };
         let k = if self.bearing.moving {
             MOVING_K
         } else {

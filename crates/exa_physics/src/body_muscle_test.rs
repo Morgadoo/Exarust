@@ -120,6 +120,27 @@ fn strength_follows_the_root_of_energy_and_damping_stops_at_half() {
     assert!((drive.muscle_gains().1 - 0.0625 * 80.0).abs() < 1e-4);
 }
 
+/// The root is taken as the energy is: a NaN stays a NaN strength, and a
+/// negative root is a NaN. Damping squares E − 0.5 unless that difference
+/// compares below 0, so a NaN damping stays and a negative energy damps
+/// nothing. −0 is not below 0.5, but −0 − 0.5 is, and √(−0) stays −0.
+#[test]
+fn a_nan_energy_keeps_a_nan_muscle_strength() {
+    let mut drive = Drive::default();
+    drive.energy = f32::NAN;
+    let (strength, damping) = drive.muscle_gains();
+    assert!(strength.is_nan());
+    assert!(damping.is_nan());
+    drive.energy = -1.0;
+    let (strength, damping) = drive.muscle_gains();
+    assert!(strength.is_nan());
+    assert_eq!(damping, 0.0);
+    drive.energy = -0.0;
+    let (strength, damping) = drive.muscle_gains();
+    assert_eq!(strength.to_bits(), (-0.0f32).to_bits());
+    assert_eq!(damping, 0.0);
+}
+
 /// The pull: the error plus its change times gain/(0.5|e|² + 1.4), then
 /// e/(1 + 0.1|e|): 10 cm pulls 5 cm; 1 cm moving 0.1 cm with gain 20 pulls
 /// (1 + 0.1·20/1.9)/(1 + 0.1·2.053) = 1.703 cm. Under 1.19e-7 cm², nothing.
