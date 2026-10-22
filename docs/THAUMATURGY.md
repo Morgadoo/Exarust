@@ -222,7 +222,12 @@ called. The player's controller asks the hook every tick
 (`casting::player_hooks`): with 1 while the left button is down, with 8
 outside combat mode, and in combat mode with the body casting with 2
 while the right button is down (else 1 again); a negative answer ends the
-cast, and a casting body asks no attack. So outside combat mode a shock,
+cast, and a casting body asks no attack. An attack start (the player's,
+past its energy check, or a duellist's) asks a set hook with 0x100 first
+(`exa_combat::AttackHook`, kept by the power system): an answer of 0 or
+more refuses the attack, a negative one ends the cast and the attack goes
+on. So attacking during a Long Door or an early vanish is refused (and
+lets the vanish go). So outside combat mode a shock,
 a blast or a torrent ends on its first tick, while kinesis, the throw and
 the 0x29 hooks hold. With a cast motion playing, the body tick's release
 flag (pressing a running cast again) asks the hook with 0x10 and ends the

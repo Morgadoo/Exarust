@@ -65,6 +65,7 @@ impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<presence::ActivationArea>()
             .add_message::<presence::Entered>()
+            .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
                 FixedUpdate,
                 presence::check_presence.before(exa_physics::body::CharacterTicks),
@@ -441,9 +442,14 @@ fn duellist(
         &GlobalTransform,
         Option<&Ragdoll>,
         &Fighter,
-        (Option<&mut DuelPowers>, Option<&presence::Presence>),
+        (
+            Option<&mut DuelPowers>,
+            Option<&presence::Presence>,
+            Option<&exa_combat::AttackHook>,
+        ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut asked: MessageWriter<exa_combat::AttackAskedHook>,
     mut planning: Local<(PlanTurn, u32)>,
 ) {
     // One brain plans a route a frame: the longest waiter of the last one.
@@ -467,7 +473,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence),
+        (mut powers, presence, attack_hook),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -960,6 +966,15 @@ fn duellist(
                 && attacking.is_none()
                 && anim.looping
                 && !ai.holds_ground
+                && {
+                    // The attack start asks a running cast's hook first: a
+                    // hook that keeps its cast refuses the attack.
+                    let (ask, go) = exa_combat::AttackHook::gate(attack_hook);
+                    if ask {
+                        asked.write(exa_combat::AttackAskedHook(entity));
+                    }
+                    go
+                }
             {
                 exa_combat::start_attack(
                     &mut commands,
@@ -1025,7 +1040,9 @@ mod tests {
     /// away along +Z.
     fn duel(distance: f32, holds_ground: bool) -> (App, Entity, Entity) {
         let mut app = App::new();
-        app.init_resource::<Time>().add_systems(Update, duellist);
+        app.init_resource::<Time>()
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(Update, duellist);
         let target = app
             .world_mut()
             .spawn((
@@ -1315,6 +1332,7 @@ mod chase_tests {
         let floor = Vec3::new(0.0, 10.0, 0.0);
         let mut app = App::new();
         app.init_resource::<Time>()
+            .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(Update, duellist)
             .insert_resource(yard());
         let target = app

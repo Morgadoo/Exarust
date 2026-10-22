@@ -77,6 +77,7 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Hit>()
+            .add_message::<AttackAskedHook>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<SecondWindFired>()
@@ -153,6 +154,32 @@ pub struct PowerFactors {
     pub shell: f32,
     pub strikes: f32,
 }
+
+/// The fighter's cast hook as an attack start asks it, with event 0x100:
+/// none without a hook, else whether the hook keeps its cast (an answer of
+/// 0 or more), which refuses the attack. The power system keeps it on the
+/// fighter.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AttackHook(pub Option<bool>);
+
+impl AttackHook {
+    /// The event an attack start asks the hook with.
+    pub const EVENT: u32 = 0x100;
+
+    /// An attack start's gate: whether the hook was asked (the power
+    /// system then asks the body's hook and ends the cast on a negative
+    /// answer) and whether the attack may go on.
+    pub fn gate(this: Option<&Self>) -> (bool, bool) {
+        match this.and_then(|h| h.0) {
+            None => (false, true),
+            Some(keeps) => (true, !keeps),
+        }
+    }
+}
+
+/// An attack start asked the fighter's cast hook ([`AttackHook`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttackAskedHook(pub Entity);
 
 /// A striker's segment along its entity's local +Y: a held weapon's, on the
 /// entity holding the weapon model, or a fist's, across the hand.

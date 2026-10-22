@@ -336,6 +336,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<crate::gamepad::PadStatus>()
             .init_resource::<AimCursor>()
             .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -1162,8 +1163,9 @@ fn request_attacks(
         Option<&mut Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
-        Has<Fallen>,
+        (Has<Fallen>, Option<&exa_combat::AttackHook>),
     )>,
+    mut asked: MessageWriter<exa_combat::AttackAskedHook>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     let pad_active = pad_status.as_ref().is_some_and(|s| s.active()) && pad.is_some();
@@ -1182,7 +1184,7 @@ fn request_attacks(
         mut condition,
         body,
         attacking,
-        fallen,
+        (fallen, hook),
     ) in &mut bodies
     {
         let state_now = condition.as_deref().copied().unwrap_or_default();
@@ -1237,6 +1239,15 @@ fn request_attacks(
             }
         }
         if dazed {
+            continue;
+        }
+        // The attack start asks a running cast's hook first: a hook that
+        // keeps its cast refuses the attack.
+        let (ask, go) = exa_combat::AttackHook::gate(hook);
+        if ask {
+            asked.write(exa_combat::AttackAskedHook(entity));
+        }
+        if !go {
             continue;
         }
         let cooldown = attacker.cooldown_ms(entity, blades.iter().map(|(b, _)| b));
@@ -2454,6 +2465,7 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<Bindings>()
             .init_resource::<AttackButton>()
+            .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(FixedPreUpdate, request_attacks);
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
@@ -2632,6 +2644,37 @@ mod tests {
         let (clip, _) = request_tick(&mut app, body, true);
         assert_ne!(clip, "Attack Up");
         assert!(app.world().get::<Attacking>(body).is_none());
+    }
+
+    /// The attack start asks a cast hook with event 0x100: one that keeps
+    /// its cast refuses the attack, one that does not lets it start.
+    #[test]
+    fn an_attack_start_asks_the_cast_hook() {
+        let asked = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<Messages<exa_combat::AttackAskedHook>>()
+                .drain()
+                .count()
+        };
+        let (mut app, body) = attack_app();
+        app.world_mut()
+            .entity_mut(body)
+            .insert(exa_combat::AttackHook(Some(true)));
+        let (clip, _) = request_tick(&mut app, body, true);
+        assert_ne!(clip, "Attack Up");
+        assert_eq!(asked(&mut app), 1);
+        let (mut app, body) = attack_app();
+        app.world_mut()
+            .entity_mut(body)
+            .insert(exa_combat::AttackHook(Some(false)));
+        assert_eq!(request_tick(&mut app, body, true).0, "Attack Up");
+        assert_eq!(asked(&mut app), 1);
+        let (mut app, body) = attack_app();
+        app.world_mut()
+            .entity_mut(body)
+            .insert(exa_combat::AttackHook(None));
+        assert_eq!(request_tick(&mut app, body, true).0, "Attack Up");
+        assert_eq!(asked(&mut app), 0, "no hook, nothing asked");
     }
 
     /// Held, the punch is never released: its swing does not stall.

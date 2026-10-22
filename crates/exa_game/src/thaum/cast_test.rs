@@ -335,6 +335,26 @@ fn pressing_vanish_again_releases_it() {
     assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
 }
 
+/// A running vanish's hook keeps an attack's event 0x100, so the attack is
+/// refused, but being asked lets the vanish go.
+#[test]
+fn an_attack_during_a_vanish_is_refused_and_ends_it() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[VANISH]);
+    cast(&mut app, caster);
+    app.update();
+    assert_eq!(
+        app.world().get::<exa_combat::AttackHook>(caster),
+        Some(&exa_combat::AttackHook(Some(true)))
+    );
+    app.world_mut()
+        .write_message(exa_combat::AttackAskedHook(caster));
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.body.casting, VANISH, "the hook kept it");
+    assert!(matches!(&state.active[0].class, ActiveClass::Vanish(v) if v.base.released));
+}
+
 /// The screen's Escape closes the bar, and a tree session's record (a slot it
 /// moved, a power it learnt) reaches the caster when the tree closes.
 #[test]

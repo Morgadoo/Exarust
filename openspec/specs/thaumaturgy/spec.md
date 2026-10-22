@@ -1116,6 +1116,13 @@ Each tick the player's controller SHALL ask the hook with 1 while the left butto
 - **WHEN** the player leaves combat mode while a shock charges
 - **THEN** the controller's 8 ends the cast and the charge clears
 
+### Requirement: An attack start asks the hook
+An attack start, the player's past its energy check or a duellist's, SHALL first ask a set cast hook with event 0x100: an answer of 0 or more SHALL refuse the attack, and a negative one SHALL end the cast and let the attack go on.
+
+#### Scenario: Attacking during a vanish
+- **WHEN** an attack starts while a vanish runs before its hold
+- **THEN** the attack is refused and the vanish is let go
+
 ### Requirement: A duellist lets its cast go
 A casting duellist's combat state, past 1000 ms from its cast's start, SHALL ask its power id's domain evaluator and, only when that answers 0, the hook with 0x10; a negative answer SHALL end the cast and clear the AI's casting. Before its state the AI SHALL clear its casting when the body does not read casting past 500 ms from the start.
 

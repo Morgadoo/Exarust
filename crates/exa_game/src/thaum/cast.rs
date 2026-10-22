@@ -55,7 +55,7 @@ use exa_ai::{DuelPowers, DuelSystems, Duellist};
 use exa_anim::{Animator, Motions};
 use exa_character::held::HeldMoveset;
 use exa_combat::swing::SwingState;
-use exa_combat::{Condition, Fighter, PowerFactors};
+use exa_combat::{AttackAskedHook, AttackHook, Condition, Fighter, PowerFactors};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{BodySystems, BodyTicks, OutOfScene, Ragdoll};
@@ -311,6 +311,7 @@ impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<BarCommand>()
             .add_message::<exa_ai::presence::Entered>()
+            .add_message::<AttackAskedHook>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
@@ -326,7 +327,10 @@ impl Plugin for CastPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                reset_entered_casts.after(exa_ai::presence::check_presence),
+                (
+                    reset_entered_casts.after(exa_ai::presence::check_presence),
+                    answer_attack_asks.before(tick_casters),
+                ),
             )
             .add_systems(
                 FixedUpdate,
@@ -829,9 +833,14 @@ fn cast_for_duellists(
 /// the hit formula.
 fn publish_power_factors(
     mut commands: Commands,
-    mut casters: Query<(Entity, &PowerCaster, Option<&mut PowerFactors>)>,
+    mut casters: Query<(
+        Entity,
+        &PowerCaster,
+        Option<&mut PowerFactors>,
+        Option<&mut AttackHook>,
+    )>,
 ) {
-    for (entity, caster, factors) in &mut casters {
+    for (entity, caster, factors, hook) in &mut casters {
         let now = PowerFactors {
             shell: caster.body.hit_damping,
             strikes: caster.body.strike_factor,
@@ -843,6 +852,35 @@ fn publish_power_factors(
             None => {
                 commands.entity(entity).insert(now);
             }
+        }
+        let gate = AttackHook(
+            caster
+                .body
+                .cast_hook
+                .map(|h| h.answer(AttackHook::EVENT) >= 0),
+        );
+        match hook {
+            Some(mut hook) => {
+                hook.set_if_neq(gate);
+            }
+            None => {
+                commands.entity(entity).insert(gate);
+            }
+        }
+    }
+}
+
+/// An attack start asked the body's cast hook with event 0x100: a negative
+/// answer ends the cast.
+fn answer_attack_asks(
+    mut asked: MessageReader<AttackAskedHook>,
+    mut casters: Query<&mut PowerCaster>,
+) {
+    for AttackAskedHook(entity) in asked.read() {
+        if let Ok(mut caster) = casters.get_mut(*entity)
+            && casting::ask_hook(&mut caster.body, AttackHook::EVENT).is_some_and(|a| a < 0)
+        {
+            casting::end_cast(&mut caster.body);
         }
     }
 }
