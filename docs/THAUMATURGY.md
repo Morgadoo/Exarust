@@ -171,8 +171,17 @@ bits 0x28); the grow passing 1 clears the hook and power id, and the
 power's ending (cast again, or the dome 20 m from its caster) breaks the
 dome, which shrinks over 700 ms and leaves. It holds its caster's limb
 spheres in and pushes other bodies' parts the shell covers out, with
-ripples and the dome's 40 cm shove (a knockback step here). The wave and torrent casts, whose creators only make an effect,
-make nothing yet (no class and no entity). A cast motion is played through
+ripples and the dome's 40 cm shove (a knockback step here). A wave cast makes its wave entity
+(`thaum::wave_live`) at the caster's hand: its start plays cast motion
+0x24 with id 0x204 and takes the blast's hook, so a later cast or the
+release flag fizzles a charging wave; it pays the cost times the tick's
+seconds each charging tick, after its chunks move and before the charge
+step, and a shortfall fizzles it and ends the cast. The release clears the
+hook and power id, and a thrown wave pushes other bodies' limbs through
+the blast's contact arithmetic (its chunks keep no wear, an Exarust
+reading). Its alert (1200 reach, within 18 m, under 150 cm of height), sounds and
+draw are not wired. The torrent cast, whose creator only makes an effect,
+makes nothing yet (no class and no entity). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,

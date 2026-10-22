@@ -188,7 +188,9 @@ other bodies' limbs. A barrier cast runs its dome as an entity
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
 focus it pays a tick, and its shell pushing other bodies' limb spheres out.
 A bubble cast runs its dome where it was cast (`thaum::bubble_live`),
-ending with its power. Nothing casts a torrent yet.
+ending with its power. A wave cast runs its wave from the caster's hand
+(`thaum::wave_live`): charging on the blast's hook, paying its drain each
+tick, and thrown into other bodies' limbs. Nothing casts a torrent yet.
 
 The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
 table, the front end (Control Mind's lock, the shared pricing), the 0.3

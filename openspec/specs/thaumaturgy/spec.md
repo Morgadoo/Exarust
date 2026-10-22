@@ -1071,3 +1071,10 @@ A bubble cast SHALL make a dome entity of radius 120 at the cast place whose sta
 #### Scenario: A duellist's bubble
 - **WHEN** a duellist with focus casts the bubble with a body's limb inside its reach, then casts it again once it stands
 - **THEN** the dome grows on the hook, moves that limb, stands with the hook cleared, then shrinks and leaves the scene
+
+### Requirement: A cast wave
+A wave cast SHALL make a wave entity at the caster's hand whose start plays cast motion 0x24 with power id 0x204 and sets the blast's hook. While it charges it SHALL pay the cost times the tick's seconds; a later cast, the release flag or a shortfall SHALL fizzle it, a shortfall also ending the cast. The release SHALL clear the hook and power id, and a thrown wave SHALL push the limbs its chunks reach.
+
+#### Scenario: A duellist's wave
+- **WHEN** a duellist with focus casts the wave at a body whose limb sits in front of its hand
+- **THEN** it charges on the hook, is thrown with the hook and power id cleared, moves that limb and leaves the scene once spent
