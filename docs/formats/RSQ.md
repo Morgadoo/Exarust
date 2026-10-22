@@ -1224,11 +1224,12 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   tick); stepping (refuses, the next tests still run); moving with balance
   under 0.9 (double precision; a float 0.9 is under it): the cooldown and
   the landing momentum's full weight; standing with more than 80 ticks
-  without support or balance under 0.99; more than 20 ticks of Rebalance.
-  A refusal clears the amount, the flags and the speed. Exarust reads the
-  balance steady until the body takes recovery steps (its standing balance
-  can settle at about 0.89 with nothing to restore it) and keeps no
-  Rebalance countdown yet.
+  without support or balance under 0.99; more than 20 ticks of Rebalance
+  left. That countdown is the posture wait (41 off balance, 27 unsteady,
+  one less each posture stage). A refusal clears the amount, the flags
+  and the speed. Exarust reads the balance steady until the body takes
+  recovery steps (its standing balance can settle at about 0.89 with
+  nothing to restore it).
 - **Brake**: braking below 1 cm a tick, the turn-about bit turns it into a
   backpedal; otherwise the amount is 0.
 - **Move or stop**: moving with an amount over 625 cm² (25 cm) or a speed

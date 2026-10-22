@@ -434,7 +434,9 @@ pub struct Footing {
     /// Its balance, and the ticks it has gone without support.
     pub balance: f32,
     pub airborne: u32,
-    /// Ticks of Rebalance left (none kept yet: 0).
+    /// Ticks of the posture wait left. A Rebalance sets 41 off balance or
+    /// 27 unsteady, and every posture stage takes one off; more than
+    /// [`REBALANCE_MOST`] refuses the move.
     pub rebalance: i32,
     /// Its gait table.
     pub gaits: GaitTable,
@@ -456,13 +458,15 @@ impl Footing {
         }
     }
 
-    /// The footing of `body`: its energy and its most from its drive, its
-    /// balance steady (a body without a drive is steady and rested).
+    /// The footing of `body`: its energy, its most and its posture wait
+    /// from its drive, its balance steady (a body without a drive is
+    /// steady and rested).
     pub fn of(body: Option<&Ragdoll>, standing: Vec3, speed: f32) -> Self {
         let mut at = Footing::steady(standing, speed);
         if let Some(d) = body.and_then(|b| b.drive.as_ref()) {
             at.energy = d.energy;
             at.max_energy = d.max_energy();
+            at.rebalance = d.posture_wait;
         }
         at
     }
@@ -571,7 +575,8 @@ pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decid
 /// lets the next tests run); moving, balance 0.9 or more (else the
 /// 40-tick cooldown and the landing's full weight); standing, at most 80
 /// ticks without support and balance 0.99 or more; at most 20 ticks of
-/// Rebalance. Returns the first refusal and whether the body landed.
+/// the posture wait left. Returns the first refusal and whether the body
+/// landed.
 fn gates(moving: bool, stepping: bool, body: &mut Locomotor, at: &Footing) -> (Option<Stop>, bool) {
     if body.cooldown > 0 {
         return (Some(Stop::Cooldown), false);

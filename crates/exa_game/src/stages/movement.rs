@@ -132,10 +132,11 @@ pub(crate) fn decide_movement(
     let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
     let rows = drive.map_or(GaitTable::HUMAN_ROWS, |d| d.race.gaits);
     let table = GaitTable::new(rows, feral, clock);
-    // The balance gates read a steady body (Exarust's own): until the body
-    // takes recovery steps, its standing balance can settle under 0.99
-    // with nothing to restore it, which would hold it for good
-    // (`Footing::balanced_by` reads the body's once it can).
+    // The balance and airborne gates read a steady body (Exarust's own):
+    // until the body takes recovery steps, its standing balance can settle
+    // under 0.99 with nothing to restore it, which would hold it for good
+    // (`Footing::balanced_by` reads the body's once it can). The Rebalance
+    // gate reads the posture wait.
     let mut at = Footing::of(ragdoll.as_deref(), standing, speed);
     at.gaits = table;
     let decided = locomotion::decide(&mut req, &mut body, &at);
