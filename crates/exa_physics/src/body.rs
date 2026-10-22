@@ -2749,6 +2749,17 @@ impl Ragdoll {
             .as_ref()
             .filter(|_| self.measures_balance())
             .map(feet::FootDrive::of);
+        let turns: Vec<Quat> = self
+            .drive
+            .as_ref()
+            .filter(|_| feet.is_some())
+            .map(|d| {
+                d.targets
+                    .iter()
+                    .map(|t| t.to_scale_rotation_translation().1)
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut landed = 0;
         for k in 0..self.parts.len() {
             let i = if gains.is_some() {
@@ -2805,6 +2816,9 @@ impl Ragdoll {
                     }
                     if leg.foot == Some(i) {
                         feet::push_sole(&mut self.parts[i], leg, fd);
+                        if let Some(turn) = turns.get(i).copied() {
+                            feet::turn_sole(&mut self.parts[i], leg, fd, turn);
+                        }
                     }
                 }
             }

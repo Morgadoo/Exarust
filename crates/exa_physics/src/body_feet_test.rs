@@ -80,6 +80,7 @@ fn full() -> FootDrive {
         run: 0.0,
         scale: 1.0,
         gain: 1.25,
+        sole_gain: 1.25,
         pelvis: 1.2,
     }
 }
@@ -371,6 +372,84 @@ fn the_toe_is_held_over_its_floor() {
         ..full()
     };
     assert_eq!(rise(standing, 1.0, 0.03, unsupported), 0.0);
+}
+
+/// After the sole push, a foot whose forward lies within a right angle of
+/// its animated forward is servoed so its toe meets that orientation: the
+/// horizontal gap, projected on the orientation's side axis, closes at
+/// rate 0.4×scale with gain P×pin factor×S. Two centimetres along that
+/// axis, unmoved, S = 1, P = 1 and pin factor 1.25, is a 1 cm push. A foot
+/// turned past a right angle, one already closing 0.05 of the gap, and one
+/// off its feet or without support, are left.
+#[test]
+fn the_sole_yaws_toward_its_animated_side() {
+    let (body, _) = footed(Vec3::ZERO);
+    let leg = &body.legs[0];
+    let foot = &body.parts[leg.foot.unwrap()];
+    let local = foot.rest_point(&leg.toe);
+    let w2: f32 = leg.toe.iter().map(|w| w * w).sum();
+    let rotation = foot.transform().to_scale_rotation_translation().1;
+    // A local yaw that swings the toe 2 cm along the animated side axis.
+    let theta = (0.02 / local.z).asin();
+    let turn = rotation * Quat::from_rotation_y(theta);
+    let toe = foot.point(&leg.toe);
+    let origin = foot.point(&foot.own_origin);
+    let flat = (origin + turn * local - toe).with_y(0.0);
+    let side = turn * Vec3::X;
+    let along = side * flat.dot(side);
+    assert!(
+        close(along.length() * CM, 2.0, 1e-3),
+        "the gap is {:.4} cm",
+        along.length() * CM
+    );
+    let moved = |foot: &super::super::Part| {
+        let now = foot.point(&leg.toe);
+        (now - toe) / w2 * CM
+    };
+    let mut turned = foot.clone();
+    let mut standing_leg = leg.clone();
+    standing_leg.state = FootState(FootState::TOUCHING);
+    turn_sole(&mut turned, &standing_leg, &full(), turn);
+    let push = moved(&turned);
+    let expected = along.normalize() * 1.0;
+    assert!(
+        close(push.x, expected.x, 1e-3)
+            && close(push.y, expected.y, 1e-3)
+            && close(push.z, expected.z, 1e-3),
+        "pushed {push}, expected {expected}"
+    );
+    // Already closing the whole gap: the servo leaves it.
+    let mut closing = foot.clone();
+    closing.push(&[1.0; 4], along);
+    let held = closing.point(&leg.toe);
+    turn_sole(&mut closing, &standing_leg, &full(), turn);
+    assert_eq!(closing.point(&leg.toe), held);
+    // Past a right angle the foot keeps its pose.
+    let mut flipped = foot.clone();
+    turn_sole(
+        &mut flipped,
+        &standing_leg,
+        &full(),
+        rotation * Quat::from_rotation_y(std::f32::consts::PI),
+    );
+    assert_eq!(flipped.point(&leg.toe), toe);
+    let off = FootDrive {
+        off_feet: true,
+        ..full()
+    };
+    let mut untouched = foot.clone();
+    turn_sole(&mut untouched, &standing_leg, &off, turn);
+    assert_eq!(untouched.point(&leg.toe), toe);
+    let unsupported = FootDrive {
+        has_support: false,
+        ..full()
+    };
+    turn_sole(&mut untouched, &standing_leg, &unsupported, turn);
+    assert_eq!(untouched.point(&leg.toe), toe);
+    // No contact state yet: the settling foot is left where it is.
+    let mut unclassified = foot.clone();
+    turn_sole(&mut unclassified, leg, &full(), turn);
+    assert_eq!(unclassified.point(&leg.toe), toe);
 }
 
 /// Before the feet are measured: a body that is not walking plants a foot

@@ -24,7 +24,8 @@
 //! fades as the foot rises 1 to 9 cm over its anchor; an anchored foot
 //! reaches its anchor within 5 cm; a foot not touching or lifted is only
 //! pushed up. Each foot's toe is pushed up to its floor by at most 0.5 cm
-//! an iteration (0.1 unless it stands), times S.
+//! an iteration (0.1 unless it stands), times S, then servoed sideways
+//! toward where its animated orientation places it.
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
 //! `docs/formats/RSQ.md`, Physical body, Feet). The footwork chooses by
@@ -146,6 +147,9 @@ const EPSILON2: f32 = 1.192_09e-7;
 /// second compared in double).
 const SOLE_STANDING: f32 = 0.5;
 const SOLE_OTHERWISE: f64 = 0.1;
+/// The sole turn closes this share of its horizontal gap a tick (× scale,
+/// in double, then narrowed).
+const SOLE_TURN_RATE: f64 = 0.4;
 
 /// A leg's friction by its foot's state: none not touching, 2.0 touching,
 /// none anchored (the anchor's pull moves it).
@@ -220,6 +224,9 @@ pub(super) struct FootDrive {
     pub scale: f32,
     /// The PD grip's gain g: scale × pin factor × leg extension.
     pub gain: f32,
+    /// The sole turn's gain before support: P × the pin factor. P is the
+    /// support pins' power, √E·T·E⁴, or 1 in a shock stagger.
+    pub sole_gain: f32,
     /// The pelvis's height (m) when the feet were measured.
     pub pelvis: f32,
 }
@@ -240,6 +247,11 @@ impl FootDrive {
             run: bearing.run,
             scale: drive.stats.scale,
             gain: drive.stats.scale * drive.stats.pin_factor * drive.balance.extension,
+            sole_gain: super::pins::power(
+                drive.energy,
+                drive.tone_target(),
+                drive.bearing.shock_stagger,
+            ) * drive.stats.pin_factor,
             pelvis: drive.balance.pelvis,
         }
     }
@@ -367,6 +379,41 @@ pub(super) fn push_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive) {
         up = SOLE_OTHERWISE as f32;
     }
     foot.push(&leg.toe, Vec3::Y * (up / CM));
+}
+
+/// One iteration of a foot's sole turning toward its animated orientation
+/// `turn`. On its feet and with support, once the foot has a contact
+/// state, and only while its forward lies within a right angle of that
+/// orientation's forward, the horizontal gap from the toe to where the
+/// orientation places it is projected onto the orientation's side axis and
+/// closed by the velocity servo: rate 0.4 × scale, gain
+/// [`FootDrive::sole_gain`] × S. A gap under 1.19e-7 cm², or one the toe
+/// already closes by 0.05, is left. A foot with no contact state is left
+/// too: turning it while it settles keeps its box off the floor.
+pub(super) fn turn_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive, turn: Quat) {
+    // Exarust's own. The original also turns a foot with no contact state.
+    if fd.off_feet || !fd.has_support || leg.state.0 == 0 {
+        return;
+    }
+    let now = foot.transform();
+    let forward = Vec3::from(now.matrix3.z_axis);
+    let ahead = forward.dot(turn * Vec3::Z);
+    if ahead.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return;
+    }
+    let local = foot.rest_point(&leg.toe);
+    let origin = foot.point(&foot.own_origin);
+    let aimed = origin + turn * local;
+    let flat = (aimed - foot.point(&leg.toe)).with_y(0.0);
+    let side = turn * Vec3::X;
+    let along = side * flat.dot(side);
+    let rate = (f64::from(fd.scale) * SOLE_TURN_RATE) as f32;
+    let gain = fd.sole_gain * fd.support;
+    if let Some(push) =
+        servo(cm(along), cm(foot.slip(&leg.toe)), gain, rate).filter(|p| p.is_finite())
+    {
+        foot.push(&leg.toe, push / CM);
+    }
 }
 
 /// What one walk phase does to a foot.

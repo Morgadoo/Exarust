@@ -1115,6 +1115,17 @@ In each iteration, after its foot's links, a body with support and on its feet S
 - **WHEN** a standing foot's toe is 3 cm, 0.3 cm, then 0.4 cm at S = 0.5 under its floor
 - **THEN** it is pushed 0.5, 0.3, then 0.2 cm (0.1 cm when the foot does not stand), and not at all off its feet or without support
 
+### Requirement: Sole turn
+In each iteration, after the sole push, a body on its feet with support SHALL turn a foot with a contact state whose forward lies within a right angle of its animated forward. The horizontal gap from the toe to where that orientation places it, projected onto that orientation's side axis, is closed by the velocity servo at rate 0.4×scale and gain P×pin factor×S. A gap under 1.19e-7 cm², one already closing 0.05 of itself, or a foot with no contact state, is left. P is the support pins' power.
+
+#### Scenario: Two centimetres to the side
+- **WHEN** a standing foot's toe is 2 cm along its animated side axis from where that orientation places it, it has not moved, its forward agrees, S is 1, P is 1 and the pin factor is 1.25
+- **THEN** the toe is pushed 1 cm along that axis
+
+#### Scenario: No contact state
+- **WHEN** a foot with no contact state has its toe 2 cm along its animated side axis, it has not moved, and its forward agrees
+- **THEN** the toe is not pushed
+
 ### Requirement: Stance level and leg extension
 With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v the share of its feet's ground difference in their squared distance), and its legs' extension SHALL be the level × (pelvis over the highest anchor ÷ the pose's pelvis over its mean ankle)², at most 1; the grip's gain g is scale × the support pins' factor × the extension.
 

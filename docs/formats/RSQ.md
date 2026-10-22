@@ -894,8 +894,17 @@ ticks.
   with support: the toe (the sole's point 20 cm × scale ahead of the ankle
   along the foot) under its floor is pushed straight up by the gap × S, at
   most 0.5 cm while the foot stands (touching, not anchored, not lifted),
-  else 0.1 cm. The original also turns the sole toward its planted
-  orientation (not ported; the pose drive turns the feet).
+  else 0.1 cm. Then, while the foot's forward lies within a right angle of
+  its animated forward, the horizontal gap from the toe to where that
+  orientation places it is projected onto that orientation's side axis and
+  closed by the velocity servo at rate 0.4×scale, gain P×pin factor×S
+  (P the support pins' power). A gap under 1.19e-7 cm², or one already
+  closing 0.05 of itself, is left. The original turns a foot with no
+  contact state whenever the character's foot-contact flag is set.
+  Exarust leaves that foot: turning it while it settles keeps its box off
+  the floor. While an unnamed flag is set and the foot stands, the
+  original projects that gap onto a side axis latched from an earlier
+  iteration; that latch is not ported.
 - **Level and extension**: with support the stance's level follows 1 − v²
   by a tenth a tick, v the share of the feet's ground difference in their
   squared distance (1 on level ground, 0.6 for feet 11 cm apart on a 15 cm
