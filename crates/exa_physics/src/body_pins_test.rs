@@ -1,7 +1,7 @@
 //! The support pins, pinned to the law (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body.rs: `#[cfg(test)] #[path = "body_pins_test.rs"] mod pins_test;`)
 use super::floor_test::standing_at;
-use super::pins::{Factors, pelvis_reach, pull, target, thorax_reach};
+use super::pins::{Factors, pelvis_reach, power, pull, target, thorax_reach};
 use super::tests::floor_quad;
 use super::*;
 
@@ -46,6 +46,18 @@ fn human(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -
             getting_up,
         },
     )
+}
+
+/// P is √E·T·E⁴. A NaN or a negative root stays a NaN, and −0 stays −0.
+/// The shock-stagger flag replaces it with 1.
+#[test]
+fn pin_power_is_the_root_unless_the_shock_stagger() {
+    assert!((power(1.0, 0.5, false) - 0.5).abs() < 1e-6);
+    assert!(power(f32::NAN, 0.5, false).is_nan());
+    assert!(power(-1.0, 0.5, false).is_nan());
+    assert_eq!(power(-0.0, 0.5, false).to_bits(), (-0.0f32).to_bits());
+    assert_eq!(power(0.5, 0.5, true), 1.0);
+    assert_eq!(power(f32::NAN, 0.5, true), 1.0);
 }
 
 /// One application equals the law: 10 cm off with 1 cm of displacement
@@ -189,6 +201,56 @@ fn one_pass_on_a_body_applies_the_law() {
             true,
             false,
         );
+        for k in 0..4 {
+            expected[i][k] += corr / 100.0 * w[k];
+        }
+    }
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.pull_support_pins();
+    for (i, p) in body.parts.iter().enumerate() {
+        for k in 0..4 {
+            let delta = p.positions[k] - before[i][k];
+            assert!(
+                delta.abs_diff_eq(expected[i][k], 1e-6),
+                "part {i} particle {k}: {delta} vs {}",
+                expected[i][k]
+            );
+        }
+    }
+}
+
+/// A shock stagger uses P = 1, twice an alert human's √1·0.5·1⁴.
+#[test]
+fn a_shock_stagger_pulls_the_pins_at_full_power() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose);
+    let thorax = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    shift(&mut body.parts[thorax], Vec3::X * 0.10);
+    body.drive.as_mut().unwrap().bearing.shock_stagger = true;
+    let centre = feet_centre(&body);
+    let targets = body.drive.as_ref().unwrap().targets().to_vec();
+    let mut pins: Vec<(usize, [f32; 4], f32)> = body
+        .chest
+        .iter()
+        .copied()
+        .map(|(i, w)| (i, w, 36.0))
+        .collect();
+    let pelvis = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    pins.push((pelvis, body.parts[pelvis].own_origin, 60.0));
+    let mut expected = vec![[Vec3::ZERO; 4]; body.parts.len()];
+    for (i, w, radius) in pins {
+        let posed = targets[i].transform_point3(body.parts[i].rest_point(&w));
+        let goal = clamped(posed, centre, radius);
+        let at = body.parts[i].point(&w);
+        let disp = (0..4)
+            .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
+            .sum::<Vec3>();
+        let corr = law(
+            ((goal - at).with_y(0.0)) * 100.0,
+            disp.with_y(0.0) * 100.0,
+            true,
+            false,
+        ) * 2.0;
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
         }

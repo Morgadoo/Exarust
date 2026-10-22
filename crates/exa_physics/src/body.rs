@@ -3546,7 +3546,10 @@ mod tests {
         assert_eq!(daze_energy(MIN_ENERGY, 0.0).to_bits(), MIN_ENERGY.to_bits());
         assert!(daze_energy(f32::NAN, 0.5).is_nan());
         assert!(daze_energy(0.8, f32::NAN).is_nan());
-        assert_eq!(daze_energy(0.5, -1.0), 0.5 - 0.5 * -1.0);
+        #[allow(clippy::neg_multiply)]
+        {
+            assert_eq!(daze_energy(0.5, -1.0), 0.5 - 0.5 * -1.0);
+        }
         // The product is a multiply then a subtract, so a second blow on
         // what the first left is not the single-precision complement.
         let energy = f32::from_bits(0x3f26_cecc);

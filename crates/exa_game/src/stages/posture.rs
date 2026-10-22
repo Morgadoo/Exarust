@@ -51,8 +51,10 @@ pub(crate) fn take_bearing(
     let mut bearing: Bearing = bearing(controller, locomotion, crouch, anim, branch, state);
     bearing.rising = rising(&motions, anim, state);
     // Dormant, or in exactly the shock's stagger, its stance factor is 1.
+    // The flag's bit, with whatever else is set, makes the pins' power 1.
     bearing.full_stance =
         state == Condition::DORMANT || flags.map_or(0, |f| f.0) == StateFlags::SHOCK_STAGGER;
+    bearing.shock_stagger = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));

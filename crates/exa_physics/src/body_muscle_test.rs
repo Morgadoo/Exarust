@@ -126,17 +126,20 @@ fn strength_follows_the_root_of_energy_and_damping_stops_at_half() {
 /// nothing. −0 is not below 0.5, but −0 − 0.5 is, and √(−0) stays −0.
 #[test]
 fn a_nan_energy_keeps_a_nan_muscle_strength() {
-    let mut drive = Drive::default();
-    drive.energy = f32::NAN;
-    let (strength, damping) = drive.muscle_gains();
+    let gains = |energy| {
+        Drive {
+            energy,
+            ..Drive::default()
+        }
+        .muscle_gains()
+    };
+    let (strength, damping) = gains(f32::NAN);
     assert!(strength.is_nan());
     assert!(damping.is_nan());
-    drive.energy = -1.0;
-    let (strength, damping) = drive.muscle_gains();
+    let (strength, damping) = gains(-1.0);
     assert!(strength.is_nan());
     assert_eq!(damping, 0.0);
-    drive.energy = -0.0;
-    let (strength, damping) = drive.muscle_gains();
+    let (strength, damping) = gains(-0.0);
     assert_eq!(strength.to_bits(), (-0.0f32).to_bits());
     assert_eq!(damping, 0.0);
 }

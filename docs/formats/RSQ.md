@@ -743,7 +743,8 @@ Exarust's own, for a body whose capsule still moves it across the ground
   times (2 − 25·s), times 1.2, times the square root of body scale and
   times the stance level. Direction is (h²/60 + 0.25)·0.36·forwardness,
   with h in centimetres. A still 40 cm sideways error moves the target
-  33.6 cm. P is √E·T·E⁴. Pin-gain starts at 0.08 and
+  33.6 cm. P is √E·T·E⁴ (the root of a NaN or a negative stays a NaN),
+  and 1 while the shock-stagger flag is set. Pin-gain starts at 0.08 and
   recovers 0.001 a tick while it is under that and the body is not
   collapsing. With no support
   the pull is zero and the target only shifts 5·scale cm forward. While

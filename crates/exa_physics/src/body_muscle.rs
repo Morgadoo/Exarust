@@ -211,6 +211,8 @@ pub struct Bearing {
     /// Its condition is dormant or its state is exactly the shock's
     /// stagger: standing, its stance factor is 1.
     pub full_stance: bool,
+    /// The shock-stagger flag is set: the support pins' power is 1.
+    pub shock_stagger: bool,
     /// It plays the walk or the run cycle: its arms hang loosely.
     pub striding: bool,
     /// It has lost its balance: falling, lying or getting up.
@@ -300,6 +302,7 @@ impl Default for Bearing {
             legs: LegMode::Standing,
             stance_run: 0.0,
             full_stance: false,
+            shock_stagger: false,
             striding: false,
             off_balance: false,
             getting_up: false,

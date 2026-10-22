@@ -649,3 +649,39 @@ fn a_shock_stagger_pins_energy_after_the_recovery() {
     assert_eq!(world.get::<StateFlags>(id).unwrap().0, 0);
     assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
 }
+
+/// The shock-stagger bit reaches the pins even beside another flag. Exactly
+/// that flag alone is what makes the stance factor 1.
+#[test]
+fn a_shock_stagger_bit_reaches_the_pins() {
+    let body = pelvis(Quat::IDENTITY);
+    let (mut world, id) = posed(body, "Idle", Branch::Standing, Condition::NORMAL);
+    world.get_mut::<StateFlags>(id).unwrap().0 =
+        StateFlags::SHOCK_STAGGER | StateFlags::TURNS_BLOWS;
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    let bearing = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .bearing;
+    assert!(bearing.shock_stagger);
+    assert!(!bearing.full_stance);
+
+    world.get_mut::<StateFlags>(id).unwrap().0 = StateFlags::SHOCK_STAGGER;
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    let bearing = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .bearing;
+    assert!(bearing.shock_stagger);
+    assert!(bearing.full_stance);
+}

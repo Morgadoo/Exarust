@@ -7,7 +7,8 @@
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
 //! otherwise; subtract the point's horizontal displacement this tick; cap
 //! the length at 8 cm; multiply by S² · pin-gain · P · the spawned pin
-//! factor, and by 0.3 while getting up. P is √E·T·E⁴. The 0.3 is only the
+//! factor, and by 0.3 while getting up. P is √E·T·E⁴, or 1 while the
+//! shock-stagger flag is set. The 0.3 is only the
 //! get-up factor: it is not stacked on the pin-gain while the body stands.
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
@@ -53,10 +54,15 @@ pub(super) fn pelvis_reach(scale: f32) -> f32 {
     (PELVIS_REACH * scale).max(0.0)
 }
 
-/// P = √E · T · E⁴, E the energy and T the tone target.
-pub(super) fn power(energy: f32, tone_target: f32) -> f32 {
-    let e = energy.max(0.0);
-    e.sqrt() * tone_target * e.powi(4)
+/// P = √E · T · E⁴, E the energy and T the tone target, unless
+/// `shock_stagger` is set, when it is 1. The root is taken as the energy
+/// is, so a NaN or a negative stays a NaN.
+pub(super) fn power(energy: f32, tone_target: f32, shock_stagger: bool) -> f32 {
+    if shock_stagger {
+        return 1.0;
+    }
+    let squared = energy * energy;
+    energy.sqrt() * tone_target * squared * squared
 }
 
 /// The gains one pin application scales by.
@@ -185,7 +191,11 @@ impl Ragdoll {
         let has_support = drive.balance.has_support();
         let support = drive.support;
         let pin_gain = drive.pin_gain;
-        let power = power(drive.energy, drive.tone_target());
+        let power = power(
+            drive.energy,
+            drive.tone_target(),
+            drive.bearing.shock_stagger,
+        );
         let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
         let getting_up = drive.bearing.getting_up;
