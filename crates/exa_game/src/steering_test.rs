@@ -565,9 +565,11 @@ fn the_spawn_snaps_on_the_third_tick() {
 }
 
 /// A footwork step's target: a step's length along its keys, clamped by
-/// the line walk; within 20 cm none.
+/// the line walk. On the level, 20 cm is 400 cm² and is not taken; 25 cm
+/// is. A point 15 cm ahead and 15 cm up is 450 cm² and is taken; 15 cm
+/// ahead on the level is not. An unordered distance is not taken.
 #[test]
-fn a_step_target_is_clamped_and_taken_beyond_20_cm() {
+fn a_step_target_is_clamped_and_taken_past_400_cm2() {
     let mut s = Steering::default();
     let wall =
         |near: f32| move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
@@ -581,6 +583,15 @@ fn a_step_target_is_clamped_and_taken_beyond_20_cm() {
         Some(Vec3::X * 0.8)
     );
     assert_eq!(s.line.unwrap().asked, Asked::Step);
+    let raised = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.15, 0.0), true);
+    assert_eq!(
+        s.step_target(Vec3::ZERO, Vec3::X, 0.8, &raised),
+        Some(Vec3::new(0.15, 0.15, 0.0))
+    );
+    let flat = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.0, 0.0), true);
+    assert_eq!(s.step_target(Vec3::ZERO, Vec3::X, 0.8, &flat), None);
+    let unordered = |_: Vec3, _: Vec3| (Vec3::new(1.0, f32::NAN, 0.0), false);
+    assert_eq!(s.step_target(Vec3::ZERO, Vec3::X, 0.8, &unordered), None);
 }
 
 /// The combat right-button walk goes toward the cursor with the fast turn,

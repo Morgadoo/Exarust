@@ -651,9 +651,13 @@ the cursor's direction, and keys held longer than 200 ms walk on.
 A fresh press aims one step reach; once the keys have already been held
 200 ms the target is (1.5 − 0.3 × encumbrance) step reaches, one double
 product narrowed once (120 cm unencumbered, 97.2 cm at encumbrance 0.5
-on a 72 cm reach). The
+on a 72 cm reach). A side key weighs 0.8 of the facing before the
+direction is normalised, so a diagonal aims eight tenths as far sideways
+as forward and a pure side step stays a full step. The step is taken only
+when the clamped target's three-dimensional squared distance is over
+400 cm².
 
-original's footwork steps the feet and never changes the clip; Exarust's
+The original's footwork steps the feet and never changes the clip; Exarust's
 interim one plays "Combat Walk" while a key is held and gives back the
 clip it replaced (the guard stays the guard) when they are released; its
 capsule moves meanwhile, and the body does not locomote (the original's

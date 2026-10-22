@@ -331,11 +331,19 @@ On the player's third behaviour tick with a navigation grid, unless it is down, 
 - **THEN** it is not moved, then or later
 
 ### Requirement: Footwork step targets
-In combat mode a footwork step's target SHALL be a step's length along its keys (the step reach × √scale, 80 cm for a human), clamped by the grid's line walk from where the player stands; a target within 20 cm SHALL not be stepped to. A fresh press SHALL aim that length. Keys already held 200 ms SHALL aim (1.5 − 0.3·encumbrance) times the step reach, narrowed once from a double product, then the same √scale. The interim footwork SHALL walk only while that target lies farther.
+In combat mode a footwork step SHALL aim a step's length along its keys (step reach × √scale, 80 cm for a human; held 200 ms, (1.5 − 0.3·encumbrance) times that reach, one double product narrowed once, then the same √scale), clamped by the line walk. A side key SHALL weigh 0.8 of the facing before the direction is normalised. The step SHALL be taken only when the clamped target's three-dimensional squared distance is over 400 cm². The interim footwork SHALL walk only while that step is taken.
 
 #### Scenario: Footwork at a wall
-- **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead, then 21 cm ahead
+- **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead on the level, then 21 cm ahead
 - **THEN** the player takes no step and plays no walk, then it steps and plays the combat walk
+
+#### Scenario: A diagonal weighs the side by 0.8
+- **WHEN** W and A are held together facing +Z, on open ground, for a fresh press of an 80 cm step
+- **THEN** the target lies 0.8 as far to the side as it lies forward, and a side key alone still aims a full step
+
+#### Scenario: A raised clamp
+- **WHEN** the line walk clamps a step 15 cm ahead and 15 cm up, then 15 cm ahead on the level
+- **THEN** the first is stepped to and the second is not
 
 #### Scenario: A held step is a long step
 - **WHEN** a combat step's keys have already been held 200 ms, on open ground, for a human step reach and for a reach of 72 cm at encumbrance 0.5

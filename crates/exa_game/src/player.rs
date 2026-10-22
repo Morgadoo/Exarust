@@ -800,6 +800,10 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 /// A tap step's length (m) for a character without stats: a human's step
 /// reach.
 const STEP_LENGTH: f32 = 0.8;
+/// A side key weighs this share of the facing. The sum is normalised, so
+/// a diagonal aims 0.8 as far sideways as forward and a pure side step
+/// stays a full step.
+const SIDE_SHARE: f32 = 0.8;
 
 /// Where the footwork steps from, how long a tap and a held step are, and
 /// the grid's line walk that clamps the target.
@@ -818,10 +822,12 @@ struct Footwork<'a> {
 /// request's stepping velocity, so the body does not locomote meanwhile),
 /// plays "Combat Walk" while a key is held and gives back the clip it
 /// replaced (the stance's, if that clip was a stance) once they are
-/// released. As the original's steps, it goes only while the target of a
-/// step (a step's length along the keys, clamped by the grid's line walk)
-/// lies more than 20 cm away. A fresh press aims one step reach. Keys
-/// already held 200 ms aim (1.5 − 0.3·encumbrance) step reaches, the
+/// released. As the original's steps, a side key weighs 0.8 of the facing
+/// before the direction is normalised, and it goes only while the target
+/// of a step (a step's length along the keys, clamped by the grid's line
+/// walk) lies over 400 cm² away, in three dimensions. A fresh press aims
+/// one step reach. Keys already held 200 ms aim (1.5 − 0.3·encumbrance)
+/// step reaches, the
 /// product narrowed once from double; the original also keeps the short
 /// step while an unnamed support value is at least 0.1, which Exarust
 /// does not keep, so a held key takes the long step. A walk, run or
@@ -842,7 +848,7 @@ fn combat_steps(
     dt: f32,
 ) {
     let look = forward(pb.aim);
-    let side = Vec3::new(look.z, 0.0, -look.x);
+    let side = Vec3::new(look.z, 0.0, -look.x) * SIDE_SHARE;
     let mut dir = Vec3::ZERO;
     for (held, d) in [
         (input.w, look),
@@ -1899,6 +1905,88 @@ mod tests {
         assert_eq!(held.z.to_bits(), 0x3f99_999a);
         let worn = aim(STEP_HOLD, 72.0 / 100.0, long_step_length(72.0, 0.5) / 100.0);
         assert_eq!(worn.z.to_bits(), 0x3f78_d4fd);
+    }
+
+    /// W and A together, facing +Z, aim 0.8 as far sideways as forward. A
+    /// side key alone still aims a full step: the 0.8 is weighed before
+    /// the direction is normalised.
+    #[test]
+    fn a_diagonal_step_weighs_the_side_by_0_8() {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let aim = |w: bool, a: bool, d: bool| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0);
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let footing = Footwork {
+                standing: Vec3::ZERO,
+                step: STEP_LENGTH,
+                long_step: STEP_LENGTH,
+                line: &open,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &Keys {
+                    w,
+                    a,
+                    d,
+                    ..Keys::default()
+                },
+                &mut req,
+                &mut steering,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            steering.line.unwrap().to
+        };
+        let diagonal = aim(true, true, false);
+        assert!((diagonal.x / diagonal.z - SIDE_SHARE).abs() < 1e-6);
+        let side = aim(false, false, true);
+        assert!((side - Vec3::new(-STEP_LENGTH, 0.0, 0.0)).length() < 1e-6);
+    }
+
+    /// A clamp 15 cm ahead and 15 cm up is 450 cm² and is stepped to. The
+    /// same 15 cm on the level is 225 cm² and is not.
+    #[test]
+    fn footwork_takes_a_raised_clamp_inside_20_cm() {
+        let mut req = Locomotion::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let mut anim = Animator::new("Default", "Defence stance");
+        let step_at =
+            |end: Vec3, req: &mut Locomotion, pb: &mut PlayerBody, anim: &mut Animator| {
+                let line = move |_: Vec3, _: Vec3| (end, true);
+                let footing = Footwork {
+                    standing: Vec3::ZERO,
+                    step: STEP_LENGTH,
+                    long_step: STEP_LENGTH,
+                    line: &line,
+                };
+                let mut steering = pb.steering;
+                combat_steps(
+                    &Keys {
+                        w: true,
+                        ..Keys::default()
+                    },
+                    req,
+                    &mut steering,
+                    pb,
+                    anim,
+                    Stance::Defence,
+                    false,
+                    &footing,
+                    0.012,
+                );
+                pb.steering = steering;
+            };
+        step_at(Vec3::new(0.0, 0.15, 0.15), &mut req, &mut pb, &mut anim);
+        assert!(req.stepping.is_some());
+        step_at(Vec3::new(0.0, 0.0, 0.15), &mut req, &mut pb, &mut anim);
+        assert_eq!(req.stepping, None);
     }
 
     /// The interim footwork plays the combat walk while a key is held and

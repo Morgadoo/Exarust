@@ -27,7 +27,9 @@
 //!   character is moved onto the nearest walkable point of the grid.
 //! - **Footwork.** In combat mode a step's target, a step's length along
 //!   its keys (a long step once they have been held 200 ms), is clamped
-//!   by the line walk too; within 20 cm the step is not taken.
+//!   by the line walk too. A side key weighs 0.8 of the facing. The step
+//!   is taken only when the clamped target is over 400 cm² away, in three
+//!   dimensions.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -57,9 +59,9 @@ const COMBAT_LOOK_AHEAD: f32 = 45.0;
 const LOOK_AHEAD_SPEED: f32 = 6.0;
 const LOOK_BEHIND: f32 = -70.0;
 const RUN_CUT_WITHIN: f32 = 100.0;
-/// A footwork step whose clamped target lies this close (cm) is not
-/// taken.
-const STEP_FROM: f32 = 20.0;
+/// A footwork step is not taken unless the clamped target's squared
+/// distance, in centimetres and in three dimensions, is over this (cm²).
+const STEP_FROM_CM2: f32 = 400.0;
 /// The behaviour tick on which the character is moved onto the grid's
 /// nearest walkable point, unless the condition has [`SNAP_HELD`] (down,
 /// getting up or dead).
@@ -564,8 +566,9 @@ impl Steering {
 
     /// A footwork step's target, as the original's: `length` (m) along
     /// `dir` (a unit vector across the ground) from where the character
-    /// stands, clamped by the line walk; none when the clamped target lies
-    /// within 20 cm (the step is not taken).
+    /// stands, clamped by the line walk. None when the clamped target's
+    /// squared distance, taken in centimetres and in three dimensions, is
+    /// at most 400 (the step is not taken). An unordered distance is none.
     pub(crate) fn step_target(
         &mut self,
         standing: Vec3,
@@ -575,7 +578,8 @@ impl Steering {
     ) -> Option<Vec3> {
         let asked = ask(line, Asked::Step, standing, standing + dir * length);
         self.line = Some(asked);
-        ((asked.end - standing).with_y(0.0).length() * CM > STEP_FROM).then_some(asked.end)
+        let centimetres = (asked.end - standing) * CM;
+        (centimetres.length_squared() > STEP_FROM_CM2).then_some(asked.end)
     }
 }
 
