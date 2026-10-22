@@ -180,8 +180,18 @@ step, and a shortfall fizzles it and ends the cast. The release clears the
 hook and power id, and a thrown wave pushes other bodies' limbs through
 the blast's contact arithmetic (its chunks keep no wear, an Exarust
 reading). Its alert (1200 reach, within 18 m, under 150 cm of height), sounds and
-draw are not wired. The torrent cast, whose creator only makes an effect,
-makes nothing yet (no class and no entity). A cast motion is played through
+draw are not wired. A torrent cast makes its torrent entity
+(`thaum::torrent_live`) at the caster's right hand: its creator gives the
+cost a second and id 0x10203, and its start plays cast motion 0x26 and
+takes a hook answering −1 that fizzles a charging torrent and ends a
+running one. Running keeps the hook, so the torrent pours until a later
+cast, the release flag or a shortfall (the drain while charging, half of
+it while running) calls it. Its delays draw from the effects' shared roll,
+its running points push other bodies' limb spheres (each push costing a
+character the torrent's energy loss), and it leaves the scene on the first
+frame that would build no triangles: fizzled, or no stream with more than
+two samples. The turned aim (the blast aim here) and the sphere test are
+Exarust's; the character knock, sounds, light and draw are not wired. A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,
@@ -654,7 +664,7 @@ teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
 The force blast and torrent are not drawn: their ribbon vertex builds
 are not ported. A cast blast or bolt runs as an entity, without its draw,
-sounds, light, alert or stun; casts create no torrent entity yet. Their geometry classes (`effectforce_v` with
+sounds, light, alert or stun. Their geometry classes (`effectforce_v` with
 `effectforce_f` or `effecttorrent_f`) are in `effects::effect_geometry` and
 their multi-point lights in `effects::emissive`. The mind-sight overlay's
 sphere and its animated noise are not drawn either; its pick, tracker,

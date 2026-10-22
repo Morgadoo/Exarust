@@ -1078,3 +1078,10 @@ A wave cast SHALL make a wave entity at the caster's hand whose start plays cast
 #### Scenario: A duellist's wave
 - **WHEN** a duellist with focus casts the wave at a body whose limb sits in front of its hand
 - **THEN** it charges on the hook, is thrown with the hook and power id cleared, moves that limb and leaves the scene once spent
+
+### Requirement: A cast torrent
+A torrent cast SHALL make a torrent entity at the caster's right hand whose start plays cast motion 0x26 with power id 0x10203 and sets a hook answering -1 that fizzles a charging torrent and ends a running one. It SHALL pay its drain while charging and half while running; a later cast, the release flag or a shortfall SHALL call the hook. It SHALL leave the scene once a frame would build no triangles.
+
+#### Scenario: A duellist's torrent
+- **WHEN** a duellist with focus casts the torrent at a body ahead of its hand, then lets go once it runs
+- **THEN** it charges and runs with the hook kept, moves that body's limb, ends on the release with the hook and power id cleared, and leaves the scene once its streams are spent
