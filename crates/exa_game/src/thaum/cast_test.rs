@@ -471,6 +471,86 @@ fn a_duellists_blast_charges_throws_and_strikes() {
     assert_eq!(BLAST_MOTION, 0x22);
 }
 
+/// A duellist's barrier rises before it, drains its focus, pushes a body
+/// in its shell and ends when the release flag calls its hook.
+#[test]
+fn a_duellists_barrier_rises_pushes_and_ends() {
+    use crate::effects::force_dome::Phase;
+    use crate::thaum::barrier_live::{BARRIER, BARRIER_HOOK, BARRIER_MOTION, LiveBarrier};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.85)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[BARRIER]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BARRIER);
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, BARRIER);
+    assert_eq!(body.cast_motion, Some(BARRIER_MOTION));
+    assert_eq!(body.cast_hook, Some(BARRIER_HOOK));
+    assert_eq!(count::<LiveBarrier>(&mut app), 1);
+    let barrier = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveBarrier>();
+        q.iter(app.world())
+            .next()
+            .map(|b| (b.barrier.dome.phase, b.barrier.dome.ripples.list.len()))
+    };
+    let start = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    let tick = |app: &mut App| {
+        app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+        app.world_mut().run_schedule(FixedUpdate);
+    };
+    for _ in 0..30 {
+        tick(&mut app);
+    }
+    let (phase, ripples) = barrier(&mut app).unwrap();
+    assert_eq!(phase, Phase::Growing);
+    assert!(ripples > 0);
+    assert_ne!(
+        app.world().get::<Ragdoll>(target).unwrap().parts[0].positions,
+        start
+    );
+    assert!(cast_body(&app, npc).spent > 0.0);
+    app.world_mut()
+        .get_mut::<PowerCaster>(npc)
+        .unwrap()
+        .body
+        .release = true;
+    tick(&mut app);
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    assert_eq!(barrier(&mut app).unwrap().0, Phase::Shrinking);
+    for _ in 0..200 {
+        tick(&mut app);
+    }
+    assert_eq!(count::<LiveBarrier>(&mut app), 0);
+}
+
 /// A record's powers make its caster: the known pairs and the slots.
 #[test]
 fn a_records_powers_make_its_caster() {

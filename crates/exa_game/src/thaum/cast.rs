@@ -58,6 +58,7 @@ use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
 
 use super::arcs::{ArcEmitter, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{Barricade, WallFrame, state as wall_state};
+use super::barrier_live::new_barrier;
 use super::blast_live::{LiveBlast, blast_view, start_blast};
 use super::casting::{self, ActivePower, AiView, CastBody, ID_MASK, code};
 use super::displacement::{
@@ -309,6 +310,7 @@ impl Plugin for CastPlugin {
                 (
                     tick_casters,
                     super::blast_live::tick_blasts,
+                    super::barrier_live::tick_barriers,
                     play_cast_motions,
                 )
                     .chain()
@@ -363,6 +365,9 @@ struct CastContext {
     clip_ms: Option<u32>,
     /// The body the AI casts at.
     target: Option<Entity>,
+    /// The caster's own place (cm), at its feet: its transform's, else the
+    /// body's root.
+    standing: Vec3,
 }
 
 /// One caster's bar command.
@@ -505,6 +510,7 @@ fn run_bar_commands(
                     cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
                     clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
                     target: None,
+                    standing: None,
                 };
                 begin_cast(
                     &mut commands,
@@ -535,6 +541,8 @@ struct CastPlace<'a> {
     cursor: Option<Vec3>,
     clip_ms: Option<u32>,
     target: Option<Entity>,
+    /// The caster's transform's place (cm), when it has one.
+    standing: Option<Vec3>,
 }
 
 /// After a domain's front end: a vanish asked again ends the running one,
@@ -575,6 +583,7 @@ fn begin_cast(
             cursor: place.cursor,
             clip_ms: place.clip_ms,
             target: place.target,
+            standing: place.standing.unwrap_or(root),
         };
         let made = create_active(
             commands,
@@ -766,6 +775,7 @@ fn cast_for_duellists(
             cursor: None,
             clip_ms: shot_clip_ms(motions.as_deref(), animator),
             target: Some(duellist.target),
+            standing: Some(at.translation() * CM),
         };
         begin_cast(
             &mut commands,
@@ -954,9 +964,19 @@ fn create_force(
             debug!("force torrent: the effect entity is not ported");
             None
         }
-        ForceStart::Barrier { .. } => {
-            debug!("force barrier: the dome entity is not ported");
-            None
+        ForceStart::Barrier { cost } => {
+            let live = new_barrier(
+                &mut caster.body,
+                caster_entity,
+                cost,
+                context.standing,
+                context.now,
+                draws,
+            );
+            let hooked = live.hooked;
+            let entity = commands.spawn((Name::new("_ForceBarrier"), live)).id();
+            debug!("force barrier: motion {hooked}, entity {entity:?}");
+            Some(entity)
         }
         ForceStart::Bubble { cost } => {
             let place = place_dome(

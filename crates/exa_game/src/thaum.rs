@@ -34,6 +34,7 @@ use bevy::math::Vec3;
 
 pub mod arcs;
 pub mod barricade;
+pub mod barrier_live;
 pub mod blast_live;
 pub mod cast;
 pub mod casting;

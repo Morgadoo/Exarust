@@ -1057,3 +1057,10 @@ A blast or bolt cast SHALL make a blast entity whose start plays cast motion 0x2
 #### Scenario: A duellist's blast
 - **WHEN** a duellist with focus casts the blast at a body whose limb sits in front of its hand
 - **THEN** it charges on the hook for 101 ticks, is thrown with the hook and power id cleared, moves that limb and leaves the scene once its chunks are spent
+
+### Requirement: A cast barrier
+A barrier cast SHALL make a dome entity of radius 100 that pays the power's cost a tick (half once standing) and whose start plays cast motion 0x23 with power id 0x10205, its hook ending the dome and answering -1. A later cast, the release flag or a focus shortfall SHALL call that hook; the dome SHALL push other bodies' limb spheres out of its shell and leave the scene once shrunk.
+
+#### Scenario: A duellist's barrier
+- **WHEN** a duellist with focus casts the barrier with a body's limb inside its shell
+- **THEN** the dome grows on the hook, drains focus, moves that limb and opens a ripple; the release clears the hook and the dome shrinks and leaves

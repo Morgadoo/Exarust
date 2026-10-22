@@ -154,9 +154,18 @@ blast reads the caster's right hand, facing and aim point (the AI's
 target's chest or the player's cursor), and a thrown blast pushes the limb
 spheres its chunks reach and knocks a struck character by its gathered
 impulse; that sphere test, the body's mass as its parts' sum and the knock
-as a knockback step are Exarust's. The wave, torrent and barrier casts,
-whose creators only make an effect, make nothing yet (no class and no
-entity). A cast motion is played through
+as a knockback step are Exarust's. A barrier cast makes its dome entity
+(`thaum::barrier_live`): the creator hands it the power's cost as its rate
+and the radius 100, its start plays cast motion 0x23 with id 0x10205 and
+takes the hook, which ends the dome (state 2) and answers −1. Under state 2
+it pays the rate a tick, half once standing, and a shortfall calls the
+hook and ends the cast; it pushes other bodies' limb spheres out of its
+shell and opens ripples where they strike, and a struck character is
+shoved 40 cm (a knockback step here). The cap's frame (the dome's centre,
+z along the flattened facing) and one contact a body are Exarust's; the
+contact's balance drain and knock count, the sounds and the draw are not
+wired. The wave and torrent casts, whose creators only make an effect,
+make nothing yet (no class and no entity). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,
