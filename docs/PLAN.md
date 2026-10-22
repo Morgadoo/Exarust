@@ -361,7 +361,9 @@ never sleep. All seven exanima01 corpses now sleep 3–5 s after going limp
 is measured as the original's at the chest (the thorax pins) against the
 ankles (where the original's muscle setup moves the foot contacts), with
 its lean score, counter (floor 80 standing still) and recovery; each leg
-asks the level for its ground with the original's Height Query, and
+asks the level for its ground with the original's Height Query, a foot
+grounded within 20 cm of that ground plus its offset (30 cm times the body
+scale while moving), and
 support S = grounded × balance feeds the link muscles; Exarust's falls
 follow the lean, decided in the fixed step from last tick's balance
 ([formats/RSQ.md](formats/RSQ.md)). Done (change `add-body-debug-tools`): debug tools for

@@ -307,8 +307,10 @@ How the original simulates a body (`exa_physics::body`):
     human (the clip root 91.4 cm over the ankle, sole 9.68 cm) is capped at
     ground + 99.83 cm and stands with its pelvis at ground + 101.5 cm. A
     full crouch is 60 cm times the body scale over that ground. Not
-    reproduced: the stepping (h + 10, 70 cm crouched in place of 60) and
-    resting (h + 20) variants, and the gait-smoothed ground (C19).
+    reproduced: a 70 cm times scale crouch once a standing body is displaced
+    past 10 cm times scale (that latch is not a field Exarust keeps), a
+    target 10 cm under the animated height, and a resting probe that copies
+    the animated height.
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
@@ -664,13 +666,13 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   colliders, so dead bodies and loose props are not either).
 - Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
   (the foot is lifted over it), except getting up. A foot is grounded when
-  its ankle is within 20 cm (30 cm moving) of its ground plus its ground
-  offset (the sole height standing; moving, also its ankle's lift in the
-  walk, set by the lift each tick, so Exarust reads last tick's). With a
-  grounded foot the body has support (regaining it sets the
-  landing weight to 5); without, it counts the ticks it is airborne, and a
-  standing body loses its balance. S = grounded × balance. Without
-  support the body also asks for the ground under its pelvis (the
+  its ankle is within 20 cm (30 cm times the body scale while moving) of
+  its ground plus its ground offset (the sole height standing; moving, also
+  its ankle's lift in the walk, set by the lift each tick, so Exarust reads
+  last tick's). With a grounded foot the body has support (regaining it
+  sets the landing weight to 5); without, it counts the ticks it is
+  airborne, and a standing body loses its balance. S = grounded × balance.
+  Without support the body also asks for the ground under its pelvis (the
   character's ground): a 20 cm sphere from 20 cm above the pelvis, 2000 cm
   down, −10000 cm on a miss (`Balance::ground`; with support the original
   takes it from the feet, which nothing in Exarust reads yet). A body

@@ -586,6 +586,13 @@ Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ank
 - **WHEN** a walking body's clip progress puts its first foot at the gait bump's peak, at scale 1 with no drive
 - **THEN** that foot's sphere is 20 cm and its probe is 36 cm further along the facing than the 5 cm offset
 
+### Requirement: Moving ground window
+Moving, a foot SHALL be grounded within 30 cm times the body scale of its ground plus its ground offset. Standing, that window SHALL be 20 cm and SHALL NOT scale. A NaN contact or a NaN moving window SHALL leave the foot grounded.
+
+#### Scenario: Half scale
+- **WHEN** a moving foot's contact is 15 cm or 15.1 cm over its ground plus its offset, at body scale 0.5
+- **THEN** the first is grounded and the second is not; standing, 20.1 cm is not grounded at any scale, and a NaN contact stays grounded
+
 ### Requirement: Joint measurements
 The system SHALL measure each joint of a simulated body where the last tick left it: its turn from the model's rest pose relative to its parent, split into a twist about the part's bone axis and a swing of that axis (with the swing's axis); in a living body, the angle to the clip's turn; and each link's gap against its slack, the largest share of slack a slack link uses, and the pivot's gap. A joint in its rest pose SHALL measure 0.
 

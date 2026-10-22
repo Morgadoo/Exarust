@@ -16,9 +16,10 @@
 //! under its foot (the Height Query: a walking sphere of 10 cm widened by
 //! the gait up to 20 cm and swayed along the facing, 5 cm standing),
 //! anchors its foot at that ground plus the sole height, and is grounded
-//! when its contact is within 20 cm of it (30 cm moving), its ground offset
-//! included (its sole height standing; moving, its ankle's lift in the walk
-//! as well). Support S is grounded × balance, and a standing body with no
+//! when its contact is within 20 cm of it (30 cm times the body scale while
+//! moving), its ground offset included (its sole height standing; moving,
+//! its ankle's lift in the walk as well). Support S is grounded × balance,
+//! and a standing body with no
 //! foot on the ground has no balance. The stance's level follows how much
 //! higher one foot stands than the other. Without support it asks for the
 //! ground under its pelvis (the fall check reads it, and a body getting up
@@ -99,8 +100,10 @@ const NO_GROUND: f32 = -10000.0;
 /// the pelvis.
 const REACH_SHARE: f32 = 0.5;
 /// A foot is grounded with its contact at most this high (cm) above its
-/// ground and sole height, standing and moving.
+/// ground and sole height. Standing is this, flat. Moving is this times
+/// the body scale.
 const GROUNDED_STANDING: f32 = 20.0;
+/// The moving window before the body scale.
 const GROUNDED_MOVING: f32 = 30.0;
 /// Without support the ground under the pelvis (the character's ground)
 /// is asked from 20 cm above it with a 20 cm sphere; a body getting up
@@ -438,14 +441,16 @@ pub(super) fn within_reach(ground: f32, pelvis: f32, length: f32, getting_up: bo
 }
 
 /// Whether a foot whose contact stands `height` (cm) above its ground and
-/// ground offset is grounded: within 20 cm standing, 30 cm moving.
-pub(super) fn foot_grounded(height: f32, moving: bool) -> bool {
-    height
-        <= if moving {
-            GROUNDED_MOVING
-        } else {
-            GROUNDED_STANDING
-        }
+/// ground offset is grounded. Standing, within 20 cm. Moving, within 30 cm
+/// times the body `scale`. A NaN height, or a NaN window while moving,
+/// stays grounded: the original's compare keeps the foot when unordered.
+pub(super) fn foot_grounded(height: f32, moving: bool, scale: f32) -> bool {
+    let window = if moving {
+        GROUNDED_MOVING * scale
+    } else {
+        GROUNDED_STANDING
+    };
+    height <= window || height.is_nan() || window.is_nan()
 }
 
 /// The closest point to `m` on the segment `a`–`b`, the parameter taken in
@@ -862,7 +867,7 @@ impl Ragdoll {
             }
             leg.grounded = leg
                 .ground
-                .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving));
+                .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving, scale));
             grounded += usize::from(leg.grounded);
         }
         if grounded > 0 {

@@ -3,7 +3,7 @@
 //! (Included from body_balance.rs: `#[path = "body_balance_test.rs"] mod tests;`)
 use bevy::math::Affine3A;
 
-use super::super::{Bearing, Drive, PartSetup};
+use super::super::{Bearing, BodyStats, Drive, PartSetup};
 use super::*;
 
 const NONE: &[[Vec3; 3]] = &[];
@@ -487,12 +487,20 @@ fn vertical_speed_cuts_the_score() {
     assert_eq!(cut, Some(10));
 }
 
-/// A foot is grounded with its contact within 20 cm (30 cm moving) of its
-/// ground plus the sole height.
+/// A foot is grounded with its contact within 20 cm of its ground plus the
+/// sole height, or within 30 cm times the body scale while moving. A NaN
+/// stays grounded.
 #[test]
 fn feet_are_grounded_within_20_cm() {
-    assert!(foot_grounded(20.0, false) && !foot_grounded(20.1, false));
-    assert!(foot_grounded(30.0, true) && !foot_grounded(30.1, true));
+    assert!(foot_grounded(20.0, false, 1.0) && !foot_grounded(20.1, false, 0.5));
+    assert!(foot_grounded(30.0, true, 1.0) && !foot_grounded(30.1, true, 1.0));
+    // Moving, the window scales. Standing does not, and a NaN stays grounded.
+    assert!(foot_grounded(15.0, true, 0.5) && !foot_grounded(15.1, true, 0.5));
+    assert!(foot_grounded(60.0, true, 2.0) && !foot_grounded(60.1, true, 2.0));
+    assert!(foot_grounded(20.0, false, 2.0));
+    assert!(!foot_grounded(20.1, false, f32::NAN));
+    assert!(foot_grounded(f32::NAN, true, 1.0));
+    assert!(foot_grounded(100.0, true, f32::NAN));
     // The biped's ankles stand 9.4 cm up with an 8 cm sole: lifted 18 cm
     // they are 19.4 cm over, 23 cm they are 24.4 cm over (grounded only
     // moving).
@@ -516,6 +524,21 @@ fn feet_are_grounded_within_20_cm() {
             "{lift} cm, moving {moving}"
         );
     }
+    // Half scale narrows the moving window to 15 cm, so a contact 24.4 cm
+    // over its ground is not grounded.
+    let mut half = biped_at(Affine3A::from_translation(cm(0.0, 23.0, 0.0))).with_stats(BodyStats {
+        scale: 0.5,
+        ..BodyStats::HUMAN
+    });
+    bearing(
+        &mut half,
+        Bearing {
+            moving: true,
+            ..Bearing::default()
+        },
+    );
+    half.measure_balance(floor().as_slice());
+    assert!(half.legs().iter().all(|l| !l.grounded));
 }
 
 /// Ground the query finds higher than half a leg under the pelvis is not
