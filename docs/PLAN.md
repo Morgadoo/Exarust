@@ -388,7 +388,9 @@ standing raise; moving, the offset stands on the walk's first-key lowest
 ankle, on that key slerped 0.7 toward the run while the run flag is set,
 and on the run's first key while the sprint latch is set; a lifted
 lowest foot hands the two-foot blend its full weight and a lifted other
-foot none (the other wins when both are lifted); the
+foot none (the other wins when both are lifted); moving, that weight
+starts at min(0.5, 0.2·speed) and is multiplied by min(1, (0.3·speed)²),
+speed the cm a tick along the heading; the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
 pins once and the pelvis pin twice toward the frame in each iteration. The
@@ -407,9 +409,10 @@ when a standing body is at its target height). While stepping, the thigh
 turns 75% of the hip-to-target angle and an anchored foot takes the step
 lift. The controller-floor stair coupling is gone: the lift reads each
 foot's own ground, so a controller 12 cm up does not raise the target,
-and a synthetic walk up four 18 cm steps finishes with its feet near
-34 cm, short of the landing, because the support pins stay slack while
-its condition is walking. Gait plants are not in yet (C19).
+and a synthetic walk up four 18 cm steps at 1.4 m/s stops on the floor
+before the first riser, because at that speed the moving blend stays near
+the lowest foot and the support pins stay slack while its condition is
+walking. Gait plants are not in yet (C19).
 Done (change `anchor-the-character-frame`, C9): the
 pose is put on the original's character frame, whose origin is the pelvis
 less the clip root's offset across the ground: it rides on the pelvis

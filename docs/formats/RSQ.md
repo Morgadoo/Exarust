@@ -295,15 +295,18 @@ How the original simulates a body (`exa_physics::body`):
     as read: on a floor high in the world nothing is blended), and not when
     the other foot has no ground. A lifted lowest foot uses 1 for that
     weight and a lifted other foot uses 0 (its flag wins when both are
-    lifted); the slope scales whichever weight the flags leave. Standing, it
+    lifted); the slope scales whichever weight the flags leave. Moving,
+    that half is min(0.5, 0.2·speed) and the weight is then multiplied by
+    min(1, (0.3·speed)²), speed the cm a tick along the heading (a NaN
+    saturates both). Standing, it
     is capped at that ground + sole + leg length and raised 5 cm; moving,
     neither. With no ground under any foot it is −1000 m: no lift. An idle
     human (the clip root 91.4 cm over the ankle, sole 9.68 cm) is capped at
     ground + 99.83 cm and stands with its pelvis at ground + 101.5 cm. A
     full crouch is 60 cm times the body scale over that ground. Not
     reproduced: the stepping (h + 10, 70 cm crouched in place of 60) and
-    resting (h + 20) variants, the walking blend weights, and the
-    gait-smoothed ground (C19).
+    resting (h + 20) variants, the moving spread's mix of the two pin
+    heights, and the gait-smoothed ground (C19).
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
@@ -765,12 +768,13 @@ Exarust's own, for a body whose capsule still moves it across the ground
   foot's own ground, so the controller's floor does not raise the pelvis
   on level ground, perched, fallen or on the stairs. A 0, 2 or 5 cm float
   keeps the original's target, and a controller 12 cm up adds nothing. A
-  synthetic body walking four 18 cm steps, stopping on the third, finishes
-  with its feet near 34 cm, short of the 72 cm landing: the support pins
-  stay slack while its condition is walking, and the gait plants that
-  would step it up are not in yet. Carried, its balance stays at 1;
-  without the controller its balance falls to 0. The two pelvis heights
-  agree, so the controller's floor does not raise the pelvis. The standing leg bend
+  synthetic body walking four 18 cm steps at 1.4 m/s, stopping on the
+  third, stops on the floor before the first riser: at that speed the
+  moving blend stays near the lowest foot, the support pins stay slack
+  while its condition is walking, and the gait plants that would step it
+  up are not in yet. Its balance stays at 1 whether or not the controller
+  carries it. The two pelvis heights agree, so the controller's floor
+  does not raise the pelvis. The standing leg bend
   is in (`exa_physics`, `body_bend.rs`): the knee is the law of cosines on
   the two bones, 30° when the cosine is above 0.866 and 180° when it is
   below −1. The correction from the clip advances at most 0.02 rad a tick

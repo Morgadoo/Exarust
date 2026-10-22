@@ -559,6 +559,7 @@ pub(crate) fn bearing(
     Bearing {
         moving,
         run: locomotion.map_or(0.0, |(_, body)| body.run),
+        speed: locomotion.map_or(0.0, |(_, body)| body.speed),
         // A body without a locomotion request walks while its controller
         // moves it; the movement stage sets a request's leg mode.
         legs: match locomotion {

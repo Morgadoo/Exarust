@@ -17,7 +17,9 @@
 //! the ankle and the foot's ground offset (its sole height standing),
 //! blended with the other foot's, capped at the ground plus sole plus leg
 //! length, plus 5 cm. The blend's weight is a half, all of it when the
-//! lowest foot is lifted and none when the other is. A full crouch is 60
+//! lowest foot is lifted and none when the other is. Moving, that half is
+//! min(0.5, 0.2·speed) and the weight is multiplied by min(1, (0.3·speed)²).
+//! A full crouch is 60
 //! cm times the body scale over that ground. The rules are the original's,
 //! in its centimetres and ticks (evidence: `docs/formats/RSQ.md`, Physical
 //! body). Each foot's ground is its own: the controller's floor does not
@@ -57,10 +59,16 @@ const CROUCHED_HEIGHT: f32 = 60.0;
 /// when the lowest foot is lifted and by none when the other is (that
 /// flag wins when both are), by none once the feet's spread (cm) reaches
 /// the second, and by all of the weight under the first; between, by 0.05
-/// a cm times the weight.
+/// a cm times the weight. Moving, the half is min(0.5, 0.2·speed) and the
+/// weight is then multiplied by min(1, (0.3·speed)²).
 const STANDING_BLEND: f32 = 0.5;
 /// A lifted lowest foot hands the blend this weight before the slope.
 const LIFTED_LOWEST: f32 = 1.0;
+/// Moving, the base weight is this share of the speed along the heading
+/// (cm a tick), and the whole weight is multiplied by the square of the
+/// second share. Both are taken in double and narrowed once.
+const SPEED_BASE: f64 = 0.2;
+const SPEED_SQUARE: f64 = 0.3;
 const BLEND_FULL: f32 = 40.0;
 const BLEND_NONE: f32 = 60.0;
 const BLEND_SLOPE: f64 = 0.05;
@@ -165,12 +173,15 @@ pub(super) struct LegHeight {
 /// each leg's is crouch·(60·scale) + (1 − crouch)·stance + ground, `scale`
 /// the body scale. It is the lowest foot L's, blended toward the other
 /// O's by half, by 1 when L is lifted and by 0 when O is (O's flag wins
-/// when both are; 0 as well when O has no ground).
+/// when both are; 0 as well when O has no ground). Moving, that half is
+/// min(0.5, 0.2·`speed`) and the weight is then multiplied by
+/// min(1, (0.3·`speed`)²), `speed` the cm a tick along the heading.
 /// The weight applies in full while O's contact height less its ground
 /// plus L's contact height is under 40 cm, by 0.05 a cm of it less over
 /// 40, not at all from 60 (the original's test, as read). Standing, it is
 /// capped at L's ground plus sole plus leg length and raised 5 cm; moving,
 /// neither. [`NO_TARGET`] when no foot has ground.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn target_height(
     legs: &[LegHeight],
     sole: f32,
@@ -178,6 +189,7 @@ pub(super) fn target_height(
     pelvis: f32,
     moving: bool,
     scale: f32,
+    speed: f32,
 ) -> f32 {
     let mut lowest = pelvis + LOWEST_ABOVE;
     let mut low = None;
@@ -200,19 +212,29 @@ pub(super) fn target_height(
     if let Some(o) = legs.get(1 - i) {
         // The other's lifted flag is read second, so it wins when both
         // feet are in the swing. A foot with no ground is not blended.
+        // Moving, the half is min(0.5, 0.2·speed) before those flags.
+        let base = if moving {
+            ((f64::from(speed) * SPEED_BASE) as f32).min(STANDING_BLEND)
+        } else {
+            STANDING_BLEND
+        };
         let (weight, ground) = match o.ground {
             Some(g) if o.lifted => (0.0, g),
             Some(g) if l.lifted => (LIFTED_LOWEST, g),
-            Some(g) => (STANDING_BLEND, g),
+            Some(g) => (base, g),
             None => (0.0, lowest),
         };
         let spread = o.contact - ground + l.contact;
         if spread < BLEND_NONE {
-            let weight = if spread > BLEND_FULL {
+            let mut weight = if spread > BLEND_FULL {
                 (f64::from((BLEND_NONE - spread) * weight) * BLEND_SLOPE) as f32
             } else {
                 weight
             };
+            if moving {
+                let scaled = f64::from(speed) * SPEED_SQUARE;
+                weight *= ((scaled * scaled) as f32).min(1.0);
+            }
             target = value(o, ground) * weight + (1.0 - weight) * target;
         }
     }
@@ -295,6 +317,7 @@ impl Ragdoll {
             height,
             bearing.moving,
             drive.stats.scale,
+            bearing.speed,
         );
         drive.lift_target = Some(target / CM);
         if !drive.balance.has_support() {

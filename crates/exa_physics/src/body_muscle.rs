@@ -200,6 +200,10 @@ pub struct Bearing {
     pub moving: bool,
     /// Run blend, 0 walking to 1 running.
     pub run: f32,
+    /// The speed along the heading (cm a tick). Moving, the two-foot
+    /// blend starts at min(0.5, 0.2·speed) and is then multiplied by
+    /// min(1, (0.3·speed)²).
+    pub speed: f32,
     /// How its legs move this tick, its movement decision's leg mode
     /// (standing unless it locomotes): the thighs' factors and the leg
     /// limits follow it, and its stance factor rises only while it is not
@@ -301,6 +305,7 @@ impl Default for Bearing {
         Self {
             moving: false,
             run: 0.0,
+            speed: 0.0,
             legs: LegMode::Standing,
             stance_run: 0.0,
             full_stance: false,

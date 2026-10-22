@@ -131,30 +131,30 @@ const SOLE: f32 = 9.68;
 fn the_target_height_is_the_originals() {
     let flat = [idle_leg(0.0), idle_leg(0.0)];
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, false, 1.0),
+        target_height(&flat, SOLE, 0.0, 101.5, false, 1.0, 0.0),
         99.83,
         1e-3
     ));
     let step = [idle_leg(30.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&step, SOLE, 0.0, 131.5, false, 1.0),
+        target_height(&step, SOLE, 0.0, 131.5, false, 1.0, 0.0),
         129.83,
         1e-3
     ));
     let one = [idle_leg(0.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, false, 1.0),
+        target_height(&one, SOLE, 0.0, 101.5, false, 1.0, 0.0),
         99.83,
         1e-3
     ));
     // Moving: the mean of the two feet's, uncapped.
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, true, 1.0),
+        target_height(&one, SOLE, 0.0, 101.5, true, 1.0, 4.0),
         116.08,
         1e-3
     ));
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, true, 1.0),
+        target_height(&flat, SOLE, 0.0, 101.5, true, 1.0, 4.0),
         101.08,
         1e-3
     ));
@@ -163,7 +163,7 @@ fn the_target_height_is_the_originals() {
         ..idle_leg(0.0)
     }; 2];
     assert_eq!(
-        target_height(&none, SOLE, 0.0, 101.5, false, 1.0),
+        target_height(&none, SOLE, 0.0, 101.5, false, 1.0, 0.0),
         NO_TARGET
     );
 }
@@ -175,10 +175,16 @@ fn the_target_height_is_the_originals() {
 #[test]
 fn a_crouch_stands_at_60_cm_times_the_body_scale() {
     let flat = [idle_leg(0.0), idle_leg(0.0)];
-    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, false, 0.5), 35.0);
-    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, false, 1.25), 80.0);
-    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, true, 0.5), 30.0);
-    assert!(target_height(&flat, SOLE, 0.0, 100.0, true, f32::NAN).is_nan());
+    assert_eq!(
+        target_height(&flat, SOLE, 1.0, 100.0, false, 0.5, 0.0),
+        35.0
+    );
+    assert_eq!(
+        target_height(&flat, SOLE, 1.0, 100.0, false, 1.25, 0.0),
+        80.0
+    );
+    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, true, 0.5, 4.0), 30.0);
+    assert!(target_height(&flat, SOLE, 0.0, 100.0, true, f32::NAN, 4.0).is_nan());
 }
 
 /// The other foot is blended in by half while its contact's height over
@@ -200,7 +206,7 @@ fn the_other_foot_is_blended_in() {
     // contact's height plus 10. Weights 0.5, 0.5, 0.125 and 0, plus 5 cm.
     for (contact, want) in [(25.0, 50.0), (30.0, 50.0), (45.0, 46.25), (50.0, 45.0)] {
         let legs = [crouched(0.0, contact), crouched(10.0, 20.0)];
-        let got = target_height(&legs, SOLE, 0.0, 100.0, false, 1.0);
+        let got = target_height(&legs, SOLE, 0.0, 100.0, false, 1.0, 0.0);
         assert!(
             close(got, want, 1e-3),
             "contact {contact}: {got}, not {want}"
@@ -208,7 +214,7 @@ fn the_other_foot_is_blended_in() {
     }
     let high = [crouched(50.0, 60.0), crouched(50.0, 60.0)];
     assert!(close(
-        target_height(&high, SOLE, 0.0, 150.0, false, 1.0),
+        target_height(&high, SOLE, 0.0, 150.0, false, 1.0, 0.0),
         95.0,
         1e-3
     ));
@@ -220,7 +226,7 @@ fn the_other_foot_is_blended_in() {
         },
     ];
     assert!(close(
-        target_height(&lifted, SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&lifted, SOLE, 0.0, 100.0, false, 1.0, 0.0),
         45.0,
         1e-3
     ));
@@ -228,7 +234,7 @@ fn the_other_foot_is_blended_in() {
     // lowest: the other is, and caps the target at its reach.
     let above = [crouched(160.0, 170.0), crouched(0.0, 10.0)];
     assert!(close(
-        target_height(&above, SOLE, 0.0, 50.0, false, 1.0),
+        target_height(&above, SOLE, 0.0, 50.0, false, 1.0, 0.0),
         99.83,
         1e-3
     ));
@@ -251,51 +257,57 @@ fn a_lifted_foot_sets_the_blend_weight() {
     // raise, under the cap.
     let pair = |low: bool, other: bool| [foot(0.0, 10.0, 40.0, low), foot(0.0, 10.0, 80.0, other)];
     assert_eq!(
-        target_height(&pair(true, false), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         85.0
     );
     assert_eq!(
-        target_height(&pair(false, true), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         45.0
     );
     assert_eq!(
-        target_height(&pair(true, true), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&pair(true, true), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         45.0
     );
     assert_eq!(
-        target_height(&pair(false, false), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&pair(false, false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         65.0
     );
     assert_eq!(
-        target_height(&pair(true, false), SOLE, 0.0, 100.0, true, 1.0),
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, true, 1.0, 4.0),
         80.0
     );
     assert_eq!(
-        target_height(&pair(false, true), SOLE, 0.0, 100.0, true, 1.0),
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, true, 1.0, 4.0),
         40.0
     );
     // Spread 50 cm: the slope takes 0.05 a cm of the weight, so a lifted
     // lowest foot blends by 0.5 (65 cm) and a planted pair by 0.25 (55).
     let sloped = |low: bool| [foot(0.0, 30.0, 40.0, low), foot(0.0, 20.0, 80.0, false)];
     assert_eq!(
-        target_height(&sloped(true), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&sloped(true), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         65.0
     );
     assert_eq!(
-        target_height(&sloped(false), SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&sloped(false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
         55.0
     );
     assert_eq!(
-        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0),
+        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0, 4.0),
         60.0
     );
     // Spread 70 cm: the flag does not blend past 60.
     let wide = [foot(0.0, 40.0, 40.0, true), foot(0.0, 30.0, 80.0, false)];
-    assert_eq!(target_height(&wide, SOLE, 0.0, 100.0, false, 1.0), 45.0);
+    assert_eq!(
+        target_height(&wide, SOLE, 0.0, 100.0, false, 1.0, 0.0),
+        45.0
+    );
     // The higher foot is the other one even when it is listed first. No
     // ground still leaves the lowest foot's height, lifted or not.
     let swapped = [foot(10.0, 20.0, 80.0, false), foot(0.0, 10.0, 40.0, true)];
-    assert_eq!(target_height(&swapped, SOLE, 0.0, 100.0, false, 1.0), 95.0);
+    assert_eq!(
+        target_height(&swapped, SOLE, 0.0, 100.0, false, 1.0, 0.0),
+        95.0
+    );
     let unreachable = [
         foot(0.0, 10.0, 40.0, true),
         LegHeight {
@@ -305,8 +317,50 @@ fn a_lifted_foot_sets_the_blend_weight() {
         },
     ];
     assert_eq!(
-        target_height(&unreachable, SOLE, 0.0, 100.0, false, 1.0),
+        target_height(&unreachable, SOLE, 0.0, 100.0, false, 1.0, 0.0),
         45.0
+    );
+}
+
+/// Moving, the blend's half is min(0.5, 0.2·speed) and the weight is then
+/// multiplied by min(1, (0.3·speed)²), speed the cm a tick along the
+/// heading. At rest that product is 0, so the pelvis stays on the lowest
+/// foot, lifted or not. At 4 cm a tick both factors saturate, so a planted
+/// pair blends by half and a lifted lowest foot by all of it. A NaN speed
+/// saturates the same way. Standing ignores the speed.
+#[test]
+fn the_moving_blend_follows_the_speed() {
+    let foot = |stance: f32, lifted: bool| LegHeight {
+        ground: Some(0.0),
+        contact: 10.0,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    let pair = |low: bool| [foot(40.0, low), foot(80.0, false)];
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 4.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 4.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, f32::NAN),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, false, 1.0, 0.0),
+        65.0
     );
 }
 

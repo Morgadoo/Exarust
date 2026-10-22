@@ -88,6 +88,8 @@ fn walking(carried: bool, gait_floor: f32) -> Bearing {
         walking: true,
         carried,
         gait_floor: Some(gait_floor),
+        // The capsule's 1.4 m/s, in cm a tick: the moving blend reads it.
+        speed: WALK * 100.0 / BODY_HZ,
         ..Bearing::default()
     }
 }
@@ -215,6 +217,8 @@ struct Climb {
     balance: f32,
     pelvis: f32,
     feet: f32,
+    /// The pelvis's place along the walk.
+    place: f32,
 }
 
 /// A body walking at the game's speed from 1.2 m before the first riser
@@ -253,7 +257,9 @@ fn climb(carried: bool) -> Climb {
         step(&mut body, walking(carried, ankles), at(z), &stride, &level);
         balance = lowest_balance(&body, balance);
     }
-    let pelvis = body.part_of(1).unwrap().transform().translation.y;
+    let pelvis_at = body.part_of(1).unwrap().transform().translation;
+    let pelvis = pelvis_at.y;
+    let place = pelvis_at.z;
     let feet = body
         .legs()
         .iter()
@@ -263,39 +269,37 @@ fn climb(carried: bool) -> Climb {
         balance,
         pelvis,
         feet,
+        place,
     }
 }
 
-/// A body whose condition is walking is left short of the landing. The
-/// support pins stay slack through the walk, and this body has no gait
-/// plants to step its feet up. From 1.2 m before four 18 cm steps, stopping
-/// on the third, both feet finish near 34 cm, short of the 72 cm landing.
-/// Carried, its balance stays at 1; without the controller it falls to 0.
-/// The controller's floor does not raise the pelvis: the two heights agree.
+/// A body whose condition is walking stops on the floor before the first
+/// riser. At the game's 1.4 m/s the moving blend stays near the lowest
+/// foot, the support pins stay slack, and this body has no gait plants to
+/// step its feet up. From 1.2 m before four 18 cm steps it finishes with
+/// its feet on the floor and its pelvis still short of the riser, balance
+/// 1 whether or not the controller carries it. The two pelvis heights
+/// agree, so the controller's floor does not raise it.
 #[test]
 fn a_walking_body_stays_short_of_the_landing() {
-    let landing = STEPS as f32 * RISE;
     let up = climb(true);
     let caught = climb(false);
-    assert!(
-        (up.balance - 1.0).abs() < 1e-6,
-        "carried balance {}",
-        up.balance
-    );
-    assert!(
-        caught.balance.abs() < 1e-6,
-        "free balance {}",
-        caught.balance
-    );
     for (label, climbed) in [("carried", &up), ("free", &caught)] {
         assert!(
-            (climbed.feet - 0.34).abs() < 0.02,
-            "{label} feet at {}, landing {landing}",
-            climbed.feet
+            (climbed.balance - 1.0).abs() < 1e-6,
+            "{label} balance {}",
+            climbed.balance
         );
+        assert!(climbed.feet < 0.02, "{label} feet at {}", climbed.feet);
+        assert!(
+            (-0.3..0.0).contains(&climbed.place),
+            "{label} pelvis at {}",
+            climbed.place
+        );
+        assert!(climbed.pelvis > 1.0, "{label} pelvis {}", climbed.pelvis);
     }
     assert!(
-        (up.pelvis - caught.pelvis).abs() < 0.02,
+        (up.pelvis - caught.pelvis).abs() < 1e-4,
         "the controller floor raised the pelvis: {} vs {}",
         up.pelvis,
         caught.pelvis

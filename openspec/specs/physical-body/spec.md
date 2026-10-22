@@ -670,7 +670,7 @@ With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negat
 - **THEN** its pelvis rises to its standing height, overshoots it by less than 6 cm (10.7 cm under the old vertical hold) and is back within a centimetre in under 100 ticks
 
 ### Requirement: Target pelvis height
-Each leg's height SHALL be ground + crouch·60·scale + (1 − crouch)·(clip-root over its ankle + offset: sole; moving, the ankle over the walk's first key, slerped 0.7 to the run's on the run flag, or the run's on the sprint latch). The target SHALL be the lowest foot's, blended by half, by 1 when the lowest is lifted or by 0 when the other is (the other wins), while that contact over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + length + 5 cm.
+Each leg's height SHALL be ground + crouch·60·scale + (1 − crouch)·(clip-root over its ankle + offset: sole; moving, the ankle over the walk's first key, 0.7 to the run's on the run flag, or the run's on the sprint latch). The target SHALL be the lowest foot's, blended by half (moving: min(0.5, 0.2·speed), then × min(1, (0.3·speed)²)), by 1 if the lowest is lifted or 0 if the other is (other wins), under 40 cm of that spread (less up to 60); standing, capped at ground + sole + length + 5 cm.
 
 #### Scenario: Idle human
 - **WHEN** a human's clip root is 91.4 cm over its ankles on flat ground, its sole 9.68 cm and its legs 85.15 cm
@@ -705,7 +705,7 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 
 #### Scenario: Stairs
 - **WHEN** a body walks up four 18 cm steps, stopping on the third, with its controller and without it
-- **THEN** its feet finish near 34 cm, short of the 72 cm landing, its balance stays at 1 while carried and falls to 0 without the controller, and the two pelvis heights agree
+- **THEN** its feet stay on the floor and its pelvis stops short of the first riser, its balance stays at 1 carried or not, and the two pelvis heights agree
 
 #### Scenario: Stair room
 - **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` or `--at 7.6,-1.3,66.2` walks the player up the stairs to the door

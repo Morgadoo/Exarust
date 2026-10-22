@@ -284,6 +284,8 @@ pub(crate) fn decide_movement(
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
         d.bearing.moving = body.moving() || req.stepping.is_some();
         d.bearing.run = body.run;
+        // This tick's speed: the carry reads it for the moving blend.
+        d.bearing.speed = body.speed;
         d.bearing.legs = body.leg;
         d.bearing.turn = if held { 0.0 } else { req.turn_left(&body) };
         d.bearing.push = body.drive;
