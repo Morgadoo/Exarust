@@ -25,6 +25,17 @@
 //! the pairs found this tick rub before the level does: slips under the
 //! limit are cancelled, larger ones damped. Of two touching bodies the one
 //! with the lower sleep countdown takes the other's ([`equalise_sleep`]).
+//!
+//! A pair of two bodies keeps the fastest travel of A against B at its
+//! hits, measured before each hit's push. Once that squared travel passes
+//! 1 cm² a tick², the pair's impact is it times the negated cosine between
+//! the travel and the summed push. An impact over 0.5 strikes each side
+//! with the impact over 2·m + 1, m the other side's contact mobility
+//! ([`Touch::struck`]). [inf] The original reads each part's particle
+//! velocities; Exarust takes each particle's travel this tick. The
+//! original also needs the struck part's flag 0x40000, which add-to-world
+//! clears only on a foot and its children; Exarust takes every part that
+//! meets other bodies as having it.
 
 use bevy::math::{Affine3A, Mat3};
 use bevy::platform::collections::{HashMap, HashSet};
@@ -519,6 +530,62 @@ pub struct Touch {
     pub push: Vec3,
     /// The longest of them (m).
     pub deepest: f32,
+    /// The fastest relative travel of A against B at a hit this tick,
+    /// measured before the hit's push (cm a tick), and its square.
+    pub travel: Vec3,
+    pub travel2: f32,
+    /// The impact each side takes ([`Touch::impact`] over 2·m + 1, m the
+    /// other side's contact mobility): A's, then B's.
+    pub struck: [Option<f32>; 2],
+}
+
+/// A pair's fastest squared travel must pass this (cm² a tick²) to strike.
+pub const STRIKE_TRAVEL2: f32 = 1.0;
+/// A pair's impact must pass this to strike either side.
+pub const STRIKE_IMPACT: f32 = 0.5;
+
+impl Touch {
+    /// The pair's impact: the fastest squared travel times the cosine
+    /// between that travel and the summed push, negated. Only a pair of two
+    /// bodies with a hit and a squared travel over [`STRIKE_TRAVEL2`] has
+    /// one. Under 1e-8 for the product of the two squared lengths the
+    /// original's cosine is the push's x² + y², as its routine leaves it.
+    pub fn impact(&self) -> Option<f32> {
+        if self.hits == 0
+            || self.a.0 == self.b.0
+            || self.travel2 <= STRIKE_TRAVEL2
+            || self.travel2.is_nan()
+        {
+            return None;
+        }
+        Some(self.travel2 * -cosine(self.travel, cm(self.push)))
+    }
+
+    /// The impact on each side once the pair's impact passes
+    /// [`STRIKE_IMPACT`]: the impact over 2·m + 1, m the other side's
+    /// contact mobility.
+    fn strike(&mut self, mobility_a: f32, mobility_b: f32) {
+        let Some(impact) = self.impact().filter(|&i| i > STRIKE_IMPACT) else {
+            return;
+        };
+        self.struck = [
+            Some(impact / (mobility_b * 2.0 + 1.0)),
+            Some(impact / (mobility_a * 2.0 + 1.0)),
+        ];
+    }
+}
+
+/// The engine's cosine between two vectors, summed in its order in single
+/// precision.
+fn cosine(a: Vec3, b: Vec3) -> f32 {
+    let aa = a.z * a.z + (a.y * a.y + a.x * a.x);
+    let partial = b.y * b.y + b.x * b.x;
+    let both = (b.z * b.z + partial) * aa;
+    if both > f32::from_bits(0x322b_cc77) {
+        (a.z * b.z + (a.y * b.y + a.x * b.x)) / both.sqrt()
+    } else {
+        partial
+    }
 }
 
 /// How the pair stage finds the parts that may meet: the original's 3 × 3
@@ -796,12 +863,16 @@ impl Pairs {
             point: Vec3::ZERO,
             push: Vec3::ZERO,
             deepest: 0.0,
+            travel: Vec3::ZERO,
+            travel2: 0.0,
+            struck: [None; 2],
         };
         {
             let Some((pa, pb)) = parts_mut(bodies, a, b) else {
                 return false;
             };
             collide(pa, pb, &mut pair, &mut touch);
+            touch.strike(pa.pairing.mobility, pb.pairing.mobility);
         }
         if touch.hits == 0 {
             return false;
@@ -910,6 +981,12 @@ fn on_hit(
     touch.point += point;
     touch.push += push;
     touch.deepest = touch.deepest.max(push.length());
+    let travel = cm(pa.slip(&wa)) - cm(pb.slip(&wb));
+    let travel2 = travel.z * travel.z + (travel.y * travel.y + travel.x * travel.x);
+    if travel2 > touch.travel2 {
+        touch.travel = travel;
+        touch.travel2 = travel2;
+    }
     push_apart(pa, pb, wa, wb, push);
     true
 }

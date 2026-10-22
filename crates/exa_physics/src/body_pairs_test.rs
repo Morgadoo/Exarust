@@ -113,6 +113,63 @@ fn two_limbs_stop_at_their_spheres() {
     }
 }
 
+/// Two limbs meeting head-on at 2 m/s each strike each other: their
+/// relative travel at the hit (under the 4.8 cm a tick they were thrown
+/// at, as the solver damps it, and before the push) squared,
+/// times the cosine against the push, over 2·m + 1 of the other's contact
+/// mobility m. At 0.2 m/s each the squared travel is under 1 cm² and
+/// neither is struck.
+#[test]
+fn limbs_meeting_fast_strike_each_other() {
+    let first_touch = |speed: f32| {
+        let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
+        a.set_velocity(Vec3::X * speed);
+        b.set_velocity(Vec3::NEG_X * speed);
+        let mobility = a.parts[0].pairing.mobility;
+        let mut stages = pairs();
+        for _ in 0..400 {
+            step(&mut [&mut a, &mut b], NONE, &mut stages);
+            if let Some(t) = the_pairs(&stages).touches().first() {
+                return (*t, mobility);
+            }
+        }
+        panic!("the two balls never touched");
+    };
+    let (fast, m) = first_touch(2.0);
+    assert!(fast.travel.x > 4.0 && fast.travel.x < 4.8, "{fast:?}");
+    let impact = fast.impact().unwrap();
+    assert!((impact - fast.travel2).abs() < 0.01 * impact, "{fast:?}");
+    let each = impact / (m * 2.0 + 1.0);
+    assert_eq!(fast.struck, [Some(each), Some(each)]);
+    let (slow, _) = first_touch(0.2);
+    assert!(slow.travel2 < STRIKE_TRAVEL2, "{slow:?}");
+    assert_eq!(slow.impact(), None);
+    assert_eq!(slow.struck, [None, None]);
+}
+
+/// A pair whose push or travel has almost no length takes the original's
+/// leftover for its cosine (the push's x² + y²), which leaves no impact.
+#[test]
+fn a_degenerate_pair_cosine_is_the_push_leftover() {
+    let mut t = Touch {
+        a: (entity(1), 0),
+        b: (entity(2), 0),
+        hits: 1,
+        point: Vec3::ZERO,
+        push: Vec3::ZERO,
+        deepest: 0.0,
+        travel: Vec3::new(-3.0, 0.0, 0.0),
+        travel2: 9.0,
+        struck: [None; 2],
+    };
+    assert_eq!(t.impact(), Some(-0.0));
+    t.push = Vec3::X * 0.01;
+    assert_eq!(t.impact(), Some(9.0));
+    t.b.0 = t.a.0;
+    assert_eq!(t.impact(), None);
+}
+
 /// Bodies in pairs keep the original's interleaving with the pair passes
 /// while the others run their iterations and friction together in
 /// parallel: with two balls colliding and three falling on a floor, every
