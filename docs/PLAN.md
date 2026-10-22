@@ -382,7 +382,9 @@ original's carry: every limb particle falls by g(1 − a) + carry·a (a the
 tone times its support share, or times its energy above the legs), and a
 lift servo takes g·f·S off the carry to hold the pelvis at a target height
 over the ground under the feet, from the clip root's height over each
-ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
+ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); a
+full crouch is 60 cm times the body scale over that ground before the
+standing raise; the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
 pins once and the pelvis pin twice toward the frame in each iteration. The

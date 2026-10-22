@@ -280,7 +280,7 @@ How the original simulates a body (`exa_physics::body`):
     pelvis (`carry_share`), and the lift multiplies f by t² while collapsing
     (the word's bit 0x800: [The collapse](#the-collapse)).
   - The **target pelvis height** comes from the feet, each tick, in cm.
-    Each leg's is its ground + crouch·60 + (1 − crouch)·(the clip root's
+    Each leg's is its ground + crouch·60·scale + (1 − crouch)·(the clip root's
     height over the leg's animated ankle + its ground offset). The ground
     offset is the sole height standing; moving, the ankle's height over the
     lowest ankle of the moveset's walk in its first pose, plus the sole
@@ -294,9 +294,10 @@ How the original simulates a body (`exa_physics::body`):
     sole + leg length and raised 5 cm; moving, neither. With no ground under
     any foot it is −1000 m: no lift. An idle human (the clip root 91.4 cm
     over the ankle, sole 9.68 cm) is capped at ground + 99.83 cm and stands
-    with its pelvis at ground + 101.5 cm. Not reproduced: the stepping
-    (h + 10, 70 cm crouched) and resting (h + 20) variants, the walking
-    blend weights and swing flags, and the gait-smoothed ground (C19).
+    with its pelvis at ground + 101.5 cm. A full crouch is 60 cm times the
+    body scale over that ground. Not reproduced: the stepping
+    (h + 10, 70 cm crouched in place of 60) and resting (h + 20) variants,
+    the walking blend weights and swing flags, and the gait-smoothed ground (C19).
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its

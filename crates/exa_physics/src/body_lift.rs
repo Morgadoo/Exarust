@@ -16,7 +16,8 @@
 //! The target is the lowest foot's ground plus the clip root's height over
 //! the ankle and the foot's ground offset (its sole height standing),
 //! blended with the other foot's, capped at the ground plus sole plus leg
-//! length, plus 5 cm. The rules are the original's, in its centimetres and
+//! length, plus 5 cm. A full crouch is 60 cm times the body scale over
+//! that ground. The rules are the original's, in its centimetres and
 //! ticks (evidence: `docs/formats/RSQ.md`, Physical body). Each foot's
 //! ground is its own: the controller's floor does not raise it. The leg
 //! bend stores the lift term before clamping and lowers an unanchored
@@ -49,7 +50,7 @@ const MIN_CROUCHED_LIFT: f32 = -10.0;
 /// tone above it.
 const TONE_FLOOR: f32 = 0.5;
 /// A crouching body's target is this high over its ground at full crouch
-/// (cm).
+/// (cm), times the body scale.
 const CROUCHED_HEIGHT: f32 = 60.0;
 /// The other foot's target is blended in with this weight standing, by
 /// none once the feet's spread (cm) reaches the second, by all of it under
@@ -153,19 +154,20 @@ pub(super) struct LegHeight {
 
 /// The target pelvis height (cm) from the first two legs, crouching by
 /// `crouch`, with the feet's sole height `sole` and the pelvis at `pelvis`:
-/// each leg's is crouch·60 + (1 − crouch)·stance + ground. It is the lowest
-/// foot L's, blended toward the other O's by half (none when O has no
-/// ground), fully while O's contact height less its ground plus L's
-/// contact height is under 40 cm, by 0.05 a cm of it less over 40, not at
-/// all from 60 (the original's test, as read). Standing, it is capped at
-/// L's ground plus sole plus leg length and raised 5 cm; moving, neither.
-/// [`NO_TARGET`] when no foot has ground.
+/// each leg's is crouch·(60·scale) + (1 − crouch)·stance + ground, `scale`
+/// the body scale. It is the lowest foot L's, blended toward the other
+/// O's by half (none when O has no ground), fully while O's contact height
+/// less its ground plus L's contact height is under 40 cm, by 0.05 a cm of
+/// it less over 40, not at all from 60 (the original's test, as read).
+/// Standing, it is capped at L's ground plus sole plus leg length and
+/// raised 5 cm; moving, neither. [`NO_TARGET`] when no foot has ground.
 pub(super) fn target_height(
     legs: &[LegHeight],
     sole: f32,
     crouch: f32,
     pelvis: f32,
     moving: bool,
+    scale: f32,
 ) -> f32 {
     let mut lowest = pelvis + LOWEST_ABOVE;
     let mut low = None;
@@ -180,9 +182,9 @@ pub(super) fn target_height(
     let Some(i) = low else {
         return NO_TARGET;
     };
-    let value = |leg: &LegHeight, ground: f32| {
-        CROUCHED_HEIGHT * crouch + (1.0 - crouch) * leg.stance + ground
-    };
+    let crouched = CROUCHED_HEIGHT * scale;
+    let value =
+        |leg: &LegHeight, ground: f32| crouched * crouch + (1.0 - crouch) * leg.stance + ground;
     let l = &legs[i];
     let mut target = value(l, lowest);
     if let Some(o) = legs.get(1 - i) {
@@ -271,7 +273,14 @@ impl Ragdoll {
             let b = &mut drive.balance;
             b.extension = feet::extension(b.level, height - cm(highest), reach);
         }
-        let target = target_height(&heights, cm(*sole), bearing.crouch, height, bearing.moving);
+        let target = target_height(
+            &heights,
+            cm(*sole),
+            bearing.crouch,
+            height,
+            bearing.moving,
+            drive.stats.scale,
+        );
         drive.lift_target = Some(target / CM);
         if !drive.balance.has_support() {
             return;

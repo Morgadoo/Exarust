@@ -670,7 +670,7 @@ With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negat
 - **THEN** its pelvis rises to its standing height, overshoots it by less than 6 cm (10.7 cm under the old vertical hold) and is back within a centimetre in under 100 ticks
 
 ### Requirement: Target pelvis height
-Each leg's height SHALL be its ground + crouch·60 + (1 − crouch)·(the clip root's height over its animated ankle + its ground offset: the sole height, moving also the ankle's lift over the walk's lowest). The target SHALL be the lowest foot's, blended by half toward the other's while that one's contact height over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
+Each leg's height SHALL be its ground + crouch·60·scale + (1 − crouch)·(the clip root's height over its animated ankle + its ground offset: the sole height, moving also the ankle's lift over the walk's lowest), scale the body scale. The target SHALL be the lowest foot's, blended by half toward the other's while that one's contact height over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
 
 #### Scenario: Idle human
 - **WHEN** a human's clip root is 91.4 cm over its ankles on flat ground, its sole 9.68 cm and its legs 85.15 cm
@@ -691,6 +691,10 @@ Each leg's height SHALL be its ground + crouch·60 + (1 − crouch)·(the clip r
 #### Scenario: No ground
 - **WHEN** no foot has ground
 - **THEN** the target is −1000 m and nothing lifts the body
+
+#### Scenario: Scaled crouch
+- **WHEN** a standing body of scale one half or 1.25 crouches fully, and that crouch term is under the leg's reach
+- **THEN** the target is 35 cm or 80 cm over the ground
 
 ### Requirement: Climbing with the controller
 The lift SHALL read each foot's own ground. The character controller's floor SHALL NOT raise that ground, on level ground, on stairs, perched or fallen.

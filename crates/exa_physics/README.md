@@ -120,7 +120,7 @@ a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
-its feet (`src/body_lift.rs`). A character moves through a locomotion request its
+its feet, a full crouch at 60 cm times the body scale (`src/body_lift.rs`). A character moves through a locomotion request its
 behaviour writes (`body::locomotion::Locomotion`: heading, look, the
 original's flag word, moving, free walk, goal) and the movement decision
 its tick makes from it (`body::locomotion::decide`: the move vector, leg

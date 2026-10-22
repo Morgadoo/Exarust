@@ -130,30 +130,30 @@ const SOLE: f32 = 9.68;
 fn the_target_height_is_the_originals() {
     let flat = [idle_leg(0.0), idle_leg(0.0)];
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, false),
+        target_height(&flat, SOLE, 0.0, 101.5, false, 1.0),
         99.83,
         1e-3
     ));
     let step = [idle_leg(30.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&step, SOLE, 0.0, 131.5, false),
+        target_height(&step, SOLE, 0.0, 131.5, false, 1.0),
         129.83,
         1e-3
     ));
     let one = [idle_leg(0.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, false),
+        target_height(&one, SOLE, 0.0, 101.5, false, 1.0),
         99.83,
         1e-3
     ));
     // Moving: the mean of the two feet's, uncapped.
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, true),
+        target_height(&one, SOLE, 0.0, 101.5, true, 1.0),
         116.08,
         1e-3
     ));
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, true),
+        target_height(&flat, SOLE, 0.0, 101.5, true, 1.0),
         101.08,
         1e-3
     ));
@@ -161,7 +161,23 @@ fn the_target_height_is_the_originals() {
         ground: None,
         ..idle_leg(0.0)
     }; 2];
-    assert_eq!(target_height(&none, SOLE, 0.0, 101.5, false), NO_TARGET);
+    assert_eq!(
+        target_height(&none, SOLE, 0.0, 101.5, false, 1.0),
+        NO_TARGET
+    );
+}
+
+/// A full crouch is 60 cm times the body scale over the ground. Half scale
+/// stands at 35 cm (30 plus the 5 cm raise); scale 1.25 stands at 80 cm.
+/// Moving, neither the cap nor the raise applies, so half scale is 30 cm.
+/// A NaN scale, moving, leaves the target a NaN.
+#[test]
+fn a_crouch_stands_at_60_cm_times_the_body_scale() {
+    let flat = [idle_leg(0.0), idle_leg(0.0)];
+    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, false, 0.5), 35.0);
+    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, false, 1.25), 80.0);
+    assert_eq!(target_height(&flat, SOLE, 1.0, 100.0, true, 0.5), 30.0);
+    assert!(target_height(&flat, SOLE, 0.0, 100.0, true, f32::NAN).is_nan());
 }
 
 /// The other foot is blended in by half while its contact's height over
@@ -182,7 +198,7 @@ fn the_other_foot_is_blended_in() {
     // contact's height plus 10. Weights 0.5, 0.5, 0.125 and 0, plus 5 cm.
     for (contact, want) in [(25.0, 50.0), (30.0, 50.0), (45.0, 46.25), (50.0, 45.0)] {
         let legs = [crouched(0.0, contact), crouched(10.0, 20.0)];
-        let got = target_height(&legs, SOLE, 0.0, 100.0, false);
+        let got = target_height(&legs, SOLE, 0.0, 100.0, false, 1.0);
         assert!(
             close(got, want, 1e-3),
             "contact {contact}: {got}, not {want}"
@@ -190,7 +206,7 @@ fn the_other_foot_is_blended_in() {
     }
     let high = [crouched(50.0, 60.0), crouched(50.0, 60.0)];
     assert!(close(
-        target_height(&high, SOLE, 0.0, 150.0, false),
+        target_height(&high, SOLE, 0.0, 150.0, false, 1.0),
         95.0,
         1e-3
     ));
@@ -202,7 +218,7 @@ fn the_other_foot_is_blended_in() {
         },
     ];
     assert!(close(
-        target_height(&lifted, SOLE, 0.0, 100.0, false),
+        target_height(&lifted, SOLE, 0.0, 100.0, false, 1.0),
         45.0,
         1e-3
     ));
@@ -210,7 +226,7 @@ fn the_other_foot_is_blended_in() {
     // lowest: the other is, and caps the target at its reach.
     let above = [crouched(160.0, 170.0), crouched(0.0, 10.0)];
     assert!(close(
-        target_height(&above, SOLE, 0.0, 50.0, false),
+        target_height(&above, SOLE, 0.0, 50.0, false, 1.0),
         99.83,
         1e-3
     ));
