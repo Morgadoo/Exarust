@@ -1597,8 +1597,8 @@ What it slows, by encumbrance e (the readers' own precision):
 Exarust sums it at spawn for every placed character (`exa_world`) and for
 the player's and the duellist's outfits (the first painted item worn as
 each model); `exa-tool characters` prints it. The step reach, the player's
-run blend and the held weapons' and fists' records read it; the other
-readers take it when they are ported.
+run blend, a held step key's long step and the held weapons' and fists'
+records read it; the other readers take it when they are ported.
 
 ## Damage
 

@@ -642,8 +642,9 @@ is not locomoting or is down (condition bit 0x200), and it falls by 0.02 a
 tick; the bearing carries it, so the pelvis lowers and the chest shifts
 back. Above 0.1 the locomotion clock runs × (1 − 0.1·crouch), above 0.5
 the footwork's steps are 0.7 of the step length, and a crouched attacker
-picks the first side attack. Not yet: the 1.5 long step, an AI crouch and
-the crouched look twist.
+picks the first side attack. A held step key's target is (1.5 − 0.3 ×
+encumbrance) step reaches. Not yet: an AI crouch and the crouched look
+twist.
 
 Done (change `follow-the-intersection-routines`): the original's
 RF_Intersection unit is in `exa_physics::intersect`, checked against the

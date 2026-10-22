@@ -327,11 +327,15 @@ On the player's third behaviour tick with a navigation grid, unless it is down, 
 - **THEN** it is not moved, then or later
 
 ### Requirement: Footwork step targets
-In combat mode a footwork step's target SHALL be a step's length along its keys (the step reach × √scale, 80 cm for a human), clamped by the grid's line walk from where the player stands; a target within 20 cm SHALL not be stepped to. Until the original's steps replace it, the interim footwork SHALL walk only while its step's target lies farther.
+In combat mode a footwork step's target SHALL be a step's length along its keys (the step reach × √scale, 80 cm for a human), clamped by the grid's line walk from where the player stands; a target within 20 cm SHALL not be stepped to. A fresh press SHALL aim that length. Keys already held 200 ms SHALL aim (1.5 − 0.3·encumbrance) times the step reach, narrowed once from a double product, then the same √scale. The interim footwork SHALL walk only while that target lies farther.
 
 #### Scenario: Footwork at a wall
 - **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead, then 21 cm ahead
 - **THEN** the player takes no step and plays no walk, then it steps and plays the combat walk
+
+#### Scenario: A held step is a long step
+- **WHEN** a combat step's keys have already been held 200 ms, on open ground, for a human step reach and for a reach of 72 cm at encumbrance 0.5
+- **THEN** the target is 120 cm and 97.2 cm along the keys, and a fresh press of the same reach stays at 80 cm
 
 ### Requirement: Camera yaw wrap
 Cursor Look SHALL keep the camera's target yaw within half a turn of the camera's present yaw, adding or subtracting a whole turn when the difference, compared in double precision, exceeds π.

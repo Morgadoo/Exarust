@@ -26,8 +26,8 @@
 //! - **The spawn.** On its third behaviour tick (unless down) the
 //!   character is moved onto the nearest walkable point of the grid.
 //! - **Footwork.** In combat mode a step's target, a step's length along
-//!   its keys, is clamped by the line walk too; within 20 cm the step is
-//!   not taken.
+//!   its keys (a long step once they have been held 200 ms), is clamped
+//!   by the line walk too; within 20 cm the step is not taken.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};

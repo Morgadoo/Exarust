@@ -646,7 +646,12 @@ The point under the cursor is the navigation unit's pick: a screen ray, then the
 **Tab** toggles it, and every practice or arena fight starts with it on, as
 the original turns it on at each fight start (with `--opponent`, once the
 level shows; not in the arena hub). W, S, A and D step along and across
-the cursor's direction, and keys held longer than 200 ms walk on. The
+the cursor's direction, and keys held longer than 200 ms walk on.
+A fresh press aims one step reach; once the keys have already been held
+200 ms the target is (1.5 − 0.3 × encumbrance) step reaches, one double
+product narrowed once (120 cm unencumbered, 97.2 cm at encumbrance 0.5
+on a 72 cm reach). The
+
 original's footwork steps the feet and never changes the clip; Exarust's
 interim one plays "Combat Walk" while a key is held and gives back the
 clip it replaced (the guard stays the guard) when they are released; its

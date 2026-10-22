@@ -29,6 +29,7 @@ use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, Swing, SwingAt, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
+use exa_formats::encumbrance::long_step_length;
 use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, forward, turn_between, yaw_of};
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
@@ -649,13 +650,31 @@ pub(crate) fn steer_player(
             if pb.combat {
                 steering.aim(&mut req, to_cursor, state.off_feet());
                 steering.fight(&mut req, body, standing, &line);
-                // A tap step's length (m), the step reach × √scale.
-                let step = fighter.map_or(STEP_LENGTH, |f| {
-                    f.stats.step_reach(f.stats.encumbrance) * f.stats.scale.sqrt()
-                });
+                // A tap step's length (m), the step reach × √scale, and the
+                // long step a held key aims: (1.5 − 0.3·encumbrance) × the
+                // reach, one double product, then the same √scale.
+                let (step, long_step) = fighter.map_or(
+                    (
+                        STEP_LENGTH,
+                        long_step_length(STEP_LENGTH * 100.0, 0.0) / 100.0,
+                    ),
+                    |f| {
+                        let cm = exa_formats::weapon_record::step_reach(
+                            f.stats.scale,
+                            f.stats.feral,
+                            f.stats.encumbrance,
+                        );
+                        let root = f.stats.scale.sqrt();
+                        (
+                            f.stats.step_reach(f.stats.encumbrance) * root,
+                            long_step_length(cm, f.stats.encumbrance) / 100.0 * root,
+                        )
+                    },
+                );
                 let footing = Footwork {
                     standing,
                     step,
+                    long_step,
                     line: &line,
                 };
                 // The right button walks toward the cursor in combat mode
@@ -782,11 +801,14 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 /// reach.
 const STEP_LENGTH: f32 = 0.8;
 
-/// Where the footwork steps from, how long a step is and the grid's line
-/// walk that clamps its target.
+/// Where the footwork steps from, how long a tap and a held step are, and
+/// the grid's line walk that clamps the target.
 struct Footwork<'a> {
     standing: Vec3,
+    /// A fresh press: one step reach (m).
     step: f32,
+    /// Keys already held 200 ms: (1.5 − 0.3·encumbrance) step reaches (m).
+    long_step: f32,
     line: LineWalk<'a>,
 }
 
@@ -798,7 +820,12 @@ struct Footwork<'a> {
 /// replaced (the stance's, if that clip was a stance) once they are
 /// released. As the original's steps, it goes only while the target of a
 /// step (a step's length along the keys, clamped by the grid's line walk)
-/// lies more than 20 cm away. A walk, run or backpedal of the exploration
+/// lies more than 20 cm away. A fresh press aims one step reach. Keys
+/// already held 200 ms aim (1.5 − 0.3·encumbrance) step reaches, the
+/// product narrowed once from double; the original also keeps the short
+/// step while an unnamed support value is at least 0.1, which Exarust
+/// does not keep, so a held key takes the long step. A walk, run or
+/// backpedal of the exploration
 /// steering still playing when combat mode turned on ends in the stance
 /// once the body stands (`moving` false), as the original's walk ends in
 /// it.
@@ -828,9 +855,16 @@ fn combat_steps(
         }
     }
     let mut dir = dir.normalize_or_zero();
+    // The hold is what the last ticks already accumulated: the press
+    // itself stays a tap, and the long step starts once 200 ms have passed.
+    let length = if dir != Vec3::ZERO && pb.held >= STEP_HOLD {
+        footing.long_step
+    } else {
+        footing.step
+    };
     if dir != Vec3::ZERO
         && steering
-            .step_target(footing.standing, dir, footing.step, footing.line)
+            .step_target(footing.standing, dir, length, footing.line)
             .is_none()
     {
         dir = Vec3::ZERO;
@@ -1594,6 +1628,7 @@ pub(crate) fn chase_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::encumbrance::long_step_length;
 
     #[test]
     fn steering_with_w_and_a_walks_a_circle() {
@@ -1745,6 +1780,7 @@ mod tests {
         let footing = Footwork {
             standing: Vec3::ZERO,
             step: STEP_LENGTH,
+            long_step: STEP_LENGTH,
             line: &open,
         };
         let mut steering = pb.steering;
@@ -1778,6 +1814,7 @@ mod tests {
             let footing = Footwork {
                 standing: Vec3::ZERO,
                 step: STEP_LENGTH,
+                long_step: STEP_LENGTH,
                 line: &wall,
             };
             let mut steering = pb.steering;
@@ -1805,6 +1842,50 @@ mod tests {
         walk(0.21, &mut req, &mut anim);
         assert!(req.stepping.is_some_and(|v| v.z > 0.0));
         assert_eq!(anim.action, "Combat Walk");
+    }
+
+    /// A fresh press aims one step reach. Keys already held 200 ms aim
+    /// (1.5 − 0.3·encumbrance) × the reach, narrowed once from double:
+    /// 120 cm from 80 cm, and 97.2 cm from a reach already shortened to
+    /// 72 cm at encumbrance 0.5.
+    #[test]
+    fn a_held_step_key_aims_a_long_step() {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let aim = |held: f32, step: f32, long_step: f32| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0);
+            pb.held = held;
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let footing = Footwork {
+                standing: Vec3::ZERO,
+                step,
+                long_step,
+                line: &open,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &Keys {
+                    w: true,
+                    ..Keys::default()
+                },
+                &mut req,
+                &mut steering,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            steering.line.unwrap().to
+        };
+        let tap = aim(0.0, STEP_LENGTH, long_step_length(80.0, 0.0) / 100.0);
+        assert_eq!(tap.z.to_bits(), STEP_LENGTH.to_bits());
+        let held = aim(STEP_HOLD, STEP_LENGTH, long_step_length(80.0, 0.0) / 100.0);
+        assert_eq!(held.z.to_bits(), 0x3f99_999a);
+        let worn = aim(STEP_HOLD, 72.0 / 100.0, long_step_length(72.0, 0.5) / 100.0);
+        assert_eq!(worn.z.to_bits(), 0x3f78_d4fd);
     }
 
     /// The interim footwork plays the combat walk while a key is held and
