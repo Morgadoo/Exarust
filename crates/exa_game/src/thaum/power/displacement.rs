@@ -12,7 +12,11 @@
 //!   [`VanishStep::apply`] calls.
 //! - **Vanish** ([`Vanish`]): phase 3 spends half the power's tick cost
 //!   while the caster stays away; a release moves nothing (the body never
-//!   left its place) and fades it back in.
+//!   left its place) and fades it back in. Its cast hook answers 0 to every
+//!   event before the hold and −1 to a cast's start and to 0x100 from it;
+//!   being asked with 1, 0x10, 0x20, 0x80 or 0x100 lets the power go.
+//!   The Long Door's hook answers 0 to everything; Constant Displacement's
+//!   (once its motion starts) and the Summon's answer 0 to bits 0x29.
 //! - **The Long Door** ([`LongDoor`]): starts at phase 0x10 asking the
 //!   navigation grid for the aim's place; a found place starts the phases,
 //!   an impossible one ends at once, and phase 3 moves the body there.
@@ -29,7 +33,7 @@
 
 use super::PowerBase;
 use crate::effects::vanish::Vanish as VanishEffect;
-use crate::thaum::casting::{CastBody, start_cast};
+use crate::thaum::casting::{CastBody, CastHook, start_cast};
 
 /// The Displacement power ids the classes run.
 pub use crate::thaum::displacement::{
@@ -38,6 +42,20 @@ pub use crate::thaum::displacement::{
 
 /// The cast motion Constant Displacement starts.
 pub const CONSTANT_MOTION: u32 = 0x28;
+
+/// Vanish's cast hook before its hold: 0 to every event.
+pub const VANISH_HOOK: CastHook = CastHook { keeps: !0 };
+/// Vanish's cast hook from its hold on: −1 to a cast's start and to event
+/// 0x100, 0 to the rest.
+pub const VANISH_LATE_HOOK: CastHook = CastHook { keeps: !0x120 };
+/// The events that let a vanish go when its hook is asked with them.
+pub const VANISH_RELEASE_EVENTS: u32 = 0x1b1;
+/// The Long Door's cast hook: 0 to every event.
+pub const LONG_DOOR_HOOK: CastHook = CastHook { keeps: !0 };
+/// Constant Displacement's and the Summon's cast hooks: 0 to an event
+/// carrying bits 0x29.
+pub const CONSTANT_HOOK: CastHook = CastHook { keeps: 0x29 };
+pub const SUMMON_HOOK: CastHook = CastHook { keeps: 0x29 };
 
 /// The vanish effect's first phase: hidden, before the fade-out.
 pub const HIDDEN: i32 = 1;
@@ -309,6 +327,8 @@ pub struct Vanish {
     pub base: VanishBase,
     /// The focus a vanished tick spends.
     pub drain: f32,
+    /// The caster's cast hook is this vanish's.
+    pub hooked: bool,
 }
 
 impl Vanish {
@@ -317,6 +337,57 @@ impl Vanish {
         Self {
             base: VanishBase::begin(now, shared, ai),
             drain,
+            hooked: false,
+        }
+    }
+
+    /// The hook this vanish keeps at its phase: from the hold on (the
+    /// phase compared unsigned, so the AI's 0x10 too) it lets a cast start.
+    pub fn own_hook(&self) -> CastHook {
+        if (self.base.phase as u32) < 3 {
+            VANISH_HOOK
+        } else {
+            VANISH_LATE_HOOK
+        }
+    }
+
+    /// Whether the caster's hook is still this vanish's.
+    pub fn owns_hook(&self, body: &CastBody) -> bool {
+        self.hooked && body.casting == VANISH && body.cast_hook == Some(self.own_hook())
+    }
+
+    /// The activation's hook on the caster.
+    pub fn take_hook(&mut self, body: &mut CastBody) {
+        body.cast_hook = Some(self.own_hook());
+        body.hook_asked = 0;
+        self.hooked = true;
+    }
+
+    /// Reads the hook's calls since the last tick: an event of
+    /// [`VANISH_RELEASE_EVENTS`], or a −1 that dropped the hook, lets the
+    /// power go.
+    pub fn answer_hook(&mut self, body: &mut CastBody) {
+        if !self.hooked {
+            return;
+        }
+        if !self.owns_hook(body) {
+            self.hooked = false;
+            self.base.released = true;
+            return;
+        }
+        if body.hook_asked & VANISH_RELEASE_EVENTS != 0 {
+            self.base.released = true;
+        }
+        body.hook_asked = 0;
+    }
+
+    /// After a tick: a hook still this vanish's follows its phase.
+    pub fn keep_hook(&mut self, body: &mut CastBody) {
+        if self.hooked
+            && body.casting == VANISH
+            && matches!(body.cast_hook, Some(VANISH_HOOK | VANISH_LATE_HOOK))
+        {
+            body.cast_hook = Some(self.own_hook());
         }
     }
 
@@ -470,6 +541,9 @@ impl ConstantDisplacement {
         }
         if self.state == super::READY {
             let motion = start_cast(body, CONSTANT_MOTION, CONSTANT_DISPLACEMENT);
+            if motion {
+                body.cast_hook = Some(CONSTANT_HOOK);
+            }
             self.state = super::RUNNING;
             return ConstantStep { motion, ..quiet };
         }
@@ -707,6 +781,7 @@ mod tests {
         power.held = 0.35;
         body.reserved = 0.35;
         assert!(power.control(0, &mut body).motion);
+        assert_eq!(body.cast_hook, Some(CONSTANT_HOOK));
         assert_eq!(power.hum_volume, 0.002);
         for _ in 0..100 {
             power.grow();
@@ -722,6 +797,43 @@ mod tests {
         assert_eq!(end.result, 2);
         assert!(end.released && end.closing);
         assert_eq!(body.reserved, 0.0);
+    }
+
+    #[test]
+    fn the_vanish_hook_refuses_casts_until_the_hold_and_lets_it_go() {
+        let mut body = CastBody::default();
+        assert!(start_cast(&mut body, 0, VANISH));
+        let mut vanish = Vanish::new(0, false, false, 0.001);
+        vanish.take_hook(&mut body);
+        assert!(
+            !start_cast(&mut body, 0x22, 0x201),
+            "refused before the hold"
+        );
+        vanish.answer_hook(&mut body);
+        assert!(vanish.base.released, "the cast's start lets it go");
+        assert_eq!(body.cast_hook, Some(VANISH_HOOK));
+        assert!(!crate::thaum::casting::motion_replaced(&mut body));
+        assert_eq!(body.cast_hook, Some(VANISH_HOOK), "event 4 keeps it");
+
+        let mut body = CastBody::default();
+        assert!(start_cast(&mut body, 0, VANISH));
+        let mut held = Vanish::new(0, false, false, 0.001);
+        held.take_hook(&mut body);
+        for now in [400, 700] {
+            held.answer_hook(&mut body);
+            held.control(0, now);
+            held.keep_hook(&mut body);
+        }
+        assert_eq!(held.base.phase, HOLDING);
+        assert_eq!(body.cast_hook, Some(VANISH_LATE_HOOK));
+        held.answer_hook(&mut body);
+        assert!(!held.base.released);
+        assert!(
+            start_cast(&mut body, 0x22, 0x201),
+            "a cast starts in the hold"
+        );
+        held.answer_hook(&mut body);
+        assert!(held.base.released && !held.hooked);
     }
 
     #[test]

@@ -208,7 +208,15 @@ strikes, though it still answers 1). Kinesis's hook keeps events 8 and
 1 and the throw's event 8; any other event, a focus shortfall included,
 ends that power. A throw from a kinesis ends the kinesis without ending
 the cast, and the kinesis's hook then also keeps a cast's start, so the
-throw plays on in the kinesis's motion. The blast, wave, torrent and barrier
+throw plays on in the kinesis's motion. Shock's hook answers −1 and,
+called while the shock charges, clears it so it never fires; Shock
+Weapons, Constant Displacement and the Summon keep bits 0x29. The Long
+Door's hook answers 0 to everything, and Vanish's does until its hold,
+then lets a cast start; asked with 1, 0x10, 0x20, 0x80 or 0x100 it lets
+the vanish go (`CastBody::hook_asked` records the events a hook was asked
+with, for the hooks that act whatever they answer). A sustained tick
+whose focus falls short with a hook set ends the cast, as the engine's
+spend does. The blast, wave, torrent and barrier
 hooks answer −1 to everything, and their effect fizzles or ends when
 called. The
 player swap, the spirit body's character generation, the kinesis aim sweep and the effect meshes are descriptions here, not

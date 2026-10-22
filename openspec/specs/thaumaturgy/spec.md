@@ -1100,3 +1100,7 @@ A cast hook SHALL answer 0 to an event carrying any of its kept bits and -1 to a
 #### Scenario: A kinesis hands its body to a throw
 - **WHEN** a throw is cast while a kinesis holds a body
 - **THEN** the kinesis ends without ending the cast, its hook refuses other casts, and the throw plays on in the kinesis's motion
+
+#### Scenario: A vanish's hook lets a cast through once it holds
+- **WHEN** another cast asks to start while a vanish runs
+- **THEN** it is refused before the vanish's hold and allowed from the hold on, and either way the vanish is let go

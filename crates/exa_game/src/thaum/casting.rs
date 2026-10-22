@@ -166,6 +166,9 @@ pub struct CastBody {
     pub release: bool,
     /// The running cast's hook, None without one.
     pub cast_hook: Option<CastHook>,
+    /// The events the hook was asked with since its owner last looked, for
+    /// a hook that acts on its power whatever it answers.
+    pub hook_asked: u32,
     /// The cast motion the last start played, for the caller to animate.
     pub cast_motion: Option<u32>,
     /// The powers the body runs and the effects on it.
@@ -216,6 +219,7 @@ impl Default for CastBody {
             casting: 0,
             release: false,
             cast_hook: None,
+            hook_asked: 0,
             cast_motion: None,
             powers: Vec::new(),
             slots: 1,
@@ -363,14 +367,22 @@ impl CastHook {
     }
 }
 
+/// Asks the body's hook with `event`, noting the event for the hook's
+/// owner. None without a hook.
+pub fn ask_hook(body: &mut CastBody, event: u32) -> Option<i32> {
+    let hook = body.cast_hook?;
+    body.hook_asked |= event;
+    Some(hook.answer(event))
+}
+
 /// The hook's call when a motion replaces the cast motion or a one-shot
 /// cast clip ends: a negative answer drops the hook and the power id.
 /// Whether it was dropped.
 pub fn motion_replaced(body: &mut CastBody) -> bool {
-    let Some(hook) = body.cast_hook else {
+    let Some(answer) = ask_hook(body, hook_event::MOTION) else {
         return false;
     };
-    if hook.answer(hook_event::MOTION) < 0 {
+    if answer < 0 {
         body.cast_hook = None;
         body.casting = 0;
         true
@@ -382,10 +394,7 @@ pub fn motion_replaced(body: &mut CastBody) -> bool {
 /// Starts a power's cast motion (`motion` 0 plays none). False when the
 /// running cast keeps it from starting.
 pub fn start_cast(body: &mut CastBody, motion: u32, id: u32) -> bool {
-    if body
-        .cast_hook
-        .is_some_and(|hook| hook.answer(hook_event::CAST_START) >= 0)
-    {
+    if ask_hook(body, hook_event::CAST_START).is_some_and(|answer| answer >= 0) {
         return false;
     }
     body.cast_hook = None;
@@ -435,7 +444,11 @@ pub fn release_reserve(body: &mut CastBody, held: f32) {
 /// stop (true).
 pub fn spend_tick(body: &mut CastBody, cost: f32) -> bool {
     body.spent += cost;
-    body.focus - body.spent < cost && body.cast_hook.is_some()
+    let short = body.focus - body.spent < cost && body.cast_hook.is_some();
+    if short {
+        body.hook_asked |= hook_event::SHORTFALL;
+    }
+    short
 }
 
 /// The body tick's first settle, before its powers run: while the reserve's

@@ -1236,7 +1236,8 @@ fn create_displacement(
 ) -> Option<Entity> {
     match start {
         DisplacementStart::Vanish { cost } => {
-            let power = Vanish::new(context.now, false, false, cost);
+            let mut power = Vanish::new(context.now, false, false, cost);
+            power.take_hook(&mut caster.body);
             push_active(
                 caster,
                 0x601,
@@ -1251,6 +1252,7 @@ fn create_displacement(
         }
         DisplacementStart::LongDoor { tick_cost, to, .. } => {
             let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            caster.body.cast_hook = Some(super::power::displacement::LONG_DOOR_HOOK);
             push_active(
                 caster,
                 LONG_DOOR,
@@ -1283,6 +1285,7 @@ fn create_displacement(
         }
         DisplacementStart::Summon { .. } => {
             let power = Summon::new(context.now, false);
+            caster.body.cast_hook = Some(super::power::displacement::SUMMON_HOOK);
             push_active(
                 caster,
                 super::displacement::SUMMON,
@@ -1501,10 +1504,15 @@ fn tick_casters(
                     result = step.result;
                 }
                 ActiveClass::Vanish(power) => {
+                    power.answer_hook(body);
                     let step = power.control(event, now);
                     if 0.0 < step.spend {
                         drain(body, step.spend);
                     }
+                    if step.clear_hook && power.owns_hook(body) {
+                        casting::end_cast(body);
+                    }
+                    power.keep_hook(body);
                     result = step.result;
                 }
                 ActiveClass::LongDoor(power) => {
@@ -1516,6 +1524,9 @@ fn tick_casters(
                     let step = power.control(now, nav);
                     if 0.0 < step.spend {
                         drain(body, step.spend);
+                    }
+                    if step.clear_hook && body.casting == LONG_DOOR {
+                        casting::end_cast(body);
                     }
                     result = step.result;
                 }
