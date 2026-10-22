@@ -181,8 +181,10 @@ push-out, simulated points), their frames' sounds, colour bytes, texture
 offsets and torrent light points, their geometry classes
 (`effects::effect_geometry`) and multi-point lights (`effects::emissive`)
 are in. The engine's mesh and sphere tests that find contacts, the ribbon
-vertex builds and the GL passes are not; nothing casts them yet (no power
-bar, no AI cast).
+vertex builds and the GL passes are not. A blast or bolt cast runs its
+blast as an entity (`thaum::blast_live`): the cast motion and hook as the
+original's start sets them, and Exarust's own sphere test against the
+other bodies' limbs. Nothing casts a torrent yet.
 
 The Mind domain (`mind`) has its casts (`mind::casts`): the sixteen-row
 table, the front end (Control Mind's lock, the shared pricing), the 0.3

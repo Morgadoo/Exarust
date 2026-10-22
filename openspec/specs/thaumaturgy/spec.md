@@ -1050,3 +1050,10 @@ A character's caster SHALL take its body's technique word from the record's lear
 #### Scenario: Concentration's techniques
 - **WHEN** a record with powers has 15000 Concentration points and Sustain, Continuity II and Abstraction
 - **THEN** its caster's technique word is 0x50_0000 and it has three persistent slots with the focus item, and with 5000 points none
+
+### Requirement: A cast blast
+A blast or bolt cast SHALL make a blast entity whose start plays cast motion 0x22 with the setup's power id and, when that motion starts, sets the caster's cast hook to answer -1. While it charges, a later cast's start or the release flag SHALL fizzle it; the throw and a focus shortfall SHALL clear the hook and the power id, and a thrown blast SHALL push the limbs its chunks reach.
+
+#### Scenario: A duellist's blast
+- **WHEN** a duellist with focus casts the blast at a body whose limb sits in front of its hand
+- **THEN** it charges on the hook for 101 ticks, is thrown with the hook and power id cleared, moves that limb and leaves the scene once its chunks are spent

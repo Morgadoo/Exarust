@@ -144,9 +144,19 @@ original's order, passes control event 0 (event 2 once a power is told to
 end), releases the focus a finished power held and takes it out with the
 last entry in its place. The live arcs, barricades and wisps are spawned
 with their powers and removed as they end; the other effects have no
-entity yet, so their classes keep running, and the blast, bolt, wave,
-torrent and barrier casts, whose creators only make an effect, make nothing
-yet (no class and no entity). A cast motion is played through
+entity yet, so their classes keep running. A blast or bolt cast makes its
+blast entity (`thaum::blast_live`): its start plays cast motion 0x22 with
+the setup's power id and, when that motion starts, takes the caster's cast
+hook, which answers −1 and fizzles a charging blast when it is called (a
+later cast's start, or the release flag, which also ends the cast). The
+throw and a focus shortfall clear the hook and the power id. Each tick the
+blast reads the caster's right hand, facing and aim point (the AI's
+target's chest or the player's cursor), and a thrown blast pushes the limb
+spheres its chunks reach and knocks a struck character by its gathered
+impulse; that sphere test, the body's mass as its parts' sum and the knock
+as a knockback step are Exarust's. The wave, torrent and barrier casts,
+whose creators only make an effect, make nothing yet (no class and no
+entity). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s
 hit formula, and the player swap, the spirit body's character generation,
@@ -618,8 +628,8 @@ the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
 The force blast and torrent are not drawn: their ribbon vertex builds
-are not ported, and the bar's casts create no blast or torrent entity yet
-(the AI does not cast). Their geometry classes (`effectforce_v` with
+are not ported. A cast blast or bolt runs as an entity, without its draw,
+sounds, light, alert or stun; casts create no torrent entity yet. Their geometry classes (`effectforce_v` with
 `effectforce_f` or `effecttorrent_f`) are in `effects::effect_geometry` and
 their multi-point lights in `effects::emissive`. The mind-sight overlay's
 sphere and its animated noise are not drawn either; its pick, tracker,

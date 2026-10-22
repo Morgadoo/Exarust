@@ -22,12 +22,13 @@
 //!   radius grows `0.0015·swell` (in double precision), the trail head takes
 //!   the chunk's place and each older slot eases a tenth of the way to the
 //!   next one's place 9 cm back along the aim; the caster pays the drain
-//!   (running out fizzles the blast) and the charge rises by the rate. Past
+//!   (running out fizzles the blast and ends the cast: its hook and power id
+//!   go) and the charge rises by the rate. Past
 //!   1 the nearby characters are alerted, the release directions are set
 //!   (each direction pushed `forward` along the frame's z, rotated into the
 //!   frame and normalised; its weight `0.1·z + 0.9` of the unpushed z, in
 //!   double precision), the
-//!   cast hook is cleared, the release sound plays at pitch
+//!   cast hook and the caster's power id are cleared, the release sound plays at pitch
 //!   `0.9 + 0.2·random`, and "PowerUsed" is raised.
 //! - **Fizzle** (state −1): the chunks still follow the hand and grow
 //!   another 0.0015; the charge falls twice the rate, and below 0 every life
@@ -435,6 +436,7 @@ impl Blast {
                 if spend_tick(caster, self.drain) {
                     self.release();
                     caster.cast_hook = None;
+                    caster.casting = 0;
                 }
                 self.charge += self.rate;
                 if 1.0 < self.charge {
@@ -443,6 +445,7 @@ impl Blast {
                         self.state = THROWN;
                         self.flags |= THROWN_FLAG;
                         caster.cast_hook = None;
+                        caster.casting = 0;
                         self.set_release_directions();
                         events.released = Some((random.unit() as f32 as f64 * 0.2 + 0.9) as f32);
                     }
@@ -904,6 +907,7 @@ mod tests {
         let mut b = Blast::new(BLAST_SETUP, 0.1, 1300, &view(), &mut Mt19937::new(1));
         let mut caster = CastBody {
             cast_hook: Some(0),
+            casting: 0x201,
             ..CastBody::default()
         };
         let mut moved = view();
@@ -914,7 +918,7 @@ mod tests {
         assert!((0.9..=1.1).contains(&pitch));
         assert!(events.power_used);
         assert_eq!((b.state, b.charge, b.flags), (THROWN, 0.0, THROWN_FLAG));
-        assert_eq!(caster.cast_hook, None);
+        assert_eq!((caster.cast_hook, caster.casting), (None, 0));
         assert_eq!(caster.spent, b.drain);
         let c = &b.chunks[0];
         assert!((c.at.x - 10.0).abs() < 1e-2);
@@ -929,10 +933,12 @@ mod tests {
         let mut caster = CastBody {
             focus: 0.0,
             cast_hook: Some(0),
+            casting: 0x201,
             ..CastBody::default()
         };
         b.tick(&view(), &mut caster, &mut Mt19937::new(1));
         assert_eq!(b.state, FIZZLING);
+        assert_eq!((caster.cast_hook, caster.casting), (None, 0));
         b.charge = 0.01;
         let events = b.tick(&view(), &mut caster, &mut Mt19937::new(1));
         assert!(events.removed);

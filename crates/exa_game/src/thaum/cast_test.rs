@@ -396,6 +396,81 @@ fn a_duellists_chosen_power_is_cast() {
     assert!(powers.casting);
 }
 
+/// A duellist's blast charges in its hand on its cast motion and hook,
+/// throws once the charge passes 1 (the hook and power id go), pushes the
+/// limb in front of it and leaves the scene when its chunks are spent.
+#[test]
+fn a_duellists_blast_charges_throws_and_strikes() {
+    use crate::effects::blast::{CHARGING, THROWN};
+    use crate::thaum::blast_live::{BLAST_HOOK, LiveBlast};
+    use crate::thaum::force::BLAST_MOTION;
+    let mut app = new_app();
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 0.0, 0.35)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.3)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[0x201]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x201);
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, 0x201);
+    assert_eq!(body.cast_hook, Some(BLAST_HOOK));
+    assert_eq!(count::<LiveBlast>(&mut app), 1);
+    let start = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    let state = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveBlast>();
+        q.iter(app.world()).next().map(|b| b.blast.state)
+    };
+    let mut ticks = 0;
+    while state(&mut app) == Some(CHARGING) {
+        app.world_mut().run_schedule(FixedUpdate);
+        ticks += 1;
+        assert!(ticks < 200);
+    }
+    // Five sixths of a 12 ms tick a tick: a hundred of them sum to just
+    // under 1 in single precision, so the charge passes 1 on tick 101.
+    assert_eq!(ticks, 101);
+    assert_eq!(state(&mut app), Some(THROWN));
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    assert!(body.spent > 0.0 || body.focus < 1.0);
+    // The throw's own tick still holds the chunks in the hand (no move, no
+    // impulse); they fly from the next.
+    for _ in 0..5 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    let moved = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    assert_ne!(moved, start);
+    for _ in 0..100 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    assert_eq!(count::<LiveBlast>(&mut app), 0);
+    assert_eq!(BLAST_MOTION, 0x22);
+}
+
 /// A record's powers make its caster: the known pairs and the slots.
 #[test]
 fn a_records_powers_make_its_caster() {

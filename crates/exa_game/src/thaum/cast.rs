@@ -35,8 +35,11 @@
 //!   takes and deals read them.
 //! - **Live effects** ([`super::live`]): a shock's hand arcs, a barricade's
 //!   wall and a constant displacement's wisps are spawned with the power and
-//!   removed when it ends. Every other effect has no entity yet: the class
-//!   keeps running and the missing entity is named in the crate README.
+//!   removed when it ends; a blast or bolt cast makes its blast entity
+//!   ([`super::blast_live`]), which plays the cast motion, takes the cast
+//!   hook and ticks after the body tick. Every other effect has no entity
+//!   yet: the class keeps running and the missing entity is named in the
+//!   crate README.
 //!
 //! Rules: `docs/THAUMATURGY.md` (In the game), `docs/PLAYER.md` (Hotkeys).
 //! Evidence: the bar's cast entry and the dispatcher by domain byte, the
@@ -55,13 +58,14 @@ use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
 
 use super::arcs::{ArcEmitter, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{Barricade, WallFrame, state as wall_state};
+use super::blast_live::{LiveBlast, blast_view, start_blast};
 use super::casting::{self, ActivePower, AiView, CastBody, ID_MASK, code};
 use super::displacement::{
     CursorHit, DisplacementAim, DisplacementStart, body_wisps, displacement_front_end,
 };
 use super::energy::{EnergyStart, energy_front_end, shock_charge};
 use super::force::{
-    BARRICADE, ForceStart, ForceWorld, GroundHit, KINESIS, place_barricade, place_dome,
+    BARRICADE, ForceStart, ForceWorld, GroundHit, KINESIS, WAVE_SETUP, place_barricade, place_dome,
 };
 use super::live::{EffectDraws, EffectRoll, LiveArcs, LiveBarricade, LiveWisps};
 use super::power::displacement::{
@@ -79,6 +83,7 @@ use super::tree::{
     TreeScreen, domain_of, word,
 };
 use super::wisps::{Strand, Wisps};
+use crate::effects::blast::Blast;
 use crate::hand::{Hand, Holding};
 use crate::player::{CursorGround, PlayerBody};
 use crate::power_screen::PowerScreen;
@@ -260,7 +265,7 @@ impl PowerCaster {
     }
 
     /// Rebuild the body's power view from the active list, in its order.
-    fn sync_body(&mut self) {
+    pub(crate) fn sync_body(&mut self) {
         self.body.powers = self
             .active
             .iter()
@@ -301,7 +306,13 @@ impl Plugin for CastPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (tick_casters, play_cast_motions).chain().after(BodySystems),
+                (
+                    tick_casters,
+                    super::blast_live::tick_blasts,
+                    play_cast_motions,
+                )
+                    .chain()
+                    .after(BodySystems),
             );
     }
 }
@@ -350,6 +361,8 @@ struct CastContext {
     ground: Vec3,
     cursor: Option<Vec3>,
     clip_ms: Option<u32>,
+    /// The body the AI casts at.
+    target: Option<Entity>,
 }
 
 /// One caster's bar command.
@@ -491,6 +504,7 @@ fn run_bar_commands(
                     yaw: locomotor.map_or(0.0, |l| l.yaw),
                     cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
                     clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
+                    target: None,
                 };
                 begin_cast(
                     &mut commands,
@@ -520,6 +534,7 @@ struct CastPlace<'a> {
     yaw: f32,
     cursor: Option<Vec3>,
     clip_ms: Option<u32>,
+    target: Option<Entity>,
 }
 
 /// After a domain's front end: a vanish asked again ends the running one,
@@ -559,6 +574,7 @@ fn begin_cast(
             ground: root,
             cursor: place.cursor,
             clip_ms: place.clip_ms,
+            target: place.target,
         };
         let made = create_active(
             commands,
@@ -681,6 +697,7 @@ fn cast_for_duellists(
         Entity,
         &mut DuelPowers,
         &mut PowerCaster,
+        &Duellist,
         &GlobalTransform,
         Option<&Condition>,
         Option<&SwingState>,
@@ -701,6 +718,7 @@ fn cast_for_duellists(
         entity,
         mut powers,
         mut caster,
+        duellist,
         at,
         condition,
         swing,
@@ -747,6 +765,7 @@ fn cast_for_duellists(
             yaw: facing.x.atan2(facing.z),
             cursor: None,
             clip_ms: shot_clip_ms(motions.as_deref(), animator),
+            target: Some(duellist.target),
         };
         begin_cast(
             &mut commands,
@@ -865,6 +884,7 @@ fn create_active(
             caster,
             start,
             context,
+            ragdoll,
             physics,
             draws,
             roll,
@@ -898,16 +918,36 @@ fn create_force(
     caster: &mut PowerCaster,
     start: ForceStart,
     context: &CastContext,
+    ragdoll: Option<&Ragdoll>,
     physics: Option<&Physics>,
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
 ) -> Option<Entity> {
     match start {
-        ForceStart::Blast { setup, .. } => {
+        ForceStart::Blast { setup, cost } if setup != WAVE_SETUP => {
+            let body = ragdoll?;
+            let view = blast_view(body, context.heading, context.cursor)?;
+            let hooked = start_blast(&mut caster.body, &setup);
+            let blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
+            let entity = commands
+                .spawn((
+                    Name::new("_ForceBlast"),
+                    LiveBlast {
+                        blast,
+                        caster: caster_entity,
+                        target: context.target,
+                        hooked,
+                    },
+                ))
+                .id();
             debug!(
-                "force blast/bolt/wave {:?}: the effect entity is not ported",
+                "force blast {:#x}: motion {hooked}, entity {entity:?}",
                 setup.power
             );
+            Some(entity)
+        }
+        ForceStart::Blast { .. } => {
+            debug!("force wave: the effect entity is not ported");
             None
         }
         ForceStart::Torrent { .. } => {
