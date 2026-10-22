@@ -60,6 +60,7 @@ use super::arcs::{ArcEmitter, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{Barricade, WallFrame, state as wall_state};
 use super::barrier_live::new_barrier;
 use super::blast_live::{LiveBlast, blast_view, start_blast};
+use super::bubble_live::{LiveBubble, end_bubble, new_bubble};
 use super::casting::{self, ActivePower, AiView, CastBody, ID_MASK, code};
 use super::displacement::{
     CursorHit, DisplacementAim, DisplacementStart, body_wisps, displacement_front_end,
@@ -73,9 +74,7 @@ use super::power::displacement::{
     ConstantDisplacement, LONG_DOOR, LongDoor, NavAnswer, Summon, Vanish,
 };
 use super::power::energy::{Shock, ShockWeapons};
-use super::power::force::{
-    BUBBLE, BUBBLE_MOTION, Kinesis, RemotePower, SHELL, Shell, Strikes, THROW, Throw,
-};
+use super::power::force::{BUBBLE, Kinesis, RemotePower, SHELL, Shell, Strikes, THROW, Throw};
 use super::power::{
     ENDING, KNOWN_WORD, KnownPower, PowerBase, READY, RUNNING, drain, evaluate_domain,
 };
@@ -311,6 +310,7 @@ impl Plugin for CastPlugin {
                     tick_casters,
                     super::blast_live::tick_blasts,
                     super::barrier_live::tick_barriers,
+                    super::bubble_live::tick_bubbles,
                     play_cast_motions,
                 )
                     .chain()
@@ -360,7 +360,6 @@ struct CastContext {
     now: u32,
     caster: Vec3,
     heading: Vec3,
-    ground: Vec3,
     cursor: Option<Vec3>,
     clip_ms: Option<u32>,
     /// The body the AI casts at.
@@ -579,7 +578,6 @@ fn begin_cast(
             now: place.now,
             caster: root,
             heading: Vec3::new(place.yaw.sin(), 0.0, place.yaw.cos()),
-            ground: root,
             cursor: place.cursor,
             clip_ms: place.clip_ms,
             target: place.target,
@@ -981,19 +979,23 @@ fn create_force(
         ForceStart::Bubble { cost } => {
             let place = place_dome(
                 super::force::ForceKind::Bubble,
-                context.ground,
+                context.standing,
                 context.heading,
             );
-            let at = place.map_or([0.0; 3], |p| p.centre.to_array());
-            let (motion, held) = {
-                let body = &mut caster.body;
-                let motion = casting::start_cast(body, BUBBLE_MOTION, BUBBLE);
-                let held = PowerBase::new(BUBBLE).accrue(body, cost);
-                (motion, held)
-            };
-            let mut power = RemotePower::new(at);
+            let at = place.map_or(context.standing, |p| p.centre);
+            let (live, motion) = new_bubble(
+                &mut caster.body,
+                caster_entity,
+                at,
+                context.standing,
+                context.now,
+                draws,
+            );
+            let held = PowerBase::new(BUBBLE).accrue(&mut caster.body, cost);
+            let mut power = RemotePower::new(at.to_array());
             power.held = held;
-            debug!("force bubble: cast motion {motion}, the dome entity is not ported");
+            let entity = commands.spawn((Name::new("_ForceBubble"), live)).id();
+            debug!("force bubble at {at:?}: cast motion {motion}, entity {entity:?}");
             push_active(
                 caster,
                 BUBBLE,
@@ -1001,9 +1003,9 @@ fn create_force(
                 RUNNING,
                 ActiveClass::Remote(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            None
+            Some(entity)
         }
         ForceStart::Barricade { cost } => {
             let place = barricade_place(context, physics, roll);
@@ -1363,6 +1365,7 @@ fn tick_casters(
         Option<&mut Animator>,
     )>,
     walls: Query<&LiveBarricade>,
+    mut bubbles: Query<&mut LiveBubble>,
     ticks: Option<Res<BodyTicks>>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
@@ -1479,6 +1482,11 @@ fn tick_casters(
                     }
                 }
                 let entry = active.swap_remove(index);
+                if let Some(entity) = entry.entity
+                    && let Ok(mut bubble) = bubbles.get_mut(entity)
+                {
+                    end_bubble(&mut bubble);
+                }
                 if let Some(entity) = entry.entity
                     && !matches!(entry.class, ActiveClass::Remote(_))
                 {

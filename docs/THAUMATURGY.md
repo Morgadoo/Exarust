@@ -164,7 +164,14 @@ shell and opens ripples where they strike, and a struck character is
 shoved 40 cm (a knockback step here). The cap's frame (the dome's centre,
 z along the flattened facing) and one contact a body are Exarust's; the
 contact's balance drain and knock count, the sounds and the draw are not
-wired. The wave and torrent casts, whose creators only make an effect,
+wired. A bubble cast makes its dome entity (`thaum::bubble_live`) at the
+cast place, 120 cm across: its start plays cast motion 0x24 with id
+0x20207 and takes the hook (−1 to a cast's start, 0 to a call carrying
+bits 0x28); the grow passing 1 clears the hook and power id, and the
+power's ending (cast again, or the dome 20 m from its caster) breaks the
+dome, which shrinks over 700 ms and leaves. It holds its caster's limb
+spheres in and pushes other bodies' parts the shell covers out, with
+ripples and the dome's 40 cm shove (a knockback step here). The wave and torrent casts, whose creators only make an effect,
 make nothing yet (no class and no entity). A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
 combat factors the classes publish are still not read by `exa_combat`'s

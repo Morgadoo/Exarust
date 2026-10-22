@@ -36,6 +36,7 @@ pub mod arcs;
 pub mod barricade;
 pub mod barrier_live;
 pub mod blast_live;
+pub mod bubble_live;
 pub mod cast;
 pub mod casting;
 pub mod displacement;

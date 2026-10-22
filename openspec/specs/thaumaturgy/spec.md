@@ -1064,3 +1064,10 @@ A barrier cast SHALL make a dome entity of radius 100 that pays the power's cost
 #### Scenario: A duellist's barrier
 - **WHEN** a duellist with focus casts the barrier with a body's limb inside its shell
 - **THEN** the dome grows on the hook, drains focus, moves that limb and opens a ripple; the release clears the hook and the dome shrinks and leaves
+
+### Requirement: A cast bubble
+A bubble cast SHALL make a dome entity of radius 120 at the cast place whose start plays cast motion 0x24 with power id 0x20207 and takes a hook answering -1 to a cast's start. Standing SHALL clear the hook and power id; the power's ending SHALL break the dome, which shrinks and leaves. It SHALL hold its caster's parts in and push other bodies' covered parts out.
+
+#### Scenario: A duellist's bubble
+- **WHEN** a duellist with focus casts the bubble with a body's limb inside its reach, then casts it again once it stands
+- **THEN** the dome grows on the hook, moves that limb, stands with the hook cleared, then shrinks and leaves the scene

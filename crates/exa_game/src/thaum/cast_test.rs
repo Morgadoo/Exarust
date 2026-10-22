@@ -551,6 +551,85 @@ fn a_duellists_barrier_rises_pushes_and_ends() {
     assert_eq!(count::<LiveBarrier>(&mut app), 0);
 }
 
+/// A duellist's bubble grows where it was cast, pushes a body its shell
+/// covers out, stands, and breaks when it is cast again.
+#[test]
+fn a_duellists_bubble_grows_pushes_and_breaks_when_cast_again() {
+    use crate::effects::force_dome::Phase;
+    use crate::thaum::bubble_live::{BUBBLE_HOOK, LiveBubble};
+    use crate::thaum::power::force::{BUBBLE, BUBBLE_MOTION};
+    let mut app = new_app();
+    app.insert_resource(BodyTicks(0));
+    let target = app
+        .world_mut()
+        .spawn(Ragdoll::new(&[PartSetup {
+            bone: 9,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 1.1)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+        }]))
+        .id();
+    let mut caster = PowerCaster::new(&[BUBBLE]);
+    caster.body.focus = 1.0;
+    let npc = app
+        .world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id();
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BUBBLE);
+    app.update();
+    let body = cast_body(&app, npc);
+    assert_eq!(body.casting, BUBBLE);
+    assert_eq!(body.cast_motion, Some(BUBBLE_MOTION));
+    assert_eq!(body.cast_hook, Some(BUBBLE_HOOK));
+    let bubble = |app: &mut App| {
+        let mut q = app.world_mut().query::<&LiveBubble>();
+        q.iter(app.world())
+            .next()
+            .map(|b| (b.bubble.dome.phase, b.bubble.dome.at))
+    };
+    assert_eq!(
+        bubble(&mut app),
+        Some((Phase::Growing, Vec3::new(0.0, 100.0, 0.0)))
+    );
+    let start = app.world().get::<Ragdoll>(target).unwrap().parts[0].positions;
+    let tick = |app: &mut App| {
+        app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+        app.world_mut().run_schedule(FixedUpdate);
+    };
+    for _ in 0..110 {
+        tick(&mut app);
+    }
+    assert_eq!(bubble(&mut app).unwrap().0, Phase::Standing);
+    let body = cast_body(&app, npc);
+    assert_eq!((body.casting, body.cast_hook), (0, None));
+    assert_ne!(
+        app.world().get::<Ragdoll>(target).unwrap().parts[0].positions,
+        start
+    );
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BUBBLE);
+    app.update();
+    tick(&mut app);
+    tick(&mut app);
+    assert_eq!(bubble(&mut app).unwrap().0, Phase::Shrinking);
+    for _ in 0..80 {
+        tick(&mut app);
+    }
+    assert_eq!(count::<LiveBubble>(&mut app), 0);
+}
+
 /// A record's powers make its caster: the known pairs and the slots.
 #[test]
 fn a_records_powers_make_its_caster() {
