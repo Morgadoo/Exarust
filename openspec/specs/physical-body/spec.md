@@ -94,7 +94,7 @@ The system SHALL give a living physical body the animated pose of each tick on i
 - **THEN** its planted feet are carried round with it, within 0.1 cm of their anchors
 
 ### Requirement: Blows and daze
-The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
+The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy: energy − energy×share, the share at most 0.9 when it compares above that double, the result 0.05 when it compares below that double (a NaN stays). Energy recovers by 0.005 per tick up to the body's most: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
 
 #### Scenario: Stagger
 - **WHEN** a body's chest is shoved at 3 m/s with daze 0.7

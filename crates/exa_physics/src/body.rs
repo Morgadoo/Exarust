@@ -172,11 +172,17 @@ const VERTICAL_PUSH: f64 = 0.1;
 /// The least energy a blow leaves ([`daze_energy`]). Recovery adds the
 /// double 0.005 each tick, up to the body's most ([`recover_energy`]).
 const MIN_ENERGY: f32 = 0.05;
+/// The double that floor is compared with. The float 0.05 promotes to a
+/// hair above it, so a blow that lands on the float is not raised.
+const MIN_ENERGY_F64: f64 = 0.05;
 /// The most energy of a body that is not feral (a feral body's is less,
 /// [`BodyStats::max_energy`]).
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 pub const MAX_DAZE: f32 = 0.9;
+/// The double a daze is compared with before it is capped at [`MAX_DAZE`].
+/// The float 0.9 promotes to a hair under it, so that float is not capped.
+const MAX_DAZE_F64: f64 = 0.9;
 /// The support pins' gain factor a living body starts with, and below
 /// which it recovers 0.001 a tick unless it collapses. The start is the
 /// float 0.08, compared with the double 0.08, so a living body's first
@@ -1344,10 +1350,23 @@ pub fn recover_pins(gain: f32, collapsing: bool) -> f32 {
     }
 }
 
-/// A body's energy after a blow that dazes it by `daze`: it loses that
-/// share of its energy (at most 0.9 of it), never going under 0.05.
+/// A body's energy after a blow that dazes it by `daze`. The loss is
+/// `energy − energy × daze` in single precision. A daze that compares
+/// above the double 0.9 becomes 0.9; a result that compares below the
+/// double 0.05 becomes 0.05. A NaN stays, and a negative daze is not
+/// raised to 0.
 pub fn daze_energy(energy: f32, daze: f32) -> f32 {
-    (energy * (1.0 - daze.clamp(0.0, MAX_DAZE))).max(MIN_ENERGY)
+    let daze = if f64::from(daze) > MAX_DAZE_F64 {
+        MAX_DAZE
+    } else {
+        daze
+    };
+    let next = energy - energy * daze;
+    if f64::from(next) < MIN_ENERGY_F64 {
+        MIN_ENERGY
+    } else {
+        next
+    }
 }
 
 impl Default for Drive {
@@ -3503,6 +3522,8 @@ mod tests {
         };
         step(&mut body, 20);
         body.shove(1, Vec3::X * 3.0, 0.7);
+        // The blow's energy is the original's product, not a clamped share.
+        assert_eq!(body.drive.as_ref().unwrap().energy, 1.0 - 0.7);
         let pushed = step(&mut body, 10);
         assert!(pushed > 0.05, "barely moved: {pushed}");
         let back = step(&mut body, 400);
@@ -3510,6 +3531,29 @@ mod tests {
         // shove is not pulled back to the origin. The energy still recovers.
         assert!(back.abs() > 0.2, "pulled back to {back}");
         assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
+    }
+
+    /// A blow's energy loss is `energy − energy × daze`. A daze above the
+    /// double 0.9 becomes 0.9, and a result below the double 0.05 becomes
+    /// 0.05. A NaN stays, and a negative daze is not raised to 0.
+    #[test]
+    fn a_blow_leaves_energy_as_the_original_does() {
+        assert_eq!(daze_energy(1.0, 0.5), 0.5);
+        assert_eq!(daze_energy(1.0, 0.9), 1.0 - 0.9);
+        assert_eq!(daze_energy(1.0, 0.9f32.next_up()), 1.0 - 0.9);
+        assert_eq!(daze_energy(0.2, 0.9), MIN_ENERGY);
+        assert_eq!(daze_energy(0.04, 0.0), MIN_ENERGY);
+        assert_eq!(daze_energy(MIN_ENERGY, 0.0).to_bits(), MIN_ENERGY.to_bits());
+        assert!(daze_energy(f32::NAN, 0.5).is_nan());
+        assert!(daze_energy(0.8, f32::NAN).is_nan());
+        assert_eq!(daze_energy(0.5, -1.0), 0.5 - 0.5 * -1.0);
+        // The product is a multiply then a subtract, so a second blow on
+        // what the first left is not the single-precision complement.
+        let energy = f32::from_bits(0x3f26_cecc);
+        let daze = f32::from_bits(0x3f35_b8cc);
+        let once = daze_energy(energy, daze);
+        assert_eq!(once.to_bits(), 0x3e41_98b0);
+        assert_ne!(once, energy * (1.0 - daze));
     }
 }
 

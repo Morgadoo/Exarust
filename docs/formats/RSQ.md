@@ -402,8 +402,10 @@ How the original simulates a body (`exa_physics::body`):
     carried frame (its vertical is the world's). The
     original also multiplies a lean into the spine's rotation, which is
     not reproduced. Off its feet the push keeps only its vertical.
-  - Energy is the daze level. A blow takes up to 90 % of it, with a floor
-    of 0.05. It recovers 0.005 per tick up to the character's most energy
+  - Energy is the daze level. A blow leaves energy − energy × its share: a
+    share that compares above the double 0.9 becomes 0.9, and a result that
+    compares below the double 0.05 becomes 0.05 (a NaN stays). It recovers
+    0.005 per tick up to the character's most energy
     (1, or 1 − 0.1 × its feral level: a zombie's 0.9). A body starts at 1,
     so a feral one is cut to its most on its first tick, as the original's
     body tick clamps it. The daze (energy more than 0.05 under the most:
