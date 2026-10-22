@@ -115,6 +115,7 @@ fn idle_leg(ground: f32) -> LegHeight {
         contact: ground + 10.0,
         stance: 91.4 + SOLE,
         length: 85.15,
+        lifted: false,
     }
 }
 
@@ -192,6 +193,7 @@ fn the_other_foot_is_blended_in() {
         contact,
         stance: 40.0,
         length: 85.15,
+        lifted: false,
     };
     // Uncapped, 40 cm over each foot's ground, the other foot's ground
     // 10 cm higher, its contact 10 cm over it: the spread is the lower
@@ -230,6 +232,82 @@ fn the_other_foot_is_blended_in() {
         99.83,
         1e-3
     ));
+}
+
+/// A lifted lowest foot blends by the whole weight, a lifted other foot by
+/// none, and the other's flag wins when both are lifted. The 40–60 cm
+/// slope scales that weight. Past 60 cm, and when the other foot has no
+/// ground, nothing is blended. Moving skips the cap and the raise.
+#[test]
+fn a_lifted_foot_sets_the_blend_weight() {
+    let foot = |ground: f32, contact: f32, stance: f32, lifted: bool| LegHeight {
+        ground: Some(ground),
+        contact,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    // Spread 20 cm: weights 1, 0 and 0.5. Heights 40 and 80, plus the 5 cm
+    // raise, under the cap.
+    let pair = |low: bool, other: bool| [foot(0.0, 10.0, 40.0, low), foot(0.0, 10.0, 80.0, other)];
+    assert_eq!(
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, false, 1.0),
+        85.0
+    );
+    assert_eq!(
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, false, 1.0),
+        45.0
+    );
+    assert_eq!(
+        target_height(&pair(true, true), SOLE, 0.0, 100.0, false, 1.0),
+        45.0
+    );
+    assert_eq!(
+        target_height(&pair(false, false), SOLE, 0.0, 100.0, false, 1.0),
+        65.0
+    );
+    assert_eq!(
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, true, 1.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, true, 1.0),
+        40.0
+    );
+    // Spread 50 cm: the slope takes 0.05 a cm of the weight, so a lifted
+    // lowest foot blends by 0.5 (65 cm) and a planted pair by 0.25 (55).
+    let sloped = |low: bool| [foot(0.0, 30.0, 40.0, low), foot(0.0, 20.0, 80.0, false)];
+    assert_eq!(
+        target_height(&sloped(true), SOLE, 0.0, 100.0, false, 1.0),
+        65.0
+    );
+    assert_eq!(
+        target_height(&sloped(false), SOLE, 0.0, 100.0, false, 1.0),
+        55.0
+    );
+    assert_eq!(
+        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0),
+        60.0
+    );
+    // Spread 70 cm: the flag does not blend past 60.
+    let wide = [foot(0.0, 40.0, 40.0, true), foot(0.0, 30.0, 80.0, false)];
+    assert_eq!(target_height(&wide, SOLE, 0.0, 100.0, false, 1.0), 45.0);
+    // The higher foot is the other one even when it is listed first. No
+    // ground still leaves the lowest foot's height, lifted or not.
+    let swapped = [foot(10.0, 20.0, 80.0, false), foot(0.0, 10.0, 40.0, true)];
+    assert_eq!(target_height(&swapped, SOLE, 0.0, 100.0, false, 1.0), 95.0);
+    let unreachable = [
+        foot(0.0, 10.0, 40.0, true),
+        LegHeight {
+            ground: None,
+            stance: 80.0,
+            ..foot(10.0, 20.0, 80.0, false)
+        },
+    ];
+    assert_eq!(
+        target_height(&unreachable, SOLE, 0.0, 100.0, false, 1.0),
+        45.0
+    );
 }
 
 /// Standing on its legs the lift holds a body up where f = 1, its pelvis

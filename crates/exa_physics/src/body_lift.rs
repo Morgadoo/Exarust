@@ -16,12 +16,13 @@
 //! The target is the lowest foot's ground plus the clip root's height over
 //! the ankle and the foot's ground offset (its sole height standing),
 //! blended with the other foot's, capped at the ground plus sole plus leg
-//! length, plus 5 cm. A full crouch is 60 cm times the body scale over
-//! that ground. The rules are the original's, in its centimetres and
-//! ticks (evidence: `docs/formats/RSQ.md`, Physical body). Each foot's
-//! ground is its own: the controller's floor does not raise it. The leg
-//! bend stores the lift term before clamping and lowers an unanchored
-//! target by twice that (`bend`).
+//! length, plus 5 cm. The blend's weight is a half, all of it when the
+//! lowest foot is lifted and none when the other is. A full crouch is 60
+//! cm times the body scale over that ground. The rules are the original's,
+//! in its centimetres and ticks (evidence: `docs/formats/RSQ.md`, Physical
+//! body). Each foot's ground is its own: the controller's floor does not
+//! raise it. The leg bend stores the lift term before clamping and lowers
+//! an unanchored target by twice that (`bend`).
 //! (Included from body.rs: `#[path = "body_lift.rs"] mod lift;`)
 
 use bevy::math::Affine3A;
@@ -52,10 +53,14 @@ const TONE_FLOOR: f32 = 0.5;
 /// A crouching body's target is this high over its ground at full crouch
 /// (cm), times the body scale.
 const CROUCHED_HEIGHT: f32 = 60.0;
-/// The other foot's target is blended in with this weight standing, by
-/// none once the feet's spread (cm) reaches the second, by all of it under
-/// the first; between, by 0.05 a cm.
+/// The other foot's target is blended in with this weight, by all of it
+/// when the lowest foot is lifted and by none when the other is (that
+/// flag wins when both are), by none once the feet's spread (cm) reaches
+/// the second, and by all of the weight under the first; between, by 0.05
+/// a cm times the weight.
 const STANDING_BLEND: f32 = 0.5;
+/// A lifted lowest foot hands the blend this weight before the slope.
+const LIFTED_LOWEST: f32 = 1.0;
 const BLEND_FULL: f32 = 40.0;
 const BLEND_NONE: f32 = 60.0;
 const BLEND_SLOPE: f64 = 0.05;
@@ -143,24 +148,29 @@ pub(super) fn lift_factor(h: f32, rise: f32, energy: f32, bearing: &Bearing) -> 
 
 /// One leg as the target height reads it, in cm: its ground (none out of
 /// reach), its contact's height, the clip root's height over its animated
-/// ankle plus its ground offset, and its length.
+/// ankle plus its ground offset, its length, and whether its foot is
+/// lifted for the swing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct LegHeight {
     pub ground: Option<f32>,
     pub contact: f32,
     pub stance: f32,
     pub length: f32,
+    /// The foot contact's lifted bit: the swing, only pushed up.
+    pub lifted: bool,
 }
 
 /// The target pelvis height (cm) from the first two legs, crouching by
 /// `crouch`, with the feet's sole height `sole` and the pelvis at `pelvis`:
 /// each leg's is crouch·(60·scale) + (1 − crouch)·stance + ground, `scale`
 /// the body scale. It is the lowest foot L's, blended toward the other
-/// O's by half (none when O has no ground), fully while O's contact height
-/// less its ground plus L's contact height is under 40 cm, by 0.05 a cm of
-/// it less over 40, not at all from 60 (the original's test, as read).
-/// Standing, it is capped at L's ground plus sole plus leg length and
-/// raised 5 cm; moving, neither. [`NO_TARGET`] when no foot has ground.
+/// O's by half, by 1 when L is lifted and by 0 when O is (O's flag wins
+/// when both are; 0 as well when O has no ground).
+/// The weight applies in full while O's contact height less its ground
+/// plus L's contact height is under 40 cm, by 0.05 a cm of it less over
+/// 40, not at all from 60 (the original's test, as read). Standing, it is
+/// capped at L's ground plus sole plus leg length and raised 5 cm; moving,
+/// neither. [`NO_TARGET`] when no foot has ground.
 pub(super) fn target_height(
     legs: &[LegHeight],
     sole: f32,
@@ -188,7 +198,11 @@ pub(super) fn target_height(
     let l = &legs[i];
     let mut target = value(l, lowest);
     if let Some(o) = legs.get(1 - i) {
+        // The other's lifted flag is read second, so it wins when both
+        // feet are in the swing. A foot with no ground is not blended.
         let (weight, ground) = match o.ground {
+            Some(g) if o.lifted => (0.0, g),
+            Some(g) if l.lifted => (LIFTED_LOWEST, g),
             Some(g) => (STANDING_BLEND, g),
             None => (0.0, lowest),
         };
@@ -256,6 +270,7 @@ impl Ragdoll {
                     contact: cm(parts[leg.shin].point(&leg.contact).y),
                     stance: cm(over_ankle + leg.offset),
                     length: cm(leg.length),
+                    lifted: leg.state.has(feet::FootState::LIFTED),
                 }
             })
             .collect();

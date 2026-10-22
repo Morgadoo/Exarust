@@ -386,7 +386,9 @@ ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); a
 full crouch is 60 cm times the body scale over that ground before the
 standing raise; moving, the offset stands on the walk's first-key lowest
 ankle, on that key slerped 0.7 toward the run while the run flag is set,
-and on the run's first key while the sprint latch is set; the
+and on the run's first key while the sprint latch is set; a lifted
+lowest foot hands the two-foot blend its full weight and a lifted other
+foot none (the other wins when both are lifted); the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
 pins once and the pelvis pin twice toward the frame in each iteration. The

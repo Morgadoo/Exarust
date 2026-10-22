@@ -288,19 +288,22 @@ How the original simulates a body (`exa_physics::body`):
     clip's first key (the root lerped the same way) while the run flag is
     set, and the Run clip's first key while the sprint latch is set (the
     latch wins when both are set). Exarust measures those three poses and
-    picks by the same flags. The target
-    is the lowest foot's, blended by half toward the other's while the
+    picks by the same flags.     The target
+    is the lowest foot's, blended toward the other's by half while the
     other's contact height over its ground plus the lowest foot's contact
     height is under 40 cm, by 0.05 a cm less up to 60 (the original's test
     as read: on a floor high in the world nothing is blended), and not when
-    the other foot has no ground. Standing, it is capped at that ground +
-    sole + leg length and raised 5 cm; moving, neither. With no ground under
-    any foot it is −1000 m: no lift. An idle human (the clip root 91.4 cm
-    over the ankle, sole 9.68 cm) is capped at ground + 99.83 cm and stands
-    with its pelvis at ground + 101.5 cm. A full crouch is 60 cm times the
-    body scale over that ground. Not reproduced: the stepping
-    (h + 10, 70 cm crouched in place of 60) and resting (h + 20) variants,
-    the walking blend weights and swing flags, and the gait-smoothed ground (C19).
+    the other foot has no ground. A lifted lowest foot uses 1 for that
+    weight and a lifted other foot uses 0 (its flag wins when both are
+    lifted); the slope scales whichever weight the flags leave. Standing, it
+    is capped at that ground + sole + leg length and raised 5 cm; moving,
+    neither. With no ground under any foot it is −1000 m: no lift. An idle
+    human (the clip root 91.4 cm over the ankle, sole 9.68 cm) is capped at
+    ground + 99.83 cm and stands with its pelvis at ground + 101.5 cm. A
+    full crouch is 60 cm times the body scale over that ground. Not
+    reproduced: the stepping (h + 10, 70 cm crouched in place of 60) and
+    resting (h + 20) variants, the walking blend weights, and the
+    gait-smoothed ground (C19).
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
