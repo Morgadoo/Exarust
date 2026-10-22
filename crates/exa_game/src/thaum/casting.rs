@@ -398,6 +398,16 @@ pub fn start_cast(body: &mut CastBody, motion: u32, id: u32) -> bool {
     true
 }
 
+/// The engine's cast end: the hook and the power id go, and a casting
+/// condition becomes 0.
+pub fn end_cast(body: &mut CastBody) {
+    body.cast_hook = None;
+    body.casting = 0;
+    if body.condition == CASTING {
+        body.condition = 0;
+    }
+}
+
 /// An instant cast's focus: added to the spent focus.
 pub fn spend(body: &mut CastBody, cost: f32) {
     body.spent += cost;

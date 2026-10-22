@@ -20,13 +20,18 @@
 //!   strength. Ending plays `thmfrc_brf` at volume 0.3 (pitch
 //!   `0.6 + 0.4·roll`).
 //! - **Kinesis** ([`Kinesis`]): a sustained power that starts cast motion
-//!   0x23, installs the pick callbacks and, each tick, spends its cost and
-//!   steers the held body toward the aim. The velocity is the unit
+//!   0x23 with a cast hook keeping events 8 and 1, installs the pick
+//!   callbacks and, each tick, spends its cost and steers the held body
+//!   toward the aim. Any other hook event, or a focus shortfall, ends it.
+//!   Handing its body to a throw ends it without ending the cast, and its
+//!   hook then also keeps a cast's start, so the throw plays on in its
+//!   motion. The velocity is the unit
 //!   direction to the aim (the direction times 0.02 within 50 cm) times the
 //!   body's reach (half its radius plus one); the stick or the turn keys
 //!   rotate it by `reach² · 0.001` a tick; a held body remembers its user
 //!   for 2 s. A pick holds the body at a third of its extents' sum.
-//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23) and aims
+//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23, with a
+//!   hook keeping event 8 that ends the throw for any other) and aims
 //!   100 cm above it, steers it there at `mass/(mass + 0.1)` of the unit
 //!   direction (a fiftieth of the direction within 50 cm) while spending
 //!   `tick · cost · 0.00125` a tick, drops the shell after 800 ms and coasts
@@ -38,7 +43,7 @@
 //! Kinesis steering and the Throw phases, read from `Exanima.exe`.
 
 use super::PowerBase;
-use crate::thaum::casting::{CastBody, CastHook, start_cast};
+use crate::thaum::casting::{CastBody, CastHook, end_cast, spend_tick, start_cast};
 use crate::thaum::engine::dist_sq;
 
 pub use crate::thaum::force::{BARRICADE, BARRICADE_MOTION, KINESIS, STRIKES, STRIKES_MOTION};
@@ -57,6 +62,12 @@ pub const THROW_MOTION: u32 = 0x23;
 /// The shell's cast hook: 0 to an event carrying bits 0x29, so no other
 /// cast starts while it is set; the raise clip's end drops it.
 pub const SHELL_HOOK: CastHook = CastHook { keeps: 0x29 };
+/// Kinesis's cast hook keeps events 8 and 1; any other ends the kinesis.
+/// Once its body went to a throw it also answers 0 to a cast's start.
+pub const KINESIS_HOOK: CastHook = CastHook { keeps: 0x9 };
+pub const KINESIS_HANDED_HOOK: CastHook = CastHook { keeps: 0x29 };
+/// Throw's cast hook keeps event 8; any other ends the throw.
+pub const THROW_HOOK: CastHook = CastHook { keeps: 0x8 };
 
 /// The squared distance at which a bubble or a barricade ends (20 m, cm²).
 pub const REMOTE_RANGE_SQ: f32 = 4.0e6;
@@ -385,6 +396,11 @@ pub struct Kinesis {
     pub state: i32,
     pub held: f32,
     pub target: Option<u64>,
+    /// The caster's cast hook is this kinesis's.
+    pub hooked: bool,
+    /// The held body went to a throw: the hook keeps the cast motion for
+    /// it, and the kinesis's end leaves the cast running.
+    pub handed: bool,
 }
 
 impl Kinesis {
@@ -398,11 +414,49 @@ impl Kinesis {
             state: super::READY,
             held: 0.0,
             target: None,
+            hooked: false,
+            handed: false,
         }
+    }
+
+    /// The hook this kinesis has on its caster, if the caster still has it.
+    fn own_hook(&self) -> CastHook {
+        if self.handed {
+            KINESIS_HANDED_HOOK
+        } else {
+            KINESIS_HOOK
+        }
+    }
+
+    /// Whether the caster called this kinesis's hook since its last tick
+    /// with an event it does not keep: the hook is gone or another cast
+    /// runs. The hook then ends the kinesis.
+    fn hook_called(&mut self, body: &CastBody) -> bool {
+        let called =
+            self.hooked && (body.casting != KINESIS || body.cast_hook != Some(self.own_hook()));
+        if called {
+            self.hooked = false;
+            self.state = super::ENDING;
+        }
+        called
+    }
+
+    /// Hands the held body to a throw: the kinesis ends without ending the
+    /// cast, and its hook now also answers 0 to a cast's start, so the
+    /// throw plays on in its motion. Returns the body handed.
+    pub fn hand_off(&mut self, body: &mut CastBody) -> Option<u64> {
+        let target = self.target.take();
+        if self.hooked && body.cast_hook == Some(KINESIS_HOOK) {
+            body.cast_hook = Some(KINESIS_HANDED_HOOK);
+        }
+        self.handed = true;
+        self.state = super::ENDING;
+        target
     }
 
     /// One control tick. `tick_cost` is what a running tick spends.
     pub fn control(&mut self, event: i32, body: &mut CastBody, tick_cost: f32) -> KinesisStep {
+        self.hook_called(body);
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
@@ -417,6 +471,10 @@ impl Kinesis {
         }
         if self.state == super::READY {
             let motion = start_cast(body, KINESIS_MOTION, KINESIS);
+            if motion {
+                body.cast_hook = Some(KINESIS_HOOK);
+                self.hooked = true;
+            }
             self.state = super::RUNNING;
             return KinesisStep {
                 result: 0,
@@ -425,7 +483,13 @@ impl Kinesis {
                 drain: false,
             };
         }
-        super::drain(body, tick_cost);
+        if spend_tick(body, tick_cost) {
+            if self.hooked {
+                self.hooked = false;
+                self.state = super::ENDING;
+            }
+            end_cast(body);
+        }
         KinesisStep {
             result: 0,
             motion: false,
@@ -597,6 +661,8 @@ pub struct Throw {
     pub aim: [f32; 3],
     /// The coast direction once the shell drops (unit length).
     pub coast: [f32; 3],
+    /// The caster's cast hook is this throw's.
+    pub hooked: bool,
 }
 
 impl Throw {
@@ -609,6 +675,7 @@ impl Throw {
             tick_cost: 0.0,
             aim: [0.0; 3],
             coast: [0.0; 3],
+            hooked: false,
         }
     }
 
@@ -690,6 +757,10 @@ impl Throw {
             restore: false,
             hold: false,
         };
+        if self.hooked && (body.casting != THROW || body.cast_hook != Some(THROW_HOOK)) {
+            self.hooked = false;
+            self.state = super::ENDING;
+        }
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
@@ -700,6 +771,10 @@ impl Throw {
         }
         if self.state == super::READY {
             step.motion = start_cast(body, THROW_MOTION, THROW);
+            if step.motion {
+                body.cast_hook = Some(THROW_HOOK);
+                self.hooked = true;
+            }
             if self.phase == THROW_LIFT {
                 self.lift(view.target_at, view.tick_ms);
                 step.lift = true;
@@ -711,7 +786,13 @@ impl Throw {
         let share = throw_share(view.mass);
         if self.phase == THROW_FLY {
             step.velocity = Some(throw_steer(view.target_at, self.aim, share));
-            super::drain(body, self.tick_cost);
+            if spend_tick(body, self.tick_cost) {
+                if self.hooked {
+                    self.hooked = false;
+                    self.state = super::ENDING;
+                }
+                end_cast(body);
+            }
             // The stamp and the delay are added in 64 bits.
             if u64::from(self.stamp) + u64::from(THROW_DROP_MS) < u64::from(now) {
                 self.phase = THROW_FALL;
@@ -891,6 +972,75 @@ mod tests {
         let end = kinesis.control(0xa, &mut body, 0.001);
         assert_eq!(end.result, 2);
         assert_eq!(kinesis.target, None);
+    }
+
+    #[test]
+    fn the_kinesis_hook_ends_it_for_any_other_event() {
+        let mut body = CastBody {
+            focus: 1.0,
+            ..CastBody::default()
+        };
+        let mut kinesis = Kinesis::new();
+        assert!(kinesis.control(0, &mut body, 0.001).motion);
+        assert_eq!(body.cast_hook, Some(KINESIS_HOOK));
+        assert_eq!(KINESIS_HOOK.answer(8), 0);
+        assert_eq!(KINESIS_HOOK.answer(1), 0);
+        assert!(
+            start_cast(&mut body, 0x22, 0x201),
+            "a cast start is answered -1"
+        );
+        assert_eq!(kinesis.control(0, &mut body, 0.001).result, 2);
+
+        let mut body = CastBody {
+            focus: 0.0015,
+            ..CastBody::default()
+        };
+        let mut short = Kinesis::new();
+        short.control(0, &mut body, 0.001);
+        short.control(0, &mut body, 0.001);
+        assert_eq!(short.state, super::super::ENDING);
+        assert_eq!((body.casting, body.cast_hook), (0, None));
+
+        let mut body = CastBody::default();
+        let mut handing = Kinesis::new();
+        handing.control(0, &mut body, 0.0);
+        handing.target = Some(7);
+        assert_eq!(handing.hand_off(&mut body), Some(7));
+        assert_eq!(body.cast_hook, Some(KINESIS_HANDED_HOOK));
+        assert!(
+            !start_cast(&mut body, THROW_MOTION, THROW),
+            "the throw keeps the motion"
+        );
+        assert_eq!(handing.control(0, &mut body, 0.0).result, 2);
+        assert_eq!(body.casting, KINESIS);
+    }
+
+    #[test]
+    fn the_throw_hook_ends_it_for_any_event_but_8() {
+        let view = ThrowView {
+            target_at: [0.0, 50.0, 0.0],
+            mass: 0.9,
+            caster_point: [500.0, 50.0, 0.0],
+            tick_ms: 12,
+        };
+        let mut body = CastBody::default();
+        let mut power = Throw::new(0.1);
+        assert!(power.control(0, 0, &view, &mut body).motion);
+        assert_eq!(body.cast_hook, Some(THROW_HOOK));
+        assert_eq!(THROW_HOOK.answer(8), 0);
+        assert!(crate::thaum::casting::motion_replaced(&mut body));
+        let end = power.control(0, 12, &view, &mut body);
+        assert!(end.result == 2 && end.restore);
+
+        let mut body = CastBody {
+            focus: Throw::tick_cost(12, 0.1) * 1.5,
+            ..CastBody::default()
+        };
+        let mut short = Throw::new(0.1);
+        short.control(0, 0, &view, &mut body);
+        short.control(0, 12, &view, &mut body);
+        assert_eq!(short.state, super::super::ENDING);
+        assert_eq!((body.casting, body.cast_hook), (0, None));
     }
 
     #[test]

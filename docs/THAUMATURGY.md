@@ -204,12 +204,14 @@ run and the attacks). The shell's raise, Force Strikes and the barricade
 install a hook answering 0 to bits 0x29 once their cast motion starts,
 and the bubble's answers to bits 0x28, so none lets another cast start
 until its cast clip ends (a strikes cast whose motion is refused makes no
-strikes, though it still answers 1); the blast, wave, torrent and barrier
+strikes, though it still answers 1). Kinesis's hook keeps events 8 and
+1 and the throw's event 8; any other event, a focus shortfall included,
+ends that power. A throw from a kinesis ends the kinesis without ending
+the cast, and the kinesis's hook then also keeps a cast's start, so the
+throw plays on in the kinesis's motion. The blast, wave, torrent and barrier
 hooks answer −1 to everything, and their effect fizzles or ends when
 called. The
-combat factors the classes publish are still not read by `exa_combat`'s
-hit formula, and the player swap, the spirit body's character generation,
-the kinesis aim sweep and the effect meshes are descriptions here, not
+player swap, the spirit body's character generation, the kinesis aim sweep and the effect meshes are descriptions here, not
 spawned entities.
 
 ## Force

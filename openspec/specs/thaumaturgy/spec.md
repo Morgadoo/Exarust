@@ -1096,3 +1096,7 @@ A cast hook SHALL answer 0 to an event carrying any of its kept bits and -1 to a
 #### Scenario: Strikes take their hook with the motion
 - **WHEN** Force Strikes or a barricade starts its cast motion
 - **THEN** its hook refuses another cast until the clip ends, and a strikes cast whose motion is refused makes no strikes
+
+#### Scenario: A kinesis hands its body to a throw
+- **WHEN** a throw is cast while a kinesis holds a body
+- **THEN** the kinesis ends without ending the cast, its hook refuses other casts, and the throw plays on in the kinesis's motion

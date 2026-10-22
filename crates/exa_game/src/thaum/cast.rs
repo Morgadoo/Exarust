@@ -173,6 +173,12 @@ impl ActiveClass {
             ActiveClass::Vanish(_) | ActiveClass::LongDoor(_) | ActiveClass::Summon(_) => None,
         }
     }
+
+    /// Whether the class's end leaves the cast motion running: a kinesis
+    /// whose body went to a throw.
+    fn keeps_cast(&self) -> bool {
+        matches!(self, ActiveClass::Kinesis(p) if p.handed)
+    }
 }
 
 /// A caster's powers: the body the front ends read, the powers the player
@@ -1116,10 +1122,23 @@ fn create_force(
             None
         }
         ForceStart::Throw { cost, from_kinesis } => {
+            let mut cast_id = THROW;
+            if from_kinesis {
+                let PowerCaster { body, active, .. } = &mut *caster;
+                for entry in active.iter_mut() {
+                    if let ActiveClass::Kinesis(kinesis) = &mut entry.class
+                        && kinesis.state != ENDING
+                    {
+                        kinesis.hand_off(body);
+                        entry.state = ENDING;
+                        cast_id = KINESIS;
+                    }
+                }
+            }
             push_active(
                 caster,
                 THROW,
-                THROW,
+                cast_id,
                 READY,
                 ActiveClass::Throw(Throw::new(cost)),
                 0.0,
@@ -1514,7 +1533,7 @@ fn tick_casters(
             }
             if result & 2 != 0 {
                 // The cast motion ends with the power: its id and hook go.
-                if body.casting == entry.cast_id {
+                if body.casting == entry.cast_id && !entry.class.keeps_cast() {
                     body.casting = 0;
                     body.cast_hook = None;
                     body.condition &= !casting::CASTING;
