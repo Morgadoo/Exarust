@@ -236,9 +236,9 @@ pub struct Bearing {
     pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
-    /// How high (m) its lowest ankle sits over its floor in the first pose
-    /// of its walk: a moving body's feet are grounded, and its pelvis held,
-    /// from there.
+    /// How high (m) its lowest ankle sits in the gait pose a moving body
+    /// stands on: the walk's first key, that key slerped 0.7 of the way
+    /// toward the run's first key, or the run's first key.
     pub gait_floor: Option<f32>,
     /// It collapses from a lethal wound: its frame follows its pelvis
     /// exactly, its lift fades by its tone squared, its arms' stiffness is

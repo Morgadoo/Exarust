@@ -283,9 +283,12 @@ How the original simulates a body (`exa_physics::body`):
     Each leg's is its ground + crouch·60·scale + (1 − crouch)·(the clip root's
     height over the leg's animated ankle + its ground offset). The ground
     offset is the sole height standing; moving, the ankle's height over the
-    lowest ankle of the moveset's walk in its first pose, plus the sole
-    (the original keeps that lowest ankle for walking, jogging and
-    sprinting blends; Exarust's moving bodies use the walk's). The target
+    lowest ankle of a gait pose, plus the sole. That pose is the moveset's
+    Walk at its first key, that key slerped 0.7 of the way toward the Run
+    clip's first key (the root lerped the same way) while the run flag is
+    set, and the Run clip's first key while the sprint latch is set (the
+    latch wins when both are set). Exarust measures those three poses and
+    picks by the same flags. The target
     is the lowest foot's, blended by half toward the other's while the
     other's contact height over its ground plus the lowest foot's contact
     height is under 40 cm, by 0.05 a cm less up to 60 (the original's test
@@ -470,7 +473,7 @@ controllers move first. Then each living body's character tick runs the
 one body's whole tick before the next: posture says what the body does
 (the condition, the collapse's dying tick and the falls are still decided
 over every body just before the character ticks, in that order);
-movement measures the walk's lowest ankle while it moves, leaves its
+movement measures the gait pose's lowest ankle while it moves, leaves its
 controller's step out of the carry and measures its balance and the
 ground under its feet (below; the original measures them in its carry
 stage, after the sampler); the sampler takes the capture of a clip started

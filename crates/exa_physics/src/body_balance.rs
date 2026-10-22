@@ -135,7 +135,7 @@ pub struct Leg {
     pub length: f32,
     /// How high (m) its contact stands over its ground when the foot is
     /// down: the feet's sole height standing; moving, also its animated
-    /// ankle's height over the walk's lowest (set by the lift).
+    /// ankle's height over the gait pose's lowest (set by the lift).
     pub offset: f32,
     /// The ground under the foot this tick (m), smoothed (it rises at once
     /// and falls by the gait's share, at once outside the walk), or none

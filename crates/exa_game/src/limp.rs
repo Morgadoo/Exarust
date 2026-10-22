@@ -24,7 +24,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
     ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, TickedClips, follow_up_blend,
-    rising_frames, standing_frames,
+    rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
@@ -593,9 +593,38 @@ pub(crate) fn bearing(
     }
 }
 
-/// How high (m) the lowest ankle of `body` sits over its floor in the first
-/// pose of its moveset's walk, as the original measures a moving body's
-/// gait from the first key of its walk.
+/// Which precomputed gait pose a moving body's ground offset measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnkleSample {
+    /// The walk's first key.
+    Walk,
+    /// That key slerped 0.7 of the way toward the run's first key.
+    Jog,
+    /// The run's first key.
+    Sprint,
+}
+
+/// The sprint latch selects the run's first key. The run flag, without the
+/// latch, selects the walk's first key slerped 0.7 of the way toward it.
+/// Any other moving body keeps the walk's first key.
+pub(crate) fn ankle_sample(flags: u32) -> AnkleSample {
+    use exa_physics::body::locomotion::flags::{RUN, SPRINT};
+    if flags & SPRINT != 0 {
+        AnkleSample::Sprint
+    } else if flags & RUN != 0 {
+        AnkleSample::Jog
+    } else {
+        AnkleSample::Walk
+    }
+}
+
+/// How far a jog's walk key is slerped toward the run key.
+const JOG_TOWARD_RUN: f32 = 0.7;
+
+/// How high (m) the lowest ankle of `body` sits in `sample`: the walk's
+/// first key, that key slerped 0.7 of the way toward the run's first key,
+/// or the run's first key. A missing run clip keeps the walk's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn gait_floor(
     motions: &Motions,
     anim: &Animator,
@@ -604,9 +633,9 @@ pub(crate) fn gait_floor(
     root: Entity,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
+    sample: AnkleSample,
 ) -> Option<f32> {
-    let walk = motions.clip(anim, "Walk")?;
-    let pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
+    let pose = gait_pose(motions, anim, stature, sample)?;
     body.legs()
         .iter()
         .map(|leg| {
@@ -614,6 +643,40 @@ pub(crate) fn gait_floor(
             shin.transform_point3(leg.point).y
         })
         .reduce(f32::min)
+}
+
+/// The pose `sample` measures. The jog lerps the root the same way it
+/// slerps each bone; a missing run keeps the walk.
+fn gait_pose(
+    motions: &Motions,
+    anim: &Animator,
+    stature: f32,
+    sample: AnkleSample,
+) -> Option<ClipPose> {
+    let walk = motions.clip(anim, "Walk")?;
+    let walk_pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
+    let run_pose = || {
+        let run = motions.clip(anim, "Run")?;
+        ClipPose::at(run, run.keys.first()?.time, stature, true)
+    };
+    Some(match sample {
+        AnkleSample::Walk => walk_pose,
+        AnkleSample::Jog => match run_pose() {
+            Some(run) => blend_first_keys(walk_pose, run, JOG_TOWARD_RUN),
+            None => walk_pose,
+        },
+        AnkleSample::Sprint => run_pose().unwrap_or(walk_pose),
+    })
+}
+
+/// The walk's first key slerped `t` of the way toward the run's, the root
+/// lerped the same way. A bone the run does not pose keeps the walk's.
+fn blend_first_keys(mut walk: ClipPose, run: ClipPose, t: f32) -> ClipPose {
+    for (q, end) in walk.rotations.iter_mut().zip(&run.rotations) {
+        *q = slerp(*q, *end, t).normalize();
+    }
+    walk.root = walk.root.lerp(run.root, t);
+    walk
 }
 
 /// Where `pose` puts `part` in the space of its body root `root`: the
@@ -765,6 +828,127 @@ pub(crate) mod tests {
             }],
         };
         Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// Walk and run whose first keys differ only in the root's height.
+    fn walk_and_run(run: bool) -> Motions {
+        let key = |y: f32| Key {
+            time: 0.0,
+            root: [0.0, y, 0.4],
+            rotations: vec![[0.0, 0.0, 0.0, 1.0]],
+            flags: vec![0],
+        };
+        let walk = Clip {
+            mode: 0,
+            keys: vec![key(1.0)],
+        };
+        let run_clip = run.then(|| Clip {
+            mode: 0,
+            keys: vec![key(2.0)],
+        });
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![
+                Action {
+                    name: "Walk".into(),
+                    params: [0, 0],
+                },
+                Action {
+                    name: "Run".into(),
+                    params: [0, 0],
+                },
+            ],
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(walk), run_clip],
+            }],
+        };
+        Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// A pelvis over a shin whose ankle is the shin's origin, 0.5 m under
+    /// the pelvis rest. Returns the body root.
+    fn ankle_body(world: &mut World) -> Entity {
+        let root = world.spawn(Transform::IDENTITY).id();
+        let pelvis = world
+            .spawn((
+                Transform::from_translation(Vec3::Y),
+                BodyPart {
+                    bone: 1,
+                    rest: Transform::from_translation(Vec3::Y),
+                },
+                ChildOf(root),
+            ))
+            .id();
+        let shin_at = Vec3::new(0.0, -0.5, 0.0);
+        let shin = world
+            .spawn((
+                Transform::from_translation(shin_at),
+                BodyPart {
+                    bone: 3,
+                    rest: Transform::from_translation(shin_at),
+                },
+                ChildOf(pelvis),
+            ))
+            .id();
+        let part = |bone, entity, parent, origin, foot| PartSetup {
+            bone,
+            entity,
+            parent,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin,
+            links: Vec::new(),
+            foot,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let body = Ragdoll::new(&[
+            part(1, pelvis, None, Vec3::ZERO, None),
+            part(3, shin, Some(0), shin_at, Some(Vec3::ZERO)),
+        ]);
+        world
+            .entity_mut(root)
+            .insert((body, Animator::new("Default", "Walk")));
+        root
+    }
+
+    /// The sprint latch stands on the run's first key, the run flag on the
+    /// walk key slerped 0.7 of the way there, and a walk on the walk key.
+    /// The root's z is left out, so a root at z 0.4 does not move the ankle.
+    #[test]
+    fn a_moving_body_stands_on_the_gait_its_flags_name() {
+        use bevy::ecs::system::{Query, SystemState};
+        use exa_physics::body::locomotion::flags::{RUN, SPRINT};
+        assert_eq!(ankle_sample(0), AnkleSample::Walk);
+        assert_eq!(ankle_sample(RUN), AnkleSample::Jog);
+        assert_eq!(ankle_sample(SPRINT), AnkleSample::Sprint);
+        assert_eq!(ankle_sample(RUN | SPRINT), AnkleSample::Sprint);
+
+        let mut world = World::new();
+        ankle_body(&mut world);
+        world.insert_resource(walk_and_run(true));
+        let ankle = |world: &mut World, sample| {
+            let mut state = SystemState::<(
+                Res<Motions>,
+                Query<(Entity, &Ragdoll, &Animator)>,
+                Query<&ChildOf>,
+                Query<(&Transform, Option<&BodyPart>)>,
+            )>::new(world);
+            let (motions, bodies, parents, nodes) = state.get(world).unwrap();
+            let (root, body, anim) = bodies.single().unwrap();
+            gait_floor(&motions, anim, 1.0, body, root, &parents, &nodes, sample)
+        };
+        assert_eq!(ankle(&mut world, AnkleSample::Walk), Some(0.5));
+        assert_eq!(ankle(&mut world, AnkleSample::Sprint), Some(1.5));
+        let jog = 1.0 + (2.0 - 1.0) * 0.7 - 0.5;
+        assert_eq!(ankle(&mut world, AnkleSample::Jog), Some(jog));
+
+        world.insert_resource(walk_and_run(false));
+        assert_eq!(ankle(&mut world, AnkleSample::Jog), Some(0.5));
+        assert_eq!(ankle(&mut world, AnkleSample::Sprint), Some(0.5));
     }
 
     /// Moves the character as its controller would, once a tick.

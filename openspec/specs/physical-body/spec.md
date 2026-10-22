@@ -670,7 +670,7 @@ With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negat
 - **THEN** its pelvis rises to its standing height, overshoots it by less than 6 cm (10.7 cm under the old vertical hold) and is back within a centimetre in under 100 ticks
 
 ### Requirement: Target pelvis height
-Each leg's height SHALL be its ground + crouch·60·scale + (1 − crouch)·(the clip root's height over its animated ankle + its ground offset: the sole height, moving also the ankle's lift over the walk's lowest), scale the body scale. The target SHALL be the lowest foot's, blended by half toward the other's while that one's contact height over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
+Each leg's height SHALL be its ground + crouch·60·scale + (1 − crouch)·(clip-root height over its animated ankle + offset: sole; moving, the ankle over the walk's first key, slerped 0.7 toward the run's with the run flag, or the run's with the sprint latch), scale the body scale. The target SHALL be the lowest foot's, blended by half toward the other while that contact over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
 
 #### Scenario: Idle human
 - **WHEN** a human's clip root is 91.4 cm over its ankles on flat ground, its sole 9.68 cm and its legs 85.15 cm

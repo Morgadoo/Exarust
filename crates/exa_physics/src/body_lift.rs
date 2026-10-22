@@ -211,8 +211,8 @@ pub(super) fn target_height(
 impl Ragdoll {
     /// The character tick's carry, once the body is aimed: gravity, less
     /// the lift. Each leg's ground offset is set (its sole height standing;
-    /// moving, its animated ankle's height over the walk's lowest, plus the
-    /// sole), then the target pelvis height from the ground under the feet
+    /// moving, its animated ankle's height over the gait pose's lowest,
+    /// plus the sole), then the target pelvis height from the ground under the feet
     /// (each foot's own; the controller's floor does not raise it) and the
     /// clip root's height over each ankle, then the lift servo, with
     /// support only. The pre-clamp term is kept for the leg bend.
@@ -245,7 +245,7 @@ impl Ragdoll {
             .map(|leg| {
                 let ankle = posed.then(|| drive.targets[leg.shin].transform_point3(leg.point));
                 // The original's ground offset: the sole height standing;
-                // moving, the ankle's height over the walk's lowest.
+                // moving, the ankle's height over the gait pose's lowest.
                 leg.offset = match (bearing.moving, bearing.gait_floor, ankle, floor) {
                     (true, Some(lowest), Some(a), Some(f)) => a.y - f - lowest + *sole,
                     _ => *sole,

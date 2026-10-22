@@ -7,7 +7,9 @@
 //! stands; its capsule executes the decision at Exarust's speeds until the
 //! body walks by its carry ([`decide_movement`]); then, while the body
 //! moves, how high the lowest
-//! ankle of its walk's first pose sits (its gait floor); the step its
+//! ankle of its gait pose sits (the walk's first key, that key slerped
+//! 0.7 toward the run while the run flag is set, the run's first key while
+//! the sprint latch is set); the step its
 //! controller made since the last aim, left out of the carry (the
 //! controller is Exarust's locomotion until the body walks by its carry);
 //! then its balance and the ground under its feet against the level.
@@ -26,7 +28,7 @@ use exa_physics::body::locomotion::{
 use exa_physics::body::{BodyTicks, Fallen, Ragdoll, TickedCharacter};
 use exa_physics::{CharacterBody, Physics};
 
-use crate::limp::{gait_floor, sprinting};
+use crate::limp::{AnkleSample, ankle_sample, gait_floor, sprinting};
 use crate::player::PlayerBody;
 
 /// Centimetres per metre, and body ticks a second.
@@ -352,7 +354,10 @@ pub(crate) fn measure_ground(
     };
     let stature = stature.map_or(1.0, |s| s.0);
     if body.drive.as_ref().is_some_and(|d| d.bearing.moving) {
-        let floor = gait_floor(&motions, anim, stature, &body, root, &parents, &nodes);
+        let sample = locomotion.map_or(AnkleSample::Walk, |r| ankle_sample(r.flags));
+        let floor = gait_floor(
+            &motions, anim, stature, &body, root, &parents, &nodes, sample,
+        );
         if let Some(drive) = body.drive.as_mut() {
             drive.bearing.gait_floor = floor;
         }
