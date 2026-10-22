@@ -383,7 +383,9 @@ humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
     2. c = o·v/(s|o|²), v the particle's displacement over the last tick
        (before this tick's inertia), s the stance factor; at c ≥ 1 (the
        particle already closes at s|o| a tick) nothing;
-    3. push G·o·(1 − c), its vertical cut to 0.1: a P term and a
+    3. push G·o·(1 − c). On its feet the vertical is the double 0.1
+       narrowed once; off its feet (down, getting up, dormant or dead)
+       only that vertical is kept: a P term and a
        one-sided damper along o that never brakes past the target, and
        pushes harder (c < 0) a particle moving away;
     4. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s, E the
@@ -396,8 +398,8 @@ humans, so 0.98977). A dormant statue or golem keeps 0.95 of that
     across the ground (one without muscles; a body with muscles walks by
     its carry), that carry is not velocity: v is the velocity in the
     carried frame (its vertical is the world's). The
-    original also multiplies a lean into the spine's rotation and keeps
-    only the vertical push for the unconscious; neither is reproduced.
+    original also multiplies a lean into the spine's rotation, which is
+    not reproduced. Off its feet the push keeps only its vertical.
   - Energy is the daze level. A blow takes up to 90 % of it, with a floor
     of 0.05. It recovers 0.005 per tick up to the character's most energy
     (1, or 1 − 0.1 × its feral level: a zombie's 0.9). A body starts at 1,

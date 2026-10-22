@@ -167,8 +167,8 @@ const DRIVE_SCALE: f32 = 19200.0 / (BODY_HZ * BODY_HZ);
 /// its head gain, [`BodyStats::head_gain`]).
 const TRUNK_GAIN: f32 = 0.03;
 const HEAD_GAIN: f32 = 0.01;
-/// The share of a pose push's vertical component that is kept.
-const VERTICAL_PUSH: f32 = 0.1;
+/// The standing pose push's vertical scale: the double 0.1, narrowed once.
+const VERTICAL_PUSH: f64 = 0.1;
 /// The least energy a blow leaves ([`daze_energy`]). Recovery adds the
 /// double 0.005 each tick, up to the body's most ([`recover_energy`]).
 const MIN_ENERGY: f32 = 0.05;
@@ -2933,9 +2933,17 @@ const HEAD: usize = 10;
 /// last tick, `stance` the stance factor s and `gain` G. The share of o
 /// that v already closes, c = o·v/(s|o|²), is taken off: G·o·(1 − c), only
 /// when c < 1 (a particle closing fast enough is left alone, one moving
-/// away is pushed harder), its vertical cut to a tenth. None under
-/// 1.19e-7 cm².
-fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> {
+/// away is pushed harder). On its feet the vertical is the double 0.1
+/// narrowed once. Off its feet (`vertical_only`: down, getting up, dormant
+/// or dead) the horizontal is dropped and the vertical is kept whole.
+/// None under 1.19e-7 cm².
+fn pose_push(
+    offset: Vec3,
+    moved: Vec3,
+    stance: f32,
+    gain: f32,
+    vertical_only: bool,
+) -> Option<Vec3> {
     let len2 = offset.length_squared();
     if len2.is_nan() || len2 < LINK_EPSILON2 * CM * CM {
         return None;
@@ -2945,7 +2953,12 @@ fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> 
         return None;
     }
     let mut push = offset * (1.0 - c);
-    push.y *= VERTICAL_PUSH;
+    if vertical_only {
+        push.x = 0.0;
+        push.z = 0.0;
+    } else {
+        push.y = (f64::from(push.y) * VERTICAL_PUSH) as f32;
+    }
     Some(push * gain)
 }
 
@@ -2956,11 +2969,13 @@ fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> 
 /// on its particles, so it has no position or height target. Each particle
 /// is pushed by [`pose_push`] against its own velocity (in the frame its
 /// controller carries, while one carries it), with the gain
-/// [`Drive::pose_gain`]; only while the body has support. The other parts
-/// are turned by their link muscles alone.
+/// [`Drive::pose_gain`]; only while the body has support. Off its feet the
+/// push keeps only its vertical. The other parts are turned by their link
+/// muscles alone.
 fn drive_parts(parts: &mut [Part], drive: &Drive) {
     if drive.targets.len() == parts.len() && drive.balance.has_support() {
         let stance = drive.stance.max(muscle::MIN_STANCE);
+        let vertical_only = drive.bearing.off_feet;
         for (p, target) in parts.iter_mut().zip(&drive.targets) {
             let gain = drive.pose_gain(p.bone);
             if gain.is_nan() || gain <= 0.0 {
@@ -2970,7 +2985,9 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
             let origin = p.point(&p.own_origin);
             for k in 0..4 {
                 let offset = origin + turn * p.rest[k] - p.positions[k];
-                if let Some(push) = pose_push(offset * CM, p.moved[k] * CM, stance, gain) {
+                if let Some(push) =
+                    pose_push(offset * CM, p.moved[k] * CM, stance, gain, vertical_only)
+                {
                     p.positions[k] += push / CM;
                 }
             }

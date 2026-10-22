@@ -609,7 +609,7 @@ The system SHALL measure each joint of a simulated body where the last tick left
 - **THEN** `j.csv` has 18 rows per tick per fighter, and the rows of the ticks a hit lands mark the struck part as shoved
 
 ### Requirement: Pose drive
-After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 − c), only when c < 1, its vertical cut to a tenth. o runs from the particle to R·r + O: its rest vertex under the part's animated rotation, at the part's origin on its particles. c = o·v/(s|o|²), v its last displacement, s the stance factor. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s. Only with support.
+After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 − c), only when c < 1. On its feet the vertical is the double 0.1, narrowed once; off its feet only the vertical is kept. o runs from the particle to its rest vertex under the animated rotation, placed at the part's origin. c = o·v/(s|o|²), v its last displacement, s the stance factor. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s. Only with support.
 
 #### Scenario: Closing particle
 - **WHEN** a particle closes on its target at s|o| a tick or faster, and another moves away from it
@@ -622,6 +622,10 @@ After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 �
 #### Scenario: No support
 - **WHEN** a body lies on its back on the floor, or stands on its controller with no ground under its feet
 - **THEN** its pose drive moves no particle
+
+#### Scenario: Off its feet
+- **WHEN** a still particle's offset is (1, 2, 3) cm while the body is off its feet, and a standing particle's offset is 0.01 cm straight up
+- **THEN** with G = 1 the off-feet push is (0, 2, 0) cm and the standing vertical has bits 0x3a83126e
 
 #### Scenario: Chest shove
 - **WHEN** a standing body is shoved at the chest at 1.5 m/s
