@@ -7,10 +7,10 @@ use super::*;
 
 /// The law, written out here and not taken from [`pull`]: raw is
 /// 0.2·e·|e|/60 under 60 cm and 12 cm along the error otherwise, less the
-/// horizontal displacement, capped at 8 cm, times S²·pin-gain·P·pin factor,
-/// and times 0.3 while getting up. An alert human is S = 1, pin-gain 0.08,
-/// P = 0.5, pin factor 1.25, so the scale is 0.05.
-fn law(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -> Vec3 {
+/// horizontal displacement, capped at 8 cm, times S²·pin-gain·P·pin factor.
+/// An alert human is S = 1, pin-gain 0.08, P = 0.5, pin factor 1.25, so
+/// the scale is 0.05. Walking and off its feet never reach this function.
+fn law(error: Vec3, displacement: Vec3, has_support: bool) -> Vec3 {
     if !has_support {
         return Vec3::ZERO;
     }
@@ -26,14 +26,11 @@ fn law(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -> 
     if clen > 8.0 {
         corr *= 8.0 / clen;
     }
-    let mut scale = 0.08 * 0.5 * 1.25;
-    if getting_up {
-        scale *= 0.3;
-    }
+    let scale = 0.08 * 0.5 * 1.25;
     corr * scale
 }
 
-fn human(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -> Vec3 {
+fn human(error: Vec3, displacement: Vec3, has_support: bool) -> Vec3 {
     pull(
         error,
         displacement,
@@ -43,7 +40,6 @@ fn human(error: Vec3, displacement: Vec3, has_support: bool, getting_up: bool) -
             pin_gain: 0.08,
             power: 0.5,
             pin_factor: 1.25,
-            getting_up,
         },
     )
 }
@@ -61,44 +57,32 @@ fn pin_power_is_the_root_unless_the_shock_stagger() {
 }
 
 /// One application equals the law: 10 cm off with 1 cm of displacement
-/// along the error is −0.0333 cm; 80 cm with none is 0.4 cm; getting up is
-/// 0.3 of the standing pull; no support is zero.
+/// along the error is −0.0333 cm; 80 cm with none is 0.4 cm; no support
+/// is zero.
 #[test]
 fn one_application_is_the_law() {
     let near = Vec3::X * 10.0;
     let along = Vec3::X;
-    let got = human(near, along, true, false);
-    assert!(
-        got.abs_diff_eq(law(near, along, true, false), 1e-6),
-        "{got}"
-    );
+    let got = human(near, along, true);
+    assert!(got.abs_diff_eq(law(near, along, true), 1e-6), "{got}");
     assert!((got.x + 0.0333333).abs() < 1e-4, "{got}");
     assert_eq!((got.y, got.z), (0.0, 0.0));
 
     let far = Vec3::new(48.0, 9.0, 64.0);
     assert!(far.length() > 60.0);
-    let got = human(far, Vec3::ZERO, true, false);
-    let want = law(far, Vec3::ZERO, true, false);
+    let got = human(far, Vec3::ZERO, true);
+    let want = law(far, Vec3::ZERO, true);
     assert!(got.abs_diff_eq(want, 1e-5), "{got} vs {want}");
     assert!((got.length() - 0.4).abs() < 1e-5, "{got}");
 
     let along_x = Vec3::X * 80.0;
-    let got = human(along_x, Vec3::ZERO, true, false);
+    let got = human(along_x, Vec3::ZERO, true);
     assert!(
         (got.x - 0.4).abs() < 1e-5 && got.y == 0.0 && got.z == 0.0,
         "{got}"
     );
 
-    let standing = human(near, Vec3::ZERO, true, false);
-    let rising = human(near, Vec3::ZERO, true, true);
-    assert!(
-        (rising.x / standing.x - 0.3).abs() < 1e-5,
-        "{rising} / {standing}"
-    );
-    assert!(rising.abs_diff_eq(law(near, Vec3::ZERO, true, true), 1e-6));
-
-    assert_eq!(human(near, along, false, false), Vec3::ZERO);
-    assert_eq!(human(near, along, false, true), Vec3::ZERO);
+    assert_eq!(human(near, along, false), Vec3::ZERO);
 }
 
 /// Thorax targets stay within 36·scale cm of the feet centre standing
@@ -199,7 +183,6 @@ fn one_pass_on_a_body_applies_the_law() {
             ((goal - at).with_y(0.0)) * 100.0,
             disp.with_y(0.0) * 100.0,
             true,
-            false,
         );
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
@@ -249,7 +232,6 @@ fn a_shock_stagger_pulls_the_pins_at_full_power() {
             ((goal - at).with_y(0.0)) * 100.0,
             disp.with_y(0.0) * 100.0,
             true,
-            false,
         ) * 2.0;
         for k in 0..4 {
             expected[i][k] += corr / 100.0 * w[k];
@@ -278,6 +260,101 @@ fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
 fn chest_off_feet(body: &Ragdoll) -> f32 {
     let chest = body.chest_point().unwrap();
     (chest - feet_centre(body)).with_y(0.0).length() * 100.0
+}
+
+/// Walking, or off its feet (down, getting up, dormant or dead), the pin
+/// loops do not run: a chest held 10 cm off the feet centre stays there.
+/// A shock stagger does not reopen them. Collapsing is not that condition,
+/// so the standing law still applies.
+#[test]
+fn walking_or_off_its_feet_the_pins_stay() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.aim(Affine3A::IDENTITY, pose);
+    let thorax = body.parts.iter().position(|p| p.bone == 8).unwrap();
+    shift(&mut body.parts[thorax], Vec3::X * 0.10);
+
+    let stay = |body: &mut Ragdoll, bearing: Bearing| {
+        body.drive.as_mut().unwrap().bearing = bearing;
+        let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+        body.pull_support_pins();
+        for (i, p) in body.parts.iter().enumerate() {
+            assert_eq!(p.positions, before[i], "part {i} moved");
+        }
+    };
+    stay(
+        &mut body,
+        Bearing {
+            walking: true,
+            ..Bearing::default()
+        },
+    );
+    stay(
+        &mut body,
+        Bearing {
+            off_feet: true,
+            ..Bearing::default()
+        },
+    );
+    stay(
+        &mut body,
+        Bearing {
+            off_feet: true,
+            getting_up: true,
+            ..Bearing::default()
+        },
+    );
+    stay(
+        &mut body,
+        Bearing {
+            walking: true,
+            shock_stagger: true,
+            ..Bearing::default()
+        },
+    );
+
+    body.drive.as_mut().unwrap().bearing = Bearing {
+        collapsing: true,
+        ..Bearing::default()
+    };
+    let centre = feet_centre(&body);
+    let targets = body.drive.as_ref().unwrap().targets().to_vec();
+    let mut pins: Vec<(usize, [f32; 4], f32)> = body
+        .chest
+        .iter()
+        .copied()
+        .map(|(i, w)| (i, w, 36.0))
+        .collect();
+    let pelvis = body.parts.iter().position(|p| p.bone == 1).unwrap();
+    pins.push((pelvis, body.parts[pelvis].own_origin, 60.0));
+    let mut expected = vec![[Vec3::ZERO; 4]; body.parts.len()];
+    for (i, w, radius) in pins {
+        let posed = targets[i].transform_point3(body.parts[i].rest_point(&w));
+        let goal = clamped(posed, centre, radius);
+        let at = body.parts[i].point(&w);
+        let disp = (0..4)
+            .map(|k| (body.parts[i].positions[k] - body.parts[i].start[k]) * w[k])
+            .sum::<Vec3>();
+        let corr = law(
+            ((goal - at).with_y(0.0)) * 100.0,
+            disp.with_y(0.0) * 100.0,
+            true,
+        );
+        for k in 0..4 {
+            expected[i][k] += corr / 100.0 * w[k];
+        }
+    }
+    let before: Vec<[Vec3; 4]> = body.parts.iter().map(|p| p.positions).collect();
+    body.pull_support_pins();
+    for (i, p) in body.parts.iter().enumerate() {
+        for k in 0..4 {
+            let delta = p.positions[k] - before[i][k];
+            assert!(
+                delta.abs_diff_eq(expected[i][k], 1e-6),
+                "part {i} particle {k}: {delta} vs {}",
+                expected[i][k]
+            );
+        }
+    }
 }
 
 /// A supported chest held about 10 cm off the feet centre is brought back

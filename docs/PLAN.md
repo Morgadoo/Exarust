@@ -398,8 +398,9 @@ when a standing body is at its target height). While stepping, the thigh
 turns 75% of the hip-to-target angle and an anchored foot takes the step
 lift. The controller-floor stair coupling is gone: the lift reads each
 foot's own ground, so a controller 12 cm up does not raise the target,
-and a synthetic walk up four 18 cm steps keeps balance at or above 0.9
-with its feet on the landing. Gait plants are not in yet (C19).
+and a synthetic walk up four 18 cm steps finishes with its feet near
+34 cm, short of the landing, because the support pins stay slack while
+its condition is walking. Gait plants are not in yet (C19).
 Done (change `anchor-the-character-frame`, C9): the
 pose is put on the original's character frame, whose origin is the pelvis
 less the clip root's offset across the ground: it rides on the pelvis

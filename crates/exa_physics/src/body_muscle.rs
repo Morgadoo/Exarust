@@ -247,11 +247,13 @@ pub struct Bearing {
     pub collapsing: bool,
     /// Its condition is walking (the walk or the run cycle plays at full
     /// tone): its feet's contacts are pushed by the velocity servo, not
-    /// gripped, and are probed as a walking foot's.
+    /// gripped, and are probed as a walking foot's. Its support pins do
+    /// not pull.
     pub walking: bool,
     /// Its condition is off its feet: down, getting up, dormant or dead
     /// (the condition's bit 0x200). Its feet are probed from their ankles
-    /// and their soles are not held over the floor.
+    /// and their soles are not held over the floor. Its support pins do
+    /// not pull.
     pub off_feet: bool,
     /// How far its clip has played, 0 to 1 (by last tick's clock): a
     /// get-up's feet do not touch in its first fifth, and stand on their

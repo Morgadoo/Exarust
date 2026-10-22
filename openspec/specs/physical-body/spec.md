@@ -700,8 +700,8 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick: in `--autowalk play arena` the same as without the rule, the pelvis 99.4–102.2 cm walking and 101.5 cm standing
 
 #### Scenario: Stairs
-- **WHEN** a body walks up four 18 cm steps with its controller, stopping on the third
-- **THEN** it keeps its balance at or above 0.9 and its feet end on the landing, and the controller's floor does not raise the pelvis
+- **WHEN** a body walks up four 18 cm steps, stopping on the third, with its controller and without it
+- **THEN** its feet finish near 34 cm, short of the 72 cm landing, its balance stays at 1 while carried and falls to 0 without the controller, and the two pelvis heights agree
 
 #### Scenario: Stair room
 - **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` or `--at 7.6,-1.3,66.2` walks the player up the stairs to the door
@@ -1105,7 +1105,7 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor, and times 0.3 while getting up. P is √E·T·E⁴, or 1 while the shock-stagger flag is set (a NaN root stays). Pin-gain starts at 0.08.
+In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor. While it is walking, or off its feet (down, getting up, dormant or dead), that pull is zero. P is √E·T·E⁴, or 1 while the shock-stagger flag is set (a NaN root stays). Pin-gain starts at 0.08. Collapsing still pulls.
 
 #### Scenario: One application inside 60 cm
 - **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up
@@ -1115,9 +1115,13 @@ In each iteration a supported living body SHALL pull its two thorax pins and its
 - **WHEN** the same pin is 80 cm from its target and has not moved this tick
 - **THEN** one application is 12 cm along the error, capped at 8 cm, times 0.05, which is 0.4 cm
 
-#### Scenario: Getting up
-- **WHEN** the same 10 cm pin with no displacement is on a body that is getting up
-- **THEN** one application is 0.3 of the standing pull
+#### Scenario: Walking or off its feet
+- **WHEN** a supported body with its chest 10 cm off the feet centre is walking, then off its feet while getting up, then walking in a shock stagger
+- **THEN** the pins do not move it
+
+#### Scenario: Collapsing
+- **WHEN** that body is collapsing instead, and not walking
+- **THEN** one application is the standing pull
 
 #### Scenario: Chest returns
 - **WHEN** a supported standing body's chest is held about 10 cm off the feet centre

@@ -7,9 +7,9 @@
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
 //! otherwise; subtract the point's horizontal displacement this tick; cap
 //! the length at 8 cm; multiply by S² · pin-gain · P · the spawned pin
-//! factor, and by 0.3 while getting up. P is √E·T·E⁴, or 1 while the
-//! shock-stagger flag is set. The 0.3 is only the
-//! get-up factor: it is not stacked on the pin-gain while the body stands.
+//! factor. The pull does not run while the body is walking or off its feet
+//! (down, getting up, dormant or dead). P is √E·T·E⁴, or 1 while the
+//! shock-stagger flag is set.
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
 
@@ -26,8 +26,6 @@ const SOFT_GAIN: f32 = 0.2;
 const FAR_PULL: f32 = 12.0;
 /// The correction (cm), before the gains, is no longer than this.
 const CAP: f32 = 8.0;
-/// While getting up the pull is this much of the standing one.
-const GET_UP: f32 = 0.3;
 /// With no support a target shifts this far (cm) forward, times scale.
 const UNSUPPORTED_AHEAD: f32 = 5.0;
 /// The pelvis pin stays within this (cm) of the feet centre, times scale.
@@ -72,7 +70,6 @@ pub(super) struct Factors {
     pub pin_gain: f32,
     pub power: f32,
     pub pin_factor: f32,
-    pub getting_up: bool,
 }
 
 /// One application of a support pin's horizontal pull, in centimetres.
@@ -102,10 +99,7 @@ pub(super) fn pull(error: Vec3, displacement: Vec3, gain: Factors) -> Vec3 {
     if clen > CAP {
         corr *= CAP / clen;
     }
-    let mut scale = gain.support * gain.support * gain.pin_gain * gain.power * gain.pin_factor;
-    if gain.getting_up {
-        scale *= GET_UP;
-    }
+    let scale = gain.support * gain.support * gain.pin_gain * gain.power * gain.pin_factor;
     if !scale.is_finite() {
         return Vec3::ZERO;
     }
@@ -182,6 +176,11 @@ impl Ragdoll {
         let Some(drive) = self.drive.as_ref() else {
             return;
         };
+        // Walking, or off its feet (down, getting up, dormant or dead), the
+        // pin loops do not run. A shock stagger does not reopen them.
+        if drive.bearing.walking || drive.bearing.off_feet {
+            return;
+        }
         if drive.targets.len() != self.parts.len() || self.legs.is_empty() {
             return;
         }
@@ -198,7 +197,6 @@ impl Ragdoll {
         );
         let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
-        let getting_up = drive.bearing.getting_up;
         let lead = (drive.steps.stepping && !drive.steps.out_of_balance).then(|| {
             (
                 drive.steps.target,
@@ -256,7 +254,6 @@ impl Ragdoll {
                         pin_gain,
                         power,
                         pin_factor: factor,
-                        getting_up,
                     },
                 );
                 (i, w, corr)

@@ -735,8 +735,9 @@ Exarust's own, for a body whose capsule still moves it across the ground
   thorax reach is 36·scale cm. One application, in centimetres: raw is
   0.2·e·|e|/60 when |e| is under 60 cm and 12 cm along the error otherwise,
   less the point's horizontal displacement this tick, capped at 8 cm,
-  times S²·pin-gain·P·the spawned pin factor, and times 0.3 while getting
-  up. While a recovery step runs and the chest is not past the trigger,
+  times S²·pin-gain·P·the spawned pin factor. While the body is walking,
+  or off its feet (down, getting up, dormant or dead), the pull is zero.
+  While a recovery step runs and the chest is not past the trigger,
   each thorax target is first shifted by the horizontal error from the
   pin's world point to the posed target plus the step offset. The shift
   is that error times 0.7 (0.4 while Idle plays), times (direction + 0.5),
@@ -755,9 +756,12 @@ Exarust's own, for a body whose capsule still moves it across the ground
   foot's own ground, so the controller's floor does not raise the pelvis
   on level ground, perched, fallen or on the stairs. A 0, 2 or 5 cm float
   keeps the original's target, and a controller 12 cm up adds nothing. A
-  synthetic body walking four 18 cm steps, stopping on the third, keeps
-  its balance at or above 0.9 and ends with its feet on the landing,
-  carried or not, and the two pelvis heights agree. The standing leg bend
+  synthetic body walking four 18 cm steps, stopping on the third, finishes
+  with its feet near 34 cm, short of the 72 cm landing: the support pins
+  stay slack while its condition is walking, and the gait plants that
+  would step it up are not in yet. Carried, its balance stays at 1;
+  without the controller its balance falls to 0. The two pelvis heights
+  agree, so the controller's floor does not raise the pelvis. The standing leg bend
   is in (`exa_physics`, `body_bend.rs`): the knee is the law of cosines on
   the two bones, 30° when the cosine is above 0.866 and 180° when it is
   below −1. The correction from the clip advances at most 0.02 rad a tick
@@ -784,9 +788,9 @@ Exarust's own, for a body whose capsule still moves it across the ground
 - Clips keep their root's travel, but for the walk, the run and the
   backpedal (and Exarust's interim `Combat Walk`), whose travel along z is
   left out since the body's own motion makes it ([Motion
-  playback](#motion-playback)). A get-up's travel moves its targets, and
-  the support pins pull at 0.3 of the standing pull while the body is
-  getting up.
+  playback](#motion-playback)). A get-up's travel moves its targets. The
+  support pins stay while the body is getting up, since that condition is
+  off its feet, and while it is walking.
 - Falls, staggers and get-ups are the original's ([Falls and
   get-ups](#falls-and-get-ups), below). A falling or lying body is no
   longer carried or held by its controller (Exarust's own, until the body

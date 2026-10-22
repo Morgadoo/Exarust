@@ -266,30 +266,38 @@ fn climb(carried: bool) -> Climb {
     }
 }
 
-/// A body walking up four 18 cm steps keeps its balance at or above 0.9
-/// and ends with its feet on the landing. The controller's floor does not
-/// raise the pelvis: carried or not, the two pelvis heights agree.
+/// A body whose condition is walking is left short of the landing. The
+/// support pins stay slack through the walk, and this body has no gait
+/// plants to step its feet up. From 1.2 m before four 18 cm steps, stopping
+/// on the third, both feet finish near 34 cm, short of the 72 cm landing.
+/// Carried, its balance stays at 1; without the controller it falls to 0.
+/// The controller's floor does not raise the pelvis: the two heights agree.
 #[test]
-fn a_walker_climbs_four_18_cm_steps() {
+fn a_walking_body_stays_short_of_the_landing() {
     let landing = STEPS as f32 * RISE;
     let up = climb(true);
-    assert!(up.balance >= 0.9, "lost its balance: {}", up.balance);
-    assert!(up.feet > landing - 0.02, "feet at {}", up.feet);
     let caught = climb(false);
     assert!(
-        caught.feet > landing - 0.02,
-        "feet left the landing: {}",
-        caught.feet
+        (up.balance - 1.0).abs() < 1e-6,
+        "carried balance {}",
+        up.balance
     );
+    assert!(
+        caught.balance.abs() < 1e-6,
+        "free balance {}",
+        caught.balance
+    );
+    for (label, climbed) in [("carried", &up), ("free", &caught)] {
+        assert!(
+            (climbed.feet - 0.34).abs() < 0.02,
+            "{label} feet at {}, landing {landing}",
+            climbed.feet
+        );
+    }
     assert!(
         (up.pelvis - caught.pelvis).abs() < 0.02,
         "the controller floor raised the pelvis: {} vs {}",
         up.pelvis,
         caught.pelvis
-    );
-    assert!(
-        caught.balance >= 0.9,
-        "lost its balance: {}",
-        caught.balance
     );
 }
