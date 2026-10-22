@@ -68,7 +68,8 @@ impl Health {
     /// `held` (attacking or in the combat idle), else it rises by
     /// [`RAMP`] × [`RATE_CAP`] to the cap and, above a red of [`RED_FLOOR`],
     /// yellow gains √red × rate; then yellow is kept within red, red within
-    /// the maximum, and yellow at least 0.
+    /// the maximum, and a yellow that compares below 0 becomes 0 (a NaN
+    /// stays, as the body tick's last compare does).
     pub fn bookkeep(&mut self, held: bool, now: u32, wind: &mut SecondWind) {
         if self.heal_pool > 0.0 {
             self.red = at_most((f64::from(self.red) + RED_PER_TICK) as f32, self.max);
@@ -86,7 +87,11 @@ impl Health {
         }
         self.yellow = at_most(self.yellow, self.red);
         self.red = at_most(self.red, self.max);
-        self.yellow = self.yellow.max(0.0);
+        // The body tick's last compare: ordered below 0 becomes 0. A NaN
+        // stays, and −0 is not below 0.
+        if self.yellow < 0.0 {
+            self.yellow = 0.0;
+        }
     }
 }
 

@@ -1865,7 +1865,8 @@ executable; a retail trace; `exa_combat::regen`)
   the demon.
 - Then yellow is kept within red, and after it red within the maximum
   (so yellow follows a red cut to the maximum a tick later); at the end
-  of the tick yellow is at least 0. Death sets yellow to 0 (the collapse
+  of the tick a yellow that compares below 0 becomes 0, and a NaN stays.
+  Death sets yellow to 0 (the collapse
   regenerates about 0.0006 of it over its 250 ticks).
 - A shield arm's stamina (0..=1) and its rate refill with the living
   body's health tick: while the stamina is below 1 minus the data epsilon

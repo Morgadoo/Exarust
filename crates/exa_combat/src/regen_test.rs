@@ -147,6 +147,12 @@ fn the_clamps() {
     assert_eq!((over.yellow, over.red), (0.25, 0.25));
     let under = healed(health(-0.01, 0.2, 0.25), 1);
     assert_eq!(under.yellow, 0.0);
+    let mut nan = health(f32::NAN, 0.2, 0.25);
+    nan.bookkeep(true, 0, &mut crate::fighter::SecondWind::default());
+    assert!(nan.yellow.is_nan());
+    let mut neg_zero = health(-0.0, 0.2, 0.25);
+    neg_zero.bookkeep(true, 0, &mut crate::fighter::SecondWind::default());
+    assert_eq!(neg_zero.yellow.to_bits(), (-0.0f32).to_bits());
     // The floor is the image's float just under FLT_EPSILON; a red just
     // above it heals.
     assert_eq!(RED_FLOOR.to_bits(), 0x33ff_ffd7);
