@@ -40,6 +40,17 @@ AI evaluators and effect classes of `Exanima.exe`; research notes in
   Displacement) or over 1000 (Energy), half again with the sustain
   technique; persistent powers hold their cost (three quarters with the
   reserve technique) until they end.
+- **Settle**: a body starts with focus and capacity 1. Each body tick,
+  before its powers run, a share of the reserve's change (what holds add
+  and releases take away) moves into the capacity while that change is
+  beyond 0.001 either way, the share climbing by 0.001 a tick (to 10) and
+  dropping to 0 otherwise. After the powers, with more than 0.0001 spent,
+  a share climbing the same way leaves both the spent focus and the pool;
+  with nothing spent that share falls by 0.01 a tick and the pool regains
+  `√capacity × 0.000301205 × 0.1` up to the capacity, the 0.000301205
+  half again with technique bit 0x20_0000 and plus any effect's bonus
+  (one sets 0.000100402). Either settle restarts a regeneration ramp,
+  which otherwise climbs by 0.001 of that rate to at most the rate.
 - **Focus factors**: blast, bolt and shock need 1.2 times the cost, the
   long door 0.8 times (both in double precision, so a focus of exactly
   0.12 is short of a 0.1 blast), barrier twice and vanish 80 times.
@@ -544,7 +555,10 @@ state's chooser picks starts through its domain's front end as an AI
 caster, with no cursor and its hands free. A caster's running shell and
 Force Strikes put their factors on its fighter (`exa_combat::PowerFactors`):
 a blow it takes keeps 1 − 0.5 of its impact, and a blow it deals is
-multiplied by 1 + 0.5 · 1. The bearing measure (1 less the
+multiplied by 1 + 0.5 · 1. Every caster's body tick runs the two focus
+settles around its power walk, so spent focus drains out of the pool and
+then regenerates, and the player's HUD focus bar shows the pool and its
+capacity. The bearing measure (1 less the
 cosine between the facing and the line to the target) is Exarust's. The
 tree screen and the caster share one record:
 the screen owns it while the tree is open and the caster takes it back when

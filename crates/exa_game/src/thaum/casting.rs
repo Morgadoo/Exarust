@@ -46,6 +46,11 @@
 //!   cast adds its cost to the spent focus; a persistent power holds its
 //!   cost (three quarters with technique bit 0x40_0000) in the reserve and
 //!   in the spent focus until it ends.
+//! - **Settle** ([`settle_capacity`], [`settle_focus`]): each body tick
+//!   moves a climbing share of the reserve's change into the capacity
+//!   before the powers run, and afterwards a climbing share of the spent
+//!   focus out of the pool, or, with nothing spent, regenerates the pool
+//!   toward the capacity at `√capacity × 0.000301205 × 0.1` a tick.
 //!
 //! Evidence: the domains' cast tables and front ends, the two gates, the
 //! slot count and the cast-motion start, read from `Exanima.exe`
@@ -92,6 +97,12 @@ pub const WEAPON_IN_HAND: u32 = 0x30;
 pub const REPEAT_TECHNIQUE: u32 = 0x80_0000;
 pub const SUSTAIN_TECHNIQUE: u32 = 0x10_0000;
 pub const RESERVE_TECHNIQUE: u32 = 0x40_0000;
+/// The technique that raises the base regeneration rate by half.
+pub const REGEN_TECHNIQUE: u32 = 0x20_0000;
+
+/// The focus a body regains a tick at capacity 1, before the 0.1 factor:
+/// 0.000301205 (1/3320).
+pub const FOCUS_REGEN: f32 = f32::from_bits(0x399d_eb07);
 
 /// The id bits of a sustained and of a persistent power.
 pub const SUSTAINED: u32 = 0x1_0000;
@@ -133,8 +144,22 @@ pub struct CastBody {
     pub focus: f32,
     /// The focus spent since the pool was last settled.
     pub spent: f32,
-    /// The focus persistent powers hold.
+    /// The change to the capacity still to come: a persistent power's hold
+    /// adds to it and its release takes the hold away; the settle moves it
+    /// into the capacity ([`settle_capacity`]).
     pub reserved: f32,
+    /// The capacity the focus regenerates to (1 for a new body).
+    pub capacity: f32,
+    /// The share of the spent focus a settle takes from the pool.
+    pub settle_rate: f32,
+    /// The share of the reserve's change a settle moves into the capacity.
+    pub capacity_rate: f32,
+    /// The regeneration ramp: it climbs toward the rate while nothing is
+    /// spent and restarts whenever focus is settled.
+    pub regen_ramp: f32,
+    /// What the body's effects add to the regeneration rate (0 unless one
+    /// sets it; one of them sets 0.000100402).
+    pub regen_bonus: f32,
     /// The power whose cast motion runs, 0 for none.
     pub casting: u32,
     /// The next tick releases the charging power.
@@ -184,6 +209,11 @@ impl Default for CastBody {
             focus: 1.0,
             spent: 0.0,
             reserved: 0.0,
+            capacity: 1.0,
+            settle_rate: 0.0,
+            capacity_rate: 0.0,
+            regen_ramp: 0.0,
+            regen_bonus: 0.0,
             casting: 0,
             release: false,
             cast_hook: None,
@@ -351,6 +381,71 @@ pub fn release_reserve(body: &mut CastBody, held: f32) {
 pub fn spend_tick(body: &mut CastBody, cost: f32) -> bool {
     body.spent += cost;
     body.focus - body.spent < cost && body.cast_hook.is_some()
+}
+
+/// The body tick's first settle, before its powers run: while the reserve's
+/// change is beyond 0.001 either way its rate climbs by 0.001 (below 10)
+/// and that share of the change leaves it for the capacity (not below 0),
+/// restarting the regeneration ramp; otherwise the rate is 0.
+pub fn settle_capacity(body: &mut CastBody) {
+    if f64::from(body.reserved.abs()) > 0.001 {
+        if body.capacity_rate < 10.0 {
+            body.capacity_rate = (f64::from(body.capacity_rate) + 0.001) as f32;
+        }
+        body.capacity -= body.capacity_rate * body.reserved;
+        body.reserved -= body.reserved * body.capacity_rate;
+        if body.capacity < 0.0 {
+            body.capacity = 0.0;
+        }
+        body.regen_ramp = 0.0;
+    } else {
+        body.capacity_rate = 0.0;
+    }
+}
+
+/// The body tick's second settle, after its powers run. With more than
+/// 0.0001 spent the settle rate climbs by 0.001 (below 10) and that share
+/// of the spent focus leaves the pool (neither below 0), restarting the
+/// regeneration ramp. Otherwise the rate falls by 0.01 (not below 0), the
+/// ramp climbs by 0.001 of the regeneration rate (at most the rate) and the
+/// pool regains `√capacity × rate × 0.1`, up to the capacity. The rate is
+/// [`FOCUS_REGEN`], times 1.5 with [`REGEN_TECHNIQUE`], plus the bonus.
+pub fn settle_focus(body: &mut CastBody) {
+    if f64::from(body.spent) > 0.0001 {
+        if body.settle_rate < 10.0 {
+            body.settle_rate = (f64::from(body.settle_rate) + 0.001) as f32;
+        }
+        body.focus -= body.settle_rate * body.spent;
+        body.spent -= body.spent * body.settle_rate;
+        if body.focus < 0.0 {
+            body.focus = 0.0;
+        }
+        if body.spent < 0.0 {
+            body.spent = 0.0;
+        }
+        body.regen_ramp = 0.0;
+        return;
+    }
+    if body.settle_rate > 0.0 {
+        body.settle_rate = (f64::from(body.settle_rate) - 0.01) as f32;
+        if body.settle_rate < 0.0 {
+            body.settle_rate = 0.0;
+        }
+    }
+    let rate = if body.techniques & REGEN_TECHNIQUE != 0 {
+        FOCUS_REGEN * 1.5 + body.regen_bonus
+    } else {
+        FOCUS_REGEN + body.regen_bonus
+    };
+    body.regen_ramp = (f64::from(rate) * 0.001 + f64::from(body.regen_ramp)) as f32;
+    if rate < body.regen_ramp {
+        body.regen_ramp = rate;
+    }
+    let gain = body.capacity.sqrt() * rate;
+    body.focus = (f64::from(gain) * 0.1 + f64::from(body.focus)) as f32;
+    if body.focus > body.capacity {
+        body.focus = body.capacity;
+    }
 }
 
 /// How a domain divides a sustained power's cost by the tick.
@@ -632,5 +727,81 @@ mod tests {
         assert!(spend_tick(&mut body, 0.25));
         body.cast_hook = None;
         assert!(!spend_tick(&mut body, 0.25));
+    }
+
+    #[test]
+    fn a_hold_moves_into_the_capacity_at_a_climbing_rate() {
+        let mut body = CastBody::default();
+        reserve(&mut body, 0.25);
+        settle_capacity(&mut body);
+        assert_eq!(body.capacity_rate, 0.001);
+        assert_eq!(body.capacity, 1.0 - 0.001 * 0.25);
+        assert_eq!(body.reserved, 0.25 - 0.25 * 0.001);
+        for _ in 0..2000 {
+            settle_capacity(&mut body);
+        }
+        assert!((body.capacity - 0.75).abs() < 2e-3, "{}", body.capacity);
+        assert!(body.reserved.abs() <= 0.001);
+        // Within 0.001 (in double precision, which an f32 0.001 passes) the
+        // rate drops to 0 and nothing moves.
+        let kept = body.capacity;
+        body.reserved = 0.0009;
+        settle_capacity(&mut body);
+        assert_eq!((body.capacity_rate, body.capacity), (0.0, kept));
+        // A release takes the hold away, and the capacity comes back.
+        body.reserved -= 0.25;
+        for _ in 0..2000 {
+            settle_capacity(&mut body);
+        }
+        assert!((body.capacity - 1.0).abs() < 2e-3, "{}", body.capacity);
+    }
+
+    #[test]
+    fn spent_focus_leaves_the_pool_then_it_regenerates() {
+        let mut body = CastBody::default();
+        spend(&mut body, 0.2);
+        settle_focus(&mut body);
+        assert_eq!(body.settle_rate, 0.001);
+        assert_eq!(body.focus, 1.0 - 0.001 * 0.2);
+        assert_eq!(body.spent, 0.2 - 0.2 * 0.001);
+        while body.spent > 0.0001 {
+            settle_focus(&mut body);
+        }
+        assert!((body.focus - 0.8).abs() < 1e-4, "{}", body.focus);
+        // Nothing left to settle: the rate falls by 0.01 and the pool
+        // regains √1 × 0.000301205 × 0.1 a tick.
+        let rate = body.settle_rate;
+        let before = body.focus;
+        settle_focus(&mut body);
+        assert_eq!(body.settle_rate, (f64::from(rate) - 0.01) as f32);
+        assert_eq!(
+            body.focus,
+            (f64::from(FOCUS_REGEN) * 0.1 + f64::from(before)) as f32
+        );
+        assert_eq!(body.regen_ramp, (f64::from(FOCUS_REGEN) * 0.001) as f32);
+    }
+
+    #[test]
+    fn regeneration_reads_the_capacity_and_the_technique() {
+        let mut body = CastBody {
+            focus: 0.1,
+            capacity: 0.25,
+            techniques: REGEN_TECHNIQUE,
+            ..CastBody::default()
+        };
+        settle_focus(&mut body);
+        let gain = 0.5 * (FOCUS_REGEN * 1.5);
+        assert_eq!(
+            body.focus,
+            (f64::from(gain) * 0.1 + f64::from(0.1f32)) as f32
+        );
+        // The pool stops at the capacity.
+        body.focus = 0.25;
+        settle_focus(&mut body);
+        assert_eq!(body.focus, 0.25);
+        // The ramp never passes the rate.
+        body.regen_ramp = 1.0;
+        settle_focus(&mut body);
+        assert_eq!(body.regen_ramp, FOCUS_REGEN * 1.5);
     }
 }

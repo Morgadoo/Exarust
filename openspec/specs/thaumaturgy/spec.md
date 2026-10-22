@@ -1018,3 +1018,28 @@ A caster's fighter SHALL carry its body's shell damping and strike factor, which
 #### Scenario: A shelled blow
 - **WHEN** the same cut lands on a fighter with a shell of 0.5 and on one without
 - **THEN** the shelled blow's impact is half, and the shelled fighter loses less yellow
+
+### Requirement: Capacity settle
+Each caster's body tick SHALL, before its power walk and while the reserve's change is beyond 0.001 either way, move a share of that change into the capacity (not below 0), the share climbing by 0.001 a tick to at most 10; otherwise the share SHALL be 0. A hold SHALL add to the change and a release SHALL take the hold away from it.
+
+#### Scenario: A hold lowers the capacity and a release restores it
+- **WHEN** a persistent power holds 0.25 and many ticks pass, and then its hold is released and many ticks pass
+- **THEN** the capacity falls to 0.75 and comes back to 1
+
+### Requirement: Focus settle
+After its power walk, with more than 0.0001 spent, a body tick SHALL take a share climbing by 0.001 a tick (to 10) of the spent focus from both it and the pool, neither below 0. With nothing spent the share SHALL fall by 0.01 a tick to 0 and the pool SHALL regain the square root of the capacity times the rate times 0.1, up to the capacity: 0.000301205, half again with technique bit 0x20_0000, plus the body's bonus.
+
+#### Scenario: Spent focus leaves the pool
+- **WHEN** 0.2 is spent on a full body and a tick settles
+- **THEN** the share is 0.001, the pool is 1 − 0.0002 and 0.2 − 0.0002 is still spent
+
+#### Scenario: The pool regenerates
+- **WHEN** nothing is spent on a body of capacity 0.25 with technique bit 0x20_0000
+- **THEN** its pool gains 0.5 × 1.5 × 0.000301205 × 0.1 a tick, up to 0.25
+
+### Requirement: HUD focus
+The player's HUD focus bar SHALL show its caster's pool and capacity, and 1 and 1 for a body that casts nothing.
+
+#### Scenario: A caster's bar
+- **WHEN** the player's caster has a pool of 0.4 and a capacity of 0.75
+- **THEN** the HUD's focus is 0.4 and its capacity 0.75

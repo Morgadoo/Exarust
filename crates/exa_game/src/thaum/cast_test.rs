@@ -91,11 +91,17 @@ fn the_shock_casts_makes_arcs_and_charges() {
     );
     assert_eq!(count::<LiveArcs>(&mut app), 1);
     // The first tick installs the charge; the second adds its rate (1.0,
-    // not past one) and spends the charge's focus.
+    // not past one) and spends the charge's focus, of which the tick's
+    // settle takes its first 0.001 share from the pool.
     app.world_mut().run_schedule(FixedUpdate);
     app.world_mut().run_schedule(FixedUpdate);
-    let spent = cast_body(&app, caster).spent;
-    assert!((spent - 0.12).abs() < 1e-5, "{spent}");
+    let body = cast_body(&app, caster);
+    assert!((body.spent - 0.12 * 0.999).abs() < 1e-6, "{}", body.spent);
+    assert!(
+        (body.focus - (1.0 - 0.12 * 0.001)).abs() < 1e-6,
+        "{}",
+        body.focus
+    );
 }
 
 /// Displacement: constant displacement makes its class, holds its cost and
@@ -136,7 +142,19 @@ fn an_ended_power_clears_its_cast_and_restarts() {
     let ended = app.world().get::<PowerCaster>(caster).unwrap();
     assert!(ended.active.is_empty());
     assert_eq!(ended.body.casting, 0);
-    assert!((ended.body.reserved - 0.0).abs() < 1e-6);
+    // The ticks moved a little of the hold into the capacity; after the
+    // release exactly that much is still to come back.
+    assert!(
+        ended.body.reserved < 0.0 && ended.body.reserved > -0.01,
+        "{}",
+        ended.body.reserved
+    );
+    assert!(
+        (ended.body.capacity - 1.0 - ended.body.reserved).abs() < 1e-6,
+        "{} {}",
+        ended.body.capacity,
+        ended.body.reserved
+    );
     // A new press starts it again instead of releasing a stale cast.
     cast(&mut app, caster);
     let again = app.world().get::<PowerCaster>(caster).unwrap();

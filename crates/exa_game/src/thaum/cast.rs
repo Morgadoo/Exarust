@@ -21,7 +21,10 @@
 //!   was told to end), keeps a power that answers a result with bit 2 clear
 //!   and takes it out with the last entry in its place otherwise, releasing
 //!   the focus it held. A cast motion the classes start is played through
-//!   [`exa_anim::Animator`] by its motion id's action name.
+//!   [`exa_anim::Animator`] by its motion id's action name. The walk sits
+//!   between the body's two focus settles: the reserve's change moves into
+//!   the capacity before it, the spent focus leaves the pool (or the pool
+//!   regenerates) after it.
 //! - **The duellists' casts** ([`exa_ai::DuelPowers`]): before the combat
 //!   state runs, each of a duellist's record slots is answered by its
 //!   domain's AI evaluator over what it sees of its target; the power the
@@ -1301,6 +1304,7 @@ fn tick_casters(
         caster.take_states();
         let at = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO).to_array();
         let PowerCaster { body, active, .. } = caster;
+        casting::settle_capacity(body);
         let mut index = 0;
         while index < active.len() {
             let entry = &mut active[index];
@@ -1408,6 +1412,7 @@ fn tick_casters(
             }
             index += 1;
         }
+        casting::settle_focus(body);
         caster.sync_body();
     }
 }

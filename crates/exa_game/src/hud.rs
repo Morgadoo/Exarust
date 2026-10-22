@@ -10,6 +10,7 @@ use exa_combat::{Fighter, Weakened};
 use exa_ui::{Heartbeat, HudBars};
 
 use crate::player::{Player, PlayerBody};
+use crate::thaum::cast::PowerCaster;
 
 /// The heartbeat starts at most once in this long (s of game time).
 pub const HEARTBEAT_EVERY: f64 = 60.0;
@@ -66,28 +67,34 @@ struct HeartbeatState {
 #[derive(Component)]
 struct HeartbeatSound;
 
-/// The player's health, focus and combat mode for the HUD. Exarust has no
-/// powers and no shields yet: focus stays full, as the original's for a
-/// character who casts nothing, and the stamina gauge never shows.
+/// The player's health, focus and combat mode for the HUD: the focus and
+/// the capacity it regenerates to are the caster's, full for a body that
+/// casts nothing. Exarust has no shields yet: the stamina gauge never
+/// shows.
 fn pick_hud(
     players: Query<&Children, With<Player>>,
-    bodies: Query<(&PlayerBody, Option<&Fighter>)>,
+    bodies: Query<(&PlayerBody, Option<&Fighter>, Option<&PowerCaster>)>,
     mut hud: ResMut<HudBars>,
 ) {
     let found = players
         .iter()
         .find_map(|children| children.iter().find_map(|c| bodies.get(c).ok()));
     let next = match found {
-        Some((body, fighter)) => {
+        Some((body, fighter, caster)) => {
             let health = fighter
                 .map(|f| f.health)
                 .unwrap_or_else(|| exa_combat::Health::of_race(1.0));
+            let (focus, focus_cap) = caster.map_or((1.0, 1.0), |caster| {
+                (caster.body.focus, caster.body.capacity)
+            });
             HudBars {
                 active: true,
                 combat: body.combat,
                 yellow: health.yellow,
                 red: health.red,
                 max: health.max,
+                focus,
+                focus_cap,
                 ..default()
             }
         }
@@ -209,6 +216,22 @@ mod tests {
         assert!(weaken(&mut app, player));
         let (mut arena, player, _) = beating(false);
         assert!(!weaken(&mut arena, player));
+    }
+
+    /// The focus bar shows the player's caster: its pool and its capacity.
+    #[test]
+    fn the_focus_bar_reads_the_players_caster() {
+        let mut app = App::new();
+        app.init_resource::<HudBars>().add_systems(Update, pick_hud);
+        let mut caster = PowerCaster::new(&[]);
+        caster.body.focus = 0.4;
+        caster.body.capacity = 0.75;
+        let body = app.world_mut().spawn((PlayerBody::new(0.0), caster)).id();
+        app.world_mut().spawn(Player).add_children(&[body]);
+        app.update();
+        let hud = *app.world().resource::<HudBars>();
+        assert!(hud.active);
+        assert_eq!((hud.focus, hud.focus_cap), (0.4, 0.75));
     }
 
     #[test]
