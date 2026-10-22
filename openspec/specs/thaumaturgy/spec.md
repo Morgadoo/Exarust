@@ -996,3 +996,14 @@ The caster SHALL take the screen's record and bar when the tree closes, and the 
 #### Scenario: A tree session
 - **WHEN** the tree opens, fills slot 3 and a learnt pair, and closes
 - **THEN** the caster's record holds both and its known powers number three
+
+### Requirement: Duellist casts
+Before a duellist's combat state runs, the game SHALL answer each of its record's ten slots with that power's domain AI evaluator over its target's distance, bearing, condition and status. The pool SHALL be the caster's focus. The power the combat state chooses SHALL start through its domain's front end as an AI caster and become an active power as a bar cast does.
+
+#### Scenario: A shock within reach
+- **WHEN** a duellist knowing only the shock, with 0.5 focus, faces a target 3 m ahead, and then 6 m ahead
+- **THEN** its first slot answers 3, and then 0
+
+#### Scenario: The chosen shock
+- **WHEN** the combat state has chosen the shock
+- **THEN** the cast answers started, a Shock and its arcs exist, the choice is taken and the body reads casting

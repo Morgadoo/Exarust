@@ -90,8 +90,11 @@ while it follows the route does the combat tick end there. A running body
 stops its run before the drives (the step goal pulled to `8·speed + 20`
 cm along its facing). The cast chooser runs at the first place for a body
 not attacking with a foe, and a cast running past a second is torn down
-once the power system is done (`cast`; the running game has no power
-system, so nobody casts there). The follow check is ported and not yet
+once the power system is done (`cast`). A duellist with `DuelPowers`
+asks it as its power system: the game answers its slots before
+`DuelSystems` and casts the chosen power after it
+(`exa_game::thaum::cast`); a level character whose record knows powers
+gets one. The follow check is ported and not yet
 wired into the running game.
 
 **Morale.** The AI tick's morale (`combat::drift_morale`): stress falls

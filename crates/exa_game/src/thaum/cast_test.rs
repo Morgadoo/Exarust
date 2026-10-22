@@ -321,3 +321,79 @@ fn a_power_list_parses_both_bases() {
     assert_eq!(parse_power_list(" , "), Some(Vec::new()));
     assert_eq!(parse_power_list("0x20z"), None);
 }
+
+/// A duellist with a shock and a target 3 m ahead.
+fn duellist(app: &mut App) -> Entity {
+    let target = app
+        .world_mut()
+        .spawn(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 3.0)))
+        .id();
+    let mut caster = PowerCaster::new(&[SHOCK]);
+    caster.body.focus = 0.5;
+    app.world_mut()
+        .spawn((
+            Duellist::new(target),
+            DuelPowers::default(),
+            caster,
+            GlobalTransform::IDENTITY,
+            ragdoll(),
+        ))
+        .id()
+}
+
+/// A duellist's slots are answered by their domain's AI evaluator: the
+/// shock within five metres ahead advises 3; out of range, nothing.
+#[test]
+fn a_duellists_slots_are_answered_by_the_ai_evaluators() {
+    let mut app = new_app();
+    let npc = duellist(&mut app);
+    app.update();
+    let powers = app.world().get::<DuelPowers>(npc).unwrap();
+    assert_eq!(powers.slots[0], SHOCK);
+    assert_eq!(powers.answers[0], 3);
+    assert_eq!(powers.slots[1..], [0; 9]);
+    assert_eq!(powers.pool, 0.5);
+    assert!(!powers.casting);
+    let target = app.world().get::<Duellist>(npc).unwrap().target;
+    *app.world_mut().get_mut::<GlobalTransform>(target).unwrap() =
+        GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0));
+    app.update();
+    assert_eq!(app.world().get::<DuelPowers>(npc).unwrap().answers[0], 0);
+}
+
+/// The power a duellist's combat state chose is cast as the bar's: the
+/// shock's class and arcs, and the body then reads casting.
+#[test]
+fn a_duellists_chosen_power_is_cast() {
+    let mut app = new_app();
+    let npc = duellist(&mut app);
+    app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
+    app.update();
+    let state = app.world().get::<PowerCaster>(npc).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
+    assert_eq!(count::<LiveArcs>(&mut app), 1);
+    let powers = app.world().get::<DuelPowers>(npc).unwrap();
+    assert_eq!(powers.chosen, None);
+    assert!(powers.casting);
+}
+
+/// A record's powers make its caster: the known pairs and the slots.
+#[test]
+fn a_records_powers_make_its_caster() {
+    let mut slots = [0; 10];
+    slots[0] = SHOCK;
+    let record = exa_formats::characters::Powers {
+        word: 0,
+        slots,
+        known: vec![exa_formats::characters::Power {
+            id: SHOCK,
+            flags: crate::thaum::tree::LEARNED,
+            blob: None,
+        }],
+    };
+    let caster = PowerCaster::of_record(&record);
+    assert_eq!(caster.record.slots, slots);
+    assert_eq!(caster.known.len(), 1);
+    assert_eq!(caster.known[0].id, SHOCK);
+}

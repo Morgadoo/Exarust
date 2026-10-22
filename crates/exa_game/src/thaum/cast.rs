@@ -22,6 +22,11 @@
 //!   and takes it out with the last entry in its place otherwise, releasing
 //!   the focus it held. A cast motion the classes start is played through
 //!   [`exa_anim::Animator`] by its motion id's action name.
+//! - **The duellists' casts** ([`exa_ai::DuelPowers`]): before the combat
+//!   state runs, each of a duellist's record slots is answered by its
+//!   domain's AI evaluator over what it sees of its target; the power the
+//!   combat state's chooser picks is then started by its domain's front end
+//!   as an AI caster, and becomes an active power as the bar's do.
 //! - **Live effects** ([`super::live`]): a shock's hand arcs, a barricade's
 //!   wall and a constant displacement's wisps are spawned with the power and
 //!   removed when it ends. Every other effect has no entity yet: the class
@@ -33,17 +38,18 @@
 //! control, read from `Exanima.exe`.
 
 use bevy::prelude::*;
+use exa_ai::{DuelPowers, DuelSystems, Duellist};
 use exa_anim::{Animator, Motions};
 use exa_character::held::HeldMoveset;
-use exa_combat::Condition;
 use exa_combat::swing::SwingState;
+use exa_combat::{Condition, Fighter};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll};
 
 use super::arcs::{ArcEmitter, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{Barricade, WallFrame, state as wall_state};
-use super::casting::{self, ActivePower, CastBody, ID_MASK, code};
+use super::casting::{self, ActivePower, AiView, CastBody, ID_MASK, code};
 use super::displacement::{
     CursorHit, DisplacementAim, DisplacementStart, body_wisps, displacement_front_end,
 };
@@ -59,10 +65,12 @@ use super::power::energy::{Shock, ShockWeapons};
 use super::power::force::{
     BUBBLE, BUBBLE_MOTION, Kinesis, RemotePower, SHELL, Shell, Strikes, THROW, Throw,
 };
-use super::power::{ENDING, KNOWN_WORD, KnownPower, PowerBase, READY, RUNNING, drain};
+use super::power::{
+    ENDING, KNOWN_WORD, KnownPower, PowerBase, READY, RUNNING, drain, evaluate_domain,
+};
 use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
-    TreeScreen, word,
+    TreeScreen, domain_of, word,
 };
 use super::wisps::{Strand, Wisps};
 use crate::hand::{Hand, Holding};
@@ -211,6 +219,24 @@ impl PowerCaster {
         }
     }
 
+    /// A character record's caster: its known powers and its ten slots, on
+    /// the body [`PowerCaster::new`] gives.
+    pub fn of_record(powers: &exa_formats::characters::Powers) -> Self {
+        let mut caster = Self::new(&[]);
+        caster.record.pairs = powers
+            .known
+            .iter()
+            .map(|power| super::tree::KnownPower {
+                power: power.id,
+                flags: power.flags,
+            })
+            .collect();
+        caster.record.slots = powers.slots;
+        caster.known = known_from(&caster.record);
+        caster.bar.load(&caster.record);
+        caster
+    }
+
     /// Rebuild the body's power view from the active list, in its order.
     fn sync_body(&mut self) {
         self.body.powers = self
@@ -241,6 +267,13 @@ impl Plugin for CastPlugin {
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_systems(
+                Update,
+                (
+                    advise_duellists.before(DuelSystems),
+                    cast_for_duellists.after(DuelSystems),
+                ),
+            )
             .add_systems(
                 FixedUpdate,
                 (tick_casters, play_cast_motions).chain().after(BodySystems),
@@ -426,56 +459,282 @@ fn run_bar_commands(
                 if let Some(queued) = entry.queued_slot {
                     debug!("cast queued on slot {queued}");
                 }
-                caster.take_states();
-                if matches!(
+                debug!("bar cast {asked:#x}: {result_code}");
+                let place = CastPlace {
+                    now,
+                    ragdoll,
+                    yaw: locomotor.map_or(0.0, |l| l.yaw),
+                    cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
+                    clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
+                };
+                begin_cast(
+                    &mut commands,
+                    entity,
+                    caster,
+                    entry.result > 0,
                     start,
-                    Some(CastStart::Displacement(DisplacementStart::EndVanish))
-                ) {
-                    // Vanish pressed while it runs: the running power's hook
-                    // is told to end it.
-                    for running in &mut caster.active {
-                        if let ActiveClass::Vanish(power) = &mut running.class {
-                            power.release();
-                        }
-                    }
-                }
-                if entry.result > 0
-                    && let Some(start) = start
-                {
-                    let root = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO);
-                    let yaw = locomotor.map_or(0.0, |l| l.yaw);
-                    let heading = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-                    let context = CastContext {
-                        now,
-                        caster: root,
-                        heading,
-                        ground: root,
-                        cursor: ground.as_deref().and_then(|g| g.0).map(|p| p * CM),
-                        clip_ms: shot_clip_ms(motions.as_deref(), animator.as_deref()),
-                    };
-                    let made = create_active(
-                        &mut commands,
-                        entity,
-                        caster,
-                        start,
-                        &context,
-                        ragdoll,
-                        physics.as_deref(),
-                        &mut draws,
-                        &mut roll,
-                    );
-                    debug!(
-                        "cast {asked:#x}: {} active, effect entity {:?}",
-                        caster.active.len(),
-                        made
-                    );
-                }
-                caster.sync_body();
+                    &place,
+                    physics.as_deref(),
+                    &mut draws,
+                    &mut roll,
+                );
                 if let Some(screen) = screen.as_deref_mut() {
                     store_on_screen(screen, caster);
                 }
             }
         }
+    }
+}
+
+/// Where a cast starts: the clock, the caster's body and heading (yaw,
+/// +Z at 0), the cursor's point (cm, the player's) and the cast clip's
+/// length.
+struct CastPlace<'a> {
+    now: u32,
+    ragdoll: Option<&'a Ragdoll>,
+    yaw: f32,
+    cursor: Option<Vec3>,
+    clip_ms: Option<u32>,
+}
+
+/// After a domain's front end: a vanish asked again ends the running one,
+/// a started power gets the class its creator makes, and the body's power
+/// view follows the active list.
+#[allow(clippy::too_many_arguments)]
+fn begin_cast(
+    commands: &mut Commands,
+    entity: Entity,
+    caster: &mut PowerCaster,
+    started: bool,
+    start: Option<CastStart>,
+    place: &CastPlace,
+    physics: Option<&Physics>,
+    draws: &mut EffectDraws,
+    roll: &mut EffectRoll,
+) {
+    caster.take_states();
+    if matches!(
+        start,
+        Some(CastStart::Displacement(DisplacementStart::EndVanish))
+    ) {
+        // Vanish pressed while it runs: the running power's hook is told to
+        // end it.
+        for running in &mut caster.active {
+            if let ActiveClass::Vanish(power) = &mut running.class {
+                power.release();
+            }
+        }
+    }
+    if started && let Some(start) = start {
+        let root = place.ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO);
+        let context = CastContext {
+            now: place.now,
+            caster: root,
+            heading: Vec3::new(place.yaw.sin(), 0.0, place.yaw.cos()),
+            ground: root,
+            cursor: place.cursor,
+            clip_ms: place.clip_ms,
+        };
+        let made = create_active(
+            commands,
+            entity,
+            caster,
+            start,
+            &context,
+            place.ragdoll,
+            physics,
+            draws,
+            roll,
+        );
+        debug!(
+            "cast by {entity:?}: {} active, effect entity {:?}",
+            caster.active.len(),
+            made
+        );
+    }
+    caster.sync_body();
+}
+
+/// Answers each duellist's power slots from its caster: every slot's power
+/// through its domain's AI evaluator, over what the duellist sees of its
+/// target. The pool is the caster's focus.
+#[allow(clippy::type_complexity)]
+fn advise_duellists(
+    mut duellists: Query<(
+        &mut DuelPowers,
+        &mut PowerCaster,
+        &Duellist,
+        &GlobalTransform,
+        Option<&Condition>,
+        Option<&SwingState>,
+        Option<&Locomotion>,
+        Option<&Locomotor>,
+        Option<&Fighter>,
+    )>,
+    places: Query<&GlobalTransform>,
+    children: Query<&Children>,
+    targets: Query<(Option<&Condition>, Option<&PowerCaster>), Without<DuelPowers>>,
+) {
+    for (mut powers, mut caster, duellist, at, condition, swing, locomotion, locomotor, fighter) in
+        &mut duellists
+    {
+        let caster = &mut *caster;
+        refresh_body(
+            &mut caster.body,
+            condition,
+            swing,
+            locomotion,
+            locomotor,
+            None,
+        );
+        let mut view = AiView {
+            caster: caster.body.clone(),
+            health_ratio: fighter
+                .filter(|f| f.health.max > 0.0)
+                .map_or(1.0, |f| f.health.yellow / f.health.max),
+            summoned: caster
+                .active
+                .iter()
+                .any(|entry| matches!(entry.class, ActiveClass::Summon(_))),
+            ..AiView::default()
+        };
+        if let Ok(target) = places.get(duellist.target) {
+            let to = (target.translation() - at.translation()) * CM;
+            view.distance_sq = to.length_squared();
+            // [Exarust's measure: 1 less the cosine between the facing and
+            // the flat line to the target, 0 ahead to 2 behind, as the
+            // combat state's own "ahead" is.]
+            let flat = Vec3::new(to.x, 0.0, to.z).normalize_or_zero();
+            view.facing = 1.0 - (at.rotation() * Vec3::Z).dot(flat);
+        }
+        let target_body = std::iter::once(duellist.target)
+            .chain(children.iter_descendants(duellist.target))
+            .filter_map(|e| targets.get(e).ok());
+        for (condition, power_caster) in target_body {
+            if let Some(condition) = condition {
+                view.target_condition |= condition.0;
+            }
+            if let Some(power_caster) = power_caster {
+                view.target_status |= power_caster.body.status_bits;
+            }
+        }
+        let slots = caster.record.slots.map(|slot| {
+            if slot & word::INDEX == 0 {
+                0
+            } else {
+                slot & ID_MASK
+            }
+        });
+        let answers = slots.map(|slot| {
+            if slot == 0 {
+                0
+            } else {
+                evaluate_domain(slot, &view)
+            }
+        });
+        let casting = caster.body.casting != 0;
+        let advised = DuelPowers {
+            slots,
+            answers,
+            pool: caster.body.focus,
+            casting,
+            running: casting || caster.body.cast_hook.is_some_and(|answer| answer >= 0),
+            chosen: powers.chosen,
+        };
+        powers.set_if_neq(advised);
+    }
+}
+
+/// Casts the power each duellist's combat state chose, by its domain's
+/// front end as an AI caster (no cursor, its hands free).
+/// [inf: the AI's cast is taken to start the power as the bar's dispatcher
+/// does, without the bar's slot rules.]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn cast_for_duellists(
+    mut commands: Commands,
+    mut duellists: Query<(
+        Entity,
+        &mut DuelPowers,
+        &mut PowerCaster,
+        &GlobalTransform,
+        Option<&Condition>,
+        Option<&SwingState>,
+        Option<&Locomotion>,
+        Option<&Locomotor>,
+        Option<&Animator>,
+        Option<&HeldMoveset>,
+        Option<&Ragdoll>,
+    )>,
+    physics: Option<Res<Physics>>,
+    ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<Motions>>,
+    mut draws: ResMut<EffectDraws>,
+    mut roll: ResMut<EffectRoll>,
+) {
+    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    for (
+        entity,
+        mut powers,
+        mut caster,
+        at,
+        condition,
+        swing,
+        locomotion,
+        locomotor,
+        animator,
+        held,
+        ragdoll,
+    ) in &mut duellists
+    {
+        let Some(asked) = powers.chosen.take() else {
+            continue;
+        };
+        let caster = &mut *caster;
+        refresh_body(
+            &mut caster.body,
+            condition,
+            swing,
+            locomotion,
+            locomotor,
+            held,
+        );
+        let possessing = caster.body.status_bits & CONTROLLING != 0;
+        let world = ForceWorld {
+            controls_busy: false,
+            possessing,
+            cursor_on_barricade: false,
+            throw_pick: false,
+            kinesis_holds: false,
+        };
+        let aim = DisplacementAim {
+            player: false,
+            cursor: None,
+            possessing,
+        };
+        let (result, start) =
+            dispatch_domain(domain_of(asked), asked, &mut caster.body, &world, &aim);
+        caster.last_result = result;
+        debug!("duellist {entity:?} casts {asked:#x}: {result}");
+        let facing = at.rotation() * Vec3::Z;
+        let place = CastPlace {
+            now,
+            ragdoll,
+            yaw: facing.x.atan2(facing.z),
+            cursor: None,
+            clip_ms: shot_clip_ms(motions.as_deref(), animator),
+        };
+        begin_cast(
+            &mut commands,
+            entity,
+            caster,
+            result > 0,
+            start,
+            &place,
+            physics.as_deref(),
+            &mut draws,
+            &mut roll,
+        );
+        powers.casting = caster.body.casting != 0;
     }
 }
 

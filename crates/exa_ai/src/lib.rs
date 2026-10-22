@@ -55,16 +55,53 @@ pub use sense::{Decision, Mind, decide, noticeability, tick, view_weight};
 
 pub struct AiPlugin;
 
+/// The duellists' combat state: a power system answers [`DuelPowers`]
+/// before it and casts what it chose after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DuelSystems;
+
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
             (
                 (brain::apply_new_roles, brain::rate_the_player).chain(),
-                duellist,
+                duellist.in_set(DuelSystems),
             )
                 .chain(),
         );
+    }
+}
+
+/// What a duellist's power system answers the combat state, and the power
+/// it chose. The game writes the answers before [`DuelSystems`] and casts
+/// [`DuelPowers::chosen`] after it; a duellist without one casts nothing.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct DuelPowers {
+    /// The record's ten power slots (0 empty).
+    pub slots: [u32; cast::SLOTS],
+    /// Each slot's word, as [`cast::Powers::query`] answers it.
+    pub answers: [u32; cast::SLOTS],
+    /// The focus the chooser's budget scales.
+    pub pool: f32,
+    /// A cast motion runs: the body's condition reads casting.
+    pub casting: bool,
+    /// The power system still runs the body's cast.
+    pub running: bool,
+    /// The power the combat state chose, until the game casts it.
+    pub chosen: Option<u32>,
+}
+
+impl cast::Powers for DuelPowers {
+    fn query(&mut self, power: u32) -> u32 {
+        self.slots
+            .iter()
+            .position(|&slot| slot == power)
+            .map_or(cast::DENIED, |slot| self.answers[slot])
+    }
+
+    fn cast(&mut self, power: u32) {
+        self.chosen = Some(power);
     }
 }
 
@@ -224,6 +261,8 @@ struct DuelField<'a> {
     spot: place::Spot,
     /// The chase's state, when the level has a navigation grid.
     chase: Option<DuelChase<'a>>,
+    /// The power system, when the duellist has powers.
+    powers: Option<&'a mut DuelPowers>,
 }
 
 /// What the chase route needs from the duel, and what it did.
@@ -290,6 +329,14 @@ impl combat::Field for DuelField<'_> {
             distance_cm: d,
             ahead,
         }
+    }
+    fn powers(&mut self) -> Option<&mut dyn cast::Powers> {
+        self.powers
+            .as_deref_mut()
+            .map(|powers| powers as &mut dyn cast::Powers)
+    }
+    fn cast_running(&mut self) -> bool {
+        self.powers.as_ref().is_some_and(|powers| powers.running)
     }
 }
 
@@ -379,6 +426,7 @@ fn duellist(
         &GlobalTransform,
         Option<&Ragdoll>,
         &Fighter,
+        Option<&mut DuelPowers>,
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
     mut planning: Local<(PlanTurn, u32)>,
@@ -404,6 +452,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
+        mut powers,
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -680,12 +729,31 @@ fn duellist(
             presses: false,
             other_skill: 0.0,
         };
+        // A chosen power the power system never started, or one done before
+        // the body read casting, leaves the cast [Exarust's: the running
+        // game keeps a cast on its caster, not in the body's condition, so
+        // the combat state's own stop may never see it].
+        if let Some(p) = powers.as_deref()
+            && ai.mind.casting
+            && !p.casting
+            && !p.running
+            && p.chosen.is_none()
+        {
+            ai.mind.casting = false;
+        }
+        let casting = powers.as_deref().is_some_and(|p| p.casting);
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
             let mut me = combat::Body {
                 now_ms: now as u32,
-                condition: condition.0,
+                condition: if casting && condition.0 == 0 {
+                    combat::CASTING
+                } else {
+                    condition.0
+                },
+                power_pool: powers.as_deref().map_or(0.0, |p| p.pool),
+                power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
                 weapon_class: u32::from(class),
                 held: blades
@@ -762,6 +830,7 @@ fn duellist(
                     },
                     outcome: None,
                 }),
+                powers: powers.as_deref_mut(),
             };
             // A chase mark lapses once its time has passed (the contact
             // integration's rule).
@@ -1135,6 +1204,51 @@ mod tests {
             step(&mut tired);
             assert!(tired.world().get::<Attacking>(foe2).is_none());
         }
+    }
+
+    /// A duellist whose power system answers a usable power chooses it for
+    /// the game to cast; one never started leaves the cast, so it may
+    /// choose again.
+    #[test]
+    fn the_duellist_chooses_a_power_its_power_system_offers() {
+        let (mut app, foe, _) = duel(3.0, true);
+        let mut slots = [0; cast::SLOTS];
+        slots[0] = 0x401;
+        let mut answers = [0; cast::SLOTS];
+        answers[0] = cast::USABLE | 5;
+        app.world_mut().entity_mut(foe).insert(DuelPowers {
+            slots,
+            answers,
+            pool: 1.0,
+            ..DuelPowers::default()
+        });
+        engage(&mut app, foe);
+        let chosen = |app: &mut App| {
+            app.world_mut()
+                .get_mut::<DuelPowers>(foe)
+                .unwrap()
+                .chosen
+                .take()
+        };
+        let mut first = None;
+        for _ in 0..400 {
+            step(&mut app);
+            first = chosen(&mut app);
+            if first.is_some() {
+                break;
+            }
+        }
+        assert_eq!(first, Some(0x401));
+        assert!(app.world().get::<Duellist>(foe).unwrap().mind.casting);
+        let mut again = None;
+        for _ in 0..400 {
+            step(&mut app);
+            again = chosen(&mut app);
+            if again.is_some() {
+                break;
+            }
+        }
+        assert_eq!(again, Some(0x401));
     }
 
     /// The combat ticks follow the body ticks: four at most a frame.

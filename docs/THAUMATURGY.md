@@ -536,7 +536,14 @@ the tree, bar, tooltip and preview with the six fragment programs in
 `exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`). The bar's keys
 (`hotkeys`) go to `thaum::cast`, described with the classes above, which
 runs the chosen slot through the Force, Energy and Displacement front ends
-against the player's body. The tree screen and the caster share one record:
+against the player's body. A duellist whose record knows powers casts too:
+before its combat state runs, each record slot is answered by its domain's
+AI evaluator (distance and bearing to its target, the target's condition
+and status, the caster's focus as the pool), and the power the combat
+state's chooser picks starts through its domain's front end as an AI
+caster, with no cursor and its hands free. The bearing measure (1 less the
+cosine between the facing and the line to the target) is Exarust's. The
+tree screen and the caster share one record:
 the screen owns it while the tree is open and the caster takes it back when
 the tree closes. The constant displacement's veil, the grant routine and the
 tree's key handler are not wired. The
