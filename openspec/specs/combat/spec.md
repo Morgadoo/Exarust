@@ -171,11 +171,15 @@ The system SHALL keep each fighter's stance, the looping clip it returns to. The
 - **THEN** it starts Idle at once
 
 ### Requirement: Combat readiness
-The system SHALL raise a fighter's readiness by 0.004 per tick, up to 1, while its stance and its clip are both Cmbt - Idle, and SHALL reset it to 0 otherwise. A blow SHALL scale the victim's penetration, impact and stab energy by 1 − 0.5 × its readiness, after the shove is taken from the impact.
+The system SHALL raise a fighter's readiness by 0.004 a tick, up to 1, while its stance is Cmbt - Idle or it parries, and its clip is Cmbt - Idle, it parries or its attack is released; else it SHALL reset it to 0. A blow SHALL scale the victim's penetration, impact and stab energy by 1 − 0.5 × its readiness, after the shove is taken from the impact.
 
 #### Scenario: Ready for 3 s
 - **WHEN** a fighter that has stood in Cmbt - Idle for 3 s takes a sword cut on bare flesh
 - **THEN** the cut's penetration is half what it would be on a fighter in the Defence stance, and the shove is the same
+
+#### Scenario: Readiness through a parry
+- **WHEN** a fighter in the Defence stance playing an attack clip parries
+- **THEN** its readiness rises by 0.004 a tick, and it resets to 0 once the parry ends
 
 ### Requirement: Weapon record
 The system SHALL build a held weapon's record as the original does: from its section's bytes, its length along its model's first-child chain of rigid parts (an assembled factory weapon's top) and its holder's own encumbrance and size, giving held weight and balance, swing speed, recoil, swing shaping, stance blend, arm stiffness, sweet spot, reach, second-hand place, swing sound and AI turn factors and mass. It SHALL hold for every weapon item of the installed `objdb.rdb`.
@@ -292,7 +296,7 @@ An attack's clock SHALL gain speed × g × 1.125 × base frames a tick, g = 1 �
 - **THEN** each uninterrupted punch (110 frames) plays 67 ticks and ends into its stance on the 68th
 
 ### Requirement: Dazed stance
-While a fighter's energy is more than 0.05 under its most (in double precision), its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless its condition is helpless or attacking, its clip SHALL start the Defence stance when another clip plays, with a blend of round((1.05 − E) × 300) frames, eased smoothly. A daze SHALL be decided before the posture stage in the same tick, so a fall's clip wins.
+While a fighter's energy is more than 0.05 under its most (double precision) and it does not parry, its stance SHALL be the Defence stance every body tick, and the player's stance rule SHALL not give Cmbt - Idle. Unless helpless, attacking or shock-staggered, the Defence clip SHALL start when another plays, blend round((1.05 − E) × 300), eased smoothly. A daze is decided before the posture stage, so a fall's clip wins.
 
 #### Scenario: Struck in the combat idle
 - **WHEN** the player in combat mode, in Cmbt - Idle, is dazed to energy 0.62
@@ -313,6 +317,17 @@ While a fighter's energy is more than 0.05 under its most (in double precision),
 #### Scenario: Shoved over
 - **WHEN** `exarust --shove 60 --trace t.csv play arena` dazes the player to energy 0.13 and it falls
 - **THEN** the Defence stance starts (blend 276), Rebalance and then the fall replace it each tick until the player is down, and the get-up ends in Idle without a jump
+
+### Requirement: Shock stagger
+While the shock-stagger flag is set, a body tick SHALL set energy to its most minus 0.5 in single precision, set the stance to Defence (when the body has one) without starting its clip, start Rebalance with no blend unless it already plays, and clear the flag once the game clock is past the next shock. The daze's Defence clip SHALL NOT start on that tick. A shock on a fighter that is not collapsing or dead SHALL set the flag.
+
+#### Scenario: The flag holds, then the clock passes
+- **WHEN** a fighter with the flag, energy 1 and most 1, plays Idle with the next shock due at 500 ms, and is ticked at 0, 144 and 504 ms
+- **THEN** the first tick leaves energy at 0.5, the stance Defence and Rebalance started with blend 0, the flag kept; the second keeps the flag without restarting Rebalance; the third clears the flag
+
+#### Scenario: A body without a stance
+- **WHEN** a staggered body that has no stance plays Idle
+- **THEN** its energy is pinned and Rebalance starts as for a fighter
 
 ### Requirement: Stance blends
 Each stance start SHALL blend from where the body is to the stance's first key: the set-stance helper (Tab, a duellist entering combat) 30 frames, smooth; the posture switch 30 frames, linear, once a Rebalance's wait has run out; a duellist's stance 40 frames without a primary striker, else twice its primary's stance blend, smooth, its ease set smooth on every pass even when nothing starts.

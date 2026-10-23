@@ -78,13 +78,14 @@ fn pose_gains_are_the_originals() {
 /// The push G·o·(1 − c), c = o·v/(s|o|²), in cm a tick, at s = 0.5: still,
 /// the whole of G·o; closing at half of s|o| a tick, half of it; at s|o| or
 /// faster, none; moving away, more (twice at s|o|); moving across, all of
-/// it. The vertical is cut to a tenth, and an offset under 1.19e-7 cm² is
-/// left alone.
+/// it. On its feet the vertical is the double 0.1 narrowed once (0.01 cm
+/// narrows to bits 0x3a83126e, not the f32 product), and an offset under
+/// 1.19e-7 cm² is left alone. Off its feet only the vertical is kept.
 #[test]
 fn the_push_takes_off_what_the_particle_closes() {
     let (s, g) = (0.5, 0.0314);
     let o = Vec3::new(1.0, 0.0, 0.0);
-    let push = |v: Vec3| pose_push(o, v, s, g);
+    let push = |v: Vec3| pose_push(o, v, s, g, false);
     let near = |a: Option<Vec3>, b: Vec3| a.is_some_and(|a| a.abs_diff_eq(b, 1e-7));
     assert!(near(push(Vec3::ZERO), o * g));
     assert!(near(push(Vec3::X * 0.25), o * g * 0.5));
@@ -92,10 +93,19 @@ fn the_push_takes_off_what_the_particle_closes() {
     assert_eq!(push(Vec3::X * 3.0), None);
     assert!(near(push(Vec3::X * -0.5), o * g * 2.0));
     assert!(near(push(Vec3::Z * 2.0), o * g));
-    let up = pose_push(Vec3::new(0.0, 2.0, 1.0), Vec3::ZERO, s, g);
+    let up = pose_push(Vec3::new(0.0, 2.0, 1.0), Vec3::ZERO, s, g, false);
     assert!(near(up, Vec3::new(0.0, 0.2, 1.0) * g));
-    assert_eq!(pose_push(Vec3::splat(1.9e-4), Vec3::ZERO, s, g), None);
-    assert!(pose_push(Vec3::splat(2.1e-4), Vec3::ZERO, s, g).is_some());
+    let tenth = pose_push(Vec3::new(0.0, 0.01, 0.0), Vec3::ZERO, s, 1.0, false).unwrap();
+    assert_eq!(tenth.y.to_bits(), 0x3a83_126e);
+    assert_eq!(
+        pose_push(Vec3::splat(1.9e-4), Vec3::ZERO, s, g, false),
+        None
+    );
+    assert!(pose_push(Vec3::splat(2.1e-4), Vec3::ZERO, s, g, false).is_some());
+    let down = pose_push(Vec3::new(1.0, 2.0, 3.0), Vec3::ZERO, s, 1.0, true).unwrap();
+    assert_eq!(down.x.to_bits(), 0);
+    assert_eq!(down.z.to_bits(), 0);
+    assert_eq!(down.y.to_bits(), 2.0f32.to_bits());
 }
 
 /// The pose drive has no position target: a body moved and moving as a
@@ -161,6 +171,42 @@ fn a_turned_part_is_turned_back_about_its_origin() {
             assert!(
                 tilt_after < tilt && tilt_after > 0.3 * (1.0 - g),
                 "tilt {tilt_after}"
+            );
+        }
+    }
+}
+
+/// Off its feet a yaw, whose offsets are level, is not pushed. A tilt still
+/// moves, and only vertically.
+#[test]
+fn off_its_feet_a_yaw_is_not_pushed() {
+    for (r, yawed) in [
+        (Quat::from_rotation_y(0.3), true),
+        (Quat::from_rotation_x(0.3), false),
+    ] {
+        let (setup, pose) = humanoid(Vec3::ZERO);
+        let mut body = Ragdoll::new(&setup).with_drive();
+        body.aim(Affine3A::IDENTITY, pose);
+        body.drive.as_mut().unwrap().bearing.off_feet = true;
+        let i = body.parts.iter().position(|p| p.bone == 8).unwrap();
+        turn_part(&mut body.parts[i], r);
+        let before = body.parts[i].positions;
+        let Ragdoll { parts, drive, .. } = &mut body;
+        drive_parts(parts, drive.as_ref().unwrap());
+        let after = parts[i].positions;
+        for (a, b) in after.iter().zip(before) {
+            assert_eq!(a.x.to_bits(), b.x.to_bits());
+            assert_eq!(a.z.to_bits(), b.z.to_bits());
+            if yawed {
+                assert_eq!(a.y.to_bits(), b.y.to_bits());
+            }
+        }
+        if !yawed {
+            assert!(
+                after
+                    .iter()
+                    .zip(before)
+                    .any(|(a, b)| a.y.to_bits() != b.y.to_bits())
             );
         }
     }
@@ -362,7 +408,8 @@ fn the_horizontal_stance_hold_does_not_run() {
 /// dazed (energy more than 0.05 under its most), 1 − (1 − S)²·(1 − s)·
 /// (E/Emax)⁴, so a dazed body standing on its feet holds its pose in full
 /// and one lying (E = 0.5) 0.9375; alert, (1 − S)·s, nothing without a
-/// blow sag. The sag fades 0.01 a tick, and is gone once the body falls.
+/// blow sag. The sag fades 0.01 a tick in double precision, and is 0 while
+/// the body is down.
 #[test]
 fn a_dazed_body_holds_its_pose() {
     let mut d = Drive {
@@ -390,14 +437,22 @@ fn a_dazed_body_holds_its_pose() {
     assert!(d.holds_pose());
     d.support = 1.0;
     assert!(!d.holds_pose());
-    // The sag fades with the ticks, and goes with a fall.
+    // The sag fades 0.01 in double precision. Leaving the feet does not
+    // clear it; the down condition does.
     let (mut body, targets) = standing();
     let floor = floor_quad(0.0, 5.0);
     body.aim(Affine3A::IDENTITY, targets);
     body.drive.as_mut().unwrap().sag = 0.5;
     body.tick(floor.as_slice());
-    assert!(close(body.drive.as_ref().unwrap().sag, 0.49, 1e-6));
+    let faded = super::fade_sag(0.5, false);
+    assert_eq!(body.drive.as_ref().unwrap().sag, faded);
     body.fall();
+    body.tick(floor.as_slice());
+    assert_eq!(
+        body.drive.as_ref().unwrap().sag,
+        super::fade_sag(faded, false)
+    );
+    body.drive.as_mut().unwrap().bearing.off_feet = true;
     body.tick(floor.as_slice());
     assert_eq!(body.drive.as_ref().unwrap().sag, 0.0);
 }

@@ -223,8 +223,51 @@ pub struct Release {
     /// Busy until this game clock (ms); locomotion, its thrust and the
     /// clip rate stop.
     pub busy_until_ms: u32,
+    /// The clip rate it writes (0): the clock keeps it until the posture
+    /// block's stance reset raises it to the race base again.
+    pub clip_rate: f32,
     /// The condition it is left in: [`SHOCKED`].
     pub condition: u32,
+}
+
+/// What one body tick writes while the shock-stagger flag is set, after
+/// this tick's energy recovery.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaggerTick {
+    /// Energy, the most minus 0.5 in single precision.
+    pub energy: f32,
+    /// The flag word, the stagger bit cleared once the clock is past the
+    /// next shock.
+    pub flags: u32,
+    /// Rebalance starts with no blend. Already playing it, the clip stays.
+    pub play_rebalance: bool,
+}
+
+/// The body tick's shock stagger. Nothing when the flag is clear. While it
+/// is set, energy becomes `max_energy − 0.5` (single precision; a NaN
+/// stays) and Rebalance starts unless `playing_rebalance`. The flag clears
+/// once `now_ms` is past `next_shock_ms`; a deadline still ahead, or equal
+/// to the clock, keeps it. The child-pose scatter that follows the energy
+/// write in the original is not here.
+pub fn shock_stagger_tick(
+    flags: u32,
+    max_energy: f32,
+    playing_rebalance: bool,
+    now_ms: u64,
+    next_shock_ms: u64,
+) -> Option<StaggerTick> {
+    if flags & SHOCK_STAGGER == 0 {
+        return None;
+    }
+    let mut flags = flags;
+    if next_shock_ms < now_ms {
+        flags &= !SHOCK_STAGGER;
+    }
+    Some(StaggerTick {
+        energy: max_energy - 0.5,
+        flags,
+        play_rebalance: !playing_rebalance,
+    })
 }
 
 /// The force release on a body that is `stepping` in `condition`.
@@ -233,6 +276,7 @@ pub fn force_release(now_ms: u32, stepping: bool, condition: u32) -> Release {
         end_step: stepping,
         reset_swing: condition == COMBAT,
         busy_until_ms: now_ms.wrapping_add(RELEASE_BUSY_MS),
+        clip_rate: 0.0,
         condition: SHOCKED,
     }
 }
@@ -260,6 +304,41 @@ mod tests {
             i += 1;
             values[i - 1]
         }
+    }
+
+    /// The shock start writes the clip rate 0, condition 0xC0 and a 600 ms
+    /// busy timer.
+    #[test]
+    fn the_release_writes_a_zero_clip_rate() {
+        let release = force_release(1_000, false, 0);
+        assert_eq!(release.clip_rate, 0.0);
+        assert_eq!(release.busy_until_ms, 1_600);
+        assert_eq!(release.condition, SHOCKED);
+        assert!(!release.end_step && !release.reset_swing);
+    }
+
+    /// The body tick while the stagger flag is set: energy is the most
+    /// minus 0.5, Rebalance starts unless it plays, and the flag clears
+    /// once the clock is past the next shock.
+    #[test]
+    fn the_stagger_pins_energy_and_clears_when_the_clock_passes() {
+        let held = shock_stagger_tick(SHOCK_STAGGER | 0x10, 1.0, false, 500, 500).unwrap();
+        assert_eq!(held.energy.to_bits(), 0x3f00_0000);
+        assert_eq!(held.flags, SHOCK_STAGGER | 0x10);
+        assert!(held.play_rebalance);
+        let playing = shock_stagger_tick(SHOCK_STAGGER, 0.9, true, 0, 0).unwrap();
+        assert_eq!(playing.energy.to_bits(), (0.9f32 - 0.5).to_bits());
+        assert!(!playing.play_rebalance);
+        assert_eq!(playing.flags, SHOCK_STAGGER);
+        let done = shock_stagger_tick(SHOCK_STAGGER | 0x10, 1.0, false, 501, 500).unwrap();
+        assert_eq!(done.flags, 0x10);
+        assert!(shock_stagger_tick(0x10, 1.0, false, 0, 0).is_none());
+        assert!(
+            shock_stagger_tick(SHOCK_STAGGER, f32::NAN, false, 1, 0)
+                .unwrap()
+                .energy
+                .is_nan()
+        );
     }
 
     /// The window: refused while the next shock is more than 150 ms away.
@@ -405,6 +484,7 @@ mod tests {
                 end_step: true,
                 reset_swing: true,
                 busy_until_ms: 2_600,
+                clip_rate: 0.0,
                 condition: SHOCKED
             }
         );

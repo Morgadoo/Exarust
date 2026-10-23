@@ -94,7 +94,7 @@ The system SHALL give a living physical body the animated pose of each tick on i
 - **THEN** its planted feet are carried round with it, within 0.1 cm of their anchors
 
 ### Requirement: Blows and daze
-The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy (at most 90 %, never below 0.05), which recovers by 0.005 per tick up to the body's most energy: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
+The system SHALL let a blow change the velocity of the struck part and take a share of the body's energy: energy − energy×share, the share at most 0.9 when it compares above that double, the result 0.05 when it compares below that double (a NaN stays). Energy recovers by 0.005 per tick up to the body's most: its character's, 1 for a human that is not feral. Blows SHALL be queued and dealt by the next tick, whichever frame sends them.
 
 #### Scenario: Stagger
 - **WHEN** a body's chest is shoved at 3 m/s with daze 0.7
@@ -425,7 +425,7 @@ Inside its slack a limp link SHALL update its smoothed length L ← s·L + (1 �
 - **THEN** that link's smoothed length is its slack
 
 ### Requirement: Velocity retention
-A limp part SHALL keep its velocity as the original's default environment gives it: 0.426, 0.25 or 0.05 per second (0.98977, 0.98344 or 0.96455 per tick) when the farthest of its particles moved over 40/83 cm, over 20/83 cm, or less in the last tick. A living body's limbs SHALL keep the fast retention times u², u being 1 for a human, whatever their speed.
+A limp part SHALL keep its velocity as the original's default environment gives it: 0.426, 0.25 or 0.05 per second (0.98977, 0.98344 or 0.96455 per tick) when the farthest of its particles moved over 40/83 cm, over 20/83 cm, or less in the last tick. A living body's limbs SHALL keep the fast retention times the living factor, whatever their speed.
 
 #### Scenario: Limp bands
 - **WHEN** a limp part's farthest particle moved 0.49 cm, exactly 40/83 cm, or exactly 20/83 cm in the last tick
@@ -436,7 +436,7 @@ A limp part SHALL keep its velocity as the original's default environment gives 
 - **THEN** it keeps 0.98977 of its velocity per tick
 
 ### Requirement: Link muscles
-In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)² (0 below E = 0.5), k = 50 moving, else 40 / stance factor, ×0.6 on the pelvis and legs; then e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T, the excess beyond the slack added at full weight.
+In a living body each slack link SHALL pull its point toward its anchor, where the clip's joint angle puts it on the parent: e = anchor − point, plus the gap's change over the tick × D·k/(0.5|e|² + 1.4), D = (E − 0.5)², or 0 when E − 0.5 compares below 0 (a NaN stays), k = 50 moving, else 40 / stance factor, ×0.6 on the pelvis and legs; then e/(1 + c|e|), c = 0.1, in cm; times strength × part factor × √E·T (a NaN or negative root stays NaN), the excess beyond the slack added at full weight.
 
 #### Scenario: Elbow swing
 - **WHEN** a living arm's clip swings the elbow 40° over 10 ticks and holds it
@@ -489,7 +489,7 @@ Each tick the character tick SHALL set the legs' gains by the movement decision'
 - **THEN** its thighs and leg limits keep the gains they had
 
 ### Requirement: Arm stiffness
-The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (balance under 0.6, falling, lying or getting up), 0.2 at tone under 0.85, the character's walking arms (0.2 unless feral) in the walk and run cycles, and otherwise x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), never under min(0.4·|turn left in rad|, 0.4). An arm part's anchor relaxation SHALL be capped at 0.6 − (x − 0.1)·0.8.
+Each tick, unless shocked (which leaves the arms as they are), the arms' stiffness SHALL be, first match: 0.2 collapsing; 0.5 off balance (balance under 0.6, unsupported, falling, lying or getting up); an attack's own value per arm; 0.2 at tone under 0.85; unchanged kicking; the parry blend; 0.3 casting; the walking arms (0.2 unless feral) in the walk and run, a shield's off arm twice that; 0.4 switching; else the relaxed blend.
 
 #### Scenario: Idle human arms
 - **WHEN** an alert human stands still
@@ -499,12 +499,39 @@ The arms' stiffness SHALL be 0.2 while the body collapses, 0.5 off balance (bala
 - **WHEN** the human walks, and later falls
 - **THEN** its arms pull with σ = 0.175 walking and 0.3125 off balance
 
+#### Scenario: A shield doubles the off arm
+- **WHEN** a shielded fighter walks at full tone
+- **THEN** its off arm's stiffness is twice its walking arms and its weapon arm keeps them
+
 #### Scenario: Zombie arms
 - **WHEN** a fully feral human walks, and is then dazed to tone 0.8
 - **THEN** its arms' stiffness is 0.05 walking and 0.2 dazed
 
 #### Scenario: Collapsing arms
 - **WHEN** a body collapses, off balance, at tone 0.6
+- **THEN** its arms' stiffness is 0.2
+
+#### Scenario: Casting and switching
+- **WHEN** a standing body with arms at 0.8 casts, and another switches weapons
+- **THEN** their arms' stiffness is 0.3 and 0.4, each arm saturating at 0.1
+
+#### Scenario: A shock leaves the arms
+- **WHEN** a shocked body's arms were 0.6 the tick before
+- **THEN** their stiffness, cap and saturation stay as they were
+
+### Requirement: Parry arm blend
+While a fighter parries (by the flag the previous tick left), and the body is not shocked, collapsing, off balance, attacking, at tone under 0.85 or kicking, each stored arm stiffness SHALL ease by 0.8x + 0.04 in double precision and then take the arm floor. A power, a walk and a weapon switch SHALL not replace that ease.
+
+#### Scenario: A parry eases toward a fifth
+- **WHEN** a standing fighter parries with its arms at 0 and at 0.5
+- **THEN** those stiffnesses are 0.04 and 0.44
+
+#### Scenario: Off balance keeps its arms
+- **WHEN** a parrying fighter is off balance
+- **THEN** its arms' stiffness is 0.5
+
+#### Scenario: A daze wins
+- **WHEN** a parrying fighter at tone 0.8 also strides and casts
 - **THEN** its arms' stiffness is 0.2
 
 ### Requirement: Anchor relaxation
@@ -556,7 +583,7 @@ The level SHALL answer the original's Height Query: a sphere whose lowest point 
 - **THEN** the first is passed through, and nothing is found
 
 ### Requirement: Support
-Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it down or getting up) with a 10 cm sphere walking, else 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. A foot is grounded within 20 cm (30 moving) of its ground plus its ground offset. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
+Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ankle from 70 cm above it (from it, down or getting up), walking with the gait probe, else with a sphere of 5 cm + 10 cm × an anchored foot's share. Ground over half the leg under the pelvis is out of reach, but getting up. S SHALL be grounded × balance; a standing body without a grounded foot loses its balance unless its controller stands on the ground.
 
 #### Scenario: Standing in the arena
 - **WHEN** `exarust --trace t.csv play arena` runs for a minute
@@ -582,6 +609,17 @@ Each tick each leg of a living body SHALL query the ground 5 cm ahead of its ank
 - **WHEN** a body lying or getting up has a shelf 40 cm over its ankle, and a 5 cm step's edge 7 cm beside its probe
 - **THEN** its leg finds the floor under both, where a standing body finds the shelf and the floor, and a walking body the shelf and the step's edge (2.14 cm)
 
+#### Scenario: Walking gait probe
+- **WHEN** a walking body's clip progress puts its first foot at the gait bump's peak, at scale 1 and a speed of 0
+- **THEN** that foot's sphere is 20 cm and its probe is 36 cm further along the facing than the 5 cm offset
+
+### Requirement: Moving ground window
+Moving, a foot SHALL be grounded within 30 cm times the body scale of its ground plus its ground offset. Standing, that window SHALL be 20 cm and SHALL NOT scale. A NaN contact or a NaN moving window SHALL leave the foot grounded.
+
+#### Scenario: Half scale
+- **WHEN** a moving foot's contact is 15 cm or 15.1 cm over its ground plus its offset, at body scale 0.5
+- **THEN** the first is grounded and the second is not; standing, 20.1 cm is not grounded at any scale, and a NaN contact stays grounded
+
 ### Requirement: Joint measurements
 The system SHALL measure each joint of a simulated body where the last tick left it: its turn from the model's rest pose relative to its parent, split into a twist about the part's bone axis and a swing of that axis (with the swing's axis); in a living body, the angle to the clip's turn; and each link's gap against its slack, the largest share of slack a slack link uses, and the pivot's gap. A joint in its rest pose SHALL measure 0.
 
@@ -605,7 +643,7 @@ The system SHALL measure each joint of a simulated body where the last tick left
 - **THEN** `j.csv` has 18 rows per tick per fighter, and the rows of the ticks a hit lands mark the struck part as shoved
 
 ### Requirement: Pose drive
-After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 − c), only when c < 1, its vertical cut to a tenth. o runs from the particle to R·r + O: its rest vertex under the part's animated rotation, at the part's origin on its particles. c = o·v/(s|o|²), v its last displacement, s the stance factor. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s. Only with support.
+After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 − c), only when c < 1. On its feet the vertical is the double 0.1, narrowed once; off its feet only the vertical is kept. o runs from the particle to its rest vertex under the animated rotation, placed at the part's origin. c = o·v/(s|o|²), v its last displacement, s the stance factor. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s. Only with support.
 
 #### Scenario: Closing particle
 - **WHEN** a particle closes on its target at s|o| a tick or faster, and another moves away from it
@@ -618,6 +656,10 @@ After inertia each particle of a pose-driven part SHALL be pushed by G·o·(1 �
 #### Scenario: No support
 - **WHEN** a body lies on its back on the floor, or stands on its controller with no ground under its feet
 - **THEN** its pose drive moves no particle
+
+#### Scenario: Off its feet
+- **WHEN** a still particle's offset is (1, 2, 3) cm while the body is off its feet, and a standing particle's offset is 0.01 cm straight up
+- **THEN** with G = 1 the off-feet push is (0, 2, 0) cm and the standing vertical has bits 0x3a83126e
 
 #### Scenario: Chest shove
 - **WHEN** a standing body is shoved at the chest at 1.5 m/s
@@ -643,7 +685,7 @@ After its inertia each particle of a living part over half its tone t SHALL move
 - **THEN** its pelvis settles 0.3 cm over its target, 1.2 cm and 3.0 cm under it, where its weight balances the lift
 
 ### Requirement: Lift
-With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negative f lifts nothing, unless crouched past 0.9: down to −10), or f = (0.4·run + 0.2)(h + 5), at most 2, moving (none when negative); h = target − pelvis height, in cm. Then f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis's vertical displacement over the last tick, and f ×= 2(t − 0.5) over a tone of a half.
+With support the lift SHALL be f = scale·0.075(h + L) standing, at most 1.5, L being 15, or 10 while a foot steps, else 20 dormant (a negative f lifts nothing, unless crouched past 0.9: down to −10), or f = scale·(0.4·run + 0.2)(h + 5) moving, at most 2 (none when negative), each product in double, narrowed before the clamp; h = target − pelvis height (cm). Then f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis's last vertical displacement, and f ×= 2(t − 0.5) over half tone.
 
 #### Scenario: Balance point
 - **WHEN** an alert body stands on its legs, its pelvis 1.7 cm over its target
@@ -657,12 +699,20 @@ With support the lift SHALL be f = 0.075(h + 15), at most 1.5, standing (a negat
 - **WHEN** a standing body's tone is 0.75, then 0.5
 - **THEN** its lift is half, then nothing
 
+#### Scenario: Body scale
+- **WHEN** the body scale is a half, at h = 0 standing and walking, and 2 standing
+- **THEN** f is 0.5625, 0.5, and 1.5
+
+#### Scenario: Standing leads
+- **WHEN** a standing body at h = 0 and scale 1 steps, is dormant, or both
+- **THEN** f is 0.75, 1.5 and 0.75
+
 #### Scenario: Get-up
 - **WHEN** `exarust --trace t.csv --shove 60 play arena` gets the player up with `Get Up 2` into Idle
 - **THEN** its pelvis rises to its standing height, overshoots it by less than 6 cm (10.7 cm under the old vertical hold) and is back within a centimetre in under 100 ticks
 
 ### Requirement: Target pelvis height
-Each leg's height SHALL be its ground + crouch·60 + (1 − crouch)·(the clip root's height over its animated ankle + its ground offset: the sole height, moving also the ankle's lift over the walk's lowest). The target SHALL be the lowest foot's, blended by half toward the other's while that one's contact height over its ground plus the lowest's is under 40 cm (less up to 60); standing, capped at ground + sole + leg length, plus 5 cm.
+Each leg's height SHALL be ground + crouch·60·scale + (1 − crouch)·(clip-root over its ankle + offset: sole; moving, the ankle over the walk's first key, 0.7 to the run's on the run flag, or the run's on the sprint latch). The target SHALL be the lowest foot's, blended by half (moving: min(0.5, 0.2·speed), then × min(1, (0.3·speed)²)), by 1 if the lowest is lifted or 0 if the other is (other wins), under 40 cm of that spread (less up to 60); standing, min(it, ground + sole + length) + 5 cm.
 
 #### Scenario: Idle human
 - **WHEN** a human's clip root is 91.4 cm over its ankles on flat ground, its sole 9.68 cm and its legs 85.15 cm
@@ -684,6 +734,32 @@ Each leg's height SHALL be its ground + crouch·60 + (1 − crouch)·(the clip r
 - **WHEN** no foot has ground
 - **THEN** the target is −1000 m and nothing lifts the body
 
+#### Scenario: Scaled crouch
+- **WHEN** a standing body of scale one half or 1.25 crouches fully, and that crouch term is under the leg's reach
+- **THEN** the target is 35 cm or 80 cm over the ground
+
+### Requirement: Moving pelvis spread
+Moving, the two-foot spread SHALL be (1 − k)·lowest ground + k·(lowest contact + other contact − other ground), where k = min(1, 0.2·speed) and speed is the cm a tick along the heading. Standing, k SHALL be 1, so the spread stays the contact test. A NaN speed SHALL saturate k.
+
+#### Scenario: Partial mix
+- **WHEN** contacts sit 30 and 20 cm over grounds at 0 and the body moves at 2.5, 4 or 5 cm a tick
+- **THEN** the spread is 25, 40 or 50 cm, so a planted pair blends by 0.28125, a lifted lowest foot keeps its full weight, or the slope leaves half
+
+### Requirement: Falling chest blend
+While a body moves, a negative slow vertical chest speed v (cm a tick) SHALL multiply the two-foot blend weight by max(0, 1 + 0.5·v). A rise, a hold and a NaN SHALL leave that weight, and a standing body SHALL ignore v.
+
+#### Scenario: One centimetre down
+- **WHEN** a moving body at 4 cm a tick blends two planted feet of stance 40 and 80 cm and its chest's slow speed is −1 cm a tick
+- **THEN** the target is 50 cm, a quarter of the way from the lowest foot to the other
+
+#### Scenario: Two centimetres down
+- **WHEN** the same body's slow speed is −2 cm a tick
+- **THEN** the weight is 0 and the target stays on the lowest foot, at 40 cm
+
+#### Scenario: Rising or standing
+- **WHEN** the slow speed is 1 cm a tick, or the body stands with it at −4
+- **THEN** the moving target stays 60 cm, or the standing target stays 65 cm
+
 ### Requirement: Climbing with the controller
 The lift SHALL read each foot's own ground. The character controller's floor SHALL NOT raise that ground, on level ground, on stairs, perched or fallen.
 
@@ -692,8 +768,8 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick: in `--autowalk play arena` the same as without the rule, the pelvis 99.4–102.2 cm walking and 101.5 cm standing
 
 #### Scenario: Stairs
-- **WHEN** a body walks up four 18 cm steps with its controller, stopping on the third
-- **THEN** it keeps its balance at or above 0.9 and its feet end on the landing, and the controller's floor does not raise the pelvis
+- **WHEN** a body walks up four 18 cm steps, stopping on the third, with its controller and without it
+- **THEN** its feet stay on the floor and its pelvis stops short of the first riser, its balance stays at 1 carried or not, and the two pelvis heights agree
 
 #### Scenario: Stair room
 - **WHEN** `exarust --autowalk --at 7.5,-0.95,64.4 play exanima01` or `--at 7.6,-1.3,66.2` walks the player up the stairs to the door
@@ -708,7 +784,7 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick, as with its controller on the floor
 
 ### Requirement: Leg bend
-A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosines on the two bones: 30° when the cosine is above 0.866, and 180° when it is below −1. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it.
+A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosines on the two bones: 30° when the cosine is above 0.866, and 180° when it is below −1. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it. Lying down it SHALL release instead.
 
 #### Scenario: Folded to 40 cm
 - **WHEN** both bones are 40 cm and the hip-to-target distance is 40 cm
@@ -721,6 +797,10 @@ A leg SHALL bend onto its bend target. The knee SHALL come from the law of cosin
 #### Scenario: Next tick
 - **WHEN** the stored correction and its rate are 0 and the new correction is past 0.02 rad
 - **THEN** the pose the muscles follow on that tick is unchanged, and the next tick's correction is 0.02 rad
+
+#### Scenario: Lying down
+- **WHEN** the body is down, dormant or dead, not getting up, and a stored knee of 0.2 rad and a hip of −0.2 rad have a zero rate
+- **THEN** the next stored knee is 0.18 rad and the hip is −0.18 rad, each rate half of that 0.02 rad step, and the bend target, the step lift and the thigh's extra turn are unchanged
 
 ### Requirement: Thigh turn
 While a leg is stepping, its thigh SHALL turn by 75% of the angle from its rest direction to the direction from the hip to the bend target, taken in the character frame. While it is not stepping, that extra turn SHALL lose 10% a tick.
@@ -775,7 +855,7 @@ A living body's targets SHALL be its clip pose on a frame that turns with the bo
 
 #### Scenario: Unsteady body
 - **WHEN** a standing body at support 0.95 is pushed 14 cm across the floor
-- **THEN** its frame follows it, and it comes to rest no more than 5 cm back from the farthest it went, within 2 cm of where its frame puts its pelvis
+- **THEN** its frame follows it, and it comes to rest no more than 6 cm back from the farthest it went, within 2 cm of where its frame puts its pelvis
 
 #### Scenario: Support threshold
 - **WHEN** a standing body's support is 0.95 as a float, which is under the double 0.95, or the next float up
@@ -1085,6 +1165,17 @@ In each iteration, after its foot's links, a body with support and on its feet S
 - **WHEN** a standing foot's toe is 3 cm, 0.3 cm, then 0.4 cm at S = 0.5 under its floor
 - **THEN** it is pushed 0.5, 0.3, then 0.2 cm (0.1 cm when the foot does not stand), and not at all off its feet or without support
 
+### Requirement: Sole turn
+In each iteration, after the sole push, a body on its feet with support SHALL turn a foot with a contact state whose forward lies within a right angle of its animated forward. The horizontal gap from the toe to where that orientation places it, projected onto that orientation's side axis, is closed by the velocity servo at rate 0.4×scale and gain P×pin factor×S. A gap under 1.19e-7 cm², one already closing 0.05 of itself, or a foot with no contact state, is left. P is the support pins' power.
+
+#### Scenario: Two centimetres to the side
+- **WHEN** a standing foot's toe is 2 cm along its animated side axis from where that orientation places it, it has not moved, its forward agrees, S is 1, P is 1 and the pin factor is 1.25
+- **THEN** the toe is pushed 1 cm along that axis
+
+#### Scenario: No contact state
+- **WHEN** a foot with no contact state has its toe 2 cm along its animated side axis, it has not moved, and its forward agrees
+- **THEN** the toe is not pushed
+
 ### Requirement: Stance level and leg extension
 With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v the share of its feet's ground difference in their squared distance), and its legs' extension SHALL be the level × (pelvis over the highest anchor ÷ the pose's pelvis over its mean ankle)², at most 1; the grip's gain g is scale × the support pins' factor × the extension.
 
@@ -1093,7 +1184,11 @@ With support, a body's stance level SHALL follow 1 − v² by a tenth a tick (v 
 - **THEN** its anchors sit 24.5 and 9.5 cm up and its level settles at 0.60, where on level ground it is 1
 
 ### Requirement: Support pin pull
-In each iteration a supported living body SHALL pull its two thorax pins and its pelvis pin horizontally, in centimetres: raw is 0.2·e·|e|/60 when |e| < 60 and 12 along e otherwise, less this tick's horizontal displacement, capped at 8, times S²·pin-gain·P·pin factor, and times 0.3 while getting up. P is √E·T·E⁴. Pin-gain starts at 0.08.
+In each iteration a supported living body SHALL pull its two thorax pins and its pelvis origin in order, each reading the pushes before it, then the pelvis origin again. One pull, in cm: 0.2·e·|e|/60 under 60, else 12 along e, less this tick's horizontal displacement, capped at 8, times S²·(G·(P·F)), G the pin-gain (from 0.08), F the pin factor. A gap under 1.19e-7 cm², walking, or off its feet (down, getting up, dormant or dead) pulls nothing.
+
+#### Scenario: Pelvis origin twice
+- **WHEN** a supported pelvis origin and a thorax pin are each 10 cm from their clamped targets and have not moved this tick
+- **THEN** the thorax pin takes one application and the pelvis origin takes a second after the first push has moved it
 
 #### Scenario: One application inside 60 cm
 - **WHEN** a supported pin is 10 cm from its clamped target, its horizontal displacement this tick is 1 cm along that error, and the body is an alert human (S = 1, pin-gain 0.08, T = 0.5, E = 1, pin factor 1.25) that is not getting up
@@ -1103,9 +1198,17 @@ In each iteration a supported living body SHALL pull its two thorax pins and its
 - **WHEN** the same pin is 80 cm from its target and has not moved this tick
 - **THEN** one application is 12 cm along the error, capped at 8 cm, times 0.05, which is 0.4 cm
 
-#### Scenario: Getting up
-- **WHEN** the same 10 cm pin with no displacement is on a body that is getting up
-- **THEN** one application is 0.3 of the standing pull
+#### Scenario: A tiny gap
+- **WHEN** a supported pin's horizontal gap is 0, then under 1.19e-7 cm², and it moved 1 cm this tick
+- **THEN** one application is zero both times
+
+#### Scenario: Walking or off its feet
+- **WHEN** a supported body with its chest 10 cm off the feet centre is walking, then off its feet while getting up, then walking in a shock stagger
+- **THEN** the pins do not move it
+
+#### Scenario: Collapsing
+- **WHEN** that body is collapsing instead, and not walking
+- **THEN** one application is the standing pull
 
 #### Scenario: Chest returns
 - **WHEN** a supported standing body's chest is held about 10 cm off the feet centre
@@ -1187,6 +1290,24 @@ Standing with support, the footwork SHALL move at most one foot: the highest of 
 #### Scenario: Under 5 cm
 - **WHEN** one free foot's spot is on its anchor and the other's is 6 cm off
 - **THEN** neither steps while both are under 5 cm, and the foot 6 cm off steps
+
+### Requirement: Stand-still score
+An anchored foot's score base SHALL be 11.5 while the step clock is under the later stand-still stamp plus 100 ms, else 3.5 under the earlier plus 300 ms, else 2 under the later plus 600 ms, else 1.5; each bound strict, and an unwritten or closed stamp opens no band.
+
+#### Scenario: Just planted
+- **WHEN** the stamps are T and T plus 100 ms
+- **THEN** an anchored foot's base is 11.5 at T plus 100 ms, 3.5 at T plus 250 ms, 2 at T plus 300 ms and 1.5 at T plus 700 ms
+
+#### Scenario: Closed stamps
+- **WHEN** the later stamp is closed, and then both are
+- **THEN** the base is 3.5 at T plus 100 ms, and then 1.5
+
+### Requirement: Stance spots
+The footwork SHALL turn each stance spot from the character frame's yaw onto the stance facing and keep its height. The same yaw SHALL leave the clip's ankle where it stands.
+
+#### Scenario: A quarter turn
+- **WHEN** the frame faces +Z and the stance facing is a quarter turn toward +X
+- **THEN** an ankle 1 m ahead across the ground stands 1 m toward +X
 
 ### Requirement: Stance score
 The stance score of two feet SHALL be 2(1 − C²) + (1 − W²) + A. A SHALL be 1 minus the chest reference's horizontal distance to the foot segment, divided by 30. W SHALL be the absolute difference of the separation from 60·scale, divided by 60·scale. C SHALL be the same for 55·scale and the side separation, and that separation SHALL be its square root when it is positive.
@@ -1687,3 +1808,85 @@ The physical body reader SHALL keep the body chunk's first word as the part's fl
 #### Scenario: The shipped humanoid
 - **WHEN** `humanoid.rsq` is read from the installation
 - **THEN** its 18 bodies hold no stored spheres
+
+### Requirement: Pair impact
+A body pair SHALL keep the greatest squared relative travel of its hits, measured before each push; when it passes 1 between two different trees its impact SHALL be that times the negated cosine of the travel against the summed push, the cosine being 0 when the product of their squared lengths is at most 1e-8. Over 0.5 it SHALL strike each side with the impact over 2·m + 1 of the other side's contact mobility m.
+
+#### Scenario: Two limbs meeting fast
+- **WHEN** two bodies' limbs meet head-on at speed
+- **THEN** each side is struck with the impact scaled by the other's mobility
+
+#### Scenario: A degenerate push
+- **WHEN** a 3 cm travel meets a push of 1e-7 m, or of 0.01 m, straight against it
+- **THEN** the impact is 0, or 9
+
+### Requirement: Living retention
+With u = (1 − balance)(1 − r) + r, r the race's limb damping ratio (1 for a human), the living factor SHALL be 0.5·u + 0.5 while walking or off its feet (0x200); else u in combat, or 0.97·u² in double when not attacking and the body scale is over 1.3; else u². A dormant body's fast retention SHALL first take the double 0.95.
+
+#### Scenario: A golem in combat
+- **WHEN** a golem (r 0.95) at balance 0.5 stands in combat at scale 1, at scale 1.4, attacking at 1.4, or walking at 1.4
+- **THEN** the factor is 0.975, 0.9221063, 0.975 and 0.9875
+
+### Requirement: Arm relaxed blend, floor and cap
+The relaxed blend SHALL be x ← 0.8x + 0.08 while stepping, else 0.8x + 0.08·(0.5 + 0.5·race arm relaxation). Every written stiffness SHALL take the floor min(0.4·|turn left in rad|, 0.4) in double. An arm part's relaxation cap SHALL be 0.6 − (x − 0.1)·0.8 in double, and its saturation 0.1 − 0.08·drive, the drive zeroed each tick and written only by an attack.
+
+#### Scenario: Stepping and the floor
+- **WHEN** a half-relaxing race's arms at 0.5 blend stepping, then not; and an arm at 0.1 has 2 rad of turn left
+- **THEN** they are 0.48 and 0.46; the floored arm is 0.4
+
+#### Scenario: The cap in double
+- **WHEN** an arm's stiffness is 0.8
+- **THEN** its relaxation cap is 0.03999999
+
+### Requirement: Gait probe sphere and sway
+Walking, a foot's ground probe SHALL be a sphere of 10 + 10·(2 − s)·s cm, s the gait bump of its clip progress, swayed s·(36·scale + 8·speed) cm along the facing (against it backing), speed being the body's cm a tick along the heading, not its drive.
+
+#### Scenario: At the bump's peak
+- **WHEN** a walking body's first foot is at the gait bump's peak, at scale 1 and 1.5 cm a tick, forward or backing
+- **THEN** that foot's sphere is 20 cm and its sway 48 cm, or −48 cm
+
+#### Scenario: Speed, not drive
+- **WHEN** a walk at 7.5 cm a tick has a 5 cm drive vector
+- **THEN** the probe reads the speed 7.5
+
+### Requirement: Lying leg release
+While lying down (down, dormant or dead) and not getting up, the stored knee, hip and foot pitch SHALL each ease toward 0 by at most 0.02 rad a tick plus its rate, and the bend target, the step lift and the thigh's extra turn SHALL stay as they were.
+
+#### Scenario: The foot pitch is released too
+- **WHEN** a lying body, not getting up, has a stored foot pitch of 0.2 rad with a zero rate
+- **THEN** the next stored pitch is 0.18 rad, as the knee and hip ease
+
+### Requirement: Support pin power
+The pins' power P SHALL be (√E·T)·((E·E)·(E·E)), or 1 in a shock stagger (a NaN root stays).
+
+#### Scenario: Grouped products
+- **WHEN** E = 0.7 and T = 0.8; and S = 0.77, G = 0.093, P = 0.61, F = 0.83
+- **THEN** P is 0.16070566, and the scale S²·(G·(P·F)) is 0.027917228
+
+### Requirement: Stand-still stamps
+Leaving the walk SHALL write the earlier stand-still stamp as the clock the next score reads and the later as that plus 100 ms. A footwork landing SHALL write the later alone as now plus 100 ms, a stalled foot as now; a foot starting to move SHALL write the earlier as now; a recovery step's start SHALL close the later.
+
+#### Scenario: A landing keeps the earlier stamp
+- **WHEN** a foot lands at 500 ms with the earlier stamp at 120 ms
+- **THEN** the later stamp is 600 ms and the earlier stays 120 ms
+
+### Requirement: Hit event pairs
+A pair whose one side is an active striker (bit 0x10000) and whose other side is hittable (a living limb or a held part, bit 0x20000), neither body being placed, SHALL take the hit event and no impact. A body's own parts SHALL take no impact from each other.
+
+#### Scenario: A striker on a limb
+- **WHEN** a held striker meets a living limb, and a limb meets a held weapon without the strike bit
+- **THEN** the first takes the hit event and no impact, and the second takes the impact path
+
+### Requirement: Dormant sleep countdown
+A dormant body SHALL count its sleep down by one a tick, floored at 1, whatever its motion; a limp body keeps its speed bands.
+
+#### Scenario: A statue
+- **WHEN** a dormant body's countdown is 10, and another's is 10 while it moves at 60 cm/s
+- **THEN** both are 9 after a tick
+
+### Requirement: Death clears the feet's strikes
+A body's death SHALL give each lower leg (a part with a foot contact) collision layer 0 and its foot child 0x30, clear that foot child's level-contact word and its strike-chain bit, and change no other part's class word or strike bit.
+
+#### Scenario: Only the feet
+- **WHEN** a body whose parts all carry the strike-chain bit dies
+- **THEN** only the lower legs' first children lose it

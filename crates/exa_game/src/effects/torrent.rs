@@ -290,6 +290,23 @@ impl Torrent {
         caster: &mut CastBody,
         random: &mut Mt19937,
     ) -> TorrentEvents {
+        self.tick_paying(view, random, |cost| {
+            let short = spend_tick(caster, cost);
+            if short {
+                crate::thaum::casting::end_cast(caster);
+            }
+            short
+        })
+    }
+
+    /// One tick, `spend` paying each drain and answering whether the
+    /// shortfall called this torrent's hook.
+    pub fn tick_paying(
+        &mut self,
+        view: &TorrentView,
+        random: &mut Mt19937,
+        mut spend: impl FnMut(f32) -> bool,
+    ) -> TorrentEvents {
         let mut events = TorrentEvents::default();
         self.aim = blast_aim(view.hand_node, view.target, view.facing);
         self.frame = Frame::looking(view.turned_aim, view.hand);
@@ -328,9 +345,8 @@ impl Torrent {
                     self.state = FIZZLED;
                 }
             } else {
-                if spend_tick(caster, self.drain) {
+                if spend(self.drain) {
                     self.release();
-                    caster.cast_hook = None;
                 }
                 self.charge += self.rate;
                 if 1.0 < self.charge {
@@ -348,9 +364,8 @@ impl Torrent {
                 }
             }
         } else {
-            if self.state == RUNNING && spend_tick(caster, self.drain * 0.5) {
+            if self.state == RUNNING && spend(self.drain * 0.5) {
                 self.release();
-                caster.cast_hook = None;
             }
             let streams = self.count;
             for index in 0..streams {
@@ -522,17 +537,11 @@ fn below3(roll: &mut Roll) -> i32 {
     ((u64::from(roll.step()) * 3) >> 32) as i32
 }
 
-/// The cosine between two moves, 0 when either is shorter than 1e-8
-/// (squared, multiplied).
+/// The cosine between two moves, the engine's
+/// ([`exa_physics::engine_math::cosine`]): 0 when the product of their
+/// squared lengths is at most 1e-8.
 pub fn cosine_between(a: Vec3, b: Vec3) -> f32 {
-    let la = (a.y * a.y + a.x * a.x) + a.z * a.z;
-    let lb = (b.y * b.y + b.x * b.x) + b.z * b.z;
-    let p = lb * la;
-    if p > 1e-8 {
-        ((a.y * b.y + a.x * b.x) + a.z * b.z) / p.sqrt()
-    } else {
-        0.0
-    }
+    exa_physics::engine_math::cosine(a, b)
 }
 
 /// One sample the draw takes of a stream.
@@ -593,6 +602,31 @@ pub struct TorrentFrame {
 }
 
 impl Torrent {
+    /// Whether a frame would build no triangles, when the original's frame
+    /// takes the torrent's light away and removes it from the scene: it has
+    /// fizzled, or no stream has more than two samples (each segment of a
+    /// stream's ribbon adds two, less the first segment's two).
+    pub fn builds_nothing(&self) -> bool {
+        if self.state == FIZZLED {
+            return true;
+        }
+        !self.records[..self.count].iter().any(|stream| {
+            let mut samples = usize::from(!stream.split && self.state != ENDING);
+            let mut k = stream.head;
+            loop {
+                samples += 1;
+                if stream.points[k].life < 1 {
+                    break;
+                }
+                k = if k == 0 { POINTS - 1 } else { k - 1 };
+                if k == stream.head {
+                    break;
+                }
+            }
+            2 < samples
+        })
+    }
+
     /// The frame `t` of the way between the last two ticks; it also
     /// gathers the light points.
     pub fn frame(&mut self, t: f32) -> TorrentFrame {
@@ -735,6 +769,23 @@ mod tests {
 
     fn torrent() -> Torrent {
         Torrent::new(0.2, 12, &view(), &mut Mt19937::new(1), Roll(7))
+    }
+
+    #[test]
+    fn a_torrent_builds_nothing_once_fizzled_or_its_streams_are_spent() {
+        let mut t = torrent();
+        // The source, the head and the dead point before it: three samples.
+        assert!(!t.builds_nothing());
+        t.state = ENDING;
+        assert!(t.builds_nothing());
+        t.state = RUNNING;
+        for stream in &mut t.records {
+            stream.points[stream.head].life = 0;
+        }
+        assert!(t.builds_nothing());
+        let mut t = torrent();
+        t.state = FIZZLED;
+        assert!(t.builds_nothing());
     }
 
     #[test]

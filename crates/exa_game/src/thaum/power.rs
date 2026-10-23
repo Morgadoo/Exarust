@@ -205,8 +205,14 @@ pub fn load_power(words: &[u32]) -> Option<u32> {
 }
 
 /// A tick of a sustained power's focus: adds it to what the body spent.
-pub fn drain(body: &mut CastBody, cost: f32) {
-    spend_tick(body, cost);
+/// When the pool falls short while a hook is set, the hook was asked with
+/// 0x80 and the cast ends. Whether it fell short.
+pub fn drain(body: &mut CastBody, cost: f32) -> bool {
+    let short = spend_tick(body, cost);
+    if short {
+        super::casting::end_cast(body);
+    }
+    short
 }
 
 /// The index of a power id in a record's list of known powers, or `None`

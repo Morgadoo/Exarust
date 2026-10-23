@@ -252,6 +252,14 @@ fn learnt_techniques_give_perks() {
     assert!(with_skills(&[(0, 5000, &[3])]).perks().has(Perk::Fend));
     // Dual Wield, Draw and the Armour tiers are techniques, not perks.
     assert!(with_skills(&[(0, 40000, &[8, 5, 6, 7])]).perks().is_empty());
+    // The body's technique word: every bit but Fend's 0x4.
+    assert_eq!(r.perks().body_word(), 0x3ff1_100b);
+    assert_eq!(
+        with_skills(&[(5, 25000, &[1, 5, 6, 8, 2])])
+            .perks()
+            .body_word(),
+        0x0071_0000
+    );
 }
 
 #[test]

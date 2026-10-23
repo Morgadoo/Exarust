@@ -7,7 +7,9 @@
 //! stands; its capsule executes the decision at Exarust's speeds until the
 //! body walks by its carry ([`decide_movement`]); then, while the body
 //! moves, how high the lowest
-//! ankle of its walk's first pose sits (its gait floor); the step its
+//! ankle of its gait pose sits (the walk's first key, that key slerped
+//! 0.7 toward the run while the run flag is set, the run's first key while
+//! the sprint latch is set); the step its
 //! controller made since the last aim, left out of the carry (the
 //! controller is Exarust's locomotion until the body walks by its carry);
 //! then its balance and the ground under its feet against the level.
@@ -26,7 +28,7 @@ use exa_physics::body::locomotion::{
 use exa_physics::body::{BodyTicks, Fallen, Ragdoll, TickedCharacter};
 use exa_physics::{CharacterBody, Physics};
 
-use crate::limp::{gait_floor, sprinting};
+use crate::limp::{AnkleSample, ankle_sample, gait_floor, sprinting};
 use crate::player::PlayerBody;
 
 /// Centimetres per metre, and body ticks a second.
@@ -132,10 +134,11 @@ pub(crate) fn decide_movement(
     let drive = ragdoll.as_deref().and_then(|r| r.drive.as_ref());
     let rows = drive.map_or(GaitTable::HUMAN_ROWS, |d| d.race.gaits);
     let table = GaitTable::new(rows, feral, clock);
-    // The balance gates read a steady body (Exarust's own): until the body
-    // takes recovery steps, its standing balance can settle under 0.99
-    // with nothing to restore it, which would hold it for good
-    // (`Footing::balanced_by` reads the body's once it can).
+    // The balance and airborne gates read a steady body (Exarust's own):
+    // until the body takes recovery steps, its standing balance can settle
+    // under 0.99 with nothing to restore it, which would hold it for good
+    // (`Footing::balanced_by` reads the body's once it can). The Rebalance
+    // gate reads the posture wait.
     let mut at = Footing::of(ragdoll.as_deref(), standing, speed);
     at.gaits = table;
     let decided = locomotion::decide(&mut req, &mut body, &at);
@@ -281,6 +284,8 @@ pub(crate) fn decide_movement(
     if let Some(d) = ragdoll.as_mut().and_then(|r| r.drive.as_mut()) {
         d.bearing.moving = body.moving() || req.stepping.is_some();
         d.bearing.run = body.run;
+        // This tick's speed: the carry reads it for the moving blend.
+        d.bearing.speed = body.speed;
         d.bearing.legs = body.leg;
         d.bearing.turn = if held { 0.0 } else { req.turn_left(&body) };
         d.bearing.push = body.drive;
@@ -328,29 +333,47 @@ fn start_walk(motions: Option<&Motions>, anim: &mut Animator, start: Option<Star
 
 /// Gives the ticked body its gait floor while it moves, takes its
 /// controller's step out of its carry and measures its balance and ground.
+#[allow(clippy::type_complexity)]
 pub(crate) fn measure_ground(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
     physics: Option<Res<Physics>>,
     controllers: Query<&CharacterBody>,
-    mut bodies: Query<(&mut Ragdoll, &Animator, Option<&Stature>)>,
+    mut bodies: Query<(
+        &mut Ragdoll,
+        &Animator,
+        Option<&Stature>,
+        Option<&Locomotor>,
+        Option<&Locomotion>,
+    )>,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
 ) {
     let Some(motions) = motions else { return };
     let root = ticked.body;
-    let Ok((mut body, anim, stature)) = bodies.get_mut(root) else {
+    let Ok((mut body, anim, stature, locomotor, locomotion)) = bodies.get_mut(root) else {
         return;
     };
     let stature = stature.map_or(1.0, |s| s.0);
     if body.drive.as_ref().is_some_and(|d| d.bearing.moving) {
-        let floor = gait_floor(&motions, anim, stature, &body, root, &parents, &nodes);
+        let sample = locomotion.map_or(AnkleSample::Walk, |r| ankle_sample(r.flags));
+        let floor = gait_floor(
+            &motions, anim, stature, &body, root, &parents, &nodes, sample,
+        );
         if let Some(drive) = body.drive.as_mut() {
             drive.bearing.gait_floor = floor;
         }
     }
     if let Some(c) = ticked.character.and_then(|c| controllers.get(c).ok()) {
         body.followed(c.followed());
+    }
+    if let Some(drive) = body.drive.as_mut() {
+        let speed = locomotor.map(|l| l.speed).unwrap_or(0.0);
+        let backwards = locomotion.is_some_and(|r| r.has(flags::BACK));
+        drive.note_gait(anim.progress, speed, backwards);
+        if let Some(l) = locomotor {
+            drive.note_stance_yaw(l.stance_facing);
+        }
     }
     if let Some(physics) = &physics {
         body.measure_balance(&physics.0);
@@ -565,7 +588,7 @@ mod tests {
 
     /// A one-bone motion set: "Walk" keyed every 10 frames to 80, and
     /// "Idle".
-    fn walk_motions() -> Motions {
+    pub(super) fn walk_motions() -> Motions {
         use std::collections::HashMap;
         use std::sync::Arc;
 
@@ -687,6 +710,7 @@ mod tests {
 
 #[cfg(test)]
 mod carry_tests {
+    use super::tests::walk_motions;
     use super::*;
 
     /// A body with muscles walks by its carry: the capsule is asked for no
@@ -733,5 +757,43 @@ mod carry_tests {
         assert!(d.bearing.moving, "the decision did not move the body");
         assert!(d.bearing.push.length() > 0.0);
         assert!(d.bearing.push_gain > 0.0);
+    }
+
+    /// The walking ground probe's sway reads the locomotion speed along
+    /// the heading (cm a tick), not the push's length: a 7.5 cm/tick walk
+    /// whose drive vector is 5 cm/tick² long still notes 7.5, and the probe
+    /// sways 7.5·8 + 36 = 96 cm at full share.
+    #[test]
+    fn the_gait_probe_reads_the_speed_along_the_heading() {
+        let mut app = App::new();
+        app.add_systems(Update, measure_ground);
+        app.insert_resource(walk_motions());
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), Transform::default()))
+            .id();
+        let ragdoll = Ragdoll::new(&[]).with_drive();
+        let model = app
+            .world_mut()
+            .spawn((
+                Locomotion::facing(0.0),
+                ragdoll,
+                Animator::new("Default", "Idle"),
+                Transform::default(),
+                ChildOf(root),
+            ))
+            .id();
+        {
+            let mut l = app.world_mut().get_mut::<Locomotor>(model).unwrap();
+            l.speed = 7.5;
+            l.drive = Vec3::new(3.0, 4.0, 0.0);
+        }
+        app.insert_resource(TickedCharacter {
+            body: model,
+            character: Some(root),
+        });
+        app.update();
+        let body = app.world().get::<Ragdoll>(model).unwrap();
+        assert_eq!(body.drive.as_ref().unwrap().gait_speed(), 7.5);
     }
 }

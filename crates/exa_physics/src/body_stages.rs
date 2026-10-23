@@ -50,7 +50,7 @@ pub struct CharacterTick;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CharacterStage {
     /// Wound painting and red regeneration (a dead character's tick ends
-    /// here), the impact accumulator's decay, burning.
+    /// here), the impact accumulator's decay and burning.
     Upkeep,
     /// Readiness, stepping progress, the queued motion, the pin gain,
     /// energy and the blow sag, the daze block and its pose capture.

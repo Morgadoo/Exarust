@@ -202,6 +202,18 @@ pub fn ragdoll_state(state: PartState) -> PartState {
     state.with(PartState::MUSCLED)
 }
 
+/// A struck part waits this long, plus a draw below [`PART_SOUND_SPREAD_MS`],
+/// before its impact sound may play again.
+pub const PART_SOUND_WAIT_MS: u32 = 300;
+/// The draw a blow takes for the struck part's sound clock: 0 up to 149.
+pub const PART_SOUND_SPREAD_MS: u32 = 150;
+
+/// The game clock when a struck part may sound again: `now_ms` plus 300 ms,
+/// less `spread` (a draw below 150). The sum is the original's 32-bit clock.
+pub fn part_sound_ready(now_ms: u32, spread: u32) -> u32 {
+    now_ms.wrapping_add(PART_SOUND_WAIT_MS).wrapping_sub(spread)
+}
+
 /// Stamps the sound cooldown `stamp` on a part, its first-child
 /// chain and its weapon ancestors: the part, each first
 /// child down the chain, then each parent while it is a striking weapon
@@ -350,11 +362,19 @@ pub struct ImpactSound {
     /// The impact after the knock-down scale and the half, which the voice
     /// request and the damage bookkeeping read.
     pub scaled: f32,
-    /// Milliseconds after the impact until the next sound may play.
+    /// Milliseconds after the impact until the next sound may play. A
+    /// limb's is the part before its random spread
+    /// ([`ImpactSound::spread_cooldown`]).
     pub cooldown_ms: u32,
 }
 
 impl ImpactSound {
+    /// A limb's cooldown with its random `spread` (ms) added:
+    /// `220 + spread − round(170·volume)`.
+    pub fn spread_cooldown(&self, spread: u32) -> u32 {
+        self.cooldown_ms.wrapping_add(spread)
+    }
+
     /// The pitch for a character whose recent-impact counter is `counter`.
     pub fn pitch_for(&self, counter: i32) -> f32 {
         if counter > 2 {
@@ -371,15 +391,11 @@ impl ImpactSound {
 /// unless the character is down, then halved; a scaled impact under 0.5 is
 /// silent, a NaN is not (the original skips only on a below compare). The
 /// volume is the scaled impact times 0.05 (at most 1, a NaN giving 1), the
-/// pitch 0.6 of that plus 0.5. `spread` draws the 0 to 99 ms random spread
-/// of the cooldown, and is called only when a sound plays, as the original
-/// draws it then: `220 + spread − round(170·volume)`, the rounding half to
-/// even on the single-precision product.
-pub fn limb_impact_sound(
-    impact: f32,
-    down: bool,
-    spread: impl FnOnce() -> u32,
-) -> Option<ImpactSound> {
+/// pitch 0.6 of that plus 0.5. The cooldown is `220 − round(170·volume)`,
+/// the rounding half to even on the single-precision product; the original
+/// adds its 0 to 99 ms random spread only after the damage step, and not
+/// for an impact that step drops ([`ImpactSound::spread_cooldown`]).
+pub fn limb_impact_sound(impact: f32, down: bool) -> Option<ImpactSound> {
     let mut scaled = impact;
     if !down {
         scaled = (f64::from(scaled) * 0.33) as f32;
@@ -391,7 +407,7 @@ pub fn limb_impact_sound(
     let volume = ((f64::from(scaled) * 0.05) as f32).min(1.0);
     let crowded_pitch = (f64::from(volume * 0.5) + 0.6) as f32;
     let pitch = (f64::from(volume) * 0.6 + 0.5) as f32;
-    let cooldown_ms = (220 + i64::from(spread()) - convert(volume * 170.0)) as u32;
+    let cooldown_ms = (220 - convert(volume * 170.0)) as u32;
     Some(ImpactSound {
         volume,
         pitch,
@@ -470,7 +486,7 @@ pub struct LimbDamage {
     pub heavy: bool,
     /// A hard hit on a held weapon that is mid-swing (attack motion 12 on a
     /// striking part): the damage is dropped and the original returns before
-    /// the sound's cooldown and the voice request.
+    /// the sound's generator draw, cooldown and voice request.
     pub dropped: bool,
     /// The new damage, when there is any.
     pub hurt: Option<Hurt>,
@@ -665,32 +681,6 @@ pub fn immediate_counter(flags: u32, clip: i32) -> Option<Counter> {
     }
 }
 
-/// The tally of bleeding wounds a character's limbs add up,
-/// which its body tick turns into damage over time. Only a limb with a bone
-/// index above zero adds: a weapon or a boneless body does not.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct WoundTally(f32);
-
-impl WoundTally {
-    /// Adds `amount` for a part of `bone` (the original's part bone index,
-    /// negative for a held weapon).
-    pub fn add(&mut self, bone: i32, amount: f32) {
-        if bone > 0 {
-            self.0 += amount;
-        }
-    }
-
-    /// The tally so far.
-    pub fn get(self) -> f32 {
-        self.0
-    }
-
-    /// Takes the tally, leaving zero.
-    pub fn take(&mut self) -> f32 {
-        core::mem::take(&mut self.0)
-    }
-}
-
 /// The kind of contact a striking part reports: what the character's damage
 /// pass then resolves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -843,55 +833,56 @@ mod tests {
     fn a_limbs_impact_sound() {
         // Not knocked down: 20 → 6.6 (the third in double precision, so
         // exactly the single-precision 6.6) → 3.3, volume 0.165.
-        let sound = limb_impact_sound(20.0, false, || 50).unwrap();
+        let sound = limb_impact_sound(20.0, false).unwrap();
         assert_eq!(sound.scaled, 6.6_f32 * 0.5);
         assert!((sound.volume - 0.165).abs() < 1e-6);
         assert!((sound.pitch - 0.599).abs() < 1e-6);
         assert!((sound.crowded_pitch - (0.165 * 0.5 + 0.6)).abs() < 1e-6);
-        assert_eq!(sound.cooldown_ms, 220 + 50 - 28);
+        assert_eq!(sound.cooldown_ms, 220 - 28);
+        assert_eq!(sound.spread_cooldown(50), 220 + 50 - 28);
         // Knocked down: 20 → 10 → 5, volume 0.25 at the 0.05 scale.
-        let sound = limb_impact_sound(20.0, true, || 0).unwrap();
+        let sound = limb_impact_sound(20.0, true).unwrap();
         assert!((sound.volume - 0.5).abs() < 1e-6);
         assert!((sound.pitch - 0.8).abs() < 1e-6);
         assert_eq!(sound.cooldown_ms, 220 - 85);
         // The cooldown rounds half to even: 0.25 · 170 = 42.5 gives 42.
-        let sound = limb_impact_sound(10.0, true, || 0).unwrap();
+        let sound = limb_impact_sound(10.0, true).unwrap();
         assert_eq!(sound.volume, 0.25);
         assert_eq!(sound.cooldown_ms, 220 - 42);
         // The volume caps at 1.
-        let sound = limb_impact_sound(1000.0, true, || 0).unwrap();
+        let sound = limb_impact_sound(1000.0, true).unwrap();
         assert_eq!(sound.volume, 1.0);
         assert_eq!(sound.cooldown_ms, 220 - 170);
-        // Under half the scaled impact: silent, and no spread is drawn.
-        assert_eq!(limb_impact_sound(3.0, false, || panic!("drew")), None);
-        assert_eq!(limb_impact_sound(0.9, true, || panic!("drew")), None);
+        // Under half the scaled impact: silent.
+        assert_eq!(limb_impact_sound(3.0, false), None);
+        assert_eq!(limb_impact_sound(0.9, true), None);
         // A NaN is not below the threshold: the original rings at full
         // volume (its minimum takes the second operand).
-        let sound = limb_impact_sound(f32::NAN, true, || 7).unwrap();
+        let sound = limb_impact_sound(f32::NAN, true).unwrap();
         assert_eq!(sound.volume, 1.0);
-        assert_eq!(sound.cooldown_ms, 220 + 7 - 170);
+        assert_eq!(sound.spread_cooldown(7), 220 + 7 - 170);
     }
 
     #[test]
     fn a_crowded_limb_uses_the_shared_pitch() {
-        let sound = limb_impact_sound(20.0, true, || 0).unwrap();
+        let sound = limb_impact_sound(20.0, true).unwrap();
         assert_eq!(sound.pitch_for(2), sound.pitch);
         assert_eq!(sound.pitch_for(3), sound.crowded_pitch);
     }
 
     #[test]
     fn a_hard_limb_impact_asks_for_a_grunt() {
-        let sound = limb_impact_sound(100.0, true, || 0).unwrap();
+        let sound = limb_impact_sound(100.0, true).unwrap();
         // 100 → 50 scaled, volume 1.
         let voice = limb_impact_voice(&sound, 0).unwrap();
         assert_eq!(voice.volume, 0.5);
         assert_eq!(voice.pitch, 1.0);
         // Dead and down is silent, and so is an impact of 15 or less.
         assert_eq!(limb_impact_voice(&sound, 0xa00), None);
-        let soft = limb_impact_sound(30.0, true, || 0).unwrap();
+        let soft = limb_impact_sound(30.0, true).unwrap();
         assert_eq!(soft.scaled, 15.0);
         assert_eq!(limb_impact_voice(&soft, 0), None);
-        let nan = limb_impact_sound(f32::NAN, true, || 0).unwrap();
+        let nan = limb_impact_sound(f32::NAN, true).unwrap();
         assert_eq!(limb_impact_voice(&nan, 0), None);
     }
 
@@ -1087,19 +1078,6 @@ mod tests {
         assert_eq!(immediate_counter(0x2_0000, 5), None);
     }
 
-    #[test]
-    fn only_a_boned_limb_bleeds() {
-        let mut tally = WoundTally::default();
-        tally.add(0, 1.0);
-        tally.add(-1, 1.0);
-        assert_eq!(tally.get(), 0.0);
-        tally.add(3, 0.25);
-        tally.add(4, 0.5);
-        assert!((tally.get() - 0.75).abs() < 1e-6);
-        assert!((tally.take() - 0.75).abs() < 1e-6);
-        assert_eq!(tally.get(), 0.0);
-    }
-
     fn contact(own: u32, other: u32) -> Contact {
         Contact {
             own: PartState(own),
@@ -1171,6 +1149,22 @@ mod tests {
         assert_eq!(classify(&c), None);
         c.other_guarded = false;
         assert_eq!(classify(&c).unwrap().kind, ContactKind::Wound);
+    }
+
+    #[test]
+    fn a_struck_part_sounds_again_300_ms_minus_the_draw() {
+        assert_eq!(part_sound_ready(1_000, 0), 1_300);
+        assert_eq!(part_sound_ready(1_000, 149), 1_151);
+        assert_eq!(part_sound_ready(u32::MAX, 0), 299);
+        // Seed 0 stepped twice (the armour roll, then the draw): the state
+        // is 0x08088406 and the high half of that times 150 is 4.
+        let mut seed = 0u32;
+        seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+        seed = seed.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let spread = ((u64::from(seed) * u64::from(PART_SOUND_SPREAD_MS)) >> 32) as u32;
+        assert_eq!(seed, 0x0808_8406);
+        assert_eq!(spread, 4);
+        assert_eq!(part_sound_ready(0, spread), 296);
     }
 
     #[test]

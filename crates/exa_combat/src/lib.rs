@@ -35,8 +35,10 @@ pub mod fall;
 pub mod fast_math;
 pub mod fighter;
 pub mod grip;
+pub mod impact;
 pub mod parry;
 pub mod regen;
+pub mod remedy;
 pub mod sounds;
 pub mod stance;
 pub mod strike_body;
@@ -60,6 +62,7 @@ use exa_physics::body::BODY_HZ;
 use exa_physics::body::{
     BodyTicks, CharacterStage, CharacterTick, Fallen, GoLimp, MAX_DAZE, Ragdoll, Shove, daze_energy,
 };
+use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
 pub use fighter::{
     Damage, DamageTaken, Fighter, Health, LowAnswer, SecondWind, SecondWindFired, StoryMode, Taken,
@@ -73,7 +76,9 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Hit>()
+        app.init_resource::<remedy::WorldClock>()
+            .add_message::<Hit>()
+            .add_message::<AttackAskedHook>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<SecondWindFired>()
@@ -82,6 +87,7 @@ impl Plugin for CombatPlugin {
                 condition::ConditionPlugin,
                 collapse::CollapsePlugin,
                 regen::RegenerationPlugin,
+                impact::plugin,
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
@@ -104,6 +110,14 @@ impl Plugin for CombatPlugin {
                 ),
             )
             .add_systems(
+                CharacterTick,
+                (
+                    burn::burn_upkeep
+                        .in_set(CharacterStage::Upkeep)
+                        .after(regen::regenerate_red),
+                ),
+            )
+            .add_systems(
                 PostUpdate,
                 // Wounds struck this frame wait from the next tick on.
                 (
@@ -123,6 +137,42 @@ impl Plugin for CombatPlugin {
 /// found and dealt. In `PostUpdate`, after transforms propagate.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CombatSystems;
+
+/// What a fighter's running powers give the hit formula: Force Shell's
+/// share of a blow's impact kept off it, and Force Strikes' factor on the
+/// blows it deals (half of it is added to the impact's multiplier). The
+/// power system keeps it on the fighter; without one both are 0.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+pub struct PowerFactors {
+    pub shell: f32,
+    pub strikes: f32,
+}
+
+/// The fighter's cast hook as an attack start asks it, with event 0x100:
+/// none without a hook, else whether the hook keeps its cast (an answer of
+/// 0 or more), which refuses the attack. The power system keeps it on the
+/// fighter.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AttackHook(pub Option<bool>);
+
+impl AttackHook {
+    /// The event an attack start asks the hook with.
+    pub const EVENT: u32 = 0x100;
+
+    /// An attack start's gate: whether the hook was asked (the power
+    /// system then asks the body's hook and ends the cast on a negative
+    /// answer) and whether the attack may go on.
+    pub fn gate(this: Option<&Self>) -> (bool, bool) {
+        match this.and_then(|h| h.0) {
+            None => (false, true),
+            Some(keeps) => (true, !keeps),
+        }
+    }
+}
+
+/// An attack start asked the fighter's cast hook ([`AttackHook`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttackAskedHook(pub Entity);
 
 /// A striker's segment along its entity's local +Y: a held weapon's, on the
 /// entity holding the weapon model, or a fist's, across the hand.
@@ -334,10 +384,17 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn detect_hits(
     motions: Option<Res<Motions>>,
     blades: Query<(Entity, &Blade, &GlobalTransform)>,
-    mut attackers: Query<(&Animator, &mut Attacking, &SwingState, Option<&Fighter>)>,
+    mut attackers: Query<(
+        &Animator,
+        &mut Attacking,
+        &SwingState,
+        Option<&Fighter>,
+        Option<&PowerFactors>,
+    )>,
     fighters: Query<(Entity, &Condition), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
@@ -345,7 +402,8 @@ fn detect_hits(
 ) {
     let Some(motions) = motions else { return };
     for (striker, blade, gt) in &blades {
-        let Ok((anim, mut attack, swing, wielder)) = attackers.get_mut(blade.wielder) else {
+        let Ok((anim, mut attack, swing, wielder, powers)) = attackers.get_mut(blade.wielder)
+        else {
             continue;
         };
         // A striker whose window is open: the held items (the fists only
@@ -418,6 +476,7 @@ fn detect_hits(
                     clock: progress,
                     along,
                     unarmed: attack.weapon_class & HANDS == 0,
+                    strikes: powers.map_or(0.0, |p| p.strikes),
                     ..Strike::default()
                 };
                 hits.write(Hit {
@@ -514,6 +573,7 @@ fn react_to_hits(
         Option<&mut Ragdoll>,
         Option<&mut SwingState>,
         Option<&Swing>,
+        Option<&PowerFactors>,
     )>,
     attacks: Query<&Attacking>,
     slots: Query<&Blade>,
@@ -542,6 +602,7 @@ fn react_to_hits(
                 mut body,
                 state,
                 swing,
+                powers,
             )) = fighters.get_mut(hit.target)
             else {
                 break 'struck None;
@@ -556,6 +617,7 @@ fn react_to_hits(
                 steadfast: f.stats.rules.has(BodyRules::STEADFAST),
                 security: f.perks.has(Perk::Security),
                 potion: flags.has(StateFlags::POTION),
+                shell: powers.map_or(0.0, |p| p.shell),
                 ..damage::Victim::new(f.health.max, f.readiness)
             };
             // A guarded blow meets a shield or a weapon: no armour, no roll.
@@ -643,6 +705,8 @@ fn react_to_hits(
                     f.health.yellow = b.yellow;
                     f.guard = damage::Guard::Shield(damage::ShieldGuard {
                         stamina: b.stamina,
+                        rate: 0.0,
+                        blocked_at: now as u32,
                         ..shield
                     });
                     let mut state = state;
@@ -681,8 +745,13 @@ fn react_to_hits(
                     break 'struck Some(StrikerReaction::Blocked(outcome));
                 }
             }
-            // The struck part's sound cooldown draws from the generator.
-            let _ = roll.below(PART_SOUND_SPREAD_MS);
+            // A blow on flesh stamps the struck part: the game clock plus
+            // 300 ms, less a draw below 150. A turned blow still stamps.
+            // A body with no part for the bone keeps the draw.
+            let spread = roll.below(PART_SOUND_SPREAD_MS);
+            if let Some(body) = body.as_mut() {
+                body.mark_part_sound(hit.bone, part_sound_ready(now as u32, spread));
+            }
             if flags.has(StateFlags::TURNS_BLOWS) {
                 // The blow is turned: the striker recoils, nothing is dealt. The
                 // blow sag was set with the armour, before the turn, so the
@@ -722,10 +791,6 @@ fn react_to_hits(
                     fighter: hit.target,
                 });
             }
-            // The struck limb adds its bleeding to the character's tally of
-            // wounds (the part's slot 39); the body tick turns the tally
-            // into damage over time.
-            f.bleeding.add(hit.bone as i32, outcome.wound);
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -869,8 +934,13 @@ fn react_to_hits(
             }
             Some(StrikerReaction::Wounded(outcome))
         };
+        // The shield's first ring in a swing draws its cooldown and stamps
+        // the struck object's clock: the shield body in the original.
+        // Exarust's shield is a held model without a body of its own, so the
+        // draw is kept and nothing is stamped (the victim's part at the bone
+        // is not the struck object).
         if let Some(reaction) = reaction
-            && let Ok((_, f, .., Some(mut state), _)) = fighters.get_mut(hit.attacker)
+            && let Ok((_, f, .., Some(mut state), _, _)) = fighters.get_mut(hit.attacker)
         {
             let striker = swing::Striker {
                 class_word: attacks
@@ -894,15 +964,16 @@ fn react_to_hits(
 /// The striker's swing after a contact: a wound cleaves on or bogs down; a
 /// parry or a shield recoils a striker under the large size, and a body
 /// that turns blows any striker. A clash rings the weapon once a swing; a
-/// shield the weapon and then the shield, whose sound cooldown draws from
-/// the generator.
+/// shield the weapon and then the shield. The shield's first ring in a
+/// swing draws its sound cooldown and returns that draw, for the shield
+/// body's clock (Exarust's shield has no body, so the caller drops it).
 fn strike_back(
     state: &mut SwingState,
     striker: &swing::Striker,
     hit: &Hit,
     reaction: StrikerReaction,
     roll: &mut Roll,
-) {
+) -> Option<u32> {
     let small = f64::from(striker.size) < swing::LARGE_STRIKER;
     match reaction {
         StrikerReaction::Wounded(blow) => {
@@ -917,6 +988,7 @@ fn strike_back(
                     hit.attacker, blow.bite
                 );
             }
+            None
         }
         StrikerReaction::Clashed {
             blow,
@@ -927,6 +999,7 @@ fn strike_back(
                 state.recoil_from(blow.speed, hit.weapon.recoil, striker);
             }
             state.flags |= swing::flags::WEAPON_RUNG;
+            None
         }
         StrikerReaction::Blocked(blow) => {
             if small {
@@ -935,11 +1008,14 @@ fn strike_back(
             state.flags |= swing::flags::WEAPON_RUNG;
             if state.flags & swing::flags::SHIELD_RUNG == 0 {
                 state.flags |= swing::flags::SHIELD_RUNG;
-                let _ = roll.below(PART_SOUND_SPREAD_MS);
+                Some(roll.below(PART_SOUND_SPREAD_MS))
+            } else {
+                None
             }
         }
         StrikerReaction::Turned(blow) => {
             state.recoil_from(blow.speed, hit.weapon.recoil, striker);
+            None
         }
     }
 }
@@ -968,9 +1044,6 @@ fn answer_low(
     }
 }
 
-/// The struck part's sound cooldown spreads over this many ms (it draws
-/// from the generator once a blow on flesh).
-const PART_SOUND_SPREAD_MS: u32 = 150;
 /// An armed blow that bites in deeper sticks the weapon in the part.
 const BITES_FROM: f32 = 0.1;
 
@@ -1000,7 +1073,8 @@ mod tests {
     /// An app running only the blow reactions.
     fn reactions() -> App {
         let mut app = App::new();
-        app.add_message::<Hit>()
+        app.init_resource::<remedy::WorldClock>()
+            .add_message::<Hit>()
             .add_message::<Shove>()
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
@@ -1246,6 +1320,51 @@ mod tests {
         assert!(damage::notices_damage(wound), "{:08x}", wound.to_bits());
     }
 
+    /// A fighter whose shell holds 0.5 takes the blow with half its impact,
+    /// as the hit formula gives it, and loses less yellow than one without.
+    #[test]
+    fn a_shell_halves_the_blows_impact() {
+        let mut app = reactions();
+        let plain = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        let shelled = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                PowerFactors {
+                    shell: 0.5,
+                    strikes: 0.0,
+                },
+            ))
+            .id();
+        strike(&mut app, plain, 9);
+        strike(&mut app, shelled, 9);
+        let yellow = |e| app.world().get::<Fighter>(e).unwrap().health.yellow;
+        let full = Fighter::default().health.yellow;
+        let (lost_plain, lost_shelled) = (full - yellow(plain), full - yellow(shelled));
+        assert!(
+            0.0 < lost_shelled && lost_shelled < lost_plain,
+            "{lost_plain} {lost_shelled}"
+        );
+        let blow = |shell| {
+            damage::resolve(
+                &damage::sword_a(),
+                &cut(),
+                Some((&PartArmour::default(), 0.5)),
+                9,
+                &damage::Victim {
+                    shell,
+                    ..damage::Victim::new(0.25, 0.0)
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(blow(0.5).impact, blow(0.0).impact * 0.5);
+    }
+
     /// A granted second wind fires when the clock is past its ready time,
     /// waits 180000 ms, and does not write the heartbeat's low-health
     /// message. At that ready clock it waits, and the heartbeat message
@@ -1263,6 +1382,8 @@ mod tests {
                 leak: 1.0,
                 cost: 1.0,
                 stamina: 1.0,
+                rate: 0.0,
+                blocked_at: 0,
                 parrying: true,
             });
             fighter.second_wind.granted = true;
@@ -1290,24 +1411,6 @@ mod tests {
         let fighter = fired.world().get::<Fighter>(id).unwrap();
         assert!(fighter.second_wind.active);
         assert_eq!(fighter.second_wind.ready_at, 180_012);
-    }
-
-    /// A wound on a boned limb adds its size to the struck fighter's
-    /// bleeding tally; one on bone 0 (the original checks `bone > 0`) does
-    /// not.
-    #[test]
-    fn a_wound_adds_to_the_bleeding_tally() {
-        for (bone, added) in [(9usize, true), (0, false)] {
-            let mut app = reactions();
-            let id = app
-                .world_mut()
-                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
-                .id();
-            strike(&mut app, id, bone);
-            let wound = outcome(bone).wound;
-            let tally = app.world().get::<Fighter>(id).unwrap().bleeding.get();
-            assert_eq!(tally.to_bits(), if added { wound.to_bits() } else { 0 });
-        }
     }
 
     /// The same cut that wounds bare flesh deals nothing through a parry
@@ -1424,6 +1527,8 @@ mod tests {
                 leak,
                 cost: leak,
                 stamina: 0.0,
+                rate: 0.0,
+                blocked_at: 0,
                 parrying: false,
             }),
             ..Fighter::default()
@@ -1659,6 +1764,122 @@ mod tests {
             &mut roll,
         );
         assert_eq!(roll.0, Roll::default().0);
+    }
+
+    fn one_part(bone: usize) -> Ragdoll {
+        Ragdoll::new(&[exa_physics::body::PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            spheres: None,
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+        }])
+    }
+
+    fn part_clock(app: &App, fighter: Entity, bone: usize) -> u32 {
+        app.world()
+            .get::<Ragdoll>(fighter)
+            .unwrap()
+            .parts
+            .iter()
+            .find(|p| p.bone == bone)
+            .unwrap()
+            .sound_ready_ms
+    }
+
+    /// A blow on flesh stamps the struck part's sound clock: the game clock
+    /// plus 300 ms, less the draw below 150 that follows the armour roll.
+    /// Seed 0, stepped for the armour roll and then drawn below 150, is 4,
+    /// so at clock 0 the part is ready at 296. A turned blow stamps the
+    /// same clock. A shield's first ring draws before any armour roll but
+    /// stamps the shield body, which Exarust lacks, so the victim's part is
+    /// left alone; a second block of that swing draws nothing. A bone with
+    /// no part leaves the body as it is.
+    #[test]
+    fn a_blow_stamps_the_struck_parts_sound_clock() {
+        let mut roll = Roll::default();
+        let _ = roll.next();
+        let spread = roll.below(PART_SOUND_SPREAD_MS);
+        assert_eq!(spread, 4);
+        assert_eq!(part_sound_ready(0, spread), 296);
+
+        let mut app = reactions();
+        app.insert_resource(BodyTicks(100));
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                one_part(9),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), part_sound_ready(1_200, spread));
+        assert_eq!(part_clock(&app, victim, 9), 1_496);
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                StateFlags(StateFlags::TURNS_BLOWS),
+                one_part(9),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), 296);
+        assert_eq!(
+            app.world().get::<Fighter>(victim).unwrap().health.yellow,
+            Fighter::default().health.yellow
+        );
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                one_part(1),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 1), 0);
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let shielded = Fighter {
+            guard: damage::Guard::Shield(damage::ShieldGuard::default()),
+            ..Fighter::default()
+        };
+        let victim = app
+            .world_mut()
+            .spawn((shielded, Animator::new("Default", "Idle"), one_part(9)))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        // The shield's ring draws its cooldown but stamps the shield body,
+        // which Exarust does not have: the victim's part at the bone is left
+        // alone.
+        let mut shield_roll = Roll::default();
+        let _shield_spread = shield_roll.below(PART_SOUND_SPREAD_MS);
+        assert_eq!(part_clock(&app, victim, 9), 0);
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(part_clock(&app, victim, 9), 0);
+        assert!(
+            app.world()
+                .get::<SwingState>(attacker)
+                .unwrap()
+                .has(swing::flags::SHIELD_RUNG)
+        );
     }
 
     /// A sword cut that wounds but does not kill starts no clip: a bare
@@ -1950,7 +2171,8 @@ mod tests {
     /// body tick clock.
     fn bleeding() -> App {
         let mut app = App::new();
-        app.add_message::<Hit>()
+        app.init_resource::<remedy::WorldClock>()
+            .add_message::<Hit>()
             .add_message::<Shove>()
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
@@ -2372,7 +2594,8 @@ mod tests {
     /// knuckles first at 4 m/s; the hits detected.
     fn punch(motion: AttackMotion, weapon_class: u8) -> (Vec<Hit>, [Entity; 2]) {
         let mut app = App::new();
-        app.add_message::<Hit>()
+        app.init_resource::<remedy::WorldClock>()
+            .add_message::<Hit>()
             .insert_resource(punches())
             .add_systems(Update, detect_hits);
         let mut anim = Animator::new("Default", "Cmbt - Idle");

@@ -3,7 +3,7 @@
 //! (Included from body_balance.rs: `#[path = "body_balance_test.rs"] mod tests;`)
 use bevy::math::Affine3A;
 
-use super::super::{Bearing, Drive, PartSetup};
+use super::super::{Bearing, BodyStats, Drive, PartSetup};
 use super::*;
 
 const NONE: &[[Vec3; 3]] = &[];
@@ -487,12 +487,20 @@ fn vertical_speed_cuts_the_score() {
     assert_eq!(cut, Some(10));
 }
 
-/// A foot is grounded with its contact within 20 cm (30 cm moving) of its
-/// ground plus the sole height.
+/// A foot is grounded with its contact within 20 cm of its ground plus the
+/// sole height, or within 30 cm times the body scale while moving. A NaN
+/// stays grounded.
 #[test]
 fn feet_are_grounded_within_20_cm() {
-    assert!(foot_grounded(20.0, false) && !foot_grounded(20.1, false));
-    assert!(foot_grounded(30.0, true) && !foot_grounded(30.1, true));
+    assert!(foot_grounded(20.0, false, 1.0) && !foot_grounded(20.1, false, 0.5));
+    assert!(foot_grounded(30.0, true, 1.0) && !foot_grounded(30.1, true, 1.0));
+    // Moving, the window scales. Standing does not, and a NaN stays grounded.
+    assert!(foot_grounded(15.0, true, 0.5) && !foot_grounded(15.1, true, 0.5));
+    assert!(foot_grounded(60.0, true, 2.0) && !foot_grounded(60.1, true, 2.0));
+    assert!(foot_grounded(20.0, false, 2.0));
+    assert!(!foot_grounded(20.1, false, f32::NAN));
+    assert!(foot_grounded(f32::NAN, true, 1.0));
+    assert!(foot_grounded(100.0, true, f32::NAN));
     // The biped's ankles stand 9.4 cm up with an 8 cm sole: lifted 18 cm
     // they are 19.4 cm over, 23 cm they are 24.4 cm over (grounded only
     // moving).
@@ -516,6 +524,21 @@ fn feet_are_grounded_within_20_cm() {
             "{lift} cm, moving {moving}"
         );
     }
+    // Half scale narrows the moving window to 15 cm, so a contact 24.4 cm
+    // over its ground is not grounded.
+    let mut half = biped_at(Affine3A::from_translation(cm(0.0, 23.0, 0.0))).with_stats(BodyStats {
+        scale: 0.5,
+        ..BodyStats::HUMAN
+    });
+    bearing(
+        &mut half,
+        Bearing {
+            moving: true,
+            ..Bearing::default()
+        },
+    );
+    half.measure_balance(floor().as_slice());
+    assert!(half.legs().iter().all(|l| !l.grounded));
 }
 
 /// Ground the query finds higher than half a leg under the pelvis is not
@@ -587,6 +610,37 @@ fn down_the_query_starts_at_the_ankle_5_cm_wide() {
         assert!(ground(&shelf, down).abs() < 1e-5);
         assert!(ground(&step, down).abs() < 1e-5);
     }
+}
+
+/// At the gait bump's peak the first foot's sphere is 20 cm and its probe
+/// sits 36 cm further along the facing than the plain 5 cm offset, so a
+/// platform there is the ground. At a phase with no bump the same platform
+/// is missed and the foot finds the floor.
+#[test]
+fn a_walking_probe_sways_forward_and_widens() {
+    let peak = 0.125f32.sqrt();
+    let swayed = Vec2::new(-0.078, 0.062 + 0.36);
+    let mut level = floor();
+    level.extend(square(swayed, 0.2, 0.04));
+    let ground = |progress: f32| {
+        let mut body = biped();
+        bearing(
+            &mut body,
+            Bearing {
+                walking: true,
+                ..Bearing::default()
+            },
+        );
+        body.drive.as_mut().unwrap().note_gait(progress, 0.0, false);
+        body.measure_balance(level.as_slice());
+        body.legs()[0].ground.unwrap()
+    };
+    assert!(
+        (ground(2.0 - peak) - 0.2).abs() < 1e-4,
+        "{}",
+        ground(2.0 - peak)
+    );
+    assert!(ground(0.0).abs() < 1e-4);
 }
 
 /// Getting up, balance rises 0.05 a tick and the counter falls by 5 while
@@ -704,6 +758,22 @@ fn a_sphere_drops_onto_a_triangle_where_it_first_touches() {
         }
     }
     assert!(hits > 300 && misses > 300, "{hits} hits, {misses} misses");
+}
+
+/// A stance facing a quarter turn from the frame swings an ankle that
+/// stood 1 m ahead around to 1 m toward +X, and keeps its height. The
+/// same yaw, and a yaw that is not finite, leave the clip's ankle.
+#[test]
+fn the_stance_facing_turns_the_spot() {
+    use std::f32::consts::FRAC_PI_2;
+    let spot = Vec3::new(0.0, 1.2, 1.0);
+    let turned = stance_spot(spot, Vec3::ZERO, 0.0, FRAC_PI_2);
+    assert!((turned.x - 1.0).abs() < 1e-5, "{}", turned.x);
+    assert!((turned.z).abs() < 1e-5, "{}", turned.z);
+    assert_eq!(turned.y, 1.2);
+    let same = stance_spot(spot, Vec3::ZERO, 0.4, 0.4);
+    assert!((same - spot).length() < 1e-5, "{same}");
+    assert_eq!(stance_spot(spot, Vec3::ZERO, 0.0, f32::NAN), spot);
 }
 
 /// A reset facing is the chest over the pelvis, flattened: a sloped

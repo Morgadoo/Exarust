@@ -21,7 +21,7 @@ and keeps each fighter's combat stance and readiness (`stance`:
 the looping clip it returns to, the body tick's switch to it that skips
 Cmbt - Idle, the player's and a duellist's rules, the daze's Defence
 stance, the original's blend and ease for every stance start, readiness
-halving the wound after 3 s in Cmbt - Idle; rules in
+halving the wound after 3 s in Cmbt - Idle or while parrying; rules in
 [`docs/PLAYER.md`](../../docs/PLAYER.md), The combat stance).
 
 A fighter's swing (`swing`) is run every attack tick by the original's
@@ -100,10 +100,11 @@ other than its primary ends into its stance with no lock and no sag
 rest on the swing (`SwingState::recoil`) until the stall ends, and the
 stance that ends it starts with the rest's blend (40 frames) and both
 arms' stiffness (0.2, `Ragdoll::set_arm_stiffness`), which the next
-character tick eases back up, instead of the stance's recovery blend. A
-wound on a boned limb adds its size to the struck fighter's bleeding tally
-(`Fighter::bleeding`, the part's slot 39), which the body tick turns into
-damage over time.
+standing tick eases back up, each arm on its own, instead of the
+stance's recovery blend. A wound causes no damage over time: the body
+tick's only damage-over-time routine is burning (`burn`, fed by the
+particle body-contact pass through `Burn::add_dose`, not by a wound), and
+a wound's blood is cosmetic (`wounds`).
 A Force effect's interrupt (`SwingState::force_interrupt`) breaks an
 attack into a full-strength stall with no drain, cleaving and recoiled,
 its window shut and the stance 600 ms on. The debug barricade calls it
@@ -331,8 +332,11 @@ it off the second item and its grandparent), Break Tangle's counter and the
 clinch clear (grip links assigned the disabled flag, arm bit 8 cleared,
 countered motion reset, parry ended into the 0x28 stance blend unless the
 condition holds the clip still). Grip link bodies are another lane's
-(`exa_physics::grip`); only the drop/clinch logic is here. None of these is
-called by the running game yet: its weapons are bone-attached meshes.
+(`exa_physics::grip`); only the drop/clinch logic is here. The attack
+arms' stiffness is applied while an attack tick plays: the swing stage
+stores the pair and the muscle tune writes each side's arm bones. The
+gate, the sound, the fatigue ramp and the aim nudges are not called by
+the running game yet.
 
 `parry` adds the trigger (`parry_trigger`): a helpless body, the
 break-tangle motion or yellow under 0.01 end a parry; otherwise the attacker
@@ -341,7 +345,10 @@ window, not cleaving, not behind and within its reach + 150 cm. Its counter
 rises and falls by the chosen clip, a start blends round(recovery · 20) with
 ease 2 and moves an attack motion to 4, and a changed attack motion repicks
 the clip. The running fight calls the rule from each ticked fighter's
-attack stage, after its swing routine, as the original's body tick does:
+attack stage, after its swing routine, as the original's body tick does;
+the posture block's arm writes and clip rate, which run before it, read
+the flag the previous tick's check left, so the posture stage takes it
+from the fighter ahead of the attack stage:
 a fighter in the combat idle that is not parrying, whose muscle tone is at
 least 0.85, whose auto-parry deadline has passed and whose hands hold
 something (a fist does) checks the blow coming at it; a fighter that

@@ -174,6 +174,10 @@ mod tests {
             point: Vec3::new(0.5, 1.25, -2.0),
             push: Vec3::new(0.0, 0.03, 0.04),
             deepest: 0.03,
+            travel: Vec3::ZERO,
+            travel2: 0.0,
+            struck: [None; 2],
+            hit_event: false,
         };
         let mut out = String::new();
         let side = |body, bone, living| PairSide { body, bone, living };

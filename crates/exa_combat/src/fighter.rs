@@ -15,7 +15,6 @@ use crate::fall::FallDeath;
 use crate::parry::ParryState;
 use crate::swing::SwingState;
 use crate::wounds::WoundQueue;
-use exa_physics::part::WoundTally;
 
 /// A character that can fight and be hurt (on the body model root). It
 /// keeps the original's condition word and state flags beside it, the
@@ -28,7 +27,8 @@ use exa_physics::part::WoundTally;
     Condition,
     StateFlags,
     PostureBranch,
-    FallDeath
+    FallDeath,
+    crate::impact::ImpactBook
 )]
 pub struct Fighter {
     pub health: Health,
@@ -41,6 +41,9 @@ pub struct Fighter {
     pub readiness: f32,
     /// Its race bleeds: its wounds paint blood (`races.rdb` flag bit 0).
     pub bleeds: bool,
+    /// The race's first flag word has red regeneration, so death keeps a
+    /// low-health body dormant (the golem suit).
+    pub first_flag_red: bool,
     /// What its record and race gave it when it spawned (maximum health,
     /// scale, size, reach, rule bits, …).
     pub stats: CharacterStats,
@@ -52,12 +55,11 @@ pub struct Fighter {
     /// The parry in progress: whether it parries and the motion it
     /// counters, which decides the clash's branch.
     pub parry: ParryState,
-    /// The bleeding the struck limbs added up since the body's last tick:
-    /// a boned limb's wound adds its size, and the body tick
-    /// turns the tally into damage over time.
-    pub bleeding: WoundTally,
     /// The armour that grants a second wind, and when it may fire again.
     pub second_wind: SecondWind,
+    /// The world clock (s) at which a drunk elixir's potion flag ends
+    /// ([`crate::remedy`]).
+    pub potion_until: u32,
 }
 
 impl Default for Fighter {
@@ -85,13 +87,42 @@ impl Fighter {
             armour: damage::armour_layers(natural.as_ref(), &[], stats.deflection),
             readiness: 0.0,
             bleeds: race.is_none_or(Race::bleeds),
+            first_flag_red: race.is_some_and(Race::keeps_dormant_corpse),
             stats,
             perks: Perks::default(),
             guard: Guard::Open,
             parry: ParryState::default(),
-            bleeding: WoundTally::default(),
             second_wind: SecondWind::default(),
+            potion_until: 0,
         }
+    }
+
+    /// Use a salve or an elixir on this fighter. A salve fills
+    /// [`Health::heal_pool`] and an elixir sets the potion flag and
+    /// [`Self::potion_until`], when [`CharacterStats::rules`] take
+    /// remedies. The item's spent flags come back on the result.
+    pub fn take_remedy(
+        &mut self,
+        flags: &mut StateFlags,
+        item: crate::remedy::ItemUse,
+        now: u32,
+        unit: impl FnOnce() -> f64,
+    ) -> crate::remedy::Applied {
+        let applied = crate::remedy::apply_remedy(
+            item,
+            crate::remedy::RemedyTarget {
+                heal_pool: self.health.heal_pool,
+                flags: flags.0,
+                potion_until: self.potion_until,
+                takes_remedies: self.stats.rules.has(BodyRules::TAKES_REMEDIES),
+            },
+            now,
+            unit,
+        );
+        self.health.heal_pool = applied.heal_pool;
+        self.potion_until = applied.potion_until;
+        flags.0 = applied.flags;
+        applied
     }
 
     /// The same fighter with its record's `perks`.
@@ -124,8 +155,8 @@ pub struct Health {
     /// Yellow health regained a tick per unit of √red: it ramps up from 0
     /// to [`crate::regen::RATE_CAP`] and every blow sets it back to 0.
     pub rate: f32,
-    /// Red health still to heal (bandages), moved to red a little a tick.
-    /// Nothing fills it yet.
+    /// Red health still to heal (a salve fills it), moved to red a little
+    /// a tick.
     pub heal_pool: f32,
 }
 

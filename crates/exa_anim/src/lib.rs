@@ -25,7 +25,7 @@ use exa_formats::rsq::{BoneBody, Clip, ClipTable, MotionSet, Sequences, bone_ind
 mod clock;
 pub use clock::{
     ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, STANDING_PACE, bracket, follow_up_blend,
-    hold_toward, in_place, overlay_toward,
+    hold_toward, in_place, overlay_toward, rising_frames, standing_frames,
 };
 
 /// Body ticks a second: the clock every clip counts frames by (the
@@ -562,8 +562,8 @@ fn play_clips(
                 break;
             };
             let ending = set.action_index(&anim.action);
-            let frames = STANDING_PACE * anim.base;
-            if anim.tick(clip, frames, follow_up_blend(ending, 0)) {
+            let frames = standing_frames(anim.base);
+            if anim.tick_double(clip, frames, follow_up_blend(ending, 0)) {
                 anim.take_capture(&[]);
             }
         }

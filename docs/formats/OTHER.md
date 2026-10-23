@@ -1393,8 +1393,15 @@ W17 0.67, W18 0.275, W19 8.
 | ogre (`0x2000000`) | 0.32 – 0.80 | 0.50 – 1.00 | 0.50 – 1.00 |
 | demon (`0x4000000`) | 0.50 – 1.20 | 0.75 – 1.50 | 0.75 – 1.50 |
 
-spread over the weapon's rigid parts half evenly and half by their own
-masses; the weapon's own part then weighs s times more.
+The part tree redistributes in two passes, parent before children
+(`exa_physics::weapon_mass`). A saved mass of zero is replaced by the
+live mass and then left alone. The live mass becomes 1.25 times that
+saved mass and the inverse word becomes its reciprocal; the walk counts
+the parts and sums those reciprocals. The second pass writes both words
+with the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale, where
+scale is the caller's factor. A saved mass that is already set is the
+one inflated. A zero inflated mass
+divides the way a single-precision division by zero does.
 
 **Equip refresh**: each held record is held again with the character's g
 and s; the character's reach is the largest W23; W19 = round(W19 × race
@@ -1442,7 +1449,13 @@ mode).
 **Shield record**, item section `0x8000` (22 items): weight, block and
 bulk = bytes 4, 5, 6 × 0.01, each in double precision then stored as a
 float (a round shield 0.5, 0.58, 0.6; a buckler's weight 15 is 0.15, where
-single precision gives 0.14999999). In the off
+single precision gives 0.14999999). On the part those three floats fill a
+16-byte block (`ShieldBlock`). The block is created with its first word
+`0x80000000`; an existing block keeps its first word. With no section
+body, the item's `0x8000` section object is used and the body is read
+eight bytes in. A missed lookup leaves the three floats unwritten, and so
+does a body that does not hold bytes 4, 5 and 6 (the original reads them
+with no length check). In the off
 hand it gives parry effectiveness 0.5 + 1.5·(1 − weight)² (weight/2 with
 the Mobility technique), a block leak of 1 − block/2, a stamina cost per
 block of the leak (× 2/3 with Endure), and adds (2 − u)·bulk/4 to the
@@ -1582,8 +1595,8 @@ What it slows, by encumbrance e (the readers' own precision):
 Exarust sums it at spawn for every placed character (`exa_world`) and for
 the player's and the duellist's outfits (the first painted item worn as
 each model); `exa-tool characters` prints it. The step reach, the player's
-run blend and the held weapons' and fists' records read it; the other
-readers take it when they are ported.
+run blend, a held step key's long step and the held weapons' and fists'
+records read it; the other readers take it when they are ported.
 
 ## Damage
 
@@ -1700,8 +1713,11 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   ogre 6, golem 2, …) with the init's race-byte rules, and health starts at
   the record's saved pools ([RFC.md](RFC.md), Stats derived at spawn).
 - Applying a blow: see Applying damage below.
-- A blow on flesh draws one more number from the generator (the struck
-  part's sound cooldown, 300 − 0..150 ms; not kept in Exarust).
+- A blow on flesh draws one more number from the generator and stamps
+  the struck part's sound clock (`exa_physics::part::part_sound_ready`):
+  the game clock plus 300 ms, less a draw below 150. A blow the body
+  then turns still stamps it. A shield's first ring in a swing draws
+  the same number and stamps that same clock.
 - A body whose state flag 0x400 is set turns the blow: nothing is dealt
   (no push, daze or wound) and the striker recoils whatever its size; the
   blow sag the armour pass set before the turn stays (what sets the flag
@@ -1739,16 +1755,17 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   blend 40 and both arms' stiffness 0.2, which the next character tick
   eases back up; a released swing, a wound or a new attack drops the
   rest.
-- A wound on a boned limb (`bone > 0`) adds its size to the character's
-  bleeding tally, which its body tick turns into damage over
-  time: each tick the tally × 0.03 raises a bleeding level at most 20,
-  yellow loses level × 4e-5 and, over 1, red loses (0.002·level)². The
-  tally is cleared each tick. Exarust keeps the tally on the fighter
-  (`Fighter::bleeding`); the bleeding tick is the kernel lane's.
+- A wound causes no damage over time. The body tick's one damage-over-time
+  routine is burning (`exa_combat::burn`): the particle body-contact pass
+  adds a fire's dose to the burn through the part's virtual slot 39, for a
+  part whose bone index is above zero (`Burn::add_dose`), and the damage
+  routine never calls it. A wound's blood (the queue, spray and weapon
+  stain) is cosmetic.
 - A clash and a block set the swing's weapon-sound bit 0x1000 (the
   weapon's hit sound once a swing); a block sets the shield-sound bit
   0x200 once a swing (a wound's bits already hold it) and then draws the
-  shield's sound cooldown from the generator (300 − 0..150 ms).
+  shield's sound cooldown from the generator (300 − 0..150 ms) onto the
+  struck part's sound clock.
 - The routine runs per contact: each contact's striker is dealt right
   after its struck side, before the frame's next contact, so two fighters
   wounding each other in one frame take a follow-through before the other
@@ -1813,7 +1830,8 @@ executable; a retail trace; `exa_combat::regen`)
   a human with full red heals 0.005 a second, the whole bar in 50 s.
 - r is set to 0 by every blow that deals health and by every weapon
   contact on a character, before the damage routine decides what the
-  contact does; burning resets it too (not ported).
+  contact does; a burn that still has strength clears it in the upkeep
+  stage, before this bookkeeping (`exa_combat::burn`).
 - An active second wind, after the heal pool and before the rate ramp,
   adds the double 0.0003 to yellow and stores the float, whether or not
   the fighter attacks. The wind stays while the game clock is at or before
@@ -1821,8 +1839,15 @@ executable; a retail trace; `exa_combat::regen`)
   still adds, then the wind ends. Yellow bits 0x3d000000 become
   0x3d013a93. A quiet wind adds nothing. A dead fighter does not take
   this tick.
-- Red heals only from the heal pool (bandages fill it; nothing does in
-  Exarust yet): 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
+- Red heals only from the heal pool. A salve (operative kind 8) fills it
+  when the body takes remedies: 0.2, or 0.1 when the section's value word
+  is 50, added in double precision (`exa_combat::remedy`). An elixir
+  (kind 14) sets the potion flag and stamps the world clock (the save's
+  seconds plus game time) plus 1800 s; the body tick clears the flag once
+  that clock is past the stamp. Either kind ORs `0xC80000`, whether or
+  not the body takes remedies, into the item's flags when it is used
+  directly, or into its container's inventory entry (the entry word less
+  one) when that word is above zero; a zero word marks nothing. 0.25 × 5e-5 = 1.25e-5 a tick moves from the pool to red
   (a pool of 0.2 drains in 15,999 ticks, 193 s), and, dead or alive (the
   test comes before the dead test), for bodies whose rule bits hold 0x20
   without 0x100 ([RFC.md](RFC.md), Stats derived at spawn): 1.25e-5 a
@@ -1832,15 +1857,18 @@ executable; a retail trace; `exa_combat::regen`)
   the demon.
 - Then yellow is kept within red, and after it red within the maximum
   (so yellow follows a red cut to the maximum a tick later); at the end
-  of the tick yellow is at least 0. Death sets yellow to 0 (the collapse
+  of the tick a yellow that compares below 0 becomes 0, and a NaN stays.
+  Death sets yellow to 0 (the collapse
   regenerates about 0.0006 of it over its 250 ticks).
-- A shield arm's stamina (0..=1) and its rate refill
-  with the body tick: while the stamina is under 1 the rate rises 2e-6 a
-  tick to 0.001 and the stamina rises by the rate; at 1 the rate stops. A
-  block sets the rate to 0 (and the block's stamp to now), so an
-  empty arm reaches full rate in 500 ticks (6.0 s) and full stamina in
-  about 1,250 ticks (15.1 s). The rule is `exa_combat::regen::ShieldStamina`;
-  the body tick that calls it is the kernel lane's.
+- A shield arm's stamina (0..=1) and its rate refill with the living
+  body's health tick: while the stamina is below 1 minus the data epsilon
+  the rate rises by the double 2e-6, narrowed, and is capped once that
+  double exceeds 0.001; the stamina then rises by the rate. At 1 the
+  stamina snaps to 1 and the block stamp becomes 0xffffffff; the rate
+  stays at the cap. A block floors the stamina at 0, zeros the rate and
+  stamps the game clock, so an empty arm reaches full rate in 500 ticks
+  (6.0 s) and full stamina in about 1,250 ticks (15.1 s). The rule is
+  `exa_combat::regen::ShieldStamina`, run from the health bookkeeping.
 - The retail trace of the player after a fight: yellow 0.085, held for
   7.5 s in Cmbt - Idle, then in Idle 0.086, 0.090, 0.100, 0.110 and 0.121
   at 5.0, 9.6, 16.2, 21.1 and 25.3 s, 0.202 at 45.8 s; the rule with red
@@ -1919,8 +1947,8 @@ damage call), at least 0; yellow under 0.05 runs the low-health check.
 The daze is (0.3 − 0.2·S)·Q (·I when x is 0) with the stall factor half
 the holder's clock with Persist, its clock under Synchrony before 0.3,
 else 1. No lasting wound, no shove; either guard makes a striker smaller
-than 1.4 recoil. Exarust has no counters and no shield stamina
-regeneration yet: a held shield's stamina only falls. An armed bite above 0.1 sticks the weapon
+than 1.4 recoil. A held shield's stamina refills on the living body's
+health tick. An armed bite above 0.1 sticks the weapon
 (`bite::stick`): the depth is capped at 1, flags are 0x11000 or 0x211000
 around the widened 0.4, strength is 12 times the depth, smoothing adds
 0.5, and the count is 3 times the truncated 83·unit·depth. The weapon
@@ -1989,7 +2017,8 @@ Captain −1/12, 0, 1/12, Skirmish and the Beast's company at 7/12, 0.5,
 opponent its own team. A tournament event groups its entry slots into
 teams of its team size and stands every member on one ring of
 `teams × size × 50 + 100` cm (at most 350), each team spread around its
-own sixth (`bracket_layout`).
+own sixth (`bracket_layout`): the spread is `f32((n − 1)/(n + 1) · 2)` and
+the start `f64(g/G · 6) − f64(f32(spread · 0.5))`, narrowed once.
 The hub (`exa_game::arena_hub`) draws Msc_Hub01 or Msc_Hub02 at 0.1 and a
 start at none, 41, 126.8 or 152 seconds; its click hook knows the objects
 named ArenaShop and ArenaMach by their sixteen-byte names, whose first byte

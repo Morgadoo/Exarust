@@ -10,18 +10,20 @@
 //! gain 0.0003; its body meanwhile follows its pelvis with its frame
 //! exactly, its lift fades by its tone squared and its arms' stiffness is
 //! 0.2 (`exa_physics::body::Bearing::collapsing`). At a tone of 0.25,
-//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), its yellow
-//! health 0 (it regenerates while collapsing), a plain ragdoll that keeps
-//! the motion it has. Rules: `docs/formats/RSQ.md` (Condition,
-//! The collapse).
+//! 250 ticks (3.0 s) after the blow, it dies: dead (0xA00), the may-rise
+//! rule and rise clock settled, its yellow health 0 (it regenerates while
+//! collapsing), a plain ragdoll that keeps the motion it has. Rules:
+//! `docs/formats/RSQ.md` (Condition, The collapse).
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{
-    CharacterStage, CharacterTick, GoLimp, Ragdoll, RigidPart, TickedCharacter, pairs, step_length,
+    BodyTicks, CharacterStage, CharacterTick, GoLimp, Ragdoll, RigidPart, TickedCharacter, pairs,
+    step_length,
 };
 
-use crate::condition::{Condition, StateFlags, track_condition};
+use crate::condition::{Condition, DeathClock, StateFlags, settle_death, track_condition};
+use crate::fall::FallDeath;
 use crate::{Fighter, Roll};
 
 /// The clip a lethal wound starts.
@@ -459,17 +461,20 @@ impl Plugin for CollapsePlugin {
 /// tone falls 0.003 and its pins' gain 0.0003. Unless a step is already
 /// running, it walks the stagger from the chest and its fast velocity.
 /// At a tone of 0.25 it dies
-/// there and then: dead, its yellow health 0, its muscles gone, keeping
-/// its motion, and the rest of its tick does not run
+/// there and then: [`crate::condition::settle_death`] writes the condition,
+/// the may-rise rule and the rise clock, its yellow health becomes 0, its
+/// muscles go, it keeps its motion, and the rest of its tick does not run
 /// ([`crate::condition::ticked_lives`]); the frame strips its clip and
 /// controller.
 #[allow(clippy::type_complexity)]
 pub fn dying_tick(
     ticked: Res<TickedCharacter>,
     mut commands: Commands,
+    ticks: Option<Res<BodyTicks>>,
     mut roll: Local<Roll>,
     mut bodies: Query<(
         &mut Condition,
+        &FallDeath,
         &mut Collapse,
         &mut Ragdoll,
         &mut Animator,
@@ -479,7 +484,7 @@ pub fn dying_tick(
     )>,
 ) {
     let entity = ticked.body;
-    if let Ok((mut condition, mut collapse, mut body, mut anim, mut fighter, gt, hands)) =
+    if let Ok((mut condition, fall, mut collapse, mut body, mut anim, mut fighter, gt, hands)) =
         bodies.get_mut(entity)
     {
         if !condition.is_collapsing() {
@@ -527,9 +532,28 @@ pub fn dying_tick(
         }
         walk_collapse(&mut body);
         if dies {
-            condition.die();
-            // Death empties the yellow bar the collapse regenerated.
+            let now_ms = ticks.as_ref().map(|t| t.millis() as u32).unwrap_or(0);
+            if let Some(settled) = settle_death(
+                *condition,
+                fighter.stats.rules,
+                fall.stage.death_stage(),
+                fighter.health.red,
+                fighter.first_flag_red,
+                now_ms,
+            ) {
+                *condition = settled.condition;
+                fighter.stats.rules = settled.rules;
+                commands.entity(entity).insert(DeathClock {
+                    wake_at_ms: settled.wake_at_ms,
+                    died_at_ms: now_ms,
+                });
+            }
+            // Death empties the yellow bar the collapse regenerated and
+            // clears the strike chain on each lower leg's first child. Its
+            // go-limp takes the lower legs out of the living layer (the
+            // class writer's 0, 0x30 on the feet).
             fighter.health.yellow = 0.0;
+            body.clear_death_strikes();
             body.go_limp();
             commands
                 .entity(entity)

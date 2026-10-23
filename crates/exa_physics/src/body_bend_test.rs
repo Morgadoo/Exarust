@@ -45,7 +45,7 @@ fn the_bend_target_drops_an_unanchored_foot() {
     assert!(close((mid - foot).length(), 0.1));
     assert!(close((mid - anchor).length(), 0.1));
     assert!(close(mid.y, anchor.y));
-    let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default());
+    let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default(), 1.0);
     assert!(close(raw, 1.125));
     let dropped = bend_target(foot, anchor, false, 2.0 * raw / super::super::CM);
     assert!(close(dropped.y, anchor.y - 0.0225));
@@ -144,6 +144,113 @@ fn the_muscles_follow_the_bend_on_the_next_tick() {
     let (axis, angle) = extra.to_axis_angle();
     assert!(close(angle, 0.02), "next pose turned {angle}");
     assert!(axis.x > 0.99, "axis {axis}, not the leg's x");
+}
+
+/// Lying down (off its feet, not getting up) eases a stored knee of 0.2
+/// and a hip of −0.2 toward 0 by 0.02, and leaves the bend target, the
+/// step lift and the thigh's extra turn. A get-up still writes a bend
+/// target.
+#[test]
+fn lying_down_releases_the_stored_bend() {
+    let level = step_under_the_right_foot();
+    let root = Affine3A::IDENTITY;
+    let prepare = |bearing: Bearing| {
+        let (mut body, pose) = standing_at(Vec3::ZERO);
+        let aimed: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
+        body.set_bearing(bearing);
+        body.measure_balance(level.as_slice());
+        body.aim(root, aimed);
+        let leg = right_leg(&body);
+        body.legs[leg].knee = 0.2;
+        body.legs[leg].knee_rate = 0.0;
+        body.legs[leg].hip = -0.2;
+        body.legs[leg].hip_rate = 0.0;
+        let kept = (
+            body.legs[leg].goal,
+            body.legs[leg].lift,
+            body.legs[leg].turn,
+        );
+        (body, leg, kept)
+    };
+    let lying = Bearing {
+        off_feet: true,
+        ..Bearing::default()
+    };
+    let (mut body, leg, kept) = prepare(lying);
+    body.bend_legs();
+    assert!(
+        close(body.legs[leg].knee, 0.18),
+        "knee {}",
+        body.legs[leg].knee
+    );
+    assert!(close(body.legs[leg].knee_rate, -0.01));
+    assert!(
+        close(body.legs[leg].hip, -0.18),
+        "hip {}",
+        body.legs[leg].hip
+    );
+    assert!(close(body.legs[leg].hip_rate, 0.01));
+    assert_eq!(body.legs[leg].goal, kept.0);
+    assert_eq!(body.legs[leg].lift, kept.1);
+    assert_eq!(body.legs[leg].turn, kept.2);
+
+    // A get-up still folds, so it writes a bend target. The release leaves
+    // the one it had.
+    let rising = Bearing {
+        off_feet: true,
+        getting_up: true,
+        ..Bearing::default()
+    };
+    let (mut body, leg, kept) = prepare(rising);
+    body.bend_legs();
+    assert_ne!(body.legs[leg].goal, kept.0);
+}
+
+/// Lying down, the original eases every stored bend correction toward zero
+/// by the standing 0.02 rad a tick, the foot's pitch among them: 0.2 at
+/// rest eases to 0.18.
+#[test]
+fn lying_down_releases_the_stored_foot_pitch() {
+    let level = step_under_the_right_foot();
+    let root = Affine3A::IDENTITY;
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let aimed: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
+    body.set_bearing(Bearing {
+        off_feet: true,
+        ..Bearing::default()
+    });
+    body.measure_balance(level.as_slice());
+    body.aim(root, aimed);
+    let leg = right_leg(&body);
+    body.legs[leg].pitch = 0.2;
+    body.legs[leg].pitch_rate = 0.0;
+    body.bend_legs();
+    assert!(
+        close(body.legs[leg].pitch, 0.18),
+        "pitch {}",
+        body.legs[leg].pitch
+    );
+}
+
+/// A shin pointing straight up pitches the foot by the engine's arc cosine
+/// of 0.5. A level shin with the contact on its ground pitches none, and
+/// a correction under 0.1 cm is none. Half scale with the contact 10 cm
+/// high uses the shorter toe. A NaN scale pitches none.
+#[test]
+fn the_foot_pitch_levels_a_20_cm_toe() {
+    let up = foot_pitch_target(0.0, 1.0, 0.0, 0.0, 1.0);
+    let cos = 0.5_f32;
+    let expect = -crate::engine_math::acos_approx(cos).copysign(-20.0);
+    assert_eq!(up.to_bits(), expect.to_bits());
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.0, 0.0, 1.0), 0.0);
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.002, 0.0, 1.0), 0.0);
+    let high = foot_pitch_target(1.0, 0.0, 0.0, 10.0, 0.5);
+    let half = -crate::engine_math::acos_approx(0.5).copysign(-10.0);
+    assert_eq!(high.to_bits(), half.to_bits());
+    assert_eq!(foot_pitch_target(1.0, 0.0, 0.0, 0.0, f32::NAN), 0.0);
+    let (angle, rate) = ease(0.0, 0.0, up, PITCH_STEP);
+    assert_eq!(angle.to_bits(), 0.01_f32.to_bits());
+    assert_eq!(rate.to_bits(), (0.01_f32 * 0.5).to_bits());
 }
 
 /// A standing body with one foot's anchor on a 15 cm step meets that step

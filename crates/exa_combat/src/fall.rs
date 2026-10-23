@@ -65,6 +65,20 @@ pub enum FallStage {
     Gone,
 }
 
+impl FallStage {
+    /// The counter death reads: 0 while steady, 1 while falling, 2 once
+    /// lost, 3 while the player's screen fades, 4 once it is gone.
+    pub fn death_stage(self) -> u32 {
+        match self {
+            Self::Steady => 0,
+            Self::Falling => 1,
+            Self::Lost => 2,
+            Self::Fading => 3,
+            Self::Gone => 4,
+        }
+    }
+}
+
 /// A character's fall, kept from tick to tick (on the body model root,
 /// with its [`crate::Fighter`]).
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -113,6 +113,123 @@ fn two_limbs_stop_at_their_spheres() {
     }
 }
 
+/// Two limbs meeting head-on at 2 m/s each strike each other: their
+/// relative travel at the hit (under the 4.8 cm a tick they were thrown
+/// at, as the solver damps it, and before the push) squared,
+/// times the cosine against the push, over 2·m + 1 of the other's contact
+/// mobility m. At 0.2 m/s each the squared travel is under 1 cm² and
+/// neither is struck.
+#[test]
+fn limbs_meeting_fast_strike_each_other() {
+    let first_touch = |speed: f32| {
+        let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
+        a.set_velocity(Vec3::X * speed);
+        b.set_velocity(Vec3::NEG_X * speed);
+        let mobility = a.parts[0].pairing.mobility;
+        let mut stages = pairs();
+        for _ in 0..400 {
+            step(&mut [&mut a, &mut b], NONE, &mut stages);
+            if let Some(t) = the_pairs(&stages).touches().first() {
+                return (*t, mobility);
+            }
+        }
+        panic!("the two balls never touched");
+    };
+    let (fast, m) = first_touch(2.0);
+    assert!(fast.travel.x > 4.0 && fast.travel.x < 4.8, "{fast:?}");
+    let impact = fast.impact().unwrap();
+    assert!((impact - fast.travel2).abs() < 0.01 * impact, "{fast:?}");
+    let each = impact / (m * 2.0 + 1.0);
+    assert_eq!(fast.struck, [Some(each), Some(each)]);
+    let (slow, _) = first_touch(0.2);
+    assert!(slow.travel2 < STRIKE_TRAVEL2, "{slow:?}");
+    assert_eq!(slow.impact(), None);
+    assert_eq!(slow.struck, [None, None]);
+}
+
+/// A limb thrown at a resting one strikes it, but not one that is placed
+/// (settling): the original's pair with exactly one placed body goes
+/// through its placed callback, which counts no hits, so neither side takes
+/// an impact.
+#[test]
+fn a_placed_body_takes_no_impact() {
+    let first_touch = |placed: bool| {
+        let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
+        if placed {
+            a.settle_for(100);
+        }
+        b.set_velocity(Vec3::NEG_X * 4.0);
+        let mut stages = pairs();
+        for _ in 0..400 {
+            step(&mut [&mut a, &mut b], NONE, &mut stages);
+            if let Some(t) = the_pairs(&stages).touches().first() {
+                return *t;
+            }
+        }
+        panic!("the two balls never touched");
+    };
+    let free = first_touch(false);
+    assert!(free.struck.iter().all(Option::is_some), "{free:?}");
+    let placed = first_touch(true);
+    assert!(placed.hits > 0, "{placed:?}");
+    assert_eq!(placed.struck, [None, None]);
+}
+
+/// A pair whose push or travel has almost no length takes the original's
+/// 0 cosine when the product of the squared lengths is at most 1e-8, which
+/// leaves no impact; a longer push gives the true cosine.
+#[test]
+fn a_degenerate_pair_cosine_is_zero() {
+    let mut t = Touch {
+        a: (entity(1), 0),
+        b: (entity(2), 0),
+        hits: 1,
+        point: Vec3::ZERO,
+        push: Vec3::ZERO,
+        deepest: 0.0,
+        travel: Vec3::new(-3.0, 0.0, 0.0),
+        travel2: 9.0,
+        struck: [None; 2],
+        hit_event: false,
+    };
+    assert_eq!(t.impact(), Some(0.0));
+    // The push in cm: 9 × 1e-10 is under 1e-8, still 0.
+    t.push = Vec3::X * 1e-7;
+    assert_eq!(t.impact(), Some(0.0));
+    // The push in cm: 9 × 1e-4 is over it, so the cosine is −1 and the
+    // impact is the travel².
+    t.push = Vec3::X * 0.01;
+    assert_eq!(t.impact(), Some(9.0));
+    t.b.0 = t.a.0;
+    assert_eq!(t.impact(), None);
+    // A hit-event pair takes no impact.
+    t.b.0 = entity(2);
+    t.hit_event = true;
+    assert_eq!(t.impact(), None);
+}
+
+/// A striker (bit 0x10000) against a hittable limb takes the hit event;
+/// two hittable limbs, or a striker against a non-hittable body, take the
+/// impact path.
+#[test]
+fn a_striker_on_a_limb_takes_the_hit_event() {
+    use crate::part::PartState;
+    let limb = PartState(PartState::LIMB | PartState::DYNAMIC);
+    let striker = PartState(PartState::HELD | PartState::STRIKE_CHAIN);
+    let held = PartState(PartState::HELD);
+    let striker_limb = PartState(PartState::LIMB | PartState::STRIKE_CHAIN);
+    assert!(hittable(limb) && hittable(held) && hittable(striker));
+    assert!(hit_event(striker, limb));
+    assert!(hit_event(limb, striker_limb));
+    assert!(!hit_event(limb, held));
+    assert!(!hit_event(
+        striker,
+        PartState(PartState::DYNAMIC | PartState::HAS_CONTACTS)
+    ));
+}
+
 /// Bodies in pairs keep the original's interleaving with the pair passes
 /// while the others run their iterations and friction together in
 /// parallel: with two balls colliding and three falling on a floor, every

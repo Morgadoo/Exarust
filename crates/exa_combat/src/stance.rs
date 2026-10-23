@@ -5,7 +5,8 @@
 //! behaviour in and out of combat mode ([`player_stance`]), a duellist by
 //! its distance to its target ([`duellist_stance`]), and a dazed fighter's
 //! body, which takes the Defence stance while its energy is more than 0.05
-//! under its most. Each change starts the stance's clip from where the
+//! under its most, unless the shock-stagger flag is set (that tick plays
+//! Rebalance instead). Each change starts the stance's clip from where the
 //! body is with the original's blend and ease: 30 frames, smooth, through
 //! the helper ([`set_stance`]); 30, linear, by the posture switch; 40 or
 //! twice the primary striker's stance blend, smooth, by a duellist
@@ -22,7 +23,9 @@ use bevy::prelude::*;
 use exa_anim::{Animator, Ease};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
+use crate::condition::StateFlags;
 use crate::fighter::failing;
+use crate::swing::{SwingState, flags};
 use crate::{Attacking, Condition, Fighter, attack};
 
 /// The looping clip a fighter returns to.
@@ -85,7 +88,7 @@ const DAZE_BLEND_FROM: f64 = 1.05;
 const DAZE_BLEND_SCALE: f64 = 300.0;
 /// Where a body's chest is (m above its feet) before its balance has
 /// measured it.
-const CHEST_HEIGHT: f32 = 1.3;
+pub const CHEST_HEIGHT: f32 = 1.3;
 /// Looping clips the posture switch leaves alone: the combat idle (the
 /// original's body tick handles it in its own branch, which skips the
 /// switch), the walk and the run (each its own branch too), and the
@@ -246,13 +249,22 @@ pub fn switches_posture(anim: &Animator, stance: Stance, balance: f32, tone: f32
         && tone >= POSTURE_TONE
 }
 
-/// One tick of combat readiness: it rises by 0.004 up to 1 while the
-/// stance and the clip are both the combat idle, and drops to 0 at once
-/// otherwise. (The original also raises it while parrying and while an
-/// attack is ready to chain; neither exists yet.)
-pub fn readiness_step(readiness: f32, stance: Stance, action: &str) -> f32 {
-    if stance == Stance::CombatIdle && action == Stance::CombatIdle.action() {
-        (readiness + READINESS_RATE).min(1.0)
+/// One tick of combat readiness. It rises by the double 0.004, capped at 1
+/// in single precision, when the stance is the combat idle or the fighter
+/// is parrying, and the clip is the combat idle, the fighter is parrying,
+/// or an attack is released. Anything else is 0.
+pub fn readiness_step(
+    readiness: f32,
+    stance: Stance,
+    action: &str,
+    released: bool,
+    parrying: bool,
+) -> f32 {
+    let rising = (stance == Stance::CombatIdle || parrying)
+        && (action == Stance::CombatIdle.action() || parrying || released);
+    if rising {
+        let next = (f64::from(readiness) + 0.004) as f32;
+        if next > 1.0 { 1.0 } else { next }
     } else {
         0.0
     }
@@ -278,10 +290,14 @@ fn take_stance(
         Option<&Condition>,
         Option<&Ragdoll>,
         Option<&Attacking>,
+        Option<&SwingState>,
+        Option<&StateFlags>,
         Has<Fallen>,
     )>,
 ) {
-    for (mut stance, mut anim, mut fighter, condition, body, attacking, fallen) in &mut bodies {
+    for (mut stance, mut anim, mut fighter, condition, body, attacking, swing, flags, fallen) in
+        &mut bodies
+    {
         let condition = condition.copied().unwrap_or_default();
         // A collapsing or dead fighter keeps nothing of its stance.
         if condition.dying() {
@@ -289,7 +305,12 @@ fn take_stance(
         }
         let parrying = fighter.as_ref().is_some_and(|f| f.parry.active);
         if let Some(f) = fighter.as_mut() {
-            let g = readiness_step(f.readiness, *stance, &anim.action);
+            // The body tick reads the attack state from the tick before,
+            // which is this swing: a released attack in the combat idle
+            // keeps the readiness rising.
+            let released =
+                condition == Condition::ATTACKING && swing.is_some_and(|s| s.has(flags::RELEASED));
+            let g = readiness_step(f.readiness, *stance, &anim.action, released, parrying);
             if f.readiness != g {
                 f.readiness = g;
             }
@@ -299,7 +320,11 @@ fn take_stance(
         if parrying {
             continue;
         }
-        if let Some(drive) = body.and_then(|b| b.drive.as_ref())
+        // The shock stagger plays Rebalance and skips this daze for the
+        // tick, including the tick that clears the flag.
+        let staggered = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
+        if !staggered
+            && let Some(drive) = body.and_then(|b| b.drive.as_ref())
             && drive.dazed()
         {
             // The daze leaves a helpless or attacking fighter's clip alone,
@@ -593,21 +618,54 @@ mod tests {
     }
 
     /// Readiness: 0.004 a tick in the combat idle (0 to 1 in 250 ticks, 3 s
-    /// at 83 Hz), 0 at once in any other stance or clip.
+    /// at 83 Hz), through a released attack in that stance, and through a
+    /// parry whatever the stance or clip. 0 at once in any other stance or
+    /// clip, and through an attack that is held.
     #[test]
-    fn readiness_rises_in_the_combat_idle_only() {
+    fn readiness_rises_in_the_combat_idle_or_a_parry() {
         let mut g = 0.0;
         for _ in 0..125 {
-            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle");
+            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle", false, false);
         }
         assert!((g - 0.5).abs() < 1e-4, "{g}");
         for _ in 0..200 {
-            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle");
+            g = readiness_step(g, Stance::CombatIdle, "Cmbt - Idle", false, false);
         }
         assert_eq!(g, 1.0);
-        assert_eq!(readiness_step(g, Stance::Defence, "Cmbt - Idle"), 0.0);
-        assert_eq!(readiness_step(g, Stance::CombatIdle, "Attack Mid"), 0.0);
-        assert_eq!(readiness_step(g, Stance::CombatIdle, "Combat Walk"), 0.0);
+        assert_eq!(
+            readiness_step(g, Stance::Defence, "Cmbt - Idle", false, false),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(g, Stance::CombatIdle, "Attack Mid", false, false),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::CombatIdle, "Attack Mid", true, false),
+            (0.5f64 + 0.004) as f32
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::Defence, "Attack Mid", true, false),
+            0.0
+        );
+        assert_eq!(
+            readiness_step(g, Stance::CombatIdle, "Combat Walk", false, false),
+            0.0
+        );
+        // Both parry terms: the parrying byte alone raises readiness from
+        // any stance and clip, and never drops it.
+        assert_eq!(
+            readiness_step(0.5, Stance::Defence, "Attack Mid", false, true),
+            (0.5f64 + 0.004) as f32
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::Idle, "Combat Walk", false, true),
+            (0.5f64 + 0.004) as f32
+        );
+        assert_eq!(
+            readiness_step(0.5, Stance::Defence, "Defence stance", false, true),
+            (0.5f64 + 0.004) as f32
+        );
     }
 
     fn ticked() -> App {
@@ -711,8 +769,35 @@ mod tests {
         }
         let g = app.world().get::<Fighter>(id).unwrap().readiness;
         assert!((g - 0.04).abs() < 1e-5, "{g}");
-        *app.world_mut().get_mut::<Condition>(id).unwrap() = Condition::DEAD;
+        // A released attack in the combat idle keeps it rising. Holding
+        // the attack, or releasing one from the guard, resets it.
+        app.world_mut().entity_mut(id).insert((
+            Condition::ATTACKING,
+            SwingState {
+                flags: flags::RELEASED,
+                ..SwingState::default()
+            },
+        ));
+        // Played once, so the posture switch does not replace it with the
+        // stance's looping clip before the next tick reads it.
+        app.world_mut()
+            .get_mut::<Animator>(id)
+            .unwrap()
+            .play_once("Attack Mid", "Cmbt - Idle");
+        app.update();
+        let g = app.world().get::<Fighter>(id).unwrap().readiness;
+        assert!((g - 0.044).abs() < 1e-5, "{g}");
+        app.world_mut().get_mut::<SwingState>(id).unwrap().flags = 0;
+        app.update();
+        assert_eq!(app.world().get::<Fighter>(id).unwrap().readiness, 0.0);
         *app.world_mut().get_mut::<Stance>(id).unwrap() = Stance::Defence;
+        app.world_mut().get_mut::<SwingState>(id).unwrap().flags = flags::RELEASED;
+        app.world_mut().get_mut::<Fighter>(id).unwrap().readiness = 0.5;
+        app.update();
+        assert_eq!(app.world().get::<Fighter>(id).unwrap().readiness, 0.0);
+        app.world_mut().get_mut::<Animator>(id).unwrap().action = "Cmbt - Idle".into();
+        *app.world_mut().get_mut::<Condition>(id).unwrap() = Condition::DEAD;
+        app.world_mut().get_mut::<Fighter>(id).unwrap().readiness = 0.04;
         app.update();
         let f = app.world().get::<Fighter>(id).unwrap();
         assert!((f.readiness - 0.04).abs() < 1e-5);

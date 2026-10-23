@@ -24,7 +24,8 @@
 //! fades as the foot rises 1 to 9 cm over its anchor; an anchored foot
 //! reaches its anchor within 5 cm; a foot not touching or lifted is only
 //! pushed up. Each foot's toe is pushed up to its floor by at most 0.5 cm
-//! an iteration (0.1 unless it stands), times S.
+//! an iteration (0.1 unless it stands), times S, then servoed sideways
+//! toward where its animated orientation places it.
 //!
 //! The rules are the original's, in its centimetres and ticks (evidence:
 //! `docs/formats/RSQ.md`, Physical body, Feet). The footwork chooses by
@@ -95,7 +96,6 @@ const PROBE_BLEND: f64 = 0.05;
 const PROBE_BLEND_MAX: f32 = 0.5;
 const PROBE_RADIUS: f32 = 5.0;
 const PROBE_RADIUS_BLEND: f32 = 10.0;
-const WALKING_RADIUS: f32 = 10.0;
 /// The stance's level follows 1 − v² by this share a tick (double).
 const LEVEL_KEEP: f64 = 0.9;
 const LEVEL_TAKE: f64 = 0.1;
@@ -147,6 +147,9 @@ const EPSILON2: f32 = 1.192_09e-7;
 /// second compared in double).
 const SOLE_STANDING: f32 = 0.5;
 const SOLE_OTHERWISE: f64 = 0.1;
+/// The sole turn closes this share of its horizontal gap a tick (× scale,
+/// in double, then narrowed).
+const SOLE_TURN_RATE: f64 = 0.4;
 
 /// A leg's friction by its foot's state: none not touching, 2.0 touching,
 /// none anchored (the anchor's pull moves it).
@@ -221,6 +224,9 @@ pub(super) struct FootDrive {
     pub scale: f32,
     /// The PD grip's gain g: scale × pin factor × leg extension.
     pub gain: f32,
+    /// The sole turn's gain before support: P × the pin factor. P is the
+    /// support pins' power, √E·T·E⁴, or 1 in a shock stagger.
+    pub sole_gain: f32,
     /// The pelvis's height (m) when the feet were measured.
     pub pelvis: f32,
 }
@@ -241,6 +247,11 @@ impl FootDrive {
             run: bearing.run,
             scale: drive.stats.scale,
             gain: drive.stats.scale * drive.stats.pin_factor * drive.balance.extension,
+            sole_gain: super::pins::power(
+                drive.energy,
+                drive.tone_target(),
+                drive.bearing.shock_stagger,
+            ) * drive.stats.pin_factor,
             pelvis: drive.balance.pelvis,
         }
     }
@@ -370,6 +381,41 @@ pub(super) fn push_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive) {
     foot.push(&leg.toe, Vec3::Y * (up / CM));
 }
 
+/// One iteration of a foot's sole turning toward its animated orientation
+/// `turn`. On its feet and with support, once the foot has a contact
+/// state, and only while its forward lies within a right angle of that
+/// orientation's forward, the horizontal gap from the toe to where the
+/// orientation places it is projected onto the orientation's side axis and
+/// closed by the velocity servo: rate 0.4 × scale, gain
+/// [`FootDrive::sole_gain`] × S. A gap under 1.19e-7 cm², or one the toe
+/// already closes by 0.05, is left. A foot with no contact state is left
+/// too: turning it while it settles keeps its box off the floor.
+pub(super) fn turn_sole(foot: &mut Part, leg: &Leg, fd: &FootDrive, turn: Quat) {
+    // Exarust's own. The original also turns a foot with no contact state.
+    if fd.off_feet || !fd.has_support || leg.state.0 == 0 {
+        return;
+    }
+    let now = foot.transform();
+    let forward = Vec3::from(now.matrix3.z_axis);
+    let ahead = forward.dot(turn * Vec3::Z);
+    if ahead.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+        return;
+    }
+    let local = foot.rest_point(&leg.toe);
+    let origin = foot.point(&foot.own_origin);
+    let aimed = origin + turn * local;
+    let flat = (aimed - foot.point(&leg.toe)).with_y(0.0);
+    let side = turn * Vec3::X;
+    let along = side * flat.dot(side);
+    let rate = (f64::from(fd.scale) * SOLE_TURN_RATE) as f32;
+    let gain = fd.sole_gain * fd.support;
+    if let Some(push) =
+        servo(cm(along), cm(foot.slip(&leg.toe)), gain, rate).filter(|p| p.is_finite())
+    {
+        foot.push(&leg.toe, push / CM);
+    }
+}
+
 /// What one walk phase does to a foot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GaitPlant {
@@ -424,7 +470,7 @@ pub(super) fn plant(
     bearing: &Bearing,
     had_support: bool,
     down: &[bool],
-    work: &Work,
+    work: &mut Work,
 ) -> bool {
     for (i, ((leg, &at), &down)) in legs.iter_mut().zip(ankles).zip(down).enumerate() {
         if bearing.walking {
@@ -511,24 +557,22 @@ pub fn walk_stagger(
             })
         })
         .collect();
-    let ended = footwork(
-        legs,
-        ankles,
-        &shifted,
-        &Work {
-            now_ms: 0.0,
-            scale,
-            crouch: 0.0,
-            reference: frame,
-            root: frame,
-            origin,
-            step_cm,
-            episode: true,
-            episode_ms: 0.0,
-            chest_to_target_cm: cm((target - frame).with_y(0.0)).length(),
-            size: 1.0,
-        },
-    );
+    let mut work = Work {
+        now_ms: 0.0,
+        scale,
+        crouch: 0.0,
+        reference: frame,
+        root: frame,
+        origin,
+        step_cm,
+        episode: true,
+        episode_ms: 0.0,
+        chest_to_target_cm: cm((target - frame).with_y(0.0)).length(),
+        size: 1.0,
+        still_at: f32::NAN,
+        still_plus: f32::NAN,
+    };
+    let ended = footwork(legs, ankles, &shifted, &mut work);
     let foot = legs
         .iter()
         .position(|leg| leg.state.has(FootState::ANCHORED));
@@ -546,7 +590,7 @@ pub fn walk_stagger(
 /// at once. Returns whether the other foot's landing ended the recovery
 /// step (it had run for more than 200 ms and the chest was within 20·scale
 /// cm of the target).
-fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Work) -> bool {
+fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mut Work) -> bool {
     for (leg, &at) in legs.iter_mut().zip(ankles) {
         if leg.state.has(FootState::REACHED) {
             leg.state.0 &= !(FootState::ANCHORED | FootState::REACHED);
@@ -555,7 +599,9 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
             leg.state.0 =
                 leg.state.0 & FootState::RAMP_SLOW | FootState::TOUCHING | FootState::STALLED;
             leg.anchor = at;
-            leg.landed_ms = work.now_ms;
+            // A stalled foot's landing opens the stand-still window at
+            // once: the later stamp is the landing time itself.
+            work.still_plus = work.now_ms;
             leg.changed_ms = work.now_ms;
         }
     }
@@ -585,6 +631,8 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
             step: work.step_cm,
             episode: work.episode,
             size: work.size,
+            still_at: work.still_at,
+            still_plus: work.still_plus,
         },
     );
     let Some(k) = chosen else {
@@ -596,7 +644,10 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
     let other = 1 - k;
     let mut ended = false;
     if legs[other].state.has(FootState::ANCHORED) {
-        legs[other].landed_ms = work.now_ms + 100.0;
+        // The landing writes the body's later stand-still stamp (now +
+        // 100 ms, which the trailing plant also writes) and the foot's own
+        // change stamp; the earlier stamp is the last step start's.
+        work.still_plus = work.now_ms + 100.0;
         legs[other].changed_ms = work.now_ms;
         if !legs[other].state.has(FootState::REACHED) {
             legs[other].anchor = ankles[other];
@@ -612,7 +663,9 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &Wo
         legs[k].state.0 =
             legs[k].state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
         legs[k].approach = 1.0;
-        legs[k].started_ms = work.now_ms;
+        // A foot that starts moving stamps the body's earlier stand-still
+        // stamp.
+        work.still_at = work.now_ms;
     }
     legs[k].anchor = anchor;
     ended
@@ -627,14 +680,14 @@ impl Ragdoll {
     /// ones, and the first when none is under 3.4e38 or all are NaN) is
     /// anchored at its stance spot under the frame, keeping its height,
     /// and every other foot lands where it is (whether or not it was
-    /// anchored). Both keep their slow ramp bit. (The original also stamps
-    /// two stand-still timers, the clock plus 100 ms and the clock; they
-    /// are not modelled.)
+    /// anchored). Both keep their slow ramp bit. It stamps the step clock
+    /// the next score reads (that clock advances before the score) and
+    /// that clock plus 100 ms; a footwork landing writes the same pair.
     pub fn plant_trailing_foot(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
         } = self;
-        let Some(drive) = drive.as_ref() else {
+        let Some(drive) = drive.as_mut() else {
             return;
         };
         let Some(frame) = drive.frame else {
@@ -643,6 +696,9 @@ impl Ragdoll {
         if legs.is_empty() || drive.targets.len() != parts.len() {
             return;
         }
+        let now = drive.steps.clock.saturating_add(1) as f32 * steps::MS_PER_TICK;
+        drive.steps.still_at = now;
+        drive.steps.still_plus = now + 100.0;
         let forward = Vec3::from(frame.matrix3.z_axis);
         // A strict compare against the running smallest: a NaN never wins.
         let mut smallest = REAR_START;
@@ -695,8 +751,6 @@ fn foot_view(leg: &Leg, ankle: Vec3) -> FootView {
         point: cm(ankle),
         leg: cm(leg.length),
         changed_ms: leg.changed_ms,
-        landed_ms: leg.landed_ms,
-        started_ms: leg.started_ms,
     }
 }
 
@@ -710,18 +764,63 @@ pub(super) fn probe_blend(leg: &Leg) -> f32 {
     }
 }
 
-/// The radius (cm) of a foot's ground probe: a walking foot's 10 cm (its
-/// gait's bump is not ported), otherwise 5 cm plus 10 times its blend.
-pub(super) fn probe_radius(walking: bool, blend: f32) -> f32 {
-    if walking {
-        WALKING_RADIUS
-    } else {
-        PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
+/// The radius (cm) of a foot's ground probe when the body is not walking:
+/// 5 cm plus 10 times its blend. A walking foot uses [`gait_probe`].
+pub(super) fn probe_radius(blend: f32) -> f32 {
+    PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
+}
+
+/// One walking foot's ground probe, from the leg's index and the clip
+/// progress. The phase is the fraction of 2 − 0.5·index − progress
+/// (truncating toward zero). From it, s = max(0, 16p² − 64p⁴) and the
+/// bump is (2 − s)·s: the sphere is 10 + 10·bump cm (20 at the peak). The
+/// probe sways s·(36·scale + 8·speed) cm along the facing, the other way
+/// when walking backwards. A ground higher than the smoothed one is taken
+/// at once; a lower one is taken by the fall share
+/// 1 − 0.95·(2 − r)·r, r = 0.12·max(0, 24p − 2048p⁸), the two products
+/// in double precision and narrowed once.
+pub(super) fn gait_probe(
+    leg: usize,
+    progress: f32,
+    scale: f32,
+    speed: f32,
+    backwards: bool,
+) -> GaitProbe {
+    let half = (leg as f32) * 0.5;
+    let phase = super::locomotion::fraction((2.0 - half) - progress);
+    let p2 = phase * phase;
+    let four = p2 * 4.0;
+    let fourth = four * four;
+    let raised_raw = phase * 24.0 - (fourth * fourth) * 8.0;
+    let raised_raw = if raised_raw > 0.0 { raised_raw } else { 0.0 };
+    let raised = (f64::from(raised_raw) * 0.12) as f32;
+    let shaped = (2.0 - raised) * raised;
+    let fall = (1.0 - f64::from(shaped) * 0.95) as f32;
+    let wide_raw = p2 * 16.0 - fourth * 4.0;
+    let share = (if wide_raw > 0.0 { wide_raw } else { 0.0 }) * 1.0;
+    let bump = (2.0 - share) * share;
+    let mut reach = speed * 8.0 + 36.0 * scale;
+    if backwards {
+        reach = -reach;
+    }
+    GaitProbe {
+        radius: 10.0 * bump + 10.0,
+        fall,
+        sway: reach * share,
     }
 }
 
+/// A walking foot's ground probe: the sphere's radius (cm), how much of a
+/// lower ground it takes this tick, and the sway along the facing (cm).
+pub(super) struct GaitProbe {
+    pub radius: f32,
+    pub fall: f32,
+    pub sway: f32,
+}
+
 /// A foot's smoothed ground (cm) from the last one and the ground found
-/// now: it rises at once and falls by `fall` (1 outside walking).
+/// now: it rises at once and falls by `fall` (1 outside a walk; a walk's
+/// is the gait's).
 pub(super) fn smooth_ground(last: f32, found: f32, fall: f32) -> f32 {
     if last <= found {
         found

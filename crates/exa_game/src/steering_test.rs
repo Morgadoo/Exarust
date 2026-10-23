@@ -564,23 +564,78 @@ fn the_spawn_snaps_on_the_third_tick() {
     assert_eq!(s.snap(Condition::NORMAL, at, &nearest), None);
 }
 
-/// A footwork step's target: a step's length along its keys, clamped by
-/// the line walk; within 20 cm none.
+/// A soft stop pulls a goal in when its squared distance, in centimetres
+/// and in three dimensions, is over (8·v + 20)². At speed 0 that reach is
+/// 20 cm: 10 cm ahead and 30 cm up is pulled to 20 cm along the facing at
+/// the standing height; 20 cm ahead on the level, and 10 cm ahead on the
+/// level, stay; a NaN component stays.
 #[test]
-fn a_step_target_is_clamped_and_taken_beyond_20_cm() {
+fn a_soft_stop_measures_the_goal_in_three_dimensions() {
+    let (_s, mut req, body) = standing();
+    let at = Vec3::ZERO;
+    req.goal = Vec3::new(0.0, 0.30, 0.10);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.20)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(0.0, 0.0, 0.20);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.20)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(0.0, 0.0, 0.10);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(
+        (req.goal - Vec3::new(0.0, 0.0, 0.10)).length() < 1e-6,
+        "{:?}",
+        req.goal
+    );
+    req.goal = Vec3::new(f32::NAN, 0.0, 1.0);
+    soft_stop(&mut req, &body, at, &open);
+    assert!(req.goal.x.is_nan());
+}
+
+/// A footwork step's target: a step's length along its keys, clamped by
+/// the line walk. On the level, 20 cm is 400 cm² and is not taken; 25 cm
+/// is. A point 15 cm ahead and 15 cm up is 450 cm² and is taken; 15 cm
+/// ahead on the level is not. An unordered distance is not taken.
+#[test]
+fn a_step_target_is_clamped_and_taken_past_400_cm2() {
     let mut s = Steering::default();
     let wall =
         |near: f32| move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
-    assert_eq!(s.step_target(Vec3::ZERO, Vec3::X, 0.8, &wall(0.2)), None);
-    let t = s
-        .step_target(Vec3::ZERO, Vec3::X, 0.8, &wall(0.25))
-        .unwrap();
+    let target = Vec3::X * 0.8;
+    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &wall(0.2)), None);
+    let t = s.step_target(Vec3::ZERO, 0.0, target, &wall(0.25)).unwrap();
     assert!((t - Vec3::X * 0.25).length() < 1e-6);
-    assert_eq!(
-        s.step_target(Vec3::ZERO, Vec3::X, 0.8, &open),
-        Some(Vec3::X * 0.8)
-    );
+    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &open), Some(target));
     assert_eq!(s.line.unwrap().asked, Asked::Step);
+    let raised = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.15, 0.0), true);
+    assert_eq!(
+        s.step_target(Vec3::ZERO, 0.0, target, &raised),
+        Some(Vec3::new(0.15, 0.15, 0.0))
+    );
+    let flat = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.0, 0.0), true);
+    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &flat), None);
+    let unordered = |_: Vec3, _: Vec3| (Vec3::new(1.0, f32::NAN, 0.0), false);
+    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &unordered), None);
+    // The line walk starts at the chest's x/z on the ground, and the 400
+    // cm² gate is measured from the chest.
+    let tells = std::cell::RefCell::new(Vec::new());
+    let record = |from: Vec3, to: Vec3| {
+        tells.borrow_mut().push((from, to));
+        (to, false)
+    };
+    let chest = Vec3::new(0.0, 1.5, 0.0);
+    assert_eq!(
+        s.step_target(chest, 0.0, chest + Vec3::X * 0.8, &record),
+        Some(chest + Vec3::X * 0.8)
+    );
+    assert_eq!(*tells.borrow(), vec![(Vec3::ZERO, chest + Vec3::X * 0.8)]);
 }
 
 /// The combat right-button walk goes toward the cursor with the fast turn,

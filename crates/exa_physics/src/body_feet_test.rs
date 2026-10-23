@@ -80,6 +80,7 @@ fn full() -> FootDrive {
         run: 0.0,
         scale: 1.0,
         gain: 1.25,
+        sole_gain: 1.25,
         pelvis: 1.2,
     }
 }
@@ -373,6 +374,121 @@ fn the_toe_is_held_over_its_floor() {
     assert_eq!(rise(standing, 1.0, 0.03, unsupported), 0.0);
 }
 
+/// After the sole push, a foot whose forward lies within a right angle of
+/// its animated forward is servoed so its toe meets that orientation: the
+/// horizontal gap, projected on the orientation's side axis, closes at
+/// rate 0.4×scale with gain P×pin factor×S. Two centimetres along that
+/// axis, unmoved, S = 1, P = 1 and pin factor 1.25, is a 1 cm push. A foot
+/// turned past a right angle, one already closing 0.05 of the gap, and one
+/// off its feet or without support, are left.
+#[test]
+fn the_sole_yaws_toward_its_animated_side() {
+    let (body, _) = footed(Vec3::ZERO);
+    let leg = &body.legs[0];
+    let foot = &body.parts[leg.foot.unwrap()];
+    let local = foot.rest_point(&leg.toe);
+    let w2: f32 = leg.toe.iter().map(|w| w * w).sum();
+    let rotation = foot.transform().to_scale_rotation_translation().1;
+    // A local yaw that swings the toe 2 cm along the animated side axis.
+    let theta = (0.02 / local.z).asin();
+    let turn = rotation * Quat::from_rotation_y(theta);
+    let toe = foot.point(&leg.toe);
+    let origin = foot.point(&foot.own_origin);
+    let flat = (origin + turn * local - toe).with_y(0.0);
+    let side = turn * Vec3::X;
+    let along = side * flat.dot(side);
+    assert!(
+        close(along.length() * CM, 2.0, 1e-3),
+        "the gap is {:.4} cm",
+        along.length() * CM
+    );
+    let moved = |foot: &super::super::Part| {
+        let now = foot.point(&leg.toe);
+        (now - toe) / w2 * CM
+    };
+    let mut turned = foot.clone();
+    let mut standing_leg = leg.clone();
+    standing_leg.state = FootState(FootState::TOUCHING);
+    turn_sole(&mut turned, &standing_leg, &full(), turn);
+    let push = moved(&turned);
+    let expected = along.normalize() * 1.0;
+    assert!(
+        close(push.x, expected.x, 1e-3)
+            && close(push.y, expected.y, 1e-3)
+            && close(push.z, expected.z, 1e-3),
+        "pushed {push}, expected {expected}"
+    );
+    // Already closing the whole gap: the servo leaves it.
+    let mut closing = foot.clone();
+    closing.push(&[1.0; 4], along);
+    let held = closing.point(&leg.toe);
+    turn_sole(&mut closing, &standing_leg, &full(), turn);
+    assert_eq!(closing.point(&leg.toe), held);
+    // Past a right angle the foot keeps its pose.
+    let mut flipped = foot.clone();
+    turn_sole(
+        &mut flipped,
+        &standing_leg,
+        &full(),
+        rotation * Quat::from_rotation_y(std::f32::consts::PI),
+    );
+    assert_eq!(flipped.point(&leg.toe), toe);
+    let off = FootDrive {
+        off_feet: true,
+        ..full()
+    };
+    let mut untouched = foot.clone();
+    turn_sole(&mut untouched, &standing_leg, &off, turn);
+    assert_eq!(untouched.point(&leg.toe), toe);
+    let unsupported = FootDrive {
+        has_support: false,
+        ..full()
+    };
+    turn_sole(&mut untouched, &standing_leg, &unsupported, turn);
+    assert_eq!(untouched.point(&leg.toe), toe);
+    // No contact state yet: the settling foot is left where it is.
+    let mut unclassified = foot.clone();
+    turn_sole(&mut unclassified, leg, &full(), turn);
+    assert_eq!(unclassified.point(&leg.toe), toe);
+}
+
+/// A footwork landing writes the body's later stand-still stamp (the
+/// landing time plus 100 ms, as the trailing plant does) and leaves the
+/// earlier one, which the moving foot's start writes; the landed foot's
+/// change stamp is the landing time.
+#[test]
+fn a_footwork_landing_stamps_the_stand_still_clocks() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    let spots = ankles.map(|a| Some(a + Vec3::new(0.0, 0.0, 0.3)));
+    for (leg, ankle) in body.legs.iter_mut().zip(ankles) {
+        leg.state = FootState(FootState::ANCHORED | FootState::TOUCHING);
+        leg.anchor = ankle;
+        leg.approach = 1.0;
+    }
+    // Foot 1's anchor is 10 cm off, so the score moves foot 0 and foot 1
+    // (anchored) is the one that lands.
+    body.legs[1].anchor = ankles[1] + Vec3::new(0.0, 0.0, -0.1);
+    let mut work = super::super::steps::Work::plain(1.0);
+    work.now_ms = 500.0;
+    work.still_at = 120.0;
+    plant(
+        &mut body.legs,
+        &ankles,
+        &spots,
+        &Bearing::default(),
+        true,
+        &[true; 2],
+        &mut work,
+    );
+    assert_eq!(work.still_plus, 600.0);
+    // Foot 0 was already anchored, so no foot started: the earlier stamp
+    // stays.
+    assert_eq!(work.still_at, 120.0);
+    // Ties keep the earlier foot, so foot 1 is the one that landed.
+    assert_eq!(body.legs[1].changed_ms, 500.0);
+}
+
 /// Before the feet are measured: a body that is not walking plants a foot
 /// that does not touch where it is, once it meets the level. Walking, each
 /// foot plants or lifts by its phase. Standing, lying down no foot touches; getting up its feet
@@ -394,6 +510,7 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
                     bearing: Bearing,
                     had_support: bool,
                     down: [bool; 2]| {
+        let mut work = super::super::steps::Work::plain(1.0);
         plant(
             legs,
             &ankles,
@@ -401,7 +518,7 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
             &bearing,
             had_support,
             &down,
-            &super::super::steps::Work::plain(1.0),
+            &mut work,
         );
         legs.iter().map(|l| (l.state, l.anchor)).collect::<Vec<_>>()
     };
@@ -503,8 +620,7 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
 /// The smoothed ground rises at once and falls by its share (at once
 /// outside the walk); an anchor sits on it plus the sole height, at most
 /// 1 m over the ankle; an anchored foot's probe moves 0.05 a tick toward
-/// its anchor up to 0.5, its sphere 5 cm plus 10 times that (10 cm
-/// walking).
+/// its anchor up to 0.5, its sphere 5 cm plus 10 times that.
 #[test]
 fn anchors_sit_on_the_smoothed_ground() {
     assert_eq!(smooth_ground(0.0, 5.0, 0.05), 5.0);
@@ -520,9 +636,33 @@ fn anchors_sit_on_the_smoothed_ground() {
     assert_eq!(probe_blend(leg), 0.5);
     leg.blend = 0.1;
     assert!(close(probe_blend(leg), 0.15, 1e-6));
-    assert_eq!(probe_radius(false, 0.0), 5.0);
-    assert_eq!(probe_radius(false, 0.5), 10.0);
-    assert_eq!(probe_radius(true, 0.5), 10.0);
+    assert_eq!(probe_radius(0.0), 5.0);
+    assert_eq!(probe_radius(0.5), 10.0);
+}
+
+/// A walking foot's phase is the fraction of 2 − 0.5·leg − progress. At
+/// the bump's peak the sphere is 20 cm and the sway is
+/// (36·scale + 8·speed) cm (the other way backwards). The fall share is
+/// one double product narrowed once: at phase 0.5 it is 0.30688005685806274.
+#[test]
+fn a_walking_probe_widens_and_sways_with_the_gait() {
+    let peak = 0.125f32.sqrt();
+    let wide = gait_probe(0, 2.0 - peak, 1.0, 1.5, false);
+    assert_eq!(wide.radius, 20.0);
+    assert_eq!(wide.sway, 48.0);
+    assert_eq!(wide.fall.to_bits(), 0x3d53_9678);
+    let back = gait_probe(0, 2.0 - peak, 1.0, 1.5, true);
+    assert_eq!(back.sway, -48.0);
+    // Phase 0.5 (the second leg at progress 0): the sphere stays 10 cm
+    // and the sway is 0, but the ground no longer falls at once.
+    let half = gait_probe(1, 0.0, 1.0, 0.0, false);
+    assert_eq!((half.radius, half.sway), (10.0, 0.0));
+    assert_eq!(half.fall.to_bits(), 0x3e9d_1f62);
+    // A phase of 0, and a NaN progress, keep the plain 10 cm sphere.
+    let still = gait_probe(0, 0.0, 1.0, 4.0, false);
+    assert_eq!((still.radius, still.sway, still.fall), (10.0, 0.0, 1.0));
+    let nan = gait_probe(0, f32::NAN, 1.0, 1.0, false);
+    assert_eq!((nan.radius, nan.sway, nan.fall), (10.0, 0.0, 1.0));
 }
 
 /// The stance's level keeps 0.9 of itself and takes 0.1 of 1 − v², v the
@@ -820,6 +960,9 @@ fn the_trailing_foot_is_planted_on_leaving_the_walk() {
         *x -= Vec3::Z * 0.2;
     }
     body.plant_trailing_foot();
+    let tick = 1000.0 / 83.0;
+    assert!(close(drive(&body).steps.still_at, tick, 1e-4));
+    assert!(close(drive(&body).steps.still_plus, tick + 100.0, 1e-4));
     assert!(body.legs[1].state.has(FootState::ANCHORED));
     assert!(body.legs[1].state.has(FootState::RAMP_SLOW));
     assert!(body.legs[0].state.has(FootState::TOUCHING));

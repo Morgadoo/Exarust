@@ -405,6 +405,7 @@ fn posed(body: Ragdoll, action: &str, branch: Branch, condition: Condition) -> (
             body,
             Animator::new("Default", action),
             condition,
+            Stance::default(),
             PostureBranch(branch),
             StateFlags::NONE,
             Transform::default(),
@@ -573,8 +574,9 @@ fn a_body_that_rolls_over_changes_its_get_up() {
     assert_eq!(world.get::<Animator>(id).unwrap().action, "Get up");
 }
 
-/// Getting up (by last tick's condition), its energy gains 0.01 × (1 −
-/// progress) in the readiness stage: 0.005 halfway through Get up.
+/// Getting up (by last tick's condition), its energy gains the 0.005
+/// recovery and 0.01 × (1 − progress) in one double sum: 0.51 halfway
+/// through Get up. Standing, the next tick adds only the 0.005.
 #[test]
 fn getting_up_energy_rises_faster() {
     let mut body = pelvis(Quat::IDENTITY);
@@ -589,7 +591,8 @@ fn getting_up_energy_rises_faster() {
         .as_ref()
         .unwrap()
         .energy;
-    assert!((energy - 0.505).abs() < 1e-6, "{energy}");
+    let halfway = exa_physics::body::recover_energy(0.5, 1.0, true, 0.5);
+    assert_eq!(energy, halfway);
     *world.get_mut::<Condition>(id).unwrap() = Condition::NORMAL;
     world.run_system_once(recover_rising).unwrap();
     let again = world
@@ -599,5 +602,117 @@ fn getting_up_energy_rises_faster() {
         .as_ref()
         .unwrap()
         .energy;
-    assert_eq!(again, energy);
+    assert_eq!(
+        again,
+        exa_physics::body::recover_energy(halfway, 1.0, false, 0.5)
+    );
+}
+
+/// After the recovery, a shock stagger replaces the energy with the most
+/// minus 0.5 and starts Rebalance. The same clock as the next shock keeps
+/// the flag; a clock past it clears the flag and does not restart Rebalance.
+#[test]
+fn a_shock_stagger_pins_energy_after_the_recovery() {
+    let mut body = pelvis(Quat::IDENTITY);
+    body.drive.as_mut().unwrap().energy = 1.0;
+    let (mut world, id) = posed(body, "Idle", Branch::Standing, Condition::NORMAL);
+    world.get_mut::<StateFlags>(id).unwrap().0 = StateFlags::SHOCK_STAGGER;
+    world.entity_mut(id).insert(ShockReady(500));
+    world.insert_resource(BodyTicks(0));
+    world.run_system_once(recover_rising).unwrap();
+    world.run_system_once(pin_shock_stagger).unwrap();
+    let energy = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .energy;
+    let anim = world.get::<Animator>(id).unwrap();
+    assert_eq!(energy.to_bits(), 0x3f00_0000);
+    assert_eq!(
+        (anim.action.as_str(), anim.blend, anim.looping, anim.ease),
+        ("Rebalance", 0.0, true, Ease::Linear)
+    );
+    assert_eq!(*world.get::<Stance>(id).unwrap(), Stance::Defence);
+    assert_eq!(
+        world.get::<StateFlags>(id).unwrap().0,
+        StateFlags::SHOCK_STAGGER
+    );
+    // Twelve ticks are 144 ms: still before 500, and Rebalance is not restarted.
+    let started = world.get::<Animator>(id).unwrap().time;
+    world.insert_resource(BodyTicks(12));
+    world.get_mut::<Animator>(id).unwrap().time = 4.0;
+    world.run_system_once(pin_shock_stagger).unwrap();
+    assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
+    assert_eq!(started, 0.0);
+    world.insert_resource(BodyTicks(42));
+    world.run_system_once(pin_shock_stagger).unwrap();
+    assert_eq!(world.get::<StateFlags>(id).unwrap().0, 0);
+    assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
+}
+
+/// The bearing's parry flag is the one the previous tick's attack stage
+/// left: the posture stage runs before this tick's parry check, so the arm
+/// writes and the clip rate of this tick read last tick's value.
+#[test]
+fn the_bearing_reads_last_ticks_parry_flag() {
+    let body = pelvis(Quat::IDENTITY);
+    let (mut world, id) = posed(body, "Idle", Branch::Standing, Condition::NORMAL);
+    let parrying = |w: &World| {
+        w.get::<Ragdoll>(id)
+            .unwrap()
+            .drive
+            .as_ref()
+            .unwrap()
+            .bearing
+            .parrying
+    };
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    assert!(!parrying(&world));
+    let mut fighter = exa_combat::Fighter::default();
+    fighter.parry.active = true;
+    world.entity_mut(id).insert(fighter);
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    assert!(parrying(&world));
+}
+
+/// The shock-stagger bit reaches the pins even beside another flag. Exactly
+/// that flag alone is what makes the stance factor 1.
+#[test]
+fn a_shock_stagger_bit_reaches_the_pins() {
+    let body = pelvis(Quat::IDENTITY);
+    let (mut world, id) = posed(body, "Idle", Branch::Standing, Condition::NORMAL);
+    world.get_mut::<StateFlags>(id).unwrap().0 =
+        StateFlags::SHOCK_STAGGER | StateFlags::TURNS_BLOWS;
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    let bearing = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .bearing;
+    assert!(bearing.shock_stagger);
+    assert!(!bearing.full_stance);
+
+    world.get_mut::<StateFlags>(id).unwrap().0 = StateFlags::SHOCK_STAGGER;
+    world
+        .run_system_once(crate::stages::posture::take_bearing)
+        .unwrap();
+    let bearing = world
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .bearing;
+    assert!(bearing.shock_stagger);
+    assert!(bearing.full_stance);
 }

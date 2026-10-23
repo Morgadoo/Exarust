@@ -757,7 +757,7 @@ fn held_items_keep_their_motion_and_static_only_flags() {
 }
 
 /// The class word writer gives every part the word and each part's first
-/// child `word | 0x30`; the bite grab raises layer bit 0x40 on a part, its
+/// child `word | 0x30`. The bite grab raises layer bit 0x40 on a part, its
 /// parent and its children; a state flag reaches every part.
 #[test]
 fn class_grab_and_state_words_reach_their_parts() {
@@ -778,6 +778,11 @@ fn class_grab_and_state_words_reach_their_parts() {
         })
         .collect();
     let mut body = Ragdoll::new(&setup);
+    body.set_class_word(0);
+    assert_eq!(body.parts[0].class_word, 0);
+    assert_eq!(body.parts[1].class_word, 0x30);
+    assert_eq!(body.parts[2].class_word, 0x30);
+    assert_eq!(body.parts[3].class_word, 0);
     body.set_class_word(0x400);
     assert_eq!(body.parts[0].class_word, 0x400);
     assert_eq!(body.parts[1].class_word, 0x430);
@@ -789,6 +794,46 @@ fn class_grab_and_state_words_reach_their_parts() {
     assert_eq!(body.parts[3].class_word, 0x400);
     body.raise_state_flag(4);
     assert!(body.parts.iter().all(|p| p.state_word & 4 != 0));
+}
+
+/// The death pass walks the lower legs only: each lower leg's first child
+/// (the foot) loses the strike-chain bit and takes the level word 0. A
+/// part that is not a lower leg's first child keeps the bit, and so does a
+/// first child of a part that carries no foot contact.
+#[test]
+fn death_clears_only_the_lower_legs_first_children() {
+    let part = |bone, parent, foot: Option<Vec3>| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[
+        part(1, None, None),
+        part(3, Some(0), Some(Vec3::new(0.0, -0.4, 0.0))),
+        part(4, Some(1), None),
+        part(5, None, None),
+        part(6, Some(3), None),
+    ]);
+    let chain = crate::part::PartState::STRIKE_CHAIN;
+    for p in &mut body.parts {
+        p.state.0 |= chain;
+    }
+    body.parts[2].no_level = true;
+    body.clear_death_strikes();
+    assert_eq!(body.parts[0].state.0 & chain, chain);
+    assert_eq!(body.parts[1].state.0 & chain, chain);
+    assert_eq!(body.parts[2].state.0 & chain, 0);
+    assert!(!body.parts[2].no_level);
+    assert_eq!(body.parts[3].state.0 & chain, chain);
+    assert_eq!(body.parts[4].state.0 & chain, chain);
 }
 
 /// A push at a point moves the particles by its weight there, scaled by the

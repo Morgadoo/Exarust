@@ -22,12 +22,13 @@
 //!   radius grows `0.0015·swell` (in double precision), the trail head takes
 //!   the chunk's place and each older slot eases a tenth of the way to the
 //!   next one's place 9 cm back along the aim; the caster pays the drain
-//!   (running out fizzles the blast) and the charge rises by the rate. Past
+//!   (running out fizzles the blast and ends the cast: its hook and power id
+//!   go) and the charge rises by the rate. Past
 //!   1 the nearby characters are alerted, the release directions are set
 //!   (each direction pushed `forward` along the frame's z, rotated into the
 //!   frame and normalised; its weight `0.1·z + 0.9` of the unpushed z, in
 //!   double precision), the
-//!   cast hook is cleared, the release sound plays at pitch
+//!   cast hook and the caster's power id are cleared, the release sound plays at pitch
 //!   `0.9 + 0.2·random`, and "PowerUsed" is raised.
 //! - **Fizzle** (state −1): the chunks still follow the hand and grow
 //!   another 0.0015; the charge falls twice the rate, and below 0 every life
@@ -389,11 +390,14 @@ impl Blast {
         }
     }
 
-    /// One tick. `caster` pays the drain; `random` draws the release pitch.
+    /// One tick. `caster` pays the drain; a shortfall fizzles the blast
+    /// only while `hooked` (the caster's hook is the blast's); `random`
+    /// draws the release pitch.
     pub fn tick(
         &mut self,
         view: &BlastView,
         caster: &mut CastBody,
+        hooked: bool,
         random: &mut Mt19937,
     ) -> BlastEvents {
         let mut events = BlastEvents::default();
@@ -432,9 +436,14 @@ impl Blast {
                     events.removed = true;
                 }
             } else {
+                // The spend always pays; a shortfall calls the caster's hook,
+                // which fizzles the blast only while it is the blast's, and
+                // ends the cast.
                 if spend_tick(caster, self.drain) {
-                    self.release();
-                    caster.cast_hook = None;
+                    if hooked {
+                        self.release();
+                    }
+                    crate::thaum::casting::end_cast(caster);
                 }
                 self.charge += self.rate;
                 if 1.0 < self.charge {
@@ -442,7 +451,10 @@ impl Blast {
                     if self.state == CHARGING {
                         self.state = THROWN;
                         self.flags |= THROWN_FLAG;
+                        // The throw clears the hook and the power id itself,
+                        // not through the cast end: the cast motion plays on.
                         caster.cast_hook = None;
+                        caster.casting = 0;
                         self.set_release_directions();
                         events.released = Some((random.unit() as f32 as f64 * 0.2 + 0.9) as f32);
                     }
@@ -903,18 +915,23 @@ mod tests {
     fn charging_follows_the_hand_and_releases_past_one() {
         let mut b = Blast::new(BLAST_SETUP, 0.1, 1300, &view(), &mut Mt19937::new(1));
         let mut caster = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook::NEVER_KEEPS),
+            casting: 0x201,
+            condition: crate::thaum::casting::CASTING,
             ..CastBody::default()
         };
         let mut moved = view();
         moved.hand.x += 10.0;
-        let events = b.tick(&moved, &mut caster, &mut Mt19937::new(2));
+        let events = b.tick(&moved, &mut caster, true, &mut Mt19937::new(2));
         // 1.3 s of charge at 5/6 a second passes 1 at once.
         let pitch = events.released.expect("a release");
         assert!((0.9..=1.1).contains(&pitch));
         assert!(events.power_used);
         assert_eq!((b.state, b.charge, b.flags), (THROWN, 0.0, THROWN_FLAG));
-        assert_eq!(caster.cast_hook, None);
+        assert_eq!((caster.cast_hook, caster.casting), (None, 0));
+        // The throw is not the cast end: the cast motion plays on.
+        assert_eq!(caster.condition, crate::thaum::casting::CASTING);
+        assert!(!caster.stance_return);
         assert_eq!(caster.spent, b.drain);
         let c = &b.chunks[0];
         assert!((c.at.x - 10.0).abs() < 1e-2);
@@ -924,17 +941,33 @@ mod tests {
     }
 
     #[test]
+    fn a_blast_whose_motion_was_refused_does_not_fizzle() {
+        let mut b = blast();
+        let mut caster = CastBody {
+            focus: 0.0,
+            ..CastBody::default()
+        };
+        b.tick(&view(), &mut caster, false, &mut Mt19937::new(1));
+        assert_eq!(b.state, CHARGING);
+        assert_eq!((caster.cast_hook, caster.casting), (None, 0));
+        // The drain is paid all the same.
+        assert_eq!(caster.spent, b.drain);
+    }
+
+    #[test]
     fn running_out_of_focus_fizzles() {
         let mut b = blast();
         let mut caster = CastBody {
             focus: 0.0,
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook::NEVER_KEEPS),
+            casting: 0x201,
             ..CastBody::default()
         };
-        b.tick(&view(), &mut caster, &mut Mt19937::new(1));
+        b.tick(&view(), &mut caster, true, &mut Mt19937::new(1));
         assert_eq!(b.state, FIZZLING);
+        assert_eq!((caster.cast_hook, caster.casting), (None, 0));
         b.charge = 0.01;
-        let events = b.tick(&view(), &mut caster, &mut Mt19937::new(1));
+        let events = b.tick(&view(), &mut caster, true, &mut Mt19937::new(1));
         assert!(events.removed);
         assert_eq!(b.state, FIZZLED);
         assert!(b.lives.iter().all(|l| l.ticks == 0));
@@ -948,7 +981,12 @@ mod tests {
         b.set_release_directions();
         let start = b.chunks[0].at;
         let weight = b.chunks[0].weight;
-        b.tick(&view(), &mut CastBody::default(), &mut Mt19937::new(1));
+        b.tick(
+            &view(),
+            &mut CastBody::default(),
+            false,
+            &mut Mt19937::new(1),
+        );
         let c = &b.chunks[0];
         // No move yet: the push alone, 2.4·0.25·weight along its direction,
         // times 0.96.
@@ -971,7 +1009,12 @@ mod tests {
         b.charge = 2.0;
         b.chunks[0].previous = b.chunks[0].at - Vec3::new(10.0, 0.0, 0.0);
         b.chunks[0].wear = CONTACT_WEAR;
-        b.tick(&view(), &mut CastBody::default(), &mut Mt19937::new(1));
+        b.tick(
+            &view(),
+            &mut CastBody::default(),
+            false,
+            &mut Mt19937::new(1),
+        );
         // A move of 10 (before the retention): 100·0.015 = 1.5 → 2 ticks,
         // and the tick.
         assert_eq!(b.lives[0].ticks, 55);
@@ -996,7 +1039,12 @@ mod tests {
     #[test]
     fn the_bounds_take_the_margin() {
         let mut b = Blast::new(BOLT_SETUP, 0.1, 12, &view(), &mut Mt19937::new(1));
-        b.tick(&view(), &mut CastBody::default(), &mut Mt19937::new(1));
+        b.tick(
+            &view(),
+            &mut CastBody::default(),
+            false,
+            &mut Mt19937::new(1),
+        );
         let low = b
             .chunks
             .iter()

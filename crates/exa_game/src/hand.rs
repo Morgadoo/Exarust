@@ -10,7 +10,12 @@
 //! Ctrl is held or the hand already holds something), while the point under
 //! the cursor is out of reach, or while the player is down. Otherwise the
 //! pick at the pressed point is named ([`crate::pick::classify`]):
-//! - a prop or item the hand can move, not while the player locomotes: it
+//! - a prop or item the hand can move, not while the player locomotes:
+//!   while the player's kinesis waits for its pick, the lift hands the prop
+//!   to the kinesis instead (`crate::thaum::kinesis_live`). While it waits
+//!   the kinesis pick alone answers the reach ([`press_out_of_reach`]): a
+//!   prop the hand can move is in reach wherever it is, anything else out
+//!   of it. Otherwise it
 //!   holds an object (the standing quarter turns stop) and, with Ctrl held,
 //!   drags it: a grab on the part the pick hit, at the hit point, strength
 //!   1, in the tick's first two passes. Without Ctrl the original lifts it
@@ -66,6 +71,7 @@ use exa_ui::ScriptedPointer;
 use crate::bindings::{Action, Bindings};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
+use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -283,6 +289,25 @@ pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
     true
 }
 
+/// Whether a press finds its point out of reach. While the player's
+/// kinesis waits for its pick the original asks the kinesis's pick callback
+/// instead of measuring: the point is in reach exactly when the kinesis can
+/// take it, wherever it is. Otherwise the hand's own measure (`measured`)
+/// answers. [inf: the callback tests the cursor ray against the scene's
+/// kinesis nodes; Exarust takes a prop the hand can move.]
+pub fn press_out_of_reach(
+    measured: bool,
+    waiting: bool,
+    hit: Option<Hit>,
+    named: Option<Pick>,
+) -> bool {
+    if waiting {
+        !(matches!(hit, Some(Hit::Prop { .. })) && named.is_some_and(Pick::movable))
+    } else {
+        measured
+    }
+}
+
 /// Whether the frame measures the reach: in combat mode only with Ctrl
 /// held or something held, whatever the right button does; outside it while
 /// the right button is not walking to the cursor (it shows chevrons then).
@@ -335,7 +360,7 @@ fn ray_sphere(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, max: f32) -> O
 
 /// The nearest character sphere along the ray: the distance, the body, the
 /// part and whether it is dead.
-fn character_hit<'a>(
+pub(crate) fn character_hit<'a>(
     origin: Vec3,
     dir: Vec3,
     max: f32,
@@ -516,7 +541,10 @@ fn press_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    kinesis: Option<Res<KinesisPickHook>>,
+    mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
 ) {
+    let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
     let pointer = windows.single().ok().and_then(|w| {
         scripted
@@ -561,13 +589,6 @@ fn press_hand(
         &bodies,
         own.map(|r| (child, r, condition)),
     );
-    let state = PressState {
-        kept_for_combat: pb.combat && !ctrl && hand.holding == Holding::Nothing,
-        out_of_reach: hand.out_of_reach,
-        down: condition.off_feet(),
-        ctrl,
-        moving: locomotor.is_some_and(Locomotor::moving),
-    };
     let named = picked.map(|p| {
         name_of(p.hit, |body| {
             bodies
@@ -577,6 +598,18 @@ fn press_hand(
                 .map(|p| p.inverse_mass)
         })
     });
+    let state = PressState {
+        kept_for_combat: pb.combat && !ctrl && hand.holding == Holding::Nothing,
+        out_of_reach: press_out_of_reach(
+            hand.out_of_reach,
+            kinesis.is_some(),
+            picked.map(|p| p.hit),
+            named,
+        ),
+        down: condition.off_feet(),
+        ctrl,
+        moving: locomotor.is_some_and(Locomotor::moving),
+    };
     // Every press starts from nothing held.
     hand.holding = Holding::Nothing;
     let Ok((mut pb, ..)) = player_bodies.get_mut(child) else {
@@ -589,6 +622,19 @@ fn press_hand(
         Press::Mechanism(pick) => hand.holding = Holding::Mechanism(pick),
         Press::Refused => hand.holding = Holding::Refused,
         Press::Lift => {
+            if let (
+                Some(caster),
+                Some(Picked {
+                    hit: Hit::Prop { body, .. },
+                    ..
+                }),
+            ) = (kinesis, picked)
+            {
+                if let Some(messages) = kinesis_picks.as_deref_mut() {
+                    messages.write(KinesisPicked { caster, body });
+                }
+                return;
+            }
             pb.hold_object(true);
             hand.holding = Holding::Lift;
         }
@@ -895,6 +941,50 @@ mod tests {
         assert!(!measures_reach(true, false, false, false));
         assert!(measures_reach(true, true, false, true));
         assert!(measures_reach(true, false, true, true));
+    }
+
+    /// While the kinesis waits, its pick alone answers the reach: a movable
+    /// prop is in reach wherever it is, anything else out of it.
+    #[test]
+    fn the_waiting_kinesis_answers_the_reach() {
+        let prop = Hit::Prop {
+            body: Entity::PLACEHOLDER,
+            part: 0,
+        };
+        let corpse = Hit::Character {
+            body: Entity::PLACEHOLDER,
+            part: 0,
+            dead: true,
+        };
+        // Waiting: a movable prop is in reach even when measured out of it.
+        assert!(!press_out_of_reach(
+            true,
+            true,
+            Some(prop),
+            Some(Pick::Loose)
+        ));
+        // Waiting: a near corpse is out of reach all the same.
+        assert!(press_out_of_reach(
+            false,
+            true,
+            Some(corpse),
+            Some(Pick::Corpse)
+        ));
+        assert!(press_out_of_reach(false, true, Some(prop), None));
+        assert!(press_out_of_reach(false, true, None, None));
+        // Not waiting: the measure answers.
+        assert!(press_out_of_reach(
+            true,
+            false,
+            Some(prop),
+            Some(Pick::Loose)
+        ));
+        assert!(!press_out_of_reach(
+            false,
+            false,
+            Some(corpse),
+            Some(Pick::Corpse)
+        ));
     }
 
     /// The point lets go beyond 330 cm in any direction.

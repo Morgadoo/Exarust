@@ -20,13 +20,19 @@
 //!   strength. Ending plays `thmfrc_brf` at volume 0.3 (pitch
 //!   `0.6 + 0.4·roll`).
 //! - **Kinesis** ([`Kinesis`]): a sustained power that starts cast motion
-//!   0x23, installs the pick callbacks and, each tick, spends its cost and
-//!   steers the held body toward the aim. The velocity is the unit
+//!   0x23 with a cast hook keeping events 8 and 1, installs the pick
+//!   callbacks and, each tick, spends its cost and steers the held body
+//!   toward the aim. Any other hook event, or a focus shortfall, ends it.
+//!   Handing its body to a throw ends it without ending the cast, and its
+//!   hook then also keeps a cast's start, so the throw plays on in its
+//!   motion. The velocity is the unit
 //!   direction to the aim (the direction times 0.02 within 50 cm) times the
-//!   body's reach (half its radius plus one); the stick or the turn keys
+//!   body's reach (half its count of linked child bodies plus one; Exarust
+//!   counts the held part's child parts); the stick or the turn keys
 //!   rotate it by `reach² · 0.001` a tick; a held body remembers its user
 //!   for 2 s. A pick holds the body at a third of its extents' sum.
-//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23) and aims
+//! - **Throw** ([`Throw`]): lifts its target (cast motion 0x23, with a
+//!   hook keeping event 8 that ends the throw for any other) and aims
 //!   100 cm above it, steers it there at `mass/(mass + 0.1)` of the unit
 //!   direction (a fiftieth of the direction within 50 cm) while spending
 //!   `tick · cost · 0.00125` a tick, drops the shell after 800 ms and coasts
@@ -37,8 +43,10 @@
 //! Evidence: the Force classes' control handlers, the Strike callbacks, the
 //! Kinesis steering and the Throw phases, read from `Exanima.exe`.
 
+use bevy::math::Vec3;
+
 use super::PowerBase;
-use crate::thaum::casting::{CastBody, start_cast};
+use crate::thaum::casting::{CastBody, CastHook, end_cast, spend_tick, start_cast};
 use crate::thaum::engine::dist_sq;
 
 pub use crate::thaum::force::{BARRICADE, BARRICADE_MOTION, KINESIS, STRIKES, STRIKES_MOTION};
@@ -53,6 +61,16 @@ pub const SHELL_MOTION: u32 = 0x24;
 pub const BUBBLE_MOTION: u32 = 0x24;
 pub const KINESIS_MOTION: u32 = 0x23;
 pub const THROW_MOTION: u32 = 0x23;
+
+/// The shell's cast hook: 0 to an event carrying bits 0x29, so no other
+/// cast starts while it is set; the raise clip's end drops it.
+pub const SHELL_HOOK: CastHook = CastHook { keeps: 0x29 };
+/// Kinesis's cast hook keeps events 8 and 1; any other ends the kinesis.
+/// Once its body went to a throw it also answers 0 to a cast's start.
+pub const KINESIS_HOOK: CastHook = CastHook { keeps: 0x9 };
+pub const KINESIS_HANDED_HOOK: CastHook = CastHook { keeps: 0x29 };
+/// Throw's cast hook keeps event 8; any other ends the throw.
+pub const THROW_HOOK: CastHook = CastHook { keeps: 0x8 };
 
 /// The squared distance at which a bubble or a barricade ends (20 m, cm²).
 pub const REMOTE_RANGE_SQ: f32 = 4.0e6;
@@ -79,7 +97,7 @@ pub fn strikes_end_pitch(roll: f32) -> f32 {
 
 /// How many weapons can carry a strike aura.
 pub const MOST_AURAS: usize = 4;
-/// A kinesis object's reach: half its radius plus one.
+/// A kinesis object's reach: half its count of linked child bodies plus one.
 pub const KINESIS_REACH_BIAS: f32 = 1.0;
 /// The squared distance under which a kinesis or throw direction is not
 /// unit-scaled.
@@ -171,6 +189,9 @@ impl Shell {
             }
         } else if self.state == super::READY {
             let motion = start_cast(body, SHELL_MOTION, SHELL);
+            if motion {
+                body.cast_hook = Some(SHELL_HOOK);
+            }
             self.state = super::RUNNING;
             ShellStep { motion, ..quiet }
         } else {
@@ -352,12 +373,12 @@ impl Default for Strikes {
     }
 }
 
-/// Kinesis' one target: where its centre is and how large it is.
+/// Kinesis' one target: where its centre is and how many child nodes its
+/// node has.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KinesisTarget {
     pub position: [f32; 3],
-    /// The held body's largest radius, in cm.
-    pub radius: f32,
+    pub children: f32,
 }
 
 /// Kinesis' control answer.
@@ -378,6 +399,18 @@ pub struct Kinesis {
     pub state: i32,
     pub held: f32,
     pub target: Option<u64>,
+    /// The caster's cast hook is this kinesis's.
+    pub hooked: bool,
+    /// The cast generation whose hook the kinesis took.
+    pub generation: u64,
+    /// The held body went to a throw: the hook keeps the cast motion for
+    /// it, and the kinesis's end leaves the cast running.
+    pub handed: bool,
+    /// The depth the pick holds its body at (cm).
+    pub depth: f32,
+    /// Where the held body is steered (cm): the pick's centre until a clear
+    /// cursor aim replaces it.
+    pub aim: [f32; 3],
 }
 
 impl Kinesis {
@@ -391,11 +424,54 @@ impl Kinesis {
             state: super::READY,
             held: 0.0,
             target: None,
+            hooked: false,
+            generation: 0,
+            handed: false,
+            depth: 0.0,
+            aim: [0.0; 3],
         }
+    }
+
+    /// The hook this kinesis has on its caster, if the caster still has it.
+    fn own_hook(&self) -> CastHook {
+        if self.handed {
+            KINESIS_HANDED_HOOK
+        } else {
+            KINESIS_HOOK
+        }
+    }
+
+    /// Whether the caster called this kinesis's hook since its last tick
+    /// with an event it does not keep: the hook is gone or another cast
+    /// runs. The hook then ends the kinesis.
+    fn hook_called(&mut self, body: &CastBody) -> bool {
+        let called = self.hooked
+            && (body.cast_generation != self.generation
+                || body.casting != KINESIS
+                || body.cast_hook != Some(self.own_hook()));
+        if called {
+            self.hooked = false;
+            self.state = super::ENDING;
+        }
+        called
+    }
+
+    /// Hands the held body to a throw: the kinesis ends without ending the
+    /// cast, and its hook now also answers 0 to a cast's start, so the
+    /// throw plays on in its motion. Returns the body handed.
+    pub fn hand_off(&mut self, body: &mut CastBody) -> Option<u64> {
+        let target = self.target.take();
+        if self.hooked && body.cast_hook == Some(KINESIS_HOOK) {
+            body.cast_hook = Some(KINESIS_HANDED_HOOK);
+        }
+        self.handed = true;
+        self.state = super::ENDING;
+        target
     }
 
     /// One control tick. `tick_cost` is what a running tick spends.
     pub fn control(&mut self, event: i32, body: &mut CastBody, tick_cost: f32) -> KinesisStep {
+        self.hook_called(body);
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
@@ -410,6 +486,11 @@ impl Kinesis {
         }
         if self.state == super::READY {
             let motion = start_cast(body, KINESIS_MOTION, KINESIS);
+            if motion {
+                body.cast_hook = Some(KINESIS_HOOK);
+                self.hooked = true;
+                self.generation = body.cast_generation;
+            }
             self.state = super::RUNNING;
             return KinesisStep {
                 result: 0,
@@ -418,7 +499,13 @@ impl Kinesis {
                 drain: false,
             };
         }
-        super::drain(body, tick_cost);
+        if spend_tick(body, tick_cost) {
+            if self.hooked {
+                self.hooked = false;
+                self.state = super::ENDING;
+            }
+            end_cast(body);
+        }
         KinesisStep {
             result: 0,
             motion: false,
@@ -434,9 +521,9 @@ impl Default for Kinesis {
     }
 }
 
-/// A kinesis object's reach: half its largest radius plus one.
-pub fn kinesis_reach(radius: f32) -> f32 {
-    radius * 0.5 + KINESIS_REACH_BIAS
+/// A kinesis object's reach: half its count of linked child bodies plus one.
+pub fn kinesis_reach(children: f32) -> f32 {
+    children * 0.5 + KINESIS_REACH_BIAS
 }
 
 /// The steering factor a kinesis or throw direction is scaled by: one over
@@ -461,8 +548,38 @@ pub fn kinesis_velocity(target: &KinesisTarget, aim: [f32; 3]) -> [f32; 3] {
         aim[2] - target.position[2],
     ];
     let dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-    let scale = steer_factor(dist_sq) * kinesis_reach(target.radius);
+    let scale = steer_factor(dist_sq) * kinesis_reach(target.children);
     [delta[0] * scale, delta[1] * scale, delta[2] * scale]
+}
+
+/// The height a kinesis aim takes over the cursor's hit, less the held
+/// body's depth (cm), and the least it takes.
+pub const AIM_RISE: f32 = 100.0;
+pub const AIM_RISE_LEAST: f32 = 10.0;
+/// The share of its height over the caster an aim gives up, per cm.
+pub const AIM_SETTLE: f64 = 0.005;
+/// The most an aim's height over the caster is kept (cm).
+pub const AIM_SETTLE_MOST: f32 = 200.0;
+
+/// Where the cursor aims a held body (cm): back along the unit ray from
+/// `origin` through its hit `t` cm along until it is `100 − depth` (at
+/// least 10, also for a depth that is not a number) higher.
+pub fn cursor_aim(origin: Vec3, dir: Vec3, t: f32, depth: f32) -> Vec3 {
+    let mut rise = AIM_RISE - depth;
+    if rise.is_nan() || rise < AIM_RISE_LEAST {
+        rise = AIM_RISE_LEAST;
+    }
+    origin + dir * (t + rise / dir.y)
+}
+
+/// A clear cursor aim `point` (cm) moved along the ray's `dir` by its
+/// height over the caster's `caster_y` less that height eased:
+/// `h/(|h| + 1)·200` of `h = (y − caster_y)·0.005`, the product in double.
+pub fn settle_aim(point: Vec3, dir: Vec3, caster_y: f32) -> Vec3 {
+    let h = (f64::from(point.y - caster_y) * AIM_SETTLE) as f32;
+    let eased = h / (h.abs() + 1.0) * AIM_SETTLE_MOST;
+    let s = point.y - (caster_y + eased);
+    point + dir * s
 }
 
 /// The stick length past which the gamepad turns a kinesis object instead
@@ -475,8 +592,8 @@ pub const STICK_DEAD_ZONE: f64 = 0.1;
 /// give, compared in double) turns by its y and x times the step; otherwise key 1 turns the
 /// first axis forward or else key 4 back, and key 2 the second forward or
 /// else key 8 back (the original tests each pair as if/else).
-pub fn kinesis_turn(keys: u32, stick: [f32; 2], radius: f32) -> [f32; 2] {
-    let reach = kinesis_reach(radius);
+pub fn kinesis_turn(keys: u32, stick: [f32; 2], children: f32) -> [f32; 2] {
+    let reach = kinesis_reach(children);
     let step = (f64::from(reach * reach) * KINESIS_TURN_STEP) as f32;
     let mut x = 0.0f32;
     let mut y = 0.0f32;
@@ -590,6 +707,54 @@ pub struct Throw {
     pub aim: [f32; 3],
     /// The coast direction once the shell drops (unit length).
     pub coast: [f32; 3],
+    /// The caster's cast hook is this throw's.
+    pub hooked: bool,
+    /// The cast generation whose hook the throw took.
+    pub generation: u64,
+    /// The thrown body.
+    pub body: Option<u64>,
+    /// The last tick's velocity for the body (cm a tick), and whether it
+    /// was steered (the original then adds [`kinesis_spin`]).
+    pub push: Option<([f32; 3], bool)>,
+    /// The body came from a kinesis: the lift keeps the body's centre as
+    /// the aim and, its cost never stored, spends nothing a tick.
+    pub handed: bool,
+    /// The sounds the game still has to play or fade.
+    pub sound: ThrowSound,
+    /// The body takes the caster as its user until then
+    /// ([`ThrowStep::hold`]); the game stamps it.
+    pub held_until: Option<u32>,
+}
+
+/// A throw's sounds: the pick's at the body when the cursor's throw starts,
+/// the lift's, and the fade of the lift's voice when the throw ends before
+/// its drop.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThrowSound {
+    pub pick: bool,
+    pub lift: bool,
+    pub fade: bool,
+    /// The lift's voice.
+    pub voice: Option<u32>,
+}
+
+/// The pick's sound (`thmfrc_knsst`): at volume 0.3, a pitch of
+/// `0.8 + 0.4·roll`.
+pub const THROW_PICK_SOUND: &str = "thmfrc_knsst";
+pub const THROW_PICK_VOLUME: f32 = 0.3;
+/// The lift's sound (`thmfrc_throw`): at volume 0.6, a pitch of
+/// `1 + 0.2·roll`.
+pub const THROW_LIFT_SOUND: &str = "thmfrc_throw";
+pub const THROW_LIFT_VOLUME: f32 = 0.6;
+
+/// The pick sound's pitch for a unit `roll`, in double.
+pub fn throw_pick_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.4 + 0.8) as f32
+}
+
+/// The lift sound's pitch for a unit `roll`, in double.
+pub fn throw_lift_pitch(roll: f32) -> f32 {
+    (f64::from(roll) * 0.2 + 1.0) as f32
 }
 
 impl Throw {
@@ -602,18 +767,28 @@ impl Throw {
             tick_cost: 0.0,
             aim: [0.0; 3],
             coast: [0.0; 3],
+            hooked: false,
+            generation: 0,
+            body: None,
+            push: None,
+            handed: false,
+            sound: ThrowSound::default(),
+            held_until: None,
         }
     }
 
     /// The lift: the per-tick cost becomes the tick in milliseconds times
     /// the cost times 0.00125 (single, in that order), the aim the body's
-    /// position 100 cm up, and the throw steers. The loop sound starts at
-    /// volume 0.6 with a pitch of `1 + 0.2·roll`.
+    /// position, 100 cm up unless the body was handed from a kinesis, and
+    /// the throw steers.
     pub fn lift(&mut self, target_at: [f32; 3], tick_ms: u32) {
-        self.tick_cost = Self::tick_cost(tick_ms, self.cost);
+        let cost = if self.handed { 0.0 } else { self.cost };
+        self.tick_cost = Self::tick_cost(tick_ms, cost);
         self.aim = target_at;
         self.phase = THROW_FLY;
-        self.aim[1] += THROW_LIFT_HEIGHT;
+        if !self.handed {
+            self.aim[1] += THROW_LIFT_HEIGHT;
+        }
     }
 
     /// The focus a steered tick spends.
@@ -649,9 +824,10 @@ pub struct ThrowStep {
     pub velocity: Option<[f32; 3]>,
     /// The shell drops now.
     pub drop_shell: bool,
-    /// The body's materials come back (and, before the drop, the loop sound
-    /// stops; the shell closes).
+    /// The body's materials come back (and the shell closes).
     pub restore: bool,
+    /// The throw ends before its drop: the lift's voice fades.
+    pub fade: bool,
     /// The held bodies take the caster as their user until
     /// [`hold_until`].
     pub hold: bool,
@@ -681,18 +857,33 @@ impl Throw {
             velocity: None,
             drop_shell: false,
             restore: false,
+            fade: false,
             hold: false,
         };
+        if self.hooked
+            && (body.cast_generation != self.generation
+                || body.casting != THROW
+                || body.cast_hook != Some(THROW_HOOK))
+        {
+            self.hooked = false;
+            self.state = super::ENDING;
+        }
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
         if self.state == super::ENDING {
             step.result = 2;
             step.restore = true;
+            step.fade = self.phase < THROW_FALL;
             return step;
         }
         if self.state == super::READY {
             step.motion = start_cast(body, THROW_MOTION, THROW);
+            if step.motion {
+                body.cast_hook = Some(THROW_HOOK);
+                self.hooked = true;
+                self.generation = body.cast_generation;
+            }
             if self.phase == THROW_LIFT {
                 self.lift(view.target_at, view.tick_ms);
                 step.lift = true;
@@ -704,7 +895,13 @@ impl Throw {
         let share = throw_share(view.mass);
         if self.phase == THROW_FLY {
             step.velocity = Some(throw_steer(view.target_at, self.aim, share));
-            super::drain(body, self.tick_cost);
+            if spend_tick(body, self.tick_cost) {
+                if self.hooked {
+                    self.hooked = false;
+                    self.state = super::ENDING;
+                }
+                end_cast(body);
+            }
             // The stamp and the delay are added in 64 bits.
             if u64::from(self.stamp) + u64::from(THROW_DROP_MS) < u64::from(now) {
                 self.phase = THROW_FALL;
@@ -779,6 +976,12 @@ mod tests {
         let first = shell.control(0, &mut body);
         assert!(first.motion);
         assert_eq!(shell.state, super::super::RUNNING);
+        // Its hook keeps the raise through another cast's start and lets
+        // the clip's end drop it.
+        assert_eq!(body.cast_hook, Some(SHELL_HOOK));
+        assert!(!start_cast(&mut body, 0x22, 0x201));
+        assert!(crate::thaum::casting::motion_replaced(&mut body));
+        assert_eq!((body.casting, body.cast_hook), (0, None));
         let end = shell.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.released);
@@ -832,7 +1035,7 @@ mod tests {
         assert_eq!(kinesis_reach(100.0), 51.0);
         let target = KinesisTarget {
             position: [0.0; 3],
-            radius: 100.0,
+            children: 100.0,
         };
         let far = kinesis_velocity(&target, [100.0, 0.0, 0.0]);
         assert!((far[0] - 51.0).abs() < 1e-5);
@@ -865,6 +1068,19 @@ mod tests {
         assert_eq!(pick_pitch(0.5), 1.0);
     }
 
+    /// 30 cm under the caster, the aim gives up 0.15/1.15 of 200 cm of the
+    /// height it is under: it moves 3.91 cm back along a downward ray.
+    #[test]
+    fn the_kinesis_aim_rises_and_settles() {
+        let hit = cursor_aim(Vec3::new(0.0, 500.0, 0.0), Vec3::NEG_Y, 450.0, 120.0);
+        assert_eq!(hit, Vec3::new(0.0, 60.0, 0.0));
+        let settled = settle_aim(Vec3::new(0.0, 70.0, 0.0), Vec3::NEG_Y, 100.0);
+        let h = (-30.0f64 * 0.005) as f32;
+        let s = 70.0 - (100.0 + h / (h.abs() + 1.0) * 200.0);
+        assert_eq!(settled, Vec3::new(0.0, 70.0 - s, 0.0));
+        assert!((settled.y - 73.913).abs() < 1e-3);
+    }
+
     #[test]
     fn kinesis_starts_once_then_drains_each_tick() {
         let mut body = CastBody::default();
@@ -878,6 +1094,75 @@ mod tests {
         let end = kinesis.control(0xa, &mut body, 0.001);
         assert_eq!(end.result, 2);
         assert_eq!(kinesis.target, None);
+    }
+
+    #[test]
+    fn the_kinesis_hook_ends_it_for_any_other_event() {
+        let mut body = CastBody {
+            focus: 1.0,
+            ..CastBody::default()
+        };
+        let mut kinesis = Kinesis::new();
+        assert!(kinesis.control(0, &mut body, 0.001).motion);
+        assert_eq!(body.cast_hook, Some(KINESIS_HOOK));
+        assert_eq!(KINESIS_HOOK.answer(8), 0);
+        assert_eq!(KINESIS_HOOK.answer(1), 0);
+        assert!(
+            start_cast(&mut body, 0x22, 0x201),
+            "a cast start is answered -1"
+        );
+        assert_eq!(kinesis.control(0, &mut body, 0.001).result, 2);
+
+        let mut body = CastBody {
+            focus: 0.0015,
+            ..CastBody::default()
+        };
+        let mut short = Kinesis::new();
+        short.control(0, &mut body, 0.001);
+        short.control(0, &mut body, 0.001);
+        assert_eq!(short.state, super::super::ENDING);
+        assert_eq!((body.casting, body.cast_hook), (0, None));
+
+        let mut body = CastBody::default();
+        let mut handing = Kinesis::new();
+        handing.control(0, &mut body, 0.0);
+        handing.target = Some(7);
+        assert_eq!(handing.hand_off(&mut body), Some(7));
+        assert_eq!(body.cast_hook, Some(KINESIS_HANDED_HOOK));
+        assert!(
+            !start_cast(&mut body, THROW_MOTION, THROW),
+            "the throw keeps the motion"
+        );
+        assert_eq!(handing.control(0, &mut body, 0.0).result, 2);
+        assert_eq!(body.casting, KINESIS);
+    }
+
+    #[test]
+    fn the_throw_hook_ends_it_for_any_event_but_8() {
+        let view = ThrowView {
+            target_at: [0.0, 50.0, 0.0],
+            mass: 0.9,
+            caster_point: [500.0, 50.0, 0.0],
+            tick_ms: 12,
+        };
+        let mut body = CastBody::default();
+        let mut power = Throw::new(0.1);
+        assert!(power.control(0, 0, &view, &mut body).motion);
+        assert_eq!(body.cast_hook, Some(THROW_HOOK));
+        assert_eq!(THROW_HOOK.answer(8), 0);
+        assert!(crate::thaum::casting::motion_replaced(&mut body));
+        let end = power.control(0, 12, &view, &mut body);
+        assert!(end.result == 2 && end.restore);
+
+        let mut body = CastBody {
+            focus: Throw::tick_cost(12, 0.1) * 1.5,
+            ..CastBody::default()
+        };
+        let mut short = Throw::new(0.1);
+        short.control(0, 0, &view, &mut body);
+        short.control(0, 12, &view, &mut body);
+        assert_eq!(short.state, super::super::ENDING);
+        assert_eq!((body.casting, body.cast_hook), (0, None));
     }
 
     #[test]
@@ -929,8 +1214,17 @@ mod tests {
         let mut ending = Throw::new(0.1);
         let end = ending.control(2, 0, &view, &mut body);
         assert_eq!(end.result, 2);
-        assert!(end.restore);
+        assert!(end.restore && end.fade, "before the drop the lift fades");
         assert_eq!(body.reserved, 0.1);
+        assert!(!power.control(2, 2004, &view, &mut body).fade);
+        // A body handed from a kinesis is steered at its centre for nothing.
+        let mut handed = Throw::new(0.1);
+        handed.handed = true;
+        assert!(handed.control(0, 0, &view, &mut body).lift);
+        assert_eq!(handed.aim, view.target_at);
+        assert_eq!(handed.tick_cost, 0.0);
+        assert_eq!(throw_pick_pitch(0.5), 1.0);
+        assert_eq!(throw_lift_pitch(1.0), 1.2);
         // A drop near the caster's point ends the throw on that tick.
         let mut short = Throw::new(0.1);
         let beside = ThrowView {

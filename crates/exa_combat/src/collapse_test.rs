@@ -281,6 +281,153 @@ fn the_body_dies_250_ticks_after_the_blow() {
     assert_eq!(yellow(&app), 0.0);
 }
 
+/// One dying tick from a tone that crosses 0.25. Low red clears may-rise.
+/// The golem suit keeps it and waits 10000 ms. A lost fall clears it even
+/// for that suit. The dormant state flag is left alone.
+#[test]
+fn a_collapsing_death_settles_may_rise() {
+    use crate::condition::{DeathClock, StateFlags};
+    use crate::fall::{FallDeath, FallStage};
+    use exa_formats::character_stats::BodyRules;
+    use exa_physics::body::BodyTicks;
+
+    let run = |mut fighter: Fighter, stage| {
+        fighter.stats.rules = BodyRules(BodyRules::MAY_RISE);
+        let mut app = App::new();
+        app.add_systems(Update, dying_tick);
+        let mut body = Ragdoll::new(&[]).with_drive();
+        body.drive.as_mut().unwrap().tone = 0.25;
+        let id = app
+            .world_mut()
+            .spawn((
+                fighter,
+                Condition::COLLAPSING,
+                StateFlags(StateFlags::DORMANT | StateFlags::WAKING),
+                FallDeath {
+                    stage,
+                    ..FallDeath::default()
+                },
+                Collapse::default(),
+                body,
+                Animator::new("Default", FALL_BACKWARD),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: id,
+            character: None,
+        });
+        app.insert_resource(BodyTicks(0));
+        app.update();
+        let rules = app.world().get::<Fighter>(id).unwrap().stats.rules.0;
+        let flags = app.world().get::<StateFlags>(id).unwrap().0;
+        let clock = *app.world().get::<DeathClock>(id).unwrap();
+        (rules, flags, clock)
+    };
+
+    let low = Fighter {
+        health: crate::Health {
+            red: 0.0,
+            ..crate::Health::of_race(1.0)
+        },
+        ..Fighter::default()
+    };
+    let (rules, flags, clock) = run(low, FallStage::Steady);
+    assert_eq!(rules & BodyRules::MAY_RISE, 0);
+    assert_eq!(flags, StateFlags::DORMANT | StateFlags::WAKING);
+    assert_eq!(clock.wake_at_ms, None);
+    assert_eq!(clock.died_at_ms, 0);
+
+    let suited = Fighter {
+        health: crate::Health {
+            red: 0.01,
+            ..crate::Health::of_race(1.0)
+        },
+        first_flag_red: true,
+        ..Fighter::default()
+    };
+    let (rules, flags, clock) = run(suited, FallStage::Steady);
+    assert_eq!(rules & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
+    assert_eq!(flags, StateFlags::DORMANT | StateFlags::WAKING);
+    assert_eq!(clock.wake_at_ms, Some(crate::condition::DEATH_WAKE_MS));
+
+    let lost = Fighter {
+        first_flag_red: true,
+        health: crate::Health {
+            red: 1.0,
+            ..crate::Health::of_race(1.0)
+        },
+        ..Fighter::default()
+    };
+    let (rules, _, clock) = run(lost, FallStage::Lost);
+    assert_eq!(rules & BodyRules::MAY_RISE, 0);
+    assert_eq!(clock.wake_at_ms, None);
+}
+
+/// Death clears the strike-chain bit on each lower leg's first child (the
+/// foot), and going limp takes the lower legs out of the living layer (0,
+/// the feet 0x30). The class word is not written: nothing reads it. A part
+/// that is not a lower leg's first child keeps its chain bit.
+#[test]
+fn a_collapsing_death_clears_the_lower_legs_strikes() {
+    use exa_physics::body::{PartSetup, pairs};
+    use exa_physics::part::PartState;
+
+    let mut app = App::new();
+    app.add_systems(Update, dying_tick);
+    let part = |bone, parent, foot| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[
+        part(1, None, None),
+        part(3, Some(0), Some(Vec3::new(0.0, -0.4, 0.0))),
+        part(4, Some(1), None),
+    ])
+    .with_drive();
+    let chain = PartState::STRIKE_CHAIN;
+    for p in &mut body.parts {
+        p.class_word = 0x11;
+        p.state.0 |= chain;
+    }
+    body.drive.as_mut().unwrap().tone = 0.25;
+    let id = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            Condition::COLLAPSING,
+            Collapse::default(),
+            body,
+            Animator::new("Default", FALL_BACKWARD),
+            GlobalTransform::default(),
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    app.update();
+    let body = app.world().get::<Ragdoll>(id).unwrap();
+    // The foot child loses its chain, the leg and the root keep theirs.
+    assert_eq!(body.parts[2].state.0 & chain, 0);
+    assert_eq!(body.parts[1].state.0 & chain, chain);
+    assert_eq!(body.parts[0].state.0 & chain, chain);
+    // The class word is left alone; the go-limp layer writer runs instead.
+    assert_eq!(body.parts[0].class_word, 0x11);
+    assert_eq!(body.parts[1].pairing.layer, 0);
+    assert_eq!(body.parts[2].pairing.layer, pairs::FOOT_LAYER);
+    assert_eq!(pairs::FOOT_LAYER, 0x30);
+}
+
 fn falling() -> CollapseStep {
     CollapseStep {
         stepping: false,

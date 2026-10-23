@@ -34,7 +34,7 @@ pub(super) const RELAX_CAP: f32 = 1.0;
 /// The damping gain is D·k/(0.5|e|² + 1.4), e in cm.
 const DAMPING_SPREAD: f32 = 0.5;
 const DAMPING_FLOOR: f32 = 1.4;
-/// D = (E − 0.5)², and 0 below this energy.
+/// D = (E − 0.5)² unless that difference compares below 0, when it is 0.
 const DAMPED_FROM: f32 = 0.5;
 /// k while the body moves, and the numerator of the standing k (divided by
 /// the race's stance factor: 80 for a human).
@@ -83,17 +83,9 @@ const ARM_LOOSE: f32 = 0.2;
 const ARM_DAZED_TONE: f32 = 0.85;
 /// A human's support pins' factor (its race's 1.25).
 const HUMAN_PINS: f32 = 1.25;
-/// Otherwise it eases each tick, x ← 0.8x + 0.08·(0.5 + 0.5·race arm
-/// relaxation): to 0.4 for a human.
-const ARM_KEEP: f32 = 0.8;
-const ARM_EASE: f32 = 0.08;
-/// While the body turns it is at least 0.4 × the turn left (rad), at most
-/// 0.4.
-const ARM_TURN: f32 = 0.4;
-/// An arm part's anchor relaxation cap: 0.6 − (x − 0.1)·0.8.
-const ARM_CAP_TOP: f32 = 0.6;
-const ARM_CAP_FROM: f32 = 0.1;
-const ARM_CAP_SLOPE: f32 = 0.8;
+/// While the body turns its arms are at least this times the turn left
+/// (rad), and this at most (double).
+const ARM_FLOOR: f64 = 0.4;
 /// Anchor relaxation: the target is 0.6 − 32|Δa|² (cm², the most an anchor
 /// moved since the last tick) times the race's factor, capped by the part's
 /// cap; λ falls to it at once and rises 0.015 a tick.
@@ -121,6 +113,11 @@ pub struct RaceMuscles {
     pub arm_relaxation: f32,
     /// Adds 0.05 × it to the balance score (1 in every race record).
     pub balance_bonus: f32,
+    /// The race record's limb damping ratio r. A living limb's fast
+    /// retention is multiplied by u², or by 0.5·u + 0.5 while walking or
+    /// off its feet, with u = (1 − balance)(1 − r) + r (1 for a human,
+    /// 0.95 for a golem).
+    pub damping_ratio: f32,
     /// The base rate of the clip clock: frames a tick before what the body
     /// does multiplies it (1 for a human).
     pub clip_rate: f32,
@@ -135,6 +132,7 @@ impl RaceMuscles {
         stance: 0.5,
         arm_relaxation: 1.0,
         balance_bonus: 1.0,
+        damping_ratio: 1.0,
         clip_rate: 1.0,
         gaits: GaitTable::HUMAN_ROWS,
     };
@@ -194,6 +192,11 @@ pub struct Bearing {
     pub moving: bool,
     /// Run blend, 0 walking to 1 running.
     pub run: f32,
+    /// The speed along the heading (cm a tick). Moving, the two-foot
+    /// blend starts at min(0.5, 0.2·speed) and is then multiplied by
+    /// min(1, (0.3·speed)²), and by max(0, 1 + 0.5·v) while the chest's
+    /// slow vertical speed v (cm a tick) is negative.
+    pub speed: f32,
     /// How its legs move this tick, its movement decision's leg mode
     /// (standing unless it locomotes): the thighs' factors and the leg
     /// limits follow it, and its stance factor rises only while it is not
@@ -205,7 +208,13 @@ pub struct Bearing {
     /// Its condition is dormant or its state is exactly the shock's
     /// stagger: standing, its stance factor is 1.
     pub full_stance: bool,
-    /// It plays the walk or the run cycle: its arms hang loosely.
+    /// Its condition holds the shock's timed bit: the arm state machine
+    /// writes nothing this tick.
+    pub shocked: bool,
+    /// The shock-stagger flag is set: the support pins' power is 1.
+    pub shock_stagger: bool,
+    /// It plays the walk or the run cycle: its arms hang loosely. A shield
+    /// in the off hand doubles that arm.
     pub striding: bool,
     /// It has lost its balance: falling, lying or getting up.
     pub off_balance: bool,
@@ -228,9 +237,9 @@ pub struct Bearing {
     pub carried: bool,
     /// What is left of its turn toward its heading (rad).
     pub turn: f32,
-    /// How high (m) its lowest ankle sits over its floor in the first pose
-    /// of its walk: a moving body's feet are grounded, and its pelvis held,
-    /// from there.
+    /// How high (m) its lowest ankle sits in the gait pose a moving body
+    /// stands on: the walk's first key, that key slerped 0.7 of the way
+    /// toward the run's first key, or the run's first key.
     pub gait_floor: Option<f32>,
     /// It collapses from a lethal wound: its frame follows its pelvis
     /// exactly, its lift fades by its tone squared, its arms' stiffness is
@@ -239,11 +248,19 @@ pub struct Bearing {
     pub collapsing: bool,
     /// Its condition is walking (the walk or the run cycle plays at full
     /// tone): its feet's contacts are pushed by the velocity servo, not
-    /// gripped, and are probed as a walking foot's.
+    /// gripped, and are probed as a walking foot's. Its support pins do
+    /// not pull.
     pub walking: bool,
+    /// Its condition is the attack's (2): a large body in combat keeps u
+    /// for its standing retention factor rather than 0.97·u².
+    pub attacking: bool,
+    /// Its behaviour is in combat (the original's in-combat flag): its
+    /// standing retention factor is u, not u².
+    pub in_combat: bool,
     /// Its condition is off its feet: down, getting up, dormant or dead
     /// (the condition's bit 0x200). Its feet are probed from their ankles
-    /// and their soles are not held over the floor.
+    /// and their soles are not held over the floor. Its support pins do
+    /// not pull.
     pub off_feet: bool,
     /// How far its clip has played, 0 to 1 (by last tick's clock): a
     /// get-up's feet do not touch in its first fifth, and stand on their
@@ -254,7 +271,8 @@ pub struct Bearing {
     pub idle: bool,
     /// Its head looks this tick (its sampler's head look ran): the head's
     /// link anchors are placed relative to the thorax where it physically
-    /// is, not where its pose puts it.
+    /// is, not where its pose puts it. While it does not, they follow its
+    /// pose relative to its parent's pose from before the torso twist.
     pub head_looks: bool,
     /// The locomotion drive this tick (cm a tick²) and its push gain (the
     /// gait table's push column), which the carry adds to every part while
@@ -268,11 +286,33 @@ pub struct Bearing {
     /// which the feet's lag is measured along.
     pub facing: Vec3,
     /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
-    /// instead of following the leg mode.
+    /// instead of following the leg mode, and its standing lift lead is
+    /// 10 cm.
     pub stepping: bool,
+    /// It is dormant (a statue or golem lying until it sees a target): its
+    /// standing lift lead is 20 cm rather than 15.
+    pub dormant: bool,
+    /// It plays a kick, at the tone a standing body keeps. The arms are
+    /// left as the last tick wrote them.
+    pub kicking: bool,
+    /// It is parrying. Each stored arm eases by 0.8x + 0.04 unless the
+    /// body is collapsing, off balance, kicking, or an attack is setting
+    /// the arms. A walk, a daze, a power and a weapon switch do not.
+    /// The clip rate is twice the race base unless the body is off
+    /// balance, getting up, attacking or weak.
+    pub parrying: bool,
+    /// It plays a power. Both arms are set to 0.3.
+    pub casting: bool,
+    /// It plays a weapon switch. Both arms are set to 0.4.
+    pub switching: bool,
     /// Its golem suit is powered: the standing thigh factor and the leg
     /// limit's target are halved a second time.
     pub golem_powered: bool,
+    /// A shield is in the off hand. While the body strides at full tone
+    /// and on balance, that arm's stiffness is twice the walking arms and
+    /// the weapon arm keeps them. A parry, a daze, a kick and an attack
+    /// do not take this.
+    pub shield: bool,
     /// The jump flag and its timer: the original never writes either, so
     /// the leg mode's jump share is dead; kept for the rule.
     pub jump: bool,
@@ -284,9 +324,12 @@ impl Default for Bearing {
         Self {
             moving: false,
             run: 0.0,
+            speed: 0.0,
             legs: LegMode::Standing,
             stance_run: 0.0,
             full_stance: false,
+            shocked: false,
+            shock_stagger: false,
             striding: false,
             off_balance: false,
             getting_up: false,
@@ -297,6 +340,8 @@ impl Default for Bearing {
             gait_floor: None,
             collapsing: false,
             walking: false,
+            attacking: false,
+            in_combat: false,
             off_feet: false,
             progress: 0.0,
             idle: false,
@@ -306,7 +351,13 @@ impl Default for Bearing {
             lag: 1.0,
             facing: Vec3::Z,
             stepping: false,
+            dormant: false,
+            kicking: false,
+            parrying: false,
+            casting: false,
+            switching: false,
             golem_powered: false,
+            shield: false,
             jump: false,
             jump_progress: 0.0,
         }
@@ -401,35 +452,58 @@ fn leg_gains(legs: LegMode, limbs: f32, support: f32, bearing: &Bearing) -> (f32
     }
 }
 
-/// The arms' stiffness after one tick, `x` last tick's: 0.2 collapsing;
-/// 0.5 off balance; 0.2 dazed (tone under 0.85); striding, the
-/// character's walking arms (0.2, looser for the feral); else easing to
-/// 0.4·(0.5 + 0.5·race arm relaxation). While the body turns it is at
-/// least min(0.4·|turn left|, 0.4).
-pub(super) fn arm_stiffness(
-    x: f32,
-    bearing: &Bearing,
-    tone: f32,
-    race: &RaceMuscles,
-    stats: &BodyStats,
-) -> f32 {
-    let x = if bearing.collapsing {
-        ARM_LOOSE
-    } else if bearing.off_balance {
-        ARM_OFF_BALANCE
-    } else if tone < ARM_DAZED_TONE {
-        ARM_LOOSE
-    } else if bearing.striding {
-        stats.walking_arms
-    } else {
-        ARM_KEEP * x + ARM_EASE * (0.5 + 0.5 * race.arm_relaxation)
-    };
-    x.max((ARM_TURN * bearing.turn.abs()).min(ARM_TURN))
+/// A power's arms, both of them.
+const ARM_POWER: f32 = 0.3;
+/// A weapon switch's arms, both of them.
+const ARM_SWITCH: f32 = 0.4;
+
+/// One attack tick's two arms, right then left, as the swing hands them to
+/// the muscle tune.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AttackArmTune {
+    /// Each arm's stiffness before the turn floor.
+    pub stiffness: (f32, f32),
+    /// Each arm's drive, which sets that side's saturation.
+    pub drive: (f32, f32),
 }
 
-/// An arm part's anchor relaxation cap at stiffness `x`.
-pub(super) fn arm_relax_cap(x: f32) -> f32 {
-    ARM_CAP_TOP - (x - ARM_CAP_FROM) * ARM_CAP_SLOPE
+/// The arm setter's floor of a stiffness: 0.4·|turn| stored as a float
+/// and capped at 0.4 (the cap compared in double). It replaces the
+/// stiffness only when the floor compares above it, so a NaN on either
+/// side leaves the stiffness.
+pub(super) fn arm_stiffness_floor(stiffness: f32, turn: f32) -> f32 {
+    let mut floor = (f64::from(turn.abs()) * ARM_FLOOR) as f32;
+    if f64::from(floor) > ARM_FLOOR {
+        floor = ARM_FLOOR as f32;
+    }
+    if floor.partial_cmp(&stiffness) == Some(std::cmp::Ordering::Greater) {
+        floor
+    } else {
+        stiffness
+    }
+}
+
+/// An arm part's anchor relaxation cap: 0.6 − (stiffness − 0.1)·0.8, the
+/// stiffness widened and the rest in double.
+pub(super) fn arm_relax_cap(stiffness: f32) -> f32 {
+    (0.6 - (f64::from(stiffness) - 0.1) * 0.8) as f32
+}
+
+/// An arm's saturation: 0.1 − 0.08·drive, the drive widened and the rest
+/// in double. The drive is zero outside an attack, so the idle saturation
+/// is 0.1.
+pub(super) fn arm_saturation(drive: f32) -> f32 {
+    (0.1 - f64::from(drive) * 0.08) as f32
+}
+
+/// Which attack arm a bone takes: 0 the right, 1 the left. The right side
+/// is the negative-x arm (shoulder, upper arm, forearm, hand).
+fn attack_side(bone: usize) -> Option<usize> {
+    match bone {
+        11 | 12 | 13 | 17 => Some(0),
+        14 | 15 | 16 | 18 => Some(1),
+        _ => None,
+    }
 }
 
 /// A relaxation `lambda` after one tick toward `target`: it rises by `rise`
@@ -473,15 +547,14 @@ pub(super) fn muscle_pull(
 
 impl Drive {
     /// The strength scale A = √E·T and the damping gain D·k of this tick's
-    /// link muscles: D = (E − 0.5)² (0 below E = 0.5), k = 50 while moving,
-    /// else 40 over the race's stance factor.
+    /// link muscles. The root is taken as the energy is, so a NaN or a
+    /// negative stays a NaN. D = (E − 0.5)² unless that difference compares
+    /// below 0, when it is 0 (a NaN is squared and stays). k = 50 while
+    /// moving, else 40 over the race's stance factor.
     pub(super) fn muscle_gains(&self) -> (f32, f32) {
-        let strength = self.energy.max(0.0).sqrt() * self.tone_target();
-        let d = if self.energy >= DAMPED_FROM {
-            (self.energy - DAMPED_FROM).powi(2)
-        } else {
-            0.0
-        };
+        let strength = self.energy.sqrt() * self.tone_target();
+        let below = self.energy - DAMPED_FROM;
+        let d = if below < 0.0 { 0.0 } else { below * below };
         let k = if self.bearing.moving {
             MOVING_K
         } else {
@@ -565,7 +638,80 @@ impl Ragdoll {
                 || drive.balance.value < OFF_BALANCE_BELOW,
             ..bearing
         };
-        drive.arm = arm_stiffness(drive.arm, &unsteady, drive.tone, &drive.race, &drive.stats);
+        // The two arm-drive slots are zeroed at the start of every body
+        // tick, before the arm state machine; only an attack's branch
+        // writes them. So every other tick saturates each arm at 0.1.
+        drive.arm_drive = (0.0, 0.0);
+        // The arm state machine, in the original's order: a shock writes
+        // nothing; collapsing; off balance (under 0.6) or getting up; an
+        // attack; a daze (tone under 0.85); a kick, which writes nothing;
+        // a parry; a power; the walk or the run; a weapon switch; and
+        // finally the relaxed blend that the combat idle and every other
+        // clip take. A collapse, a daze, an off-balance body, a power, a
+        // weapon switch and a shielded stride write both arms through the
+        // same setter; a parry and the relaxed blend keep each side's own
+        // stored stiffness.
+        let writes_arms = !unsteady.shocked;
+        let mut hold_arms = false;
+        if writes_arms {
+            if unsteady.collapsing {
+                let x = arm_stiffness_floor(ARM_LOOSE, unsteady.turn);
+                drive.arms = (x, x);
+                drive.arm = x;
+            } else if unsteady.off_balance {
+                let x = arm_stiffness_floor(ARM_OFF_BALANCE, unsteady.turn);
+                drive.arms = (x, x);
+                drive.arm = x;
+            } else if let Some(tune) = drive.attack_arms {
+                drive.arm_drive = tune.drive;
+                let right = arm_stiffness_floor(tune.stiffness.0, unsteady.turn);
+                let left = arm_stiffness_floor(tune.stiffness.1, unsteady.turn);
+                drive.arms = (right, left);
+                drive.arm = right;
+            } else if drive.tone < ARM_DAZED_TONE {
+                let x = arm_stiffness_floor(ARM_LOOSE, unsteady.turn);
+                drive.arms = (x, x);
+                drive.arm = x;
+            } else if unsteady.kicking {
+                // A kick leaves both stored stiffnesses as they are.
+                hold_arms = true;
+                drive.arm = drive.arms.0;
+            } else if unsteady.parrying {
+                let right =
+                    arm_stiffness_floor(crate::motile::parry_blend(drive.arms.0), unsteady.turn);
+                let left =
+                    arm_stiffness_floor(crate::motile::parry_blend(drive.arms.1), unsteady.turn);
+                drive.arms = (right, left);
+                drive.arm = right;
+            } else if unsteady.casting {
+                let x = arm_stiffness_floor(ARM_POWER, unsteady.turn);
+                drive.arms = (x, x);
+                drive.arm = x;
+            } else if unsteady.striding {
+                let right = arm_stiffness_floor(drive.stats.walking_arms, unsteady.turn);
+                let left = if unsteady.shield {
+                    arm_stiffness_floor(drive.stats.walking_arms * 2.0, unsteady.turn)
+                } else {
+                    right
+                };
+                drive.arms = (right, left);
+                drive.arm = right;
+            } else if unsteady.switching {
+                let x = arm_stiffness_floor(ARM_SWITCH, unsteady.turn);
+                drive.arms = (x, x);
+                drive.arm = x;
+            } else {
+                let eased = attack_arms(
+                    drive.arms,
+                    unsteady.stepping,
+                    false,
+                    drive.race.arm_relaxation,
+                    unsteady.turn,
+                );
+                drive.arms = eased;
+                drive.arm = eased.0;
+            }
+        }
         let limbs = LIMB_SCALE * drive.stats.scale;
         let (thigh, limit) = leg_gains(bearing.legs, limbs, drive.support, &bearing);
         for i in 0..parts.len() {
@@ -592,10 +738,26 @@ impl Ragdoll {
                     }
                 }
                 Role::Arm => {
+                    // A shock and a kick leave whatever the last tick wrote.
+                    if !writes_arms || hold_arms {
+                        continue;
+                    }
+                    let Some(side) = attack_side(parts[i].bone) else {
+                        continue;
+                    };
+                    // The setter writes each side's stiffness, relaxation
+                    // cap and saturation from the drive slot. Only an
+                    // attack fills a slot; everywhere else it is 0 and the
+                    // saturation is the idle 0.1.
+                    let (stiff, drv) = if side == 0 {
+                        (drive.arms.0, drive.arm_drive.0)
+                    } else {
+                        (drive.arms.1, drive.arm_drive.1)
+                    };
                     let p = &mut parts[i];
-                    p.factor = drive.arm * limbs;
-                    p.relax_cap = arm_relax_cap(drive.arm);
-                    p.saturation = SATURATION;
+                    p.factor = stiff * limbs;
+                    p.relax_cap = arm_relax_cap(stiff);
+                    p.saturation = arm_saturation(drv);
                 }
                 _ => {}
             }
@@ -607,6 +769,7 @@ impl Ragdoll {
             &drive.targets,
             drive.race.arm_relaxation,
             bearing.head_looks,
+            drive.head_pose_parent(),
         );
         if drive.support > 0.0 {
             relax_legs(parts);
@@ -633,9 +796,11 @@ impl Ragdoll {
 /// Samples each slack link's anchor from this tick's pose: the part's point
 /// placed by its animated transform relative to its parent's (the clip's
 /// turn, at the part's origin; a looking head's relative to its parent's
-/// physical transform), as weights on the parent. Each part's λ then
-/// moves toward 0.6 − 32|Δa|² (the most one of its anchors moved since the
-/// last tick, cm²) times the race's factor, capped by the part's cap.
+/// physical transform; a head that does not look, relative to its parent's
+/// pose from before the torso twist, when one was named), as weights on
+/// the parent. Each part's λ then moves toward 0.6 − 32|Δa|² (the most one
+/// of its anchors moved since the last tick, cm²) times the race's factor,
+/// capped by the part's cap.
 fn sample_anchors(
     parts: &mut [Part],
     links: &mut [Link],
@@ -643,6 +808,7 @@ fn sample_anchors(
     targets: &[Affine3A],
     relaxation: f32,
     head_looks: bool,
+    head_pose_parent: Option<Affine3A>,
 ) {
     if targets.len() != parts.len() {
         return;
@@ -651,10 +817,10 @@ fn sample_anchors(
         let Some(j) = parts[i].parent.filter(|&j| j < parts.len() && j != i) else {
             continue;
         };
-        let parent = if head_looks && role(parts[i].bone) == Role::Head {
-            parts[j].transform()
-        } else {
-            targets[j]
+        let parent = match role(parts[i].bone) {
+            Role::Head if head_looks => parts[j].transform(),
+            Role::Head => head_pose_parent.unwrap_or(targets[j]),
+            _ => targets[j],
         };
         let relative = parent.inverse() * targets[i];
         let (_, turn, _) = relative.to_scale_rotation_translation();
@@ -736,12 +902,10 @@ pub fn attack_arms(
             (f64::from(add) + f64::from(next.1) * EASE) as f32,
         )
     };
-    let mut floor = (f64::from(turn.abs()) * 0.4) as f32;
-    if f64::from(floor) > 0.4 {
-        floor = 0.4;
-    }
-    let raised = |x: f32| if floor > x { floor } else { x };
-    (raised(right), raised(left))
+    (
+        arm_stiffness_floor(right, turn),
+        arm_stiffness_floor(left, turn),
+    )
 }
 
 #[cfg(test)]

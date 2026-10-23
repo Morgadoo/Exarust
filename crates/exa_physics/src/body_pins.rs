@@ -1,17 +1,21 @@
 //! The support pins. In each solver iteration a living body with support
-//! pulls its two thorax pins and its pelvis pin horizontally toward targets
-//! on the character frame, clamped near the feet centre. With no support
-//! the pull is zero and the targets only shift forward.
+//! pulls its two thorax pins once, and its pelvis pin twice, horizontally
+//! toward targets on the character frame, clamped near the feet centre.
+//! The second pelvis pull sees the first push. With no support the pull
+//! is zero and the targets only shift forward.
 //!
 //! One application, in the original's centimetres ([`cm`]): after the
 //! clamp, raw is 0.2·e·|e|/60 when |e| < 60 cm and 12 cm along the error
 //! otherwise; subtract the point's horizontal displacement this tick; cap
 //! the length at 8 cm; multiply by S² · pin-gain · P · the spawned pin
-//! factor, and by 0.3 while getting up. P is √E·T·E⁴. The 0.3 is only the
-//! get-up factor: it is not stacked on the pin-gain while the body stands.
+//! factor. A horizontal gap under 1.19e-7 cm² leaves the pin, damper
+//! included. The pull does not run while the body is walking or off its
+//! feet (down, getting up, dormant or dead). P is √E·T·E⁴, or 1 while the
+//! shock-stagger flag is set.
 //! Evidence: `docs/formats/RSQ.md` (Physical body).
 //! (Included from body.rs: `#[path = "body_pins.rs"] mod pins;`)
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::balance::{Leg, cm};
@@ -25,8 +29,9 @@ const SOFT_GAIN: f32 = 0.2;
 const FAR_PULL: f32 = 12.0;
 /// The correction (cm), before the gains, is no longer than this.
 const CAP: f32 = 8.0;
-/// While getting up the pull is this much of the standing one.
-const GET_UP: f32 = 0.3;
+/// A horizontal gap whose squared length is below this (cm², the
+/// single-precision epsilon) skips the spring and the damper.
+const GAP_EPSILON2: f32 = f32::from_bits(0x33ff_ffd7);
 /// With no support a target shifts this far (cm) forward, times scale.
 const UNSUPPORTED_AHEAD: f32 = 5.0;
 /// The pelvis pin stays within this (cm) of the feet centre, times scale.
@@ -53,32 +58,45 @@ pub(super) fn pelvis_reach(scale: f32) -> f32 {
     (PELVIS_REACH * scale).max(0.0)
 }
 
-/// P = √E · T · E⁴, E the energy and T the tone target.
-pub(super) fn power(energy: f32, tone_target: f32) -> f32 {
-    let e = energy.max(0.0);
-    e.sqrt() * tone_target * e.powi(4)
+/// P = √E · T · E⁴, E the energy and T the tone target, unless
+/// `shock_stagger` is set, when it is 1. The root is taken as the energy
+/// is, so a NaN or a negative stays a NaN.
+pub(super) fn power(energy: f32, tone_target: f32, shock_stagger: bool) -> f32 {
+    if shock_stagger {
+        return 1.0;
+    }
+    let squared = energy * energy;
+    let fourth = squared * squared;
+    energy.sqrt() * tone_target * fourth
 }
 
 /// The gains one pin application scales by.
+#[derive(Clone, Copy)]
 pub(super) struct Factors {
     pub has_support: bool,
     pub support: f32,
     pub pin_gain: f32,
     pub power: f32,
     pub pin_factor: f32,
-    pub getting_up: bool,
 }
 
 /// One application of a support pin's horizontal pull, in centimetres.
 /// `error` is the gap from the point to its clamped target and
 /// `displacement` is how far the point has moved this tick, both
-/// horizontal. Nothing without support, and nothing that is not finite.
+/// horizontal. A gap under 1.19e-7 cm² leaves it, damper included.
+/// Nothing without support, and nothing that is not finite.
 pub(super) fn pull(error: Vec3, displacement: Vec3, gain: Factors) -> Vec3 {
     if !gain.has_support {
         return Vec3::ZERO;
     }
     let e = error.with_y(0.0);
     let moved = displacement.with_y(0.0);
+    // z² + (y² + x²), and only a gap ordered below the epsilon returns.
+    // A NaN is not below it.
+    let len2 = e.z * e.z + (e.y * e.y + e.x * e.x);
+    if len2 < GAP_EPSILON2 {
+        return Vec3::ZERO;
+    }
     let len = e.length();
     if !len.is_finite() || !moved.is_finite() {
         return Vec3::ZERO;
@@ -96,14 +114,17 @@ pub(super) fn pull(error: Vec3, displacement: Vec3, gain: Factors) -> Vec3 {
     if clen > CAP {
         corr *= CAP / clen;
     }
-    let mut scale = gain.support * gain.support * gain.pin_gain * gain.power * gain.pin_factor;
-    if gain.getting_up {
-        scale *= GET_UP;
-    }
+    let scale = pin_scale(gain);
     if !scale.is_finite() {
         return Vec3::ZERO;
     }
     corr * scale
+}
+
+/// The gains' product in the original's order: S²·(G·(P·F)).
+pub(super) fn pin_scale(gain: Factors) -> f32 {
+    let squared = gain.support * gain.support;
+    squared * (gain.pin_gain * (gain.power * gain.pin_factor))
 }
 
 /// The target a pin is pulled toward. With support, `posed` clamped
@@ -170,12 +191,18 @@ fn side_axis(drive: &Drive) -> Vec3 {
 }
 
 impl Ragdoll {
-    /// One pass of the support pins: the two thorax pins and the pelvis
-    /// pin, each by [`pull`] toward [`target`].
+    /// One pass of the support pins: the two thorax pins once and the
+    /// pelvis pin twice, each by [`pull`] toward [`target`]. The second
+    /// pelvis pull is read after the first push.
     pub(super) fn pull_support_pins(&mut self) {
         let Some(drive) = self.drive.as_ref() else {
             return;
         };
+        // Walking, or off its feet (down, getting up, dormant or dead), the
+        // pin loops do not run. A shock stagger does not reopen them.
+        if drive.bearing.walking || drive.bearing.off_feet {
+            return;
+        }
         if drive.targets.len() != self.parts.len() || self.legs.is_empty() {
             return;
         }
@@ -185,10 +212,13 @@ impl Ragdoll {
         let has_support = drive.balance.has_support();
         let support = drive.support;
         let pin_gain = drive.pin_gain;
-        let power = power(drive.energy, drive.tone_target());
+        let power = power(
+            drive.energy,
+            drive.tone_target(),
+            drive.bearing.shock_stagger,
+        );
         let factor = drive.stats.pin_factor;
         let scale = drive.stats.scale;
-        let getting_up = drive.bearing.getting_up;
         let lead = (drive.steps.stepping && !drive.steps.out_of_balance).then(|| {
             (
                 drive.steps.target,
@@ -224,37 +254,77 @@ impl Ragdoll {
         if let Some(i) = self.parts.iter().position(|p| p.bone == 1) {
             pins.push((i, self.parts[i].own_origin, pelvis, false));
         }
-        // Read every pin before any push, so each application sees the
-        // same tick and not a sibling pin's correction.
-        let planned: Vec<(usize, [f32; 4], Vec3)> = pins
-            .into_iter()
-            .filter(|(i, _, _, _)| *i < targets.len())
-            .map(|(i, w, radius, thorax)| {
-                let at = self.parts[i].point(&w);
-                let mut posed = targets[i].transform_point3(self.parts[i].rest_point(&w));
-                if thorax && let Some((step_at, standing, chest)) = &lead {
-                    posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
-                }
-                let goal = target(posed, centre, radius, has_support, forward, scale);
-                let disp = self.parts[i].slip(&w);
-                let corr = pull(
-                    cm((goal - at).with_y(0.0)),
-                    cm(disp.with_y(0.0)),
-                    Factors {
-                        has_support,
-                        support,
-                        pin_gain,
-                        power,
-                        pin_factor: factor,
-                        getting_up,
-                    },
-                );
-                (i, w, corr)
-            })
-            .filter(|(_, _, c)| c.is_finite() && c.length_squared() > 0.0)
-            .collect();
-        for (i, w, corr) in planned {
-            self.parts[i].push(&w, corr / CM);
+        let pass = Pass {
+            centre,
+            forward,
+            scale,
+            has_support,
+            gain: Factors {
+                has_support,
+                support,
+                pin_gain,
+                power,
+                pin_factor: factor,
+            },
+            lead: lead.as_ref(),
+        };
+        // The pin records are applied in sequence, so each pull reads the
+        // pushes before it: the second thorax pin sees the first's push.
+        // The pelvis origin is then pulled a second time, after its first.
+        for (i, w, radius, thorax) in pins.iter().copied() {
+            if i >= targets.len() {
+                continue;
+            }
+            let corr = pin_correction(&self.parts[i], &targets[i], w, radius, thorax, &pass);
+            if corr.is_finite() && corr.length_squared() > 0.0 {
+                self.parts[i].push(&w, corr / CM);
+            }
+        }
+        let pelvis = pins.iter().copied().find(|(_, _, _, thorax)| !thorax);
+        if let Some((i, w, radius, _)) = pelvis
+            && i < targets.len()
+        {
+            let corr = pin_correction(&self.parts[i], &targets[i], w, radius, false, &pass);
+            if corr.is_finite() && corr.length_squared() > 0.0 {
+                self.parts[i].push(&w, corr / CM);
+            }
         }
     }
+}
+
+/// What one iteration's pin pulls share. A thorax pin reads `lead`; the
+/// pelvis pin does not.
+struct Pass<'a> {
+    centre: Vec3,
+    forward: Vec3,
+    scale: f32,
+    has_support: bool,
+    gain: Factors,
+    lead: Option<&'a (Vec3, Vec3, steps::ChestLead)>,
+}
+
+/// One pin's horizontal correction, in centimetres.
+fn pin_correction(
+    part: &Part,
+    pose: &Affine3A,
+    weights: [f32; 4],
+    radius: f32,
+    thorax: bool,
+    pass: &Pass<'_>,
+) -> Vec3 {
+    let at = part.point(&weights);
+    let mut posed = pose.transform_point3(part.rest_point(&weights));
+    if thorax && let Some((step_at, standing, chest)) = pass.lead {
+        posed = steps::lead_pose(posed, *step_at, *standing, at, chest);
+    }
+    let goal = target(
+        posed,
+        pass.centre,
+        radius,
+        pass.has_support,
+        pass.forward,
+        pass.scale,
+    );
+    let disp = part.slip(&weights);
+    pull(cm((goal - at).with_y(0.0)), cm(disp.with_y(0.0)), pass.gain)
 }

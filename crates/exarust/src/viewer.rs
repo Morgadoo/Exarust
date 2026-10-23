@@ -982,6 +982,9 @@ fn spawn_players(
                 duellist,
                 ChildOf(foe_root),
             ));
+            if let Some(options) = practice.as_ref() {
+                insert_duel_powers(commands, foe, &options.record);
+            }
         }
     }
     // `--corpse`: dead humans of a new record, as a level places its dead.
@@ -1027,6 +1030,31 @@ fn spawn_players(
         stage: "dressing characters".into(),
         fraction: COLLIDED_AT,
     });
+}
+
+/// Gives a duellist its record's powers: a caster the combat state may
+/// cast through, with the record's techniques and persistent slots. A
+/// record without a known power casts nothing.
+fn insert_duel_powers(
+    commands: &mut Commands,
+    fighter: Entity,
+    record: &exa_formats::characters::CharacterRecord,
+) {
+    let Some(caster) = exa_game::thaum::cast::PowerCaster::of_character(record) else {
+        return;
+    };
+    if caster.known.is_empty() {
+        return;
+    }
+    info!(
+        "duellist {fighter:?} knows powers: {:x?}, techniques {:#x}, {} persistent slots",
+        caster.known.iter().map(|p| p.id).collect::<Vec<_>>(),
+        caster.body.techniques,
+        caster.body.slots
+    );
+    commands
+        .entity(fighter)
+        .insert((caster, exa_ai::DuelPowers::default()));
 }
 
 /// Logs what `who` wears weighs and what that slows.
@@ -1462,6 +1490,7 @@ fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
         stance: body.stance,
         arm_relaxation: body.arm_relaxation,
         balance_bonus: body.balance_bonus,
+        damping_ratio: body.damping_ratio,
         clip_rate: body.clip_rate,
         gaits: exa_physics::race_runtime::rows_of(body),
     }
@@ -1550,10 +1579,13 @@ fn spawn_placed_characters(
         let anim = exa_anim::Animator::new(&moveset, "Idle");
         if c.dead {
             // The dead fall where they lie: their condition is dead, as
-            // the original's corpse placement writes it.
+            // the original's corpse placement writes it. The original puts
+            // them in their saved pose instead, so their fall deals no limb
+            // impacts.
             commands.entity(model).insert((
                 exa_physics::body::GoLimp::default(),
                 exa_combat::Condition::DEAD,
+                exa_combat::impact::LayingOut,
             ));
         } else if physical {
             let body = exa_formats::races::body_of_character(races, c.race);
@@ -1666,6 +1698,7 @@ fn spawn_placed_characters(
                     exa_ai::Mind::new(0.0),
                     exa_ai::Duellist::new(placing.player),
                 ));
+                insert_duel_powers(commands, model, &c.record);
             }
         }
         spawned += 1;

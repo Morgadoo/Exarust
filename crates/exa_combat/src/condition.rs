@@ -7,14 +7,18 @@
 //! in the original's order: the daze first (a dazed fighter is normal
 //! unless it is helpless or attacking), then the posture decision
 //! ([`posture`]) from the clip it plays, its balance, its summed limb
-//! motion and its tone. A few events write it between: a get-up's start
-//! (getting up) and its clip's end (normal), a killing blow (dead until the
-//! collapse lands), placed corpses (dead). Rules: `docs/formats/RSQ.md`
-//! (Condition).
+//! motion and its tone. That write also restores the living lower-leg
+//! layer when it replaces a condition above 0xFF, and an attack that
+//! replaces one puts the shins in 0x10. A few events write it between: a
+//! get-up's start (getting up) and its clip's end (normal), a killing blow
+//! (dead until the collapse lands), placed corpses (dead). Rules:
+//! `docs/formats/RSQ.md` (Condition).
 
 use bevy::prelude::*;
 use exa_anim::Motions;
-use exa_physics::body::{CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter};
+use exa_physics::body::{
+    CharacterStage, CharacterTick, CharacterTicks, Ragdoll, TickedCharacter, pairs,
+};
 
 use crate::stance::StanceTick;
 
@@ -148,9 +152,78 @@ impl Condition {
     }
 }
 
-/// The original's state flags beside the condition word. Nothing in
-/// Exarust sets them yet (no knock-outs, dormant corpses, shocks or
-/// potions).
+/// How long a body that may still rise waits, when death leaves the
+/// may-rise rule set and red regeneration is not blocked.
+pub const DEATH_WAKE_MS: u32 = 10_000;
+/// Red health below this, compared in double, clears the may-rise rule
+/// unless the race's first flag word carries red regeneration.
+pub const DEATH_HEALTH: f64 = 0.01;
+
+/// What death writes when the body was not already dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettledDeath {
+    pub condition: Condition,
+    pub rules: exa_formats::character_stats::BodyRules,
+    /// When the body may rise. `None` is the disabled clock.
+    pub wake_at_ms: Option<u32>,
+}
+
+/// The clocks death stamps on the body: when it died, and when a body that
+/// may still rise is allowed to.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeathClock {
+    /// When the body may rise. `None` is the disabled clock.
+    pub wake_at_ms: Option<u32>,
+    /// The game clock when death wrote the clocks.
+    pub died_at_ms: u32,
+}
+
+/// Death's condition, may-rise rule and rise clock.
+///
+/// A body that is already dead is left alone. Otherwise the condition
+/// becomes dead. [`BodyRules::MAY_RISE`] is cleared when `fall_stage` is
+/// greater than 1 (the fall-to-death counter: 2 lost, 3 fading, 4 gone) or
+/// when `red` is below [`DEATH_HEALTH`] and `first_flag_red` is false.
+/// `first_flag_red` is the race record's first flag word bit `0x80` (the
+/// golem suit). The second flag word's regeneration bit is a different
+/// test and does not count here.
+///
+/// When the rules then still have [`BodyRules::MAY_RISE`] and not
+/// [`BodyRules::NO_RED_REGENERATION`], the rise clock is `now_ms` plus
+/// [`DEATH_WAKE_MS`]. Otherwise the clock is disabled.
+pub fn settle_death(
+    condition: Condition,
+    rules: exa_formats::character_stats::BodyRules,
+    fall_stage: u32,
+    red: f32,
+    first_flag_red: bool,
+    now_ms: u32,
+) -> Option<SettledDeath> {
+    use exa_formats::character_stats::BodyRules;
+    if condition == Condition::DEAD {
+        return None;
+    }
+    let mut bits = rules.0;
+    if fall_stage > 1 || (f64::from(red) < DEATH_HEALTH && !first_flag_red) {
+        bits &= !BodyRules::MAY_RISE;
+    }
+    let wake_at_ms =
+        if bits & (BodyRules::MAY_RISE | BodyRules::NO_RED_REGENERATION) == BodyRules::MAY_RISE {
+            Some(now_ms.wrapping_add(DEATH_WAKE_MS))
+        } else {
+            None
+        };
+    Some(SettledDeath {
+        condition: Condition::DEAD,
+        rules: BodyRules(bits),
+        wake_at_ms,
+    })
+}
+
+/// The original's state flags beside the condition word. Knock-outs and
+/// shocks still have no writer on the running body. An elixir sets the
+/// potion ([`crate::remedy`]), and the health tick clears it once the
+/// game clock passes its stamp.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct StateFlags(pub u32);
 
@@ -328,6 +401,35 @@ pub fn posture(condition: Condition, p: &Posture) -> (Condition, Branch) {
     (next, Branch::Standing)
 }
 
+/// The attack's lower-leg layer: the foot channel's membership bit, without
+/// the exclusive bit. The setter ORs the feet's layer onto each foot.
+const ATTACK_SHIN_LAYER: u32 = 0x10;
+
+/// The lower-leg layer a posture store writes when it replaces a condition
+/// above 0xFF. Weak, a kick, a walk and normal put the living lower legs
+/// back. An attack puts [`ATTACK_SHIN_LAYER`]. Anything else, and a store
+/// whose condition was already at most 0xFF, writes nothing: getting up,
+/// down, a collapse, the dead, a shock and an off-balance body that keeps
+/// its word leave the layers alone.
+pub fn leg_layer_for(entering: Condition, next: Condition, branch: Branch) -> Option<u32> {
+    if entering.0 <= 0xFF {
+        return None;
+    }
+    if next == Condition::ATTACKING && branch == Branch::Attack {
+        return Some(ATTACK_SHIN_LAYER);
+    }
+    let restore = match next {
+        Condition::WEAK => branch == Branch::Weak,
+        Condition::KICKING | Condition::WALKING | Condition::NORMAL => branch == Branch::Standing,
+        _ => false,
+    };
+    if restore {
+        Some(pairs::LIVING_SHIN_LAYER)
+    } else {
+        None
+    }
+}
+
 /// The posture work that still runs over every character, after the daze's
 /// stance and before the character ticks ([`CharacterTicks`]). The
 /// condition, the collapse's dying tick, the falls and get-ups and the
@@ -370,7 +472,9 @@ pub fn ticked_lives(
 /// writer while its energy is more than 0.05 under its most (not in a
 /// shock's stagger), then the posture decision from the clip it plays,
 /// last tick's balance, summed limb motion and tone; the branch it takes
-/// is kept beside it.
+/// is kept beside it. When that decision replaces a condition above 0xFF,
+/// weak, a kick, a walk or normal restore the living lower-leg layer, and
+/// an attack puts the shins in 0x10.
 #[allow(clippy::type_complexity)]
 pub fn track_condition(
     ticked: Res<TickedCharacter>,
@@ -378,7 +482,7 @@ pub fn track_condition(
     mut bodies: Query<(
         &mut Condition,
         &StateFlags,
-        &Ragdoll,
+        &mut Ragdoll,
         &exa_anim::Animator,
         Option<&crate::Fighter>,
         Option<&mut PostureBranch>,
@@ -387,28 +491,36 @@ pub fn track_condition(
     let Some(motions) = motions else { return };
     let set = &*motions.0;
     let entity = ticked.body;
-    let Ok((mut condition, flags, body, anim, fighter, taken)) = bodies.get_mut(entity) else {
+    let Ok((mut condition, flags, mut body, anim, fighter, taken)) = bodies.get_mut(entity) else {
         return;
     };
-    let Some(drive) = body.drive.as_ref() else {
-        return;
+    let (dazed, balance, tone) = match body.drive.as_ref() {
+        Some(drive) => (
+            drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER),
+            drive.balance().value,
+            drive.tone,
+        ),
+        None => return,
     };
-    let mut next = *condition;
-    if drive.dazed() && !flags.has(StateFlags::SHOCK_STAGGER) {
-        next.daze();
+    let mut entering = *condition;
+    if dazed {
+        entering.daze();
     }
     let p = Posture {
         motion: set.action_index(&anim.action),
         progress: motions
             .clip(anim, &anim.action)
             .map_or(0.0, |c| anim.clip_progress(c)),
-        balance: drive.balance().value,
+        balance,
         exertion: body.exertion(),
-        tone: drive.tone,
+        tone,
         parrying: fighter.is_some_and(|f| f.parry.active),
         shock_over: false,
     };
-    let (next, branch) = posture(next, &p);
+    let (next, branch) = posture(entering, &p);
+    if let Some(layer) = leg_layer_for(entering, next, branch) {
+        pairs::set_leg_layers(&mut body.parts, layer);
+    }
     if let Some(mut taken) = taken
         && taken.0 != branch
     {
@@ -712,6 +824,49 @@ mod knockout_tests {
         );
         assert_eq!(knocked.condition, Condition::DOWN);
         assert_eq!(knocked.stance, Some(0.0));
+    }
+
+    #[test]
+    fn death_clears_may_rise_on_a_lost_body_and_keeps_a_suited_one_waiting() {
+        use exa_formats::character_stats::BodyRules;
+        let may = BodyRules(BodyRules::MAY_RISE | BodyRules::TAKES_REMEDIES);
+        let lost = settle_death(Condition::COLLAPSING, may, 2, 1.0, true, 50).unwrap();
+        assert_eq!(lost.condition, Condition::DEAD);
+        assert_eq!(lost.rules.0 & BodyRules::MAY_RISE, 0);
+        assert_eq!(
+            lost.rules.0 & BodyRules::TAKES_REMEDIES,
+            BodyRules::TAKES_REMEDIES
+        );
+        assert_eq!(lost.wake_at_ms, None);
+
+        let kept = settle_death(Condition::COLLAPSING, may, 1, 1.0, true, 50).unwrap();
+        assert_eq!(kept.rules, may);
+        assert_eq!(kept.wake_at_ms, Some(50 + DEATH_WAKE_MS));
+
+        let low = settle_death(Condition::COLLAPSING, may, 0, 0.0, false, 50).unwrap();
+        assert_eq!(low.rules.0 & BodyRules::MAY_RISE, 0);
+        assert!(settle_death(Condition::DEAD, may, 0, 0.0, false, 50).is_none());
+
+        // The f32 value 0.01 promotes to a double just under the f64
+        // threshold, so it clears. The next f32 promotes above it. A NaN
+        // does not compare below.
+        let edge = settle_death(Condition::NORMAL, may, 0, 0.01, false, 0).unwrap();
+        assert_eq!(edge.rules.0 & BodyRules::MAY_RISE, 0);
+        let above = f32::from_bits(0.01f32.to_bits() + 1);
+        let held_health = settle_death(Condition::NORMAL, may, 0, above, false, 0).unwrap();
+        assert_eq!(
+            held_health.rules.0 & BodyRules::MAY_RISE,
+            BodyRules::MAY_RISE
+        );
+        let suited = settle_death(Condition::NORMAL, may, 0, 0.01, true, 0).unwrap();
+        assert_eq!(suited.rules.0 & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
+        let nan = settle_death(Condition::NORMAL, may, 0, f32::NAN, false, 0).unwrap();
+        assert_eq!(nan.rules.0 & BodyRules::MAY_RISE, BodyRules::MAY_RISE);
+
+        let blocked = BodyRules(BodyRules::MAY_RISE | BodyRules::NO_RED_REGENERATION);
+        let held = settle_death(Condition::NORMAL, blocked, 0, 1.0, true, 10).unwrap();
+        assert_eq!(held.wake_at_ms, None);
+        assert_eq!(held.rules, blocked);
     }
 
     #[test]

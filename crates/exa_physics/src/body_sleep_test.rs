@@ -104,6 +104,23 @@ fn a_limp_body_sleeps_by_its_speed() {
     assert_eq!(drift(&mut body, 0.0, 400), Some(128));
 }
 
+/// A dormant statue's whole tree counts down by one a tick, floored at 1,
+/// whatever its motion: from 256 it sleeps in its 255th tick.
+#[test]
+fn a_dormant_statue_counts_down_by_one() {
+    let mut body = ball(Vec3::ZERO).with_drive();
+    body.drive.as_mut().unwrap().dormant = true;
+    assert_eq!(body.countdown(), WAKE_COUNT);
+    assert_eq!(drift(&mut body, 0.0, 400), Some(255));
+    // Fast motion still takes one, not the limp fast band's 256.
+    let mut body = ball(Vec3::ZERO).with_drive();
+    body.drive.as_mut().unwrap().dormant = true;
+    body.countdown = 10;
+    body.set_velocity(Vec3::X * 0.6);
+    body.tick(NONE);
+    assert_eq!(body.countdown(), 9);
+}
+
 /// Falling asleep, a body's velocity is taken away in its first sleeping
 /// tick, which leaves it in deep sleep; from then on it is not moved at
 /// all, whatever ticks run.

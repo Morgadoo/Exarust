@@ -14,11 +14,15 @@ The system SHALL turn the meshes of a level shown in play mode into static colli
 - **THEN** the player stands on the floor instead of falling through it
 
 ### Requirement: Clips follow movement
-The system SHALL play the walk clip whenever the player moves forward, walking or running: the body tick's locomotion SHALL start it in the tick it first moves the player, from any clip, and the steering SHALL end it in the idle clip when the player stops out of combat mode. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides, so the combat idle stays until the player walks.
+The system SHALL play the walk clip whenever the player moves forward, walking or running: the body tick's locomotion SHALL start it in the tick it first moves the player, from any clip, and the steering SHALL end it in the idle clip when the player stops out of combat mode. A walk or a run SHALL blend into idle over 20 frames with the fast ease; a backpedal SHALL end at once. Standing still out of combat mode, the steering SHALL start no other clip: the stance decides.
 
 #### Scenario: Start and stop
 - **WHEN** the player starts walking and then stops
 - **THEN** the clip changes from idle to walk in the tick the body first moves, and back to idle
+
+#### Scenario: A walk ends over twenty frames
+- **WHEN** the player stops a walk or a run out of combat mode, and later a backpedal
+- **THEN** idle starts with a fast-eased blend of 20 frames, and the backpedal ends at once
 
 #### Scenario: Combat idle after combat mode
 - **WHEN** Tab turns combat mode off while the player stands in Cmbt - Idle with the Defence stance, and it then turns in place, walks and stops
@@ -62,7 +66,7 @@ The system SHALL start the player where the original does for a new game in the 
 - **THEN** the player stands at (0, 0, 5) facing −Z and the opponent at (0, 0, 2.5) facing it, so the duellist's blows meet the player's front and land
 
 ### Requirement: Tank controls
-The system SHALL steer the player in exploration as the original does. W SHALL walk along the heading; A and D SHALL turn it 0.025 rad a tick while moving, or a quarter standing, once more than 1 s of the game clock has passed since any turn key. S SHALL backpedal, braking first above 1 cm a tick. A released walk SHALL go on to its walk's key segment 0 or 4, then stop softly 8·v + 20 cm ahead. Shift SHALL jog. Neither camera nor cursor SHALL change the heading.
+The system SHALL steer the player in exploration as the original does. W SHALL walk along the heading; A and D SHALL turn it 0.025 rad a tick while moving, or a quarter standing, once more than 1 s of the game clock has passed since any turn key. S SHALL backpedal, braking first above 1 cm a tick. A released walk SHALL go on to its walk's key segment 0 or 4, then stop softly 8·v + 20 cm ahead in three dimensions. Shift SHALL jog. Neither camera nor cursor SHALL change the heading.
 
 #### Scenario: Walking forward
 - **WHEN** W is held while the camera is orbited
@@ -100,7 +104,7 @@ The system SHALL walk the player toward the cursor's point on the plane 80 cm ab
 - **THEN** the movement decisions see the run bit and the sprint latch both set
 
 ### Requirement: Combat footwork
-The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk from before combat mode SHALL stop softly and end in the stance.
+The system SHALL toggle combat mode on Tab, and turn it on at a practice or arena fight's start. In combat mode the heading SHALL turn to the cursor once more than 30° off it, and follow it while the left button is held; the body SHALL turn toward it at the table's rate (300°/s standing). W, S, A and D SHALL step along and across the cursor's direction; their walk SHALL give back the clip it replaced; a walk or run from before combat mode SHALL stop softly and end in the stance as a walk ends.
 
 #### Scenario: Side step
 - **WHEN** A is held in combat mode
@@ -268,11 +272,15 @@ The system SHALL set the player's crouch amount to 1 while the Crouch binding is
 - **THEN** the walk clip's clock runs at 0.9 of its rate
 
 ### Requirement: Grid look-ahead
-The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch. A soft stop's goal SHALL be clamped the same way.
+The player's look-ahead SHALL walk the navigation grid from the standing point toward the look-ahead goal (75 cm + 6·v², 70 cm when backing), as the original does. Blocked, the free walk SHALL end and the body walk to the clamped goal and brake there; a clamped goal within 100 cm SHALL also cut the run and the sprint latch. A soft stop SHALL pull its goal in when the squared distance in three dimensions is over (8·v + 20 cm)², then the line walk SHALL clamp that goal the same way.
 
 #### Scenario: Walking into a crate
 - **WHEN** the player walks toward a crate lower than its hip
 - **THEN** the player brakes to a stop in front of it instead of pushing into it
+
+#### Scenario: A raised soft-stop goal
+- **WHEN** a soft stop at speed 0 has a goal 10 cm ahead and 30 cm up, then one exactly 20 cm ahead on the level, then one with a NaN component
+- **THEN** the first is pulled to 20 cm along the facing at the standing height, and the other two stay
 
 ### Requirement: Locomotion request
 The player SHALL move through a locomotion request (heading, look, flag word, moving, free walk, goal) that its body tick decides each tick: a free walk never brakes; toward a goal a walking body SHALL brake within its stop distance (50/200/250/50 cm, blended by the run; the sprint row's only with the sprint latch, a stance level above 0.9 and over 3.5 cm a tick) and stop within 25 cm at 0.5 cm a tick or less; a running body never brakes. A body under its most energy SHALL not walk.
@@ -327,11 +335,31 @@ On the player's third behaviour tick with a navigation grid, unless it is down, 
 - **THEN** it is not moved, then or later
 
 ### Requirement: Footwork step targets
-In combat mode a footwork step's target SHALL be a step's length along its keys (the step reach × √scale, 80 cm for a human), clamped by the grid's line walk from where the player stands; a target within 20 cm SHALL not be stepped to. Until the original's steps replace it, the interim footwork SHALL walk only while its step's target lies farther.
+In combat mode a footwork step SHALL aim from the chest: target = chest + v·(r·√scale/|v|) cm, v the key sum with a side key weighing 0.8, r the step reach × the legs' extension (80 cm for a human), or with the long-step latch (1.5 − 0.3·encumbrance) × the reach, narrowed once, times the extension. The line walk SHALL clamp it from the chest's x and z at the ground, and the step SHALL be taken only when the clamped target is over 400 cm² from the chest in three dimensions.
 
 #### Scenario: Footwork at a wall
-- **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead, then 21 cm ahead
+- **WHEN** W is held in combat mode facing a wall that clamps the step's target 20 cm ahead of the chest on its level, then 21 cm ahead
 - **THEN** the player takes no step and plays no walk, then it steps and plays the combat walk
+
+#### Scenario: A diagonal weighs the side by 0.8
+- **WHEN** W and A are held together facing +Z, on open ground, for a fresh press of an 80 cm step
+- **THEN** the target lies 0.8 as far to the side as it lies forward, and a side key alone still aims a full step
+
+#### Scenario: A raised clamp
+- **WHEN** the line walk clamps a step 15 cm ahead and 15 cm up, then 15 cm ahead on the level
+- **THEN** the first is stepped to and the second is not
+
+#### Scenario: A held step is a long step
+- **WHEN** a combat step's keys have already been held past 200 ms, on open ground, for a human step reach and for a reach of 72 cm at encumbrance 0.5
+- **THEN** the target is 120 cm and 97.2 cm along the keys, and a fresh press of the same reach stays at 80 cm
+
+#### Scenario: A shortened extension halves the step
+- **WHEN** the legs' extension is 0.5, on open ground, for a human's fresh press and for the same keys held past 200 ms
+- **THEN** the targets are 40 cm and 60 cm along the keys
+
+#### Scenario: A crouch of 0.1 keeps the short step
+- **WHEN** a combat step's keys have already been held past 200 ms and the crouch is 0.1, then the float just under 0.1
+- **THEN** the first target stays one step reach and the second is the long step
 
 ### Requirement: Camera yaw wrap
 Cursor Look SHALL keep the camera's target yaw within half a turn of the camera's present yaw, adding or subtracting a whole turn when the difference, compared in double precision, exceeds π.
@@ -505,6 +533,13 @@ While the head looks, its link muscles' anchors SHALL be placed relative to the 
 #### Scenario: A turned pose
 - **WHEN** the whole pose is turned 0.5 rad about the thorax and the head looks
 - **THEN** the head's anchors take the turn, which they do not when it does not look
+
+### Requirement: Anchors of a head that does not look
+While the head is not looking, its link anchors SHALL be placed from its pose relative to its parent's pose before the torso twist. The same twist on both SHALL leave those anchors where the untwisted pose puts them.
+
+#### Scenario: A twisted thorax
+- **WHEN** the thorax is twisted 0.5 rad about the vertical and the head keeps the untwisted pose
+- **THEN** the head's anchors match the untwisted pose, which they do not when the anchors read the twisted thorax
 
 ### Requirement: Reach under the cursor
 A point under the cursor SHALL be within reach when the point the pick hit is at most 245 cm high in the world and its offset from the player's hip is at most 300 cm up or down and 300 cm across the ground; a door SHALL be measured from its own place with 300 cm of height and 350 cm across. A comparison with a NaN SHALL pass.
@@ -705,3 +740,10 @@ Each camera tick SHALL end with a wall probe from 50 cm under the followed point
 #### Scenario: Open space
 - **WHEN** the camera ticks with nothing in the probe's way
 - **THEN** the view's pitch is the camera's own
+
+### Requirement: Long step latch
+The footwork's keys SHALL form a key code in which opposing keys cancel; the cursor walk is its own code. The clock SHALL be stamped when the code changes, and the long-step latch SHALL be set when the code is held, the stamp plus 200 ms is below the clock and the crouch widened to double is below 0.1. Only a code change or a release SHALL clear it; a later crouch or a blocked step SHALL not. The interim footwork SHALL walk only while a step is taken.
+
+#### Scenario: The latch holds until the keys change
+- **WHEN** W is pressed and held with steps of 80 and 120 cm, then the crouch goes to 0.5, then A and D are added, then W and A are held, then every key is released
+- **THEN** the target is 80 cm through 16 ticks after the press and 120 cm from the 17th, stays 120 cm after the crouch and with W, A and D, the hold restarts at 0 with W and A, and the release clears the latch

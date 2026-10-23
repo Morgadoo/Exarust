@@ -261,7 +261,7 @@ A killing blow on a living body SHALL start its collapse: condition collapsing, 
 - **THEN** the trace reads 0x800 from the blow, Fall Backward then Rebalance, and 0xA00 250 ticks later, and the body lies limp on its back
 
 ### Requirement: Health regeneration
-Each fixed tick a fighter not dead SHALL regenerate yellow health as the original: its rate is 0 while it attacks (condition 2) or plays Cmbt - Idle, else it rises 0.0003 × 0.01/83 a tick up to 0.01/83, and yellow gains √red × rate. Every blow and weapon contact SHALL set the rate to 0. A heal pool SHALL move 1.25e-5 a tick to red; yellow SHALL stay within red and red within the maximum. Death SHALL set yellow to 0.
+Each fixed tick a fighter not dead SHALL regenerate yellow health as the original: its rate is 0 while it attacks (condition 2) or plays Cmbt - Idle, else it rises 0.0003 × 0.01/83 a tick up to 0.01/83, and yellow gains √red × rate. Every blow and weapon contact SHALL set the rate to 0. A heal pool SHALL move 1.25e-5 a tick to red; yellow SHALL stay within red and red within the maximum. Yellow below 0 SHALL become 0; a NaN SHALL stay. Death SHALL set yellow to 0.
 
 #### Scenario: The retail trace
 - **WHEN** a fighter with yellow 0.085 and red 0.203 of 0.25 leaves Cmbt - Idle for the Idle clip

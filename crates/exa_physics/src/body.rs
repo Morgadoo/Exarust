@@ -43,14 +43,17 @@ use crate::part::PartState;
 
 #[path = "body_muscle.rs"]
 mod muscle;
-pub use muscle::{Bearing, BodyStats, RaceMuscles, attack_arms};
+pub use muscle::{AttackArmTune, Bearing, BodyStats, RaceMuscles, attack_arms};
 
 #[path = "body_balance.rs"]
 mod balance;
 pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
-pub use bend::{FemurPosture, femur_posture_turn};
+pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
+#[path = "body_hunch.rs"]
+mod hunch;
+pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 #[path = "body_feet.rs"]
 mod feet;
 #[path = "body_stagger.rs"]
@@ -96,9 +99,9 @@ pub const RETENTION: [f32; 3] = [0.426, 0.25, 0.05];
 /// Speeds (cm/s) a limp part's last tick must exceed to be fast, or slow.
 pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// u = (1 − b)(1 − r) + r, from a race's limb damping ratio r and the
-/// balance b. A living limb keeps the fast retention × u², and a human's r
-/// of 1 makes u 1 at any balance.
-const HUMAN_LIMB_DAMPING: f32 = 1.0;
+/// balance b. A living limb keeps the fast retention times [`retention_factor`]:
+/// u² standing, and 0.5·u + 0.5 while walking or off its feet. A human's r
+/// of 1 makes both 1 at any balance.
 pub(crate) const LINK_ITERATIONS: usize = 20;
 pub(crate) const FRICTION_PASSES: usize = 8;
 /// A held item body's motion flag: a walk's start clears it.
@@ -167,17 +170,22 @@ const DRIVE_SCALE: f32 = 19200.0 / (BODY_HZ * BODY_HZ);
 /// its head gain, [`BodyStats::head_gain`]).
 const TRUNK_GAIN: f32 = 0.03;
 const HEAD_GAIN: f32 = 0.01;
-/// The share of a pose push's vertical component that is kept.
-const VERTICAL_PUSH: f32 = 0.1;
-/// Energy regained per tick after a daze, up to the body's most energy
-/// ([`BodyStats::max_energy`]), and its floor.
-const ENERGY_RECOVERY: f32 = 0.005;
+/// The standing pose push's vertical scale: the double 0.1, narrowed once.
+const VERTICAL_PUSH: f64 = 0.1;
+/// The least energy a blow leaves ([`daze_energy`]). Recovery adds the
+/// double 0.005 each tick, up to the body's most ([`recover_energy`]).
 const MIN_ENERGY: f32 = 0.05;
+/// The double that floor is compared with. The float 0.05 promotes to a
+/// hair above it, so a blow that lands on the float is not raised.
+const MIN_ENERGY_F64: f64 = 0.05;
 /// The most energy of a body that is not feral (a feral body's is less,
 /// [`BodyStats::max_energy`]).
 pub const MAX_ENERGY: f32 = 1.0;
 /// Most of its energy a single blow takes.
 pub const MAX_DAZE: f32 = 0.9;
+/// The double a daze is compared with before it is capped at [`MAX_DAZE`].
+/// The float 0.9 promotes to a hair under it, so that float is not capped.
+const MAX_DAZE_F64: f64 = 0.9;
 /// The support pins' gain factor a living body starts with, and below
 /// which it recovers 0.001 a tick unless it collapses. The start is the
 /// float 0.08, compared with the double 0.08, so a living body's first
@@ -189,8 +197,6 @@ const PIN_RECOVERY: f64 = 0.001;
 /// compared in double precision as the original does (so an energy of
 /// 0.95f is dazed).
 const DAZED_BELOW_MAX: f64 = 0.05;
-/// The blow sag fades by this a tick.
-const SAG_FADE: f32 = 0.01;
 /// Friction of a limb against the level.
 const LIMB_FRICTION: f32 = 2.5;
 /// Friction of a foot (bones 4 and 7) as a body is built; a living body's
@@ -313,6 +319,9 @@ pub struct Part {
     /// controller), which the body tick sets bits of (bit 4 marks a part
     /// in a tangle or a hit reaction).
     pub state_word: u32,
+    /// When this part may play its impact sound again, on the 32-bit game
+    /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
+    pub sound_ready_ms: u32,
 }
 
 /// The share of a push at a point of a body that acts, as the original's
@@ -443,6 +452,7 @@ impl Part {
             static_only: false,
             class_word: 0,
             state_word: 0,
+            sound_ready_ms: 0,
         }
         .settle()
     }
@@ -960,10 +970,55 @@ pub enum Sleep {
     Deep,
 }
 
+/// A dormant statue or golem keeps this share of the living retention
+/// (the original's double 0.95, applied in double before the body's
+/// factor).
+const DORMANT_KEEP: f64 = 0.95;
+/// A body scale over this (double) in combat, outside an attack, keeps
+/// 0.97 of u² instead of u.
+const LARGE_SCALE: f64 = 1.3;
+const HEAVY_KEEP: f64 = 0.97;
+
+/// The factor a living limb's fast retention is multiplied by. `u` is
+/// (1 − balance)(1 − r) + r, all in single precision. While `eased` (the
+/// condition is walking, or it holds bit 0x200: down, getting up, dormant
+/// or dead) it is 0.5·u + 0.5. Standing it is u², but in combat (`in_combat`,
+/// the behaviour's in-combat flag) it is u, or 0.97·u² in double when the
+/// body scale compares over 1.3 and the condition is not the attack's. A
+/// NaN balance or ratio stays NaN.
+pub(crate) fn retention_factor(
+    balance: f32,
+    ratio: f32,
+    eased: bool,
+    in_combat: bool,
+    attacking: bool,
+    scale: f32,
+) -> f32 {
+    let u = (1.0 - balance) * (1.0 - ratio) + ratio;
+    if eased {
+        u * 0.5 + 0.5
+    } else if in_combat {
+        if f64::from(scale) > LARGE_SCALE && !attacking {
+            (f64::from(u * u) * HEAVY_KEEP) as f32
+        } else {
+            u
+        }
+    } else {
+        u * u
+    }
+}
+
 /// The velocity a living body's limbs keep each tick, whatever their
-/// speed: the fast retention × u².
-fn living_retention(u: f32) -> f32 {
-    per_tick(RETENTION[0]) * u * u
+/// speed: the fast retention × `factor` ([`retention_factor`]), ×
+/// [`DORMANT_KEEP`] while `dormant`.
+fn living_retention(factor: f32, dormant: bool) -> f32 {
+    let fast = per_tick(RETENTION[0]);
+    let keep = if dormant {
+        (f64::from(fast) * DORMANT_KEEP) as f32
+    } else {
+        fast
+    };
+    keep * factor
 }
 
 /// The original's smoothing for a link point `r` (m) from its part's origin.
@@ -1204,12 +1259,29 @@ pub struct Drive {
     /// The character frame: the body root's turn, at the anchor across the
     /// ground.
     frame: Option<Affine3A>,
+    /// The stance facing (a yaw) the footwork turns its spots onto. Not a
+    /// number until the turn writes one, and then the spots stay in the
+    /// character frame.
+    stance_yaw: f32,
+    /// The head's parent as posed before the torso twist, in the same
+    /// space as [`Drive::targets`]. While the head is not looking, its
+    /// link anchors are placed from its pose relative to this, so the
+    /// twist in the parent's target does not turn them. None while the
+    /// head looks (its anchors follow the physical thorax) and before a
+    /// sample names one.
+    head_pose_parent: Option<Affine3A>,
+    /// [`Drive::note_head_pose_parent`] stored this tick's placement, so
+    /// the carry leaves it where it was put.
+    head_parent_fresh: bool,
     /// Muscle tone, 0..=1: muscle strength and gravity compensation. A
     /// fall leaves it as it is.
     pub tone: f32,
     /// Daze: 1 when alert; blows lower it and it recovers over time. The
     /// pose drive follows its fourth power, the link muscles its root.
     pub energy: f32,
+    /// The character tick already wrote this tick's recovery, so the
+    /// integration step leaves the energy.
+    energy_recovered: bool,
     /// Standing on its controller, which carries it across the ground and
     /// turns it. The support pins hold it over its feet. A fallen body is
     /// not carried, and its balance is measured lying.
@@ -1222,8 +1294,16 @@ pub struct Drive {
     pub bearing: Bearing,
     /// Stance factor s: the share of its tone the body uses (T = tone·s).
     stance: f32,
-    /// The arms' stiffness.
+    /// The right arm's stiffness, which the readout reports. Standing, the
+    /// two arms ease apart and this is the right one ([`Self::arms`]).
     arm: f32,
+    /// The two stored arm stiffnesses, right then left. A standing tick
+    /// eases each; a kick leaves them; a collapse, a daze, a stride, a
+    /// power and a weapon switch write both the same. An attack stores the
+    /// floored pair so the next standing tick starts there. A shielded
+    /// stride writes the walking arms on the weapon arm and twice that
+    /// on the off arm.
+    arms: (f32, f32),
     /// Support S, 0..=1.
     support: f32,
     /// The balance its character tick measures.
@@ -1242,14 +1322,18 @@ pub struct Drive {
     lift_raw: f32,
     /// Blow sag s, 0..=1: how much an unsteady body's targets give way to
     /// the pose it holds after a blow (the damage routine sets it through
-    /// [`Shove::sag`]); it fades 0.01 a tick, and is 0 while the body is
-    /// down.
+    /// [`Shove::sag`]); it fades 0.01 a tick in double precision, and is 0
+    /// while the condition is down, getting up, dormant, collapsing or dead.
     pub sag: f32,
     /// The support pins' gain factor (the 0.08 of the pins' gain
     /// S²·pin-gain·P·pin factor): it recovers toward 0.08 every tick while
     /// the body lives ([`recover_pins`]) and fades while it collapses. The
     /// support pins read it each iteration.
     pub pin_gain: f32,
+    /// The thorax hunch: a pinned part's local forward axis loses this on
+    /// its height. It rises 0.01 a tick to 0.3 while the body is on its
+    /// feet and falls 0.01 to 0 off them; an attack clip takes 0.02 more off.
+    pub hunch: f32,
     /// Ticks the posture switch waits before it starts the body's stance
     /// again (it starts it only under 1): a Rebalance started off balance
     /// sets 41, one started unsteady 27, and every posture stage takes one
@@ -1257,6 +1341,61 @@ pub struct Drive {
     pub posture_wait: i32,
     /// Its recovery step, if the chest has left the feet.
     steps: steps::Steps,
+    /// The clip rate the posture block last wrote. A weak tick, and a walk
+    /// or a run, leave it; the clock reads it. It starts at the human base.
+    pub posture_rate: f32,
+    /// A dormant statue or golem. Its limbs keep [`DORMANT_KEEP`] of the
+    /// living retention, its sleep countdown runs, and its standing lift
+    /// lead is 20 cm.
+    pub dormant: bool,
+    /// This tick's attack arms, when a swing is playing: the muscle tune
+    /// writes each side's arm parts from it. Absent, the eased stiffness
+    /// stands. The swing stage clears it at the start of every tick.
+    attack_arms: Option<muscle::AttackArmTune>,
+    /// The two arm-drive slots, right then left: zeroed at the start of
+    /// every body tick before the arm state machine, and written only by
+    /// an attack's branch. Each arm's saturation is 0.1 − 0.08·drive, so
+    /// every tick that is not an attack saturates at 0.1.
+    arm_drive: (f32, f32),
+    /// Each target's rotation, taken once when the targets are installed
+    /// (the solver's sole turns read it every iteration).
+    turns: Vec<Quat>,
+    /// The clip progress the walking ground probe reads (the last
+    /// sample's), the locomotion speed along the heading (cm a tick) and
+    /// whether that walk is backwards. [`feet::gait_probe`] turns them into
+    /// the sphere, the sway and the ground's fall.
+    gait_progress: f32,
+    gait_speed: f32,
+    gait_back: bool,
+}
+
+/// One tick of energy. The base is u = energy + the double 0.005; while
+/// getting up t = (1 − progress)·0.01 is computed first, the difference
+/// taken in single precision, and added to u. The sum narrows to single
+/// precision and a value above `max_energy` becomes it; a NaN stays.
+pub fn recover_energy(energy: f32, max_energy: f32, getting_up: bool, progress: f32) -> f32 {
+    let sum = if getting_up {
+        f64::from(1.0 - progress) * 0.01 + (f64::from(energy) + 0.005)
+    } else {
+        f64::from(energy) + 0.005
+    };
+    let next = sum as f32;
+    if next > max_energy { max_energy } else { next }
+}
+
+/// One tick of blow sag. Above 0 it is 0 while `down` (the condition is
+/// down, getting up, dormant, collapsing or dead), and otherwise loses the
+/// double 0.01, floored at 0. A NaN, and a sag that is not above 0, stays.
+pub fn fade_sag(sag: f32, down: bool) -> f32 {
+    // A NaN, like a sag that does not compare above 0, stays.
+    if sag.is_nan() || sag <= 0.0 {
+        return sag;
+    }
+    if down {
+        return 0.0;
+    }
+    let next = (f64::from(sag) - 0.01) as f32;
+    if next < 0.0 { 0.0 } else { next }
 }
 
 /// One tick of the support pins' gain factor: under 0.08 (in double
@@ -1269,10 +1408,23 @@ pub fn recover_pins(gain: f32, collapsing: bool) -> f32 {
     }
 }
 
-/// A body's energy after a blow that dazes it by `daze`: it loses that
-/// share of its energy (at most 0.9 of it), never going under 0.05.
+/// A body's energy after a blow that dazes it by `daze`. The loss is
+/// `energy − energy × daze` in single precision. A daze that compares
+/// above the double 0.9 becomes 0.9; a result that compares below the
+/// double 0.05 becomes 0.05. A NaN stays, and a negative daze is not
+/// raised to 0.
 pub fn daze_energy(energy: f32, daze: f32) -> f32 {
-    (energy * (1.0 - daze.clamp(0.0, MAX_DAZE))).max(MIN_ENERGY)
+    let daze = if f64::from(daze) > MAX_DAZE_F64 {
+        MAX_DAZE
+    } else {
+        daze
+    };
+    let next = energy - energy * daze;
+    if f64::from(next) < MIN_ENERGY_F64 {
+        MIN_ENERGY
+    } else {
+        next
+    }
 }
 
 impl Default for Drive {
@@ -1282,14 +1434,19 @@ impl Default for Drive {
             root: None,
             anchor: None,
             frame: None,
+            stance_yaw: f32::NAN,
+            head_pose_parent: None,
+            head_parent_fresh: false,
             tone: 1.0,
             energy: 1.0,
+            energy_recovered: false,
             supported: true,
             race: RaceMuscles::HUMAN,
             stats: BodyStats::HUMAN,
             bearing: Bearing::default(),
             stance: RaceMuscles::HUMAN.stance,
             arm: 0.0,
+            arms: (0.0, 0.0),
             support: 1.0,
             balance: Balance::default(),
             carry: lift::gravity_per_tick(),
@@ -1298,13 +1455,56 @@ impl Default for Drive {
             lift_raw: 0.0,
             sag: 0.0,
             pin_gain: PIN_GAIN,
+            hunch: 0.0,
             posture_wait: 0,
             steps: steps::Steps::default(),
+            posture_rate: RaceMuscles::HUMAN.clip_rate,
+            dormant: false,
+            attack_arms: None,
+            arm_drive: (0.0, 0.0),
+            turns: Vec::new(),
+            gait_progress: 0.0,
+            gait_speed: 0.0,
+            gait_back: false,
         }
     }
 }
 
 impl Drive {
+    /// What the walking ground probe reads this tick: the clip `progress`
+    /// (the last sample's), the locomotion `speed` along the heading (cm a
+    /// tick) and whether the walk is `backwards`.
+    pub fn note_gait(&mut self, progress: f32, speed: f32, backwards: bool) {
+        self.gait_progress = progress;
+        self.gait_speed = speed;
+        self.gait_back = backwards;
+    }
+
+    /// The speed the walking ground probe's sway reads (cm a tick), as the
+    /// movement stage last noted it.
+    pub fn gait_speed(&self) -> f32 {
+        self.gait_speed
+    }
+
+    /// The stance facing this tick (a yaw). The footwork turns its stance
+    /// spots from the character frame onto it.
+    pub fn note_stance_yaw(&mut self, yaw: f32) {
+        self.stance_yaw = yaw;
+    }
+
+    /// The head's parent before the torso twist, in the same space as the
+    /// targets the next aim installs. While the head is not looking, its
+    /// anchors are placed against this. `None` while it looks.
+    pub fn note_head_pose_parent(&mut self, parent: Option<Affine3A>) {
+        self.head_pose_parent = parent;
+        self.head_parent_fresh = true;
+    }
+
+    /// The head's parent before the twist, once a sample named one.
+    pub(super) fn head_pose_parent(&self) -> Option<Affine3A> {
+        self.head_pose_parent
+    }
+
     /// Each part's animated world transform this tick (none before the
     /// first aim): the clip's pose on the character frame.
     pub fn targets(&self) -> &[Affine3A] {
@@ -1368,6 +1568,16 @@ impl Drive {
         self.support
     }
 
+    /// Takes each target's rotation once, for the solver's sole turns.
+    fn refresh_turns(&mut self) {
+        self.turns.clear();
+        self.turns.extend(
+            self.targets
+                .iter()
+                .map(|t| t.to_scale_rotation_translation().1),
+        );
+    }
+
     /// The body's balance.
     pub fn balance(&self) -> &Balance {
         &self.balance
@@ -1383,7 +1593,8 @@ impl Drive {
         self.steps.stepping
     }
 
-    /// The arms' stiffness (their link muscle factor is 1.25 times it).
+    /// The right arm's stiffness (its link muscle factor is 1.25 times it).
+    /// Standing, the two arms ease apart and this is the right one.
     pub fn arm_stiffness(&self) -> f32 {
         self.arm
     }
@@ -1410,6 +1621,13 @@ impl Drive {
     /// ([`BodyStats::max_energy`]), 1 unless feral.
     pub fn max_energy(&self) -> f32 {
         self.stats.max_energy
+    }
+
+    /// Writes this tick's energy recovery. The integration step then leaves
+    /// it, so the pose drive and the link muscles read the same value.
+    pub fn write_energy(&mut self, getting_up: bool, progress: f32) {
+        self.energy = recover_energy(self.energy, self.max_energy(), getting_up, progress);
+        self.energy_recovered = true;
     }
 
     /// Its energy as a share of its most, E/Emax.
@@ -1474,6 +1692,11 @@ pub struct DealtShoves(pub Vec<Shove>);
 /// Ticks the bodies have run since the start.
 #[derive(Resource, Debug, Default, Clone, Copy)]
 pub struct BodyTicks(pub u64);
+
+/// A body taken out of the scene (an AI character out of its activation
+/// range): the solver, its character tick and the drawing leave it.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OutOfScene;
 
 /// The original's game clock advances this many milliseconds a body tick
 /// (12 ms, the 83 Hz tick rounded), however long the tick took: its timers
@@ -1671,6 +1894,74 @@ impl Ragdoll {
         }
     }
 
+    /// How far (cm) leg `leg`'s contact sits over its ground and sole.
+    /// None until a ground is measured, which leaves the pitch to the
+    /// shin's tilt alone.
+    pub fn foot_contact_height(&self, leg: usize) -> f32 {
+        let Some(leg) = self.legs.get(leg) else {
+            return 0.0;
+        };
+        match leg.ground {
+            Some(ground) => (leg.at.y - self.sole - ground) * CM,
+            None => 0.0,
+        }
+    }
+
+    /// One tick of leg `leg`'s foot pitch toward `target` (rad): at most
+    /// 0.01 plus the stored rate, never past the target, the rate then
+    /// half of that sum within ±0.1. Returns the pitch the foot takes.
+    /// A placement uses [`Self::place_foot_pitches`] instead, which stores
+    /// the angle at once and clears the rate.
+    pub fn step_foot_pitch(&mut self, leg: usize, target: f32) -> f32 {
+        let Some(leg) = self.legs.get_mut(leg) else {
+            return 0.0;
+        };
+        let (angle, rate) = bend::ease(leg.pitch, leg.pitch_rate, target, bend::PITCH_STEP);
+        leg.pitch = angle;
+        leg.pitch_rate = rate;
+        angle
+    }
+
+    /// A placement's foot pitch: each foot on its feet stores the angle
+    /// that levels its toe, and the rate is cleared. The following ticks
+    /// ease from there. Off its feet the stored pitch stays.
+    pub fn place_foot_pitches(mut self) -> Self {
+        if self.drive.as_ref().is_some_and(|d| d.bearing.off_feet) {
+            return self;
+        }
+        let scale = self.drive.as_ref().map(|d| d.stats.scale).unwrap_or(1.0);
+        let count = self.legs.len();
+        for i in 0..count {
+            let (shin, foot) = {
+                let Some(leg) = self.legs.get(i) else {
+                    continue;
+                };
+                let Some(foot) = leg.foot else {
+                    continue;
+                };
+                (leg.shin, foot)
+            };
+            if shin >= self.parts.len() || foot >= self.parts.len() {
+                continue;
+            }
+            let parent = self.parts[shin].transform();
+            let placed = self.parts[foot].transform();
+            let local = parent.inverse() * placed;
+            let target = bend::foot_pitch_target(
+                parent.matrix3.y_axis.y,
+                parent.matrix3.z_axis.y,
+                local.matrix3.z_axis.y,
+                self.foot_contact_height(i),
+                scale,
+            );
+            if let Some(leg) = self.legs.get_mut(i) {
+                leg.pitch = target;
+                leg.pitch_rate = 0.0;
+            }
+        }
+        self
+    }
+
     /// Gives the body muscles following its animation. A living body never
     /// sleeps: its countdown is held at 256.
     pub fn with_drive(mut self) -> Self {
@@ -1682,18 +1973,36 @@ impl Ragdoll {
         self
     }
 
-    /// Sets both arms' stiffness to `x`, as the original's recoil does when
-    /// its stance returns: the next character tick eases it back up.
+    /// The part that carries the support pins (the thorax, the first part
+    /// whose setup has pins), if any. The thorax hunch pitches that part.
+    pub fn support_pin_part(&self) -> Option<usize> {
+        self.chest.first().map(|(i, _)| *i)
+    }
+
+    /// Sets both stored arm stiffnesses to `x`, as the original's recoil
+    /// does when its stance returns: the next standing tick eases each
+    /// back up from there.
     pub fn set_arm_stiffness(&mut self, x: f32) {
         if let Some(d) = self.drive.as_mut() {
             d.arm = x;
+            d.arms = (x, x);
         }
     }
 
-    /// The arms' stiffness, or none for a limp body (the debug readout and
-    /// the recoil's rest).
+    /// The right arm's stiffness, or none for a limp body (the debug
+    /// readout and the recoil's rest). Standing, the two arms ease apart
+    /// and this is the right one.
     pub fn arm_stiffness(&self) -> Option<f32> {
         self.drive.as_ref().map(|d| d.arm)
+    }
+
+    /// Sets this tick's attack arms, or clears them. The muscle tune writes
+    /// each side's shoulder, upper arm, forearm and hand from the pair;
+    /// absent, those parts keep the eased stiffness.
+    pub fn set_attack_arms(&mut self, tune: Option<AttackArmTune>) {
+        if let Some(d) = self.drive.as_mut() {
+            d.attack_arms = tune;
+        }
     }
 
     /// Marks the part `root`'s chain as striking, or clears it: the
@@ -1765,6 +2074,34 @@ impl Ragdoll {
         }
         for child in first.into_iter().flatten() {
             self.parts[child].class_word = word | 0x30;
+        }
+    }
+
+    /// The death routine's lower-leg pass: for each lower leg (a part that
+    /// carries a foot contact), its first child (the foot) gets the
+    /// level-contact word 0 and loses the strike-chain bit. A part that is
+    /// not a lower leg's first child keeps the bit. The same routine sets
+    /// each leg limit link's strength to 1, which [`Ragdoll::go_limp`]
+    /// does; the lower legs' collision layer is that routine's class
+    /// writer, [`pairs::set_leg_layers`].
+    pub fn clear_death_strikes(&mut self) {
+        for leg in 0..self.parts.len() {
+            if self.parts[leg].foot.is_none() {
+                continue;
+            }
+            let Some(child) = self.first_child(leg) else {
+                continue;
+            };
+            self.parts[child].no_level = false;
+            self.parts[child].state.0 &= !crate::part::PartState::STRIKE_CHAIN;
+        }
+    }
+
+    /// Stamps the impact-sound clock on the part of `bone`. A bone with no
+    /// part leaves the body as it is.
+    pub fn mark_part_sound(&mut self, bone: usize, ready_ms: u32) {
+        if let Some(part) = self.parts.iter_mut().find(|p| p.bone == bone) {
+            part.sound_ready_ms = ready_ms;
         }
     }
 
@@ -1884,6 +2221,22 @@ impl Ragdoll {
     /// The body's sleep countdown, in ticks: 256 woken or alive, 0 asleep.
     pub fn countdown(&self) -> i32 {
         self.countdown
+    }
+
+    /// Resets a body that re-enters the scene, as the original's body reset
+    /// does: every velocity word, the stepping episode, the tone and energy
+    /// to 1, the balance to 1, the blow sag and posture wait to 0.
+    pub fn reset_presence(&mut self) {
+        self.set_velocity(Vec3::ZERO);
+        if let Some(d) = self.drive.as_mut() {
+            d.tone = 1.0;
+            d.energy = 1.0;
+            d.balance.value = 1.0;
+            d.steps = steps::Steps::default();
+            d.sag = 0.0;
+            d.posture_wait = 0;
+            d.carry = Vec3::ZERO;
+        }
     }
 
     /// Lets the body settle for `ticks` ticks with gravity but no inertia:
@@ -2045,6 +2398,7 @@ impl Ragdoll {
         self.carry(root);
         if let Some(drive) = self.drive.as_mut() {
             drive.targets = targets;
+            drive.refresh_turns();
         }
         self.anchor_frame(root);
         // Last tick's bend, so this tick's muscles follow it.
@@ -2057,6 +2411,9 @@ impl Ragdoll {
     /// none to give; its frame follows the pelvis as in [`Ragdoll::aim`].
     pub fn hold(&mut self, root: Affine3A) {
         self.carry(root);
+        if let Some(drive) = self.drive.as_mut() {
+            drive.refresh_turns();
+        }
         let base = self.drive.as_ref().and_then(|d| d.frame).unwrap_or(root);
         self.anchor_frame(base);
         self.tune_muscles();
@@ -2084,6 +2441,8 @@ impl Ragdoll {
         if !drive.supported {
             drive.root = None;
         }
+        let fresh = drive.head_parent_fresh;
+        drive.head_parent_fresh = false;
         let Some(previous) = drive.root.replace(root) else {
             return;
         };
@@ -2113,6 +2472,9 @@ impl Ragdoll {
         }
         for t in &mut drive.targets {
             *t = carry * *t;
+        }
+        if !fresh && let Some(parent) = drive.head_pose_parent.as_mut() {
+            *parent = carry * *parent;
         }
         // The anchor is kept from tick to tick, so it is carried relative
         // to the root: a root that has not moved leaves it exactly where
@@ -2189,6 +2551,37 @@ impl Ragdoll {
     /// The point with weights `w` where the part is now (m).
     pub fn point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
         self.parts.get(part).map(|p| p.point(w))
+    }
+
+    /// Where the part's own origin is now (m).
+    pub fn origin_at(&self, part: usize) -> Option<Vec3> {
+        self.parts.get(part).map(|p| p.point(&p.own_origin))
+    }
+
+    /// How far the part's own origin moved over the last tick (m): each
+    /// particle's displacement times its origin weight.
+    pub fn origin_moved(&self, part: usize) -> Option<Vec3> {
+        self.parts
+            .get(part)
+            .map(|p| (0..4).map(|k| p.moved[k] * p.own_origin[k]).sum())
+    }
+
+    /// Moves each of the part's particles by `delta` (m) times its origin
+    /// weight.
+    pub fn push_origin(&mut self, part: usize, delta: Vec3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            let w = p.own_origin;
+            p.push(&w, delta);
+        }
+    }
+
+    /// Turns the part's particles about `centre` (m) by `turn`.
+    pub fn turn_part(&mut self, part: usize, centre: Vec3, turn: Mat3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            for x in &mut p.positions {
+                *x = turn * (*x - centre) + centre;
+            }
+        }
     }
 
     /// A part's link mobility: its inverse mass times the link share
@@ -2363,12 +2756,18 @@ impl Ragdoll {
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
-            drive.energy = (drive.energy + ENERGY_RECOVERY).min(drive.stats.max_energy);
-            drive.sag = if drive.supported {
-                (drive.sag - SAG_FADE).max(0.0)
+            if drive.energy_recovered {
+                drive.energy_recovered = false;
             } else {
-                0.0
-            };
+                drive.energy = recover_energy(
+                    drive.energy,
+                    drive.stats.max_energy,
+                    drive.bearing.getting_up,
+                    drive.bearing.progress,
+                );
+            }
+            let down = drive.bearing.off_feet || drive.bearing.collapsing;
+            drive.sag = fade_sag(drive.sag, down);
         }
         self.integrate();
         if self.drive.is_some() {
@@ -2389,13 +2788,17 @@ impl Ragdoll {
     }
 
     /// This tick's sleep countdown, from the last tick's motion, before the
-    /// body is integrated. A living body's is held at 256 (the original's
-    /// living never sleep, save dormant statues). A limp body's follows the
-    /// band of its fastest part, by the farthest one of that part's
-    /// particles moved ([`count_down`]).
+    /// body is integrated. A living body's is held at 256. A dormant statue
+    /// or golem has its whole tree counted down by one, floored at 1,
+    /// whatever its motion. A limp body counts down by the band of its
+    /// fastest part ([`count_down`]).
     fn tick_countdown(&mut self) {
-        if self.drive.is_some() {
-            self.countdown = self.countdown.max(WAKE_COUNT);
+        if let Some(drive) = self.drive.as_ref() {
+            if !drive.dormant {
+                self.countdown = self.countdown.max(WAKE_COUNT);
+            } else {
+                self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+            }
             return;
         }
         let band = self
@@ -2470,19 +2873,31 @@ impl Ragdoll {
         }
         // A living part over half its tone falls by g(1 − a) + carry·a, a
         // its share of the carry; any other by gravity.
-        let carried = self.drive.as_ref().map(|d| (d.tone, d.energy, d.carry));
-        // A limp part keeps its velocity by how fast it moved last tick; a
-        // living limb keeps the fast retention whatever its speed.
-        let living = self
+        let carried = self
             .drive
-            .is_some()
-            .then(|| living_retention(HUMAN_LIMB_DAMPING));
+            .as_ref()
+            .map(|d| (d.tone, d.energy, d.carry, d.stats.scale));
+        // A limp part keeps its velocity by how fast it moved last tick; a
+        // living limb keeps the fast retention times its race's factor,
+        // whatever its speed.
+        let living = self.drive.as_ref().map(|d| {
+            let eased = d.bearing.walking || d.bearing.off_feet;
+            let factor = retention_factor(
+                d.balance.value,
+                d.race.damping_ratio,
+                eased,
+                d.bearing.in_combat,
+                d.bearing.attacking,
+                d.stats.scale,
+            );
+            living_retention(factor, d.dormant)
+        });
         for p in &mut self.parts {
             p.start = p.positions;
             p.strain = 0.0;
             let pull = carried
-                .and_then(|(tone, energy, carry)| {
-                    let a = lift::carry_share(p.bone, tone, energy)?;
+                .and_then(|(tone, energy, carry, scale)| {
+                    let a = lift::carry_share(p.bone, tone, energy, scale)?;
                     Some(gravity * (1.0 - a) + carry * a)
                 })
                 .unwrap_or(gravity);
@@ -2596,7 +3011,8 @@ impl Ragdoll {
             if gains.is_none() && !self.grabs.is_empty() {
                 self.pull_grabs(i);
             }
-            // A lower leg's foot contact, then a foot's sole.
+            // A lower leg's foot contact, then a foot's sole. The target
+            // rotations were taken once when the targets were installed.
             if let Some(fd) = &feet {
                 for leg in &mut self.legs {
                     if leg.shin == i && feet::drive_contact(&mut self.parts[i], leg, fd) {
@@ -2604,6 +3020,11 @@ impl Ragdoll {
                     }
                     if leg.foot == Some(i) {
                         feet::push_sole(&mut self.parts[i], leg, fd);
+                        if let Some(turn) =
+                            self.drive.as_ref().and_then(|d| d.turns.get(i)).copied()
+                        {
+                            feet::turn_sole(&mut self.parts[i], leg, fd, turn);
+                        }
                     }
                 }
             }
@@ -2803,9 +3224,17 @@ const HEAD: usize = 10;
 /// last tick, `stance` the stance factor s and `gain` G. The share of o
 /// that v already closes, c = o·v/(s|o|²), is taken off: G·o·(1 − c), only
 /// when c < 1 (a particle closing fast enough is left alone, one moving
-/// away is pushed harder), its vertical cut to a tenth. None under
-/// 1.19e-7 cm².
-fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> {
+/// away is pushed harder). On its feet the vertical is the double 0.1
+/// narrowed once. Off its feet (`vertical_only`: down, getting up, dormant
+/// or dead) the horizontal is dropped and the vertical is kept whole.
+/// None under 1.19e-7 cm².
+fn pose_push(
+    offset: Vec3,
+    moved: Vec3,
+    stance: f32,
+    gain: f32,
+    vertical_only: bool,
+) -> Option<Vec3> {
     let len2 = offset.length_squared();
     if len2.is_nan() || len2 < LINK_EPSILON2 * CM * CM {
         return None;
@@ -2815,7 +3244,12 @@ fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> 
         return None;
     }
     let mut push = offset * (1.0 - c);
-    push.y *= VERTICAL_PUSH;
+    if vertical_only {
+        push.x = 0.0;
+        push.z = 0.0;
+    } else {
+        push.y = (f64::from(push.y) * VERTICAL_PUSH) as f32;
+    }
     Some(push * gain)
 }
 
@@ -2826,11 +3260,13 @@ fn pose_push(offset: Vec3, moved: Vec3, stance: f32, gain: f32) -> Option<Vec3> 
 /// on its particles, so it has no position or height target. Each particle
 /// is pushed by [`pose_push`] against its own velocity (in the frame its
 /// controller carries, while one carries it), with the gain
-/// [`Drive::pose_gain`]; only while the body has support. The other parts
-/// are turned by their link muscles alone.
+/// [`Drive::pose_gain`]; only while the body has support. Off its feet the
+/// push keeps only its vertical. The other parts are turned by their link
+/// muscles alone.
 fn drive_parts(parts: &mut [Part], drive: &Drive) {
     if drive.targets.len() == parts.len() && drive.balance.has_support() {
         let stance = drive.stance.max(muscle::MIN_STANCE);
+        let vertical_only = drive.bearing.off_feet;
         for (p, target) in parts.iter_mut().zip(&drive.targets) {
             let gain = drive.pose_gain(p.bone);
             if gain.is_nan() || gain <= 0.0 {
@@ -2840,7 +3276,9 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
             let origin = p.point(&p.own_origin);
             for k in 0..4 {
                 let offset = origin + turn * p.rest[k] - p.positions[k];
-                if let Some(push) = pose_push(offset * CM, p.moved[k] * CM, stance, gain) {
+                if let Some(push) =
+                    pose_push(offset * CM, p.moved[k] * CM, stance, gain, vertical_only)
+                {
                     p.positions[k] += push / CM;
                 }
             }
@@ -2931,7 +3369,7 @@ pub fn world_with(
 fn begin_frame(
     mut shoves: MessageReader<Shove>,
     mut queue: ResMut<ShoveQueue>,
-    mut bodies: Query<&mut Ragdoll>,
+    mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
 ) {
     queue.0.extend(shoves.read().copied());
     for mut body in &mut bodies {
@@ -2952,7 +3390,7 @@ pub fn step_bodies(
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
     mut stages: ResMut<SolverStages>,
-    mut bodies: Query<&mut Ragdoll>,
+    mut bodies: Query<&mut Ragdoll, Without<OutOfScene>>,
 ) {
     dealt.0.clear();
     for s in queue.0.drain(..) {
@@ -3079,6 +3517,20 @@ mod tests {
 
     const NONE: &[[Vec3; 3]] = &[];
 
+    /// A get-up's share is computed first and added to the base E + 0.005,
+    /// all in double. E = 0.009986606 at progress 0.032463625 gives
+    /// 0.024661969; the left-to-right sum rounds to 0.024661971. The 0.005
+    /// is double, so 0.5 becomes the float 0.5049999952316284.
+    #[test]
+    fn the_get_up_energy_adds_its_share_to_the_base() {
+        assert_eq!(
+            recover_energy(0.009_986_606, 1.0, true, 0.032_463_625),
+            0.024_661_969
+        );
+        assert_eq!(recover_energy(0.5, 1.0, false, 0.0), 0.504_999_99);
+        assert_eq!(recover_energy(1.0, 1.0, true, 0.0), 1.0);
+    }
+
     fn two_parts(slack: f32) -> Ragdoll {
         let e = Entity::PLACEHOLDER;
         let at = |y: f32| Affine3A::from_translation(Vec3::new(0.0, y, 0.0));
@@ -3112,6 +3564,25 @@ mod tests {
                 spheres: None,
             },
         ])
+    }
+
+    /// The sole turns the solver reads are taken once when the targets are
+    /// installed: each is its target's rotation, and a hold keeps them.
+    #[test]
+    fn the_sole_turns_are_taken_when_the_targets_are_installed() {
+        let mut body = two_parts(0.0).with_drive();
+        let pose = vec![
+            Affine3A::from_rotation_y(0.3),
+            Affine3A::from_rotation_x(-0.2),
+        ];
+        body.aim(Affine3A::IDENTITY, pose.clone());
+        let turns = body.drive.as_ref().unwrap().turns.clone();
+        assert_eq!(turns.len(), pose.len());
+        for (turn, target) in turns.iter().zip(&pose) {
+            assert_eq!(*turn, target.to_scale_rotation_translation().1);
+        }
+        body.hold(Affine3A::IDENTITY);
+        assert_eq!(body.drive.as_ref().unwrap().turns, turns);
     }
 
     #[test]
@@ -3191,8 +3662,12 @@ mod tests {
     /// 0.426, 0.25 and 0.05 per second, 0.98977, 0.98344 and 0.96455 per
     /// tick. A limp part takes its band from the farthest one of its
     /// particles moved last tick, strictly over 40/83 cm (fast) or 20/83 cm
-    /// (slow); a living limb keeps the fast retention × u², 0.98977 for a
-    /// human, whatever its speed.
+    /// (slow); a living limb keeps the fast retention times its factor,
+    /// 0.98977 for a human, whatever its speed. A golem (r = 0.95) at full
+    /// balance keeps r² standing and 0.5·r + 0.5 while walking or down; in
+    /// combat it keeps u, or 0.97·u² in double when it is larger than 1.3
+    /// and not attacking. A dormant body takes 0.95 of the fast retention
+    /// in double first.
     #[test]
     fn velocity_is_kept_as_the_default_environment_gives_it() {
         let close = |a: f32, b: f32| (a - b).abs() < 5e-6;
@@ -3208,7 +3683,51 @@ mod tests {
         ] {
             assert_eq!(limp_retention(moved), want, "{moved} cm in a tick");
         }
-        assert!(close(living_retention(HUMAN_LIMB_DAMPING), 0.98977));
+        assert!(close(living_retention(1.0, false), 0.98977));
+        assert!(close(living_retention(1.0, true), 0.98977 * 0.95));
+        // The keep is the double 0.95, not the float widened.
+        assert_eq!(
+            living_retention(1.0, true),
+            (f64::from(per_tick(RETENTION[0])) * 0.95) as f32
+        );
+        assert_eq!(living_retention(0.9025, true), 0.848_605_5);
+        // The fast value takes 0.95 in double and narrows before the
+        // factor: 0.00005 gives 0.000047014153, not 0.000047014157.
+        assert_eq!(living_retention(0.000_05, true), 0.000_047_014_153);
+        let golem = 0.95f32;
+        let still = |b, eased, combat, attacking, scale| {
+            retention_factor(b, golem, eased, combat, attacking, scale)
+        };
+        let standing = still(1.0, false, false, false, 1.0);
+        let walking = still(1.0, true, false, false, 1.0);
+        assert_eq!(standing.to_bits(), (golem * golem).to_bits());
+        assert_eq!(walking.to_bits(), (golem * 0.5 + 0.5).to_bits());
+        // In combat, standing, u is 0.975: u, or 0.97·u² on a large body
+        // that is not attacking, and the eased branch first.
+        assert_eq!(still(0.5, false, true, false, 1.0), 0.975);
+        assert_eq!(still(0.5, false, true, false, 1.4), 0.922_106_3);
+        assert_eq!(still(0.5, false, true, true, 1.4), 0.975);
+        assert_eq!(still(0.5, true, true, false, 1.4), 0.987_5);
+        // The scale test is strict: 1.3 is not over.
+        assert_eq!(still(0.5, false, true, false, 1.3), 0.975);
+        // Lost balance makes u 1, so both factors are 1.
+        assert_eq!(still(0.0, false, false, false, 1.0), 1.0);
+        assert_eq!(still(0.0, true, false, false, 1.0), 1.0);
+        // A human's ratio of 1 leaves the factor at 1, walking or not.
+        assert_eq!(retention_factor(0.4, 1.0, false, false, false, 1.0), 1.0);
+        assert_eq!(retention_factor(0.4, 1.0, true, false, false, 1.0), 1.0);
+        assert!(retention_factor(f32::NAN, golem, false, false, false, 1.0).is_nan());
+        assert!(retention_factor(f32::NAN, golem, true, false, false, 1.0).is_nan());
+        assert!(retention_factor(1.0, f32::NAN, false, false, false, 1.0).is_nan());
+        let mut awake = Ragdoll::new(&[]).with_drive();
+        awake.countdown = 10;
+        awake.tick_countdown();
+        assert_eq!(awake.countdown(), WAKE_COUNT);
+        let mut statue = Ragdoll::new(&[]).with_drive();
+        statue.drive.as_mut().unwrap().dormant = true;
+        statue.countdown = 10;
+        statue.tick_countdown();
+        assert_eq!(statue.countdown(), 9);
         // One tick of a lone part drifting sideways at 6 cm/s (resting) and
         // at 60 cm/s (fast), limp and living (held up by its tone).
         for (speed, living, want) in [
@@ -3241,6 +3760,40 @@ mod tests {
                 "{speed} m/s, living {living}: kept {kept}"
             );
         }
+        // A golem (r = 0.95) at full balance keeps that fast share times r²
+        // standing, and times 0.5·r + 0.5 while walking, even when slow.
+        let mut golem_body = Ragdoll::new(&[PartSetup {
+            bone: 11,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.06),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }])
+        .with_drive();
+        golem_body.drive.as_mut().unwrap().race.damping_ratio = golem;
+        let expect = |body: &mut Ragdoll, eased: bool| {
+            body.drive.as_mut().unwrap().bearing.walking = eased;
+            body.set_velocity(Vec3::X * 0.06);
+            let x = body.parts[0].positions[0].x;
+            body.integrate();
+            (body.parts[0].positions[0].x - x) / (0.06 / BODY_HZ)
+        };
+        let standing_kept = expect(&mut golem_body, false);
+        assert!(
+            (standing_kept - fast * golem * golem).abs() < 1e-4,
+            "standing golem kept {standing_kept}"
+        );
+        let walking_kept = expect(&mut golem_body, true);
+        assert!(
+            (walking_kept - fast * (golem * 0.5 + 0.5)).abs() < 1e-4,
+            "walking golem kept {walking_kept}"
+        );
     }
 
     /// A legless body has no lift: it lies on the floor while its pose
@@ -3285,6 +3838,8 @@ mod tests {
         };
         step(&mut body, 20);
         body.shove(1, Vec3::X * 3.0, 0.7);
+        // The blow's energy is the original's product, not a clamped share.
+        assert_eq!(body.drive.as_ref().unwrap().energy, 1.0 - 0.7);
         let pushed = step(&mut body, 10);
         assert!(pushed > 0.05, "barely moved: {pushed}");
         let back = step(&mut body, 400);
@@ -3292,6 +3847,32 @@ mod tests {
         // shove is not pulled back to the origin. The energy still recovers.
         assert!(back.abs() > 0.2, "pulled back to {back}");
         assert_eq!(body.drive.as_ref().unwrap().energy, 1.0);
+    }
+
+    /// A blow's energy loss is `energy − energy × daze`. A daze above the
+    /// double 0.9 becomes 0.9, and a result below the double 0.05 becomes
+    /// 0.05. A NaN stays, and a negative daze is not raised to 0.
+    #[test]
+    fn a_blow_leaves_energy_as_the_original_does() {
+        assert_eq!(daze_energy(1.0, 0.5), 0.5);
+        assert_eq!(daze_energy(1.0, 0.9), 1.0 - 0.9);
+        assert_eq!(daze_energy(1.0, 0.9f32.next_up()), 1.0 - 0.9);
+        assert_eq!(daze_energy(0.2, 0.9), MIN_ENERGY);
+        assert_eq!(daze_energy(0.04, 0.0), MIN_ENERGY);
+        assert_eq!(daze_energy(MIN_ENERGY, 0.0).to_bits(), MIN_ENERGY.to_bits());
+        assert!(daze_energy(f32::NAN, 0.5).is_nan());
+        assert!(daze_energy(0.8, f32::NAN).is_nan());
+        #[allow(clippy::neg_multiply)]
+        {
+            assert_eq!(daze_energy(0.5, -1.0), 0.5 - 0.5 * -1.0);
+        }
+        // The product is a multiply then a subtract, so a second blow on
+        // what the first left is not the single-precision complement.
+        let energy = f32::from_bits(0x3f26_cecc);
+        let daze = f32::from_bits(0x3f35_b8cc);
+        let once = daze_energy(energy, daze);
+        assert_eq!(once.to_bits(), 0x3e41_98b0);
+        assert_ne!(once, energy * (1.0 - daze));
     }
 }
 
@@ -3335,44 +3916,5 @@ mod environment_tests {
             (MOTILE_ENVIRONMENT.fast_speed, MOTILE_ENVIRONMENT.slow_speed),
             (40.0, 20.0)
         );
-    }
-}
-
-/// The body's footstep phase after a tick whose pelvis origin travelled
-/// `travel2` (cm², over the last two particle sets): the phase kept as the
-/// previous one, then raised by √travel²·0.0002 above the epsilon; over 1
-/// both wrap by one.
-pub fn step_phase(phase: f32, travel2: f32) -> (f32, f32) {
-    let previous = phase;
-    let mut now = phase;
-    if travel2 > f32::from_bits(0x33ff_ffd7) {
-        // The sum runs in double: the root widened, scaled, added, narrowed.
-        now = (f64::from(travel2.sqrt()) * 0.0002 + f64::from(now)) as f32;
-    }
-    if now > 1.0 {
-        now -= 1.0;
-        return (previous - 1.0, now);
-    }
-    (previous, now)
-}
-
-#[cfg(test)]
-mod step_phase_tests {
-    use super::*;
-
-    #[test]
-    fn the_footstep_phase_follows_the_pelvis_travel() {
-        let (prev, now) = step_phase(0.5, 100.0);
-        assert_eq!(prev, 0.5);
-        assert!((now - 0.502).abs() < 1e-7);
-        let (prev, now) = step_phase(1.1, 100.0);
-        assert!((prev - 0.1).abs() < 1e-6);
-        assert!((now - 0.102).abs() < 1e-6);
-        assert_eq!(step_phase(0.5, 0.0), (0.5, 0.5));
-        // At the epsilon itself or for a NaN travel the phase stands.
-        assert_eq!(step_phase(0.5, f32::from_bits(0x33ff_ffd7)), (0.5, 0.5));
-        assert_eq!(step_phase(0.5, f32::NAN), (0.5, 0.5));
-        // Exactly 1 does not wrap; the sum is taken in double.
-        assert_eq!(step_phase(1.0, 0.0), (1.0, 1.0));
     }
 }

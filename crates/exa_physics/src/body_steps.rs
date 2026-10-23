@@ -137,6 +137,13 @@ pub(super) struct Steps {
     /// A blow started this step. It is not the balance trigger, and walking
     /// does not clear it.
     pub knockback: bool,
+    /// The body's stand-still stamps (ms), which an anchored foot's score
+    /// reads: when a foot last started moving, and a landing's time plus
+    /// 100 ms (a stalled landing's time itself). The trailing-foot plant
+    /// writes both, its clock and that plus 100 ms; a step's start closes
+    /// the later one. NaN until written.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 impl Default for Steps {
@@ -153,6 +160,8 @@ impl Default for Steps {
             near: 0,
             landed_from: 0,
             knockback: false,
+            still_at: f32::NAN,
+            still_plus: f32::NAN,
         }
     }
 }
@@ -320,6 +329,8 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
                 steps.started = steps.clock;
                 steps.near = 0;
                 steps.landed_from = t.landings;
+                // A step's start closes the later stand-still stamp.
+                steps.still_plus = f32::NAN;
             }
             steps.target = new_target;
         }
@@ -439,8 +450,6 @@ pub(super) struct FootView {
     pub point: Vec3,
     pub leg: f32,
     pub changed_ms: f32,
-    pub landed_ms: f32,
-    pub started_ms: f32,
 }
 
 /// What one footwork pass reads. Positions are metres.
@@ -458,6 +467,10 @@ pub(super) struct Work {
     /// The chest's horizontal distance to the step target (cm).
     pub chest_to_target_cm: f32,
     pub size: f32,
+    /// The body's stand-still stamps (ms), which the footwork writes back
+    /// as feet start and land.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 impl Work {
@@ -476,6 +489,8 @@ impl Work {
             episode_ms: 0.0,
             chest_to_target_cm: f32::MAX,
             size: 1.0,
+            still_at: f32::NAN,
+            still_plus: f32::NAN,
         }
     }
 }
@@ -492,6 +507,9 @@ pub(super) struct ScoreCtx {
     pub step: f32,
     pub episode: bool,
     pub size: f32,
+    /// Stand-still stamps (ms), as the footwork's landing left them.
+    pub still_at: f32,
+    pub still_plus: f32,
 }
 
 /// The footwork's choice for two feet: the highest of stay, foot 0 and
@@ -593,17 +611,32 @@ fn foot_score(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx)
     if !feet[i].anchored && off < tolerance {
         return STAY_SCORE;
     }
-    let mut score = MOVE_SCORE;
-    if feet[i].anchored {
-        if recent(feet[i].landed_ms, ctx.now_ms, FRESH_MS) {
-            score += FRESH_BONUS;
-        } else if recent(feet[i].started_ms, ctx.now_ms, EARLY_MS) {
-            score += EARLY_BONUS;
-        } else if recent(feet[i].landed_ms, ctx.now_ms, LATE_MS) {
-            score += LATE_BONUS;
-        }
-    }
+    let score = if feet[i].anchored {
+        anchored_base(ctx.still_plus, ctx.still_at, ctx.now_ms)
+    } else {
+        MOVE_SCORE
+    };
     score + common(i, feet, spots, ctx)
+}
+
+/// An anchored foot's base, from the body's two stand-still stamps:
+/// `plus` (a landing's time plus 100 ms, a stalled landing's time, or the
+/// trailing plant's clock plus 100 ms) and `at` (when a foot last started
+/// moving, or the trailing plant's clock). Under `plus` plus 100 ms the
+/// base is 11.5, else under `at` plus 300 ms it is 3.5, else under `plus`
+/// plus 600 ms it is 2, else 1.5. Each bound is strict, and a stamp that
+/// is not a number (never written, or closed by a step's start) opens no
+/// band.
+pub(super) fn anchored_base(plus: f32, at: f32, now: f32) -> f32 {
+    if now < plus + FRESH_MS {
+        MOVE_SCORE + FRESH_BONUS
+    } else if now < at + EARLY_MS {
+        MOVE_SCORE + EARLY_BONUS
+    } else if now < plus + LATE_MS {
+        MOVE_SCORE + LATE_BONUS
+    } else {
+        MOVE_SCORE
+    }
 }
 
 fn common(i: usize, feet: &[FootView; 2], spots: &[Vec3; 2], ctx: &ScoreCtx) -> f32 {

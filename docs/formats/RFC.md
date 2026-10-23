@@ -982,7 +982,7 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 | inventory | `i32 n`, n × {u32 item, u32 flags, u32 ?} | carried items |
 | roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
 | relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
-| saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (game clock) |
+| saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (world clock, s) |
 | sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: u32, ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12`: two words; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
 
 Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
@@ -1005,7 +1005,12 @@ own item database).
 perks its combat and body read: Close Combat 1–4 Remise, Feint, Fend,
 Riposte; Armour 5 Security; Shields 1–6 Counter, Synchrony, Ward, Persist,
 Endure, Mobility; Insight 6 Iteration; Concentration 1, 5, 6, 8 Sustain,
-Abstraction, Clarity, Volition. Close Combat 5–8 (Draw, Impel, Brace, Dual
+Abstraction, Clarity, Volition. A body packs them into its technique word,
+rebuilt from the record (each skill's techniques read one per 5000
+points): Close Combat's four at bits 0x1 to 0x8, Security 0x1000, Shields'
+six at 0x100_0000 to 0x2000_0000, Iteration 0x80_0000, Sustain 0x10_0000,
+Abstraction 0x40_0000, Clarity 0x20_0000 and Volition 0x1_0000; the
+powers read those last five. Close Combat 5–8 (Draw, Impel, Brace, Dual
 Wield) give none (the first three are marked unavailable; 37 level records
 learn Dual Wield). Armour 1–3 are the Manoeuvring in Armour tiers: the
 armour builder takes the highest learnt and lowers encumbrance by 0.3 per
@@ -1014,7 +1019,8 @@ Encumbrance). The name table has a
 seventh skill, Meditation, without a slot or techniques.
 
 **Saving.** The save works in single precision: yellow and red as
-value / max × 65535 (red 0 unless it is positive, NaN included), focus ×
+value / max × 65535 in single precision (red 0 unless it is positive, NaN
+included), focus ×
 65535, each converted by the SSE instruction (nearest, ties to even; NaN,
 infinities and values past the 64-bit range give the indefinite integer)
 and cut to 16 bits; the seed as 0xFFFF (a random one when a body is

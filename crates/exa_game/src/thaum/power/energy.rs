@@ -2,8 +2,10 @@
 //! Weapons' arcs on the held weapons.
 //!
 //! - **Shock** ([`Shock`]): the cast has already started motion 0x27; the
-//!   first control tick installs the cast hook and plays the charge (volume
-//!   0.2, pitch `0.9 + 0.2·roll`). Each later tick adds the charge rate; not
+//!   first control tick installs the cast hook (−1 to every event; a call
+//!   while charging, a focus shortfall's included, clears the hand's arcs
+//!   so the shock never fires) and plays the charge (volume 0.2, pitch
+//!   `0.9 + 0.2·roll`). Each later tick adds the charge rate; not
 //!   past one (or not a number) it spends the tick's focus while charging,
 //!   and past one it fires the arc burst once, clears the hand's arcs, the
 //!   cast hook and the cast id, and plays the release (volume 1). A second
@@ -11,19 +13,25 @@
 //!   bit 1 or 3 ends it, clearing the hand's arcs first when it never fired,
 //!   and stops the cast motion.
 //! - **Shock Weapons** ([`ShockWeapons`]): the first tick starts cast
-//!   motion 0x25; ending clears each armed weapon's arcs and both body
+//!   motion 0x25, with a hook answering 0 to bits 0x29; ending clears each armed weapon's arcs and both body
 //!   callbacks. The weapon changes themselves are
 //!   [`super::super::energy::ArmedWeapons`].
 //!
 //! Evidence: the two classes' control handlers, read from `Exanima.exe`.
 
 use super::PowerBase;
-use crate::thaum::casting::{CastBody, start_cast};
+use crate::thaum::casting::{CastBody, CastHook, start_cast};
 
 pub use crate::thaum::energy::{SHOCK, SHOCK_MOTION, SHOCK_WEAPONS};
 
 /// The cast motion Shock Weapons starts.
 pub const SHOCK_WEAPONS_MOTION: u32 = 0x25;
+
+/// Shock's cast hook: −1 to every event; called while the shock charges,
+/// it clears the hand's arcs and the shock never fires.
+pub const SHOCK_HOOK: CastHook = CastHook::NEVER_KEEPS;
+/// Shock Weapons' cast hook: 0 to an event carrying bits 0x29.
+pub const SHOCK_WEAPONS_HOOK: CastHook = CastHook { keeps: 0x29 };
 
 /// The sounds the shock plays, and their volumes.
 pub use crate::thaum::energy::{CHARGE_SOUND, SHOCK_SOUND as RELEASE_SOUND};
@@ -74,6 +82,8 @@ pub struct Shock {
     pub focus_tick: f32,
     /// Charging, fired or cleared.
     pub phase: i32,
+    /// The caster's cast hook is this shock's.
+    pub hooked: bool,
 }
 
 impl Shock {
@@ -86,7 +96,18 @@ impl Shock {
             rate,
             focus_tick,
             phase: CHARGE,
+            hooked: false,
         }
+    }
+
+    /// The hook's call: a charging shock is cleared.
+    fn hook_called(&mut self) -> bool {
+        self.hooked = false;
+        let cleared = self.phase == CHARGE;
+        if cleared {
+            self.phase = CLEARED;
+        }
+        cleared
     }
 
     /// One control tick.
@@ -99,6 +120,10 @@ impl Shock {
             cleared: false,
             release_sound: false,
         };
+        let mut quiet = quiet;
+        if self.hooked && (body.casting != SHOCK || body.cast_hook != Some(SHOCK_HOOK)) {
+            quiet.cleared = self.hook_called();
+        }
         if event & 0xa != 0 {
             self.state = super::ENDING;
         }
@@ -109,12 +134,14 @@ impl Shock {
             }
             return ShockStep {
                 result: 2,
-                cleared,
+                cleared: cleared || quiet.cleared,
                 ..quiet
             };
         }
         if self.state == super::READY {
             self.state = super::RUNNING;
+            body.cast_hook = Some(SHOCK_HOOK);
+            self.hooked = true;
             return ShockStep {
                 charge_sound: true,
                 ..quiet
@@ -126,7 +153,9 @@ impl Shock {
         let past_one = self.charge.partial_cmp(&1.0) == Some(std::cmp::Ordering::Greater);
         if !past_one {
             if self.phase == CHARGE {
-                super::drain(body, self.focus_tick);
+                if super::drain(body, self.focus_tick) && self.hooked {
+                    quiet.cleared = self.hook_called();
+                }
                 return ShockStep {
                     drain: true,
                     ..quiet
@@ -137,6 +166,7 @@ impl Shock {
         self.charge = 0.0;
         if self.phase == CHARGE {
             self.phase = FIRED;
+            self.hooked = false;
             body.cast_hook = None;
             body.casting = 0;
             return ShockStep {
@@ -208,6 +238,9 @@ impl ShockWeapons {
         }
         if self.state == super::READY {
             let motion = start_cast(body, SHOCK_WEAPONS_MOTION, SHOCK_WEAPONS);
+            if motion {
+                body.cast_hook = Some(SHOCK_WEAPONS_HOOK);
+            }
             self.state = super::RUNNING;
             return ShockWeaponsStep {
                 result: 0,
@@ -267,10 +300,38 @@ mod tests {
         let mut body = CastBody::default();
         let mut shock = Shock::new(0.5, 0.1);
         shock.control(0, &mut body);
+        body.casting = SHOCK;
         let end = shock.control(2, &mut body);
         assert_eq!(end.result, 2);
         assert!(end.cleared);
         assert_eq!(shock.phase, CLEARED);
+    }
+
+    #[test]
+    fn a_shock_hook_called_while_charging_clears_it() {
+        let mut body = CastBody::default();
+        let mut shock = Shock::new(0.5, 0.1);
+        shock.control(0, &mut body);
+        assert_eq!(body.cast_hook, Some(SHOCK_HOOK));
+        body.casting = SHOCK;
+        assert!(start_cast(&mut body, 0x22, 0x201), "the hook answers -1");
+        let step = shock.control(0, &mut body);
+        assert!(step.cleared && !step.drain);
+        assert_eq!(shock.phase, CLEARED);
+        let rest: Vec<_> = (0..2).map(|_| shock.control(0, &mut body)).collect();
+        assert!(rest.iter().all(|step| !step.fired && !step.drain));
+        assert_eq!(rest[1].result, 2, "no burst, then done");
+
+        let mut body = CastBody {
+            focus: 0.15,
+            ..CastBody::default()
+        };
+        let mut short = Shock::new(0.5, 0.1);
+        short.control(0, &mut body);
+        body.casting = SHOCK;
+        let step = short.control(0, &mut body);
+        assert!(step.drain && step.cleared);
+        assert_eq!((body.casting, body.cast_hook), (0, None));
     }
 
     #[test]
@@ -280,6 +341,7 @@ mod tests {
         weapons.held = 0.3;
         body.reserved = 0.3;
         assert!(weapons.control(0, &mut body).motion);
+        assert_eq!(body.cast_hook, Some(SHOCK_WEAPONS_HOOK));
         assert_eq!(weapons.state, super::super::RUNNING);
         assert_eq!(weapons.control(0, &mut body).result, 0);
         let end = weapons.control(2, &mut body);

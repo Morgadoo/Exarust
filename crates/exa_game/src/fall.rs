@@ -17,11 +17,11 @@ use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
-use exa_combat::condition::{Branch, PostureBranch};
+use exa_combat::condition::{Branch, DeathClock, PostureBranch, settle_death};
 use exa_combat::fall::{FallDeath, FallReading, scream_voice};
 use exa_combat::{Condition, Fighter, Roll};
 use exa_physics::body::{
-    BodySystems, BodyTicks, CharacterStage, CharacterTick, Ragdoll, TickedCharacter,
+    BodySystems, BodyTicks, CharacterStage, CharacterTick, Ragdoll, TickedCharacter, pairs,
 };
 use exa_ui::DeathFade;
 
@@ -122,13 +122,13 @@ pub(crate) fn fall_to_death(
         &mut FallDeath,
         &mut Condition,
         &mut Fighter,
-        &Ragdoll,
+        &mut Ragdoll,
         Option<&PlayerBody>,
         Option<&ChildOf>,
     )>,
 ) {
     let now = ticks.millis();
-    if let Ok((entity, branch, mut fall, mut condition, mut fighter, body, player, parent)) =
+    if let Ok((entity, branch, mut fall, mut condition, mut fighter, mut body, player, parent)) =
         bodies.get_mut(ticked.body)
     {
         let Some(drive) = body.drive.as_ref() else {
@@ -182,9 +182,29 @@ pub(crate) fn fall_to_death(
             );
         }
         if step.dies {
-            condition.die();
+            let now_ms = now as u32;
             fighter.health.yellow = 0.0;
             fighter.health.red = 0.0;
+            if let Some(settled) = settle_death(
+                *condition,
+                fighter.stats.rules,
+                fall.stage.death_stage(),
+                fighter.health.red,
+                fighter.first_flag_red,
+                now_ms,
+            ) {
+                *condition = settled.condition;
+                fighter.stats.rules = settled.rules;
+                commands.entity(entity).insert(DeathClock {
+                    wake_at_ms: settled.wake_at_ms,
+                    died_at_ms: now_ms,
+                });
+            }
+            // The death routine's lower-leg pass, then the class writer's
+            // 0: the feet leave the living layer before the body is taken
+            // out.
+            body.clear_death_strikes();
+            pairs::set_leg_layers(&mut body.parts, 0);
             take_out(&mut commands, entity, parent);
             info!(
                 "{entity:?} falls to its death, tick {}, {} ms after it was lost",

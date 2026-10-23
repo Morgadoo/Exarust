@@ -36,6 +36,16 @@ fn it_screams_once_past_5_cm_a_tick() {
         FallStep::default()
     );
     assert_eq!(fall.stage, FallStage::Steady);
+    assert_eq!(
+        (
+            FallStage::Steady.death_stage(),
+            FallStage::Falling.death_stage(),
+            FallStage::Lost.death_stage(),
+            FallStage::Fading.death_stage(),
+            FallStage::Gone.death_stage(),
+        ),
+        (0, 1, 2, 3, 4)
+    );
     let step = fall.check(&near(-5.01), false, false, 12);
     assert!(step.scream && !step.lost);
     assert_eq!(fall.stage, FallStage::Falling);

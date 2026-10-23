@@ -16,10 +16,24 @@
 //! fighters every sixth of a turn, the company's fighter fourth, each
 //! opponent on a team of its own. Pugilism's opponent has no gear tier.
 //!
+//! A fresh tournament match then creates those bodies. A side stops at the
+//! first body the generator cannot create and reports the failure; the
+//! bodies that were created on that side are given familiarity 100 toward
+//! each other, both ways, and both of their AI clocks wait 3000 ms. Fewer
+//! than three formed sides are hostile; three or more are a free-for-all.
+//! The side whose id is the player's is stood from the company list, and
+//! the player's own entry is not spawned again. A rematch drops bodies in
+//! the dead mode and stands whoever remains on the player's spread.
+//!
 //! Evidence: the retail arena's eleven template setups, the ring placement,
-//! the fixed placement templates and the next-round routine read from
-//! `Exanima.exe` (`context/re/arena-layout.md`).
+//! the fixed placement templates, the next-round routine and the fresh
+//! match generator, read from `Exanima.exe` 0.9.5 (`context/re/arena-layout.md`).
 
+use exa_formats::characters::{DEAD, FULL_POOL};
+
+use crate::arena_spawn::{
+    GenericPlan, HirePlan, MANAGER_ROLE, SPAWN_DAMAGE, SPAWN_HEALTH, generic_plan, hire_plan,
+};
 use crate::thaum::engine::sin_cos;
 
 /// The opponent's spot from the arena's spawn spot (cm): 2 m ahead, 5 cm up.
@@ -317,17 +331,12 @@ pub fn bracket_layout(
         }
     }
     let radius = (i64::from(teams) * i64::from(per_team) * 50 + 100).min(350) as f32;
-    let count = groups.len() as f32;
+    let sides = groups.len();
     groups
         .into_iter()
         .enumerate()
         .map(|(index, (team, members))| {
-            let n = members.len() as i64;
-            let mut spread = ((n - 1) as f64 / (n + 1) as f64 * 2.0) as f32;
-            let start = index as f32 / count * 6.0 - spread * 0.5;
-            if n > 1 {
-                spread /= (n - 1) as f32;
-            }
+            let (spread, start) = side_spread(index, sides, members.len());
             let members = members
                 .into_iter()
                 .enumerate()
@@ -361,6 +370,468 @@ pub fn bracket_opponent(team: i32, teams: usize, tier: i32) -> Fighter {
             flags,
         }
     }
+}
+
+/// Both AI clocks of a body created for a fresh match wait this long.
+pub const MATCH_ACT_GRACE_MS: u32 = 3_000;
+/// Familiarity each generated teammate is given toward the others.
+pub const TEAMMATE_FAMILIARITY: f32 = 100.0;
+/// The report title when a match body cannot be created.
+pub const MATCH_ERROR_TITLE: &str = "Error";
+/// The report message when a match body cannot be created.
+pub const MATCH_ERROR: &str = "Failed to generate match motile.";
+
+/// The three condition words written on a character before its body is created.
+///
+/// A generated opponent writes −100, 100, 0. A company entrant writes
+/// 100, 100, 0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConditionWords {
+    pub first: f32,
+    pub second: f32,
+    pub third: f32,
+}
+
+/// Condition words of a generated opponent.
+pub const OPPONENT_CONDITION: ConditionWords = ConditionWords {
+    first: SPAWN_DAMAGE,
+    second: SPAWN_HEALTH,
+    third: 0.0,
+};
+
+/// Condition words of a company entrant created for the player's side.
+pub const COMPANY_CONDITION: ConditionWords = ConditionWords {
+    first: SPAWN_HEALTH,
+    second: SPAWN_HEALTH,
+    third: 0.0,
+};
+
+/// The behaviour reset forced onto every generated opponent: mode 0,
+/// parameter 20, applied even when that mode is already current.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviourReset {
+    pub mode: u32,
+    pub parameter: u32,
+    pub forced: bool,
+}
+
+/// The reset [`raise_fresh_match`] applies to a generated opponent.
+pub const OPPONENT_BEHAVIOUR: BehaviourReset = BehaviourReset {
+    mode: 0,
+    parameter: 20,
+    forced: true,
+};
+
+/// What a fresh match asks the generator to create for one opponent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OpponentPlan {
+    /// Team id under 2: level 5, dressed at the event's tier.
+    Generic(GenericPlan),
+    /// Team id of 2 or more: the hire-list profile. The profile's level
+    /// byte is the event tier, not the team id.
+    Hire(HirePlan),
+}
+
+/// One opponent the generator is asked to create.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OpponentAttempt {
+    /// Index inside the team window, as [`bracket_layout`] records it.
+    pub index: usize,
+    pub team: i32,
+    pub place: Place,
+    pub plan: OpponentPlan,
+}
+
+/// A body a fresh match settled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RaisedBody {
+    /// The player's own character, stood on its place and not spawned again.
+    Player,
+    /// Another company entrant. Role [`MANAGER_ROLE`], both AI clocks held.
+    Company {
+        condition: ConditionWords,
+        role: u32,
+        act_at_ms: u32,
+    },
+    /// A generated opponent. Its pending-action word is cleared.
+    Opponent {
+        plan: OpponentPlan,
+        condition: ConditionWords,
+        role: u32,
+        act_at_ms: u32,
+        behaviour: BehaviourReset,
+        action_cleared: bool,
+    },
+}
+
+/// One placed fighter of a fresh match.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaisedFighter {
+    /// Index inside the team window, as [`bracket_layout`] records it.
+    pub index: usize,
+    pub team: i32,
+    pub place: Place,
+    pub body: RaisedBody,
+}
+
+/// Familiarity from one generated teammate toward another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TeammateLink {
+    /// The source fighter's index inside its team window.
+    pub from_index: usize,
+    /// The other fighter's index inside the same team window.
+    pub to_index: usize,
+    pub familiarity: f32,
+}
+
+/// A generation failure, reported as the side stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchReport {
+    pub title: &'static str,
+    pub message: &'static str,
+}
+
+/// The bodies, teammate links and failure reports of a fresh match.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RaisedMatch {
+    pub fighters: Vec<RaisedFighter>,
+    pub links: Vec<TeammateLink>,
+    pub reports: Vec<MatchReport>,
+}
+
+/// The inputs of a fresh match, while the rematch counter is still zero.
+pub struct FreshMatch<'a> {
+    pub slots: &'a [i32],
+    pub per_team: i32,
+    /// How many teams to form, at most.
+    pub teams: i32,
+    pub spawn_at: [f32; 3],
+    /// The side stood from the company list instead of generated.
+    pub player_team: i32,
+    /// How many company entries exist. A player-side member at this index
+    /// or past it is left out.
+    pub company_entries: usize,
+    /// The company entry, counted inside its team window, that is the
+    /// player's own character.
+    pub player_entry: Option<usize>,
+    /// The event's gear tier: a generic opponent's outfit level, and the
+    /// level byte of a hire-list profile.
+    pub tier: i32,
+    /// Forced outfit id of a hire-list team, indexed by team id.
+    pub outfits: &'a [i32],
+    /// The event's weapon count. Positive draws a weapon from the row below.
+    pub event_weapon: i32,
+    /// The game clock, in milliseconds. Created bodies act at this plus
+    /// [`MATCH_ACT_GRACE_MS`].
+    pub now_ms: u32,
+}
+
+/// Raise a fresh tournament match from its bracket.
+///
+/// Sides and places come from [`bracket_layout`]. The player's side is
+/// placed from the company list: the player's own entry keeps the body it
+/// already has, and every other entry in range is a company body. Every
+/// other side is generated. `create` returning false stops that side, the
+/// failed body and the ones after it on that side are left out, and the
+/// failure is reported; earlier bodies on the side stay, and later sides
+/// are still raised. The created opponents of one side are linked both
+/// ways at [`TEAMMATE_FAMILIARITY`]. Role flags follow how many sides were
+/// formed, the player's side included: hostile below three, otherwise a
+/// free-for-all.
+#[must_use]
+pub fn raise_fresh_match(
+    spec: &FreshMatch<'_>,
+    mut create: impl FnMut(&OpponentAttempt) -> bool,
+) -> RaisedMatch {
+    let laid = bracket_layout(spec.slots, spec.per_team, spec.teams, spec.spawn_at);
+    let flags = if laid.len() < 3 {
+        HOSTILE
+    } else {
+        FREE_FOR_ALL
+    };
+    let mut raised = RaisedMatch::default();
+    for team in &laid {
+        if team.team == spec.player_team {
+            raise_company(team, spec, &mut raised);
+        } else {
+            raise_opponents(team, spec, flags, &mut create, &mut raised);
+        }
+    }
+    raised
+}
+
+fn raise_company(team: &BracketTeam, spec: &FreshMatch<'_>, raised: &mut RaisedMatch) {
+    for (order, &(index, place)) in team.members.iter().enumerate() {
+        if order >= spec.company_entries {
+            break;
+        }
+        // `index` is the place inside the team window. The roster is read
+        // there; `order` is how far along the occupied members this one is,
+        // and that is what the company-entry count limits.
+        let body = if spec.player_entry == Some(index) {
+            RaisedBody::Player
+        } else {
+            RaisedBody::Company {
+                condition: COMPANY_CONDITION,
+                role: MANAGER_ROLE,
+                act_at_ms: spec.now_ms.wrapping_add(MATCH_ACT_GRACE_MS),
+            }
+        };
+        raised.fighters.push(RaisedFighter {
+            index,
+            team: team.team,
+            place,
+            body,
+        });
+    }
+}
+
+/// Raises one side's opponents through `create`. The generator behind the
+/// closure posts its own "Error generating combatant." before it returns
+/// false; the closure owns that message, and this side stops at it.
+fn raise_opponents(
+    team: &BracketTeam,
+    spec: &FreshMatch<'_>,
+    flags: u32,
+    create: &mut impl FnMut(&OpponentAttempt) -> bool,
+    raised: &mut RaisedMatch,
+) {
+    let mut spawned = Vec::new();
+    for &(index, place) in &team.members {
+        let plan = opponent_plan(team.team, spec);
+        let attempt = OpponentAttempt {
+            index,
+            team: team.team,
+            place,
+            plan,
+        };
+        if !create(&attempt) {
+            raised.reports.push(MatchReport {
+                title: MATCH_ERROR_TITLE,
+                message: MATCH_ERROR,
+            });
+            break;
+        }
+        spawned.push(index);
+        raised.fighters.push(RaisedFighter {
+            index,
+            team: team.team,
+            place,
+            body: RaisedBody::Opponent {
+                plan,
+                condition: OPPONENT_CONDITION,
+                role: flags,
+                act_at_ms: spec.now_ms.wrapping_add(MATCH_ACT_GRACE_MS),
+                behaviour: OPPONENT_BEHAVIOUR,
+                action_cleared: true,
+            },
+        });
+    }
+    for &from in &spawned {
+        for &to in &spawned {
+            if from != to {
+                raised.links.push(TeammateLink {
+                    from_index: from,
+                    to_index: to,
+                    familiarity: TEAMMATE_FAMILIARITY,
+                });
+            }
+        }
+    }
+}
+
+fn opponent_plan(team: i32, spec: &FreshMatch<'_>) -> OpponentPlan {
+    if team < 2 {
+        OpponentPlan::Generic(generic_plan(5, spec.tier))
+    } else {
+        let company = usize::try_from(team)
+            .ok()
+            .and_then(|index| spec.outfits.get(index).copied())
+            .unwrap_or(0);
+        OpponentPlan::Hire(hire_plan(spec.tier as u8, company, spec.event_weapon))
+    }
+}
+
+/// Flag on a character whose health is stored before a rematch.
+pub const HEALTH_TRACK: u32 = 0x2000_0000;
+/// How long a rematch holds a non-player's AI clocks.
+pub const REMATCH_GRACE_MS: u32 = 10_000;
+/// The yield a rematch gives the frame before it touches the bodies.
+pub const REMATCH_YIELD_MS: u32 = 13;
+/// Behaviour written onto a body a rematch keeps: mode 3, parameter 0,
+/// and not forced. The stand first writes the mode word to −1, so the
+/// reset runs even when the mode is already 3.
+pub const STANDBY_BEHAVIOUR: BehaviourReset = BehaviourReset {
+    mode: 3,
+    parameter: 0,
+    forced: false,
+};
+/// The ratio word a stood body is given.
+const STOOD_RATIO: f32 = 1.0;
+/// The generator a rematch jitters with.
+const ROLL_STEP: u32 = 0x0808_8405;
+
+/// The health word stored for a tracked character, or nothing when the
+/// track flag is clear.
+///
+/// At or below zero the word is 0. Above zero it is the nearest integer
+/// of `health / maximum × 65535`, ties to even, kept in sixteen bits.
+#[must_use]
+pub fn stored_health(flags: u32, health: f32, maximum: f32) -> Option<u16> {
+    if flags & HEALTH_TRACK == 0 {
+        return None;
+    }
+    if health <= 0.0 {
+        return Some(0);
+    }
+    // The original divides and multiplies in single precision, then
+    // converts to an integer, ties to even.
+    let scaled = (health / maximum * f32::from(FULL_POOL)).round_ties_even();
+    if !scaled.is_finite() {
+        return Some(0);
+    }
+    Some(scaled as i64 as u16)
+}
+
+/// One body still in the match when a rematch starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveBody {
+    pub id: u32,
+    pub mode: i32,
+    pub health: f32,
+    pub is_player: bool,
+}
+
+/// A body a rematch kept.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReposedBody {
+    pub id: u32,
+    pub is_player: bool,
+    pub health: f32,
+    /// The cleanup's standby, written for everyone but the player.
+    pub standby: bool,
+    /// Where the player's side stands this body. Absent when that side is
+    /// not in the bracket.
+    pub place: Option<Place>,
+    /// Health copied into the saved word, once the side is stood.
+    pub saved_health: Option<f32>,
+    /// Condition after the stand. The dead mode is cleared to 0.
+    pub mode: Option<i32>,
+    /// The ratio word, set to 1 once the side is stood.
+    pub ratio: Option<f32>,
+    /// Both plain AI clocks, for a non-player on a stood side.
+    pub act_at_ms: Option<u32>,
+    /// The third clock: the roll's high half of ×10000, plus the grace.
+    pub jitter_at_ms: Option<u32>,
+    pub behaviour: Option<BehaviourReset>,
+}
+
+/// What a rematch does to the bodies already in the match.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rematch {
+    pub standing: Vec<ReposedBody>,
+    pub dropped: Vec<u32>,
+    /// The player's body was in the dead mode, so it is spawned again.
+    pub respawn_player: bool,
+    pub yield_ms: u32,
+}
+
+/// Drop dead bodies and stand whoever remains.
+///
+/// A body whose condition is the dead mode is removed, and the next body
+/// is examined in its place. A dead player is removed and marked to be
+/// spawned again. Everyone else who is not the player is put on standby.
+/// When the player's side is in the bracket, each survivor is stood on
+/// that side's spread at its new index: the spread is the side's member
+/// count, not how many bodies survived. The condition becomes 0, the
+/// saved health takes the current health, and the ratio becomes 1. A
+/// non-player's two AI clocks wait [`REMATCH_GRACE_MS`], and a third clock
+/// adds the high half of the stepped roll times 10000. The roll steps
+/// once per such body, and only when the side is stood.
+#[must_use]
+pub fn stand_rematch(
+    spec: &FreshMatch<'_>,
+    bodies: &[LiveBody],
+    now_ms: u32,
+    roll: &mut u32,
+) -> Rematch {
+    let respawn_player = bodies
+        .iter()
+        .any(|body| body.is_player && body.mode == DEAD);
+    let mut survivors = Vec::new();
+    let mut dropped = Vec::new();
+    let mut pending: Vec<LiveBody> = bodies.to_vec();
+    let mut cursor = 0;
+    while cursor < pending.len() {
+        if pending[cursor].mode == DEAD {
+            dropped.push(pending[cursor].id);
+            pending.remove(cursor);
+        } else {
+            survivors.push(pending[cursor]);
+            cursor += 1;
+        }
+    }
+
+    let laid = bracket_layout(spec.slots, spec.per_team, spec.teams, spec.spawn_at);
+    let player_side = laid.iter().position(|side| side.team == spec.player_team);
+    let radius = (i64::from(spec.teams) * i64::from(spec.per_team) * 50 + 100).min(350) as f32;
+    let standing = survivors
+        .iter()
+        .enumerate()
+        .map(|(order, body)| {
+            let mut reposed = ReposedBody {
+                id: body.id,
+                is_player: body.is_player,
+                health: body.health,
+                standby: !body.is_player,
+                place: None,
+                saved_health: None,
+                mode: None,
+                ratio: None,
+                act_at_ms: None,
+                jitter_at_ms: None,
+                behaviour: (!body.is_player).then_some(STANDBY_BEHAVIOUR),
+            };
+            if let Some(side) = player_side {
+                let members = laid[side].members.len();
+                let (spread, start) = side_spread(side, laid.len(), members);
+                let angle = order as f32 * spread + start;
+                reposed.place = Some(bracket_place(spec.spawn_at, angle, radius));
+                reposed.saved_health = Some(body.health);
+                reposed.mode = Some(0);
+                reposed.ratio = Some(STOOD_RATIO);
+                reposed.behaviour = Some(STANDBY_BEHAVIOUR);
+                if !body.is_player {
+                    *roll = roll.wrapping_mul(ROLL_STEP).wrapping_add(1);
+                    let jitter = ((u64::from(*roll) * u64::from(REMATCH_GRACE_MS)) >> 32) as u32;
+                    let grace = now_ms.wrapping_add(REMATCH_GRACE_MS);
+                    reposed.act_at_ms = Some(grace);
+                    reposed.jitter_at_ms = Some(grace.wrapping_add(jitter));
+                }
+            }
+            reposed
+        })
+        .collect();
+    Rematch {
+        standing,
+        dropped,
+        respawn_player,
+        yield_ms: REMATCH_YIELD_MS,
+    }
+}
+
+/// Spread and start angle of one side, the same split [`bracket_layout`]
+/// uses: the spread is `f32((n − 1)/(n + 1) · 2)`, the start is computed in
+/// double as `g/G · 6 − f64(f32(spread · 0.5))` and narrowed once, then the
+/// spread is divided in single precision.
+fn side_spread(side: usize, sides: usize, members: usize) -> (f32, f32) {
+    let count = members as i64;
+    let mut spread = ((count - 1) as f64 / (count + 1) as f64 * 2.0) as f32;
+    let start = (side as f64 / sides as f64 * 6.0 - f64::from(spread * 0.5)) as f32;
+    if count > 1 {
+        spread /= (count - 1) as f32;
+    }
+    (spread, start)
 }
 
 /// The next round's change.
@@ -568,5 +1039,335 @@ mod tests {
         assert_eq!(next_round(0, true), NextRound::FreshOpponent);
         assert_eq!(next_round(1, false), NextRound::FreshOpponent);
         assert_eq!(next_round(2, true), NextRound::Reserve(2));
+    }
+
+    fn fresh<'a>(slots: &'a [i32], per_team: i32, teams: i32) -> FreshMatch<'a> {
+        FreshMatch {
+            slots,
+            per_team,
+            teams,
+            spawn_at: [0.0; 3],
+            player_team: 1,
+            company_entries: 8,
+            player_entry: None,
+            tier: 4,
+            outfits: &[],
+            event_weapon: 0,
+            now_ms: 1_000,
+        }
+    }
+
+    fn opponent(body: &RaisedBody) -> (&OpponentPlan, &ConditionWords, u32, u32, &BehaviourReset) {
+        match body {
+            RaisedBody::Opponent {
+                plan,
+                condition,
+                role,
+                act_at_ms,
+                behaviour,
+                action_cleared,
+            } => {
+                assert!(*action_cleared);
+                (plan, condition, *role, *act_at_ms, behaviour)
+            }
+            other => panic!("expected an opponent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_body_stops_its_side_and_reports() {
+        let slots = [4, 4, 4];
+        let mut spec = fresh(&slots, 3, 1);
+        spec.outfits = &[0, 0, 0, 0, 2];
+        spec.event_weapon = 5;
+        let mut asked = 0;
+        let raised = raise_fresh_match(&spec, |attempt| {
+            asked += 1;
+            assert_eq!(attempt.index, 0);
+            assert_eq!(attempt.team, 4);
+            match attempt.plan {
+                OpponentPlan::Hire(plan) => {
+                    assert_eq!(plan, hire_plan(4, 2, 5));
+                    assert!(plan.draw_weapon);
+                }
+                OpponentPlan::Generic(_) => panic!("team 4 is a hire"),
+            }
+            false
+        });
+        assert_eq!(asked, 1);
+        assert!(raised.fighters.is_empty());
+        assert!(raised.links.is_empty());
+        assert_eq!(
+            raised.reports,
+            vec![MatchReport {
+                title: "Error",
+                message: "Failed to generate match motile.",
+            }]
+        );
+    }
+
+    #[test]
+    fn two_successes_are_related_both_ways_and_the_third_is_dropped() {
+        let slots = [4, 4, 4];
+        let spec = fresh(&slots, 3, 1);
+        let mut n = 0;
+        let raised = raise_fresh_match(&spec, |_| {
+            n += 1;
+            n < 3
+        });
+        assert_eq!(
+            raised.fighters.iter().map(|f| f.index).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let (plan, condition, role, act_at, behaviour) = opponent(&raised.fighters[0].body);
+        assert!(matches!(plan, OpponentPlan::Hire(_)));
+        assert_eq!(*condition, OPPONENT_CONDITION);
+        assert_eq!(role, HOSTILE);
+        assert_eq!(act_at, 4_000);
+        assert_eq!(*behaviour, OPPONENT_BEHAVIOUR);
+        assert_eq!(
+            raised.links,
+            vec![
+                TeammateLink {
+                    from_index: 0,
+                    to_index: 1,
+                    familiarity: 100.0,
+                },
+                TeammateLink {
+                    from_index: 1,
+                    to_index: 0,
+                    familiarity: 100.0,
+                },
+            ]
+        );
+        assert_eq!(raised.reports.len(), 1);
+        assert_eq!(
+            raised.fighters[0].place,
+            bracket_layout(&slots, 3, 1, [0.0; 3])[0].members[0].1
+        );
+    }
+
+    #[test]
+    fn three_successes_link_every_ordered_pair() {
+        let slots = [6, 6, 6];
+        let raised = raise_fresh_match(&fresh(&slots, 3, 1), |_| true);
+        assert_eq!(raised.links.len(), 6);
+        assert!(raised.reports.is_empty());
+        assert!(
+            raised
+                .links
+                .iter()
+                .all(|link| link.from_index != link.to_index)
+        );
+        assert!(raised.links.iter().all(|link| link.familiarity == 100.0));
+    }
+
+    #[test]
+    fn three_sides_fight_free_and_two_stay_hostile() {
+        let three = [2, 3, 4];
+        let raised = raise_fresh_match(&fresh(&three, 1, 3), |_| true);
+        assert!(raised.fighters.iter().all(|f| match f.body {
+            RaisedBody::Opponent { role, .. } => role == FREE_FOR_ALL,
+            _ => false,
+        }));
+        let two = [2, 3];
+        let raised = raise_fresh_match(&fresh(&two, 1, 2), |_| true);
+        assert!(raised.fighters.iter().all(|f| match f.body {
+            RaisedBody::Opponent { role, .. } => role == HOSTILE,
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn a_low_team_id_is_generic_level_five() {
+        let slots = [1];
+        let mut spec = fresh(&slots, 1, 1);
+        spec.player_team = 99;
+        spec.tier = 3;
+        let raised = raise_fresh_match(&spec, |_| true);
+        let (plan, _, _, _, _) = opponent(&raised.fighters[0].body);
+        assert_eq!(plan, &OpponentPlan::Generic(generic_plan(5, 3)));
+    }
+
+    #[test]
+    fn the_player_side_is_stood_and_not_generated() {
+        let slots = [1, 0, 1, 2];
+        let mut spec = fresh(&slots, 3, 2);
+        spec.player_entry = Some(2);
+        spec.company_entries = 2;
+        let mut asked = Vec::new();
+        let raised = raise_fresh_match(&spec, |attempt| {
+            asked.push(attempt.index);
+            true
+        });
+        // The opponent is the first (and only) member of the second window.
+        assert_eq!(asked, vec![0]);
+        assert_eq!(raised.fighters.len(), 3);
+        assert!(matches!(
+            raised.fighters[0].body,
+            RaisedBody::Company {
+                role: MANAGER_ROLE,
+                act_at_ms: 4_000,
+                condition: COMPANY_CONDITION
+            }
+        ));
+        assert!(matches!(raised.fighters[1].body, RaisedBody::Player));
+        assert_eq!(raised.fighters[1].index, 2);
+        assert!(raised.links.is_empty());
+        let (_, _, role, _, _) = opponent(&raised.fighters[2].body);
+        assert_eq!(role, HOSTILE);
+    }
+
+    #[test]
+    fn a_later_side_is_still_raised_after_a_failure() {
+        let slots = [4, 4, 5];
+        let raised = raise_fresh_match(&fresh(&slots, 2, 2), |attempt| attempt.team != 4);
+        assert_eq!(
+            raised
+                .fighters
+                .iter()
+                .map(|f| (f.index, f.team))
+                .collect::<Vec<_>>(),
+            vec![(0, 5)]
+        );
+        assert_eq!(raised.reports.len(), 1);
+        assert!(raised.links.is_empty());
+    }
+
+    fn body(id: u32, mode: i32, health: f32, is_player: bool) -> LiveBody {
+        LiveBody {
+            id,
+            mode,
+            health,
+            is_player,
+        }
+    }
+
+    #[test]
+    fn a_rematch_drops_the_dead_and_stands_the_rest() {
+        let slots = [1, 1, 2];
+        let spec = fresh(&slots, 1, 2);
+        let bodies = [
+            body(10, 0, 40.0, false),
+            body(11, DEAD, 0.0, false),
+            body(12, 0, 80.0, true),
+        ];
+        let mut roll = 0;
+        let rematch = stand_rematch(&spec, &bodies, 1_000, &mut roll);
+        assert_eq!(rematch.dropped, vec![11]);
+        assert!(!rematch.respawn_player);
+        assert_eq!(rematch.yield_ms, REMATCH_YIELD_MS);
+        assert_eq!(rematch.standing[0].id, 10);
+        assert!(rematch.standing[0].standby);
+        assert_eq!(rematch.standing[0].saved_health, Some(40.0));
+        assert_eq!(rematch.standing[0].mode, Some(0));
+        assert_eq!(rematch.standing[0].ratio, Some(1.0));
+        assert_eq!(rematch.standing[0].behaviour, Some(STANDBY_BEHAVIOUR));
+        assert_eq!(rematch.standing[0].act_at_ms, Some(11_000));
+        assert_eq!(rematch.standing[0].jitter_at_ms, Some(11_000));
+        assert_eq!(roll, 1);
+        assert!(rematch.standing[1].is_player);
+        assert!(!rematch.standing[1].standby);
+        assert_eq!(rematch.standing[1].act_at_ms, None);
+        let laid = bracket_layout(&slots, 1, 2, [0.0; 3]);
+        assert_eq!(rematch.standing[0].place, Some(laid[0].members[0].1));
+        assert_eq!(rematch.standing[1].place, rematch.standing[0].place);
+    }
+
+    #[test]
+    fn a_dead_player_is_spawned_again() {
+        let slots = [1];
+        let spec = fresh(&slots, 1, 1);
+        let bodies = [body(1, DEAD, 0.0, true), body(2, 0, 10.0, false)];
+        let mut roll = 1;
+        let rematch = stand_rematch(&spec, &bodies, 0, &mut roll);
+        assert!(rematch.respawn_player);
+        assert_eq!(rematch.dropped, vec![1]);
+        assert_eq!(rematch.standing.len(), 1);
+        let stepped = 1u32.wrapping_mul(0x0808_8405).wrapping_add(1);
+        assert_eq!(roll, stepped);
+        let jitter = ((u64::from(stepped) * 10_000) >> 32) as u32;
+        assert_eq!(
+            rematch.standing[0].jitter_at_ms,
+            Some(REMATCH_GRACE_MS + jitter)
+        );
+    }
+
+    #[test]
+    fn two_dead_bodies_in_a_row_leave_the_living() {
+        let slots = [1, 1];
+        let spec = fresh(&slots, 2, 1);
+        let bodies = [
+            body(1, DEAD, 0.0, false),
+            body(2, DEAD, 0.0, false),
+            body(3, 0, 5.0, false),
+        ];
+        let mut roll = 0;
+        let rematch = stand_rematch(&spec, &bodies, 0, &mut roll);
+        assert_eq!(rematch.dropped, vec![1, 2]);
+        assert_eq!(
+            rematch.standing.iter().map(|b| b.id).collect::<Vec<_>>(),
+            vec![3]
+        );
+        let laid = bracket_layout(&slots, 2, 1, [0.0; 3]);
+        assert_eq!(rematch.standing[0].place, Some(laid[0].members[0].1));
+    }
+
+    #[test]
+    fn without_the_player_side_nobody_is_stood() {
+        let slots = [4, 4];
+        let spec = fresh(&slots, 2, 1);
+        let mut roll = 7;
+        let rematch = stand_rematch(&spec, &[body(1, 0, 5.0, false)], 0, &mut roll);
+        assert!(rematch.standing[0].place.is_none());
+        assert!(rematch.standing[0].standby);
+        assert!(rematch.standing[0].act_at_ms.is_none());
+        assert_eq!(roll, 7);
+    }
+
+    #[test]
+    fn stored_health_scales_a_tracked_fighter() {
+        assert_eq!(stored_health(0, 50.0, 100.0), None);
+        assert_eq!(stored_health(HEALTH_TRACK, 0.0, 100.0), Some(0));
+        assert_eq!(stored_health(HEALTH_TRACK, -1.0, 100.0), Some(0));
+        assert_eq!(stored_health(HEALTH_TRACK, 100.0, 100.0), Some(FULL_POOL));
+        assert_eq!(stored_health(HEALTH_TRACK, 50.0, 100.0), Some(32_768));
+        // In single precision 0.74686044 × 65535 is 48945.5, which ties to
+        // even: 48 946. The double product is 48945.498 and would round down.
+        assert_eq!(
+            stored_health(HEALTH_TRACK, 74.686_042_785_644_53, 100.0),
+            Some(48_946)
+        );
+    }
+
+    /// The start angle is `g/G · 6` in double less the f32 half spread
+    /// widened, narrowed once: team 1 of 5 with 3 members starts at the
+    /// f32 of 0.7, which the all-f32 product would miss.
+    #[test]
+    fn a_side_starts_at_the_double_angle_narrowed_once() {
+        let (spread, start) = side_spread(1, 5, 3);
+        assert_eq!(spread, 0.5);
+        assert_eq!(start.to_bits(), 0.7f32.to_bits());
+        let (_, one) = side_spread(1, 5, 1);
+        assert_eq!(one.to_bits(), 1.2f32.to_bits());
+    }
+
+    /// The AI clocks add with the 32-bit clock's wrap, not at the maximum.
+    #[test]
+    fn the_ai_clocks_wrap() {
+        let slots = [1, 4];
+        let mut spec = fresh(&slots, 1, 2);
+        spec.now_ms = u32::MAX - 10;
+        let raised = raise_fresh_match(&spec, |_| true);
+        let (_, _, _, act_at, _) = opponent(&raised.fighters[1].body);
+        assert_eq!(act_at, (u32::MAX - 10).wrapping_add(MATCH_ACT_GRACE_MS));
+    }
+
+    #[test]
+    fn an_unknown_outfit_forces_nothing() {
+        let slots = [8];
+        let raised = raise_fresh_match(&fresh(&slots, 1, 1), |_| true);
+        let (plan, _, _, _, _) = opponent(&raised.fighters[0].body);
+        assert_eq!(plan, &OpponentPlan::Hire(hire_plan(4, 0, 0)));
     }
 }

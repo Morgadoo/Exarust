@@ -429,8 +429,10 @@ fn the_pelvis_forward_follows_the_pelvis_turn() {
     assert!((f - turn * Vec3::Z).length() < 1e-5, "{f}");
 }
 
-/// A body's footing: its energy and most from its drive, its balance steady
-/// unless read from the body (0.5), with its ticks without support.
+/// A body's footing: its energy and most from its drive, its Rebalance
+/// wait the posture wait, its balance steady unless read from the body
+/// (0.5), with its ticks without support. Twenty-one ticks left refuse a
+/// walk; twenty do not.
 #[test]
 fn the_footing_reads_the_body() {
     let mut body = Ragdoll::new(&[PartSetup {
@@ -450,10 +452,28 @@ fn the_footing_reads_the_body() {
     let d = body.drive.as_mut().unwrap();
     d.energy = 0.7;
     d.balance.value = 0.5;
+    d.posture_wait = 21;
     let at = Footing::of(Some(&body), Vec3::ZERO, 1.0);
-    assert_eq!((at.energy, at.max_energy, at.balance), (0.7, 1.0, 1.0));
+    assert_eq!(
+        (at.energy, at.max_energy, at.balance, at.rebalance),
+        (0.7, 1.0, 1.0, 21)
+    );
     let at = at.balanced_by(&body);
     assert_eq!((at.balance, at.airborne), (0.5, 0));
+    // The tired gate would win on the energy above, so the wait is read
+    // from a rested body.
+    body.drive.as_mut().unwrap().energy = 1.0;
+    let at = Footing::of(Some(&body), Vec3::ZERO, 1.0);
+    let (mut req, mut loco) = walker(false, Vec3::ZERO);
+    req.moving = false;
+    decide(&mut req, &mut loco, &at);
+    assert_eq!(loco.stop, Stop::Rebalancing);
+    body.drive.as_mut().unwrap().posture_wait = 20;
+    let at = Footing::of(Some(&body), Vec3::ZERO, 1.0);
+    let (mut req, mut loco) = walker(false, Vec3::ZERO);
+    req.moving = false;
+    decide(&mut req, &mut loco, &at);
+    assert_eq!(loco.stop, Stop::Standing);
     assert_eq!(
         Footing::of(None, Vec3::ZERO, 1.0),
         Footing::steady(Vec3::ZERO, 1.0)

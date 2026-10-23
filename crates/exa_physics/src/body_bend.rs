@@ -14,10 +14,17 @@
 //! body is at its target height. While the leg is not stepping, the reach
 //! still measures its height from the anchor and its horizontal reach from
 //! the clip, which is how the original builds the standing triangle.
+//!
+//! Lying down (down, dormant or dead: off its feet, and not getting up)
+//! does not retarget. The stored knee and hip ease toward 0 by the standing
+//! step, 0.02 rad a tick, and the bend target, the step lift and the
+//! thigh's extra turn stay as they were. A get-up still folds.
 //! (Included from body.rs: `#[path = "body_bend.rs"] mod bend;`)
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
+
+use crate::engine_math::acos_approx;
 
 use super::balance::cm;
 use super::feet::FootState;
@@ -32,6 +39,16 @@ const FLAT: f32 = 3.1415927;
 /// while a recovery step is on.
 const EASE_STANDING: f32 = 0.02;
 const EASE_STEPPING: f32 = 0.2;
+/// The foot pitch eases at most this far (rad) a tick, plus its rate.
+pub(super) const PITCH_STEP: f32 = 0.01;
+/// The toe the pitch levels sits this far (cm) ahead of the ankle, times
+/// the body scale.
+const PITCH_REACH: f32 = 20.0;
+/// The correction (cm) is held inside this, and under 0.1 it is none.
+const PITCH_LIMIT: f32 = 30.0;
+const PITCH_DEAD: f64 = 0.1;
+/// Squared lengths under this (the original's epsilon) are none.
+const PITCH_EPS: f32 = f32::from_bits(0x33ff_ffd7);
 /// The stored rate is kept by half, and never past this (rad).
 const RATE_KEEP: f32 = 0.5;
 const RATE_CAP: f32 = 0.1;
@@ -125,6 +142,52 @@ pub(super) fn ease(angle: f32, rate: f32, target: f32, step: f32) -> (f32, f32) 
     let angle = angle + advance;
     let rate = ((rate + advance) * RATE_KEEP).clamp(-RATE_CAP, RATE_CAP);
     (angle, rate)
+}
+
+/// The pitch (rad) that levels a toe `20·scale` cm ahead of the ankle.
+/// `up_y` and `forward_y` are the shin basis heights, `local_forward_y`
+/// the foot's own, `height` how far the contact sits over its ground and
+/// sole (cm). A correction of 0.1 cm or under, or a NaN, is none. The
+/// angle is the engine's arc cosine of the isosceles cosine, negated into
+/// the correction's sign.
+pub fn foot_pitch_target(
+    up_y: f32,
+    forward_y: f32,
+    local_forward_y: f32,
+    height: f32,
+    scale: f32,
+) -> f32 {
+    let length = PITCH_REACH * scale;
+    let length2 = length * length;
+    let remain = length2 - height * height;
+    let mut raw = if remain > PITCH_EPS {
+        let horiz = up_y * up_y + forward_y * forward_y;
+        if horiz > PITCH_EPS {
+            let along = (remain / horiz).sqrt();
+            -up_y * height - forward_y * along
+        } else {
+            0.0
+        }
+    } else {
+        -up_y * height
+    };
+    // Ordered compares: a NaN correction stays NaN and the dead zone drops it.
+    raw = raw.clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    raw -= local_forward_y * length;
+    if f64::from(raw.abs()) > PITCH_DEAD {
+        let denom = 2.0 * length2;
+        let cos = (denom - raw * raw) / denom;
+        let angle = if cos <= -1.0 {
+            std::f32::consts::PI
+        } else if cos >= 1.0 {
+            0.0
+        } else {
+            acos_approx(cos)
+        };
+        -angle.copysign(raw)
+    } else {
+        0.0
+    }
 }
 
 /// The bend target (m). Anchored: the midpoint of `foot` and `anchor`, at
@@ -242,7 +305,10 @@ impl Ragdoll {
     }
 
     /// One tick of the leg bend, from where the solver left the body.
-    /// The pose the muscles just followed is not rewritten.
+    /// The pose the muscles just followed is not rewritten. Lying down
+    /// (off its feet, and not getting up) eases the stored knee, hip and
+    /// foot pitch toward 0 by 0.02 rad and leaves the target, the lift
+    /// and the thigh's extra turn alone.
     pub(super) fn bend_legs(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
@@ -251,6 +317,20 @@ impl Ragdoll {
             return;
         };
         if drive.targets.len() != parts.len() {
+            return;
+        }
+        if drive.bearing.off_feet && !drive.bearing.getting_up {
+            for leg in legs.iter_mut() {
+                let (knee, knee_rate) = ease(leg.knee, leg.knee_rate, 0.0, EASE_STANDING);
+                leg.knee = knee;
+                leg.knee_rate = knee_rate;
+                let (hip, hip_rate) = ease(leg.hip, leg.hip_rate, 0.0, EASE_STANDING);
+                leg.hip = hip;
+                leg.hip_rate = hip_rate;
+                let (pitch, pitch_rate) = ease(leg.pitch, leg.pitch_rate, 0.0, EASE_STANDING);
+                leg.pitch = pitch;
+                leg.pitch_rate = pitch_rate;
+            }
             return;
         }
         let stepping = drive.steps.stepping;

@@ -1,6 +1,7 @@
 //! Bodies tick in the fixed step: the same ticks whatever the frame rate,
 //! blows queued for the next tick, parts drawn between their last two ticks.
 use super::floor_test::{Aim, app, floor, humanoid};
+use super::locomotion::LegMode;
 use super::*;
 
 /// Every particle of every body after each tick, bodies in spawn order.
@@ -171,11 +172,7 @@ fn a_shove_in_a_frame_without_a_tick_is_dealt_by_the_next_tick() {
     }
     assert!(app.world().resource::<ShoveQueue>().0.is_empty());
     // Halved by the daze, then one tick's recovery.
-    assert!(
-        (energy(&app) - (0.5 + ENERGY_RECOVERY)).abs() < 1e-6,
-        "energy {}",
-        energy(&app)
-    );
+    assert_eq!(energy(&app), recover_energy(0.5, 1.0, false, 0.0));
 }
 
 /// A body model root that a frame system moves and turns every frame, as
@@ -253,4 +250,62 @@ fn parts_are_drawn_between_their_last_two_ticks() {
         }
     }
     assert!(between > 10, "only {between} draws fell between ticks");
+}
+
+/// A timing probe for the body tick (`--release -- --ignored --nocapture`):
+/// a standing and a walking humanoid ragdoll, each aimed and ticked 10 000
+/// times. It prints the mean time of one tick and their ratio, to compare a
+/// change against the tree before it.
+#[test]
+#[ignore = "timing probe"]
+fn body_tick_timing() {
+    let level = super::tests::floor_quad(0.0, 400.0);
+    let run = |walking: bool| {
+        let at = Vec3::ZERO;
+        let (mut body, pose) = super::floor_test::standing_at(at);
+        let local: Vec<Affine3A> = pose
+            .iter()
+            .map(|t| Affine3A::from_translation(-at) * *t)
+            .collect();
+        body.set_bearing(Bearing {
+            moving: walking,
+            walking,
+            striding: walking,
+            legs: if walking {
+                LegMode::Walk
+            } else {
+                LegMode::Standing
+            },
+            speed: if walking { 1.5 } else { 0.0 },
+            ..Bearing::default()
+        });
+        let aim = |body: &mut Ragdoll, tick: u64| {
+            let root = if walking {
+                Affine3A::from_translation(Vec3::Z * 0.014 * tick as f32)
+                    * Affine3A::from_rotation_y(0.01 * tick as f32)
+            } else {
+                Affine3A::IDENTITY
+            };
+            body.aim(root, local.iter().map(|l| root * *l).collect());
+        };
+        for tick in 0..100 {
+            aim(&mut body, tick);
+            body.tick(level.as_slice());
+        }
+        let start = std::time::Instant::now();
+        for tick in 100..10_100 {
+            aim(&mut body, tick);
+            body.tick(level.as_slice());
+        }
+        let each = start.elapsed().as_secs_f64() * 1e6 / 10_000.0;
+        println!(
+            "body tick {}: {each:.3} us/tick",
+            if walking { "walking" } else { "standing" }
+        );
+        each
+    };
+    let standing = run(false);
+    let walking = run(true);
+    println!("body tick walking/standing: {:.2}x", walking / standing);
+    assert!(standing > 0.0 && walking > 0.0);
 }

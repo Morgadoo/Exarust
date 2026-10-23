@@ -37,6 +37,24 @@ use super::{Animator, ClipPose, to_quat};
 /// second for a human. Getting up, attacking and walking have their own
 /// rates (`exa_game::limp`).
 pub const STANDING_PACE: f32 = 0.6;
+
+/// Frames a standing clock gains from `rate`: the double 0.6 times the
+/// rate, which [`Animator::tick_double`] adds to the widened clock.
+pub fn standing_frames(rate: f32) -> f64 {
+    f64::from(rate) * 0.6
+}
+
+/// Frames a get-up's clock gains above half tone: the double product
+/// rate × 0.6 × tone, added in double like the standing pace. At half tone
+/// and below, and for a NaN tone, none.
+pub fn rising_frames(rate: f32, tone: f32) -> f64 {
+    if tone > 0.5 {
+        f64::from(rate) * 0.6 * f64::from(tone)
+    } else {
+        0.0
+    }
+}
+
 /// The walk, the run and the backpedal (action indices): played in place,
 /// their root's travel along z left out, since the body's own motion makes
 /// it.
@@ -234,14 +252,30 @@ impl Animator {
     /// wraps by that time, and one played once starts its follow-up
     /// (looping) with `follow_up` frames of blend, eased smoothly, or else
     /// holds its last key. Returns whether the follow-up started (its
-    /// capture is pending).
+    /// capture is pending). The add is single precision: an attack's rate
+    /// and a locomotion step.
     pub fn tick(&mut self, clip: &Clip, frames: f32, follow_up: u32) -> bool {
         self.rate = frames;
+        self.advance(clip, self.time + frames, follow_up)
+    }
+
+    /// [`Animator::tick`] with the add in double: the original's 0.6-rate
+    /// paths (standing, off balance, a kick, a power, a weapon switch) and
+    /// a get-up add the double product to the widened clock and narrow
+    /// once.
+    pub fn tick_double(&mut self, clip: &Clip, frames: f64, follow_up: u32) -> bool {
+        self.rate = frames as f32;
+        let time = (f64::from(self.time) + frames) as f32;
+        self.advance(clip, time, follow_up)
+    }
+
+    /// The end test and the wrap after the clock has reached `time`.
+    fn advance(&mut self, clip: &Clip, time: f32, follow_up: u32) -> bool {
         self.ended = false;
         let Some(last) = clip.keys.last().map(|k| k.time) else {
             return false;
         };
-        self.time += frames;
+        self.time = time;
         if self.looping && last > 0.0 && self.time < 0.0 {
             self.time = self.time.rem_euclid(last);
         }

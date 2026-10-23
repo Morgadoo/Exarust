@@ -171,8 +171,6 @@ fn foot(at: Vec3) -> FootView {
         point: at,
         leg: 100.0,
         changed_ms: f32::NAN,
-        landed_ms: f32::NAN,
-        started_ms: f32::NAN,
     }
 }
 
@@ -188,7 +186,43 @@ fn ctx() -> ScoreCtx {
         step: 80.0,
         episode: false,
         size: 1.0,
+        still_at: f32::NAN,
+        still_plus: f32::NAN,
     }
+}
+
+/// The trailing plant stamps T and T+100. An anchored foot's base is then
+/// 11.5 under T+200, 3.5 under T+300, 2 under T+700 and 1.5 after. A
+/// boundary is the next band. A stamp that is not a number opens no band:
+/// a closed later stamp leaves the earlier one's 3.5, and with neither the
+/// base is 1.5. The foot's own change stamp is not read for the base.
+#[test]
+fn a_stand_still_window_sets_the_anchored_base() {
+    let t = 1_000.0;
+    let plus = t + 100.0;
+    assert_eq!(anchored_base(plus, t, t), 11.5);
+    assert_eq!(anchored_base(plus, t, t + 100.0), 11.5);
+    assert_eq!(anchored_base(plus, t, t + 200.0), 3.5);
+    assert_eq!(anchored_base(plus, t, t + 250.0), 3.5);
+    assert_eq!(anchored_base(plus, t, t + 300.0), 2.0);
+    assert_eq!(anchored_base(plus, t, t + 400.0), 2.0);
+    assert_eq!(anchored_base(plus, t, t + 700.0), 1.5);
+    assert_eq!(anchored_base(f32::NAN, t, t + 100.0), 3.5);
+    assert_eq!(anchored_base(f32::NAN, f32::NAN, t), 1.5);
+    assert_eq!(anchored_base(plus, f32::NAN, t + 200.0), 2.0);
+
+    let mut feet = [foot(Vec3::ZERO), foot(Vec3::X * 60.0)];
+    feet[0].anchored = true;
+    let spots = [Vec3::ZERO, Vec3::X * 60.0];
+    let mut c = ctx();
+    c.now_ms = t + 250.0;
+    c.still_at = t;
+    c.still_plus = plus;
+    let windowed = foot_score(0, &feet, &spots, &c);
+    c.still_at = f32::NAN;
+    c.still_plus = f32::NAN;
+    let closed = foot_score(0, &feet, &spots, &c);
+    assert!(close(windowed - closed, 2.0), "{windowed} {closed}");
 }
 
 /// The episode ends on its four rules and not while it is young and closing.

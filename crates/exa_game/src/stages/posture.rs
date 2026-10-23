@@ -7,12 +7,16 @@
 //! striding, off balance while its posture stage takes an off-balance
 //! branch, getting up and rising through its get-up's first quarter,
 //! carried by its controller, turning unless its condition is helpless,
-//! collapsing, walking and off its feet by its condition, its clip's
-//! progress.
+//! collapsing, kicking, casting, switching weapons, walking and off its
+//! feet by its condition, its clip's progress, and whether a shield is in
+//! the off hand. The attack stage copies the parry flag onto that bearing
+//! after the parry check.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
 use exa_combat::Condition;
+use exa_combat::Fighter;
+use exa_combat::attack::{self, Attacker};
 use exa_combat::condition::{PostureBranch, StateFlags};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
@@ -36,11 +40,24 @@ pub(crate) fn take_bearing(
         Option<&PostureBranch>,
         Option<&Condition>,
         Option<&StateFlags>,
+        Option<&Attacker>,
+        Option<&exa_ai::combatant::Combatant>,
+        Option<&Fighter>,
     )>,
 ) {
     let Some(motions) = motions else { return };
-    let Ok((mut body, anim, locomotion, player, branch, condition, flags)) =
-        bodies.get_mut(ticked.body)
+    let Ok((
+        mut body,
+        anim,
+        locomotion,
+        player,
+        branch,
+        condition,
+        flags,
+        attacker,
+        combatant,
+        fighter,
+    )) = bodies.get_mut(ticked.body)
     else {
         return;
     };
@@ -49,12 +66,26 @@ pub(crate) fn take_bearing(
     let branch = branch.map_or_else(Default::default, |b| b.0);
     let crouch = player.map_or(0.0, PlayerBody::crouch);
     let mut bearing: Bearing = bearing(controller, locomotion, crouch, anim, branch, state);
+    // The behaviour is in combat: the player's combat mode, or an AI that
+    // has entered its combat state.
+    bearing.in_combat = player.is_some_and(|p| p.combat) || combatant.is_some_and(|c| c.in_combat);
+    // The parry flag this tick's arm writes and clip rate read is the one
+    // the previous tick's attack stage left: the auto-parry runs after
+    // them in the original's posture block.
+    bearing.parrying = fighter.is_some_and(|f| f.parry.active);
     bearing.rising = rising(&motions, anim, state);
     // Dormant, or in exactly the shock's stagger, its stance factor is 1.
+    // The flag's bit, with whatever else is set, makes the pins' power 1.
     bearing.full_stance =
         state == Condition::DORMANT || flags.map_or(0, |f| f.0) == StateFlags::SHOCK_STAGGER;
+    bearing.shock_stagger = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
+    bearing.shield = attacker.is_some_and(|a| a.stance_class == attack::STANCE_SHIELD);
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
+    bearing.dormant = state == Condition::DORMANT;
+    if let Some(drive) = body.drive.as_mut() {
+        drive.dormant = state == Condition::DORMANT;
+    }
     body.set_bearing(bearing);
 }

@@ -169,7 +169,7 @@ pub struct Strike {
     /// The striking body hangs from another striker of the same weapon (a
     /// flail's link); Exarust's weapons are one body, so never.
     pub hanging: bool,
-    /// The attacker's Force Strikes strength (no powers in Exarust: 0).
+    /// The attacker's Force Strikes strength ([`crate::PowerFactors`]).
     pub strikes: f32,
 }
 
@@ -180,7 +180,7 @@ pub struct Victim {
     /// Readiness g, 0..=1 ([`crate::Fighter::readiness`]): the wound's
     /// penetration, impact and stab energy are taken 1 − 0.5·g.
     pub readiness: f32,
-    /// Force Shell: 0.5 while the power holds (no powers in Exarust: 0).
+    /// Force Shell: 0.5 while the power holds ([`crate::PowerFactors`]).
     pub shell: f32,
     /// A blow dazes it a quarter as much and never stalls its swing (rule
     /// bit `BodyRules::STEADFAST`).
@@ -227,6 +227,11 @@ pub struct ShieldGuard {
     pub cost: f32,
     /// The shield arm's stamina, 0..=1.
     pub stamina: f32,
+    /// The stamina's regeneration rate. A block zeros it.
+    pub rate: f32,
+    /// The game clock of the last block, or [`crate::regen::ShieldStamina::STAMP_FULL`]
+    /// once the arm has filled.
+    pub blocked_at: u32,
     /// The holder parries with the shield.
     pub parrying: bool,
 }
@@ -1603,6 +1608,8 @@ mod tests {
             leak,
             cost: leak,
             stamina,
+            rate: 0.0,
+            blocked_at: 0,
             parrying,
         };
         let bits = |b: &Blocked| [b.stamina, b.yellow, b.daze, b.daze_factor].map(f32::to_bits);

@@ -5,9 +5,9 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **59.9% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 54.7% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
-- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **44.1%** reproduced.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **60.4% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 54.9% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
 
@@ -18,15 +18,15 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Data, assets & I/O | 440 | 91 | 26 | 65% | 0% | TStringLibrary, RF_DataManager, TRFCExporter |
 | Rendering & GPU | 823 | 334 | 63 | 68% | 1% | FLX_IconRender, Screen-quad GLSL snippets, TTexLoaderThread |
 | World, levels & terrain | 454 | 174 | 31 | 62% | 0% | Scene node despawn and viewport step (TSceneTaskInt by address) |
-| Physics, bodies & cloth | 363 | 242 | 13 | 57% | 0% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 55% | 0% |  |
+| Physics, bodies & cloth | 363 | 242 | 13 | 59% | 0% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 56% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 60% | 0% | TCharLoot, TPopUpDesc, TPopUpContainer |
 | AI & behaviour | 437 | 206 | 17 | 59% | 0% | FG_AI_Behaviours, FLX_Entities, TEntity |
-| Thaumaturgy & effects | 697 | 296 | 83 | 62% | 0% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 63% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 70% | 0% | TJournal, TScriptActor |
-| Game modes, arena & session | 646 | 193 | 23 | 60% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager, TManageForm |
+| Game modes, arena & session | 646 | 193 | 23 | 61% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager, TManageForm |
 | UI | 959 | 312 | 63 | 73% | 0% | TReadKeyScreen, THairEditForm, TCharEditForm |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
@@ -83,8 +83,8 @@ Ordered by code size; these are where most of the original still has no counterp
 
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
-| XA_Arena | Game modes, arena & session | 71 | 65% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
-| TMotileAI | AI & behaviour | 60 | 59% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
+| XA_Arena | Game modes, arena & session | 71 | 67% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
+| TMotileAI | AI & behaviour | 60 | 60% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | TGUIDrawSkin | UI | 35 | 90% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 86% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 84% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
@@ -101,7 +101,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TParticleSystem | Thaumaturgy & effects | 19 | 82% | exa_world/src/particles.rs; exa_world/src/flame.rs |
 | RFE_MeshSubdivide | Rendering & GPU | 18 | 89% | exa_assets/src/mesh_smooth.rs; exa_assets/src/model.rs |
 | TGUIForm | UI | 20 | 76% | exa_ui/src/form.rs; exa_ui/src/form_test.rs |
-| TSimSector | Physics, bodies & cloth | 28 | 53% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
+| TSimSector | Physics, bodies & cloth | 28 | 54% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
 | SG_ObjectDB2 | Data, assets & I/O | 19 | 74% | exa_formats/src/objdb.rs; exa_formats/src/objdb/store.rs |
 
 ## Combat rules
@@ -109,7 +109,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | rule | inside | bytes | coverage |
 |---|---|---:|---:|
 | NPC combat state | TMotileAI | 18,453 | 5% |
-| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 70% |
+| damage routine: hit point, speed/impact, zone factors, armour roll | TMotileDynamics | 13,157 | 71% |
 | per-part weapon stat bytes of factory weapons | FLX_ItemFactory | 3,692 | 90% |
 | armour layers from equipped apparel | SG_CharacterGen | 3,680 | 60% |
 | weapon mesh assembly (feeds striking-part extent) | FLX_ItemFactory | 3,282 | 40% |
@@ -123,14 +123,14 @@ Ordered by code size; these are where most of the original still has no counterp
 | applies damage to a body | TMotileDynamics | 481 | 50% |
 | attacker recoil after a hit | TMotileDynamics | 266 | 0% |
 | factory item stats | FLX_ItemFactory | 247 | 55% |
-| shield stat block | TMotilePart | 187 | 0% |
-| weapon mass distribution | TMotilePart | 178 | 0% |
-| weapon mass distribution | TMotilePart | 146 | 0% |
+| shield stat block | TMotilePart | 187 | 90% |
+| weapon mass distribution | TMotilePart | 178 | 100% |
+| weapon mass distribution | TMotilePart | 146 | 100% |
 | sweet spot | TMotilePart | 141 | 0% |
-| daze | TMotilePart | 138 | 75% |
+| daze | TMotilePart | 138 | 80% |
 | enter combat state | TMotileAI | 116 | 15% |
 | blade length | TMotilePart | 79 | 60% |
-| weapon mass distribution | TMotilePart | 66 | 0% |
+| weapon mass distribution | TMotilePart | 66 | 100% |
 | fetches the weapon stat record up the body chain | TMotilePart | 38 | 50% |
 
 ## How it was made

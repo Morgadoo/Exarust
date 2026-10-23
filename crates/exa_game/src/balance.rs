@@ -28,7 +28,8 @@
 //! with a blend of 20 from its whole physical pose. The movement stage
 //! picks again while the get-up is under 40 % (a body that rolled over
 //! changes clip). While getting up its energy gains 0.01 × (1 − progress)
-//! a tick more. Under a balance of 0.8, not getting up, a body whose pelvis
+//! a tick more, in the same double sum as the 0.005 recovery. Under a
+//! balance of 0.8, not getting up, a body whose pelvis
 //! has turned more than 45° from its clip's turns its heading toward its
 //! fall when that is more than 37° off.
 //!
@@ -42,9 +43,13 @@ use exa_combat::Condition;
 use exa_combat::collapse::dying_tick;
 use exa_combat::condition::{Branch, PostureBranch, StateFlags, track_condition};
 use exa_combat::stance::Stance;
-use exa_physics::body::{CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter};
+use exa_physics::body::{
+    BodyTicks, CharacterStage, CharacterTick, Fallen, Ragdoll, TickedCharacter,
+};
+use exa_physics::shock::shock_stagger_tick;
 
 use crate::limp::CM;
+use crate::thaum::live::ShockReady;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 
 pub struct BalancePlugin;
@@ -55,6 +60,9 @@ impl Plugin for BalancePlugin {
             CharacterTick,
             (
                 recover_rising.in_set(CharacterStage::Readiness),
+                pin_shock_stagger
+                    .in_set(CharacterStage::Readiness)
+                    .after(recover_rising),
                 take_posture
                     .in_set(CharacterStage::Posture)
                     .after(track_condition)
@@ -752,8 +760,10 @@ fn turn_toward_fall(
     }
 }
 
-/// The ticked body's extra energy while getting up, in its readiness stage
-/// (by last tick's condition and clock): 0.01 × (1 − progress).
+/// The ticked body's energy recovery, in its readiness stage (by last
+/// tick's condition and clock). Getting up adds 0.01 × (1 − progress) in
+/// the same double sum as the 0.005; anything else adds only that 0.005.
+/// The integration step then leaves the energy.
 fn recover_rising(
     ticked: Res<TickedCharacter>,
     motions: Option<Res<Motions>>,
@@ -763,14 +773,56 @@ fn recover_rising(
     let Ok((mut body, anim, condition)) = bodies.get_mut(ticked.body) else {
         return;
     };
-    if *condition != Condition::GETTING_UP {
-        return;
-    }
     let progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
     if let Some(d) = body.drive.as_mut() {
-        d.energy += rising_energy(progress);
+        d.write_energy(*condition == Condition::GETTING_UP, progress);
+    }
+}
+
+/// The shock stagger, after this tick's energy recovery: energy becomes
+/// the most minus 0.5, the stance becomes Defence (without starting its
+/// clip), Rebalance starts with no blend unless it already plays, and the
+/// flag clears once the clock is past the next shock.
+#[allow(clippy::type_complexity)]
+fn pin_shock_stagger(
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    mut bodies: Query<(
+        &mut Ragdoll,
+        &mut Animator,
+        Option<&mut Stance>,
+        &mut StateFlags,
+        Option<&ShockReady>,
+    )>,
+) {
+    let Ok((mut body, mut anim, stance, mut flags, ready)) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    let Some(drive) = body.drive.as_mut() else {
+        return;
+    };
+    let now = ticks.map_or(0, |t| t.millis());
+    let next = ready.map(|r| r.0).unwrap_or(0);
+    let Some(step) = shock_stagger_tick(
+        flags.0,
+        drive.max_energy(),
+        anim.action == "Rebalance",
+        now,
+        next,
+    ) else {
+        return;
+    };
+    drive.energy = step.energy;
+    flags.0 = step.flags;
+    // The original sets the stance motion to Defence before it starts
+    // Rebalance. A body without a stance (no fighter's) still staggers.
+    if let Some(mut stance) = stance {
+        *stance = Stance::Defence;
+    }
+    if step.play_rebalance {
+        anim.start("Rebalance", true, None, 0, Ease::Linear);
     }
 }
 

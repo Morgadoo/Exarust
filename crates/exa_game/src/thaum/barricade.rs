@@ -359,6 +359,9 @@ impl Barricade {
         roll: f64,
     ) -> BarricadeAdd {
         let motion = casting::start_cast(body, CAST_MOTION, POWER_ID);
+        if motion {
+            body.cast_hook = Some(super::force::BARRICADE_HOOK);
+        }
         let power = ActivePower {
             id: POWER_ID,
             state: power::RUNNING,
@@ -1135,6 +1138,11 @@ mod tests {
         assert_eq!(body.reserved, 0.25);
         assert_eq!(body.powers.len(), 1);
         assert_eq!(body.cast_motion, Some(CAST_MOTION));
+        assert_eq!(body.cast_hook, Some(super::super::force::BARRICADE_HOOK));
+        assert!(
+            !casting::start_cast(&mut body, 0x22, 0x201),
+            "the hook refuses a cast"
+        );
         // Sector (1 + 5, −1 + 4) of a 10 × 8 grid.
         assert_eq!(add.entity.sector, Some(3 * 10 + 6));
         assert_eq!(add.hum_pitch, Some(((2.0f64 * 0.8) * 0.5) as f32));
@@ -1145,12 +1153,16 @@ mod tests {
         assert!(wall.stamp.is_none() && !wall.voice);
         // A running cast keeps the hook off; there is no hum without a sound.
         let mut busy = CastBody {
-            cast_hook: Some(0),
+            cast_hook: Some(crate::thaum::casting::CastHook { keeps: 0x20 }),
             ..CastBody::default()
         };
         let mut other = Barricade::raise(frame, 0.25, 0, |_, _, _| None, None, &mut draws);
         let add = other.add_to_world(&mut busy, None, None, 0.5);
         assert!(!add.motion && !other.spawned);
+        assert_eq!(
+            busy.cast_hook,
+            Some(crate::thaum::casting::CastHook { keeps: 0x20 })
+        );
         assert_eq!((add.entity.sector, add.hum_pitch), (None, None));
     }
 

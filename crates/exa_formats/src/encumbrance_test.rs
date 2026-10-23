@@ -144,6 +144,12 @@ fn what_encumbrance_slows() {
     assert_eq!(standing_alignment(0.5), 0.5);
     assert_eq!(long_step(0.5), 1.35);
     assert_eq!(footwork_long_step(0.5), 1.45);
+    // 80 cm at no encumbrance is 120 cm; at 0.5, 108 cm. A reach already
+    // shortened to 72 cm lengthens to 97.2 cm.
+    assert_eq!(long_step_length(80.0, 0.0).to_bits(), 0x42f0_0000);
+    assert_eq!(long_step_length(80.0, 0.5).to_bits(), 0x42d8_0000);
+    assert_eq!(long_step_length(72.0, 0.5).to_bits(), 0x42c2_6666);
+    assert!(long_step_length(80.0, f32::NAN).is_nan());
     assert_eq!(get_up_rate(0.5), 1.25);
 }
 

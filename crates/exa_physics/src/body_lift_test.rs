@@ -1,9 +1,9 @@
 //! The carry and the lift: the original's rules, each pinned to its numbers
 //! (`docs/formats/RSQ.md`, Physical body).
 //! (Included from body_lift.rs: `#[path = "body_lift_test.rs"] mod tests;`)
+use super::super::Drive;
 use super::super::floor_test::{STANDING_LEG, STANDING_SOLE, standing_at};
 use super::super::tests::floor_quad;
-use super::super::{Drive, ENERGY_RECOVERY};
 use super::*;
 
 const NONE: &[[Vec3; 3]] = &[];
@@ -29,16 +29,20 @@ fn stand(body: &mut Ragdoll, pose: &[Affine3A], level: &[[Vec3; 3]]) {
     body.tick(level);
 }
 
-/// Standing, f = 0.075(h + 15), h the target less the pelvis height (cm):
-/// 1 when the pelvis is 1.7 cm over its target, 1.5 at most (5 cm under
-/// it), none once the pelvis is 15 cm over it, but down to −10 crouched
-/// deeper than 0.9. Moving, f = (0.4·run + 0.2)(h + 5): 1 at the target
-/// walking, 3.3 cm over it running, 2 at most, none 5 cm over it. Falling
-/// a cm a tick at f = 1 adds (1 − 1/3)·E², rising takes it off.
+/// Standing, f = scale·0.075(h + 15), h the target less the pelvis height
+/// (cm): 1 when the pelvis is 1.7 cm over its target at scale 1, 1.5 at
+/// most (5 cm under it), none once the pelvis is 15 cm over it, but down
+/// to −10 crouched deeper than 0.9. Moving, f = scale·(0.4·run + 0.2)(h + 5):
+/// 1 at the target walking, 3.3 cm over it running, 2 at most, none 5 cm
+/// over it. The scale product is a double narrowed once, before the clamp.
+/// Half scale gives 0.5625 standing at h = 0 and 0.5 walking there; scale 2
+/// clamps the standing term to 1.5. The standing lead is 15, 10 while
+/// stepping and 20 when dormant. Falling a cm a tick at f = 1 adds
+/// (1 − 1/3)·E², rising takes it off.
 #[test]
 fn the_lift_is_the_originals() {
     let standing = Bearing::default();
-    let lift = |h: f32, rise: f32, energy: f32, b: &Bearing| lift_factor(h, rise, energy, b);
+    let lift = |h: f32, rise: f32, energy: f32, b: &Bearing| lift_factor(h, rise, energy, b, 1.0);
     let near = |f: Option<f32>, want: f32| f.is_some_and(|f| close(f, want, 1e-5));
     assert!(near(lift(-15.0, 0.0, 1.0, &standing), 0.0));
     assert!(near(lift(-5.0 / 3.0, 0.0, 1.0, &standing), 1.0));
@@ -69,6 +73,28 @@ fn the_lift_is_the_originals() {
     assert!(near(lift(at_one, 1.0, 1.0, &standing), 1.0 - 2.0 / 3.0));
     // At the clamp the damping is (1 − 1.5/3.5) of the speed.
     assert!(near(lift(30.0, 2.0, 1.0, &standing), 1.5 - 2.0 * 4.0 / 7.0));
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &standing, 0.5), Some(0.5625));
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &walking, 0.5), Some(0.5));
+    assert_eq!(lift_unclamped(0.0, &standing, 2.0), 2.25);
+    assert_eq!(lift_factor(0.0, 0.0, 1.0, &standing, 2.0), Some(1.5));
+    // The standing lead is 10 cm while stepping and 20 when dormant; the
+    // stepping test comes first.
+    let stepping = Bearing {
+        stepping: true,
+        ..standing
+    };
+    let dormant = Bearing {
+        dormant: true,
+        ..standing
+    };
+    assert_eq!(lift_unclamped(0.0, &stepping, 1.0), 0.75);
+    assert_eq!(lift_unclamped(0.0, &dormant, 1.0), 1.5);
+    let both = Bearing {
+        stepping: true,
+        dormant: true,
+        ..standing
+    };
+    assert_eq!(lift_unclamped(0.0, &both, 1.0), 0.75);
 }
 
 /// A part takes the carry by its tone times its support share: the pelvis
@@ -85,18 +111,26 @@ fn carry_shares_are_the_originals() {
         (4, 0.25),
         (7, 0.25),
     ] {
-        assert_eq!(carry_share(bone, 1.0, 0.6), Some(want), "bone {bone}");
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.0), Some(want), "bone {bone}");
         assert!(close(
-            carry_share(bone, 0.9, 0.6).unwrap(),
+            carry_share(bone, 0.9, 0.6, 1.0).unwrap(),
             0.9 * want,
             1e-6
         ));
+        // Scale 1.3 stays; the next step up zeroes the legs and pelvis.
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.3), Some(want), "bone {bone}");
+        assert_eq!(carry_share(bone, 1.0, 0.6, 1.31), Some(0.0), "bone {bone}");
     }
     for bone in [8, 9, 10, 11, 13, 17] {
-        assert!(close(carry_share(bone, 0.9, 0.6).unwrap(), 0.54, 1e-6));
+        assert!(close(carry_share(bone, 0.9, 0.6, 1.0).unwrap(), 0.54, 1e-6));
+        assert!(close(
+            carry_share(bone, 0.9, 0.6, 1.31).unwrap(),
+            0.54,
+            1e-6
+        ));
     }
-    assert_eq!(carry_share(1, 0.5, 1.0), None);
-    assert_eq!(carry_share(9, 0.3, 1.0), None);
+    assert_eq!(carry_share(1, 0.5, 1.0, 1.31), None);
+    assert_eq!(carry_share(9, 0.3, 1.0, 1.0), None);
 }
 
 /// The leg of a standing human as the arena's Idle gives it (cm): the clip
@@ -107,6 +141,7 @@ fn idle_leg(ground: f32) -> LegHeight {
         contact: ground + 10.0,
         stance: 91.4 + SOLE,
         length: 85.15,
+        lifted: false,
     }
 }
 
@@ -122,30 +157,30 @@ const SOLE: f32 = 9.68;
 fn the_target_height_is_the_originals() {
     let flat = [idle_leg(0.0), idle_leg(0.0)];
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, false),
+        target_height(&flat, SOLE, 0.0, 101.5, false, 1.0, 0.0, 0.0),
         99.83,
         1e-3
     ));
     let step = [idle_leg(30.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&step, SOLE, 0.0, 131.5, false),
+        target_height(&step, SOLE, 0.0, 131.5, false, 1.0, 0.0, 0.0),
         129.83,
         1e-3
     ));
     let one = [idle_leg(0.0), idle_leg(30.0)];
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, false),
+        target_height(&one, SOLE, 0.0, 101.5, false, 1.0, 0.0, 0.0),
         99.83,
         1e-3
     ));
     // Moving: the mean of the two feet's, uncapped.
     assert!(close(
-        target_height(&one, SOLE, 0.0, 101.5, true),
+        target_height(&one, SOLE, 0.0, 101.5, true, 1.0, 4.0, 0.0),
         116.08,
         1e-3
     ));
     assert!(close(
-        target_height(&flat, SOLE, 0.0, 101.5, true),
+        target_height(&flat, SOLE, 0.0, 101.5, true, 1.0, 4.0, 0.0),
         101.08,
         1e-3
     ));
@@ -153,7 +188,32 @@ fn the_target_height_is_the_originals() {
         ground: None,
         ..idle_leg(0.0)
     }; 2];
-    assert_eq!(target_height(&none, SOLE, 0.0, 101.5, false), NO_TARGET);
+    assert_eq!(
+        target_height(&none, SOLE, 0.0, 101.5, false, 1.0, 0.0, 0.0),
+        NO_TARGET
+    );
+}
+
+/// A full crouch is 60 cm times the body scale over the ground. Half scale
+/// stands at 35 cm (30 plus the 5 cm raise); scale 1.25 stands at 80 cm.
+/// Moving, neither the cap nor the raise applies, so half scale is 30 cm.
+/// A NaN scale, moving, leaves the target a NaN.
+#[test]
+fn a_crouch_stands_at_60_cm_times_the_body_scale() {
+    let flat = [idle_leg(0.0), idle_leg(0.0)];
+    assert_eq!(
+        target_height(&flat, SOLE, 1.0, 100.0, false, 0.5, 0.0, 0.0),
+        35.0
+    );
+    assert_eq!(
+        target_height(&flat, SOLE, 1.0, 100.0, false, 1.25, 0.0, 0.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&flat, SOLE, 1.0, 100.0, true, 0.5, 4.0, 0.0),
+        30.0
+    );
+    assert!(target_height(&flat, SOLE, 0.0, 100.0, true, f32::NAN, 4.0, 0.0).is_nan());
 }
 
 /// The other foot is blended in by half while its contact's height over
@@ -168,13 +228,14 @@ fn the_other_foot_is_blended_in() {
         contact,
         stance: 40.0,
         length: 85.15,
+        lifted: false,
     };
     // Uncapped, 40 cm over each foot's ground, the other foot's ground
     // 10 cm higher, its contact 10 cm over it: the spread is the lower
     // contact's height plus 10. Weights 0.5, 0.5, 0.125 and 0, plus 5 cm.
     for (contact, want) in [(25.0, 50.0), (30.0, 50.0), (45.0, 46.25), (50.0, 45.0)] {
         let legs = [crouched(0.0, contact), crouched(10.0, 20.0)];
-        let got = target_height(&legs, SOLE, 0.0, 100.0, false);
+        let got = target_height(&legs, SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0);
         assert!(
             close(got, want, 1e-3),
             "contact {contact}: {got}, not {want}"
@@ -182,7 +243,7 @@ fn the_other_foot_is_blended_in() {
     }
     let high = [crouched(50.0, 60.0), crouched(50.0, 60.0)];
     assert!(close(
-        target_height(&high, SOLE, 0.0, 150.0, false),
+        target_height(&high, SOLE, 0.0, 150.0, false, 1.0, 0.0, 0.0),
         95.0,
         1e-3
     ));
@@ -194,7 +255,7 @@ fn the_other_foot_is_blended_in() {
         },
     ];
     assert!(close(
-        target_height(&lifted, SOLE, 0.0, 100.0, false),
+        target_height(&lifted, SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
         45.0,
         1e-3
     ));
@@ -202,10 +263,226 @@ fn the_other_foot_is_blended_in() {
     // lowest: the other is, and caps the target at its reach.
     let above = [crouched(160.0, 170.0), crouched(0.0, 10.0)];
     assert!(close(
-        target_height(&above, SOLE, 0.0, 50.0, false),
+        target_height(&above, SOLE, 0.0, 50.0, false, 1.0, 0.0, 0.0),
         99.83,
         1e-3
     ));
+}
+
+/// A lifted lowest foot blends by the whole weight, a lifted other foot by
+/// none, and the other's flag wins when both are lifted. The 40–60 cm
+/// slope scales that weight. Past 60 cm, and when the other foot has no
+/// ground, nothing is blended. Moving skips the cap and the raise.
+#[test]
+fn a_lifted_foot_sets_the_blend_weight() {
+    let foot = |ground: f32, contact: f32, stance: f32, lifted: bool| LegHeight {
+        ground: Some(ground),
+        contact,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    // Spread 20 cm: weights 1, 0 and 0.5. Heights 40 and 80, plus the 5 cm
+    // raise, under the cap.
+    let pair = |low: bool, other: bool| [foot(0.0, 10.0, 40.0, low), foot(0.0, 10.0, 80.0, other)];
+    assert_eq!(
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        85.0
+    );
+    assert_eq!(
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        45.0
+    );
+    assert_eq!(
+        target_height(&pair(true, true), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        45.0
+    );
+    assert_eq!(
+        target_height(&pair(false, false), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        65.0
+    );
+    assert_eq!(
+        target_height(&pair(true, false), SOLE, 0.0, 100.0, true, 1.0, 4.0, 0.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(false, true), SOLE, 0.0, 100.0, true, 1.0, 4.0, 0.0),
+        40.0
+    );
+    // Spread 50 cm: the slope takes 0.05 a cm of the weight, so a lifted
+    // lowest foot blends by 0.5 (65 cm) and a planted pair by 0.25 (55).
+    let sloped = |low: bool| [foot(0.0, 30.0, 40.0, low), foot(0.0, 20.0, 80.0, false)];
+    assert_eq!(
+        target_height(&sloped(true), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        65.0
+    );
+    assert_eq!(
+        target_height(&sloped(false), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        55.0
+    );
+    // 5 cm a tick saturates the spread's mix, so the 50 cm slope still
+    // applies and a lifted lowest foot blends by half.
+    assert_eq!(
+        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0, 5.0, 0.0),
+        60.0
+    );
+    // Spread 70 cm: the flag does not blend past 60.
+    let wide = [foot(0.0, 40.0, 40.0, true), foot(0.0, 30.0, 80.0, false)];
+    assert_eq!(
+        target_height(&wide, SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        45.0
+    );
+    // The higher foot is the other one even when it is listed first. No
+    // ground still leaves the lowest foot's height, lifted or not.
+    let swapped = [foot(10.0, 20.0, 80.0, false), foot(0.0, 10.0, 40.0, true)];
+    assert_eq!(
+        target_height(&swapped, SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        95.0
+    );
+    let unreachable = [
+        foot(0.0, 10.0, 40.0, true),
+        LegHeight {
+            ground: None,
+            stance: 80.0,
+            ..foot(10.0, 20.0, 80.0, false)
+        },
+    ];
+    assert_eq!(
+        target_height(&unreachable, SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        45.0
+    );
+}
+
+/// Moving, the blend's half is min(0.5, 0.2·speed) and the weight is then
+/// multiplied by min(1, (0.3·speed)²), speed the cm a tick along the
+/// heading. At rest that product is 0, so the pelvis stays on the lowest
+/// foot, lifted or not. At 4 cm a tick both factors saturate, so a planted
+/// pair blends by half and a lifted lowest foot by all of it. A NaN speed
+/// saturates the same way. Standing ignores the speed.
+#[test]
+fn the_moving_blend_follows_the_speed() {
+    let foot = |stance: f32, lifted: bool| LegHeight {
+        ground: Some(0.0),
+        contact: 10.0,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    let pair = |low: bool| [foot(40.0, low), foot(80.0, false)];
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 0.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 0.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 4.0, 0.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 4.0, 0.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, f32::NAN, 0.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        65.0
+    );
+}
+
+/// Moving, the spread is (1 − k)·lowest ground + k·(lowest contact + other
+/// contact − other ground), k = min(1, 0.2·speed). Contacts 30 and 20 cm
+/// over grounds at 0 are 50 cm apart, which the slope would cut; at 2.5 cm
+/// a tick k is 0.5 and the spread is 25, so the weight is not cut, and at
+/// 4 cm a tick the spread is 40, so a lifted lowest foot keeps its full
+/// weight. At 5 cm a tick k is 1 and the 50 cm slope returns. A NaN speed
+/// saturates k the same way. Standing keeps k at 1.
+#[test]
+fn the_moving_spread_follows_the_speed() {
+    let foot = |contact: f32, stance: f32, lifted: bool| LegHeight {
+        ground: Some(0.0),
+        contact,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    let pair = |lifted: bool| [foot(30.0, 40.0, lifted), foot(20.0, 80.0, false)];
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 0.0, 0.0),
+        40.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, true, 1.0, 2.5, 0.0),
+        51.25
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 4.0, 0.0),
+        80.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, 5.0, 0.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(true), SOLE, 0.0, 100.0, true, 1.0, f32::NAN, 0.0),
+        60.0
+    );
+    assert_eq!(
+        target_height(&pair(false), SOLE, 0.0, 100.0, false, 1.0, 0.0, 0.0),
+        55.0
+    );
+}
+
+/// Moving, a negative slow vertical chest speed (cm a tick) multiplies the
+/// blend weight by max(0, 1 + 0.5·v). At 4 cm a tick a planted pair blends
+/// by half, so −1 cm a tick leaves a quarter and −2 cm a tick leaves none.
+/// The cut follows the 40–60 cm slope. A rise, a NaN and standing leave
+/// the blend as it was.
+#[test]
+fn a_falling_chest_cuts_the_moving_blend() {
+    let foot = |stance: f32, lifted: bool| LegHeight {
+        ground: Some(0.0),
+        contact: 10.0,
+        stance,
+        length: 85.15,
+        lifted,
+    };
+    let pair = |low: bool| [foot(40.0, low), foot(80.0, false)];
+    let height = |moving, speed, drop, low| {
+        target_height(&pair(low), SOLE, 0.0, 100.0, moving, 1.0, speed, drop)
+    };
+    assert_eq!(height(true, 4.0, -1.0, false), 50.0);
+    assert_eq!(height(true, 4.0, -2.0, false), 40.0);
+    assert_eq!(height(true, 4.0, -4.0, false), 40.0);
+    assert_eq!(height(true, 4.0, 1.0, false), 60.0);
+    assert_eq!(height(true, 4.0, 0.0, false), 60.0);
+    assert_eq!(height(true, 4.0, f32::NAN, false), 60.0);
+    // A lifted lowest foot starts at weight 1, then the drop halves it.
+    assert_eq!(height(true, 4.0, -1.0, true), 60.0);
+    assert_eq!(height(false, 0.0, -4.0, false), 65.0);
+    // Spread 50 cm at 5 cm a tick: the slope leaves half, and −2 cm a tick
+    // takes the rest, so the target stays on the lowest foot.
+    let sloped = |lifted: bool| {
+        [
+            LegHeight {
+                contact: 30.0,
+                ..foot(40.0, lifted)
+            },
+            LegHeight {
+                contact: 20.0,
+                ..foot(80.0, false)
+            },
+        ]
+    };
+    assert_eq!(
+        target_height(&sloped(true), SOLE, 0.0, 100.0, true, 1.0, 5.0, -2.0),
+        40.0
+    );
 }
 
 /// Standing on its legs the lift holds a body up where f = 1, its pelvis
@@ -351,8 +628,8 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
         // Outside both plant windows, so the lift is what holds the feet up.
         body.drive.as_mut().unwrap().bearing.progress = 0.85;
         for _ in 0..800 {
-            // The tick recovers 0.005 before the parts take the carry.
-            body.drive.as_mut().unwrap().energy = energy - ENERGY_RECOVERY;
+            // The tick recovers the double 0.005 before the parts take the carry.
+            body.drive.as_mut().unwrap().energy = energy - 0.005;
             stand(&mut body, &pose, &floor);
         }
         let lowest = body
@@ -365,7 +642,7 @@ fn a_dazed_body_sags_in_proportion_to_its_energy() {
             "a foot touches the floor at {energy}: {lowest}"
         );
         let (mass, carried) = body.parts.iter().fold((0.0, 0.0), |(m, am), p| {
-            let a = carry_share(p.bone, 1.0, energy).unwrap();
+            let a = carry_share(p.bone, 1.0, energy, 1.0).unwrap();
             (m + 1.0 / p.inverse_mass, am + a / p.inverse_mass)
         });
         let f: f32 = mass / carried;

@@ -30,6 +30,21 @@ pub const GIMBAL_LIMIT: f64 = 0.005;
 /// The fixed up vector the original's look-at basis starts from.
 pub const UP: Vec3 = Vec3::Y;
 
+/// The engine's cosine between two vectors, summed in the original's order
+/// in single precision: 0 when the product of their squared lengths is at
+/// most 1e-8 (or either is NaN there), otherwise the dot over the square
+/// root of that product.
+pub fn cosine(a: Vec3, b: Vec3) -> f32 {
+    let la = (a.y * a.y + a.x * a.x) + a.z * a.z;
+    let lb = (b.y * b.y + b.x * b.x) + b.z * b.z;
+    let p = lb * la;
+    if p > 1e-8 {
+        ((a.y * b.y + a.x * b.x) + a.z * b.z) / p.sqrt()
+    } else {
+        0.0
+    }
+}
+
 /// The original's sign: the sign bit copied onto one, and zero for either
 /// signed zero.
 pub fn sign(x: f32) -> f32 {

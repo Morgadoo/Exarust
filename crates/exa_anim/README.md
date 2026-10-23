@@ -19,7 +19,7 @@ its own steps between them; each tick keeps the frames it added and
 whether its end test fired. A physical body's tick sets the clock rate
 and the capture (`exa_game::limp`); other bodies tick by the same body
 clock (83 a second, counted from the frames' time, what is under a tick
-owed to the next frame), 0.6 × the race's base a tick
+owed to the next frame), 0.6 × the race's base a tick, added in double
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Motion playback).
 
 ## Scope

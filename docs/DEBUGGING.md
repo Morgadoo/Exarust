@@ -185,6 +185,15 @@ the run blend it allows and the step reach it leaves; `--outfit` gives the
 player armour to weigh (`--outfit fptdhrnsa,fptdhelma,fptdlegsa`, a tourney
 plate set: 0.625, run blend at most 0.8125; formats/OTHER.md, Encumbrance).
 
+A body striking a character's limb hard enough to hurt it is logged at
+info ("… bone b struck by …: impact …, damage …"). With
+`RUST_LOG=info,exa_combat::impact=debug` every candidate impact is logged
+first: the struck character's name, whether it lives and its condition,
+the part, the striking body's name, bone, sleep state, countdown and
+settling, and the pair's impact, squared travel, hits and push. A level's
+corpse takes and deals none until its body first sleeps (it is still
+falling into the pose the original places it in).
+
 The world cursor's shape changes are logged at debug level
 (`RUST_LOG=info,exa_game::cursor=debug`), and its size once it is drawn:
 

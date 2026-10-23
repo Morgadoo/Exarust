@@ -22,12 +22,16 @@
 //!   Shift sets the sprint latch: with the keys it is spent on a jog; the
 //!   mouse beyond 3 m runs and keeps it. Standing, A or D turns a quarter,
 //!   more than 1 s after any turn key; released, a free walk stops softly
-//!   8·v + 20 cm ahead.
+//!   8·v + 20 cm ahead in three dimensions.
 //! - **The spawn.** On its third behaviour tick (unless down) the
 //!   character is moved onto the nearest walkable point of the grid.
-//! - **Footwork.** In combat mode a step's target, a step's length along
-//!   its keys, is clamped by the line walk too; within 20 cm the step is
-//!   not taken.
+//! - **Footwork.** In combat mode a step's target is the chest plus the
+//!   raw key sum scaled by (fd4·√scale)/|v| in centimetres (a long step
+//!   once the same keys have been held strictly over 200 ms while the
+//!   crouch widened is below 0.1, both scaled by the legs' extension),
+//!   clamped by the line walk from the chest's x/z at the ground. A side
+//!   key weighs 0.8 of the facing. The step is taken only when the clamped
+//!   target is over 400 cm² from the chest, in three dimensions.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -57,15 +61,15 @@ const COMBAT_LOOK_AHEAD: f32 = 45.0;
 const LOOK_AHEAD_SPEED: f32 = 6.0;
 const LOOK_BEHIND: f32 = -70.0;
 const RUN_CUT_WITHIN: f32 = 100.0;
-/// A footwork step whose clamped target lies this close (cm) is not
-/// taken.
-const STEP_FROM: f32 = 20.0;
+/// A footwork step is not taken unless the clamped target's squared
+/// distance, in centimetres and in three dimensions, is over this (cm²).
+const STEP_FROM_CM2: f32 = 400.0;
 /// The behaviour tick on which the character is moved onto the grid's
 /// nearest walkable point, unless the condition has [`SNAP_HELD`] (down,
 /// getting up or dead).
 const SNAP_TICK: u8 = 3;
 const SNAP_HELD: u32 = 0x200;
-/// A soft stop's goal lies at most 8·v + 20 cm ahead.
+/// A soft stop pulls a goal farther than 8·v + 20 cm in three dimensions.
 const SOFT_STOP_SPEED: f32 = 8.0;
 const SOFT_STOP_MARGIN: f32 = 20.0;
 /// By the mouse, a wanted direction this far behind the facing (its dot
@@ -562,20 +566,23 @@ impl Steering {
         }
     }
 
-    /// A footwork step's target, as the original's: `length` (m) along
-    /// `dir` (a unit vector across the ground) from where the character
-    /// stands, clamped by the line walk; none when the clamped target lies
-    /// within 20 cm (the step is not taken).
+    /// A footwork step's target, as the original's: `target` (m) is the
+    /// chest plus the scaled key vector, the line walk starts from the
+    /// chest's x/z at the ground's height, and the step is taken only when
+    /// the clamped target's squared distance from the chest, in centimetres
+    /// and three dimensions, is over 400. An unordered distance is none.
     pub(crate) fn step_target(
         &mut self,
-        standing: Vec3,
-        dir: Vec3,
-        length: f32,
+        chest: Vec3,
+        ground: f32,
+        target: Vec3,
         line: LineWalk,
     ) -> Option<Vec3> {
-        let asked = ask(line, Asked::Step, standing, standing + dir * length);
+        let from = Vec3::new(chest.x, ground, chest.z);
+        let asked = ask(line, Asked::Step, from, target);
         self.line = Some(asked);
-        ((asked.end - standing).with_y(0.0).length() * CM > STEP_FROM).then_some(asked.end)
+        let centimetres = (asked.end - chest) * CM;
+        (centimetres.length_squared() > STEP_FROM_CM2).then_some(asked.end)
     }
 }
 
@@ -586,9 +593,9 @@ fn ease_look(look: f32, wanted: Vec3) -> f32 {
     yaw_of((from + (wanted - from) * LOOK_EASE).normalize_or(wanted))
 }
 
-/// The original's soft stop: free walk and run off, stopping on; the goal
-/// brought within 8·v + 20 cm ahead of where the character stands (along
-/// its facing), then clamped by the line walk (whose answer it records).
+/// The original's soft stop: free walk and run off, stopping on; a goal
+/// farther than 8·v + 20 cm in three dimensions is brought back along the
+/// facing, then clamped by the line walk (whose answer it records).
 pub(crate) fn soft_stop(
     req: &mut Locomotion,
     body: &Locomotor,
@@ -597,9 +604,10 @@ pub(crate) fn soft_stop(
 ) -> LineAsked {
     req.free_walk = false;
     req.flags = (req.flags & !flags::RUN) | flags::STOPPING;
-    let most = (body.speed * SOFT_STOP_SPEED + SOFT_STOP_MARGIN) / CM;
-    if (req.goal - standing).with_y(0.0).length() > most {
-        req.goal = standing + body.facing() * most;
+    let centimetres = (req.goal - standing) * CM;
+    let reach = body.speed * SOFT_STOP_SPEED + SOFT_STOP_MARGIN;
+    if centimetres.length_squared() > reach * reach {
+        req.goal = standing + body.facing() * (reach / CM);
     }
     let asked = ask(line, Asked::SoftStop, standing, req.goal);
     req.goal = asked.end;

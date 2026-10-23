@@ -98,3 +98,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-21 | d901a048 | dirty | 58.0% | 5.7% | 51.9% | 44.1% | batch 16: tendril, thaumtree, charextra, guitail, coretail lanes |
 | 2026-10-21 | 61889589 | dirty | 58.7% | 5.5% | 53.0% | 44.1% | batch 17: materialfix, rendertail, texgui, datatail, wire-combat-parry lanes |
 | 2026-10-21 | 58c36cca | clean | 59.9% | 4.9% | 54.7% | 44.1% | batch 18: cloth, world tail, light and effect units, casting and GUI draw wiring, retail screens |
+| 2026-10-23 | 5abfa243 | clean | 60.4% | 4.9% | 54.9% | 45.4% | PR #2 review: body tick, combat, casting, live effects, arena |

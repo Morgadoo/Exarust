@@ -33,13 +33,27 @@ AI evaluators and effect classes of `Exanima.exe`; research notes in
   caller's own word, the id of the power being cast.
 - **Slots**: the highest chosen thaumaturgy technique of 2 to 4 among the
   record's tiers (one tier for each 5000 of its thaumaturgy word), one less
-  without the focus item, less one for each running persistent power.
+  without the focus item, less one for each running persistent power. Above
+  30000 the tier count passes the record's six technique bytes, which the
+  original reads past; Exarust scans only the six it holds (a deliberate
+  deviation, no out-of-bounds read).
 - **Prices**: the row is found by the id under `0x0e0f_ffff`; an instant
   power cast again with the repeat technique costs half; a sustained power
   costs the tick in milliseconds times its cost times 0.001 (Force and
   Displacement) or over 1000 (Energy), half again with the sustain
   technique; persistent powers hold their cost (three quarters with the
   reserve technique) until they end.
+- **Settle**: a body starts with focus and capacity 1. Each body tick,
+  before its powers run, a share of the reserve's change (what holds add
+  and releases take away) moves into the capacity while that change is
+  beyond 0.001 either way, the share climbing by 0.001 a tick (to 10) and
+  dropping to 0 otherwise. After the powers, with more than 0.0001 spent,
+  a share climbing the same way leaves both the spent focus and the pool;
+  with nothing spent that share falls by 0.01 a tick and the pool regains
+  `√capacity × 0.000301205 × 0.1` up to the capacity, the 0.000301205
+  half again with technique bit 0x20_0000 and plus any effect's bonus
+  (one sets 0.000100402). Either settle restarts a regeneration ramp,
+  which otherwise climbs by 0.001 of that rate to at most the rate.
 - **Focus factors**: blast, bolt and shock need 1.2 times the cost, the
   long door 0.8 times (both in double precision, so a focus of exactly
   0.12 is short of a 0.1 blast), barrier twice and vanish 80 times.
@@ -97,16 +111,39 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   more than 20 m from the caster; Strikes sets the strike factor 1.0 and
   the swing factor 3.0, keeps at most four weapon auras, ripples an aura
   at half a swing's strength and plays `thmfrc_brf` as it ends; Kinesis
-  steers its held body at its reach (half its radius plus one) along the
-  unit direction to the aim (the direction times 0.02 within 50 cm or for
-  a distance that is not a number), turns it by `reach²` times the double
-  0.001 a tick by the stick or the key pairs (each pair if/else), holds a
-  pick at a third of its extents' sum and stamps its user for 2 s; Throw
-  holds no reserve: its lift aims 100 cm above the body and spends
-  `tick·cost·0.00125` every steered tick at `mass/(0.1 + mass)` of the
-  unit direction, drops the shell after 800 ms and coasts at six times
-  that share toward the caster's aim point (ending at once within 100 cm),
-  and restores the materials 200 ms later.
+  waits on the hand for its pick while it runs (a press that would lift a
+  prop hands it the prop, and the pick alone answers the reach: a point
+  it can take is in reach wherever it is, any other out of it),
+  holds a pick at a third of its extents' sum and aims at its centre.
+  Each tick, when the cursor's ray (passing over the held body) hits
+  within 40 m, the aim is that hit raised `100 − depth` (at least 10) back
+  along the ray and, when the line from the caster's head to it is clear,
+  settled by `h/(|h| + 1)·200` of its height over the caster (`h` that
+  height times 0.005); the held part's origin is pushed at its reach (half
+  its count of linked child bodies plus one; Exarust counts the held part's
+  child parts) along the unit direction to the aim
+  (the direction times 0.02 within 50 cm or for a distance that is not a
+  number) less a fifth of its own motion, each particle by its origin
+  weight, and the body wakes. It turns by `reach²` times the double 0.001
+  a tick by the stick or the key pairs (each pair if/else), about the
+  camera's right axis and the vertical, and stamps its user for 2 s
+  (`exa_game::thaum::kinesis_live`); Throw
+  takes the body a charging kinesis holds, else the first body the
+  cursor's ray meets passing over the level: a dead character, or a prop
+  whose mobility widened to double is at least 0.01 (a single 0.01 is
+  not), that the hand does not hold, and plays `thmfrc_knsst` there (0.3,
+  pitch `0.8 + 0.4·roll`). It holds no reserve: its lift aims 100 cm
+  above the body and spends `tick·cost·0.00125` every steered tick at
+  `mass/(0.1 + mass)` of the unit direction (less a fifth of the body's
+  own motion), drops the shell after 800 ms and coasts at six times that
+  share toward the caster's aim point (the player's cursor; ending at
+  once within 100 cm), and restores the materials 200 ms later. A body
+  handed from a kinesis is lifted at its centre and spends nothing a
+  tick: that start never stores the cast's cost. Every lift plays
+  `thmfrc_throw` at the body (0.6, pitch `1 + 0.2·roll`), a one-shot that
+  fades when the throw ends before its drop. Each tick moves the body's
+  first part, each particle by its origin weight, and wakes it; a body
+  gone ends the throw (`exa_game::thaum::throw_live`).
 - **Energy**: Shock's first tick installs its cast hook and plays the
   charge; it charges by its rate, spends its focus while charging, fires
   one arc burst when it passes 1 (clearing the cast hook and id) and
@@ -133,14 +170,121 @@ original's order, passes control event 0 (event 2 once a power is told to
 end), releases the focus a finished power held and takes it out with the
 last entry in its place. The live arcs, barricades and wisps are spawned
 with their powers and removed as they end; the other effects have no
-entity yet, so their classes keep running, and the blast, bolt, wave,
-torrent and barrier casts, whose creators only make an effect, make nothing
-yet (no class and no entity). A cast motion is played through
-the animator by its action name (0x22 Force Blast … 0x28 Disp Form). The
-combat factors the classes publish are still not read by `exa_combat`'s
-hit formula, and the player swap, the spirit body's character generation,
-the kinesis aim sweep and the effect meshes are descriptions here, not
-spawned entities.
+entity yet, so their classes keep running. A blast or bolt cast makes its
+blast entity (`thaum::blast_live`): its start plays cast motion 0x22 with
+the setup's power id and, when that motion starts, takes the caster's cast
+hook, which answers −1 and fizzles a charging blast when it is called (a
+later cast's start, or the release flag, which also ends the cast). It
+pays its drain each charging tick whether or not it holds the hook; a
+focus shortfall with a hook set goes through the shared cast end (the
+hook, the hook owner and the power id go, and a condition word of exactly
+casting, 0x20, becomes 0 and the caster returns to its stance over 30
+frames in the same tick), and fizzles the blast only while the hook
+is its own. The throw clears the hook and the power id itself and the
+cast motion plays on. Each tick the
+blast reads the caster's right hand, facing and aim point (the AI's
+target's chest or the player's cursor), and a thrown blast pushes the limb
+spheres its chunks reach and knocks a struck character by its gathered
+impulse; that sphere test, the body's mass as its parts' sum and the knock
+as a knockback step are Exarust's. A barrier cast makes its dome entity
+(`thaum::barrier_live`): the creator hands it the power's cost as its rate
+and the radius 100, its start plays cast motion 0x23 with id 0x10205 and
+takes the hook, which ends the dome (state 2) and answers −1. Under state 2
+it pays the rate a tick, half once standing, and a shortfall calls the
+hook and ends the cast; it pushes other bodies' limb spheres out of its
+shell and opens ripples where they strike, and a struck character is
+shoved 40 cm (a knockback step here). The cap's frame (the dome's centre,
+z along the flattened facing) and one contact a body are Exarust's; the
+contact's balance drain and knock count, the sounds and the draw are not
+wired. A bubble cast makes its dome entity (`thaum::bubble_live`) at the
+cast place, 120 cm across: its start plays cast motion 0x24 with id
+0x20207 and takes the hook (0 to a call carrying bits 0x28, so a cast's
+start, event 0x20, is refused while it is set); the grow passing 1 clears
+the hook and the power id (not the cast end: the cast motion plays on),
+and the
+power's ending (cast again, or the dome 20 m from its caster) breaks the
+dome, which shrinks over 700 ms and leaves. It holds its caster's limb
+spheres in and pushes other bodies' parts the shell covers out, with
+ripples and the dome's 40 cm shove (a knockback step here). A wave cast makes its wave entity
+(`thaum::wave_live`) round the caster's body root: its start plays cast motion
+0x24 with id 0x204 and takes the blast's hook, so a later cast or the
+release flag fizzles a charging wave; it pays the cost times the tick's
+seconds each charging tick, after its chunks move and before the charge
+step, and a shortfall fizzles it and ends the cast through the shared
+cast end. The release clears the hook and the power id itself, the cast
+motion playing on, and a thrown wave pushes other bodies' limbs through
+the blast's contact arithmetic (its chunks keep no wear, an Exarust
+reading). Its alert (1200 reach, within 18 m, under 150 cm of height), sounds and
+draw are not wired. A torrent cast makes its torrent entity
+(`thaum::torrent_live`) at the caster's right hand: its creator gives the
+cost a second and id 0x10203, and its start plays cast motion 0x26 and
+takes a hook answering −1 that fizzles a charging torrent and ends a
+running one. Running keeps the hook, so the torrent pours until a later
+cast, the release flag or a shortfall (the drain while charging, half of
+it while running) calls it. Its delays draw from the effects' shared roll,
+its running points push other bodies' limb spheres (each push costing a
+character the torrent's energy loss), and it leaves the scene on the first
+frame that would build no triangles: fizzled, or no stream with more than
+two samples. The turned aim (the blast aim here) and the sphere test are
+Exarust's; the character knock, sounds, light and draw are not wired. A cast motion is played through
+the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
+looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
+cast hook answers by the event's bits (`casting::CastHook`): the engine
+asks it with 0x20 when another cast starts (0 or more refuses that cast),
+0x80 when the cast's focus falls short, and 4 when a motion replaces the
+cast motion, which a one-shot cast clip's end does as it returns to the
+stance; a negative answer to 4 drops the hook and the power id
+(`cast::call_motion_hooks`, for any action left other than the walk, the
+run and the attacks). The shell's raise, Force Strikes and the barricade
+install a hook answering 0 to bits 0x29 once their cast motion starts,
+and the bubble's answers to bits 0x28, so none lets another cast start
+until its cast clip ends (a strikes cast whose motion is refused makes no
+strikes, though it still answers 1). Kinesis's hook keeps events 8 and
+1 and the throw's event 8; any other event, a focus shortfall included,
+ends that power. A throw from a kinesis ends the kinesis without ending
+the cast, and the kinesis's hook then also keeps a cast's start, so the
+throw plays on in the kinesis's motion. Shock's hook answers −1 and,
+called while the shock charges, clears it so it never fires; Shock
+Weapons, Constant Displacement and the Summon keep bits 0x29. The Long
+Door's hook answers 0 to everything, and Vanish's does until its hold.
+From the hold on, an event with any 0x120 bit lets the vanish go and
+answers −1; any other event with a 0x91 bit lets it go and answers 0
+(`CastBody::hook_asked` records the events a hook was asked with, for the
+hooks that act whatever they answer). A sustained tick
+whose focus falls short with a hook set ends the cast, as the engine's
+spend does. The blast, wave, torrent and barrier
+hooks answer −1 to everything, and their effect fizzles or ends when
+called. The player's controller asks the hook every tick
+(`casting::player_hooks`): with 1 while the left button is down, with 8
+outside combat mode, and in combat mode with the body casting with 2
+while the right button is down or a gamepad stick over 0.1 is pushed with
+Sprint held (else 1 again); a negative answer ends the cast. The combat
+branch is skipped while the body's tone is under 0.85, as the original's
+behaviour tick does. [inf: the original's game-view and status-bit 0x100
+gates around these asks are not reproduced; Exarust runs the asks for a
+living player whose caster it ticks.] A casting body asks no attack. An attack start (the player's,
+past its energy check, or a duellist's) asks a set hook with 0x100 first
+(`exa_combat::AttackHook`, kept by the power system): an answer of 0 or
+more refuses the attack, a negative one ends the cast and the attack goes
+on. So attacking during a Long Door or an early vanish is refused (and
+lets the vanish go). So outside combat mode a shock,
+a blast or a torrent ends on its first tick, while kinesis, the throw and
+the 0x29 hooks hold. With a cast motion playing, the body tick's release
+flag (pressing a running cast again) asks the hook with 0x10 and ends the
+cast whatever it answers (`casting::release_cast`). A duellist's combat
+state, a second after its cast began with the body still casting, asks
+the body's power id's domain evaluator and, when that answers nothing,
+the hook with 0x10; a negative answer ends the cast and the AI lets it
+go. Before its state the AI lets go of a cast whose body has not read
+casting 500 ms after it began. The
+player swap, the spirit body's character generation and the effect meshes are descriptions here, not
+spawned entities; the kinesis's held material, pick shell and pick
+sound, and the throw's shell and material, are not wired. A kinesis pick,
+and each tick a throw coasts after its shell drops, stamp the body with
+the caster for 2 s (`thaum::user_stamp`): a limb the body hurts while the
+stamp holds adds the script's concern toward the caster (amount 0.9, gain
+three times the damage) when the caster is one of the struck brain's
+contacts.
 
 ## Force
 
@@ -337,7 +481,9 @@ The AI shocks within 5 m.
 `exa_game::thaum::displacement`. Vanish 0x10601 (0.10 a second), the long
 door 0x602 (0.20, to the cursor's point), constant displacement 0x20603
 (0.35, persistent), the summoning 0x604 (0.35, cast motion 0x28, spent at
-once). A constantly displaced body lets a blow through when a percentage
+once). Vanish pressed while it runs answers released, starts nothing and
+asks the body's hook event 0x10 (its answer ignored), which the vanish's
+own hook takes as its end on the next tick. A constantly displaced body lets a blow through when a percentage
 roll is at most `100 >> (s + 1)` (s ≥ 0) or `100 − (100 >> (1 − s))`
 (s < 0) for its streak s: 50 % at first, 25 % after a pass, 75 % after a
 miss. A passing weapon loses its collisions for 500 ms and leaves a wisp
@@ -520,8 +666,11 @@ shock other fighters (their parts' spheres stand in for the character
 query): a shock lands once the game clock is within 150 ms of the
 fighter's next shock time, which then moves 500 ms plus a draw below
 200 ms of the engine's generator ahead, and a fighter that is not
-collapsing or dead loses the strength in yellow health (the rest of the
-shock reaction, its motion and stagger, is not wired); a barricade pushes
+collapsing or dead loses the strength in yellow health and takes the
+shock-stagger flag, which the next body tick spends by setting energy to
+its most minus 0.5 and starting Rebalance with no blend until the clock
+passes that next shock (the release, the stagger step and the sounds stay
+unwired); a barricade pushes
 the particles of every body part it holds (`Ragdoll::push_sphere`), wakes
 the body for 32 ticks, knocks a character back a step and sets its
 instability, each part it strikes in front lowers the character's energy
@@ -533,7 +682,24 @@ the tree, bar, tooltip and preview with the six fragment programs in
 `exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`). The bar's keys
 (`hotkeys`) go to `thaum::cast`, described with the classes above, which
 runs the chosen slot through the Force, Energy and Displacement front ends
-against the player's body. The tree screen and the caster share one record:
+against the player's body. A duellist whose record knows powers casts too:
+before its combat state runs, each record slot is answered by its domain's
+AI evaluator (distance and bearing to its target, the target's condition
+and status, the caster's focus as the pool), and the power the combat
+state's chooser picks starts through its domain's front end as an AI
+caster, with no cursor and its hands free. A duellist or placed
+character's caster takes its body's technique word from the record's
+learnt techniques, and its persistent slots from Concentration's highest
+Continuity tier ([formats/RFC.md](formats/RFC.md), Techniques and perks);
+the player's caster keeps technique word 0 and one slot. A caster's running shell and
+Force Strikes put their factors on its fighter (`exa_combat::PowerFactors`):
+a blow it takes keeps 1 − 0.5 of its impact, and a blow it deals is
+multiplied by 1 + 0.5 · 1. Every caster's body tick runs the two focus
+settles around its power walk, so spent focus drains out of the pool and
+then regenerates, and the player's HUD focus bar shows the pool and its
+capacity. The bearing measure (1 less the
+cosine between the facing and the line to the target) is Exarust's. The
+tree screen and the caster share one record:
 the screen owns it while the tree is open and the caster takes it back when
 the tree closes. The constant displacement's veil, the grant routine and the
 tree's key handler are not wired. The
@@ -582,13 +748,13 @@ force noise) are not ported, nor are the lights and sounds. The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); the AI's sight of it is still
 `effects::danger`, which nothing registers yet. The domes, the wave and
-the rain are not drawn yet (nothing starts them); the GI emissive objects behind
+the rain are not drawn yet; the GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
 The force blast and torrent are not drawn: their ribbon vertex builds
-are not ported, and the bar's casts create no blast or torrent entity yet
-(the AI does not cast). Their geometry classes (`effectforce_v` with
+are not ported. A cast blast or bolt runs as an entity, without its draw,
+sounds, light, alert or stun. Their geometry classes (`effectforce_v` with
 `effectforce_f` or `effecttorrent_f`) are in `effects::effect_geometry` and
 their multi-point lights in `effects::emissive`. The mind-sight overlay's
 sphere and its animated noise are not drawn either; its pick, tracker,

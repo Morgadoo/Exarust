@@ -238,9 +238,10 @@ Exarust (`exa_ui::hud` draws, `exa_game::hud` reads the player):
 - the bars are painted on the CPU in the original's order and blended in
   gamma space, then shown as one image node in physical pixels, repainted
   only when the values, the fade or the window change;
-- Exarust has no powers: focus and its capacity are 1, the full blue bar
-  the original shows for a character who casts nothing. It has no shields:
-  the stamina gauge never shows;
+- the focus bar shows the player's caster's focus and the capacity it
+  regenerates to ([THAUMATURGY.md](THAUMATURGY.md), Settle), 1 and 1 for a
+  body that casts nothing. Exarust has no shields: the stamina gauge
+  never shows;
 - the original offsets the stone by the last form it drew; on a lossless
   capture of the user's running game the offset is zero (the window's
   bottom-left corner, as Exarust samples it): its frame lines follow the

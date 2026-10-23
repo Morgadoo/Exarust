@@ -34,17 +34,25 @@ use bevy::math::Vec3;
 
 pub mod arcs;
 pub mod barricade;
+pub mod barrier_live;
+pub mod blast_live;
+pub mod bubble_live;
 pub mod cast;
 pub mod casting;
 pub mod displacement;
 pub mod energy;
 pub mod engine;
 pub mod force;
+pub mod kinesis_live;
 pub mod live;
 pub mod power;
+pub mod throw_live;
+pub mod torrent_live;
 pub mod tree;
+pub mod user_stamp;
 pub mod veil;
 pub mod visuals;
+pub mod wave_live;
 pub mod wisps;
 
 /// The four domains that have a cast.

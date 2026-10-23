@@ -26,8 +26,9 @@ decides from it each tick (below). Outside combat:
   playing walk reaches key segment 0 or 4 (its keys run every 10 frames
   from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
   after frame 40: the cycle's two double-support moments), then stops
-  softly: its goal 8·v + 20 cm ahead (v in cm a tick: 33.5 cm at a walk),
-  where it brakes to a stop.
+  softly: a goal farther than 8·v + 20 cm in three dimensions (v in cm a
+  tick: 33.5 cm at a walk) is brought back along the facing, where it
+  brakes to a stop.
 - **S** backpedals; faster than 1 cm a tick it first brakes, turning the
   brake into the backpedal once it is slower; released it also finishes
   its stride. It never turns the character about.
@@ -106,8 +107,10 @@ decides from it each tick (below). Outside combat:
   4 backwards, 5 or 8 turning hard one way, none the other), its clock at
   the key before; within 600 ms where its clock was. The steering also
   plays the walk while the body moves (a braking body keeps its gait) and
-  ends it in Idle when the body tick stops it. Its clock steps by the
-  locomotion's gait clock, × (0.8·speed + 1) and the alignment's phase
+  ends it in Idle when the body tick stops it. A walk or a run blends into
+  that Idle over 20 frames with the fast ease; a backpedal ends at once. Its
+  clock steps by the locomotion's gait clock, × (0.8·speed + 1) and the
+  alignment's phase
   envelope ([formats/RSQ.md](formats/RSQ.md), Locomotion); backing (the
   backpedal leg mode) runs it backwards at the backpedal rate, and the
   run is an overlay on the walk. It starts no other clip: what a standing character plays is its
@@ -523,10 +526,16 @@ is higher than 280 cm or lower than 1000 cm.
 
 ### Using an item
 
-An item used on the world acts by its usable section's subtype: 8 pours a
-liquid that warms the character it is poured on by 0.2 (0.1 for a liquid of
-type 50, added in double precision), 14 pours one that marks the character
-and stamps an 1800 ms timer, 9 is a cleaning kit that takes an item's dirt
+An item used on a character acts by its operative section's kind byte.
+Kind 8 is a salve: when the body's rule bits take remedies it adds 0.2 to
+the heal pool, or 0.1 when the section's value word is 50, in double
+precision. Kind 14 is an elixir: when the body takes remedies it sets the
+potion flag, stamps the world clock (the save's seconds plus game time)
+plus 1800 s, and plays `LqdA_Pour_01` at volume 0.25 with pitch
+0.9 + 0.2 times one unit draw. Both kinds OR `0xC80000`, whether or not
+the body takes remedies, into the item's flags when it is used directly,
+or into its container's inventory entry (the entry word less one) when
+that word is above zero; a zero word marks nothing (`exa_combat::remedy`). Kind 9 is a cleaning kit that takes an item's dirt
 byte down to 0x20, and 10 a repair kit that lowers its wear byte by 255
 over the material's rating step `(r + 5) / 10` (at least 1), never under
 zero. A kit's change runs over two seconds: the byte moves 0.0005 of its
@@ -538,7 +547,10 @@ that picks the target.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
-(`player_controls::PlaySession`; nothing in Exarust reads it yet).
+(`player_controls::PlaySession`). While play runs the player controller
+moves the centre to the player every tick, and the AI's presence
+(`exa_ai::presence`) reads the area: a character out of range leaves the
+scene, and one that comes back into range enters it again, reset.
 
 ### The reach
 
@@ -591,7 +603,12 @@ there:
   hit point, strength 1, in the first two of the tick's 20 passes. Without
   Ctrl the original lifts it onto the cursor as an inventory item; Exarust
   has no item cursor yet, so that press only holds until the release, whose
-  end also ends the object's hold.
+  end also ends the object's hold. While the player's kinesis waits for its
+  pick, the lift hands the prop to the kinesis instead
+  (`docs/THAUMATURGY.md`, Force), and the kinesis's pick callback answers
+  the reach in place of the measure: a point the kinesis can take is in
+  reach wherever it is, any other out of it (Exarust takes a prop the hand
+  can move as the kinesis's pick).
 - **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
@@ -642,8 +659,24 @@ The point under the cursor is the navigation unit's pick: a screen ray, then the
 **Tab** toggles it, and every practice or arena fight starts with it on, as
 the original turns it on at each fight start (with `--opponent`, once the
 level shows; not in the arena hub). W, S, A and D step along and across
-the cursor's direction, and keys held longer than 200 ms walk on. The
-original's footwork steps the feet and never changes the clip; Exarust's
+the cursor's direction, and keys held longer than 200 ms walk on.
+A fresh press aims one step reach. The long step is a latch: once the
+same keys have been held strictly over 200 ms while the crouch promoted
+to double is below 0.1, the target becomes (1.5 − 0.3 × encumbrance) step
+reaches, one double product narrowed once (120 cm unencumbered, 97.2 cm
+at encumbrance 0.5 on a 72 cm reach). The float 0.1 is already above that
+double, so a crouch of 0.1 keeps the short reach, and a crouch raised
+after the latch is set does not clear it; only a key change or release
+does. The legs' extension scales both lengths, so a half extension halves
+the tap and the held step, and √scale scales the displacement once more.
+A side key weighs 0.8 of the facing, and the target is the chest plus the
+raw key sum scaled by (fd4·√scale)/|v| in centimetres, so a diagonal aims
+eight tenths as far sideways as forward and a pure side step stays a full
+step. The line walk starts at the chest's x/z on the ground, and the step
+is taken only when the clamped target's three-dimensional squared
+distance from the chest is over 400 cm².
+
+The original's footwork steps the feet and never changes the clip; Exarust's
 interim one plays "Combat Walk" while a key is held and gives back the
 clip it replaced (the guard stays the guard) when they are released; its
 capsule moves meanwhile, and the body does not locomote (the original's
@@ -766,10 +799,35 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 - Perks come from the character's record (placed characters); the player
   and the duellist are new records, with none (`--perks` gives the player
   some, [DEBUGGING.md](DEBUGGING.md)).
-- Not yet: the swinging arm's stiffness (W20·L(p)), swing sounds, the
-  AI's own release and attack choice (L11), recoil and the
+- The swinging arm's stiffness (W20·L(p)) runs in the muscle tune while
+  an attack plays: each side's shoulder, upper arm, forearm and hand
+  take that arm's stiffness, and the turn floors it. A power sets both
+  arms to 0.3 and a weapon switch to 0.4; a kick leaves them, and a daze
+  comes before a parry. Once the attack ends, a standing tick eases each
+  stored stiffness (0.8x + 0.08·(0.5 + 0.5·race arm relaxation), or
+  0.8x + 0.08 while stepping). The two arm drive slots are zeroed at the
+  start of every body tick and only an attack writes them, so every other
+  tick saturates the arms at 0.1. Not yet:
+  swing sounds, the AI's own release and attack choice (L11), recoil and the
   follow-through after a wound (C21, M26), the aim nudges (M23), parries
   (L10).
+- **Bodies striking limbs** (`exa_combat::impact`). A body pair whose
+  fastest relative travel at its hits passes 1 cm² a tick² measures its
+  impact as that times the negated cosine against its summed push; over
+  0.5 it strikes each side with the impact over 2·m + 1 of the other
+  side's contact mobility. A struck limb of a fighter, not met by a
+  striking limb, past its root's sound clock, takes the part's impact
+  damage from its volume, the root's damage multiplier, its sinking speed
+  and the damage it has already taken from impacts; a hurt takes half the
+  amount as yellow health (vital over 0.6 of total) and dazes by half of
+  it. The clock then waits 220 + rand(100) − round(170·volume) ms. The
+  taken damage falls 0.01 a tick, and the sinking speed follows the
+  root's fall at once and its rise by 0.5 % a tick. Each struck part's
+  recent-impact counter rises by 2 (under 40) and falls by 1 a tick to 1;
+  with the root's over 2 the impact sounds through the character's foley
+  (volume times the foley's, pitch 0.5·v + 0.6), else as the bone's hit
+  sound (pitch 0.6·v + 0.5), at the character. The impact's voice and the
+  level's own impacts are not wired.
 
 ### The behaviour's aim and contact rules
 
@@ -872,8 +930,10 @@ also leaves its interim backpedal and combat walk alone).
   a clip played once the original's table (twice the primary's stance
   blend after an attack, none after a get-up), smooth
   ([formats/RSQ.md](formats/RSQ.md), Motion playback).
-- **Readiness.** Standing in Cmbt - Idle, with that stance, a fighter's
-  readiness rises 0.004 a tick (0 to 1 in 3 s); anything else resets it.
+- **Readiness.** With the stance in Cmbt - Idle or while parrying, a
+  fighter's readiness rises 0.004 a tick (the add in double, 0 to 1 in
+  3 s) while the clip is Cmbt - Idle, it parries, or a released attack
+  passes its ready bit. Anything else resets it.
   A blow's wound (penetration, impact, stab energy) is scaled by 1 − 0.5 ×
   readiness, so a fighter ready for 3 s takes half the wound; the shove is
   not lessened ([formats/OTHER.md](formats/OTHER.md), Damage).
@@ -891,7 +951,7 @@ Not yet, with the change that brings each:
 - the Defence stance and Rebalance a fighter takes from its balance
   (below 0.8) or its tone (below 0.85), C11;
 - parries, whose clips are stances while they last, and readiness while
-  parrying or with an attack ready to chain (L10, C21);
+  parrying (L10, C21);
 - the original's line-of-sight test on the player's target; the AI's own
   footwork in its stance instead of the combat walk, and its parries (C16,
   L11). The live retail opponent took its guard for 0.4 s at the fight

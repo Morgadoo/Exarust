@@ -1051,3 +1051,27 @@ fn a_force_effect_breaks_the_attack() {
     assert_eq!(s.open, [false, false]);
     assert_eq!(s.recoil, None);
 }
+
+/// The attack routine eases the thorax hunch 0.02 a tick, and only in the
+/// balanced attack branch: an off-balance attack, a shock, a get-up and a
+/// non-attacking condition leave it.
+#[test]
+fn the_attack_routine_eases_the_hunch_on_its_balance() {
+    let hunch_after = |condition: Condition, balance: f32| {
+        let (mut app, fighter) = attacking(50.0, SwingState::default());
+        let mut body = Ragdoll::new(&[]).with_drive();
+        body.drive.as_mut().unwrap().hunch = 0.3;
+        body.drive.as_mut().unwrap().balance_mut().value = balance;
+        app.world_mut().entity_mut(fighter).insert(body);
+        *app.world_mut().get_mut::<Condition>(fighter).unwrap() = condition;
+        app.update();
+        let body = app.world().get::<Ragdoll>(fighter).unwrap();
+        body.drive.as_ref().unwrap().hunch
+    };
+    assert!((hunch_after(Condition::ATTACKING, 1.0) - 0.28).abs() < 1e-6);
+    assert_eq!(hunch_after(Condition::ATTACKING, 0.5), 0.3);
+    assert_eq!(hunch_after(Condition::SHOCKED, 1.0), 0.3);
+    assert_eq!(hunch_after(Condition::GETTING_UP, 1.0), 0.3);
+    assert_eq!(hunch_after(Condition::NORMAL, 1.0), 0.3);
+    assert_eq!(hunch_after(Condition::COLLAPSING, 1.0), 0.3);
+}

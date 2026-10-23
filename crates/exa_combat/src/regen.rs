@@ -8,6 +8,8 @@
 //! fighter attacks (condition 2) or while Cmbt - Idle plays, so a fighter
 //! in its fighting stance never heals, and every blow sets it back to 0
 //! ([`crate::Health::take`], and each weapon contact in the hit reaction).
+//! A burn that still has strength clears it in the upkeep stage, before
+//! this bookkeeping ([`crate::burn`]).
 //! Red health heals only for the races whose rule bits give red
 //! regeneration without the bit that blocks it (the ogre, Sir, the
 //! harvester, the demon, a golem suit wearing its core), dead or alive,
@@ -22,8 +24,9 @@ use exa_physics::body::{
 };
 
 use crate::Fighter;
-use crate::condition::{Condition, PostureTick, action, ticked_lives};
+use crate::condition::{Condition, PostureTick, StateFlags, action, ticked_lives};
 use crate::fighter::{Health, SecondWind, heal_second_wind};
+use crate::remedy::{WorldClock, expire_potion, world_seconds};
 
 /// The regeneration rate's cap, yellow health per unit of √red a tick: 0.01
 /// a second over the original's 83 ticks.
@@ -65,7 +68,8 @@ impl Health {
     /// `held` (attacking or in the combat idle), else it rises by
     /// [`RAMP`] × [`RATE_CAP`] to the cap and, above a red of [`RED_FLOOR`],
     /// yellow gains √red × rate; then yellow is kept within red, red within
-    /// the maximum, and yellow at least 0.
+    /// the maximum, and a yellow that compares below 0 becomes 0 (a NaN
+    /// stays, as the body tick's last compare does).
     pub fn bookkeep(&mut self, held: bool, now: u32, wind: &mut SecondWind) {
         if self.heal_pool > 0.0 {
             self.red = at_most((f64::from(self.red) + RED_PER_TICK) as f32, self.max);
@@ -83,7 +87,11 @@ impl Health {
         }
         self.yellow = at_most(self.yellow, self.red);
         self.red = at_most(self.red, self.max);
-        self.yellow = self.yellow.max(0.0);
+        // The body tick's last compare: ordered below 0 becomes 0. A NaN
+        // stays, and −0 is not below 0.
+        if self.yellow < 0.0 {
+            self.yellow = 0.0;
+        }
     }
 }
 
@@ -97,37 +105,73 @@ pub fn holds_regeneration(condition: Condition, motion: Option<usize>) -> bool {
 /// A shield arm's stamina and its regeneration rate: the stamina
 /// (0..=1) and the rate, ticked with the body.
 ///
-/// While the stamina is under 1 the rate rises by [`RISE`] a tick to
-/// [`RATE_CAP`] and the stamina rises by the rate; at 1 the rate stops. A
-/// block restarts the rate at 0, so a tired arm takes about 6 s to reach
-/// full rate and about 15 s from empty to full.
+/// While the stamina is below 1 minus the data epsilon, the rate rises by
+/// the double [`RISE`], narrowed, and is capped once that double exceeds
+/// [`RATE_CAP_F64`]. The stamina then rises by the rate in single
+/// precision. At 1 the stamina snaps to 1 and the block stamp becomes
+/// [`STAMP_FULL`]; the rate stays. A block zeros the rate and stamps the
+/// game clock ([`Self::blocked`]), so an empty arm reaches full rate in
+/// 500 ticks (6.0 s) and full stamina in 1,250 ticks (15.1 s).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ShieldStamina {
     pub stamina: f32,
     pub rate: f32,
+    /// The game clock of the last block, or [`Self::STAMP_FULL`] once the
+    /// arm is full.
+    pub blocked_at: u32,
 }
 
 impl ShieldStamina {
-    /// The rate's rise a tick.
-    pub const RISE: f32 = 2e-6;
-    /// The rate's cap: stamina a tick.
-    pub const RATE_CAP: f32 = 0.001;
+    /// The data epsilon subtracted from 1 before the refill compare.
+    pub const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+    /// The rate's rise a tick, added in double precision.
+    pub const RISE: f64 = 2e-6;
+    /// The rate's cap, stored as this float.
+    pub const RATE_CAP: f32 = f32::from_bits(0x3a83_126f);
+    /// The double the raised rate is compared with.
+    pub const RATE_CAP_F64: f64 = f64::from_bits(0x3f50_624d_d2f1_a9fc);
+    /// The block stamp once the arm is full.
+    pub const STAMP_FULL: u32 = 0xffff_ffff;
 
     /// One body tick of the regeneration.
     pub fn tick(&mut self) {
-        if self.stamina < 1.0 {
-            self.rate = (self.rate + Self::RISE).min(Self::RATE_CAP);
-            self.stamina = (self.stamina + self.rate).min(1.0);
-            if self.stamina >= 1.0 {
-                self.rate = 0.0;
-            }
+        let gate = 1.0 - Self::EPSILON;
+        if self.stamina.partial_cmp(&gate) != Some(std::cmp::Ordering::Less) {
+            return;
+        }
+        self.rate = (f64::from(self.rate) + Self::RISE) as f32;
+        if f64::from(self.rate) > Self::RATE_CAP_F64 {
+            self.rate = Self::RATE_CAP;
+        }
+        self.stamina += self.rate;
+        if self.stamina >= 1.0 {
+            self.stamina = 1.0;
+            self.blocked_at = Self::STAMP_FULL;
         }
     }
 
-    /// A block on the shield restarts the rate at zero.
-    pub fn blocked(&mut self) {
+    /// A block on the shield zeros the rate and stamps the game clock.
+    pub fn blocked(&mut self, now: u32) {
         self.rate = 0.0;
+        self.blocked_at = now;
     }
+}
+
+/// One tick of a held shield's arm, after the living body's health
+/// bookkeeping.
+pub fn refill_shield(guard: &mut crate::damage::Guard) {
+    let crate::damage::Guard::Shield(shield) = guard else {
+        return;
+    };
+    let mut arm = ShieldStamina {
+        stamina: shield.stamina,
+        rate: shield.rate,
+        blocked_at: shield.blocked_at,
+    };
+    arm.tick();
+    shield.stamina = arm.stamina;
+    shield.rate = arm.rate;
+    shield.blocked_at = arm.blocked_at;
 }
 
 /// The health bookkeeping of the fighters the character tick does not
@@ -197,28 +241,36 @@ fn keep(
 #[allow(clippy::type_complexity)]
 pub fn regenerate_health(
     ticks: Option<Res<BodyTicks>>,
+    clock: Option<Res<WorldClock>>,
     motions: Option<Res<Motions>>,
     mut fighters: Query<(
         Entity,
         &mut Fighter,
+        &mut StateFlags,
         &Condition,
         Option<&Animator>,
         Option<&Ragdoll>,
         Has<TickedClips>,
     )>,
 ) {
-    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    let now = world_seconds(clock.as_deref(), now_ms);
     let set = motions.as_deref().map(|m| &*m.0);
-    for (entity, mut fighter, condition, anim, body, clips) in &mut fighters {
+    for (entity, mut fighter, mut flags, condition, anim, body, clips) in &mut fighters {
         if ticked_by_its_character(set.is_some(), body, clips && anim.is_some()) {
             continue;
+        }
+        let cleared = expire_potion(flags.0, fighter.potion_until, now);
+        if cleared != flags.0 {
+            flags.0 = cleared;
         }
         let mut health = fighter.health;
         let mut wind = fighter.second_wind;
         health.regenerate_red(fighter.stats.rules);
         if !condition.is_dead() {
             let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
-            keep(entity, &mut health, *condition, motion, now, &mut wind);
+            keep(entity, &mut health, *condition, motion, now_ms, &mut wind);
+            refill_shield(&mut fighter.guard);
         }
         if health != fighter.health {
             fighter.health = health;
@@ -231,10 +283,21 @@ pub fn regenerate_health(
 
 /// The ticked body's red regeneration, in its upkeep stage (before the
 /// original's body tick leaves a dead body), by its rule bits.
-pub fn regenerate_red(ticked: Res<TickedCharacter>, mut fighters: Query<&mut Fighter>) {
-    let Ok(mut fighter) = fighters.get_mut(ticked.body) else {
+pub fn regenerate_red(
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<BodyTicks>>,
+    clock: Option<Res<WorldClock>>,
+    mut fighters: Query<(&mut Fighter, &mut StateFlags)>,
+) {
+    let Ok((mut fighter, mut flags)) = fighters.get_mut(ticked.body) else {
         return;
     };
+    let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    let now = world_seconds(clock.as_deref(), now_ms);
+    let cleared = expire_potion(flags.0, fighter.potion_until, now);
+    if cleared != flags.0 {
+        flags.0 = cleared;
+    }
     let mut health = fighter.health;
     health.regenerate_red(fighter.stats.rules);
     if health != fighter.health {
@@ -264,6 +327,7 @@ pub fn keep_health(
     let mut wind = fighter.second_wind;
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     keep(entity, &mut health, *condition, motion, now, &mut wind);
+    refill_shield(&mut fighter.guard);
     if health != fighter.health {
         fighter.health = health;
     }

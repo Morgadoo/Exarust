@@ -169,6 +169,12 @@ pub fn long_step(encumbrance: f32) -> f32 {
     (1.5 - f64::from(encumbrance) * 0.3) as f32
 }
 
+/// A long step's length, in `reach`'s unit: (1.5 − 0.3·encumbrance) ×
+/// `reach`, one double product narrowed once.
+pub fn long_step_length(reach: f32, encumbrance: f32) -> f32 {
+    ((1.5 - f64::from(encumbrance) * 0.3) * f64::from(reach)) as f32
+}
+
 /// The AI's long footwork step, in step reaches: 1.6 − 0.3·encumbrance.
 pub fn footwork_long_step(encumbrance: f32) -> f32 {
     (1.6 - f64::from(encumbrance) * 0.3) as f32

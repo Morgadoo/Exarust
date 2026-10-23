@@ -361,7 +361,9 @@ never sleep. All seven exanima01 corpses now sleep 3–5 s after going limp
 is measured as the original's at the chest (the thorax pins) against the
 ankles (where the original's muscle setup moves the foot contacts), with
 its lean score, counter (floor 80 standing still) and recovery; each leg
-asks the level for its ground with the original's Height Query, and
+asks the level for its ground with the original's Height Query, a foot
+grounded within 20 cm of that ground plus its offset (30 cm times the body
+scale while moving), and
 support S = grounded × balance feeds the link muscles; Exarust's falls
 follow the lean, decided in the fixed step from last tick's balance
 ([formats/RSQ.md](formats/RSQ.md)). Done (change `add-body-debug-tools`): debug tools for
@@ -381,11 +383,28 @@ keeps the tone and a fallen body is left to its link muscles
 original's carry: every limb particle falls by g(1 − a) + carry·a (a the
 tone times its support share, or times its energy above the legs), and a
 lift servo takes g·f·S off the carry to hold the pelvis at a target height
+(f times the body scale, that product a double narrowed once)
 over the ground under the feet, from the clip root's height over each
-ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); the
+ankle, capped at the leg's reach (an idle human's pelvis at 101.5 cm); a
+full crouch is 60 cm times the body scale over that ground before the
+standing raise; moving, the offset stands on the walk's first-key lowest
+ankle, on that key slerped 0.7 toward the run while the run flag is set,
+and on the run's first key while the sprint latch is set; a lifted
+lowest foot hands the two-foot blend its full weight and a lifted other
+foot none (the other wins when both are lifted); moving, that weight
+starts at min(0.5, 0.2·speed) and is multiplied by min(1, (0.3·speed)²),
+speed the cm a tick along the heading, and by max(0, 1 + 0.5·v) while the
+chest's slow vertical speed v (cm a tick) is negative, and that spread is (1 − k)·lowest
+ground + k·(lowest contact + other contact − other ground), k = min(1,
+0.2·speed) moving and 1 standing; the
 capsule carries the body only across the ground and turns it. The
 support pins (change `pull-the-support-pins`, C14) pull the two thorax
-pins and the pelvis pin toward the frame in each iteration. A
+pins once and the pelvis pin twice toward the frame in each iteration,
+each pin's push applied before the next pin is pulled. When the
+character's feral level is over 0.1, the thorax hunch pitches that pinned
+part's local forward axis by a scalar that rises 0.01 a tick to 0.3 on its
+feet and falls 0.01 to 0 off them; the balanced attack branch takes 0.02
+more off. A
 get-up no longer hops (the end of `Get Up 2` overshoots 3–5 cm and settles
 in 45–100 ticks, from 10.7 cm ringing 90). Done (change
 `bend-the-legs-to-the-ground`, C13): a standing leg bends onto its bend
@@ -398,8 +417,10 @@ when a standing body is at its target height). While stepping, the thigh
 turns 75% of the hip-to-target angle and an anchored foot takes the step
 lift. The controller-floor stair coupling is gone: the lift reads each
 foot's own ground, so a controller 12 cm up does not raise the target,
-and a synthetic walk up four 18 cm steps keeps balance at or above 0.9
-with its feet on the landing. Gait plants are not in yet (C19).
+and a synthetic walk up four 18 cm steps at 1.4 m/s stops on the floor
+before the first riser, because at that speed the moving blend stays near
+the lowest foot and the support pins stay slack while its condition is
+walking. Gait plants are not in yet (C19).
 Done (change `anchor-the-character-frame`, C9): the
 pose is put on the original's character frame, whose origin is the pelvis
 less the clip root's offset across the ground: it rides on the pelvis
@@ -642,8 +663,11 @@ is not locomoting or is down (condition bit 0x200), and it falls by 0.02 a
 tick; the bearing carries it, so the pelvis lowers and the chest shifts
 back. Above 0.1 the locomotion clock runs × (1 − 0.1·crouch), above 0.5
 the footwork's steps are 0.7 of the step length, and a crouched attacker
-picks the first side attack. Not yet: the 1.5 long step, an AI crouch and
-the crouched look twist.
+picks the first side attack. The footwork's long step is a latch: once
+the same keys have been held more than 200 ms with the crouch under 0.1,
+the step's target is (1.5 − 0.3 × encumbrance) step reaches from the
+chest, until the keys change or are released. Not yet: an AI crouch and the crouched look
+twist.
 
 Done (change `follow-the-intersection-routines`): the original's
 RF_Intersection unit is in `exa_physics::intersect`, checked against the
@@ -675,7 +699,7 @@ Done (change `reproduce-the-simulation-sector`; simsector lane): the simulation 
 
 Done (change `follow-the-world-link-and-repair-laws`; tetra2 lane): a rigid body's world links are one type, `body::WorldLink`, in centimetres and in the original's branch order (horizontal drag, the slider pushed twice, the spring, the plane's 0.8 removal, plain or slack with the step cap), with the disabled and last-pass skips; the soft weld, the limp slack link, the slack reset, the inverted-tetra rebuild and draw interpolation between particle states follow the original. Root bodies' stored links become world links, so hung props use them; the duplicate world-link system is gone. TTetraRBD about 51%. Not in: driving doors, levers and plates through them, the group-mobility blend, the parent-disabled grab removal, sounds, clone sharing and the node-clock draw fraction.
 
-Done (change `walk-in-combat-and-ease-the-pad-aim`; playerctl lane): in combat the right button walks the player as the original's combat branch does (the sprint latch kept, a run beyond 3 m or by the Run latch, a look-ahead of 6·v²+45 cm along the facing that cuts the free walk and, within 100 cm, the run; the chevrons show while it is held); the gamepad aim point (250·|aim|+50 cm) eases by (0.4·AimSpeed+0.1)² in double each behaviour tick; the hand holds a door, wheel or cloth while dragged and leaves the request to the keys; the idle camera keeps the original's blocked-screen, open-window (the in-game menu counts as one) and dialogue or power-bar gates. Tested and not yet called (`exa_game::player_behaviour`, `exa_game::player_controls`): the aim bone lock, the 12 m contact list, the engaged enemy, the screen-nearest character, the attack wind-up and recovery, the item-use values and the timed list, and the play start and end activation centre. The lane's second pass was almost entirely invented and was removed, as were its duplicates of the cursor follower, `exa_combat::stance`, `pick::within_reach` and the click handling (a plain click no longer counts as a double click and no longer walks). TPlayerBehaviour about 46%, SG_PlayerControls about 25%. At integration the player plugin was made to create the aim cursor and play session resources, which only the tests had created (the game stopped on its first frame); in `exanima01` a plain click no longer walks, the right button and the keys walk as before, and in combat mode the right button now walks the player to the cursor. Open: the click and double-click windows and the item cursor; the reach room, portal and mesh-blocker tests; the door, wheel and cloth bodies under the hand; wiring the attack timing, the contacts and the engaged enemy into combat. Follow-ups found on main in review: `Steering::step_target`'s 20 cm test should be a 3-D squared distance (over 400); the diagonal footwork side vector lacks its ×0.8; the `CLASS_LIVING` name looks wrong; the spirit-form permission mask belongs with `exa_game::mind`.
+Done (change `walk-in-combat-and-ease-the-pad-aim`; playerctl lane): in combat the right button walks the player as the original's combat branch does (the sprint latch kept, a run beyond 3 m or by the Run latch, a look-ahead of 6·v²+45 cm along the facing that cuts the free walk and, within 100 cm, the run; the chevrons show while it is held); the gamepad aim point (250·|aim|+50 cm) eases by (0.4·AimSpeed+0.1)² in double each behaviour tick; the hand holds a door, wheel or cloth while dragged and leaves the request to the keys; the idle camera keeps the original's blocked-screen, open-window (the in-game menu counts as one) and dialogue or power-bar gates. Tested and not yet called (`exa_game::player_behaviour`, `exa_game::player_controls`): the aim bone lock, the 12 m contact list, the engaged enemy, the screen-nearest character, the attack wind-up and recovery, the item-use values and the timed list, and the play start and end activation centre. The lane's second pass was almost entirely invented and was removed, as were its duplicates of the cursor follower, `exa_combat::stance`, `pick::within_reach` and the click handling (a plain click no longer counts as a double click and no longer walks). TPlayerBehaviour about 46%, SG_PlayerControls about 25%. At integration the player plugin was made to create the aim cursor and play session resources, which only the tests had created (the game stopped on its first frame); in `exanima01` a plain click no longer walks, the right button and the keys walk as before, and in combat mode the right button now walks the player to the cursor. Open: the click and double-click windows and the item cursor; the reach room, portal and mesh-blocker tests; the door, wheel and cloth bodies under the hand; wiring the attack timing, the contacts and the engaged enemy into combat. Follow-ups found on main in review: the `CLASS_LIVING` name looks wrong; the spirit-form permission mask belongs with `exa_game::mind`. The footwork step is taken only past 400 cm² in three dimensions, a side key weighs 0.8 of the facing before the direction is normalised, the step's length is the reach times the legs' extension and √scale again, and a held key keeps the short reach once the crouch promoted to double is at least 0.1; the step is measured from the chest. A released walk's soft stop pulls the goal in when its squared distance, in three dimensions, is over (8·v + 20 cm)².
 
 Done (change `reproduce-the-motile-combat-body`; motiledyn lane): the motile body's combat-side rules were reviewed and corrected: the step phase in double with the engine's epsilon; the step end, full tone, point push and rearmost-foot search in the original's z+(y+x) order with its NaN branches; the invented footstep fallback and ground query removed. The femur posture turns the thighs about the (0,0,1)→(−1,0,0) 0.4 lerp in the combat conditions only (wired in the sampler). Muscled bodies walk by their carry (the capsule asks no velocity; the body's own speed and root step drive the decision), with the head tilt, exertion, the look target, the start notice and the trailing-foot plant wired in the movement stage. The swing rules, strike body, parry trigger, weapon handling, stagger and recoil, burning and effects are ported in the original's float order but not yet called by the combat stage. TMotileDynamics about 37% → 42%. Not in: the start callback, the grip link bodies, the three-bone IK, the rsqrt estimates, the trailing foot's stand-still timers, the balance routine and about half of the body tick kernel. The integration compared long `--opponent --undying` fights (`--trace-all`, 3 100 ticks, an idle player) before and after the change: in both builds the duellist crowds the player to about 0.6 m after tick 2 000 and its blows land early in their arc (readiness 0.1–0.4, 1–2 cm a tick); its first approach varies from run to run (first blow at tick 600–1 400 either way). The crowding is older than this change (the player used to die before it showed) and is open: the duellist's combat spacing.
 
@@ -861,7 +885,17 @@ squats on its feet longer before it falls (Rebalance 1.6–1.9 s after the
 blow; live 0.9–1.4 s at like energies). The stagger step's length and
 target are in. The footwork that walks that target is in, and the
 dying tick calls it. The held weapons are dropped when the collapse
-starts and again on the first dying tick if they are still held.
+starts and again on the first dying tick if they are still held. Death's
+own write (`settle_death`) clears the may-rise rule once the fall counter
+is past 1, or when red health is below 0.01 and the race's first flag word
+lacks red regeneration, and leaves a body that may still rise a 10000 ms
+clock when red regeneration is not blocked. Each lower leg then takes
+collision layer 0 and its foot child 0x30, and only that foot child loses
+its strike-chain bit; no other part's word changes.
+The dying tick and a fall that has reached its death call that write and
+stamp both clocks. The f32 value 0.01 promotes to a double just under the
+threshold, so it clears the rule. A fatal fall zeroes both bars before
+the call.
 Done (change `regenerate-health`, M43 of the master plan): wounds heal as
 in the original. Each fixed tick yellow health regains √red × a rate that
 ramps up over 40 s to 0.01/83 a tick (0.005 a second for a human with
@@ -1597,7 +1631,9 @@ Done (change `reproduce-the-data-tail`; datatail lane, Phase 1, registry under P
 
 Done (change `run-the-parry-in-the-body-tick`; Phase 4 Combat): the parry rule family now runs in the body tick as the original's callers run it, and the blow stagger is stored on the body, so wiring completeness rose. Still unwired: the armed grip, the explicit target, the Fend entry, the request-an-attack clearing, the capable-flag forbids, the learned-skill deadline word, the continuation record, the part-check counter side effects, the Force-wall interrupt is unexercised, and the `exa_physics::body::stagger` helpers have no caller.
 
-Done (change `wire-casting`; Phase 7 thaumaturgy): casts run in the game through `thaum::cast::CastPlugin`: bar keys reach the bar cast entry, the Force, Energy and Displacement front ends and the creators (shell, kinesis, throw, strikes, bubble, barricade, shock, shock weapons, vanish, long door, constant displacement, summon) run, and the body tick walks the active list. The invented known-power gate, the release-flag event and the stand-in power body are gone. Not wired: the blast, bolt, wave, torrent, barrier, dome, shell, shock burst, vanish and demon effect entities, the kinesis and throw targets, the Mind casts, the saved record and grant, sounds and HUD, the queued-slot retry, the shell's combat damping and the AI chooser.
+Done (change `wire-casting`; Phase 7 thaumaturgy): casts run in the game through `thaum::cast::CastPlugin`: bar keys reach the bar cast entry, the Force, Energy and Displacement front ends and the creators (shell, kinesis, throw, strikes, bubble, barricade, shock, shock weapons, vanish, long door, constant displacement, summon) run, and the body tick walks the active list. The invented known-power gate, the release-flag event and the stand-in power body are gone. Since then (PR #2 and its review) the blast, bolt, wave, torrent, barrier and bubble entities, the kinesis and throw targets, the throw's sounds, the HUD focus bar, the shell's combat damping and the AI chooser are wired. Not wired: the shell's aura entity, the shock burst, vanish and demon effect entities, the Mind casts, the saved record and grant, the queued-slot retry, and the other powers' sounds and draws. A duellist whose record knows powers now casts: its slots are answered by their domains' AI evaluators before its combat state runs, and the chooser's pick starts through the domain's front end as an AI caster (`exa_ai::DuelPowers`). A blast or bolt cast now makes its blast entity: it plays cast motion 0x22, takes the caster's cast hook (answering −1, so a later cast's start or the release flag fizzles it while it charges), charges in the right hand toward the AI's target's chest or the cursor, pays its drain each charging tick, ends the cast through the shared cast end when short of focus with a hook set (fizzling only while the hook is its own), clears the hook and power id itself when thrown (the cast motion playing on), and pushes the limbs its chunks reach (Exarust's own sphere test). A barrier cast now makes its dome entity: cast motion 0x23 with id 0x10205 and the hook that ends it, the cost paid a tick (half once standing) with a shortfall calling its hook and ending the cast through the shared cast end, and its shell pushing other bodies' limb spheres out and opening ripples. A bubble cast now makes its dome where it was cast: cast motion 0x24 with id 0x20207 and its hook, the hook and power id cleared when it stands (the cast motion playing on), a break and 700 ms shrink, once, when its power ends or its caster is gone, its caster held in and other bodies pushed out. A wave cast now runs its wave round the caster's body root as an entity (`thaum::wave_live`): cast motion 0x24 with id 0x204 on the blast's hook, the drain paid each charging tick (a shortfall ends the cast through the shared cast end and fizzles the wave while it holds the hook), the release clearing the hook and power id itself, and its thrown chunks pushing other bodies' limbs. A torrent cast now runs its torrent as an entity (`thaum::torrent_live`): cast motion 0x26 with id 0x10203 and a hook that fizzles or ends it, the drain paid while charging and half while running (a shortfall calls the hook and ends the cast through the shared cast end), its running points pushing other bodies' limbs, and its removal on the first frame that would build no triangles. Cast hooks now answer by the event's bits: the shell's raise installs its hook (0 to bits 0x29) and the bubble's answers 0 to bits 0x28, so neither lets another cast start (event 0x20) until the Force Raise clip ends; a motion replacing the cast motion, or a one-shot cast clip ending into the stance, asks the hook with event 4 and drops it on a negative answer, and looping cast clips loop. The shared cast end clears the hook and power id and, from exactly casting, returns the body to its stance over 30 frames in the same tick. A duellist's or placed character's caster now takes its body's technique word from the record's learnt techniques and its persistent slots from Concentration's Continuity tiers, as the original rebuilds them; the player's caster keeps technique 0 and one slot until its saved record is read. Each body tick now settles focus as the original does around its power walk (the reserve's change moves into the capacity, spent focus leaves the pool at a climbing share, and with nothing spent the pool regenerates by √capacity × 0.000301205 × 0.1), so the pool a duellist weighs is its settled focus, and the HUD's focus bar shows the player's pool and capacity. The shell's damping and Force Strikes' factor now reach the hit formula: each caster's fighter carries them (`exa_combat::PowerFactors`), so a shelled fighter takes half a blow's impact and a striking one deals 1.5 times it.
+
+Done (review of PR #2, change `correct-pr2-rules`; Phases 3, 4, 6 and 7): PR #2 (a Cursor agent's 94 commits) and the review's fixes reproduce, checked against the original's instructions: the body tick's arm state machine in the original's order (a shock leaves the arms, a daze wins over a parry, the attack drive zeroed every tick, the parry read from last tick's flag), the clip clock's double add and its stance rate reset, the feral thorax hunch, the gait probe swayed by the body's speed, the standing lift leads, the moving pelvis spread and falling chest blend, the support pins applied in sequence, the sole turn, the stand-still stamps, the lying leg and foot release, the dormant countdown and keep, the in-combat retention, death clearing only the feet's strikes, the pair impact's hit-event gate and engine cosine, the limb impact sounds and gates, the shock stagger, readiness through a parry, the presence reset (a hidden duellist still decides but neither moves nor casts), the footwork's long-step latch from the chest and the fast-eased walk end, the elixir on the world clock (1800 s), the burn's crackle levels, and in thaumaturgy the live blast, wave, torrent, barrier and bubble, kinesis and throw targets, the shared cast end, the vanish hook, the player's hook asks and the duellists' casts. The invented bleeding damage over time (a copy of the burning routine fed by wounds) was removed. Open: the shock reaction's caller, the particle body-contact pass that feeds the burn, a shield body for the block's stamp, the world clock's saved base at load, the original's placed flag and group root for the pair gates, the player's game-view and status gates around the hook asks, the footwork landing's slow-turn extension, and the shell's aura, vanish and demon entities.
 
 Done (change `draw-the-game-screens`; Phase 7 UI): the GUI draw path is wired (`exa_ui::gui_draw`, a CPU rasteriser over the 3-D view: ten-entry blend table, four skin programs, top-left fill, bottom-up rows) and the inventory and journal windows draw through their constructors' words, without a title bar. Next: the item renderer, the Rayform fonts if they are found, the control callbacks, the character view and preview bars, item icons, the tab strip, the journal list, typing, the loot window and the technique selector.
 
@@ -1752,7 +1788,16 @@ against Exarust and lists the largest missing ones. In order:
    the character view's camera, background and drags, checked instruction
    by instruction), and so are the character record's live rules (equip
    lock, trade, loadouts, skills); drawing the windows, the cards and the
-   3D figure, and re-attaching held models, are not. Injuries beyond damage are not.
+   3D figure, and re-attaching held models, are not. A weapon part tree
+   redistributes its masses in two passes (`exa_physics::weapon_mass`): a
+   saved mass of zero is latched from the live mass, each live mass becomes
+   1.25 times that saved mass, and both the mass word and the inverse word
+   become the reciprocal of a half-even, half-by-inverse share of the
+   caller's scale. A part's shield stat block (`ShieldBlock`) is marked
+   `0x80000000` only when it is created; the three floats are the shield
+   section's bytes 4, 5 and 6 times 0.01 in double, or those bytes eight
+   bytes into a looked-up section object, and a missed lookup leaves them
+   unwritten. Injuries beyond damage are not.
 3. The original's NPC brain: perception, targets and the combat state that
    drives the same inputs as the player (Phase 6). A path on the grid, the
    look-ahead, and an order that writes the player's heading and velocity
@@ -1800,9 +1845,20 @@ against Exarust and lists the largest missing ones. In order:
    retail saves and rebuilds them byte for byte; applying the flow's
    steps and loading a save into a session come next.
    The arena's match, staff, report, save chunks and company windows'
-   rules are in; a hub screen to draw and wire the windows and actor
-   spawning for matches come next. The gamepad drives the player in
-   controller mode; its menu keys and picks wait for those drawn forms.
+   rules are in. A fresh tournament match (`match_layout::raise_fresh_match`)
+   places that bracket: a side stops at the first body the generator
+   refuses and reports "Failed to generate match motile."; the bodies
+   created on that side take familiarity 100 toward each other, both ways,
+   and both of their AI clocks wait 3000 ms; fewer than three formed sides
+   are hostile and three or more are a free-for-all; the player's side is
+   stood from the company list and the player's own entry is not spawned
+   again. A rematch (`match_layout::stand_rematch`) drops bodies in the
+   dead mode, stores a tracked fighter's health on the full scale, and
+   stands the survivors on the player's spread with a 10000 ms grace.
+   Creating the scene bodies is not in. A hub
+   screen to draw and wire the windows comes next. The gamepad drives the
+   player in controller mode; its menu keys and picks wait for those drawn
+   forms.
 7. Thaumaturgy in play (Phase 7): the casts' gates and prices, the active
    power classes and the force and environment effect nodes are tested
    rules; a power bar or cast dispatcher that creates the classes from the

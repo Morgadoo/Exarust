@@ -72,10 +72,16 @@ How the original simulates a body (`exa_physics::body`):
   moved over 40/83 cm, over 20/83 cm, or less in the last tick (strictly
   over). A living limb keeps the fast value × u² whatever its speed, with
   u = (1 − balance)(1 − r) + r and r the race's limb damping ratio (1 for
-  humans, so 0.98977). The original also builds a 0.6× environment
-  (0.2556 / 0.15 / 0.03) that no body ever uses. Exarust leaves out the
-  living ×0.95 the original applies in a state of dormant statues and
-  golems, and caps particles at 25 m/s, a guard the original lacks.
+  humans, so 0.98977). While its condition is walking, or holds bit 0x200
+  (down, getting up, dormant or dead), that factor is 0.5·u + 0.5 instead.
+  In combat (the behaviour's in-combat flag, `Bearing::in_combat`) the
+  standing factor is u rather than u², or 0.97·u² in double when the body
+  scale compares over 1.3 and the condition is not the attack's; the
+  eased branch still comes first. A dormant statue or golem takes 0.95 of
+  the fast value in double first and then the factor
+  (`Drive::dormant`). The original also builds a 0.6× environment
+(0.2556 / 0.15 / 0.03) that no body ever uses. Exarust caps particles at
+25 m/s, a guard the original lacks.
 - Joints (`Ragdoll::new`). Every part with a parent part takes its stored
   links and then one more, made when the body is registered: a **pivot**
   from its origin (the joint centre) to its origin's place in the parent,
@@ -190,10 +196,10 @@ How the original simulates a body (`exa_physics::body`):
   recoil when the chain is the primary, or records a stab's or overhead's
   `round(5√impact)` with the strike chain cleared (`part::hard_impact`),
   and a clash may run an immediate counter (the basic attack for motions
-  5–7, the combo for 8–10, `part::immediate_counter`). A wound on a boned
-  limb adds its size to the character's bleeding tally
-  (`part::WoundTally`), which the body tick turns into yellow and red loss
-  ([OTHER.md](OTHER.md), Damage).
+  5–7, the combo for 8–10, `part::immediate_counter`). A wound causes no
+  yellow or red loss over time: the part's slot 39 adds a fire's dose to
+  the burn (a part with a bone index above zero), and only the particle
+  body-contact pass calls it ([OTHER.md](OTHER.md), Damage).
 - After the iterations, every sphere collider is tested once against the
   level's triangles (`exa_physics::contact`):
   - A triangle pushes only from its front, the side its winding faces in
@@ -237,8 +243,10 @@ How the original simulates a body (`exa_physics::body`):
   A sleeper is not integrated, solved, tested against the level or
   rubbed; its stored level contacts are kept, unused.
   - A living body never sleeps: the original wakes its tree to 256 every
-    tick, standing, fallen or getting up (only dormant statues and golems
-    count down; Exarust has none). Death leaves the countdown as it is
+    tick, standing, fallen or getting up. A dormant statue or golem
+    (`Drive::dormant`) has its whole tree counted down by one, floored at
+    1, whatever its motion: one sleeps 255 ticks after going dormant.
+    Death leaves the countdown as it is
     (256). Registration sets it to 0, so a placed corpse sleeps after its
     first tick, and the living builder wakes its body to 256. Exarust
     builds every body at 256, since its corpses still collapse from a
@@ -259,9 +267,13 @@ How the original simulates a body (`exa_physics::body`):
     gravity (−0.142 cm/tick²), then, with support only (a grounded foot),
     the **lift** takes g·f·S off it, in cm:
     1. h = target pelvis height − the pelvis origin's height;
-    2. standing, f = 0.075(h + 15), at most 1.5; a negative f lifts
-       nothing (crouched deeper than 0.9 it may go down to −10). Moving,
-       f = (0.4·run + 0.2)(h + 5), nothing when negative, at most 2;
+    2. standing, f = scale·0.075(h + 15), at most 1.5; the lead is 10 while
+       a foot is stepping and 20 for a dormant statue or golem (stepping
+       is tested first). A negative f lifts nothing (crouched deeper than
+       0.9 it may go down to −10). Moving, f = scale·(0.4·run +
+       0.2)(h + 5), nothing when negative, at most 2. `scale` is the body
+       scale. That product is taken in double and narrowed once, before
+       the clamp;
     3. f −= (1 − |f|/(|f| + 2))·E²·v, v the pelvis origin's vertical
        displacement over the last tick;
     4. over a tone t of a half f ×= 2(t − 0.5) and the carry is
@@ -273,28 +285,45 @@ How the original simulates a body (`exa_physics::body`):
     t × E for the upper body. A standing body floats on its legs at f = 1,
     its pelvis 1.7 cm over its target; well under it, f = 1.5 lifts the
     pelvis and thighs at half g. A dazed body's upper body takes less of
-    the lift, so it sags; a body without support falls at g. The original
-    zeroes the shares of the legs and pelvis on bodies of scale over 1.3
-    (not yet in Exarust), and multiplies f by t² while collapsing (the
-    word's bit 0x800: [The collapse](#the-collapse)).
+    the lift, so it sags; a body without support falls at g. A body of
+    scale over 1.3, compared in double, zeroes the shares of the legs and
+    pelvis (`carry_share`), and the lift multiplies f by t² while collapsing
+    (the word's bit 0x800: [The collapse](#the-collapse)).
   - The **target pelvis height** comes from the feet, each tick, in cm.
-    Each leg's is its ground + crouch·60 + (1 − crouch)·(the clip root's
+    Each leg's is its ground + crouch·60·scale + (1 − crouch)·(the clip root's
     height over the leg's animated ankle + its ground offset). The ground
     offset is the sole height standing; moving, the ankle's height over the
-    lowest ankle of the moveset's walk in its first pose, plus the sole
-    (the original keeps that lowest ankle for walking, jogging and
-    sprinting blends; Exarust's moving bodies use the walk's). The target
-    is the lowest foot's, blended by half toward the other's while the
+    lowest ankle of a gait pose, plus the sole. That pose is the moveset's
+    Walk at its first key, that key slerped 0.7 of the way toward the Run
+    clip's first key (the root lerped the same way) while the run flag is
+    set, and the Run clip's first key while the sprint latch is set (the
+    latch wins when both are set). Exarust measures those three poses and
+    picks by the same flags.     The target
+    is the lowest foot's, blended toward the other's by half while the
     other's contact height over its ground plus the lowest foot's contact
-    height is under 40 cm, by 0.05 a cm less up to 60 (the original's test
-    as read: on a floor high in the world nothing is blended), and not when
-    the other foot has no ground. Standing, it is capped at that ground +
-    sole + leg length and raised 5 cm; moving, neither. With no ground under
-    any foot it is −1000 m: no lift. An idle human (the clip root 91.4 cm
-    over the ankle, sole 9.68 cm) is capped at ground + 99.83 cm and stands
-    with its pelvis at ground + 101.5 cm. Not reproduced: the stepping
-    (h + 10, 70 cm crouched) and resting (h + 20) variants, the walking
-    blend weights and swing flags, and the gait-smoothed ground (C19).
+    height is under 40 cm, by 0.05 a cm less up to 60 (on a floor high in
+    the world nothing is blended), and not when the other foot has no
+    ground. A lifted lowest foot uses 1 for that weight and a lifted other
+    foot uses 0 (its flag wins when both are lifted); the slope scales
+    whichever weight the flags leave. Moving, that half is min(0.5,
+    0.2·speed) and the weight is then multiplied by min(1, (0.3·speed)²),
+    speed the cm a tick along the heading (a NaN saturates both). A
+    negative slow vertical chest speed v (cm a tick) multiplies that
+    weight once more by max(0, 1 + 0.5·v); a rise, a hold and a NaN leave
+    it, and standing ignores v. The
+    spread those thresholds read is (1 − k)·lowest ground + k·(lowest
+    contact + other contact − other ground), k = min(1, 0.2·speed) moving
+    and 1 standing (a NaN speed saturates k), so at rest it is the lowest
+    ground and at 5 cm a tick it is the contact test. Standing, it
+    is capped at that ground + sole + leg length and raised 5 cm; moving,
+    neither. With no ground under any foot it is −1000 m: no lift. An idle
+    human (the clip root 91.4 cm over the ankle, sole 9.68 cm) is capped at
+    ground + 99.83 cm and stands with its pelvis at ground + 101.5 cm. A
+    full crouch is 60 cm times the body scale over that ground. Not
+    reproduced: a 70 cm times scale crouch once a standing body is displaced
+    past 10 cm times scale (that latch is not a field Exarust keeps), a
+    target 10 cm under the animated height, and a resting probe that copies
+    the animated height.
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
@@ -306,12 +335,14 @@ How the original simulates a body (`exa_physics::body`):
     1. the anchor is drawn toward the point by the part's relaxation λ;
        e = anchor − point;
     2. e += (how the gap changed since the tick began) × D·k/(0.5|e|² +
-       1.4), × 0.6 on the pelvis and legs (bones under 8). D = (E − 0.5)²,
-       0 below E = 0.5; k = 50 while the body moves, else 40 / the race's
+       1.4), × 0.6 on the pelvis and legs (bones under 8). D = (E − 0.5)²
+       unless that difference compares below 0, else 0 (a NaN is squared
+       and stays); k = 50 while the body moves, else 40 / the race's
        stance factor (80 for a human). Idle that is a gain of 14.3 (8.6 on
        the legs), walking 8.9. Under 1.19e-7 cm² the link does nothing;
     3. saturated e/(1 + c|e|), c = 0.1 per cm;
-    4. times σ = link strength × part factor × √E·T, plus the excess
+    4. times σ = link strength × part factor × √E·T (the root of a NaN
+       or a negative stays a NaN), plus the excess
        beyond the slack at full weight, cut to 80 cm, shared by the parts'
        mobilities.
     The damping acts on the joint's own motion, not the clip's, so a joint
@@ -333,15 +364,33 @@ How the original simulates a body (`exa_physics::body`):
       1.25 × the body scale × the arm stiffness (the scale is the
       character's, 0.95 to 1.05 by its height: RFC.md, Stats derived at
       spawn).
-    - Arm stiffness (both arms): 0.5 off balance (balance under 0.6,
-      falling, lying, getting up); 0.2 at tone under 0.85; in the walk and
-      run cycles the character's walking arms (0.2, or 0.2 − 0.15 × its
-      feral level, at least 0.05: a zombie's arms hang at 0.05); otherwise
-      x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation), 0.4 for a human; at
-      least 0.4 × the turn left (rad), at most 0.4. An idle arm pulls at
-      σ = 0.25, walking 0.175, off balance 0.31. The original's attack,
-      parry, recoil and power states are not reproduced: attacks use the
-      relaxed value.
+    - Arm stiffness, in the original's branch order: a shock writes
+      nothing (the arms keep last tick's values); collapsing 0.2; off
+      balance (balance under 0.6, falling, lying, getting up) 0.5; an
+      attack, which replaces both with the swing's pair and stores them
+      (the swing routine's body side, below); a daze (tone under 0.85)
+      0.2; a kick, which writes nothing; a parry, each stored stiffness
+      eased by 0.8x + 0.04 in double (toward 0.2); a power, both arms
+      0.3; the walk and the run cycles, the character's walking arms
+      (0.2, or 0.2 − 0.15 × its feral level, at least 0.05: a zombie's
+      arms hang at 0.05); a weapon switch, both arms 0.4; and finally the
+      relaxed blend that the combat idle and every other clip take, each
+      stored stiffness eased on its own by x ← 0.8x + 0.08 while the
+      body steps, else x ← 0.8x + 0.08·(0.5 + 0.5·race arm relaxation),
+      so a human at rest is 0.4 on both arms and a tick after an attack
+      starts from the attack's pair. The collapse, off-balance, daze,
+      power, switch and shielded-stride branches write both arms the
+      same; in the walk and the run a shield's off arm is twice the
+      walking arms and the weapon arm keeps them. Every branch goes
+      through the same setter: at least 0.4 × the turn left (rad) and at
+      most 0.4, the floor compared in double, except a kick which is not
+      floored; the relaxation cap 0.6 − (stiffness − 0.1)·0.8 and the
+      saturation 0.1 − 0.08 × drive, both in double. The two drive slots
+      are zeroed at the start of every body tick and written only by an
+      attack's branch, so every other tick saturates at 0.1. An idle arm
+      pulls at σ = 0.25, walking 0.175, off balance 0.31. Not reproduced
+      on this path: the clinch latch that sets the same parry flag, and
+      the tangle counter's 0.5.
     - A leg limit link's strength s ← 0.9s + 0.1t each tick (double
       precision), t = 0.4 walking or running, 0.5·S² standing or
       backpedalling (0.2 → 0.5 standing); kept while the body collapses.
@@ -374,7 +423,9 @@ How the original simulates a body (`exa_physics::body`):
     2. c = o·v/(s|o|²), v the particle's displacement over the last tick
        (before this tick's inertia), s the stance factor; at c ≥ 1 (the
        particle already closes at s|o| a tick) nothing;
-    3. push G·o·(1 − c), its vertical cut to 0.1: a P term and a
+    3. push G·o·(1 − c). On its feet the vertical is the double 0.1
+       narrowed once; off its feet (down, getting up, dormant or dead)
+       only that vertical is kept: a P term and a
        one-sided damper along o that never brakes past the target, and
        pushes harder (c < 0) a particle moving away;
     4. G = gain·t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s, E the
@@ -387,10 +438,12 @@ How the original simulates a body (`exa_physics::body`):
     across the ground (one without muscles; a body with muscles walks by
     its carry), that carry is not velocity: v is the velocity in the
     carried frame (its vertical is the world's). The
-    original also multiplies a lean into the spine's rotation and keeps
-    only the vertical push for the unconscious; neither is reproduced.
-  - Energy is the daze level. A blow takes up to 90 % of it, with a floor
-    of 0.05. It recovers 0.005 per tick up to the character's most energy
+    original also multiplies a lean into the spine's rotation, which is
+    not reproduced. Off its feet the push keeps only its vertical.
+  - Energy is the daze level. A blow leaves energy − energy × its share: a
+    share that compares above the double 0.9 becomes 0.9, and a result that
+    compares below the double 0.05 becomes 0.05 (a NaN stays). It recovers
+    0.005 per tick up to the character's most energy
     (1, or 1 − 0.1 × its feral level: a zombie's 0.9). A body starts at 1,
     so a feral one is cut to its most on its first tick, as the original's
     body tick clamps it. The daze (energy more than 0.05 under the most:
@@ -444,6 +497,10 @@ tick, in this order (REA and `exe.asm` of its sector step and body tick):
 6. 8 friction passes, each the pairs' friction, then every body's against
    the level.
 7. The post-step (for a character: its pending hit and its damage first).
+   It advances the footstep phase by √(the root origin's travel in cm²) ×
+   0.0002, in double, and both the phase and the one the previous tick
+   left wrap by subtracting 1 above 1. No ported rule reads that phase,
+   so Exarust's post-step does not advance it.
 
 Exarust runs the same order in its fixed step: `BodyPreStep`, then
 `CharacterTicks`, `BodySystems` and `BodyPostStep`. The character
@@ -452,7 +509,7 @@ controllers move first. Then each living body's character tick runs the
 one body's whole tick before the next: posture says what the body does
 (the condition, the collapse's dying tick and the falls are still decided
 over every body just before the character ticks, in that order);
-movement measures the walk's lowest ankle while it moves, leaves its
+movement measures the gait pose's lowest ankle while it moves, leaves its
 controller's step out of the carry and measures its balance and the
 ground under its feet (below; the original measures them in its carry
 stage, after the sampler); the sampler takes the capture of a clip started
@@ -623,22 +680,26 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   the lower leg's forward axis from the ankle (an anchored foot's moved
   toward its anchor by a share that grows 0.05 a tick to 0.5), 70 cm above
   it, 2000 cm down; while the body is down (lying or getting up) it starts
-  at the ankle. Its sphere is 10 cm while the body walks (its condition 1,
-  the walk or the run playing), else 5 cm plus 10 cm × that share. Living
+  at the ankle. Its sphere is 10 cm while the body walks (its condition 1),
+  widened by the gait bump up to 20 cm, else 5 cm plus 10 cm × that share.
+  The phase is the fraction of 2 − 0.5·leg − progress. From it,
+  s = max(0, 16p² − 64p⁴) and the bump is (2 − s)·s, so the sphere is
+  10 + 10·bump cm. The probe sways s·(36·scale + 8·the locomotion speed
+  along the heading, cm a tick) cm along the facing, the other way when
+  walking backwards. A lower ground
+  is taken by 1 − 0.95·(2 − r)·r, r = 0.12·max(0, 24p − 2048p⁸), each of
+  those two products one double multiply narrowed once. Living
   bodies are not part of the level (Exarust's level is its static
-  colliders, so dead bodies and loose props are not either). A walking
-  body's probe also sways forward by the gait phase and widens to 20 cm,
-  and its ground falls by a share of the gait; Exarust leaves these for the
-  gait (C19).
+  colliders, so dead bodies and loose props are not either).
 - Ground higher than half the leg (42.6 cm) under the pelvis is out of reach
   (the foot is lifted over it), except getting up. A foot is grounded when
-  its ankle is within 20 cm (30 cm moving) of its ground plus its ground
-  offset (the sole height standing; moving, also its ankle's lift in the
-  walk, set by the lift each tick, so Exarust reads last tick's). With a
-  grounded foot the body has support (regaining it sets the
-  landing weight to 5); without, it counts the ticks it is airborne, and a
-  standing body loses its balance. S = grounded × balance. Without
-  support the body also asks for the ground under its pelvis (the
+  its ankle is within 20 cm (30 cm times the body scale while moving) of
+  its ground plus its ground offset (the sole height standing; moving, also
+  its ankle's lift in the walk, set by the lift each tick, so Exarust reads
+  last tick's). With a grounded foot the body has support (regaining it
+  sets the landing weight to 5); without, it counts the ticks it is
+  airborne, and a standing body loses its balance. S = grounded × balance.
+  Without support the body also asks for the ground under its pelvis (the
   character's ground): a 20 cm sphere from 20 cm above the pelvis, 2000 cm
   down, −10000 cm on a miss (`Balance::ground`; with support the original
   takes it from the feet, which nothing in Exarust reads yet). A body
@@ -706,24 +767,30 @@ Exarust's own, for a body whose capsule still moves it across the ground
   lying clip (Unconcious 1, until C11) keeps its pelvis 57 cm off its
   root, and the controller stands at the frame's origin while the body
   lies.
-- The support pins, in each solver iteration: the two thorax pins and the
-  pelvis pin (its origin) are pulled horizontally toward their points on
-  the frame. With support the target stays near the feet centre, the mean
+- The support pins, in each solver iteration: the two thorax pins once,
+  and the pelvis pin (its origin) twice, are pulled horizontally toward
+  their points on the frame. The pins are applied in sequence, so the
+  second thorax pin sees the first's push and the second pelvis pull sees
+  its first.
+  With support the target stays near the feet centre, the mean
   of the ankles: a thorax target within (60 − 60·crouch)·0.6·scale cm, or
   (60 − 30·crouch)·0.6·scale cm while a foot is stepping, and the pelvis
   within 60·scale cm. Crouch stays 0 until a crouch exists, so a standing
   thorax reach is 36·scale cm. One application, in centimetres: raw is
   0.2·e·|e|/60 when |e| is under 60 cm and 12 cm along the error otherwise,
   less the point's horizontal displacement this tick, capped at 8 cm,
-  times S²·pin-gain·P·the spawned pin factor, and times 0.3 while getting
-  up. While a recovery step runs and the chest is not past the trigger,
+  times S²·(pin-gain·(P·the spawned pin factor)). A horizontal gap under
+  1.19e-7 cm² leaves the pin, damper included. While the body is walking,
+  or off its feet (down, getting up, dormant or dead), the pull is zero.
+  While a recovery step runs and the chest is not past the trigger,
   each thorax target is first shifted by the horizontal error from the
   pin's world point to the posed target plus the step offset. The shift
   is that error times 0.7 (0.4 while Idle plays), times (direction + 0.5),
   times (2 − 25·s), times 1.2, times the square root of body scale and
   times the stance level. Direction is (h²/60 + 0.25)·0.36·forwardness,
   with h in centimetres. A still 40 cm sideways error moves the target
-  33.6 cm. P is √E·T·E⁴. Pin-gain starts at 0.08 and
+  33.6 cm. P is (√E·T)·((E·E)·(E·E)) (the root of a NaN or a negative
+  stays a NaN), and 1 while the shock-stagger flag is set. Pin-gain starts at 0.08 and
   recovers 0.001 a tick while it is under that and the body is not
   collapsing. With no support
   the pull is zero and the target only shifts 5·scale cm forward. While
@@ -734,15 +801,22 @@ Exarust's own, for a body whose capsule still moves it across the ground
   foot's own ground, so the controller's floor does not raise the pelvis
   on level ground, perched, fallen or on the stairs. A 0, 2 or 5 cm float
   keeps the original's target, and a controller 12 cm up adds nothing. A
-  synthetic body walking four 18 cm steps, stopping on the third, keeps
-  its balance at or above 0.9 and ends with its feet on the landing,
-  carried or not, and the two pelvis heights agree. The standing leg bend
+  synthetic body walking four 18 cm steps at 1.4 m/s, stopping on the
+  third, stops on the floor before the first riser: at that speed the
+  moving blend stays near the lowest foot, the support pins stay slack
+  while its condition is walking, and the gait plants that would step it
+  up are not in yet. Its balance stays at 1 whether or not the controller
+  carries it. The two pelvis heights agree, so the controller's floor
+  does not raise the pelvis. The standing leg bend
   is in (`exa_physics`, `body_bend.rs`): the knee is the law of cosines on
   the two bones, 30° when the cosine is above 0.866 and 180° when it is
   below −1. The correction from the clip advances at most 0.02 rad a tick
   (0.2 while a recovery step is on) plus its stored rate, never past the
   target, and the rate becomes half that sum, within ±0.1 rad. The
-  muscles follow it on the next tick. An unanchored bend target is the
+  muscles follow it on the next tick. Lying down (down, dormant or dead;
+  a get-up still folds) eases those stored angles, and the foot's stored
+  pitch, toward 0 by 0.02 rad a tick and leaves the bend target, the step lift and the thigh's extra
+  turn alone. An unanchored bend target is the
   anchor lowered by twice the lift term stored before clamping: 2.25 cm
   when a standing body is at its target height and not stepping. While
   stepping, the thigh turns 75% of the angle from its rest direction to
@@ -760,9 +834,9 @@ Exarust's own, for a body whose capsule still moves it across the ground
 - Clips keep their root's travel, but for the walk, the run and the
   backpedal (and Exarust's interim `Combat Walk`), whose travel along z is
   left out since the body's own motion makes it ([Motion
-  playback](#motion-playback)). A get-up's travel moves its targets, and
-  the support pins pull at 0.3 of the standing pull while the body is
-  getting up.
+  playback](#motion-playback)). A get-up's travel moves its targets. The
+  support pins stay while the body is getting up, since that condition is
+  off its feet, and while it is walking.
 - Falls, staggers and get-ups are the original's ([Falls and
   get-ups](#falls-and-get-ups), below). A falling or lying body is no
   longer carried or held by its controller (Exarust's own, until the body
@@ -849,8 +923,17 @@ ticks.
   with support: the toe (the sole's point 20 cm × scale ahead of the ankle
   along the foot) under its floor is pushed straight up by the gap × S, at
   most 0.5 cm while the foot stands (touching, not anchored, not lifted),
-  else 0.1 cm. The original also turns the sole toward its planted
-  orientation (not ported; the pose drive turns the feet).
+  else 0.1 cm. Then, while the foot's forward lies within a right angle of
+  its animated forward, the horizontal gap from the toe to where that
+  orientation places it is projected onto that orientation's side axis and
+  closed by the velocity servo at rate 0.4×scale, gain P×pin factor×S
+  (P the support pins' power). A gap under 1.19e-7 cm², or one already
+  closing 0.05 of itself, is left. The original turns a foot with no
+  contact state whenever the character's foot-contact flag is set.
+  Exarust leaves that foot: turning it while it settles keeps its box off
+  the floor. While an unnamed flag is set and the foot stands, the
+  original projects that gap onto a side axis latched from an earlier
+  iteration; that latch is not ported.
 - **Level and extension**: with support the stance's level follows 1 − v²
   by a tenth a tick, v the share of the feet's ground difference in their
   squared distance (1 on level ground, 0.6 for feet 11 cm apart on a 15 cm
@@ -932,8 +1015,10 @@ the branch come first ([Condition](#condition)). Thresholds marked
   stage starts the get-up again while it is under 40 % (double), so a body
   that rolls over changes clip with the same blend and capture, and one
   still in its first quarter re-anchors; the balance rises 0.05 a tick
-  (above); the energy gains 0.01 × (1 − progress) more a tick (double, by
-  last tick's progress); the clip ends into the stance with no blend and
+  (above); the energy gains 0.01 × (1 − progress) more a tick, computed
+  first in double and added to the base E + 0.005 (by last tick's
+  progress); the clip
+  ends into the stance with no blend and
   the condition normal.
 - **Unsteady on its feet** (balance 0.6–0.8, double, at full tone, playing
   a plain clip: not an attack, the combat idle, the walk or run, the kick,
@@ -998,7 +1083,26 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
 `0x10203` (no queued motion starts). State flags sit beside the word
 (dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
-`0x100`, a potion `0x800000`).
+`0x100`, a potion `0x800000`). While the stagger flag is set, the body tick
+after the energy recovery sets energy to its most minus 0.5 and starts
+Rebalance with no blend unless it already plays, then clears the flag once
+the clock is past the next shock; that tick does not start the daze's
+Defence stance (`exa_physics::shock::shock_stagger_tick`). Death (`exa_combat::condition::settle_death`),
+called once the fall counter is past 1 and when a collapse's tone gives
+out, leaves a body that is already dead alone. Otherwise the word becomes
+dead. The may-rise rule (body rule bit `0x10`) is cleared when that
+counter is greater than 1, or when red health is below 0.01 in double and
+the race's first flag word lacks `0x80` (that test reads the first flag
+word). If may-rise remains and red regeneration is not blocked (rule bit
+`0x100` clear), the rise clock is the game clock plus 10000 ms; otherwise
+the clock is disabled. The death routine then gives each lower leg collision
+layer 0 (its class word) and its foot child 0x30; that foot child also
+takes the level-contact word 0 and loses the strike-chain bit. Only the
+lower legs' first children are touched; the class word of every other part
+is left alone. The dying tick and a fall that has reached its death call
+this and stamp both clocks (`DeathClock`): the f32 value 0.01 promotes to
+a double just under the threshold, so it clears the rule. A fatal fall
+zeroes yellow and red before that call, so the call reads red 0.
 
 The body tick writes the word once, in this order: the daze block makes a
 dazed character normal unless the word holds `0xAC0` or is 2; then the
@@ -1048,10 +1152,13 @@ stage, after the daze's stance; every `Fighter` keeps the word):
   effect class exists to put in it. The body's reset facing is
   `exa_physics::body::reset_heading` (the chest over the pelvis,
   flattened).
-- not yet: the kick, weapon switch and powers, dormancy, shocks (nothing
-  lowers tone yet), the collision layer the original restores on leaving a
-  state of 0x100 or more; Exarust's backpedal and combat walk stand in for
-  the walk played backwards and the footwork, so they give 0.
+- the posture write restores the living lower-leg layer (0x300, feet
+  0x330) when weak, a kick, a walk or normal replaces a condition above
+  0xFF; an attack that replaces one puts the shins in 0x10 (the feet stay
+  0x30);
+- not yet: dormancy, shocks (nothing lowers tone yet). Exarust's backpedal
+  and combat walk stand in for the walk played backwards and the footwork,
+  so they give 0.
 - `--shove 60 play arena`: 0 in Idle, in the daze's Defence stance and in
   Rebalance while it falls, `0x200` from balance 0.26 on, `0x300` at the
   get-up's start, 0 when `Get Up 2` ends into Idle.
@@ -1190,11 +1297,12 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
   tick); stepping (refuses, the next tests still run); moving with balance
   under 0.9 (double precision; a float 0.9 is under it): the cooldown and
   the landing momentum's full weight; standing with more than 80 ticks
-  without support or balance under 0.99; more than 20 ticks of Rebalance.
-  A refusal clears the amount, the flags and the speed. Exarust reads the
-  balance steady until the body takes recovery steps (its standing balance
-  can settle at about 0.89 with nothing to restore it) and keeps no
-  Rebalance countdown yet.
+  without support or balance under 0.99; more than 20 ticks of Rebalance
+  left. That countdown is the posture wait (41 off balance, 27 unsteady,
+  one less each posture stage). A refusal clears the amount, the flags
+  and the speed. Exarust reads the balance steady until the body takes
+  recovery steps (its standing balance can settle at about 0.89 with
+  nothing to restore it).
 - **Brake**: braking below 1 cm a tick, the turn-about bit turns it into a
   backpedal; otherwise the amount is 0.
 - **Move or stop**: moving with an amount over 625 cm² (25 cm) or a speed
@@ -1203,8 +1311,9 @@ original's body tick does (REA, `context/re/master-movement.md` §5, §21):
 - **Turn** (held while the condition is helpless): the error is the
   heading less the yaw, brought once within ±π; the stance facing is the
   heading while it is within a quarter turn of the yaw, else the yaw a
-  quarter turn toward it (kept for the footwork's stance frame, which has
-  no reader in Exarust yet; a turn toward a fall snaps it with the yaw).
+  quarter turn toward it. The footwork turns its stance spots from the
+  character frame's yaw onto that facing and keeps their height. A turn
+  toward a fall snaps the facing with the yaw.
   The rate: free walk (1 −
   0.1·v)·B (v the speed in cm a tick, no floor); the slow turn 0.5·B
   (120°/s; the exploration behaviour asks for it, cleared by a far
@@ -1325,7 +1434,18 @@ and down. h is the heading.
   The controller follows the body's frame instead of walking it.
 - **Leaving the walk** plants the rearmost foot (the smallest projection of
   its animated contact along the frame's forward) at its stance spot under
-  the frame, keeping its height; the other foot lands where it is.
+  the frame, keeping its height; the other foot lands where it is. The same
+  pass stamps the body's two stand-still stamps: the step clock the next
+  score reads, and that clock plus 100 ms. Afterwards the footwork keeps
+  them: a landing sets the later stamp to the landing time plus 100 ms (a
+  stalled foot's landing to the landing time), a foot that starts moving
+  sets the earlier stamp to now, and a recovery step's start closes the
+  later stamp. An anchored foot's base is 11.5 while the later stamp plus
+  100 ms is ahead, else 3.5 while the earlier stamp plus 300 ms is ahead,
+  else 2 while the later stamp plus 600 ms is ahead, else 1.5; the foot's
+  own stamps play no part (its change stamp is only the −10 recent-change
+  term). Not yet: a slow-turning body's landing adds 200 ms to the later
+  stamp, and Exarust has no slow turn.
 - **Leg gains.** A powered golem suit halves the standing thigh factor and
   quarters the leg limit's standing target; a stepping foot that is
   anchored blends its limit s ← 0.8s + 0.04 instead of following the leg
@@ -1338,15 +1458,32 @@ and down. h is the heading.
   (`exa_physics::body::femur_posture_turn`, applied by the sampler).
 - **The swing routine's body side** is reproduced piece by piece. The
   parry check, its counter, start and re-pick now run in every fighter's
-  attack stage after the swing routine (`exa_combat::parry`); a blow's
+  attack stage after the swing routine (`exa_combat::parry`), so the arm
+  state machine and the clip rate, which run in the posture block before
+  it, read the previous tick's parry flag; Exarust's posture stage takes
+  the flag from the fighter before the attack stage's check. A blow's
   stagger is the swing's stall, which the swing routine already drains
   (`exa_combat::swing`); the body-side stagger helpers
-  (`exa_physics::body::stagger`) are not called. Not run yet: the
-  weapon-in-hand gate, the attack arms' stiffness, the swing sound, the
+  (`exa_physics::body::stagger`) are not called. An attack tick sets the
+  two arms' stiffness (W20·L(p) by stance class) on the body, and the
+  muscle tune writes it on every bone of that side: factor stiffness ×
+  1.25 × scale, saturation 0.1 − 0.08·drive in double, and the relaxation
+  cap 0.6 − (stiffness − 0.1)·0.8 in double. The turn floors a stiffness
+  at 0.4·|turn| (capped at 0.4) only when that floor compares above it.
+  A character size over 1.4 whose weapon class has neither the two-handed
+  nor the polearm bits skips the clock square; a stab by a fighter that
+  is not a quadruped scales the length by 0.3 and drives nothing. A
+  shield's off arm is 0.4 while a parry is up (the original reads a
+  partner index; a parry in progress stands in for one) and 0.6
+  otherwise. The stage clears the pair at the start of every tick, so a
+  tick that is not an attack keeps the eased stiffness. Not run yet: the
+  weapon-in-hand gate, the swing sound, the
   fatigue ramp, the aim nudges (fist, edge, overhead, homing), the two-hand
   group bit, Break Tangle and the clinch clear (`exa_combat::swing`,
-  `strike_body`), the held weapon's handling pushes (`weapon`) and burning
-  (`exa_combat::burn`). Not reproduced: the start callback itself (no
+  `strike_body`) and the held weapon's handling pushes (`weapon`).
+  Burning runs in the upkeep stage (`exa_combat::burn`): a tick that still
+  has strength clears the regeneration rate, and yellow under 0 starts the
+  collapse. Not reproduced: the start callback itself (no
   callback is registered), the grip link bodies and their collision
   consumers (the drop/clinch logic is here), the full three-bone IK, and
   the reciprocal-square-root approximations (Exarust normalises exactly).
@@ -1533,17 +1670,19 @@ from the installation. Exarust: `exa_anim` (`Animator`, its `clock`),
 **Clock.** A clip's clock counts frames; each body tick adds frames from
 a rate. The base is the race's clip rate (`races.rdb` `0x5C`: 1.0, the
 ghouls 1.5; the character init first stores (80/83)/scale, then
-overwrites it). The posture rules set the rate each tick, in this order,
-the last line overriding whatever came before:
+overwrites it). The posture rules set the rate each tick. The first matching branch
+writes it and the rest are skipped; the block's end then resets it to
+the base while the clip playing is the body's stance:
 
 | the body | rate |
 |---|---|
 | off balance (balance under 0.6: falling, lying; a get-up's first tick, set before its start) | 1.25 × base |
 | getting up | (1.5 − 0.5 × encumbrance) × base |
-| kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, Exarust reads the base) | 2 × base |
-| the combat idle, a weapon switch, a power, any other clip (the walk and the run write none) | 1 × base |
+| kicking, at the tone a standing body keeps (0.85 and over; under it the weak branch writes no rate, so the clock keeps the rate the posture block last wrote) | 2 × base |
+| parrying, unless off balance, getting up, attacking or weak (a walk takes this too; the stance reset does not) | 2 × base |
+| the combat idle, a weapon switch, a power, any other clip (the walk and the run write none, so they keep the last rate too) | 1 × base |
 | an attack (actions 5–12), balanced | the swing's rate (below) |
-| the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance) | 1 × base |
+| the clip playing is the body's stance, whatever its balance (a dazed body in its Defence stance), unless it parries | 1 × base |
 
 Then the clock block adds the frames:
 
@@ -1553,7 +1692,14 @@ Then the clock block adds the frames:
 | getting up | tone × rate × 0.6, only above half tone | 0.9 (0.75 on its first tick) |
 | an attack (actions 5–12) | the rate, without the 0.6 | ≈ 1.0–1.3; 1.25 off balance (no swing routine runs) |
 | shocked (the condition's bit 0x80) | none | 0 |
-| otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking |
+| otherwise | 0.6 × rate | 0.6 standing or in its stance (49.8 frames a second), 0.75 off balance, 1.2 kicking, 1.2 parrying |
+
+The shock start writes the rate 0 with the condition 0xC0 and its 600 ms
+timer, so a shocked tick that is not in its stance keeps the last rate it
+had; the block-end stance reset still runs while shocked and raises it to
+the race's base. The standing product and the get-up's (tone included)
+are each one double-precision product, and the clock add itself is double
+too: the widened clock plus the product, narrowed once. A rate of 1.5 at full tone gains 0.8999999761581421 frames, and a get-up in encumbrance 0.625 gains 0.7124999761581421; an attack's rate and a locomotion step add in single precision.
 
 The clip ends when its clock less its blend reaches the last key's time. A
 looping clip (mode bit 0, or one Exarust loops) then wraps by the last
@@ -1571,8 +1717,8 @@ the reviewer.
 characters have no body tick; the original has none such (every
 character is a body). Exarust ticks their clocks by the same body ticks,
 counted from the frames' time (what is under a tick is owed to the next
-frame), each tick adding 0.6 × the race's base as a standing body's. No
-clip clock runs per frame.
+frame), each tick adding 0.6 × the race's base as a standing body does, in
+double. No clip clock runs per frame.
 
 **Starts.** Starting a clip sets its clock to 0, its blend (frames) and its
 ease (linear unless the caller sets one) and captures where the body is:
@@ -1622,14 +1768,15 @@ not landed is the identity and says which:
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
-| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the foot pitch and the hunch identity until C13 |
-| 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`) |
+| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick; a placement stores the angle and clears the rate). While an unnamed flag is set the original eases 0.1 rad a tick instead; that flag is not ported. |
+| 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
 w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
 its most), else (1 − S)·s, when w is over 1.19e-7 (S support, s blow sag,
-which fades 0.01 a tick and is 0 down; a blow on a limb sets it to
+which fades 0.01 a tick in double precision and is 0 while down, getting
+up, dormant, collapsing or dead; a blow on a limb sets it to
 min(2·I, 1), I the blow's impact at the hit, [OTHER.md](OTHER.md),
 Damage). The held pose
 is the pelvis's and legs' current targets and every other bone's physical
@@ -1806,17 +1953,16 @@ above (the original adds a pitch offset nothing writes); its roll a
 tenth of the yaw. The head's place keeps the pose. While it looks, its
 link muscles' anchors are placed relative to the thorax where it
 physically is, not where its pose puts it, so the head keeps looking
-whatever the chest does. Not reproduced: a target's eye point while the
-character has one and its look timer runs (Exarust gives the player no
-look target), and the head step's other relative frame for a clip from
-0x2C on.
+whatever the chest does. While it does not look, those anchors follow
+its pose relative to its parent's pose from before the twist. Not
+reproduced: a target's eye point while the character has one and its
+look timer runs (Exarust gives the player no look target).
 
 Not reproduced yet: the swing's weapon-in-hand wait (weapons are bodies
 with M24), the recoil's stance blend and arm stiffness (C21, M26); the
 attack arm stiffness; the twist in the captures and the run lean's
-exertion; the femur posture outside the combat conditions
-and the foot pitch (C13); the foot contacts' flag in the capture; the
-weak branch's rate kept from last tick (Exarust reads the base); the
+exertion; the femur posture outside the combat conditions; the foot
+contacts' flag in the capture; the
 creature classes' own clock bases.
 
 ## Skinning

@@ -11,13 +11,17 @@
 //! bonus. An instability counter grows while q ≤ 0.99 and sets the balance
 //! to q once it reaches 100; below 100 balance recovers slowly.
 //!
+//! The stance spots the feet read are the clip's ankles turned from the
+//! character frame's yaw onto the stance facing, keeping their height.
 //! Then the feet's states are set (`feet`), and each leg takes its
 //! friction from its foot's state, asks the level how high the ground is
-//! under its foot (the Height Query: a 10 cm sphere walking, 5 cm standing),
+//! under its foot (the Height Query: a walking sphere of 10 cm widened by
+//! the gait up to 20 cm and swayed along the facing, 5 cm standing),
 //! anchors its foot at that ground plus the sole height, and is grounded
-//! when its contact is within 20 cm of it (30 cm moving), its ground offset
-//! included (its sole height standing; moving, its ankle's lift in the walk
-//! as well). Support S is grounded × balance, and a standing body with no
+//! when its contact is within 20 cm of it (30 cm times the body scale while
+//! moving), its ground offset included (its sole height standing; moving,
+//! its ankle's lift in the walk as well). Support S is grounded × balance,
+//! and a standing body with no
 //! foot on the ground has no balance. The stance's level follows how much
 //! higher one foot stands than the other. Without support it asks for the
 //! ground under its pelvis (the fall check reads it, and a body getting up
@@ -29,6 +33,7 @@
 
 use std::ops::Mul;
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use super::feet::{self, FootState};
@@ -98,8 +103,10 @@ const NO_GROUND: f32 = -10000.0;
 /// the pelvis.
 const REACH_SHARE: f32 = 0.5;
 /// A foot is grounded with its contact at most this high (cm) above its
-/// ground and sole height, standing and moving.
+/// ground and sole height. Standing is this, flat. Moving is this times
+/// the body scale.
 const GROUNDED_STANDING: f32 = 20.0;
+/// The moving window before the body scale.
 const GROUNDED_MOVING: f32 = 30.0;
 /// Without support the ground under the pelvis (the character's ground)
 /// is asked from 20 cm above it with a 20 cm sphere; a body getting up
@@ -134,7 +141,7 @@ pub struct Leg {
     pub length: f32,
     /// How high (m) its contact stands over its ground when the foot is
     /// down: the feet's sole height standing; moving, also its animated
-    /// ankle's height over the walk's lowest (set by the lift).
+    /// ankle's height over the gait pose's lowest (set by the lift).
     pub offset: f32,
     /// The ground under the foot this tick (m), smoothed (it rises at once
     /// and falls by the gait's share, at once outside the walk), or none
@@ -165,16 +172,19 @@ pub struct Leg {
     pub(super) smoothed: f32,
     /// The leg's foot part, if it has one.
     pub foot: Option<usize>,
+    /// The foot's pitch (rad) toward the ground, and the rate the smoother
+    /// keeps: at most 0.01 rad a tick plus the rate, the rate then half of
+    /// that sum within ±0.1.
+    pub pitch: f32,
+    pub pitch_rate: f32,
     /// The toe: the foot's sole point 20 cm ahead of the ankle, as weights
     /// on the foot part.
     pub(super) toe: [f32; 4],
     /// The floor the toe is held over (m).
     pub floor: f32,
-    /// When the footwork last changed this foot's state, it landed, and
-    /// its step started (ms). Not a number until it has happened.
+    /// When the footwork last changed this foot's state (ms): it landed,
+    /// stalled or reached its spot. Not a number until it has happened.
     pub(super) changed_ms: f32,
-    pub(super) landed_ms: f32,
-    pub(super) started_ms: f32,
     /// The knee and hip corrections the next tick's pose takes (rad), and
     /// the rates the smoother carries (rad a tick).
     pub(super) knee: f32,
@@ -437,14 +447,16 @@ pub(super) fn within_reach(ground: f32, pelvis: f32, length: f32, getting_up: bo
 }
 
 /// Whether a foot whose contact stands `height` (cm) above its ground and
-/// ground offset is grounded: within 20 cm standing, 30 cm moving.
-pub(super) fn foot_grounded(height: f32, moving: bool) -> bool {
-    height
-        <= if moving {
-            GROUNDED_MOVING
-        } else {
-            GROUNDED_STANDING
-        }
+/// ground offset is grounded. Standing, within 20 cm. Moving, within 30 cm
+/// times the body `scale`. A NaN height, or a NaN window while moving,
+/// stays grounded: the original's compare keeps the foot when unordered.
+pub(super) fn foot_grounded(height: f32, moving: bool, scale: f32) -> bool {
+    let window = if moving {
+        GROUNDED_MOVING * scale
+    } else {
+        GROUNDED_STANDING
+    };
+    height <= window || height.is_nan() || window.is_nan()
 }
 
 /// The closest point to `m` on the segment `a`–`b`, the parameter taken in
@@ -513,8 +525,6 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             toe,
             floor: 0.0,
             changed_ms: f32::NAN,
-            landed_ms: f32::NAN,
-            started_ms: f32::NAN,
             knee: 0.0,
             knee_rate: 0.0,
             hip: 0.0,
@@ -524,6 +534,8 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             posed_offset: Vec3::ZERO,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
+            pitch: 0.0,
+            pitch_rate: 0.0,
         });
     }
     for leg in &mut legs {
@@ -625,12 +637,23 @@ impl Ragdoll {
                 .with_y(0.0)
                 .normalize_or(Vec3::Z)
         });
-        // Where last tick's pose put each ankle: its stance spot.
+        // Where last tick's pose put each ankle: its stance spot, turned
+        // from the character frame's yaw onto the stance facing.
         let posed = drive.targets.len() == parts.len();
         let mut spots: Vec<Option<Vec3>> = legs
             .iter()
             .map(|l| posed.then(|| drive.targets[l.shin].transform_point3(l.point)))
             .collect();
+        if drive.stance_yaw.is_finite()
+            && let Some(frame) = drive.frame
+        {
+            let origin = Vec3::from(frame.translation);
+            let frame_yaw = horizontal_yaw(frame);
+            let stance_yaw = drive.stance_yaw;
+            for spot in spots.iter_mut().flatten() {
+                *spot = stance_spot(*spot, origin, frame_yaw, stance_yaw);
+            }
+        }
         let b = &mut drive.balance;
         b.follow_chest(chest);
 
@@ -729,7 +752,7 @@ impl Ragdoll {
                 / n
         });
         let stance_origin = origin.unwrap_or(frame);
-        let work = steps::Work {
+        let mut work = steps::Work {
             now_ms: drive.steps.clock as f32 * steps::MS_PER_TICK,
             scale,
             crouch: bearing.crouch,
@@ -753,6 +776,8 @@ impl Ragdoll {
             },
             chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
             size: 1.0,
+            still_at: drive.steps.still_at,
+            still_plus: drive.steps.still_plus,
         };
         // The feet's states, from last tick's support.
         let met: Vec<bool> = legs
@@ -766,8 +791,12 @@ impl Ragdoll {
             &bearing,
             trigger.supported,
             &met,
-            &work,
+            &mut work,
         );
+        // A footwork landing stamps the stand-still clocks the next
+        // score reads, as the trailing-foot plant does.
+        drive.steps.still_at = work.still_at;
+        drive.steps.still_plus = work.still_plus;
         if drive.steps.stepping {
             let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
             let toward = cm(fast.with_y(0.0))
@@ -802,31 +831,47 @@ impl Ragdoll {
         b.pelvis = pelvis.y;
         let under = b.under;
         let mut grounded = 0;
-        for ((leg, &c), &axis) in legs.iter_mut().zip(&contacts).zip(&ahead) {
+        for (i, ((leg, &c), &axis)) in legs.iter_mut().zip(&contacts).zip(&ahead).enumerate() {
             let friction = feet::leg_friction(leg.state);
             parts[leg.shin].friction = friction;
             if let Some(f) = leg.foot {
                 parts[f].friction = friction;
             }
-            // A walking foot's probe is at its ankle with a 10 cm sphere (its
-            // gait's bump not ported); any other's at its ankle, or toward
-            // its anchor while anchored, 5 cm wide and more so.
+            // A walking foot's probe is at its ankle, swayed along the
+            // facing, its sphere 10 cm widened by the gait up to 20. Any
+            // other's is at its ankle, or toward its anchor while anchored,
+            // 5 cm wide and more so.
             leg.blend = feet::probe_blend(leg);
+            let gait = (bearing.walking && !down).then(|| {
+                feet::gait_probe(
+                    i,
+                    drive.gait_progress,
+                    scale,
+                    drive.gait_speed,
+                    drive.gait_back,
+                )
+            });
             let mut probe = if bearing.walking {
                 c
             } else {
                 c.lerp(leg.anchor, leg.blend)
             };
+            if let Some(gait) = &gait {
+                probe += forward * (gait.sway / CM);
+            }
             probe += axis * (PROBE_AHEAD * scale / CM);
-            let radius = feet::probe_radius(bearing.walking && !down, leg.blend);
+            let radius = gait
+                .as_ref()
+                .map_or_else(|| feet::probe_radius(leg.blend), |g| g.radius);
             probe.y = c.y + if down { 0.0 } else { PROBE_ABOVE / CM };
             let found = level
                 .height_below(probe, radius / CM, PROBE_DEPTH / CM)
                 .map_or(NO_GROUND, cm);
             if within_reach(found, cm(pelvis.y), cm(leg.length), bearing.getting_up) {
                 leg.state.0 &= !FootState::NO_GROUND;
-                // The walk's share is its gait's (not ported): at once.
-                let ground = feet::smooth_ground(cm(leg.smoothed), found, 1.0);
+                // A walk falls by the gait's share; any other ground at once.
+                let fall = gait.as_ref().map_or(1.0, |g| g.fall);
+                let ground = feet::smooth_ground(cm(leg.smoothed), found, fall);
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
@@ -845,7 +890,7 @@ impl Ragdoll {
             }
             leg.grounded = leg
                 .ground
-                .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving));
+                .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving, scale));
             grounded += usize::from(leg.grounded);
         }
         if grounded > 0 {
@@ -939,6 +984,29 @@ fn end_step(
         steps.standing = ankles[i] - local;
         steps.placed = true;
     }
+}
+
+/// The yaw of a frame's horizontal forward. The model faces +Z, so a pure
+/// yaw's forward is (sin yaw, 0, cos yaw).
+fn horizontal_yaw(frame: Affine3A) -> f32 {
+    let z = Vec3::from(frame.matrix3.z_axis).with_y(0.0);
+    if z.length_squared() < 1e-12 {
+        0.0
+    } else {
+        z.x.atan2(z.z)
+    }
+}
+
+/// The footwork's stance spot: `spot` turned from the character frame's
+/// yaw onto the stance facing, about `origin`, keeping its height. A yaw
+/// that is not finite leaves the spot where the clip put it.
+pub(super) fn stance_spot(spot: Vec3, origin: Vec3, frame_yaw: f32, stance_yaw: f32) -> Vec3 {
+    if !(frame_yaw.is_finite() && stance_yaw.is_finite()) {
+        return spot;
+    }
+    let flat = (spot - origin).with_y(0.0);
+    let aimed = Quat::from_rotation_y(stance_yaw) * (Quat::from_rotation_y(-frame_yaw) * flat);
+    Vec3::new(origin.x + aimed.x, spot.y, origin.z + aimed.z)
 }
 
 /// The heading a reset takes from the chest over the pelvis:

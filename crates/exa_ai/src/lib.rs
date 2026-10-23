@@ -45,6 +45,7 @@ pub mod order;
 pub mod path;
 pub mod personality;
 pub mod place;
+pub mod presence;
 pub mod roles;
 pub mod route;
 pub mod search;
@@ -55,16 +56,65 @@ pub use sense::{Decision, Mind, decide, noticeability, tick, view_weight};
 
 pub struct AiPlugin;
 
+/// The duellists' combat state: a power system answers [`DuelPowers`]
+/// before it and casts what it chose after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DuelSystems;
+
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (
-                (brain::apply_new_roles, brain::rate_the_player).chain(),
-                duellist,
+        app.init_resource::<presence::ActivationArea>()
+            .add_message::<presence::Entered>()
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(
+                FixedUpdate,
+                presence::check_presence.before(exa_physics::body::CharacterTicks),
             )
-                .chain(),
-        );
+            .add_systems(
+                Update,
+                (
+                    (brain::apply_new_roles, brain::rate_the_player).chain(),
+                    duellist.in_set(DuelSystems),
+                )
+                    .chain(),
+            );
+    }
+}
+
+/// What a duellist's power system answers the combat state, and the power
+/// it chose. The game writes the answers before [`DuelSystems`] and casts
+/// [`DuelPowers::chosen`] after it; a duellist without one casts nothing.
+#[derive(Component, Debug, Clone, Default, PartialEq)]
+pub struct DuelPowers {
+    /// The record's ten power slots (0 empty).
+    pub slots: [u32; cast::SLOTS],
+    /// Each slot's word, as [`cast::Powers::query`] answers it.
+    pub answers: [u32; cast::SLOTS],
+    /// The focus the chooser's budget scales.
+    pub pool: f32,
+    /// A cast motion runs: the body's condition reads casting.
+    pub casting: bool,
+    /// The power system still runs the body's cast: its domain's evaluator
+    /// answers the body's power id, or the hook keeps event 0x10.
+    pub running: bool,
+    /// The combat state asked [`DuelPowers::running`]: the game then calls
+    /// the hook with 0x10 when the evaluator answered nothing, and ends the
+    /// cast on a negative answer.
+    pub probed: bool,
+    /// The power the combat state chose, until the game casts it.
+    pub chosen: Option<u32>,
+}
+
+impl cast::Powers for DuelPowers {
+    fn query(&mut self, power: u32) -> u32 {
+        self.slots
+            .iter()
+            .position(|&slot| slot == power)
+            .map_or(cast::DENIED, |slot| self.answers[slot])
+    }
+
+    fn cast(&mut self, power: u32) {
+        self.chosen = Some(power);
     }
 }
 
@@ -72,7 +122,7 @@ impl Plugin for AiPlugin {
 /// `CharacterBody`) that duels `target` (a world-space entity, e.g. the
 /// player's physics root).
 #[derive(Component, Debug, Clone)]
-#[require(Stance, Combatant)]
+#[require(Stance, Combatant, presence::Presence)]
 pub struct Duellist {
     pub target: Entity,
     /// The combat state's generator.
@@ -224,6 +274,8 @@ struct DuelField<'a> {
     spot: place::Spot,
     /// The chase's state, when the level has a navigation grid.
     chase: Option<DuelChase<'a>>,
+    /// The power system, when the duellist has powers.
+    powers: Option<&'a mut DuelPowers>,
 }
 
 /// What the chase route needs from the duel, and what it did.
@@ -290,6 +342,17 @@ impl combat::Field for DuelField<'_> {
             distance_cm: d,
             ahead,
         }
+    }
+    fn powers(&mut self) -> Option<&mut dyn cast::Powers> {
+        self.powers
+            .as_deref_mut()
+            .map(|powers| powers as &mut dyn cast::Powers)
+    }
+    fn cast_running(&mut self) -> bool {
+        self.powers.as_deref_mut().is_some_and(|powers| {
+            powers.probed = true;
+            powers.running
+        })
     }
 }
 
@@ -379,8 +442,14 @@ fn duellist(
         &GlobalTransform,
         Option<&Ragdoll>,
         &Fighter,
+        (
+            Option<&mut DuelPowers>,
+            Option<&presence::Presence>,
+            Option<&exa_combat::AttackHook>,
+        ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut asked: MessageWriter<exa_combat::AttackAskedHook>,
     mut planning: Local<(PlanTurn, u32)>,
 ) {
     // One brain plans a route a frame: the longest waiter of the last one.
@@ -404,6 +473,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
+        (mut powers, presence, attack_hook),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -680,12 +750,24 @@ fn duellist(
             presses: false,
             other_skill: 0.0,
         };
+        // The AI tick, before its state: a cast whose body is not casting
+        // 500 ms after it began is let go (64-bit compare). A duellist runs
+        // only the combat state, so the other states' hook call with 0x10
+        // on a casting body does not arise.
+        if ai.mind.casting
+            && *condition != Condition::CASTING
+            && u64::from(ai.mind.cast_start_ms) + 500 < u64::from(now as u32)
+        {
+            ai.mind.casting = false;
+        }
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
             let mut me = combat::Body {
                 now_ms: now as u32,
                 condition: condition.0,
+                power_pool: powers.as_deref().map_or(0.0, |p| p.pool),
+                power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
                 weapon_class: u32::from(class),
                 held: blades
@@ -762,6 +844,7 @@ fn duellist(
                     },
                     outcome: None,
                 }),
+                powers: powers.as_deref_mut(),
             };
             // A chase mark lapses once its time has passed (the contact
             // integration's rule).
@@ -883,6 +966,15 @@ fn duellist(
                 && attacking.is_none()
                 && anim.looping
                 && !ai.holds_ground
+                && {
+                    // The attack start asks a running cast's hook first: a
+                    // hook that keeps its cast refuses the attack.
+                    let (ask, go) = exa_combat::AttackHook::gate(attack_hook);
+                    if ask {
+                        asked.write(exa_combat::AttackAskedHook(entity));
+                    }
+                    go
+                }
             {
                 exa_combat::start_attack(
                     &mut commands,
@@ -898,6 +990,13 @@ fn duellist(
                     stance.action(),
                 );
             }
+        }
+        // Only a character in the scene moves its body. A hidden one's AI
+        // still runs its combat state above, as the original's AI manager
+        // runs a dormant character's whole AI tick; its body, out of the
+        // scene, does not take the attack forward.
+        if presence.is_some_and(|p| !p.moves()) {
+            continue;
         }
         // It turns to the heading its look follows.
         t.rotation = Quat::from_rotation_y(ai.mind.heading);
@@ -944,7 +1043,9 @@ mod tests {
     /// away along +Z.
     fn duel(distance: f32, holds_ground: bool) -> (App, Entity, Entity) {
         let mut app = App::new();
-        app.init_resource::<Time>().add_systems(Update, duellist);
+        app.init_resource::<Time>()
+            .add_message::<exa_combat::AttackAskedHook>()
+            .add_systems(Update, duellist);
         let target = app
             .world_mut()
             .spawn((
@@ -1137,6 +1238,54 @@ mod tests {
         }
     }
 
+    /// A duellist whose power system answers a usable power chooses it for
+    /// the game to cast; one never started leaves the cast once 500 ms have
+    /// passed, so it may choose again.
+    #[test]
+    fn the_duellist_chooses_a_power_its_power_system_offers() {
+        let (mut app, foe, _) = duel(3.0, true);
+        let mut slots = [0; cast::SLOTS];
+        slots[0] = 0x401;
+        let mut answers = [0; cast::SLOTS];
+        answers[0] = cast::USABLE | 5;
+        app.world_mut().entity_mut(foe).insert(DuelPowers {
+            slots,
+            answers,
+            pool: 1.0,
+            ..DuelPowers::default()
+        });
+        engage(&mut app, foe);
+        let chosen = |app: &mut App| {
+            app.world_mut()
+                .get_mut::<DuelPowers>(foe)
+                .unwrap()
+                .chosen
+                .take()
+        };
+        let mut first = None;
+        for _ in 0..400 {
+            step(&mut app);
+            first = chosen(&mut app);
+            if first.is_some() {
+                break;
+            }
+        }
+        assert_eq!(first, Some(0x401));
+        assert!(app.world().get::<Duellist>(foe).unwrap().mind.casting);
+        let started = app.world().resource::<BodyTicks>().millis();
+        let mut again = None;
+        for _ in 0..400 {
+            step(&mut app);
+            again = chosen(&mut app);
+            if again.is_some() {
+                break;
+            }
+        }
+        assert_eq!(again, Some(0x401));
+        // A body that never read casting lets the cast go past 500 ms.
+        assert!(app.world().resource::<BodyTicks>().millis() - started > 500);
+    }
+
     /// The combat ticks follow the body ticks: four at most a frame.
     #[test]
     fn the_combat_state_ticks_with_the_body() {
@@ -1186,6 +1335,7 @@ mod chase_tests {
         let floor = Vec3::new(0.0, 10.0, 0.0);
         let mut app = App::new();
         app.init_resource::<Time>()
+            .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(Update, duellist)
             .insert_resource(yard());
         let target = app

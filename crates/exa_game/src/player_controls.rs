@@ -1,13 +1,14 @@
 //! The player controls' rules that are not the hand's drags nor the hotkey
-//! dispatch: the values an item used on the world leaves (a pour, a
-//! cleaning or a repair kit) and the timed list that carries a kit's change
+//! dispatch: the values an item used on a character leaves (a salve, an
+//! elixir, a cleaning or a repair kit) and the timed list that carries a kit's change
 //! over two seconds, and the start and end of play. Rules: `docs/PLAYER.md`
 //! (Using what the cursor is over, Using an item).
 //!
-//! **Using an item.** The usable section's subtype names the use: 8 pours a
-//! liquid that warms the character it is poured on by 0.2 (0.1 for a
-//! liquid of type 50), 14 pours one that marks it and stamps an 1800 ms
-//! timer, 9 cleans and 10 repairs. A cleaning kit takes an item's dirt byte
+//! **Using an item.** The operative section's kind byte names the use: 8
+//! is a salve that adds 0.2 to the heal pool (0.1 when the value word is
+//! 50) when the body takes remedies, 14 is an elixir that sets the potion
+//! flag and stamps the world clock plus 1800 s (`exa_combat::remedy`), 9
+//! cleans and 10 repairs. A cleaning kit takes an item's dirt byte
 //! down to 0x20 when it is over that; a repair kit lowers the wear byte by
 //! 255 over the material's rating `(r + 5) / 10` (at least 1), never under
 //! zero. Both schedule a timed value that moves 0.0005 of the gap a
@@ -19,8 +20,9 @@
 //!
 //! Not in Exarust: the click and double-click handlers (the item card, the
 //! narrator's line, the inventory, loot and talk windows they open), the
-//! dispatcher that picks the target of a use, and a consumer for the
-//! activation centre.
+//! dispatcher that picks the target of a use. While play runs the player
+//! controller moves the centre to the player each tick, and the AI's
+//! presence (`exa_ai::presence`) reads it.
 //!
 //! Evidence: the use routines, the timed list and the start and end of
 //! play, read in the instructions (`context/re/player-control-hand.md`).
@@ -33,23 +35,18 @@ pub const POUR: u8 = 8;
 pub const POUR_MARKS: u8 = 14;
 pub const CLEAN: u8 = 9;
 pub const REPAIR: u8 = 10;
-/// The liquid type that warms by the smaller step.
+/// The operative value word that fills the smaller share of the heal pool.
 pub const SMALL_POUR_TYPE: u16 = 50;
-/// The timer (ms of the game clock) a marking pour stamps on its target.
-pub const POUR_MARK_MS: u32 = 1800;
+/// The world-clock span (s) an elixir's potion flag lasts.
+pub const POUR_MARK_S: u32 = exa_combat::remedy::ELIXIR_S;
 /// A cleaning kit leaves the dirt byte at this.
 pub const CLEAN_TO: u8 = 0x20;
 
-/// The warmth a pour leaves on the character it is poured on: `warmth` plus
-/// 0.1 for a liquid of type 50 and 0.2 for any other, added in double
-/// precision.
-pub fn poured(warmth: f32, liquid_type: u16) -> f32 {
-    let add = if liquid_type == SMALL_POUR_TYPE {
-        0.1
-    } else {
-        0.2
-    };
-    (f64::from(warmth) + add) as f32
+/// The heal pool a salve leaves: `pool` plus 0.1 when the operative value
+/// word is 50 and 0.2 otherwise, added in double precision. The use adds
+/// this only when the body takes remedies ([`exa_combat::remedy::apply_remedy`]).
+pub fn poured(pool: f32, liquid_type: u16) -> f32 {
+    exa_combat::remedy::fill_salve(pool, liquid_type)
 }
 
 /// The cleaning kit's target: the dirt byte goes to 0x20 when it is over
@@ -230,10 +227,10 @@ impl PlaySession {
 mod tests {
     use super::*;
 
-    /// A pour warms by 0.2, or 0.1 for the type-50 liquid, in double
-    /// precision: 0.3 + 0.2 is 0.5 exactly once rounded back.
+    /// A salve fills the heal pool by 0.2, or 0.1 when the value word is
+    /// 50, in double precision: 0.3 + 0.2 is 0.5 exactly once narrowed.
     #[test]
-    fn a_pour_warms_in_double_precision() {
+    fn a_salve_fills_in_double_precision() {
         assert_eq!(poured(0.3, 1), 0.5);
         assert_eq!(poured(0.3, SMALL_POUR_TYPE), 0.4);
         assert_eq!(poured(0.0, 7), 0.2);

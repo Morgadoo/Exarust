@@ -617,3 +617,41 @@ fn the_installed_clips_loop_and_lead_in_as_the_original() {
         assert_eq!(blended, ticks, "{name}");
     }
 }
+
+/// The standing pace and a get-up's are one double product. A rate of 1.5
+/// gains the double 1.5 × 0.6, which narrows to 0.8999999761581421, one
+/// float under the single-precision product; half tone and a NaN tone gain
+/// nothing.
+#[test]
+fn the_pace_is_a_double_product() {
+    assert_eq!(standing_frames(1.5), 1.5 * 0.6);
+    assert_eq!((standing_frames(1.5) as f32).to_bits(), 0x3f66_6666);
+    assert_eq!((rising_frames(1.5, 1.0) as f32).to_bits(), 0x3f66_6666);
+    assert_eq!((rising_frames(1.1875, 1.0) as f32).to_bits(), 0x3f36_6666);
+    assert_ne!(
+        (standing_frames(1.5) as f32).to_bits(),
+        (1.5f32 * 0.6).to_bits()
+    );
+    assert_eq!(rising_frames(1.5, 0.5), 0.0);
+    assert_eq!(rising_frames(1.5, f32::NAN), 0.0);
+}
+
+/// The 0.6-rate clock adds the double product to the widened clock and
+/// narrows once; an attack's rate adds in single precision. From 0.0274 a
+/// standing human's 0.6 lands on 0.20739999, the single add on 0.20740001;
+/// from 0.0548 a get-up at 1.5 × 0.6 × 0.7 = 0.63 lands on 0.68480003.
+#[test]
+fn the_six_tenths_clock_adds_in_double() {
+    let mut anim = Animator::new("Default", "Idle");
+    anim.time = 0.0274;
+    assert!(!anim.tick_double(&idle(), 0.3 * 0.6, 0));
+    assert_eq!(anim.time, 0.207_399_99);
+    let mut single = Animator::new("Default", "Idle");
+    single.time = 0.0274;
+    single.tick(&idle(), (0.3 * 0.6) as f32, 0);
+    assert_eq!(single.time, 0.207_400_01);
+    let mut up = Animator::new("Default", "Get up");
+    up.time = 0.0548;
+    up.tick_double(&get_up(20.0, 120.0), 1.5 * 0.6 * 0.7, 0);
+    assert_eq!(up.time, 0.684_800_03);
+}

@@ -5,7 +5,9 @@ Rigid-body and articulated-body simulation: the core of Exanima's feel (physical
 **Phase:** Phase 3 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started — the original's
 body solver (`body`), its level contacts (`contact`), props and items as bodies (`prop`), a cloth step (`cloth`), the
 character controller (`lib`), the dynamics world unit (`dynamics`), the rigid-body shape
-builders (`shape`), the shared intersection maths (`intersect`) and the engine's own maths unit (`engine_math`).
+builders (`shape`), the shared intersection maths (`intersect`), the engine's own maths unit (`engine_math`) and the weapon part tree's mass redistribution (`weapon_mass`).
+
+`weapon_mass` redistributes a weapon's part tree in two passes, parent before children. A saved mass of zero is latched from the live mass. The live mass becomes 1.25 times that saved mass and the inverse word its reciprocal. Both words then become the reciprocal of (0.5/count + (inverse/sum)·0.5) · scale. A second pass inflates the saved mass again. Nothing in the running game calls it yet.
 
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
@@ -118,7 +120,7 @@ a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
 (`body::Drive`); and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
-its feet (`src/body_lift.rs`). A character moves through a locomotion request its
+its feet, a full crouch at 60 cm times the body scale (`src/body_lift.rs`). A character moves through a locomotion request its
 behaviour writes (`body::locomotion::Locomotion`: heading, look, the
 original's flag word, moving, free walk, goal) and the movement decision
 its tick makes from it (`body::locomotion::decide`: the move vector, leg
@@ -141,7 +143,7 @@ carries a standing body only across the ground and turns it, and follows
 the frame (`CharacterBody::follow`, a tenth of the way a step,
 at most 2 cm), leaving its follow out of the carry. In each solver
 iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
-and the pelvis pin horizontally toward the frame's targets, clamped near
+once and the pelvis pin twice horizontally toward the frame's targets, clamped near
 the feet centre. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
@@ -189,11 +191,15 @@ pins read that gain each iteration. A body
 asked to go limp keeps its motion unless the request gives a velocity
 (`body::GoLimp::velocity`); `body::daze_energy` is a blow's daze.
 Velocity retention is the original's default environment: banded by speed
-for limp parts, the fast value for living limbs. A limp body sleeps by the
-original's countdown (`body::Ragdoll::countdown`: 256, two off each tick
-under 20 cm/s, held at 30–32 between 20 and 40 cm/s, back to 256 above)
-and is woken by a blow, by going limp or by a contact with an awake body;
-a living body never sleeps.
+for limp parts, the fast value for living limbs; standing in combat the
+limb factor is u rather than u² (or 0.97·u² in double for a body over 1.3
+scale outside an attack), and a dormant body takes 0.95 of the fast value
+in double first. A limp body sleeps by the original's countdown
+(`body::Ragdoll::countdown`: 256, two off each tick under 20 cm/s, held at
+30–32 between 20 and 40 cm/s, back to 256 above) and is woken by a blow,
+by going limp or by a contact with an awake body; a living body never
+sleeps, though a dormant statue or golem counts down one a tick and
+sleeps 255 ticks after going dormant.
 Each part also keeps its state word and the part's own impact and wound
 bookkeeping (`part`): the class bits this crate reads (`part::PartState`:
 the strike window and chain, a held item, an arm, a muscled limb, a sole,
@@ -215,8 +221,9 @@ clash may start (`part::immediate_counter`: the basic attack for motions
 5–7, the combo for 8–10). A striking part's contact is classified as the
 damage routine's kind 1, 2 or 3 (`part::classify`: a muscled limb, a
 weapon, a shield, with its pending-hit, arm, once-a-swing, parrying and
-countering guards), and a boned limb's wound adds its size to the
-character's bleeding tally (`part::WoundTally`).
+countering guards). A wound adds nothing over time: the part slot that
+once was read as a bleeding tally is the burn's dose, which only the
+particle body-contact pass feeds (`exa_combat::burn::Burn::add_dose`).
 A dazed or unsteady body's targets give way to the pose it holds by the
 original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
@@ -541,11 +548,14 @@ The body kernel also keeps the original's class and state words
 (`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the
 class word to every part and `word | 0x30` to each first child,
 `raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
-children, and `raise_state_flag` walks the whole tree. `push_at` applies a
+children, and `raise_state_flag` walks the whole tree. Death's class
+writer is `pairs::set_leg_layers` instead (layer 0 on each lower leg, 0x30
+on its foot), and `Ragdoll::clear_death_strikes` clears the strike chain
+and level word only on those feet. `push_at` applies a
 push at a world point with the original's weighting (`push_fraction`, the
 `4·dot` test against the push's squared length). The stagger helper
 (`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
-countdown; `step_phase` advances the footstep phase from the pelvis travel;
+countdown;
 `femur_posture_turn` is the thigh posture's alternating 5° (splayed) or
 (1 − height)·−1.5° (combat) turn, applied by the sampler to the clip's
 thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init's unused

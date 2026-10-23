@@ -23,12 +23,12 @@ use std::collections::HashMap;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, STANDING_PACE, TickedClips,
-    follow_up_blend,
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, TickedClips, follow_up_blend,
+    rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
-use exa_combat::condition::{Branch, WEAK_BELOW};
+use exa_combat::condition::{Branch, WEAK_BELOW, action};
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
@@ -129,7 +129,8 @@ fn build_bodies(
                     .with_drive()
                     .with_race(race)
                     .with_stats(stats)
-                    .with_rest_turns(&rest_turns),
+                    .with_rest_turns(&rest_turns)
+                    .place_foot_pitches(),
                 TickedClips,
             ))
             .remove::<Physical>();
@@ -277,20 +278,34 @@ impl Hold {
 pub(crate) fn clip_tick(
     motions: &Motions,
     anim: &mut Animator,
-    body: &Ragdoll,
+    body: &mut Ragdoll,
     pace: &Pace,
     turns: impl Fn(&Ragdoll) -> Vec<Option<Quat>>,
 ) -> Option<Hold> {
     let set = &*motions.0;
-    let drive = body.drive.as_ref()?;
-    let holding = drive.holds_pose();
+    let (holding, weight) = {
+        let drive = body.drive.as_ref()?;
+        (drive.holds_pose(), drive.hold_weight())
+    };
     let physical = (anim.pending.is_some() || holding).then(|| turns(body));
     let physical = physical.as_deref().unwrap_or(&[]);
     anim.take_capture(physical);
     let playing = set.action_index(&anim.action);
     if let Some(clip) = motions.clip(anim, &anim.action) {
-        let frames = clip_frames(playing, anim.clip_progress(clip), drive, pace);
-        if anim.tick(clip, frames, follow_up_blend(playing, pace.swing.recovery)) {
+        let progress = anim.clip_progress(clip);
+        let advance = {
+            let drive = body.drive.as_mut()?;
+            let advance = clip_clock(playing, progress, drive, pace);
+            drive.posture_rate = advance.stored;
+            advance
+        };
+        let follow_up = follow_up_blend(playing, pace.swing.recovery);
+        let started = if advance.double {
+            anim.tick_double(clip, advance.frames, follow_up)
+        } else {
+            anim.tick(clip, advance.frames as f32, follow_up)
+        };
+        if started {
             if physical.is_empty() {
                 anim.take_capture(&turns(body));
             } else {
@@ -300,7 +315,7 @@ pub(crate) fn clip_tick(
     }
     Some(Hold {
         pose: holding.then(|| anim.hold_pose(physical)).flatten(),
-        weight: drive.hold_weight(),
+        weight,
     })
 }
 
@@ -357,84 +372,138 @@ const OFF_BALANCE_RATE: f32 = 1.25;
 /// running tone × rate × 0.6 a tick, and only above half tone.
 const RISING_RATE: f32 = 1.5;
 const RISING_ARMOUR: f32 = 0.5;
-const RISING_TONE: f32 = 0.5;
 /// Kicking at the tone a standing body keeps (0.85 and over) its rate is
-/// twice the base; under it the original's weak branch leaves the rate
-/// as it was, which Exarust reads as the base.
+/// twice the base. Under it the weak branch writes nothing, so the clock
+/// keeps [`Drive::posture_rate`].
 const KICK_RATE: f32 = 2.0;
 /// The kick's action index.
 const KICK: usize = 0x0D;
 /// The rate the original's posture block sets a living body's clip clock
 /// this tick, from its race's base: × 1.25 off balance (falling, lying,
-/// a get-up's first tick) and × (1.5 − 0.5 × encumbrance) getting up, × 2
-/// kicking at full tone, else × 1 (the combat idle, a weapon switch, a
-/// power, every other clip); then, whatever the branch, × 1 while the
-/// clip `playing` is the body's stance, as the block's end resets it (a
+/// a get-up's first tick) and × (1.5 − 0.5 × encumbrance) getting up, the
+/// swing's rate for a balanced attack, × 2 kicking at full tone, × 2
+/// while parrying (unless off balance, getting up, attacking or weak),
+/// else × 1 (the combat idle, a weapon switch, a power, every other clip).
+/// The weak branch and, unless it parries, the walk and the run write
+/// nothing, so this returns the rate the block last wrote. The block's
+/// end resets it to × 1 while the clip `playing` is the body's stance (a
 /// dazed body in its Defence stance plays it at the standing pace though
-/// off balance). An attack's rate is its swing routine's, and a walking
-/// body's locomotion clock ignores the rate.
-fn clip_rate(playing: Option<usize>, drive: &Drive, pace: &Pace) -> f32 {
+/// off balance), except while it parries; that reset runs even while a
+/// shock holds the clock still, and it is what raises the shock start's 0
+/// again. Otherwise a shocked tick keeps the rate last written, except for
+/// an attack, whose routine still writes. A walking body's locomotion
+/// clock ignores the rate. The `bool` reports the stance reset.
+fn clip_rate(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> (f32, bool) {
     let base = drive.race.clip_rate;
     let bearing = &drive.bearing;
-    if playing.is_some() && playing == pace.stance {
-        base
-    } else if bearing.getting_up {
-        if pace.rose {
-            (RISING_RATE - RISING_ARMOUR * pace.encumbrance) * base
-        } else {
-            OFF_BALANCE_RATE * base
-        }
-    } else if bearing.off_balance {
-        OFF_BALANCE_RATE * base
-    } else if playing == Some(KICK) && drive.tone >= WEAK_BELOW {
-        KICK_RATE * base
-    } else {
-        base
+    let attack = playing.is_some_and(|a| ATTACKS.contains(&a));
+    // The block's end resets a stance to the base, and skips that reset
+    // while the body parries, so a parry in its stance keeps the rate
+    // the branch wrote. It runs even while a shock holds the clock still,
+    // and the strike is what raises the shock-start routine's 0 again.
+    if playing.is_some() && playing == pace.stance && !drive.bearing.parrying {
+        return (base, true);
     }
+    if pace.still && !attack {
+        return (drive.posture_rate, false);
+    }
+    if bearing.getting_up {
+        return (
+            if pace.rose {
+                (RISING_RATE - RISING_ARMOUR * pace.encumbrance) * base
+            } else {
+                OFF_BALANCE_RATE * base
+            },
+            false,
+        );
+    }
+    if bearing.off_balance {
+        return (OFF_BALANCE_RATE * base, false);
+    }
+    if attack {
+        return (
+            pace.attack.unwrap_or_else(|| {
+                pace.swing
+                    .frames(playing, progress, base, drive.energy_share())
+            }),
+            false,
+        );
+    }
+    // A walk or a run writes nothing, unless the body parries: that
+    // branch is earlier and sets twice the base. Weak still writes
+    // nothing, parry or not.
+    if drive.tone < WEAK_BELOW
+        || ((playing == Some(action::WALK) || playing == Some(action::RUN))
+            && !drive.bearing.parrying)
+    {
+        return (drive.posture_rate, false);
+    }
+    if playing == Some(KICK) || drive.bearing.parrying {
+        return (KICK_RATE * base, false);
+    }
+    (base, false)
 }
 
-/// Frames a living body's clip clock advances this tick, as the original's
-/// clock block adds them, from the clip `playing` (its action index), its
+/// The frames a living body's clip clock advances this tick, and the rate
+/// the posture block leaves stored. The clock adds frames as the original's
+/// clock block does, from the clip `playing` (its action index), its
 /// `progress` by last tick's clock, its drive and its pace, with the
 /// posture block's [`clip_rate`]; a human's at full tone in brackets:
 /// locomoting, the step its locomotion routine made (the original adds it
 /// in that routine, whatever the clip; 0.764 walking 1.687 cm a tick,
 /// `exa_physics::body::locomotion::locomote`); getting up,
-/// tone × the rate × 0.6 above half tone (0.9 unencumbered, 0.75 on the
-/// tick its posture stage starts the get-up); attacking, the rate its
-/// swing routine set (about 1.1; without one its swing's unstalled rate),
-/// or off balance the posture block's rate as it is (1.25: no routine
-/// runs); otherwise 0.6 × the rate (0.6 standing or in its stance, 0.75
+/// tone × the rate × 0.6 above half tone, one double product narrowed
+/// once (0.8999999761581421 unencumbered, 0.75 on the tick its posture
+/// stage starts the get-up); attacking, the rate its swing routine set
+/// (about 1.1; without one its swing's unstalled rate), or off balance
+/// the posture block's rate as it is (1.25: no routine runs); otherwise
+/// the same double 0.6 × the rate (0.6 standing or in its stance, 0.75
 /// off balance, 1.2 kicking), and none while its condition holds the
-/// clock still.
+/// clock still. A shock that is not an attack leaves the stored rate.
+fn clip_clock(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> Advance {
+    let (rate, stance_reset) = clip_rate(playing, progress, drive, pace);
+    let attack = playing.is_some_and(|a| ATTACKS.contains(&a));
+    // The stance reset writes the base even on a tick the shock holds
+    // still; otherwise a still tick keeps the rate last written.
+    let stored = if stance_reset || !(pace.still && !attack) {
+        rate
+    } else {
+        drive.posture_rate
+    };
+    let (frames, double) = if let Some(step) = pace.stride {
+        (f64::from(step), false)
+    } else {
+        let bearing = &drive.bearing;
+        match playing {
+            // tone × rate × 0.6, the whole product in double.
+            _ if bearing.getting_up => (rising_frames(rate, drive.tone), true),
+            Some(a) if ATTACKS.contains(&a) => (f64::from(rate), false),
+            _ if pace.still => (0.0, false),
+            // The 0.6 rate: a double product added to the widened clock.
+            _ => (standing_frames(rate), true),
+        }
+    };
+    Advance {
+        frames,
+        double,
+        stored,
+    }
+}
+
+/// This tick's advance of the clip clock, and the rate its posture block
+/// leaves stored.
+struct Advance {
+    /// The frames added, in the precision the original uses.
+    frames: f64,
+    /// The add is the double sum (the 0.6-rate paths and a get-up); an
+    /// attack's rate and a locomotion step add in single precision.
+    double: bool,
+    stored: f32,
+}
+
+#[cfg(test)]
 fn clip_frames(playing: Option<usize>, progress: f32, drive: &Drive, pace: &Pace) -> f32 {
-    if let Some(step) = pace.stride {
-        return step;
-    }
-    let rate = clip_rate(playing, drive, pace);
-    let race = &drive.race;
-    let bearing = &drive.bearing;
-    match playing {
-        _ if bearing.getting_up => {
-            if drive.tone > RISING_TONE {
-                drive.tone * rate * STANDING_PACE
-            } else {
-                0.0
-            }
-        }
-        Some(a) if ATTACKS.contains(&a) => {
-            if bearing.off_balance {
-                rate
-            } else {
-                pace.attack.unwrap_or_else(|| {
-                    pace.swing
-                        .frames(playing, progress, race.clip_rate, drive.energy_share())
-                })
-            }
-        }
-        _ if pace.still => 0.0,
-        _ => STANDING_PACE * rate,
-    }
+    clip_clock(playing, progress, drive, pace).frames as f32
 }
 
 /// Each bone's physical turn under its parent (bone − 1 indexed, `bones`
@@ -535,6 +604,7 @@ pub(crate) fn bearing(
     Bearing {
         moving,
         run: locomotion.map_or(0.0, |(_, body)| body.run),
+        speed: locomotion.map_or(0.0, |(_, body)| body.speed),
         // A body without a locomotion request walks while its controller
         // moves it; the movement stage sets a request's leg mode.
         legs: match locomotion {
@@ -544,6 +614,7 @@ pub(crate) fn bearing(
         },
         stance_run: locomotion.map_or(0.0, |(_, body)| body.run),
         full_stance: false,
+        shocked: condition.has(Condition::SHOCK_MASK),
         striding: matches!(anim.action.as_str(), "Walk" | "Run"),
         off_balance: getting_up || matches!(branch, Branch::Falling | Branch::LyingStill),
         getting_up,
@@ -556,7 +627,12 @@ pub(crate) fn bearing(
         },
         gait_floor: None,
         collapsing: condition.is_collapsing(),
+        kicking: condition == Condition::KICKING,
+        casting: condition == Condition::CASTING,
+        switching: condition == Condition::SWITCHING || condition == Condition::SWITCHED,
         walking: condition == Condition::WALKING,
+        attacking: condition == Condition::ATTACKING,
+        in_combat: false,
         off_feet: condition.off_feet(),
         progress: 0.0,
         idle: anim.action == "Idle",
@@ -566,9 +642,38 @@ pub(crate) fn bearing(
     }
 }
 
-/// How high (m) the lowest ankle of `body` sits over its floor in the first
-/// pose of its moveset's walk, as the original measures a moving body's
-/// gait from the first key of its walk.
+/// Which precomputed gait pose a moving body's ground offset measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnkleSample {
+    /// The walk's first key.
+    Walk,
+    /// That key slerped 0.7 of the way toward the run's first key.
+    Jog,
+    /// The run's first key.
+    Sprint,
+}
+
+/// The sprint latch selects the run's first key. The run flag, without the
+/// latch, selects the walk's first key slerped 0.7 of the way toward it.
+/// Any other moving body keeps the walk's first key.
+pub(crate) fn ankle_sample(flags: u32) -> AnkleSample {
+    use exa_physics::body::locomotion::flags::{RUN, SPRINT};
+    if flags & SPRINT != 0 {
+        AnkleSample::Sprint
+    } else if flags & RUN != 0 {
+        AnkleSample::Jog
+    } else {
+        AnkleSample::Walk
+    }
+}
+
+/// How far a jog's walk key is slerped toward the run key.
+const JOG_TOWARD_RUN: f32 = 0.7;
+
+/// How high (m) the lowest ankle of `body` sits in `sample`: the walk's
+/// first key, that key slerped 0.7 of the way toward the run's first key,
+/// or the run's first key. A missing run clip keeps the walk's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn gait_floor(
     motions: &Motions,
     anim: &Animator,
@@ -577,9 +682,9 @@ pub(crate) fn gait_floor(
     root: Entity,
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
+    sample: AnkleSample,
 ) -> Option<f32> {
-    let walk = motions.clip(anim, "Walk")?;
-    let pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
+    let pose = gait_pose(motions, anim, stature, sample)?;
     body.legs()
         .iter()
         .map(|leg| {
@@ -587,6 +692,40 @@ pub(crate) fn gait_floor(
             shin.transform_point3(leg.point).y
         })
         .reduce(f32::min)
+}
+
+/// The pose `sample` measures. The jog lerps the root the same way it
+/// slerps each bone; a missing run keeps the walk.
+fn gait_pose(
+    motions: &Motions,
+    anim: &Animator,
+    stature: f32,
+    sample: AnkleSample,
+) -> Option<ClipPose> {
+    let walk = motions.clip(anim, "Walk")?;
+    let walk_pose = ClipPose::at(walk, walk.keys.first()?.time, stature, true)?;
+    let run_pose = || {
+        let run = motions.clip(anim, "Run")?;
+        ClipPose::at(run, run.keys.first()?.time, stature, true)
+    };
+    Some(match sample {
+        AnkleSample::Walk => walk_pose,
+        AnkleSample::Jog => match run_pose() {
+            Some(run) => blend_first_keys(walk_pose, run, JOG_TOWARD_RUN),
+            None => walk_pose,
+        },
+        AnkleSample::Sprint => run_pose().unwrap_or(walk_pose),
+    })
+}
+
+/// The walk's first key slerped `t` of the way toward the run's, the root
+/// lerped the same way. A bone the run does not pose keeps the walk's.
+fn blend_first_keys(mut walk: ClipPose, run: ClipPose, t: f32) -> ClipPose {
+    for (q, end) in walk.rotations.iter_mut().zip(&run.rotations) {
+        *q = slerp(*q, *end, t).normalize();
+    }
+    walk.root = walk.root.lerp(run.root, t);
+    walk
 }
 
 /// Where `pose` puts `part` in the space of its body root `root`: the
@@ -738,6 +877,127 @@ pub(crate) mod tests {
             }],
         };
         Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// Walk and run whose first keys differ only in the root's height.
+    fn walk_and_run(run: bool) -> Motions {
+        let key = |y: f32| Key {
+            time: 0.0,
+            root: [0.0, y, 0.4],
+            rotations: vec![[0.0, 0.0, 0.0, 1.0]],
+            flags: vec![0],
+        };
+        let walk = Clip {
+            mode: 0,
+            keys: vec![key(1.0)],
+        };
+        let run_clip = run.then(|| Clip {
+            mode: 0,
+            keys: vec![key(2.0)],
+        });
+        let set = MotionSet {
+            bone_count: 1,
+            actions: vec![
+                Action {
+                    name: "Walk".into(),
+                    params: [0, 0],
+                },
+                Action {
+                    name: "Run".into(),
+                    params: [0, 0],
+                },
+            ],
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: vec![Some(walk), run_clip],
+            }],
+        };
+        Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// A pelvis over a shin whose ankle is the shin's origin, 0.5 m under
+    /// the pelvis rest. Returns the body root.
+    fn ankle_body(world: &mut World) -> Entity {
+        let root = world.spawn(Transform::IDENTITY).id();
+        let pelvis = world
+            .spawn((
+                Transform::from_translation(Vec3::Y),
+                BodyPart {
+                    bone: 1,
+                    rest: Transform::from_translation(Vec3::Y),
+                },
+                ChildOf(root),
+            ))
+            .id();
+        let shin_at = Vec3::new(0.0, -0.5, 0.0);
+        let shin = world
+            .spawn((
+                Transform::from_translation(shin_at),
+                BodyPart {
+                    bone: 3,
+                    rest: Transform::from_translation(shin_at),
+                },
+                ChildOf(pelvis),
+            ))
+            .id();
+        let part = |bone, entity, parent, origin, foot| PartSetup {
+            bone,
+            entity,
+            parent,
+            world: Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin,
+            links: Vec::new(),
+            foot,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let body = Ragdoll::new(&[
+            part(1, pelvis, None, Vec3::ZERO, None),
+            part(3, shin, Some(0), shin_at, Some(Vec3::ZERO)),
+        ]);
+        world
+            .entity_mut(root)
+            .insert((body, Animator::new("Default", "Walk")));
+        root
+    }
+
+    /// The sprint latch stands on the run's first key, the run flag on the
+    /// walk key slerped 0.7 of the way there, and a walk on the walk key.
+    /// The root's z is left out, so a root at z 0.4 does not move the ankle.
+    #[test]
+    fn a_moving_body_stands_on_the_gait_its_flags_name() {
+        use bevy::ecs::system::{Query, SystemState};
+        use exa_physics::body::locomotion::flags::{RUN, SPRINT};
+        assert_eq!(ankle_sample(0), AnkleSample::Walk);
+        assert_eq!(ankle_sample(RUN), AnkleSample::Jog);
+        assert_eq!(ankle_sample(SPRINT), AnkleSample::Sprint);
+        assert_eq!(ankle_sample(RUN | SPRINT), AnkleSample::Sprint);
+
+        let mut world = World::new();
+        ankle_body(&mut world);
+        world.insert_resource(walk_and_run(true));
+        let ankle = |world: &mut World, sample| {
+            let mut state = SystemState::<(
+                Res<Motions>,
+                Query<(Entity, &Ragdoll, &Animator)>,
+                Query<&ChildOf>,
+                Query<(&Transform, Option<&BodyPart>)>,
+            )>::new(world);
+            let (motions, bodies, parents, nodes) = state.get(world).unwrap();
+            let (root, body, anim) = bodies.single().unwrap();
+            gait_floor(&motions, anim, 1.0, body, root, &parents, &nodes, sample)
+        };
+        assert_eq!(ankle(&mut world, AnkleSample::Walk), Some(0.5));
+        assert_eq!(ankle(&mut world, AnkleSample::Sprint), Some(1.5));
+        let jog = 1.0 + (2.0 - 1.0) * 0.7 - 0.5;
+        assert_eq!(ankle(&mut world, AnkleSample::Jog), Some(jog));
+
+        world.insert_resource(walk_and_run(false));
+        assert_eq!(ankle(&mut world, AnkleSample::Jog), Some(0.5));
+        assert_eq!(ankle(&mut world, AnkleSample::Sprint), Some(0.5));
     }
 
     /// Moves the character as its controller would, once a tick.
@@ -1109,6 +1369,11 @@ pub(crate) mod tests {
         }
         let b = of(Branch::Standing, Condition::COMBAT_IDLE);
         assert!(!b.walking && !b.off_feet);
+        assert!(of(Branch::Standing, Condition::KICKING).kicking);
+        assert!(of(Branch::Standing, Condition::CASTING).casting);
+        assert!(of(Branch::Standing, Condition::SWITCHING).switching);
+        assert!(of(Branch::Standing, Condition::SWITCHED).switching);
+        assert!(!of(Branch::Standing, Condition::NORMAL).kicking);
     }
 
     /// A drive whose body does what `bearing` says, at `tone`.
@@ -1155,8 +1420,8 @@ pub(crate) mod tests {
             }],
         };
         let motions = Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0);
-        let body = Ragdoll::new(&[]).with_drive();
-        let pose = |latch: bool, level: f32, speed: f32, blend: f32| {
+        let mut body = Ragdoll::new(&[]).with_drive();
+        let mut pose = |latch: bool, level: f32, speed: f32, blend: f32| {
             let mut anim = Animator::new("Default", "Walk");
             anim.time = 45.0;
             // The overlay reads the latch alone, whatever the stance level
@@ -1173,7 +1438,7 @@ pub(crate) mod tests {
                 stance: None,
                 still: false,
             };
-            let hold = clip_tick(&motions, &mut anim, &body, &pace, |_| Vec::new()).unwrap();
+            let hold = clip_tick(&motions, &mut anim, &mut body, &pace, |_| Vec::new()).unwrap();
             let walk = motions.clip(&anim, "Walk").unwrap();
             let gait = run_overlay(&motions, &anim, &pace);
             anim.sample_layered(walk, true, hold.toward(), gait)
@@ -1198,6 +1463,39 @@ pub(crate) mod tests {
         assert!(close(still.rotations[0], flat));
     }
 
+    /// The 0.6-rate paths and a get-up add in double, the attack's rate
+    /// in single precision.
+    #[test]
+    fn the_clock_adds_the_six_tenths_rate_in_double() {
+        let pace = Pace {
+            stride: None,
+            run: 0.0,
+            swing: Swing::FISTS,
+            attack: None,
+            encumbrance: 0.0,
+            latch: false,
+            rose: true,
+            stance: None,
+            still: false,
+        };
+        let drive = doing(Bearing::default(), 1.0);
+        let standing = clip_clock(Some(0x13), 0.3, &drive, &pace);
+        assert!(standing.double);
+        assert_eq!(standing.frames, 0.6);
+        let attack = clip_clock(Some(5), 0.3, &drive, &pace);
+        assert!(!attack.double);
+        let rising = doing(
+            Bearing {
+                getting_up: true,
+                ..Bearing::default()
+            },
+            0.7,
+        );
+        let rose = clip_clock(Some(0x13), 0.3, &rising, &pace);
+        assert!(rose.double);
+        assert_eq!(rose.frames, 0.629_999_989_271_163_9);
+    }
+
     /// A human's clip clocks, as the original's: standing 0.6 frames a
     /// tick, off balance 0.75, getting up 0.9 at full tone (0.72 at 0.8,
     /// none at half tone; in the 0.625 plate set (1.5 − 0.3125) × 0.6 =
@@ -1209,7 +1507,8 @@ pub(crate) mod tests {
     /// ghoul's base of 1.5 stands at 0.9; collapsing 0.6; its stance
     /// (the Defence stance, 0x14) at the base, 0.6, though off balance,
     /// while another clip off balance keeps 0.75; the kick (0x0D) 1.2 at
-    /// full tone and 0.6 weak (tone 0.8); an attack off balance 1.25 (the
+    /// full tone and, while weak, at the rate last written (0.6 from the
+    /// standing base, 1.2 after that kick); an attack off balance 1.25 (the
     /// falls branch's rate, no swing routine); a condition that holds the
     /// clock still (shocked) 0, but an attack's 1.62.
     #[test]
@@ -1243,18 +1542,73 @@ pub(crate) mod tests {
         assert!(close(frames(0x14, &doing(still, 1.0), &guarding), 0.6));
         assert!(close(frames(0x0D, &doing(still, 1.0), &pace), 1.2));
         assert!(close(frames(0x0D, &doing(still, 0.8), &pace), 0.6));
-        assert!(close(frames(0x0D, &doing(falling, 1.0), &pace), 0.75));
-        assert!(close(frames(5, &doing(falling, 1.0), &pace), 1.25));
+        // A parry is twice the base, including in its stance and on a
+        // walk. Off balance the fall rate stands (the stance reset does
+        // not run), and a weak tick keeps the rate last written.
+        let parrying = Bearing {
+            parrying: true,
+            ..still
+        };
+        assert!(close(frames(0x13, &doing(parrying, 1.0), &pace), 1.2));
+        assert!(close(frames(0x14, &doing(parrying, 1.0), &guarding), 1.2));
+        assert!(close(frames(0x00, &doing(parrying, 1.0), &pace), 1.2));
+        let falling_parry = Bearing {
+            parrying: true,
+            ..falling
+        };
+        assert!(close(
+            frames(0x14, &doing(falling_parry, 1.0), &guarding),
+            0.75
+        ));
+        let mut weak_parry = doing(parrying, 0.8);
+        weak_parry.posture_rate = 1.5;
+        assert!(close(frames(0x13, &weak_parry, &pace), 0.9));
+        assert!(close(frames(5, &doing(parrying, 1.0), &pace), 1.62));
+        // A weak kick keeps the rate the posture block last wrote. After a
+        // full-tone kick that is 2 × base, so the clock stays at 1.2; the
+        // walk and the run keep it too. The stance reset still writes the
+        // base, and a shock that is not an attack leaves the stored rate.
+        let mut kicked = doing(still, 0.8);
+        kicked.posture_rate = 2.0;
+        assert!(close(frames(0x0D, &kicked, &pace), 1.2));
+        assert!(close(frames(0x00, &kicked, &pace), 1.2));
+        assert!(close(frames(0x01, &kicked, &pace), 1.2));
+        let stance_kick = Pace {
+            stance: Some(0x0D),
+            ..pace
+        };
+        assert!(close(frames(0x0D, &kicked, &stance_kick), 0.6));
+        assert!(close(frames(5, &kicked, &pace), 1.62));
         let shocked = Pace {
             still: true,
             ..pace
         };
+        assert_eq!(clip_clock(Some(0x13), 0.3, &kicked, &shocked).stored, 2.0);
+        assert_eq!(frames(0x13, &kicked, &shocked), 0.0);
+        // A shock in its stance: the block-end reset still writes the base
+        // (1), though the clock does not advance.
+        let shocked_stance = Pace {
+            still: true,
+            stance: Some(0x14),
+            ..pace
+        };
+        assert_eq!(
+            clip_clock(Some(0x14), 0.3, &kicked, &shocked_stance).stored,
+            1.0
+        );
+        assert_eq!(frames(0x14, &kicked, &shocked_stance), 0.0);
+        assert!(close(frames(0x0D, &doing(falling, 1.0), &pace), 0.75));
+        assert!(close(frames(5, &doing(falling, 1.0), &pace), 1.25));
         assert_eq!(frames(0x13, &doing(still, 1.0), &shocked), 0.0);
         assert!(close(frames(5, &doing(still, 1.0), &shocked), 1.62));
         let rising = Bearing {
             getting_up: true,
             ..falling
         };
+        assert_eq!(
+            frames(0x0F, &doing(rising, 1.0), &pace).to_bits(),
+            0x3f66_6666
+        );
         assert!(close(frames(0x0F, &doing(rising, 1.0), &pace), 0.9));
         assert!(close(frames(0x0F, &doing(rising, 0.8), &pace), 0.72));
         assert_eq!(frames(0x0F, &doing(rising, 0.5), &pace), 0.0);
@@ -1262,6 +1616,10 @@ pub(crate) mod tests {
             encumbrance: 0.625,
             ..pace
         };
+        assert_eq!(
+            frames(0x0F, &doing(rising, 1.0), &plate).to_bits(),
+            0x3f36_6666
+        );
         assert!(close(frames(0x0F, &doing(rising, 1.0), &plate), 0.7125));
         // A get-up its posture stage starts this tick (from the floor, or
         // a stagger's) runs at the off-balance rate, whatever the armour.
@@ -1294,6 +1652,7 @@ pub(crate) mod tests {
         assert!(close(frames(5, &zombie, &pace), 0.81));
         let mut ghoul = doing(still, 1.0);
         ghoul.race.clip_rate = 1.5;
+        assert_eq!(frames(0x13, &ghoul, &pace).to_bits(), 0x3f66_6666);
         assert!(close(frames(0x13, &ghoul, &pace), 0.9));
         // An attack's clip runs at the rate its swing routine set (a
         // stalled swing's 0.4), whatever its energy.
