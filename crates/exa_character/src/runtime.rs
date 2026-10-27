@@ -141,6 +141,11 @@ pub struct Node {
     /// in the material manager, which this unit does not model, so its
     /// meaning is a guess.
     pub host: Option<usize>,
+    /// The skin texture job the node's mesh was built with, if any (the
+    /// original keeps it on the mesh object; a rebuild's apply step clears
+    /// the node's `0x20` render flag for it). A labelled guess: the job is
+    /// engine state this model keeps by identity.
+    pub texture: Option<usize>,
     /// The body slot its name gives.
     pub slot: usize,
     /// The layer bits of its name ([`crate::layers::layer_of`]).
@@ -173,6 +178,7 @@ impl Default for Node {
             render_flags: 0,
             owner: 0,
             host: None,
+            texture: None,
             slot: 0,
             layer: 0,
             morphed: false,

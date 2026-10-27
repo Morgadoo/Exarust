@@ -246,6 +246,52 @@ pub fn preview(
     Rebuild::prepare(body, root, bones, pixel_format, apparel)
 }
 
+/// The apply step of a background rebuild, as the main thread runs it after
+/// the build: the body's direct mesh children that still carry a skin job
+/// have their `0x20` render flag cleared; the new node tree is registered
+/// with the scene; the old hair roots (the nodes the hair builder owns) are
+/// removed and the new ones attached; the viewer is told to refresh.
+/// Exarust models the decisions; the scene and viewer calls are the
+/// caller's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApplyPlan {
+    /// The direct mesh children whose texture job the apply clears.
+    pub clear_texture: Vec<usize>,
+    /// The new body tree the caller registers, when a rebuild built one.
+    pub register_tree: Option<usize>,
+    /// The old hair roots to unregister and free.
+    pub remove_hair: Vec<usize>,
+    pub attach_hair: Vec<usize>,
+    pub notify_viewer: bool,
+}
+
+/// The background rebuild's apply plan for `body` ([`ApplyPlan`]).
+pub fn apply_plan(
+    body: &Body,
+    root: usize,
+    new_tree: Option<usize>,
+    new_hair: &[usize],
+) -> ApplyPlan {
+    let clear_texture = body.nodes[root]
+        .children
+        .iter()
+        .copied()
+        .filter(|&i| body.nodes[i].is_mesh() && body.nodes[i].texture.is_some())
+        .collect();
+    let remove_hair = body
+        .descendants(root)
+        .into_iter()
+        .filter(|&i| body.nodes[i].owner == crate::runtime::HAIR_OWNER)
+        .collect();
+    ApplyPlan {
+        clear_texture,
+        register_tree: new_tree,
+        remove_hair,
+        attach_hair: new_hair.to_vec(),
+        notify_viewer: true,
+    }
+}
+
 /// A texture-only rebuild from a record: the job [`SkinJob::of_record`]
 /// builds for `record`, then [`retexture`]. The original sets the factory's
 /// look to the record before this, which the caller does.
@@ -550,5 +596,36 @@ mod tests {
     #[test]
     fn a_free_render_flag_does_not_wait() {
         wait_for_render(&std::sync::atomic::AtomicBool::new(false));
+    }
+
+    /// The apply step clears the direct mesh children's texture marks,
+    /// registers the new tree, removes the old hair roots and attaches the
+    /// new ones, then notifies the viewer.
+    #[test]
+    fn the_apply_plan_clears_textures_and_swaps_hair() {
+        let mut b = body();
+        b.nodes[1].chunk_kind = crate::runtime::MESH;
+        b.nodes[1].texture = Some(4);
+        let hair = crate::runtime::Node {
+            name: "?HULA01_".into(),
+            parent: Some(0),
+            owner: crate::runtime::HAIR_OWNER,
+            ..Default::default()
+        };
+        b.nodes.push(hair);
+        b.refresh_links();
+        let plan = apply_plan(&b, 0, Some(7), &[2]);
+        assert_eq!(plan.clear_texture, [1]);
+        assert_eq!(plan.register_tree, Some(7));
+        assert_eq!(plan.remove_hair, [2]);
+        assert_eq!(plan.attach_hair, [2]);
+        assert!(plan.notify_viewer);
+        // No texture, no hair: only the notify remains.
+        let plan = apply_plan(&b, 0, None, &[]);
+        assert_eq!(plan.clear_texture, [1]);
+        let mut plain = body();
+        plain.nodes[1].chunk_kind = crate::runtime::MESH;
+        let plan = apply_plan(&plain, 0, None, &[]);
+        assert!(plan.clear_texture.is_empty() && plan.remove_hair.is_empty());
     }
 }
