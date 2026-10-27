@@ -402,20 +402,26 @@ only.
   migration list once; a repeat is logged as `Duplicate simulation motile:
   <name>` under `Migration` and skipped. Followers take the six stored
   offsets `(−100,0,−100)`, `(100,0,−100)`, `(0,0,150)`, `(100,0,200)`,
-  `(0,0,0)`, `(0,0,0)`, each rotated by the player's heading and added to
-  the player's position in order. Re-attaching one frees its UID manager,
-  re-creates its player controls, clears its carry world, sets its body
-  controller to 1 and raises a minimum distance under 5 cm to 5 (a NaN is
+  `(0,0,0)`, `(0,0,0)`, each taken as a row vector times the spawn
+  matrix's rotation rows (the saved player matrix, else the identity),
+  added to the player's placed position, and then spawned with its own
+  floor probe and lift. The original does not bound the index (a seventh
+  follower reads past the table); Exarust stops at six. A plain scene
+  flush empties the migration list after flushing its characters.
+  Re-attaching one frees its UID manager, re-creates its player controls,
+  clears its carry word, stores 1 as its body controller and raises a minimum distance under 5 cm to 5 (a NaN is
   kept, as the unordered compare does not branch).
 * **Menu.** The menu background is the shipped `menuscene.rfc` with the
   1.8 fog preset, the scene editor at mode 0, the view at (0, 500, 700)
-  and its target 200 cm down the z axis; the camera's far distance is 60.
+  and its target at (0, 0, −200); a 60 is written into the camera (most
+  likely its field of view).
 * **Terrain.** A saved level's terrain file is the locale with its
   extension replaced by `.rft` (the loader looks it up in the archive and
   imports it when it exists).
 * **Scene content.** A scene node is classified from its object record:
-  kind bits `0x1100`/`0x1200` go to the first list, `0x2200` to the second,
-  and a `0x10000` kind whose kind byte is 2 to the third. A record the
+  kind pair `0x1100`/`0x1200` goes to the first list, `0x2200` to the
+  second, and independently a `0x10000` property whose first byte is 2
+  adds it to the third (one node can join two lists). A record the
   object database does not know falls back to a name starting with `[`,
   which joins the second list.
 * **Load reset.** Before a load the save unit clears the old-settings flag,
@@ -425,7 +431,8 @@ only.
   update flag 1 and mode 0).
 * **Landing.** The landing plan puts the player at the saved planar
   position and the lifted floor height, then places the followers around
-  them from the offset table in order.
+  them from the offset table in order (positions before each follower's
+  own floor probe).
 
 ## The game clock
 

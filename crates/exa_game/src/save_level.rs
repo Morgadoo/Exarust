@@ -12,8 +12,6 @@
 //! scene-content routines of the save unit, read from the instructions
 //! (`docs/formats/SAVES.md`, Level transitions).
 
-use crate::flow::rotation;
-
 /// The height the original gives a body's feet above the floor, before the
 /// body's own extent is taken off: 108.18 cm minus eleven point one times
 /// the body's extent word.
@@ -55,9 +53,10 @@ pub fn spawn_placement(position: [f32; 3], extent: f32, floor: f32, raised: bool
 }
 
 /// The six offsets followers take around the player, in the original's
-/// order: two in front, one behind and two at the sides. The last two
-/// entries are zero and are only reached when more followers than offsets
-/// travel.
+/// order: two at the front corners, one behind, one at a back corner, and
+/// two zero entries that put a fifth and sixth follower on the player's own
+/// spot. The original does not bound the index; a seventh follower would
+/// read past the table, so Exarust stops at six (a deliberate divergence).
 pub const FOLLOWER_OFFSETS: [[f32; 3]; 6] = [
     [-100.0, 0.0, -100.0],
     [100.0, 0.0, -100.0],
@@ -67,11 +66,13 @@ pub const FOLLOWER_OFFSETS: [[f32; 3]; 6] = [
     [0.0, 0.0, 0.0],
 ];
 
-/// Rotates a planar offset by the player's heading and adds it to the
-/// player's placement. The original builds the rotation from the player's
-/// frame and adds the offset to its position.
-pub fn follower_position(player: [f32; 3], heading: [[f32; 3]; 3], offset: [f32; 3]) -> [f32; 3] {
-    let moved = apply(heading, offset);
+/// Rotates an offset by the spawn matrix's rotation rows (the offset as a
+/// row vector: x times the first row plus y times the second, then z times
+/// the third) and adds the player's placed position. The result is the
+/// matrix position the follower is then spawned at; its own floor probe
+/// and lift ([`spawn_placement`]) follow.
+pub fn follower_position(player: [f32; 3], frame: [[f32; 3]; 3], offset: [f32; 3]) -> [f32; 3] {
+    let moved = apply(frame, offset);
     [
         player[0] + moved[0],
         player[1] + moved[1],
@@ -80,18 +81,16 @@ pub fn follower_position(player: [f32; 3], heading: [[f32; 3]; 3], offset: [f32;
 }
 
 /// All follower placements around a player, one per offset, in order.
-pub fn follower_positions(player: [f32; 3], heading: [[f32; 3]; 3], count: usize) -> Vec<[f32; 3]> {
+pub fn follower_positions(player: [f32; 3], frame: [[f32; 3]; 3], count: usize) -> Vec<[f32; 3]> {
     (0..count.min(FOLLOWER_OFFSETS.len()))
-        .map(|index| follower_position(player, heading, FOLLOWER_OFFSETS[index]))
+        .map(|index| follower_position(player, frame, FOLLOWER_OFFSETS[index]))
         .collect()
 }
 
+/// A row vector times the matrix, summed first row, second, then third.
 fn apply(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-    ]
+    let column = |j: usize| (v[0] * m[0][j] + v[1] * m[1][j]) + v[2] * m[2][j];
+    [column(0), column(1), column(2)]
 }
 
 /// A character the scene offers the transition.
@@ -107,12 +106,13 @@ pub struct SceneMotile<'a> {
     pub flags: u32,
 }
 
-/// One character on the migration list.
+/// One character the migration pass met.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migration {
     pub address: usize,
     /// A repeated address is logged as "Duplicate simulation motile: <name>"
-    /// under the "Migration" tag and is not added twice.
+    /// under the "Migration" tag and is not added to the list (nor flushed)
+    /// again; callers skip the entries marked here.
     pub duplicate: bool,
 }
 
@@ -149,22 +149,23 @@ pub struct FollowerReset {
     pub controls: bool,
     /// The character's carry weight is reset to zero.
     pub carry: f32,
-    /// The body's controller word becomes 1.
+    /// The body's controller word: always set to 1, whatever it was.
     pub controller: u32,
     /// The body's minimum distance is at least 5 cm.
     pub min_distance: f32,
 }
 
 /// The re-attach of one migrated follower: its UID, controls, carry word,
-/// controller and minimum distance. The original brings a distance under
-/// 5 cm up to 5 and leaves a NaN alone (the unordered compare does not
-/// branch).
-pub fn reattach_follower(controller: u32, min_distance: f32) -> FollowerReset {
+/// controller (stored as 1 unconditionally) and minimum distance. The
+/// original brings a distance under 5 cm up to 5 and leaves a NaN alone
+/// (the unordered compare does not branch). The pass then empties the
+/// migration list.
+pub fn reattach_follower(min_distance: f32) -> FollowerReset {
     FollowerReset {
         uid_cleared: true,
         controls: true,
         carry: 0.0,
-        controller: controller.max(1),
+        controller: 1,
         min_distance: if min_distance < 5.0 {
             5.0
         } else {
@@ -175,15 +176,16 @@ pub fn reattach_follower(controller: u32, min_distance: f32) -> FollowerReset {
 
 /// The menu background scene the original loads behind the main menu: the
 /// shipped `menuscene.rfc` with the 1.8 fog preset, the scene editor at
-/// mode zero, the view at (0, 500, 700) and its target 200 cm down the
-/// z axis, 60 cm ahead.
+/// mode zero, the view at (0, 500, 700), its target at (0, 0, −200), and a
+/// 60 written into the camera beforehand (most likely its field of view in
+/// degrees; a guess, the field is only stored).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuScene {
     pub file: &'static str,
     pub fog_distance: f32,
     pub view: [f32; 3],
     pub target: [f32; 3],
-    pub camera_distance: f32,
+    pub camera_field: f32,
 }
 
 /// The menu scene's values.
@@ -193,7 +195,7 @@ pub fn menu_scene() -> MenuScene {
         fog_distance: 1.8,
         view: [0.0, 500.0, 700.0],
         target: [0.0, 0.0, -200.0],
-        camera_distance: 60.0,
+        camera_field: 60.0,
     }
 }
 
@@ -211,38 +213,47 @@ pub enum SceneContent {
     /// A node whose name starts with `[`, or an object record whose kind
     /// byte pair is `0x2200` (a guess at the shared list's meaning).
     Second,
-    /// An object whose kind word is `0x10000` and whose kind byte is 2.
+    /// An object whose `0x10000` property's first byte is 2.
     Third,
 }
 
-/// Classifies one scene node from its name and, when the object database
-/// knows it, its record's kind flags and its `0x10000` property's kind
-/// byte. `None` is a node the save unit leaves out of all three lists.
-///
-/// The original tests the object archive first; only when the record is
-/// missing does it look at the `[` name prefix.
-pub fn scene_content(
-    name: &str,
-    object_flags: Option<u32>,
-    object_kind_byte: Option<u8>,
-) -> Option<SceneContent> {
-    if let Some(flags) = object_flags {
+/// What the object database knows about a scene node's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObjectKinds {
+    /// The record's kind word (its `0xff00` byte pair is tested), when the
+    /// record carries the kind property.
+    pub flags: Option<u32>,
+    /// The first byte of the record's `0x10000` property, when present.
+    pub kind_byte: Option<u8>,
+}
+
+/// Classifies one scene node into the save unit's lists, in the order the
+/// original appends it. `object` is `None` when the object database has no
+/// record for the node; then only a name starting with `[` joins the second
+/// list. With a record, the kind pair picks the first (`0x1100`, `0x1200`)
+/// or second (`0x2200`) list, and independently a `0x10000` property whose
+/// first byte is 2 adds the node to the third: one node can join two lists.
+pub fn scene_content(name: &str, object: Option<ObjectKinds>) -> Vec<SceneContent> {
+    let Some(object) = object else {
+        return if name.as_bytes().first() == Some(&b'[') {
+            vec![SceneContent::Second]
+        } else {
+            Vec::new()
+        };
+    };
+    let mut lists = Vec::new();
+    if let Some(flags) = object.flags {
         let pair = flags & 0xff00;
         if pair == 0x1100 || pair == 0x1200 {
-            return Some(SceneContent::First);
+            lists.push(SceneContent::First);
+        } else if pair == 0x2200 {
+            lists.push(SceneContent::Second);
         }
-        if pair == 0x2200 {
-            return Some(SceneContent::Second);
-        }
-        if object_kind_byte == Some(2) {
-            return Some(SceneContent::Third);
-        }
-        return None;
     }
-    name.as_bytes()
-        .first()
-        .is_some_and(|first| *first == b'[')
-        .then_some(SceneContent::Second)
+    if object.kind_byte == Some(2) {
+        lists.push(SceneContent::Third);
+    }
+    lists
 }
 
 /// The grid-environment arrays a load allocates: one zero word per grid
@@ -266,7 +277,9 @@ pub fn grid_environment_setup(cells: usize) -> GridEnvironmentSetup {
 }
 
 /// One scene flush: the object database begins, the player is flushed, the
-/// travelling characters are listed, and the database ends.
+/// migration pass flushes every travelling character once, and the
+/// database ends. The original empties the migration list right after, so
+/// a plain flush keeps nobody for a transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneFlush {
     pub object_db_begun: bool,
@@ -294,26 +307,22 @@ pub struct LandingPlan {
 
 /// The landing plan: the player at the saved planar position and the
 /// lifted floor height, the travelling followers around them in the stored
-/// offset order.
+/// offset order, rotated by the spawn matrix's rotation rows `frame` (the
+/// saved player matrix, or the identity default). Each follower position
+/// is the matrix position before that follower's own floor probe and lift.
 pub fn landing_plan(
     position: [f32; 3],
+    frame: [[f32; 3]; 3],
     extent: f32,
     floor: f32,
     raised: bool,
-    yaw: f32,
     followers: usize,
 ) -> LandingPlan {
     let player = spawn_placement(position, extent, floor, raised);
     LandingPlan {
         player,
-        followers: follower_positions(player, heading(yaw), followers),
+        followers: follower_positions(player, frame, followers),
     }
-}
-
-/// A heading matrix for a yaw in radians, as the follower placement needs
-/// it. The engine's rotation builder takes degrees.
-pub fn heading(yaw: f32) -> [[f32; 3]; 3] {
-    rotation(0.0, yaw.to_degrees(), 0.0)
 }
 
 #[cfg(test)]
@@ -336,12 +345,15 @@ mod tests {
 
     #[test]
     fn followers_take_the_stored_offsets_rotated_by_the_heading() {
-        let yaw = std::f32::consts::FRAC_PI_2;
-        let m = heading(yaw);
-        // A quarter turn sends the local −100 x offset to world −100 z.
+        // A quarter-turn frame with rows (0, 0, −1), (0, 1, 0), (1, 0, 0):
+        // the row vector (−100, 0, −100) gives −100·row0 + −100·row2 =
+        // (−100, 0, 100), plus the player's (10, 0, 20).
+        let m = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
         let front = follower_position([10.0, 0.0, 20.0], m, FOLLOWER_OFFSETS[0]);
-        assert!((front[0] - 110.0).abs() < 1e-3);
-        assert!((front[2] + 80.0).abs() < 1e-3);
+        assert_eq!(front, [-90.0, 0.0, 120.0]);
+        // The third offset (0, 0, 150) is 150·row0 = (150, 0, 0).
+        let back = follower_position([0.0; 3], m, FOLLOWER_OFFSETS[2]);
+        assert_eq!(back, [150.0, 0.0, 0.0]);
         let all = follower_positions(
             [0.0; 3],
             [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -414,14 +426,17 @@ mod tests {
 
     #[test]
     fn a_reattached_follower_gets_its_distance_floor() {
-        let reset = reattach_follower(0, 1.0);
+        let reset = reattach_follower(1.0);
         assert_eq!(reset.carry, 0.0);
         assert_eq!(reset.min_distance, 5.0);
         assert_eq!(reset.controller, 1);
         assert!(reset.controls && reset.uid_cleared);
         // NaN does not compare below 5 and is kept.
-        assert!(reattach_follower(2, f32::NAN).min_distance.is_nan());
-        assert_eq!(reattach_follower(7, 8.0).min_distance, 8.0);
+        assert!(reattach_follower(f32::NAN).min_distance.is_nan());
+        let kept = reattach_follower(8.0);
+        assert_eq!(kept.min_distance, 8.0);
+        // The controller word is stored as 1 whatever it was before.
+        assert_eq!(kept.controller, 1);
     }
 
     #[test]
@@ -447,7 +462,8 @@ mod tests {
 
     #[test]
     fn the_landing_plan_lifts_the_player_and_places_the_followers() {
-        let plan = landing_plan([1.0, 2.0, 3.0], 1.0, 0.0, false, 0.0, 2);
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let plan = landing_plan([1.0, 2.0, 3.0], identity, 1.0, 0.0, false, 2);
         assert!((plan.player[0] - 1.0).abs() < 1e-6);
         assert!((plan.player[1] - 102.08).abs() < 1e-4);
         assert!((plan.player[2] - 3.0).abs() < 1e-6);
@@ -463,7 +479,7 @@ mod tests {
         assert_eq!(scene.fog_distance, 1.8);
         assert_eq!(scene.view, [0.0, 500.0, 700.0]);
         assert_eq!(scene.target, [0.0, 0.0, -200.0]);
-        assert_eq!(scene.camera_distance, 60.0);
+        assert_eq!(scene.camera_field, 60.0);
     }
 
     #[test]
@@ -474,27 +490,47 @@ mod tests {
 
     #[test]
     fn scene_content_follows_the_object_kind_then_the_name() {
+        let kinds = |flags, kind_byte| {
+            Some(ObjectKinds {
+                flags: Some(flags),
+                kind_byte,
+            })
+        };
         assert_eq!(
-            scene_content("door", Some(0x1100), None),
-            Some(SceneContent::First)
+            scene_content("door", kinds(0x1100, None)),
+            vec![SceneContent::First]
         );
         assert_eq!(
-            scene_content("lever", Some(0x12ff), None),
-            Some(SceneContent::First)
+            scene_content("lever", kinds(0x12ff, None)),
+            vec![SceneContent::First]
         );
         assert_eq!(
-            scene_content("x", Some(0x2200), None),
-            Some(SceneContent::Second)
+            scene_content("x", kinds(0x2200, None)),
+            vec![SceneContent::Second]
         );
         assert_eq!(
-            scene_content("x", Some(0x0100), Some(2)),
-            Some(SceneContent::Third)
+            scene_content("x", kinds(0x0100, Some(2))),
+            vec![SceneContent::Third]
         );
-        assert_eq!(scene_content("[trigger]", Some(0x0100), None), None);
+        // The third list is tested independently of the kind pair.
         assert_eq!(
-            scene_content("[trigger]", None, None),
-            Some(SceneContent::Second)
+            scene_content("x", kinds(0x1100, Some(2))),
+            vec![SceneContent::First, SceneContent::Third]
         );
-        assert_eq!(scene_content("plain", None, None), None);
+        // A record without the kind property can still join the third.
+        assert_eq!(
+            scene_content(
+                "x",
+                Some(ObjectKinds {
+                    flags: None,
+                    kind_byte: Some(2)
+                })
+            ),
+            vec![SceneContent::Third]
+        );
+        // With a record the name prefix is not looked at.
+        assert!(scene_content("[trigger]", kinds(0x0100, None)).is_empty());
+        assert_eq!(scene_content("[trigger]", None), vec![SceneContent::Second]);
+        assert!(scene_content("plain", None).is_empty());
     }
 }
