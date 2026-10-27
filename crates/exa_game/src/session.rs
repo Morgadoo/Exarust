@@ -14,7 +14,7 @@
 //! chunk's own payload is version 2 (version 1 had no discovery,
 //! experience-worth, memory or transition fields).
 
-use exa_formats::arena_save::ArenaTables;
+use exa_formats::arena_save::{self, ArenaTables};
 use exa_formats::save_package::{
     self, ARENA_DATA_VERSION, EXARUST_CHUNK, Flavour, JournalRecord, PLAYER_DATA, PackageImage,
     PlayerData, PlayerHeader,
@@ -62,7 +62,8 @@ pub struct Session {
     pub transition: Option<[u8; 16]>,
     /// The arena's own table chunks. `None` keeps whatever a save already
     /// holds; `Some` replaces them in the writer's order (an empty stash,
-    /// shop, staff list or merchant is removed).
+    /// shop or staff list, or a merchant a non-empty staff lacks, is
+    /// removed).
     pub arena_tables: Option<ArenaTables>,
 }
 
@@ -198,8 +199,8 @@ pub fn player_data(session: &Session) -> PlayerData {
                     for chunk in chunks {
                         data.set_chunk(chunk.id, chunk.payload.to_vec());
                     }
-                    // The writer omits an empty stash, shop, staff list or
-                    // merchant; remove the previous save's chunk so it does
+                    // The writer omits an empty stash, shop or staff list,
+                    // and the merchant of a staff without one; remove the previous save's chunk so it does
                     // not survive the merge.
                     for (id, absent) in [
                         (save_package::HUB_STASH_CHUNK, tables.stash.is_empty()),
@@ -208,7 +209,10 @@ pub fn player_data(session: &Session) -> PlayerData {
                             save_package::EMPLOYEES_CHUNK,
                             tables.employees.employees.is_empty(),
                         ),
-                        (save_package::MERCHANT_CHUNK, tables.merchant.is_none()),
+                        (
+                            save_package::MERCHANT_CHUNK,
+                            !arena_save::merchant_chunk_written(&tables.employees),
+                        ),
                     ] {
                         if absent && !present.contains(&id) {
                             data.remove_chunk(id);
@@ -1108,7 +1112,8 @@ mod tests {
         assert!(ids.contains(&save_package::HIREABLES_CHUNK));
         assert!(ids.contains(&save_package::TOURNAMENT_CHUNK));
         assert!(!ids.contains(&save_package::EMPLOYEES_CHUNK));
-        assert!(!ids.contains(&save_package::MERCHANT_CHUNK));
+        // No staff at all still writes the merchant, as the original does.
+        assert!(ids.contains(&save_package::MERCHANT_CHUNK));
         let arsenal = chunks
             .iter()
             .find(|chunk| chunk.id == save_package::ARSENAL_CHUNK)

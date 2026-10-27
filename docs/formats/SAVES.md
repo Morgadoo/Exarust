@@ -313,9 +313,11 @@ zero: the slot is neither listed nor loaded.
   RDB with magic `0xDBACCD00` (observed in both retail saves).
 * The settings chunk (`0xECADCA01`) is written into the level section by
   the story's exporter only; see the settings rules in
-  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`]. It holds the
-  twelve-byte tag (a zero, `1 100 000.0`, a zero) and the two words the
-  settings store carries. `rfc_write::export_save_level` appends it after
+  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`]. It is written
+  only when the read tag was old or the saved word is above zero (unsigned).
+  It holds the twelve-byte tag (the tag read from the save when it was old,
+  otherwise the current one: a zero, `1 100 000.0`, a zero) and the two
+  words the settings store carries. `rfc_write::export_save_level` appends it after
   the scene's chunk tree.
 
 ### Chunks
@@ -333,7 +335,7 @@ skipped by size.
 | `0xD000C001` | story | memory-fragment flags, u32 |
 | `0xD000C003` | story | portal/respawn state, 16 bytes; state 2 forces the level to `exanima05` after loading |
 | `0x00010000` | arena | hireable characters |
-| `0xA0100000` | arena | arsenal: 25 item lists, one per box and shelf, written box first then shelf |
+| `0xA0100000` | arena | arsenal: 25 item lists, one per shelf and box, written shelf by shelf |
 | `0xA0200000` | arena | hub stash: one item list |
 | `0xA0300000` | arena | shop stock: `i32 n`, then `n` ids |
 | `0xA0400000` | arena | employees |
@@ -353,7 +355,8 @@ flags and the transition state (each when non-zero). The arena writes the
 placement, the journal (when it has entries), the arsenal (always), the
 stash and the shop stock (each when not empty), then the company record
 `0xA0DC0000`, the extra record `0xA0D10000`, the employees `0xA0400000`
-(when not empty), the merchant `0xA0500000`, the hireables `0x00010000`
+(when not empty), the merchant `0xA0500000` (skipped only when the staff
+is non-empty and holds no merchant, class 4), the hireables `0x00010000`
 and the tournament `0xA0600000`; the observed arena save holds, after the
 placement, `0xA0100000`, `0xA0300000`, `0xA0DC0000`, `0xA0D10000`,
 `0xA0500000`, `0x00010000`, `0xA0600000` (no employees yet).
@@ -368,9 +371,10 @@ that regenerates the stock reads only the header. The hireables chunk
 (`0x00010000`) is a count and, per candidate, an unused word and a
 character export. An **item list** is a signed count and that many
 twelve-byte entries (id, flags, a third word). The arsenal is 25 such
-lists: the writer walks the five boxes first and the five shelves inside
-each box, so the wire order is box 0 shelf 0…4, box 1 shelf 0…4, and so
-on. The stash is one list.
+lists: the writer walks the five shelves and the five boxes inside each
+shelf, so the wire order is shelf 0 box 0…4, shelf 1 box 0…4, and so on
+(the shelf indices are the arsenal's: weapons 0, shields 2, armour 3,
+clothing 4). The stash is one list.
 
 A loader passes a **mask**: the reader ands each chunk id with it, ignores
 a result of `0xF` or less and dispatches the rest on the **masked** id
