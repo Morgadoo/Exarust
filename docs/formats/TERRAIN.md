@@ -67,8 +67,8 @@ not checked one by one, so one tile past a row's end is the next row's
 first), the 6 m block the floor of the tile fraction times eight, the point
 is refused where the block is not built, and its height is
 the bilinear interpolation of the four vertices around it, the products and
-sums in the original's order (the high corner's product first, then the +Z,
-the +X and the low corner's). A vertex is a hole when it or its +X
+sums in the original's order (the +X corner's product added to the low
+corner's, then the +Z corner's, then the high corner's). A vertex is a hole when it or its +X
 neighbour is set in its row or the row below of the hole mask, read a byte
 at a time (the +X neighbour is not tested where it starts the next byte);
 any corner being a hole means no ground. Results at or below −100 m are no

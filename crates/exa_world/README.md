@@ -41,7 +41,8 @@ and the grid's rooms; portal clipping is next (see
   level only the blocks its grid flags; `terrain::ground` is the
   original's world height query (`TerrainGround`), built from the same
   displaced heights the navigation grid reads, with the bilinear sums in
-  the instruction order (the high corner first); `terrain::frame` is the
+  the instruction order (the +X corner onto the low corner, then +Z, then
+  the high corner); `terrain::frame` is the
   lit program's normal-map tangent frame; `terrain::stream` holds the
   original's streaming decisions (60 m block priorities, the 44.4 m / 15 m
   composite selection and its pools, the 3 × 3 tile gather) and the tile
