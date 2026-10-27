@@ -27,11 +27,16 @@ A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
 activity; every frame they rate the player from both sides' roles, which
 feeds the contact rating (`sense`), and the brain's target pass decides
-whether the character engages the player. Every frame the brain's perception pass
-looks at every character it can sense, with that character's own contacts,
-the role database's attitude and the relations' trust in its threat
-estimate, and writes the contact words the integration reads. A sleeper
-that rates the player above a notice drops the sleep role and wakes.
+whether the character engages the player. Every frame the brain's
+perception pass clears its contacts' concern targets, closeness and view
+(as the original's target pass does before it perceives), looks at every
+character within the largest perception reach and every one it already
+knows, with that character's own contacts, the role database's attitude
+and the relations' trust in its threat estimate, and writes the contact
+words the integration reads. The original weighs only the characters in
+its line of sight; Exarust has no such test yet, so the reach stands in.
+A sleeper that rates the player above a notice drops the sleep role and
+wakes.
 
 | module | what it holds |
 |---|---|
@@ -125,18 +130,21 @@ replaces the lightest. The running game has no room graph yet, so no
 flight starts there.
 
 `brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
-runs the target pass over this tick's sighting of its target, and reports
+runs the target pass over every character seen this tick, and reports
 the engagement, the leave, the encounter and the greeting (Exarust has no
 dialogue engine). The AI tick (`brain::ai_tick`) runs it after the
 perception pass filled the contact words and before the duellist's combat
 state, keeps the report (level, attention, stress, cursor) on the brain,
 and feeds the report's stress and the integration's total back into the
-next morale drift. The target pass starts the duel (the duellist enters
-combat on the next frame) and a calm pass leaves it; the mind's own rating
-no longer decides the engagement. A duellist without a brain, the practice
-opponent, is started by the fight's setup as before. The pass weighs the
-seen target only; the original also weighs every visible and nearby
-character.
+next morale drift. The combatant's contacts follow the brain's concern and
+hostility, as the original keeps one list. A pass that enters combat
+against the duellist's target starts the duel (the duellist enters combat
+on the next frame) and a calm pass leaves it; the mind's own rating no
+longer decides the engagement. Exarust's duellist fights only its own
+target, so an entry against another character does not start it. A
+duellist without a brain, the practice opponent, is started by the fight's
+setup as before. Not yet: the original's one brain a tick (the longest
+waiter), the line-of-sight filter, the nearby list and the room graph.
 
 The golem guardians' rules are plain functions with tests; no level has a
 golem entity or an alarm zone yet.

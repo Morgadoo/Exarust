@@ -175,15 +175,16 @@ impl Npc {
         self.applied.as_ref().map(|a| a.state)
     }
 
-    /// Integrates the brain's contact with an optional sighting this tick
-    /// and runs the target pass over it: the level to fight at, 0 when
-    /// nothing is noticed.
+    /// Integrates the brain's contacts and runs the target pass over the
+    /// characters `visible` this tick: the level to fight at, 0 when
+    /// nothing is noticed. `distance2` gives a character's squared distance
+    /// (cm²) for the greeting.
     #[allow(clippy::too_many_arguments)]
     pub fn run_pass(
         &mut self,
-        sighting: Option<contacts::Sighting>,
+        visible: &[contacts::Sighting],
         sight: contacts::FoeSight,
-        distance_cm: f32,
+        distance2: &dyn Fn(u64) -> f32,
         in_combat: bool,
         asleep: bool,
         health: (f32, f32),
@@ -210,15 +211,19 @@ impl Npc {
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
         contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
-        // The target pass reads the contact after the integration has
-        // moved its hostility and concern; the sighting was taken before
-        // that, so it takes the integrated record for the same id.
-        let mut sighting = sighting;
-        if let Some(s) = sighting.as_mut()
-            && let Some(c) = self.contacts.iter().find(|c| c.id == s.contact.id)
-        {
-            s.contact = *c;
-        }
+        // The target pass reads the contacts after the integration has
+        // moved their hostility and concern; the sightings were taken
+        // before that, so each takes the integrated record for its id.
+        let visible: Vec<contacts::Sighting> = visible
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                if let Some(c) = self.contacts.iter().find(|c| c.id == s.contact.id) {
+                    s.contact = *c;
+                }
+                s
+            })
+            .collect();
         // The integration's concern total feeds the next tick's courage
         // floor.
         self.morale.total = self.integration.total;
@@ -228,7 +233,6 @@ impl Npc {
             ..contacts::Morale::default()
         };
         let attended = self.pass.attention;
-        let visible: &[contacts::Sighting] = sighting.as_slice();
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -244,9 +248,9 @@ impl Npc {
                 attended_id: attended,
                 greet_gates: (self.integration.notice_scale, self.integration.readiness),
             },
-            visible,
+            &visible,
             &[],
-            |_| distance_cm * distance_cm,
+            distance2,
             || false,
         );
         self.integration.level = report.level;
@@ -269,9 +273,11 @@ impl Npc {
     /// disturbing the integration's own hostility, concern, noticed level
     /// and counters. The combatant's contact does not carry the
     /// integration's values, so only the words the perception owns are
-    /// written; a dead or asleep character's concern and hostility are
-    /// cleared, as its perception pass does.
-    fn absorb(&mut self, record: ContactRecord) {
+    /// written, and the perception's own changes to the concern and the
+    /// hostility are made on the brain's values: `lying` (a dead, asleep
+    /// or removed character) clears both, `out` (knocked out, not dead)
+    /// takes the concern down by 0.99.
+    fn absorb(&mut self, record: ContactRecord, lying: bool, out: bool) {
         if let Some(c) = self.contacts.iter_mut().find(|c| c.id == record.id) {
             c.flags = record.flags;
             c.sighting = record.sighting;
@@ -283,9 +289,11 @@ impl Npc {
             c.soothe = record.soothe;
             c.seen = record.seen;
             c.dead = record.dead;
-            if record.dead {
-                c.concern = record.concern;
-                c.hostility = record.hostility;
+            if lying {
+                c.concern = 0.0;
+                c.hostility = 0.0;
+            } else if out {
+                c.concern = (f64::from(c.concern) * 0.99) as f32;
             }
             return;
         }
@@ -438,15 +446,29 @@ pub fn perceive_all(
             resist_mind: false,
             target,
         };
-        // The largest radius a tracked perception can have; a character
-        // beyond it cannot be seen, so no contact is made for it.
+        // The target pass clears every contact's concern target, closeness
+        // and view and its noticed flag before it perceives; the perception
+        // then writes them again for the characters it reaches.
+        for c in &mut combatant.contacts {
+            c.concern_target = 0.0;
+            c.closeness = 0.0;
+            c.view = 0.0;
+            c.flags &= !combatant::CONTACT_NOTICED;
+        }
+        // The largest radius a tracked perception can have. The original
+        // weighs only the characters in its line of sight, which Exarust
+        // cannot test yet; no contact is made for a character beyond this
+        // reach or unseen [guess: a stand-in for the line-of-sight filter].
+        // A character it already knows is still perceived, so a tracked
+        // contact is lost and the alert raised as the perception does.
         let reach = combatant::PERCEPTION_CM + combatant::TRACKED_CM + combatant::FLAT_BAND_CM;
         for sensed in &candidates {
             if sensed.entity == entity {
                 continue;
             }
-            if sensed.invisible
-                || (sensed.position_cm - position_cm).length_squared() > reach * reach
+            if (sensed.invisible
+                || (sensed.position_cm - position_cm).length_squared() > reach * reach)
+                && combatant.contact(sensed.entity).is_none()
             {
                 npc.unseen(sensed.id);
                 continue;
@@ -533,11 +555,23 @@ pub fn perceive_all(
                 effects,
                 u64::from(now),
             );
-            let seen = sight.seen;
+            if let Some(floor) = sight.alert_floor
+                && combatant.alert < floor
+            {
+                combatant.alert = floor;
+            }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
-            record.dead = observed.condition & combatant::CONDITION_DEAD != 0;
-            if seen {
-                npc.absorb(record);
+            // The integration skips the calming of a knocked-out character
+            // (the out bit of its condition); the perception clears the
+            // concern and hostility of a dead, asleep or removed one and
+            // takes a knocked-out one's concern down.
+            let condition = observed.condition;
+            record.dead = condition & combatant::CONDITION_OUT != 0;
+            let lying =
+                condition == combatant::CONDITION_DEAD || observed.asleep || observed.removed;
+            let out = condition & combatant::CONDITION_OUT != 0;
+            if sight.seen {
+                npc.absorb(record, lying, out);
             } else {
                 npc.unseen(sensed.id);
             }
@@ -547,11 +581,11 @@ pub fn perceive_all(
 }
 
 /// Runs the brain's AI tick: drifts its morale, integrates the contacts the
-/// perception filled and runs the target pass over this tick's sighting of
-/// the duellist's target, with the body's health, down state, sleep,
-/// combat state and distance, on the game clock and the brain's generator.
-/// The report stays in [`Npc::pass`] (its level, attention, stress and
-/// cursor included).
+/// perception filled and runs the target pass over every character the
+/// perception saw this tick, with the body's health, down state, sleep,
+/// combat state and the distances, on the game clock and the brain's
+/// generator. The report stays in [`Npc::pass`] (its level, attention,
+/// stress and cursor included).
 #[allow(clippy::type_complexity)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
@@ -589,19 +623,37 @@ pub fn ai_tick(
         } else {
             (target_cm - observer_cm).length()
         };
-        let sighting = target.and_then(|t| {
-            npc.contacts
+        // Every character the perception saw this tick is weighed, in the
+        // contact list's order [guess: the original walks the world's
+        // character list, which Exarust does not keep in that order].
+        let visible: Vec<contacts::Sighting> = npc
+            .contacts
+            .iter()
+            .filter(|c| !c.object && contacts::TINY < c.seen)
+            .map(|&contact| contacts::Sighting {
+                contact,
+                character: true,
+            })
+            .collect();
+        let sees_foe = target.is_some_and(|t| visible.iter().any(|s| s.contact.id == t.to_bits()));
+        let distances: Vec<(u64, f32)> = combatant
+            .contacts
+            .iter()
+            .map(|c| (c.character.to_bits(), c.distance_cm))
+            .collect();
+        let target_id = target.map(Entity::to_bits);
+        let distance2 = |id: u64| {
+            if Some(id) == target_id {
+                return distance_cm * distance_cm;
+            }
+            distances
                 .iter()
-                .find(|c| c.id == t.to_bits() && contacts::TINY < c.seen)
-                .copied()
-                .map(|contact| contacts::Sighting {
-                    contact,
-                    character: true,
-                })
-        });
+                .find(|(other, _)| *other == id)
+                .map_or(f32::INFINITY, |(_, d)| d * d)
+        };
         let sight = contacts::FoeSight {
-            foe: target.map(Entity::to_bits),
-            sees_foe: sighting.is_some(),
+            foe: target_id,
+            sees_foe,
             foe_point: target_cm,
             // [guess: the model's translation stands in for the body's
             // stored ground height; the running game has no room graph, so
@@ -617,9 +669,9 @@ pub fn ai_tick(
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
         let _ = npc.run_pass(
-            sighting,
+            &visible,
             sight,
-            distance_cm,
+            &distance2,
             in_combat,
             asleep,
             (fighter.health.yellow, fighter.health.max),
@@ -628,25 +680,31 @@ pub fn ai_tick(
             &mut roll,
         );
         npc.roll = roll;
-        // The original keeps one contact list: the combat state and the
-        // target pass read the same hostility and concern. Exarust keeps
-        // the integration's on the brain, so the combatant's copy follows
-        // it for the target the combat state weighs.
-        if let Some(t) = target
-            && let Some(c) = npc.contacts.iter().find(|c| c.id == t.to_bits())
-        {
-            let theirs = combatant.contact_mut(t);
-            theirs.concern = c.concern;
-            theirs.hostility = c.hostility;
-            theirs.concern_target = c.concern_target;
-            theirs.noticed = c.noticed;
+        // The original keeps one contact list: the combat state, the
+        // perception's threat estimate and the target pass read the same
+        // hostility and concern. Exarust keeps the integration's on the
+        // brain, so the combatant's copies follow it.
+        if let Some(t) = target {
+            combatant.contact_mut(t);
+        }
+        for theirs in &mut combatant.contacts {
+            let id = theirs.character.to_bits();
+            if let Some(c) = npc.contacts.iter().find(|c| c.id == id) {
+                theirs.concern = c.concern;
+                theirs.hostility = c.hostility;
+                theirs.concern_target = c.concern_target;
+                theirs.noticed = c.noticed;
+            }
         }
         // The target pass decides the engagement: an entry starts the
         // duel, a calm pass while fighting leaves it. The mind's own
-        // rating no longer decides it.
+        // rating no longer decides it. Exarust's duellist fights only its
+        // own target, so an entry against another character does not
+        // start it [guess: the original turns its body to whichever
+        // character the pass picked].
         if let Some(mut duellist) = duellist {
             if let Some(level) = npc.pass.enter {
-                if !duellist.engaged {
+                if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
                     info!(
                         "{talking}: the target pass enters combat at level {level} on tick {}",
@@ -907,9 +965,9 @@ mod tests {
         };
         let mut roll = 7;
         let level = npc.run_pass(
-            Some(sighting(5.0)),
+            &[sighting(5.0)],
             sight,
-            300.0,
+            &|_| 300.0 * 300.0,
             false,
             false,
             (1.0, 1.0),
@@ -932,9 +990,9 @@ mod tests {
             c.concern = 0.0;
         }
         let level = npc.run_pass(
-            Some(sighting(0.0)),
+            &[sighting(0.0)],
             sight,
-            300.0,
+            &|_| 300.0 * 300.0,
             false,
             false,
             (1.0, 1.0),
@@ -1019,7 +1077,7 @@ mod tests {
     }
 
     /// A role that makes the player hostile engages through the brain's
-    /// target pass; a neutral one only notices.
+    /// target pass; a neutral one never engages the player.
     #[test]
     fn a_hostile_role_engages_and_a_neutral_one_only_notices() {
         let mut app = App::new();
@@ -1064,9 +1122,12 @@ mod tests {
             "the hostile brain engages"
         );
         assert!(w.get::<Npc>(hostile).unwrap().pass.enter.is_some());
+        // The neutral brain also weighs the fighting brain beside it, so it
+        // may watch that one; it never takes the player as its target and
+        // its duellist waits.
         let quiet = w.get::<Npc>(neutral).unwrap();
-        assert_eq!(quiet.pass.level, 0);
-        assert_eq!(quiet.pass.enter, None);
+        assert_ne!(quiet.pass.target, Some(player.to_bits()));
+        assert!(quiet.pass.level <= 1, "{}", quiet.pass.level);
         assert!(!w.get::<crate::Duellist>(neutral).unwrap().engaged);
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
@@ -1135,6 +1196,68 @@ mod tests {
             .find(|c| c.id == player.to_bits())
             .unwrap();
         assert_eq!((c.sighting, c.seen), (0.0, 0.0));
+    }
+
+    /// A dead character's concern and hostility are cleared on the brain,
+    /// as its perception pass clears them; a downed one is still calmed
+    /// (only the out bit marks it for the integration) and keeps them.
+    #[test]
+    fn perception_clears_a_dead_contact_and_keeps_a_downed_one() {
+        for (condition, cleared) in [
+            (combatant::CONDITION_DEAD, true),
+            (combatant::CONDITION_DOWN, false),
+        ] {
+            let (mut app, player, npc) = perception();
+            app.world_mut()
+                .get_mut::<Npc>(npc)
+                .unwrap()
+                .contacts
+                .push(ContactRecord {
+                    id: player.to_bits(),
+                    concern: 3.0,
+                    hostility: 5.0,
+                    ..ContactRecord::default()
+                });
+            app.world_mut()
+                .entity_mut(player)
+                .insert(Condition(condition));
+            app.update();
+            let brain = app.world().get::<Npc>(npc).unwrap();
+            let c = brain
+                .contacts
+                .iter()
+                .find(|c| c.id == player.to_bits())
+                .unwrap();
+            if cleared {
+                assert_eq!((c.concern, c.hostility, c.dead), (0.0, 0.0, true));
+            } else {
+                assert_eq!((c.concern, c.hostility, c.dead), (3.0, 5.0, false));
+            }
+        }
+    }
+
+    /// A tracked target that moves beyond every perception radius is lost:
+    /// the contact is no longer tracked and the brain's alert takes the
+    /// lost floor, as the duellist's own perception does.
+    #[test]
+    fn a_lost_target_raises_the_brains_alert() {
+        let (mut app, player, npc) = perception();
+        app.update();
+        assert!(
+            app.world()
+                .get::<Combatant>(npc)
+                .unwrap()
+                .contact(player)
+                .unwrap()
+                .tracked()
+        );
+        app.world_mut()
+            .entity_mut(player)
+            .insert(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 25.0)));
+        app.update();
+        let cb = app.world().get::<Combatant>(npc).unwrap();
+        assert!(!cb.contact(player).unwrap().tracked());
+        assert_eq!(cb.alert, combatant::LOST_ALERT);
     }
 
     /// The attitude the perception writes is the role database's rating:
