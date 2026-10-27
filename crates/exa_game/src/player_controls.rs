@@ -646,8 +646,9 @@ pub struct Use {
 
 /// The pour kinds' mark on the item or its container entry.
 pub const POUR_MARK: u32 = 0xC80000;
-/// The elixir's potion flag on the body.
-pub const POTION_FLAG: u32 = 0x800000;
+/// The elixir's potion flag on the body, and the world seconds it lasts.
+pub const POTION_FLAG: u32 = exa_combat::condition::StateFlags::POTION;
+pub const ELIXIR_S: u32 = exa_combat::remedy::ELIXIR_S;
 
 /// A salve's heal-pool addition: 0.2, or 0.1 when the value word is 50, in
 /// double precision. Only when the body takes remedies.
@@ -662,7 +663,7 @@ pub fn salve(liquid_type: u16, takes_remedies: bool) -> Option<f32> {
 /// An elixir: the potion flag and the world-clock second it lasts to, only
 /// when the body takes remedies.
 pub fn elixir(takes_remedies: bool, world_clock_s: u32) -> Option<(u32, u32)> {
-    takes_remedies.then_some((POTION_FLAG, world_clock_s.wrapping_add(1800)))
+    takes_remedies.then_some((POTION_FLAG, world_clock_s.wrapping_add(ELIXIR_S)))
 }
 
 /// A use's pitch: `0.9 + 0.2·draw`, then its volume by kind.
