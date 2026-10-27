@@ -25,6 +25,7 @@
 //! hooks, end menu, level exit, death and revival, quit and autosave.
 
 use bevy::prelude::*;
+use exa_formats::characters::{Carried, ItemRef, NEW_ENTRY_WORD};
 use exa_formats::save_package;
 
 use crate::arena_hub;
@@ -451,25 +452,30 @@ impl Background {
 
 /// What a new story does for its background: the roles added to the player,
 /// the story flag word, the spawn pose, the starting light, the companion
-/// and the record words the start writes.
+/// and the record writes (gear and powers) the start makes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StoryStart {
     pub background: Background,
     /// The role ID added to the player's roles.
     pub role: u32,
-    /// The whole role list the start adds, in order: the two shared roles
-    /// (7 and 1) first, then the background's own. The unknown background
-    /// also adds 0x10c.
+    /// The whole role list the start gives the record, in order: the list
+    /// is cleared, the two shared roles (7 and 1) are added, then the
+    /// background's own.
     pub roles: &'static [u32],
     /// The story flag word the record gets.
     pub flags: u32,
     pub placement: Placement,
-    /// The record template word the knight and proctor start with (0x1f).
-    pub template: Option<u32>,
-    /// The record's class word; the unknown background sets 0x510000.
-    pub class_word: Option<u32>,
-    /// The potential the unknown background starts with.
-    pub potential: Option<f32>,
+    /// The item put in the record's off hand: the knight's and proctor's
+    /// item 0x1f.
+    pub off_hand: Option<ItemRef>,
+    /// The entry appended to the record's carried list: the unknown
+    /// background's item 0x10c (its third word 0x0080_0020) and the knight's
+    /// and proctor's item 0x1f with flags 0x100 (the default third word).
+    pub carried: Option<Carried>,
+    /// The power word and the float beside the power slots the unknown
+    /// background writes: the thaumaturge's
+    /// [`creation_defaults`](crate::create::creation_defaults) values.
+    pub powers: Option<(u32, f32)>,
     /// The condition word the start writes (the villager's 0x600).
     pub condition: Option<u32>,
     /// The animator flags the start writes (the villager's 0x600).
@@ -511,14 +517,15 @@ pub const COMPANION_FLAGS: u32 = 0x500;
 
 /// The two roles every new story adds before the background's own.
 pub const STORY_COMMON_ROLES: [u32; 2] = [7, 1];
-/// The unknown background's extra role.
-pub const STORY_UNKNOWN_ROLE: u32 = 0x10c;
-/// The knight's and proctor's extra record template/role word.
-pub const STORY_TEMPLATE: u32 = 0x1f;
-/// The unknown background's record class word.
-pub const STORY_UNKNOWN_CLASS: u32 = 0x0051_0000;
-/// The potential the unknown background starts with.
-pub const STORY_UNKNOWN_POTENTIAL: f32 = 4.0;
+/// The item the unknown background's record carries.
+pub const STORY_UNKNOWN_ITEM: u32 = 0x10c;
+/// The third word of the unknown background's carried entry (its two
+/// half-words 0x20 and 0x80 replace the default 0x28 and 4).
+pub const STORY_UNKNOWN_ITEM_WORD: u32 = 0x0080_0020;
+/// The item the knight and proctor hold in the off hand and carry.
+pub const STORY_KNIGHT_ITEM: u32 = 0x1f;
+/// The flags of the knight's and proctor's carried entry.
+pub const STORY_KNIGHT_ITEM_FLAGS: u32 = 0x100;
 
 /// What starting a new story does, from its background and the player's
 /// height. The spawn table has three entries: the unknown background (the
@@ -529,7 +536,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
         Background::Unknown => StoryStart {
             background,
             role: 0x0e,
-            roles: &[7, 1, STORY_UNKNOWN_ROLE, 0x0e],
+            roles: &[7, 1, 0x0e],
             flags: 0x200,
             placement: Placement {
                 rotation: yaw(150.0),
@@ -539,9 +546,16 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                     STORY_POINT.z,
                 ),
             },
-            template: None,
-            class_word: Some(STORY_UNKNOWN_CLASS),
-            potential: Some(STORY_UNKNOWN_POTENTIAL),
+            off_hand: None,
+            carried: Some(Carried {
+                item: STORY_UNKNOWN_ITEM,
+                flags: 0,
+                extra: STORY_UNKNOWN_ITEM_WORD,
+            }),
+            powers: {
+                let powers = crate::create::creation_defaults();
+                Some((powers.flags as u32, powers.value))
+            },
             condition: None,
             animator: None,
             turn: None,
@@ -560,15 +574,22 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
         Background::Knight | Background::Proctor => StoryStart {
             background,
             role: 0x1b,
-            roles: &[7, 1, STORY_TEMPLATE, 0x1b],
+            roles: &[7, 1, 0x1b],
             flags: 0,
             placement: Placement {
                 rotation: yaw(-50.0),
                 position: Vec3::new(STORY_POINT.x, 210.0, STORY_POINT.z),
             },
-            template: Some(STORY_TEMPLATE),
-            class_word: None,
-            potential: None,
+            off_hand: Some(ItemRef {
+                id: STORY_KNIGHT_ITEM,
+                flags: 0,
+            }),
+            carried: Some(Carried {
+                item: STORY_KNIGHT_ITEM,
+                flags: STORY_KNIGHT_ITEM_FLAGS,
+                extra: NEW_ENTRY_WORD,
+            }),
+            powers: None,
             condition: None,
             animator: None,
             turn: Some(1.0),
@@ -584,9 +605,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: rotation(50.0, -50.0, 2.0),
                 position: Vec3::new(STORY_POINT.x, 300.0, STORY_POINT.z),
             },
-            template: None,
-            class_word: None,
-            potential: None,
+            off_hand: None,
+            carried: None,
+            powers: None,
             condition: Some(0x600),
             animator: Some(0x600),
             turn: Some(0.45),
@@ -622,8 +643,11 @@ pub struct EndMenu {
     pub scale: f32,
     /// The pad/steam bindings are refreshed for the menu.
     pub pad_bindings: bool,
-    /// The menu's help flag is set as it is built (the arena's menu).
-    pub help: bool,
+    /// No row starts selected: a cursor that misses every row picks none
+    /// instead of the first (the arena's menu sets it as it is built; a
+    /// session's begin and continue clear it). The reading of the flag
+    /// comes from the menus' shared row hit test.
+    pub unselected: bool,
 }
 
 impl EndMenu {
@@ -646,8 +670,8 @@ const NEXT_ROWS: &[EndRow] = &["NEXT FIGHT"];
 /// row, a mode with bit 2 (practice) RESTART and EXIT. Kind 5 is the
 /// arena's (CONTINUE, LOBBY, EXIT). Every other kind is the next-fight
 /// page. The scales are the form's 0.9 (default), 0.85 (two rows) and 0.78
-/// (the arena's). The arena's menu alone refreshes the pad bindings and sets
-/// the help flag as it is built.
+/// (the arena's). The arena's menu alone refreshes the pad bindings and
+/// starts with no row selected.
 pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
     match kind {
         MENU_RECONSTRUCTED => EndMenu {
@@ -655,7 +679,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
             rows: RECONSTRUCTED_ROWS,
             scale: 0.85,
             pad_bindings: false,
-            help: false,
+            unselected: false,
         },
         MENU_WON => {
             if mode.practice_family() {
@@ -664,7 +688,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
                     rows: PRACTICE_OVER_ROWS,
                     scale: 0.85,
                     pad_bindings: false,
-                    help: false,
+                    unselected: false,
                 }
             } else {
                 EndMenu {
@@ -672,7 +696,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
                     rows: WON_ROWS,
                     scale: 0.9,
                     pad_bindings: false,
-                    help: false,
+                    unselected: false,
                 }
             }
         }
@@ -681,14 +705,14 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
             rows: ARENA_ROWS,
             scale: 0.78,
             pad_bindings: true,
-            help: true,
+            unselected: true,
         },
         _ => EndMenu {
             kind,
             rows: NEXT_ROWS,
             scale: 0.9,
             pad_bindings: false,
-            help: false,
+            unselected: false,
         },
     }
 }
@@ -1046,14 +1070,14 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
-    /// Add the player's story roles and flags, and write the record words
-    /// only the background's start sets.
+    /// Give the player its story roles (the list cleared first) and flags,
+    /// and the gear and powers only the background's start writes.
     StoryPlayer {
         roles: &'static [u32],
         flags: u32,
-        template: Option<u32>,
-        class_word: Option<u32>,
-        potential: Option<f32>,
+        off_hand: Option<ItemRef>,
+        carried: Option<Carried>,
+        powers: Option<(u32, f32)>,
     },
     /// Create the story's starting light.
     StoryLight(StoryLight),
@@ -1103,6 +1127,11 @@ pub enum Step {
     /// Clear or set the menu's help flag (the form field the help screen
     /// clears when it closes).
     MenuHelp(bool),
+    /// Set or clear the end menu's no-row-selected flag
+    /// ([`EndMenu::unselected`]).
+    EndMenuUnselected(bool),
+    /// Show or hide the title logo the main-menu form draws above its rows.
+    TitleLogo(bool),
     /// The GUI's scale was re-quantised; both menus lay out again.
     GuiScale(f32),
     /// The arena's own pause-screen callback runs.
@@ -1487,8 +1516,8 @@ impl Flow {
     /// The page state the menu table reads. The two managers' saves are kept
     /// apart: the title's CONTINUE reads the story's, the start page's the
     /// arena's. The in-game page reads NEW GAME for a mode with bit 2
-    /// (practice and the scripted modes), and the arena pause page's last
-    /// row reads the session's bit 2.
+    /// (value 2: practice), and the arena pause page's last row reads the
+    /// session's value-4 bit.
     pub fn page_state(&self) -> PageState {
         PageState {
             has_save: self.has_save[0] || self.has_save[1],
@@ -1658,15 +1687,15 @@ impl Flow {
         };
         let mut steps = vec![
             Step::SessionTask(true),
-            // The player's roles and record words first (the original writes
+            // The player's roles, gear and powers first (the original writes
             // them before the level is loaded), then the level, the light,
             // the starting motion, the place and the camera shot.
             Step::StoryPlayer {
                 roles: start.roles,
                 flags: start.flags,
-                template: start.template,
-                class_word: start.class_word,
-                potential: start.potential,
+                off_hand: start.off_hand,
+                carried: start.carried,
+                powers: start.powers,
             },
             Step::LoadLevel {
                 locale: "exanima01",
@@ -2225,11 +2254,6 @@ impl Flow {
         vec![Step::HideMenu]
     }
 
-    /// The help screen closed: its flag on the menu form clears.
-    pub fn clear_help_flag(&mut self) -> Vec<Step> {
-        vec![Step::MenuHelp(false)]
-    }
-
     /// Leaves the session, shows the main-menu form and plays the menu
     /// theme (the original's short form of the return to the title; it
     /// builds no page).
@@ -2304,8 +2328,8 @@ impl Flow {
     }
 
     /// The session begin's own work around the mode's starter: the frame
-    /// task starts, the session phase becomes playing and the menu's help
-    /// flag clears. The original runs all of this around the starter (the
+    /// task starts, the session phase becomes playing and the end menu's
+    /// no-row-selected flag clears. The original runs all of this around the starter (the
     /// story's new game, the practice start or the arena's data init), which
     /// Exarust's own starters return as steps; the starter's steps come
     /// first here.
@@ -2313,22 +2337,24 @@ impl Flow {
         self.phase = Phase::Playing;
         self.menu_open = false;
         self.end_menu = None;
-        starter.push(Step::MenuHelp(false));
         starter.push(Step::SessionTask(true));
+        starter.push(Step::EndMenuUnselected(false));
         starter
     }
 
     /// The session continue's own work around the mode's continue: the menu
-    /// form closes, the session phase becomes playing and the frame task
-    /// starts. The mode's continue steps (the story's or the arena hub's)
+    /// form closes, the session phase becomes playing, the frame task starts
+    /// and the end menu's no-row-selected flag clears. The mode's continue steps (the story's or the arena hub's)
     /// come first.
     pub fn continue_session(&mut self, mut resumed: Vec<Step>) -> Vec<Step> {
         self.phase = Phase::Playing;
         if self.menu_open {
+            // The original hides the form before the mode's continue runs.
             self.menu_open = false;
-            resumed.push(Step::HideMenu);
+            resumed.insert(0, Step::HideMenu);
         }
         resumed.push(Step::SessionTask(true));
+        resumed.push(Step::EndMenuUnselected(false));
         resumed
     }
 
@@ -2374,9 +2400,8 @@ impl Flow {
     }
 
     /// Back to the title: leave the session's world, hide the game, switch to
-    /// the menu mode, mark the menu's help flag, build the title page, play
-    /// its theme (before the page shows) and show it. The GUI scale is laid
-    /// out again for the current client.
+    /// the menu mode, show the menu form's title logo, build the title page,
+    /// play its theme (before the page shows) and show it.
     pub fn quit_to_menu(&mut self) -> Vec<Step> {
         let mut steps = self.leave_session();
         // The switch to the title clears the reconstruction state and its
@@ -2389,14 +2414,13 @@ impl Flow {
         self.hook = Hook::None;
         self.end_menu = None;
         self.menu_open = true;
-        steps.push(Step::MenuHelp(true));
+        steps.push(Step::TitleLogo(true));
         let theme = menu_theme(self.alternative_music);
         steps.push(Step::Music {
             name: theme.name,
             volume: theme.volume,
             restart: true,
         });
-        steps.push(Step::GuiScale(gui_scale(self.viewport.height as i32)));
         steps.push(Step::ShowMenu(Page::Title));
         steps.push(Step::SessionTask(false));
         steps
@@ -2964,8 +2988,23 @@ mod tests {
         assert_eq!(knight.placement.position.y, 210.0);
         assert!(knight.companion.is_none());
         assert!(knight.light.is_none());
+        // The knight and proctor hold item 0x1f in the off hand and carry it
+        // with flags 0x100 and the default third word (0x28, 4); their roles
+        // are only 7, 1 and their own.
+        assert_eq!(knight.roles, &[7, 1, 0x1b]);
+        assert_eq!(knight.off_hand, Some(ItemRef { id: 0x1f, flags: 0 }));
+        assert_eq!(
+            knight.carried,
+            Some(Carried {
+                item: 0x1f,
+                flags: 0x100,
+                extra: 0x0004_0028,
+            })
+        );
+        assert_eq!(knight.powers, None);
         let proctor = story_start(Background::Proctor, 1.0);
         assert_eq!(proctor.placement, knight.placement);
+        assert_eq!(proctor.carried, knight.carried);
         let villager = story_start(Background::Villager, 1.0);
         assert_eq!(villager.role, 0x18);
         assert_eq!(villager.flags, 0x600);
@@ -3007,8 +3046,8 @@ mod tests {
         assert_eq!(arena.rows, &["CONTINUE", "LOBBY", "EXIT"]);
         assert_eq!(arena.scale, 0.78);
         assert!(arena.pad_bindings);
-        assert!(arena.help);
-        assert!(!won.help);
+        assert!(arena.unselected);
+        assert!(!won.unselected);
         let next = end_menu(MENU_NEXT, Mode::Practice);
         assert_eq!(next.rows, &["NEXT FIGHT"]);
         assert_eq!(next.scale, 0.9);
@@ -3688,11 +3727,15 @@ mod tests {
             teardown: true
         }));
         assert!(steps.contains(&Step::StoryPlayer {
-            roles: &[7, 1, STORY_UNKNOWN_ROLE, 0x0e],
+            roles: &[7, 1, 0x0e],
             flags: 0x200,
-            template: None,
-            class_word: Some(STORY_UNKNOWN_CLASS),
-            potential: Some(STORY_UNKNOWN_POTENTIAL),
+            off_hand: None,
+            carried: Some(Carried {
+                item: 0x10c,
+                flags: 0,
+                extra: 0x0080_0020,
+            }),
+            powers: Some((0x0051_0000, 4.0)),
         }));
         assert!(
             !steps
@@ -4060,8 +4103,8 @@ mod tests {
                     spawn: 0,
                     teardown: true
                 },
-                Step::MenuHelp(false),
                 Step::SessionTask(true),
+                Step::EndMenuUnselected(false),
             ]
         );
         assert_eq!(flow.phase, Phase::Playing);
@@ -4082,13 +4125,14 @@ mod tests {
         assert_eq!(
             steps,
             vec![
+                Step::HideMenu,
                 Step::LoadLevel {
                     locale: "exanima02",
                     spawn: 0,
                     teardown: true
                 },
-                Step::HideMenu,
                 Step::SessionTask(true),
+                Step::EndMenuUnselected(false),
             ]
         );
         assert_eq!(flow.phase, Phase::Playing);
@@ -4107,15 +4151,20 @@ mod tests {
             },
             ..Default::default()
         };
-        let scale = gui_scale(flow.viewport.height as i32);
         let steps = flow.quit_to_menu();
         assert_eq!(flow.mode, Mode::Menu);
         assert_eq!(flow.phase, Phase::Menu);
         assert_eq!(flow.story.reconstruction, 0);
         assert_eq!(flow.story.checkpoint, 0);
         assert!(flow.menu_open);
-        assert!(steps.contains(&Step::MenuHelp(true)));
-        assert!(steps.contains(&Step::GuiScale(scale)));
+        // The title logo shows again; the help flag and the GUI scale are
+        // not touched.
+        assert!(steps.contains(&Step::TitleLogo(true)));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::MenuHelp(_) | Step::GuiScale(_)))
+        );
         assert_eq!(
             steps
                 .iter()
@@ -4187,7 +4236,6 @@ mod tests {
         assert!(flow.menu_open);
         assert_eq!(flow.hide_menu_form(), vec![Step::HideMenu]);
         assert!(!flow.menu_open);
-        assert_eq!(flow.clear_help_flag(), vec![Step::MenuHelp(false)]);
         assert_eq!(
             flow.leave_game_layer(),
             vec![Step::TeardownWorld, Step::GameGui(false)]

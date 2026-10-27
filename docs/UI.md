@@ -680,9 +680,10 @@ calling the rest of the game, so the order is testable.
   one. Story mode uses checkpoints, arena mode overrides the inventory (the
   flag words' reading is a guess).
 - **Starts.** A story starts at `exanima01` with its background's roles (7
-  and 1, then the background's own; the unknown one also 0x10c), flags,
-  pose and wake-up motion; the unknown background writes the record's class
-  0x510000 and four potential, the knight and proctor the template 0x1f.
+  and 1, then the background's own, the list cleared first), flags, pose
+  and wake-up motion; the unknown background carries item 0x10c and gets
+  the thaumaturge's power word 0x510000 and 4.0, the knight and proctor hold
+  item 0x1f in the off hand and carry it (flags 0x100).
   The villager starts with condition and animator flags 0x600 and turn
   0.45, the knight and proctor turn 1.0.
   The unknown background and the villager get a starting light (turned −48°,
@@ -723,13 +724,14 @@ calling the rest of the game, so the order is testable.
   strips them). The end menus are EXIT; (a won story or arena), RESTART/EXIT
   (practice over), CONTINUE/EXIT (rebuilt), CONTINUE/LOBBY/EXIT (arena) and
   NEXT FIGHT, at scales 0.9, 0.85 and 0.78; the arena's refreshes the pad
-  bindings and sets the help flag. Its confirm key plays the menu's click at
+  bindings and starts with no row selected (a session's begin and continue
+  clear that flag). Its confirm key plays the menu's click at
   0.06 with a pitch of 0.8 to 1.2. The arena's pause page reads its last row
   EXIT once the session was won or has ended, FORFEIT before.
 - **The menus' rows.** The title's CONTINUE reads the story's save manager,
   the start page's the arena's; each grey out only when its own manager has
-  no save. The in-game page's first row is NEW GAME in a mode with bit 2
-  (practice and the scripted modes) and CONTINUE otherwise, and the pause
+  no save. The in-game page's first row is NEW GAME in a mode whose word
+  has the value-2 bit (practice) and CONTINUE otherwise, and the pause
   pages never grey CONTINUE out. The row origin is 0.38 (title), 0.45
   (start, class select) or 0.39 (the in-game and pause pages).
 - **Leaving.** The story's end-menu EXIT closes the game view and the
@@ -737,8 +739,8 @@ calling the rest of the game, so the order is testable.
   death rule (any other story saves with it), then leaves to the title
   behind the transition. Leaving a session stops the hook and the frame
   task, closes the dialogue, the prelude and the save package and hides the
-  end menu. Back to the title marks the menu's help flag, plays its theme,
-  lays the GUI scale out again and builds the title page. A level load's
+  end menu. Back to the title shows the menu form's title logo again, plays
+  its theme and builds the title page. A level load's
   finish closes the end menu and the prelude and returns the session to
   playing.
 - **Level exits.** A level the locale table names is left behind the

@@ -55,7 +55,7 @@ pub struct PageState {
     /// The arena's save manager has a save. The start page's CONTINUE
     /// reads this manager.
     pub arena_save: bool,
-    /// The mode word has bit 2 set (practice and the scripted modes). The
+    /// The mode word has bit 2 (value 2) set: practice. The
     /// in-game page then reads NEW GAME instead of CONTINUE.
     pub new_game: bool,
     /// The arena is available, so VERSUS appears.
@@ -64,7 +64,8 @@ pub struct PageState {
     /// out until then).
     pub expert: bool,
     /// The session-state word. The arena pause page's last row reads its
-    /// bit 2 to label itself EXIT (the session was won or ended) or FORFEIT.
+    /// value-4 bit to label itself EXIT (the session was won or ended) or
+    /// FORFEIT.
     pub session: u32,
 }
 
@@ -119,7 +120,7 @@ impl PageState {
 /// The rows of `page`. The title's CONTINUE is live when the story's save
 /// manager has a save, the start page's when the arena's does. The start
 /// page drops VERSUS when the arena is not available; the in-game page's
-/// first row is NEW GAME in a mode with bit 2 (practice and scripted modes)
+/// first row is NEW GAME in a mode with bit 2 (value 2: practice)
 /// and CONTINUE otherwise. The arena pause page's last row reads EXIT once
 /// the session was won or has ended, and FORFEIT before that.
 pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
@@ -216,8 +217,9 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
     }
 }
 
-/// The arena pause page's last row: EXIT once the session was won (4) or has
-/// ended (5, whose bit 2 is set), FORFEIT while it is still being played.
+/// The arena pause page's last row (the arena's pause form relabels it after
+/// the page is built): EXIT once the session was won (4) or has
+/// ended (5, whose value-4 bit is set), FORFEIT while it is still being played.
 pub const fn arena_last_row(session: u32) -> &'static str {
     if session & 4 != 0 { "EXIT" } else { "FORFEIT" }
 }
@@ -326,7 +328,7 @@ mod tests {
             },
         );
         assert_eq!(rows[2].label, "FORFEIT");
-        // Won or ended (bit 2 of the word): EXIT, and still the row that
+        // Won or ended (the value-4 bit of the word): EXIT, and still the row that
         // finishes the match.
         for session in [crate::flow::PHASE_WON, crate::flow::PHASE_ENDED] {
             let rows = page_rows(
