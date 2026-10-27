@@ -1865,7 +1865,7 @@ impl Ragdoll {
         pairs::register_legs(&mut parts);
         // The parts join the world with the original's class bits: a part
         // without foot contacts keeps level contacts, a lower leg has none
-        // and is no longer dynamic, and its foot child is marked a sole.
+        // and is no longer dynamic, nor is its foot child.
         let feet: Vec<usize> = (0..parts.len())
             .filter(|&i| parts[i].foot.is_some())
             .collect();

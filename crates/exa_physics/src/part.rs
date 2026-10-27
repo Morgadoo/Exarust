@@ -198,7 +198,7 @@ pub fn set_striking(parts: &mut [Part], root: usize, on: bool) {
 
 /// A living part's state when it joins the world: a part with no foot
 /// contacts keeps level contacts; a lower leg (one with foot contacts) has
-/// none and is no longer dynamic, and its foot child is marked a sole.
+/// none and is no longer dynamic (its children take [`foot_child_state`]).
 pub fn world_state(state: PartState, has_foot_contacts: bool) -> PartState {
     if has_foot_contacts {
         state.without(PartState::HAS_CONTACTS | PartState::DYNAMIC)
@@ -207,10 +207,12 @@ pub fn world_state(state: PartState, has_foot_contacts: bool) -> PartState {
     }
 }
 
-/// The state of a lower leg's child when the leg joins the world: its own
-/// foot is a sole and no longer dynamic.
+/// The state of a lower leg's child when the leg joins the world: it is no
+/// longer dynamic. The original also sets a mark in a second flag word and
+/// the child's collision layers; Exarust keeps neither in [`PartState`]
+/// (the layers are `body_pairs::register_legs`'), so neither is set here.
 pub fn foot_child_state(state: PartState) -> PartState {
-    state.without(PartState::DYNAMIC).with(PartState::SOLE)
+    state.without(PartState::DYNAMIC)
 }
 
 /// The part's state after it goes limp: a limb keeps its muscle mark, as a
@@ -1266,10 +1268,9 @@ mod tests {
         let shin = world_state(PartState::LIMB_FRESH, true);
         assert!(!shin.has(PartState::HAS_CONTACTS));
         assert!(!shin.has(PartState::DYNAMIC));
-        // Its foot is a sole.
+        // Its foot loses only the dynamic bit.
         let foot = foot_child_state(PartState::LIMB_FRESH);
-        assert!(foot.has(PartState::SOLE));
-        assert!(!foot.has(PartState::DYNAMIC));
+        assert_eq!(foot.bits(), PartState::LIMB);
         // A second join leaves the same bits.
         assert_eq!(world_state(torso, false), torso);
         assert_eq!(foot_child_state(foot), foot);
