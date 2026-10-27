@@ -102,12 +102,11 @@ fn rewrite(node: &mut WeaponMassNode, tally: &MassTally) {
 pub struct WeaponMassPart {
     /// The part's parent in the same list, when it has one.
     pub parent: Option<usize>,
-    /// The live mass word (the original's `0x54`): the initial mass, then
-    /// 1.25 times the saved mass. [`distribute_tree`] rewrites it to the
-    /// distributed inverse.
+    /// The live mass word: the initial mass, then 1.25 times the saved
+    /// mass. [`distribute_tree`] rewrites it to the distributed inverse.
     pub mass: f32,
-    /// The inverse-mass word (the original's `0x50`): the reciprocal of the
-    /// inflated mass, then the distributed inverse.
+    /// The inverse-mass word: the reciprocal of the inflated mass, then the
+    /// distributed inverse.
     pub inverse: f32,
     /// The saved mass (the original's separate latch, zero until the first
     /// pass).
