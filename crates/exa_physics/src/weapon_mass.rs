@@ -136,9 +136,14 @@ pub struct WeaponMass {
 
 impl WeaponMass {
     /// Distributes `parts` with the weapon's total mass as the scale, as the
-    /// holding pass does for a held weapon's body tree.
-    pub fn new(mut parts: Vec<WeaponMassPart>, total: f32) -> Self {
+    /// holding pass does for a held weapon's body tree, then divides the
+    /// tree root's live mass word (the weapon part's own) by the holder's
+    /// `size`; its inverse word keeps the distributed value.
+    pub fn new(mut parts: Vec<WeaponMassPart>, total: f32, size: f32) -> Self {
         distribute_tree(&mut parts, total);
+        if let Some(&root) = tree_order(&parts).first() {
+            parts[root].mass /= size;
+        }
         Self { parts, total }
     }
 }
@@ -381,13 +386,22 @@ mod tests {
             WeaponMassPart::new(None, 3.0),
             WeaponMassPart::new(Some(0), 1.0),
         ];
-        let mass = WeaponMass::new(parts, 0.75);
+        let mass = WeaponMass::new(parts.clone(), 0.75, 1.25);
         assert_eq!(mass.total, 0.75);
         assert_eq!(mass.parts.len(), 2);
-        assert!(
-            mass.parts
-                .iter()
-                .all(|p| p.mass.is_finite() && p.mass > 0.0)
+        // Inflated 3.75 and 1.25: inverses 0.2667 and 0.8, sum 1.0667.
+        // Shares 0.25 + 0.125 = 0.375 and 0.25 + 0.375 = 0.625, so the
+        // words are 1 / (0.375 × 0.75) = 3.5556 and 1 / (0.625 × 0.75) =
+        // 2.1333; the root's live mass is then divided by the size 1.25.
+        let mut flat = parts;
+        distribute_tree(&mut flat, 0.75);
+        assert!((flat[0].inverse - 3.555_555_6).abs() < 1e-5);
+        assert!((flat[1].inverse - 2.133_333_3).abs() < 1e-5);
+        assert_eq!(mass.parts[0].inverse.to_bits(), flat[0].inverse.to_bits());
+        assert_eq!(
+            mass.parts[0].mass.to_bits(),
+            (flat[0].mass / 1.25).to_bits()
         );
+        assert_eq!(mass.parts[1], flat[1]);
     }
 }

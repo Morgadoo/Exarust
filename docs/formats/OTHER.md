@@ -1399,7 +1399,10 @@ mass; Exarust runs it when a weapon is equipped, over the rigid nodes of its
 model (`exa_character::weapon_mass_of`, kept as `WeaponMass` for the body
 solver). Each node's initial mass is the reciprocal of the mobility the body
 solver gives it; the original's word is the shape builder's (a guess, as
-Exarust's held weapons are not bodies yet). A saved mass of zero is replaced by the
+Exarust's held weapons are not bodies yet). After the two passes the
+holding pass divides the root part's mass word (the weapon part's own) by
+the holder's size; its inverse word keeps the distributed value. A saved
+mass of zero is replaced by the
 live mass and then left alone. The live mass becomes 1.25 times that
 saved mass and the inverse word becomes its reciprocal; the walk counts
 the parts and sums those reciprocals. The second pass writes both words

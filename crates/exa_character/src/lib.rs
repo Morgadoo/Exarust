@@ -482,8 +482,13 @@ fn held_record(
 /// on a held weapon's body tree: each rigid node is a part, its parent the
 /// nearest rigid ancestor, and its initial mass the reciprocal of the
 /// mobility the body solver gives it (`1 / mobility`, as `Ragdoll::rigid`
-/// takes a rigid part's inverse mass). `total` is the weapon's table mass.
-fn weapon_mass_of(model: &model::Model, total: f32) -> exa_physics::weapon_mass::WeaponMass {
+/// takes a rigid part's inverse mass). `total` is the weapon's table mass
+/// and `size` the holder's, which divides the root part's mass word.
+fn weapon_mass_of(
+    model: &model::Model,
+    total: f32,
+    size: f32,
+) -> exa_physics::weapon_mass::WeaponMass {
     use exa_physics::weapon_mass::{WeaponMass, WeaponMassPart};
     let rigid: Vec<usize> = (0..model.nodes.len())
         .filter(|&i| model.nodes[i].rigid.is_some())
@@ -514,7 +519,7 @@ fn weapon_mass_of(model: &model::Model, total: f32) -> exa_physics::weapon_mass:
             .map_or(0.0, |body| body.mobility());
         parts.push(WeaponMassPart::new(nearest, 1.0 / inverse));
     }
-    WeaponMass::new(parts, total)
+    WeaponMass::new(parts, total, size)
 }
 
 /// The records of an unarmed character's fists (or claws), right then left,
@@ -875,7 +880,9 @@ fn equip_outfits(
             );
             // The holding pass hands the weapon's table mass to its part
             // tree's redistribution; the result waits for the body solver.
-            let mass = record.mass().map(|total| weapon_mass_of(&weapon, total));
+            let mass = record
+                .mass()
+                .map(|total| weapon_mass_of(&weapon, total, holder.size));
             // The one held weapon is the primary striker from the equip.
             if let Some(mut attacker) = attacker {
                 attacker.primary = Some(Slot::First);
@@ -1235,11 +1242,10 @@ mod tests {
                 &Holder::AVERAGE,
                 &human,
             );
-            let mass = WeaponMass::new(parts, record.mass().unwrap());
+            let mass = WeaponMass::new(parts, record.mass().unwrap(), 1.0);
             assert!(!mass.parts.is_empty(), "{name}");
             for part in &mass.parts {
                 assert!(part.mass.is_finite() && part.mass > 0.0, "{name} {part:?}");
-                assert_eq!(part.mass.to_bits(), part.inverse.to_bits());
                 assert!(part.saved > 0.0, "{name} {part:?}");
             }
             assert_eq!(mass.parts[0].parent, None, "{name}");
