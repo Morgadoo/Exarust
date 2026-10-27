@@ -425,8 +425,8 @@ impl Body {
     }
 
     /// The meshes the dressed-mesh pass collects under `node`, as the
-    /// original's skin builder asks for them ([`CollectedNode`], the
-    /// `0x1000e7660` callback).
+    /// original's skin builder asks for them ([`CollectedNode`]): the
+    /// collection callback the builder runs for each slot node.
     ///
     /// A node in a body slot is replaced by the slot's chosen node from
     /// `table`. The chosen node's parent is added first when it is a mesh

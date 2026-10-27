@@ -189,7 +189,7 @@ pub fn retexture(mut job: SkinJob, apparel: &[Option<String>]) -> SkinJob {
 pub struct RetextureLayer {
     pub texture: String,
     pub appearance: exa_formats::objdb::Appearance,
-    /// The seed the texture compositor takes (`FUN_100207740`'s third word).
+    /// The seed the texture compositor takes as its third word.
     pub seed: u32,
 }
 
