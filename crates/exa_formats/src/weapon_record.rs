@@ -115,9 +115,10 @@ impl Lengths {
     /// The lengths of an armed weapon whose own node, then its first child,
     /// that child's first child and so on, are `chain`, with the striking
     /// part from `start` to `end` of its last part. The length adds the
-    /// tops of the weapon's node and of every rigid node down the chain;
-    /// the sweet spot adds whole parts while the next one is rigid, then
-    /// 60 % of the striking part of the part it stopped at.
+    /// tops of the weapon's node and of every rigid node down the chain,
+    /// stopping at the first node that is not rigid; the sweet spot adds
+    /// whole parts while the next one is rigid, then 60 % of the striking
+    /// part of the part it stopped at.
     pub fn armed(chain: &[ChainNode], start: f32, end: f32) -> Self {
         let Some(first) = chain.first() else {
             return Self::default();

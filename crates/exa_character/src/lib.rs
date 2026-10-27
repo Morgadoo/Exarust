@@ -504,14 +504,13 @@ fn weapon_mass_of(model: &model::Model, total: f32) -> exa_physics::weapon_mass:
             }
             parent = model.nodes.get(at).and_then(|n| n.parent);
         }
+        // A rigid part's inverse mass is its mobility, so its mass is the
+        // reciprocal; a missing body cannot occur on this path.
         let inverse = model.nodes[node]
             .rigid
             .as_ref()
             .map_or(0.0, |body| body.mobility());
-        parts.push(WeaponMassPart::new(
-            nearest,
-            if inverse > 0.0 { 1.0 / inverse } else { 0.0 },
-        ));
+        parts.push(WeaponMassPart::new(nearest, 1.0 / inverse));
     }
     WeaponMass::new(parts, total)
 }
