@@ -58,9 +58,22 @@
 //!   placed nodes, their link curves, the marks, the flash and learn
 //!   timers and the bar's slots; the tree pass and the bar are laid out
 //!   there. A slot whose power matches a picked node is given the
-//!   persistent-pick bit in the view. The show and hide window fades, the
-//!   bar's opening and closing animation and the link ribbon's spline are
-//!   not modelled: the view is always fully shown and the bar steady.
+//!   persistent-pick bit in the view. The link ribbon's spline texture is
+//!   not modelled (the ribbon reads as white).
+//! - **The form's windows** ([`TreeScreen::present_window`]): showing the
+//!   tree raises a 1000 ms fade whose alpha is `min(2·(1 − (1 −
+//!   dt·0.001)²), 1)` and whose inner value, `1 − (1 − dt·0.001)²`, fades
+//!   the bar child; hiding cuts both over 256 ms from the closing stamp.
+//!   The backdrop takes the first alpha and the content the second; a
+//!   domain switch cuts the content out over 256 ms, swaps the domain at
+//!   the stamp and fades the new tree in over 1000 ms ([`fade_domain`]
+//!   starts it; the wheel that calls it is outside the pack).
+//! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
+//!   [`step_bar`]): opening loads the bar, clears each slot's flash and
+//!   picked bits and runs a 900 ms rise whose height and size are an ease of
+//!   the elapsed share (the pitch eases twice); closing runs 900 ms, the
+//!   marked slots falling as `1 − f⁴` and the rest as `1 − 1.5f`, then
+//!   clears the animation and the slots' flash and picked bits.
 //! - **The slot budget** ([`limit_running_powers`]): the highest Concentration
 //!   technique of 2 to 4 among the skill's levels, one less without the
 //!   focus item, is how many running powers a body may keep; the rest are
@@ -657,6 +670,36 @@ pub struct TreeScreen {
     pub hovered: i32,
     /// The quick bar overlay is open.
     pub bar_open: bool,
+    /// The form's fade flags: bit 0 opening, bit 1 closing.
+    pub fade_flags: u8,
+    /// The stamp the opening fade ends.
+    pub open_at: u32,
+    /// The stamp the closing fade ends.
+    pub close_at: u32,
+    /// The closing fade has run out: the screen is no longer drawn.
+    pub faded_out: bool,
+    /// The domain switch's fade flags: bit 0 the new tree fades in, bit 1
+    /// the old tree fades out.
+    pub domain_flags: u8,
+    /// The stamp of the domain switch's fade.
+    pub domain_at: u32,
+    /// The record and domain files are waiting for the switch's fade to run
+    /// out; the caller performs it.
+    pub switch_due: bool,
+    /// The window's fade this frame (the backdrop's alpha).
+    pub window_alpha: f32,
+    /// The tree content's fade this frame.
+    pub content_alpha: f32,
+    /// The bar child's fade this frame.
+    pub bar_alpha: f32,
+    /// The bar's animation flags: bit 1 closing, bit 2 opening.
+    pub bar_flags: u8,
+    /// The stamp the bar's opening began.
+    pub bar_open_at: u32,
+    /// The stamp the bar's closing began.
+    pub bar_close_at: u32,
+    /// The bar's animation this frame.
+    pub bar_phase_now: Option<exa_ui::tree_draw::BarPhase>,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -771,6 +814,20 @@ impl TreeScreen {
             link_turn: 0.0,
             hovered: 0,
             bar_open: false,
+            fade_flags: 0,
+            open_at: 0,
+            close_at: 0,
+            faded_out: false,
+            domain_flags: 0,
+            domain_at: 0,
+            switch_due: false,
+            window_alpha: 1.0,
+            content_alpha: 1.0,
+            bar_alpha: 1.0,
+            bar_flags: 0,
+            bar_open_at: 0,
+            bar_close_at: 0,
+            bar_phase_now: Some(exa_ui::tree_draw::BarPhase::Steady),
         }
     }
 
@@ -1522,11 +1579,12 @@ impl TreeScreen {
 
     /// Opens or closes the quick bar: opening loads it from the record and
     /// re-marks the nodes; closing stores it. Returns whether it is open.
-    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord) -> bool {
+    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) -> bool {
         if self.bar_open {
             bar.store(record, false);
+            self.close_bar(now);
         } else {
-            bar.load(record);
+            self.open_bar(bar, record, now);
             self.apply_bar_marks(bar);
         }
         self.bar_open = !self.bar_open;
@@ -1857,7 +1915,9 @@ impl TreeScreen {
             width,
             height,
             scale,
-            window: 1.0,
+            window: self.window_alpha,
+            content: self.content_alpha,
+            bar_alpha: self.bar_alpha,
             zoom: self.zoom.value,
             icon_size: self.zoom_fixed,
             mode: match self.mode {
@@ -1869,7 +1929,7 @@ impl TreeScreen {
             nodes,
             links,
             bar: slots,
-            bar_phase: draw::BarPhase::Steady,
+            bar_phase: self.bar_phase_now,
             hovered: self.node_under,
             flash: self.flash,
             flash_until: self.flash_until,
@@ -1883,25 +1943,232 @@ impl TreeScreen {
     }
 }
 
-/// What showing the screen sets.
+/// What showing or hiding the screen sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShowState {
-    /// The form flags' new value.
+    /// The form fade flags' new value: bit 0 opening, bit 1 closing.
     pub flags: u8,
-    /// The bar's hide stamp.
-    pub hide_at: u32,
-    /// The remembered domain.
+    /// The fade's end stamp.
+    pub stamp: u32,
+    /// The remembered domain (the hide path keeps it; the open path reads
+    /// it).
     pub remembered: u8,
 }
 
+/// The form's opening fade, in milliseconds.
+pub const OPEN_MS: u32 = 1000;
+/// The form's closing fade, in milliseconds.
+pub const CLOSE_MS: u32 = 256;
+/// The bar's opening or closing animation, in milliseconds.
+pub const BAR_ANIM_MS: u32 = 900;
+/// The form's open-fade flag.
+pub const FADING_IN: u8 = 1;
+/// The form's close-fade flag.
+pub const FADING_OUT: u8 = 2;
+/// The domain switch's fade-in flag.
+pub const DOMAIN_IN: u8 = 1;
+/// The domain switch's fade-out flag.
+pub const DOMAIN_OUT: u8 = 2;
+/// The bar's closing flag.
+pub const BAR_CLOSING: u8 = 1;
+/// The bar's opening flag.
+pub const BAR_OPENING: u8 = 2;
+/// The bar is steady after its opening animation.
+pub const BAR_STEADY: u8 = 4;
+
+/// The original's opening ease: `1 − (1 − dt·0.001)²` doubled and held to
+/// one, beside the inner `1 − (1 − dt·0.001)` value. The clock subtraction is
+/// signed over the two zero-extended 32-bit stamps.
+fn open_fade(stamp: u32, now: u32) -> (f32, f32) {
+    let left = (u64::from(stamp) as i64 - u64::from(now) as i64) as f64;
+    let inner = (1.0 - left * 0.001) as f32;
+    let second = 1.0 - inner * inner;
+    let mut window = second * 2.0;
+    // `COMISS`/`JBE`: an unordered or not-greater value is left alone.
+    if window > 1.0 {
+        window = 1.0;
+    }
+    (window, second)
+}
+
 impl TreeScreen {
-    /// Showing the tree flags it shown and stamps the bar's 256 ms hide.
-    pub fn show(&self, now: u32) -> ShowState {
+    /// Showing the tree starts its 1000 ms opening fade and remembers the
+    /// domain for the next opening.
+    pub fn show(&mut self, now: u32) -> ShowState {
+        self.fade_flags |= FADING_IN;
+        self.open_at = now.wrapping_add(OPEN_MS);
+        self.faded_out = false;
         ShowState {
-            flags: 2,
-            hide_at: now.wrapping_add(0x100),
+            flags: self.fade_flags,
+            stamp: self.open_at,
             remembered: self.domain,
         }
+    }
+
+    /// Whether the closing fade is running: the screen takes no pointer
+    /// input any more.
+    pub fn closing(&self) -> bool {
+        self.fade_flags & FADING_OUT != 0
+    }
+
+    /// Hiding the tree starts its 256 ms closing fade; the screen keeps
+    /// drawing, thinner each frame, until the fade runs out.
+    pub fn hide(&mut self, now: u32) -> ShowState {
+        self.fade_flags |= FADING_OUT;
+        self.close_at = now.wrapping_add(CLOSE_MS);
+        ShowState {
+            flags: self.fade_flags,
+            stamp: self.close_at,
+            remembered: self.domain,
+        }
+    }
+
+    /// Computes this frame's three fades and the domain switch, as the
+    /// draw's head does. The closing fade clears its flag and marks the
+    /// screen faded out once its stamp is reached; the opening fade clears
+    /// its flag at the same point.
+    pub fn present_window(&mut self, now: u32) {
+        let mut window = 1.0;
+        let mut second = 1.0;
+        self.faded_out = false;
+        self.switch_due = false;
+        if self.fade_flags & FADING_IN != 0 {
+            if now.wrapping_sub(self.open_at) >= 0x8000_0000 {
+                // now < open_at
+                let (raised, inner) = open_fade(self.open_at, now);
+                window = raised;
+                second = inner;
+            } else {
+                self.fade_flags &= !FADING_IN;
+            }
+        }
+        if self.fade_flags & FADING_OUT != 0 {
+            if now.wrapping_sub(self.close_at) < 0x8000_0000 {
+                // now >= close_at
+                self.fade_flags &= !FADING_OUT;
+                self.window_alpha = 0.0;
+                self.content_alpha = 0.0;
+                self.bar_alpha = 0.0;
+                self.faded_out = true;
+                return;
+            }
+            let left = (u64::from(self.close_at) as i64 - u64::from(now) as i64) as f32;
+            window = left * window / 256.0;
+        }
+        // The bar child's own fade is read before the domain switch reuses
+        // the second value.
+        let bar_second = second;
+        let mut content = window;
+        if self.domain_flags & DOMAIN_IN != 0 {
+            if now.wrapping_sub(self.domain_at) >= 0x8000_0000 {
+                let (raised, _) = open_fade(self.domain_at, now);
+                content = raised;
+            } else {
+                self.domain_flags &= !DOMAIN_IN;
+            }
+        }
+        if self.domain_flags & DOMAIN_OUT != 0 {
+            if now.wrapping_sub(self.domain_at) >= 0x8000_0000 {
+                let left = (u64::from(self.domain_at) as i64 - u64::from(now) as i64) as f32;
+                content = left * content / 256.0;
+            } else {
+                // The old tree has faded out: switch the domain and start
+                // the new tree's fade-in. The caller performs the switch.
+                self.domain_flags = DOMAIN_IN;
+                self.domain_at = now.wrapping_add(OPEN_MS);
+                self.switch_due = true;
+                content = 0.0;
+            }
+        }
+        self.window_alpha = window;
+        self.content_alpha = content;
+        self.bar_alpha = if self.fade_flags & FADING_OUT != 0 {
+            window * bar_second
+        } else {
+            bar_second
+        };
+    }
+
+    /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
+    /// domain is outside this module; its click calls this.
+    pub fn fade_domain(&mut self, now: u32) {
+        self.domain_flags = DOMAIN_OUT;
+        self.domain_at = now.wrapping_add(CLOSE_MS);
+    }
+
+    /// Loads the bar from the record and starts its 900 ms opening, as
+    /// turning it on does.
+    pub fn open_bar(&mut self, bar: &mut PowerBar, record: &PowerRecord, now: u32) {
+        bar.load(record);
+        self.bar_flags = BAR_OPENING;
+        self.bar_open_at = now;
+        for slot in &mut bar.slots {
+            slot.state &= 0xffff_fff6;
+        }
+    }
+
+    /// Loads the bar and starts its opening only when no animation runs, as
+    /// opening the tree does.
+    pub fn open_bar_if_closed(&mut self, bar: &mut PowerBar, record: &PowerRecord, now: u32) {
+        if self.bar_flags & (BAR_OPENING | BAR_CLOSING) == 0 {
+            self.open_bar(bar, record, now);
+        }
+    }
+
+    /// Starts the bar's 900 ms closing animation, keeping an opening that
+    /// is still running flagged (the closing runs after it).
+    pub fn close_bar(&mut self, now: u32) {
+        self.bar_flags = (self.bar_flags & BAR_OPENING) | BAR_CLOSING;
+        self.bar_close_at = now;
+    }
+
+    /// Steps the bar's slots and reads its animation for `now`. The bar
+    /// closing to its end clears the slots' flash and picked bits and
+    /// answers `None`.
+    pub fn step_bar(
+        &mut self,
+        bar: &mut PowerBar,
+        now: u32,
+    ) -> Option<exa_ui::tree_draw::BarPhase> {
+        use exa_ui::tree_draw::BarPhase;
+        for slot in &mut bar.slots {
+            slot.step(now);
+        }
+        let phase = if self.bar_flags & BAR_OPENING != 0 {
+            if now.wrapping_sub(self.bar_open_at) < BAR_ANIM_MS {
+                Some(BarPhase::Opening {
+                    elapsed: now.wrapping_sub(self.bar_open_at),
+                })
+            } else {
+                self.bar_flags = if self.bar_flags & BAR_CLOSING == 0 {
+                    BAR_STEADY
+                } else {
+                    BAR_CLOSING
+                };
+                None
+            }
+        } else {
+            None
+        };
+        let phase = phase.or_else(|| {
+            if self.bar_flags & BAR_CLOSING != 0 {
+                if now.wrapping_sub(self.bar_close_at) >= BAR_ANIM_MS {
+                    self.bar_flags = 0;
+                    for slot in &mut bar.slots {
+                        slot.state &= 0xffff_fff6;
+                    }
+                    None
+                } else {
+                    Some(BarPhase::Closing {
+                        elapsed: now.wrapping_sub(self.bar_close_at),
+                    })
+                }
+            } else {
+                Some(BarPhase::Steady)
+            }
+        });
+        self.bar_phase_now = phase;
+        phase
     }
 
     /// Changes the domain: the current one is stored back into the record
@@ -3617,10 +3884,10 @@ mod tests {
             flags: LEARNED | PICKED,
         }];
         let mut bar = PowerBar::default();
-        assert!(screen.toggle_bar(&mut bar, &mut record));
+        assert!(screen.toggle_bar(&mut bar, &mut record, 10));
         assert_eq!(bar.slots[0].word, 0x100101);
         assert_eq!(screen.marks[0], SHOWN | LEARNED | PICKED);
-        assert!(!screen.toggle_bar(&mut bar, &mut record));
+        assert!(!screen.toggle_bar(&mut bar, &mut record, 20));
         assert_eq!(record.slots[0], 0x100101);
         screen.leave(&mut bar, &mut record);
         assert!(!screen.bar_open);
@@ -3753,16 +4020,119 @@ mod tests {
     }
 
     #[test]
-    fn showing_stamps_the_bar_and_the_domain_switches() {
+    fn the_window_fades_in_and_out_by_its_stamps() {
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        tree.show(1000);
+        // Halfway through the opening fade: the inner value is 0.5, so the
+        // window is 1 − 0.25 doubled and held at one, and its inner value
+        // is 0.75.
+        tree.present_window(1500);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert_eq!(tree.content_alpha, 1.0);
+        assert_eq!(tree.bar_alpha, 0.75);
+        // A millisecond before the fade ends it is nearly shut: the inner
+        // 0.999 squares to 0.99800104, so the window is its complement
+        // doubled, 0.003997922, and the bar's fade is 0.001998961.
+        tree.present_window(1999);
+        assert!((tree.window_alpha - 0.003_997_922).abs() < 1e-9);
+        assert!((tree.content_alpha - 0.003_997_922).abs() < 1e-9);
+        assert!((tree.bar_alpha - 0.001_998_961).abs() < 1e-9);
+        // At the stamp the flag clears and the window is whole.
+        tree.present_window(2000);
+        assert_eq!(tree.fade_flags, 0);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert!(!tree.faded_out);
+        // The closing fade halves the content a 128 ms from its end.
+        tree.hide(3000);
+        tree.present_window(3128);
+        assert_eq!(tree.window_alpha, 0.5);
+        assert_eq!(tree.content_alpha, 0.5);
+        assert_eq!(tree.bar_alpha, 0.5);
+        tree.present_window(3256);
+        assert_eq!(tree.fade_flags, 0);
+        assert!(tree.faded_out);
+        assert_eq!(tree.window_alpha, 0.0);
+    }
+
+    #[test]
+    fn a_domain_switch_fades_out_then_in() {
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        tree.fade_domain(1000);
+        assert_eq!((tree.domain_flags, tree.domain_at), (DOMAIN_OUT, 1256));
+        tree.present_window(1128);
+        assert_eq!(tree.content_alpha, 0.5);
+        // The stamp switches the domain: the caller's flag rises and the
+        // new tree fades in over the next second.
+        tree.present_window(1256);
+        assert!(tree.switch_due);
+        assert_eq!((tree.domain_flags, tree.domain_at), (DOMAIN_IN, 2256));
+        assert_eq!(tree.content_alpha, 0.0);
+        tree.present_window(1756);
+        assert!(!tree.switch_due);
+        assert_eq!(tree.content_alpha, 1.0);
+        // The window itself never faded.
+        assert_eq!(tree.window_alpha, 1.0);
+    }
+
+    #[test]
+    fn the_bar_opens_and_closes_over_nine_hundred_milliseconds() {
+        use exa_ui::tree_draw::BarPhase;
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        bar.slots[0].state = bar_state::FLASH | bar_state::MARK;
+        let record = PowerRecord::starter();
+        tree.open_bar(&mut bar, &record, 1000);
+        // Opening clears the slot's flash and picked bits; the loaded
+        // record's picked pair puts the picked bit back.
+        assert_eq!(bar.slots[0].state, bar_state::PICKED);
+        assert_eq!(
+            tree.step_bar(&mut bar, 1049),
+            Some(BarPhase::Opening { elapsed: 49 })
+        );
+        assert_eq!(
+            tree.step_bar(&mut bar, 1899),
+            Some(BarPhase::Opening { elapsed: 899 })
+        );
+        assert_eq!(tree.step_bar(&mut bar, 1900), Some(BarPhase::Steady));
+        assert_eq!(tree.bar_flags, BAR_STEADY);
+        // A closing bar runs its own 900 ms and leaves the slots' flash,
+        // lit, fade and picked bits alone.
+        bar.slots[1].state = bar_state::LIT;
+        tree.close_bar(2000);
+        assert_eq!(tree.bar_flags, BAR_CLOSING);
+        assert_eq!(
+            tree.step_bar(&mut bar, 2100),
+            Some(BarPhase::Closing { elapsed: 100 })
+        );
+        assert_eq!(
+            tree.step_bar(&mut bar, 2899),
+            Some(BarPhase::Closing { elapsed: 899 })
+        );
+        assert_eq!(tree.step_bar(&mut bar, 2900), None);
+        assert_eq!(tree.bar_flags, 0);
+        assert_eq!(bar.slots[1].state, bar_state::LIT);
+        // Closing while opening: the closing starts when the opening ends.
+        tree.open_bar(&mut bar, &record, 3000);
+        tree.close_bar(3200);
+        assert_eq!(
+            tree.step_bar(&mut bar, 3900),
+            Some(BarPhase::Closing { elapsed: 700 })
+        );
+    }
+
+    #[test]
+    fn showing_stamps_the_open_fade_and_the_domain_switches() {
         let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
         assert_eq!(
             tree.show(1000),
             ShowState {
-                flags: 2,
-                hide_at: 1256,
+                flags: FADING_IN,
+                stamp: 2000,
                 remembered: DOMAIN_FORCE
             }
         );
+        assert_eq!(tree.hide(3000).stamp, 3256);
+        assert_eq!(tree.fade_flags, FADING_IN | FADING_OUT);
         let mut record = PowerRecord::starter();
         let old = tree.switch_domain(DOMAIN_MIND, &mut record, None, 1000.0, 700.0);
         assert_eq!(old, DOMAIN_FORCE);

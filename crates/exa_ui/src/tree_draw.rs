@@ -685,8 +685,14 @@ pub struct TreeView {
     pub height: f32,
     /// The GUI unit: the bar's slots are 17 units apart and 13 across.
     pub scale: f32,
-    /// The opening or closing window's alpha, 0 to 1.
+    /// The opening or closing window's alpha, 0 to 1: the backdrop's and
+    /// the form's own.
     pub window: f32,
+    /// The tree's content fade, 0 to 1: the links, icons, marks, rings and
+    /// glows. It follows `window` and is cut by the domain switch.
+    pub content: f32,
+    /// The bar child's fade under the tree, 0 to 1.
+    pub bar_alpha: f32,
     pub zoom: f32,
     /// The zoom in 8.8 fixed point, rounded to even: the icon size.
     pub icon_size: f32,
@@ -694,7 +700,8 @@ pub struct TreeView {
     pub nodes: Vec<NodeView>,
     pub links: Vec<LinkView>,
     pub bar: [SlotView; 10],
-    pub bar_phase: BarPhase,
+    /// The bar's animation, or none while it is not shown.
+    pub bar_phase: Option<BarPhase>,
     /// The node under the pointer, one-based, or 0 (the tooltip's node).
     pub hovered: i32,
     /// The node whose flash runs, zero-based, or -1.
@@ -957,7 +964,7 @@ fn background(out: &mut TreeDraw, view: &TreeView) {
 /// The links: bright when the source has any mark, otherwise dim when the
 /// destination has one, and not at all when neither does.
 fn links(out: &mut TreeDraw, view: &TreeView) {
-    let colour = link_ink(low_byte(view.window * 200.0));
+    let colour = link_ink(low_byte(view.content * 200.0));
     let half_width = view.zoom * 10.0;
     for entry in &view.links {
         let program = if entry.source_mark != 0 {
@@ -987,7 +994,7 @@ fn icon_fade(flags: u32) -> [f32; 4] {
 
 /// Every shown node's icon.
 fn icons(out: &mut TreeDraw, view: &TreeView) {
-    let alpha = f32::from(alpha_byte(view.window)) / 255.0;
+    let alpha = f32::from(alpha_byte(view.content)) / 255.0;
     for node in &view.nodes {
         if node.flags & mark::SHOWN == 0 {
             continue;
@@ -1027,9 +1034,9 @@ fn marks(out: &mut TreeDraw, view: &TreeView) {
         let mut batch = Batch::new(Program::Mods, Texture::Mods);
         if (!learned || view.mode == ScreenMode::Test) && technique != 0 {
             let alpha = if view.mode == ScreenMode::Test {
-                low_byte(view.window * 160.0)
+                low_byte(view.content * 160.0)
             } else {
-                low_byte(view.window * 112.0)
+                low_byte(view.content * 112.0)
             };
             let size = if framed(node.power) {
                 view.icon_size * 0.5
@@ -1051,7 +1058,7 @@ fn marks(out: &mut TreeDraw, view: &TreeView) {
                 node.x,
                 node.y,
                 view.icon_size * 0.5,
-                link_ink(low_byte(view.window * 180.0)),
+                link_ink(low_byte(view.content * 180.0)),
             );
         }
         out.submit(batch);
@@ -1086,7 +1093,7 @@ fn node_ring(
 /// while the one it replaced fades out. Returns the last fade and the
 /// retired node (one-based) as the glow pass needs them.
 fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
-    let colour = link_ink(alpha_byte(view.window));
+    let colour = link_ink(alpha_byte(view.content));
     let mut fade = 0.0;
     let mut retired = view.retired_new;
     for node in &view.nodes {
@@ -1116,7 +1123,7 @@ fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
 /// that is not picked gets the fading-out ring of what it was.
 fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
     let [red, green, blue] = ring_colour(view.domain);
-    let colour = ink([red, green, blue, alpha_byte(view.window)]);
+    let colour = ink([red, green, blue, alpha_byte(view.content)]);
     let flashing = usize::try_from(view.flash).ok();
     for (index, node) in view.nodes.iter().enumerate() {
         if node.flags & mark::PICKED == 0 {
@@ -1171,7 +1178,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
                 *lane /= 3;
             }
         }
-        let window = 255.0 * view.window;
+        let window = 255.0 * view.content;
         bytes[3] = if node.flags & mark::LEARNED != 0 {
             low_byte(window)
         } else if node.flags & mark::NEW != 0 {
@@ -1179,7 +1186,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         } else if usize::try_from(retired - 1).ok() == Some(index) {
             cvt_i32_f64((f64::from(new_ease) * 0.3 + 0.7) * f64::from(window)) as u8
         } else {
-            low_byte(178.0 * view.window)
+            low_byte(178.0 * view.content)
         };
         let (size, outer) = if framed(node.power) {
             (times(view.icon_size, 0.24), times(view.icon_size, 0.1))
@@ -1236,7 +1243,7 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
         a11: 1.0,
         a12: 1.0,
     };
-    match view.bar_phase {
+    match view.bar_phase? {
         BarPhase::Steady => {}
         BarPhase::Opening { elapsed } => {
             if elapsed < 900 {
@@ -1269,6 +1276,10 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
             pose.size *= (1.0 - shrink * shrink) as f32;
         }
     }
+    // The bar is a child form under the tree: its own fade multiplies the
+    // slots' two alphas.
+    pose.a11 *= view.bar_alpha;
+    pose.a12 *= view.bar_alpha;
     Some(pose)
 }
 
@@ -1657,13 +1668,15 @@ mod tests {
             height: 700.0,
             scale: 4.0,
             window: 1.0,
+            content: 1.0,
+            bar_alpha: 1.0,
             zoom: 0.293,
             icon_size: 75.0,
             mode: ScreenMode::Play,
             nodes: Vec::new(),
             links: Vec::new(),
             bar: [SlotView::default(); 10],
-            bar_phase: BarPhase::Steady,
+            bar_phase: Some(BarPhase::Steady),
             hovered: 0,
             flash: -1,
             flash_until: 0,
@@ -2298,7 +2311,7 @@ mod tests {
         let mut view = view();
         view.bar[0].word = 0x101;
         view.bar[0].state = state::LIT;
-        view.bar_phase = BarPhase::Opening { elapsed: 200 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 200 });
         let pose = bar_pose(&view).unwrap();
         let rise = ease(0.5);
         assert!(close(pose.a12, rise));
@@ -2306,23 +2319,23 @@ mod tests {
         assert!(close(pose.top, 32.0 * rise));
         assert!(close(pose.pitch, 68.0 * ease(ease(200.0 / 900.0))));
         // After 400 ms only the pitch is still opening.
-        view.bar_phase = BarPhase::Opening { elapsed: 500 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 500 });
         let pose = bar_pose(&view).unwrap();
         assert_eq!((pose.a11, pose.a12, pose.size), (1.0, 1.0, 52.0));
         assert!(pose.pitch < 68.0);
-        view.bar_phase = BarPhase::Opening { elapsed: 900 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 900 });
         assert_eq!(bar_pose(&view).unwrap().pitch, 68.0);
         // Closing: fades first, then invisible, then gone.
-        view.bar_phase = BarPhase::Closing { elapsed: 300 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
         let pose = bar_pose(&view).unwrap();
         let fall = ease(0.5);
         assert!(close(pose.a11, 1.0 - fall.powi(4)));
         assert!(close(pose.a12, (1.0 - 1.5 * fall).max(0.0)));
         assert!(close(pose.size, 52.0 * (1.0 - (300.0f32 / 900.0).powi(2))));
-        view.bar_phase = BarPhase::Closing { elapsed: 700 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 700 });
         let pose = bar_pose(&view).unwrap();
         assert_eq!((pose.a11, pose.a12), (0.0, 0.0));
-        view.bar_phase = BarPhase::Closing { elapsed: 900 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 900 });
         assert!(bar_pose(&view).is_none());
         assert!(bar_draw(&view).batches.is_empty());
     }
@@ -2335,7 +2348,7 @@ mod tests {
             state: state::LIT | state::MARK,
             ..SlotView::default()
         };
-        view.bar_phase = BarPhase::Closing { elapsed: 300 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
         let pose = bar_pose(&view).unwrap();
         let draw = bar_draw(&view);
         let icon = draw

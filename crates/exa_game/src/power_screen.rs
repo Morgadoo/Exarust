@@ -200,6 +200,7 @@ fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Option<Res<Bindings>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
 ) {
     let Some(bindings) = bindings else {
@@ -210,6 +211,7 @@ fn hotkeys(
     };
     let width = window.physical_width() as f32;
     let height = window.physical_height() as f32;
+    let now = time.elapsed().as_millis() as u32;
     let PowerScreen {
         open,
         bar_open,
@@ -226,9 +228,11 @@ fn hotkeys(
         .is_some_and(|key| keys.just_pressed(key))
     {
         if *open {
+            // Closing stores the bar and the domain, then fades out over
+            // 256 ms; the draw turns the screen off at the fade's end.
             tree.leave(bar, record);
-            *open = false;
-            *bar_open = false;
+            tree.hide(now);
+            tree.close_bar(now);
         } else {
             let domain = tree.domain;
             let file = domain_files.get(usize::from(domain)).cloned().flatten();
@@ -248,7 +252,8 @@ fn hotkeys(
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
-            bar.load(record);
+            tree.show(now);
+            tree.open_bar(bar, record, now);
         }
         *dirty = true;
         return;
@@ -258,9 +263,11 @@ fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         if *open {
             tree.leave(bar, record);
-            *open = false;
+            tree.hide(now);
+            tree.close_bar(now);
+        } else {
+            *bar_open = false;
         }
-        *bar_open = false;
         *dirty = true;
     }
 }
@@ -315,7 +322,7 @@ fn pointer(
         press_origin,
         ..
     } = &mut *screen;
-    let hidden = !*open;
+    let hidden = !*open || tree.closing();
     let hover = tree.hover(x, y, width, height, hidden);
     if hover != tree.focus {
         tree.set_focus(hover, now);
@@ -460,8 +467,25 @@ fn draw(
         return;
     }
     let now = time.elapsed().as_millis();
-    if (screen.open || screen.bar_open) && screen.tree.settle() {
-        screen.dirty = true;
+    if screen.open || screen.bar_open {
+        let now_at = now as u32;
+        if screen.tree.settle() {
+            screen.dirty = true;
+        }
+        screen.tree.present_window(now_at);
+        let PowerScreen { tree, bar, .. } = &mut *screen;
+        tree.step_bar(bar, now_at);
+        if screen.tree.faded_out {
+            screen.open = false;
+            screen.bar_open = false;
+            screen.dirty = true;
+        }
+    }
+    if !screen.open && !screen.bar_open {
+        for (_, _, mut visibility, _) in &mut canvas {
+            *visibility = Visibility::Hidden;
+        }
+        return;
     }
     if !screen.dirty && now.saturating_sub(screen.last_draw) < REDRAW_MS {
         return;
