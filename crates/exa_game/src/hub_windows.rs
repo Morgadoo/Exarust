@@ -55,9 +55,11 @@ pub const SHOP_SIZE: (i32, i32) = (
 /// The row height the roster and stock rows use. The original's row pitch is
 /// not in the packs, so this is a guess from the table heights.
 pub const ROW_HEIGHT: i32 = 26;
-/// The centred placement word the hub's forms use.
+/// The centred placement word the hub's forms use. The constructors' own
+/// placement words are not traced, so centring is a guess.
 pub const CENTRE: u32 = 0x8000 | 0x800;
-/// The form's title bit: the hub's three windows carry a title.
+/// The form's title bit. The three windows carry a title string; whether
+/// their constructor words set this bit is a guess.
 pub const TITLE_BIT: u32 = 1;
 /// The button style the screens' constructors share.
 pub const BUTTON_STYLE: u32 = 0x40_3320;
@@ -284,6 +286,8 @@ impl HubWindows {
         let Some(shop) = self.shop.as_mut() else {
             return false;
         };
+        // The bottom row's own record places are not traced; the guessed
+        // rect is where the page's bottom-left "Trade" button draws.
         let trade = shop
             .window
             .panels()

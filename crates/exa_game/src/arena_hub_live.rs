@@ -514,6 +514,9 @@ fn hub_clicks(
         let action = match click.hit {
             crate::hand::Hit::Prop { body, .. } => {
                 let name = names.get(body).ok().map(|name| hub_name(name.as_bytes()));
+                // The original reads the node's +0x20 float as the side;
+                // Exarust's body has no such field, so the global x is a
+                // guess (the sign is what the hook compares).
                 let side = transforms
                     .get(body)
                     .map(|transform| transform.translation().x)
@@ -565,8 +568,8 @@ fn hub_clicks(
 
 /// The original's sixteen-byte scene name: the executable's copies begin
 /// with 0xAA. Exarust's level objects carry the object-database name, so the
-/// byte is put back for the comparison. A name that already begins with it
-/// is left alone.
+/// byte is put back for the comparison (a guess about the name text).
+/// A name that already begins with it is left alone.
 fn hub_name(name: &[u8]) -> [u8; 16] {
     let mut out = [0u8; 16];
     let (first, rest) = if name.first() == Some(&0xAA) {
