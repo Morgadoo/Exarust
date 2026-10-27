@@ -36,6 +36,14 @@ use crate::slots::Slots;
 /// The level the hub lives in.
 pub const HUB_LEVEL: &str = "arenahub";
 
+/// Whether a `LevelRoot` name is the hub's: the loader keeps the `.rfc`
+/// suffix.
+pub fn is_hub_level(name: &str) -> bool {
+    name.strip_suffix(".rfc")
+        .unwrap_or(name)
+        .eq_ignore_ascii_case(HUB_LEVEL)
+}
+
 /// What the hub knows after it was entered.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct ArenaHub {
@@ -177,9 +185,7 @@ fn enter_loaded_hub(
     bodies: Query<(&Condition, &Fighter, Option<&Ragdoll>), With<PlayerBody>>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
 ) {
-    let loaded = levels
-        .iter()
-        .any(|root| root.name.eq_ignore_ascii_case(HUB_LEVEL));
+    let loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !loaded {
         hub.entered = false;
         hub.manager_placed = false;
@@ -451,9 +457,7 @@ fn hub_clicks(
     mut launches: MessageWriter<ArenaMatchLaunch>,
     mut last: ResMut<LastHubClick>,
 ) {
-    let hub_loaded = levels
-        .iter()
-        .any(|root| root.name.eq_ignore_ascii_case(HUB_LEVEL));
+    let hub_loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !hub.entered && !hub_loaded {
         clicks.clear();
         return;
@@ -653,7 +657,7 @@ mod tests {
 
     fn spawn_hub_level(app: &mut App) {
         app.world_mut().spawn(LevelRoot {
-            name: HUB_LEVEL.into(),
+            name: format!("{HUB_LEVEL}.rfc"),
         });
     }
 
@@ -953,6 +957,14 @@ mod tests {
                 .is_kind(HubWindowKind::None)
         );
         assert!(!app.world().resource::<ArenaHub>().busy);
+    }
+
+    #[test]
+    fn the_hub_level_name_takes_the_loaders_suffix() {
+        assert!(is_hub_level("arenahub"));
+        assert!(is_hub_level("ArenaHub.rfc"));
+        assert!(!is_hub_level("arena1"));
+        assert!(!is_hub_level("arenahub2"));
     }
 
     #[test]
