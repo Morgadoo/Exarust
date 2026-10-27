@@ -595,6 +595,9 @@ pub fn weapon_content(
     value_shown: bool,
 ) -> CardContent {
     let handling = weapon_handling(flags, weight, balance, grip);
+    // Guess: the three stat rows come from the page's control template,
+    // whose ids the pseudo-code never names. 0x101–0x103 continue the
+    // apparel page's weight id (0x101), and the labels are Exarust's.
     let mut rows = vec![
         CardRow {
             control: 0x101,
