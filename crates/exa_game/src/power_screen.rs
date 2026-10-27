@@ -471,9 +471,7 @@ fn draw(
     let now = time.elapsed().as_millis();
     if screen.open || screen.bar_open {
         let now_at = now as u32;
-        if screen.tree.settle() {
-            screen.dirty = true;
-        }
+        screen.tree.advance(now_at);
         screen.tree.present_window(now_at);
         let PowerScreen { tree, bar, .. } = &mut *screen;
         tree.step_bar(bar, now_at);

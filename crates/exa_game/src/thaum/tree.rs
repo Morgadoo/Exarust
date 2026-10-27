@@ -60,6 +60,11 @@
 //!   there. A slot whose power matches a picked node is given the
 //!   persistent-pick bit in the view. The link ribbon's spline texture is
 //!   not modelled (the ribbon reads as white).
+//! - **The view's clock** ([`TreeScreen::advance`]): the springs step in the
+//!   draw's 17 ms frames and the pan is shown between the step before the
+//!   last and the last by the frame's place in a step; a stretched link is
+//!   the drag's own cubic (0.508 or 0.29 of the fixed zoom, a 400 cap on
+//!   the tangents).
 //! - **The form's windows** ([`TreeScreen::present_window`]): showing the
 //!   tree raises a 1000 ms fade whose alpha is `min(2·(1 − (1 −
 //!   dt·0.001)²), 1)` and whose inner value, `1 − (1 − dt·0.001)²`, fades
@@ -709,6 +714,9 @@ pub struct TreeScreen {
     pub bar_close_at: u32,
     /// The bar's animation this frame.
     pub bar_phase_now: Option<exa_ui::tree_draw::BarPhase>,
+    /// The simulated time the view's springs have reached: the draw
+    /// advances it in 17 ms steps.
+    pub step_at: u32,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -838,6 +846,7 @@ impl TreeScreen {
             bar_open_at: 0,
             bar_close_at: 0,
             bar_phase_now: Some(exa_ui::tree_draw::BarPhase::Steady),
+            step_at: 0,
         }
     }
 
@@ -1037,6 +1046,28 @@ impl TreeScreen {
     /// The charge moves by `steps` wheel steps of a tenth of a level.
     pub fn zoom_by(&mut self, steps: f32, now: u32) {
         self.step_charge(steps * 10.0, now);
+    }
+
+    /// The view's step, in milliseconds (the original's 0x11).
+    pub const STEP_MS: u32 = 17;
+
+    /// Advances the pan and zoom springs to `now` in 17 ms steps, then
+    /// shows the pan blended from the step before the last to the last by
+    /// the frame's place inside a step, as the draw does. The first call or
+    /// an opening sets the step clock.
+    pub fn advance(&mut self, now: u32) {
+        if self.step_at == 0 {
+            self.step_at = now;
+        }
+        while self.step_at < now {
+            self.step_at = self.step_at.wrapping_add(Self::STEP_MS);
+            if !self.settle() {
+                self.step_at = now;
+                break;
+            }
+        }
+        let overshoot = self.step_at.wrapping_sub(now) as f32;
+        self.present(1.0 - overshoot * 0.058_823_529);
     }
 
     /// Eases the pan and the zoom. Returns whether anything moved.
@@ -1322,6 +1353,61 @@ impl TreeScreen {
             }
             DragState::Idle => 0,
         }
+    }
+
+    /// The curve of the link being dragged out of the focused node, as the
+    /// original draws it while the drag is live: a 30-sample cubic from the
+    /// node's edge to the pointer, its start along the drag's turn by
+    /// `(0.508 − zoom·0.003)·zoom_fixed` (0.29 when the power is framed),
+    /// and both tangents scaled by the distance, held to 400. The curve ends
+    /// a thirtieth of the far tangent past the pointer. The tangent
+    /// convention (the far one pointing back at the node) is inferred from
+    /// the engine's vector calls: a labelled guess.
+    pub fn drag_link_points(&self) -> Option<Vec<[f32; 2]>> {
+        if !matches!(self.drag, DragState::LinkHover | DragState::Link) {
+            return None;
+        }
+        let index = self.node_under.checked_sub(1)? as usize;
+        let node = self.nodes.get(index)?;
+        let (sine, cosine) = (self.link_turn * std::f32::consts::TAU).sin_cos();
+        let base = if node.power & word::FRAME == 0 {
+            0.508
+        } else {
+            0.29
+        };
+        let reach =
+            ((base - f64::from(self.zoom.value) * 0.003) * f64::from(self.zoom_fixed)) as f32;
+        let start = [node.x + sine * reach, node.y + cosine * reach];
+        let pointer = self.pointer;
+        let delta = [pointer[0] - start[0], pointer[1] - start[1]];
+        let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+        let capped = if length >= 400.0 { 400.0 } else { length };
+        let unit = if length == 0.0 {
+            [0.0, 0.0]
+        } else {
+            [delta[0] / length, delta[1] / length]
+        };
+        let out = [
+            sine * capped * self.zoom.value,
+            cosine * capped * self.zoom.value,
+        ];
+        let in_ = [
+            -unit[0] * capped * self.zoom.value,
+            -unit[1] * capped * self.zoom.value,
+        ];
+        let mut points = Vec::with_capacity(32);
+        points.push(start);
+        for step in 1..=30 {
+            let t = step as f32 / 30.0;
+            points.push(exa_formats::power_tree::cubic_point(
+                start, pointer, out, in_, t,
+            ));
+        }
+        points.push([
+            pointer[0] + in_[0] * 0.033_333_334,
+            pointer[1] + in_[1] * 0.033_333_334,
+        ]);
+        Some(points)
     }
 
     /// Ends a drag: a link dropped on a node is added to the focused node.
@@ -1968,6 +2054,15 @@ impl TreeScreen {
                 });
             }
         }
+        // The link a drag has out of a node is drawn as it is stretched.
+        if let Some(points) = self.drag_link_points() {
+            let index = self.node_under as usize - 1;
+            links.push(draw::LinkView {
+                points,
+                source_mark: self.marks.get(index).copied().unwrap_or(0),
+                dest_mark: 0,
+            });
+        }
         let picked: Vec<u32> = self
             .nodes
             .iter()
@@ -2078,6 +2173,7 @@ impl TreeScreen {
         self.fade_flags |= FADING_IN;
         self.open_at = now.wrapping_add(OPEN_MS);
         self.faded_out = false;
+        self.step_at = now;
         ShowState {
             flags: self.fade_flags,
             stamp: self.open_at,
@@ -2878,6 +2974,36 @@ mod tests {
         };
         assert!(!step_pan(&mut lost));
         assert!(lost.position[0].is_nan());
+    }
+
+    #[test]
+    fn the_view_advances_in_seventeen_millisecond_steps() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        screen.show(1000);
+        screen.pan.position = [0.0, 0.0];
+        screen.pan.previous = [0.0, 0.0];
+        screen.pan.goal = [10.0, 0.0];
+        // A step lands the pan at 0.98 and the frame at the step's end
+        // shows it whole: the overshoot is exactly one step.
+        screen.advance(1000 + 17);
+        assert_eq!(screen.step_at, 1017);
+        assert!((screen.pan.position[0] - 0.98).abs() < 1e-6);
+        assert!((screen.shown_pan[0] - 0.98).abs() < 1e-6);
+        // Twelve milliseconds into the next step the frame shows 5/17 of
+        // the way from the previous point to the new one.
+        screen.advance(1000 + 17 + 5);
+        assert_eq!(screen.step_at, 1000 + 34);
+        let alpha = 1.0 - 12.0 * 0.058_823_529;
+        let expected =
+            screen.pan.previous[0] + (screen.pan.position[0] - screen.pan.previous[0]) * alpha;
+        assert_eq!(screen.pan.previous[0], 0.98);
+        assert!((screen.shown_pan[0] - expected).abs() < 1e-5);
+        // When the springs come to rest the clock snaps to the frame.
+        screen.pan.position = screen.pan.goal;
+        screen.pan.previous = screen.pan.goal;
+        screen.advance(10_000);
+        assert_eq!(screen.step_at, 10_000);
+        assert_eq!(screen.shown_pan[0], 10.0);
     }
 
     #[test]
@@ -3707,6 +3833,40 @@ mod tests {
         assert!(out.back);
         // CREATE mode does not open the tree from a wheel.
         assert!(!screen.wheel(0x300, 0.0, 0.0, 10).open);
+    }
+
+    #[test]
+    fn a_stretched_link_runs_from_the_node_to_the_pointer() {
+        let mut screen =
+            TreeScreen::from_nodes(DOMAIN_MIND, TreeMode::Play, vec![node(0x101, vec![])]);
+        screen.zoom.value = 1.0;
+        screen.zoom_fixed = 256.0;
+        assert!(screen.drag_link_points().is_none());
+        screen.drag = DragState::LinkHover;
+        screen.node_under = 1;
+        screen.link_turn = 0.0;
+        screen.pointer = [0.0, 100.0];
+        let points = screen.drag_link_points().expect("the drag draws");
+        assert_eq!(points.len(), 32);
+        // The start is 0.508 − 0.003 of the zoom, times 256, straight up.
+        assert!((points[0][1] - 129.28).abs() < 1e-4);
+        assert_eq!(points[0][0], 0.0);
+        // The cubic reaches the pointer at its thirtieth sample and runs a
+        // thirtieth of the far tangent past it.
+        assert!((points[30][1] - 100.0).abs() < 1e-3);
+        assert!((points[31][1] - 100.976).abs() < 1e-3);
+        // The far tangent's reach is held to 400: a pointer ten thousand
+        // away still ends 13.3 past it.
+        screen.pointer = [0.0, 10_000.0];
+        let far = screen.drag_link_points().expect("the drag draws");
+        assert!((far[31][1] - (10_000.0 - 400.0 / 30.0)).abs() < 1e-2);
+        // A framed power starts nearer its centre: 0.29 − 0.003 over 256.
+        screen.nodes[0].power = 0x0100_0101;
+        screen.pointer = [0.0, 100.0];
+        let framed = screen.drag_link_points().expect("the drag draws");
+        assert!((framed[0][1] - 73.472).abs() < 1e-4);
+        screen.drag = DragState::Idle;
+        assert!(screen.drag_link_points().is_none());
     }
 
     #[test]

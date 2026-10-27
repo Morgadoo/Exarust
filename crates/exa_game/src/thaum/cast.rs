@@ -284,6 +284,24 @@ impl PowerCaster {
         Some(caster)
     }
 
+    /// Grants a power as the game's grant routine does: the record must
+    /// hold Insight's seventh technique and the power's node must have a
+    /// learnt prerequisite in `nodes`, after which the pair carries
+    /// `0x9fff` and the known list is rebuilt. The record's power tree
+    /// screen is the caller's. Returns whether the power was granted.
+    pub fn grant(
+        &mut self,
+        nodes: &[exa_formats::power_tree::PowerNode],
+        insight: &exa_formats::characters::Skill,
+        power: u32,
+    ) -> bool {
+        if !super::tree::grant_power(nodes, insight, &mut self.record.pairs, power) {
+            return false;
+        }
+        self.known = known_from(&self.record);
+        true
+    }
+
     /// Rebuild the body's power view from the active list, in its order.
     pub(crate) fn sync_body(&mut self) {
         self.body.powers = self

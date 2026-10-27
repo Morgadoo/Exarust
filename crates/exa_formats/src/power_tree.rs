@@ -441,6 +441,12 @@ fn tangents(
     )
 }
 
+/// One point of a link's cubic at `t`, between two placed ends and their
+/// tangents.
+pub fn cubic_point(p0: [f32; 2], p1: [f32; 2], t0: [f32; 2], t1: [f32; 2], t: f32) -> [f32; 2] {
+    hermite(p0, p1, t0, t1, t)
+}
+
 fn hermite(p0: [f32; 2], p1: [f32; 2], t0: [f32; 2], t1: [f32; 2], t: f32) -> [f32; 2] {
     let t2 = t * t;
     let t3 = t2 * t;
