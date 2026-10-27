@@ -211,8 +211,6 @@ pub(crate) struct Group {
     positions: Vec<u32>,
     /// The joint index the group took, when one did.
     joint: Option<usize>,
-    /// A parent group's bone the group took through the stack.
-    parent_bone: Option<u16>,
 }
 
 impl Group {
@@ -574,14 +572,14 @@ impl<'a> Builder<'a> {
     fn weights(&self, groups: &[Group], joints: &[Joint], own: u16) -> Vec<VertexSkin> {
         let rigid = [(own, 1.0), (own, 0.0), (own, 0.0), (own, 0.0)];
         let mut skin = vec![rigid; self.position.len()];
-        if groups.iter().all(|g| !g.matched()) {
+        if groups.iter().all(|g| g.joint.is_none()) {
             return skin;
         }
         for (position, _) in self.used.iter().enumerate().filter(|(_, used)| **used) {
             let p = self.position[position];
             let mut candidates = Vec::with_capacity(MAX_GROUPS);
             for (index, group) in groups.iter().enumerate() {
-                if !group.matched() {
+                if group.joint.is_none() {
                     continue;
                 }
                 let mut reach = 1.0f32;
@@ -623,10 +621,8 @@ impl<'a> Builder<'a> {
         // A position of a matched group is split between its own bone and
         // the group's, whichever group comes last.
         for group in groups {
-            if !group.matched() {
-                continue;
-            }
-            let bone = group.bone(joints);
+            let Some(joint) = group.joint else { continue };
+            let bone = joints[joint].bone;
             for &position in &group.positions {
                 let share = self.share(position);
                 skin[position as usize] = [(own, 1.0 - share), (bone, share), (0, 0.0), (0, 0.0)];
@@ -648,13 +644,7 @@ impl<'a> Builder<'a> {
 
 impl Group {
     fn bone(&self, joints: &[Joint]) -> u16 {
-        self.parent_bone
-            .unwrap_or_else(|| self.joint.map_or(0, |j| joints[j].bone))
-    }
-
-    /// Whether a joint took the group, directly or through the parent stack.
-    fn matched(&self) -> bool {
-        self.joint.is_some() || self.parent_bone.is_some()
+        self.joint.map_or(0, |j| joints[j].bone)
     }
 }
 
@@ -754,9 +744,9 @@ pub const GROUP_STACK_LIMIT: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GroupStackOverflow;
 
-/// One frame of the builder's group stack: the parent groups' joints in the
-/// part's space. The original stores each parent group's point and later
-/// takes its bone; Exarust keeps the resolved joint.
+/// One frame of the builder's group stack: the parent groups' points. Only
+/// their pivots are read, by [`match_apparel_with_context`]; they are kept
+/// as joints so a caller can carry the parent's bone alongside.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroupFrame {
     pub joints: Vec<Joint>,
@@ -796,12 +786,12 @@ impl GroupStack {
         Ok(())
     }
 
-    /// Pushes an empty frame (`0x1000d3f70`).
+    /// Pushes an empty frame.
     pub fn push_empty(&mut self) -> Result<(), GroupStackOverflow> {
         self.push(Vec::new())
     }
 
-    /// Clears the frame on top without popping it (`0x1000d3e30`): its
+    /// Clears the frame on top without popping it: its
     /// joint list is freed, the depth stays.
     pub fn clear_top(&mut self) {
         if let Some(frame) = self.frames.last_mut() {
@@ -809,7 +799,7 @@ impl GroupStack {
         }
     }
 
-    /// Pops every frame and frees its lists (`0x1000d3d70`).
+    /// Pops every frame and frees its lists.
     pub fn clear(&mut self) {
         self.frames.clear();
     }
@@ -820,37 +810,38 @@ impl GroupStack {
     }
 }
 
-/// The apparel's joint matching with the parent group stack: each group
-/// takes the nearest of its own joints and `parents` (the enclosing part's
-/// groups), the parent's bone when that is nearer. Ties stay with the
-/// group's own joints, as the original's strict compare.
+/// The apparel's joint matching with the parent group stack's top frame:
+/// a group starts at its first joint's distance, the parent points can only
+/// lower that bar, and a later joint is taken when strictly nearer than the
+/// bar so far. A parent point is never taken itself: a group nearer to a
+/// parent point than to any of its own later joints keeps its first joint.
+/// With no parents this is [`match_apparel`]. `parents` are the parent
+/// groups' points already in the part's space (metres).
 pub(crate) fn match_apparel_with_context(
     groups: &mut [Group],
     joints: &[Joint],
     parents: &[Joint],
 ) {
-    let mut all: Vec<Joint> = joints.to_vec();
-    all.extend_from_slice(parents);
-    if all.is_empty() {
+    if joints.is_empty() {
         return;
     }
     for group in groups {
-        let mut nearest = usize::MAX;
-        let mut best = f32::MAX;
-        for (index, joint) in all.iter().enumerate() {
+        let mut best = distance_squared(group.centre, joints[0].pivot * CM_PER_METRE);
+        for parent in parents {
+            let d = distance_squared(group.centre, parent.pivot * CM_PER_METRE);
+            if d < best {
+                best = d;
+            }
+        }
+        let mut nearest = 0;
+        for (index, joint) in joints.iter().enumerate().skip(1) {
             let d = distance_squared(group.centre, joint.pivot * CM_PER_METRE);
             if d < best {
                 best = d;
                 nearest = index;
             }
         }
-        if nearest < joints.len() {
-            group.parent_bone = None;
-            group.joint = Some(nearest);
-        } else {
-            group.joint = None;
-            group.parent_bone = Some(all[nearest].bone);
-        }
+        group.joint = Some(nearest);
     }
 }
 
@@ -862,10 +853,11 @@ pub fn auto_skin(mesh: &Mesh, own: u16, joints: &[Joint], seams: Seams) -> Vec<V
     auto_skin_with_context(mesh, own, joints, seams, &[])
 }
 
-/// [`auto_skin`] with the enclosing part's groups as extra apparel joints:
-/// a garment group nearer to a parent group's joint than to its own takes
-/// the parent's bone (`0x1000d6840`). The model builder skins each node on
-/// its own and passes no context.
+/// [`auto_skin`] with the enclosing part's group points as the apparel
+/// matching's parent context ([`match_apparel_with_context`]): a parent
+/// point nearer than a garment group's later joints keeps the group on its
+/// first joint. The model builder skins each node on its own and passes no
+/// context.
 pub fn auto_skin_with_context(
     mesh: &Mesh,
     own: u16,
@@ -1525,33 +1517,48 @@ mod tests {
         }
     }
 
-    /// The parent context wins a garment group whose nearest parent joint is
-    /// closer than any of its own; the group then takes the parent's bone.
+    /// The parent context only raises the bar: a parent point nearer than
+    /// the group's second joint keeps the group on its first joint, and is
+    /// never taken itself; a farther parent leaves the nearest own joint.
     #[test]
-    fn a_parent_group_can_take_a_garment_group() {
+    fn a_parent_point_shadows_later_joints() {
         let mut groups = [Group {
             centre: Vec3::ZERO,
             ..Group::default()
         }];
-        let own = [Joint {
-            bone: 1,
-            pivot: Vec3::new(0.1, 0.0, 0.0),
-        }];
+        // Joint 0 at 50 cm, joint 1 at 10 cm.
+        let own = [
+            Joint {
+                bone: 1,
+                pivot: Vec3::new(0.5, 0.0, 0.0),
+            },
+            Joint {
+                bone: 3,
+                pivot: Vec3::new(0.1, 0.0, 0.0),
+            },
+        ];
+        // A parent point at 1 cm: 1 < 100 beats joint 1's 100 cm².
         let parents = [Joint {
             bone: 2,
             pivot: Vec3::new(0.01, 0.0, 0.0),
         }];
         match_apparel_with_context(&mut groups, &own, &parents);
-        assert_eq!(groups[0].bone(&own), 2);
-        assert_eq!(groups[0].joint, None);
-        // A nearer own joint keeps the group.
+        assert_eq!(groups[0].joint, Some(0));
+        assert_eq!(groups[0].bone(&own), 1);
+        // A parent point at 1 m changes nothing: joint 1 is nearest.
         let parents = [Joint {
             bone: 2,
             pivot: Vec3::new(1.0, 0.0, 0.0),
         }];
         match_apparel_with_context(&mut groups, &own, &parents);
-        assert_eq!(groups[0].bone(&own), 1);
-        assert_eq!(groups[0].joint, Some(0));
+        assert_eq!(groups[0].joint, Some(1));
+        // No parents is the plain matching.
+        let mut plain = [Group {
+            centre: Vec3::ZERO,
+            ..Group::default()
+        }];
+        match_apparel(&mut plain, &own);
+        assert_eq!(plain[0].joint, Some(1));
     }
 
     /// The group stack keeps sixteen frames; the seventeenth is refused and
