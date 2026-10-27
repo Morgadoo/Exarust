@@ -11,6 +11,9 @@
 //!   lengths sum, the scale is that sum × 0.0125 (in double precision) and
 //!   the inverse is the square root of 80 over the sum (single precision).
 //!   The amount and the tag start at 0. The return is the 1-based index.
+//! - **Releasing a part's spot** ([`release_part`]): a body that is not a
+//!   limb (a held weapon) and still holds a 1-based slot releases it and
+//!   takes 0; a limb's slot is left alone.
 //! - **Clearing the count** ([`WeaponBlood::clear_count`]) drops every spot;
 //!   the array memory is reused on the next add.
 //! - **Clearing a spot** ([`WeaponBlood::clear`]) drops its source, amount
@@ -88,6 +91,18 @@ impl WeaponBlood {
         }
     }
 
+    /// Releases the spot a part leaves the world with: only a body that is
+    /// not a limb (a held weapon) releases a 1-based `slot`, and the part's
+    /// slot becomes 0. A limb keeps its slot.
+    pub fn release_part(&mut self, part_is_limb: bool, slot: usize) -> usize {
+        if !part_is_limb && slot > 0 {
+            self.clear(slot);
+            0
+        } else {
+            slot
+        }
+    }
+
     /// Adds blood to the spot at the original's 1-based `index`, keeping the
     /// amount within 0 through 1.
     pub fn add_amount(&mut self, index: usize, delta: f32) {
@@ -146,5 +161,17 @@ mod tests {
 
         blood.clear_count();
         assert!(blood.spots.is_empty());
+    }
+
+    #[test]
+    fn a_leaving_weapon_releases_its_spot_but_a_limb_does_not() {
+        let mut blood = WeaponBlood::default();
+        blood.add(7, 40.0, 40.0, false);
+        assert_eq!(blood.release_part(true, 1), 1);
+        assert_eq!(blood.spots[0].source, Some(7));
+        assert_eq!(blood.release_part(false, 1), 0);
+        assert_eq!(blood.spots[0].source, None);
+        // A part with no slot keeps 0.
+        assert_eq!(blood.release_part(false, 0), 0);
     }
 }
