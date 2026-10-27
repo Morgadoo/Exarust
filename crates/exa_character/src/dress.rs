@@ -324,12 +324,12 @@ mod tests {
         assert_eq!(first_apparel(&steps, |_| vec![]), None);
     }
 
-    /// The shipped human body and a plate helm, assembled as the builder
-    /// does: the helm's head nodes are chosen, the body's head is hidden,
-    /// and the helmet merges after the body's visible slots (skipped when
-    /// the game is not installed).
+    /// The shipped human body and a helm (item 3, `helm_b`), assembled as
+    /// the builder does: the helm's head node is chosen and merged first,
+    /// then the body's slots in slot order (skipped when the game is not
+    /// installed).
     #[test]
-    fn the_shipped_human_dresses_in_the_plate_helm() {
+    fn the_shipped_human_dresses_in_a_helm() {
         let Some(dir) = exa_assets::locate_install(None) else {
             return;
         };
@@ -341,7 +341,8 @@ mod tests {
                 .iter()
                 .map(|n| Node {
                     name: n.name.clone(),
-                    parent: n.parent,
+                    // The scene's parents are 1-based.
+                    parent: n.parent.map(|p| p - 1),
                     chunk_kind: if n.kind == exa_formats::rfc::NODE_MESH {
                         MESH
                     } else {
@@ -360,7 +361,7 @@ mod tests {
         table[1..=18].copy_from_slice(&filled[..18]);
         assert_eq!(
             table[9].map(|i| body.nodes[i].name.clone()).as_deref(),
-            Some("0900Chest")
+            Some("09Chest")
         );
         let mut slot_world = [None; 19];
         for slot in 1..=18 {
@@ -369,13 +370,13 @@ mod tests {
         let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
         let items = exa_formats::objdb::items(&db);
         let helm = items.iter().find(|i| i.id == 3).unwrap();
-        assert_eq!(helm.worn_model.to_ascii_lowercase(), "armet___ba1");
+        assert_eq!(helm.worn_model.to_ascii_lowercase(), "helm_b");
         let chars = game.pack(exa_assets::PackKind::Characters).unwrap();
         let garment = exa_formats::rfc::Scene::parse(chars.get(&helm.worn_model).unwrap()).unwrap();
         let base = body.nodes.len();
         for (i, n) in from_scene(&garment.nodes).into_iter().enumerate() {
             let mut n = n;
-            n.parent = garment.nodes[i].parent.map(|p| p + base);
+            n.parent = garment.nodes[i].parent.map(|p| p - 1 + base);
             body.nodes.push(n);
         }
         body.refresh_links();
@@ -388,25 +389,36 @@ mod tests {
             })
             .fold(0, |m, slot| m | crate::layers::slot_bit(slot));
         let mut words = [0u64; 18];
+        let mut occupancy = [0u64; 18];
         for slot in 1..=18 {
             words[slot - 1] = helm.slot_word(slot);
+            occupancy[slot - 1] = helm.occupancy[slot - 1];
         }
         let worn = WornGarment {
             roots: vec![base],
-            occupancy: words,
+            occupancy,
             coverage: words,
             slots,
             material: helm.armour.map_or(0, |a| a.material),
         };
         let plan = dress(&body, 0, &[worn], &table);
-        assert!(!plan.steps.is_empty());
-        // The helm covers the head on every layer: the body's head is not
-        // merged and the helm's nodes are.
+        // The helm's head word is 0x83 on every layer: the body's own head
+        // slot bit is hidden, but the head's select mask keeps its partial
+        // bits, so the body's head still merges, after the helm.
+        assert_eq!(words[9] & 0xFF, 0x83);
         assert_eq!(plan.body_visible & slot_bit(10), 0);
-        assert_eq!(plan.body_slots & slot_bit(10), 0);
-        assert!(plan.steps.iter().any(|s| s.node >= base));
+        assert_ne!(plan.body_slots & slot_bit(10), 0);
         assert_eq!(plan.garments[0].chosen[10].map(|i| i >= base), Some(true));
-        // The slots' impact material is the helm's own.
+        assert!(plan.steps[0].node >= base);
+        assert_eq!(plan.steps.len(), 1 + 18);
+        // The body follows in slot order.
+        let body_order: Vec<usize> = plan.steps[1..]
+            .iter()
+            .map(|s| body.nodes[s.node].slot)
+            .collect();
+        assert_eq!(body_order, (1..=18).collect::<Vec<_>>());
+        // The head's impact material is the helm's own (plate, 4).
+        assert_eq!(helm.armour.unwrap().material, 4);
         assert_eq!(plan.slot_material[9], helm.armour.unwrap().material);
     }
 }
