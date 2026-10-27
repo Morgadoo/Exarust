@@ -72,6 +72,57 @@ pub const CLASSES: [ControlClass; 7] = [
     },
 ];
 
+/// The five classes the item GUI registers when its unit starts: the
+/// rating dots, the value slider, the coin value, the crystal-socket row
+/// and the item-icon cell. Their default sizes are the records' (0, 24),
+/// (72, 24), (128, 24), (0, 28) and (160, 160).
+pub const ITEM_CLASSES: [ControlClass; 5] = [
+    ControlClass {
+        id: 0xac01,
+        name: "rating dots",
+        size: (0, 24),
+        style: 0,
+        picture: false,
+    },
+    ControlClass {
+        id: 0xac02,
+        name: "slider",
+        size: (72, 24),
+        style: 0,
+        picture: false,
+    },
+    ControlClass {
+        id: 0xac03,
+        name: "coin value",
+        size: (128, 24),
+        style: 0,
+        picture: false,
+    },
+    ControlClass {
+        id: 0xac04,
+        name: "crystal sockets",
+        size: (0, 28),
+        style: 0,
+        picture: false,
+    },
+    ControlClass {
+        id: 0xac05,
+        name: "item icon",
+        size: (160, 160),
+        style: 0,
+        picture: false,
+    },
+];
+
+/// Registers the item GUI's five classes after the shipped ones, in the
+/// order the item unit registers them, and returns how many were added.
+pub fn register_item_classes(classes: &mut Vec<ControlClass>) -> usize {
+    for class in ITEM_CLASSES {
+        register_class(classes, class);
+    }
+    ITEM_CLASSES.len()
+}
+
 /// The class with `id`.
 pub fn class(id: u16) -> Option<&'static ControlClass> {
     CLASSES.iter().find(|c| c.id == id)
@@ -919,6 +970,23 @@ impl ClassRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_item_classes_come_after_the_shipped_ones() {
+        let mut registry = ClassRegistry::shipped();
+        assert_eq!(register_item_classes(&mut registry.classes), 5);
+        assert_eq!(
+            registry.classes[7..]
+                .iter()
+                .map(|c| c.id)
+                .collect::<Vec<_>>(),
+            [0xac01, 0xac02, 0xac03, 0xac04, 0xac05]
+        );
+        assert_eq!(registry.find(0xac02).map(|c| c.size), Some((72, 24)));
+        assert_eq!(registry.find(0xac03).map(|c| c.size), Some((128, 24)));
+        assert_eq!(registry.find(0xac04).map(|c| c.size), Some((0, 28)));
+        assert_eq!(registry.find(0xac05).map(|c| c.size), Some((160, 160)));
+    }
 
     #[test]
     fn the_classes_and_their_defaults() {

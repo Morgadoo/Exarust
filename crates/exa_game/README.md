@@ -466,8 +466,15 @@ its tint, clamps and layouts; the container record and character-list
 codecs, both total and round-tripping; loads, saves, drops, drag ends,
 rescaling, painting and the icon-alpha hit test; add-at-centre, replace,
 held marks and the torn-out AR crystal trigger; the item card's request,
-its 200 ms delay timer and its description box. The panel is not drawn or bound to an
-input form yet; the running game has no inventory screen to host it.
+its 200 ms delay timer and its description box. The panel's icons are drawn through the GUI path (`item_panel_draw`): the
+manager's atlas and cache are a resource, each visible entry is drawn at its
+cell in the item panel's highlight program with its flags' tint, and the
+inventory screen submits the layer over its pack panel. No item renderer
+fills the atlas yet, so the panel is empty in the running game. The card
+window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
+close fade; a double click classifies a container's open, a non-use and a
+use; a popup's inner panel and top are `open_container`'s. The inventory
+screen still has no bound item list.
 
 The gamepad (`gamepad`) reproduces the original's Steam Input action sets on
 Bevy's gamepad backend instead of Steam: the menu set and the interact and

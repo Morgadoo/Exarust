@@ -766,6 +766,67 @@ pub fn shield_content(
     }
 }
 
+/// The control a card's value row uses.
+pub const VALUE_CONTROL: u32 = 0xa01;
+
+/// The values the card refresh writes into an open weapon card: the three
+/// striking rows (when the side's bytes are not 0), thrust, and the value.
+/// The weight, handling and balance rows are not refreshed.
+pub fn weapon_refresh(slash: u8, crush: u8, pierce: u8, thrust: u8, value: u32) -> Vec<(u32, f32)> {
+    let side = [slash, crush, pierce];
+    let mut out: Vec<(u32, f32)> = side
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte != 0)
+        .map(|(row, byte)| (0xd03 + row as u32, *byte as f32 * 0.05))
+        .collect();
+    out.push((0x106, thrust as f32 * 0.05));
+    out.push((VALUE_CONTROL, value as f32));
+    out
+}
+
+/// The values the card refresh writes into an open apparel card: the
+/// weight, impact, the three striking rows, encumbrance (8 when its byte is
+/// 0xa1 or above) and the value.
+pub fn apparel_refresh(
+    weight: u8,
+    impact: u8,
+    slash: u8,
+    crush: u8,
+    pierce: u8,
+    encumbrance: u8,
+    value: u32,
+) -> Vec<(u32, f32)> {
+    let mut out = vec![
+        (0x101, weight as f32 * 0.05),
+        (0x102, impact as f32 * 0.05),
+        (0xd03, slash as f32 * 0.05),
+        (0xd04, crush as f32 * 0.05),
+        (0xd05, pierce as f32 * 0.05),
+    ];
+    out.push((
+        0x107,
+        if encumbrance < 0xa1 {
+            encumbrance as f32 * 0.05
+        } else {
+            8.0
+        },
+    ));
+    out.push((VALUE_CONTROL, value as f32));
+    out
+}
+
+/// Applies a refreshed value to the row with `control`; true when the card
+/// has that row.
+pub fn refresh_row(rows: &mut [CardRow], control: u32, value: f32) -> bool {
+    if let Some(row) = rows.iter_mut().find(|row| row.control == control) {
+        row.value = value;
+        true
+    } else {
+        false
+    }
+}
+
 /// One description phrase and the inclusive byte range that may use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phrase<'a> {
@@ -2048,5 +2109,36 @@ mod tests {
         assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x7f00_0000);
         assert_eq!(blend_colour(0x1020_3040, 0x1020_3040, 0.7), 0x1020_3040);
         assert_eq!(CARD_CONTROL_STRIDE, 104);
+    }
+
+    #[test]
+    fn a_card_refreshes_its_open_rows() {
+        assert_eq!(
+            weapon_refresh(10, 0, 40, 60, 7),
+            vec![(0xd03, 0.5), (0xd05, 2.0), (0x106, 3.0), (0xa01, 7.0)]
+        );
+        assert_eq!(
+            apparel_refresh(20, 5, 6, 0, 100, 0xa1, 3),
+            vec![
+                (0x101, 1.0),
+                (0x102, 0.25),
+                (0xd03, 0.3),
+                (0xd04, 0.0),
+                (0xd05, 5.0),
+                (0x107, 8.0),
+                (0xa01, 3.0),
+            ]
+        );
+        assert_eq!(apparel_refresh(0, 0, 0, 0, 0, 0xa0, 0)[5], (0x107, 8.0));
+        assert!((apparel_refresh(0, 0, 0, 0, 0, 0x9f, 0)[5].1 - 7.95).abs() < 1e-5);
+        let mut rows = vec![CardRow {
+            control: 0xd03,
+            label: "Slash",
+            value: 0.5,
+        }];
+        assert!(refresh_row(&mut rows, 0xd03, 1.5));
+        assert_eq!(rows[0].value, 1.5);
+        assert!(!refresh_row(&mut rows, 0x106, 3.0));
+        assert_eq!(VALUE_CONTROL, 0xa01);
     }
 }

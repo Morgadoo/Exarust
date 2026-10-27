@@ -692,6 +692,9 @@ mod tests {
     #[test]
     fn the_popup_inner_panel() {
         assert_eq!(popup_inner(10, 6, 4, 4), (48, 32));
+        let form = Container::form(4);
+        assert_eq!((form.unit, form.icon_size), (4, 160));
+        assert_eq!(Container::form(2).icon_size, 80);
         let plan = open_container(false, Some((10, 6)), 4, 4, 160).unwrap();
         assert_eq!(plan.inner, (48, 32));
         assert_eq!(plan.inner_top, 6 * 4 + 160);
@@ -1374,6 +1377,18 @@ pub struct DropDrag {
 }
 
 impl Container {
+    /// The panel's constructor for a GUI unit: forty-unit icons, the
+    /// constructor's flags and style (the caller builds the form with
+    /// [`FORM_FLAGS`] and [`STYLE`]) and the vertical scale 1. A unit below
+    /// 1 keeps the icon at 0, as the manager's size would.
+    pub fn form(unit: i32) -> Self {
+        Self {
+            icon_size: exa_items::icon_cache::icon_size(unit.max(0)),
+            unit,
+            ..Self::default()
+        }
+    }
+
     /// Releases every entry's icon (the destroy path), leaving the entries'
     /// places and items in place.
     pub fn release_all_icons<F>(&mut self, mut release: F)

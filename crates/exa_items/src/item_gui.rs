@@ -772,6 +772,29 @@ pub fn sheet_cell(atlas: &SheetAtlas, unit: i32) -> Option<i32> {
     atlas.manager.map(|manager| manager_cell(manager, unit))
 }
 
+/// One sheet cell's source rectangle: its top-left and its side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetCellRect {
+    pub x: i32,
+    pub y: i32,
+    pub side: i32,
+}
+
+/// The source rectangle of a sheet's cell `index`; `None` past its cells.
+/// The places are the corners the sheet stores (bottom row first), so the
+/// cropped image is taken there and stored as the manager's cell.
+pub fn sheet_cell_rect(sheet: &SpriteSheet, index: usize) -> Option<SheetCellRect> {
+    if index >= sheet.cells as usize {
+        return None;
+    }
+    let (x, y) = *sheet.places.get(index)?;
+    Some(SheetCellRect {
+        x,
+        y,
+        side: sheet.cell,
+    })
+}
+
 /// The item panel's icon shader, as the original's program compiles it.
 ///
 /// The program sums the alpha of a ring around the pixel (three pixels
@@ -837,50 +860,6 @@ pub fn item_icon_pixel(
         (a + texel[3]).min(1.0) * ink[3],
     ]
 }
-
-/// The item GUI's five control classes, registered with the GUI's control
-/// table in the original: the rating dots, the value slider, the coin
-/// value, the crystal-socket row and the item-icon cell, each with the
-/// procedure that answers its events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ControlClass {
-    pub class: u16,
-    pub control: ControlKind,
-}
-
-/// Which item-GUI control a class is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlKind {
-    RatingDots,
-    Slider,
-    CoinValue,
-    Sockets,
-    IconCell,
-}
-
-/// The control classes, in the order the original registers them.
-pub const CONTROL_CLASSES: [ControlClass; 5] = [
-    ControlClass {
-        class: 0xac01,
-        control: ControlKind::RatingDots,
-    },
-    ControlClass {
-        class: 0xac02,
-        control: ControlKind::Slider,
-    },
-    ControlClass {
-        class: 0xac03,
-        control: ControlKind::CoinValue,
-    },
-    ControlClass {
-        class: 0xac04,
-        control: ControlKind::Sockets,
-    },
-    ControlClass {
-        class: 0xac05,
-        control: ControlKind::IconCell,
-    },
-];
 
 #[cfg(test)]
 mod tests {
@@ -1152,6 +1131,23 @@ mod tests {
         );
         assert_eq!(SPRITE_SHEETS[1].places, &[(0, 0), (48, 0), (96, 0)]);
         assert_eq!(SPRITE_SHEETS[2].places, &[(0, 96), (96, 96), (192, 96)]);
+        assert_eq!(
+            sheet_cell_rect(&SPRITE_SHEETS[0], 1),
+            Some(SheetCellRect {
+                x: 0,
+                y: 64,
+                side: 64
+            })
+        );
+        assert_eq!(
+            sheet_cell_rect(&SPRITE_SHEETS[1], 2),
+            Some(SheetCellRect {
+                x: 96,
+                y: 0,
+                side: 48
+            })
+        );
+        assert_eq!(sheet_cell_rect(&SPRITE_SHEETS[3], 6), None);
     }
 
     #[test]
@@ -1194,18 +1190,6 @@ mod tests {
         assert_eq!(p, [0.1, 0.15, 0.2, 0.25]);
         assert_eq!(HLT_OFFSETS[0], (-3, 0));
         assert_eq!(HLT_OFFSETS[7], (2, 2));
-    }
-
-    #[test]
-    fn the_control_classes_are_registered_in_order() {
-        assert_eq!(CONTROL_CLASSES.len(), 5);
-        assert_eq!(CONTROL_CLASSES[0].class, 0xac01);
-        assert_eq!(CONTROL_CLASSES[0].control, ControlKind::RatingDots);
-        assert_eq!(CONTROL_CLASSES[1].control, ControlKind::Slider);
-        assert_eq!(CONTROL_CLASSES[2].control, ControlKind::CoinValue);
-        assert_eq!(CONTROL_CLASSES[3].control, ControlKind::Sockets);
-        assert_eq!(CONTROL_CLASSES[4].class, 0xac05);
-        assert_eq!(CONTROL_CLASSES[4].control, ControlKind::IconCell);
     }
 
     #[test]

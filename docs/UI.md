@@ -1727,8 +1727,10 @@ pass a sixth level read the next skill's bytes, as the original's do.
 ## Item windows
 
 The item GUI's rules, read by REA from the original's item panel, icon
-cache, inventory, arsenal and item-card code. None of these windows is
-drawn yet: the rules wait for the forms that will show them.
+cache, inventory, arsenal and item-card code. The running inventory screen
+paints its pack panel and, when the item manager's icon atlas has icons,
+the pack's icons through the GUI draw path (below); no item renderer fills
+that atlas yet, and the other windows wait for their forms.
 
 - **Panel entries** (`exa_game::item_container`): an entry is drawn
   unless it is dragged, held (`0x100`, the item in a hand) or has no icon,
@@ -1795,11 +1797,38 @@ drawn yet: the rules wait for the forms that will show them.
   for a balance byte up to 100, `(w·0.004 + 0.1)/1.04` above, in the
   original's mixed precision; a weapon flagged `0x6000000` shows weight 1,
   handling 5 and balance 0. Strike rows show above 5 and scale by 0.05;
-  apparel rows above 0.25; coverage always. The striking side's shown rows
-  (slash, crush, pierce) fill the card's rows from the first. A
+  apparel rows above 0.25 and its weight always. The striking side's shown
+  rows (slash, crush, pierce) fill the card's rows from the first. A
   description's pronoun marker names `HeShe`, `HimHer`, `HisHer` or
   `HisHers`, giving he/she, him/her, his/her or his/hers by the owner's
-  sex bit; the description box sits `0xb4` pixels below the page's top.
+  sex bit; the description box sits `0xb4` pixels below the page's top,
+  4 pixels in, the page's width less twice the border and 8, and is first
+  `0xa0` tall. Refreshing an open card rewrites the strike rows (slash,
+  crush and pierce at their control ids with a zero-byte row left out),
+  thrust (0x106) and the value (0xa01); the apparel refresh also rewrites
+  weight (0x101), impact (0x102), the strike rows (0xd03–0xd05) and
+  encumbrance (0x107, 8 at a byte of 0xa1 or above).
+- **Card content and window** (`exa_items::card`,
+  `exa_game::item_container::CardWindow`): the weapon page's rows use
+  controls 0x101–0x103 for weight, handling and balance, the shown strike
+  rows continue 0xd03 upwards and thrust is 0x106; the material, socket,
+  rank, points and value rows add 0x14, 0x18, 0x14, 0x14 and 0x18 to the
+  page's height. The apparel page's impact row is 0x102 and its
+  encumbrance 0x107; the shield page shows 1, 0.05·byte and 8 (fixed) or
+  the bytes' 0.01/0.05/0.05. The title's tint runs between the palette's
+  low, middle and high words by the condition byte, over the low-to-middle
+  pair below 0x80 and the middle-to-high pair above, with factors
+  1/127 and 1/128 in opposite orders for weapons and apparel (a model
+  whose flags carry bit 2 maps the whole byte). A request is delayed
+  200 ms; a close cancels a pending request, otherwise an open card fades
+  over 0x100 ms, and a request while one is pending drops it. A double
+  click's use class 0 opens a container (and does nothing for anything
+  else), class 1 does nothing, and a class above 1 runs the game's use
+  hook. An already-open popup is refocused; a new one is sized from its
+  record (`2·border + cells·unit`) with its inner panel six units plus the
+  icon down. The five special controls register after the shipped ones:
+  rating dots (0, 24), slider (72, 24), coin value (128, 24), crystal
+  sockets (0, 28) and item icon (160, 160).
 - **Inventory** (`exa_items::inventory_window`): 244 wide and 644 high (628
   compact, 590 inside the arsenal), the doll above a 228 × 180 pack at the
   bottom of the client area, of capacity 400 and items up to 50; only what
@@ -1823,7 +1852,21 @@ drawn yet: the rules wait for the forms that will show them.
   and crystal sockets; a popup opens centred on the cursor, its bottom 8
   units below it. The four socket sheets (`dotrating.rfi`,
   `coinicons.rfi`, `wpnflpgrpico.rfi`, `crystalicons.rfi`) keep their
-  three, three, three and six cells. A socket row hovers by fifths of a
+  three, three, three and six cells; the rating dots are stored down the
+  sheet at (0, 128), (0, 64) and (0, 0), the coins across at (0, 0),
+  (48, 0) and (96, 0), the grip sides at (0, 96), (96, 96) and (192, 96),
+  and the crystals at (0, 128), (64, 128), (0, 64), (0, 0), (64, 0) and
+  (64, 64). The coins draw into a `4·unit` manager in the colour format,
+  the grip sides into an `8·unit` one in the single-channel format and the
+  crystals into a 22-pixel one; all blend 0x203.
+- **Panel drawing** (`exa_game::item_panel_draw`): every visible entry is
+  drawn at its stored cell from the manager's atlas through the item
+  panel's own program, tinted by its highlight masks (green, yellow at
+  half alpha, both green at half alpha, else black). The program
+  (`exa_ui::skin::SkinMode::HltCol`) sums a ring of eight neighbouring
+  alphas, scales it by the vertex's green and 0.75, mixes the highlight
+  (1, 0.75, 0.45) to white by the vertex's red, adds the glow over the
+  pixel by the square of its transparency and applies the vertex alpha. A socket row hovers by fifths of a
   unit, takes only crystals 431, 451, 452 and 499, shows a crystal's card
   on a right click and starts its drag on a drag, and hands the previous
   crystal back when one replaces it; a finished drag clears the socket's
