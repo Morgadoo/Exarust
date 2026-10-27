@@ -307,7 +307,7 @@ pub const CORPSE_CONDITION: u32 = 0xA00;
 
 /// The body flag a spawn sets on the model it built.
 pub const SPAWNED: u32 = 0x1000_0000;
-/// The condition-flags word a lying spawn writes (`0xdf8`).
+/// The condition-flags word a lying spawn writes.
 pub const LYING_FLAGS: u32 = 0x1000;
 /// The stance a spawn resets to before it sets the record's own (none).
 pub const NO_STANCE: i32 = -1;
@@ -426,8 +426,10 @@ pub struct CorpseSpawn {
     pub condition: u32,
     pub pose: PoseSource,
     pub model_flags: u32,
-    /// The "asleep/limp" byte and the "down" float it clears.
+    /// The spawn clears the body's limp byte (always true: a corpse spawn
+    /// writes it to zero).
     pub limp: bool,
+    /// The "down" float it writes: zero.
     pub down: f32,
 }
 

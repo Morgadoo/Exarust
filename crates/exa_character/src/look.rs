@@ -147,6 +147,7 @@ pub fn beard_textures(index: usize) -> Option<[String; 2]> {
 /// profession bit `0x10000`: `harhps1…` by default and `harhpc1…` for the
 /// variant. Only the `S` set ships in `CharExt.rpk`; the variant's maps are
 /// absent, so the material keeps the maps the style's own material names.
+/// The creation preview's hair material always names the `C` set.
 pub fn hair_textures(light_variant: bool) -> [&'static str; 3] {
     if light_variant {
         ["harhpc1d", "harhpc1n", "harhpc1g"]
