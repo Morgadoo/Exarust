@@ -692,6 +692,59 @@ mod tests {
     #[test]
     fn the_popup_inner_panel() {
         assert_eq!(popup_inner(10, 6, 4, 4), (48, 32));
+        let plan = open_container(false, Some((10, 6)), 4, 4, 160).unwrap();
+        assert_eq!(plan.inner, (48, 32));
+        assert_eq!(plan.inner_top, 6 * 4 + 160);
+        assert_eq!(open_container(true, Some((10, 6)), 4, 4, 160), None);
+        assert_eq!(open_container(false, None, 4, 4, 160), None);
+    }
+
+    #[test]
+    fn the_card_window_delays_opens_and_fades() {
+        let mut card = CardWindow::default();
+        card.toggle(9, 0x400, 1000);
+        assert_eq!(card.build_due(1199), None);
+        assert_eq!(card.build_due(1200), Some((9, 0x400)));
+        assert!(card.open && card.shown(1200));
+        assert_eq!(card.fade(1200), 1.0);
+        // A second request cancels the open card, then closes.
+        assert_eq!(card.close(1300), CardClose::Fading(1300 + 0x100));
+        assert!(card.shown(1555));
+        assert!(!card.shown(1556));
+        assert_eq!(card.fade(1300 + 0x80), 0.5);
+        assert_eq!(card.close(1400), CardClose::Nothing);
+        // A pending request is cancelled instead.
+        let mut card = CardWindow::default();
+        card.toggle(1, 0, 0);
+        assert_eq!(card.close(10), CardClose::Cancelled);
+        assert_eq!(card.build_due(500), None);
+        // The toggle drops the open card when one was pending.
+        let mut card = CardWindow {
+            open: true,
+            due: Some(5),
+            ..Default::default()
+        };
+        card.toggle(2, 0, 0);
+        assert!(!card.open);
+        assert_eq!(card.due, Some(CARD_DELAY_MS));
+    }
+
+    #[test]
+    fn a_double_click_opens_uses_or_does_nothing() {
+        assert_eq!(double_click(0, true), DoubleClick::OpenContainer);
+        assert_eq!(double_click(0, false), DoubleClick::Nothing);
+        assert_eq!(double_click(1, true), DoubleClick::Nothing);
+        assert_eq!(double_click(2, false), DoubleClick::UseItem);
+        assert_eq!(double_click(7, true), DoubleClick::UseItem);
+    }
+
+    #[test]
+    fn the_card_text_box_sits_under_the_content() {
+        let b = card_text_box(300, 400, 2);
+        assert_eq!(b.x, 4);
+        assert_eq!(b.y, 300 + 0xb4);
+        assert_eq!(b.width, 400 - 4 - 8);
+        assert_eq!(b.height, 0xa0);
     }
 }
 
@@ -1938,6 +1991,173 @@ impl CardTimer {
         } else {
             None
         }
+    }
+}
+
+/// The card window's fade: a card closes over 0x100 ms.
+pub const CARD_FADE_MS: u32 = 0x100;
+
+/// The card window's state: the request's item and flags, the delayed build,
+/// whether a card is shown, and when its close fade began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CardWindow {
+    pub item: u32,
+    pub flags: u32,
+    /// The real-time millisecond the delayed build comes due.
+    pub due: Option<u32>,
+    pub open: bool,
+    /// The millisecond the close fade began, while closing.
+    pub closing: Option<u32>,
+}
+
+/// What closing a card window did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardClose {
+    /// A pending build was cancelled and no card was open.
+    Cancelled,
+    /// The open card began its close fade at this millisecond.
+    Fading(u32),
+    /// Nothing was pending or open.
+    Nothing,
+}
+
+impl CardWindow {
+    /// The card request: a pending build is cancelled, the item and flags
+    /// are remembered, and the build is scheduled [`CARD_DELAY_MS`] later.
+    /// The original also drops its pointer to an open card here.
+    pub fn toggle(&mut self, item: u32, flags: u32, now: u32) {
+        if self.due.take().is_some() {
+            self.open = false;
+        }
+        self.item = item;
+        self.flags = flags;
+        self.due = Some(now.wrapping_add(CARD_DELAY_MS));
+    }
+
+    /// Builds the card once the delay has passed; `None` while it has not.
+    /// A built card is open until a close begins.
+    pub fn build_due(&mut self, now: u32) -> Option<(u32, u32)> {
+        let due = self.due?;
+        if (now.wrapping_sub(due) as i32) < 0 {
+            return None;
+        }
+        self.due = None;
+        self.open = true;
+        self.closing = None;
+        Some((self.item, self.flags))
+    }
+
+    /// Closes the card: a pending build is cancelled; otherwise an open
+    /// card starts its [`CARD_FADE_MS`] fade. An open card is not closed
+    /// twice.
+    pub fn close(&mut self, now: u32) -> CardClose {
+        if self.due.take().is_some() {
+            return CardClose::Cancelled;
+        }
+        if self.open && self.closing.is_none() {
+            self.closing = Some(now);
+            return CardClose::Fading(now.wrapping_add(CARD_FADE_MS));
+        }
+        CardClose::Nothing
+    }
+
+    /// Whether the card is drawn at `now`: open and not past its fade.
+    pub fn shown(&self, now: u32) -> bool {
+        if !self.open {
+            return false;
+        }
+        match self.closing {
+            Some(start) => now.wrapping_sub(start) < CARD_FADE_MS,
+            None => true,
+        }
+    }
+
+    /// The card's shown share at `now`, from 0 to 1 over the close fade.
+    pub fn fade(&self, now: u32) -> f32 {
+        match self.closing {
+            Some(start) if self.open => {
+                (1.0 - now.wrapping_sub(start) as f32 / CARD_FADE_MS as f32).clamp(0.0, 1.0)
+            }
+            _ => f32::from(u8::from(self.open)),
+        }
+    }
+}
+
+/// What a double click on a panel entry does: the item's use class decides.
+/// Class 0 opens a container (and does nothing for anything else); classes
+/// 0 and 1 close an open card; a class above 1 runs the game's use hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoubleClick {
+    OpenContainer,
+    UseItem,
+    Nothing,
+}
+
+/// The double click's decision for a use class and whether the item has a
+/// container section.
+pub fn double_click(use_class: u8, is_container: bool) -> DoubleClick {
+    if use_class == 0 {
+        if is_container {
+            DoubleClick::OpenContainer
+        } else {
+            DoubleClick::Nothing
+        }
+    } else if use_class == 1 {
+        DoubleClick::Nothing
+    } else {
+        DoubleClick::UseItem
+    }
+}
+
+/// An opened container's popup: its inner panel's width and height and
+/// where the panel's top is inside the popup, from the record's size in
+/// cells, the GUI unit and the popup's border.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PopupPlan {
+    pub inner: (i32, i32),
+    /// The inner panel's top: six units plus the icon's size.
+    pub inner_top: i32,
+}
+
+/// Opening a container: an already-open popup of the same container is
+/// refocused and returns `None`; otherwise its panel is sized from the
+/// record's cell size, `2 · border + cells · unit` each way. A container
+/// with no record opens nothing.
+pub fn open_container(
+    already_open: bool,
+    record: Option<(u16, u16)>,
+    unit: i32,
+    border: i32,
+    icon_size: i32,
+) -> Option<PopupPlan> {
+    if already_open {
+        return None;
+    }
+    let (x, y) = record?;
+    Some(PopupPlan {
+        inner: popup_inner(x, y, unit, border),
+        inner_top: unit * 6 + icon_size,
+    })
+}
+
+/// A card's description box: 4 pixels in from the card's left, `0xb4`
+/// pixels below the card's content, the card's width less twice its border
+/// and twice the 4-pixel margin, and `0xa0` tall before the builder sizes
+/// it to its lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardTextBox {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+pub fn card_text_box(content_height: i32, card_width: i32, border: i32) -> CardTextBox {
+    CardTextBox {
+        x: CARD_TEXT_MARGIN,
+        y: content_height + CARD_TEXT_TOP,
+        width: card_text_width(card_width, border),
+        height: CARD_TEXT_HEIGHT,
     }
 }
 
