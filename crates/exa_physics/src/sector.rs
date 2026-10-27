@@ -743,36 +743,67 @@ pub const BODY_LIVE: u32 = 0x1000_0000;
 pub const BODY_STATIC: u32 = 0x2000_0000;
 
 /// The registration decision for one scene node ([`Registration`]):
-/// `flags` is the node's runtime flag word, `state` its body's/controller's
-/// state word (0 without one), `has_body` whether it carries a body, and
-/// `body_flags` the body's own first word (bit `0x10000` = already built).
-pub fn registration(flags: u32, state: u32, has_body: bool, body_flags: u32) -> Registration {
+/// `flags` is the node's runtime flag word, `body_state` its body's state
+/// word, `has_body` whether it carries a body, `body_flags` the body's own
+/// first word (bit `0x10000` = already built) and `node_class` the node's
+/// class word (bit `0x200000` marks a simulated object).
+pub fn registration(
+    flags: u32,
+    body_state: u32,
+    has_body: bool,
+    body_flags: u32,
+    node_class: u32,
+) -> Registration {
     if flags & NODE_BODY_FLAGS == 0x1_0000 {
         if !has_body {
             return Registration::None;
         }
-        if state & BODY_LIVE != 0 {
+        if body_state & BODY_LIVE != 0 {
             if body_flags & 0x1_0000 == 0 {
                 Registration::Body
             } else {
                 Registration::GridOnly
             }
-        } else if state & BODY_STATIC != 0 {
+        } else if body_state & BODY_STATIC != 0 {
             Registration::Static
         } else {
             Registration::None
         }
     } else if flags & 0x89 == 0x89 {
-        // The original also asks the node's class word for 0x200000 here;
-        // only a simulated object carries it. Without that word a node of
-        // these flags registers nothing.
-        if state & 0x20_0000 != 0 {
+        if node_class & 0x20_0000 != 0 {
             Registration::SimObject
         } else {
             Registration::None
         }
     } else {
         Registration::None
+    }
+}
+
+/// The impact sound scales the original's registration derives from a
+/// body's mobility (after the material divisor): the impact reaction
+/// class bit, the reciprocal of the squared sound factor and the sound
+/// factor itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImpactScale {
+    /// Whether the body's material has a collision sound, which sets the
+    /// class bit `0x40000` (only such bodies take the impact call).
+    pub reactions: bool,
+    /// `1/v²`, the factor the impact's sound volume is squared by.
+    pub squared_reciprocal: f32,
+    /// `(√v + v)/2`, the mean of the sound factor and its root.
+    pub volume: f32,
+}
+
+/// [`ImpactScale`] for a mobility and whether the node's first mesh part has
+/// a material collision sound: `v = min(2m, 1) + 1` with the processor's
+/// minimum (so a NaN mobility gives 2).
+pub fn impact_scale(mobility: f32, has_sound: bool) -> ImpactScale {
+    let v = min_first(mobility * 2.0, 1.0) + 1.0;
+    ImpactScale {
+        reactions: has_sound,
+        squared_reciprocal: 1.0 / (v * v),
+        volume: (v.sqrt() + v) * 0.5,
     }
 }
 

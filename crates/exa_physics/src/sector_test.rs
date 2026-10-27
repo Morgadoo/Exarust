@@ -515,29 +515,51 @@ fn simulated_objects_step_and_sleep_by_their_state() {
 #[test]
 fn node_flags_decide_what_registers() {
     assert_eq!(
-        registration(0x1_0000, 0x1000_0000, true, 0),
+        registration(0x1_0000, 0x1000_0000, true, 0, 0),
         Registration::Body
     );
     assert_eq!(
-        registration(0x1_0000, 0x1000_0000, true, 0x1_0000),
+        registration(0x1_0000, 0x1000_0000, true, 0x1_0000, 0),
         Registration::GridOnly
     );
     assert_eq!(
-        registration(0x1_0000, 0x2000_0000, true, 0),
+        registration(0x1_0000, 0x2000_0000, true, 0, 0),
         Registration::Static
     );
     assert_eq!(
-        registration(0x1_0000, 0x1000_0000, false, 0),
+        registration(0x1_0000, 0x1000_0000, false, 0, 0),
         Registration::None
     );
     assert_eq!(
-        registration(0x9_0000, 0x1000_0000, true, 0),
+        registration(0x9_0000, 0x1000_0000, true, 0, 0),
         Registration::None
     );
-    assert_eq!(registration(0x0, 0x1000_0000, true, 0), Registration::None);
     assert_eq!(
-        registration(0x89, 0x20_0000, false, 0),
+        registration(0x0, 0x1000_0000, true, 0, 0),
+        Registration::None
+    );
+    assert_eq!(
+        registration(0x89, 0x1000_0000, false, 0, 0x20_0000),
         Registration::SimObject
     );
-    assert_eq!(registration(0x89, 0x10_0000, false, 0), Registration::None);
+    assert_eq!(
+        registration(0x89, 0x1000_0000, false, 0, 0x10_0000),
+        Registration::None
+    );
+}
+
+/// The registration's impact sound scales: v = min(2m, 1) + 1, its squared
+/// reciprocal, and the mean of v and its root.
+#[test]
+fn impact_scales_follow_the_mobility() {
+    let slow = impact_scale(0.05, true);
+    assert!(slow.reactions);
+    assert!((slow.squared_reciprocal - 1.0 / 1.21).abs() < 1e-7);
+    assert!((slow.volume - (1.1_f32.sqrt() + 1.1) * 0.5).abs() < 1e-7);
+    let fast = impact_scale(1.0, false);
+    assert!(!fast.reactions);
+    assert_eq!(fast.squared_reciprocal, 0.25);
+    assert_eq!(fast.volume, 1.7071068);
+    // The processor's minimum gives way to 1 on a NaN mobility.
+    assert_eq!(impact_scale(f32::NAN, true).volume, 1.7071068);
 }

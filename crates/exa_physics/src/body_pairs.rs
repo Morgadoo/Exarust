@@ -265,6 +265,13 @@ pub(super) fn register_legs(parts: &mut [Part]) {
         p.out = true;
         p.group = union;
     }
+    for p in parts.iter_mut() {
+        if p.pairing.out {
+            // A foot does not react to level impacts (the original clears
+            // the class bit at add-to-world).
+            p.reacts = false;
+        }
+    }
 }
 
 /// Puts a character's lower legs in `layer` (0 when it dies or collapses,

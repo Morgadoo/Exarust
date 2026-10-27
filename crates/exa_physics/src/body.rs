@@ -325,12 +325,70 @@ pub struct Part {
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
+    /// Whether the part takes the level's impact call (the original's class
+    /// bit 0x40000, set at add-to-world on every part but a foot and its
+    /// children; a rigid body has it when its material has a collision
+    /// sound, which Exarust takes as always).
+    pub reacts: bool,
+    /// This tick's accepted level hits of the part: their count, summed
+    /// world points and pushes, and the fastest smoothed velocity with its
+    /// square, from which the level impact is made.
+    level_hits: u32,
+    level_point: Vec3,
+    level_push: Vec3,
+    level_travel: Vec3,
+    level_travel2: f32,
     /// The original's extra particle array a placed body's pair solves
     /// record: each push it applies is recorded back with the opposite
     /// sign, so the placed body's node controller can read how far a
     /// contact wanted to move it. The two pushes cancel, so nothing moves
     /// by this array; [`crate::body_pairs`] keeps it for the node owner.
     pub(crate) placed_offset: [Vec3; 4],
+}
+
+/// A level impact: a part hit the static level hard enough for the
+/// original's impact call (a fall or a scrape), with the mean world contact
+/// point and the strength `|v|²·(−cos(v, Σδ))`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelImpact {
+    pub part: usize,
+    /// The mean contact point (world, m).
+    pub point: Vec3,
+    /// The impact strength (cm² a tick²).
+    pub strength: f32,
+}
+
+/// A level contact's fastest smoothed velocity squared must pass this to
+/// make an impact (the original's 0.1 cm² a tick²).
+pub const LEVEL_STRIKE_TRAVEL2: f32 = 0.1;
+/// The level impact's strength must pass this to be called (0.1).
+pub const LEVEL_STRIKE_IMPACT: f32 = 0.1;
+
+/// A level impact record is made for a part whose reaction class is set
+/// (the original's class bit 0x40000, cleared on a foot and its children)
+/// and whose fastest smoothed velocity squared `travel2` (cm² a tick²)
+/// passes 0.1: the strength is that square times the negated cosine
+/// against the summed pushes, and must pass 0.1.
+fn level_impact(
+    part: usize,
+    point: Vec3,
+    push: Vec3,
+    travel: Vec3,
+    travel2: f32,
+) -> Option<LevelImpact> {
+    if travel2.is_nan() || travel2 <= LEVEL_STRIKE_TRAVEL2 {
+        return None;
+    }
+    let strength = travel2 * -crate::engine_math::cosine(travel, balance::cm(push));
+    if strength > LEVEL_STRIKE_IMPACT {
+        Some(LevelImpact {
+            part,
+            point,
+            strength,
+        })
+    } else {
+        None
+    }
 }
 
 /// The share of a push at a point of a body that acts, as the original's
@@ -463,6 +521,12 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            reacts: true,
+            level_hits: 0,
+            level_point: Vec3::ZERO,
+            level_push: Vec3::ZERO,
+            level_travel: Vec3::ZERO,
+            level_travel2: 0.0,
             placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
@@ -597,6 +661,19 @@ impl Part {
             for (x, c) in self.positions.iter_mut().zip(clamped) {
                 *x += delta * (c / top);
             }
+        }
+        // The level impact's bookkeeping, before the push changes the
+        // velocity: the smoothed velocity at the max-normalised contact
+        // weights, and the point and push sums.
+        let scaled = crate::sector::normalise_to_max(w).map_or(w, |(n, _)| n);
+        let travel = balance::cm(self.smoothed_velocity(&scaled));
+        let travel2 = travel.z * travel.z + (travel.y * travel.y + travel.x * travel.x);
+        self.level_hits += 1;
+        self.level_point += q;
+        self.level_push += delta;
+        if travel2 > self.level_travel2 {
+            self.level_travel = travel;
+            self.level_travel2 = travel2;
         }
         self.strain += len2.sqrt();
         if self.strain > PUSH_STRAIN {
@@ -1283,6 +1360,9 @@ pub struct Ragdoll {
     /// models, so the word is kept for them; no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
+    /// The level impacts this tick's detection found (a fall or scrape hard
+    /// enough to sound and hurt), one per part.
+    level_impacts: Vec<LevelImpact>,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1936,6 +2016,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            level_impacts: Vec::new(),
         }
     }
 
@@ -2901,6 +2982,12 @@ impl Ragdoll {
         self.fell_out
     }
 
+    /// The level impacts this tick's detection found, one per part, for the
+    /// sound and damage the original's impact call makes of them.
+    pub fn level_impacts(&self) -> &[LevelImpact] {
+        &self.level_impacts
+    }
+
     /// A tick the body sleeps through. The first one takes its velocity
     /// away (its positions become its previous ones) and puts it in deep
     /// sleep, where nothing is done. It is drawn where it lies, its level
@@ -2908,6 +2995,7 @@ impl Ragdoll {
     /// (the original counts down one left on a sleeper first; nothing in
     /// Exarust leaves one).
     fn sleep_tick(&mut self) {
+        self.level_impacts.clear();
         if self.sleep == Sleep::Asleep {
             for p in &mut self.parts {
                 p.previous = p.positions;
@@ -3148,10 +3236,20 @@ impl Ragdoll {
     }
 
     /// Tests every sphere against the level: swept from where the last tick
-    /// left it when it moved far enough, else where it is.
+    /// left it when it moved far enough, else where it is. Each part's hits
+    /// this tick make up to one level impact ([`LevelImpact`]).
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
+        let mut impacts = std::mem::take(&mut self.level_impacts);
+        impacts.clear();
+        for p in &mut self.parts {
+            p.level_hits = 0;
+            p.level_point = Vec3::ZERO;
+            p.level_push = Vec3::ZERO;
+            p.level_travel = Vec3::ZERO;
+            p.level_travel2 = 0.0;
+        }
         for p in &mut self.parts {
             if p.no_level {
                 continue;
@@ -3200,6 +3298,18 @@ impl Ragdoll {
                 }
             }
         }
+        for (i, p) in self.parts.iter().enumerate() {
+            if p.level_hits == 0 || !p.reacts {
+                continue;
+            }
+            let point = p.level_point / p.level_hits as f32;
+            if let Some(impact) =
+                level_impact(i, point, p.level_push, p.level_travel, p.level_travel2)
+            {
+                impacts.push(impact);
+            }
+        }
+        self.level_impacts = impacts;
         self.pieces = pieces;
         self.triangles = triangles;
     }
@@ -3939,6 +4049,70 @@ mod tests {
         let once = daze_energy(energy, daze);
         assert_eq!(once.to_bits(), 0x3e41_98b0);
         assert_ne!(once, energy * (1.0 - daze));
+    }
+
+    /// A level impact needs a smoothed travel squared over 0.1 cm² and an
+    /// impact strength over 0.1: 1 cm a tick into a push straight against
+    /// it is the whole square, and equal values do not pass either gate.
+    #[test]
+    fn level_impacts_take_the_original_gates() {
+        let up = Vec3::new(0.0, 0.01, 0.0);
+        let down = Vec3::new(0.0, -1.0, 0.0);
+        let impact = level_impact(3, Vec3::ZERO, up, down, 1.0).unwrap();
+        assert_eq!(impact.part, 3);
+        assert_eq!(impact.strength, 1.0);
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.1), None);
+        // A travel square of 0.09 is under the travel gate.
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.09), None);
+        // No push gives the original's zero cosine, hence no strength.
+        assert_eq!(level_impact(0, Vec3::ZERO, Vec3::ZERO, down, 1.0), None);
+        // A push along the travel gives a negative cosine, hence none.
+        assert_eq!(level_impact(0, Vec3::ZERO, -up, down, 1.0), None);
+    }
+
+    /// A ball dropped onto a floor makes a level impact once it falls fast
+    /// enough for the smoothed velocity (a tenth of the way each tick) to
+    /// pass the gates, and nothing on its resting ticks.
+    #[test]
+    fn a_falling_body_makes_a_level_impact() {
+        let ground = floor_quad(0.0, 5.0);
+        let e = Entity::PLACEHOLDER;
+        // One cube a metre over the floor.
+        let mut body = Ragdoll::new(&[PartSetup {
+            bone: 1,
+            entity: e,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::Y),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.15),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        let mut impact = None;
+        for _ in 0..60 {
+            body.tick(ground.as_slice());
+            if let Some(&i) = body.level_impacts().first() {
+                impact = Some(i);
+                break;
+            }
+        }
+        let impact = impact.expect("no level impact on landing");
+        assert!(impact.strength > 0.1);
+        // Once it lies still, no further impact is made.
+        for _ in 0..300 {
+            body.tick(ground.as_slice());
+        }
+        for _ in 0..20 {
+            body.tick(ground.as_slice());
+            assert!(
+                body.level_impacts().is_empty(),
+                "{:?}",
+                body.level_impacts()
+            );
+        }
     }
 }
 

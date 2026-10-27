@@ -159,6 +159,12 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            reacts: true,
+            level_hits: 0,
+            level_point: Vec3::ZERO,
+            level_push: Vec3::ZERO,
+            level_travel: Vec3::ZERO,
+            level_travel2: 0.0,
             placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
@@ -305,6 +311,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            level_impacts: Vec::new(),
         }
     }
 }
