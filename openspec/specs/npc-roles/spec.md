@@ -101,7 +101,7 @@ Each living placed character SHALL carry its record's roles, empty relations and
 - **THEN** it patrols and rates the player −50 at tolerance 0 with traits 20 and −30
 
 ### Requirement: Sleepers wake and hostile characters duel
-A sleeper rating the player above a notice SHALL lose the sleep role and have its roles applied again. A human-framed level character SHALL duel the player once its rating engages, and the fight start SHALL NOT engage it.
+A sleeper rating the player above a notice SHALL lose the sleep role and have its roles applied again. A level character SHALL duel the player once its brain's target pass enters combat against the player, and the fight start SHALL NOT engage it.
 
 #### Scenario: A sleeper's concern rises
 - **WHEN** a sleeping skeleton's concern rises to 1.5
