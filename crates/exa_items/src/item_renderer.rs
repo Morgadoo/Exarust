@@ -173,18 +173,21 @@ pub const CAMERA_SHIFT: [f32; 3] = [0.0, 500.0, 0.0];
 /// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
 pub type Transform3 = [[f32; 4]; 3];
 
-/// A point's projection through a [`Transform3`].
+/// A point's projection through a [`Transform3`]. The engine's packed
+/// transform sums the x and y terms and the z and translation terms
+/// separately, then adds the two pairs.
 pub fn project(transform: &Transform3, point: [f32; 3]) -> [f32; 3] {
     let mut out = [0.0f32; 3];
     for (row, value) in out.iter_mut().enumerate() {
         let m = &transform[row];
-        *value = point[0] * m[0] + point[1] * m[1] + point[2] * m[2] + m[3];
+        *value = (point[0] * m[0] + point[1] * m[1]) + (point[2] * m[2] + m[3]);
     }
     out
 }
 
-/// The span of projected points: the largest minus the smallest x and y,
-/// each widened by 0.0001 in double precision and narrowed back to single.
+/// The span of projected points: the largest minus the smallest x and y
+/// (in single precision), each widened by 0.0001 in double precision and
+/// narrowed back to single.
 /// `None` for no points.
 pub fn projected_extents(points: &[[f32; 3]], transform: &Transform3) -> Option<(f32, f32)> {
     let first = project(transform, *points.first()?);
@@ -234,38 +237,50 @@ pub fn projected_box_extents(
     projected_extents(&corners, transform).unwrap_or((0.0001, 0.0001))
 }
 
-/// The exact widening and subtraction of the extents helper.
+/// The exact subtraction and widening of the extents helper: the
+/// difference is taken in single precision, only the widening in double.
 fn span(max_x: f32, min_x: f32, max_y: f32, min_y: f32) -> (f32, f32) {
-    let width = f64::from(max_x) - f64::from(min_x);
-    let height = f64::from(max_y) - f64::from(min_y);
-    ((width + 0.0001) as f32, (height + 0.0001) as f32)
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    (
+        (f64::from(width) + 0.0001) as f32,
+        (f64::from(height) + 0.0001) as f32,
+    )
 }
 
-/// The depth the icon scene's bounding box spans.
+/// The depth the icon scene's bounding box spans: its extent along the
+/// camera's axis (the transform's second row; the icon camera sits 500 up).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DepthBounds {
-    /// The smallest and largest projected z.
+    /// The smallest and largest projected depth.
     pub min: f32,
     pub max: f32,
-    /// Their midpoint.
+    /// Their midpoint (the box centre's second component).
     pub centre: f32,
-    /// Half their difference.
+    /// Half their difference (the box half extent's second component).
     pub half: f32,
-    /// The length of the half-extent vector (a guess for the unnamed
-    /// length helper the original calls on the box's half extents).
+    /// The length of the box's half extents with the new depth half:
+    /// `sqrt((x² + z²) + half²)`, the engine's vector length order.
     pub radius: f32,
 }
 
-/// The scene bounds the icon camera frames: every mesh vertex the scene
-/// keeps (the icon scene's own node list), projected through the node's
-/// matrix onto z. Classes other than the mesh class and nodes with both
-/// withheld bits are left out. The original also copies a vector the
-/// pseudo-code does not identify; that copy is not modelled.
-pub fn scene_bounds(vertices: &[[f32; 3]], transform: &Transform3) -> DepthBounds {
-    // The node's depth row is the transform's third row.
-    let row = &transform[2];
-    let z_of = |p: [f32; 3]| p[0] * row[0] + p[1] * row[1] + p[2] * row[2] + row[3];
-    let Some(first) = vertices.first().map(|p| z_of(*p)) else {
+/// One kept mesh node of the icon scene: its vertices and its matrix.
+#[derive(Debug, Clone, Copy)]
+pub struct SceneMesh<'a> {
+    pub vertices: &'a [[f32; 3]],
+    pub transform: Transform3,
+}
+
+/// The scene bounds the icon camera frames. `meshes` are the scene's mesh
+/// nodes the original keeps (the mesh class, not both withheld bits), in
+/// node order; `seed` is the first kept node's stored depth (a node field
+/// both bounds start from before any vertex is seen); `half_xz` is the
+/// box's other two half extents, which the radius includes. With no kept
+/// node the original reads uninitialised bounds; this returns zeros there.
+/// The original then adds the node's offset to the centre into a second
+/// vector, which is not modelled.
+pub fn scene_bounds(seed: f32, meshes: &[SceneMesh<'_>], half_xz: (f32, f32)) -> DepthBounds {
+    if meshes.is_empty() {
         return DepthBounds {
             min: 0.0,
             max: 0.0,
@@ -273,24 +288,31 @@ pub fn scene_bounds(vertices: &[[f32; 3]], transform: &Transform3) -> DepthBound
             half: 0.0,
             radius: 0.0,
         };
-    };
-    let (mut min, mut max) = (first, first);
-    for p in &vertices[1..] {
-        let z = z_of(*p);
-        if z < min {
-            min = z;
-        } else if z > max {
-            max = z;
+    }
+    let (mut min, mut max) = (seed, seed);
+    for mesh in meshes {
+        let row = &mesh.transform[1];
+        for p in mesh.vertices {
+            // The depth row in the machine's order: ((x + y) + z) + w.
+            let depth = p[0] * row[0] + p[1] * row[1] + p[2] * row[2] + row[3];
+            // Above the maximum moves the maximum, otherwise below the
+            // minimum moves the minimum; an unordered value moves neither.
+            if depth > max {
+                max = depth;
+            } else if depth < min {
+                min = depth;
+            }
         }
     }
     let centre = (min + max) * 0.5;
     let half = (max - min) * 0.5;
+    let (hx, hz) = half_xz;
     DepthBounds {
         min,
         max,
         centre,
         half,
-        radius: half,
+        radius: ((hx * hx + hz * hz) + half * half).sqrt(),
     }
 }
 
@@ -332,11 +354,16 @@ pub struct RenderPlan {
     pub subdivide: bool,
     /// The projected width and height after the screen scale.
     pub screen_extents: (f32, f32),
-    /// The full-size render is post-processed before it is drawn.
-    pub post_process: bool,
+    /// The screen-quad pass draws the full render into the final image
+    /// (while the alpha global is set). The post-process call itself always
+    /// runs.
+    pub screen_pass: bool,
     /// The full-size render is filtered down to the final image (rather
-    /// than the final image being the full one).
+    /// than the final image being the full one); only without the screen
+    /// pass.
     pub downsample: bool,
+    /// The halo runs on the final image; only without the screen pass.
+    pub halo: bool,
     /// The halo is the highlighted one.
     pub halo_highlight: bool,
 }
@@ -350,8 +377,8 @@ pub fn extent_scale(icon_pixels: i32, view_scale: f32, distance_squared: f32) ->
 /// The icon render plan for an item: the framing by its variant, the
 /// scene's bounds and the projected extents it frames. `extents` is the
 /// item's own projected span; `model_flags` decides the material hiding;
-/// `close` is the manager's close-icon flag. The post process and the halo
-/// always run, as the render routine calls them.
+/// `close` is the manager's close-icon flag; `alpha` is the alpha global,
+/// which picks the screen-quad pass over the downsample and halo.
 #[allow(clippy::too_many_arguments)]
 pub fn render_plan(
     variant: u32,
@@ -361,6 +388,7 @@ pub fn render_plan(
     icon_pixels: i32,
     view_scale: f32,
     distance_squared: f32,
+    alpha: bool,
 ) -> RenderPlan {
     let framing = crate::item_gui::framing(variant, close);
     let scale = extent_scale(icon_pixels, view_scale, distance_squared);
@@ -370,8 +398,9 @@ pub fn render_plan(
         hide_star_materials: model_flags & 0x5f == 9,
         subdivide: variant & 0x8000_0000 != 0,
         screen_extents: (extents.0 * scale, extents.1 * scale),
-        post_process: true,
-        downsample: downsamples(icon_pixels, icon_pixels.wrapping_shl(1)),
+        screen_pass: alpha,
+        downsample: !alpha && downsamples(icon_pixels, icon_pixels.wrapping_shl(1)),
+        halo: !alpha,
         halo_highlight: variant & crate::icon_cache::variant::HIGHLIGHT != 0,
     }
 }
@@ -496,22 +525,48 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_bounds_frame_z() {
-        let b = scene_bounds(
-            &[[1.0, 1.0, 1.0], [1.0, 1.0, 3.0], [9.0, 9.0, -1.0]],
-            &IDENTITY,
-        );
+    fn the_projection_pairs_its_terms() {
+        // (1e8 + 1) + (−1e8 + 1): the pairs round to 1e8 and −1e8, so the
+        // sum is 0, where a left-to-right sum would give 1.
+        let tf: Transform3 = [
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        assert_eq!(project(&tf, [1.0e8, 1.0, -1.0e8])[0], 0.0);
+    }
+
+    #[test]
+    fn the_scene_bounds_frame_the_camera_axis() {
+        let verts = [[1.0, 1.0, 1.0], [1.0, 3.0, 1.0], [9.0, -1.0, 9.0]];
+        let mesh = SceneMesh {
+            vertices: &verts,
+            transform: IDENTITY,
+        };
+        let b = scene_bounds(1.0, &[mesh], (0.0, 0.0));
         assert_eq!(
             (b.min, b.max, b.centre, b.half, b.radius),
             (-1.0, 3.0, 1.0, 2.0, 2.0)
         );
-        assert_eq!(scene_bounds(&[], &IDENTITY).half, 0.0);
+        // The radius takes the box's other half extents: sqrt(9 + 4).
+        let b = scene_bounds(1.0, &[mesh], (3.0, 0.0));
+        assert_eq!(b.radius, 13.0f32.sqrt());
+        // The seed bounds both ends before the first vertex.
+        let b = scene_bounds(10.0, &[mesh], (0.0, 0.0));
+        assert_eq!((b.min, b.max), (-1.0, 10.0));
+        assert_eq!(scene_bounds(1.0, &[], (0.0, 0.0)).half, 0.0);
+        // Each node projects through its own matrix's depth row.
         let tilted: Transform3 = [
             [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
             [0.0, 2.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 0.0],
         ];
-        let b = scene_bounds(&[[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]], &tilted);
+        let verts = [[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]];
+        let mesh = SceneMesh {
+            vertices: &verts,
+            transform: tilted,
+        };
+        let b = scene_bounds(3.0, &[mesh], (0.0, 0.0));
         assert_eq!((b.min, b.max, b.centre, b.half), (3.0, 5.0, 4.0, 1.0));
     }
 
@@ -535,21 +590,24 @@ mod tests {
             160,
             1.0,
             400.0,
+            false,
         );
         assert_eq!(p.framing.distance, 20.0);
         assert_eq!(p.framing.sun, (-0.16, 0.6516));
         assert!(p.turned && p.hide_star_materials && p.halo_highlight);
         assert!(!p.subdivide);
-        assert!(p.post_process && p.downsample);
+        assert!(!p.screen_pass && p.downsample && p.halo);
         // 2 × 4.0 and 1 × 4.0.
         assert_eq!(p.screen_extents, (8.0, 4.0));
         // Apparel alone: 30, the other sun.
-        let p = render_plan(v::APPAREL, false, (1.0, 1.0), 0, 160, 1.0, 400.0);
+        let p = render_plan(v::APPAREL, false, (1.0, 1.0), 0, 160, 1.0, 400.0, true);
+        // The alpha global's screen pass replaces the downsample and halo.
+        assert!(p.screen_pass && !p.downsample && !p.halo);
         assert_eq!(p.framing.distance, 30.0);
         assert_eq!(p.framing.sun, (-0.21, 0.7516));
         assert!(!p.turned && !p.hide_star_materials);
         // Neither: 70, and the subdivision bit.
-        let p = render_plan(0x8000_0000, false, (1.0, 1.0), 0, 160, 1.0, 400.0);
+        let p = render_plan(0x8000_0000, false, (1.0, 1.0), 0, 160, 1.0, 400.0, false);
         assert_eq!(p.framing.distance, 70.0);
         assert!(p.subdivide);
     }
