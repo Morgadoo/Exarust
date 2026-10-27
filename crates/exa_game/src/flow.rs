@@ -924,10 +924,11 @@ impl Unlocks {
         }
     }
 
-    /// Reads the expert unlock's word: anything but zero unlocks it.
+    /// Reads the expert unlock's word: bit 0 unlocks the expert ladder (the
+    /// page's disabled-row test reads that bit).
     pub fn read_expert(&mut self, bytes: &[u8]) {
         if let Some(word) = Self::read_word(bytes) {
-            self.expert = word != 0;
+            self.expert = word & 1 != 0;
         }
     }
 
@@ -950,18 +951,28 @@ pub enum BootTask {
     Window,
     /// Open the audio device.
     Audio,
-    /// Load the actor/character template library.
+    /// Load the actor/character template library (and `actors.rpk`).
     ActorLibrary,
     /// Initialise the game layer's interface.
     GameGui,
-    /// Initialise the item interface and the skill screen.
+    /// Initialise the item interface.
     ItemGui,
+    /// Initialise the skill screen's interface.
+    SkillGui,
     /// Read the hardware settings.
     HardwareConfig,
+    /// Hand the current client's row scale to the GUI.
+    GuiScale,
+    /// Register the menu's key task.
+    MenuTask,
+    /// Apply the first-run end-page tip.
+    FirstRunTip,
     /// Apply the first-run settings.
     FirstRun,
     /// Read the unlock words.
     Settings,
+    /// Initialise the experience system.
+    Experience,
     /// Create a save manager for the mode.
     SaveManager(Mode),
     /// Initialise the arena's data.
@@ -1014,6 +1025,9 @@ pub enum Step {
         /// Put the level's objects in a fresh world first.
         teardown: bool,
     },
+    /// Filter the loaded level's nodes: a container's children and the
+    /// player's own objects go (the practice scene filter).
+    PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
     /// Add the player's story roles and flags, and write the record words
@@ -1059,6 +1073,8 @@ pub enum Step {
     EndMenu(EndMenu),
     /// Hide the end-of-session menu.
     HideEndMenu,
+    /// Close the prelude's tips and popup.
+    ClosePrelude,
     /// Clear or set the menu's help flag (the form field the help screen
     /// clears when it closes).
     MenuHelp(bool),
@@ -1480,18 +1496,23 @@ impl Flow {
         }
         self.booted = true;
         let mut steps = vec![
-            Step::Boot(BootTask::FirstRun),
+            Step::Boot(BootTask::Scripts),
             Step::Boot(BootTask::Window),
+            Step::Boot(BootTask::FirstRun),
             Step::Boot(BootTask::ActorLibrary),
             Step::Boot(BootTask::GameGui),
             Step::Boot(BootTask::ItemGui),
+            Step::Boot(BootTask::SkillGui),
             Step::Boot(BootTask::HardwareConfig),
+            Step::Boot(BootTask::GuiScale),
+            Step::Boot(BootTask::MenuTask),
+            Step::Boot(BootTask::FirstRunTip),
             Step::Boot(BootTask::Settings),
+            Step::Boot(BootTask::Experience),
             Step::Boot(BootTask::SaveManager(Mode::Story)),
             Step::Boot(BootTask::SaveManager(Mode::Arena)),
-            Step::Boot(BootTask::ArenaData),
             Step::Boot(BootTask::Transition),
-            Step::Boot(BootTask::Scripts),
+            Step::Boot(BootTask::ArenaData),
             Step::Boot(BootTask::Audio),
             Step::Boot(BootTask::Splash),
             Step::Boot(BootTask::MainMenu),
@@ -1612,11 +1633,9 @@ impl Flow {
         };
         let mut steps = vec![
             Step::SessionTask(true),
-            Step::LoadLevel {
-                locale: "exanima01",
-                spawn: 0,
-                teardown: true,
-            },
+            // The player's roles and record words first (the original writes
+            // them before the level is loaded), then the level, the light,
+            // the starting motion, the place and the camera shot.
             Step::StoryPlayer {
                 roles: start.roles,
                 flags: start.flags,
@@ -1624,12 +1643,17 @@ impl Flow {
                 class_word: start.class_word,
                 potential: start.potential,
             },
-            Step::PlacePlayer(start.placement),
+            Step::LoadLevel {
+                locale: "exanima01",
+                spawn: 0,
+                teardown: true,
+            },
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
         }
         steps.push(Step::RequestAction(motion));
+        steps.push(Step::PlacePlayer(start.placement));
         steps.push(Step::Camera(camera::frame_player(
             start.placement.position,
             viewport,
@@ -1685,16 +1709,17 @@ impl Flow {
         vec![
             Step::TeardownWorld,
             Step::GameGui(false),
-            Step::Controls(true),
             Step::SessionTask(true),
             Step::LoadLevel {
                 locale: start.locale,
                 spawn: 0,
                 teardown: true,
             },
+            Step::PracticeFilter,
             Step::PracticePlayer {
                 role: PRACTICE_ROLE,
             },
+            Step::Controls(true),
             Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
@@ -1776,15 +1801,16 @@ impl Flow {
         vec![Step::SessionTask(true), Step::Controls(true)]
     }
 
-    /// The pause: the in-game menu is up and the phase records it. The
-    /// original's pause word is only read by its autosave; the game clock's
-    /// pause is the frame loop's.
+    /// The arena's pause: its own form sets the paused phase (0x20) and
+    /// builds the arena pause page. The story's in-game page covers the game
+    /// without a phase of its own, as the original's frame task only hides
+    /// behind the visible menu.
     pub fn pause(&mut self) -> Vec<Step> {
         if self.phase == Phase::Playing {
             self.saved_phase = self.phase;
             self.phase = Phase::Paused;
             self.menu_open = true;
-            return vec![Step::ShowMenu(Page::InGame), Step::Controls(false)];
+            return vec![Step::ShowMenu(Page::ArenaPause), Step::Controls(false)];
         }
         Vec::new()
     }
@@ -1982,6 +2008,7 @@ impl Flow {
         };
         let mut steps = vec![
             Step::HideEndMenu,
+            Step::ClosePrelude,
             Step::MenuHelp(false),
             Step::Health {
                 red_bits: step.red_bits,
@@ -2204,14 +2231,14 @@ impl Flow {
         steps
     }
 
-    /// The level-load finish behind the transition: the end menu closes and
-    /// the session is playing again. (The original also clears the pending
-    /// exit words, saves the level's start state and runs the scene's own
-    /// loaded callback, which are the host's.)
+    /// The level-load finish behind the transition: the end menu and the
+    /// prelude close and the session is playing again. (The original also
+    /// clears the pending exit words, saves the level's start state and runs
+    /// the scene's own loaded callback, which are the host's.)
     pub fn level_loaded(&mut self) -> Vec<Step> {
         self.phase = Phase::Playing;
         self.end_menu = None;
-        vec![Step::HideEndMenu]
+        vec![Step::HideEndMenu, Step::ClosePrelude]
     }
 
     /// The in-game page opened (F1): the session hook and the dialogue stop
@@ -2231,6 +2258,35 @@ impl Flow {
     pub fn finalise(&mut self) -> Vec<Step> {
         self.custom_hook = false;
         vec![Step::Finalise]
+    }
+
+    /// The session begin's own work around the mode's starter: the frame
+    /// task starts, the session phase becomes playing and the menu's help
+    /// flag clears. The original runs all of this around the starter (the
+    /// story's new game, the practice start or the arena's data init), which
+    /// Exarust's own starters return as steps; the starter's steps come
+    /// first here.
+    pub fn begin_session(&mut self, mut starter: Vec<Step>) -> Vec<Step> {
+        self.phase = Phase::Playing;
+        self.menu_open = false;
+        self.end_menu = None;
+        starter.push(Step::MenuHelp(false));
+        starter.push(Step::SessionTask(true));
+        starter
+    }
+
+    /// The session continue's own work around the mode's continue: the menu
+    /// form closes, the session phase becomes playing and the frame task
+    /// starts. The mode's continue steps (the story's or the arena hub's)
+    /// come first.
+    pub fn continue_session(&mut self, mut resumed: Vec<Step>) -> Vec<Step> {
+        self.phase = Phase::Playing;
+        if self.menu_open {
+            self.menu_open = false;
+            resumed.push(Step::HideMenu);
+        }
+        resumed.push(Step::SessionTask(true));
+        resumed
     }
 
     /// The end-of-life story CONTINUE of a save with no record: the player
@@ -2302,14 +2358,15 @@ impl Flow {
     }
 
     /// Leaving a session: the hook and the frame task stop, the dialogue and
-    /// interface go, the world is torn down and the player pointers are
-    /// cleared. A scripted mode's end hook is named.
+    /// interface go, the prelude closes, the world is torn down and the
+    /// player pointers are cleared. A scripted mode's end hook is named.
     pub fn leave_session(&mut self) -> Vec<Step> {
         let mut steps = vec![
             Step::Hook(Hook::None),
             Step::SessionTask(false),
             Step::GameGui(false),
             Step::Dialogue,
+            Step::ClosePrelude,
         ];
         self.hook = Hook::None;
         match self.mode {
@@ -3403,6 +3460,39 @@ mod tests {
         let steps = flow.boot();
         assert!(steps.contains(&Step::Boot(BootTask::Splash)));
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
+        // The boot's order: the script hooks first, then graphics and the
+        // first-run settings, the interfaces, the hardware and menu hooks,
+        // the settings and experience, the two save managers, the transition
+        // screen, the arena data, the audio, the splash and the title.
+        let order: Vec<usize> = [
+            BootTask::Scripts,
+            BootTask::Window,
+            BootTask::FirstRun,
+            BootTask::ActorLibrary,
+            BootTask::GameGui,
+            BootTask::ItemGui,
+            BootTask::SkillGui,
+            BootTask::HardwareConfig,
+            BootTask::MenuTask,
+            BootTask::Settings,
+            BootTask::Experience,
+            BootTask::SaveManager(Mode::Story),
+            BootTask::SaveManager(Mode::Arena),
+            BootTask::Transition,
+            BootTask::ArenaData,
+            BootTask::Audio,
+            BootTask::Splash,
+            BootTask::MainMenu,
+        ]
+        .into_iter()
+        .map(|task| {
+            steps
+                .iter()
+                .position(|step| *step == Step::Boot(task))
+                .unwrap()
+        })
+        .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(flow.mode, Mode::Menu);
         assert_eq!(flow.phase, Phase::Menu);
         assert_eq!(flow.menu_page(), Page::Title);
@@ -3449,9 +3539,11 @@ mod tests {
             position: Vec3::new(0.0, 97.0, 500.0),
         })));
         assert_eq!(flow.practice.fight, 1);
+        assert!(steps.contains(&Step::PracticeFilter));
         assert!(steps.contains(&Step::PracticePlayer {
             role: PRACTICE_ROLE
         }));
+        assert!(steps.contains(&Step::RequestAction(PRACTICE_MOTION)));
         assert!(steps.contains(&Step::Controls(true)));
         assert!(steps.contains(&Step::LoadLevel {
             locale: "arenae",
@@ -3654,6 +3746,11 @@ mod tests {
         assert_eq!(unlocks.backgrounds, 5);
         unlocks.read_expert(&[0, 0, 0, 0]);
         assert!(!unlocks.expert);
+        // Only bit 0 unlocks: the page's disabled-row test reads that bit.
+        unlocks.read_expert(&[2, 0, 0, 0]);
+        assert!(!unlocks.expert);
+        unlocks.read_expert(&[3, 0, 0, 0]);
+        assert!(unlocks.expert);
         assert_eq!(Unlocks::read_word(&[1, 2, 3, 4]), Some(0x0403_0201));
         assert_eq!(Unlocks::read_word(&[]), None);
         assert_eq!(SCRIPT_HOOK, "GameEvent");
@@ -3792,6 +3889,84 @@ mod tests {
     }
 
     #[test]
+    fn the_arenas_pause_page_and_resume() {
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.pause(),
+            vec![Step::ShowMenu(Page::ArenaPause), Step::Controls(false)]
+        );
+        assert_eq!(flow.phase, Phase::Paused);
+        assert!(flow.menu_open);
+        // A pause from any other phase does nothing.
+        assert!(flow.pause().is_empty());
+        assert_eq!(flow.resume(), vec![Step::HideMenu, Step::Controls(true)]);
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+        assert!(flow.resume().is_empty());
+    }
+
+    #[test]
+    fn a_session_begins_and_continues_around_its_starter() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            end_menu: Some(end_menu(MENU_WON, Mode::Story)),
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.begin_session(vec![Step::LoadLevel {
+            locale: "exanima01",
+            spawn: 0,
+            teardown: true,
+        }]);
+        assert_eq!(
+            steps,
+            vec![
+                Step::LoadLevel {
+                    locale: "exanima01",
+                    spawn: 0,
+                    teardown: true
+                },
+                Step::MenuHelp(false),
+                Step::SessionTask(true),
+            ]
+        );
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+        assert!(flow.end_menu.is_none());
+        // A continue closes the menu form first, then starts the task.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Menu,
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.continue_session(vec![Step::LoadLevel {
+            locale: "exanima02",
+            spawn: 0,
+            teardown: true,
+        }]);
+        assert_eq!(
+            steps,
+            vec![
+                Step::LoadLevel {
+                    locale: "exanima02",
+                    spawn: 0,
+                    teardown: true
+                },
+                Step::HideMenu,
+                Step::SessionTask(true),
+            ]
+        );
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+    }
+
+    #[test]
     fn back_to_the_title_clears_the_reconstruction_state() {
         let mut flow = Flow {
             mode: Mode::Story,
@@ -3864,7 +4039,10 @@ mod tests {
             menu_open: true,
             ..Default::default()
         };
-        assert_eq!(flow.level_loaded(), vec![Step::HideEndMenu]);
+        assert_eq!(
+            flow.level_loaded(),
+            vec![Step::HideEndMenu, Step::ClosePrelude]
+        );
         assert_eq!(flow.phase, Phase::Playing);
         assert!(flow.end_menu.is_none());
         // F1 in a session stops the hook behind the page and starts it

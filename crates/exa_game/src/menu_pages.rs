@@ -10,6 +10,8 @@ pub enum Page {
     Title = 0,
     Start = 1,
     InGame = 2,
+    /// The arena's pause page. The story's pause page (5) is defined by the
+    /// same builder but the executable never builds it.
     ArenaPause = 4,
     StoryPause = 5,
     ClassSelect = 8,

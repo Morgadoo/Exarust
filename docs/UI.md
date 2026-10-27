@@ -662,10 +662,13 @@ mode word, a phase word and a session hook. Its methods return named steps
 (a menu page, a level load, a save, a camera shot, a cursor warp) instead of
 calling the rest of the game, so the order is testable.
 
-- **Boot.** First-run settings, the actor library, the game and item
-  interfaces, the hardware settings, the unlock words, the two save managers
-  (story signature, arena signature and data version), the arena data, the
-  transition form, the script hooks, the splash, then the title page.
+- **Boot.** First-run settings, the actor library, the game, item and skill
+  interfaces, the hardware settings, the GUI scale, the menu key task, the
+  first-run tip, the unlock words, the experience system, the two save
+  managers (story signature, arena signature and data version), the
+  transition form, the arena data, the audio, the splash, then the title
+  page. The script hooks register at the unit's initialisation, before the
+  window.
 - **Modes and phases.** The mode word is 0 (title), 2 (practice), 4 (story),
   8 (arena) or a scripted mode (versus is 0x1010). Phases: 0 transition, 1
   title, 2 the character creator, 3 playing, 4 won, 5 ended, 8 round won,
@@ -793,9 +796,12 @@ otherwise, with the flow's mode, phase and page state. The screen follows
   arena save), PRACTICE, VERSUS (only with the versus lobby), BACK.
   Practice: NOVICE, EXPERT (greyed until it is unlocked), BACK. In-game:
   NEW GAME in a mode with bit 2 (practice) and CONTINUE otherwise, then
-  MANUAL, SETTINGS, EXIT. The end pages: CONTINUE, SETTINGS, FORFEIT, or
-  EXIT once the session was won or has ended. The row origins are 0.38, 0.42
-  with five arena rows (0.45 with four), 0.45 and 0.39 of the height.
+  MANUAL, SETTINGS, EXIT; in a session this page is the pause too. The
+  arena's own pause page is CONTINUE, SETTINGS, FORFEIT (EXIT once the
+  session was won or has ended); the story's pause page is the same shape
+  with EXIT, defined by the builder but never built by the executable. The
+  row origins are 0.38, 0.42 with five arena rows (0.45 with four), 0.45
+  and 0.39 of the height.
 - **Geometry.** The row scale is `round(H / 135) · 0.125`. The page's top is
   `round(H · origin)` and a row advances `round(70 · scale)` (single
   precision, half to even). A painted row's baseline is the top plus the
