@@ -1793,8 +1793,8 @@ impl Flow {
         ]
     }
 
-    /// Continues a story save: the menu form closes, the wake-up flags and
-    /// their clock clear, the save's locale is loaded (or the first level
+    /// Continues a story save: the menu form closes, the first wake-up's
+    /// animating flag clears, the save's locale is loaded (or the first level
     /// when there is none), the player nudged out of any exit trigger by the
     /// host, and the near shot framed on the player's body, fast.
     pub fn continue_story(
@@ -1808,9 +1808,9 @@ impl Flow {
         self.phase = Phase::Playing;
         self.viewport = viewport;
         self.menu_open = false;
-        // A continued save starts with every wake-up flag and its clock
-        // clear.
-        self.story.wake = Wake::default();
+        // A continued save clears the first wake-up's animating flag; the
+        // get-up and delayed flags and the start time are left as they are.
+        self.story.wake.animating = false;
         vec![
             Step::HideMenu,
             Step::SessionTask(true),
@@ -2436,10 +2436,7 @@ impl Flow {
             Step::GameGui(false),
             Step::Dialogue,
             Step::ClosePrelude,
-            Step::CloseSave,
-            Step::HideEndMenu,
         ];
-        self.story.wake.start_ms = 0;
         self.hook = Hook::None;
         match self.mode {
             Mode::Arena => steps.push(Step::ScriptMode {
@@ -2452,6 +2449,10 @@ impl Flow {
             }),
             _ => {}
         }
+        // After the mode's end hook: the save package closes and the end
+        // menu hides, then the world goes.
+        steps.push(Step::CloseSave);
+        steps.push(Step::HideEndMenu);
         steps.push(Step::TeardownWorld);
         self.player = [false; 3];
         self.end_menu = None;
@@ -3772,7 +3773,7 @@ mod tests {
         };
         let steps = flow.continue_story(Some("exanima02"), placement, view);
         assert_eq!(steps.first(), Some(&Step::HideMenu));
-        assert!(flow.story.wake == Wake::default());
+        assert!(!flow.story.wake.animating);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "exanima02",
             spawn: 0,
