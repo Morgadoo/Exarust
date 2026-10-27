@@ -216,13 +216,14 @@ pub fn player_motion(mode: i32) -> i32 {
     if mode == 1 { 3 } else { 0x13 }
 }
 
-/// The record's hand flag that asks the held light to burn.
+/// The record's hand flag that asks the held light to burn (read for a
+/// weapon-section item only).
 pub const HAND_LIT: u32 = 0x0200_0000;
-/// The record's hand flag that holds the item flipped.
+/// The record's hand flag that holds the weapon flipped (one flag for the
+/// character: the last weapon equipped sets it).
 pub const HAND_FLIPPED: u32 = 0x0100_0000;
 
-/// What an attached item is, as the attach pass decides from the equip
-/// pass's plan.
+/// How the attach pass hangs an item on the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attach {
     /// The main hand's weapon.
@@ -231,46 +232,72 @@ pub enum Attach {
     SecondWeapon,
     /// A shield on the off arm.
     Shield,
-    /// The off hand's torch (the item's torch section).
+    /// The off hand's torch (the item's torch section); its meshes are
+    /// marked held.
     Torch,
 }
 
-/// One item the spawn attaches, and the hand it hangs under.
+/// One item the spawn attaches, and the record hand it came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttachPlan {
     pub hand: usize,
     pub kind: Attach,
-    /// The item's light burns (the hand's `0x02000000` flag).
+    /// The item's light burns: a weapon-section item whose hand has
+    /// [`HAND_LIT`] (the equip pass lights it; a shield or the off-hand
+    /// torch path never reads the flag).
     pub lit: bool,
-    /// The item is held flipped (the hand's `0x01000000` flag).
-    pub flipped: bool,
 }
 
-/// The attach pass's plan over the equip pass's two hands: the main hand's
-/// item first, then the off hand's, a torch on its own path. The original
-/// attaches a weapon, a second weapon, a shield or a torch, marks its
-/// meshes held, lights a burning torch and registers it with the scene; an
-/// item the equip pass refused attaches nothing.
+/// The attach pass over the equip pass's result ([`equip_hands`]).
+///
+/// The equip pass keeps three off-hand holders: a weapon in hand 1, a
+/// shield from either hand (the shield goes on the off arm even from hand
+/// 0, and hand 1's overwrites hand 0's) and hand 1's torch. The attach pass
+/// hangs the main hand's weapon first, then one off-hand item: the shield
+/// when there is one, else the torch, else the second weapon. A shield in
+/// hand 0 with a weapon in hand 1 attaches the shield only.
 pub fn attach_plan(hands: &[Option<Equipped>; 2]) -> Vec<AttachPlan> {
+    let lit = |item: &Equipped| item.kind == EquipKind::Weapon && item.flags & HAND_LIT != 0;
     let mut out = Vec::new();
-    for (hand, item) in hands.iter().enumerate() {
-        let Some(item) = item else { continue };
-        let kind = match (hand, item.kind) {
-            (0, EquipKind::Weapon) => Attach::Weapon,
-            (0, EquipKind::Shield) => Attach::Shield,
-            (0, EquipKind::Torch) => Attach::Torch,
-            (_, EquipKind::Weapon) => Attach::SecondWeapon,
-            (_, EquipKind::Shield) => Attach::Shield,
-            (_, EquipKind::Torch) => Attach::Torch,
-        };
+    if let Some(main) = &hands[0]
+        && main.kind == EquipKind::Weapon
+    {
+        out.push(AttachPlan {
+            hand: 0,
+            kind: Attach::Weapon,
+            lit: lit(main),
+        });
+    }
+    let shield = (0..2).rev().find(|&h| {
+        hands[h]
+            .as_ref()
+            .is_some_and(|i| i.kind == EquipKind::Shield)
+    });
+    let off = match (shield, &hands[1]) {
+        (Some(h), _) => Some((h, Attach::Shield)),
+        (None, Some(i)) if i.kind == EquipKind::Torch => Some((1, Attach::Torch)),
+        (None, Some(i)) if i.kind == EquipKind::Weapon => Some((1, Attach::SecondWeapon)),
+        _ => None,
+    };
+    if let Some((hand, kind)) = off {
         out.push(AttachPlan {
             hand,
             kind,
-            lit: item.flags & HAND_LIT != 0,
-            flipped: item.flags & HAND_FLIPPED != 0,
+            lit: hands[hand].as_ref().is_some_and(lit),
         });
     }
     out
+}
+
+/// Whether the character holds its weapons flipped: the flag of the last
+/// weapon-section item the equip pass took (hand 1's over hand 0's).
+pub fn holds_flipped(hands: &[Option<Equipped>; 2]) -> Option<bool> {
+    hands
+        .iter()
+        .rev()
+        .flatten()
+        .find(|i| i.kind == EquipKind::Weapon)
+        .map(|i| i.flags & HAND_FLIPPED != 0)
 }
 
 /// The corpse's motion: the Defence stance 3.
@@ -625,62 +652,59 @@ mod tests {
         assert_eq!(equip_hands(&record, |_, _| None), [None, None]);
     }
 
-    /// The attach pass: the main hand's weapon, a second weapon or shield in
-    /// the off hand, a torch on its own path, with the hand's lit and
-    /// flipped flags.
+    /// The attach pass: the main hand's weapon, then one off-hand item (a
+    /// shield first, else the torch, else a second weapon); the lit flag
+    /// only on a weapon, the flipped flag from the last weapon.
     #[test]
     fn the_attach_plan_takes_the_equipped_hands() {
         let mut record = CharacterRecord::default();
-        record.hands[0] = ItemRef::new(1, 0x0100_0000);
+        record.hands[0] = ItemRef::new(1, 0x0300_0000);
         record.hands[1] = ItemRef::new(2, 0x0200_0000);
+        let sword = || entry("sword", Some(weapon(0x11)), false);
+        let torch = || HandEntry {
+            torch: true,
+            ..entry("torch", None, false)
+        };
         let hands = equip_hands(&record, |hand, _| {
-            Some(if hand == 0 {
-                entry("sword", Some(weapon(0x11)), false)
-            } else {
-                HandEntry {
-                    torch: true,
-                    ..entry("torch", None, false)
-                }
-            })
+            Some(if hand == 0 { sword() } else { torch() })
         });
-        let plan = attach_plan(&hands);
         assert_eq!(
-            plan,
+            attach_plan(&hands),
             [
                 AttachPlan {
                     hand: 0,
                     kind: Attach::Weapon,
-                    lit: false,
-                    flipped: true,
+                    lit: true,
                 },
+                // The torch path does not read the lit flag.
                 AttachPlan {
                     hand: 1,
                     kind: Attach::Torch,
-                    lit: true,
-                    flipped: false,
+                    lit: false,
                 },
             ]
         );
-        // A second weapon and a shield take their own kinds; an empty plan
-        // attaches nothing.
-        record.hands[0] = ItemRef::new(1, 0);
-        let hands = equip_hands(&record, |hand, _| {
-            Some(if hand == 0 {
-                entry("sword", Some(weapon(0x11)), false)
-            } else {
-                entry("mace", Some(weapon(0x11)), false)
-            })
-        });
+        assert_eq!(holds_flipped(&hands), Some(true));
+        // A second weapon: its own kind, and its flag decides the flip.
+        let hands = equip_hands(&record, |_, _| Some(sword()));
         assert_eq!(attach_plan(&hands)[1].kind, Attach::SecondWeapon);
+        assert_eq!(holds_flipped(&hands), Some(false));
+        // A shield in hand 0 goes on the off arm and wins over hand 1's
+        // weapon; nothing hangs in the main hand.
+        let shield = || entry("shield", None, true);
         let hands = equip_hands(&record, |hand, _| {
-            Some(if hand == 0 {
-                entry("sword", Some(weapon(0x11)), false)
-            } else {
-                entry("shield", None, true)
-            })
+            Some(if hand == 0 { shield() } else { sword() })
         });
-        assert_eq!(attach_plan(&hands)[1].kind, Attach::Shield);
+        assert_eq!(
+            attach_plan(&hands),
+            [AttachPlan {
+                hand: 0,
+                kind: Attach::Shield,
+                lit: false,
+            }]
+        );
         assert!(attach_plan(&[None, None]).is_empty());
+        assert_eq!(holds_flipped(&[None, None]), None);
     }
 
     #[test]

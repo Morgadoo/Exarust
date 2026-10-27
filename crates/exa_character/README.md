@@ -197,8 +197,12 @@ These are tested rules the running game does not drive yet.
   (`creator_role`: races 5–9 force role 11; 0x11 and 0x12 try 45 and 46)
   and the two material passes: run-time `&` materials clear their validity
   word and set `0x80000`, `*` placeholders clear their value and set `0x10`.
-  The viewer still stands placed characters on the ground and does not set
-  the motion, so these are plans.
+  `attach_plan` is the attach pass over the equip pass: the main hand's
+  weapon, then one off-hand item (a shield from either hand first, else
+  hand 1's torch, else its second weapon); a weapon's hand flag lights it
+  and the last weapon's sets the character's flipped grip
+  (`holds_flipped`). The viewer still stands placed characters on the
+  ground and does not set the motion, so these are plans.
 
 ## Held items
 
