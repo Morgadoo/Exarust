@@ -766,6 +766,145 @@ pub fn shield_content(
     }
 }
 
+/// A weapon section's card fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponStats {
+    pub flags: u32,
+    pub weight: u8,
+    pub balance: u8,
+    pub grip: u8,
+    pub slash: u8,
+    pub crush: u8,
+    pub pierce: u8,
+    pub thrust: u8,
+}
+
+/// An apparel section's card fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApparelStats {
+    pub weight: u8,
+    pub impact: u8,
+    pub slash: u8,
+    pub crush: u8,
+    pub pierce: u8,
+    pub encumbrance: u8,
+}
+
+/// A shield section's card fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShieldStats {
+    pub flags: u32,
+    pub weight: u8,
+    pub impact: u8,
+    pub encumbrance: u8,
+}
+
+/// Everything the description card's builder reads.
+#[derive(Debug, Clone, Copy)]
+pub struct CardBuildInput<'a> {
+    pub item: CardItem,
+    pub condition: u8,
+    /// The model's flags carry the title-tint bit.
+    pub model_tinted: bool,
+    pub weapon: Option<WeaponStats>,
+    pub apparel: Option<ApparelStats>,
+    pub shield: Option<ShieldStats>,
+    pub sockets: bool,
+    pub material: bool,
+    /// The skill row's byte (rank and, for apparel, points) and a weapon's
+    /// separate points count.
+    pub skill: u8,
+    pub points: i32,
+    pub gates: CardGates,
+    pub description: &'a str,
+    pub female: bool,
+}
+
+/// A built description card: its page, printed value, title colour, stats
+/// content and expanded description.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltCard {
+    pub page: CardPage,
+    pub value: u32,
+    pub title_colour: u32,
+    pub content: Option<CardContent>,
+    pub description: String,
+}
+
+/// Builds the description card: the page from [`item_card`], the title tint
+/// from the condition byte, the stats content from the page's section and
+/// the description with its condition block and pronouns expanded. A card
+/// with no page, a map, or a stats page whose section is missing has none.
+pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
+    let card = item_card(&input.item);
+    let value = card.value?;
+    let content = match card.page {
+        CardPage::Weapon => {
+            let w = input.weapon?;
+            Some(weapon_content(
+                w.flags,
+                w.weight,
+                w.balance,
+                w.grip,
+                w.slash,
+                w.crush,
+                w.pierce,
+                w.thrust,
+                input.material,
+                input.sockets,
+                input.skill,
+                input.points,
+                value,
+                input.gates,
+                true,
+            ))
+        }
+        CardPage::Apparel => {
+            let a = input.apparel?;
+            Some(apparel_content(
+                a.weight,
+                a.impact,
+                a.slash,
+                a.crush,
+                a.pierce,
+                a.encumbrance,
+                input.sockets,
+                u16::from(input.skill),
+                value,
+                input.gates,
+                true,
+            ))
+        }
+        CardPage::Shield => {
+            let s = input.shield?;
+            Some(shield_content(
+                s.flags,
+                s.weight,
+                s.impact,
+                s.encumbrance,
+                input.skill,
+                value,
+                input.gates,
+                true,
+            ))
+        }
+        CardPage::Plain => None,
+        CardPage::None | CardPage::Map => return None,
+    };
+    let (low, high, weight) = title_colour(
+        input.condition,
+        input.model_tinted,
+        card.page == CardPage::Weapon,
+    );
+    Some(BuiltCard {
+        page: card.page,
+        value,
+        title_colour: blend_colour(low, high, weight),
+        content,
+        description: expand_card_text(input.description, input.item.flags, input.female),
+    })
+}
+
 /// The control a card's value row uses.
 pub const VALUE_CONTROL: u32 = 0xa01;
 
@@ -2109,6 +2248,87 @@ mod tests {
         assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x7f00_0000);
         assert_eq!(blend_colour(0x1020_3040, 0x1020_3040, 0.7), 0x1020_3040);
         assert_eq!(CARD_CONTROL_STRIDE, 104);
+    }
+
+    #[test]
+    fn the_card_builder_composes_page_content_and_text() {
+        let item = CardItem {
+            id: 12,
+            flags: 0,
+            container: false,
+            map: false,
+            model: true,
+            marked: 1,
+            coins: 7,
+            has_weapon: true,
+            weapon_flags: 0,
+            has_apparel: true,
+            armour: 3,
+            has_shield: true,
+            shield_flags: 0,
+        };
+        let input = CardBuildInput {
+            item,
+            condition: 0x40,
+            model_tinted: false,
+            weapon: Some(WeaponStats {
+                flags: 0,
+                weight: 100,
+                balance: 50,
+                grip: 127,
+                slash: 10,
+                crush: 0,
+                pierce: 40,
+                thrust: 60,
+            }),
+            apparel: None,
+            shield: None,
+            sockets: false,
+            material: false,
+            skill: 0x65,
+            points: 4,
+            gates: CardGates {
+                rank: true,
+                points: true,
+            },
+            description: "It is {\u{ae}HisHer} edge.",
+            female: true,
+        };
+        let card = build_card(&input).unwrap();
+        assert_eq!(card.page, CardPage::Weapon);
+        // A coin word of 7 is quartered.
+        assert_eq!(card.value, 1);
+        let content = card.content.unwrap();
+        assert_eq!(content.rows.len(), 6);
+        assert_eq!(content.rank, Some("Adept"));
+        assert_eq!(content.points, Some(2.0));
+        assert_eq!(card.description, "It is her edge.");
+        // A plain page has no stats content; a map has no card at all.
+        let plain = CardBuildInput {
+            item: CardItem {
+                has_weapon: false,
+                has_apparel: false,
+                has_shield: false,
+                ..item
+            },
+            weapon: None,
+            ..input
+        };
+        let card = build_card(&plain).unwrap();
+        assert_eq!(card.page, CardPage::Plain);
+        assert_eq!(card.content, None);
+        let map = CardBuildInput {
+            item: CardItem { map: true, ..item },
+            ..plain
+        };
+        assert!(build_card(&map).is_none());
+        // A stats page without its section is not built.
+        let missing = CardBuildInput {
+            item,
+            weapon: None,
+            ..input
+        };
+        assert!(build_card(&missing).is_none());
     }
 
     #[test]
