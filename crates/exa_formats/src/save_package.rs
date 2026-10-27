@@ -1274,6 +1274,15 @@ impl PlayerData {
         }
         self.remove_chunk(HIREABLES_CHUNK);
         self.remove_chunk(SHOP_STOCK_CHUNK);
+        // The load compacts the hub stash's twelve-byte records: every
+        // entry whose first word carries the top bit is dropped and the
+        // gaps close.
+        if let Some(stash) = self.chunk(HUB_STASH_CHUNK)
+            && let Ok(mut items) = crate::arena_save::parse_item_list(stash)
+        {
+            items.retain(|item| item.id & crate::arena_save::ITEM_MARKER == 0);
+            self.set_chunk(HUB_STASH_CHUNK, crate::arena_save::write_item_list(&items));
+        }
         if let Some(character) = &mut self.character
             && let Some(position) = character.get_mut(4..16)
         {
@@ -2150,6 +2159,15 @@ mod tests {
         data.set_chunk(HIREABLES_CHUNK, vec![1]);
         data.set_chunk(SHOP_STOCK_CHUNK, vec![2]);
         data.set_chunk(ARSENAL_CHUNK, vec![3]);
+        let item = |id| crate::arena_save::ItemEntry {
+            id,
+            flags: 0,
+            extra: 0,
+        };
+        data.set_chunk(
+            HUB_STASH_CHUNK,
+            crate::arena_save::write_item_list(&[item(1), item(0x8000_0002), item(3)]),
+        );
         assert!(!data.arena_data_is_old());
         assert!(!data.convert_arena());
         let PlayerHeader::Arena(header) = &mut data.header else {
@@ -2161,6 +2179,10 @@ mod tests {
         assert!(data.chunk(HIREABLES_CHUNK).is_none());
         assert!(data.chunk(SHOP_STOCK_CHUNK).is_none());
         assert_eq!(data.chunk(ARSENAL_CHUNK), Some(&[3u8][..]));
+        // The stash keeps only plain twelve-byte records.
+        let stash =
+            crate::arena_save::parse_item_list(data.chunk(HUB_STASH_CHUNK).unwrap()).unwrap();
+        assert_eq!(stash, vec![item(1), item(3)]);
     }
 
     #[test]

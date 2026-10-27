@@ -291,13 +291,15 @@ zero: the slot is neither listed nor loaded.
   puts the player's saved position back to `(0, 0, 300)`, skips the
   hireables and shop-stock chunks, regenerates the hireables when the
   mask keeps them, repairs the player record's item ids and compacts the
-  hub stash. Exarust's load does the section drop, the position and the
-  chunk removal, and writes the converted player data back so a later save
-  does not revive the skipped chunks (the original keeps the empty lists in
-  memory only). It carries the pure compaction passes
-  (`arena_save::retain_plain_items`, `retain_plain_records`,
-  `remove_duplicate_item_ids`); regeneration, the record repair and the
-  object-database id passes are not modelled.
+  hub stash. Exarust's load does the section drop, the position, the
+  chunk removal and the stash compaction, and writes the converted player
+  data back so a later save does not revive the skipped chunks (the
+  original keeps the empty lists in memory only). It carries the pure
+  compaction passes (`arena_save::retain_plain_items`,
+  `arena_save::retain_plain_records`, `remove_duplicate_item_ids` and the
+  record-repair order in `ArenaLists::compact`); regeneration, the
+  character-record repair and the object-database id passes are not
+  modelled.
 * Story start compatibility (the character creator, while the started byte
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb`'s **third
