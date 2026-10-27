@@ -72,8 +72,9 @@ use crate::bindings::{Action, Bindings};
 use crate::gui_screens::ScreenRequest;
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
-use crate::player_controls::{self, CharacterInteraction, ClickTarget};
+use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
 use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
+use exa_ui::hud::HudShowUntil;
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -309,11 +310,13 @@ pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
     true
 }
 
-/// The same test on a box in its own frame: the eight corners are placed by
-/// `rotation` about `centre`, in the original's order (x, then y, then z,
-/// the low corner before the high each time), and the first corner over
-/// 280 cm or under −1000 cm refuses the box.
-pub fn box_ok_local(centre: Vec3, half: Vec3, rotation: Mat3) -> bool {
+/// The same test on a box in its own frame: the eight corners `centre ±
+/// half` are placed by the affine `frame` (rotation and translation), in
+/// the original's order (x, then y, then z, the low corner before the high
+/// each time), and the first corner over 280 cm or under −1000 cm refuses
+/// the box. The placed height sums as the original's point transform does:
+/// `(x·r0 + y·r1) + (z·r2 + t)`.
+pub fn box_ok_local(centre: Vec3, half: Vec3, frame: bevy::math::Affine3A) -> bool {
     let low = centre - half;
     let high = centre + half;
     let xs = [low.x, high.x];
@@ -322,8 +325,10 @@ pub fn box_ok_local(centre: Vec3, half: Vec3, rotation: Mat3) -> bool {
     for &x in &xs {
         for &y in &ys {
             for &z in &zs {
-                let placed = rotation * Vec3::new(x, y, z);
-                let height = placed.y * CM;
+                let m = frame.matrix3;
+                let placed_y =
+                    (x * m.x_axis.y + y * m.y_axis.y) + (z * m.z_axis.y + frame.translation.y);
+                let height = placed_y * CM;
                 if height > 280.0 || height < -1000.0 {
                     return false;
                 }
@@ -469,8 +474,10 @@ pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 
 
 /// A wheel's asked angle after a frame: the gap `wanted − current` is taken
 /// as no turn when it is negative and stops at `limit` when it is longer;
-/// the current angle plus that turn is then wrapped into ±π. The gap is not
-/// wrapped before the clamp, as the original computes it.
+/// the current angle plus that turn is then wrapped into ±π, compared in
+/// double precision against the double π and moved by the float 2π. The
+/// gap is not wrapped before the clamp, as the original computes it, and a
+/// NaN gap passes both clamps.
 pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
     let delta = wanted - current;
     let delta = if delta < 0.0 {
@@ -481,10 +488,10 @@ pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
         delta
     };
     let mut out = current + delta;
-    if out > std::f32::consts::PI {
-        out -= std::f32::consts::TAU;
-    } else if out < -std::f32::consts::PI {
+    if f64::from(out) < -std::f64::consts::PI {
         out += std::f32::consts::TAU;
+    } else if f64::from(out) > std::f64::consts::PI {
+        out -= std::f32::consts::TAU;
     }
     out
 }
@@ -1037,65 +1044,76 @@ fn hold_hand(
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
+    (time, mut show_bars): (Option<Res<Time<Virtual>>>, Option<ResMut<HudShowUntil>>),
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
     // A release before the drag started is a click: outside combat mode
-    // the player turns toward the cursor. A double click or Ctrl then
-    // interacts with what is there.
+    // the player turns toward the cursor, and a click on the player's own
+    // body shows the health and focus bars for 5000 ms. A double click
+    // (with Ctrl held in combat mode) then interacts with what is there.
+    // The original takes the double click on the second press; Exarust
+    // reads it on that press's release.
     if released {
         let left = hand.left.take();
         if let Some(left) = left.filter(|l| !l.dragging)
             && let Some((_, child)) = player
+            && let Ok((pb, own, condition, _)) = player_bodies.get(child)
         {
-            let ctrl = bindings.pressed(&keys, Action::Interact);
-            let interact = left.double || ctrl;
-            if let Ok((pb, own, condition, _)) = player_bodies.get(child) {
-                if !pb.combat
-                    && let Some((yaw, distance)) = pb.cursor()
-                    && click_turns(distance * CM)
-                    && let Ok(mut req) = requests.get_mut(child)
-                {
-                    req.heading = yaw;
-                }
-                if interact {
-                    let ray = windows.single().ok().zip(cameras.single().ok()).and_then(
+            let combat = pb.combat;
+            if !combat
+                && let Some((yaw, distance)) = pb.cursor()
+                && click_turns(distance * CM)
+                && let Ok(mut req) = requests.get_mut(child)
+            {
+                req.heading = yaw;
+            }
+            let interact = left.double && (!combat || bindings.pressed(&keys, Action::Interact));
+            if !combat || interact {
+                let condition = condition.copied().unwrap_or_default();
+                let ray =
+                    windows.single().ok().zip(cameras.single().ok()).and_then(
                         |(window, (camera, eye))| window_ray(camera, eye, window, left.at),
                     );
-                    let picked = pick_with(
-                        ray,
-                        &physics,
-                        &stand_ins,
-                        &bodies,
-                        own.map(|r| (child, r, condition.copied().unwrap_or_default())),
-                    );
-                    if let Some(picked) = picked {
-                        let target = match picked.hit {
-                            Hit::Character { body, .. } if body == child => {
-                                Some(ClickTarget::Player)
-                            }
-                            Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
-                            Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
-                            Hit::Prop { .. } => Some(ClickTarget::plain()),
-                            Hit::Level => None,
-                        };
-                        if let Some(target) = target {
-                            let outcome = player_controls::click(target);
-                            let interaction =
-                                player_controls::interact_character(target, false, false);
-                            debug!("click {target:?}: {outcome:?}, {interaction:?}");
-                            // The player's own body opens Exarust's
-                            // inventory screen; the other windows have no
-                            // Exarust form yet.
-                            if interaction == CharacterInteraction::Inventory
-                                && let Some(messages) = screens.as_deref_mut()
-                            {
-                                messages.write(ScreenRequest {
-                                    screen: exa_ui::game_gui::GameScreen::Inventory,
-                                    player_ready: !condition.copied().unwrap_or_default().dying(),
-                                    player_alive: !condition.copied().unwrap_or_default().is_dead(),
-                                });
-                            }
+                let picked = pick_with(
+                    ray,
+                    &physics,
+                    &stand_ins,
+                    &bodies,
+                    own.map(|r| (child, r, condition)),
+                );
+                let target = picked.and_then(|picked| match picked.hit {
+                    Hit::Character { body, .. } if body == child => Some(ClickTarget::Player),
+                    Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
+                    Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
+                    Hit::Prop { .. } => Some(ClickTarget::plain()),
+                    Hit::Level => None,
+                });
+                if let Some(target) = target {
+                    if !combat {
+                        let outcome = player_controls::click(target);
+                        debug!("click {target:?}: {outcome:?}");
+                        if let ClickOutcome::ShowBars { ms } = outcome
+                            && let Some(show) = show_bars.as_deref_mut()
+                            && let Some(time) = time.as_deref()
+                        {
+                            show.show_for(time.elapsed().as_millis() as i64, i64::from(ms));
+                        }
+                    }
+                    if interact {
+                        let interaction = player_controls::interact_character(target, false, false);
+                        debug!("double click {target:?}: {interaction:?}");
+                        // The player's own body opens Exarust's inventory
+                        // screen; the loot and talk windows have no
+                        // Exarust form yet.
+                        if interaction == CharacterInteraction::Inventory
+                            && let Some(messages) = screens.as_deref_mut()
+                        {
+                            messages.write(ScreenRequest {
+                                screen: exa_ui::game_gui::GameScreen::Inventory,
+                                player_ready: !condition.dying(),
+                                player_alive: !condition.is_dead(),
+                            });
                         }
                     }
                 }
@@ -1556,25 +1574,32 @@ mod tests {
     /// 280 cm or under −1000 cm refuses it, and a NaN corner passes.
     #[test]
     fn a_box_is_placed_before_it_is_refused() {
+        use bevy::math::Affine3A;
         let centre = Vec3::ZERO;
         let half = Vec3::new(0.1, 1.4, 0.1);
-        assert!(box_ok_local(centre, half, Mat3::IDENTITY));
+        assert!(box_ok_local(centre, half, Affine3A::IDENTITY));
         assert!(!box_ok_local(
             centre,
             Vec3::new(0.1, 2.81, 0.1),
-            Mat3::IDENTITY
+            Affine3A::IDENTITY
         ));
         // Rotated so a corner reaches the ceiling while the unrotated box
         // does not: 2 m wide, 2.9 m tall at 45° over 2.8 m.
         let tall = Vec3::new(2.0, 2.0, 0.05);
-        assert!(box_ok_local(centre, tall, Mat3::IDENTITY));
-        let tilt = Mat3::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        assert!(box_ok_local(centre, tall, Affine3A::IDENTITY));
+        let tilt = Affine3A::from_rotation_z(std::f32::consts::FRAC_PI_4);
         assert!(!box_ok_local(centre, tall, tilt));
+        // The frame's translation counts: lifted 1.5 m, the 1.4 m half
+        // height reaches 2.9 m; sunk 9 m, the low corner is under −10 m.
+        let lift = Affine3A::from_translation(Vec3::Y * 1.5);
+        assert!(!box_ok_local(centre, half, lift));
+        let sink = Affine3A::from_translation(Vec3::Y * -9.0);
+        assert!(!box_ok_local(centre, half, sink));
         // A NaN height is an unordered pass.
         assert!(box_ok_local(
             centre,
             Vec3::new(0.0, f32::NAN, 0.0),
-            Mat3::IDENTITY
+            Affine3A::IDENTITY
         ));
     }
 
@@ -1618,6 +1643,11 @@ mod tests {
         assert!((wheel_turn(0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
         // The gap is not wrapped: −6 is no turn, so the angle stays.
         assert_eq!(wheel_turn(3.0, -3.0, 1.0), 3.0);
+        // The float π is over the double π: it wraps to −π.
+        assert_eq!(
+            wheel_turn(3.0, std::f32::consts::PI, 1.0),
+            std::f32::consts::PI - std::f32::consts::TAU
+        );
         assert!(uses_first_wheel_grip(0.2));
         assert!(!uses_first_wheel_grip(0.19));
         assert!(uses_first_wheel_grip(-0.3));

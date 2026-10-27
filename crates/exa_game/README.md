@@ -381,14 +381,15 @@ yet. The right button walks to the cursor in combat mode too
 held.
 
 The controls' rules (`player_controls`) are the click's and the
-Ctrl/double-click interaction's outcomes (a lock's key and first-unlock
+double-click interaction's outcomes (a lock's key and first-unlock
 reward, a container, an item use in hand, a button push, a corpse's scripts,
 a character's talk condition, the player's inventory), the item-use values
 (a pour's warmth and marks, the cleaning and repair kits' targets, their
 sounds) and the timed list that writes only while it lowers a section or
 arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
-bar's 500 ms hold. The player's own body on a Ctrl or double click opens the
+bar's 500 ms hold. A click on the player's own body shows the HUD bars for
+5000 ms; a double click on it (with Ctrl in combat mode) opens the
 existing inventory screen; the other windows have no form and the script
 registry is `exa_ai::roles`. The controls' scene-node words are
 `control_nodes`, a tested model (the runtime hand holds physics bodies, not
