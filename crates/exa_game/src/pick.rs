@@ -165,6 +165,35 @@ pub enum ReachTo {
     Wheel,
 }
 
+/// The player's navigation region's answer for the point under the cursor:
+/// the world has no region there, the point is in the player's region, or
+/// it is outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Region {
+    /// No region test applies (no height field at the point).
+    None,
+    Inside,
+    Outside,
+}
+
+/// Everything the reach test reads. A point is measured by its world
+/// height and its offset from the player's hip; a door or a wheel is
+/// measured from its own place instead. Outside combat mode a point that
+/// is not a door must also lie in the player's navigation region, with no
+/// flagged mesh between the player and it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reach {
+    pub to: ReachTo,
+    /// The point's world height (cm), for a plain point.
+    pub height_cm: f32,
+    /// The offset from the player's hip (cm).
+    pub offset_cm: Vec3,
+    /// The navigation region at the point.
+    pub region: Region,
+    /// The region test applies to this point (everything but a door).
+    pub region_applies: bool,
+}
+
 /// Whether the point the pick hit, `hit_height_cm` high in the world, is
 /// close enough to use without walking closer, its offset (or the door's,
 /// or the wheel's) from the player's hip being `offset_cm`.
@@ -185,6 +214,32 @@ pub fn within_reach(hit_height_cm: f32, offset_cm: Vec3, to: ReachTo) -> bool {
     let across2 = flat.x * flat.x + flat.y * flat.y + flat.z * flat.z;
     let beyond = across2 > across * across;
     !beyond
+}
+
+/// The reach with the navigation region's answer: an outside point is out
+/// before the height and offset are measured; a door skips the region.
+pub fn reach(r: Reach) -> bool {
+    if r.region_applies && r.region == Region::Outside {
+        return false;
+    }
+    within_reach(r.height_cm, r.offset_cm, r.to)
+}
+
+/// The walk-to point test: from the player's hip (`hip`) to a point (both
+/// cm), the point's world height under 245 cm and its ground offset under
+/// 300 cm; when the player's navigation region has a height field at the
+/// point, the point must also be inside it and no flagged mesh may stand
+/// between the player and it. Every ordered comparison lets a NaN through.
+pub fn walk_within_reach(point: Vec3, hip: Vec3, region: Region) -> bool {
+    if region == Region::Outside {
+        return false;
+    }
+    if point.y > 245.0 {
+        return false;
+    }
+    let off = point - hip;
+    let flat2 = off.x * off.x + off.z * off.z;
+    !(flat2 > 300.0 * 300.0)
 }
 
 #[cfg(test)]
@@ -297,5 +352,56 @@ mod tests {
         assert!(within_reach(f32::NAN, across(f32::NAN), ReachTo::Point));
         // The height is the world's, not the offset's.
         assert!(!within_reach(500.0, across(0.0), ReachTo::Point));
+    }
+
+    /// A point outside the player's navigation region is out before the
+    /// measurements; a door skips the region. A walk-to point has its own
+    /// world height and 300 cm across.
+    #[test]
+    fn the_region_and_the_walk_to_point() {
+        let near = Vec3::new(100.0, 50.0, 0.0);
+        let base = Reach {
+            to: ReachTo::Point,
+            height_cm: 50.0,
+            offset_cm: Vec3::new(100.0, 50.0, 0.0),
+            region: Region::None,
+            region_applies: true,
+        };
+        assert!(reach(base));
+        assert!(!reach(Reach {
+            region: Region::Outside,
+            ..base
+        }));
+        assert!(reach(Reach {
+            region: Region::Outside,
+            to: ReachTo::Door,
+            region_applies: false,
+            ..base
+        }));
+        let hip = Vec3::ZERO;
+        assert!(walk_within_reach(near, hip, Region::None));
+        assert!(walk_within_reach(near, hip, Region::Inside));
+        assert!(!walk_within_reach(near, hip, Region::Outside));
+        assert!(!walk_within_reach(
+            Vec3::new(0.0, 245.1, 0.0),
+            hip,
+            Region::None
+        ));
+        assert!(!walk_within_reach(
+            Vec3::new(300.1, 0.0, 0.0),
+            hip,
+            Region::None
+        ));
+        assert!(walk_within_reach(
+            Vec3::new(180.0, 0.0, 240.0),
+            hip,
+            Region::None
+        ));
+        // NaN passes the ordered tests.
+        assert!(walk_within_reach(
+            Vec3::new(f32::NAN, f32::NAN, 0.0),
+            hip,
+            Region::None
+        ));
     }
 }

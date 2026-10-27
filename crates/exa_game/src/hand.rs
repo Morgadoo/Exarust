@@ -168,6 +168,19 @@ pub fn click_turns(distance_cm: f32) -> bool {
 }
 
 impl Hand {
+    /// The drag state word the press left.
+    pub fn drag_state(&self) -> DragState {
+        match self.holding {
+            Holding::Nothing => DragState::Idle,
+            Holding::Lift => DragState::Lift,
+            Holding::Drag { .. } => DragState::Physical,
+            Holding::Mechanism(Pick::Hinge) => DragState::Door,
+            Holding::Mechanism(Pick::Wheel) => DragState::Wheel,
+            Holding::Mechanism(_) => DragState::Cloth,
+            Holding::Refused => DragState::Refused,
+        }
+    }
+
     /// Whether the frame's movement request is left as it was: while a
     /// press is refused or a lift holds the cursor.
     pub fn keeps_the_request(&self) -> bool {
@@ -287,6 +300,217 @@ pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
         }
     }
     true
+}
+
+/// The same test on a box in its own frame: the eight corners are placed by
+/// `rotation` about `centre`, in the original's order (x, then y, then z,
+/// the low corner before the high each time), and the first corner over
+/// 280 cm or under −1000 cm refuses the box.
+pub fn box_ok_local(centre: Vec3, half: Vec3, rotation: Mat3) -> bool {
+    let low = centre - half;
+    let high = centre + half;
+    let xs = [low.x, high.x];
+    let ys = [low.y, high.y];
+    let zs = [low.z, high.z];
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let placed = rotation * Vec3::new(x, y, z);
+                let height = placed.y * CM;
+                if height > 280.0 || height < -1000.0 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The controls' drag state word, as the hand's press leaves it. The bits
+/// name the handler the release calls; a door's rattle may add the refused
+/// bit while it is latched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DragState {
+    #[default]
+    Idle,
+    /// An item is being used on the world.
+    Use,
+    /// A GUI item drag is pending.
+    GuiPending,
+    /// A prop is lifted onto the cursor.
+    Lift,
+    /// A door or a lever is pulled.
+    Door,
+    /// A prop or a corpse is dragged.
+    Physical,
+    /// A wheel is turned.
+    Wheel,
+    /// A sim object (cloth) is pulled.
+    Cloth,
+    /// A GUI callback's drag.
+    GuiCallback,
+    /// The press was refused.
+    Refused,
+}
+
+impl DragState {
+    /// The state word the original keeps.
+    pub fn word(self) -> u32 {
+        match self {
+            DragState::Idle => 0,
+            DragState::Use => 0x100,
+            DragState::GuiPending => 0x1000,
+            DragState::Lift => 0x2000,
+            DragState::Door => 0x4000,
+            DragState::Physical => 0x8000,
+            DragState::Wheel => 0x10000,
+            DragState::Cloth => 0x20000,
+            DragState::GuiCallback => 0x40000,
+            DragState::Refused => 0x80000,
+        }
+    }
+
+    /// The state a word names. The release dispatch tests `0x3000` (the
+    /// GUI item drag and the lift), then the door, physical, wheel, GUI and
+    /// cloth bits, so the more specific states come first.
+    pub fn from_word(word: u32) -> Self {
+        if word & 0x3000 != 0 {
+            if word & 0x2000 != 0 {
+                DragState::Lift
+            } else {
+                DragState::GuiPending
+            }
+        } else if word & 0x4000 != 0 {
+            DragState::Door
+        } else if word & 0x8000 != 0 {
+            DragState::Physical
+        } else if word & 0x10000 != 0 {
+            DragState::Wheel
+        } else if word & 0x40000 != 0 {
+            DragState::GuiCallback
+        } else if word & 0x20000 != 0 {
+            DragState::Cloth
+        } else if word & 0x80000 != 0 {
+            DragState::Refused
+        } else if word & 0x100 != 0 {
+            DragState::Use
+        } else {
+            DragState::Idle
+        }
+    }
+}
+
+/// The distance (cm) a closed door is pulled toward the cursor, out of its
+/// own hinge-side point.
+pub const DOOR_PULL_CM: f32 = 100.0;
+/// A door's drag link flags, its pass limit and its slack.
+pub const DOOR_LINK_FLAGS: u32 = 0x4000;
+pub const DOOR_LINK_LIMIT: u32 = 2;
+pub const DOOR_LINK_SLACK: f32 = 0.003;
+
+/// A door's drag as the press records it: where its pull started, whether
+/// the leaf slides, and whether it was latched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoorGrip {
+    /// The point the pull started from: the hinge-side point of a closing
+    /// door, or the hit point of a sliding one.
+    pub anchor: Vec3,
+    pub sliding: bool,
+    /// The door was latched and rattled instead of dragging.
+    pub latched: bool,
+}
+
+/// The rattle of a latched door: its volume and pitch, drawn in that order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rattle {
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// A latched door's rattle: pitch `0.8 + 0.2·draw`, then volume `0.15 +
+/// 0.1·draw`, each draw a unit random. Returns `None` when the door is
+/// already being forced open.
+pub fn door_rattle(latched: bool, forcing: bool, mut draw: impl FnMut() -> f32) -> Option<Rattle> {
+    if !latched || forcing {
+        return None;
+    }
+    let pitch = draw() * 0.2 + 0.8;
+    let volume = draw() * 0.1 + 0.15;
+    Some(Rattle { volume, pitch })
+}
+
+/// A ray's point on the horizontal plane at `height` (m): `origin +
+/// dir·((height − origin.y)/dir.y)`. A ray parallel to the plane gives no
+/// finite point.
+pub fn plane_pick(origin: Vec3, dir: Vec3, height: f32) -> Option<Vec3> {
+    let at = origin + dir * ((height - origin.y) / dir.y);
+    at.is_finite().then_some(at)
+}
+
+/// A door's dragged anchor (m). A closing leaf is pulled 100 cm from its
+/// hinge-side point toward the cursor's point, wherever the cursor is. A
+/// sliding leaf's point is projected onto its own sliding axis `axis`
+/// (unit, across its frame), so it only moves along the slide.
+pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 {
+    let delta = cursor_point - grip.anchor;
+    if grip.sliding {
+        grip.anchor + axis * delta.dot(axis)
+    } else {
+        grip.anchor + delta * (1.0 / delta.length())
+    }
+}
+
+/// A wheel's asked angle after a frame: the gap `wanted − current` is taken
+/// as no turn when it is negative and stops at `limit` when it is longer;
+/// the current angle plus that turn is then wrapped into ±π. The gap is not
+/// wrapped before the clamp, as the original computes it.
+pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
+    let delta = wanted - current;
+    let delta = if delta < 0.0 {
+        0.0
+    } else if delta > limit {
+        limit
+    } else {
+        delta
+    };
+    let mut out = current + delta;
+    if out > std::f32::consts::PI {
+        out -= std::f32::consts::TAU;
+    } else if out < -std::f32::consts::PI {
+        out += std::f32::consts::TAU;
+    }
+    out
+}
+
+/// Whether the first wheel grip is the one the view picks: its direction
+/// from the wheel, on the camera's forward axis, is at least 0.2 in
+/// absolute value; otherwise the second grip is used.
+pub fn uses_first_wheel_grip(alignment: f32) -> bool {
+    alignment.abs() >= 0.2
+}
+
+/// The cloth vertex a press grabbed: the first of the cloth's local
+/// vertices within `radius` (m) of the press point in the cloth's frame.
+pub fn cloth_vertex(vertices: &[Vec3], at: Vec3, radius: f32) -> Option<usize> {
+    let r2 = radius * radius;
+    vertices
+        .iter()
+        .position(|v| (*v - at).length_squared() < r2)
+}
+
+/// A cloth drag's anchor each frame: the grabbed vertex while the pick
+/// still finds it within `radius` (m), else the ray's point on the drag
+/// plane.
+pub fn cloth_drag_anchor(
+    vertex: Option<Vec3>,
+    picked: Option<Vec3>,
+    plane: Vec3,
+    radius: f32,
+) -> Vec3 {
+    match picked {
+        Some(p) if vertex.is_some_and(|v| (v - p).length_squared() < radius * radius) => p,
+        _ => plane,
+    }
 }
 
 /// Whether a press finds its point out of reach. While the player's
@@ -1150,5 +1374,131 @@ mod tests {
         ]));
         assert!(!box_ok([Vec3::new(0.0, -10.01, 0.0)]));
         assert!(box_ok([Vec3::new(0.0, f32::NAN, 0.0)]));
+    }
+
+    /// The box's eight corners are tested in the original's order; one over
+    /// 280 cm or under −1000 cm refuses it, and a NaN corner passes.
+    #[test]
+    fn a_box_is_placed_before_it_is_refused() {
+        let centre = Vec3::ZERO;
+        let half = Vec3::new(0.1, 1.4, 0.1);
+        assert!(box_ok_local(centre, half, Mat3::IDENTITY));
+        assert!(!box_ok_local(
+            centre,
+            Vec3::new(0.1, 2.81, 0.1),
+            Mat3::IDENTITY
+        ));
+        // Rotated so a corner reaches the ceiling while the unrotated box
+        // does not: 2 m wide, 2.9 m tall at 45° over 2.8 m.
+        let tall = Vec3::new(2.0, 2.0, 0.05);
+        assert!(box_ok_local(centre, tall, Mat3::IDENTITY));
+        let tilt = Mat3::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        assert!(!box_ok_local(centre, tall, tilt));
+        // A NaN height is an unordered pass.
+        assert!(box_ok_local(
+            centre,
+            Vec3::new(0.0, f32::NAN, 0.0),
+            Mat3::IDENTITY
+        ));
+    }
+
+    /// A closing door pulls 100 cm from its hinge-side point toward the
+    /// cursor; a sliding one projects onto its own axis; a latch rattles
+    /// with the drawn volume and pitch.
+    #[test]
+    fn the_door_and_wheel_grips() {
+        let grip = DoorGrip {
+            anchor: Vec3::ZERO,
+            sliding: false,
+            latched: false,
+        };
+        let a = door_pull_anchor(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X);
+        assert!((a - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-5, "{a}");
+        let sliding = DoorGrip {
+            sliding: true,
+            ..grip
+        };
+        let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
+        assert!((a - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-5, "{a}");
+        let rattle = door_rattle(true, false, {
+            let mut n = 0;
+            move || {
+                n += 1;
+                if n == 1 { 0.5 } else { 0.5 }
+            }
+        })
+        .unwrap();
+        assert!((rattle.pitch - 0.9).abs() < 1e-6);
+        assert!((rattle.volume - 0.2).abs() < 1e-6);
+        assert_eq!(door_rattle(true, true, || 0.5), None);
+        assert_eq!(door_rattle(false, false, || 0.5), None);
+        // The plane pick at a height, and no point for a level ray.
+        assert!(
+            (plane_pick(Vec3::Y * 2.0, Vec3::NEG_Y, 0.5).unwrap() - Vec3::Y * 0.5).length() < 1e-5
+        );
+        assert_eq!(plane_pick(Vec3::Y, Vec3::X, 0.5), None);
+    }
+
+    /// The wheel stops at its limit, never turns the other way, and picks
+    /// its first grip at an alignment of 0.2. The cloth grabs the first
+    /// vertex within its radius and follows the picked point.
+    #[test]
+    fn the_wheel_and_cloth_drags() {
+        assert!((wheel_turn(0.5, 2.0, 1.0) - 1.5).abs() < 1e-6);
+        assert!((wheel_turn(1.5, 2.0, 1.0) - 2.0).abs() < 1e-6);
+        assert!((wheel_turn(0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
+        // The gap is not wrapped: −6 is no turn, so the angle stays.
+        assert_eq!(wheel_turn(3.0, -3.0, 1.0), 3.0);
+        assert!(uses_first_wheel_grip(0.2));
+        assert!(!uses_first_wheel_grip(0.19));
+        assert!(uses_first_wheel_grip(-0.3));
+        let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.05), Some(1));
+        assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.05), None);
+        let grabbed = Vec3::new(1.0, 0.0, 0.0);
+        assert_eq!(
+            cloth_drag_anchor(
+                Some(grabbed),
+                Some(Vec3::new(1.01, 0.0, 0.0)),
+                Vec3::Y,
+                0.05
+            ),
+            Vec3::new(1.01, 0.0, 0.0)
+        );
+        assert_eq!(
+            cloth_drag_anchor(Some(grabbed), Some(Vec3::new(2.0, 0.0, 0.0)), Vec3::Y, 0.05),
+            Vec3::Y
+        );
+    }
+
+    /// The state word round-trips and a hand's hold maps onto it.
+    #[test]
+    fn the_drag_state_word() {
+        for state in [
+            DragState::Idle,
+            DragState::Use,
+            DragState::GuiPending,
+            DragState::Lift,
+            DragState::Door,
+            DragState::Physical,
+            DragState::Wheel,
+            DragState::Cloth,
+            DragState::GuiCallback,
+            DragState::Refused,
+        ] {
+            assert_eq!(DragState::from_word(state.word()), state, "{state:?}");
+        }
+        let mut hand = Hand::default();
+        assert_eq!(hand.drag_state(), DragState::Idle);
+        hand.holding = Holding::Lift;
+        assert_eq!(hand.drag_state(), DragState::Lift);
+        hand.holding = Holding::Mechanism(Pick::Hinge);
+        assert_eq!(hand.drag_state(), DragState::Door);
+        hand.holding = Holding::Mechanism(Pick::Wheel);
+        assert_eq!(hand.drag_state(), DragState::Wheel);
+        hand.holding = Holding::Mechanism(Pick::Scene);
+        assert_eq!(hand.drag_state(), DragState::Cloth);
+        hand.holding = Holding::Refused;
+        assert_eq!(hand.drag_state(), DragState::Refused);
     }
 }
