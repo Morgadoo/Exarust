@@ -65,6 +65,39 @@ const RECOVERY_SLOPE: f64 = 1.428_571_428_571_428_6;
 /// farther or unordered one is never taken.
 const SCREEN_FAR2: f32 = 3.4e38;
 
+/// A two-part value the behaviour keeps for frame interpolation: the
+/// previous and current copies and the interpolated one the draw reads.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Interpolated2 {
+    pub previous: Vec2,
+    pub current: Vec2,
+    pub shown: Vec2,
+}
+
+impl Interpolated2 {
+    /// Sets all three copies to `at`, as the setter does.
+    pub fn at(at: Vec2) -> Self {
+        Self {
+            previous: at,
+            current: at,
+            shown: at,
+        }
+    }
+
+    /// The frame's advance: the previous copy takes the current one and
+    /// the current takes `now`.
+    pub fn advance(&mut self, now: Vec2) {
+        self.previous = self.current;
+        self.current = now;
+    }
+
+    /// The interpolated value at `t`: previous plus (current − previous)·t,
+    /// without a clamp.
+    pub fn lerp(&self, t: f32) -> Vec2 {
+        self.previous + (self.current - self.previous) * t
+    }
+}
+
 /// The aim point's distance (cm) for a stick of magnitude `m`: 250·m + 50.
 pub fn aim_distance(m: f32) -> f32 {
     m * AIM_REACH + AIM_MARGIN
@@ -571,6 +604,31 @@ mod tests {
         // A slow weapon's step stops at 0.01.
         let slow = windup(0.0, 100.0, 1000, 1.0, 0, false, 0);
         assert!((slow.step - 0.01).abs() < 1e-6, "{slow:?}");
+    }
+
+    /// The two-part value: setting puts all three copies on the same point,
+    /// advancing shifts previous←current and current←now, and the shown
+    /// value is previous + (current − previous)·t.
+    #[test]
+    fn the_two_part_value_interpolates() {
+        let mut v = Interpolated2::at(Vec2::new(2.0, 3.0));
+        assert_eq!(
+            (v.previous, v.current, v.shown),
+            (v.current, v.current, v.current)
+        );
+        v.advance(Vec2::new(6.0, 9.0));
+        assert_eq!(v.previous, Vec2::new(2.0, 3.0));
+        assert_eq!(v.current, Vec2::new(6.0, 9.0));
+        assert_eq!(v.lerp(0.5), Vec2::new(4.0, 6.0));
+        assert_eq!(v.lerp(-1.0), Vec2::new(-2.0, -3.0));
+        assert_eq!(
+            Interpolated2 {
+                previous: Vec2::ZERO,
+                current: Vec2::ZERO,
+                shown: Vec2::ZERO,
+            },
+            Interpolated2::default()
+        );
     }
 
     /// A swing's balance gives the recovery's quadratic: balance 0.5,
