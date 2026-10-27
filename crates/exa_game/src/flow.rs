@@ -2046,6 +2046,7 @@ impl Flow {
         let mut steps = self.close_end_menu();
         steps.extend([
             Step::MenuHelp(false),
+            Step::Controls(true),
             Step::Health {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
@@ -3110,6 +3111,8 @@ mod tests {
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
+        assert!(steps.contains(&Step::Controls(true)));
+        assert!(steps.contains(&Step::HideEndMenu));
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:
         // 0x3e666667.
         let healed = (f64::from(0.2f32) + 0.25 * 0.1) as f32;
