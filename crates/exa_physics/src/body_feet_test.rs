@@ -137,12 +137,24 @@ fn legs_take_their_friction_from_their_feet() {
 fn a_walk_plants_and_lifts_by_its_phase() {
     assert!(close(gait_phase(0.0, 0), 0.2, 1e-6));
     assert!(close(gait_phase(0.0, 1), 0.7, 1e-6));
-    assert_eq!(gait_plant(gait_phase(0.0, 0), false), GaitPlant::Plant);
-    assert_eq!(gait_plant(gait_phase(0.0, 0), true), GaitPlant::Hold);
-    assert_eq!(gait_plant(gait_phase(0.0, 1), true), GaitPlant::Lift);
-    assert_eq!(gait_plant(gait_phase(0.0, 1), false), GaitPlant::Hold);
-    assert_eq!(gait_plant(0.0, true), GaitPlant::Lift);
-    assert_eq!(gait_plant(0.41, false), GaitPlant::Hold);
+    assert_eq!(
+        gait_plant(gait_phase(0.0, 0), false, 0.5, false),
+        GaitPlant::Plant
+    );
+    assert_eq!(
+        gait_plant(gait_phase(0.0, 0), true, 0.5, false),
+        GaitPlant::Hold
+    );
+    assert_eq!(
+        gait_plant(gait_phase(0.0, 1), true, 0.5, false),
+        GaitPlant::Lift
+    );
+    assert_eq!(
+        gait_plant(gait_phase(0.0, 1), false, 0.5, false),
+        GaitPlant::Hold
+    );
+    assert_eq!(gait_plant(0.0, true, 0.5, false), GaitPlant::Lift);
+    assert_eq!(gait_plant(0.41, false, 0.5, false), GaitPlant::Hold);
 }
 
 /// The servo pushes a still point d·rate·gain (10 cm off at rate 0.2 and
@@ -476,6 +488,7 @@ fn a_footwork_landing_stamps_the_stand_still_clocks() {
         &mut body.legs,
         &ankles,
         &spots,
+        &[Vec3::ZERO; 2],
         &Bearing::default(),
         true,
         &[true; 2],
@@ -515,6 +528,7 @@ fn feet_are_planted_lifted_or_stood_on_their_stance_spots() {
             legs,
             &ankles,
             spots,
+            &[Vec3::ZERO; 2],
             &bearing,
             had_support,
             &down,
@@ -1059,4 +1073,26 @@ fn a_queued_step_aims_from_the_chest() {
     assert!(queued_step(chest, far, Vec3::X, side, 1.0, 0).is_none());
     // A target on the chest is unordered and takes the queue.
     assert!(queued_step(chest, chest, Vec3::X, side, 1.0, 0).is_some());
+}
+
+/// A lifted walking foot plants early before phase 0.2 when it moves
+/// forward at most 0.3 cm a tick, or, backpedalling, back at least
+/// 0.2 cm a tick.
+#[test]
+fn a_slow_foot_plants_early() {
+    assert_eq!(gait_plant(0.1, false, 0.3, false), GaitPlant::Plant);
+    assert_eq!(gait_plant(0.1, false, 0.31, false), GaitPlant::Hold);
+    assert_eq!(gait_plant(0.1, false, -0.2, true), GaitPlant::Plant);
+    assert_eq!(gait_plant(0.1, false, -0.21, true), GaitPlant::Hold);
+    assert_eq!(gait_plant(0.2, false, 9.0, false), GaitPlant::Plant);
+}
+
+/// A step's loudness is 0.01 + 0.0139 × its length up to 140 cm, and 1
+/// beyond: 5 cm gives 0.0795, 140 cm 1.956, 200 cm 1.
+#[test]
+fn a_steps_loudness_follows_its_length() {
+    assert!(close(step_loudness(5.0), 0.0795, 1e-6));
+    assert!(close(step_loudness(140.0), 1.956, 1e-6));
+    assert_eq!(step_loudness(200.0), 1.0);
+    assert_eq!(step_loudness(-10.0), -0.129);
 }

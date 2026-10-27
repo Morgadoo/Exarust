@@ -201,6 +201,9 @@ pub struct Leg {
     pub(super) goal: Vec3,
     /// The unsmoothed knee of the reach triangle (rad).
     pub(super) reach_knee: f32,
+    /// The length of the step this foot started (cm), which the footstep
+    /// sound's loudness follows: 0.01 + 0.0139 × it up to 140 cm, else 1.
+    pub step_length_cm: f32,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -593,6 +596,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             posed_offset: Vec3::ZERO,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
+            step_length_cm: 0.0,
             pitch: 0.0,
             pitch_rate: 0.0,
         });
@@ -720,11 +724,12 @@ impl Ragdoll {
         let centre = contacts.iter().copied().sum::<Vec3>() / contacts.len() as f32;
         b.feet_centre = centre;
         let mut m = chest;
-        if b.landing > LANDING_FADE {
+        // The landing's momentum fades by the double 0.05 a tick.
+        if f64::from(b.landing) > f64::from(LANDING_FADE) {
             if !bearing.moving {
                 m += b.slow * b.landing;
             }
-            b.landing -= LANDING_FADE;
+            b.landing = (f64::from(b.landing) - f64::from(LANDING_FADE)) as f32;
         }
         if bearing.moving && b.has_support {
             m += b.fast * MOVING_LEAD;
@@ -865,10 +870,15 @@ impl Ragdoll {
             .iter()
             .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
             .collect();
+        let moves: Vec<Vec3> = legs
+            .iter()
+            .map(|l| parts[l.shin].slip(&l.contact))
+            .collect();
         let foot_ended = feet::plant(
             legs,
             &contacts,
             &spots,
+            &moves,
             &bearing,
             trigger.supported,
             &met,

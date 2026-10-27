@@ -39,8 +39,10 @@ const FLAT: f32 = 3.1415927;
 /// while a recovery step is on.
 const EASE_STANDING: f32 = 0.02;
 const EASE_STEPPING: f32 = 0.2;
-/// The foot pitch eases at most this far (rad) a tick, plus its rate.
+/// The foot pitch eases at most this far (rad) a tick, plus its rate, and
+/// ten times that while a recovery step is on.
 pub(super) const PITCH_STEP: f32 = 0.01;
+pub(super) const PITCH_STEP_STEPPING: f32 = 0.1;
 /// The toe the pitch levels sits this far (cm) ahead of the ankle, times
 /// the body scale.
 const PITCH_REACH: f32 = 20.0;
@@ -400,7 +402,12 @@ fn bend_leg(parts: &[Part], leg: &mut Leg, tick: &BendTick) {
         crouch,
         stance,
     );
-    leg.lift = next_lift(leg.lift, anchored, stepping, fresh / CM);
+    leg.lift = if leg.ground.is_none() {
+        // A foot with no ground in reach keeps no step lift.
+        0.0
+    } else {
+        next_lift(leg.lift, anchored, stepping, fresh / CM)
+    };
     let goal = bend_target(foot, leg.anchor, anchored, drop);
     leg.goal = goal;
     let hip = Vec3::from(parts[thigh].transform().translation);

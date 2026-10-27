@@ -103,8 +103,13 @@ impl Ease {
     pub fn apply(self, f: f32) -> f32 {
         match self {
             Ease::Linear => f,
-            Ease::Smooth => f * f * (SMOOTH_A - SMOOTH_B * f),
-            Ease::Fast => FAST_SLOPE * f + 1.0 - 1.0 / (1.0 + FAST_RISE * f),
+            Ease::Smooth => (SMOOTH_A - SMOOTH_B * f) * f * f,
+            Ease::Fast => {
+                // The first sum is double, the reciprocal single, as the
+                // original's two ease routines compute it.
+                let recip = 1.0 / (1.0 + FAST_RISE * f);
+                ((f64::from(f) * f64::from(FAST_SLOPE) + 1.0) - f64::from(recip)) as f32
+            }
         }
     }
 }
@@ -481,12 +486,22 @@ pub fn overlay_toward(pose: &mut ClipPose, over: &Clip, b: &Bracket, weight: f32
 
 /// The hold step of a sample: each bone's turn is pulled toward the held
 /// pose by the hold's weight (when it is over the original's 1.19e-7),
-/// then every turn is normalised. Returns the weight applied.
+/// then every turn is normalised. The components are interpolated without
+/// the short-way sign check (the original's own lerp): two opposite turns
+/// half way give a zero quaternion and a NaN. Returns the weight applied.
 pub fn hold_toward(pose: &mut ClipPose, hold: Option<(&[Quat], f32)>) -> f32 {
     let weight = hold.map_or(0.0, |(_, w)| w);
     for (i, q) in pose.rotations.iter_mut().enumerate() {
         *q = match hold.and_then(|(h, _)| h.get(i)) {
-            Some(&h) if weight > EPSILON => q.lerp(h, weight.min(1.0)),
+            Some(&h) if weight > EPSILON => {
+                let w = weight;
+                Quat::from_xyzw(
+                    q.x + (h.x - q.x) * w,
+                    q.y + (h.y - q.y) * w,
+                    q.z + (h.z - q.z) * w,
+                    q.w + (h.w - q.w) * w,
+                )
+            }
             _ => *q,
         }
         .normalize();

@@ -291,6 +291,7 @@ pub(crate) fn decide_movement(
         d.bearing.push = body.drive;
         d.bearing.push_gain = body.gait.push;
         d.bearing.facing = facing;
+        d.bearing.backpedal = req.has(flags::BACK);
         d.bearing.stepping = req.stepping.is_some();
         d.bearing.jump = body.jump;
         d.bearing.jump_progress = body.jump_progress;

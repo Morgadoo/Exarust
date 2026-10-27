@@ -433,10 +433,20 @@ pub(super) fn gait_phase(progress: f32, leg: usize) -> f32 {
     (progress + 1.2 - 0.5 * leg as f32).rem_euclid(1.0)
 }
 
-/// Plant in [0.2, 0.4] while the foot does not touch. Lift at phase 0 or
-/// at least 0.55 while it does.
-pub(super) fn gait_plant(phase: f32, touching: bool) -> GaitPlant {
-    if !touching && (0.2..=0.4).contains(&phase) {
+/// Plant in [0.2, 0.4] while the foot does not touch, or earlier (phase
+/// under 0.2) when its speed along the facing is at most 0.3 cm a tick
+/// (backpedalling, at least −0.2). Lift at phase 0 or at least 0.55 while
+/// it does.
+pub(super) fn gait_plant(phase: f32, touching: bool, along_cm: f32, backwards: bool) -> GaitPlant {
+    if !touching
+        && ((0.2..=0.4).contains(&phase)
+            || (phase < 0.2
+                && if backwards {
+                    along_cm >= -0.2
+                } else {
+                    along_cm <= 0.3
+                }))
+    {
         GaitPlant::Plant
     } else if touching && (phase <= 0.0 || phase >= 0.55) {
         GaitPlant::Lift
@@ -463,10 +473,12 @@ pub(super) fn gait_plant(phase: f32, touching: bool) -> GaitPlant {
 /// under 5 cm of its spot (10 cm after a stall, outside a recovery step)
 /// scores as staying. Returns whether the other foot landing ended the
 /// recovery step.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plant(
     legs: &mut [Leg],
     ankles: &[Vec3],
     spots: &[Option<Vec3>],
+    moves: &[Vec3],
     bearing: &Bearing,
     had_support: bool,
     down: &[bool],
@@ -474,9 +486,13 @@ pub(super) fn plant(
 ) -> bool {
     for (i, ((leg, &at), &down)) in legs.iter_mut().zip(ankles).zip(down).enumerate() {
         if bearing.walking {
+            let along = moves.get(i).map_or(0.0, |m| cm(*m).dot(bearing.facing));
+            let along = if bearing.backpedal { -along } else { along };
             match gait_plant(
                 gait_phase(bearing.progress, i),
                 leg.state.has(FootState::TOUCHING),
+                along,
+                bearing.backpedal,
             ) {
                 GaitPlant::Plant => {
                     leg.anchor.x = at.x;
@@ -554,6 +570,7 @@ pub fn walk_stagger(
     spots: &[Option<Vec3>],
     target: Vec3,
     frame: Vec3,
+    side: Vec3,
     scale: f32,
 ) -> WalkedStep {
     let step_cm = steps::step_length(scale, 1.0);
@@ -574,7 +591,7 @@ pub fn walk_stagger(
         reference: frame,
         root: frame,
         origin,
-        side: Vec3::X,
+        side,
         step_cm,
         episode: true,
         episode_ms: 0.0,
@@ -674,6 +691,8 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
         legs[k].state.0 =
             legs[k].state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
         legs[k].approach = 1.0;
+        // The step's length feeds its sound's loudness.
+        legs[k].step_length_cm = cm(anchor - ankles[k]).length();
         // A foot that starts moving stamps the body's earlier stand-still
         // stamp.
         work.still_at = work.now_ms;
@@ -772,6 +791,16 @@ pub(super) fn probe_blend(leg: &Leg) -> f32 {
         ((f64::from(leg.blend) + PROBE_BLEND) as f32).min(PROBE_BLEND_MAX)
     } else {
         0.0
+    }
+}
+
+/// A step's loudness from its length (cm): 0.01 + 0.0139 × the length up
+/// to 140 cm, 1 beyond. The footstep sound's volume starts here.
+pub fn step_loudness(length_cm: f32) -> f32 {
+    if length_cm <= 140.0 {
+        length_cm * 0.0139 + 0.01
+    } else {
+        1.0
     }
 }
 
