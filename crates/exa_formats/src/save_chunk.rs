@@ -63,13 +63,36 @@ pub fn read_save_settings(id: u32, tag_value: f32, first: i32, second: i32) -> S
     }
 }
 
-/// The twelve-byte tag a written settings chunk carries. The original has
-/// two source tags (the old and the current one) with the same bytes: a
-/// zero, `1_100_000.0` and a zero.
-pub fn save_tag_bytes(_tag: SaveTag) -> [u8; 12] {
-    let mut out = [0u8; 12];
-    out[4..8].copy_from_slice(&1_100_000.0f32.to_le_bytes());
-    out
+/// The current twelve-byte settings tag: a zero, the version
+/// `1_100_000.0` and a zero.
+pub const CURRENT_SETTINGS_TAG: [u8; 12] = {
+    let version = 1_100_000.0f32.to_le_bytes();
+    [
+        0, 0, 0, 0, version[0], version[1], version[2], version[3], 0, 0, 0, 0,
+    ]
+};
+
+/// The twelve-byte tag a written settings chunk carries. The reader keeps
+/// the tag it read (the load reset puts the current one there first); a
+/// save whose read tag was old (`old`, a version under one million) writes
+/// that read tag back, any other the current tag.
+pub fn save_tag_bytes(old: bool, read_tag: [u8; 12]) -> [u8; 12] {
+    if old { read_tag } else { CURRENT_SETTINGS_TAG }
+}
+
+/// Whether the story's level exporter writes the settings chunk at all:
+/// only for an old tag or a saved word above zero (compared unsigned).
+pub fn settings_chunk_written(old: bool, saved: u32) -> bool {
+    old || saved > 0
+}
+
+/// The settings chunk's payload after its header: the tag and the two
+/// words (the settings store's word, then the saved word).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsChunk {
+    pub tag: [u8; 12],
+    pub first: u32,
+    pub saved: u32,
 }
 
 /// The saved settings word a load clears.
@@ -490,6 +513,20 @@ mod tests {
             GameClock::restore(120, 4_294_966_296).now(1_000),
             4_290_672_451
         );
+    }
+
+    #[test]
+    fn an_old_read_tag_is_written_back_and_gates_the_chunk() {
+        let mut old_tag = [0u8; 12];
+        old_tag[4..8].copy_from_slice(&900_000.0f32.to_le_bytes());
+        assert_eq!(save_tag_bytes(true, old_tag), old_tag);
+        assert_eq!(save_tag_bytes(false, old_tag), CURRENT_SETTINGS_TAG);
+        assert_eq!(&CURRENT_SETTINGS_TAG[4..8], &1_100_000.0f32.to_le_bytes());
+        assert!(settings_chunk_written(true, 0));
+        assert!(settings_chunk_written(false, 1));
+        // The word is compared unsigned: a "negative" one is above zero.
+        assert!(settings_chunk_written(false, 0xffff_ffff));
+        assert!(!settings_chunk_written(false, 0));
     }
 
     #[test]

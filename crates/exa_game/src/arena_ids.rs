@@ -87,31 +87,55 @@ pub fn reclassify_records(
     added
 }
 
-/// Prepare one character record: its hands, worn items, loadouts, then
-/// its carried items.
-pub fn prepare_character_items(
-    character: &mut CharacterRecord,
-    prepare_item: &mut impl FnMut(u32) -> u32,
-) {
-    prepare_character(character, prepare_item);
+/// What flushing one scene character produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneCharacterFlush {
+    /// The id to register in the world character database (the reference's
+    /// low 28 bits), or `None` when the reference's top bit is clear.
+    pub register: Option<u32>,
+    /// The first hand pair's (old, new) ids: the original rewrites the ids
+    /// of the objects attached to the character through these, which is
+    /// the caller's.
+    pub hands: [(u32, u32); 2],
 }
 
-/// Flushes one scene character before a save: a reference with its top bit
-/// set registers the character in the world character database under the
-/// low 28 bits, and every item in the record takes its saved id. The
-/// original also rewrites the ids of objects attached to the character;
-/// those attachments are the caller's.
-///
-/// Returns the id to register, or `None` when the character was already
-/// registered.
+/// Flushes one scene character before a save, in the original's order:
+/// a reference with its top bit set registers the character under the low
+/// 28 bits; then every worn item takes its saved id, then the first hand
+/// pair, then the second pair, then each carried item. A carried item
+/// whose id is one of the hands' old ids takes that hand's new id (the
+/// first pair is looked up before the second) instead of a fresh call.
+/// The loadouts are not touched.
 pub fn flush_scene_character(
     character: &mut CharacterRecord,
     reference: u32,
     mut prepare_item: impl FnMut(u32) -> u32,
-) -> Option<u32> {
-    let register = reference & 0x8000_0000 != 0;
-    prepare_character(character, &mut prepare_item);
-    register.then_some(reference & 0x0fff_ffff)
+) -> SceneCharacterFlush {
+    let register = (reference & 0x8000_0000 != 0).then_some(reference & 0x0fff_ffff);
+    for worn in &mut character.worn {
+        worn.id = prepare_item(worn.id);
+    }
+    let mut remap_pair = |first: usize| {
+        std::array::from_fn::<(u32, u32), 2, _>(|offset| {
+            let hand = &mut character.hands[first + offset];
+            let old = hand.id;
+            hand.id = prepare_item(old);
+            (old, hand.id)
+        })
+    };
+    let hands = remap_pair(0);
+    let second = remap_pair(2);
+    for item in &mut character.inventory {
+        let reused = hands
+            .iter()
+            .chain(second.iter())
+            .find(|(old, _)| *old == item.item);
+        item.item = match reused {
+            Some(&(_, new)) => new,
+            None => prepare_item(item.item),
+        };
+    }
+    SceneCharacterFlush { register, hands }
 }
 
 /// The fighter rank the board and the company read: the six skills' levels
@@ -606,22 +630,31 @@ mod tests {
     }
 
     #[test]
-    fn flushing_a_scene_character_registers_once_and_remaps_every_item() {
-        let mut record = character([40, 0], &[50], &[([60, 0], &[70])]);
+    fn flushing_a_scene_character_follows_the_original_order() {
+        let mut record = character([40, 41], &[50, 41, 52], &[([60, 0], &[70])]);
+        record.hands[2] = ItemRef::new(42, 0);
+        record.hands[3] = ItemRef::new(52, 0);
         record.worn = vec![ItemRef::new(45, 0)];
         let mut seen = Vec::new();
-        let registered = flush_scene_character(&mut record, 0x8000_0000 | 0x1234, |id| {
+        let flushed = flush_scene_character(&mut record, 0x8000_0000 | 0x1234, |id| {
             seen.push(id);
-            id + 1
+            id + 100
         });
-        assert_eq!(registered, Some(0x1234));
-        // The record's hands, worn items, loadout hands and worn items, then
-        // its carried items.
-        assert_eq!(seen, vec![40, 0, 0, 0, 45, 60, 0, 0, 0, 70, 50]);
-        assert_eq!(record.hands[0].id, 41);
-        assert_eq!(record.worn[0].id, 46);
-        assert_eq!(record.inventory[0].item, 51);
-        // A reference without the top bit does not register again.
-        assert_eq!(flush_scene_character(&mut record, 0x1234, |id| id), None);
+        assert_eq!(flushed.register, Some(0x1234));
+        assert_eq!(flushed.hands, [(40, 140), (41, 141)]);
+        // Worn, the first hand pair, the second pair, then the carried
+        // items; carried 41 and 52 reuse the hands' new ids, and the
+        // loadouts are left alone.
+        assert_eq!(seen, vec![45, 40, 41, 42, 52, 50]);
+        assert_eq!(record.worn[0].id, 145);
+        let carried: Vec<u32> = record.inventory.iter().map(|item| item.item).collect();
+        assert_eq!(carried, vec![150, 141, 152]);
+        assert_eq!(record.loadouts[0].hands[0].id, 60);
+        assert_eq!(record.loadouts[0].worn[0].id, 70);
+        // A reference without the top bit does not register.
+        assert_eq!(
+            flush_scene_character(&mut record, 0x1234, |id| id).register,
+            None
+        );
     }
 }

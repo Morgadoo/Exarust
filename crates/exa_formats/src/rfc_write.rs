@@ -19,7 +19,7 @@
 //! Inconsistent input (a mesh node without a mesh, a stream shorter than its
 //! count, a reference past the node list) is an error, never a panic.
 
-use crate::save_chunk::{SAVE_SETTINGS_ID, SaveSettings, save_tag_bytes};
+use crate::save_chunk::{SAVE_SETTINGS_ID, SettingsChunk};
 use crate::{Error, Result};
 
 /// The first word of a chunk tree: the sanity half `0xAFCF`, then the
@@ -642,18 +642,19 @@ const SUFFIX_RFI: &[u8; 4] = b".rfi";
 
 /// Writes a level section for a save, with the story's settings-chunk hook:
 /// the scene's chunk tree, then the `0xECADCA01` chunk with its twelve-byte
-/// tag and two words. The arena passes `None`.
+/// tag and two words. The arena, and a story save the gate
+/// (`save_chunk::settings_chunk_written`) rejects, pass `None`.
 pub fn export_save_level(
     scene: &ExportScene,
     options: &ExportOptions,
-    settings: Option<SaveSettings>,
+    settings: Option<SettingsChunk>,
 ) -> Result<Vec<u8>> {
     let mut extra = |w: &mut ChunkWriter| -> Result<()> {
         if let Some(settings) = settings {
             w.open(SAVE_SETTINGS_ID);
-            w.bytes(&save_tag_bytes(settings.tag));
-            w.u32(settings.first as u32);
-            w.u32(settings.second as u32);
+            w.bytes(&settings.tag);
+            w.u32(settings.first);
+            w.u32(settings.saved);
             w.close()?;
         }
         Ok(())

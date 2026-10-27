@@ -1171,15 +1171,14 @@ fn a_parent_past_the_node_list_is_an_error() {
 
 #[test]
 fn a_save_level_writes_the_story_settings_chunk_after_the_scene() {
-    use crate::save_chunk::{SAVE_SETTINGS_ID, SaveSettings, SaveTag};
+    use crate::save_chunk::{SAVE_SETTINGS_ID, SettingsChunk, save_tag_bytes};
 
     let scene = ExportScene::default();
     let options = ExportOptions::default();
-    let settings = SaveSettings {
-        id: SAVE_SETTINGS_ID,
-        tag: SaveTag::Small,
+    let settings = SettingsChunk {
+        tag: save_tag_bytes(false, [0xff; 12]),
         first: 0x1122_3344,
-        second: 0x5566_7788,
+        saved: 0x5566_7788,
     };
     let bytes = export_save_level(&scene, &options, Some(settings)).unwrap();
     // The chunk tree's sanity and version words come first.
