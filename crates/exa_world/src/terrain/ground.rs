@@ -105,9 +105,9 @@ impl GroundTile {
     }
 
     /// Height (metres) at vertex coordinates (`u`, `v`), bilinearly between
-    /// the four vertices around. The sums follow the original's order:
-    /// `((h10 + h00) + h01) + h11`, each product times `u`/`v` in the order
-    /// the code multiplies them.
+    /// the four vertices around. The sums follow the original's order (its
+    /// high-corner term first): `((h11 + h01) + h10) + h00`, each product
+    /// times `u`/`v` in the order the code multiplies them.
     ///
     /// The original reads its hole mask a byte at a time: a vertex is a hole
     /// when it or its +X neighbour is set in its row or the row below, and
@@ -129,11 +129,13 @@ impl GroundTile {
         }
         let (fu, fv) = (u - i as f32, v - j as f32);
         let h = |i: usize, j: usize| self.heights[at(i, j)];
+        // The original adds the high corner first, then the +Z corner, then
+        // the +X corner, then the low corner.
         Some(
-            h(i + 1, j) * fu * (1.0 - fv)
-                + h(i, j) * (1.0 - fu) * (1.0 - fv)
+            h(i + 1, j + 1) * fu * fv
                 + h(i, j + 1) * (1.0 - fu) * fv
-                + h(i + 1, j + 1) * fu * fv,
+                + h(i + 1, j) * fu * (1.0 - fv)
+                + h(i, j) * (1.0 - fu) * (1.0 - fv),
         )
     }
 }
@@ -263,13 +265,39 @@ mod tests {
         let h = t.height(1.5, 0.25).unwrap();
         let fu = 0.5;
         let fv = 0.25;
-        let expect = 5.0 * fu * (1.0 - fv)
-            + 3.0 * (1.0 - fu) * (1.0 - fv)
+        // The high corner first, then +Z, +X and the low corner.
+        let expect = 9.0 * fu * fv
             + 7.0 * (1.0 - fu) * fv
-            + 9.0 * fu * fv;
+            + 5.0 * fu * (1.0 - fv)
+            + 3.0 * (1.0 - fu) * (1.0 - fv);
         assert_eq!(h, expect);
         // At a vertex the four weights pick it alone.
         assert_eq!(t.height(1.0, 1.0), Some(7.0));
+    }
+
+    /// The sum order is the instruction order, not the mathematically equal
+    /// one: with these corners the original's order gives a different last
+    /// bit from adding the low corner first.
+    #[test]
+    fn the_corner_products_sum_in_the_instruction_order() {
+        let mut t = tile(0, 0, vec![0.0; TILE_VERTICES * TILE_VERTICES]);
+        let at = |i: usize, j: usize| j * TILE_VERTICES + i;
+        t.heights[at(0, 0)] = 1.0;
+        t.heights[at(1, 0)] = 1.0;
+        t.heights[at(0, 1)] = 1.0;
+        t.heights[at(1, 1)] = 10_000_000.0;
+        let (fu, fv) = (0.1f32, 0.1f32);
+        let h = t.height(fu, fv).unwrap();
+        let ordered = 10_000_000.0 * fu * fv
+            + 1.0 * (1.0 - fu) * fv
+            + 1.0 * fu * (1.0 - fv)
+            + 1.0 * (1.0 - fu) * (1.0 - fv);
+        let other = 1.0 * (1.0 - fu) * (1.0 - fv)
+            + 1.0 * fu * (1.0 - fv)
+            + 1.0 * (1.0 - fu) * fv
+            + 10_000_000.0 * fu * fv;
+        assert_ne!(ordered.to_bits(), other.to_bits());
+        assert_eq!(h.to_bits(), ordered.to_bits());
     }
 
     #[test]

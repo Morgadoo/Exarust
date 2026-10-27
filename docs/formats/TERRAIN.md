@@ -67,7 +67,8 @@ not checked one by one, so one tile past a row's end is the next row's
 first), the 6 m block the floor of the tile fraction times eight, the point
 is refused where the block is not built, and its height is
 the bilinear interpolation of the four vertices around it, the products and
-sums in the original's order. A vertex is a hole when it or its +X
+sums in the original's order (the high corner's product first, then the +Z,
+the +X and the low corner's). A vertex is a hole when it or its +X
 neighbour is set in its row or the row below of the hole mask, read a byte
 at a time (the +X neighbour is not tested where it starts the next byte);
 any corner being a hole means no ground. Results at or below −100 m are no
@@ -247,22 +248,74 @@ opacity is sharpened against the mask, `a′ = clamp((s + t)·a − s·(1 − M)
 what is below is scaled by `1 − a′ × cover`. Materials without textures show
 their flat tint (e.g. black `Mat STint`, which fills unseen ground).
 
-The original bakes this into per-tile colour, normal, gloss, mask, height and
-displacement textures, using up to 32 materials in groups of four, and draws
-the tile as one 6 m block mesh at a time. A worker thread builds a tile's
-geometry and material masks. Exarust builds the same per-vertex weights and
-the tile's block meshes on the async compute pool, and layers every material
-of a tile
-(up to 16) in a shader, in palette order; each vertex's over opacities go to
-the shader in a per-tile texture, one texel per vertex. Shipped tiles use up
-to 12 materials (11 in one 6 m block, 10 in one quad): 11 of `exanima01`'s
-20 tiles use more than four, as do most outdoor tiles. Keeping only the four
-heaviest dropped lighter materials and left `Mat STint`'s black showing in
-their mask shapes. Normal maps are layered the same way, with the N-pass
-sharpness (f4, f5) and strength (f11). Gloss is the G texture's red times
-f10 × 1.5·min(f9, 1), stacked like the colour; roughness is 1 − it. The
-parallax height is the B texture's red through `f20 + (B − f21) × f22`,
-stacked like the normals, at half the colour's resolution in the original.
+The original bakes this into per-6 m-block textures instead of evaluating it
+per fragment. A block gets a set of four targets: colour (RGB8), tangent-space
+normal (RG8), gloss (R8) and parallax height (R8 at half the colour's
+resolution). The sizes follow the texture-detail setting: its detail texture
+is 8192 texels at setting 3 or above and 4096 below, the high set's side is
+`32 << (log2(size/8) − 5)` (1024² at 8192) and the low set's one level less
+(512²); the displacement target is half the set's side (512² and 256²). The
+pools hold 21 high and 43 low sets; a set's colour, normal and gloss share
+the level and the displacement is halved. The pass targets are allocated with
+the initial filter word `0x30`, which has no mipmap bit, so the composites
+have no mip levels (colour and normal would gain one only if the filter's
+`0x40` bit were set).
+
+Each pass walks the tile's layers in groups of four, with one RGBA weight
+upload per group; groups after the first are additive (`AddPass`) and use the
+group's alpha as what survives below. The program key's low nibble is the
+group's layer count, `0x10 << i` marks a layer textured, `0x100 << i` a layer
+masked, `0x10000000` an additive group and `0x20000000` the normal pass's
+`BaseNrm` (off at the shipped settings). The passes:
+
+| pass | target | layer texture | per-layer values |
+|---|---|---|---|
+| normal | normal set | N | amount f11, sharpness f4/f5 |
+| colour | colour set | D | linear tint × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
+| gloss | gloss set | G | f10 × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
+| displacement | displacement set, half size | B | f20, f21, f22, 1; sharpness f4/f5 |
+| mask | mask working target | M | f12, f13, f14, 1; cover f9; sharpness f2/f3 |
+| height | height working target | H | f16, f17, f18, 1; cover f9, boosted by min(1.5·a, 1); sharpness f2/f3 |
+
+The sharpness pair travels to the shaders as `(s, t/s + 1)`. The mask pass
+clears to 0 and the height pass to 0.5. The colour pass's quads cover a
+block's palette slice at the palette scale 4 and 8 blocks a side,
+`[bx, bx+1] × [−by−1, −by] · 4/8`; their mask coordinates run from
+`0.5/32` to `30.5/32` of the block's 32-texel upload, so the 30 × 30 cells
+are vertex-centred. The layer sampler multiplies the palette coordinates by
+f0 (or 1 when f0 ≤ 0). A block's lit `TexPos` is
+`(2^(level−1) − (bx >> (tile level − level)), 2^(level−1) − (by >> (tile level
+− level)))`, `(0.5, 0.5)` for a whole-tile block.
+
+The selection and the frame hook decide which block is rebaked. Blocks within
+44.4 m of the look-ahead point (the camera moved 10 m along its back axis and
+snapped to a 6 m block centre) join a list of at most 189; those within 15 m
+want the high set and the rest the low set. A NaN distance is kept as low. The
+list is sorted by a key: visible clean blocks first (0), visible blocks that
+want work by `0xffff − (ring − priority)` (clamped to 1), and invisible blocks
+by their nearest light's rounded distance plus 0x10000. One block is baked a
+frame once the list holds blocks that are no longer clean; the first batch of
+newly selected (clean) blocks is baked together. A block that turns high with
+no free high set takes one from the last selected block that holds a high set
+at low resolution (state `0x900`): if that holder is dirty it gets a low set
+with a copy of its composite, else it keeps sharing the high set. A block that
+turns high while holding a low set (state `0x600`) trades its low set back for
+a high one. A block that leaves the list hands its set back to its pool.
+
+Exarust evaluates the same stacking per pixel in `terrain.wesl` — the
+colour, normal, gloss, parallax-height and height rules above, every material
+a tile uses (up to 16) in palette order — so it has no offscreen sets, but
+`terrain::composite` reproduces the sizes, pools, pass keys, per-layer values,
+quads, `TexPos`, selection, sort and state transitions with the original's
+numbers, pinned by tests. The palette's wet-floor source (offset 28) above 0.4
+turns on the lit program's wet-floor term: the composited gloss rises by
+`8c²`, capped at 0.85, with `c = max((y + 35)·−0.03, 0)² · n.y` and y in world
+centimetres, so ground below −35 cm grows glossier (the sewer's 0.5 is the
+only shipped source). The draw's specular level is the same float `+ 0.3`,
+unused while the gloss pass is on. The `trndtl01d` detail texture is looked
+up once at start-up; the shipped install has no such entry, and no terrain
+pass reads its handle in any case.
+
 G, B and the M mask are packed into one texture per material by
 `exa_world::terrain::surface_image`.
 

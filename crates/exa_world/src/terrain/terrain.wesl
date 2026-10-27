@@ -31,17 +31,21 @@ struct TerrainSplat {
     surface: array<vec4<f32>, 16>,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
+    // The palette's wet-floor source; only the flag below is read.
+    wetness: f32,
     flags: u32,
     // Layers in use.
     layers: u32,
     pad1: u32,
     pad2: u32,
+    pad3: u32,
 }
 
 const GI: u32 = 1u;
 const ENVIRONMENT: u32 = 2u;
 const DEBUG_GI: u32 = 4u;
 const SPLIT_TAPS: u32 = 8u;
+const WET_FLOOR: u32 = 16u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 // Every layer texture is read through one repeating sampler.
@@ -357,11 +361,21 @@ fn fragment(
     s.n = n;
     s.v = v;
     s.ndv = abs(dot(v, n));
-    // The composite gloss is an 8-bit value; roughness is 1 - it, with no
-    // other floor (the model program's 0.02 is Exarust's). Full gloss is a
-    // mirror without a highlight, as in the original; the shared light
-    // keeps its one singular point at 0.
-    s.rough = 1.0 - clamp(gloss.x, 0.0, 1.0);
+    // The composite gloss is an 8-bit value; roughness is 1 − it. A palette
+    // whose wet-floor source is above 0.4 turns on the original's wet-floor
+    // term: the gloss rises by `8c²` (capped at 0.85), with
+    // `c = max((y + 35) · −0.03, 0)² · n.y` and y in world centimetres
+    // (`terrain::composite::wet_floor_gloss`). Above −35 cm the term is 0, so
+    // only low ground grows glossier. A full gloss is a mirror without a
+    // highlight, as in the original; the shared light keeps its one singular
+    // point at 0.
+    var glossiness = clamp(gloss.x, 0.0, 1.0);
+    if has(WET_FLOOR) {
+        let m = max((wp.y * 100.0 + 35.0) * -0.03, 0.0);
+        let c = m * m * n.y;
+        glossiness = min(glossiness + 8.0 * c * c, 0.85);
+    }
+    s.rough = 1.0 - glossiness;
     s.f0 = vec3(0.04);
     s.legacy = false;
 

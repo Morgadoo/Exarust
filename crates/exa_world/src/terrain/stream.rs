@@ -194,6 +194,181 @@ pub fn neighbours<T: Copy>(
     out
 }
 
+/// A tile's streaming bits, as the original's terrain worker and frame hook
+/// write them.
+pub mod tile_flags {
+    /// The raw tile data is present (the state the `.rft` reader leaves).
+    pub const RAW: u32 = 0x1;
+    /// The tile's geometry has been built (the worker's state).
+    pub const BUILT: u32 = 0x8;
+    /// The tile is ready for the frame hook.
+    pub const READY: u32 = 0x20;
+    /// The tile's nodes are in the scene.
+    pub const INSERTED: u32 = 0x80;
+    /// The tile wants streaming attention this frame.
+    pub const STREAM: u32 = 0x800;
+    /// The tile's data changed and its GPU side must be reloaded (the worker
+    /// sets this when the terrain's flags ask); the frame hook unloads it.
+    pub const RELOAD: u32 = 0x1000;
+    /// The tile has been unloaded.
+    pub const UNLOADED: u32 = 0x2000;
+    /// The tile's GPU data is uploaded.
+    pub const UPLOADED: u32 = 0x4000;
+}
+
+/// What the frame hook does with one tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileAction {
+    /// Nothing this frame (the tile is mid-load).
+    None,
+    /// Insert the tile's nodes into the scene.
+    Insert,
+    /// Upload the tile's GPU data.
+    Upload,
+    /// Unload the tile's GPU data.
+    Unload,
+}
+
+/// One tile's streaming state: the bits above, and the refresh delay the
+/// per-tile refresh pass bumps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileStream {
+    pub state: u32,
+    /// The refresh pass's delay counter.
+    pub delay: i32,
+}
+
+impl Default for TileStream {
+    fn default() -> Self {
+        Self::raw()
+    }
+}
+
+impl TileStream {
+    /// A tile as the terrain reader leaves it: raw data, state 7.
+    pub fn raw() -> Self {
+        Self {
+            state: 0x7,
+            delay: 0,
+        }
+    }
+
+    /// The worker finished the tile's geometry and masks: state
+    /// `(state & ~0x10) | 0x828`, plus the reload bit when the terrain's
+    /// flags ask for one.
+    pub fn mark_built(&mut self, reload: bool) {
+        self.state = (self.state & !0x10) | 0x828;
+        if reload {
+            self.state |= tile_flags::RELOAD;
+        }
+    }
+
+    /// The frame hook inserted the tile's nodes.
+    pub fn mark_inserted(&mut self) {
+        self.state = (self.state & !tile_flags::READY) | tile_flags::INSERTED;
+    }
+
+    /// The tile's upload is pending.
+    pub fn begin_upload(&mut self) {
+        self.state |= tile_flags::UPLOADED;
+    }
+
+    /// The frame hook's choice for this tile. The insert test is the
+    /// original's `(state & 0x309f) == 0xf`; the upload test is
+    /// `(state & 0x4080) == 0x4080`; a reload bit wins over both and is
+    /// handled by unloading the tile.
+    pub fn action(&self) -> TileAction {
+        if self.state & tile_flags::RELOAD != 0 {
+            return TileAction::Unload;
+        }
+        if self.state & 0x309f == 0xf {
+            return TileAction::Insert;
+        }
+        if self.state & 0x4080 == 0x4080 {
+            return TileAction::Upload;
+        }
+        TileAction::None
+    }
+
+    /// Applies the frame hook's action: the state transitions its branches
+    /// make.
+    pub fn apply(&mut self, action: TileAction) {
+        match action {
+            TileAction::Insert => {
+                self.state = (self.state & !tile_flags::READY) | tile_flags::INSERTED;
+                self.state &= !tile_flags::UPLOADED;
+            }
+            TileAction::Upload => {
+                self.state &= !tile_flags::UPLOADED;
+            }
+            TileAction::Unload => {
+                self.state = (self.state & !tile_flags::RELOAD) | tile_flags::UNLOADED;
+            }
+            TileAction::None => {}
+        }
+    }
+
+    /// The frame hook marks every block of a ready, inserted tile as wanting
+    /// a composite (`state & 0xa0 == 0xa0`).
+    pub fn blocks_wanted(&self) -> bool {
+        self.state & 0xa0 == 0xa0
+    }
+
+    /// The refresh pass: the tile leaves the scene (its
+    /// nodes are detached, visibility cleared) and its delay counter goes up.
+    pub fn refresh(&mut self) {
+        self.state &= !tile_flags::INSERTED;
+        self.delay += 1;
+    }
+
+    /// The tile is fully in the scene and no longer holds the frame hook's
+    /// attention (the original's scene hook clears the stream bit once the
+    /// inserted nodes are in).
+    pub fn mark_settled(&mut self) {
+        self.state &= !tile_flags::STREAM;
+    }
+}
+
+/// A level's tiles as the frame hook streams them: one tile handled a frame,
+/// and a delay counter that skips frames after a refresh pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerrainStream {
+    pub tiles: Vec<TileStream>,
+    /// The terrain's refresh delay; while positive, frames only decrease it.
+    pub delay: i32,
+}
+
+impl TerrainStream {
+    pub fn new(tiles: Vec<TileStream>) -> Self {
+        Self { tiles, delay: 0 }
+    }
+
+    /// The tile the frame hook handles this frame, in tile order: the first
+    /// one with the stream bit, whose action may be `None` while it loads.
+    /// The original always handles one tile when the delay is 0 and stops
+    /// at it.
+    pub fn frame(&mut self) -> Option<(usize, TileAction)> {
+        if self.delay >= 1 {
+            self.delay -= 1;
+            return None;
+        }
+        for (index, tile) in self.tiles.iter().enumerate() {
+            if tile.state & tile_flags::STREAM == 0 {
+                continue;
+            }
+            return Some((index, tile.action()));
+        }
+        None
+    }
+
+    /// Applies an action to tile `index`.
+    pub fn apply(&mut self, index: usize, action: TileAction) {
+        if let Some(tile) = self.tiles.get_mut(index) {
+            tile.apply(action);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,5 +544,56 @@ mod tests {
         let n = neighbours(&tiles, 3, 3, 1, 1);
         assert_eq!(n[1][1], None);
         assert_eq!(n[0][0], Some(0));
+    }
+
+    #[test]
+    fn a_built_tile_keeps_the_reader_bits_and_inserts_once() {
+        let mut tile = TileStream::raw();
+        assert_eq!(tile.state, 0x7);
+        assert_eq!(tile.action(), TileAction::None);
+        // The worker clears bit 0x10 and ORs 0x828 into the reader's 7, so
+        // the insert test (low bits 0xf, no 0x3000) passes.
+        tile.mark_built(false);
+        assert_eq!(tile.state, 0x82f);
+        assert_eq!(tile.action(), TileAction::Insert);
+        tile.apply(TileAction::Insert);
+        assert_eq!(tile.state, 0x88f);
+        assert_eq!(tile.action(), TileAction::None);
+        // A queued upload is handled next.
+        tile.begin_upload();
+        assert_eq!(tile.action(), TileAction::Upload);
+        tile.apply(TileAction::Upload);
+        assert_eq!(tile.state, 0x88f);
+        // A reload request (bit 0x1000) on a fresh tile is handled by
+        // unloading.
+        let mut reload = TileStream::raw();
+        reload.mark_built(true);
+        assert_eq!(reload.state, 0x182f);
+        assert_eq!(reload.action(), TileAction::Unload);
+        reload.apply(TileAction::Unload);
+        assert_eq!(reload.state, 0x282f);
+    }
+
+    #[test]
+    fn the_frame_hook_handles_the_first_streaming_tile_a_frame() {
+        let mut stream = TerrainStream::new(vec![TileStream::raw(), TileStream::raw()]);
+        // Neither tile asks for streaming yet.
+        assert_eq!(stream.frame(), None);
+        stream.tiles[0].mark_built(false);
+        stream.tiles[1].mark_built(false);
+        let (index, action) = stream.frame().expect("the first tile is handled");
+        assert_eq!((index, action), (0, TileAction::Insert));
+        stream.apply(0, action);
+        // Still the first tile until its stream bit is cleared.
+        assert_eq!(stream.frame(), Some((0, TileAction::None)));
+        stream.tiles[0].mark_settled();
+        assert_eq!(stream.frame(), Some((1, TileAction::Insert)));
+        // A refresh sets the delay and the next frames count it down.
+        stream.tiles[1].refresh();
+        stream.delay = 2;
+        assert_eq!(stream.frame(), None);
+        assert_eq!(stream.delay, 1);
+        assert_eq!(stream.frame(), None);
+        assert_eq!(stream.delay, 0);
     }
 }

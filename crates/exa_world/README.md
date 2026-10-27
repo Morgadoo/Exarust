@@ -40,10 +40,22 @@ and the grid's rooms; portal clipping is next (see
   original's `TerrainBlock` frame and flat 10 cm slab bounds, and in a grid
   level only the blocks its grid flags; `terrain::ground` is the
   original's world height query (`TerrainGround`), built from the same
-  displaced heights the navigation grid reads; `terrain::frame` is the lit
-  program's normal-map tangent frame; `terrain::stream` holds the
+  displaced heights the navigation grid reads, with the bilinear sums in
+  the instruction order (the high corner first); `terrain::frame` is the
+  lit program's normal-map tangent frame; `terrain::stream` holds the
   original's streaming decisions (60 m block priorities, the 44.4 m / 15 m
-  composite selection and its pools, the 3 × 3 tile gather). Grass and
+  composite selection and its pools, the 3 × 3 tile gather) and the tile
+  streaming bits with the one-tile-a-frame hook as a tested model;
+  `terrain::composite` is the original's compositor as numbers: the 21 high
+  and 43 low set pools and their 1024²/512² targets (colour RGB8, normal
+  RG8, gloss R8, half-size parallax R8), the four-layer pass keys
+  (`AddPass`, `Textured`, `Masked`, `BaseNrm`), every per-layer value the
+  passes upload, the block palette and mask quads, `TexPos`, the
+  wet-floor gloss term (wired into `terrain.wesl` through the palette's
+  wetness) and the selection's cut-offs, light-distance sort, set stealing
+  and one-block-a-frame rule; `terrain::wireframe` draws each block's
+  triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
+  wireframe hook). Grass and
   small plants take the original's upward normals, grass is drawn at 0.75
   size, the density mask is sampled on its
   240 × 240 texels, and the baked chunks have no collider and cast shadows
