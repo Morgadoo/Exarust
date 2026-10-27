@@ -87,18 +87,13 @@ pub fn beard_colour(beard_alpha: f32, blurred_alpha: f32, tint: [f32; 3]) -> [f3
     b *= b;
     let col = mix(tint, [0.1; 3], b * 0.4);
     b = b * c * (1.0 + a * 0.3);
-    [
-        col[0] * b,
-        col[1] * b,
-        col[2] * b,
-        beard_alpha_scale(beard_alpha),
-    ]
+    [col[0] * b, col[1] * b, col[2] * b, beard_alpha_scale(a)]
 }
 
-/// The overlay colour program's alpha: the texture's alpha times 1.5,
-/// clamped by the 8-bit target.
-fn beard_alpha_scale(alpha: f32) -> f32 {
-    (alpha * 1.5).clamp(0.0, 1.0)
+/// The overlay colour program's alpha: the squared texture alpha times 1.5,
+/// clamped by the 8-bit target (the shader squares `a` before writing it).
+fn beard_alpha_scale(a: f32) -> f32 {
+    (a * 1.5).clamp(0.0, 1.0)
 }
 
 /// The beard's normal overlay: the beard normal's x and y, re-encoded,
@@ -327,7 +322,7 @@ mod tests {
         for i in 0..3 {
             assert!((o[i] - col[i] * scale).abs() < 1e-6, "{o:?}");
         }
-        assert!((o[3] - 0.75).abs() < 1e-6);
+        assert!((o[3] - 0.375).abs() < 1e-6);
         // Alpha 1 clamps the overlay's 1.5 to one.
         assert_eq!(beard_colour(1.0, 0.0, [0.0; 3])[3], 1.0);
         // The normal overlay re-encodes the same texel and takes the mask
