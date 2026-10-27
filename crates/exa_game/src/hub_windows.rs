@@ -769,13 +769,13 @@ pub fn draw_hub_windows(
     screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
 ) {
-    frames.clear();
     let Some(windows) = windows else {
         return;
     };
     if !windows.is_open() {
         return;
     }
+    frames.clear();
     let Some(bounds) = windows.bounds() else {
         return;
     };
@@ -1011,6 +1011,12 @@ mod tests {
         for _ in 0..3 {
             app.update();
         }
+        // With no hub window the pass leaves another screen's frames alone.
+        app.world_mut()
+            .resource_mut::<GuiFrames>()
+            .push(exa_ui::gui_draw::GuiFrame::new());
+        app.update();
+        assert_eq!(app.world().resource::<GuiFrames>().frames.len(), 1);
         let mut windows = HubWindows::default();
         windows.open_board(&career());
         app.world_mut().insert_resource(windows);
