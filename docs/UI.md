@@ -683,6 +683,8 @@ calling the rest of the game, so the order is testable.
   and 1, then the background's own; the unknown one also 0x10c), flags,
   pose and wake-up motion; the unknown background writes the record's class
   0x510000 and four potential, the knight and proctor the template 0x1f.
+  The villager starts with condition and animator flags 0x600 and turn
+  0.45, the knight and proctor turn 1.0.
   The unknown background and the villager get a starting light (turned −48°,
   110°, 88° and 8°, −150°, 50°), the unknown one Derrin. The spawn turns are
   the engine's angle builder's rows (`(cz·cy, sz, −cz·sy)`, …). Practice

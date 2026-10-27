@@ -470,6 +470,13 @@ pub struct StoryStart {
     pub class_word: Option<u32>,
     /// The potential the unknown background starts with.
     pub potential: Option<f32>,
+    /// The condition word the start writes (the villager's 0x600).
+    pub condition: Option<u32>,
+    /// The animator flags the start writes (the villager's 0x600).
+    pub animator: Option<u32>,
+    /// The turn factor the start writes (the villager's 0.45, the knight's
+    /// and proctor's 1.0; the unknown background leaves it).
+    pub turn: Option<f32>,
     /// The starting light: the unknown background's and the villager's; the
     /// knight and proctor start without one.
     pub light: Option<StoryLight>,
@@ -535,6 +542,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             template: None,
             class_word: Some(STORY_UNKNOWN_CLASS),
             potential: Some(STORY_UNKNOWN_POTENTIAL),
+            condition: None,
+            animator: None,
+            turn: None,
             light: Some(StoryLight {
                 position: Vec3::new(8045.0, 4.7, 4075.0),
                 rotation_degrees: Vec3::new(-48.0, 110.0, 88.0),
@@ -559,6 +569,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             template: Some(STORY_TEMPLATE),
             class_word: None,
             potential: None,
+            condition: None,
+            animator: None,
+            turn: Some(1.0),
             light: None,
             companion: None,
         },
@@ -574,6 +587,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             template: None,
             class_word: None,
             potential: None,
+            condition: Some(0x600),
+            animator: Some(0x600),
+            turn: Some(0.45),
             light: Some(StoryLight {
                 position: Vec3::new(8000.0, 500.0, 4000.0),
                 rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
@@ -1041,6 +1057,13 @@ pub enum Step {
     },
     /// Create the story's starting light.
     StoryLight(StoryLight),
+    /// Write the story start's condition word, animator flags and turn
+    /// factor (the fields each background sets; `None` leaves one).
+    StoryPose {
+        condition: Option<u32>,
+        flags: Option<u32>,
+        turn_factor: Option<f32>,
+    },
     /// Place the story's companion.
     Companion(Companion),
     /// Frame the camera.
@@ -1655,6 +1678,13 @@ impl Flow {
             steps.push(Step::StoryLight(light));
         }
         steps.push(Step::RequestAction(motion));
+        if start.condition.is_some() || start.animator.is_some() || start.turn.is_some() {
+            steps.push(Step::StoryPose {
+                condition: start.condition,
+                flags: start.animator,
+                turn_factor: start.turn,
+            });
+        }
         steps.push(Step::PlacePlayer(start.placement));
         steps.push(Step::Camera(camera::frame_player(
             start.placement.position,
@@ -2938,6 +2968,13 @@ mod tests {
         let villager = story_start(Background::Villager, 1.0);
         assert_eq!(villager.role, 0x18);
         assert_eq!(villager.flags, 0x600);
+        assert_eq!(villager.condition, Some(0x600));
+        assert_eq!(villager.animator, Some(0x600));
+        assert_eq!(villager.turn, Some(0.45));
+        assert_eq!(knight.condition, None);
+        assert_eq!(knight.turn, Some(1.0));
+        assert_eq!(unknown.condition, None);
+        assert_eq!(unknown.turn, None);
         assert_eq!(villager.placement.position.y, 300.0);
         assert_ne!(villager.placement.rotation, NO_ROTATION);
         let villager_light = villager.light.unwrap();
@@ -3654,8 +3691,34 @@ mod tests {
             class_word: Some(STORY_UNKNOWN_CLASS),
             potential: Some(STORY_UNKNOWN_POTENTIAL),
         }));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::StoryPose { .. }))
+        );
         assert!(steps.iter().any(|step| matches!(step, Step::Companion(_))));
         assert!(steps.iter().any(|step| matches!(step, Step::StoryLight(_))));
+        // The villager gets up: the pose writes its condition, flags and
+        // turn factor and asks for motion 0x1b.
+        let mut flow = Flow::default();
+        let steps = flow.start_story(Background::Villager, 1.8, view, 500);
+        assert!(flow.story.wake.getting_up);
+        assert!(steps.contains(&Step::RequestAction(START_MOTION_VILLAGER)));
+        assert!(steps.contains(&Step::StoryPose {
+            condition: Some(0x600),
+            flags: Some(0x600),
+            turn_factor: Some(0.45),
+        }));
+        // The knight waits for a scripted motion and starts at turn 1.0.
+        let mut flow = Flow::default();
+        let steps = flow.start_story(Background::Knight, 1.8, view, 500);
+        assert!(flow.story.wake.delayed);
+        assert!(steps.contains(&Step::RequestAction(START_MOTION_WAKING)));
+        assert!(steps.contains(&Step::StoryPose {
+            condition: None,
+            flags: None,
+            turn_factor: Some(1.0),
+        }));
         let mut flow = Flow::default();
         let placement = Placement {
             rotation: NO_ROTATION,
