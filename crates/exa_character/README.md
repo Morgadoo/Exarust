@@ -178,11 +178,10 @@ These are tested rules the running game does not drive yet.
   the new standing height, the double-precision body scale), the
   dressed-mesh plan (per garment, in layer order: chosen slots, visible
   mask, merge order, plus the per-slot impact material; the body's mask and
-  merged slots), a texture-only rebuild (without the feral apparel overlay)
-  and the creation scene's hair roots. `background` hands a runner the
+  merged slots), a texture-only rebuild and the creation scene's hair roots. `background` hands a runner the
   rebuild's build and apply steps apart, or runs both inline.
-- The texture-only pass's feral overlay: the underwear (item 8) of a feral
-  character takes quality and damage `round_to_even((2 − f)·f·255)` and the
+- The dressing and texture-only passes' feral overlay: the underwear (item 8) of a feral
+  character takes damage and dirt `round_to_even((2 − f)·f·255)` and the
   record's look seed; every other first apparel keeps its stored appearance
   and its own seed (`retexture_layer`). `preview` and `retexture_only` are
   the two public wrappers.

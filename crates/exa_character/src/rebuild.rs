@@ -218,17 +218,18 @@ pub fn retexture_layer(
     }
 }
 
-/// The two bytes the re-texture pass writes on the underwear's appearance
-/// (its quality and damage) for a feral level `f`: `(2 − f)·f·255`, rounded
-/// to even as the original's conversion does and cut to a byte.
+/// The two bytes the dressing and re-texture passes write on the
+/// underwear's appearance (its damage and dirt, the block's second and
+/// third bytes) for a feral level `f`: `(2 − f)·f·255`, rounded to even as
+/// the original's conversion does and cut to a byte. Quality is kept.
 pub fn feral_underwear_appearance(
     mut appearance: exa_formats::objdb::Appearance,
     feral: f32,
 ) -> exa_formats::objdb::Appearance {
     let k = (2.0 - feral) * feral;
     let byte = (k * 255.0).round_ties_even() as i64 as u8;
-    appearance.quality = byte;
     appearance.damage = byte;
+    appearance.dirt = byte;
     appearance
 }
 
@@ -521,9 +522,9 @@ mod tests {
         assert_eq!(job.format.side, 0x200);
     }
 
-    /// The feral overlay on the underwear: quality and damage become
-    /// `(2 − f)·f·255` rounded to even; every other item keeps its own
-    /// appearance and seed.
+    /// The feral overlay on the underwear: damage and dirt become
+    /// `(2 − f)·f·255` rounded to even, quality is kept; every other item
+    /// keeps its own appearance and seed.
     #[test]
     fn the_feral_underwear_takes_the_feral_share() {
         let appearance = exa_formats::objdb::Appearance {
@@ -532,13 +533,14 @@ mod tests {
             dirt: 3,
             layers: [Default::default(); 8],
         };
+        // 0.5: 1.5·0.5·255 = 191.25 → 191.
         let feral = feral_underwear_appearance(appearance, 0.5);
-        assert_eq!((feral.quality, feral.damage), (191, 191));
-        assert_eq!(feral.dirt, 3);
+        assert_eq!((feral.damage, feral.dirt), (191, 191));
+        assert_eq!(feral.quality, 160);
         let calm = feral_underwear_appearance(appearance, 0.0);
-        assert_eq!((calm.quality, calm.damage), (0, 0));
+        assert_eq!((calm.damage, calm.dirt), (0, 0));
         let full = feral_underwear_appearance(appearance, 1.0);
-        assert_eq!((full.quality, full.damage), (255, 255));
+        assert_eq!((full.damage, full.dirt), (255, 255));
         // The underwear (item 8) takes the record's seed; anything else its
         // own.
         let layer = retexture_layer(
@@ -549,7 +551,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(layer.seed, 0x1234);
-        assert_eq!(layer.appearance.quality, 112);
+        // 0.25: 1.75·0.25·255 = 111.5625 → 112.
+        assert_eq!((layer.appearance.damage, layer.appearance.dirt), (112, 112));
         let other = retexture_layer(Some(("&shirt", appearance, 77)), 144, 0.25, 0x1234).unwrap();
         assert_eq!((other.seed, other.appearance), (77, appearance));
         assert_eq!(retexture_layer(None, 8, 1.0, 0), None);
